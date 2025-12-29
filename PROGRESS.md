@@ -29,13 +29,20 @@
    - `src/config.ts` - Config merging with priority (overrides > env > yaml)
    - `src/index.ts` - exports
 
+4. **Unit Tests (41 tests)**
+   - `packages/core/src/__tests__/tool.test.ts` - 6 tests
+   - `packages/core/src/__tests__/registry.test.ts` - 12 tests
+   - `packages/core/src/__tests__/agent.test.ts` - 8 tests
+   - `packages/config/src/__tests__/schema.test.ts` - 7 tests
+   - `packages/config/src/__tests__/env.test.ts` - 8 tests
+   - CI/CD now fails if tests fail (removed continue-on-error)
+
 ### 🔄 In Progress
 
 - None
 
 ### ⏳ Pending (Roadmap Month 1)
 
-- Unit tests (target: >80% coverage)
 - Basic built-in tools (calculator, datetime)
 - Structured logging
 

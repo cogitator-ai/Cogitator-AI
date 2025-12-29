@@ -91,4 +91,3 @@ jobs:
       - run: pnpm build
 
       - run: pnpm test
-        continue-on-error: true  # TODO: Remove when tests are added
