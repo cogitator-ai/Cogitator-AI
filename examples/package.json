@@ -1,0 +1,16 @@
+{
+  "name": "@cogitator/examples",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "basic-agent": "tsx basic-agent.ts"
+  },
+  "dependencies": {
+    "@cogitator/core": "workspace:*",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  }
+}

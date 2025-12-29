@@ -1,0 +1,55 @@
+/**
+ * LLM Backend types
+ */
+
+import type { Message, ToolCall } from './message.js';
+import type { ToolSchema } from './tool.js';
+
+export type LLMProvider = 'ollama' | 'openai' | 'anthropic' | 'google' | 'vllm';
+
+export interface LLMConfig {
+  provider: LLMProvider;
+  model: string;
+  temperature?: number;
+  topP?: number;
+  maxTokens?: number;
+  stopSequences?: string[];
+}
+
+export interface ChatRequest {
+  model: string;
+  messages: Message[];
+  tools?: ToolSchema[];
+  temperature?: number;
+  topP?: number;
+  maxTokens?: number;
+  stop?: string[];
+  stream?: boolean;
+}
+
+export interface ChatResponse {
+  id: string;
+  content: string;
+  toolCalls?: ToolCall[];
+  finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  };
+}
+
+export interface ChatStreamChunk {
+  id: string;
+  delta: {
+    content?: string;
+    toolCalls?: Partial<ToolCall>[];
+  };
+  finishReason?: 'stop' | 'tool_calls' | 'length' | 'error';
+}
+
+export interface LLMBackend {
+  readonly provider: LLMProvider;
+  chat(request: ChatRequest): Promise<ChatResponse>;
+  chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk>;
+}
