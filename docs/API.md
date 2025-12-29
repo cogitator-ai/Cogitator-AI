@@ -178,7 +178,7 @@ interface AgentConfig {
   description?: string;
 
   // Model
-  model: string;  // e.g., 'ollama/llama3.2:70b', 'openai/gpt-4o'
+  model: string; // e.g., 'ollama/llama3.2:70b', 'openai/gpt-4o'
   temperature?: number;
   topP?: number;
   maxTokens?: number;
@@ -511,7 +511,14 @@ interface SwarmConfig {
   name: string;
 
   // Strategy
-  strategy: 'hierarchical' | 'round-robin' | 'consensus' | 'auction' | 'pipeline' | 'debate' | 'collaborative';
+  strategy:
+    | 'hierarchical'
+    | 'round-robin'
+    | 'consensus'
+    | 'auction'
+    | 'pipeline'
+    | 'debate'
+    | 'collaborative';
 
   // Agents (varies by strategy)
   supervisor?: Agent;
@@ -824,15 +831,15 @@ swarm.on('swarm:complete', (event: SwarmCompleteEvent) => {});
 
 ```typescript
 import {
-  CogitatorError,        // Base error class
-  AgentError,            // Agent execution errors
-  ToolError,             // Tool execution errors
-  MemoryError,           // Memory operations errors
-  LLMError,              // LLM provider errors
-  TimeoutError,          // Timeout errors
-  ValidationError,       // Input validation errors
-  RateLimitError,        // Rate limiting errors
-  AuthenticationError,   // Auth errors
+  CogitatorError, // Base error class
+  AgentError, // Agent execution errors
+  ToolError, // Tool execution errors
+  MemoryError, // Memory operations errors
+  LLMError, // LLM provider errors
+  TimeoutError, // Timeout errors
+  ValidationError, // Input validation errors
+  RateLimitError, // Rate limiting errors
+  AuthenticationError, // Auth errors
 } from '@cogitator/core';
 
 // Error handling

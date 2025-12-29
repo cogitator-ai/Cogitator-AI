@@ -81,6 +81,7 @@ cogitator/
 ### Pull Requests
 
 1. **Fork and branch**: Create a feature branch from `main`
+
    ```bash
    git checkout -b feature/your-feature-name
    ```
@@ -88,16 +89,19 @@ cogitator/
 2. **Write code**: Follow our coding standards (see below)
 
 3. **Test**: Add tests for new functionality
+
    ```bash
    pnpm test
    ```
 
 4. **Lint**: Ensure code passes linting
+
    ```bash
    pnpm lint
    ```
 
 5. **Commit**: Use conventional commit messages
+
    ```bash
    git commit -m "feat(core): add new agent feature"
    ```
@@ -117,6 +121,7 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 ```
 
 Types:
+
 - `feat`: New feature
 - `fix`: Bug fix
 - `docs`: Documentation only
@@ -127,6 +132,7 @@ Types:
 - `chore`: Maintenance tasks
 
 Scopes:
+
 - `core`: @cogitator/core
 - `cli`: @cogitator/cli
 - `memory`: @cogitator/memory
@@ -137,6 +143,7 @@ Scopes:
 - `dashboard`: @cogitator/dashboard
 
 Examples:
+
 ```
 feat(core): add support for streaming responses
 fix(memory): resolve race condition in context builder
@@ -214,7 +221,7 @@ describe('Agent', () => {
 - Update relevant docs when changing functionality
 - Include examples in documentation
 
-```typescript
+````typescript
 /**
  * Creates a new agent with the specified configuration.
  *
@@ -233,7 +240,7 @@ describe('Agent', () => {
 export function createAgent(config: AgentConfig): Agent {
   // ...
 }
-```
+````
 
 ## Development Workflow
 
@@ -296,6 +303,7 @@ We especially welcome contributions in these areas:
 ## Recognition
 
 Contributors will be recognized in:
+
 - CONTRIBUTORS.md file
 - Release notes
 - Project README (for significant contributions)

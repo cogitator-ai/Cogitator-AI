@@ -15,13 +15,13 @@ import type {
   Span,
   ToolContext,
 } from '@cogitator/types';
-import { Agent } from './agent.js';
+import { type Agent } from './agent.js';
 import { ToolRegistry } from './registry.js';
 import { createLLMBackend, parseModel } from './llm/index.js';
 
 export class Cogitator {
   private config: CogitatorConfig;
-  private backends: Map<LLMProvider, LLMBackend> = new Map();
+  private backends = new Map<LLMProvider, LLMBackend>();
   public readonly tools: ToolRegistry = new ToolRegistry();
 
   constructor(config: CogitatorConfig = {}) {
@@ -118,12 +118,7 @@ export class Cogitator {
           options.onToolCall?.(toolCall);
 
           const toolSpanStart = Date.now();
-          const result = await this.executeTool(
-            registry,
-            toolCall,
-            runId,
-            agent.id
-          );
+          const result = await this.executeTool(registry, toolCall, runId, agent.id);
 
           spans.push({
             name: `tool.${toolCall.name}`,
@@ -150,9 +145,7 @@ export class Cogitator {
     }
 
     const endTime = Date.now();
-    const lastAssistantMessage = messages
-      .filter((m) => m.role === 'assistant')
-      .pop();
+    const lastAssistantMessage = messages.filter((m) => m.role === 'assistant').pop();
 
     return {
       output: lastAssistantMessage?.content ?? '',
@@ -163,11 +156,7 @@ export class Cogitator {
         inputTokens: totalInputTokens,
         outputTokens: totalOutputTokens,
         totalTokens: totalInputTokens + totalOutputTokens,
-        cost: this.calculateCost(
-          agent.model,
-          totalInputTokens,
-          totalOutputTokens
-        ),
+        cost: this.calculateCost(agent.model, totalInputTokens, totalOutputTokens),
         duration: endTime - startTime,
       },
       toolCalls: allToolCalls,
@@ -221,10 +210,7 @@ export class Cogitator {
     }
 
     // Estimate input tokens (rough)
-    inputTokens = messages.reduce(
-      (acc, m) => acc + Math.ceil(m.content.length / 4),
-      0
-    );
+    inputTokens = messages.reduce((acc, m) => acc + Math.ceil(m.content.length / 4), 0);
 
     return {
       id: `stream_${nanoid(8)}`,
@@ -287,8 +273,7 @@ export class Cogitator {
    */
   private getBackend(modelString: string): LLMBackend {
     const { provider } = parseModel(modelString);
-    const actualProvider =
-      provider ?? this.config.llm?.defaultProvider ?? 'ollama';
+    const actualProvider = provider ?? this.config.llm?.defaultProvider ?? 'ollama';
 
     let backend = this.backends.get(actualProvider);
     if (!backend) {
@@ -302,13 +287,9 @@ export class Cogitator {
   /**
    * Calculate cost based on model and tokens
    */
-  private calculateCost(
-    model: string,
-    inputTokens: number,
-    outputTokens: number
-  ): number {
+  private calculateCost(model: string, inputTokens: number, outputTokens: number): number {
     // Simplified pricing (per 1M tokens)
-    const pricing: Record<string, { input: number; output: number }> = {
+    const pricing: Partial<Record<string, { input: number; output: number }>> = {
       'gpt-4o': { input: 2.5, output: 10 },
       'gpt-4o-mini': { input: 0.15, output: 0.6 },
       'gpt-4-turbo': { input: 10, output: 30 },
@@ -325,16 +306,13 @@ export class Cogitator {
       return 0;
     }
 
-    return (
-      (inputTokens * price.input) / 1_000_000 +
-      (outputTokens * price.output) / 1_000_000
-    );
+    return (inputTokens * price.input) / 1_000_000 + (outputTokens * price.output) / 1_000_000;
   }
 
   /**
    * Close all connections
    */
-  async close(): Promise<void> {
+  close(): void {
     this.backends.clear();
   }
 }

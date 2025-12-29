@@ -5,6 +5,7 @@
 ## Overview
 
 Tools give agents the ability to interact with the outside world. In Cogitator, tools are:
+
 - **Type-safe** — Parameters validated with Zod schemas
 - **Sandboxed** — Execute in isolated environments (Docker/WASM)
 - **MCP-compatible** — Work with Model Context Protocol servers
@@ -47,7 +48,8 @@ import { z } from 'zod';
 
 const calculator = tool({
   name: 'calculator',
-  description: 'Perform mathematical calculations. Supports basic arithmetic, trigonometry, and common functions.',
+  description:
+    'Perform mathematical calculations. Supports basic arithmetic, trigonometry, and common functions.',
   parameters: z.object({
     expression: z.string().describe('Mathematical expression to evaluate, e.g., "2 + 2 * 3"'),
   }),
@@ -66,27 +68,19 @@ const createFile = tool({
   name: 'create_file',
   description: 'Create a new file with the specified content',
   parameters: z.object({
-    path: z.string()
-      .describe('File path relative to workspace root'),
-    content: z.string()
-      .describe('File content'),
-    encoding: z.enum(['utf-8', 'base64'])
-      .default('utf-8')
-      .describe('Content encoding'),
-    overwrite: z.boolean()
-      .default(false)
-      .describe('Whether to overwrite existing file'),
+    path: z.string().describe('File path relative to workspace root'),
+    content: z.string().describe('File content'),
+    encoding: z.enum(['utf-8', 'base64']).default('utf-8').describe('Content encoding'),
+    overwrite: z.boolean().default(false).describe('Whether to overwrite existing file'),
   }),
   execute: async ({ path, content, encoding, overwrite }) => {
     const fullPath = join(workspaceRoot, path);
 
-    if (!overwrite && await exists(fullPath)) {
+    if (!overwrite && (await exists(fullPath))) {
       return { error: `File already exists: ${path}. Set overwrite: true to replace.` };
     }
 
-    const buffer = encoding === 'base64'
-      ? Buffer.from(content, 'base64')
-      : content;
+    const buffer = encoding === 'base64' ? Buffer.from(content, 'base64') : content;
 
     await fs.writeFile(fullPath, buffer);
 
@@ -117,7 +111,7 @@ const shellExecute = tool({
   // Require human approval for dangerous commands
   requiresApproval: (params) => {
     const dangerous = ['rm', 'sudo', 'chmod', 'kill', 'reboot'];
-    return dangerous.some(cmd => params.command.includes(cmd));
+    return dangerous.some((cmd) => params.command.includes(cmd));
   },
 
   execute: async ({ command, cwd, timeout }) => {
@@ -178,11 +172,7 @@ const matches = await fileSearch.execute({
 ### Web Operations
 
 ```typescript
-import {
-  webFetch,
-  webSearch,
-  webScreenshot,
-} from '@cogitator/tools/web';
+import { webFetch, webSearch, webScreenshot } from '@cogitator/tools/web';
 
 // Fetch URL
 const page = await webFetch.execute({
@@ -411,9 +401,7 @@ const tool = tool({
     network: {
       mode: 'none', // No network access
     },
-    mounts: [
-      { source: '/workspace', target: '/workspace', readOnly: true },
-    ],
+    mounts: [{ source: '/workspace', target: '/workspace', readOnly: true }],
     timeout: 30_000,
   },
 
@@ -510,13 +498,13 @@ const researchAndSummarize = tool({
     });
 
     const contents = await Promise.all(
-      searchResults.map(r => tools.webFetch.execute({ url: r.url }))
+      searchResults.map((r) => tools.webFetch.execute({ url: r.url }))
     );
 
     // Return combined result
     return {
-      sources: searchResults.map(r => r.url),
-      content: contents.map(c => c.content).join('\n\n'),
+      sources: searchResults.map((r) => r.url),
+      content: contents.map((c) => c.content).join('\n\n'),
     };
   },
 });
@@ -794,19 +782,20 @@ tool({
 
 ```typescript
 execute: async ({ filePath }) => {
-  if (!await exists(filePath)) {
+  if (!(await exists(filePath))) {
     const dir = dirname(filePath);
     const similar = await findSimilar(dir, basename(filePath));
 
     return {
       error: `File not found: ${filePath}`,
-      suggestion: similar.length > 0
-        ? `Did you mean: ${similar.join(', ')}?`
-        : `Directory contents: ${await listDir(dir)}`,
+      suggestion:
+        similar.length > 0
+          ? `Did you mean: ${similar.join(', ')}?`
+          : `Directory contents: ${await listDir(dir)}`,
     };
   }
   // ...
-}
+};
 ```
 
 ### 3. Resource Limits

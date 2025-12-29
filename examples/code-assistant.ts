@@ -71,7 +71,7 @@ const listFiles = tool({
     const fullPath = path.join(WORKSPACE_DIR, dirPath);
     try {
       const entries = await fs.readdir(fullPath, { withFileTypes: true });
-      const files = entries.map(e => ({
+      const files = entries.map((e) => ({
         name: e.name,
         type: e.isDirectory() ? 'directory' : 'file',
       }));

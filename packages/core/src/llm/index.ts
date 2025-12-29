@@ -48,8 +48,10 @@ export function createLLMBackend(
     case 'vllm':
       throw new Error(`Provider ${provider} not yet implemented`);
 
-    default:
-      throw new Error(`Unknown provider: ${provider}`);
+    default: {
+      const _exhaustive: never = provider;
+      throw new Error(`Unknown provider: ${_exhaustive as string}`);
+    }
   }
 }
 

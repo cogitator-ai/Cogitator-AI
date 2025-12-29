@@ -85,12 +85,12 @@ The Gateway is the single entry point for all client interactions.
 
 #### Technology Choices
 
-| Component | Technology | Rationale |
-|-----------|------------|-----------|
-| HTTP Server | Fastify | Fastest Node.js framework, plugin ecosystem |
-| Type Safety | tRPC | End-to-end type safety, auto-generated clients |
-| WebSocket | uWebSockets.js | 10x faster than ws, C++ bindings |
-| gRPC | @grpc/grpc-js | Official gRPC for high-performance RPC |
+| Component   | Technology     | Rationale                                      |
+| ----------- | -------------- | ---------------------------------------------- |
+| HTTP Server | Fastify        | Fastest Node.js framework, plugin ecosystem    |
+| Type Safety | tRPC           | End-to-end type safety, auto-generated clients |
+| WebSocket   | uWebSockets.js | 10x faster than ws, C++ bindings               |
+| gRPC        | @grpc/grpc-js  | Official gRPC for high-performance RPC         |
 
 #### API Structure
 
@@ -107,9 +107,7 @@ export const appRouter = router({
       .input(z.object({ id: z.string() }))
       .query(({ input }) => agentService.get(input.id)),
 
-    list: protectedProcedure
-      .input(PaginationSchema)
-      .query(({ input }) => agentService.list(input)),
+    list: protectedProcedure.input(PaginationSchema).query(({ input }) => agentService.list(input)),
   }),
 
   // Execution
@@ -222,17 +220,21 @@ class BullMQTaskQueue implements TaskQueue {
   constructor(redis: Redis) {
     this.queue = new Queue('agent-tasks', { connection: redis });
 
-    this.worker = new Worker('agent-tasks', async (job) => {
-      const executor = new AgentExecutor(job.data);
-      return executor.run();
-    }, {
-      connection: redis,
-      concurrency: 10,
-      limiter: {
-        max: 100,
-        duration: 1000, // 100 jobs/second
+    this.worker = new Worker(
+      'agent-tasks',
+      async (job) => {
+        const executor = new AgentExecutor(job.data);
+        return executor.run();
       },
-    });
+      {
+        connection: redis,
+        concurrency: 10,
+        limiter: {
+          max: 100,
+          duration: 1000, // 100 jobs/second
+        },
+      }
+    );
   }
 }
 ```
@@ -249,7 +251,7 @@ class SmartLoadBalancer implements LoadBalancer {
     const workers = await this.getAvailableWorkers();
 
     // Score each worker
-    const scored = workers.map(worker => ({
+    const scored = workers.map((worker) => ({
       worker,
       score: this.calculateScore(worker, task),
     }));
@@ -371,10 +373,10 @@ interface Memory {
   agentId: string;
   type: 'message' | 'tool_result' | 'fact' | 'summary';
   content: string;
-  embedding?: number[];  // For semantic search
+  embedding?: number[]; // For semantic search
   metadata: {
     timestamp: Date;
-    importance: number;  // 0-1, affects retrieval priority
+    importance: number; // 0-1, affects retrieval priority
     source: string;
     tags: string[];
   };
@@ -393,10 +395,10 @@ interface RetrievalQuery {
 }
 
 type RetrievalStrategy =
-  | 'recency'      // Most recent first
-  | 'semantic'     // Most similar to query
-  | 'importance'   // Highest importance score
-  | 'hybrid';      // Weighted combination
+  | 'recency' // Most recent first
+  | 'semantic' // Most similar to query
+  | 'importance' // Highest importance score
+  | 'hybrid'; // Weighted combination
 ```
 
 #### Automatic Summarization
@@ -420,18 +422,18 @@ class ContextBuilder {
     // 3. If over limit, apply compression strategies
     if (tokenCount > maxTokens) {
       // Strategy 1: Remove low-importance memories
-      memories = memories.filter(m => m.metadata.importance > 0.3);
+      memories = memories.filter((m) => m.metadata.importance > 0.3);
       tokenCount = this.countTokens(memories);
 
       // Strategy 2: Summarize old conversations
       if (tokenCount > maxTokens) {
-        const oldMemories = memories.filter(m =>
-          m.metadata.timestamp < Date.now() - 24 * 60 * 60 * 1000
+        const oldMemories = memories.filter(
+          (m) => m.metadata.timestamp < Date.now() - 24 * 60 * 60 * 1000
         );
         const summary = await this.summarizer.summarize(oldMemories);
         memories = [
           { type: 'summary', content: summary, metadata: { importance: 0.8 } },
-          ...memories.filter(m => !oldMemories.includes(m)),
+          ...memories.filter((m) => !oldMemories.includes(m)),
         ];
       }
 
@@ -556,7 +558,7 @@ class AgentExecutor {
       const response = await this.llm.chat({
         model: agent.model,
         messages,
-        tools: agent.tools.map(t => t.schema),
+        tools: agent.tools.map((t) => t.schema),
         temperature: agent.temperature,
       });
 
@@ -580,7 +582,7 @@ class AgentExecutor {
       if (response.toolCalls) {
         const toolResults = await Promise.all(
           response.toolCalls.map(async (call) => {
-            const tool = agent.tools.find(t => t.name === call.name);
+            const tool = agent.tools.find((t) => t.name === call.name);
             if (!tool) throw new Error(`Unknown tool: ${call.name}`);
 
             const result = await this.sandbox.execute(tool, call.arguments);
@@ -754,12 +756,14 @@ class SmartLLMRouter {
       Array.from(this.backends.entries()).map(async ([name, backend]) => {
         const health = await backend.health();
         const models = await backend.listModels();
-        const hasModel = models.some(m => m.name === model);
+        const hasModel = models.some((m) => m.name === model);
 
         return {
           name,
           backend,
-          score: hasModel ? (100 - health.latency + (request.tools ? health.toolSupport * 20 : 0)) : 0,
+          score: hasModel
+            ? 100 - health.latency + (request.tools ? health.toolSupport * 20 : 0)
+            : 0,
         };
       })
     );
@@ -814,9 +818,24 @@ const exampleTrace: AgentTrace = {
   spans: [
     { name: 'agent.run', duration: 2500 },
     { name: 'memory.retrieve', duration: 50, parent: 'agent.run' },
-    { name: 'llm.chat', duration: 1800, parent: 'agent.run', attributes: { model: 'llama3.2', tokens: 1500 } },
-    { name: 'tool.execute', duration: 200, parent: 'agent.run', attributes: { tool: 'search_web' } },
-    { name: 'llm.chat', duration: 400, parent: 'agent.run', attributes: { model: 'llama3.2', tokens: 500 } },
+    {
+      name: 'llm.chat',
+      duration: 1800,
+      parent: 'agent.run',
+      attributes: { model: 'llama3.2', tokens: 1500 },
+    },
+    {
+      name: 'tool.execute',
+      duration: 200,
+      parent: 'agent.run',
+      attributes: { tool: 'search_web' },
+    },
+    {
+      name: 'llm.chat',
+      duration: 400,
+      parent: 'agent.run',
+      attributes: { model: 'llama3.2', tokens: 500 },
+    },
   ],
   usage: {
     inputTokens: 1500,
@@ -861,7 +880,7 @@ services:
   cogitator:
     image: cogitator/runtime:latest
     ports:
-      - "3000:3000"
+      - '3000:3000'
     environment:
       - DATABASE_URL=postgres://localhost/cogitator
       - REDIS_URL=redis://localhost:6379
@@ -896,8 +915,8 @@ spec:
           image: cogitator/gateway:latest
           resources:
             requests:
-              memory: "512Mi"
-              cpu: "500m"
+              memory: '512Mi'
+              cpu: '500m'
 
 ---
 apiVersion: apps/v1
@@ -913,10 +932,10 @@ spec:
           image: cogitator/worker:latest
           resources:
             requests:
-              memory: "2Gi"
-              cpu: "2"
+              memory: '2Gi'
+              cpu: '2'
             limits:
-              nvidia.com/gpu: 1  # For local inference
+              nvidia.com/gpu: 1 # For local inference
 ```
 
 ---
@@ -932,7 +951,7 @@ interface AuthConfig {
     // API key (simple)
     apiKey: {
       enabled: boolean;
-      header: string;  // X-API-Key
+      header: string; // X-API-Key
     };
 
     // JWT (recommended)
@@ -1003,15 +1022,15 @@ interface AuditLog {
 
 ## Performance Benchmarks (Target)
 
-| Metric | Target | Notes |
-|--------|--------|-------|
-| Gateway latency (p50) | < 5ms | Excluding LLM time |
-| Gateway latency (p99) | < 20ms | |
-| Concurrent agents | 10,000+ | Per node |
-| Memory retrieval | < 10ms | With proper indexing |
-| Tool execution (WASM) | < 5ms | Excluding tool logic |
-| Tool execution (Docker) | < 200ms | Cold start |
-| Trace export | < 1ms | Async batching |
+| Metric                  | Target  | Notes                |
+| ----------------------- | ------- | -------------------- |
+| Gateway latency (p50)   | < 5ms   | Excluding LLM time   |
+| Gateway latency (p99)   | < 20ms  |                      |
+| Concurrent agents       | 10,000+ | Per node             |
+| Memory retrieval        | < 10ms  | With proper indexing |
+| Tool execution (WASM)   | < 5ms   | Excluding tool logic |
+| Tool execution (Docker) | < 200ms | Cold start           |
+| Trace export            | < 1ms   | Async batching       |
 
 ---
 

@@ -62,6 +62,7 @@
 ### Anthropic SDK (v0.39.0+)
 
 **Новые beta helpers:**
+
 ```typescript
 // betaZodTool - инструменты с Zod схемами напрямую
 import { betaZodTool } from '@anthropic-ai/sdk/helpers/zod';

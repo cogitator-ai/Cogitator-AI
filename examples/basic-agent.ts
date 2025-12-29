@@ -80,7 +80,10 @@ async function main() {
     input: 'What is 15% of 250?',
   });
   console.log('Response:', result2.output);
-  console.log('Tool calls:', result2.toolCalls.map(t => t.name));
+  console.log(
+    'Tool calls:',
+    result2.toolCalls.map((t) => t.name)
+  );
   console.log();
 
   // Example 3: Using another tool

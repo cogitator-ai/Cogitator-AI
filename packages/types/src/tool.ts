@@ -9,7 +9,7 @@ export interface ToolConfig<TParams = unknown, TResult = unknown> {
   description: string;
   parameters: ZodType<TParams>;
   execute: (params: TParams, context: ToolContext) => Promise<TResult>;
-  sideEffects?: Array<'filesystem' | 'network' | 'database' | 'process'>;
+  sideEffects?: ('filesystem' | 'network' | 'database' | 'process')[];
   requiresApproval?: boolean | ((params: TParams) => boolean);
   timeout?: number;
 }
@@ -19,7 +19,7 @@ export interface Tool<TParams = unknown, TResult = unknown> {
   description: string;
   parameters: ZodType<TParams>;
   execute: (params: TParams, context: ToolContext) => Promise<TResult>;
-  sideEffects?: Array<'filesystem' | 'network' | 'database' | 'process'>;
+  sideEffects?: ('filesystem' | 'network' | 'database' | 'process')[];
   requiresApproval?: boolean | ((params: TParams) => boolean);
   timeout?: number;
   toJSON: () => ToolSchema;

@@ -116,13 +116,15 @@ const codeAnalyzer = new Agent({
     schema: z.object({
       summary: z.string(),
       quality: z.number().min(1).max(10),
-      issues: z.array(z.object({
-        severity: z.enum(['critical', 'major', 'minor', 'suggestion']),
-        file: z.string(),
-        line: z.number().optional(),
-        description: z.string(),
-        suggestion: z.string().optional(),
-      })),
+      issues: z.array(
+        z.object({
+          severity: z.enum(['critical', 'major', 'minor', 'suggestion']),
+          file: z.string(),
+          line: z.number().optional(),
+          description: z.string(),
+          suggestion: z.string().optional(),
+        })
+      ),
       approved: z.boolean(),
     }),
   },
@@ -143,13 +145,15 @@ const securityScanner = new Agent({
   responseFormat: {
     type: 'json_schema',
     schema: z.object({
-      vulnerabilities: z.array(z.object({
-        type: z.string(),
-        severity: z.enum(['critical', 'high', 'medium', 'low']),
-        location: z.string(),
-        description: z.string(),
-        remediation: z.string(),
-      })),
+      vulnerabilities: z.array(
+        z.object({
+          type: z.string(),
+          severity: z.enum(['critical', 'high', 'medium', 'low']),
+          location: z.string(),
+          description: z.string(),
+          remediation: z.string(),
+        })
+      ),
       passed: z.boolean(),
     }),
   },
@@ -223,9 +227,7 @@ const codeReviewWorkflow = new Workflow({
 
         return {
           canAutoApprove,
-          reason: canAutoApprove
-            ? 'All checks passed with high quality'
-            : 'Manual review required',
+          reason: canAutoApprove ? 'All checks passed with high quality' : 'Manual review required',
         };
       },
       dependsOn: ['analyze', 'security-scan', 'run-ci'],
@@ -242,14 +244,16 @@ const codeReviewWorkflow = new Workflow({
         **CI:** ${ctx.steps['run-ci'].output.status}
 
         ### Issues Found:
-        ${ctx.steps.analyze.output.issues.map((i: any) =>
-          `- [${i.severity}] ${i.description}`
-        ).join('\n')}
+        ${ctx.steps.analyze.output.issues
+          .map((i: any) => `- [${i.severity}] ${i.description}`)
+          .join('\n')}
 
         ### Security Findings:
-        ${ctx.steps['security-scan'].output.vulnerabilities.map((v: any) =>
-          `- [${v.severity}] ${v.type}: ${v.description}`
-        ).join('\n') || 'None'}
+        ${
+          ctx.steps['security-scan'].output.vulnerabilities
+            .map((v: any) => `- [${v.severity}] ${v.type}: ${v.description}`)
+            .join('\n') || 'None'
+        }
 
         **Do you approve this PR for merge?**
       `,

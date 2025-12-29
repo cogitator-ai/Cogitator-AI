@@ -80,7 +80,7 @@ export class OllamaBackend extends BaseLLMBackend {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Ollama API error: ${response.status} - ${error}`);
+      throw new Error(`Ollama API error: ${response.status.toString()} - ${error}`);
     }
 
     const data = (await response.json()) as OllamaChatResponse;
@@ -107,7 +107,7 @@ export class OllamaBackend extends BaseLLMBackend {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Ollama API error: ${response.status} - ${error}`);
+      throw new Error(`Ollama API error: ${response.status.toString()} - ${error}`);
     }
 
     const reader = response.body?.getReader();
@@ -117,7 +117,7 @@ export class OllamaBackend extends BaseLLMBackend {
     let buffer = '';
     const id = this.generateId();
 
-    while (true) {
+    for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
 
@@ -134,16 +134,12 @@ export class OllamaBackend extends BaseLLMBackend {
           delta: {
             content: data.message.content,
             toolCalls: data.message.tool_calls?.map((tc, i) => ({
-              id: `call_${i}`,
+              id: `call_${i.toString()}`,
               name: tc.function.name,
               arguments: tc.function.arguments,
             })),
           },
-          finishReason: data.done
-            ? data.message.tool_calls
-              ? 'tool_calls'
-              : 'stop'
-            : undefined,
+          finishReason: data.done ? (data.message.tool_calls ? 'tool_calls' : 'stop') : undefined,
         };
       }
     }
@@ -156,9 +152,7 @@ export class OllamaBackend extends BaseLLMBackend {
     }));
   }
 
-  private convertTools(
-    tools: ChatRequest['tools']
-  ): OllamaTool[] | undefined {
+  private convertTools(tools: ChatRequest['tools']): OllamaTool[] | undefined {
     if (!tools) return undefined;
     return tools.map((t) => ({
       type: 'function' as const,
@@ -171,13 +165,11 @@ export class OllamaBackend extends BaseLLMBackend {
   }
 
   private convertResponse(data: OllamaChatResponse): ChatResponse {
-    const toolCalls: ToolCall[] | undefined = data.message.tool_calls?.map(
-      (tc, i) => ({
-        id: `call_${i}`,
-        name: tc.function.name,
-        arguments: tc.function.arguments,
-      })
-    );
+    const toolCalls: ToolCall[] | undefined = data.message.tool_calls?.map((tc, i) => ({
+      id: `call_${i.toString()}`,
+      name: tc.function.name,
+      arguments: tc.function.arguments,
+    }));
 
     return {
       id: this.generateId(),

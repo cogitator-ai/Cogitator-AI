@@ -25,13 +25,13 @@
 
 AI agent engineering is broken:
 
-| Pain Point | Reality |
-|------------|---------|
-| **LangChain** | 150+ dependencies, breaking changes weekly, abstraction hell |
-| **Python Scripts** | Work for demos, die in production |
-| **Observability** | Zero visibility into why agent loops fail or costs explode |
-| **Vendor Lock-in** | OpenAI Assistants API is powerful but proprietary |
-| **Local LLMs** | Easy to run (Ollama), impossible to orchestrate at scale |
+| Pain Point         | Reality                                                      |
+| ------------------ | ------------------------------------------------------------ |
+| **LangChain**      | 150+ dependencies, breaking changes weekly, abstraction hell |
+| **Python Scripts** | Work for demos, die in production                            |
+| **Observability**  | Zero visibility into why agent loops fail or costs explode   |
+| **Vendor Lock-in** | OpenAI Assistants API is powerful but proprietary            |
+| **Local LLMs**     | Easy to run (Ollama), impossible to orchestrate at scale     |
 
 We're building mission-critical systems, not chatbots. We need **infrastructure**.
 
@@ -202,15 +202,15 @@ const result = await cog.run(devTeam, {
 
 ### Core Components
 
-| Component | Purpose | Tech |
-|-----------|---------|------|
-| **Gateway** | API entry point, protocol translation | Fastify + tRPC |
-| **Orchestrator** | Task scheduling, load balancing | BullMQ + custom scheduler |
-| **Memory Manager** | Hybrid memory with smart retrieval | Redis + Postgres + pgvector |
-| **Agent Workers** | Isolated execution environments | Docker + WASM (Extism) |
-| **Workflow Engine** | Multi-step orchestration | Custom DAG engine |
-| **Tool Registry** | Unified tool management | MCP-compatible |
-| **Observability** | Traces, metrics, cost tracking | OpenTelemetry |
+| Component           | Purpose                               | Tech                        |
+| ------------------- | ------------------------------------- | --------------------------- |
+| **Gateway**         | API entry point, protocol translation | Fastify + tRPC              |
+| **Orchestrator**    | Task scheduling, load balancing       | BullMQ + custom scheduler   |
+| **Memory Manager**  | Hybrid memory with smart retrieval    | Redis + Postgres + pgvector |
+| **Agent Workers**   | Isolated execution environments       | Docker + WASM (Extism)      |
+| **Workflow Engine** | Multi-step orchestration              | Custom DAG engine           |
+| **Tool Registry**   | Unified tool management               | MCP-compatible              |
+| **Observability**   | Traces, metrics, cost tracking        | OpenTelemetry               |
 
 [📖 Full Architecture Documentation](./docs/ARCHITECTURE.md)
 
@@ -223,7 +223,7 @@ const result = await cog.run(devTeam, {
 ```typescript
 // Same code, any provider
 const agent = new Agent({
-  model: 'ollama/llama3.2:70b',     // Local
+  model: 'ollama/llama3.2:70b', // Local
   // model: 'openai/gpt-4o',         // OpenAI
   // model: 'anthropic/claude-3-5-sonnet', // Anthropic
   // model: 'google/gemini-pro',     // Google
@@ -235,13 +235,13 @@ const agent = new Agent({
 ```typescript
 const agent = new Agent({
   memory: {
-    shortTerm: 'redis',      // Fast context window
-    longTerm: 'postgres',    // Persistent storage
-    semantic: 'pgvector',    // Similarity search
+    shortTerm: 'redis', // Fast context window
+    longTerm: 'postgres', // Persistent storage
+    semantic: 'pgvector', // Similarity search
 
     // Auto-summarization when context exceeds limit
     summarization: {
-      threshold: 100_000,    // tokens
+      threshold: 100_000, // tokens
       strategy: 'hierarchical',
     },
   },
@@ -379,17 +379,17 @@ console.log(result.trace);
 ```typescript
 const agent = new Agent({
   sandbox: {
-    type: 'docker',           // or 'wasm' for lighter isolation
+    type: 'docker', // or 'wasm' for lighter isolation
     image: 'cogitator/sandbox:python',
     resources: {
       memory: '512MB',
       cpu: 0.5,
       timeout: '30s',
     },
-    network: 'restricted',    // Only allowed domains
-    filesystem: 'readonly',   // Except /tmp
+    network: 'restricted', // Only allowed domains
+    filesystem: 'readonly', // Except /tmp
   },
-  tools: [codeExecutor],      // Runs inside sandbox
+  tools: [codeExecutor], // Runs inside sandbox
 });
 ```
 
@@ -397,22 +397,23 @@ const agent = new Agent({
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [Architecture](./docs/ARCHITECTURE.md) | Deep dive into system design |
-| [Memory System](./docs/MEMORY.md) | Hybrid memory architecture |
-| [Agents](./docs/AGENTS.md) | Agent patterns and configuration |
-| [Tools](./docs/TOOLS.md) | Building and using tools |
-| [Workflows](./docs/WORKFLOWS.md) | DAG-based orchestration |
-| [Swarms](./docs/SWARMS.md) | Multi-agent coordination |
-| [Deployment](./docs/DEPLOYMENT.md) | Production deployment guide |
-| [API Reference](./docs/API.md) | Complete API documentation |
+| Document                               | Description                      |
+| -------------------------------------- | -------------------------------- |
+| [Architecture](./docs/ARCHITECTURE.md) | Deep dive into system design     |
+| [Memory System](./docs/MEMORY.md)      | Hybrid memory architecture       |
+| [Agents](./docs/AGENTS.md)             | Agent patterns and configuration |
+| [Tools](./docs/TOOLS.md)               | Building and using tools         |
+| [Workflows](./docs/WORKFLOWS.md)       | DAG-based orchestration          |
+| [Swarms](./docs/SWARMS.md)             | Multi-agent coordination         |
+| [Deployment](./docs/DEPLOYMENT.md)     | Production deployment guide      |
+| [API Reference](./docs/API.md)         | Complete API documentation       |
 
 ---
 
 ## Roadmap
 
 ### Phase 1: Foundation (Months 1-3)
+
 - [x] Project structure and monorepo setup
 - [ ] Core runtime with Fastify + tRPC
 - [ ] Universal LLM interface (Ollama, OpenAI, Anthropic)
@@ -422,6 +423,7 @@ const agent = new Agent({
 - [ ] 5 example agents
 
 ### Phase 2: Intelligence (Months 4-6)
+
 - [ ] Workflow engine (DAG-based)
 - [ ] Multi-agent swarms (4 strategies)
 - [ ] MCP tool compatibility
@@ -430,6 +432,7 @@ const agent = new Agent({
 - [ ] OpenAI Assistants API compatibility layer
 
 ### Phase 3: Production (Months 7-9)
+
 - [ ] WASM sandbox (Extism)
 - [ ] Horizontal scaling with Redis Cluster
 - [ ] Kubernetes operator
@@ -438,6 +441,7 @@ const agent = new Agent({
 - [ ] Cost management and quotas
 
 ### Phase 4: Ecosystem (Months 10-12)
+
 - [ ] Plugin marketplace
 - [ ] Cloud-managed control plane
 - [ ] Visual workflow builder
@@ -451,18 +455,18 @@ const agent = new Agent({
 
 ## Comparison
 
-| Feature | Cogitator | LangChain | OpenAI Assistants | AutoGen |
-|---------|-----------|-----------|-------------------|---------|
-| Self-hosted | ✅ | ✅ | ❌ | ✅ |
-| TypeScript-native | ✅ | ❌ (Python) | N/A | ❌ (Python) |
-| Local LLM support | ✅ | ✅ | ❌ | ✅ |
-| Production memory | ✅ | ⚠️ Basic | ✅ | ❌ |
-| Sandboxed execution | ✅ | ❌ | ✅ | ❌ |
-| Workflow engine | ✅ | ⚠️ Basic | ❌ | ⚠️ Basic |
-| OpenTelemetry | ✅ | ❌ | ❌ | ❌ |
-| Multi-agent swarms | ✅ | ⚠️ Basic | ❌ | ✅ |
-| MCP compatibility | ✅ | ❌ | ❌ | ❌ |
-| Dependencies | ~20 | 150+ | N/A | ~30 |
+| Feature             | Cogitator | LangChain   | OpenAI Assistants | AutoGen     |
+| ------------------- | --------- | ----------- | ----------------- | ----------- |
+| Self-hosted         | ✅        | ✅          | ❌                | ✅          |
+| TypeScript-native   | ✅        | ❌ (Python) | N/A               | ❌ (Python) |
+| Local LLM support   | ✅        | ✅          | ❌                | ✅          |
+| Production memory   | ✅        | ⚠️ Basic    | ✅                | ❌          |
+| Sandboxed execution | ✅        | ❌          | ✅                | ❌          |
+| Workflow engine     | ✅        | ⚠️ Basic    | ❌                | ⚠️ Basic    |
+| OpenTelemetry       | ✅        | ❌          | ❌                | ❌          |
+| Multi-agent swarms  | ✅        | ⚠️ Basic    | ❌                | ✅          |
+| MCP compatibility   | ✅        | ❌          | ❌                | ❌          |
+| Dependencies        | ~20       | 150+        | N/A               | ~30         |
 
 ---
 

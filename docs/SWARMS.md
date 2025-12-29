@@ -128,7 +128,7 @@ const reviewBoard = new Swarm({
   consensus: {
     // Voting rules
     threshold: 0.66, // 2/3 must agree
-    maxRounds: 3,    // Max discussion rounds
+    maxRounds: 3, // Max discussion rounds
 
     // How to determine final answer
     resolution: 'majority', // 'majority' | 'unanimous' | 'weighted'
@@ -288,8 +288,8 @@ const debateSwarm = new Swarm({
   }),
 
   debate: {
-    rounds: 3,           // Number of back-and-forth rounds
-    turnDuration: 500,   // Max tokens per turn
+    rounds: 3, // Number of back-and-forth rounds
+    turnDuration: 500, // Max tokens per turn
   },
 });
 
@@ -357,10 +357,10 @@ const researchSwarm = new Swarm({
   blackboard: {
     enabled: true,
     sections: {
-      sources: [],      // List of found sources
-      facts: [],        // Extracted facts
-      questions: [],    // Unanswered questions
-      conclusions: [],  // Final conclusions
+      sources: [], // List of found sources
+      facts: [], // Extracted facts
+      questions: [], // Unanswered questions
+      conclusions: [], // Final conclusions
     },
   },
 });
@@ -398,15 +398,15 @@ const eventDrivenSwarm = new Swarm({
   agents: [monitorAgent, responderAgent, escalatorAgent],
 
   events: {
-    'error_detected': {
+    error_detected: {
       handler: responderAgent,
       priority: 'high',
     },
-    'threshold_exceeded': {
+    threshold_exceeded: {
       handler: escalatorAgent,
       priority: 'critical',
     },
-    'task_completed': {
+    task_completed: {
       handler: monitorAgent,
       priority: 'low',
     },
@@ -739,7 +739,16 @@ interface SwarmConfig {
   name: string;
 
   // Strategy selection
-  strategy: 'hierarchical' | 'round-robin' | 'consensus' | 'auction' | 'pipeline' | 'debate' | 'collaborative' | 'specialist' | 'adaptive';
+  strategy:
+    | 'hierarchical'
+    | 'round-robin'
+    | 'consensus'
+    | 'auction'
+    | 'pipeline'
+    | 'debate'
+    | 'collaborative'
+    | 'specialist'
+    | 'adaptive';
 
   // Agents
   supervisor?: Agent;
@@ -795,14 +804,14 @@ const badTeam = new Swarm({
 
 ### 2. Right Strategy for the Job
 
-| Task Type | Recommended Strategy |
-|-----------|---------------------|
-| Complex project | Hierarchical |
-| Load balancing | Round-Robin |
-| Critical decisions | Consensus |
-| Expert matching | Auction |
-| Content creation | Pipeline |
-| Risk assessment | Debate |
+| Task Type          | Recommended Strategy |
+| ------------------ | -------------------- |
+| Complex project    | Hierarchical         |
+| Load balancing     | Round-Robin          |
+| Critical decisions | Consensus            |
+| Expert matching    | Auction              |
+| Content creation   | Pipeline             |
+| Risk assessment    | Debate               |
 
 ### 3. Communication Limits
 

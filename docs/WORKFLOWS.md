@@ -5,6 +5,7 @@
 ## Overview
 
 Workflows allow you to orchestrate complex, multi-step tasks with:
+
 - **Directed Acyclic Graphs (DAGs)** — Define dependencies between steps
 - **State Management** — Pass data between steps
 - **Error Handling** — Retry, compensation, and fallback strategies
@@ -196,7 +197,7 @@ step('transform', {
   type: 'function',
   execute: async (ctx) => {
     const data = ctx.steps['fetch-data'].output;
-    return data.items.filter(item => item.score > 0.5);
+    return data.items.filter((item) => item.score > 0.5);
   },
 });
 ```
@@ -390,7 +391,9 @@ const orderWorkflow = new Workflow({
 const workflow = new Workflow({
   name: 'with-error-handling',
 
-  steps: [/* ... */],
+  steps: [
+    /* ... */
+  ],
 
   // Global error handler
   onError: async (error, ctx) => {
@@ -438,7 +441,7 @@ const mapReduceWorkflow = new Workflow({
       agent: summarizerAgent,
       input: (ctx) => `
         Combine these analyses into a single report:
-        ${ctx.steps.map.outputs.map(o => o.output).join('\n---\n')}
+        ${ctx.steps.map.outputs.map((o) => o.output).join('\n---\n')}
       `,
       dependsOn: ['map'],
     }),
@@ -648,7 +651,9 @@ const scheduledWorkflow = new Workflow({
     },
   ],
 
-  steps: [/* ... */],
+  steps: [
+    /* ... */
+  ],
 });
 ```
 

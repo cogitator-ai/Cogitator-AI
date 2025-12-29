@@ -140,9 +140,9 @@ const devTeam = new Swarm({
   workers: [frontendDev, backendDev, qaEngineer],
 
   coordination: {
-    visibility: 'full',        // Supervisor sees all outputs
+    visibility: 'full', // Supervisor sees all outputs
     workerCommunication: false, // Workers communicate through supervisor
-    maxParallelTasks: 2,       // Max 2 workers active at once
+    maxParallelTasks: 2, // Max 2 workers active at once
   },
 
   resources: {
@@ -206,8 +206,8 @@ async function main() {
   // Show agent interactions
   console.log('\nAgent Activity:');
   result.trace.spans
-    .filter(s => s.name.startsWith('agent.'))
-    .forEach(span => {
+    .filter((s) => s.name.startsWith('agent.'))
+    .forEach((span) => {
       console.log(`  ${span.attributes.agentName}: ${span.duration}ms`);
     });
 

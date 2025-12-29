@@ -5,6 +5,7 @@
 ## Overview
 
 An Agent in Cogitator is a configured LLM instance with:
+
 - **Model** — The underlying LLM (Llama, GPT-4, Claude, etc.)
 - **Instructions** — System prompt defining behavior
 - **Tools** — Capabilities the agent can use
@@ -18,22 +19,22 @@ interface Agent {
   description?: string;
 
   // Model configuration
-  model: string;                    // 'ollama/llama3.2:70b', 'openai/gpt-4o'
-  temperature?: number;             // 0-2, default 0.7
-  topP?: number;                    // 0-1, default 1
-  maxTokens?: number;               // Max output tokens
+  model: string; // 'ollama/llama3.2:70b', 'openai/gpt-4o'
+  temperature?: number; // 0-2, default 0.7
+  topP?: number; // 0-1, default 1
+  maxTokens?: number; // Max output tokens
 
   // Behavior
-  instructions: string;             // System prompt
-  tools: Tool[];                    // Available tools
-  responseFormat?: ResponseFormat;  // Structured output
+  instructions: string; // System prompt
+  tools: Tool[]; // Available tools
+  responseFormat?: ResponseFormat; // Structured output
 
   // Memory
   memory: MemoryConfig;
 
   // Execution
-  maxIterations?: number;           // Max tool use loops, default 10
-  timeout?: number;                 // Max execution time in ms
+  maxIterations?: number; // Max tool use loops, default 10
+  timeout?: number; // Max execution time in ms
 
   // Sandbox (for code execution)
   sandbox?: SandboxConfig;
@@ -72,7 +73,7 @@ const searchWeb = tool({
   }),
   execute: async ({ query, limit }) => {
     const results = await searchAPI.search(query, limit);
-    return results.map(r => ({ title: r.title, url: r.url, snippet: r.snippet }));
+    return results.map((r) => ({ title: r.title, url: r.url, snippet: r.snippet }));
   },
 });
 
@@ -83,7 +84,7 @@ const readUrl = tool({
     url: z.string().url(),
   }),
   execute: async ({ url }) => {
-    const content = await fetch(url).then(r => r.text());
+    const content = await fetch(url).then((r) => r.text());
     return extractText(content);
   },
 });
@@ -110,10 +111,12 @@ const analyzer = new Agent({
       summary: z.string(),
       sentiment: z.enum(['positive', 'negative', 'neutral']),
       keyPoints: z.array(z.string()),
-      entities: z.array(z.object({
-        name: z.string(),
-        type: z.enum(['person', 'organization', 'location', 'other']),
-      })),
+      entities: z.array(
+        z.object({
+          name: z.string(),
+          type: z.enum(['person', 'organization', 'location', 'other']),
+        })
+      ),
     }),
   },
 });
@@ -161,12 +164,14 @@ const planner = new Agent({
     type: 'json_schema',
     schema: z.object({
       goal: z.string(),
-      subtasks: z.array(z.object({
-        id: z.string(),
-        description: z.string(),
-        dependencies: z.array(z.string()),
-        estimatedComplexity: z.enum(['low', 'medium', 'high']),
-      })),
+      subtasks: z.array(
+        z.object({
+          id: z.string(),
+          description: z.string(),
+          dependencies: z.array(z.string()),
+          estimatedComplexity: z.enum(['low', 'medium', 'high']),
+        })
+      ),
     }),
   },
 });
@@ -212,12 +217,14 @@ const critic = new Agent({
     type: 'json_schema',
     schema: z.object({
       approved: z.boolean(),
-      issues: z.array(z.object({
-        severity: z.enum(['critical', 'major', 'minor', 'suggestion']),
-        location: z.string(),
-        description: z.string(),
-        suggestion: z.string().optional(),
-      })),
+      issues: z.array(
+        z.object({
+          severity: z.enum(['critical', 'major', 'minor', 'suggestion']),
+          location: z.string(),
+          description: z.string(),
+          suggestion: z.string().optional(),
+        })
+      ),
       summary: z.string(),
     }),
   },
@@ -281,36 +288,36 @@ const reflectiveAgent = new Agent({
 
 ```typescript
 // Local models (via Ollama)
-model: 'ollama/llama3.2:latest'
-model: 'ollama/codellama:34b'
-model: 'ollama/mistral:7b-instruct'
+model: 'ollama/llama3.2:latest';
+model: 'ollama/codellama:34b';
+model: 'ollama/mistral:7b-instruct';
 
 // OpenAI
-model: 'openai/gpt-4o'
-model: 'openai/gpt-4o-mini'
-model: 'openai/o1-preview'
+model: 'openai/gpt-4o';
+model: 'openai/gpt-4o-mini';
+model: 'openai/o1-preview';
 
 // Anthropic
-model: 'anthropic/claude-3-5-sonnet'
-model: 'anthropic/claude-3-opus'
+model: 'anthropic/claude-3-5-sonnet';
+model: 'anthropic/claude-3-opus';
 
 // Google
-model: 'google/gemini-pro'
-model: 'google/gemini-ultra'
+model: 'google/gemini-pro';
+model: 'google/gemini-ultra';
 
 // vLLM (self-hosted)
-model: 'vllm/meta-llama/Llama-3.2-70B-Instruct'
+model: 'vllm/meta-llama/Llama-3.2-70B-Instruct';
 ```
 
 ### Temperature Guidelines
 
-| Use Case | Temperature | Reasoning |
-|----------|-------------|-----------|
-| Code generation | 0.0 - 0.2 | Deterministic, correct code |
-| Planning | 0.2 - 0.4 | Consistent but flexible |
-| General assistant | 0.5 - 0.7 | Balanced |
-| Creative writing | 0.8 - 1.2 | More varied output |
-| Brainstorming | 1.0 - 1.5 | Maximum creativity |
+| Use Case          | Temperature | Reasoning                   |
+| ----------------- | ----------- | --------------------------- |
+| Code generation   | 0.0 - 0.2   | Deterministic, correct code |
+| Planning          | 0.2 - 0.4   | Consistent but flexible     |
+| General assistant | 0.5 - 0.7   | Balanced                    |
+| Creative writing  | 0.8 - 1.2   | More varied output          |
+| Brainstorming     | 1.0 - 1.5   | Maximum creativity          |
 
 ### Context Window Management
 
@@ -399,7 +406,7 @@ const agent = new Agent({
 
 ```typescript
 const agent = new Agent({
-  maxIterations: 20,  // Max tool use loops
+  maxIterations: 20, // Max tool use loops
 
   // Per-iteration timeout
   iterationTimeout: 30_000, // 30 seconds per iteration
@@ -655,7 +662,7 @@ console.log(results.summary);
 
 ```typescript
 // Bad
-instructions: 'Help the user'
+instructions: 'Help the user';
 
 // Good
 instructions: `You are a Python code assistant. Your role is to:
@@ -664,7 +671,7 @@ instructions: `You are a Python code assistant. Your role is to:
                3. Add docstrings explaining the purpose
                4. Handle edge cases appropriately
 
-               If the request is unclear, ask for clarification.`
+               If the request is unclear, ask for clarification.`;
 ```
 
 ### 2. Appropriate Model Selection
@@ -696,7 +703,8 @@ tool({
 // Good: Specific, well-documented tool
 tool({
   name: 'create_github_issue',
-  description: 'Creates a new issue in a GitHub repository. Use this when you need to report a bug or request a feature.',
+  description:
+    'Creates a new issue in a GitHub repository. Use this when you need to report a bug or request a feature.',
   parameters: z.object({
     repo: z.string().describe('Repository in format owner/repo'),
     title: z.string().max(256).describe('Issue title'),
@@ -718,7 +726,9 @@ tool({
       return await fs.readFile(path, 'utf-8');
     } catch (error) {
       if (error.code === 'ENOENT') {
-        return { error: `File not found: ${path}. Available files: ${await listDir(dirname(path))}` };
+        return {
+          error: `File not found: ${path}. Available files: ${await listDir(dirname(path))}`,
+        };
       }
       throw error;
     }

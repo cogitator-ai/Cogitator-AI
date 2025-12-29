@@ -18,6 +18,6 @@ export abstract class BaseLLMBackend implements LLMBackend {
   abstract chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk>;
 
   protected generateId(): string {
-    return `chatcmpl-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+    return `chatcmpl-${Date.now().toString()}-${Math.random().toString(36).substring(7)}`;
   }
 }

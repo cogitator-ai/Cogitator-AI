@@ -55,7 +55,7 @@ export class OpenAIBackend extends BaseLLMBackend {
     const toolCalls: ToolCall[] | undefined = message.tool_calls?.map((tc) => ({
       id: tc.id,
       name: tc.function.name,
-      arguments: JSON.parse(tc.function.arguments),
+      arguments: JSON.parse(tc.function.arguments) as Record<string, unknown>,
     }));
 
     return {
@@ -92,10 +92,11 @@ export class OpenAIBackend extends BaseLLMBackend {
       stream: true,
     });
 
-    const toolCallsAccum: Map<number, Partial<ToolCall>> = new Map();
+    const toolCallsAccum = new Map<number, Partial<ToolCall>>();
 
     for await (const chunk of stream) {
       const choice = chunk.choices[0];
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check
       if (!choice) continue;
 
       const delta = choice.delta;
@@ -108,7 +109,7 @@ export class OpenAIBackend extends BaseLLMBackend {
             id: tc.id ?? existing.id,
             name: tc.function?.name ?? existing.name,
             arguments: {
-              ...(existing.arguments as Record<string, unknown> | undefined),
+              ...existing.arguments,
               ...this.tryParseJson(tc.function?.arguments ?? ''),
             },
           });
@@ -121,19 +122,15 @@ export class OpenAIBackend extends BaseLLMBackend {
           content: delta.content ?? undefined,
           toolCalls:
             choice.finish_reason === 'tool_calls'
-              ? Array.from(toolCallsAccum.values()) as ToolCall[]
+              ? (Array.from(toolCallsAccum.values()) as ToolCall[])
               : undefined,
         },
-        finishReason: choice.finish_reason
-          ? this.mapFinishReason(choice.finish_reason)
-          : undefined,
+        finishReason: choice.finish_reason ? this.mapFinishReason(choice.finish_reason) : undefined,
       };
     }
   }
 
-  private convertMessages(
-    messages: Message[]
-  ): OpenAI.Chat.ChatCompletionMessageParam[] {
+  private convertMessages(messages: Message[]): OpenAI.Chat.ChatCompletionMessageParam[] {
     return messages.map((m) => {
       if (m.role === 'tool') {
         return {
@@ -143,15 +140,13 @@ export class OpenAIBackend extends BaseLLMBackend {
         };
       }
       return {
-        role: m.role as 'system' | 'user' | 'assistant',
+        role: m.role,
         content: m.content,
       };
     });
   }
 
-  private mapFinishReason(
-    reason: string | null
-  ): ChatResponse['finishReason'] {
+  private mapFinishReason(reason: string | null): ChatResponse['finishReason'] {
     switch (reason) {
       case 'stop':
         return 'stop';
@@ -166,7 +161,7 @@ export class OpenAIBackend extends BaseLLMBackend {
 
   private tryParseJson(str: string): Record<string, unknown> {
     try {
-      return JSON.parse(str);
+      return JSON.parse(str) as Record<string, unknown>;
     } catch {
       return {};
     }

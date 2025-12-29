@@ -57,10 +57,10 @@ class WorkingMemoryManager {
 
   constructor() {
     this.cache = new LRUCache({
-      max: 1000,              // Max 1000 agents in memory
-      maxSize: 500_000_000,   // 500MB total
+      max: 1000, // Max 1000 agents in memory
+      maxSize: 500_000_000, // 500MB total
       sizeCalculation: (memory) => this.estimateSize(memory),
-      ttl: 1000 * 60 * 30,    // 30 minutes TTL
+      ttl: 1000 * 60 * 30, // 30 minutes TTL
     });
   }
 
@@ -99,7 +99,7 @@ interface EpisodicMemory {
   content: string;
   timestamp: Date;
   metadata: {
-    importance: number;     // 0-1, affects retrieval priority
+    importance: number; // 0-1, affects retrieval priority
     tokens: number;
     toolCalls?: ToolCall[];
     model?: string;
@@ -140,11 +140,11 @@ interface SemanticMemory {
   id: string;
   agentId: string;
   content: string;
-  embedding: number[];      // 1536 dimensions (OpenAI) or 384 (local)
+  embedding: number[]; // 1536 dimensions (OpenAI) or 384 (local)
   type: 'fact' | 'preference' | 'skill' | 'document';
-  source: string;           // Where this knowledge came from
-  confidence: number;       // How confident we are in this info
-  lastAccessed: Date;       // For LRU-style eviction
+  source: string; // Where this knowledge came from
+  confidence: number; // How confident we are in this info
+  lastAccessed: Date; // For LRU-style eviction
   metadata: Record<string, any>;
 }
 
@@ -178,29 +178,25 @@ const semanticMemorySchema = `
 Retrieve most recent memories first.
 
 ```typescript
-async function retrieveByRecency(
-  agentId: string,
-  limit: number
-): Promise<EpisodicMemory[]> {
+async function retrieveByRecency(agentId: string, limit: number): Promise<EpisodicMemory[]> {
   // First check Redis (L2)
-  const recentKeys = await redis.zrevrange(
-    `episodic:${agentId}:*`,
-    0,
-    limit - 1
-  );
+  const recentKeys = await redis.zrevrange(`episodic:${agentId}:*`, 0, limit - 1);
 
   if (recentKeys.length >= limit) {
-    return Promise.all(recentKeys.map(k => redis.hgetall(k)));
+    return Promise.all(recentKeys.map((k) => redis.hgetall(k)));
   }
 
   // Fall back to Postgres (L3)
   const remaining = limit - recentKeys.length;
-  const dbResults = await db.query(`
+  const dbResults = await db.query(
+    `
     SELECT * FROM episodic_memories
     WHERE agent_id = $1
     ORDER BY created_at DESC
     LIMIT $2
-  `, [agentId, remaining]);
+  `,
+    [agentId, remaining]
+  );
 
   return [...recentKeys, ...dbResults.rows];
 }
@@ -220,14 +216,17 @@ async function retrieveBySimilarity(
   const embedding = await embedder.embed(query);
 
   // 2. Search pgvector
-  const results = await db.query(`
+  const results = await db.query(
+    `
     SELECT *,
            1 - (embedding <=> $1) as similarity
     FROM semantic_memories
     WHERE agent_id = $2
     ORDER BY embedding <=> $1
     LIMIT $3
-  `, [pgvector.toSql(embedding), agentId, limit]);
+  `,
+    [pgvector.toSql(embedding), agentId, limit]
+  );
 
   return results.rows;
 }
@@ -238,16 +237,16 @@ async function retrieveBySimilarity(
 Prioritize memories marked as important.
 
 ```typescript
-async function retrieveByImportance(
-  agentId: string,
-  limit: number
-): Promise<EpisodicMemory[]> {
-  return db.query(`
+async function retrieveByImportance(agentId: string, limit: number): Promise<EpisodicMemory[]> {
+  return db.query(
+    `
     SELECT * FROM episodic_memories
     WHERE agent_id = $1
     ORDER BY importance DESC, created_at DESC
     LIMIT $2
-  `, [agentId, limit]);
+  `,
+    [agentId, limit]
+  );
 }
 ```
 
@@ -257,7 +256,7 @@ Combine multiple strategies with weighted scoring.
 
 ```typescript
 interface HybridRetrievalConfig {
-  recencyWeight: number;    // 0-1
+  recencyWeight: number; // 0-1
   similarityWeight: number; // 0-1
   importanceWeight: number; // 0-1
 }
@@ -297,25 +296,19 @@ async function retrieveHybrid(
   };
 
   // Score by recency (higher rank = higher score)
-  addWithScore(recentMemories, (_, idx) =>
-    config.recencyWeight * (1 - idx / candidateLimit)
-  );
+  addWithScore(recentMemories, (_, idx) => config.recencyWeight * (1 - idx / candidateLimit));
 
   // Score by similarity
-  addWithScore(similarMemories, (m) =>
-    config.similarityWeight * (m as any).similarity
-  );
+  addWithScore(similarMemories, (m) => config.similarityWeight * (m as any).similarity);
 
   // Score by importance
-  addWithScore(importantMemories, (m) =>
-    config.importanceWeight * m.metadata.importance
-  );
+  addWithScore(importantMemories, (m) => config.importanceWeight * m.metadata.importance);
 
   // 3. Sort by score and return top N
   return Array.from(memoryScores.values())
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
-    .map(x => x.memory);
+    .map((x) => x.memory);
 }
 ```
 
@@ -327,11 +320,11 @@ async function retrieveHybrid(
 
 ```typescript
 interface ContextBudget {
-  total: number;           // Total tokens available
-  system: number;          // Reserved for system prompt
-  tools: number;           // Reserved for tool schemas
-  memory: number;          // Available for memory
-  output: number;          // Reserved for output
+  total: number; // Total tokens available
+  system: number; // Reserved for system prompt
+  tools: number; // Reserved for tool schemas
+  memory: number; // Available for memory
+  output: number; // Reserved for output
 }
 
 class ContextBuilder {
@@ -342,10 +335,12 @@ class ContextBuilder {
     const budget = this.calculateBudget(agent);
 
     // 1. Always include system prompt
-    const messages: Message[] = [{
-      role: 'system',
-      content: agent.instructions,
-    }];
+    const messages: Message[] = [
+      {
+        role: 'system',
+        content: agent.instructions,
+      },
+    ];
 
     let usedTokens = this.countTokens(agent.instructions);
 
@@ -358,7 +353,7 @@ class ContextBuilder {
     const memories = await this.memoryManager.retrieveHybrid(
       agent.id,
       currentInput,
-      100, // Get many candidates
+      100 // Get many candidates
     );
 
     // 4. Fit memories into budget
@@ -417,9 +412,9 @@ When memory exceeds limits, automatic summarization compresses old context.
 
 ```typescript
 type SummarizationStrategy =
-  | 'simple'      // Single LLM call to summarize
+  | 'simple' // Single LLM call to summarize
   | 'hierarchical' // Summarize in chunks, then summarize summaries
-  | 'extractive'  // Extract key points without generation
+  | 'extractive' // Extract key points without generation
   | 'map-reduce'; // Summarize chunks in parallel, then combine
 
 class Summarizer {
@@ -443,24 +438,19 @@ class Summarizer {
     }
   }
 
-  private async hierarchicalSummarize(
-    memories: Memory[],
-    targetTokens: number
-  ): Promise<string> {
+  private async hierarchicalSummarize(memories: Memory[], targetTokens: number): Promise<string> {
     const chunkSize = 10;
     const chunks = this.chunkArray(memories, chunkSize);
 
     // Level 1: Summarize each chunk
-    const chunkSummaries = await Promise.all(
-      chunks.map(chunk => this.summarizeChunk(chunk))
-    );
+    const chunkSummaries = await Promise.all(chunks.map((chunk) => this.summarizeChunk(chunk)));
 
     // If still too large, summarize the summaries
     const totalTokens = this.countTokens(chunkSummaries.join('\n'));
 
     if (totalTokens > targetTokens && chunkSummaries.length > 1) {
       return this.hierarchicalSummarize(
-        chunkSummaries.map(s => ({ content: s } as Memory)),
+        chunkSummaries.map((s) => ({ content: s }) as Memory),
         targetTokens
       );
     }
@@ -469,7 +459,7 @@ class Summarizer {
   }
 
   private async summarizeChunk(memories: Memory[]): Promise<string> {
-    const content = memories.map(m => m.content).join('\n---\n');
+    const content = memories.map((m) => m.content).join('\n---\n');
 
     const response = await this.llm.chat({
       model: 'gpt-4o-mini', // Use fast, cheap model for summarization
@@ -503,16 +493,16 @@ class ImportanceScorer {
     const content = memory.content.toLowerCase();
 
     // User preferences and facts
-    if (content.includes('my name is') ||
-        content.includes('i prefer') ||
-        content.includes('remember that')) {
+    if (
+      content.includes('my name is') ||
+      content.includes('i prefer') ||
+      content.includes('remember that')
+    ) {
       score += 0.3;
     }
 
     // Decisions and commitments
-    if (content.includes('i will') ||
-        content.includes("let's do") ||
-        content.includes('decided')) {
+    if (content.includes('i will') || content.includes("let's do") || content.includes('decided')) {
       score += 0.2;
     }
 
@@ -605,10 +595,7 @@ await memoryPool.contribute(technicalKnowledge, {
 });
 
 // Coder can now access this knowledge
-const relevantFacts = await memoryPool.query(
-  technicalKnowledge,
-  'how do shaders work in WebGPU?'
-);
+const relevantFacts = await memoryPool.query(technicalKnowledge, 'how do shaders work in WebGPU?');
 ```
 
 ---
@@ -621,7 +608,7 @@ interface MemoryConfig {
   redis: {
     url: string;
     prefix: string;
-    ttl: number;           // Default TTL for L2 memories
+    ttl: number; // Default TTL for L2 memories
   };
 
   postgres: {
@@ -632,9 +619,9 @@ interface MemoryConfig {
   // Embedding model
   embeddings: {
     provider: 'openai' | 'local' | 'cohere';
-    model: string;         // 'text-embedding-3-small' or local model name
-    dimensions: number;    // 1536 for OpenAI, 384 for local
-    batchSize: number;     // Batch embedding requests
+    model: string; // 'text-embedding-3-small' or local model name
+    dimensions: number; // 1536 for OpenAI, 384 for local
+    batchSize: number; // Batch embedding requests
   };
 
   // Retrieval settings
@@ -652,15 +639,15 @@ interface MemoryConfig {
   // Summarization
   summarization: {
     enabled: boolean;
-    threshold: number;     // Token count to trigger
+    threshold: number; // Token count to trigger
     strategy: SummarizationStrategy;
-    model: string;         // Model to use for summarization
+    model: string; // Model to use for summarization
   };
 
   // Maintenance
   maintenance: {
-    cleanupInterval: string;  // Cron expression
-    retentionDays: number;    // How long to keep old memories
+    cleanupInterval: string; // Cron expression
+    retentionDays: number; // How long to keep old memories
     compactionEnabled: boolean;
   };
 }
@@ -744,7 +731,10 @@ class BatchMemoryWriter {
   private buffer: Memory[] = [];
   private flushInterval: NodeJS.Timer;
 
-  constructor(private batchSize = 100, private flushMs = 1000) {
+  constructor(
+    private batchSize = 100,
+    private flushMs = 1000
+  ) {
     this.flushInterval = setInterval(() => this.flush(), flushMs);
   }
 

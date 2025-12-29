@@ -16,11 +16,12 @@ interface AnthropicConfig {
   apiKey: string;
 }
 
-type AnthropicToolInput = {
+interface AnthropicToolInput {
   type: 'object';
   properties: Record<string, unknown>;
   required?: string[];
-};
+  [key: string]: unknown;
+}
 
 export class AnthropicBackend extends BaseLLMBackend {
   readonly provider = 'anthropic' as const;
@@ -76,8 +77,7 @@ export class AnthropicBackend extends BaseLLMBackend {
       usage: {
         inputTokens: response.usage.input_tokens,
         outputTokens: response.usage.output_tokens,
-        totalTokens:
-          response.usage.input_tokens + response.usage.output_tokens,
+        totalTokens: response.usage.input_tokens + response.usage.output_tokens,
       },
     };
   }
@@ -131,7 +131,7 @@ export class AnthropicBackend extends BaseLLMBackend {
       } else if (event.type === 'content_block_stop') {
         if (currentToolCall) {
           try {
-            currentToolCall.arguments = JSON.parse(inputJson);
+            currentToolCall.arguments = JSON.parse(inputJson) as Record<string, unknown>;
           } catch {
             currentToolCall.arguments = {};
           }
@@ -158,38 +158,41 @@ export class AnthropicBackend extends BaseLLMBackend {
     const anthropicMessages: Anthropic.MessageParam[] = [];
 
     for (const m of messages) {
-      if (m.role === 'system') {
-        system = m.content;
-      } else if (m.role === 'user') {
-        anthropicMessages.push({
-          role: 'user',
-          content: m.content,
-        });
-      } else if (m.role === 'assistant') {
-        anthropicMessages.push({
-          role: 'assistant',
-          content: m.content,
-        });
-      } else if (m.role === 'tool') {
-        anthropicMessages.push({
-          role: 'user',
-          content: [
-            {
-              type: 'tool_result',
-              tool_use_id: m.toolCallId ?? '',
-              content: m.content,
-            },
-          ],
-        });
+      switch (m.role) {
+        case 'system':
+          system = m.content;
+          break;
+        case 'user':
+          anthropicMessages.push({
+            role: 'user',
+            content: m.content,
+          });
+          break;
+        case 'assistant':
+          anthropicMessages.push({
+            role: 'assistant',
+            content: m.content,
+          });
+          break;
+        case 'tool':
+          anthropicMessages.push({
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: m.toolCallId ?? '',
+                content: m.content,
+              },
+            ],
+          });
+          break;
       }
     }
 
     return { system, messages: anthropicMessages };
   }
 
-  private mapStopReason(
-    reason: string | null
-  ): ChatResponse['finishReason'] {
+  private mapStopReason(reason: string | null): ChatResponse['finishReason'] {
     switch (reason) {
       case 'end_turn':
         return 'stop';
