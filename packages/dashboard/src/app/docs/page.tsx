@@ -1332,7 +1332,7 @@ export default function DocsPage() {
                   Discord
                 </a>
                 <a
-                  href="https://github.com/cogitator/cogitator"
+                  href="https://github.com/eL1fe/cogitator"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-[#666] hover:text-[#fafafa]"
