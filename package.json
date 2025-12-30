@@ -28,10 +28,17 @@
     "prepare": "husky install",
     "changeset": "changeset",
     "version": "changeset version",
-    "release": "turbo run build && changeset publish"
+    "release": "turbo run build && changeset publish",
+    "dashboard": "pnpm --filter @cogitator/dashboard dev",
+    "dashboard:build": "pnpm --filter @cogitator/dashboard build",
+    "dashboard:start": "pnpm --filter @cogitator/dashboard start",
+    "services": "docker-compose up -d",
+    "services:down": "docker-compose down",
+    "start": "pnpm build && concurrently \"pnpm services\" \"pnpm dashboard\""
   },
   "devDependencies": {
     "@changesets/cli": "^2.27.0",
+    "concurrently": "^9.1.0",
     "@eslint/js": "^9.39.2",
     "@types/node": "^20.10.0",
     "eslint": "^9.39.2",

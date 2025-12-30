@@ -397,16 +397,17 @@ const agent = new Agent({
 
 ## Documentation
 
-| Document                               | Description                      |
-| -------------------------------------- | -------------------------------- |
-| [Architecture](./docs/ARCHITECTURE.md) | Deep dive into system design     |
-| [Memory System](./docs/MEMORY.md)      | Hybrid memory architecture       |
-| [Agents](./docs/AGENTS.md)             | Agent patterns and configuration |
-| [Tools](./docs/TOOLS.md)               | Building and using tools         |
-| [Workflows](./docs/WORKFLOWS.md)       | DAG-based orchestration          |
-| [Swarms](./docs/SWARMS.md)             | Multi-agent coordination         |
-| [Deployment](./docs/DEPLOYMENT.md)     | Production deployment guide      |
-| [API Reference](./docs/API.md)         | Complete API documentation       |
+| Document                                     | Description                      |
+| -------------------------------------------- | -------------------------------- |
+| [Getting Started](./docs/GETTING_STARTED.md) | Quick start guide                |
+| [Architecture](./docs/ARCHITECTURE.md)       | Deep dive into system design     |
+| [Memory System](./docs/MEMORY.md)            | Hybrid memory architecture       |
+| [Agents](./docs/AGENTS.md)                   | Agent patterns and configuration |
+| [Tools](./docs/TOOLS.md)                     | Building and using tools         |
+| [Workflows](./docs/WORKFLOWS.md)             | DAG-based orchestration          |
+| [Swarms](./docs/SWARMS.md)                   | Multi-agent coordination         |
+| [Deployment](./docs/DEPLOYMENT.md)           | Production deployment guide      |
+| [API Reference](./docs/API.md)               | Complete API documentation       |
 
 ---
 

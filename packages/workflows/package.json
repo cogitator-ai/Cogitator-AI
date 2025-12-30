@@ -25,6 +25,7 @@
   "dependencies": {
     "@cogitator/types": "workspace:*",
     "@cogitator/core": "workspace:*",
+    "cron-parser": "^4.9.0",
     "nanoid": "^5.0.4"
   },
   "devDependencies": {

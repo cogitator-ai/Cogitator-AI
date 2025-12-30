@@ -23,18 +23,18 @@ Build the definitive self-hosted AI agent runtime that developers trust to run i
 
 #### Week 1-2: Project Setup
 
-- [ ] Monorepo structure (pnpm workspaces, turborepo)
-- [ ] TypeScript config (strict mode, path aliases)
-- [ ] ESLint + Prettier configuration
-- [ ] CI/CD pipeline (GitHub Actions)
-- [ ] Initial documentation structure
+- [x] Monorepo structure (pnpm workspaces, turborepo)
+- [x] TypeScript config (strict mode, path aliases)
+- [x] ESLint + Prettier configuration
+- [x] CI/CD pipeline (GitHub Actions)
+- [x] Initial documentation structure
 
 #### Week 3-4: Core Packages
 
-- [ ] `@cogitator/core` — Agent, Tool, Cogitator classes
-- [ ] `@cogitator/types` — Shared TypeScript types
-- [ ] `@cogitator/config` — Configuration loading (YAML, env)
-- [ ] Basic error handling and logging
+- [x] `@cogitator/core` — Agent, Tool, Cogitator classes
+- [x] `@cogitator/types` — Shared TypeScript types
+- [x] `@cogitator/config` — Configuration loading (YAML, env)
+- [x] Basic error handling and logging
 
 **Deliverables:**
 
@@ -46,17 +46,18 @@ Build the definitive self-hosted AI agent runtime that developers trust to run i
 
 #### Week 1-2: LLM Backends
 
-- [ ] Ollama backend (primary)
-- [ ] OpenAI backend
-- [ ] Anthropic backend
-- [ ] Universal LLM interface with provider abstraction
+- [x] Ollama backend (primary)
+- [x] OpenAI backend
+- [x] Anthropic backend
+- [x] Google Gemini backend
+- [x] Universal LLM interface with provider abstraction
 
 #### Week 3-4: Tool System
 
-- [ ] Tool definition with Zod schemas
-- [ ] Tool execution engine
-- [ ] Basic built-in tools (calculator, datetime)
-- [ ] Tool validation and error handling
+- [x] Tool definition with Zod schemas
+- [x] Tool execution engine
+- [x] Basic built-in tools (calculator, datetime)
+- [x] Tool validation and error handling
 
 **Deliverables:**
 
@@ -68,17 +69,17 @@ Build the definitive self-hosted AI agent runtime that developers trust to run i
 
 #### Week 1-2: Memory System
 
-- [ ] Redis adapter (short-term memory)
-- [ ] Postgres adapter (long-term memory)
-- [ ] pgvector integration (semantic memory)
-- [ ] Context builder with token management
+- [x] Redis adapter (short-term memory)
+- [x] Postgres adapter (long-term memory)
+- [x] pgvector integration (semantic memory)
+- [x] Context builder with token management
 
 #### Week 3-4: CLI & Docker
 
-- [ ] `@cogitator/cli` — init, up, run commands
-- [ ] Docker Compose for local development
-- [ ] Docker-based agent sandboxing
-- [ ] Getting Started documentation
+- [x] `@cogitator/cli` — init, up, run commands
+- [x] Docker Compose for local development
+- [x] Docker-based agent sandboxing
+- [x] Getting Started documentation
 
 **Deliverables:**
 
@@ -108,17 +109,17 @@ cogitator run "Hello, world!"
 
 #### Week 1-2: Workflow Engine
 
-- [ ] DAG execution engine
-- [ ] Step types (agent, tool, function, human)
-- [ ] Dependency resolution
-- [ ] State management
+- [x] DAG execution engine
+- [x] Step types (agent, tool, function, human)
+- [x] Dependency resolution
+- [x] State management
 
 #### Week 3-4: Advanced Workflows
 
-- [ ] Conditional branching
-- [ ] Parallel execution
-- [ ] Retry and compensation (saga pattern)
-- [ ] Human-in-the-loop steps
+- [x] Conditional branching
+- [x] Parallel execution
+- [x] Retry and compensation (saga pattern)
+- [x] Human-in-the-loop steps
 
 **Deliverables:**
 
@@ -130,17 +131,17 @@ cogitator run "Hello, world!"
 
 #### Week 1-2: Swarm Strategies
 
-- [ ] Hierarchical (supervisor-worker)
-- [ ] Round-robin
-- [ ] Consensus
-- [ ] Pipeline
+- [x] Hierarchical (supervisor-worker)
+- [x] Round-robin
+- [x] Consensus
+- [x] Pipeline
 
 #### Week 3-4: Agent Communication
 
-- [ ] Message passing between agents
-- [ ] Shared blackboard
-- [ ] Auction strategy
-- [ ] Debate strategy
+- [x] Message passing between agents
+- [x] Shared blackboard
+- [x] Auction strategy
+- [x] Debate strategy
 
 **Deliverables:**
 
@@ -152,17 +153,17 @@ cogitator run "Hello, world!"
 
 #### Week 1-2: MCP Compatibility
 
-- [ ] MCP client implementation
-- [ ] MCP server creation helpers
-- [ ] Integration with @anthropic MCP servers
-- [ ] MCP tool adapter
+- [x] MCP client implementation
+- [x] MCP server creation helpers
+- [x] Integration with @anthropic MCP servers
+- [x] MCP tool adapter
 
 #### Week 3-4: OpenAI Compatibility
 
-- [ ] Assistants API compatibility layer
-- [ ] Threads and messages
-- [ ] File handling
-- [ ] Code interpreter (via sandbox)
+- [x] Assistants API compatibility layer
+- [x] Threads and messages
+- [x] File handling
+- [x] Code interpreter (via sandbox)
 
 **Deliverables:**
 
@@ -201,10 +202,10 @@ await cog.workflow(workflow).run({ task: 'Build a REST API' });
 
 #### Week 1-2: Tracing & Metrics
 
-- [ ] OpenTelemetry integration
-- [ ] Trace export (Jaeger, Zipkin, OTLP)
-- [ ] Prometheus metrics
-- [ ] Cost tracking per run
+- [x] OpenTelemetry integration
+- [x] Trace export (Jaeger, Zipkin, OTLP)
+- [x] Prometheus metrics
+- [x] Cost tracking per run
 
 #### Week 3-4: Dashboard
 
@@ -459,9 +460,9 @@ spec:
 
 ### To Be Decided
 
-- [ ] M2: Primary embedding model (OpenAI vs local)
-- [ ] M4: Workflow DSL syntax
-- [ ] M6: MCP vs custom tool protocol
+- [x] M2: Primary embedding model (OpenAI vs local) — Both supported via EmbeddingService
+- [x] M4: Workflow DSL syntax — WorkflowBuilder fluent API
+- [x] M6: MCP vs custom tool protocol — Both supported via @cogitator/mcp package
 - [ ] M8: Kubernetes operator vs Helm-only
 - [ ] M10: Cloud infrastructure (AWS/GCP/Fly.io)
 
