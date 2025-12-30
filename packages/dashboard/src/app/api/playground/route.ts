@@ -1,301 +1,253 @@
 import { NextRequest } from 'next/server';
-
-const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+import { getCogitator, createAgentFromConfig, getToolByName } from '@/lib/cogitator';
+import {
+  createRun,
+  completeRun,
+  createThread,
+  getThread,
+  incrementAgentStats,
+} from '@/lib/cogitator/db';
+import { nanoid } from 'nanoid';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+interface PlaygroundRequest {
+  model: string;
+  messages: Array<{ role: string; content: string }>;
+  temperature?: number;
+  tools?: string[];
+  threadId?: string;
+  agentId?: string;
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const { model, messages, temperature = 0.7, tools = [] } = await request.json();
-
-    if (!model || !messages) {
-      return new Response(JSON.stringify({ error: 'Model and messages required' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    // Determine if this is an Ollama model
-    const isOllamaModel = !model.includes('gpt') && 
-                          !model.includes('claude') && 
-                          !model.includes('gemini');
-
-    if (isOllamaModel) {
-      return handleOllamaChat(model, messages, temperature);
-    } else {
-      return handleCloudChat(model, messages, temperature);
-    }
-  } catch (error) {
-    console.error('Playground error:', error);
-    return new Response(JSON.stringify({ error: 'Failed to process request' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-}
-
-async function handleOllamaChat(
-  model: string,
-  messages: Array<{ role: string; content: string }>,
-  temperature: number
-) {
-  const response = await fetch(`${OLLAMA_URL}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+    const body: PlaygroundRequest = await request.json();
+    const {
       model,
       messages,
-      stream: true,
-      options: { temperature },
-    }),
-  });
+      temperature = 0.7,
+      tools = [],
+      threadId,
+      agentId,
+    } = body;
 
-  if (!response.ok || !response.body) {
-    return new Response(JSON.stringify({ error: 'Ollama request failed' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  const encoder = new TextEncoder();
-  const reader = response.body.getReader();
-
-  const stream = new ReadableStream({
-    async start(controller) {
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            controller.enqueue(encoder.encode('data: {"done":true}\n\n'));
-            controller.close();
-            break;
-          }
-
-          const text = new TextDecoder().decode(value);
-          const lines = text.split('\n').filter(Boolean);
-
-          for (const line of lines) {
-            try {
-              const data = JSON.parse(line);
-              if (data.message?.content) {
-                controller.enqueue(
-                  encoder.encode(`data: ${JSON.stringify({
-                    content: data.message.content,
-                    done: data.done || false,
-                    total_duration: data.total_duration,
-                    eval_count: data.eval_count,
-                    prompt_eval_count: data.prompt_eval_count,
-                  })}\n\n`)
-                );
-              }
-            } catch {
-              // Ignore parse errors
-            }
-          }
-        }
-      } catch (error) {
-        controller.enqueue(encoder.encode(`data: {"error":"${error}"}\n\n`));
-        controller.close();
-      }
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-    },
-  });
-}
-
-async function handleCloudChat(
-  model: string,
-  messages: Array<{ role: string; content: string }>,
-  temperature: number
-) {
-  // Check for API keys
-  const isOpenAI = model.includes('gpt') || model.includes('o1');
-  const isAnthropic = model.includes('claude');
-  const isGoogle = model.includes('gemini');
-
-  let apiKey: string | undefined;
-  let endpoint: string;
-  let headers: Record<string, string>;
-  let body: unknown;
-
-  if (isOpenAI) {
-    apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      return new Response(JSON.stringify({ error: 'OpenAI API key not configured' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    if (!model || !messages || messages.length === 0) {
+      return new Response(
+        JSON.stringify({ error: 'Model and messages required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
     }
 
-    endpoint = 'https://api.openai.com/v1/chat/completions';
-    headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    };
-    body = {
-      model,
-      messages,
+    // Get last user message as input
+    const userMessages = messages.filter((m) => m.role === 'user');
+    const input = userMessages[userMessages.length - 1]?.content || '';
+    
+    // Get system message for instructions
+    const systemMessage = messages.find((m) => m.role === 'system');
+    const instructions = systemMessage?.content || 'You are a helpful assistant.';
+
+    // Get Cogitator instance
+    const cogitator = await getCogitator();
+
+    // Get selected tools
+    const selectedTools = tools
+      .map((name) => getToolByName(name))
+      .filter((t): t is NonNullable<typeof t> => t !== undefined);
+
+    // Build model string with provider prefix
+    const modelString = buildModelString(model);
+
+    // Create a temporary agent for this request
+    const agent = createAgentFromConfig({
+      id: agentId || `playground_${nanoid(8)}`,
+      name: 'Playground Agent',
+      model: modelString,
+      instructions,
+      tools: selectedTools as Parameters<typeof createAgentFromConfig>[0]['tools'],
       temperature,
-      stream: true,
-    };
-  } else if (isAnthropic) {
-    apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      return new Response(JSON.stringify({ error: 'Anthropic API key not configured' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
+      maxIterations: 5,
+    });
+
+    // Ensure thread exists
+    const actualThreadId = threadId || `thread_${nanoid(12)}`;
+    const existingThread = await getThread(actualThreadId).catch(() => null);
+    if (!existingThread) {
+      await createThread({
+        id: actualThreadId,
+        agentId: agent.id,
+        title: input.slice(0, 50),
+      }).catch(() => {
+        // Thread creation failed, likely no database - continue anyway
       });
     }
 
-    endpoint = 'https://api.anthropic.com/v1/messages';
-    headers = {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    };
-    
-    // Convert messages to Anthropic format
-    const systemMessage = messages.find(m => m.role === 'system');
-    const otherMessages = messages.filter(m => m.role !== 'system');
-    
-    body = {
-      model,
-      messages: otherMessages,
-      system: systemMessage?.content,
-      max_tokens: 4096,
-      stream: true,
-    };
-  } else if (isGoogle) {
-    apiKey = process.env.GOOGLE_API_KEY;
-    if (!apiKey) {
-      return new Response(JSON.stringify({ error: 'Google API key not configured' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    // Use Google's REST API
-    const modelId = model.replace('gemini-', '');
-    endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-${modelId}:streamGenerateContent?key=${apiKey}`;
-    headers = {
-      'Content-Type': 'application/json',
-    };
-    
-    // Convert messages to Google format
-    body = {
-      contents: messages.map(m => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }],
-      })),
-      generationConfig: { temperature },
-    };
-  } else {
-    return new Response(JSON.stringify({ error: 'Unknown model provider' }), {
-      status: 400,
-      headers: { 'Content-Type': 'application/json' },
+    // Create run record
+    const runId = `run_${nanoid(12)}`;
+    await createRun({
+      id: runId,
+      agentId: agent.id,
+      threadId: actualThreadId,
+      input,
+    }).catch(() => {
+      // Run creation failed, likely no database - continue anyway
     });
-  }
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+    // Use streaming if supported
+    const encoder = new TextEncoder();
+    let fullContent = '';
+    const allToolCalls: Array<{
+      id: string;
+      name: string;
+      arguments: unknown;
+      result?: unknown;
+    }> = [];
 
-  if (!response.ok) {
-    const error = await response.text();
-    return new Response(JSON.stringify({ error: `API error: ${error}` }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
+    const stream = new ReadableStream({
+      async start(controller) {
+        try {
+          const result = await cogitator.run(agent, {
+            input,
+            threadId: actualThreadId,
+            stream: true,
+            useMemory: true,
+            saveHistory: true,
+            onToken: (token: string) => {
+              fullContent += token;
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify({ content: token })}\n\n`)
+              );
+            },
+            onToolCall: (toolCall) => {
+              allToolCalls.push({
+                id: toolCall.id,
+                name: toolCall.name,
+                arguments: toolCall.arguments,
+              });
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    toolCall: {
+                      id: toolCall.id,
+                      name: toolCall.name,
+                      arguments: toolCall.arguments,
+                    },
+                  })}\n\n`
+                )
+              );
+            },
+            onToolResult: (toolResult) => {
+              const tc = allToolCalls.find((t) => t.id === toolResult.callId);
+              if (tc) tc.result = toolResult.result;
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    toolResult: {
+                      callId: toolResult.callId,
+                      name: toolResult.name,
+                      result: toolResult.result,
+                      error: toolResult.error,
+                    },
+                  })}\n\n`
+                )
+              );
+            },
+          });
 
-  if (!response.body) {
-    return new Response(JSON.stringify({ error: 'No response body' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
+          // Complete run record
+          await completeRun(runId, {
+            status: 'completed',
+            output: result.output,
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+            cost: result.usage.cost,
+            duration: result.usage.duration,
+            iterations: result.toolCalls.length + 1,
+            trace: result.trace,
+          }).catch(() => {});
 
-  const encoder = new TextEncoder();
-  const reader = response.body.getReader();
-
-  const stream = new ReadableStream({
-    async start(controller) {
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            controller.enqueue(encoder.encode('data: {"done":true}\n\n'));
-            controller.close();
-            break;
+          // Update agent stats if this was a saved agent
+          if (agentId) {
+            await incrementAgentStats(
+              agentId,
+              result.usage.totalTokens,
+              result.usage.cost
+            ).catch(() => {});
           }
 
-          const text = new TextDecoder().decode(value);
-          
-          if (isOpenAI) {
-            // Parse OpenAI SSE format
-            const lines = text.split('\n').filter(line => line.startsWith('data: '));
-            for (const line of lines) {
-              const data = line.slice(6);
-              if (data === '[DONE]') continue;
-              try {
-                const parsed = JSON.parse(data);
-                const content = parsed.choices?.[0]?.delta?.content;
-                if (content) {
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content })}\n\n`));
-                }
-              } catch {}
-            }
-          } else if (isAnthropic) {
-            // Parse Anthropic SSE format
-            const lines = text.split('\n').filter(line => line.startsWith('data: '));
-            for (const line of lines) {
-              try {
-                const parsed = JSON.parse(line.slice(6));
-                if (parsed.type === 'content_block_delta') {
-                  const content = parsed.delta?.text;
-                  if (content) {
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content })}\n\n`));
-                  }
-                }
-              } catch {}
-            }
-          } else if (isGoogle) {
-            // Google sends JSON array chunks
-            try {
-              const parsed = JSON.parse(text);
-              if (Array.isArray(parsed)) {
-                for (const item of parsed) {
-                  const content = item.candidates?.[0]?.content?.parts?.[0]?.text;
-                  if (content) {
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content })}\n\n`));
-                  }
-                }
-              }
-            } catch {}
-          }
+          // Send completion data
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({
+                done: true,
+                runId: result.runId,
+                threadId: result.threadId,
+                usage: result.usage,
+                toolCalls: allToolCalls,
+              })}\n\n`
+            )
+          );
+          controller.close();
+        } catch (error) {
+          console.error('[playground] Run error:', error);
+
+          // Update run as failed
+          await completeRun(runId, {
+            status: 'failed',
+            inputTokens: 0,
+            outputTokens: 0,
+            cost: 0,
+            duration: 0,
+            iterations: 0,
+            error: error instanceof Error ? error.message : String(error),
+          }).catch(() => {});
+
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({
+                error: error instanceof Error ? error.message : 'Run failed',
+              })}\n\n`
+            )
+          );
+          controller.close();
         }
-      } catch (error) {
-        controller.enqueue(encoder.encode(`data: {"error":"${error}"}\n\n`));
-        controller.close();
-      }
-    },
-  });
+      },
+    });
 
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-    },
-  });
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      },
+    });
+  } catch (error) {
+    console.error('[playground] Error:', error);
+    return new Response(
+      JSON.stringify({
+        error: error instanceof Error ? error.message : 'Failed to process request',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
 }
 
+function buildModelString(model: string): string {
+  // Check if already has provider prefix
+  if (model.includes('/')) return model;
+
+  // Determine provider from model name
+  if (model.includes('gpt') || model.includes('o1') || model.includes('o3')) {
+    return `openai/${model}`;
+  }
+  if (model.includes('claude')) {
+    return `anthropic/${model}`;
+  }
+  if (model.includes('gemini')) {
+    return `google/${model}`;
+  }
+
+  // Default to Ollama for local models
+  return `ollama/${model}`;
+}

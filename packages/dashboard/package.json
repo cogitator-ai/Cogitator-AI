@@ -14,6 +14,9 @@
     "@cogitator/core": "workspace:*",
     "@cogitator/types": "workspace:*",
     "@cogitator/models": "workspace:*",
+    "@cogitator/memory": "workspace:*",
+    "@cogitator/workflows": "workspace:*",
+    "@cogitator/swarms": "workspace:*",
     "next": "^16.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -21,13 +24,15 @@
     "framer-motion": "^12.0.0",
     "recharts": "^2.15.0",
     "@monaco-editor/react": "^4.7.0",
+    "@xyflow/react": "^12.4.4",
     "lucide-react": "^0.468.0",
     "date-fns": "^4.1.0",
     "clsx": "^2.1.1",
     "tailwind-merge": "^2.6.0",
     "pg": "^8.13.1",
     "nanoid": "^5.0.9",
-    "ioredis": "^5.4.1"
+    "ioredis": "^5.4.1",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

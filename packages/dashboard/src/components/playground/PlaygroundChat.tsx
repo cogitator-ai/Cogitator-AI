@@ -18,14 +18,31 @@ import {
   AlertCircle,
   Server,
   Cloud,
+  DollarSign,
+  Clock,
+  ChevronDown,
+  ChevronRight,
+  CheckCircle,
+  XCircle,
 } from 'lucide-react';
+
+interface ToolCallData {
+  id: string;
+  name: string;
+  arguments: unknown;
+  result?: unknown;
+  error?: string;
+  duration?: number;
+}
 
 interface Message {
   id: string;
   role: 'user' | 'assistant' | 'tool';
   content: string;
-  toolName?: string;
+  toolCalls?: ToolCallData[];
   tokens?: number;
+  cost?: number;
+  duration?: number;
   timestamp: Date;
 }
 
@@ -34,6 +51,12 @@ interface ModelOption {
   name: string;
   provider: 'ollama' | 'openai' | 'anthropic' | 'google';
   available: boolean;
+}
+
+interface ToolOption {
+  name: string;
+  description: string;
+  requiresApproval: boolean;
 }
 
 interface ModelsData {
@@ -49,25 +72,19 @@ interface ModelsData {
   }>;
 }
 
-const BUILTIN_TOOLS = [
-  { id: 'calculator', name: 'Calculator', description: 'Math calculations' },
-  { id: 'datetime', name: 'Date/Time', description: 'Current time' },
-  { id: 'http', name: 'HTTP Request', description: 'Fetch URLs' },
-  { id: 'exec', name: 'Shell Command', description: 'Run commands' },
-];
-
 export function PlaygroundChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [selectedModel, setSelectedModel] = useState<ModelOption | null>(null);
-  const [tools, setTools] = useState(
-    BUILTIN_TOOLS.map((t) => ({ ...t, enabled: false }))
-  );
+  const [availableTools, setAvailableTools] = useState<ToolOption[]>([]);
+  const [enabledTools, setEnabledTools] = useState<Set<string>>(new Set());
   const [temperature, setTemperature] = useState(0.7);
   const [loadingModels, setLoadingModels] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [threadId, setThreadId] = useState<string | null>(null);
+  const [expandedToolCalls, setExpandedToolCalls] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -81,11 +98,10 @@ export function PlaygroundChat() {
       try {
         const response = await fetch('/api/models');
         if (!response.ok) throw new Error('Failed to fetch models');
-        
+
         const data: ModelsData = await response.json();
         const modelOptions: ModelOption[] = [];
 
-        // Add Ollama models
         if (data.ollama.available) {
           for (const model of data.ollama.models) {
             modelOptions.push({
@@ -97,7 +113,6 @@ export function PlaygroundChat() {
           }
         }
 
-        // Add cloud models
         for (const provider of data.cloud) {
           const providerType = provider.id as 'openai' | 'anthropic' | 'google';
           for (const modelId of provider.models) {
@@ -111,8 +126,7 @@ export function PlaygroundChat() {
         }
 
         setModels(modelOptions);
-        
-        // Select first available model
+
         const firstAvailable = modelOptions.find((m) => m.available);
         if (firstAvailable) {
           setSelectedModel(firstAvailable);
@@ -126,6 +140,22 @@ export function PlaygroundChat() {
     }
 
     fetchModels();
+  }, []);
+
+  // Fetch available tools
+  useEffect(() => {
+    async function fetchTools() {
+      try {
+        const response = await fetch('/api/tools');
+        if (!response.ok) throw new Error('Failed to fetch tools');
+        const tools = await response.json();
+        setAvailableTools(tools);
+      } catch (error) {
+        console.error('Failed to fetch tools:', error);
+      }
+    }
+
+    fetchTools();
   }, []);
 
   const handleSend = async () => {
@@ -143,7 +173,6 @@ export function PlaygroundChat() {
     setIsLoading(true);
     setError(null);
 
-    // Create assistant message placeholder
     const assistantMessageId = `msg_${Date.now() + 1}`;
     setMessages((prev) => [
       ...prev,
@@ -151,6 +180,7 @@ export function PlaygroundChat() {
         id: assistantMessageId,
         role: 'assistant',
         content: '',
+        toolCalls: [],
         timestamp: new Date(),
       },
     ]);
@@ -158,7 +188,6 @@ export function PlaygroundChat() {
     try {
       abortControllerRef.current = new AbortController();
 
-      // Build messages for API
       const apiMessages = messages.map((m) => ({
         role: m.role,
         content: m.content,
@@ -172,7 +201,8 @@ export function PlaygroundChat() {
           model: selectedModel.id,
           messages: apiMessages,
           temperature,
-          tools: tools.filter((t) => t.enabled).map((t) => t.id),
+          tools: Array.from(enabledTools),
+          threadId: threadId,
         }),
         signal: abortControllerRef.current.signal,
       });
@@ -189,7 +219,7 @@ export function PlaygroundChat() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let fullContent = '';
-      let tokenCount = 0;
+      const toolCalls: ToolCallData[] = [];
 
       while (true) {
         const { done, value } = await reader.read();
@@ -200,11 +230,11 @@ export function PlaygroundChat() {
           if (line.startsWith('data: ')) {
             try {
               const data = JSON.parse(line.slice(6));
-              
+
               if (data.error) {
                 throw new Error(data.error);
               }
-              
+
               if (data.content) {
                 fullContent += data.content;
                 setMessages((prev) =>
@@ -215,9 +245,56 @@ export function PlaygroundChat() {
                   )
                 );
               }
-              
-              if (data.eval_count) {
-                tokenCount = data.eval_count + (data.prompt_eval_count || 0);
+
+              if (data.toolCall) {
+                const tc: ToolCallData = {
+                  id: data.toolCall.id,
+                  name: data.toolCall.name,
+                  arguments: data.toolCall.arguments,
+                };
+                toolCalls.push(tc);
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantMessageId
+                      ? { ...m, toolCalls: [...toolCalls] }
+                      : m
+                  )
+                );
+              }
+
+              if (data.toolResult) {
+                const idx = toolCalls.findIndex(
+                  (tc) => tc.id === data.toolResult.callId
+                );
+                if (idx !== -1) {
+                  toolCalls[idx].result = data.toolResult.result;
+                  toolCalls[idx].error = data.toolResult.error;
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === assistantMessageId
+                        ? { ...m, toolCalls: [...toolCalls] }
+                        : m
+                    )
+                  );
+                }
+              }
+
+              if (data.done) {
+                if (data.threadId) {
+                  setThreadId(data.threadId);
+                }
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantMessageId
+                      ? {
+                          ...m,
+                          tokens: data.usage?.totalTokens,
+                          cost: data.usage?.cost,
+                          duration: data.usage?.duration,
+                        }
+                      : m
+                  )
+                );
               }
             } catch (e) {
               if (e instanceof SyntaxError) continue;
@@ -226,15 +303,6 @@ export function PlaygroundChat() {
           }
         }
       }
-
-      // Update final message with token count
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantMessageId
-            ? { ...m, tokens: tokenCount || undefined }
-            : m
-        )
-      );
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         return;
@@ -242,8 +310,7 @@ export function PlaygroundChat() {
 
       console.error('Chat error:', error);
       setError(error instanceof Error ? error.message : 'Failed to get response');
-      
-      // Remove empty assistant message on error
+
       setMessages((prev) =>
         prev.filter((m) => m.id !== assistantMessageId || m.content)
       );
@@ -259,15 +326,34 @@ export function PlaygroundChat() {
     }
   };
 
-  const toggleTool = (toolId: string) => {
-    setTools((prev) =>
-      prev.map((t) => (t.id === toolId ? { ...t, enabled: !t.enabled } : t))
-    );
+  const toggleTool = (toolName: string) => {
+    setEnabledTools((prev) => {
+      const next = new Set(prev);
+      if (next.has(toolName)) {
+        next.delete(toolName);
+      } else {
+        next.add(toolName);
+      }
+      return next;
+    });
+  };
+
+  const toggleToolCallExpansion = (id: string) => {
+    setExpandedToolCalls((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
   };
 
   const clearChat = () => {
     setMessages([]);
     setError(null);
+    setThreadId(null);
   };
 
   const ollamaModels = models.filter((m) => m.provider === 'ollama' && m.available);
@@ -298,6 +384,15 @@ export function PlaygroundChat() {
                     ? `Ready to chat with ${selectedModel.name}`
                     : 'Select a model from the sidebar to get started'}
                 </p>
+                {enabledTools.size > 0 && (
+                  <div className="flex items-center justify-center gap-2 mt-4">
+                    <Wrench className="w-4 h-4 text-text-muted" />
+                    <span className="text-sm text-text-muted">
+                      {enabledTools.size} tool{enabledTools.size !== 1 ? 's' : ''}{' '}
+                      enabled
+                    </span>
+                  </div>
+                )}
               </div>
             ) : (
               messages.map((message) => (
@@ -313,15 +408,11 @@ export function PlaygroundChat() {
                       'w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0',
                       message.role === 'user'
                         ? 'bg-chart-2/10'
-                        : message.role === 'tool'
-                          ? 'bg-chart-4/10'
-                          : 'bg-accent/10'
+                        : 'bg-accent/10'
                     )}
                   >
                     {message.role === 'user' ? (
                       <User className="w-4 h-4 text-chart-2" />
-                    ) : message.role === 'tool' ? (
-                      <Wrench className="w-4 h-4 text-chart-4" />
                     ) : (
                       <Bot className="w-4 h-4 text-accent" />
                     )}
@@ -332,11 +423,6 @@ export function PlaygroundChat() {
                       message.role === 'user' && 'text-right'
                     )}
                   >
-                    {message.toolName && (
-                      <Badge variant="outline" size="sm" className="mb-2">
-                        {message.toolName}
-                      </Badge>
-                    )}
                     <div
                       className={cn(
                         'rounded-xl p-4',
@@ -345,18 +431,104 @@ export function PlaygroundChat() {
                           : 'bg-bg-secondary border border-border-subtle'
                       )}
                     >
+                      {/* Tool calls */}
+                      {message.toolCalls && message.toolCalls.length > 0 && (
+                        <div className="mb-3 space-y-2">
+                          {message.toolCalls.map((tc) => (
+                            <div
+                              key={tc.id}
+                              className="bg-bg-tertiary rounded-lg border border-border-primary overflow-hidden"
+                            >
+                              <button
+                                onClick={() => toggleToolCallExpansion(tc.id)}
+                                className="w-full flex items-center gap-2 p-2 hover:bg-bg-hover transition-colors"
+                              >
+                                {expandedToolCalls.has(tc.id) ? (
+                                  <ChevronDown className="w-4 h-4 text-text-muted" />
+                                ) : (
+                                  <ChevronRight className="w-4 h-4 text-text-muted" />
+                                )}
+                                <Wrench className="w-4 h-4 text-chart-4" />
+                                <span className="text-sm font-medium text-text-primary">
+                                  {tc.name}
+                                </span>
+                                {tc.result !== undefined ? (
+                                  <CheckCircle className="w-4 h-4 text-success ml-auto" />
+                                ) : tc.error ? (
+                                  <XCircle className="w-4 h-4 text-error ml-auto" />
+                                ) : (
+                                  <span className="text-xs text-text-muted ml-auto">
+                                    Running...
+                                  </span>
+                                )}
+                              </button>
+                              {expandedToolCalls.has(tc.id) && (
+                                <div className="p-2 border-t border-border-primary">
+                                  <div className="text-xs text-text-muted mb-1">
+                                    Arguments:
+                                  </div>
+                                  <pre className="text-xs bg-bg-primary p-2 rounded overflow-x-auto">
+                                    {JSON.stringify(tc.arguments, null, 2)}
+                                  </pre>
+                                  {tc.result !== undefined && (
+                                    <>
+                                      <div className="text-xs text-text-muted mt-2 mb-1">
+                                        Result:
+                                      </div>
+                                      <pre className="text-xs bg-bg-primary p-2 rounded overflow-x-auto text-success">
+                                        {JSON.stringify(tc.result, null, 2)}
+                                      </pre>
+                                    </>
+                                  )}
+                                  {tc.error && (
+                                    <>
+                                      <div className="text-xs text-text-muted mt-2 mb-1">
+                                        Error:
+                                      </div>
+                                      <pre className="text-xs bg-bg-primary p-2 rounded text-error">
+                                        {tc.error}
+                                      </pre>
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
                       <p className="text-sm whitespace-pre-wrap">
                         {message.content || (
                           <span className="text-text-muted italic">
-                            Generating...
+                            {message.toolCalls && message.toolCalls.length > 0
+                              ? 'Processing tool results...'
+                              : 'Generating...'}
                           </span>
                         )}
                       </p>
                     </div>
-                    {message.tokens && (
-                      <div className="flex items-center gap-1 mt-1 text-xs text-text-muted">
-                        <Zap className="w-3 h-3" />
-                        {message.tokens} tokens
+
+                    {/* Stats */}
+                    {(message.tokens || message.cost || message.duration) && (
+                      <div className="flex items-center gap-3 mt-1 text-xs text-text-muted">
+                        {message.tokens && (
+                          <span className="flex items-center gap-1">
+                            <Zap className="w-3 h-3" />
+                            {message.tokens.toLocaleString()} tokens
+                          </span>
+                        )}
+                        {message.cost !== undefined && message.cost > 0 && (
+                          <span className="flex items-center gap-1">
+                            <DollarSign className="w-3 h-3" />$
+                            {message.cost.toFixed(4)}
+                          </span>
+                        )}
+                        {message.duration && (
+                          <span className="flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {(message.duration / 1000).toFixed(1)}s
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>
@@ -412,13 +584,12 @@ export function PlaygroundChat() {
 
           {loadingModels ? (
             <div className="space-y-2">
-              <Skeleton className="h-14 w-full" />
-              <Skeleton className="h-14 w-full" />
-              <Skeleton className="h-14 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
             </div>
           ) : (
             <div className="space-y-4">
-              {/* Ollama Models */}
               {ollamaModels.length > 0 && (
                 <div>
                   <div className="flex items-center gap-2 mb-2 text-xs text-text-muted">
@@ -444,7 +615,6 @@ export function PlaygroundChat() {
                 </div>
               )}
 
-              {/* Cloud Models */}
               {cloudModels.length > 0 && (
                 <div>
                   <div className="flex items-center gap-2 mb-2 text-xs text-text-muted">
@@ -518,28 +688,59 @@ export function PlaygroundChat() {
             <CardTitle className="flex items-center gap-2">
               <Wrench className="w-4 h-4" />
               Tools
+              {enabledTools.size > 0 && (
+                <Badge variant="info" size="sm">
+                  {enabledTools.size}
+                </Badge>
+              )}
             </CardTitle>
           </CardHeader>
-          <div className="space-y-2">
-            {tools.map((tool) => (
+          <div className="space-y-2 max-h-64 overflow-y-auto">
+            {availableTools.map((tool) => (
               <label
-                key={tool.id}
+                key={tool.name}
                 className="flex items-center justify-between p-2 rounded-lg hover:bg-bg-hover cursor-pointer"
               >
-                <div>
-                  <span className="text-sm text-text-primary">{tool.name}</span>
-                  <p className="text-xs text-text-muted">{tool.description}</p>
+                <div className="flex-1 min-w-0 mr-2">
+                  <div className="flex items-center gap-1">
+                    <span className="text-sm text-text-primary truncate">
+                      {tool.name}
+                    </span>
+                    {tool.requiresApproval && (
+                      <span className="text-xs text-warning">⚠️</span>
+                    )}
+                  </div>
+                  <p className="text-xs text-text-muted truncate">
+                    {tool.description}
+                  </p>
                 </div>
                 <input
                   type="checkbox"
-                  checked={tool.enabled}
-                  onChange={() => toggleTool(tool.id)}
-                  className="w-4 h-4 accent-accent"
+                  checked={enabledTools.has(tool.name)}
+                  onChange={() => toggleTool(tool.name)}
+                  className="w-4 h-4 accent-accent flex-shrink-0"
                 />
               </label>
             ))}
+            {availableTools.length === 0 && (
+              <p className="text-sm text-text-muted text-center py-2">
+                No tools available
+              </p>
+            )}
           </div>
         </Card>
+
+        {/* Thread Info */}
+        {threadId && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Thread</CardTitle>
+            </CardHeader>
+            <p className="text-xs text-text-muted font-mono truncate">
+              {threadId}
+            </p>
+          </Card>
+        )}
 
         {/* Actions */}
         <Button variant="outline" className="w-full gap-2" onClick={clearChat}>
