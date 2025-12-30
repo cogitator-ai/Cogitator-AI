@@ -11,7 +11,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-20+-green.svg)](https://nodejs.org/)
-[![Status](https://img.shields.io/badge/Status-Pre--Alpha-red.svg)]()
+[![Status](https://img.shields.io/badge/Status-Alpha-orange.svg)]()
 
 **Kubernetes for AI Agents. Self-hosted. Production-grade. TypeScript-native.**
 
@@ -413,33 +413,33 @@ const agent = new Agent({
 
 ## Roadmap
 
-### Phase 1: Foundation (Months 1-3)
+### Phase 1: Foundation (Months 1-3) ✅
 
 - [x] Project structure and monorepo setup
-- [ ] Core runtime with Fastify + tRPC
-- [ ] Universal LLM interface (Ollama, OpenAI, Anthropic)
-- [ ] Basic memory (Redis + Postgres)
-- [ ] Docker-based agent sandboxing
-- [ ] CLI tool (`cogitator init/up/run`)
-- [ ] 5 example agents
+- [x] Core runtime (Agent, Tool, Cogitator)
+- [x] Universal LLM interface (Ollama, OpenAI, Anthropic, Google)
+- [x] Basic memory (Redis + Postgres)
+- [x] Docker-based agent sandboxing
+- [x] CLI tool (`cogitator init/up/run`)
+- [x] 5+ example agents
 
-### Phase 2: Intelligence (Months 4-6)
+### Phase 2: Intelligence (Months 4-6) ✅
 
-- [ ] Workflow engine (DAG-based)
-- [ ] Multi-agent swarms (4 strategies)
-- [ ] MCP tool compatibility
-- [ ] Semantic memory with pgvector
-- [ ] Real-time observability dashboard (Next.js)
-- [ ] OpenAI Assistants API compatibility layer
+- [x] Workflow engine (DAG-based)
+- [x] Multi-agent swarms (6 strategies)
+- [x] MCP tool compatibility
+- [x] Semantic memory with pgvector
+- [x] Real-time observability dashboard (Next.js)
+- [x] OpenAI Assistants API compatibility layer
 
-### Phase 3: Production (Months 7-9)
+### Phase 3: Production (Months 7-9) 🔄
 
 - [ ] WASM sandbox (Extism)
-- [ ] Horizontal scaling with Redis Cluster
-- [ ] Kubernetes operator
+- [x] Horizontal scaling with Redis Cluster
+- [x] Kubernetes Helm chart
 - [ ] Enterprise SSO (OIDC/SAML)
-- [ ] RBAC and audit logging
-- [ ] Cost management and quotas
+- [x] RBAC and audit logging
+- [x] Cost tracking and analytics
 
 ### Phase 4: Ecosystem (Months 10-12)
 
@@ -525,6 +525,6 @@ MIT License - see [LICENSE](./LICENSE) for details.
 
 **Built for engineers who trust their agents to run while they sleep.**
 
-[⭐ Star on GitHub](https://github.com/eL1Fe/cogitator) • [📖 Documentation](./docs) • [💬 Discord](https://discord.gg/cogitator)
+[⭐ Star on GitHub](https://github.com/eL1Fe/cogitator) • [📖 Documentation](./docs)
 
 </div>

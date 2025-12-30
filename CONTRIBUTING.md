@@ -296,7 +296,6 @@ We especially welcome contributions in these areas:
 
 ## Getting Help
 
-- **Discord**: [Join our community](https://discord.gg/cogitator)
 - **Discussions**: Use GitHub Discussions for questions
 - **Issues**: Report bugs and request features
 

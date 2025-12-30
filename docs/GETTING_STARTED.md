@@ -533,7 +533,6 @@ OPENAI_API_KEY=sk-...
 - **Documentation**: [docs/](./README.md)
 - **Examples**: [examples/](../examples/)
 - **Issues**: [GitHub Issues](https://github.com/eL1Fe/cogitator/issues)
-- **Discord**: [Join Community](https://discord.gg/cogitator)
 
 ---
 

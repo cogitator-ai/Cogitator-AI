@@ -209,14 +209,14 @@ await cog.workflow(workflow).run({ task: 'Build a REST API' });
 
 #### Week 3-4: Dashboard
 
-- [ ] Next.js dashboard app
-- [ ] Real-time run monitoring
-- [ ] Agent execution traces
-- [ ] Cost and usage analytics
+- [x] Next.js dashboard app
+- [x] Real-time run monitoring
+- [x] Agent execution traces
+- [x] Cost and usage analytics
 
 **Deliverables:**
 
-- `@cogitator/dashboard` package
+- `@cogitator/dashboard` package ✅
 - Full OpenTelemetry support
 - Production monitoring guide
 
@@ -224,23 +224,23 @@ await cog.workflow(workflow).run({ task: 'Build a REST API' });
 
 #### Week 1-2: Security
 
-- [ ] API key authentication
-- [ ] JWT authentication
-- [ ] RBAC (role-based access control)
-- [ ] Audit logging
+- [x] API key authentication
+- [x] JWT authentication
+- [x] RBAC (role-based access control)
+- [x] Audit logging
 
 #### Week 3-4: Horizontal Scaling
 
-- [ ] Redis Cluster support
-- [ ] Worker pool with auto-scaling
-- [ ] Load balancer integration
-- [ ] Kubernetes deployment guide
+- [x] Redis Cluster support
+- [x] Worker pool with auto-scaling
+- [x] Load balancer integration
+- [x] Kubernetes deployment guide
 
 **Deliverables:**
 
 - Enterprise security features
 - Scale to 10,000+ concurrent agents
-- Kubernetes Helm chart
+- [x] Kubernetes Helm chart
 
 ### Month 9: WASM & Hardening
 
@@ -255,7 +255,7 @@ await cog.workflow(workflow).run({ task: 'Build a REST API' });
 
 - [ ] Comprehensive error handling
 - [ ] Graceful degradation
-- [ ] Health checks and readiness probes
+- [x] Health checks and readiness probes
 - [ ] Disaster recovery documentation
 
 **Deliverables:**
@@ -405,27 +405,6 @@ spec:
 
 ---
 
-## Business Model
-
-### Open Core
-
-| Tier           | Features                                   | Price  |
-| -------------- | ------------------------------------------ | ------ |
-| **Community**  | Full runtime, all agents, self-hosted      | Free   |
-| **Pro**        | Cloud hosting, dashboard, priority support | $99/mo |
-| **Enterprise** | SSO, RBAC, SLA, dedicated support          | Custom |
-
-### Revenue Targets
-
-| Quarter     | MRR Target | Primary Driver          |
-| ----------- | ---------- | ----------------------- |
-| Q4 (M10-12) | $5,000     | Early adopter Pro plans |
-| Y2 Q1       | $20,000    | Pro + first Enterprise  |
-| Y2 Q2       | $50,000    | Enterprise expansion    |
-| Y2 Q3       | $100,000   | Market growth           |
-
----
-
 ## Risk Mitigation
 
 ### Technical Risks
@@ -436,15 +415,6 @@ spec:
 | Performance at scale     | Early load testing, profiling      |
 | Security vulnerabilities | Regular audits, bug bounty         |
 | Dependency issues        | Minimal deps, regular updates      |
-
-### Business Risks
-
-| Risk                          | Mitigation                            |
-| ----------------------------- | ------------------------------------- |
-| Competition (LangChain, etc.) | Focus on TypeScript, production-grade |
-| LLM commoditization           | Multi-provider support                |
-| Cloud vendor lock-in          | Self-hosted first                     |
-| Slow adoption                 | Strong docs, examples, community      |
 
 ---
 
