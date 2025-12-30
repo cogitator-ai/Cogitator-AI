@@ -14,7 +14,7 @@ const Editor = dynamic(
 );
 
 const DEFAULT_CONFIG = `# Cogitator Configuration
-# Documentation: https://cogitator.dev/docs/config
+# Documentation: https://cogitator.app/docs/config
 
 llm:
   defaultProvider: openai

@@ -3,7 +3,7 @@ User-agent: *
 Allow: /
 
 # Sitemaps
-Sitemap: https://cogitator.dev/sitemap.xml
+Sitemap: https://cogitator.app/sitemap.xml
 
 # Disallow API routes and auth
 Disallow: /api/

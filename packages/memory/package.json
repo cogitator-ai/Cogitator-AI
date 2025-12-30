@@ -25,6 +25,7 @@
   "dependencies": {
     "@cogitator/redis": "workspace:*",
     "@cogitator/types": "workspace:*",
+    "@types/pg": "^8.10.9",
     "nanoid": "^5.0.4",
     "zod": "^3.22.4"
   },
@@ -34,7 +35,6 @@
     "openai": "^4.24.0"
   },
   "devDependencies": {
-    "@types/pg": "^8.10.9",
     "typescript": "^5.3.0",
     "vitest": "^1.0.0"
   },
