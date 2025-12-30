@@ -25,6 +25,7 @@ import {
   countMessageTokens,
   type ContextBuilderDeps,
 } from '@cogitator/memory';
+import { getPrice } from '@cogitator/models';
 import { type Agent } from './agent.js';
 import { ToolRegistry } from './registry.js';
 import { createLLMBackend, parseModel } from './llm/index.js';
@@ -565,28 +566,18 @@ export class Cogitator {
   }
 
   /**
-   * Calculate cost based on model and tokens
+   * Calculate cost based on model and tokens using dynamic model registry
    */
   private calculateCost(model: string, inputTokens: number, outputTokens: number): number {
-    // Simplified pricing (per 1M tokens)
-    const pricing: Partial<Record<string, { input: number; output: number }>> = {
-      'gpt-4o': { input: 2.5, output: 10 },
-      'gpt-4o-mini': { input: 0.15, output: 0.6 },
-      'gpt-4-turbo': { input: 10, output: 30 },
-      'claude-3-5-sonnet': { input: 3, output: 15 },
-      'claude-3-opus': { input: 15, output: 75 },
-      'claude-3-haiku': { input: 0.25, output: 1.25 },
-    };
-
     const { model: modelName } = parseModel(model);
-    const price = pricing[modelName];
+    const price = getPrice(modelName);
 
     if (!price) {
-      // Local models are free
+      // Local/unknown models are free
       return 0;
     }
 
-    return (inputTokens * price.input) / 1_000_000 + (outputTokens * price.output) / 1_000_000;
+    return (inputTokens * price.input + outputTokens * price.output) / 1_000_000;
   }
 
   /**

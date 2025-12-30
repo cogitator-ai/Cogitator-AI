@@ -30,5 +30,11 @@ export interface Agent {
   readonly id: string;
   readonly name: string;
   readonly config: AgentConfig;
+  /** Model accessor (shortcut to config.model) */
+  readonly model: string;
+  /** Instructions accessor (shortcut to config.instructions) */
+  readonly instructions: string;
+  /** Tools accessor (shortcut to config.tools) */
+  readonly tools: Tool[];
   clone(overrides: Partial<AgentConfig>): Agent;
 }

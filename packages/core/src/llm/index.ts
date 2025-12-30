@@ -6,11 +6,13 @@ export { BaseLLMBackend } from './base.js';
 export { OllamaBackend } from './ollama.js';
 export { OpenAIBackend } from './openai.js';
 export { AnthropicBackend } from './anthropic.js';
+export { GoogleBackend } from './google.js';
 
 import type { LLMBackend, LLMProvider, CogitatorConfig } from '@cogitator/types';
 import { OllamaBackend } from './ollama.js';
 import { OpenAIBackend } from './openai.js';
 import { AnthropicBackend } from './anthropic.js';
+import { GoogleBackend } from './google.js';
 
 /**
  * Create an LLM backend from configuration
@@ -45,6 +47,13 @@ export function createLLMBackend(
       });
 
     case 'google':
+      if (!providers.google?.apiKey) {
+        throw new Error('Google API key is required');
+      }
+      return new GoogleBackend({
+        apiKey: providers.google.apiKey,
+      });
+
     case 'vllm':
       throw new Error(`Provider ${provider} not yet implemented`);
 

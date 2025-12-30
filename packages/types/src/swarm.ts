@@ -1,0 +1,489 @@
+/**
+ * Swarm types for multi-agent coordination
+ */
+
+import type { Agent } from './agent.js';
+import type { RunResult, Span } from './runtime.js';
+
+// ============================================
+// Strategy Types
+// ============================================
+
+export type SwarmStrategy =
+  | 'hierarchical'
+  | 'round-robin'
+  | 'consensus'
+  | 'auction'
+  | 'pipeline'
+  | 'debate';
+
+// ============================================
+// Agent Wrapper for Swarm Context
+// ============================================
+
+export interface SwarmAgentMetadata {
+  /** Agent's areas of expertise */
+  expertise?: string[];
+  /** Priority in task assignment (higher = preferred) */
+  priority?: number;
+  /** Role in the swarm */
+  role?: 'supervisor' | 'worker' | 'moderator' | 'router' | 'advocate' | 'critic';
+  /** Weight for weighted voting */
+  weight?: number;
+  /** Custom metadata */
+  custom?: Record<string, unknown>;
+}
+
+export type SwarmAgentState = 'idle' | 'running' | 'completed' | 'failed';
+
+export interface SwarmAgent {
+  agent: Agent;
+  metadata: SwarmAgentMetadata;
+  state: SwarmAgentState;
+  lastResult?: RunResult;
+  messageCount: number;
+  tokenCount: number;
+}
+
+// ============================================
+// Strategy-Specific Configurations
+// ============================================
+
+export interface HierarchicalConfig {
+  /** Maximum delegation depth (default: 3) */
+  maxDelegationDepth?: number;
+  /** Allow workers to communicate with each other */
+  workerCommunication?: boolean;
+  /** Route all messages through supervisor */
+  routeThrough?: 'supervisor' | 'direct';
+  /** Visibility of worker outputs to supervisor */
+  visibility?: 'full' | 'summary' | 'none';
+}
+
+export interface RoundRobinConfig {
+  /** Enable sticky sessions (same agent handles follow-ups) */
+  sticky?: boolean;
+  /** Key function for sticky routing */
+  stickyKey?: (input: unknown) => string;
+  /** Rotation strategy */
+  rotation?: 'sequential' | 'random';
+}
+
+export interface ConsensusConfig {
+  /** Voting threshold (0-1), default: 0.5 for majority */
+  threshold: number;
+  /** Maximum discussion rounds */
+  maxRounds: number;
+  /** Resolution strategy */
+  resolution: 'majority' | 'unanimous' | 'weighted';
+  /** Action on no consensus */
+  onNoConsensus: 'escalate' | 'supervisor-decides' | 'fail';
+  /** Weights for weighted voting (agentName -> weight) */
+  weights?: Record<string, number>;
+}
+
+export interface AuctionConfig {
+  /** Bidding strategy */
+  bidding: 'capability-match' | 'custom';
+  /** Custom bid function (agent, task) -> bid score */
+  bidFunction?: (agent: SwarmAgent, task: string) => Promise<number> | number;
+  /** Winner selection */
+  selection: 'highest-bid' | 'weighted-random';
+  /** Minimum bid to participate (0-1) */
+  minBid?: number;
+}
+
+export interface PipelineStage {
+  name: string;
+  agent: Agent;
+  /** If true, acts as a quality gate */
+  gate?: boolean;
+}
+
+export interface PipelineGateConfig {
+  /** Condition to pass gate */
+  condition: (output: unknown) => boolean;
+  /** Action on gate failure */
+  onFail: 'retry-previous' | 'abort' | 'skip' | `goto:${string}`;
+  /** Maximum retries */
+  maxRetries: number;
+}
+
+export interface PipelineContext {
+  input: unknown;
+  stageIndex: number;
+  stageName: string;
+  previousOutputs: Map<string, unknown>;
+}
+
+export interface PipelineConfig {
+  /** Pipeline stages in order */
+  stages: PipelineStage[];
+  /** Stage input transformer */
+  stageInput?: (prevOutput: unknown, stage: PipelineStage, ctx: PipelineContext) => unknown;
+  /** Gate configurations */
+  gates?: Record<string, PipelineGateConfig>;
+}
+
+export interface DebateConfig {
+  /** Number of debate rounds */
+  rounds: number;
+  /** Max tokens per turn */
+  turnDuration?: number;
+  /** Debate format */
+  format?: 'structured' | 'freeform';
+}
+
+// ============================================
+// Communication: Message Bus
+// ============================================
+
+export type SwarmMessageType = 'request' | 'response' | 'notification' | 'error';
+
+export interface SwarmMessage {
+  id: string;
+  swarmId: string;
+  from: string;
+  to: string | 'broadcast';
+  type: SwarmMessageType;
+  channel?: string;
+  content: string;
+  payload?: unknown;
+  replyTo?: string;
+  correlationId?: string;
+  timestamp: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface MessageBusConfig {
+  enabled: boolean;
+  protocol: 'direct' | 'broadcast' | 'pub-sub';
+  /** Max message length in characters */
+  maxMessageLength?: number;
+  /** Max messages per turn per agent */
+  maxMessagesPerTurn?: number;
+  /** Max total messages in swarm run */
+  maxTotalMessages?: number;
+}
+
+export interface MessageBus {
+  send(message: Omit<SwarmMessage, 'id' | 'timestamp'>): Promise<SwarmMessage>;
+  broadcast(from: string, content: string, channel?: string): Promise<void>;
+  subscribe(agentName: string, handler: (msg: SwarmMessage) => void): () => void;
+  getMessages(agentName: string, limit?: number): SwarmMessage[];
+  getConversation(agent1: string, agent2: string): SwarmMessage[];
+  getAllMessages(): SwarmMessage[];
+  clear(): void;
+}
+
+// ============================================
+// Communication: Blackboard
+// ============================================
+
+export interface BlackboardSection<T = unknown> {
+  name: string;
+  data: T;
+  lastModified: number;
+  modifiedBy: string;
+  version: number;
+}
+
+export interface BlackboardConfig {
+  enabled: boolean;
+  /** Initial sections with their data */
+  sections: Record<string, unknown>;
+  /** Lock sections during write (optimistic locking) */
+  locking?: boolean;
+  /** Track history of changes */
+  trackHistory?: boolean;
+}
+
+export interface BlackboardHistoryEntry {
+  value: unknown;
+  writtenBy: string;
+  timestamp: number;
+  version: number;
+}
+
+export interface BlackboardEntry<T = unknown> {
+  section: string;
+  key?: string;
+  value: T;
+  version: number;
+  writtenBy: string;
+  timestamp: number;
+}
+
+export interface Blackboard {
+  read<T = unknown>(section: string): T;
+  write<T>(section: string, data: T, agentName: string): void;
+  append<T>(section: string, item: T, agentName: string): void;
+  has(section: string): boolean;
+  delete(section: string): void;
+  subscribe(section: string, handler: (data: unknown, agentName: string) => void): () => void;
+  getSections(): string[];
+  getSection<T = unknown>(section: string): BlackboardSection<T> | undefined;
+  getHistory(section: string): BlackboardHistoryEntry[];
+  clear(): void;
+}
+
+// ============================================
+// Communication: Event System
+// ============================================
+
+export type SwarmEventType =
+  | 'swarm:start'
+  | 'swarm:complete'
+  | 'swarm:error'
+  | 'agent:start'
+  | 'agent:complete'
+  | 'agent:error'
+  | 'message:sent'
+  | 'message:received'
+  | 'blackboard:write'
+  | 'consensus:vote'
+  | 'consensus:round'
+  | 'auction:bid'
+  | 'auction:winner'
+  | 'debate:turn'
+  | 'debate:round'
+  | 'pipeline:stage'
+  | 'pipeline:gate'
+  | string;
+
+export interface SwarmEvent {
+  type: SwarmEventType;
+  timestamp: number;
+  agentName?: string;
+  data?: unknown;
+}
+
+export type SwarmEventHandler = (event: SwarmEvent) => void | Promise<void>;
+
+export interface SwarmEventEmitter {
+  on(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void;
+  once(event: SwarmEventType, handler: SwarmEventHandler): () => void;
+  emit(event: SwarmEventType, data?: unknown, agentName?: string): void;
+  off(event: SwarmEventType, handler: SwarmEventHandler): void;
+  removeAllListeners(event?: SwarmEventType): void;
+  getEvents(): SwarmEvent[];
+}
+
+// ============================================
+// Resource Management
+// ============================================
+
+export interface SwarmResourceConfig {
+  /** Max concurrent agent runs (default: 4) */
+  maxConcurrency?: number;
+  /** Total token budget for the swarm run */
+  tokenBudget?: number;
+  /** Cost limit in dollars */
+  costLimit?: number;
+  /** Time limit in ms */
+  timeout?: number;
+  /** Per-agent limits */
+  perAgent?: {
+    maxIterations?: number;
+    maxTokens?: number;
+    timeout?: number;
+  };
+}
+
+export interface SwarmResourceUsage {
+  totalTokens: number;
+  totalCost: number;
+  elapsedTime: number;
+  agentUsage: Map<string, { tokens: number; cost: number; runs: number; duration: number }>;
+}
+
+// ============================================
+// Error Handling
+// ============================================
+
+export type SwarmErrorAction = 'retry' | 'skip' | 'failover' | 'abort';
+
+export interface SwarmErrorConfig {
+  /** Action on agent failure */
+  onAgentFailure: SwarmErrorAction;
+  /** Retry configuration */
+  retry?: {
+    maxRetries: number;
+    backoff: 'constant' | 'linear' | 'exponential';
+    initialDelay?: number;
+    maxDelay?: number;
+  };
+  /** Failover agent mapping (primaryAgent -> backupAgent) */
+  failover?: Record<string, string>;
+  /** Circuit breaker configuration */
+  circuitBreaker?: {
+    enabled: boolean;
+    /** Open circuit after N failures */
+    threshold: number;
+    /** Reset timeout in ms */
+    resetTimeout: number;
+  };
+  /** Allow returning partial results on failure */
+  partialResults?: boolean;
+}
+
+// ============================================
+// Main SwarmConfig
+// ============================================
+
+export interface SwarmConfig {
+  name: string;
+  strategy: SwarmStrategy;
+
+  // Agents (usage depends on strategy)
+  /** Supervisor agent for hierarchical strategy */
+  supervisor?: Agent;
+  /** Worker agents for hierarchical strategy */
+  workers?: Agent[];
+  /** General agents for round-robin, consensus, auction */
+  agents?: Agent[];
+  /** Pipeline stages for pipeline strategy */
+  stages?: PipelineStage[];
+  /** Moderator agent for debate strategy */
+  moderator?: Agent;
+  /** Router agent for specialist routing */
+  router?: Agent;
+
+  // Strategy-specific configurations
+  hierarchical?: HierarchicalConfig;
+  roundRobin?: RoundRobinConfig;
+  consensus?: ConsensusConfig;
+  auction?: AuctionConfig;
+  pipeline?: PipelineConfig;
+  debate?: DebateConfig;
+
+  // Communication
+  messaging?: MessageBusConfig;
+  blackboard?: BlackboardConfig;
+
+  // Resources and error handling
+  resources?: SwarmResourceConfig;
+  errorHandling?: SwarmErrorConfig;
+
+  // Observability
+  observability?: {
+    /** Enable tracing */
+    tracing?: boolean;
+    /** Log all messages */
+    messageLogging?: boolean;
+    /** Log blackboard changes */
+    blackboardLogging?: boolean;
+  };
+}
+
+// ============================================
+// Swarm Execution
+// ============================================
+
+export interface SwarmRunOptions {
+  /** Input to the swarm */
+  input: string;
+  /** Additional context passed to all agents */
+  context?: Record<string, unknown>;
+  /** Thread ID for memory persistence */
+  threadId?: string;
+  /** Override timeout */
+  timeout?: number;
+
+  // Callbacks
+  onAgentStart?: (agentName: string) => void;
+  onAgentComplete?: (agentName: string, result: RunResult) => void;
+  onAgentError?: (agentName: string, error: Error) => void;
+  onMessage?: (message: SwarmMessage) => void;
+  onEvent?: (event: SwarmEvent) => void;
+}
+
+export interface SwarmResult {
+  swarmId: string;
+  swarmName: string;
+  strategy: SwarmStrategy;
+  output: unknown;
+  structured?: unknown;
+
+  // Agent results
+  agentResults: Map<string, RunResult>;
+
+  // Strategy-specific results
+  /** Votes from consensus strategy */
+  votes?: Map<string, unknown>;
+  /** Bids from auction strategy */
+  bids?: Map<string, number>;
+  /** Winner from auction strategy */
+  auctionWinner?: string;
+  /** Debate transcript from debate strategy */
+  debateTranscript?: SwarmMessage[];
+  /** Pipeline outputs per stage */
+  pipelineOutputs?: Map<string, unknown>;
+
+  // Usage
+  usage: SwarmResourceUsage;
+
+  // Trace
+  trace: {
+    traceId: string;
+    spans: Span[];
+    events: SwarmEvent[];
+    messages: SwarmMessage[];
+  };
+
+  error?: Error;
+}
+
+// ============================================
+// Swarm Interface
+// ============================================
+
+export interface ISwarm {
+  readonly name: string;
+  readonly config: SwarmConfig;
+  readonly messageBus: MessageBus;
+  readonly blackboard: Blackboard;
+  readonly events: SwarmEventEmitter;
+
+  run(options: SwarmRunOptions): Promise<SwarmResult>;
+
+  getAgent(name: string): SwarmAgent | undefined;
+  getAgents(): SwarmAgent[];
+
+  pause(): void;
+  resume(): void;
+  abort(): void;
+}
+
+// ============================================
+// Strategy Interface (internal)
+// ============================================
+
+export interface StrategyResult {
+  output: unknown;
+  structured?: unknown;
+  agentResults: Map<string, RunResult>;
+  votes?: Map<string, unknown>;
+  bids?: Map<string, number>;
+  auctionWinner?: string;
+  debateTranscript?: SwarmMessage[];
+  pipelineOutputs?: Map<string, unknown>;
+}
+
+export interface SwarmCoordinatorInterface {
+  runAgent(agentName: string, input: string, context?: Record<string, unknown>): Promise<RunResult>;
+  runAgentsParallel(
+    agents: Array<{ name: string; input: string; context?: Record<string, unknown> }>,
+    maxConcurrency?: number
+  ): Promise<Map<string, RunResult>>;
+  getAgent(name: string): SwarmAgent | undefined;
+  getAgents(): SwarmAgent[];
+  getAgentsByRole(role: SwarmAgentMetadata['role']): SwarmAgent[];
+  readonly messageBus: MessageBus;
+  readonly blackboard: Blackboard;
+  readonly events: SwarmEventEmitter;
+}
+
+export interface IStrategy {
+  execute(options: SwarmRunOptions): Promise<StrategyResult>;
+}
