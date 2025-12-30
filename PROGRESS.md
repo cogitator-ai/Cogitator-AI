@@ -1,5 +1,67 @@
 # Cogitator Development Progress
 
+## Session: 2025-12-30 (Local Examples + Dashboard Enhancements)
+
+### ✅ Completed
+
+1. **Local Swarm & Workflow Examples** (`examples/`)
+   - **swarm-local.ts** - Hierarchical team swarm with Ollama:
+     - Project Manager (supervisor)
+     - Researcher, Writer, Critic (workers)
+     - Task delegation and progress tracking
+   - **debate-swarm.ts** - AI debate with 3 perspectives:
+     - Optimist, Skeptic, Pragmatist agents
+     - Multi-round debate with synthesis
+   - **pipeline-swarm.ts** - Content creation pipeline:
+     - Ideation → Structure → Writing → Polishing stages
+     - Sequential processing with state passing
+   - **workflow-local.ts** - Multi-step workflow:
+     - Analysis → Plan → Execute → Verify nodes
+     - Checkpoint support for resumption
+   - All examples use local Ollama (default: llama3.2:3b)
+   - Support custom model via `MODEL` env var
+
+2. **Examples Package Scripts** (`examples/package.json`)
+   - `pnpm swarm` - run hierarchical swarm
+   - `pnpm debate` - run debate swarm
+   - `pnpm pipeline` - run pipeline swarm
+   - `pnpm workflow` - run workflow example
+
+3. **Dashboard Model Management** (`packages/dashboard/`)
+   - **Models Page** (`src/app/models/page.tsx`):
+     - List local Ollama models with size/modified info
+     - Pull new models with real-time progress bar (SSE)
+     - Delete local models
+     - Cloud provider API key management (OpenAI, Anthropic, Google)
+   - **Ollama Integration** (`src/lib/ollama.ts`):
+     - `listLocalModels()` - get installed models
+     - `listAvailableModels()` - get remote model library
+     - `pullModel()` / `pullModelStream()` - download with progress
+     - `deleteModel()` - remove local model
+   - **API Routes**:
+     - `GET/POST /api/models` - list models, update API keys
+     - `POST /api/models/pull` - stream model download progress
+     - `DELETE /api/models/delete` - remove Ollama model
+   - **Playground Enhancements** (`src/components/playground/`):
+     - Real model selection from Ollama + cloud providers
+     - Actual LLM chat via `/api/playground` route
+     - Streaming responses with SSE
+
+4. **Root Package Scripts** (`package.json`)
+   - `pnpm dashboard` - start dashboard dev server
+   - `pnpm services` - start Docker services (Redis, Postgres, Ollama)
+   - `pnpm services:down` - stop Docker services
+   - `pnpm start` - build + start services + dashboard
+
+### 📊 Summary
+
+- **New examples**: 4 runnable swarm/workflow examples
+- **Dashboard features**: Model management, real playground
+- **API routes**: 3 new model management endpoints
+- **Total commits**: 5 (dashboard, examples, ecosystem, core, workflows)
+
+---
+
 ## Session: 2025-12-30 (Dashboard + Models Package)
 
 ### ✅ Completed
