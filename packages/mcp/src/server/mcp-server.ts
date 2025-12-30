@@ -8,8 +8,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Tool, ToolContext } from '@cogitator/types';
-import type { MCPServerConfig } from '../types.js';
-import { resultToMCPContent, zodToJsonSchema } from '../adapter/tool-adapter.js';
+import type { MCPServerConfig } from '../types';
+import { resultToMCPContent, zodToJsonSchema } from '../adapter/tool-adapter';
 
 interface MCPCallToolResult {
   [key: string]: unknown;

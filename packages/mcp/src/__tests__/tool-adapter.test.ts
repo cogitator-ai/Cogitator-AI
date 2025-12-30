@@ -11,9 +11,9 @@ import {
   mcpToCogitator,
   resultToMCPContent,
   mcpContentToResult,
-} from '../adapter/tool-adapter.js';
+} from '../adapter/tool-adapter';
 import type { Tool, ToolContext } from '@cogitator/types';
-import type { MCPClient } from '../client/mcp-client.js';
+import type { MCPClient } from '../client/mcp-client';
 
 describe('zodToJsonSchema', () => {
   it('should convert simple string schema', () => {

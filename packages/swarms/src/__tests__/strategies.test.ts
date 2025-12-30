@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { getDefaultStrategyConfig } from '../strategies/index.js';
+import { getDefaultStrategyConfig } from '../strategies/index';
 
 describe('Strategy Factory', () => {
   describe('getDefaultStrategyConfig', () => {

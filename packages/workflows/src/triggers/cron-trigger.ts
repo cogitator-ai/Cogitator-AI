@@ -15,7 +15,7 @@ import {
   parseCronExpression,
   getNextCronOccurrence,
   isValidCronExpression,
-} from '../timers/cron-parser.js';
+} from '../timers/cron-parser';
 
 /**
  * Cron trigger state

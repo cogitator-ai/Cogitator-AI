@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { Logger, createLogger, getLogger, setLogger } from '../logger.js';
-import type { LogEntry } from '../logger.js';
+import { Logger, createLogger, getLogger, setLogger } from '../logger';
+import type { LogEntry } from '../logger';
 
 describe('Logger', () => {
   describe('log levels', () => {

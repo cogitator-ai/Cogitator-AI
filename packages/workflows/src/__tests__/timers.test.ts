@@ -8,7 +8,7 @@ import {
   CRON_PRESETS,
   parseDuration,
   formatDuration,
-} from '../timers/index.js';
+} from '../timers/index';
 
 describe('Timer System', () => {
   describe('Cron Parser', () => {

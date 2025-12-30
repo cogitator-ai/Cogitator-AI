@@ -10,7 +10,7 @@ import type {
   SwarmAgent,
 } from '@cogitator/types';
 import { BaseStrategy } from './base';
-import type { SwarmCoordinator } from '../coordinator.js';
+import type { SwarmCoordinator } from '../coordinator';
 
 export class RoundRobinStrategy extends BaseStrategy {
   private config: RoundRobinConfig;

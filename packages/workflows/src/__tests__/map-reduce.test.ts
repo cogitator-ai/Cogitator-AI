@@ -19,7 +19,7 @@ import {
   reduceNode,
   mapReduceNode,
   type MapItemResult,
-} from '../patterns/index.js';
+} from '../patterns/index';
 
 interface TestState {
   items: number[];

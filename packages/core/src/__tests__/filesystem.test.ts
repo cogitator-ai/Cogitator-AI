@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { fileRead, fileWrite, fileList, fileExists, fileDelete } from '../tools/filesystem.js';
+import { fileRead, fileWrite, fileList, fileExists, fileDelete } from '../tools/filesystem';
 
 const mockContext = {
   agentId: 'agent_test',

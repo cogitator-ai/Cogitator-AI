@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { InMemoryMessageBus } from '../communication/message-bus.js';
+import { InMemoryMessageBus } from '../communication/message-bus';
 
 describe('InMemoryMessageBus', () => {
   let bus: InMemoryMessageBus;

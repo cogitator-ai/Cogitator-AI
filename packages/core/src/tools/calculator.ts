@@ -3,7 +3,7 @@
  */
 
 import { z } from 'zod';
-import { tool } from '../tool.js';
+import { tool } from '../tool';
 
 const calculatorParams = z.object({
   expression: z.string().describe('Mathematical expression to evaluate (e.g., "2 + 3 * 4")'),

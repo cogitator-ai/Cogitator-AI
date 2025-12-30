@@ -5,7 +5,7 @@
 import { readFile, writeFile, readdir, stat, unlink, rm, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
-import { tool } from '../tool.js';
+import { tool } from '../tool';
 
 const fileReadParams = z.object({
   path: z.string().describe('Path to the file to read'),

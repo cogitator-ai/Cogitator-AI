@@ -12,7 +12,7 @@ import {
   ratingNode,
   chainNode,
   managementChain,
-} from '../human/index.js';
+} from '../human/index';
 import type { ApprovalRequest, ApprovalResponse, HumanNodeConfig } from '@cogitator/types';
 
 interface TestState {

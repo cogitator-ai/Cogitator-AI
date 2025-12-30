@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { z } from 'zod';
 import type { Tool } from '@cogitator/types';
-import { ToolRegistry } from '../registry.js';
-import { tool } from '../tool.js';
+import { ToolRegistry } from '../registry';
+import { tool } from '../tool';
 
 describe('ToolRegistry', () => {
   let registry: ToolRegistry;

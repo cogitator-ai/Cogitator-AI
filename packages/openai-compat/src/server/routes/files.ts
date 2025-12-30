@@ -5,8 +5,8 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import type { OpenAIAdapter } from '../../client/openai-adapter.js';
-import type { FileObject, FilePurpose, ListResponse } from '../../types/openai-types.js';
+import type { OpenAIAdapter } from '../../client/openai-adapter';
+import type { FileObject, FilePurpose, ListResponse } from '../../types/openai-types';
 
 export function registerFileRoutes(
   fastify: FastifyInstance,

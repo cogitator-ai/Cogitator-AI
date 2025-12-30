@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { uuid } from '../tools/uuid.js';
+import { uuid } from '../tools/uuid';
 
 const mockContext = {
   agentId: 'agent_test',

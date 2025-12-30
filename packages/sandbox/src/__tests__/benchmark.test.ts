@@ -8,9 +8,9 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { WasmSandboxExecutor } from '../executors/wasm.js';
-import { NativeSandboxExecutor } from '../executors/native.js';
-import { DockerSandboxExecutor } from '../executors/docker.js';
+import { WasmSandboxExecutor } from '../executors/wasm';
+import { NativeSandboxExecutor } from '../executors/native';
+import { DockerSandboxExecutor } from '../executors/docker';
 import type { SandboxConfig, SandboxExecutionRequest } from '@cogitator/types';
 
 const ITERATIONS = 10;

@@ -8,8 +8,8 @@
 import { z, type ZodTypeAny, type ZodObject, type ZodRawShape } from 'zod';
 import { zodToJsonSchema as zodToJsonSchemaLib } from 'zod-to-json-schema';
 import type { Tool, ToolSchema, ToolContext } from '@cogitator/types';
-import type { MCPToolDefinition, MCPToolContent, ToolAdapterOptions } from '../types.js';
-import type { MCPClient } from '../client/mcp-client.js';
+import type { MCPToolDefinition, MCPToolContent, ToolAdapterOptions } from '../types';
+import type { MCPClient } from '../client/mcp-client';
 
 /**
  * Convert a Zod schema to JSON Schema

@@ -3,7 +3,7 @@
  */
 
 import { z } from 'zod';
-import { tool } from '../tool.js';
+import { tool } from '../tool';
 
 const jsonParseParams = z.object({
   json: z.string().describe('The JSON string to parse'),

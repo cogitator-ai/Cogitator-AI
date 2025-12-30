@@ -3,7 +3,7 @@
  */
 
 import { z } from 'zod';
-import { tool } from '../tool.js';
+import { tool } from '../tool';
 
 const regexMatchParams = z.object({
   text: z.string().describe('The text to search in'),

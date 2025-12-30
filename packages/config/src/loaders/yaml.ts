@@ -4,7 +4,7 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import { parse } from 'yaml';
-import type { CogitatorConfigInput } from '../schema.js';
+import type { CogitatorConfigInput } from '../schema';
 
 const DEFAULT_CONFIG_NAMES = ['cogitator.yaml', 'cogitator.yml', '.cogitator.yaml', '.cogitator.yml'];
 

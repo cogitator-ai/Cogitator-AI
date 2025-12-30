@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { ModelRegistry, getModelRegistry, getPrice, getModel, listModels } from '../registry.js';
-import { BUILTIN_MODELS } from '../providers/index.js';
+import { ModelRegistry, getModelRegistry, getPrice, getModel, listModels } from '../registry';
+import { BUILTIN_MODELS } from '../providers/index';
 
 describe('ModelRegistry', () => {
   let registry: ModelRegistry;

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { InMemoryAdapter } from '../adapters/memory.js';
+import { InMemoryAdapter } from '../adapters/memory';
 import type { Message } from '@cogitator/types';
 
 describe('InMemoryAdapter', () => {

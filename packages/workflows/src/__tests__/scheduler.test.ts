@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { WorkflowScheduler } from '../scheduler.js';
-import { WorkflowBuilder } from '../builder.js';
+import { WorkflowScheduler } from '../scheduler';
+import { WorkflowBuilder } from '../builder';
 
 interface TestState {
   value: number;

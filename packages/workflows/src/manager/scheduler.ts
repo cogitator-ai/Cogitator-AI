@@ -19,7 +19,7 @@ import type {
 import {
   getNextCronOccurrence,
   validateCronExpression,
-} from '../timers/cron-parser.js';
+} from '../timers/cron-parser';
 
 /**
  * Priority queue item

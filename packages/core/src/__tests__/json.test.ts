@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { jsonParse, jsonStringify } from '../tools/json.js';
+import { jsonParse, jsonStringify } from '../tools/json';
 
 const mockContext = {
   agentId: 'agent_test',

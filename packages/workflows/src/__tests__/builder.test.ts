@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { WorkflowBuilder } from '../builder.js';
+import { WorkflowBuilder } from '../builder';
 
 interface TestState {
   value: number;

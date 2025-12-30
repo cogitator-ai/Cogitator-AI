@@ -14,7 +14,7 @@ import {
   createInMemoryIdempotencyStore,
   generateIdempotencyKey,
   idempotent,
-} from '../saga/index.js';
+} from '../saga/index';
 
 interface TestState {
   value: number;

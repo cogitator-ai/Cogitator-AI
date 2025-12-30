@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { httpRequest } from '../tools/http.js';
+import { httpRequest } from '../tools/http';
 
 const mockContext = {
   agentId: 'agent_test',

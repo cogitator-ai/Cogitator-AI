@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sleep } from '../tools/sleep.js';
+import { sleep } from '../tools/sleep';
 
 const mockContext = {
   agentId: 'agent_test',

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CogitatorConfigSchema, LLMProviderSchema } from '../schema.js';
+import { CogitatorConfigSchema, LLMProviderSchema } from '../schema';
 
 describe('LLMProviderSchema', () => {
   it('accepts valid providers', () => {

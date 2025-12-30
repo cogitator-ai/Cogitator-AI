@@ -4,7 +4,7 @@ import {
   countMessageTokens,
   countMessagesTokens,
   truncateToTokens,
-} from '../token-counter.js';
+} from '../token-counter';
 
 describe('countTokens', () => {
   it('returns 0 for empty string', () => {

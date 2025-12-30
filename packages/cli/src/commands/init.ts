@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
 import ora from 'ora';
 import chalk from 'chalk';
-import { log, printBanner } from '../utils/logger.js';
+import { log, printBanner } from '../utils/logger';
 
 export const initCommand = new Command('init')
   .description('Create a new Cogitator project')

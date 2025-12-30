@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Cogitator } from '../cogitator.js';
-import { Agent } from '../agent.js';
+import { Cogitator } from '../cogitator';
+import { Agent } from '../agent';
 import type { CogitatorConfig, Message } from '@cogitator/types';
 
 const mockResponses: Message[] = [];

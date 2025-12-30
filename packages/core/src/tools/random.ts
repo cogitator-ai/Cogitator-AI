@@ -4,7 +4,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
-import { tool } from '../tool.js';
+import { tool } from '../tool';
 
 const randomNumberParams = z.object({
   min: z.number().optional().describe('Minimum value (default: 0)'),

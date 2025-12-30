@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hash } from '../tools/hash.js';
+import { hash } from '../tools/hash';
 
 const mockContext = {
   agentId: 'agent_test',

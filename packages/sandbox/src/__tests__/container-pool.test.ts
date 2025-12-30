@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { ContainerPool } from '../pool/container-pool.js';
-import type { Docker } from '../docker-types.js';
+import { ContainerPool } from '../pool/container-pool';
+import type { Docker } from '../docker-types';
 
 describe('ContainerPool', () => {
   let docker: Docker | null = null;

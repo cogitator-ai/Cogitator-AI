@@ -7,7 +7,7 @@
 import { Cogitator, Agent, tool } from '@cogitator/core';
 import { z } from 'zod';
 import type { Tool, ToolSchema } from '@cogitator/types';
-import type { AgentJobPayload, AgentJobResult } from '../types.js';
+import type { AgentJobPayload, AgentJobResult } from '../types';
 
 /**
  * Convert JSON Schema parameters to a permissive Zod schema

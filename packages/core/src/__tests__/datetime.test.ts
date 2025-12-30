@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { datetime } from '../tools/datetime.js';
+import { datetime } from '../tools/datetime';
 
 const mockContext = {
   agentId: 'agent_test',

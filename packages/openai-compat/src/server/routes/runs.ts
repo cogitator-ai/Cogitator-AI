@@ -5,11 +5,11 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import type { OpenAIAdapter } from '../../client/openai-adapter.js';
+import type { OpenAIAdapter } from '../../client/openai-adapter';
 import type {
   CreateRunRequest,
   SubmitToolOutputsRequest,
-} from '../../types/openai-types.js';
+} from '../../types/openai-types';
 
 export function registerRunRoutes(
   fastify: FastifyInstance,

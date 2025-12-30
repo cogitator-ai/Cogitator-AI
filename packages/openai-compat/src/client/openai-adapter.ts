@@ -14,7 +14,7 @@ import type {
   Run,
   CreateRunRequest,
   SubmitToolOutputsRequest,
-} from '../types/openai-types.js';
+} from '../types/openai-types';
 
 interface RunState {
   run: Run;

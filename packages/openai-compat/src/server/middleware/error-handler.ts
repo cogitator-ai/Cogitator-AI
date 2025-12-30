@@ -5,7 +5,7 @@
  */
 
 import type { FastifyError, FastifyReply, FastifyRequest } from 'fastify';
-import type { OpenAIError } from '../../types/openai-types.js';
+import type { OpenAIError } from '../../types/openai-types';
 
 /**
  * OpenAI-compatible error response

@@ -1,4 +1,4 @@
-import type { ModelInfo } from '../types.js';
+import type { ModelInfo } from '../types';
 import { OPENAI_MODELS } from './openai';
 import { ANTHROPIC_MODELS } from './anthropic';
 import { GOOGLE_MODELS } from './google';

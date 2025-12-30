@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { tool, toolToSchema } from '../tool.js';
+import { tool, toolToSchema } from '../tool';
 
 describe('tool()', () => {
   it('creates a tool with required properties', () => {

@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import chalk from 'chalk';
-import { log, printBanner } from '../utils/logger.js';
+import { log, printBanner } from '../utils/logger';
 import { Cogitator, Agent } from '@cogitator/core';
 import { loadConfig } from '@cogitator/config';
 

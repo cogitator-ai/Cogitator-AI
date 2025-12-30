@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { SandboxManager } from '../sandbox-manager.js';
+import { SandboxManager } from '../sandbox-manager';
 import type {
   SandboxConfig,
   SandboxExecutionRequest,

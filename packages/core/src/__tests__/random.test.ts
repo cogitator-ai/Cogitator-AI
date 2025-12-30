@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { randomNumber, randomString } from '../tools/random.js';
+import { randomNumber, randomString } from '../tools/random';
 
 const mockContext = {
   agentId: 'agent_test',

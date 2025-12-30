@@ -11,7 +11,7 @@ import type {
   SwarmAgent,
 } from '@cogitator/types';
 import { BaseStrategy } from './base';
-import type { SwarmCoordinator } from '../coordinator.js';
+import type { SwarmCoordinator } from '../coordinator';
 
 interface Vote {
   agentName: string;

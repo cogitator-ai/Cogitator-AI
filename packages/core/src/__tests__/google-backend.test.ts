@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { GoogleBackend } from '../llm/google.js';
+import { GoogleBackend } from '../llm/google';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);

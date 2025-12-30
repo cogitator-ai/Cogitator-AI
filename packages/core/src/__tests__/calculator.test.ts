@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculator } from '../tools/calculator.js';
+import { calculator } from '../tools/calculator';
 
 const mockContext = {
   agentId: 'agent_test',

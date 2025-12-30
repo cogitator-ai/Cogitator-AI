@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NativeSandboxExecutor } from '../executors/native.js';
+import { NativeSandboxExecutor } from '../executors/native';
 import type {
   SandboxConfig,
   SandboxExecutionRequest,

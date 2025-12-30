@@ -15,7 +15,7 @@ import {
   cronTrigger,
   webhookTrigger,
   eventTrigger,
-} from '../triggers/index.js';
+} from '../triggers/index';
 import type { CronTriggerConfig, WebhookTriggerConfig, TriggerContext } from '@cogitator/types';
 
 describe('Triggers', () => {

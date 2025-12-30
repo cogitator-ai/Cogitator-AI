@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { InMemoryBlackboard } from '../communication/blackboard.js';
+import { InMemoryBlackboard } from '../communication/blackboard';
 
 describe('InMemoryBlackboard', () => {
   let blackboard: InMemoryBlackboard;

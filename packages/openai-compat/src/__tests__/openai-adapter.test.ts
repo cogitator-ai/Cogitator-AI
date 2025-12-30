@@ -3,8 +3,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { OpenAIAdapter } from '../client/openai-adapter.js';
-import { ThreadManager } from '../client/thread-manager.js';
+import { OpenAIAdapter } from '../client/openai-adapter';
+import { ThreadManager } from '../client/thread-manager';
 
 const mockCogitator = {
   run: vi.fn(),

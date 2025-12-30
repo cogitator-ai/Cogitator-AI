@@ -4,7 +4,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { tool } from '../tool.js';
+import { tool } from '../tool';
 
 const uuidParams = z.object({
   count: z

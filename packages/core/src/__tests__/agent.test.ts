@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import type { Tool } from '@cogitator/types';
-import { Agent } from '../agent.js';
-import { tool } from '../tool.js';
+import { Agent } from '../agent';
+import { tool } from '../tool';
 
 describe('Agent', () => {
   const createBasicConfig = () => ({

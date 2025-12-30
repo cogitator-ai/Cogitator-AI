@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { SwarmEventEmitterImpl } from '../communication/event-emitter.js';
+import { SwarmEventEmitterImpl } from '../communication/event-emitter';
 
 describe('SwarmEventEmitterImpl', () => {
   let emitter: SwarmEventEmitterImpl;

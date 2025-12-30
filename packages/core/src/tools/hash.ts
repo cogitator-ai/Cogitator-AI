@@ -4,7 +4,7 @@
 
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { tool } from '../tool.js';
+import { tool } from '../tool';
 
 const hashParams = z.object({
   data: z.string().describe('The string to hash'),

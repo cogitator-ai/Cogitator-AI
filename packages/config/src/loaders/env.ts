@@ -2,7 +2,7 @@
  * Environment variable configuration loader
  */
 
-import type { CogitatorConfigInput } from '../schema.js';
+import type { CogitatorConfigInput } from '../schema';
 
 const ENV_PREFIX = 'COGITATOR_';
 

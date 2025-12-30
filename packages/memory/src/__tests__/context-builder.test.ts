@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { ContextBuilder } from '../context-builder.js';
-import { InMemoryAdapter } from '../adapters/memory.js';
+import { ContextBuilder } from '../context-builder';
+import { InMemoryAdapter } from '../adapters/memory';
 import type { Message } from '@cogitator/types';
 
 describe('ContextBuilder', () => {

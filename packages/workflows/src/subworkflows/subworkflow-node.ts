@@ -17,7 +17,7 @@ import type {
   CheckpointStore,
 } from '@cogitator/types';
 import type { Cogitator } from '@cogitator/core';
-import { WorkflowExecutor } from '../executor.js';
+import { WorkflowExecutor } from '../executor';
 
 /**
  * Error handling strategy for subworkflows

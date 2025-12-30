@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { exec } from '../tools/exec.js';
+import { exec } from '../tools/exec';
 
 const mockContext = {
   agentId: 'agent_test',

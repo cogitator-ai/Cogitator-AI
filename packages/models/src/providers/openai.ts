@@ -1,4 +1,4 @@
-import type { ModelInfo } from '../types.js';
+import type { ModelInfo } from '../types';
 
 export const OPENAI_MODELS: ModelInfo[] = [
   {

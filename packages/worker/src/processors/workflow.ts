@@ -4,7 +4,7 @@
  * Recreates a Workflow from serialized config and executes it.
  */
 
-import type { WorkflowJobPayload, WorkflowJobResult } from '../types.js';
+import type { WorkflowJobPayload, WorkflowJobResult } from '../types';
 
 /**
  * Process a workflow job

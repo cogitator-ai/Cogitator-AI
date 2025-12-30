@@ -12,7 +12,7 @@ import type {
   StrategyResult,
 } from '@cogitator/types';
 import type { Cogitator } from '@cogitator/core';
-import { Swarm } from '../swarm.js';
+import { Swarm } from '../swarm';
 
 /**
  * Extended context with Cogitator for swarm nodes

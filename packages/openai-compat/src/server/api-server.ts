@@ -8,7 +8,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyCors from '@fastify/cors';
 import type { Cogitator } from '@cogitator/core';
 import type { Tool } from '@cogitator/types';
-import { OpenAIAdapter } from '../client/openai-adapter.js';
+import { OpenAIAdapter } from '../client/openai-adapter';
 import { createAuthMiddleware, type AuthConfig } from './middleware/auth';
 import { errorHandler, notFoundHandler } from './middleware/error-handler';
 import { registerAssistantRoutes } from './routes/assistants';

@@ -10,7 +10,7 @@ import type {
   Message,
   CreateMessageRequest,
   MessageContent,
-} from '../types/openai-types.js';
+} from '../types/openai-types';
 
 export interface StoredThread {
   thread: Thread;

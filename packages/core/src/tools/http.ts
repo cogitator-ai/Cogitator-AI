@@ -3,7 +3,7 @@
  */
 
 import { z } from 'zod';
-import { tool } from '../tool.js';
+import { tool } from '../tool';
 
 const httpRequestParams = z.object({
   url: z.string().url().describe('The URL to request'),

@@ -11,7 +11,7 @@ import type {
   RunResult,
 } from '@cogitator/types';
 import { BaseStrategy } from './base';
-import type { SwarmCoordinator } from '../coordinator.js';
+import type { SwarmCoordinator } from '../coordinator';
 
 export class PipelineStrategy extends BaseStrategy {
   private config: PipelineConfig;

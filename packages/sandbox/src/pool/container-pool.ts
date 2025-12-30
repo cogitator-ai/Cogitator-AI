@@ -3,7 +3,7 @@
  */
 
 import type { SandboxMount } from '@cogitator/types';
-import type { Docker, DockerContainer } from '../docker-types.js';
+import type { Docker, DockerContainer } from '../docker-types';
 
 interface PooledContainer {
   container: DockerContainer;

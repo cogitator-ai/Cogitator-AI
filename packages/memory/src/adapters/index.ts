@@ -26,12 +26,12 @@ export async function createMemoryAdapter(
       return new InMemoryAdapter(config);
 
     case 'redis': {
-      const { RedisAdapter } = await import('./redis.js');
+      const { RedisAdapter } = await import('./redis');
       return new RedisAdapter(config);
     }
 
     case 'postgres': {
-      const { PostgresAdapter } = await import('./postgres.js');
+      const { PostgresAdapter } = await import('./postgres');
       return new PostgresAdapter(config);
     }
 

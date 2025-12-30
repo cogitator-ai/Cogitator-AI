@@ -16,8 +16,8 @@ import type {
   MCPPrompt,
   MCPPromptMessage,
   MCPToolDefinition,
-} from '../types.js';
-import { mcpToCogitator } from '../adapter/tool-adapter.js';
+} from '../types';
+import { mcpToCogitator } from '../adapter/tool-adapter';
 
 /**
  * MCP Client for connecting to external MCP servers

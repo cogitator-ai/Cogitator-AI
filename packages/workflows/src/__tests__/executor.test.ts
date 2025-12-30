@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { WorkflowExecutor } from '../executor.js';
-import { WorkflowBuilder } from '../builder.js';
-import { InMemoryCheckpointStore } from '../checkpoint.js';
+import { WorkflowExecutor } from '../executor';
+import { WorkflowBuilder } from '../builder';
+import { InMemoryCheckpointStore } from '../checkpoint';
 import type { Cogitator } from '@cogitator/core';
 
 interface TestState {

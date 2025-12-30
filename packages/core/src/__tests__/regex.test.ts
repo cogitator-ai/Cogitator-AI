@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { regexMatch, regexReplace } from '../tools/regex.js';
+import { regexMatch, regexReplace } from '../tools/regex';
 
 const mockContext = {
   agentId: 'agent_test',

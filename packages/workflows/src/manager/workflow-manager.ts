@@ -25,7 +25,7 @@ import type {
   CheckpointStore,
 } from '@cogitator/types';
 import type { Cogitator } from '@cogitator/core';
-import { WorkflowExecutor } from '../executor.js';
+import { WorkflowExecutor } from '../executor';
 import { type JobScheduler, createJobScheduler } from './scheduler';
 import { InMemoryRunStore } from './run-store';
 

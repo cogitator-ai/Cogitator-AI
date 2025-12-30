@@ -13,7 +13,7 @@ import type {
   PipelineConfig,
   DebateConfig,
 } from '@cogitator/types';
-import type { SwarmCoordinator } from '../coordinator.js';
+import type { SwarmCoordinator } from '../coordinator';
 
 export { BaseStrategy } from './base';
 export { HierarchicalStrategy } from './hierarchical';

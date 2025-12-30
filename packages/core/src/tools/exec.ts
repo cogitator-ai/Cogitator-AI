@@ -5,7 +5,7 @@
 import { exec as execCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
-import { tool } from '../tool.js';
+import { tool } from '../tool';
 
 const execPromise = promisify(execCallback);
 

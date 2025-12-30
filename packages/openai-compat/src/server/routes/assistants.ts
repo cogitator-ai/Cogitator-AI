@@ -5,13 +5,13 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import type { OpenAIAdapter } from '../../client/openai-adapter.js';
+import type { OpenAIAdapter } from '../../client/openai-adapter';
 import type {
   CreateAssistantRequest,
   UpdateAssistantRequest,
   ListResponse,
   Assistant,
-} from '../../types/openai-types.js';
+} from '../../types/openai-types';
 
 export function registerAssistantRoutes(
   fastify: FastifyInstance,

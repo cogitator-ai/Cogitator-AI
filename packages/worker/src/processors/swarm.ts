@@ -8,7 +8,7 @@ import { Cogitator, Agent, tool } from '@cogitator/core';
 import { Swarm } from '@cogitator/swarms';
 import { z } from 'zod';
 import type { Tool, ToolSchema, SwarmStrategy, SwarmConfig } from '@cogitator/types';
-import type { SwarmJobPayload, SwarmJobResult, SerializedAgent } from '../types.js';
+import type { SwarmJobPayload, SwarmJobResult, SerializedAgent } from '../types';
 
 /**
  * Convert JSON Schema to permissive Zod schema

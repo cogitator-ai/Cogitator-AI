@@ -7,8 +7,8 @@ import {
   createJobScheduler,
   type DefaultWorkflowManager,
   createWorkflowManager,
-} from '../manager/index.js';
-import { WorkflowBuilder } from '../builder.js';
+} from '../manager/index';
+import { WorkflowBuilder } from '../builder';
 import type { Cogitator } from '@cogitator/core';
 import type { WorkflowRun } from '@cogitator/types';
 
