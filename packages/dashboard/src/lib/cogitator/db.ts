@@ -949,6 +949,123 @@ export async function deleteSwarm(id: string): Promise<boolean> {
 }
 
 // ============================================================================
+// Swarm Runs
+// ============================================================================
+
+export interface SwarmRunData {
+  id: string;
+  swarmId: string;
+  input: string;
+  output?: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  error?: string;
+  duration?: number;
+  tokensUsed?: number;
+  startedAt: string;
+  completedAt?: string;
+}
+
+interface SwarmRunRow {
+  id: string;
+  swarm_id: string;
+  input: string;
+  output: string | null;
+  status: string;
+  error: string | null;
+  duration: number | null;
+  total_tokens: string | null;
+  started_at: Date;
+  completed_at: Date | null;
+}
+
+function rowToSwarmRun(row: SwarmRunRow): SwarmRunData {
+  return {
+    id: row.id,
+    swarmId: row.swarm_id,
+    input: row.input,
+    output: row.output || undefined,
+    status: row.status as SwarmRunData['status'],
+    error: row.error || undefined,
+    duration: row.duration || undefined,
+    tokensUsed: row.total_tokens ? parseInt(row.total_tokens) : undefined,
+    startedAt: row.started_at.toISOString(),
+    completedAt: row.completed_at?.toISOString(),
+  };
+}
+
+export async function createSwarmRun(data: {
+  swarmId: string;
+  input: string;
+  status?: 'pending' | 'running' | 'completed' | 'failed';
+}): Promise<SwarmRunData> {
+  const id = `swarm_run_${nanoid(12)}`;
+  const row = await queryOne<SwarmRunRow>(
+    `INSERT INTO cogitator_swarm_runs (id, swarm_id, input, status, started_at)
+     VALUES ($1, $2, $3, $4, NOW())
+     RETURNING *`,
+    [id, data.swarmId, data.input, data.status || 'pending']
+  );
+  return rowToSwarmRun(row!);
+}
+
+export async function updateSwarmRun(
+  id: string,
+  data: Partial<{
+    output: string;
+    status: 'pending' | 'running' | 'completed' | 'failed';
+    error: string;
+    duration: number;
+    tokensUsed: number;
+  }>
+): Promise<SwarmRunData | null> {
+  const updates: string[] = [];
+  const values: unknown[] = [];
+  let paramIndex = 1;
+
+  if (data.output !== undefined) {
+    updates.push(`output = $${paramIndex++}`);
+    values.push(data.output);
+  }
+  if (data.status !== undefined) {
+    updates.push(`status = $${paramIndex++}`);
+    values.push(data.status);
+    if (data.status === 'completed' || data.status === 'failed') {
+      updates.push(`completed_at = NOW()`);
+    }
+  }
+  if (data.error !== undefined) {
+    updates.push(`error = $${paramIndex++}`);
+    values.push(data.error);
+  }
+  if (data.duration !== undefined) {
+    updates.push(`duration = $${paramIndex++}`);
+    values.push(data.duration);
+  }
+  if (data.tokensUsed !== undefined) {
+    updates.push(`total_tokens = $${paramIndex++}`);
+    values.push(data.tokensUsed);
+  }
+
+  if (updates.length === 0) return null;
+
+  values.push(id);
+  const row = await queryOne<SwarmRunRow>(
+    `UPDATE cogitator_swarm_runs SET ${updates.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
+    values
+  );
+
+  // Update swarm last_run_at and increment total_runs if completed
+  if (row && data.status === 'completed') {
+    await execute(
+      `UPDATE cogitator_swarms SET last_run_at = NOW(), total_runs = total_runs + 1 WHERE id = $1`,
+      [row.swarm_id]
+    );
+  }
+
+  return row ? rowToSwarmRun(row) : null;
+}
+
+// ============================================================================
 // Analytics Queries
 // ============================================================================
 

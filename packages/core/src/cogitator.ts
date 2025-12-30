@@ -229,7 +229,9 @@ export class Cogitator {
 
     // Register agent's tools
     const registry = new ToolRegistry();
-    registry.registerMany(agent.tools);
+    if (agent.tools && agent.tools.length > 0) {
+      registry.registerMany(agent.tools);
+    }
 
     // Get LLM backend
     const backend = this.getBackend(agent.model);
@@ -255,7 +257,7 @@ export class Cogitator {
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
     let iterations = 0;
-    const maxIterations = agent.config.maxIterations ?? 10;
+    const maxIterations = agent.config?.maxIterations ?? 10;
 
     // Main agent loop
     while (iterations < maxIterations) {
