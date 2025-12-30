@@ -42,7 +42,7 @@ export function ActiveAgents() {
     }
 
     fetchAgents();
-    const interval = setInterval(fetchAgents, 15000); // Refresh every 15s
+    const interval = setInterval(fetchAgents, 15000);
     return () => clearInterval(interval);
   }, []);
 

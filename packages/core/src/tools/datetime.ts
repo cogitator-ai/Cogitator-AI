@@ -54,7 +54,6 @@ function formatDate(date: Date, format: DatetimeParams['format'], timezone?: str
     case 'iso':
     default:
       if (timezone) {
-        // Create formatter for the target timezone
         const formatter = new Intl.DateTimeFormat('en-CA', {
           timeZone: timezone,
           year: 'numeric',
@@ -78,12 +77,10 @@ export const datetime = tool({
   description:
     'Get the current date and time. Supports different timezones and output formats (ISO 8601, Unix timestamp, readable, date only, time only).',
   parameters: datetimeParams,
-  // eslint-disable-next-line @typescript-eslint/require-await
   execute: async ({ timezone, format }) => {
     try {
       const now = new Date();
 
-      // Validate timezone if provided
       if (timezone) {
         try {
           Intl.DateTimeFormat(undefined, { timeZone: timezone });

@@ -172,11 +172,9 @@ export class PriorityQueue {
   }
 
   private compare(a: QueueItem, b: QueueItem): number {
-    // First compare by scheduledFor (earlier first)
     if (a.scheduledFor !== b.scheduledFor) {
       return a.scheduledFor - b.scheduledFor;
     }
-    // Then by priority (higher priority = lower number = first)
     return a.priority - b.priority;
   }
 }
@@ -226,7 +224,6 @@ export class JobScheduler {
       this.tick();
     }, this.pollInterval);
 
-    // Initial tick
     this.tick();
   }
 
@@ -250,7 +247,6 @@ export class JobScheduler {
     const runId = nanoid();
     const now = Date.now();
 
-    // Determine scheduled time
     let scheduledFor = now;
     if (options.at) {
       scheduledFor = options.at;
@@ -262,7 +258,6 @@ export class JobScheduler {
       }).getTime();
     }
 
-    // Create run record
     const run: WorkflowRun = {
       id: runId,
       workflowName: workflow.name,
@@ -286,7 +281,6 @@ export class JobScheduler {
 
     await this.runStore.save(run);
 
-    // Add to priority queue
     this.queue.enqueue({
       runId,
       workflowName: workflow.name,
@@ -349,7 +343,6 @@ export class JobScheduler {
 
     job.enabled = enabled;
     if (enabled) {
-      // Recalculate next run
       job.nextRun = getNextCronOccurrence(job.expression, {
         currentDate: new Date(),
         timezone: job.timezone,
@@ -431,34 +424,28 @@ export class JobScheduler {
 
     const now = Date.now();
 
-    // Process cron jobs
     for (const job of this.cronJobs.values()) {
       if (!job.enabled) continue;
 
       if (job.nextRun <= now) {
-        // Schedule run
         this.scheduleRun(job.workflow, {
           ...job.options,
           triggerId: `cron:${job.id}`,
         });
 
-        // Calculate next run
         job.nextRun = getNextCronOccurrence(job.expression, {
-          currentDate: new Date(now + 1000), // Add 1 second to avoid immediate re-trigger
+          currentDate: new Date(now + 1000),
           timezone: job.timezone,
         }).getTime();
       }
     }
 
-    // Check concurrency
     if (this.runningCount >= this.maxConcurrency) return;
 
-    // Get ready runs
     const ready = this.queue.getReady(now);
 
     for (const item of ready) {
       if (this.runningCount >= this.maxConcurrency) {
-        // Put back if at capacity
         this.queue.enqueue(item);
         break;
       }

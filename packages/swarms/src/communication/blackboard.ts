@@ -18,7 +18,6 @@ export class InMemoryBlackboard implements Blackboard {
   constructor(config: BlackboardConfig) {
     this.config = config;
 
-    // Initialize sections from config
     for (const [name, initialData] of Object.entries(config.sections)) {
       this.sections.set(name, {
         name,
@@ -68,7 +67,6 @@ export class InMemoryBlackboard implements Blackboard {
 
     this.sections.set(section, newSection as BlackboardSection);
 
-    // Track history
     if (this.config.trackHistory) {
       if (!this.history.has(section)) {
         this.history.set(section, []);
@@ -81,7 +79,6 @@ export class InMemoryBlackboard implements Blackboard {
       });
     }
 
-    // Notify subscribers
     this.notifySubscribers(section, data, agentName);
   }
 
@@ -89,7 +86,6 @@ export class InMemoryBlackboard implements Blackboard {
     const current = this.sections.get(section);
 
     if (!current) {
-      // Create new section with array
       this.write(section, [item], agentName);
       return;
     }
@@ -156,7 +152,6 @@ export class InMemoryBlackboard implements Blackboard {
         try {
           handler(data, agentName);
         } catch {
-          // Ignore handler errors
         }
       }
     }

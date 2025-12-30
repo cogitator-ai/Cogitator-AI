@@ -12,14 +12,12 @@
  * - Audit trail via checkpoint store
  */
 
-// Approval stores
 export {
   InMemoryApprovalStore,
   FileApprovalStore,
   withDelegation,
 } from './approval-store.js';
 
-// Notifiers
 export {
   ConsoleNotifier,
   WebhookNotifier,
@@ -30,7 +28,6 @@ export {
   nullNotifier,
 } from './notifiers.js';
 
-// Human node
 export {
   type HumanNodeContext,
   type HumanNodeResult,

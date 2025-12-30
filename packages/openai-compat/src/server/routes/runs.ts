@@ -15,7 +15,6 @@ export function registerRunRoutes(
   fastify: FastifyInstance,
   adapter: OpenAIAdapter
 ) {
-  // Create run
   fastify.post<{ Params: { thread_id: string }; Body: CreateRunRequest }>(
     '/v1/threads/:thread_id/runs',
     async (request, reply) => {
@@ -37,7 +36,6 @@ export function registerRunRoutes(
           request.body
         );
 
-        // If streaming is requested, set up SSE
         if (request.body.stream) {
           return handleStreamingRun(reply, adapter, request.params.thread_id, run.id);
         }
@@ -55,16 +53,13 @@ export function registerRunRoutes(
     }
   );
 
-  // Create thread and run
   fastify.post<{
     Body: CreateRunRequest & { thread?: { messages?: Array<{ role: 'user' | 'assistant'; content: string }> } };
   }>(
     '/v1/threads/runs',
     async (request, reply) => {
-      // Create thread
       const thread = adapter.createThread();
 
-      // Add initial messages if provided
       if (request.body.thread?.messages) {
         for (const msg of request.body.thread.messages) {
           adapter.addMessage(thread.id, msg);
@@ -91,7 +86,6 @@ export function registerRunRoutes(
     }
   );
 
-  // Get run
   fastify.get<{ Params: { thread_id: string; run_id: string } }>(
     '/v1/threads/:thread_id/runs/:run_id',
     async (request, reply) => {
@@ -114,7 +108,6 @@ export function registerRunRoutes(
     }
   );
 
-  // Cancel run
   fastify.post<{ Params: { thread_id: string; run_id: string } }>(
     '/v1/threads/:thread_id/runs/:run_id/cancel',
     async (request, reply) => {
@@ -137,7 +130,6 @@ export function registerRunRoutes(
     }
   );
 
-  // Submit tool outputs
   fastify.post<{
     Params: { thread_id: string; run_id: string };
     Body: SubmitToolOutputsRequest;
@@ -197,24 +189,20 @@ async function handleStreamingRun(
     reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
-  // Poll for run status and send updates
   let lastStatus = '';
-  const maxIterations = 300; // 5 minutes at 1 second intervals
+  const maxIterations = 300;
   let iterations = 0;
 
   while (iterations < maxIterations) {
     const run = adapter.getRun(threadId, runId);
     if (!run) break;
 
-    // Send status update if changed
     if (run.status !== lastStatus) {
       lastStatus = run.status;
       sendEvent(`thread.run.${run.status}`, run);
     }
 
-    // Check terminal states
     if (['completed', 'failed', 'cancelled', 'expired', 'incomplete'].includes(run.status)) {
-      // Send final message if completed
       if (run.status === 'completed') {
         const messages = adapter.listMessages(threadId, { run_id: runId, limit: 1 });
         if (messages.length > 0) {
@@ -224,7 +212,6 @@ async function handleStreamingRun(
       break;
     }
 
-    // Wait before next poll
     await new Promise((resolve) => setTimeout(resolve, 1000));
     iterations++;
   }

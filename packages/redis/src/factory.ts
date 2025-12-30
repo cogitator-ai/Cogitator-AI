@@ -7,8 +7,6 @@
 import type { RedisConfig, RedisClient, RedisClusterConfig, RedisStandaloneConfig } from './types.js';
 import { isClusterConfig } from './types.js';
 
-// Internal interface for raw ioredis client methods
-// Using `any` for event callbacks to match ioredis's flexible event system
 interface RawRedisClient {
   ping(): Promise<string>;
   quit(): Promise<string>;
@@ -27,9 +25,7 @@ interface RawRedisClient {
   subscribe(channel: string): Promise<void>;
   unsubscribe(channel: string): Promise<void>;
   keys(pattern: string): Promise<string[]>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: string, callback: (...args: any[]) => void): void;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   off(event: string, callback: (...args: any[]) => void): void;
   duplicate(): RawRedisClient;
   info(section?: string): Promise<string>;
@@ -60,7 +56,6 @@ interface RawRedisClient {
  * ```
  */
 export async function createRedisClient(config: RedisConfig): Promise<RedisClient> {
-  // Dynamic import with ESM/CJS interop handling
   const ioredisModule = await import('ioredis');
   const ioredis = (ioredisModule.default ?? ioredisModule) as unknown as {
     new (url: string, options?: Record<string, unknown>): RawRedisClient;
@@ -77,7 +72,6 @@ export async function createRedisClient(config: RedisConfig): Promise<RedisClien
   return createStandaloneClient(ioredis, config);
 }
 
-// Type for the ioredis module after ESM/CJS normalization
 interface IoRedis {
   new (url: string, options?: Record<string, unknown>): RawRedisClient;
   Cluster: new (

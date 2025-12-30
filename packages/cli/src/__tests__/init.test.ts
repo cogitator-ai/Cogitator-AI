@@ -53,13 +53,11 @@ describe('cogitator init', () => {
   });
 
   it('fails if directory already exists', () => {
-    // Create first
     execSync(`node ${CLI_PATH} init ${projectName} --no-install`, {
       cwd: testDir,
       stdio: 'pipe',
     });
 
-    // Try to create again
     expect(() => {
       execSync(`node ${CLI_PATH} init ${projectName} --no-install`, {
         cwd: testDir,

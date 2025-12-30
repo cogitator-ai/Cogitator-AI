@@ -91,7 +91,6 @@ describe('ContextBuilder', () => {
     });
 
     it('truncates oldest messages when exceeding limit', async () => {
-      // Add 5 messages with 10 tokens each
       for (let i = 0; i < 5; i++) {
         await adapter.addEntry({
           threadId,
@@ -101,7 +100,7 @@ describe('ContextBuilder', () => {
       }
 
       const builder = new ContextBuilder(
-        { maxTokens: 35, reserveTokens: 5, strategy: 'recent' }, // 30 available, fits 3 messages
+        { maxTokens: 35, reserveTokens: 5, strategy: 'recent' },
         { memoryAdapter: adapter }
       );
 
@@ -121,13 +120,13 @@ describe('ContextBuilder', () => {
       });
 
       const builder = new ContextBuilder(
-        { maxTokens: 100, reserveTokens: 60, strategy: 'recent' }, // Only 40 available
+        { maxTokens: 100, reserveTokens: 60, strategy: 'recent' },
         { memoryAdapter: adapter }
       );
 
       const result = await builder.build({ threadId, agentId: 'agent1' });
 
-      expect(result.messages).toHaveLength(0); // 50 > 40, can't fit
+      expect(result.messages).toHaveLength(0);
       expect(result.truncated).toBe(true);
     });
   });
@@ -184,7 +183,7 @@ describe('ContextBuilder', () => {
       const result = await builder.build({
         threadId,
         agentId: 'agent1',
-        systemPrompt: 'Be helpful.', // ~8 tokens (2 + 4 overhead + buffer)
+        systemPrompt: 'Be helpful.',
       });
 
       expect(result.tokenCount).toBeGreaterThan(0);

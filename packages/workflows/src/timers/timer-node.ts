@@ -39,7 +39,7 @@ export interface TimerNodeConfig<S> {
  */
 export interface FixedDelayConfig<S> extends TimerNodeConfig<S> {
   type: 'fixed';
-  delay: number; // milliseconds
+  delay: number;
 }
 
 /**
@@ -47,7 +47,7 @@ export interface FixedDelayConfig<S> extends TimerNodeConfig<S> {
  */
 export interface DynamicDelayConfig<S> extends TimerNodeConfig<S> {
   type: 'dynamic';
-  getDelay: (state: S) => number; // returns milliseconds
+  getDelay: (state: S) => number;
 }
 
 /**
@@ -57,7 +57,7 @@ export interface CronWaitConfig<S> extends TimerNodeConfig<S> {
   type: 'cron';
   expression: string;
   timezone?: string;
-  waitForNext?: boolean; // If true, waits for next occurrence even if current time matches
+  waitForNext?: boolean;
 }
 
 /**
@@ -65,8 +65,8 @@ export interface CronWaitConfig<S> extends TimerNodeConfig<S> {
  */
 export interface UntilDateConfig<S> extends TimerNodeConfig<S> {
   type: 'until';
-  getDate: (state: S) => Date | number; // returns target date or timestamp
-  skipIfPast?: boolean; // If true, skip delay if date is in the past
+  getDate: (state: S) => Date | number;
+  skipIfPast?: boolean;
 }
 
 /**
@@ -220,7 +220,6 @@ export async function executeTimerNode<S>(
 
   let timerId: string | undefined;
 
-  // Schedule in timer store if persistence is enabled
   if (config.persist && context.timerStore) {
     timerId = await context.timerStore.schedule({
       workflowId: context.workflowId,
@@ -239,7 +238,6 @@ export async function executeTimerNode<S>(
     timerId = `timer_${Date.now()}_${Math.random().toString(36).slice(2)}`;
   }
 
-  // Wait for the delay
   const startWait = Date.now();
   let cancelled = false;
 
@@ -249,7 +247,6 @@ export async function executeTimerNode<S>(
     if (error instanceof AbortError) {
       cancelled = true;
 
-      // Mark as cancelled in store
       if (config.persist && context.timerStore && timerId) {
         await context.timerStore.cancel(timerId);
         const entry = await context.timerStore.get(timerId);
@@ -264,7 +261,6 @@ export async function executeTimerNode<S>(
 
   const waited = Date.now() - startWait;
 
-  // Mark as fired in store
   if (!cancelled && config.persist && context.timerStore && timerId) {
     await context.timerStore.markFired(timerId);
     const entry = await context.timerStore.get(timerId);

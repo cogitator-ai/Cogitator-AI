@@ -116,7 +116,6 @@ export function validateCronExpression(expression: string): {
   error?: string;
   normalized?: string;
 } {
-  // Handle presets
   const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
 
   try {
@@ -140,7 +139,6 @@ export function parseCronExpression(
   const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
   const parts = normalized.trim().split(/\s+/);
 
-  // Determine if expression has seconds field (6 parts)
   const hasSeconds = parts.length === 6;
 
   const options: CronIteratorOptions = {};
@@ -226,7 +224,6 @@ export function getNextCronOccurrences(
     try {
       occurrences.push(interval.next().toDate());
     } catch {
-      // No more occurrences within range
       break;
     }
   }
@@ -244,7 +241,6 @@ export function cronMatchesDate(
 ): boolean {
   const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
 
-  // Get the date adjusted for timezone if needed
   let checkDate = date;
   if (timezone) {
     const formatter = new Intl.DateTimeFormat('en-US', {
@@ -273,7 +269,6 @@ export function cronMatchesDate(
 
   const parsed = parseCronExpression(normalized, timezone);
 
-  // Check each field
   const minute = checkDate.getMinutes();
   const hour = checkDate.getHours();
   const dayOfMonth = checkDate.getDate();
@@ -284,13 +279,10 @@ export function cronMatchesDate(
   if (!parsed.fields.hour.includes(hour)) return false;
   if (!parsed.fields.month.includes(month)) return false;
 
-  // Day matching is special: either dayOfMonth OR dayOfWeek must match
-  // unless both are explicitly specified (not *)
   const dayOfMonthSpecified = parsed.fields.dayOfMonth.length < 31;
   const dayOfWeekSpecified = parsed.fields.dayOfWeek.length < 8;
 
   if (dayOfMonthSpecified && dayOfWeekSpecified) {
-    // Both specified: either must match
     if (
       !parsed.fields.dayOfMonth.includes(dayOfMonth) &&
       !parsed.fields.dayOfWeek.includes(dayOfWeek)
@@ -303,7 +295,6 @@ export function cronMatchesDate(
     if (!parsed.fields.dayOfWeek.includes(dayOfWeek)) return false;
   }
 
-  // Check seconds if specified
   if (parsed.hasSeconds && parsed.fields.second) {
     const second = checkDate.getSeconds();
     if (!parsed.fields.second.includes(second)) return false;
@@ -331,7 +322,6 @@ export function describeCronExpression(expression: string): string {
   const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
   const parts = normalized.trim().split(/\s+/);
 
-  // Handle preset descriptions
   const presetDescriptions: Record<string, string> = {
     '0 0 1 1 *': 'At midnight on January 1st',
     '0 0 1 * *': 'At midnight on the first day of each month',
@@ -350,7 +340,6 @@ export function describeCronExpression(expression: string): string {
     return presetDescriptions[normalized];
   }
 
-  // Build description from parts
   const hasSeconds = parts.length === 6;
   const offset = hasSeconds ? 1 : 0;
 
@@ -362,7 +351,6 @@ export function describeCronExpression(expression: string): string {
 
   const descriptions: string[] = [];
 
-  // Time description
   if (minute === '*' && hour === '*') {
     descriptions.push('Every minute');
   } else if (minute.startsWith('*/')) {
@@ -385,7 +373,6 @@ export function describeCronExpression(expression: string): string {
     descriptions.push(`At ${hour}:${minute.padStart(2, '0')}`);
   }
 
-  // Day description
   if (dayOfMonth !== '*' || dayOfWeek !== '*') {
     if (dayOfWeek !== '*') {
       const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -420,7 +407,6 @@ export function describeCronExpression(expression: string): string {
     }
   }
 
-  // Month description
   if (month !== '*') {
     const monthNames = [
       '',
@@ -527,5 +513,4 @@ export function isValidTimezone(timezone: string): boolean {
   }
 }
 
-// Export field info for external use
 export { CRON_FIELDS };

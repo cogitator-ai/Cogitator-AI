@@ -55,7 +55,6 @@ export class FileCheckpointStore implements CheckpointStore {
     try {
       await fs.mkdir(this.directory, { recursive: true });
     } catch {
-      // Directory already exists
     }
   }
 
@@ -97,7 +96,6 @@ export class FileCheckpointStore implements CheckpointStore {
             checkpoints.push(checkpoint);
           }
         } catch {
-          // Skip invalid files
         }
       }
 
@@ -112,7 +110,6 @@ export class FileCheckpointStore implements CheckpointStore {
       const filePath = this.getFilePath(id);
       await fs.unlink(filePath);
     } catch {
-      // File doesn't exist
     }
   }
 }

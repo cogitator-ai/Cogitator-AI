@@ -18,7 +18,7 @@ export class ModelCache {
 
   constructor(options: Partial<CacheOptions> = {}) {
     this.options = {
-      ttl: options.ttl ?? 24 * 60 * 60 * 1000, // 24 hours
+      ttl: options.ttl ?? 24 * 60 * 60 * 1000,
       storage: options.storage ?? 'memory',
       filePath: options.filePath ?? DEFAULT_CACHE_PATH,
     };
@@ -62,7 +62,6 @@ export class ModelCache {
       try {
         await writeFile(this.options.filePath, '', 'utf-8');
       } catch {
-        // Ignore if file doesn't exist
       }
     }
   }

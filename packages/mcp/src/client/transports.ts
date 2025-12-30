@@ -42,11 +42,9 @@ export interface HttpTransportConfig {
  * ```
  */
 export function createStdioTransport(config: StdioTransportConfig): Transport {
-  // Merge environment variables, filtering out undefined values
   let env: Record<string, string> | undefined;
   if (config.env) {
     env = { ...config.env };
-    // Add existing process.env values that aren't overridden
     for (const [key, value] of Object.entries(process.env)) {
       if (value !== undefined && !(key in env)) {
         env[key] = value;

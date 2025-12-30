@@ -16,32 +16,26 @@ export {
   MetricsCollector,
 } from './metrics.js';
 
-// Processors
 export {
   processAgentJob,
   processWorkflowJob,
   processSwarmJob,
 } from './processors/index.js';
 
-// Types
 export type {
-  // Serialized configs
   SerializedAgent,
   SerializedWorkflow,
   SerializedWorkflowNode,
   SerializedWorkflowEdge,
   SerializedSwarm,
-  // Job payloads
   JobPayload,
   AgentJobPayload,
   WorkflowJobPayload,
   SwarmJobPayload,
-  // Job results
   JobResult,
   AgentJobResult,
   WorkflowJobResult,
   SwarmJobResult,
-  // Config
   QueueConfig,
   WorkerConfig,
   QueueMetrics,

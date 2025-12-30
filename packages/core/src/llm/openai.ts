@@ -90,18 +90,31 @@ export class OpenAIBackend extends BaseLLMBackend {
       max_tokens: request.maxTokens,
       stop: request.stop,
       stream: true,
+      stream_options: { include_usage: true },
     });
 
     const toolCallsAccum = new Map<number, Partial<ToolCall>>();
 
     for await (const chunk of stream) {
       const choice = chunk.choices[0];
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check
+
+      if (!choice && chunk.usage) {
+        yield {
+          id: chunk.id,
+          delta: {},
+          usage: {
+            inputTokens: chunk.usage.prompt_tokens,
+            outputTokens: chunk.usage.completion_tokens,
+            totalTokens: chunk.usage.total_tokens,
+          },
+        };
+        continue;
+      }
+
       if (!choice) continue;
 
       const delta = choice.delta;
 
-      // Accumulate tool calls
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
           const existing = toolCallsAccum.get(tc.index) ?? {};

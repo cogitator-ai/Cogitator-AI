@@ -27,19 +27,16 @@ export const Card = forwardRef<HTMLDivElement, CardProps>(
         className={cn(
           'rounded-xl transition-all duration-200',
           {
-            // Variants
             'bg-bg-secondary border border-border-subtle': variant === 'default',
             'bg-bg-elevated border border-border-default shadow-lg':
               variant === 'elevated',
             'bg-transparent border border-border-default': variant === 'outline',
             'bg-bg-secondary border border-border-subtle gradient-border':
               variant === 'gradient',
-            // Padding
             'p-0': padding === 'none',
             'p-3': padding === 'sm',
             'p-4': padding === 'md',
             'p-6': padding === 'lg',
-            // Hover
             'hover:border-border-strong hover:bg-bg-tertiary cursor-pointer':
               hover,
           },

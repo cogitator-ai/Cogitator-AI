@@ -28,7 +28,6 @@ export class HierarchicalStrategy extends BaseStrategy {
   async execute(options: SwarmRunOptions): Promise<StrategyResult> {
     const agentResults = new Map<string, RunResult>();
 
-    // Find supervisor
     const supervisors = this.coordinator.getAgents().filter(
       (a) => a.metadata.role === 'supervisor'
     );
@@ -37,19 +36,16 @@ export class HierarchicalStrategy extends BaseStrategy {
     }
     const supervisor = supervisors[0];
 
-    // Get workers
     const workers = this.coordinator.getAgents().filter(
       (a) => a.metadata.role === 'worker'
     );
 
-    // Build worker info for supervisor context
     const workerInfo = workers.map((w) => ({
       name: w.agent.name,
       description: w.agent.config.description ?? w.agent.config.instructions.slice(0, 200),
       expertise: w.metadata.expertise ?? [],
     }));
 
-    // Build supervisor context with delegation instructions
     const supervisorContext = {
       ...options.context,
       availableWorkers: workerInfo,
@@ -60,11 +56,9 @@ export class HierarchicalStrategy extends BaseStrategy {
       delegationInstructions: this.buildDelegationInstructions(workerInfo),
     };
 
-    // Initialize blackboard for task tracking
     this.coordinator.blackboard.write('tasks', [], 'system');
     this.coordinator.blackboard.write('workerResults', {}, 'system');
 
-    // Run supervisor - it will use delegate_task tool to assign work to workers
     const supervisorResult = await this.coordinator.runAgent(
       supervisor.agent.name,
       options.input,
@@ -72,15 +66,12 @@ export class HierarchicalStrategy extends BaseStrategy {
     );
     agentResults.set(supervisor.agent.name, supervisorResult);
 
-    // Collect any worker results that were triggered via delegation tools
     for (const worker of workers) {
       if (worker.lastResult) {
         agentResults.set(worker.agent.name, worker.lastResult);
       }
     }
 
-    // If supervisor didn't delegate, return supervisor's output directly
-    // Otherwise, the final output is the supervisor's synthesis of worker results
     return {
       output: supervisorResult.output,
       structured: supervisorResult.structured,

@@ -72,7 +72,7 @@ llm:
 memory:
   adapter: postgres
   postgres:
-    url: postgresql://cogitator:cogitator@localhost:5432/cogitator
+    url: postgresql:
 
 sandbox:
   enabled: false
@@ -218,8 +218,6 @@ export default function ConfigPage() {
 
       if (!envVar) return;
 
-      // In a real implementation, this would save to a secure store
-      // For now, we just show a message that env vars need to be set manually
       alert(
         `To configure ${provider}, set the ${envVar} environment variable.\n\nExample:\n${envVar}=${key.slice(0, 10)}...`
       );

@@ -41,7 +41,6 @@ export function useEvents(options: UseEventsOptions = {}) {
         setState((prev) => ({ ...prev, connected: false }));
         onDisconnect?.();
 
-        // Reconnect with exponential backoff
         if (reconnectAttemptsRef.current < 5) {
           const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
           reconnectAttemptsRef.current++;
@@ -63,7 +62,6 @@ export function useEvents(options: UseEventsOptions = {}) {
         }
       };
 
-      // Handle custom events
       eventSource.addEventListener('connected', (event) => {
         const data = JSON.parse((event as MessageEvent).data);
         const handlers = handlersRef.current.get('connected');
@@ -111,7 +109,7 @@ export function useEvents(options: UseEventsOptions = {}) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
-    reconnectAttemptsRef.current = 5; // Prevent auto-reconnect
+    reconnectAttemptsRef.current = 5;
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
     setState({ connected: false, error: null });

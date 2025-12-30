@@ -4,23 +4,18 @@
  * DAG-based workflow engine for Cogitator agents
  */
 
-// Builder
 export { WorkflowBuilder } from './builder.js';
 
-// Executor
 export { WorkflowExecutor } from './executor.js';
 
-// Scheduler
 export { WorkflowScheduler } from './scheduler.js';
 
-// Checkpoint stores
 export {
   InMemoryCheckpointStore,
   FileCheckpointStore,
   createCheckpointId,
 } from './checkpoint.js';
 
-// Pre-built nodes
 export {
   agentNode,
   toolNode,
@@ -46,7 +41,6 @@ export type {
   ExtendedNodeContext,
 } from './nodes/base.js';
 
-// Observability
 export {
   WorkflowTracer,
   createTracer,
@@ -69,31 +63,25 @@ export type {
   ExporterConfig,
 } from './observability/index.js';
 
-// Saga pattern (retry, circuit breaker, compensation, DLQ)
 export {
-  // Retry
   executeWithRetry,
   withRetry,
   Retryable,
   estimateRetryDuration,
-  // Circuit Breaker
   CircuitBreaker,
   createCircuitBreaker,
   CircuitBreakerOpenError,
   WithCircuitBreaker,
-  // Compensation
   CompensationManager,
   createCompensationManager,
   CompensationBuilder,
   compensationBuilder,
-  // Dead Letter Queue
   BaseDLQ,
   InMemoryDLQ,
   FileDLQ,
   createInMemoryDLQ,
   createFileDLQ,
   createDLQEntry,
-  // Idempotency
   BaseIdempotencyStore,
   InMemoryIdempotencyStore,
   FileIdempotencyStore,
@@ -121,14 +109,11 @@ export type {
   IdempotencyCheckResult,
 } from './saga/index.js';
 
-// Timer system (delay nodes, cron scheduling)
 export {
-  // Timer stores
   InMemoryTimerStore,
   FileTimerStore,
   createInMemoryTimerStore,
   createFileTimerStore,
-  // Cron parser
   CRON_PRESETS,
   CRON_FIELDS,
   validateCronExpression,
@@ -143,7 +128,6 @@ export {
   isValidCronExpression,
   getSupportedTimezones,
   isValidTimezone,
-  // Timer nodes
   delayNode,
   dynamicDelayNode,
   cronWaitNode,
@@ -155,7 +139,6 @@ export {
   Duration,
   parseDuration,
   formatDuration,
-  // Timer manager
   TimerManager,
   createTimerManager,
   RecurringTimerScheduler,
@@ -180,7 +163,6 @@ export type {
   TimerManagerStats,
 } from './timers/index.js';
 
-// Map-Reduce pattern
 export {
   executeMap,
   executeReduce,
@@ -211,7 +193,6 @@ export type {
   MapReduceNodeConfig,
 } from './patterns/index.js';
 
-// Subworkflows
 export {
   executeSubworkflow,
   subworkflowNode,
@@ -239,7 +220,6 @@ export type {
   ParallelSubworkflowsResult,
 } from './subworkflows/index.js';
 
-// Human-in-the-Loop
 export {
   InMemoryApprovalStore,
   FileApprovalStore,
@@ -266,7 +246,6 @@ export type {
   HumanNodeResult,
 } from './human/index.js';
 
-// Workflow Manager
 export {
   InMemoryRunStore,
   FileRunStore,
@@ -286,25 +265,20 @@ export type {
   WorkflowManagerConfig,
 } from './manager/index.js';
 
-// Triggers (cron, webhooks, events)
 export {
-  // Rate limiter
   TokenBucket,
   RateLimiter,
   SlidingWindowRateLimiter,
   createRateLimiter,
   createSlidingWindowLimiter,
-  // Cron trigger
   CronTriggerExecutor,
   createCronTrigger,
   validateCronTriggerConfig,
-  // Webhook trigger
   WebhookTriggerExecutor,
   WebhookAuthError,
   WebhookRateLimitError,
   createWebhookTrigger,
   validateWebhookTriggerConfig,
-  // Trigger manager
   InMemoryTriggerStore,
   SimpleTriggerEventEmitter,
   DefaultTriggerManager,
@@ -328,9 +302,7 @@ export type {
   TriggerManagerConfig,
 } from './triggers/index.js';
 
-// Re-export types from @cogitator/types for convenience
 export type {
-  // Core workflow types
   Workflow,
   WorkflowState,
   WorkflowNode,
@@ -352,7 +324,6 @@ export type {
   AddConditionalOptions,
   AddLoopOptions,
 
-  // Observability types
   TracingConfig,
   MetricsConfig,
   SpanExporter,
@@ -366,7 +337,6 @@ export type {
   TraceContext,
   Baggage,
 
-  // Saga pattern types
   RetryConfig,
   BackoffStrategy,
   CircuitBreakerConfig,
@@ -378,11 +348,9 @@ export type {
   IdempotencyRecord,
   IdempotencyStore,
 
-  // Timer types
   TimerEntry,
   TimerStore,
 
-  // Human-in-the-Loop types
   ApprovalType,
   ApprovalChoice,
   ApprovalRequest,
@@ -392,7 +360,6 @@ export type {
   ApprovalStore,
   ApprovalNotifier,
 
-  // Manager types
   ScheduleOptions,
   WorkflowRunStatus,
   WorkflowRun,
@@ -401,7 +368,6 @@ export type {
   WorkflowManager,
   RunStore,
 
-  // Trigger types
   CronTriggerConfig,
   WebhookAuthConfig,
   WebhookRateLimitConfig,

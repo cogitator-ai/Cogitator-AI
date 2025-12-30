@@ -6,7 +6,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { OpenAIAdapter } from '../client/openai-adapter.js';
 import { ThreadManager } from '../client/thread-manager.js';
 
-// Mock Cogitator
 const mockCogitator = {
   run: vi.fn(),
 } as any;
@@ -155,7 +154,6 @@ describe('OpenAIAdapter', () => {
 
       const messages = adapter.listMessages(threadId);
 
-      // Default is descending (newest first)
       expect(messages[0].content[0]).toMatchObject({ type: 'text' });
     });
 

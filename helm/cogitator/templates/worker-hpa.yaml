@@ -14,8 +14,6 @@ spec:
   minReplicas: {{ .Values.worker.autoscaling.minReplicas }}
   maxReplicas: {{ .Values.worker.autoscaling.maxReplicas }}
   metrics:
-    # Scale based on queue depth (external metric from Prometheus)
-    # Requires Prometheus Adapter or KEDA
     - type: External
       external:
         metric:

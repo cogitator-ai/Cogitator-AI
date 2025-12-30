@@ -29,7 +29,6 @@ export class PipelineStrategy extends BaseStrategy {
     const agentResults = new Map<string, RunResult>();
     const stageOutputs = new Map<string, unknown>();
 
-    // Initialize pipeline state on blackboard
     this.coordinator.blackboard.write('pipeline', {
       stages: this.config.stages.map(s => s.name),
       currentStage: 0,
@@ -49,7 +48,6 @@ export class PipelineStrategy extends BaseStrategy {
         total: this.config.stages.length,
       });
 
-      // Update blackboard
       const pipelineState = this.coordinator.blackboard.read<{
         completed: string[];
         failed: string[];
@@ -60,7 +58,6 @@ export class PipelineStrategy extends BaseStrategy {
         currentStageName: stage.name,
       }, 'system');
 
-      // Build context for stage
       const pipelineContext: PipelineContext = {
         input: options.input,
         stageIndex,
@@ -68,7 +65,6 @@ export class PipelineStrategy extends BaseStrategy {
         previousOutputs: stageOutputs,
       };
 
-      // Transform input if transformer is provided
       const stageInput = this.config.stageInput
         ? this.config.stageInput(currentInput, stage, pipelineContext)
         : this.buildDefaultStageInput(currentInput, stage, pipelineContext);
@@ -95,7 +91,6 @@ export class PipelineStrategy extends BaseStrategy {
       stageOutputs.set(stage.name, result.output);
       currentInput = result.output;
 
-      // Update completed stages
       const updatedState = this.coordinator.blackboard.read<{
         completed: string[];
         failed: string[];
@@ -103,7 +98,6 @@ export class PipelineStrategy extends BaseStrategy {
       updatedState.completed.push(stage.name);
       this.coordinator.blackboard.write('pipeline', updatedState, 'system');
 
-      // Check gate if this is a gate stage
       if (stage.gate) {
         const gateResult = await this.checkGate(
           stage,
@@ -118,7 +112,6 @@ export class PipelineStrategy extends BaseStrategy {
         }
 
         if (gateResult.action === 'retry-previous' && stageIndex > 0) {
-          // Mark current as failed, go back to previous
           const state = this.coordinator.blackboard.read<{
             completed: string[];
             failed: string[];
@@ -137,7 +130,6 @@ export class PipelineStrategy extends BaseStrategy {
           continue;
         }
 
-        // 'pass' or 'skip' - continue to next stage
       }
 
       this.coordinator.events.emit('pipeline:stage:complete', {
@@ -148,7 +140,6 @@ export class PipelineStrategy extends BaseStrategy {
       stageIndex++;
     }
 
-    // Final output is the last stage's output
     const lastStageName = this.config.stages[this.config.stages.length - 1].name;
     const finalOutput = stageOutputs.get(lastStageName) as string;
 
@@ -198,7 +189,6 @@ Ensure your output is well-structured and ready for the next stage to consume.
     const gateConfig = this.config.gates?.[stage.name];
 
     if (!gateConfig) {
-      // Default gate behavior - check for explicit failure indicators
       const output = String(result.output).toLowerCase();
       const hasError = output.includes('error') || output.includes('failed') || output.includes('cannot');
 
@@ -214,7 +204,6 @@ Ensure your output is well-structured and ready for the next stage to consume.
       return { action: 'pass' };
     }
 
-    // Run custom gate condition
     let passed: boolean;
     try {
       passed = gateConfig.condition(result.output);
@@ -232,7 +221,6 @@ Ensure your output is well-structured and ready for the next stage to consume.
       reason: 'Gate condition failed',
     });
 
-    // Handle failure based on config
     const onFail = gateConfig.onFail;
 
     if (onFail === 'abort') {
@@ -244,7 +232,6 @@ Ensure your output is well-structured and ready for the next stage to consume.
     }
 
     if (onFail === 'retry-previous') {
-      // Check retry limit
       const retryCount = this.getRetryCount(stage.name, _agentResults);
       if (retryCount >= gateConfig.maxRetries) {
         return { action: 'abort', reason: `Max retries (${gateConfig.maxRetries}) exceeded` };
@@ -271,6 +258,6 @@ Ensure your output is well-structured and ready for the next stage to consume.
         count++;
       }
     }
-    return count - 1; // First run is not a retry
+    return count - 1;
   }
 }

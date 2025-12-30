@@ -65,9 +65,6 @@ export class OpenAIAdapter {
     return this.threadManager;
   }
 
-  // ===========================================================================
-  // Assistants
-  // ===========================================================================
 
   createAssistant(params: {
     model: string;
@@ -121,9 +118,6 @@ export class OpenAIAdapter {
     };
   }
 
-  // ===========================================================================
-  // Threads
-  // ===========================================================================
 
   createThread(metadata?: Record<string, string>) {
     return this.threadManager.createThread(metadata);
@@ -137,9 +131,6 @@ export class OpenAIAdapter {
     return this.threadManager.deleteThread(id);
   }
 
-  // ===========================================================================
-  // Messages
-  // ===========================================================================
 
   addMessage(threadId: string, params: { role: 'user' | 'assistant'; content: string; metadata?: Record<string, string> }) {
     return this.threadManager.addMessage(threadId, params);
@@ -159,9 +150,6 @@ export class OpenAIAdapter {
     return this.threadManager.listMessages(threadId, options);
   }
 
-  // ===========================================================================
-  // Runs
-  // ===========================================================================
 
   /**
    * Create and execute a run
@@ -189,7 +177,7 @@ export class OpenAIAdapter {
       status: 'queued',
       required_action: null,
       last_error: null,
-      expires_at: now + 600, // 10 minutes
+      expires_at: now + 600,
       started_at: null,
       cancelled_at: null,
       failed_at: null,
@@ -213,14 +201,12 @@ export class OpenAIAdapter {
     const abortController = new AbortController();
     this.runs.set(runId, { run, abortController });
 
-    // Add any additional messages
     if (request.additional_messages) {
       for (const msg of request.additional_messages) {
         this.threadManager.addMessage(threadId, msg);
       }
     }
 
-    // Execute the run in the background
     this.executeRun(runId, threadId, assistant, request).catch((error) => {
       const state = this.runs.get(runId);
       if (state) {
@@ -278,7 +264,6 @@ export class OpenAIAdapter {
       throw new Error('Run is not waiting for tool outputs');
     }
 
-    // Store tool outputs
     if (!state.toolOutputs) {
       state.toolOutputs = new Map();
     }
@@ -286,16 +271,12 @@ export class OpenAIAdapter {
       state.toolOutputs.set(output.tool_call_id, output.output);
     }
 
-    // Continue execution
     state.run.status = 'in_progress';
     state.run.required_action = null;
 
     return state.run;
   }
 
-  // ===========================================================================
-  // Run Execution
-  // ===========================================================================
 
   private async executeRun(
     runId: string,
@@ -306,15 +287,12 @@ export class OpenAIAdapter {
     const state = this.runs.get(runId);
     if (!state) return;
 
-    // Update status
     state.run.status = 'in_progress';
     state.run.started_at = Math.floor(Date.now() / 1000);
 
     try {
-      // Get messages for LLM
       const messages = this.threadManager.getMessagesForLLM(threadId);
 
-      // Build agent
       const agent = new Agent({
         name: assistant.name ?? 'assistant',
         model: request.model ?? assistant.model,
@@ -323,24 +301,20 @@ export class OpenAIAdapter {
         tools: this.tools,
       });
 
-      // Get the user's last message as the prompt
       const lastUserMessage = messages.filter((m) => m.role === 'user').pop();
       if (!lastUserMessage) {
         throw new Error('No user message found');
       }
 
-      // Run through Cogitator
       const result = await this.cogitator.run(agent, {
         input: lastUserMessage.content,
         threadId,
       });
 
-      // Check if we were cancelled
       if (state.abortController.signal.aborted) {
         return;
       }
 
-      // Add assistant response as a message
       if (result.output) {
         this.threadManager.addAssistantMessage(
           threadId,
@@ -350,7 +324,6 @@ export class OpenAIAdapter {
         );
       }
 
-      // Update run status
       state.run.status = 'completed';
       state.run.completed_at = Math.floor(Date.now() / 1000);
       state.run.usage = result.usage

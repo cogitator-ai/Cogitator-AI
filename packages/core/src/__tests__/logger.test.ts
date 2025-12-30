@@ -178,7 +178,7 @@ describe('Logger', () => {
       } else {
         process.env.LOG_LEVEL = undefined;
       }
-      setLogger(createLogger()); // reset
+      setLogger(createLogger());
     });
 
     it('getLogger returns singleton', () => {

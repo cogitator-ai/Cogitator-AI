@@ -37,7 +37,6 @@ export class ContextBuilder {
   private deps: ContextBuilderDeps;
 
   constructor(config: ContextBuilderConfig, deps: ContextBuilderDeps) {
-    // Default reserveTokens to 10% of maxTokens, minimum 100
     const defaultReserve = Math.max(100, Math.floor(config.maxTokens * 0.1));
     this.config = {
       maxTokens: config.maxTokens,
@@ -58,7 +57,6 @@ export class ContextBuilder {
     const facts: Fact[] = [];
     const semanticResults: Array<Embedding & { score: number }> = [];
 
-    // 1. System prompt (always first if provided)
     if (this.config.includeSystemPrompt && options.systemPrompt) {
       const systemMsg: Message = { role: 'system', content: options.systemPrompt };
       const tokens = countMessageTokens(systemMsg);
@@ -68,11 +66,10 @@ export class ContextBuilder {
       }
     }
 
-    // 2. Load and include facts if enabled
     if (this.config.includeFacts && this.deps.factAdapter) {
       const factsResult = await this.deps.factAdapter.getFacts(options.agentId);
       if (factsResult.success && factsResult.data.length > 0) {
-        const factTokenBudget = Math.floor(availableTokens * 0.1); // 10% for facts
+        const factTokenBudget = Math.floor(availableTokens * 0.1);
         let factTokens = 0;
 
         for (const fact of factsResult.data) {
@@ -83,7 +80,6 @@ export class ContextBuilder {
           }
         }
 
-        // Append facts to system message
         if (facts.length > 0 && messages.length > 0 && messages[0].role === 'system') {
           const factsStr = facts.map((f) => `- ${f.content}`).join('\n');
           messages[0] = {
@@ -95,7 +91,6 @@ export class ContextBuilder {
       }
     }
 
-    // 3. Load semantic context if enabled
     if (
       this.config.includeSemanticContext &&
       this.deps.embeddingAdapter &&
@@ -121,7 +116,6 @@ export class ContextBuilder {
           }
         }
 
-        // Add semantic context to system message
         if (semanticResults.length > 0 && messages.length > 0 && messages[0].role === 'system') {
           const contextStr = semanticResults
             .map((r) => `- ${r.content}`)
@@ -135,7 +129,6 @@ export class ContextBuilder {
       }
     }
 
-    // 4. Load conversation history based on strategy
     const entriesResult = await this.deps.memoryAdapter.getEntries({
       threadId: options.threadId,
       includeToolCalls: true,
@@ -149,7 +142,6 @@ export class ContextBuilder {
       originalMessageCount = entries.length;
 
       if (this.config.strategy === 'recent') {
-        // Take most recent messages that fit
         const selectedEntries = this.selectRecentEntries(
           entries,
           availableTokens - usedTokens
@@ -162,8 +154,6 @@ export class ContextBuilder {
           usedTokens += entry.tokenCount;
         }
       } else if (this.config.strategy === 'relevant') {
-        // TODO: Implement relevance-based selection using embeddings
-        // For now, fall back to recent
         const selectedEntries = this.selectRecentEntries(
           entries,
           availableTokens - usedTokens
@@ -175,7 +165,6 @@ export class ContextBuilder {
           usedTokens += entry.tokenCount;
         }
       } else if (this.config.strategy === 'hybrid') {
-        // TODO: Combine recent + relevant
         const selectedEntries = this.selectRecentEntries(
           entries,
           availableTokens - usedTokens
@@ -209,14 +198,13 @@ export class ContextBuilder {
     entries: MemoryEntry[],
     availableTokens: number
   ): MemoryEntry[] {
-    // Start from most recent and work backwards
     const reversed = [...entries].reverse();
     const selected: MemoryEntry[] = [];
     let usedTokens = 0;
 
     for (const entry of reversed) {
       if (usedTokens + entry.tokenCount <= availableTokens) {
-        selected.unshift(entry); // Prepend to maintain order
+        selected.unshift(entry);
         usedTokens += entry.tokenCount;
       } else {
         break;

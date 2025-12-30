@@ -4,7 +4,6 @@
  * Workflow triggers for cron scheduling, webhooks, and events.
  */
 
-// Rate limiter
 export {
   TokenBucket,
   RateLimiter,
@@ -18,7 +17,6 @@ export type {
   RateLimitResult,
 } from './rate-limiter.js';
 
-// Cron trigger
 export {
   CronTriggerExecutor,
   createCronTrigger,
@@ -30,7 +28,6 @@ export type {
   CronTriggerResult,
 } from './cron-trigger.js';
 
-// Webhook trigger
 export {
   WebhookTriggerExecutor,
   WebhookAuthError,
@@ -46,7 +43,6 @@ export type {
   WebhookHandlerResult,
 } from './webhook-trigger.js';
 
-// Trigger manager
 export {
   InMemoryTriggerStore,
   SimpleTriggerEventEmitter,

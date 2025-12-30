@@ -15,7 +15,7 @@ describe('sleep tool', () => {
 
     expect(result).toHaveProperty('requested', 100);
     expect(result).toHaveProperty('slept');
-    expect(elapsed).toBeGreaterThanOrEqual(90); // Allow some timing variance
+    expect(elapsed).toBeGreaterThanOrEqual(90);
     expect(elapsed).toBeLessThan(200);
   });
 

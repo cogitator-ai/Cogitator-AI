@@ -8,9 +8,7 @@ import type {
 } from '@cogitator/types';
 
 interface DependencyGraph {
-  // node -> nodes it depends on
   dependencies: Map<string, Set<string>>;
-  // node -> nodes that depend on it
   dependents: Map<string, Set<string>>;
 }
 
@@ -24,13 +22,11 @@ export class WorkflowScheduler {
     const dependencies = new Map<string, Set<string>>();
     const dependents = new Map<string, Set<string>>();
 
-    // Initialize all nodes
     for (const nodeName of workflow.nodes.keys()) {
       dependencies.set(nodeName, new Set());
       dependents.set(nodeName, new Set());
     }
 
-    // Process edges
     for (const edge of workflow.edges) {
       if (edge.type === 'sequential') {
         dependencies.get(edge.to)?.add(edge.from);
@@ -41,7 +37,6 @@ export class WorkflowScheduler {
           dependents.get(edge.from)?.add(to);
         }
       }
-      // Conditional and loop edges are handled dynamically at runtime
     }
 
     return { dependencies, dependents };
@@ -61,7 +56,6 @@ export class WorkflowScheduler {
       const deps = graph.dependencies.get(nodeName);
       if (!deps) continue;
 
-      // Check if all dependencies are completed
       let allDepsCompleted = true;
       for (const dep of deps) {
         if (!completed.has(dep)) {
@@ -94,7 +88,6 @@ export class WorkflowScheduler {
       const ready = this.getReadyNodes(graph, completed, pending);
 
       if (ready.length === 0 && pending.size > 0) {
-        // Cycle detected or unreachable nodes
         throw new Error(
           `Workflow has cycles or unreachable nodes: ${Array.from(pending).join(', ')}`
         );
@@ -147,7 +140,7 @@ export class WorkflowScheduler {
       }
     }
 
-    return [...new Set(nextNodes)]; // Deduplicate
+    return [...new Set(nextNodes)];
   }
 
   /**
@@ -169,10 +162,8 @@ export class WorkflowScheduler {
 
       if (executing.length >= maxConcurrency) {
         await Promise.race(executing);
-        // Remove completed promises
         const newExecuting: Promise<void>[] = [];
         for (const p of executing) {
-          // Check if promise is still pending by racing with immediate resolve
           const pending = await Promise.race([
             p.then(() => false),
             Promise.resolve(true),
@@ -199,7 +190,6 @@ export class WorkflowScheduler {
   ): Promise<T[]> {
     const results: T[] = [];
 
-    // Process in chunks
     for (let i = 0; i < tasks.length; i += maxConcurrency) {
       const chunk = tasks.slice(i, i + maxConcurrency);
       const chunkResults = await Promise.all(chunk.map((t) => t()));

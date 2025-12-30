@@ -7,14 +7,11 @@
  * - Tool Adapter: Convert between Cogitator and MCP tool formats
  */
 
-// Client
 export { MCPClient } from './client/mcp-client.js';
 export { createStdioTransport, createHttpTransport } from './client/transports.js';
 
-// Server
 export { MCPServer } from './server/mcp-server.js';
 
-// Adapter
 export {
   cogitatorToMCP,
   mcpToCogitator,
@@ -23,7 +20,6 @@ export {
   jsonSchemaToZod,
 } from './adapter/tool-adapter.js';
 
-// Types
 export type {
   MCPClientConfig,
   MCPServerConfig,

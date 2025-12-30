@@ -42,7 +42,6 @@ describe('Saga Pattern', () => {
         .mockRejectedValueOnce(new Error('timeout'))
         .mockResolvedValue('success');
 
-      // Use isRetryable: () => true to force retries on all errors
       const result = await executeWithRetry(fn, {
         maxRetries: 5,
         backoff: 'constant',
@@ -59,7 +58,6 @@ describe('Saga Pattern', () => {
     it('fails after max retries', async () => {
       const fn = vi.fn().mockRejectedValue(new Error('connection reset'));
 
-      // isRetryable: () => true means it will retry all errors
       const result = await executeWithRetry(fn, {
         maxRetries: 2,
         backoff: 'constant',
@@ -69,7 +67,6 @@ describe('Saga Pattern', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toBeDefined();
-      // maxRetries: 2 means 3 total attempts (1 initial + 2 retries)
       expect(result.attempts).toBe(3);
     });
 
@@ -89,8 +86,7 @@ describe('Saga Pattern', () => {
       });
       const elapsed = Date.now() - startTime;
 
-      // Should have waited at least initialDelay (50ms)
-      expect(elapsed).toBeGreaterThanOrEqual(40); // Allow some tolerance
+      expect(elapsed).toBeGreaterThanOrEqual(40);
     });
 
     it('respects isRetryable condition', async () => {
@@ -104,7 +100,7 @@ describe('Saga Pattern', () => {
       });
 
       expect(result.success).toBe(false);
-      expect(result.attempts).toBe(1); // Should not retry
+      expect(result.attempts).toBe(1);
     });
 
     describe('withRetry wrapper', () => {
@@ -146,12 +142,10 @@ describe('Saga Pattern', () => {
     it('opens after reaching failure threshold', async () => {
       const fn = vi.fn().mockRejectedValue(new Error('fail'));
 
-      // 3 failures should open the circuit
       for (let i = 0; i < 3; i++) {
         try {
           await circuitBreaker.execute(nodeId, fn);
         } catch {
-          // Expected
         }
       }
 
@@ -161,38 +155,31 @@ describe('Saga Pattern', () => {
     it('rejects calls when open', async () => {
       const fn = vi.fn().mockRejectedValue(new Error('fail'));
 
-      // Open the circuit
       for (let i = 0; i < 3; i++) {
         try {
           await circuitBreaker.execute(nodeId, fn);
         } catch {
-          // Expected
         }
       }
 
-      // Should reject without calling fn
       await expect(circuitBreaker.execute(nodeId, fn)).rejects.toThrow(CircuitBreakerOpenError);
-      expect(fn).toHaveBeenCalledTimes(3); // No additional calls
+      expect(fn).toHaveBeenCalledTimes(3);
     });
 
     it('transitions to half-open after reset timeout', async () => {
       const fn = vi.fn().mockRejectedValue(new Error('fail'));
 
-      // Open the circuit
       for (let i = 0; i < 3; i++) {
         try {
           await circuitBreaker.execute(nodeId, fn);
         } catch {
-          // Expected
         }
       }
 
       expect(circuitBreaker.getState(nodeId)).toBe('open');
 
-      // Wait for reset timeout
       await new Promise((resolve) => setTimeout(resolve, 150));
 
-      // Check if can execute - this will transition to half-open
       expect(circuitBreaker.canExecute(nodeId)).toBe(true);
       expect(circuitBreaker.getState(nodeId)).toBe('half-open');
     });
@@ -205,22 +192,17 @@ describe('Saga Pattern', () => {
         return 'success';
       });
 
-      // Open the circuit
       for (let i = 0; i < 3; i++) {
         try {
           await circuitBreaker.execute(nodeId, fn);
         } catch {
-          // Expected
         }
       }
 
-      // Wait for half-open
       await new Promise((resolve) => setTimeout(resolve, 150));
 
-      // Trigger transition to half-open
       expect(circuitBreaker.canExecute(nodeId)).toBe(true);
 
-      // Succeed twice to close
       await circuitBreaker.execute(nodeId, fn);
       await circuitBreaker.execute(nodeId, fn);
 
@@ -235,7 +217,6 @@ describe('Saga Pattern', () => {
       try {
         await circuitBreaker.execute(nodeId, fnFail);
       } catch {
-        // Expected
       }
 
       const stats = circuitBreaker.getStats(nodeId);
@@ -261,7 +242,6 @@ describe('Saga Pattern', () => {
         order.push('comp3');
       });
 
-      // Mark steps as completed
       manager.markCompleted('step1', { value: 1 });
       manager.markCompleted('step2', { value: 2 });
       manager.markCompleted('step3', { value: 3 });
@@ -290,7 +270,7 @@ describe('Saga Pattern', () => {
         async () => {
           executed.push('comp2');
         },
-        { condition: () => false } // Skip this one
+        { condition: () => false }
       );
 
       manager.markCompleted('step1', { value: 1 });
@@ -319,7 +299,6 @@ describe('Saga Pattern', () => {
         executed.push('comp3');
       });
 
-      // Only mark step1 and step2 as completed (step3 not completed)
       manager.markCompleted('step1', { value: 1 });
       manager.markCompleted('step2', { value: 2 });
 
@@ -353,7 +332,6 @@ describe('Saga Pattern', () => {
       const state: TestState = { value: 0, steps: [] };
       const report = await manager.compensate(state, 'step3', new Error('Test failure'));
 
-      // All compensations should be attempted
       expect(executed).toContain('comp1');
       expect(executed).toContain('comp3');
       expect(report.allSuccessful).toBe(false);
@@ -417,7 +395,6 @@ describe('Saga Pattern', () => {
         {}
       );
 
-      // add() returns the generated id
       const generatedId = await dlq.add(entry);
 
       const retrieved = await dlq.get(generatedId);
@@ -479,14 +456,11 @@ describe('Saga Pattern', () => {
     it('checks and records execution', async () => {
       const key = 'test-key';
 
-      // First check should indicate not executed
       const first = await store.check(key);
       expect(first.isDuplicate).toBe(false);
 
-      // Store the result
       await store.store(key, { result: 'success' });
 
-      // Second check should indicate executed
       const second = await store.check(key);
       expect(second.isDuplicate).toBe(true);
       expect(second.record?.result).toEqual({ result: 'success' });
@@ -498,14 +472,11 @@ describe('Saga Pattern', () => {
 
       await shortTTLStore.store(key, { result: 'success' });
 
-      // Check immediately
       let check = await shortTTLStore.check(key);
       expect(check.isDuplicate).toBe(true);
 
-      // Wait for TTL
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      // Should be expired
       check = await shortTTLStore.check(key);
       expect(check.isDuplicate).toBe(false);
 
@@ -522,7 +493,6 @@ describe('Saga Pattern', () => {
 
         const key = 'same-key';
 
-        // Call with same key twice
         const result1 = await idempotent(store, key, fn);
         const result2 = await idempotent(store, key, fn);
 
@@ -551,10 +521,8 @@ describe('Saga Pattern', () => {
 
         const key = 'error-key';
 
-        // First call throws
         await expect(idempotent(store, key, fn)).rejects.toThrow('Test error');
 
-        // Second call should also throw the cached error
         await expect(idempotent(store, key, fn)).rejects.toThrow('Test error');
       });
     });

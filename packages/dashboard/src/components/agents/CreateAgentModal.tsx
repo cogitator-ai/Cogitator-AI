@@ -85,7 +85,6 @@ export function CreateAgentModal({
       setError(null);
       setShowAdvanced(false);
 
-      // Fetch available models
       fetch('/api/models')
         .then((res) => res.json())
         .then((data) => {
@@ -120,7 +119,6 @@ export function CreateAgentModal({
         })
         .catch(console.error);
 
-      // Fetch available tools
       fetch('/api/tools')
         .then((res) => res.json())
         .then((data) => {

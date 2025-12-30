@@ -12,37 +12,35 @@ describe('countTokens', () => {
   });
 
   it('estimates tokens based on character count', () => {
-    // ~4 chars per token
-    expect(countTokens('Hello')).toBe(2); // 5 chars = ceil(5/4) = 2
-    expect(countTokens('Hello World!')).toBe(3); // 12 chars = 3
-    expect(countTokens('This is a longer sentence.')).toBe(7); // 26 chars = 7
+    expect(countTokens('Hello')).toBe(2);
+    expect(countTokens('Hello World!')).toBe(3);
+    expect(countTokens('This is a longer sentence.')).toBe(7);
   });
 
   it('handles unicode characters', () => {
-    expect(countTokens('Привет')).toBe(2); // 6 chars = 2
-    expect(countTokens('🚀🌟')).toBe(1); // 2 chars = 1 (emoji count as 2 chars in JS)
+    expect(countTokens('Привет')).toBe(2);
+    expect(countTokens('🚀🌟')).toBe(1);
   });
 });
 
 describe('countMessageTokens', () => {
   it('counts tokens with message overhead', () => {
     const message = { role: 'user' as const, content: 'Hello' };
-    // 2 tokens for content + 4 overhead = 6
     expect(countMessageTokens(message)).toBe(6);
   });
 
   it('handles empty content', () => {
     const message = { role: 'system' as const, content: '' };
-    expect(countMessageTokens(message)).toBe(4); // Just overhead
+    expect(countMessageTokens(message)).toBe(4);
   });
 });
 
 describe('countMessagesTokens', () => {
   it('counts total tokens for multiple messages', () => {
     const messages = [
-      { role: 'system' as const, content: 'You are helpful.' }, // 4 + 4 = 8
-      { role: 'user' as const, content: 'Hello' }, // 2 + 4 = 6
-      { role: 'assistant' as const, content: 'Hi there!' }, // 3 + 4 = 7
+      { role: 'system' as const, content: 'You are helpful.' },
+      { role: 'user' as const, content: 'Hello' },
+      { role: 'assistant' as const, content: 'Hi there!' },
     ];
     expect(countMessagesTokens(messages)).toBe(21);
   });
@@ -60,7 +58,7 @@ describe('truncateToTokens', () => {
 
   it('truncates text to fit token limit', () => {
     const text = 'This is a very long sentence that needs to be truncated';
-    const result = truncateToTokens(text, 5); // 5 tokens = 20 chars
+    const result = truncateToTokens(text, 5);
     expect(result).toBe('This is a very long ');
     expect(result.length).toBe(20);
   });

@@ -23,10 +23,10 @@ import { WorkflowExecutor } from '../executor.js';
  * Error handling strategy for subworkflows
  */
 export type SubworkflowErrorStrategy =
-  | 'propagate' // Re-throw error to parent
-  | 'catch'     // Catch and return error in result
-  | 'retry'     // Retry the subworkflow
-  | 'ignore';   // Ignore error and continue
+  | 'propagate'
+  | 'catch'
+  | 'retry'
+  | 'ignore';
 
 /**
  * Subworkflow retry configuration
@@ -162,12 +162,10 @@ export async function executeSubworkflow<
   const startTime = Date.now();
   const maxDepth = config.maxDepth ?? 10;
 
-  // Check depth limit
   if (context.depth > maxDepth) {
     throw new MaxDepthExceededError(context.depth, maxDepth);
   }
 
-  // Check condition
   if (config.condition && !config.condition(parentState, context)) {
     return {
       success: true,
@@ -178,18 +176,15 @@ export async function executeSubworkflow<
     };
   }
 
-  // Map parent state to child state
   const childInput = config.inputMapper(parentState, context);
 
   config.onStart?.(childInput, context);
 
-  // Create executor for child workflow
   const executor = new WorkflowExecutor(
     context.cogitator,
     config.shareCheckpoints !== false ? context.checkpointStore : undefined
   );
 
-  // Prepare execution options
   const executeOptions: WorkflowExecuteOptionsV2 = {
     checkpoint: config.shareCheckpoints !== false && !!context.checkpointStore,
     metadata: {
@@ -210,7 +205,6 @@ export async function executeSubworkflow<
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      // Execute with timeout if specified
       const executePromise = executor.execute(config.workflow, childInput, executeOptions);
 
       if (config.timeout) {
@@ -229,7 +223,6 @@ export async function executeSubworkflow<
 
       config.onComplete?.(childResult, context);
 
-      // Map child result back to parent state
       const newParentState = config.outputMapper(childResult, parentState, context);
 
       return {
@@ -244,7 +237,6 @@ export async function executeSubworkflow<
       lastError = error instanceof Error ? error : new Error(String(error));
       config.onChildError?.(lastError, context);
 
-      // Apply retry delay if not last attempt
       if (attempt < maxAttempts - 1 && config.retryConfig) {
         const delay = config.retryConfig.delay ?? 1000;
         const actualDelay =
@@ -256,7 +248,6 @@ export async function executeSubworkflow<
     }
   }
 
-  // Handle error based on strategy
   switch (config.onError) {
     case 'ignore':
       return {

@@ -24,7 +24,6 @@ const cog = new Cogitator({
   },
 });
 
-// File read tool
 const readFile = tool({
   name: 'read_file',
   description: 'Read the contents of a file',
@@ -42,7 +41,6 @@ const readFile = tool({
   },
 });
 
-// File write tool
 const writeFile = tool({
   name: 'write_file',
   description: 'Write content to a file',
@@ -59,7 +57,6 @@ const writeFile = tool({
   },
 });
 
-// List files tool
 const listFiles = tool({
   name: 'list_files',
   description: 'List files in a directory',
@@ -82,7 +79,6 @@ const listFiles = tool({
   },
 });
 
-// Run code tool (sandboxed)
 const runCode = tool({
   name: 'run_code',
   description: 'Execute code in a sandboxed environment',
@@ -102,10 +98,8 @@ const runCode = tool({
     network: 'none',
   },
   execute: async ({ language, code }) => {
-    // In production, this would execute in a Docker container
     console.log(`[Tool] Running ${language} code...`);
 
-    // Mock execution
     return {
       language,
       stdout: `Execution output for ${language}`,
@@ -116,7 +110,6 @@ const runCode = tool({
   },
 });
 
-// Run tests tool
 const runTests = tool({
   name: 'run_tests',
   description: 'Run tests for the codebase',
@@ -127,7 +120,6 @@ const runTests = tool({
   execute: async ({ testPath }) => {
     console.log(`[Tool] Running tests: ${testPath || 'all'}`);
 
-    // Mock test results
     return {
       passed: 10,
       failed: 0,
@@ -141,7 +133,6 @@ const runTests = tool({
   },
 });
 
-// Create the code assistant agent
 const codeAssistant = new Agent({
   name: 'code-assistant',
   model: 'claude-3-5-sonnet',
@@ -170,13 +161,11 @@ const codeAssistant = new Agent({
 });
 
 async function main() {
-  // Setup workspace
   await fs.mkdir(WORKSPACE_DIR, { recursive: true });
 
   console.log('Starting code assistant example...\n');
   console.log(`Workspace: ${WORKSPACE_DIR}\n`);
 
-  // Task: Create a utility function
   const result = await cog.run(codeAssistant, {
     input: `Create a TypeScript utility module at src/utils/string-utils.ts with the following functions:
     1. capitalize(str) - Capitalize the first letter

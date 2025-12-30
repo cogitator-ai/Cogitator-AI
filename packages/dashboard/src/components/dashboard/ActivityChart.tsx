@@ -19,11 +19,10 @@ interface ActivityChartProps {
 }
 
 export function ActivityChart({ data, loading }: ActivityChartProps) {
-  // Transform data for chart
   const chartData = data?.map((item) => ({
     time: format(parseISO(item.hour), 'HH:mm'),
     runs: item.runs,
-    tokens: Math.round(item.tokens / 1000), // Convert to K
+    tokens: Math.round(item.tokens / 1000),
   })) || [];
 
   if (loading) {

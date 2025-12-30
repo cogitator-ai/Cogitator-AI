@@ -20,7 +20,6 @@ export const uuid = tool({
   name: 'uuid',
   description: 'Generate one or more UUID v4 identifiers.',
   parameters: uuidParams,
-  // eslint-disable-next-line @typescript-eslint/require-await
   execute: async ({ count = 1 }) => {
     const uuids = Array.from({ length: count }, () => randomUUID());
     return count === 1 ? { uuid: uuids[0] } : { uuids, count };

@@ -9,7 +9,6 @@ export async function GET(request: NextRequest) {
 
     switch (action) {
       case 'threads': {
-        // Get all threads
         const agentId = searchParams.get('agentId');
         let sql = `
           SELECT 
@@ -34,7 +33,6 @@ export async function GET(request: NextRequest) {
       }
 
       case 'entries': {
-        // Get memory entries for a thread
         const threadId = searchParams.get('threadId');
         if (!threadId) {
           return NextResponse.json({ error: 'threadId required' }, { status: 400 });
@@ -47,7 +45,6 @@ export async function GET(request: NextRequest) {
       }
 
       case 'stats': {
-        // Get memory statistics
         const stats = await queryOne<{
           total_entries: string;
           total_threads: string;
@@ -91,7 +88,6 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ error: 'query is required' }, { status: 400 });
         }
 
-        // Create embedding service based on available provider
         let embeddingService;
         const ollamaUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
         
@@ -102,7 +98,6 @@ export async function POST(request: NextRequest) {
             model: 'text-embedding-3-small',
           });
         } else {
-          // Fall back to Ollama embeddings
           embeddingService = createEmbeddingService({
             provider: 'ollama',
             baseUrl: ollamaUrl,
@@ -110,12 +105,9 @@ export async function POST(request: NextRequest) {
           });
         }
 
-        // Generate embedding for query
         console.log('[memory] Generating embedding for query:', searchQuery.slice(0, 50));
         const queryEmbedding = await embeddingService.embed(searchQuery);
 
-        // Perform semantic search in database
-        // This requires pgvector extension
         const results = await query<{
           id: string;
           thread_id: string;
@@ -161,7 +153,6 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ error: 'threadId is required' }, { status: 400 });
         }
         
-        // Get messages from thread
         const messages = await query<{
           role: string;
           content: string;
@@ -174,14 +165,12 @@ export async function POST(request: NextRequest) {
           LIMIT $2
         `, [threadId, Math.floor(maxTokens / 100)]); // Rough estimate: ~100 tokens per message
 
-        // Reverse if we sorted DESC to get chronological order
         const orderedMessages = strategy === 'recent' ? messages.reverse() : messages;
 
-        // Simple token counting (rough estimate)
         let tokenCount = 0;
         const contextMessages = [];
         for (const msg of orderedMessages) {
-          const msgTokens = Math.ceil(msg.content.length / 4); // Rough token estimate
+          const msgTokens = Math.ceil(msg.content.length / 4);
           if (tokenCount + msgTokens > maxTokens) break;
           tokenCount += msgTokens;
           contextMessages.push({
@@ -210,7 +199,6 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ error: 'messageId and content required' }, { status: 400 });
         }
 
-        // Create embedding service
         let embeddingService;
         const ollamaUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
         
@@ -228,10 +216,8 @@ export async function POST(request: NextRequest) {
           });
         }
 
-        // Generate embedding
         const embedding = await embeddingService.embed(content);
 
-        // Store in database
         await query(
           `UPDATE dashboard_messages SET embedding = $1::vector WHERE id = $2`,
           [`[${embedding.join(',')}]`, messageId]

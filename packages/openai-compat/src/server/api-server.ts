@@ -99,20 +99,17 @@ export class OpenAIServer {
    * Set up the Fastify server
    */
   private async setupServer(): Promise<void> {
-    // Register CORS
     await this.fastify.register(fastifyCors, {
       origin: this.config.cors.origin,
       methods: this.config.cors.methods ?? ['GET', 'POST', 'DELETE', 'OPTIONS'],
     });
 
-    // Register multipart for file uploads
     await this.fastify.register(import('@fastify/multipart'), {
       limits: {
-        fileSize: 512 * 1024 * 1024, // 512 MB
+        fileSize: 512 * 1024 * 1024,
       },
     });
 
-    // Auth middleware
     if (this.config.apiKeys.length > 0) {
       const authConfig: AuthConfig = {
         apiKeys: this.config.apiKeys,
@@ -121,14 +118,11 @@ export class OpenAIServer {
       this.fastify.addHook('preHandler', createAuthMiddleware(authConfig));
     }
 
-    // Error handlers
     this.fastify.setErrorHandler(errorHandler);
     this.fastify.setNotFoundHandler(notFoundHandler);
 
-    // Health check
     this.fastify.get('/health', async () => ({ status: 'ok' }));
 
-    // Models endpoint (minimal)
     this.fastify.get('/v1/models', async () => ({
       object: 'list',
       data: [
@@ -141,7 +135,6 @@ export class OpenAIServer {
       ],
     }));
 
-    // Register API routes
     registerAssistantRoutes(this.fastify, this.adapter);
     registerThreadRoutes(this.fastify, this.adapter);
     registerRunRoutes(this.fastify, this.adapter);

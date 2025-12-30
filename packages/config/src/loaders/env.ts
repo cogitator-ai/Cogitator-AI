@@ -33,7 +33,6 @@ type LLMProvider = LLMConfig['defaultProvider'];
 export function loadEnvConfig(): CogitatorConfigInput {
   const config: CogitatorConfigInput = {};
 
-  // LLM defaults
   const defaultProvider = getEnv('LLM_DEFAULT_PROVIDER');
   const defaultModel = getEnv('LLM_DEFAULT_MODEL');
 
@@ -45,13 +44,11 @@ export function loadEnvConfig(): CogitatorConfigInput {
     };
   }
 
-  // Providers
   const providers = loadProviderConfigs();
   if (Object.keys(providers).length > 0) {
     config.llm = { ...config.llm, providers };
   }
 
-  // Limits
   const limits = loadLimitsConfig();
   if (Object.keys(limits).length > 0) {
     config.limits = limits;
@@ -66,32 +63,27 @@ type LimitsConfig = NonNullable<CogitatorConfigInput['limits']>;
 function loadProviderConfigs(): ProvidersConfig {
   const providers: ProvidersConfig = {};
 
-  // Ollama
   const ollamaBaseUrl = getEnv('OLLAMA_BASE_URL') ?? process.env.OLLAMA_HOST;
   if (ollamaBaseUrl) {
     providers.ollama = { baseUrl: ollamaBaseUrl };
   }
 
-  // OpenAI
   const openaiApiKey = getEnv('OPENAI_API_KEY') ?? process.env.OPENAI_API_KEY;
   const openaiBaseUrl = getEnv('OPENAI_BASE_URL') ?? process.env.OPENAI_BASE_URL;
   if (openaiApiKey) {
     providers.openai = { apiKey: openaiApiKey, baseUrl: openaiBaseUrl };
   }
 
-  // Anthropic
   const anthropicApiKey = getEnv('ANTHROPIC_API_KEY') ?? process.env.ANTHROPIC_API_KEY;
   if (anthropicApiKey) {
     providers.anthropic = { apiKey: anthropicApiKey };
   }
 
-  // Google
   const googleApiKey = getEnv('GOOGLE_API_KEY') ?? process.env.GOOGLE_API_KEY;
   if (googleApiKey) {
     providers.google = { apiKey: googleApiKey };
   }
 
-  // vLLM
   const vllmBaseUrl = getEnv('VLLM_BASE_URL');
   if (vllmBaseUrl) {
     providers.vllm = { baseUrl: vllmBaseUrl };

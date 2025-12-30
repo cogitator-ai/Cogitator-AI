@@ -49,7 +49,6 @@ export class ContainerPool {
     image: string,
     options: ContainerCreateOptions
   ): Promise<DockerContainer> {
-    // Try to find an available container with matching image
     const available = this.containers.find(
       (c) => !c.inUse && c.image === image
     );
@@ -60,7 +59,6 @@ export class ContainerPool {
       return available.container;
     }
 
-    // Create new container
     const container = await this.createContainer(image, options);
 
     if (this.containers.length < this.maxSize) {
@@ -82,7 +80,6 @@ export class ContainerPool {
       pooled.inUse = false;
       pooled.lastUsed = Date.now();
     } else {
-      // Not in pool, destroy it
       await this.destroyContainer(container);
     }
   }
@@ -91,11 +88,9 @@ export class ContainerPool {
     image: string,
     options: ContainerCreateOptions
   ): Promise<DockerContainer> {
-    // Ensure image exists
     try {
       await this.docker.getImage(image).inspect();
     } catch {
-      // Pull image
       await new Promise<void>((resolve, reject) => {
         this.docker.pull(image, (err: Error | null, stream: NodeJS.ReadableStream) => {
           if (err) return reject(err);
@@ -137,12 +132,10 @@ export class ContainerPool {
     try {
       await container.stop({ t: 1 });
     } catch {
-      // Already stopped
     }
     try {
       await container.remove({ force: true });
     } catch {
-      // Already removed
     }
   }
 

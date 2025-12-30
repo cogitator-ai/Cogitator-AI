@@ -61,7 +61,6 @@ describe('Triggers', () => {
         bucket.consume();
         bucket.consume();
 
-        // Wait for refill
         await new Promise(resolve => setTimeout(resolve, 150));
 
         const result = bucket.consume();
@@ -75,7 +74,6 @@ describe('Triggers', () => {
           burstLimit: 3,
         });
 
-        // Can't consume more than burst limit at once
         const result = bucket.consume(5);
         expect(result.allowed).toBe(false);
       });
@@ -100,10 +98,8 @@ describe('Triggers', () => {
           limiter.consume('client-a');
         }
 
-        // client-a is exhausted
         expect(limiter.consume('client-a').allowed).toBe(false);
 
-        // client-b is still available
         expect(limiter.consume('client-b').allowed).toBe(true);
       });
 
@@ -227,7 +223,7 @@ describe('Triggers', () => {
       const id = execWithFire.register('test-workflow', {
         expression: '* * * * *',
         enabled: true,
-        condition: () => false, // Never fire
+        condition: () => false,
       });
 
       const result = await execWithFire.fire(id);
@@ -251,10 +247,8 @@ describe('Triggers', () => {
         maxConcurrent: 1,
       });
 
-      // Start first fire (don't await)
       const fire1 = execWithFire.fire(id);
 
-      // Immediately try second fire
       const result2 = await execWithFire.fire(id);
 
       expect(result2.skipped).toBe(true);
@@ -335,7 +329,6 @@ describe('Triggers', () => {
         },
       });
 
-      // Without auth
       const noAuth = await exec.handle({
         method: 'POST',
         path: '/secure',
@@ -343,7 +336,6 @@ describe('Triggers', () => {
       });
       expect(noAuth?.response.status).toBe(401);
 
-      // With wrong token
       const wrongToken = await exec.handle({
         method: 'POST',
         path: '/secure',
@@ -351,7 +343,6 @@ describe('Triggers', () => {
       });
       expect(wrongToken?.response.status).toBe(401);
 
-      // With correct token
       const correct = await exec.handle({
         method: 'POST',
         path: '/secure',
@@ -398,11 +389,9 @@ describe('Triggers', () => {
         },
       });
 
-      // First two should succeed
       await exec.handle({ method: 'POST', path: '/limited', headers: {}, ip: 'client1' });
       await exec.handle({ method: 'POST', path: '/limited', headers: {}, ip: 'client1' });
 
-      // Third should be rate limited
       const result = await exec.handle({
         method: 'POST',
         path: '/limited',
@@ -426,7 +415,6 @@ describe('Triggers', () => {
         deduplicationWindow: 1000,
       });
 
-      // First request
       await exec.handle({
         method: 'POST',
         path: '/dedup',
@@ -434,7 +422,6 @@ describe('Triggers', () => {
         body: { id: 'same-id', data: 'first' },
       });
 
-      // Duplicate
       const result = await exec.handle({
         method: 'POST',
         path: '/dedup',
@@ -460,7 +447,6 @@ describe('Triggers', () => {
         },
       });
 
-      // Invalid payload
       const invalid = await exec.handle({
         method: 'POST',
         path: '/validated',
@@ -469,7 +455,6 @@ describe('Triggers', () => {
       });
       expect(invalid?.response.status).toBe(400);
 
-      // Valid payload
       const valid = await exec.handle({
         method: 'POST',
         path: '/validated',
@@ -617,7 +602,6 @@ describe('Triggers', () => {
 
       manager.emitEvent('user.created', { userId: '123' });
 
-      // Wait for async processing
       await new Promise(resolve => setTimeout(resolve, 50));
 
       expect(callback).toHaveBeenCalled();
@@ -634,13 +618,11 @@ describe('Triggers', () => {
         enabled: true,
       });
 
-      // Wrong source - should not trigger
       manager.emitEvent('user.created', { source: 'webhook', userId: '123' });
 
       await new Promise(resolve => setTimeout(resolve, 50));
       expect(callback).not.toHaveBeenCalled();
 
-      // Correct source - should trigger
       manager.emitEvent('user.created', { source: 'api', userId: '456' });
 
       await new Promise(resolve => setTimeout(resolve, 50));

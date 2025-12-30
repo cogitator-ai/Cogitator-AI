@@ -11,7 +11,6 @@ import type { Tool, ToolContext } from '@cogitator/types';
 import type { MCPServerConfig } from '../types.js';
 import { resultToMCPContent, zodToJsonSchema } from '../adapter/tool-adapter.js';
 
-// MCP SDK compatible result type with index signature
 interface MCPCallToolResult {
   [key: string]: unknown;
   content: Array<{ type: 'text'; text: string }>;
@@ -108,13 +107,11 @@ export class MCPServer {
    * Build the input schema for MCP tool registration
    */
   private buildInputSchema(tool: Tool): Record<string, unknown> {
-    // If we have a Zod schema, convert it to JSON Schema
     if (tool.parameters) {
       const jsonSchema = zodToJsonSchema(tool.parameters);
       return jsonSchema.properties ?? {};
     }
 
-    // Fall back to tool's JSON representation
     const schema = tool.toJSON();
     return schema.parameters.properties;
   }
@@ -126,7 +123,6 @@ export class MCPServer {
     tool: Tool,
     args: Record<string, unknown>
   ): Promise<MCPCallToolResult> {
-    // Create a minimal context for tool execution
     const context: ToolContext = {
       agentId: 'mcp-server',
       runId: `mcp_${Date.now()}`,
@@ -134,7 +130,6 @@ export class MCPServer {
     };
 
     try {
-      // Validate arguments if possible
       let validatedArgs = args;
       if (tool.parameters) {
         const parseResult = tool.parameters.safeParse(args);
@@ -152,18 +147,14 @@ export class MCPServer {
         validatedArgs = parseResult.data as Record<string, unknown>;
       }
 
-      // Execute the tool
       const result = await tool.execute(validatedArgs, context);
 
-      // Convert result to MCP content format
       const rawContent = resultToMCPContent(result);
       
-      // Convert to text-only content for MCP SDK compatibility
       const content: Array<{ type: 'text'; text: string }> = rawContent.map((item) => {
         if (item.type === 'text') {
           return { type: 'text' as const, text: item.text };
         }
-        // Convert other types to text
         return { type: 'text' as const, text: JSON.stringify(item) };
       });
 
@@ -204,8 +195,6 @@ export class MCPServer {
 
       case 'http':
       case 'sse': {
-        // HTTP transport requires Express setup
-        // We'll create a simple HTTP handler
         await this.startHttpServer();
         break;
       }
@@ -225,7 +214,6 @@ export class MCPServer {
    * Start HTTP server for MCP
    */
   private async startHttpServer(): Promise<void> {
-    // Dynamic import to avoid requiring express when not using HTTP
     const { createServer } = await import('node:http');
     const { StreamableHTTPServerTransport } = await import(
       '@modelcontextprotocol/sdk/server/streamableHttp.js'
@@ -235,7 +223,6 @@ export class MCPServer {
     const host = this.config.host ?? 'localhost';
 
     const httpServer = createServer(async (req, res) => {
-      // Handle CORS
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -252,19 +239,16 @@ export class MCPServer {
         return;
       }
 
-      // Read request body
       const chunks: Buffer[] = [];
       for await (const chunk of req) {
         chunks.push(chunk as Buffer);
       }
       const body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
 
-      // Create transport for this request
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
       });
 
-      // Connect and handle
       await this.server.connect(transport);
       await transport.handleRequest(req, res, body);
     });

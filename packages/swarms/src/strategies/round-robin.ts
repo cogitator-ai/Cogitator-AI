@@ -15,7 +15,7 @@ import type { SwarmCoordinator } from '../coordinator.js';
 export class RoundRobinStrategy extends BaseStrategy {
   private config: RoundRobinConfig;
   private currentIndex = 0;
-  private stickyAssignments = new Map<string, string>(); // stickyKey -> agentName
+  private stickyAssignments = new Map<string, string>();
 
   constructor(coordinator: SwarmCoordinator, config?: RoundRobinConfig) {
     super(coordinator);
@@ -34,7 +34,6 @@ export class RoundRobinStrategy extends BaseStrategy {
       throw new Error('Round-robin strategy requires at least 1 agent');
     }
 
-    // Determine which agent should handle this request
     const selectedAgent = this.selectAgent(agents, options);
 
     this.coordinator.events.emit('round-robin:assigned', {
@@ -43,7 +42,6 @@ export class RoundRobinStrategy extends BaseStrategy {
       sticky: this.config.sticky,
     });
 
-    // Initialize state on blackboard
     this.coordinator.blackboard.write('round-robin', {
       currentAgent: selectedAgent.agent.name,
       currentIndex: this.currentIndex,
@@ -68,7 +66,6 @@ export class RoundRobinStrategy extends BaseStrategy {
     );
     agentResults.set(selectedAgent.agent.name, result);
 
-    // Update index for next rotation (if sequential and not sticky)
     if (this.config.rotation === 'sequential' && !this.config.sticky) {
       this.currentIndex = (this.currentIndex + 1) % agents.length;
     }
@@ -81,7 +78,6 @@ export class RoundRobinStrategy extends BaseStrategy {
   }
 
   private selectAgent(agents: SwarmAgent[], options: SwarmRunOptions): SwarmAgent {
-    // Check for sticky session
     if (this.config.sticky && this.config.stickyKey) {
       const key = this.config.stickyKey(options.input);
       const existingAssignment = this.stickyAssignments.get(key);
@@ -91,11 +87,9 @@ export class RoundRobinStrategy extends BaseStrategy {
         if (agent) {
           return agent;
         }
-        // Agent no longer exists, remove stale assignment
         this.stickyAssignments.delete(key);
       }
 
-      // New sticky assignment
       const selectedAgent = this.getNextAgent(agents);
       this.stickyAssignments.set(key, selectedAgent.agent.name);
       return selectedAgent;
@@ -111,7 +105,6 @@ export class RoundRobinStrategy extends BaseStrategy {
       return agents[randomIndex];
     }
 
-    // Sequential rotation
     const agent = agents[this.currentIndex];
     return agent;
   }

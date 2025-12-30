@@ -160,7 +160,6 @@ describe('InMemoryAdapter', () => {
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data).toHaveLength(2);
-        // Should return last 2 messages
         expect(result.data[0].message.content).toBe('Message 3');
         expect(result.data[1].message.content).toBe('Message 4');
       }

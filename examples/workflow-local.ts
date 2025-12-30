@@ -36,7 +36,6 @@ const cog = new Cogitator({
   },
 });
 
-// Tools
 const analyzeTool = tool({
   name: 'analyze_text',
   description: 'Analyze text for sentiment and key topics',
@@ -47,7 +46,6 @@ const analyzeTool = tool({
     console.log('  📊 Analyzing text...');
     await sleep(300);
     
-    // Simple analysis simulation
     const wordCount = text.split(/\s+/).length;
     const hasPositive = /good|great|excellent|happy|success/i.test(text);
     const hasNegative = /bad|poor|fail|sad|problem/i.test(text);
@@ -78,7 +76,6 @@ const generateTool = tool({
   },
 });
 
-// Agents for different workflow steps
 const analyzer = new Agent({
   name: 'analyzer',
   model: MODEL,
@@ -136,7 +133,6 @@ async function main() {
   console.log('║  Multi-step processing with different AI agents             ║');
   console.log('╚══════════════════════════════════════════════════════════════╝\n');
 
-  // Build the workflow
   const workflow = new WorkflowBuilder('content-response-workflow')
     .addNode(
       'analyze',
@@ -161,7 +157,6 @@ async function main() {
     .addNode(
       'check_complexity',
       functionNode(async (ctx) => {
-        // Decide if we need detailed response
         const wordCount = ctx.input.text.split(/\s+/).length;
         return {
           needsDetailedResponse: wordCount > 50,
@@ -193,14 +188,12 @@ async function main() {
           Original text was: "${ctx.input.text}"`,
       })
     )
-    // Define edges (execution order)
     .addEdge('analyze', 'strategize')
     .addEdge('strategize', 'check_complexity')
     .addEdge('check_complexity', 'respond')
     .addEdge('respond', 'review')
     .build();
 
-  // Create executor with checkpointing
   const executor = new WorkflowExecutor(workflow, {
     checkpointStore: new InMemoryCheckpointStore(),
   });
@@ -213,7 +206,6 @@ async function main() {
   console.log('  5️⃣  review - Quality check');
   console.log('\n');
 
-  // Example input
   const input = {
     text: `We're excited to announce our new AI-powered productivity suite!
 After months of development, our team has created tools that help
@@ -232,7 +224,6 @@ Early users report 40% improvement in development speed.`,
     const startTime = Date.now();
     let currentStep = '';
 
-    // Execute with progress tracking
     const result = await executor.execute(input, {
       onNodeStart: (nodeId) => {
         currentStep = nodeId;
@@ -252,7 +243,6 @@ Early users report 40% improvement in development speed.`,
     console.log('📤 Workflow Results:');
     console.log('═'.repeat(60));
 
-    // Show results for each step
     for (const [step, output] of Object.entries(result.results)) {
       console.log(`\n📌 ${step}:`);
       console.log('─'.repeat(40));

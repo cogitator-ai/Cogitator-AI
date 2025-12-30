@@ -20,7 +20,6 @@ async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  // Agents
   async getAgents(): Promise<Agent[]> {
     return fetchJSON('/agents');
   },
@@ -49,7 +48,6 @@ export const api = {
     });
   },
 
-  // Runs
   async getRuns(options?: { agentId?: string; status?: string; limit?: number }): Promise<{ runs: Run[]; stats: unknown }> {
     const params = new URLSearchParams();
     if (options?.agentId) params.set('agentId', options.agentId);
@@ -68,7 +66,6 @@ export const api = {
     return run.spans || [];
   },
 
-  // Analytics
   async getAnalytics(period: 'hour' | 'day' | 'week' | 'month' = 'day'): Promise<AnalyticsData> {
     return fetchJSON(`/analytics?period=${period}`);
   },
@@ -77,7 +74,6 @@ export const api = {
     return fetchJSON('/analytics');
   },
 
-  // Logs
   async getLogs(options?: { level?: string; limit?: number; since?: string }): Promise<{ logs: LogEntry[]; stats: unknown }> {
     const params = new URLSearchParams();
     if (options?.level) params.set('level', options.level);
@@ -87,7 +83,6 @@ export const api = {
     return fetchJSON(`/logs${query ? `?${query}` : ''}`);
   },
 
-  // Config
   async getConfig(): Promise<unknown> {
     return fetchJSON('/config');
   },
@@ -99,12 +94,10 @@ export const api = {
     });
   },
 
-  // Models
   async getModels(): Promise<{ id: string; name: string; provider: string; pricing: { input: number; output: number } }[]> {
     return fetchJSON('/models');
   },
 
-  // Health
   async getHealth(): Promise<SystemHealth> {
     return fetchJSON('/health');
   },

@@ -16,7 +16,6 @@ export class OpenAIEmbeddingService implements EmbeddingService {
     this.model = config.model ?? 'text-embedding-3-small';
     this.baseUrl = config.baseUrl ?? 'https://api.openai.com/v1';
 
-    // text-embedding-3-small = 1536, text-embedding-3-large = 3072
     this.dimensions = this.model.includes('large') ? 3072 : 1536;
   }
 
@@ -67,7 +66,6 @@ export class OpenAIEmbeddingService implements EmbeddingService {
       data: Array<{ embedding: number[]; index: number }>;
     };
 
-    // Sort by index to maintain order
     return data.data
       .sort((a, b) => a.index - b.index)
       .map((d) => d.embedding);

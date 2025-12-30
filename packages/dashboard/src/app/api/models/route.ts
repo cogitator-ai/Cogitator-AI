@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getOllamaModels, checkOllamaHealth, POPULAR_MODELS } from '@/lib/ollama';
-import { getConfig, setConfig } from '@/lib/db/config';
+import { getApiKeysStatus, setApiKeys, type ApiKeysConfig } from '@/lib/db/config';
 import {
-  getModelRegistry,
   initializeModels,
   getModel,
   getPrice,
@@ -12,12 +11,6 @@ import {
   ANTHROPIC_MODELS,
   GOOGLE_MODELS,
 } from '@cogitator/models';
-
-interface ApiKeysConfig {
-  openai?: string;
-  anthropic?: string;
-  google?: string;
-}
 
 let modelsInitialized = false;
 
@@ -38,7 +31,6 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const action = searchParams.get('action');
 
-    // Handle specific actions
     if (action === 'pricing') {
       await ensureModelsInitialized();
       const modelName = searchParams.get('model');
@@ -53,7 +45,6 @@ export async function GET(request: NextRequest) {
         });
       }
 
-      // Return all models with pricing
       const allModels = listModels();
       return NextResponse.json({
         models: allModels.map(m => ({
@@ -70,44 +61,32 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ models });
     }
 
-    // Default: return all available models
-    // Get Ollama models
     const ollamaHealth = await checkOllamaHealth();
     const ollamaModels = ollamaHealth.available ? await getOllamaModels() : [];
     
-    // Get API keys status (not the actual keys)
-    const apiKeys = await getConfig<ApiKeysConfig>('api_keys');
+    const apiKeysStatus = await getApiKeysStatus();
     
-    // Mark which popular models are downloaded
-    // Build sets for efficient lookup
     const downloadedFullNames = new Set(ollamaModels.map((m) => m.name));
     
     const availableModels = POPULAR_MODELS.map((m) => {
       const [baseName, tag] = m.name.split(':');
       
-      // Check for exact match first
       if (downloadedFullNames.has(m.name)) {
         return { ...m, isDownloaded: true };
       }
       
-      // For models without explicit tag (e.g., "nomic-embed-text"), check if :latest exists
       if (!tag) {
         if (downloadedFullNames.has(`${baseName}:latest`)) {
           return { ...m, isDownloaded: true };
         }
       }
       
-      // For models with a tag, also check if base:latest exists (some models use :latest as alias)
-      // But only if the requested tag is a common variant like numbers (3b, 7b, etc.)
-      // Don't match different size variants
       
       return { ...m, isDownloaded: false };
     });
 
-    // Get model info from registry
     await ensureModelsInitialized();
 
-    // Cloud providers with pricing from @cogitator/models
     const cloudProviders = [
       {
         id: 'openai',
@@ -119,7 +98,7 @@ export async function GET(request: NextRequest) {
           pricing: m.pricing,
           capabilities: m.capabilities,
         })),
-        configured: !!apiKeys?.openai || !!process.env.OPENAI_API_KEY,
+        configured: apiKeysStatus.openai,
       },
       {
         id: 'anthropic',
@@ -131,7 +110,7 @@ export async function GET(request: NextRequest) {
           pricing: m.pricing,
           capabilities: m.capabilities,
         })),
-        configured: !!apiKeys?.anthropic || !!process.env.ANTHROPIC_API_KEY,
+        configured: apiKeysStatus.anthropic,
       },
       {
         id: 'google',
@@ -143,7 +122,7 @@ export async function GET(request: NextRequest) {
           pricing: m.pricing,
           capabilities: m.capabilities,
         })),
-        configured: !!apiKeys?.google || !!process.env.GOOGLE_API_KEY,
+        configured: apiKeysStatus.google,
       },
     ];
 
@@ -176,15 +155,14 @@ export async function POST(request: NextRequest) {
 
     if (action === 'save_api_keys') {
       const { openai, anthropic, google } = body;
-      
-      // Only save non-empty keys
+
       const keys: ApiKeysConfig = {};
       if (openai) keys.openai = openai;
       if (anthropic) keys.anthropic = anthropic;
       if (google) keys.google = google;
-      
-      await setConfig('api_keys', keys);
-      
+
+      await setApiKeys(keys);
+
       return NextResponse.json({ success: true });
     }
 

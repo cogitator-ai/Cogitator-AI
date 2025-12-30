@@ -50,32 +50,27 @@ function buildCogitatorConfig(): CogitatorConfig {
     },
   };
 
-  // Ollama config
   const ollamaUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
   config.llm!.providers!.ollama = { baseUrl: ollamaUrl };
 
-  // OpenAI config
   if (process.env.OPENAI_API_KEY) {
     config.llm!.providers!.openai = {
       apiKey: process.env.OPENAI_API_KEY,
     };
   }
 
-  // Anthropic config
   if (process.env.ANTHROPIC_API_KEY) {
     config.llm!.providers!.anthropic = {
       apiKey: process.env.ANTHROPIC_API_KEY,
     };
   }
 
-  // Google config
   if (process.env.GOOGLE_API_KEY) {
     config.llm!.providers!.google = {
       apiKey: process.env.GOOGLE_API_KEY,
     };
   }
 
-  // Memory config - prefer postgres if available, fallback to redis, then memory
   const postgresUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
   const redisUrl = process.env.REDIS_URL;
 
@@ -132,7 +127,6 @@ export async function getCogitator(): Promise<Cogitator> {
       const config = buildCogitatorConfig();
       cogitatorInstance = new Cogitator(config);
 
-      // Register all built-in tools (type assertion needed due to generic variance)
       for (const t of builtinTools) {
         cogitatorInstance.tools.register(t as Parameters<typeof cogitatorInstance.tools.register>[0]);
       }
@@ -188,8 +182,8 @@ export function getAvailableProviders(): AvailableProvider[] {
     {
       id: 'ollama',
       name: 'Ollama (Local)',
-      configured: true, // Always available
-      models: [], // Will be populated from Ollama API
+      configured: true,
+      models: [],
     },
     {
       id: 'openai',

@@ -12,7 +12,6 @@
  * - Race and fallback patterns
  */
 
-// Subworkflow node
 export {
   type SubworkflowErrorStrategy,
   type SubworkflowRetryConfig,
@@ -27,7 +26,6 @@ export {
   conditionalSubworkflow,
 } from './subworkflow-node.js';
 
-// Parallel subworkflows
 export {
   type ParallelSubworkflowDef,
   type ParallelSubworkflowsConfig,

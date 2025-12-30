@@ -5,7 +5,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GoogleBackend } from '../llm/google.js';
 
-// Mock fetch globally
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
@@ -244,7 +243,6 @@ describe('GoogleBackend', () => {
       const [, options] = mockFetch.mock.calls[0] as [string, RequestInit];
       const body = JSON.parse(options.body as string);
 
-      // Should have function response in contents
       const functionResponseContent = body.contents.find(
         (c: { parts: unknown[] }) =>
           c.parts.some((p) => typeof p === 'object' && p !== null && 'functionResponse' in p)
@@ -286,7 +284,7 @@ describe('GoogleBackend', () => {
       });
 
       await backend.chat({
-        model: 'gemini-flash', // alias
+        model: 'gemini-flash',
         messages: [{ role: 'user', content: 'Test' }],
       });
 
@@ -459,12 +457,10 @@ describe('GoogleBackend', () => {
         },
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       for await (const _ of backend.chatStream({
         model: 'gemini-1.5-flash',
         messages: [{ role: 'user', content: 'Test' }],
       })) {
-        // consume stream
       }
 
       const [url] = mockFetch.mock.calls[0] as [string, RequestInit];
@@ -484,7 +480,6 @@ describe('GoogleBackend', () => {
           model: 'gemini-1.5-flash',
           messages: [{ role: 'user', content: 'Test' }],
         })) {
-          // consume
         }
       }).rejects.toThrow('Gemini API error: 401');
     });

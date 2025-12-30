@@ -44,7 +44,6 @@ export class TokenBucket {
     this.burstLimit = config.burstLimit ?? config.capacity;
     this.tokens = config.initialTokens ?? config.capacity;
     this.lastRefill = Date.now();
-    // Tokens per millisecond
     this.refillRate = config.capacity / config.window;
   }
 
@@ -59,7 +58,7 @@ export class TokenBucket {
         allowed: false,
         remaining: Math.floor(this.tokens),
         resetAt: this.calculateResetAt(),
-        retryAfter: undefined, // Can never consume this many at once
+        retryAfter: undefined,
       };
     }
 
@@ -72,7 +71,6 @@ export class TokenBucket {
       };
     }
 
-    // Calculate how long to wait
     const tokensNeeded = count - this.tokens;
     const retryAfter = Math.ceil(tokensNeeded / this.refillRate);
 
@@ -152,7 +150,6 @@ export class RateLimiter {
   constructor(config: TokenBucketConfig, cleanupIntervalMs: number = 60000) {
     this.config = config;
 
-    // Periodically clean up expired buckets
     this.cleanupInterval = setInterval(() => {
       this.cleanup();
     }, cleanupIntervalMs);
@@ -219,7 +216,6 @@ export class RateLimiter {
   }
 
   private cleanup(): void {
-    // Remove buckets that are at full capacity (not being used)
     for (const [key, bucket] of this.buckets) {
       if (bucket.getTokens() >= this.config.capacity) {
         this.buckets.delete(key);
@@ -254,7 +250,6 @@ export class SlidingWindowRateLimiter {
     const now = Date.now();
     const window = this.getWindow(key);
 
-    // Remove expired timestamps
     const cutoff = now - this.windowMs;
     window.timestamps = window.timestamps.filter(t => t > cutoff);
 

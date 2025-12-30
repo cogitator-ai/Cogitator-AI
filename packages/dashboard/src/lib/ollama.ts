@@ -118,7 +118,6 @@ export async function pullModel(
           }
           onProgress(progress);
         } catch {
-          // Ignore parse errors
         }
       }
     }
@@ -156,7 +155,6 @@ export async function checkOllamaHealth(): Promise<{ available: boolean; version
   }
 }
 
-// Popular models that can be downloaded
 export const POPULAR_MODELS = [
   { name: 'llama3.2:3b', description: 'Llama 3.2 3B - Fast and efficient', size: '2.0 GB' },
   { name: 'llama3.2:1b', description: 'Llama 3.2 1B - Ultra-lightweight', size: '1.3 GB' },

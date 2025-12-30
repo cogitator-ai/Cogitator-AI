@@ -110,12 +110,10 @@ export class InMemoryTimerStore implements TimerStore {
     const timer = this.timers.get(id);
     if (timer && !timer.cancelled && !timer.fired) {
       timer.fired = true;
-      // Notify callbacks
       for (const callback of this.fireCallbacks) {
         try {
           callback(timer);
         } catch {
-          // Ignore callback errors
         }
       }
     }
@@ -223,10 +221,8 @@ export class FileTimerStore implements TimerStore {
           this.cache.set(timer.id, timer);
         }
       } catch {
-        // No existing file
       }
     } catch {
-      // Directory creation failed
     }
 
     this.initialized = true;
@@ -333,7 +329,6 @@ export class FileTimerStore implements TimerStore {
         try {
           callback(timer);
         } catch {
-          // Ignore callback errors
         }
       }
     }

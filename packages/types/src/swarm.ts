@@ -5,9 +5,6 @@
 import type { Agent } from './agent.js';
 import type { RunResult, Span } from './runtime.js';
 
-// ============================================
-// Strategy Types
-// ============================================
 
 export type SwarmStrategy =
   | 'hierarchical'
@@ -17,9 +14,6 @@ export type SwarmStrategy =
   | 'pipeline'
   | 'debate';
 
-// ============================================
-// Agent Wrapper for Swarm Context
-// ============================================
 
 export interface SwarmAgentMetadata {
   /** Agent's areas of expertise */
@@ -45,9 +39,6 @@ export interface SwarmAgent {
   tokenCount: number;
 }
 
-// ============================================
-// Strategy-Specific Configurations
-// ============================================
 
 export interface HierarchicalConfig {
   /** Maximum delegation depth (default: 3) */
@@ -134,9 +125,6 @@ export interface DebateConfig {
   format?: 'structured' | 'freeform';
 }
 
-// ============================================
-// Communication: Message Bus
-// ============================================
 
 export type SwarmMessageType = 'request' | 'response' | 'notification' | 'error';
 
@@ -176,9 +164,6 @@ export interface MessageBus {
   clear(): void;
 }
 
-// ============================================
-// Communication: Blackboard
-// ============================================
 
 export interface BlackboardSection<T = unknown> {
   name: string;
@@ -227,9 +212,6 @@ export interface Blackboard {
   clear(): void;
 }
 
-// ============================================
-// Communication: Event System
-// ============================================
 
 export type SwarmEventType =
   | 'swarm:start'
@@ -269,9 +251,6 @@ export interface SwarmEventEmitter {
   getEvents(): SwarmEvent[];
 }
 
-// ============================================
-// Resource Management
-// ============================================
 
 export interface SwarmResourceConfig {
   /** Max concurrent agent runs (default: 4) */
@@ -297,9 +276,6 @@ export interface SwarmResourceUsage {
   agentUsage: Map<string, { tokens: number; cost: number; runs: number; duration: number }>;
 }
 
-// ============================================
-// Error Handling
-// ============================================
 
 export type SwarmErrorAction = 'retry' | 'skip' | 'failover' | 'abort';
 
@@ -327,15 +303,11 @@ export interface SwarmErrorConfig {
   partialResults?: boolean;
 }
 
-// ============================================
-// Main SwarmConfig
-// ============================================
 
 export interface SwarmConfig {
   name: string;
   strategy: SwarmStrategy;
 
-  // Agents (usage depends on strategy)
   /** Supervisor agent for hierarchical strategy */
   supervisor?: Agent;
   /** Worker agents for hierarchical strategy */
@@ -349,7 +321,6 @@ export interface SwarmConfig {
   /** Router agent for specialist routing */
   router?: Agent;
 
-  // Strategy-specific configurations
   hierarchical?: HierarchicalConfig;
   roundRobin?: RoundRobinConfig;
   consensus?: ConsensusConfig;
@@ -357,15 +328,12 @@ export interface SwarmConfig {
   pipeline?: PipelineConfig;
   debate?: DebateConfig;
 
-  // Communication
   messaging?: MessageBusConfig;
   blackboard?: BlackboardConfig;
 
-  // Resources and error handling
   resources?: SwarmResourceConfig;
   errorHandling?: SwarmErrorConfig;
 
-  // Observability
   observability?: {
     /** Enable tracing */
     tracing?: boolean;
@@ -376,9 +344,6 @@ export interface SwarmConfig {
   };
 }
 
-// ============================================
-// Swarm Execution
-// ============================================
 
 export interface SwarmRunOptions {
   /** Input to the swarm */
@@ -390,7 +355,6 @@ export interface SwarmRunOptions {
   /** Override timeout */
   timeout?: number;
 
-  // Callbacks
   onAgentStart?: (agentName: string) => void;
   onAgentComplete?: (agentName: string, result: RunResult) => void;
   onAgentError?: (agentName: string, error: Error) => void;
@@ -405,10 +369,8 @@ export interface SwarmResult {
   output: unknown;
   structured?: unknown;
 
-  // Agent results
   agentResults: Map<string, RunResult>;
 
-  // Strategy-specific results
   /** Votes from consensus strategy */
   votes?: Map<string, unknown>;
   /** Bids from auction strategy */
@@ -420,10 +382,8 @@ export interface SwarmResult {
   /** Pipeline outputs per stage */
   pipelineOutputs?: Map<string, unknown>;
 
-  // Usage
   usage: SwarmResourceUsage;
 
-  // Trace
   trace: {
     traceId: string;
     spans: Span[];
@@ -434,9 +394,6 @@ export interface SwarmResult {
   error?: Error;
 }
 
-// ============================================
-// Swarm Interface
-// ============================================
 
 export interface ISwarm {
   readonly name: string;
@@ -455,9 +412,6 @@ export interface ISwarm {
   abort(): void;
 }
 
-// ============================================
-// Strategy Interface (internal)
-// ============================================
 
 export interface StrategyResult {
   output: unknown;

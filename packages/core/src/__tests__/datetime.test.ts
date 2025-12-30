@@ -9,7 +9,6 @@ const mockContext = {
 
 describe('datetime tool', () => {
   beforeEach(() => {
-    // Mock Date to return a consistent time
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2024-12-30T15:30:45.000Z'));
   });

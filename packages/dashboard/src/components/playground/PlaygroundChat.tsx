@@ -92,7 +92,6 @@ export function PlaygroundChat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Fetch available models
   useEffect(() => {
     async function fetchModels() {
       try {
@@ -143,7 +142,6 @@ export function PlaygroundChat() {
     fetchModels();
   }, []);
 
-  // Fetch available tools
   useEffect(() => {
     async function fetchTools() {
       try {

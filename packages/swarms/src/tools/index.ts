@@ -42,23 +42,19 @@ export function createSwarmTools(context: SwarmToolContext): Tool<unknown, unkno
   );
 
   return [
-    // Messaging
     messagingTools.sendMessage,
     messagingTools.readMessages,
     messagingTools.broadcastMessage,
     messagingTools.replyToMessage,
-    // Blackboard
     blackboardTools.readBlackboard,
     blackboardTools.writeBlackboard,
     blackboardTools.appendBlackboard,
     blackboardTools.listBlackboardSections,
     blackboardTools.getBlackboardHistory,
-    // Delegation
     delegationTools.delegateTask,
     delegationTools.checkProgress,
     delegationTools.requestRevision,
     delegationTools.listWorkers,
-    // Voting
     votingTools.castVote,
     votingTools.getVotes,
     votingTools.changeVote,

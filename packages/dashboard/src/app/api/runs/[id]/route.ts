@@ -33,7 +33,6 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Run not found' }, { status: 404 });
     }
 
-    // Fetch related data in parallel
     const [toolCalls, messages, spans] = await Promise.all([
       getRunToolCalls(id),
       getRunMessages(id),

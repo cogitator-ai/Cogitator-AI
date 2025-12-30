@@ -2,9 +2,6 @@
  * Sandbox types for isolated tool execution
  */
 
-// ============================================
-// Sandbox Configuration
-// ============================================
 
 export type SandboxType = 'docker' | 'native';
 
@@ -57,9 +54,6 @@ export interface SandboxConfig {
   user?: string;
 }
 
-// ============================================
-// Execution Types
-// ============================================
 
 export interface SandboxExecutionRequest {
   /** Command to execute */
@@ -84,9 +78,6 @@ export interface SandboxExecutionResult {
   duration: number;
 }
 
-// ============================================
-// Sandbox Manager Types
-// ============================================
 
 export interface SandboxPoolConfig {
   /** Max containers to keep warm */

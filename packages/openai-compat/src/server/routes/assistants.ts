@@ -17,7 +17,6 @@ export function registerAssistantRoutes(
   fastify: FastifyInstance,
   adapter: OpenAIAdapter
 ) {
-  // Create assistant
   fastify.post<{ Body: CreateAssistantRequest }>(
     '/v1/assistants',
     async (request, reply) => {
@@ -26,24 +25,20 @@ export function registerAssistantRoutes(
     }
   );
 
-  // List assistants
   fastify.get<{ Querystring: { limit?: number; order?: 'asc' | 'desc'; after?: string; before?: string } }>(
     '/v1/assistants',
     async (request, reply) => {
       const assistants = adapter.listAssistants();
 
-      // Apply pagination
       let data = assistants;
       const { limit = 20, order = 'desc', after, before } = request.query;
 
-      // Sort
       if (order === 'asc') {
         data.sort((a, b) => a.created_at - b.created_at);
       } else {
         data.sort((a, b) => b.created_at - a.created_at);
       }
 
-      // Pagination cursors
       if (after) {
         const idx = data.findIndex((a) => a.id === after);
         if (idx !== -1) {
@@ -73,7 +68,6 @@ export function registerAssistantRoutes(
     }
   );
 
-  // Get assistant
   fastify.get<{ Params: { assistant_id: string } }>(
     '/v1/assistants/:assistant_id',
     async (request, reply) => {
@@ -93,7 +87,6 @@ export function registerAssistantRoutes(
     }
   );
 
-  // Update assistant
   fastify.post<{ Params: { assistant_id: string }; Body: UpdateAssistantRequest }>(
     '/v1/assistants/:assistant_id',
     async (request, reply) => {
@@ -116,7 +109,6 @@ export function registerAssistantRoutes(
     }
   );
 
-  // Delete assistant
   fastify.delete<{ Params: { assistant_id: string } }>(
     '/v1/assistants/:assistant_id',
     async (request, reply) => {

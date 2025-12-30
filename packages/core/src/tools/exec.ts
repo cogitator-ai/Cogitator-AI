@@ -50,10 +50,9 @@ export const exec = tool({
         cwd,
         timeout,
         env: { ...process.env, ...env },
-        maxBuffer: 10 * 1024 * 1024, // 10MB
+        maxBuffer: 10 * 1024 * 1024,
       });
 
-      // Truncate large outputs
       const maxSize = 50000;
       const truncatedStdout = stdout.length > maxSize;
       const truncatedStderr = stderr.length > maxSize;
@@ -77,7 +76,6 @@ export const exec = tool({
         };
       }
 
-      // Command executed but returned non-zero exit code
       if (error.stdout !== undefined || error.stderr !== undefined) {
         const maxSize = 50000;
         return {

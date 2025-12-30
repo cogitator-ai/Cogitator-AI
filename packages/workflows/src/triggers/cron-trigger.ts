@@ -90,10 +90,8 @@ export class CronTriggerExecutor {
     if (config.enabled) {
       this.scheduleNext(triggerId);
 
-      // Run immediately if configured
       if (config.runImmediately) {
         this.fire(triggerId).catch(() => {
-          // Error handled in fire()
         });
       }
     }
@@ -180,7 +178,6 @@ export class CronTriggerExecutor {
 
     const now = Date.now();
 
-    // Check max concurrent
     if (state.config.maxConcurrent !== undefined &&
         state.activeRuns >= state.config.maxConcurrent) {
       return {
@@ -191,7 +188,6 @@ export class CronTriggerExecutor {
       };
     }
 
-    // Build context
     const context: TriggerContext = {
       triggerId,
       triggerType: 'cron',
@@ -203,7 +199,6 @@ export class CronTriggerExecutor {
       },
     };
 
-    // Check condition
     if (state.config.condition && !state.config.condition(context)) {
       return {
         triggered: false,
@@ -213,7 +208,6 @@ export class CronTriggerExecutor {
       };
     }
 
-    // Get input
     const input = typeof state.config.input === 'function'
       ? state.config.input(context)
       : state.config.input;
@@ -222,7 +216,6 @@ export class CronTriggerExecutor {
       context.payload = input;
     }
 
-    // Fire the trigger
     state.activeRuns++;
     state.lastRun = now;
 
@@ -233,7 +226,6 @@ export class CronTriggerExecutor {
       state.runCount++;
       state.activeRuns--;
 
-      // Calculate next run
       state.nextRun = this.calculateNextRun(state.config);
 
       return {
@@ -267,7 +259,6 @@ export class CronTriggerExecutor {
     const now = Date.now();
     let currentTime = since;
 
-    // Find all missed runs between 'since' and 'now'
     while (currentTime < now) {
       const nextRun = getNextCronOccurrence(
         state.config.expression,
@@ -278,7 +269,6 @@ export class CronTriggerExecutor {
         break;
       }
 
-      // Fire catch-up run
       const result = await this.fire(triggerId);
       results.push(result);
 
@@ -310,7 +300,6 @@ export class CronTriggerExecutor {
     const state = this.triggers.get(triggerId);
     if (!state || !state.enabled) return;
 
-    // Clear existing interval
     const existingInterval = this.intervals.get(triggerId);
     if (existingInterval) {
       clearInterval(existingInterval);
@@ -323,13 +312,11 @@ export class CronTriggerExecutor {
 
     const delay = Math.max(0, nextRun - now);
 
-    // Use setTimeout for the first run, then setInterval for subsequent runs
     const timeoutId = setTimeout(async () => {
       if (!this.triggers.has(triggerId)) return;
 
       await this.fire(triggerId);
 
-      // Schedule the next check
       const checkInterval = this.calculateCheckInterval(state.config);
       const interval = setInterval(async () => {
         const currentState = this.triggers.get(triggerId);
@@ -347,7 +334,6 @@ export class CronTriggerExecutor {
       this.intervals.set(triggerId, interval);
     }, delay);
 
-    // Store the timeout as an interval (we'll replace it after first fire)
     this.intervals.set(triggerId, timeoutId as unknown as ReturnType<typeof setInterval>);
   }
 
@@ -363,15 +349,13 @@ export class CronTriggerExecutor {
   }
 
   private calculateCheckInterval(config: CronTriggerConfig): number {
-    // Check every minute for sub-minute crons, otherwise check based on cron
     const parsed = parseCronExpression(config.expression);
 
-    // If second field is not *, check more frequently
     if (parsed.fields.second && parsed.fields.second.length < 60) {
-      return 1000; // Check every second
+      return 1000;
     }
 
-    return 60000; // Check every minute
+    return 60000;
   }
 
   private toWorkflowTrigger(state: CronTriggerState): WorkflowTrigger {
@@ -381,7 +365,7 @@ export class CronTriggerExecutor {
       type: 'cron',
       config: state.config,
       enabled: state.enabled,
-      createdAt: Date.now(), // Not tracked in state
+      createdAt: Date.now(),
       lastTriggered: state.lastRun,
       nextTrigger: state.nextRun,
       triggerCount: state.runCount,

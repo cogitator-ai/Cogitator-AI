@@ -26,12 +26,10 @@ export class SandboxManager {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    // Always register native executor
     const native = new NativeSandboxExecutor();
     await native.connect();
     this.executors.set('native', native);
 
-    // Try to register Docker executor
     try {
       const docker = new DockerSandboxExecutor({
         docker: this.config.docker,
@@ -42,7 +40,6 @@ export class SandboxManager {
         this.executors.set('docker', docker);
       }
     } catch {
-      // Docker not available - that's OK
     }
 
     this.initialized = true;
@@ -58,7 +55,6 @@ export class SandboxManager {
     const executor = this.executors.get(type);
 
     if (!executor) {
-      // Fallback to native if Docker requested but unavailable
       if (type === 'docker') {
         console.warn(
           '[sandbox] Docker unavailable, falling back to native execution'
@@ -71,7 +67,6 @@ export class SandboxManager {
       return { success: false, error: `Sandbox type '${type}' not available` };
     }
 
-    // Merge with defaults
     const mergedConfig: SandboxConfig = {
       ...this.config.defaults,
       ...config,

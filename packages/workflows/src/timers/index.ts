@@ -12,7 +12,6 @@
  * - Cleanup of old timers
  */
 
-// Timer stores
 export {
   type TimerQueryOptions,
   InMemoryTimerStore,
@@ -21,7 +20,6 @@ export {
   createFileTimerStore,
 } from './timer-store.js';
 
-// Cron parser
 export {
   type ParsedCron,
   type CronIteratorOptions,
@@ -41,7 +39,6 @@ export {
   isValidTimezone,
 } from './cron-parser.js';
 
-// Timer nodes
 export {
   type TimerNodeType,
   type TimerNodeConfig,
@@ -65,7 +62,6 @@ export {
   formatDuration,
 } from './timer-node.js';
 
-// Timer manager
 export {
   type TimerHandler,
   type TimerManagerConfig,

@@ -23,7 +23,6 @@ export const hash = tool({
   description:
     'Compute a cryptographic hash of a string. Supports md5, sha1, sha256, sha512 algorithms.',
   parameters: hashParams,
-  // eslint-disable-next-line @typescript-eslint/require-await
   execute: async ({ data, algorithm = 'sha256', encoding = 'hex' }) => {
     try {
       const result = createHash(algorithm).update(data).digest(encoding);

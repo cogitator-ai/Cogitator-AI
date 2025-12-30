@@ -23,7 +23,6 @@ function jsonSchemaToZod(params: ToolSchema['parameters']): z.ZodType {
     return z.object({});
   }
 
-  // Create a permissive object schema
   const shape: Record<string, z.ZodType> = {};
   for (const [key, _] of Object.entries(properties)) {
     shape[key] = required.includes(key) ? z.unknown() : z.unknown().optional();
@@ -46,8 +45,6 @@ function recreateTools(schemas: ToolSchema[]): Tool[] {
       description: schema.description,
       parameters: jsonSchemaToZod(schema.parameters),
       execute: async (input) => {
-        // Stub implementation - actual tool execution requires
-        // either built-in tools or a remote execution mechanism
         console.warn(
           `[worker] Tool "${schema.name}" called with input:`,
           JSON.stringify(input)
@@ -69,14 +66,10 @@ export async function processAgentJob(
 ): Promise<AgentJobResult> {
   const { agentConfig, input, threadId } = payload;
 
-  // Create Cogitator instance
-  // TODO: Support worker-level config for memory, sandbox, etc.
   const cogitator = new Cogitator();
 
-  // Recreate tools from schemas
   const tools = recreateTools(agentConfig.tools);
 
-  // Create Agent
   const agent = new Agent({
     name: agentConfig.name,
     model: `${agentConfig.provider}/${agentConfig.model}`,
@@ -86,17 +79,15 @@ export async function processAgentJob(
     tools,
   });
 
-  // Execute
   const result = await cogitator.run(agent, {
     input,
     threadId,
   });
 
-  // Format tool calls - ToolCall has id, name, arguments
   const toolCalls = result.toolCalls.map((tc) => ({
     name: tc.name,
     input: tc.arguments,
-    output: undefined, // ToolCall doesn't store output directly
+    output: undefined,
   }));
 
   return {

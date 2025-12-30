@@ -16,7 +16,7 @@ import { BaseSandboxExecutor } from './base.js';
 const execPromise = promisify(execCallback);
 
 const MAX_OUTPUT_SIZE = 50_000;
-const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
+const MAX_BUFFER = 10 * 1024 * 1024;
 
 export class NativeSandboxExecutor extends BaseSandboxExecutor {
   readonly type = 'native';

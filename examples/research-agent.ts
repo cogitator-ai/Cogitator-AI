@@ -21,7 +21,6 @@ const cog = new Cogitator({
   },
 });
 
-// Web search tool (mock implementation)
 const searchWeb = tool({
   name: 'search_web',
   description: 'Search the internet for information on a topic',
@@ -30,10 +29,8 @@ const searchWeb = tool({
     limit: z.number().default(5).describe('Number of results to return'),
   }),
   execute: async ({ query, limit }) => {
-    // In production, integrate with a real search API (Serper, Tavily, etc.)
     console.log(`[Tool] Searching for: "${query}"`);
 
-    // Mock results
     return [
       {
         title: `Result 1 for ${query}`,
@@ -49,7 +46,6 @@ const searchWeb = tool({
   },
 });
 
-// URL reader tool (mock implementation)
 const readUrl = tool({
   name: 'read_url',
   description: 'Read and extract the main content from a URL',
@@ -57,7 +53,6 @@ const readUrl = tool({
     url: z.string().url().describe('The URL to read'),
   }),
   execute: async ({ url }) => {
-    // In production, use a proper web scraper
     console.log(`[Tool] Reading: ${url}`);
 
     return {
@@ -69,7 +64,6 @@ const readUrl = tool({
   },
 });
 
-// Create the research agent
 const researcher = new Agent({
   name: 'researcher',
   model: 'gpt-4o',
@@ -93,7 +87,6 @@ const researcher = new Agent({
 async function main() {
   console.log('Starting research agent example...\n');
 
-  // Research a topic
   const result = await cog.run(researcher, {
     input: 'Research the latest developments in WebGPU and how it compares to WebGL.',
     threadId: 'research-session-1',
@@ -114,13 +107,12 @@ async function main() {
     console.log(`  ${i + 1}. ${call.name}(${JSON.stringify(call.arguments)})`);
   });
 
-  // Follow-up question (uses memory from previous conversation)
   console.log('\n\nFollow-up question:');
   console.log('-------------------\n');
 
   const followUp = await cog.run(researcher, {
     input: 'Based on your research, what are the main advantages of WebGPU?',
-    threadId: 'research-session-1', // Same thread to maintain context
+    threadId: 'research-session-1',
   });
 
   console.log(followUp.output);

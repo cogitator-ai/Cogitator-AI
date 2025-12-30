@@ -46,7 +46,6 @@ export class InMemoryRunStore implements RunStore {
     let runs = Array.from(this.runs.values());
 
     if (filters) {
-      // Apply filters except limit and offset for counting
       const countFilters = { ...filters };
       delete countFilters.limit;
       delete countFilters.offset;
@@ -98,7 +97,6 @@ export class InMemoryRunStore implements RunStore {
   ): WorkflowRun[] {
     let result = runs;
 
-    // Filter by status
     if (filters.status) {
       const statuses = Array.isArray(filters.status)
         ? filters.status
@@ -106,29 +104,24 @@ export class InMemoryRunStore implements RunStore {
       result = result.filter((r) => statuses.includes(r.status));
     }
 
-    // Filter by workflow name
     if (filters.workflowName) {
       result = result.filter((r) => r.workflowName === filters.workflowName);
     }
 
-    // Filter by tags
     if (filters.tags && filters.tags.length > 0) {
       result = result.filter((r) =>
         filters.tags!.some((tag) => r.tags.includes(tag))
       );
     }
 
-    // Filter by trigger
     if (filters.triggerId) {
       result = result.filter((r) => r.triggerId === filters.triggerId);
     }
 
-    // Filter by parent
     if (filters.parentRunId) {
       result = result.filter((r) => r.parentRunId === filters.parentRunId);
     }
 
-    // Filter by time ranges
     if (filters.startedAfter) {
       result = result.filter(
         (r) => r.startedAt && r.startedAt >= filters.startedAfter!
@@ -150,12 +143,10 @@ export class InMemoryRunStore implements RunStore {
       );
     }
 
-    // Filter by error presence
     if (filters.hasError !== undefined) {
       result = result.filter((r) => Boolean(r.error) === filters.hasError);
     }
 
-    // Sort
     const orderBy = filters.orderBy ?? 'startedAt';
     const direction = filters.orderDirection ?? 'desc';
     result.sort((a, b) => {
@@ -166,7 +157,6 @@ export class InMemoryRunStore implements RunStore {
         : (bVal as number) - (aVal as number);
     });
 
-    // Pagination
     const offset = filters.offset ?? 0;
     const limit = filters.limit ?? Infinity;
     result = result.slice(offset, offset + limit);
@@ -251,7 +241,7 @@ export class FileRunStore implements RunStore {
     cacheTTL?: number;
   }) {
     this.directory = options.directory;
-    this.cacheTTL = options.cacheTTL ?? 60000; // 1 minute default
+    this.cacheTTL = options.cacheTTL ?? 60000;
   }
 
   private getRunPath(id: string): string {
@@ -271,13 +261,11 @@ export class FileRunStore implements RunStore {
       'utf-8'
     );
 
-    // Update cache
     this.cache.set(run.id, run);
     this.cacheExpiry.set(run.id, Date.now() + this.cacheTTL);
   }
 
   async get(id: string): Promise<WorkflowRun | null> {
-    // Check cache first
     if (this.isCacheValid(id)) {
       return this.cache.get(id) ?? null;
     }
@@ -286,7 +274,6 @@ export class FileRunStore implements RunStore {
       const content = await fs.readFile(this.getRunPath(id), 'utf-8');
       const run = JSON.parse(content) as WorkflowRun;
 
-      // Update cache
       this.cache.set(id, run);
       this.cacheExpiry.set(id, Date.now() + this.cacheTTL);
 
@@ -322,7 +309,6 @@ export class FileRunStore implements RunStore {
     try {
       await fs.unlink(this.getRunPath(id));
     } catch {
-      // File doesn't exist
     }
 
     this.cache.delete(id);
@@ -372,7 +358,6 @@ export class FileRunStore implements RunStore {
         }
       }
     } catch {
-      // Directory doesn't exist
     }
 
     return runs;
@@ -386,7 +371,6 @@ export class FileRunStore implements RunStore {
 
     let result = runs;
 
-    // Filter by status
     if (filters.status) {
       const statuses = Array.isArray(filters.status)
         ? filters.status
@@ -394,29 +378,24 @@ export class FileRunStore implements RunStore {
       result = result.filter((r) => statuses.includes(r.status));
     }
 
-    // Filter by workflow name
     if (filters.workflowName) {
       result = result.filter((r) => r.workflowName === filters.workflowName);
     }
 
-    // Filter by tags
     if (filters.tags && filters.tags.length > 0) {
       result = result.filter((r) =>
         filters.tags!.some((tag) => r.tags.includes(tag))
       );
     }
 
-    // Filter by trigger
     if (filters.triggerId) {
       result = result.filter((r) => r.triggerId === filters.triggerId);
     }
 
-    // Filter by parent
     if (filters.parentRunId) {
       result = result.filter((r) => r.parentRunId === filters.parentRunId);
     }
 
-    // Filter by time ranges
     if (filters.startedAfter) {
       result = result.filter(
         (r) => r.startedAt && r.startedAt >= filters.startedAfter!
@@ -438,12 +417,10 @@ export class FileRunStore implements RunStore {
       );
     }
 
-    // Filter by error presence
     if (filters.hasError !== undefined) {
       result = result.filter((r) => Boolean(r.error) === filters.hasError);
     }
 
-    // Sort
     const orderBy = filters.orderBy ?? 'startedAt';
     const direction = filters.orderDirection ?? 'desc';
     result.sort((a, b) => {
@@ -454,7 +431,6 @@ export class FileRunStore implements RunStore {
         : (bVal as number) - (aVal as number);
     });
 
-    // Pagination
     const offset = filters.offset ?? 0;
     const limit = filters.limit ?? Infinity;
     result = result.slice(offset, offset + limit);

@@ -22,7 +22,6 @@ const COLORS = [
 export function TraceWaterfall({ spans }: TraceWaterfallProps) {
   const [selectedSpan, setSelectedSpan] = useState<TraceSpan | null>(null);
 
-  // Empty state
   if (!spans || spans.length === 0) {
     return (
       <Card className="text-center py-12">
@@ -37,15 +36,12 @@ export function TraceWaterfall({ spans }: TraceWaterfallProps) {
     );
   }
 
-  // Flatten spans for display (if they have children)
   const flattenedSpans = flattenSpanTree(spans);
   
-  // Calculate timing boundaries
   const minTime = Math.min(...flattenedSpans.map((s) => s.startTime));
   const maxTime = Math.max(...flattenedSpans.map((s) => s.endTime || s.startTime + (s.duration || 0)));
   const totalDuration = maxTime - minTime;
 
-  // Build depth map for indentation
   const depthMap = buildDepthMap(spans);
 
   const getSpanColor = (depth: number) => COLORS[depth % COLORS.length];

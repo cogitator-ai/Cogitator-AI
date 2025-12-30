@@ -117,7 +117,6 @@ export class DefaultWorkflowManager implements IWorkflowManager {
     const runId = nanoid();
     const now = Date.now();
 
-    // Create run record
     const run: WorkflowRun = {
       id: runId,
       workflowName: workflow.name,
@@ -139,13 +138,11 @@ export class DefaultWorkflowManager implements IWorkflowManager {
     await this.runStore.save(run);
     this.notifyStateChange(run);
 
-    // Create abort controller
     const abortController = new AbortController();
     this.activeRuns.set(runId, { abort: () => abortController.abort() });
     this.scheduler.runStarted(runId);
 
     try {
-      // Execute workflow
       const result = await this.executor.execute(workflow, input, {
         ...options,
         onNodeStart: (node) => {
@@ -162,7 +159,6 @@ export class DefaultWorkflowManager implements IWorkflowManager {
         },
       });
 
-      // Check if executor returned an error (it doesn't throw, it returns {error: ...})
       if (result.error) {
         await this.runStore.update(runId, {
           status: 'failed',
@@ -182,7 +178,6 @@ export class DefaultWorkflowManager implements IWorkflowManager {
         return result;
       }
 
-      // Update run as completed
       await this.runStore.update(runId, {
         status: 'completed',
         state: result.state,
@@ -198,7 +193,6 @@ export class DefaultWorkflowManager implements IWorkflowManager {
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
 
-      // Update run as failed
       await this.runStore.update(runId, {
         status: 'failed',
         completedAt: Date.now(),
@@ -226,7 +220,6 @@ export class DefaultWorkflowManager implements IWorkflowManager {
     const run = await this.runStore.get(runId);
     if (!run) throw new Error(`Run not found: ${runId}`);
 
-    // Handle scheduled/pending runs
     if (run.status === 'scheduled' || run.status === 'pending') {
       await this.scheduler.cancelRun(runId, reason);
       const updatedRun = await this.runStore.get(runId);
@@ -234,7 +227,6 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       return;
     }
 
-    // Handle running runs
     if (run.status === 'running' || run.status === 'paused') {
       const active = this.activeRuns.get(runId);
       if (active) {
@@ -329,7 +321,6 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       throw new Error(`Workflow not found: ${run.workflowName}`);
     }
 
-    // Create new run with same input
     const newRunId = nanoid();
     const now = Date.now();
 
@@ -345,7 +336,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       priority: run.priority,
       tags: [...run.tags, 'retry'],
       triggerId: run.triggerId,
-      parentRunId: runId, // Link to original
+      parentRunId: runId,
       metadata: {
         ...run.metadata,
         retriedFrom: runId,
@@ -355,7 +346,6 @@ export class DefaultWorkflowManager implements IWorkflowManager {
 
     await this.runStore.save(newRun);
 
-    // Schedule execution
     await this.scheduler.scheduleRun(workflow, {
       priority: run.priority,
       tags: newRun.tags,
@@ -379,7 +369,6 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       throw new Error('Run has no checkpoint to replay from');
     }
 
-    // Create new run for replay
     const newRunId = nanoid();
     const now = Date.now();
 
@@ -391,8 +380,6 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       input: run.input,
       currentNodes: [],
       completedNodes: run.completedNodes.filter((n) => {
-        // Only keep nodes before fromNode
-        // This is simplified - in practice we'd need DAG analysis
         return workflow.nodes.has(n) && n !== fromNode;
       }),
       failedNodes: [],
@@ -411,9 +398,6 @@ export class DefaultWorkflowManager implements IWorkflowManager {
     await this.runStore.save(newRun);
     this.notifyStateChange(newRun);
 
-    // Execute from checkpoint
-    // Note: This is a simplified version - full replay would need
-    // checkpoint restoration and partial execution
     const result = await this.executor.execute(workflow, run.state as Partial<S>, {
       checkpoint: !!this.checkpointStore,
     });
@@ -486,7 +470,6 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       return;
     }
 
-    // Update status
     await this.runStore.update(runId, {
       status: 'running',
       startedAt: Date.now(),
@@ -562,7 +545,6 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       try {
         callback(run);
       } catch {
-        // Ignore callback errors
       }
     }
   }

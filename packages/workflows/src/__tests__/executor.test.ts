@@ -9,7 +9,6 @@ interface TestState {
   steps: string[];
 }
 
-// Mock Cogitator
 const mockCogitator = {} as Cogitator;
 
 describe('WorkflowExecutor', () => {
@@ -121,7 +120,7 @@ describe('WorkflowExecutor', () => {
           state: { value: ctx.state.value + 1 },
         }))
         .addLoop('check', {
-          condition: () => true, // Always loop
+          condition: () => true,
           back: 'increment',
           exit: 'done',
           after: ['increment'],
@@ -136,7 +135,6 @@ describe('WorkflowExecutor', () => {
 
       expect(result.error).toBeDefined();
       expect(result.error?.message).toContain('max iterations');
-      // 10 iterations = 5 increments + 5 loop checks (each cycle is 2 iterations)
       expect(result.state.value).toBe(5);
     });
 
@@ -244,10 +242,8 @@ describe('WorkflowExecutor', () => {
       const executor = new WorkflowExecutor(mockCogitator);
       await executor.execute(workflow);
 
-      // If running in parallel, both should start around the same time
-      // (within reasonable margin for test execution)
       const startDiff = Math.abs(startTimes.a - startTimes.b);
-      expect(startDiff).toBeLessThan(30); // Should start within 30ms of each other
+      expect(startDiff).toBeLessThan(30);
     });
   });
 });

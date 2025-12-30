@@ -38,9 +38,6 @@ export class ThreadManager {
   private assistants = new Map<string, StoredAssistant>();
   private files = new Map<string, { id: string; content: Buffer; filename: string; created_at: number }>();
 
-  // ===========================================================================
-  // Assistants
-  // ===========================================================================
 
   createAssistant(params: {
     model: string;
@@ -86,9 +83,6 @@ export class ThreadManager {
     return Array.from(this.assistants.values());
   }
 
-  // ===========================================================================
-  // Threads
-  // ===========================================================================
 
   createThread(metadata?: Record<string, string>): Thread {
     const id = `thread_${nanoid()}`;
@@ -111,9 +105,6 @@ export class ThreadManager {
     return this.threads.delete(id);
   }
 
-  // ===========================================================================
-  // Messages
-  // ===========================================================================
 
   addMessage(threadId: string, request: CreateMessageRequest): Message | undefined {
     const stored = this.threads.get(threadId);
@@ -122,7 +113,6 @@ export class ThreadManager {
     const id = `msg_${nanoid()}`;
     const now = Math.floor(Date.now() / 1000);
 
-    // Convert content to MessageContent format
     const content: MessageContent[] = this.normalizeContent(request.content);
 
     const message: Message = {
@@ -162,19 +152,16 @@ export class ThreadManager {
 
     let messages = [...stored.messages];
 
-    // Filter by run_id if provided
     if (options?.run_id) {
       messages = messages.filter((m) => m.run_id === options.run_id);
     }
 
-    // Sort
     if (options?.order === 'asc') {
       messages.sort((a, b) => a.created_at - b.created_at);
     } else {
       messages.sort((a, b) => b.created_at - a.created_at);
     }
 
-    // Pagination
     if (options?.after) {
       const idx = messages.findIndex((m) => m.id === options.after);
       if (idx !== -1) {
@@ -189,7 +176,6 @@ export class ThreadManager {
       }
     }
 
-    // Limit
     if (options?.limit) {
       messages = messages.slice(0, options.limit);
     }
@@ -252,9 +238,6 @@ export class ThreadManager {
     return message;
   }
 
-  // ===========================================================================
-  // Files
-  // ===========================================================================
 
   addFile(content: Buffer, filename: string): { id: string; filename: string; created_at: number } {
     const id = `file_${nanoid()}`;
@@ -273,9 +256,6 @@ export class ThreadManager {
     return this.files.delete(id);
   }
 
-  // ===========================================================================
-  // Helpers
-  // ===========================================================================
 
   private normalizeContent(content: string | unknown[]): MessageContent[] {
     if (typeof content === 'string') {
@@ -290,7 +270,6 @@ export class ThreadManager {
       ];
     }
 
-    // Handle array of content parts
     return (content as Array<{ type: string; text?: string }>).map((part) => {
       if (part.type === 'text' && typeof part.text === 'string') {
         return {
@@ -301,7 +280,6 @@ export class ThreadManager {
           },
         };
       }
-      // Handle other content types
       return part as MessageContent;
     });
   }

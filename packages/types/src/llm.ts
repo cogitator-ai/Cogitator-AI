@@ -46,6 +46,12 @@ export interface ChatStreamChunk {
     toolCalls?: Partial<ToolCall>[];
   };
   finishReason?: 'stop' | 'tool_calls' | 'length' | 'error';
+  /** Usage data, typically included only in the final chunk */
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  };
 }
 
 export interface LLMBackend {

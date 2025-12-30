@@ -97,31 +97,24 @@ export async function processSwarmJob(
 ): Promise<SwarmJobResult> {
   const { swarmConfig, input } = payload;
 
-  // Create Cogitator instance
   const cogitator = new Cogitator();
 
-  // Recreate agents
   const agents = swarmConfig.agents.map(recreateAgent);
 
-  // Determine strategy
   const strategyType = getStrategyType(swarmConfig.topology);
 
-  // Build swarm config
   const config: SwarmConfig = {
     name: `worker-swarm-${Date.now()}`,
     agents,
     strategy: strategyType,
   };
 
-  // Create swarm with cogitator
   const swarm = new Swarm(cogitator, config);
 
-  // Execute swarm
   const result = await swarm.run({
     input,
   });
 
-  // Collect agent outputs from the Map
   const agentOutputs: Array<{ agent: string; output: string }> = [];
   if (result.agentResults) {
     for (const [agentId, runResult] of result.agentResults) {
@@ -135,7 +128,7 @@ export async function processSwarmJob(
   return {
     type: 'swarm',
     output: String(result.output ?? ''),
-    rounds: 1, // StrategyResult doesn't have rounds, default to 1
+    rounds: 1,
     agentOutputs,
   };
 }

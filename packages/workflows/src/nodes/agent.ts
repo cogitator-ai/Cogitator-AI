@@ -35,7 +35,6 @@ export function agentNode<S extends WorkflowState = WorkflowState>(
     fn: async (ctx): Promise<NodeResult<S>> => {
       const extCtx = ctx as ExtendedNodeContext<S>;
 
-      // Determine input
       let input: string;
       if (options?.inputMapper) {
         input = options.inputMapper(ctx.state, ctx.input);
@@ -47,13 +46,11 @@ export function agentNode<S extends WorkflowState = WorkflowState>(
         input = JSON.stringify(ctx.state);
       }
 
-      // Run agent
       const result = await extCtx.cogitator.run(agent, {
         input,
         ...options?.runOptions,
       });
 
-      // Map result to state and output
       const stateUpdate = options?.stateMapper?.(result);
 
       return {

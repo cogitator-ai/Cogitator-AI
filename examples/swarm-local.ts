@@ -14,8 +14,6 @@ import { Cogitator, Agent, tool } from '@cogitator/core';
 import { Swarm } from '@cogitator/swarms';
 import { z } from 'zod';
 
-// Use Ollama - make sure you have models downloaded!
-// Run: ollama pull llama3.2:3b (or any other model)
 const MODEL = process.env.MODEL || 'llama3.2:3b';
 
 console.log(`\n🤖 Using model: ${MODEL}`);
@@ -32,7 +30,6 @@ const cog = new Cogitator({
   },
 });
 
-// Simple tools for demonstration
 const searchTool = tool({
   name: 'search',
   description: 'Search for information on a topic',
@@ -41,7 +38,6 @@ const searchTool = tool({
   }),
   execute: async ({ query }) => {
     console.log(`  📚 [Research] Searching: "${query}"`);
-    // Simulate search results
     await sleep(500);
     return {
       results: [
@@ -85,7 +81,7 @@ const reviewTool = tool({
     console.log(`  🔍 [Critic] Reviewing against: ${criteria.join(', ')}`);
     await sleep(400);
     return {
-      score: Math.floor(Math.random() * 3) + 7, // 7-10
+      score: Math.floor(Math.random() * 3) + 7,
       feedback: [
         'Good structure overall',
         'Could add more specific examples',
@@ -96,7 +92,6 @@ const reviewTool = tool({
   },
 });
 
-// Create agents
 const projectManager = new Agent({
   name: 'project-manager',
   model: MODEL,
@@ -156,7 +151,6 @@ Use the review tool to evaluate content. Be fair but thorough.`,
   temperature: 0.2,
 });
 
-// Create the swarm
 const contentTeam = new Swarm({
   name: 'content-team',
   strategy: 'hierarchical',
@@ -167,13 +161,13 @@ const contentTeam = new Swarm({
   coordination: {
     visibility: 'full',
     workerCommunication: false,
-    maxParallelTasks: 1, // Sequential for clarity
+    maxParallelTasks: 1,
   },
 
   resources: {
     maxConcurrency: 2,
     tokenBudget: 10_000,
-    timeout: 120_000, // 2 minutes
+    timeout: 120_000,
   },
 
   observability: {
@@ -196,7 +190,6 @@ async function main() {
   console.log('  🔍 critic');
   console.log('\n');
 
-  // Example task
   const task = `Create a short article about the benefits of AI agents in software development.
 The article should:
 - Be informative but concise (200-300 words)

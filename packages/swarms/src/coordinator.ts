@@ -42,7 +42,6 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
     this.config = config;
     this.swarmId = `swarm_${nanoid(12)}`;
 
-    // Initialize communication primitives
     this._messageBus = new InMemoryMessageBus(
       config.messaging ?? { enabled: true, protocol: 'direct' }
     );
@@ -53,10 +52,8 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
 
     this._events = new SwarmEventEmitterImpl();
 
-    // Initialize resource tracking
     this.resourceTracker = new ResourceTracker(config.resources ?? {});
 
-    // Initialize circuit breaker if configured
     if (config.errorHandling?.circuitBreaker?.enabled) {
       this.circuitBreaker = new CircuitBreaker({
         threshold: config.errorHandling.circuitBreaker.threshold,
@@ -64,14 +61,12 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
       });
     }
 
-    // Initialize agents
     this.initializeAgents();
   }
 
   private initializeAgents(): void {
     const agentEntries: Array<{ agent: Agent; metadata: SwarmAgentMetadata }> = [];
 
-    // Collect agents based on config
     if (this.config.supervisor) {
       agentEntries.push({
         agent: this.config.supervisor,
@@ -117,7 +112,6 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
       }
     }
 
-    // Wrap in SwarmAgent
     for (const { agent, metadata } of agentEntries) {
       this.agents.set(agent.name, {
         agent,
@@ -167,22 +161,18 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
       throw new Error(`Agent '${agentName}' not found in swarm`);
     }
 
-    // Check circuit breaker
     if (this.circuitBreaker && !this.circuitBreaker.canExecute()) {
       throw new Error(`Circuit breaker is open for swarm '${this.config.name}'`);
     }
 
-    // Check resource limits
     if (!this.resourceTracker.isWithinBudget()) {
       throw new Error('Swarm resource budget exceeded');
     }
 
-    // Check if paused
     while (this.paused) {
       await new Promise((r) => setTimeout(r, 100));
     }
 
-    // Check if aborted
     if (this.aborted) {
       throw new Error('Swarm execution aborted');
     }
@@ -204,15 +194,12 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
         },
       });
 
-      // Update agent state
       this.setAgentState(agentName, 'completed');
       swarmAgent.lastResult = result;
       swarmAgent.tokenCount += result.usage.totalTokens;
 
-      // Track resources
       this.resourceTracker.trackAgentRun(agentName, result);
 
-      // Record success in circuit breaker
       this.circuitBreaker?.recordSuccess();
 
       this._events.emit('agent:complete', { agentName, result }, agentName);
@@ -221,12 +208,10 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
     } catch (error) {
       this.setAgentState(agentName, 'failed');
 
-      // Record failure in circuit breaker
       this.circuitBreaker?.recordFailure();
 
       this._events.emit('agent:error', { agentName, error }, agentName);
 
-      // Handle error based on config
       if (this.config.errorHandling) {
         return this.handleAgentError(swarmAgent, input, context, error as Error);
       }
@@ -242,7 +227,6 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
     const concurrency = maxConcurrency ?? this.config.resources?.maxConcurrency ?? 4;
     const results = new Map<string, RunResult>();
 
-    // Process in chunks
     for (let i = 0; i < agents.length; i += concurrency) {
       const chunk = agents.slice(i, i + concurrency);
       const chunkResults = await Promise.allSettled(
@@ -256,12 +240,9 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
         if (settled.status === 'fulfilled') {
           results.set(settled.value.name, settled.value.result);
         } else {
-          // Handle based on error config
           if (this.config.errorHandling?.onAgentFailure === 'skip') {
-            // Skip failed agent
             continue;
           } else if (this.config.errorHandling?.onAgentFailure !== 'abort') {
-            // Continue with other agents
             continue;
           } else {
             throw settled.reason;
@@ -297,7 +278,6 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
         throw error;
 
       case 'skip':
-        // Return empty result for skipped agent
         return {
           output: '',
           runId: `run_skipped_${nanoid(8)}`,
@@ -325,7 +305,6 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        // Reset agent state before retry
         this.setAgentState(swarmAgent.agent.name, 'idle');
         return await this.runAgent(swarmAgent.agent.name, input, context);
       } catch {
@@ -333,7 +312,6 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
           throw new Error(`Agent '${swarmAgent.agent.name}' failed after ${maxRetries} retries`);
         }
 
-        // Calculate delay
         let delay: number;
         switch (backoff) {
           case 'exponential':
@@ -390,7 +368,6 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
     this.resourceTracker.reset();
     this.circuitBreaker?.reset();
 
-    // Reset all agents
     for (const agent of this.agents.values()) {
       agent.state = 'idle';
       agent.lastResult = undefined;
@@ -398,7 +375,6 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
       agent.tokenCount = 0;
     }
 
-    // Clear communication
     (this._messageBus as InMemoryMessageBus).clear();
     (this._blackboard as InMemoryBlackboard).clear();
   }

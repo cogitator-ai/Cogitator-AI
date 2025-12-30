@@ -14,9 +14,7 @@ const calculatorParams = z.object({
  * Supports: +, -, *, /, ^, (), sqrt, sin, cos, tan, log, abs, round, floor, ceil, pi, e
  */
 function evaluateExpression(expr: string): number {
-  // Tokenize
   const tokens = tokenize(expr);
-  // Parse and evaluate
   return parseExpression(tokens, 0).value;
 }
 
@@ -34,7 +32,6 @@ function tokenize(expr: string): Token[] {
   while (i < str.length) {
     const char = str[i];
 
-    // Numbers (including decimals)
     if (/[0-9.]/.test(char)) {
       let num = '';
       while (i < str.length && /[0-9.]/.test(str[i])) {
@@ -45,7 +42,6 @@ function tokenize(expr: string): Token[] {
       continue;
     }
 
-    // Constants
     if (str.slice(i, i + 2) === 'pi') {
       tokens.push({ type: 'number', value: Math.PI });
       i += 2;
@@ -57,7 +53,6 @@ function tokenize(expr: string): Token[] {
       continue;
     }
 
-    // Functions
     const functions = ['sqrt', 'sin', 'cos', 'tan', 'log', 'abs', 'round', 'floor', 'ceil'];
     let foundFunc = false;
     for (const func of functions) {
@@ -70,14 +65,12 @@ function tokenize(expr: string): Token[] {
     }
     if (foundFunc) continue;
 
-    // Operators
     if (['+', '-', '*', '/', '^'].includes(char)) {
       tokens.push({ type: 'operator', value: char });
       i++;
       continue;
     }
 
-    // Parentheses
     if (char === '(' || char === ')') {
       tokens.push({ type: 'paren', value: char });
       i++;
@@ -235,7 +228,6 @@ export const calculator = tool({
   description:
     'Evaluate mathematical expressions. Supports +, -, *, /, ^ (power), parentheses, and functions: sqrt, sin, cos, tan, log, abs, round, floor, ceil. Constants: pi, e.',
   parameters: calculatorParams,
-  // eslint-disable-next-line @typescript-eslint/require-await
   execute: async ({ expression }) => {
     try {
       const result = evaluateExpression(expression);

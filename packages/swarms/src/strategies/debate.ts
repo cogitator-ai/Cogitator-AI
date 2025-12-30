@@ -27,7 +27,6 @@ export class DebateStrategy extends BaseStrategy {
     const agentResults = new Map<string, RunResult>();
     const debateTranscript: SwarmMessage[] = [];
 
-    // Find debating agents (advocate and critic, or any agents)
     const advocates = this.coordinator.getAgents().filter(
       (a) => a.metadata.role === 'advocate'
     );
@@ -38,7 +37,6 @@ export class DebateStrategy extends BaseStrategy {
       (a) => a.metadata.role === 'moderator'
     );
 
-    // If no specific roles, use all agents as debaters
     let debaters = [...advocates, ...critics];
     if (debaters.length === 0) {
       debaters = this.coordinator.getAgents().filter(
@@ -52,7 +50,6 @@ export class DebateStrategy extends BaseStrategy {
 
     const moderator = moderators.length > 0 ? moderators[0] : null;
 
-    // Initialize debate on blackboard
     this.coordinator.blackboard.write('debate', {
       topic: options.input,
       rounds: this.config.rounds,
@@ -60,18 +57,15 @@ export class DebateStrategy extends BaseStrategy {
       arguments: [],
     }, 'system');
 
-    // Run debate rounds
     for (let round = 1; round <= this.config.rounds; round++) {
       this.coordinator.events.emit('debate:round', { round, total: this.config.rounds });
 
-      // Update round on blackboard
       const debateState = this.coordinator.blackboard.read<{ arguments: unknown[] }>('debate');
       this.coordinator.blackboard.write('debate', {
         ...debateState,
         currentRound: round,
       }, 'system');
 
-      // Each debater takes a turn
       for (const debater of debaters) {
         const previousArguments = this.getPreviousArguments(debateTranscript, round);
 
@@ -109,7 +103,6 @@ export class DebateStrategy extends BaseStrategy {
         );
         agentResults.set(`${debater.agent.name}_round${round}`, result);
 
-        // Add to transcript
         const message: SwarmMessage = {
           id: `debate_${round}_${debater.agent.name}`,
           swarmId: '',
@@ -123,7 +116,6 @@ export class DebateStrategy extends BaseStrategy {
         };
         debateTranscript.push(message);
 
-        // Store argument on blackboard
         const currentDebate = this.coordinator.blackboard.read<{ arguments: unknown[] }>('debate');
         currentDebate.arguments.push({
           agent: debater.agent.name,
@@ -135,7 +127,6 @@ export class DebateStrategy extends BaseStrategy {
       }
     }
 
-    // Moderator synthesizes the debate
     let finalOutput: string;
     let moderatorResult: RunResult | undefined;
 
@@ -168,7 +159,6 @@ Please provide:
       agentResults.set(moderator.agent.name, moderatorResult);
       finalOutput = moderatorResult.output;
     } else {
-      // Without moderator, synthesize debate summary
       finalOutput = this.synthesizeDebate(debateTranscript, options.input);
     }
 

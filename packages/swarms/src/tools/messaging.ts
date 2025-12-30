@@ -30,8 +30,7 @@ export function createMessagingTools(messageBus: MessageBus, currentAgent: strin
       });
 
       if (waitForReply) {
-        // Poll for response (simplified - in production would use proper async)
-        const maxWait = 30000; // 30 seconds
+        const maxWait = 30000;
         const pollInterval = 500;
         let waited = 0;
 
@@ -83,7 +82,6 @@ export function createMessagingTools(messageBus: MessageBus, currentAgent: strin
     execute: async ({ limit = 10, from, channel }) => {
       let messages = messageBus.getMessages(currentAgent);
 
-      // Apply filters
       if (from) {
         messages = messages.filter(m => m.from === from);
       }
@@ -91,7 +89,6 @@ export function createMessagingTools(messageBus: MessageBus, currentAgent: strin
         messages = messages.filter(m => m.channel === channel);
       }
 
-      // Limit
       messages = messages.slice(0, limit);
 
       return {
@@ -134,7 +131,6 @@ export function createMessagingTools(messageBus: MessageBus, currentAgent: strin
       message: z.string().describe('The reply content'),
     }),
     execute: async ({ originalMessageId, message }) => {
-      // Find original message to get sender
       const allMessages = messageBus.getMessages(currentAgent);
       const original = allMessages.find(m => m.id === originalMessageId);
 

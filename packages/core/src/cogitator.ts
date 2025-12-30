@@ -23,14 +23,15 @@ import {
   PostgresAdapter,
   ContextBuilder,
   countMessageTokens,
+  countMessagesTokens,
   type ContextBuilderDeps,
 } from '@cogitator/memory';
 import { getPrice } from '@cogitator/models';
 import { type Agent } from './agent.js';
 import { ToolRegistry } from './registry.js';
 import { createLLMBackend, parseModel } from './llm/index.js';
+import { getLogger } from './logger.js';
 
-// Dynamic import type for sandbox
 type SandboxManager = {
   initialize(): Promise<void>;
   execute(
@@ -66,7 +67,6 @@ export class Cogitator {
     const provider = this.config.memory.adapter;
     let adapter: MemoryAdapter;
 
-    // Build the correct adapter based on provider
     if (provider === 'memory') {
       adapter = new InMemoryAdapter({
         provider: 'memory',
@@ -75,7 +75,7 @@ export class Cogitator {
     } else if (provider === 'redis') {
       const url = this.config.memory.redis?.url;
       if (!url) {
-        console.warn('Redis adapter requires url in config');
+        getLogger().warn('Redis adapter requires url in config');
         return;
       }
       adapter = new RedisAdapter({
@@ -86,7 +86,7 @@ export class Cogitator {
     } else if (provider === 'postgres') {
       const connectionString = this.config.memory.postgres?.connectionString;
       if (!connectionString) {
-        console.warn('Postgres adapter requires connectionString in config');
+        getLogger().warn('Postgres adapter requires connectionString in config');
         return;
       }
       adapter = new PostgresAdapter({
@@ -95,13 +95,13 @@ export class Cogitator {
         ...this.config.memory.postgres,
       });
     } else {
-      console.warn(`Unknown memory provider: ${provider}`);
+      getLogger().warn(`Unknown memory provider: ${provider}`);
       return;
     }
 
     const result = await adapter.connect();
     if (!result.success) {
-      console.warn('Memory adapter connection failed:', result.error);
+      getLogger().warn('Memory adapter connection failed', { error: result.error });
       return;
     }
 
@@ -134,8 +134,7 @@ export class Cogitator {
       await this.sandboxManager.initialize();
       this.sandboxInitialized = true;
     } catch {
-      // Sandbox package not installed or Docker not available
-      this.sandboxInitialized = true; // Mark as initialized to avoid retrying
+      this.sandboxInitialized = true;
     }
   }
 
@@ -147,7 +146,6 @@ export class Cogitator {
     options: RunOptions,
     threadId: string
   ): Promise<Message[]> {
-    // If no memory or disabled, use simple approach
     if (!this.memoryAdapter || options.useMemory === false) {
       return [
         { role: 'system', content: agent.instructions },
@@ -155,24 +153,20 @@ export class Cogitator {
       ];
     }
 
-    // Ensure thread exists
     const threadResult = await this.memoryAdapter.getThread(threadId);
     if (!threadResult.success || !threadResult.data) {
       await this.memoryAdapter.createThread(agent.id, { agentId: agent.id });
     }
 
-    // Use ContextBuilder if available and history loading is enabled
     if (this.contextBuilder && options.loadHistory !== false) {
       const ctx = await this.contextBuilder.build({
         threadId,
         agentId: agent.id,
         systemPrompt: agent.instructions,
       });
-      // Add current user input
       return [...ctx.messages, { role: 'user', content: options.input }];
     }
 
-    // Fallback: manual history load
     if (options.loadHistory !== false) {
       const entries = await this.memoryAdapter.getEntries({ threadId, limit: 20 });
       const messages: Message[] = [{ role: 'system', content: agent.instructions }];
@@ -209,7 +203,7 @@ export class Cogitator {
         tokenCount: countMessageTokens(message),
       });
     } catch (error) {
-      console.warn('Failed to save memory entry:', error);
+      getLogger().warn('Failed to save memory entry', { error });
     }
   }
 
@@ -253,32 +247,25 @@ export class Cogitator {
     const startTime = Date.now();
     const spans: Span[] = [];
 
-    // Notify run start
     options.onRunStart?.({ runId, agentId: agent.id, input: options.input, threadId });
 
-    // Create root span for the entire run
     const rootSpanId = `span_${nanoid(12)}`;
 
     try {
-      // Initialize memory on first run if configured
       if (this.config.memory?.adapter && !this.memoryInitialized) {
         await this.initializeMemory();
       }
 
-      // Register agent's tools
       const registry = new ToolRegistry();
       if (agent.tools && agent.tools.length > 0) {
         registry.registerMany(agent.tools);
       }
 
-      // Get LLM backend
       const backend = this.getBackend(agent.model);
       const { model } = parseModel(agent.model);
 
-      // Build initial messages (with history if memory enabled)
       const messages = await this.buildInitialMessages(agent, options, threadId);
 
-      // Add context if provided
       if (options.context && messages.length > 0 && messages[0].role === 'system') {
         const contextStr = Object.entries(options.context)
           .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
@@ -286,7 +273,6 @@ export class Cogitator {
         messages[0].content += `\n\nContext:\n${contextStr}`;
       }
 
-      // Save user input to memory (if this is a new message, not from history)
       if (this.memoryAdapter && options.saveHistory !== false && options.useMemory !== false) {
         await this.saveEntry(threadId, { role: 'user', content: options.input });
       }
@@ -297,13 +283,11 @@ export class Cogitator {
       let iterations = 0;
       const maxIterations = agent.config?.maxIterations ?? 10;
 
-      // Main agent loop
       while (iterations < maxIterations) {
         iterations++;
 
         const llmSpanStart = Date.now();
 
-        // Call LLM
         let response;
         if (options.stream && options.onToken) {
           response = await this.streamChat(
@@ -326,7 +310,6 @@ export class Cogitator {
           });
         }
 
-        // Create LLM span
         const llmSpan = this.createSpan(
           'llm.chat',
           traceId,
@@ -349,19 +332,16 @@ export class Cogitator {
         totalInputTokens += response.usage.inputTokens;
         totalOutputTokens += response.usage.outputTokens;
 
-        // Add assistant message
         const assistantMessage: Message = {
           role: 'assistant',
           content: response.content,
         };
         messages.push(assistantMessage);
 
-        // Save assistant message to memory
         if (this.memoryAdapter && options.saveHistory !== false && options.useMemory !== false) {
           await this.saveEntry(threadId, assistantMessage, response.toolCalls);
         }
 
-        // Check if we need to call tools
         if (response.finishReason === 'tool_calls' && response.toolCalls) {
           for (const toolCall of response.toolCalls) {
             allToolCalls.push(toolCall);
@@ -371,7 +351,6 @@ export class Cogitator {
             const result = await this.executeTool(registry, toolCall, runId, agent.id);
             const toolSpanEnd = Date.now();
 
-            // Create tool span
             const toolSpan = this.createSpan(
               `tool.${toolCall.name}`,
               traceId,
@@ -393,7 +372,6 @@ export class Cogitator {
 
             options.onToolResult?.(result);
 
-            // Add tool result message
             const toolMessage: Message = {
               role: 'tool',
               content: JSON.stringify(result.result),
@@ -402,13 +380,11 @@ export class Cogitator {
             };
             messages.push(toolMessage);
 
-            // Save tool message to memory
             if (this.memoryAdapter && options.saveHistory !== false && options.useMemory !== false) {
               await this.saveEntry(threadId, toolMessage, undefined, [result]);
             }
           }
         } else {
-          // No more tool calls, we're done
           break;
         }
       }
@@ -416,7 +392,6 @@ export class Cogitator {
       const endTime = Date.now();
       const lastAssistantMessage = messages.filter((m) => m.role === 'assistant').pop();
 
-      // Create root span (after we know the end time)
       const rootSpan = this.createSpan(
         'agent.run',
         traceId,
@@ -438,7 +413,6 @@ export class Cogitator {
         'server',
         options.onSpan
       );
-      // Insert root span at the beginning
       spans.unshift(rootSpan);
 
       const result: RunResult = {
@@ -461,14 +435,12 @@ export class Cogitator {
         },
       };
 
-      // Notify run complete
       options.onRunComplete?.(result);
 
       return result;
     } catch (error) {
       const endTime = Date.now();
 
-      // Create error root span
       const errorSpan = this.createSpan(
         'agent.run',
         traceId,
@@ -488,7 +460,6 @@ export class Cogitator {
       );
       spans.unshift(errorSpan);
 
-      // Notify run error
       options.onRunError?.(error instanceof Error ? error : new Error(String(error)), runId);
 
       throw error;
@@ -511,6 +482,7 @@ export class Cogitator {
     let finishReason: 'stop' | 'tool_calls' | 'length' | 'error' = 'stop';
     let inputTokens = 0;
     let outputTokens = 0;
+    let hasUsageFromStream = false;
 
     const stream = backend.chatStream({
       model,
@@ -526,7 +498,6 @@ export class Cogitator {
       if (chunk.delta.content) {
         content += chunk.delta.content;
         onToken(chunk.delta.content);
-        outputTokens++;
       }
       if (chunk.delta.toolCalls) {
         toolCalls = chunk.delta.toolCalls as ToolCall[];
@@ -534,10 +505,17 @@ export class Cogitator {
       if (chunk.finishReason) {
         finishReason = chunk.finishReason;
       }
+      if (chunk.usage) {
+        inputTokens = chunk.usage.inputTokens;
+        outputTokens = chunk.usage.outputTokens;
+        hasUsageFromStream = true;
+      }
     }
 
-    // Estimate input tokens (rough)
-    inputTokens = messages.reduce((acc, m) => acc + Math.ceil(m.content.length / 4), 0);
+    if (!hasUsageFromStream) {
+      inputTokens = countMessagesTokens(messages);
+      outputTokens = Math.ceil(content.length / 4);
+    }
 
     return {
       id: `stream_${nanoid(8)}`,
@@ -572,12 +550,10 @@ export class Cogitator {
       };
     }
 
-    // Check if tool has sandbox config and should use Docker
     if (tool.sandbox?.type === 'docker') {
       return this.executeInSandbox(tool, toolCall, runId, agentId);
     }
 
-    // Execute normally (native)
     const context: ToolContext = {
       agentId,
       runId,
@@ -612,11 +588,8 @@ export class Cogitator {
   ): Promise<ToolResult> {
     await this.initializeSandbox();
 
-    // If sandbox not available, fall back to native execution with warning
     if (!this.sandboxManager) {
-      console.warn(
-        `[cogitator] Sandbox unavailable for tool ${tool.name}, executing natively`
-      );
+      getLogger().warn('Sandbox unavailable, executing natively', { tool: tool.name });
       const context: ToolContext = {
         agentId,
         runId,
@@ -635,7 +608,6 @@ export class Cogitator {
       }
     }
 
-    // Execute in sandbox
     const args = toolCall.arguments as Record<string, unknown>;
     const sandboxConfig = tool.sandbox!;
 
@@ -696,7 +668,6 @@ export class Cogitator {
     const price = getPrice(modelName);
 
     if (!price) {
-      // Local/unknown models are free
       return 0;
     }
 

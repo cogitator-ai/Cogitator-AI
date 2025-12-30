@@ -82,7 +82,6 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
   async addEntry(
     entry: Omit<MemoryEntry, 'id' | 'createdAt'>
   ): Promise<MemoryResult<MemoryEntry>> {
-    // Enforce max entries limit with LRU eviction
     if (this.entries.size >= this.maxEntries) {
       const oldestId = this.entries.keys().next().value;
       if (oldestId) {
@@ -112,7 +111,6 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
       .map((id) => this.entries.get(id))
       .filter((e): e is MemoryEntry => e !== undefined);
 
-    // Apply filters
     if (options.before) {
       entries = entries.filter((e) => e.createdAt < options.before!);
     }
@@ -127,10 +125,8 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
       }));
     }
 
-    // Sort by createdAt ascending (chronological)
     entries.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
-    // Apply limit from the end (most recent)
     if (options.limit && entries.length > options.limit) {
       entries = entries.slice(-options.limit);
     }
@@ -164,7 +160,6 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
     return this.success(undefined);
   }
 
-  // For testing: get internal state
   get stats() {
     return {
       threads: this.threads.size,

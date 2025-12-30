@@ -75,7 +75,6 @@ export class Swarm {
    * Run the swarm with the configured strategy
    */
   async run(options: SwarmRunOptions): Promise<StrategyResult> {
-    // Emit start event
     this.coordinator.events.emit('swarm:start', {
       swarmId: this.id,
       strategy: this.config.strategy,
@@ -83,10 +82,8 @@ export class Swarm {
     });
 
     try {
-      // Execute strategy
       const result = await this.strategy.execute(options);
 
-      // Emit complete event
       this.coordinator.events.emit('swarm:complete', {
         swarmId: this.id,
         outputLength: typeof result.output === 'string' ? result.output.length : 0,
@@ -95,7 +92,6 @@ export class Swarm {
 
       return result;
     } catch (error) {
-      // Emit error event
       this.coordinator.events.emit('swarm:error', {
         swarmId: this.id,
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -187,7 +183,6 @@ export class Swarm {
   }
 
   private validateConfig(config: SwarmConfig): SwarmConfig {
-    // Validate strategy
     const validStrategies = [
       'hierarchical',
       'round-robin',
@@ -203,7 +198,6 @@ export class Swarm {
       );
     }
 
-    // Validate strategy-specific requirements
     switch (config.strategy) {
       case 'hierarchical':
         if (!config.supervisor) {

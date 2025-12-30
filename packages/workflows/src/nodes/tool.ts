@@ -32,20 +32,16 @@ export function toolNode<
   return {
     name: tool.name,
     fn: async (ctx): Promise<NodeResult<S>> => {
-      // Map state to tool arguments
       const args = options.argsMapper(ctx.state, ctx.input);
 
-      // Create tool context
       const toolContext: ToolContext = {
         agentId: 'workflow',
         runId: ctx.workflowId,
         signal: new AbortController().signal,
       };
 
-      // Execute tool
       const result = await tool.execute(args, toolContext);
 
-      // Map result to state
       const stateUpdate = options.stateMapper?.(result);
 
       return {

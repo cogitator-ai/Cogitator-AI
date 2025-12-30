@@ -60,7 +60,6 @@ describe('fileWrite tool', () => {
     expect(result).toHaveProperty('success', true);
     expect(result).toHaveProperty('size', 12);
 
-    // Verify
     const read = await fileRead.execute({ path: testPath }, mockContext);
     expect((read as { content: string }).content).toBe('Test content');
   });
@@ -73,7 +72,6 @@ describe('fileWrite tool', () => {
     );
     expect(result).toHaveProperty('success', true);
 
-    // Verify
     const read = await fileRead.execute({ path: testPath }, mockContext);
     expect((read as { content: string }).content).toBe('Deep content');
   });
@@ -100,7 +98,7 @@ describe('fileList tool', () => {
     const names = entries.map((e) => e.name);
     expect(names).toContain('test.txt');
     expect(names).toContain('subdir');
-    expect(names).not.toContain('.hidden'); // Hidden by default
+    expect(names).not.toContain('.hidden');
   });
 
   it('includes hidden files when requested', async () => {
@@ -166,7 +164,6 @@ describe('fileDelete tool', () => {
     const testPath = join(TEST_DIR, 'empty-dir-2');
     await mkdir(testPath, { recursive: true });
 
-    // Note: rm requires recursive: true even for empty directories in Node.js
     const result = await fileDelete.execute({ path: testPath, recursive: true }, mockContext);
     expect(result).toHaveProperty('success', true);
     expect(result).toHaveProperty('type', 'directory');

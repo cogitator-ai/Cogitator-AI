@@ -4,9 +4,6 @@
 
 import type { Message, ToolCall, ToolResult } from './message.js';
 
-// ============================================
-// Core Memory Types
-// ============================================
 
 export type MemoryType = 'conversation' | 'fact' | 'embedding';
 
@@ -64,17 +61,11 @@ export interface Embedding {
   metadata?: Record<string, unknown>;
 }
 
-// ============================================
-// Memory Result Type (Error Handling)
-// ============================================
 
 export type MemoryResult<T> =
   | { success: true; data: T }
   | { success: false; error: string };
 
-// ============================================
-// Adapter Configuration Types
-// ============================================
 
 export type MemoryProvider = 'memory' | 'redis' | 'postgres';
 
@@ -115,9 +106,6 @@ export interface PostgresAdapterConfig extends MemoryAdapterConfig {
   poolSize?: number;
 }
 
-// ============================================
-// Query Options
-// ============================================
 
 export interface MemoryQueryOptions {
   threadId: string;
@@ -139,9 +127,6 @@ export interface SemanticSearchOptions {
   };
 }
 
-// ============================================
-// Adapter Interfaces
-// ============================================
 
 /**
  * Core memory adapter - all adapters implement this
@@ -149,7 +134,6 @@ export interface SemanticSearchOptions {
 export interface MemoryAdapter {
   readonly provider: MemoryProvider;
 
-  // Thread operations
   createThread(
     agentId: string,
     metadata?: Record<string, unknown>
@@ -161,7 +145,6 @@ export interface MemoryAdapter {
   ): Promise<MemoryResult<Thread>>;
   deleteThread(threadId: string): Promise<MemoryResult<void>>;
 
-  // Memory entry operations
   addEntry(
     entry: Omit<MemoryEntry, 'id' | 'createdAt'>
   ): Promise<MemoryResult<MemoryEntry>>;
@@ -170,7 +153,6 @@ export interface MemoryAdapter {
   deleteEntry(entryId: string): Promise<MemoryResult<void>>;
   clearThread(threadId: string): Promise<MemoryResult<void>>;
 
-  // Connection lifecycle
   connect(): Promise<MemoryResult<void>>;
   disconnect(): Promise<MemoryResult<void>>;
 }
@@ -205,9 +187,6 @@ export interface EmbeddingAdapter {
   deleteBySource(sourceId: string): Promise<MemoryResult<void>>;
 }
 
-// ============================================
-// Embedding Service Interface
-// ============================================
 
 export interface EmbeddingService {
   embed(text: string): Promise<number[]>;
@@ -233,9 +212,6 @@ export interface OllamaEmbeddingConfig {
 
 export type EmbeddingServiceConfig = OpenAIEmbeddingConfig | OllamaEmbeddingConfig;
 
-// ============================================
-// Context Builder Types
-// ============================================
 
 export type ContextStrategy = 'recent' | 'relevant' | 'hybrid';
 
@@ -262,9 +238,6 @@ export interface BuiltContext {
   };
 }
 
-// ============================================
-// Memory Configuration for Cogitator
-// ============================================
 
 export interface MemoryConfig {
   adapter?: MemoryProvider;

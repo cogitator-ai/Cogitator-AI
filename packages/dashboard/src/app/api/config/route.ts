@@ -30,10 +30,8 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const action = searchParams.get('action');
 
-    // Load config using @cogitator/config
     if (action === 'load-from-file') {
       try {
-        // Try to load from cogitator.yaml in project root
         const config = await loadConfig({
           configPath: process.cwd(),
         });
@@ -74,7 +72,6 @@ export async function GET(request: NextRequest) {
     }
 
     if (action === 'schema') {
-      // Return JSON Schema for the config
       return NextResponse.json({
         schema: {
           type: 'object',
@@ -112,11 +109,9 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Default: return current config from DB and environment
     const config = await getCogitatorConfig();
     const allConfig = await getAllConfig();
     
-    // Check environment variables
     const envVars = {
       POSTGRES_HOST: process.env.POSTGRES_HOST || 'localhost',
       POSTGRES_PORT: process.env.POSTGRES_PORT || '5432',
@@ -128,7 +123,6 @@ export async function GET(request: NextRequest) {
       OLLAMA_URL: process.env.OLLAMA_URL || 'http://localhost:11434',
     };
 
-    // Try to load env config using @cogitator/config
     let envConfig;
     try {
       envConfig = loadEnvConfig();

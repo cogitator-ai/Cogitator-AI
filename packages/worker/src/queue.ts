@@ -33,7 +33,6 @@ export class JobQueue {
 
     const connection = config.redis.cluster
       ? {
-          // Cluster mode - use hash tag prefix for key routing
           host: config.redis.cluster.nodes[0]?.host ?? 'localhost',
           port: config.redis.cluster.nodes[0]?.port ?? 6379,
           password: config.redis.password,
@@ -187,7 +186,7 @@ export class JobQueue {
       failed,
       delayed,
       depth: waiting + delayed,
-      workerCount: 0, // Updated by worker pool
+      workerCount: 0,
     };
   }
 

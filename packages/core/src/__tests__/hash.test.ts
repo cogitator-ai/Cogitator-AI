@@ -13,7 +13,6 @@ describe('hash tool', () => {
     expect(result).toHaveProperty('hash');
     expect(result).toHaveProperty('algorithm', 'sha256');
     expect(result).toHaveProperty('encoding', 'hex');
-    // Known sha256 hash of "hello"
     expect((result as { hash: string }).hash).toBe(
       '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824'
     );
@@ -32,7 +31,7 @@ describe('hash tool', () => {
   it('computes sha512', async () => {
     const result = await hash.execute({ data: 'hello', algorithm: 'sha512' }, mockContext);
     const hashValue = (result as { hash: string }).hash;
-    expect(hashValue).toHaveLength(128); // sha512 hex is 128 chars
+    expect(hashValue).toHaveLength(128);
   });
 
   it('supports base64 encoding', async () => {

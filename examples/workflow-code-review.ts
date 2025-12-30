@@ -17,7 +17,6 @@ const cog = new Cogitator({
   },
 });
 
-// Tools
 const fetchPRDiff = tool({
   name: 'fetch_pr_diff',
   description: 'Fetch the diff for a pull request',
@@ -27,7 +26,6 @@ const fetchPRDiff = tool({
   }),
   execute: async ({ prNumber, repo }) => {
     console.log(`[Tool] Fetching PR #${prNumber} from ${repo}`);
-    // Mock PR diff
     return {
       prNumber,
       repo,
@@ -99,7 +97,6 @@ const mergePR = tool({
   },
 });
 
-// Agents
 const codeAnalyzer = new Agent({
   name: 'code-analyzer',
   model: 'gpt-4o',
@@ -179,20 +176,17 @@ const mergeAgent = new Agent({
   temperature: 0,
 });
 
-// Create the workflow
 const codeReviewWorkflow = new Workflow({
   name: 'code-review',
   description: 'Automated code review workflow with human approval',
 
   steps: [
-    // Step 1: Fetch and analyze PR
     step('analyze', {
       agent: codeAnalyzer,
       input: (ctx) => `Analyze PR #${ctx.input.prNumber} in ${ctx.input.repo}`,
       timeout: 60_000,
     }),
 
-    // Step 2: Security scan (parallel with Step 1 if no dependencies)
     step('security-scan', {
       agent: securityScanner,
       input: (ctx) => `
@@ -203,7 +197,6 @@ const codeReviewWorkflow = new Workflow({
       timeout: 60_000,
     }),
 
-    // Step 3: Run CI
     step('run-ci', {
       type: 'tool',
       tool: runCI,
@@ -211,7 +204,6 @@ const codeReviewWorkflow = new Workflow({
       dependsOn: ['analyze'],
     }),
 
-    // Step 4: Check if auto-approve possible
     step('check-auto-approve', {
       type: 'function',
       execute: async (ctx) => {
@@ -233,7 +225,6 @@ const codeReviewWorkflow = new Workflow({
       dependsOn: ['analyze', 'security-scan', 'run-ci'],
     }),
 
-    // Step 5: Human approval (only if can't auto-approve)
     step('human-approval', {
       type: 'human',
       prompt: (ctx) => `
@@ -258,12 +249,11 @@ const codeReviewWorkflow = new Workflow({
         **Do you approve this PR for merge?**
       `,
       options: ['approve', 'request-changes', 'reject'],
-      timeout: 24 * 60 * 60 * 1000, // 24 hours
+      timeout: 24 * 60 * 60 * 1000,
       dependsOn: ['check-auto-approve'],
       condition: (ctx) => !ctx.steps['check-auto-approve'].output.canAutoApprove,
     }),
 
-    // Step 6: Post review comment
     step('post-review', {
       agent: reviewSummarizer,
       input: (ctx) => `
@@ -279,7 +269,6 @@ const codeReviewWorkflow = new Workflow({
       dependencyMode: 'completed',
     }),
 
-    // Step 7: Merge if approved
     step('merge', {
       agent: mergeAgent,
       input: (ctx) => {
@@ -310,11 +299,9 @@ const codeReviewWorkflow = new Workflow({
 async function main() {
   console.log('Starting code review workflow example...\n');
 
-  // Mock human approval for demo
   cog.on('human-approval-required', (event: any) => {
     console.log('\n[Human Approval Required]');
     console.log(event.prompt);
-    // Auto-approve for demo
     setTimeout(() => event.respond('approve'), 1000);
   });
 

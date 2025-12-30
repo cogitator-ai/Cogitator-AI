@@ -65,7 +65,7 @@ describe('calculator tool', () => {
 
     it('handles right-associative power', async () => {
       const result = await calculator.execute({ expression: '2^2^3' }, mockContext);
-      expect(result).toEqual({ result: 256, expression: '2^2^3' }); // 2^(2^3) = 2^8 = 256
+      expect(result).toEqual({ result: 256, expression: '2^2^3' });
     });
   });
 
@@ -149,12 +149,12 @@ describe('calculator tool', () => {
   describe('complex expressions', () => {
     it('evaluates compound expression', async () => {
       const result = await calculator.execute({ expression: 'sqrt(16) + 2^3 - 4' }, mockContext);
-      expect(result).toEqual({ result: 8, expression: 'sqrt(16) + 2^3 - 4' }); // 4 + 8 - 4 = 8
+      expect(result).toEqual({ result: 8, expression: 'sqrt(16) + 2^3 - 4' });
     });
 
     it('handles function with expression argument', async () => {
       const result = await calculator.execute({ expression: 'sqrt(9 + 16)' }, mockContext);
-      expect(result).toEqual({ result: 5, expression: 'sqrt(9 + 16)' }); // sqrt(25) = 5
+      expect(result).toEqual({ result: 5, expression: 'sqrt(9 + 16)' });
     });
   });
 

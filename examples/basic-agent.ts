@@ -7,7 +7,6 @@
 import { Cogitator, Agent, tool } from '@cogitator/core';
 import { z } from 'zod';
 
-// Create Cogitator instance
 const cog = new Cogitator({
   llm: {
     defaultProvider: 'ollama',
@@ -17,7 +16,6 @@ const cog = new Cogitator({
   },
 });
 
-// Define a simple tool
 const getCurrentTime = tool({
   name: 'get_current_time',
   description: 'Get the current date and time',
@@ -41,13 +39,11 @@ const calculate = tool({
     expression: z.string().describe('Mathematical expression (e.g., "2 + 2 * 3")'),
   }),
   execute: async ({ expression }) => {
-    // In production, use a proper math library like mathjs
     const result = Function(`'use strict'; return (${expression})`)();
     return { expression, result };
   },
 });
 
-// Create an agent
 const assistant = new Agent({
   name: 'helpful-assistant',
   model: 'llama3.1:8b',
@@ -61,11 +57,9 @@ const assistant = new Agent({
   temperature: 0.7,
 });
 
-// Run the agent
 async function main() {
   console.log('Starting basic agent example...\n');
 
-  // Example 1: Simple question
   console.log('Example 1: Simple question');
   const result1 = await cog.run(assistant, {
     input: 'What is the capital of France?',
@@ -74,7 +68,6 @@ async function main() {
   console.log('Tokens used:', result1.usage.totalTokens);
   console.log();
 
-  // Example 2: Using a tool
   console.log('Example 2: Using calculate tool');
   const result2 = await cog.run(assistant, {
     input: 'What is 15% of 250?',
@@ -86,7 +79,6 @@ async function main() {
   );
   console.log();
 
-  // Example 3: Using another tool
   console.log('Example 3: Using time tool');
   const result3 = await cog.run(assistant, {
     input: 'What time is it in Tokyo?',
@@ -94,7 +86,6 @@ async function main() {
   console.log('Response:', result3.output);
   console.log();
 
-  // Example 4: Streaming response
   console.log('Example 4: Streaming response');
   process.stdout.write('Response: ');
   await cog.run(assistant, {
@@ -104,7 +95,6 @@ async function main() {
   });
   console.log('\n');
 
-  // Cleanup
   await cog.close();
 }
 

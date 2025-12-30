@@ -81,7 +81,6 @@ describe('NativeSandboxExecutor', () => {
 
       const result = await executor.execute(request, defaultConfig);
       assertSuccess(result);
-      // On macOS /tmp is symlinked to /private/tmp
       expect(result.data.stdout.trim()).toMatch(/\/?tmp$/);
     });
 

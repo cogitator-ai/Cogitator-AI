@@ -14,7 +14,7 @@ import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 
-const DEFAULT_TTL = 24 * 60 * 60 * 1000; // 24 hours
+const DEFAULT_TTL = 24 * 60 * 60 * 1000;
 
 /**
  * Idempotency check result
@@ -87,7 +87,6 @@ export class InMemoryIdempotencyStore extends BaseIdempotencyStore {
       return { isDuplicate: false };
     }
 
-    // Check expiration
     if (record.expiresAt && record.expiresAt < Date.now()) {
       this.records.delete(key);
       return { isDuplicate: false };
@@ -122,7 +121,6 @@ export class InMemoryIdempotencyStore extends BaseIdempotencyStore {
 
     if (!record) return null;
 
-    // Check expiration
     if (record.expiresAt && record.expiresAt < Date.now()) {
       this.records.delete(key);
       return null;
@@ -182,13 +180,11 @@ export class FileIdempotencyStore extends BaseIdempotencyStore {
     try {
       await fs.mkdir(this.directory, { recursive: true });
     } catch {
-      // Directory may exist
     }
     this.initialized = true;
   }
 
   private getFilePath(key: string): string {
-    // Use first 2 chars as subdirectory for better file distribution
     const subdir = key.slice(0, 2);
     return join(this.directory, subdir, `${key}.json`);
   }
@@ -209,7 +205,6 @@ export class FileIdempotencyStore extends BaseIdempotencyStore {
     const now = Date.now();
     const filePath = this.getFilePath(key);
 
-    // Ensure subdirectory exists
     const dir = filePath.substring(0, filePath.lastIndexOf('/'));
     await fs.mkdir(dir, { recursive: true }).catch(() => {});
 
@@ -239,7 +234,6 @@ export class FileIdempotencyStore extends BaseIdempotencyStore {
       const content = await fs.readFile(filePath, 'utf-8');
       const record = JSON.parse(content) as IdempotencyRecord;
 
-      // Check expiration
       if (record.expiresAt && record.expiresAt < Date.now()) {
         await this.delete(key);
         return null;
@@ -276,7 +270,6 @@ export class FileIdempotencyStore extends BaseIdempotencyStore {
           }
         }
       } catch {
-        // Directory may not exist
       }
     };
 
@@ -292,7 +285,6 @@ export async function idempotent<T>(
   key: string,
   fn: () => Promise<T>
 ): Promise<T> {
-  // Check if already executed
   const check = await store.check(key);
 
   if (check.isDuplicate && check.record) {
@@ -304,7 +296,6 @@ export async function idempotent<T>(
     return check.record.result as T;
   }
 
-  // Execute and store result
   try {
     const result = await fn();
     await store.store(key, result);

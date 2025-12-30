@@ -60,7 +60,6 @@ export class ConsoleSpanExporter implements SpanExporterInstance {
   }
 
   async shutdown(): Promise<void> {
-    // No cleanup needed
   }
 }
 
@@ -91,7 +90,6 @@ export class OTLPSpanExporter implements SpanExporterInstance {
     this.batchSize = config.batchSize ?? 512;
     this.flushInterval = config.flushInterval ?? 5000;
 
-    // Start background flush timer
     this.flushTimer = setInterval(() => {
       void this.flush();
     }, this.flushInterval);
@@ -122,12 +120,10 @@ export class OTLPSpanExporter implements SpanExporterInstance {
         console.error(
           `OTLP export failed: ${response.status.toString()} ${response.statusText}`
         );
-        // Put spans back for retry
         this.pendingSpans.unshift(...spansToExport);
       }
     } catch (error) {
       console.error('OTLP export error:', error);
-      // Put spans back for retry
       this.pendingSpans.unshift(...spansToExport);
     }
   }
@@ -290,7 +286,7 @@ export class ZipkinSpanExporter implements SpanExporterInstance {
       traceId: span.traceId,
       id: span.spanId,
       name: span.name,
-      timestamp: span.startTime * 1000, // Zipkin uses microseconds
+      timestamp: span.startTime * 1000,
       duration: span.endTime
         ? (span.endTime - span.startTime) * 1000
         : undefined,
@@ -309,12 +305,10 @@ export class ZipkinSpanExporter implements SpanExporterInstance {
       result.kind = kind;
     }
 
-    // Convert attributes to tags
     for (const [key, value] of Object.entries(span.attributes)) {
       result.tags[key] = String(value);
     }
 
-    // Add status
     if (span.status === 'error') {
       result.tags['error'] = 'true';
       if (span.statusMessage) {
@@ -322,7 +316,6 @@ export class ZipkinSpanExporter implements SpanExporterInstance {
       }
     }
 
-    // Convert events to annotations
     for (const event of span.events) {
       result.annotations.push({
         timestamp: event.timestamp * 1000,
@@ -350,7 +343,6 @@ export class ZipkinSpanExporter implements SpanExporterInstance {
   }
 
   async shutdown(): Promise<void> {
-    // No cleanup needed for sync export
   }
 }
 
@@ -382,11 +374,9 @@ export class CompositeSpanExporter implements SpanExporterInstance {
  */
 export class NoopSpanExporter implements SpanExporterInstance {
   async export(): Promise<void> {
-    // No-op
   }
 
   async shutdown(): Promise<void> {
-    // No-op
   }
 }
 
@@ -407,7 +397,6 @@ export function createSpanExporter(config: ExporterConfig): SpanExporterInstance
       });
 
     case 'jaeger':
-      // Jaeger supports OTLP natively
       return new OTLPSpanExporter({
         endpoint: config.endpoint ?? 'http://localhost:4318/v1/traces',
         headers: config.headers,
@@ -426,7 +415,6 @@ export function createSpanExporter(config: ExporterConfig): SpanExporterInstance
   }
 }
 
-// OTLP types (simplified)
 interface OTLPTraceData {
   resourceSpans: OTLPResourceSpan[];
 }
@@ -488,7 +476,6 @@ interface OTLPLink {
   attributes: OTLPAttribute[];
 }
 
-// Zipkin types
 interface ZipkinSpan {
   traceId: string;
   id: string;

@@ -27,7 +27,6 @@ export const Badge = forwardRef<HTMLSpanElement, BadgeProps>(
         className={cn(
           'inline-flex items-center font-medium rounded-full',
           {
-            // Variants
             'bg-bg-elevated text-text-secondary': variant === 'default',
             'bg-success/10 text-success': variant === 'success',
             'bg-warning/10 text-warning': variant === 'warning',
@@ -35,7 +34,6 @@ export const Badge = forwardRef<HTMLSpanElement, BadgeProps>(
             'bg-info/10 text-info': variant === 'info',
             'bg-transparent border border-border-default text-text-secondary':
               variant === 'outline',
-            // Sizes
             'px-2 py-0.5 text-xs': size === 'sm',
             'px-2.5 py-1 text-xs': size === 'md',
           },

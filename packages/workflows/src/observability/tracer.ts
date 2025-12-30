@@ -162,7 +162,6 @@ export class WorkflowTracer {
       flushInterval: this.config.flushInterval,
     });
 
-    // Make sample decision once per tracer
     this.sampleDecision = Math.random() < (this.config.sampleRate ?? 1.0);
   }
 
@@ -269,7 +268,6 @@ export class WorkflowTracer {
       status: 'unset',
     };
 
-    // Update trace context
     this.currentTraceContext = {
       traceId,
       spanId,
@@ -310,7 +308,6 @@ export class WorkflowTracer {
       status: 'unset',
     };
 
-    // Update context for child spans
     this.currentTraceContext = {
       traceId,
       spanId,
@@ -398,13 +395,11 @@ export class WorkflowTracer {
           span.statusMessage = message;
         }
 
-        // Remove from stack
         const idx = this.spanStack.indexOf(span);
         if (idx !== -1) {
           this.spanStack.splice(idx, 1);
         }
 
-        // Restore parent context
         const parentSpan = this.spanStack[this.spanStack.length - 1];
         if (parentSpan) {
           this.currentTraceContext = {
@@ -414,7 +409,6 @@ export class WorkflowTracer {
           };
         }
 
-        // Add to completed spans
         this.completedSpans.push(span);
       },
 

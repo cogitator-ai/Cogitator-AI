@@ -103,7 +103,6 @@ describe('Agent', () => {
 
       expect(cloned.name).toBe('cloned-agent');
       expect(cloned.config.temperature).toBe(0.9);
-      // Original unchanged
       expect(original.name).toBe('test-agent');
       expect(original.config.temperature).toBe(0.5);
     });

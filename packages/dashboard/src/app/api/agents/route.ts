@@ -45,7 +45,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate tools exist
     const availableToolNames = getAvailableTools().map((t) => t.name);
     const invalidTools = (body.tools || []).filter(
       (t: string) => !availableToolNames.includes(t)

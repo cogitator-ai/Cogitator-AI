@@ -24,7 +24,6 @@ export class InMemoryMessageBus implements MessageBus {
       throw new Error('Message bus is not enabled');
     }
 
-    // Validate message length
     if (
       this.config.maxMessageLength &&
       message.content.length > this.config.maxMessageLength
@@ -34,7 +33,6 @@ export class InMemoryMessageBus implements MessageBus {
       );
     }
 
-    // Check per-turn limit
     if (this.config.maxMessagesPerTurn) {
       const count = this.agentMessageCounts.get(message.from) ?? 0;
       if (count >= this.config.maxMessagesPerTurn) {
@@ -45,7 +43,6 @@ export class InMemoryMessageBus implements MessageBus {
       this.agentMessageCounts.set(message.from, count + 1);
     }
 
-    // Check total limit
     if (
       this.config.maxTotalMessages &&
       this.messages.length >= this.config.maxTotalMessages
@@ -139,7 +136,6 @@ export class InMemoryMessageBus implements MessageBus {
   }
 
   private notifySubscribers(message: SwarmMessage): void {
-    // Notify specific recipient
     if (message.to !== 'broadcast') {
       const handlers = this.subscriptions.get(message.to);
       if (handlers) {
@@ -147,19 +143,16 @@ export class InMemoryMessageBus implements MessageBus {
           try {
             handler(message);
           } catch {
-            // Ignore handler errors
           }
         }
       }
     } else {
-      // Notify all subscribers except sender for broadcast
       for (const [agentName, handlers] of this.subscriptions) {
         if (agentName !== message.from) {
           for (const handler of handlers) {
             try {
               handler(message);
             } catch {
-              // Ignore handler errors
             }
           }
         }

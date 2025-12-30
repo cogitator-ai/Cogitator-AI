@@ -129,7 +129,7 @@ export class OllamaBackend extends BaseLLMBackend {
         if (!line.trim()) continue;
         const data = JSON.parse(line) as OllamaChatResponse;
 
-        yield {
+        const chunk: ChatStreamChunk = {
           id,
           delta: {
             content: data.message.content,
@@ -141,6 +141,16 @@ export class OllamaBackend extends BaseLLMBackend {
           },
           finishReason: data.done ? (data.message.tool_calls ? 'tool_calls' : 'stop') : undefined,
         };
+
+        if (data.done && (data.prompt_eval_count || data.eval_count)) {
+          chunk.usage = {
+            inputTokens: data.prompt_eval_count ?? 0,
+            outputTokens: data.eval_count ?? 0,
+            totalTokens: (data.prompt_eval_count ?? 0) + (data.eval_count ?? 0),
+          };
+        }
+
+        yield chunk;
       }
     }
   }

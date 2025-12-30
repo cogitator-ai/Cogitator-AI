@@ -50,7 +50,6 @@ describe('WorkflowBuilder', () => {
         .build();
 
       expect(workflow.nodes.size).toBe(3);
-      // Should have 2 edges: a->merge and b->merge
       expect(workflow.edges.filter((e) => e.type === 'sequential').length).toBe(2);
     });
   });
@@ -73,7 +72,7 @@ describe('WorkflowBuilder', () => {
         })
         .build();
 
-      expect(workflow.nodes.size).toBe(4); // start, router, high, low
+      expect(workflow.nodes.size).toBe(4);
       const conditionalEdge = workflow.edges.find(
         (e) => e.type === 'conditional'
       );

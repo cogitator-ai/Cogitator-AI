@@ -68,7 +68,7 @@ export function RecentRuns() {
     }
 
     fetchRuns();
-    const interval = setInterval(fetchRuns, 10000); // Refresh every 10s
+    const interval = setInterval(fetchRuns, 10000);
     return () => clearInterval(interval);
   }, []);
 

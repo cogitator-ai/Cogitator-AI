@@ -19,7 +19,6 @@ export interface AuthConfig {
  */
 export function createAuthMiddleware(config: AuthConfig) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
-    // Skip auth if no keys configured
     if (config.apiKeys.length === 0 && !config.required) {
       return;
     }
@@ -36,7 +35,6 @@ export function createAuthMiddleware(config: AuthConfig) {
       });
     }
 
-    // Extract Bearer token
     const match = authHeader.match(/^Bearer\s+(.+)$/i);
     if (!match) {
       return reply.status(401).send({
@@ -50,7 +48,6 @@ export function createAuthMiddleware(config: AuthConfig) {
 
     const apiKey = match[1];
 
-    // Validate API key
     if (config.apiKeys.length > 0 && !config.apiKeys.includes(apiKey)) {
       return reply.status(401).send({
         error: {

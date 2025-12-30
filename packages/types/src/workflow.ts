@@ -13,16 +13,11 @@
  * - Workflow management API
  */
 
-// ============================================
-// Core Types
-// ============================================
 
-// Base workflow state - can be extended with generics
 export interface WorkflowState {
   [key: string]: unknown;
 }
 
-// Node configuration
 export interface NodeConfig {
   name?: string;
   timeout?: number;
@@ -30,7 +25,6 @@ export interface NodeConfig {
   retryDelay?: number;
 }
 
-// Context passed to each node during execution
 export interface NodeContext<S = WorkflowState> {
   state: S;
   input?: unknown;
@@ -39,26 +33,22 @@ export interface NodeContext<S = WorkflowState> {
   step: number;
 }
 
-// Result returned from a node
 export interface NodeResult<S = WorkflowState> {
   state?: Partial<S>;
   output?: unknown;
   next?: string | string[];
 }
 
-// Node function type
 export type NodeFn<S = WorkflowState> = (
   ctx: NodeContext<S>
 ) => Promise<NodeResult<S>>;
 
-// Workflow node definition
 export interface WorkflowNode<S = WorkflowState> {
   name: string;
   fn: NodeFn<S>;
   config?: NodeConfig;
 }
 
-// Edge types for DAG connections
 export type Edge =
   | SequentialEdge
   | ConditionalEdge
@@ -92,7 +82,6 @@ export interface LoopEdge {
   exit: string;
 }
 
-// Workflow definition
 export interface Workflow<S = WorkflowState> {
   name: string;
   initialState: S;
@@ -101,7 +90,6 @@ export interface Workflow<S = WorkflowState> {
   entryPoint: string;
 }
 
-// Execution options
 export interface WorkflowExecuteOptions {
   maxConcurrency?: number;
   maxIterations?: number;
@@ -111,7 +99,6 @@ export interface WorkflowExecuteOptions {
   onNodeError?: (node: string, error: Error) => void;
 }
 
-// Execution result
 export interface WorkflowResult<S = WorkflowState> {
   workflowId: string;
   workflowName: string;
@@ -122,14 +109,12 @@ export interface WorkflowResult<S = WorkflowState> {
   error?: Error;
 }
 
-// Workflow events for streaming
 export type WorkflowEvent =
   | { type: 'node:start'; node: string; timestamp: number }
   | { type: 'node:complete'; node: string; output: unknown; duration: number }
   | { type: 'node:error'; node: string; error: Error }
   | { type: 'workflow:complete'; state: unknown; duration: number };
 
-// Checkpoint for resume support
 export interface WorkflowCheckpoint {
   id: string;
   workflowId: string;
@@ -140,7 +125,6 @@ export interface WorkflowCheckpoint {
   timestamp: number;
 }
 
-// Checkpoint storage interface
 export interface CheckpointStore {
   save(checkpoint: WorkflowCheckpoint): Promise<void>;
   load(id: string): Promise<WorkflowCheckpoint | null>;
@@ -148,18 +132,15 @@ export interface CheckpointStore {
   delete(id: string): Promise<void>;
 }
 
-// Node options for builder
 export interface AddNodeOptions {
   after?: string[];
   config?: NodeConfig;
 }
 
-// Conditional options for builder
 export interface AddConditionalOptions {
   after?: string[];
 }
 
-// Loop options for builder
 export interface AddLoopOptions {
   condition: (state: unknown) => boolean;
   back: string;
@@ -167,9 +148,6 @@ export interface AddLoopOptions {
   after?: string[];
 }
 
-// ============================================
-// Human-in-the-Loop Types
-// ============================================
 
 export type ApprovalType =
   | 'approve-reject'
@@ -263,9 +241,6 @@ export interface ApprovalNotifier {
   ): Promise<void>;
 }
 
-// ============================================
-// Retry & Compensation (Saga Pattern)
-// ============================================
 
 export type BackoffStrategy = 'constant' | 'linear' | 'exponential';
 
@@ -367,9 +342,6 @@ export interface IdempotencyStore {
   clear(): Promise<void>;
 }
 
-// ============================================
-// Map-Reduce Pattern
-// ============================================
 
 export interface MapNodeConfig<S = WorkflowState, T = unknown>
   extends NodeConfig {
@@ -401,9 +373,6 @@ export interface MapReduceResult<R = unknown> {
   duration: number;
 }
 
-// ============================================
-// Timer & Scheduling Types
-// ============================================
 
 export type TimerType = 'fixed' | 'dynamic' | 'cron' | 'recurring';
 
@@ -457,9 +426,6 @@ export interface CronSchedule {
   iterate(count: number): Date[];
 }
 
-// ============================================
-// Subworkflow Types
-// ============================================
 
 export type SubworkflowErrorStrategy =
   | 'propagate'
@@ -486,9 +452,6 @@ export interface SubworkflowResult<CS = WorkflowState> {
   depth: number;
 }
 
-// ============================================
-// Trigger Types
-// ============================================
 
 export interface CronTriggerConfig {
   expression: string;
@@ -574,9 +537,6 @@ export interface TriggerManager {
   ): () => void;
 }
 
-// ============================================
-// Observability Types (OpenTelemetry)
-// ============================================
 
 export type SpanExporter = 'console' | 'otlp' | 'jaeger' | 'zipkin';
 
@@ -683,9 +643,6 @@ export interface Baggage {
   [key: string]: string;
 }
 
-// ============================================
-// Workflow Management API Types
-// ============================================
 
 export interface ScheduleOptions {
   at?: number;
@@ -816,9 +773,6 @@ export interface RunStore {
   cleanup(olderThan: number): Promise<number>;
 }
 
-// ============================================
-// Enhanced Execution Options
-// ============================================
 
 export interface WorkflowExecuteOptionsV2 extends WorkflowExecuteOptions {
   approvalStore?: ApprovalStore;
@@ -841,7 +795,6 @@ export interface WorkflowExecuteOptionsV2 extends WorkflowExecuteOptions {
   triggerId?: string;
   parentRunId?: string;
 
-  // Subworkflow context
   parentWorkflowId?: string;
   parentNodeId?: string;
   depth?: number;

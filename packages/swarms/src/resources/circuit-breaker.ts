@@ -29,7 +29,6 @@ export class CircuitBreaker {
   }
 
   getState(): CircuitState {
-    // Check if we should transition from open to half-open
     if (this.state === 'open') {
       const now = Date.now();
       if (now - this.lastFailureTime >= this.config.resetTimeout) {
@@ -52,7 +51,6 @@ export class CircuitBreaker {
         this.reset();
       }
     } else if (this.state === 'closed') {
-      // Reset failure count on success in closed state
       this.failureCount = 0;
     }
   }
@@ -61,7 +59,6 @@ export class CircuitBreaker {
     this.lastFailureTime = Date.now();
 
     if (this.state === 'half-open') {
-      // Any failure in half-open state opens the circuit
       this.setState('open');
       this.successCount = 0;
     } else if (this.state === 'closed') {
@@ -95,7 +92,6 @@ export class CircuitBreaker {
         try {
           listener(newState);
         } catch {
-          // Ignore listener errors
         }
       }
     }

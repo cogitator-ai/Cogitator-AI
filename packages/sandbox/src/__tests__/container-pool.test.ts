@@ -2,8 +2,6 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { ContainerPool } from '../pool/container-pool.js';
 import type { Docker } from '../docker-types.js';
 
-// These tests require Docker to be running
-// They will be skipped if Docker is not available
 
 describe('ContainerPool', () => {
   let docker: Docker | null = null;
@@ -21,14 +19,12 @@ describe('ContainerPool', () => {
   });
 
   afterAll(async () => {
-    // Cleanup handled per-test
   });
 
   describe('when Docker is available', () => {
     it.skipIf(!dockerAvailable)('creates pool with default options', () => {
       const pool = new ContainerPool(docker!);
       expect(pool).toBeDefined();
-      // Cleanup
       void pool.destroyAll();
     });
 
@@ -79,7 +75,6 @@ describe('ContainerPool', () => {
           });
           const id2 = container2.id;
 
-          // Should reuse the same container
           expect(id2).toBe(id1);
 
           await pool.release(container2);
@@ -101,13 +96,11 @@ describe('ContainerPool', () => {
           });
           const id1 = container1.id;
 
-          // Different image
           const container2 = await pool.acquire('alpine:3.18', {
             networkMode: 'none',
           });
           const id2 = container2.id;
 
-          // Should be different containers
           expect(id2).not.toBe(id1);
 
           await pool.release(container1);
@@ -135,7 +128,6 @@ describe('ContainerPool', () => {
         await pool.release(container2);
 
         await pool.destroyAll();
-        // Should complete without error
       },
       60_000
     );

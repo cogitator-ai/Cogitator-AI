@@ -29,10 +29,8 @@ export const initCommand = new Command('init')
     const spinner = ora('Setting up project structure...').start();
 
     try {
-      // Create directories
       mkdirSync(join(projectPath, 'src'), { recursive: true });
 
-      // Write package.json
       writeFileSync(
         join(projectPath, 'package.json'),
         JSON.stringify(
@@ -61,7 +59,6 @@ export const initCommand = new Command('init')
         )
       );
 
-      // Write tsconfig.json
       writeFileSync(
         join(projectPath, 'tsconfig.json'),
         JSON.stringify(
@@ -83,7 +80,6 @@ export const initCommand = new Command('init')
         )
       );
 
-      // Write cogitator.yml
       writeFileSync(
         join(projectPath, 'cogitator.yml'),
         `# Cogitator Configuration
@@ -98,13 +94,11 @@ memory:
 `
       );
 
-      // Write agent.ts
       writeFileSync(
         join(projectPath, 'src', 'agent.ts'),
         `import { Cogitator, Agent, tool } from '@cogitator/core';
 import { z } from 'zod';
 
-// Define a simple tool
 const greet = tool({
   name: 'greet',
   description: 'Greet someone by name',
@@ -114,7 +108,6 @@ const greet = tool({
   execute: async ({ name }) => \`Hello, \${name}! 👋\`,
 });
 
-// Create the agent
 const agent = new Agent({
   id: 'my-agent',
   name: 'My Agent',
@@ -123,7 +116,6 @@ const agent = new Agent({
   tools: [greet],
 });
 
-// Run the agent
 const cog = new Cogitator();
 
 const result = await cog.run(agent, {
@@ -136,7 +128,6 @@ await cog.close();
 `
       );
 
-      // Write docker-compose.yml
       writeFileSync(
         join(projectPath, 'docker-compose.yml'),
         `name: ${name}
@@ -174,7 +165,6 @@ volumes:
 `
       );
 
-      // Write .gitignore
       writeFileSync(
         join(projectPath, '.gitignore'),
         `node_modules/
@@ -186,7 +176,6 @@ dist/
 
       spinner.succeed('Project structure created');
 
-      // Install dependencies
       if (options.install) {
         const installSpinner = ora('Installing dependencies...').start();
         try {

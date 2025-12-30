@@ -17,7 +17,6 @@ const cog = new Cogitator({
   },
 });
 
-// Shared tools
 const writeCode = tool({
   name: 'write_code',
   description: 'Write code to a file',
@@ -60,7 +59,6 @@ const reviewCode = tool({
   },
 });
 
-// Tech Lead (Supervisor)
 const techLead = new Agent({
   name: 'tech-lead',
   model: 'gpt-4o',
@@ -83,7 +81,6 @@ const techLead = new Agent({
   temperature: 0.3,
 });
 
-// Frontend Developer
 const frontendDev = new Agent({
   name: 'frontend-dev',
   model: 'claude-3-5-sonnet',
@@ -99,7 +96,6 @@ const frontendDev = new Agent({
   temperature: 0.2,
 });
 
-// Backend Developer
 const backendDev = new Agent({
   name: 'backend-dev',
   model: 'claude-3-5-sonnet',
@@ -115,7 +111,6 @@ const backendDev = new Agent({
   temperature: 0.2,
 });
 
-// QA Engineer
 const qaEngineer = new Agent({
   name: 'qa-engineer',
   model: 'gpt-4o',
@@ -131,7 +126,6 @@ const qaEngineer = new Agent({
   temperature: 0.2,
 });
 
-// Create the dev team swarm
 const devTeam = new Swarm({
   name: 'dev-team',
   strategy: 'hierarchical',
@@ -140,15 +134,15 @@ const devTeam = new Swarm({
   workers: [frontendDev, backendDev, qaEngineer],
 
   coordination: {
-    visibility: 'full', // Supervisor sees all outputs
-    workerCommunication: false, // Workers communicate through supervisor
-    maxParallelTasks: 2, // Max 2 workers active at once
+    visibility: 'full',
+    workerCommunication: false,
+    maxParallelTasks: 2,
   },
 
   resources: {
     maxConcurrency: 3,
     tokenBudget: 50_000,
-    timeout: 300_000, // 5 minutes
+    timeout: 300_000,
   },
 
   observability: {
@@ -166,7 +160,6 @@ async function main() {
   console.log('  - qa-engineer');
   console.log('\n');
 
-  // Complex task for the team
   const task = `Build a user authentication feature with the following requirements:
 
     1. Frontend:
@@ -203,7 +196,6 @@ async function main() {
   console.log(`Cost: $${result.usage.cost.toFixed(4)}`);
   console.log(`Duration: ${result.usage.duration}ms`);
 
-  // Show agent interactions
   console.log('\nAgent Activity:');
   result.trace.spans
     .filter((s) => s.name.startsWith('agent.'))

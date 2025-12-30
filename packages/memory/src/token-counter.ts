@@ -8,7 +8,7 @@
 import type { Message } from '@cogitator/types';
 
 const CHARS_PER_TOKEN = 4;
-const MESSAGE_OVERHEAD = 4; // role, delimiters, etc.
+const MESSAGE_OVERHEAD = 4;
 
 /**
  * Estimate token count for a string

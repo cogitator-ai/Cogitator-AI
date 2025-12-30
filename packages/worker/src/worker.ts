@@ -143,7 +143,6 @@ export class WorkerPool {
 
     this.isRunning = false;
 
-    // Close all workers with timeout
     await Promise.race([
       Promise.all(this.workers.map((w) => w.close())),
       new Promise<void>((resolve) => setTimeout(resolve, timeout)),

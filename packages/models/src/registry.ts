@@ -269,14 +269,12 @@ export class ModelRegistry {
         this.loadModels(allModels);
       })
       .catch(() => {
-        // Silent fail - we have cached data
       });
   }
 
   private startAutoRefresh(): void {
     this.refreshTimer = setInterval(() => {
       this.refresh().catch(() => {
-        // Silent fail
       });
     }, this.options.refreshInterval);
   }

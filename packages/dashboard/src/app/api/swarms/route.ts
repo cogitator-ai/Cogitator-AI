@@ -30,11 +30,24 @@ const VALID_STRATEGIES = [
   'debate',
 ] as const;
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     await ensureInitialized();
-    const swarms = await getSwarms();
-    return NextResponse.json(swarms);
+
+    const searchParams = request.nextUrl.searchParams;
+    const limit = parseInt(searchParams.get('limit') || '50');
+    const offset = parseInt(searchParams.get('offset') || '0');
+    const search = searchParams.get('search') || undefined;
+    const strategy = searchParams.get('strategy') || undefined;
+
+    const result = await getSwarms({ limit, offset, search, strategy });
+
+    return NextResponse.json({
+      swarms: result.swarms,
+      total: result.total,
+      limit,
+      offset,
+    });
   } catch (error) {
     console.error('[api/swarms] Failed to fetch swarms:', error);
     return NextResponse.json({ error: 'Failed to fetch swarms' }, { status: 500 });
@@ -60,7 +73,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate agent IDs if provided
     if (body.agentIds && body.agentIds.length > 0) {
       const agents = await getAgents();
       const validIds = new Set(agents.map((a) => a.id));

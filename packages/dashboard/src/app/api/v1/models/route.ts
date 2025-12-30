@@ -17,7 +17,6 @@ export async function GET() {
       owned_by: string;
     }> = [];
 
-    // Get Ollama models
     const ollamaHealth = await checkOllamaHealth();
     if (ollamaHealth.available) {
       const ollamaModels = await getOllamaModels();
@@ -31,7 +30,6 @@ export async function GET() {
       }
     }
 
-    // Add OpenAI models if configured
     if (process.env.OPENAI_API_KEY) {
       for (const model of OPENAI_MODELS) {
         models.push({
@@ -43,7 +41,6 @@ export async function GET() {
       }
     }
 
-    // Add Anthropic models if configured
     if (process.env.ANTHROPIC_API_KEY) {
       for (const model of ANTHROPIC_MODELS) {
         models.push({
@@ -55,7 +52,6 @@ export async function GET() {
       }
     }
 
-    // Add Google models if configured
     if (process.env.GOOGLE_API_KEY) {
       for (const model of GOOGLE_MODELS) {
         models.push({

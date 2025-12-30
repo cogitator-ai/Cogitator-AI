@@ -31,7 +31,6 @@ export async function GET(request: NextRequest) {
     const hours = parseInt(searchParams.get('hours') || '24');
     const days = period === 'day' ? 1 : period === 'week' ? 7 : 30;
 
-    // Fetch both legacy and new analytics
     const [hourlyStats, modelStats, topAgents, dashboardStats, cogitatorAnalytics] =
       await Promise.all([
         getHourlyStats(hours),
@@ -41,14 +40,12 @@ export async function GET(request: NextRequest) {
         getAnalytics(days).catch(() => null),
       ]);
 
-    // Merge analytics data
     const analytics = {
       hourly: hourlyStats,
       models: modelStats,
       topAgents,
       dashboard: dashboardStats,
       period,
-      // Extended analytics from Cogitator runs
       cogitator: cogitatorAnalytics
         ? {
             totalRuns: cogitatorAnalytics.totalRuns,

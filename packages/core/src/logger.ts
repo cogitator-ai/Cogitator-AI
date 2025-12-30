@@ -30,10 +30,10 @@ const LOG_LEVELS: Record<LogLevel, number> = {
 };
 
 const LEVEL_COLORS: Record<LogLevel, string> = {
-  debug: '\x1b[90m', // gray
-  info: '\x1b[36m', // cyan
-  warn: '\x1b[33m', // yellow
-  error: '\x1b[31m', // red
+  debug: '\x1b[90m',
+  info: '\x1b[36m',
+  warn: '\x1b[33m',
+  error: '\x1b[31m',
 };
 
 const RESET = '\x1b[0m';
@@ -82,7 +82,6 @@ export class Logger {
       context: { ...this.context, ...context },
     };
 
-    // Remove empty context
     if (entry.context && Object.keys(entry.context).length === 0) {
       entry.context = undefined;
     }
@@ -133,7 +132,6 @@ export class Logger {
   }
 }
 
-// Default logger instance
 let defaultLogger: Logger | null = null;
 
 /**

@@ -107,19 +107,15 @@ export class WorkflowMetricsCollector {
     status: 'success' | 'failure' | 'cancelled',
     labels?: Record<string, string>
   ): void {
-    // Decrement active count
     const activeKey = this.metricName('active_workflows');
     this.decrementGauge(activeKey, { workflow: workflowName });
 
-    // Record status counter
     const statusKey = this.metricName(`executions_${status}_total`);
     this.incrementCounter(statusKey, { workflow: workflowName, ...labels });
 
-    // Record latency histogram
     const latencyKey = this.metricName('execution_duration_ms');
     this.recordHistogram(latencyKey, durationMs, { workflow: workflowName });
 
-    // Record latency sample for percentile calculations
     this.recordLatencySample(workflowName, durationMs);
 
     this.lastUpdated = Date.now();
@@ -136,7 +132,6 @@ export class WorkflowMetricsCollector {
     success: boolean,
     retries: number = 0
   ): void {
-    // Initialize workflow's node metrics if needed
     if (!this.nodeMetrics.has(workflowName)) {
       this.nodeMetrics.set(workflowName, new Map());
     }
@@ -165,7 +160,6 @@ export class WorkflowMetricsCollector {
 
     nodeData.retryCount += retries;
 
-    // Record node duration histogram
     const nodeLatencyKey = this.metricName('node_duration_ms');
     this.recordHistogram(nodeLatencyKey, durationMs, {
       workflow: workflowName,
@@ -173,7 +167,6 @@ export class WorkflowMetricsCollector {
       type: nodeType,
     });
 
-    // Record node execution counter
     const nodeExecKey = this.metricName('node_executions_total');
     this.incrementCounter(nodeExecKey, {
       workflow: workflowName,
@@ -203,7 +196,6 @@ export class WorkflowMetricsCollector {
     usage.output += outputTokens;
     usage.total += inputTokens + outputTokens;
 
-    // Record token histogram
     const tokenKey = this.metricName('tokens_total');
     this.recordHistogram(tokenKey, inputTokens + outputTokens, {
       workflow: workflowName,
@@ -217,7 +209,6 @@ export class WorkflowMetricsCollector {
     const current = this.costTracking.get(workflowName) ?? 0;
     this.costTracking.set(workflowName, current + cost);
 
-    // Record cost histogram
     const costKey = this.metricName('cost_usd');
     this.recordHistogram(costKey, cost, { workflow: workflowName });
   }
@@ -233,7 +224,6 @@ export class WorkflowMetricsCollector {
 
     const durations = samples.map((s) => s.value).sort((a, b) => a - b);
 
-    // Calculate execution counts from counters
     const totalKey = this.metricName('executions_total');
     const successKey = this.metricName('executions_success_total');
     const failureKey = this.metricName('executions_failure_total');
@@ -244,7 +234,6 @@ export class WorkflowMetricsCollector {
       return counter?.value ?? 0;
     };
 
-    // Build node metrics
     const nodeMetricsMap = new Map<string, NodeMetrics>();
     const workflowNodes = this.nodeMetrics.get(workflowName);
 
@@ -381,7 +370,6 @@ export class WorkflowMetricsCollector {
     histogram.min = Math.min(histogram.min, value);
     histogram.max = Math.max(histogram.max, value);
 
-    // Update buckets
     for (const [bucket, count] of histogram.buckets) {
       if (value <= bucket) {
         histogram.buckets.set(bucket, count + 1);
@@ -400,7 +388,6 @@ export class WorkflowMetricsCollector {
     const samples = this.latencySamples.get(workflowName)!;
     samples.push({ value, timestamp: Date.now() });
 
-    // Keep only last 1000 samples
     if (samples.length > 1000) {
       samples.shift();
     }
@@ -444,7 +431,6 @@ export class WorkflowMetricsCollector {
   toPrometheusFormat(): string {
     const lines: string[] = [];
 
-    // Export counters
     for (const [key, data] of this.counters) {
       const [name] = key.split(':');
       const labelStr = this.formatPrometheusLabels(data.labels);
@@ -452,7 +438,6 @@ export class WorkflowMetricsCollector {
       lines.push(`${name}${labelStr} ${data.value.toString()}`);
     }
 
-    // Export gauges
     for (const [key, data] of this.gauges) {
       const [name] = key.split(':');
       const labelStr = this.formatPrometheusLabels(data.labels);
@@ -460,7 +445,6 @@ export class WorkflowMetricsCollector {
       lines.push(`${name}${labelStr} ${data.value.toString()}`);
     }
 
-    // Export histograms
     for (const [key, data] of this.histograms) {
       const [name, labelsPart] = key.split(':');
       const labels = this.parseLabels(labelsPart);
@@ -468,7 +452,6 @@ export class WorkflowMetricsCollector {
 
       lines.push(`# TYPE ${name} histogram`);
 
-      // Bucket values
       for (const [bucket, count] of data.buckets) {
         const bucketLabels = { ...labels, le: bucket.toString() };
         lines.push(
@@ -476,7 +459,6 @@ export class WorkflowMetricsCollector {
         );
       }
 
-      // +Inf bucket
       const infLabels = { ...labels, le: '+Inf' };
       lines.push(
         `${name}_bucket${this.formatPrometheusLabels(infLabels)} ${data.count.toString()}`
@@ -583,7 +565,6 @@ export function setGlobalMetrics(metrics: WorkflowMetricsCollector): void {
   globalMetrics = metrics;
 }
 
-// Internal types
 interface NodeMetricsData {
   executionCount: number;
   successCount: number;

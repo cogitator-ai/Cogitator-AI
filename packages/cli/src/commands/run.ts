@@ -37,7 +37,6 @@ async function getOllamaModels(): Promise<string[]> {
 async function detectModel(): Promise<string | null> {
   const models = await getOllamaModels();
   if (models.length === 0) return null;
-  // Prefer common models
   const preferred = ['llama3.1:8b', 'llama3:8b', 'gemma3:4b', 'gemma2:9b', 'mistral:7b'];
   for (const p of preferred) {
     if (models.includes(p)) return `ollama/${p}`;
@@ -46,11 +45,9 @@ async function detectModel(): Promise<string | null> {
 }
 
 function findConfig(configPath: string): string | null {
-  // Explicit path
   if (existsSync(configPath)) {
     return resolve(configPath);
   }
-  // Check common names
   const names = ['cogitator.yml', 'cogitator.yaml', 'cogitator.json'];
   for (const name of names) {
     if (existsSync(name)) {
@@ -121,7 +118,6 @@ export const runCommand = new Command('run')
   .option('-s, --stream', 'Stream response tokens', true)
   .option('--no-stream', 'Disable streaming')
   .action(async (message: string | undefined, options: RunOptions) => {
-    // Load config if exists
     let config = {};
     const configPath = findConfig(options.config);
     if (configPath) {
@@ -134,11 +130,9 @@ export const runCommand = new Command('run')
           config = await loadConfig();
         }
       } catch {
-        // Ignore config errors, use defaults
       }
     }
 
-    // Detect model if not specified
     let model: string | undefined = options.model;
     if (!model) {
       model = (await detectModel()) ?? undefined;
@@ -151,7 +145,6 @@ export const runCommand = new Command('run')
       log.dim(`Auto-detected model: ${model}`);
     }
 
-    // Create cogitator and agent
     const cog = new Cogitator(config);
 
     const agent = new Agent({
@@ -162,14 +155,12 @@ export const runCommand = new Command('run')
         'You are a helpful AI assistant. Respond concisely and accurately.',
     });
 
-    // Interactive mode
     if (options.interactive || !message) {
       printBanner();
       await runInteractive(cog, agent, options.stream);
       return;
     }
 
-    // Single message mode
     try {
       if (options.stream) {
         await cog.run(agent, {

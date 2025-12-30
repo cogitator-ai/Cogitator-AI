@@ -77,7 +77,7 @@ export function createCogitatorCallbacks() {
         agentId: result.agentId,
         threadId: result.threadId,
         status: 'completed',
-        output: result.output.slice(0, 500), // Truncate for event
+        output: result.output.slice(0, 500),
         usage: result.usage,
         toolCalls: result.toolCalls.length,
         timestamp: Date.now(),
@@ -128,13 +128,9 @@ export function createCogitatorCallbacks() {
     },
 
     onToolResult: async (result: ToolResult) => {
-      // Tool results are less important for real-time updates
-      // They're included in the run complete event
     },
 
     onSpan: async (span: Span) => {
-      // Spans are stored in DB, not published to Redis
-      // This is for real-time updates only
     },
   };
 }

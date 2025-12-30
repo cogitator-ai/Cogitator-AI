@@ -14,11 +14,9 @@ export function registerFileRoutes(
 ) {
   const threadManager = adapter.getThreadManager();
 
-  // Upload file
   fastify.post(
     '/v1/files',
     async (request, reply) => {
-      // Type assertion for multipart
       const parts = (request as { parts(): AsyncIterableIterator<{
         type: 'file' | 'field';
         fieldname: string;
@@ -70,12 +68,9 @@ export function registerFileRoutes(
     }
   );
 
-  // List files
   fastify.get<{ Querystring: { purpose?: FilePurpose } }>(
     '/v1/files',
     async (_request, reply) => {
-      // This is a simplified implementation
-      // In a real implementation, you'd filter by purpose
       const response: ListResponse<FileObject> = {
         object: 'list',
         data: [],
@@ -86,7 +81,6 @@ export function registerFileRoutes(
     }
   );
 
-  // Get file
   fastify.get<{ Params: { file_id: string } }>(
     '/v1/files/:file_id',
     async (request, reply) => {
@@ -116,7 +110,6 @@ export function registerFileRoutes(
     }
   );
 
-  // Get file content
   fastify.get<{ Params: { file_id: string } }>(
     '/v1/files/:file_id/content',
     async (request, reply) => {
@@ -138,7 +131,6 @@ export function registerFileRoutes(
     }
   );
 
-  // Delete file
   fastify.delete<{ Params: { file_id: string } }>(
     '/v1/files/:file_id',
     async (request, reply) => {

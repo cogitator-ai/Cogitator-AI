@@ -58,12 +58,10 @@ function buildSpanTree(spans: TraceSpan[]): TraceSpan[] {
   const spanMap = new Map<string, TraceSpan>();
   const roots: TraceSpan[] = [];
 
-  // First pass: index all spans
   for (const span of spans) {
     spanMap.set(span.id, { ...span, children: [] });
   }
 
-  // Second pass: build tree
   for (const span of spans) {
     const node = spanMap.get(span.id)!;
     if (span.parentId) {

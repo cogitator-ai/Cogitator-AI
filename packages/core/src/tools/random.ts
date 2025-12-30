@@ -16,7 +16,6 @@ export const randomNumber = tool({
   name: 'random_number',
   description: 'Generate a random number within a range.',
   parameters: randomNumberParams,
-  // eslint-disable-next-line @typescript-eslint/require-await
   execute: async ({ min = 0, max = 1, integer = false }) => {
     if (min >= max) {
       return { error: 'min must be less than max', min, max };
@@ -45,7 +44,6 @@ export const randomString = tool({
   description:
     'Generate a cryptographically secure random string. Available charsets: alphanumeric, alpha, numeric, hex.',
   parameters: randomStringParams,
-  // eslint-disable-next-line @typescript-eslint/require-await
   execute: async ({ length, charset = 'alphanumeric' }) => {
     const chars =
       charset === 'alpha'

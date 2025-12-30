@@ -45,7 +45,6 @@ export class WorkflowExecutor {
     const maxIterations = options?.maxIterations ?? DEFAULT_MAX_ITERATIONS;
     const shouldCheckpoint = options?.checkpoint ?? false;
 
-    // Initialize state
     let state: S = { ...workflow.initialState, ...input } as S;
     const nodeResults = new Map<string, { output: unknown; duration: number }>();
     const completedNodes = new Set<string>();
@@ -53,26 +52,20 @@ export class WorkflowExecutor {
     let checkpointId: string | undefined;
     let error: Error | undefined;
 
-    // Build dependency graph
     const graph = this.scheduler.buildDependencyGraph(workflow);
 
-    // Start with entry point
     let currentNodes = [workflow.entryPoint];
 
     try {
       while (currentNodes.length > 0 && iterations < maxIterations) {
         iterations++;
 
-        // Filter out already completed nodes (for loops)
         const nodesToRun = currentNodes.filter((n) => {
-          // For loops, we may need to re-run completed nodes
-          // Only skip if not in a loop context
           return workflow.nodes.has(n);
         });
 
         if (nodesToRun.length === 0) break;
 
-        // Execute current batch in parallel
         const tasks = nodesToRun.map((nodeName) => async () => {
           const node = workflow.nodes.get(nodeName);
           if (!node) {
@@ -90,7 +83,6 @@ export class WorkflowExecutor {
             step: iterations,
           };
 
-          // Add output from previous nodes as input
           const deps = graph.dependencies.get(nodeName);
           if (deps && deps.size > 0) {
             const inputs: unknown[] = [];
@@ -103,7 +95,6 @@ export class WorkflowExecutor {
             ctx.input = inputs.length === 1 ? inputs[0] : inputs;
           }
 
-          // Inject cogitator into context for agent nodes
           (ctx as NodeContext<S> & { cogitator: Cogitator }).cogitator =
             this.cogitator;
 
@@ -120,16 +111,13 @@ export class WorkflowExecutor {
           maxConcurrency
         );
 
-        // Process results
         const nextNodes: string[] = [];
 
         for (const { nodeName, result, duration } of results) {
-          // Update state with node's state changes
           if (result.state) {
             state = { ...state, ...result.state } as S;
           }
 
-          // Store node result
           nodeResults.set(nodeName, {
             output: result.output,
             duration,
@@ -137,15 +125,12 @@ export class WorkflowExecutor {
 
           completedNodes.add(nodeName);
 
-          // Determine next nodes
           if (result.next) {
-            // Node explicitly specified next nodes
             const next = Array.isArray(result.next)
               ? result.next
               : [result.next];
             nextNodes.push(...next);
           } else {
-            // Use edge-based routing
             const edgeNext = this.scheduler.getNextNodes(
               workflow,
               nodeName,
@@ -155,7 +140,6 @@ export class WorkflowExecutor {
           }
         }
 
-        // Checkpoint if enabled
         if (shouldCheckpoint) {
           checkpointId = createCheckpointId();
           await this.checkpointStore.save({
@@ -171,7 +155,6 @@ export class WorkflowExecutor {
           });
         }
 
-        // Deduplicate and set next batch
         currentNodes = [...new Set(nextNodes)];
       }
 
@@ -216,13 +199,11 @@ export class WorkflowExecutor {
       );
     }
 
-    // Find nodes that haven't been completed yet
     const allNodes = new Set(workflow.nodes.keys());
     const completed = new Set(checkpoint.completedNodes);
     const pending = [...allNodes].filter((n) => !completed.has(n));
 
     if (pending.length === 0) {
-      // Workflow was already complete
       return {
         workflowId: checkpoint.workflowId,
         workflowName: workflow.name,
@@ -238,10 +219,8 @@ export class WorkflowExecutor {
       };
     }
 
-    // Execute remaining nodes starting from checkpoint state
     return this.execute(workflow, checkpoint.state as Partial<S>, {
       ...options,
-      // Could enhance to skip completed nodes, but for now just re-execute
     });
   }
 
@@ -261,7 +240,6 @@ export class WorkflowExecutor {
       resolveNext?.();
     };
 
-    // Start execution in background
     const resultPromise = this.execute(workflow, input, {
       ...options,
       onNodeStart: (node) => {
@@ -275,12 +253,10 @@ export class WorkflowExecutor {
       },
     });
 
-    // Yield events as they come
     while (true) {
       if (events.length > 0) {
         yield events.shift()!;
       } else {
-        // Check if execution is complete
         const raceResult = await Promise.race([
           resultPromise.then((r) => ({ type: 'done' as const, result: r })),
           new Promise<{ type: 'event' }>((resolve) => {
@@ -289,12 +265,10 @@ export class WorkflowExecutor {
         ]);
 
         if (raceResult.type === 'done') {
-          // Yield remaining events
           while (events.length > 0) {
             yield events.shift()!;
           }
 
-          // Yield completion event
           yield {
             type: 'workflow:complete',
             state: raceResult.result.state,

@@ -65,7 +65,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    // Create workflow run record
     const run = await createWorkflowRun({
       workflowId: id,
       input: typeof input === 'string' ? input : JSON.stringify(input || {}),
@@ -73,7 +72,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     console.log('[workflow-run] Created run:', run.id);
 
-    // Build the workflow from definition
     const builder = new WorkflowBuilder<WorkflowState>(workflowData.name)
       .initialState({
         input: input || '',
@@ -82,7 +80,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         ...(workflowData.initialState as WorkflowState || {}),
       });
 
-    // Track node dependencies from edges
     const nodeDependencies = new Map<string, string[]>();
     for (const edge of definition.edges) {
       const deps = nodeDependencies.get(edge.target) || [];
@@ -92,7 +89,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       nodeDependencies.set(edge.target, deps);
     }
 
-    // Find entry point (node that start connects to)
     const entryNode = definition.edges.find(e => e.source === 'start')?.target;
     if (!entryNode) {
       await updateWorkflowRun(run.id, {
@@ -105,7 +101,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    // Convert definition nodes to real workflow nodes
     for (const nodeDef of definition.nodes) {
       if (nodeDef.type === 'start' || nodeDef.type === 'end') continue;
 
@@ -224,18 +219,14 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       }
     }
 
-    // Set entry point
     builder.entryPoint(entryNode);
 
-    // Build the workflow
     const workflow = builder.build();
     console.log('[workflow-run] Workflow built with', workflow.nodes.size, 'nodes');
 
-    // Create executor with checkpoint store
     const checkpointStore = new InMemoryCheckpointStore();
     const executor = new WorkflowExecutor(cogitator, checkpointStore);
 
-    // Execute the workflow
     const startTime = Date.now();
     const eventLog: string[] = [];
 
@@ -263,13 +254,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
       const duration = Date.now() - startTime;
 
-      // Convert nodeResults Map to object for JSON
       const nodeResultsObj: Record<string, unknown> = {};
       for (const [key, value] of result.nodeResults.entries()) {
         nodeResultsObj[key] = value;
       }
 
-      // Update run with success
       await updateWorkflowRun(run.id, {
         status: result.error ? 'failed' : 'completed',
         output: result.error ? undefined : JSON.stringify(result.state),

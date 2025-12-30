@@ -11,14 +11,12 @@ import chalk from 'chalk';
 import { log } from '../utils/logger.js';
 
 function findDockerCompose(): string | null {
-  // Check current directory
   if (existsSync('docker-compose.yml')) {
     return resolve('docker-compose.yml');
   }
   if (existsSync('docker-compose.yaml')) {
     return resolve('docker-compose.yaml');
   }
-  // Check parent directories
   let dir = process.cwd();
   for (let i = 0; i < 5; i++) {
     const parent = resolve(dir, '..');
@@ -48,14 +46,12 @@ export const upCommand = new Command('up')
   .action(async (options: { detach: boolean; pull: boolean }) => {
     log.info('Starting Cogitator services...');
 
-    // Check Docker
     if (!checkDocker()) {
       log.error('Docker is not installed or not running');
       log.dim('Install Docker: https://docs.docker.com/get-docker/');
       process.exit(1);
     }
 
-    // Find docker-compose.yml
     const composePath = findDockerCompose();
     if (!composePath) {
       log.error('No docker-compose.yml found');
@@ -66,7 +62,6 @@ export const upCommand = new Command('up')
     const composeDir = dirname(composePath);
     log.dim(`Using: ${composePath}`);
 
-    // Pull images if requested
     if (options.pull) {
       const pullSpinner = ora('Pulling latest images...').start();
       try {
@@ -78,7 +73,6 @@ export const upCommand = new Command('up')
       }
     }
 
-    // Start services
     const spinner = ora('Starting services...').start();
 
     try {
@@ -91,7 +85,6 @@ export const upCommand = new Command('up')
         execSync(['docker', ...args].join(' '), { cwd: composeDir, stdio: 'pipe' });
         spinner.succeed('Services started');
 
-        // Wait a moment and check health
         await new Promise((r) => setTimeout(r, 2000));
 
         const status = execSync('docker compose ps --format json', {
@@ -129,7 +122,6 @@ export const upCommand = new Command('up')
         console.log('  docker compose logs -f   - View logs');
         console.log();
       } else {
-        // Run in foreground
         spinner.stop();
         const proc = spawn('docker', args, {
           cwd: composeDir,
@@ -144,7 +136,6 @@ export const upCommand = new Command('up')
     }
   });
 
-// Add 'down' as alias
 export const downCommand = new Command('down')
   .description('Stop Docker services')
   .option('-v, --volumes', 'Remove volumes (deletes data)')

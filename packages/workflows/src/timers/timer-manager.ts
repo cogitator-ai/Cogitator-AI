@@ -74,8 +74,8 @@ export interface TimerManagerConfig {
 
 const DEFAULT_POLL_INTERVAL = 1000;
 const DEFAULT_BATCH_SIZE = 100;
-const DEFAULT_CLEANUP_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days
-const DEFAULT_CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
+const DEFAULT_CLEANUP_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_CLEANUP_INTERVAL = 60 * 60 * 1000;
 
 /**
  * Timer manager stats
@@ -107,7 +107,6 @@ export class TimerManager {
   private running = false;
   private processing = false;
 
-  // Stats
   private processedTotal = 0;
   private errorTotal = 0;
   private overdueProcessed = 0;
@@ -153,19 +152,16 @@ export class TimerManager {
 
     this.running = true;
 
-    // Process overdue timers on start
     if (this.config.processOverdueOnStart) {
       await this.processOverdueTimers();
     }
 
-    // Start polling
     this.pollTimer = setInterval(() => {
       this.poll().catch((error) => {
         this.config.onError?.(error as Error, {} as TimerEntry);
       });
     }, this.config.pollInterval);
 
-    // Start cleanup if enabled
     if (this.config.enableCleanup) {
       this.cleanupTimer = setInterval(() => {
         this.cleanup().catch((error) => {
@@ -193,7 +189,6 @@ export class TimerManager {
       this.cleanupTimer = undefined;
     }
 
-    // Wait for current processing to complete
     while (this.processing) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
@@ -241,7 +236,6 @@ export class TimerManager {
    */
   private async processTimer(entry: TimerEntry): Promise<void> {
     try {
-      // Get handler
       const handler =
         this.handlers.get(entry.workflowId) ?? this.defaultHandler;
 
@@ -249,7 +243,6 @@ export class TimerManager {
         await handler(entry);
       }
 
-      // Mark as fired
       await this.store.markFired(entry.id);
 
       this.processedTotal++;
@@ -442,7 +435,6 @@ export class RecurringTimerScheduler {
     const { workflowId, runId, nodeId, interval, metadata, startImmediately } =
       config;
 
-    // Store recurring config
     this.recurring.set(id, {
       workflowId,
       nodeId,
@@ -450,7 +442,6 @@ export class RecurringTimerScheduler {
       metadata,
     });
 
-    // Schedule first timer
     const firesAt = startImmediately ? Date.now() : Date.now() + interval;
 
     const timerId = await this.manager.schedule({

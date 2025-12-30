@@ -15,7 +15,6 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
     }
 
-    // Get recent runs for this agent
     const runs = await getRuns({ agentId: id, limit: 20 });
 
     return NextResponse.json({ ...agent, recentRuns: runs });
@@ -30,7 +29,6 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     const { id } = await params;
     const body = await request.json();
 
-    // Validate tools if provided
     if (body.tools) {
       const availableToolNames = getAvailableTools().map((t) => t.name);
       const invalidTools = body.tools.filter(

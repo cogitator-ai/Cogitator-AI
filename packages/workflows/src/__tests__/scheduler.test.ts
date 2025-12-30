@@ -21,20 +21,15 @@ describe('WorkflowScheduler', () => {
 
       const graph = scheduler.buildDependencyGraph(workflow);
 
-      // Node a has no dependencies
       expect(graph.dependencies.get('a')?.size).toBe(0);
 
-      // Node b depends on a
       expect(graph.dependencies.get('b')?.has('a')).toBe(true);
 
-      // Node c depends on a
       expect(graph.dependencies.get('c')?.has('a')).toBe(true);
 
-      // Node d depends on both b and c
       expect(graph.dependencies.get('d')?.has('b')).toBe(true);
       expect(graph.dependencies.get('d')?.has('c')).toBe(true);
 
-      // Node a has dependents b and c
       expect(graph.dependents.get('a')?.has('b')).toBe(true);
       expect(graph.dependents.get('a')?.has('c')).toBe(true);
     });
@@ -51,12 +46,10 @@ describe('WorkflowScheduler', () => {
 
       const graph = scheduler.buildDependencyGraph(workflow);
 
-      // Initially only 'a' is ready
       const pending1 = new Set(['a', 'b', 'c']);
       const ready1 = scheduler.getReadyNodes(graph, new Set(), pending1);
       expect(ready1).toEqual(['a']);
 
-      // After 'a' completes, 'b' and 'c' are ready
       const completed = new Set(['a']);
       const pending2 = new Set(['b', 'c']);
       const ready2 = scheduler.getReadyNodes(graph, completed, pending2);
@@ -77,15 +70,12 @@ describe('WorkflowScheduler', () => {
 
       const levels = scheduler.getExecutionLevels(workflow);
 
-      // Level 0: a
       expect(levels[0]).toEqual(['a']);
 
-      // Level 1: b and c (parallel)
       expect(levels[1]).toContain('b');
       expect(levels[1]).toContain('c');
       expect(levels[1].length).toBe(2);
 
-      // Level 2: d
       expect(levels[2]).toEqual(['d']);
     });
   });
@@ -115,11 +105,9 @@ describe('WorkflowScheduler', () => {
         .addNode('low', async () => ({}), { after: ['router'] })
         .build();
 
-      // Low value -> low path
       const nextLow = scheduler.getNextNodes(workflow, 'router', { value: 3 });
       expect(nextLow).toEqual(['low']);
 
-      // High value -> high path
       const nextHigh = scheduler.getNextNodes(workflow, 'router', { value: 10 });
       expect(nextHigh).toEqual(['high']);
     });
@@ -137,11 +125,9 @@ describe('WorkflowScheduler', () => {
         .addNode('done', async () => ({}))
         .build();
 
-      // Should loop back
       const loopBack = scheduler.getNextNodes(workflow, 'check', { value: 3 });
       expect(loopBack).toEqual(['process']);
 
-      // Should exit
       const loopExit = scheduler.getNextNodes(workflow, 'check', { value: 5 });
       expect(loopExit).toEqual(['done']);
     });

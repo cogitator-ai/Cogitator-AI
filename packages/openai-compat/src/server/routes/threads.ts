@@ -17,13 +17,11 @@ export function registerThreadRoutes(
   fastify: FastifyInstance,
   adapter: OpenAIAdapter
 ) {
-  // Create thread
   fastify.post<{ Body: CreateThreadRequest }>(
     '/v1/threads',
     async (request, reply) => {
       const thread = adapter.createThread(request.body?.metadata);
 
-      // Add initial messages if provided
       if (request.body?.messages) {
         for (const msg of request.body.messages) {
           const content = typeof msg.content === 'string'
@@ -37,7 +35,6 @@ export function registerThreadRoutes(
     }
   );
 
-  // Get thread
   fastify.get<{ Params: { thread_id: string } }>(
     '/v1/threads/:thread_id',
     async (request, reply) => {
@@ -57,7 +54,6 @@ export function registerThreadRoutes(
     }
   );
 
-  // Modify thread
   fastify.post<{ Params: { thread_id: string }; Body: { metadata?: Record<string, string> } }>(
     '/v1/threads/:thread_id',
     async (request, reply) => {
@@ -73,7 +69,6 @@ export function registerThreadRoutes(
         });
       }
 
-      // Update metadata
       if (request.body?.metadata) {
         Object.assign(thread.metadata, request.body.metadata);
       }
@@ -82,7 +77,6 @@ export function registerThreadRoutes(
     }
   );
 
-  // Delete thread
   fastify.delete<{ Params: { thread_id: string } }>(
     '/v1/threads/:thread_id',
     async (request, reply) => {
@@ -106,11 +100,7 @@ export function registerThreadRoutes(
     }
   );
 
-  // ===========================================================================
-  // Messages
-  // ===========================================================================
 
-  // Create message
   fastify.post<{ Params: { thread_id: string }; Body: CreateMessageRequest }>(
     '/v1/threads/:thread_id/messages',
     async (request, reply) => {
@@ -149,7 +139,6 @@ export function registerThreadRoutes(
     }
   );
 
-  // List messages
   fastify.get<{
     Params: { thread_id: string };
     Querystring: { limit?: number; order?: 'asc' | 'desc'; after?: string; before?: string; run_id?: string };
@@ -170,7 +159,7 @@ export function registerThreadRoutes(
 
       const { limit = 20, order = 'desc', after, before, run_id } = request.query;
       const messages = adapter.listMessages(request.params.thread_id, {
-        limit: limit + 1, // Get one extra to check has_more
+        limit: limit + 1,
         order,
         after,
         before,
@@ -192,7 +181,6 @@ export function registerThreadRoutes(
     }
   );
 
-  // Get message
   fastify.get<{ Params: { thread_id: string; message_id: string } }>(
     '/v1/threads/:thread_id/messages/:message_id',
     async (request, reply) => {

@@ -37,7 +37,6 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
 
   async connect(): Promise<SandboxResult<void>> {
     try {
-      // Dynamic import for optional dependency
       const Dockerode = (await import('dockerode')).default;
 
       this.docker = new Dockerode({
@@ -46,10 +45,8 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
         port: this.options.docker?.port,
       }) as unknown as Docker;
 
-      // Verify connection
       await this.docker.ping();
 
-      // Initialize pool
       this.pool = new ContainerPool(this.docker, {
         maxSize: this.options.pool?.maxSize ?? 5,
         idleTimeoutMs: this.options.pool?.idleTimeoutMs ?? 60_000,
@@ -95,7 +92,6 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
     const image = config.image ?? DEFAULT_IMAGE;
 
     try {
-      // Get container from pool or create new
       const container = await this.pool.acquire(image, {
         memory: config.resources?.memory
           ? parseMemory(config.resources.memory)
@@ -109,7 +105,6 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
       });
 
       try {
-        // Create exec instance
         const exec = await container.exec({
           Cmd: request.command,
           Env: Object.entries({ ...config.env, ...request.env }).map(
@@ -121,7 +116,6 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
           AttachStdin: !!request.stdin,
         });
 
-        // Run with timeout
         const result = await this.runWithTimeout(exec, request.stdin, timeout);
 
         return this.success({
@@ -132,7 +126,6 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
           duration: Date.now() - startTime,
         });
       } finally {
-        // Return container to pool
         await this.pool.release(container);
       }
     } catch (error) {
@@ -168,8 +161,6 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
           let stdout = '';
           let stderr = '';
 
-          // Docker multiplexes stdout/stderr with 8-byte header
-          // Header: [STREAM_TYPE(1), 0, 0, 0, SIZE(4 bytes big-endian)]
           stream.on('data', (chunk: Buffer) => {
             let offset = 0;
             while (offset < chunk.length) {

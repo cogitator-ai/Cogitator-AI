@@ -37,7 +37,7 @@ export class PostgresAdapter
   private pool: Pool | null = null;
   private config: PostgresAdapterConfig;
   private schema: string;
-  private vectorDimensions = 768; // Default for nomic-embed-text
+  private vectorDimensions = 768;
 
   constructor(config: PostgresAdapterConfig) {
     super();
@@ -55,11 +55,9 @@ export class PostgresAdapter
         max: this.config.poolSize ?? 10,
       }) as Pool;
 
-      // Test connection
       const client = await this.pool.connect();
       client.release();
 
-      // Initialize schema
       await this.initSchema();
 
       return this.success(undefined);
@@ -75,14 +73,11 @@ export class PostgresAdapter
 
     await this.pool.query(`CREATE SCHEMA IF NOT EXISTS ${this.schema}`);
 
-    // Enable pgvector extension (safe to run multiple times)
     try {
       await this.pool.query('CREATE EXTENSION IF NOT EXISTS vector');
     } catch {
-      // pgvector might not be installed, continue without it
     }
 
-    // Threads table
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.schema}.threads (
         id TEXT PRIMARY KEY,
@@ -93,7 +88,6 @@ export class PostgresAdapter
       )
     `);
 
-    // Entries table
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.schema}.entries (
         id TEXT PRIMARY KEY,
@@ -107,7 +101,6 @@ export class PostgresAdapter
       )
     `);
 
-    // Facts table
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.schema}.facts (
         id TEXT PRIMARY KEY,
@@ -123,7 +116,6 @@ export class PostgresAdapter
       )
     `);
 
-    // Embeddings table with vector column
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.schema}.embeddings (
         id TEXT PRIMARY KEY,
@@ -136,7 +128,6 @@ export class PostgresAdapter
       )
     `);
 
-    // Indexes
     await this.pool.query(`
       CREATE INDEX IF NOT EXISTS idx_entries_thread_id
       ON ${this.schema}.entries(thread_id, created_at)
@@ -146,7 +137,6 @@ export class PostgresAdapter
       ON ${this.schema}.facts(agent_id, category)
     `);
 
-    // Vector index (IVFFlat for approximate nearest neighbor)
     try {
       await this.pool.query(`
         CREATE INDEX IF NOT EXISTS idx_embeddings_vector
@@ -154,7 +144,6 @@ export class PostgresAdapter
         USING ivfflat (vector vector_cosine_ops) WITH (lists = 100)
       `);
     } catch {
-      // pgvector index might fail if extension not available
     }
   }
 
@@ -166,9 +155,6 @@ export class PostgresAdapter
     return this.success(undefined);
   }
 
-  // ============================================
-  // Thread Operations
-  // ============================================
 
   async createThread(
     agentId: string,
@@ -244,9 +230,6 @@ export class PostgresAdapter
     return this.success(undefined);
   }
 
-  // ============================================
-  // Entry Operations
-  // ============================================
 
   async addEntry(
     entry: Omit<MemoryEntry, 'id' | 'createdAt'>
@@ -296,7 +279,6 @@ export class PostgresAdapter
     query += ' ORDER BY created_at ASC';
 
     if (options.limit) {
-      // Get last N entries by wrapping in subquery
       query = `
         SELECT * FROM (
           SELECT * FROM ${this.schema}.entries WHERE thread_id = $1
@@ -369,9 +351,6 @@ export class PostgresAdapter
     return this.success(undefined);
   }
 
-  // ============================================
-  // Fact Operations (FactAdapter)
-  // ============================================
 
   async addFact(
     fact: Omit<Fact, 'id' | 'createdAt' | 'updatedAt'>
@@ -509,7 +488,6 @@ export class PostgresAdapter
   ): Promise<MemoryResult<Fact[]>> {
     if (!this.pool) return this.failure('Not connected');
 
-    // Simple text search using ILIKE
     const result = await this.pool.query(
       `SELECT * FROM ${this.schema}.facts
        WHERE agent_id = $1 AND content ILIKE $2
@@ -534,9 +512,6 @@ export class PostgresAdapter
     );
   }
 
-  // ============================================
-  // Embedding Operations (EmbeddingAdapter)
-  // ============================================
 
   async addEmbedding(
     embedding: Omit<Embedding, 'id' | 'createdAt'>
@@ -546,7 +521,6 @@ export class PostgresAdapter
     const id = this.generateId('emb');
     const now = new Date();
 
-    // pgvector expects array formatted as string
     const vectorStr = `[${embedding.vector.join(',')}]`;
 
     await this.pool.query(
@@ -632,9 +606,6 @@ export class PostgresAdapter
     return this.success(undefined);
   }
 
-  // ============================================
-  // Configuration
-  // ============================================
 
   setVectorDimensions(dimensions: number): void {
     this.vectorDimensions = dimensions;

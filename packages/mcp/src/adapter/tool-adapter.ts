@@ -11,9 +11,6 @@ import type { Tool, ToolSchema, ToolContext } from '@cogitator/types';
 import type { MCPToolDefinition, MCPToolContent, ToolAdapterOptions } from '../types.js';
 import type { MCPClient } from '../client/mcp-client.js';
 
-// ============================================================================
-// Schema Conversion
-// ============================================================================
 
 /**
  * Convert a Zod schema to JSON Schema
@@ -28,7 +25,6 @@ export function zodToJsonSchema(schema: ZodTypeAny): {
     target: 'openApi3',
   });
 
-  // Extract the schema without $schema and other metadata
   const result = jsonSchema as Record<string, unknown>;
   delete result.$schema;
 
@@ -60,12 +56,10 @@ export function jsonSchemaToZod(schema: {
   for (const [key, prop] of Object.entries(schema.properties)) {
     let zodType = jsonSchemaPropertyToZod(prop);
 
-    // Add description if available
     if (prop.description) {
       zodType = zodType.describe(prop.description);
     }
 
-    // Make optional if not required
     if (!required.has(key)) {
       zodType = zodType.optional();
     }
@@ -96,7 +90,6 @@ interface JsonSchemaProperty {
 }
 
 function jsonSchemaPropertyToZod(prop: JsonSchemaProperty): ZodTypeAny {
-  // Handle enum
   if (prop.enum && Array.isArray(prop.enum)) {
     if (prop.enum.length >= 2 && prop.enum.every((v) => typeof v === 'string')) {
       return z.enum(prop.enum as [string, ...string[]]);
@@ -110,7 +103,6 @@ function jsonSchemaPropertyToZod(prop: JsonSchemaProperty): ZodTypeAny {
     }
   }
 
-  // Handle by type
   switch (prop.type) {
     case 'string': {
       let schema = z.string();
@@ -171,9 +163,6 @@ function jsonSchemaPropertyToZod(prop: JsonSchemaProperty): ZodTypeAny {
   }
 }
 
-// ============================================================================
-// Cogitator to MCP Conversion
-// ============================================================================
 
 /**
  * Convert a Cogitator Tool to MCP tool definition format
@@ -207,9 +196,6 @@ export function toolSchemaToMCP(schema: ToolSchema): MCPToolDefinition {
   };
 }
 
-// ============================================================================
-// MCP to Cogitator Conversion
-// ============================================================================
 
 /**
  * Convert an MCP tool definition to a Cogitator Tool
@@ -227,7 +213,6 @@ export function mcpToCogitator(
     ? options.descriptionTransform(mcpTool.description)
     : mcpTool.description;
 
-  // Convert JSON Schema to Zod - cast properties to the expected type
   const inputSchema = {
     type: 'object',
     properties: mcpTool.inputSchema.properties as Record<string, JsonSchemaProperty>,
@@ -235,7 +220,6 @@ export function mcpToCogitator(
   };
   const parameters = jsonSchemaToZod(inputSchema);
 
-  // Create the tool
   const tool: Tool = {
     name,
     description,
@@ -280,9 +264,6 @@ export async function wrapMCPTools(
   return definitions.map((def) => mcpToCogitator(def, client, options));
 }
 
-// ============================================================================
-// Tool Result Conversion
-// ============================================================================
 
 /**
  * Convert a tool execution result to MCP content format
@@ -297,7 +278,6 @@ export function resultToMCPContent(result: unknown): MCPToolContent[] {
   }
 
   if (typeof result === 'object') {
-    // Check if it's already in MCP content format
     if (
       Array.isArray(result) &&
       result.every((item) => typeof item === 'object' && 'type' in item)
@@ -305,11 +285,9 @@ export function resultToMCPContent(result: unknown): MCPToolContent[] {
       return result as MCPToolContent[];
     }
 
-    // Convert to JSON string
     return [{ type: 'text', text: JSON.stringify(result, null, 2) }];
   }
 
-  // Convert primitives to string
   return [{ type: 'text', text: String(result) }];
 }
 
@@ -321,7 +299,6 @@ export function mcpContentToResult(content: MCPToolContent[]): unknown {
     return null;
   }
 
-  // Single text content - try to parse as JSON
   if (content.length === 1 && content[0].type === 'text') {
     const text = content[0].text;
     try {
@@ -331,7 +308,6 @@ export function mcpContentToResult(content: MCPToolContent[]): unknown {
     }
   }
 
-  // Multiple content items - return as array
   return content.map((item) => {
     if (item.type === 'text') {
       try {

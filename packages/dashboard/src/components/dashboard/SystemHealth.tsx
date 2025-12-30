@@ -56,7 +56,7 @@ export function SystemHealth() {
     }
 
     fetchHealth();
-    const interval = setInterval(fetchHealth, 30000); // Check every 30s
+    const interval = setInterval(fetchHealth, 30000);
     return () => clearInterval(interval);
   }, []);
 

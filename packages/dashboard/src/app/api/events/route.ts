@@ -25,12 +25,10 @@ export async function GET(request: NextRequest) {
         controller.enqueue(encoder.encode(message));
       };
 
-      // Send heartbeat
       const heartbeat = setInterval(() => {
         sendEvent('heartbeat', { timestamp: Date.now() });
       }, 30000);
 
-      // Subscribe to channels
       const channels = Object.values(CHANNELS);
       
       try {
@@ -43,7 +41,6 @@ export async function GET(request: NextRequest) {
             const data = JSON.parse(message);
             const eventName = CHANNEL_TO_EVENT[channel] || channel.split(':').pop() || 'message';
             
-            // Add event type based on channel
             let eventType: string | undefined;
             if (channel === CHANNELS.RUN_STARTED) eventType = 'started';
             else if (channel === CHANNELS.RUN_COMPLETED) eventType = 'completed';
@@ -60,13 +57,11 @@ export async function GET(request: NextRequest) {
           }
         });
 
-        // Send initial connection event
         sendEvent('connected', { 
           channels,
           timestamp: Date.now(),
         });
 
-        // Handle client disconnect
         request.signal.addEventListener('abort', async () => {
           clearInterval(heartbeat);
           for (const channel of channels) {

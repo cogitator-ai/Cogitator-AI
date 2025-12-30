@@ -3,7 +3,6 @@ import { Cogitator } from '../cogitator.js';
 import { Agent } from '../agent.js';
 import type { CogitatorConfig, Message } from '@cogitator/types';
 
-// Mock LLM responses
 const mockResponses: Message[] = [];
 let responseIndex = 0;
 
@@ -97,16 +96,13 @@ describe('Cogitator with Memory', () => {
 
       const threadId = 'thread_persist';
 
-      // First conversation
       mockResponses.push({ role: 'assistant', content: 'Nice to meet you, Alex!' });
       await cog.run(agent, { input: 'My name is Alex', threadId });
 
-      // Second conversation - should have history
       mockResponses.push({ role: 'assistant', content: 'Your name is Alex!' });
       const result2 = await cog.run(agent, { input: "What's my name?", threadId });
 
       expect(result2.output).toBe('Your name is Alex!');
-      // The messages array should include history from first conversation
       expect(result2.messages.length).toBeGreaterThan(2);
     });
 
@@ -119,15 +115,12 @@ describe('Cogitator with Memory', () => {
         instructions: 'You are helpful.',
       });
 
-      // Thread 1
       mockResponses.push({ role: 'assistant', content: 'Hello Thread 1!' });
       await cog.run(agent, { input: 'Thread 1 message', threadId: 'thread_1' });
 
-      // Thread 2
       mockResponses.push({ role: 'assistant', content: 'Hello Thread 2!' });
       const result2 = await cog.run(agent, { input: 'Thread 2 message', threadId: 'thread_2' });
 
-      // Thread 2 should only have its own messages
       expect(result2.messages.filter((m) => m.role === 'user').length).toBe(1);
     });
 
@@ -142,11 +135,9 @@ describe('Cogitator with Memory', () => {
 
       const threadId = 'thread_nomem';
 
-      // First run with memory
       mockResponses.push({ role: 'assistant', content: 'First response' });
       await cog.run(agent, { input: 'First message', threadId });
 
-      // Second run without memory
       mockResponses.push({ role: 'assistant', content: 'Second response' });
       const result2 = await cog.run(agent, {
         input: 'Second message',
@@ -154,7 +145,6 @@ describe('Cogitator with Memory', () => {
         useMemory: false,
       });
 
-      // Should only have system + user + assistant (no history loaded)
       expect(result2.messages.length).toBe(3);
     });
 
@@ -169,15 +159,12 @@ describe('Cogitator with Memory', () => {
 
       const threadId = 'thread_nosave';
 
-      // First run without saving
       mockResponses.push({ role: 'assistant', content: 'Not saved' });
       await cog.run(agent, { input: 'Temp message', threadId, saveHistory: false });
 
-      // Second run should have no history
       mockResponses.push({ role: 'assistant', content: 'Fresh start' });
       const result2 = await cog.run(agent, { input: 'New message', threadId });
 
-      // Should only have system + user + assistant (nothing was saved before)
       expect(result2.messages.length).toBe(3);
     });
 
@@ -193,10 +180,8 @@ describe('Cogitator with Memory', () => {
       mockResponses.push({ role: 'assistant', content: 'Test' });
       await cog.run(agent, { input: 'Test', threadId: 'thread_close' });
 
-      // Close should not throw
       await expect(cog.close()).resolves.not.toThrow();
 
-      // Second close should also be safe
       await expect(cog.close()).resolves.not.toThrow();
     });
   });

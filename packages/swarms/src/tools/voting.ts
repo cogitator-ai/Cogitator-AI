@@ -33,7 +33,6 @@ export function createVotingTools(
       confidence: z.number().optional().describe('Confidence level 0-1 (optional, affects display only)'),
     }),
     execute: async ({ decision, reasoning, confidence }) => {
-      // Get current consensus state
       const consensusState = blackboard.read<{
         currentRound: number;
         votes: Vote[];
@@ -55,11 +54,9 @@ export function createVotingTools(
         timestamp: Date.now(),
       };
 
-      // Add vote
       consensusState.votes.push(vote);
       blackboard.write('consensus', consensusState, currentAgent);
 
-      // Emit event
       events.emit('consensus:vote', {
         agent: currentAgent,
         decision,
@@ -102,12 +99,10 @@ export function createVotingTools(
 
       let votes = consensusState.votes;
 
-      // Filter by round if specified
       if (round !== undefined) {
         votes = votes.filter(v => v.round === round);
       }
 
-      // Count votes by decision
       const voteCounts = new Map<string, { count: number; weighted: number; voters: string[] }>();
       for (const vote of votes) {
         const key = vote.decision.toLowerCase().trim();
@@ -161,7 +156,6 @@ export function createVotingTools(
         };
       }
 
-      // Find previous vote in current round
       const previousVoteIndex = consensusState.votes.findIndex(
         v => v.agentName === currentAgent && v.round === consensusState.currentRound
       );
@@ -170,12 +164,10 @@ export function createVotingTools(
         ? consensusState.votes[previousVoteIndex].decision
         : null;
 
-      // Remove previous vote if exists
       if (previousVoteIndex >= 0) {
         consensusState.votes.splice(previousVoteIndex, 1);
       }
 
-      // Add new vote
       const vote: Vote = {
         agentName: currentAgent,
         decision: newDecision,
@@ -224,7 +216,6 @@ export function createVotingTools(
         };
       }
 
-      // Calculate current vote distribution
       const currentRoundVotes = consensusState.votes.filter(
         v => v.round === consensusState.currentRound
       );
@@ -235,7 +226,6 @@ export function createVotingTools(
         voteCounts.set(key, (voteCounts.get(key) ?? 0) + 1);
       }
 
-      // Check if consensus would be reached
       const totalVotes = currentRoundVotes.length;
       let leadingDecision = '';
       let leadingCount = 0;

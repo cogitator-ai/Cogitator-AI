@@ -99,7 +99,6 @@ export class SimpleTriggerEventEmitter implements TriggerEventEmitter {
         try {
           callback(payload);
         } catch {
-          // Ignore listener errors
         }
       }
     }
@@ -152,27 +151,23 @@ export class DefaultTriggerManager implements ITriggerManager {
     this.eventEmitter = config.eventEmitter ?? new SimpleTriggerEventEmitter();
 
     const onFire = async (trigger: WorkflowTrigger, context: TriggerContext): Promise<string> => {
-      // Notify callbacks
       for (const callback of this.triggerCallbacks) {
         try {
           callback(trigger, context);
         } catch {
-          // Ignore callback errors
         }
       }
 
-      // Update trigger stats
       await this.store.update(trigger.id, {
         lastTriggered: context.timestamp,
         triggerCount: trigger.triggerCount + 1,
       });
 
-      // Call external handler if provided
       if (config.onTriggerFire) {
         return config.onTriggerFire(trigger, context);
       }
 
-      return nanoid(); // Return a fake run ID if no handler
+      return nanoid();
     };
 
     this.cronExecutor = createCronTrigger({ onFire });
@@ -221,7 +216,6 @@ export class DefaultTriggerManager implements ITriggerManager {
 
     await this.store.save(fullTrigger);
 
-    // Register with appropriate executor, passing manager's ID for consistency
     switch (trigger.type) {
       case 'cron': {
         const config = trigger.config as CronTriggerConfig;
@@ -289,7 +283,6 @@ export class DefaultTriggerManager implements ITriggerManager {
         this.webhookExecutor.enable(id);
         break;
       case 'event':
-        // Re-register event listener
         this.registerEventTrigger(id, trigger.workflowName, trigger.config as EventTriggerConfig);
         break;
     }
@@ -357,16 +350,13 @@ export class DefaultTriggerManager implements ITriggerManager {
       ...partialContext,
     };
 
-    // Notify callbacks
     for (const callback of this.triggerCallbacks) {
       try {
         callback(trigger, context);
       } catch {
-        // Ignore callback errors
       }
     }
 
-    // Update stats
     await this.store.update(id, {
       lastTriggered: context.timestamp,
       triggerCount: trigger.triggerCount + 1,
@@ -480,25 +470,21 @@ export class DefaultTriggerManager implements ITriggerManager {
     _workflowName: string,
     config: EventTriggerConfig
   ): void {
-    // Remove existing listener if any
     const existing = this.eventListeners.get(id);
     if (existing) {
       existing();
     }
 
     const unsubscribe = this.eventEmitter.on(config.eventType, async (payload) => {
-      // Check source filter
       if (config.source) {
         const eventSource = (payload as { source?: string })?.source;
         if (eventSource !== config.source) return;
       }
 
-      // Check filter function
       if (config.filter && !config.filter(payload)) {
         return;
       }
 
-      // Transform payload
       const transformedPayload = config.transform
         ? config.transform(payload)
         : payload;
@@ -517,16 +503,13 @@ export class DefaultTriggerManager implements ITriggerManager {
         },
       };
 
-      // Notify callbacks
       for (const callback of this.triggerCallbacks) {
         try {
           callback(trigger, context);
         } catch {
-          // Ignore callback errors
         }
       }
 
-      // Update stats
       await this.store.update(id, {
         lastTriggered: context.timestamp,
         triggerCount: trigger.triggerCount + 1,

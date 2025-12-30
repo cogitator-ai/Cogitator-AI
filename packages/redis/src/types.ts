@@ -70,11 +70,9 @@ export type RedisConfig = RedisStandaloneConfig | RedisClusterConfig;
  * All methods work identically regardless of the underlying implementation.
  */
 export interface RedisClient {
-  // Connection
   ping(): Promise<string>;
   quit(): Promise<string>;
 
-  // String operations
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<string>;
   setex(key: string, seconds: number, value: string): Promise<string>;
@@ -82,7 +80,6 @@ export interface RedisClient {
   expire(key: string, seconds: number): Promise<number>;
   mget(...keys: string[]): Promise<(string | null)[]>;
 
-  // Sorted set operations
   zadd(key: string, score: number, member: string): Promise<number>;
   zrange(key: string, start: number, stop: number): Promise<string[]>;
   zrangebyscore(
@@ -92,27 +89,19 @@ export interface RedisClient {
   ): Promise<string[]>;
   zrem(key: string, ...members: string[]): Promise<number>;
 
-  // Set operations
   smembers(key: string): Promise<string[]>;
 
-  // Pub/Sub
   publish(channel: string, message: string): Promise<number>;
   subscribe(channel: string, callback?: (message: string) => void): Promise<void>;
   unsubscribe(channel: string): Promise<void>;
 
-  // Events - flexible callback to match ioredis event emitter
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: string, callback: (...args: any[]) => void): void;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   off(event: string, callback: (...args: any[]) => void): void;
 
-  // Keys pattern matching
   keys(pattern: string): Promise<string[]>;
 
-  // Cluster-specific (no-op on standalone)
   duplicate(): RedisClient;
 
-  // Info
   info(section?: string): Promise<string>;
 }
 

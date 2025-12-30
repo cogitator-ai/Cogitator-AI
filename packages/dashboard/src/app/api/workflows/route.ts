@@ -20,11 +20,23 @@ async function ensureInitialized() {
   }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     await ensureInitialized();
-    const workflows = await getWorkflows();
-    return NextResponse.json(workflows);
+
+    const searchParams = request.nextUrl.searchParams;
+    const limit = parseInt(searchParams.get('limit') || '50');
+    const offset = parseInt(searchParams.get('offset') || '0');
+    const search = searchParams.get('search') || undefined;
+
+    const result = await getWorkflows({ limit, offset, search });
+
+    return NextResponse.json({
+      workflows: result.workflows,
+      total: result.total,
+      limit,
+      offset,
+    });
   } catch (error) {
     console.error('[api/workflows] Failed to fetch workflows:', error);
     return NextResponse.json(

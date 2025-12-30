@@ -50,7 +50,6 @@ spec:
               value: {{ .Values.config.logLevel | quote }}
             - name: WORKER_CONCURRENCY
               value: {{ .Values.worker.concurrency | quote }}
-            # Redis configuration
             {{- if .Values.redis.cluster.enabled }}
             - name: REDIS_CLUSTER_NODES
               value: {{ .Values.redis.cluster.nodes | toJson | quote }}
@@ -70,7 +69,6 @@ spec:
                   key: redis-password
             {{- end }}
             {{- end }}
-            # LLM API keys
             {{- if .Values.secrets.openaiApiKey }}
             - name: OPENAI_API_KEY
               valueFrom:
@@ -85,7 +83,6 @@ spec:
                   name: {{ include "cogitator.fullname" . }}-secrets
                   key: anthropic-api-key
             {{- end }}
-            # Ollama configuration
             {{- if or .Values.ollama.enabled .Values.ollama.external }}
             - name: OLLAMA_URL
               value: {{ if .Values.ollama.external }}{{ .Values.ollama.url }}{{ else }}http://localhost:11434{{ end }}

@@ -26,7 +26,6 @@ const cog = new Cogitator({
   },
 });
 
-// Create debaters with different perspectives
 const optimist = new Agent({
   name: 'optimist',
   model: MODEL,
@@ -72,7 +71,6 @@ Keep responses concise (2-3 paragraphs max).`,
   temperature: 0.5,
 });
 
-// Moderator synthesizes the debate
 const moderator = new Agent({
   name: 'moderator',
   model: MODEL,
@@ -89,7 +87,6 @@ After hearing all sides, provide a summary that:
   temperature: 0.3,
 });
 
-// Create debate swarm
 const debateSwarm = new Swarm({
   name: 'debate-team',
   strategy: 'debate',
@@ -99,19 +96,18 @@ const debateSwarm = new Swarm({
 
   coordination: {
     visibility: 'full',
-    workerCommunication: true, // Debaters can see each other's arguments
+    workerCommunication: true,
     maxParallelTasks: 1,
   },
 
   resources: {
     maxConcurrency: 1,
     tokenBudget: 15_000,
-    timeout: 180_000, // 3 minutes
+    timeout: 180_000,
   },
 
-  // Debate-specific config
   strategyConfig: {
-    maxRounds: 2, // Each debater speaks twice
+    maxRounds: 2,
     requireConsensus: false,
     votingEnabled: false,
   },
@@ -136,7 +132,6 @@ async function main() {
   console.log('  🎯 moderator - Synthesizes conclusions');
   console.log('\n');
 
-  // Debate topic
   const topic = `Should companies adopt AI agents for customer support?
 
 Consider:
@@ -171,7 +166,6 @@ Topic: ${topic}`,
     console.log(`   Duration: ${(result.usage.duration / 1000).toFixed(1)}s`);
     console.log(`   Cost: $${result.usage.cost.toFixed(4)}`);
 
-    // Show who spoke
     if (result.trace?.spans) {
       console.log('\n🎤 Speaker Activity:');
       const agentSpans = result.trace.spans.filter((s) =>

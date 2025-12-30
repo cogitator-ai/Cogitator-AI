@@ -102,20 +102,17 @@ export default function RunsPage() {
     }
   }, [statusFilter]);
 
-  // Initial fetch and polling
   useEffect(() => {
     fetchRuns();
-    const interval = setInterval(fetchRuns, 30000); // Poll every 30s as backup
+    const interval = setInterval(fetchRuns, 30000);
     return () => clearInterval(interval);
   }, [fetchRuns]);
 
-  // Subscribe to real-time events
   useEffect(() => {
     const unsubscribe = subscribe('run', (data: unknown) => {
       const event = data as RunEvent;
       
       if (event.type === 'started') {
-        // Add new run to the list
         const newRun: Run = {
           id: event.runId,
           agentId: event.agentId,
@@ -127,12 +124,10 @@ export default function RunsPage() {
         };
         
         setRuns((prev) => {
-          // Don't add if already exists
           if (prev.some((r) => r.id === newRun.id)) return prev;
           return [newRun, ...prev];
         });
       } else if (event.type === 'completed') {
-        // Update existing run
         setRuns((prev) =>
           prev.map((run) =>
             run.id === event.runId
@@ -149,7 +144,6 @@ export default function RunsPage() {
           )
         );
       } else if (event.type === 'failed') {
-        // Update existing run as failed
         setRuns((prev) =>
           prev.map((run) =>
             run.id === event.runId

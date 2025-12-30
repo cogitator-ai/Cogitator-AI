@@ -23,7 +23,6 @@ interface GoogleConfig {
   baseUrl?: string;
 }
 
-// Gemini API types
 interface GeminiContent {
   role: 'user' | 'model';
   parts: GeminiPart[];
@@ -165,7 +164,6 @@ export class GoogleBackend extends BaseLLMBackend {
 
         buffer += decoder.decode(value, { stream: true });
 
-        // Parse SSE events
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
 
@@ -197,20 +195,28 @@ export class GoogleBackend extends BaseLLMBackend {
                   }
                 }
 
-                // Check for finish reason
                 if (candidate.finishReason) {
                   const finishReason = this.mapFinishReason(candidate.finishReason);
-                  yield {
+                  const streamChunk: ChatStreamChunk = {
                     id,
                     delta: {
                       toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined,
                     },
                     finishReason,
                   };
+
+                  if (chunk.usageMetadata) {
+                    streamChunk.usage = {
+                      inputTokens: chunk.usageMetadata.promptTokenCount,
+                      outputTokens: chunk.usageMetadata.candidatesTokenCount,
+                      totalTokens: chunk.usageMetadata.totalTokenCount,
+                    };
+                  }
+
+                  yield streamChunk;
                 }
               }
             } catch {
-              // Skip malformed JSON chunks
             }
           }
         }
@@ -260,7 +266,6 @@ export class GoogleBackend extends BaseLLMBackend {
       geminiRequest.generationConfig.stopSequences = request.stop;
     }
 
-    // Remove empty generationConfig
     if (Object.keys(geminiRequest.generationConfig).length === 0) {
       delete geminiRequest.generationConfig;
     }
@@ -269,7 +274,6 @@ export class GoogleBackend extends BaseLLMBackend {
   }
 
   private normalizeModel(model: string): string {
-    // Handle common model aliases
     const modelMap: Record<string, string> = {
       'gemini-pro': 'gemini-1.5-pro',
       'gemini-flash': 'gemini-1.5-flash',
@@ -288,7 +292,6 @@ export class GoogleBackend extends BaseLLMBackend {
     let systemInstruction: string | null = null;
     const contents: GeminiContent[] = [];
 
-    // Group tool results with their preceding assistant message
     let pendingToolResults: Map<string, Message> = new Map();
 
     for (const msg of messages) {
@@ -307,13 +310,10 @@ export class GoogleBackend extends BaseLLMBackend {
         case 'assistant': {
           const parts: GeminiPart[] = [];
 
-          // Add text content if any
           if (msg.content) {
             parts.push({ text: msg.content });
           }
 
-          // Check if this message has associated tool calls (via parsing or explicit)
-          // Tool calls would be added separately in Gemini format
           if (parts.length > 0 || pendingToolResults.size === 0) {
             contents.push({
               role: 'model',
@@ -324,14 +324,11 @@ export class GoogleBackend extends BaseLLMBackend {
         }
 
         case 'tool': {
-          // In Gemini, tool results are sent as function responses
-          // They should follow a model message with function calls
           const functionResponse: GeminiFunctionResponse = {
             name: msg.name ?? '',
             response: this.parseToolResult(msg.content),
           };
 
-          // Gemini expects function responses in a user message
           contents.push({
             role: 'user',
             parts: [{ functionResponse }],
@@ -417,7 +414,6 @@ export class GoogleBackend extends BaseLLMBackend {
       case 'OTHER':
         return 'error';
       default:
-        // Check if we have tool calls - Gemini doesn't always set a specific finish reason
         return 'stop';
     }
   }

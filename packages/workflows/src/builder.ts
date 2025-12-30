@@ -111,7 +111,6 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
    * Build and validate the workflow
    */
   build(): Workflow<S> {
-    // Create nodes map
     const nodesMap = new Map<string, WorkflowNode<S>>();
 
     for (const node of this.nodes) {
@@ -122,7 +121,6 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
       });
     }
 
-    // Add conditional nodes as pass-through nodes
     for (const cond of this.conditionals) {
       nodesMap.set(cond.name, {
         name: cond.name,
@@ -131,7 +129,6 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
       });
     }
 
-    // Add loop nodes as pass-through nodes
     for (const loop of this.loops) {
       nodesMap.set(loop.name, {
         name: loop.name,
@@ -140,19 +137,14 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
       });
     }
 
-    // Build edges
     const edges: Edge[] = [];
 
-    // Collect conditional and loop node names (their routing is handled dynamically)
     const conditionalNames = new Set(this.conditionals.map((c) => c.name));
     const loopNames = new Set(this.loops.map((l) => l.name));
 
-    // Sequential edges from 'after' dependencies
-    // Skip if dependency is a conditional or loop (those handle routing dynamically)
     for (const node of this.nodes) {
       for (const dep of node.after) {
         if (conditionalNames.has(dep) || loopNames.has(dep)) {
-          // Routing from conditionals/loops is handled by their specific edges
           continue;
         }
         edges.push({
@@ -163,9 +155,7 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
       }
     }
 
-    // Conditional edges
     for (const cond of this.conditionals) {
-      // Add dependencies
       for (const dep of cond.after) {
         edges.push({
           type: 'sequential',
@@ -174,7 +164,6 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
         });
       }
 
-      // Find all possible targets (nodes that have this conditional in their 'after')
       const targets: string[] = [];
       for (const node of this.nodes) {
         if (node.after.includes(cond.name)) {
@@ -192,9 +181,7 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
       }
     }
 
-    // Loop edges
     for (const loop of this.loops) {
-      // Add dependencies
       for (const dep of loop.after) {
         edges.push({
           type: 'sequential',
@@ -212,11 +199,9 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
       });
     }
 
-    // Determine entry point
     let entryPoint = this.entryPointName;
 
     if (!entryPoint) {
-      // Find nodes with no dependencies (roots)
       const allDeps = new Set<string>();
       for (const node of this.nodes) {
         for (const dep of node.after) {
@@ -237,12 +222,10 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
       }
 
       if (roots.length === 0) {
-        // If no explicit roots, take first node
         entryPoint = this.nodes[0]?.name;
       } else if (roots.length === 1) {
         entryPoint = roots[0];
       } else {
-        // Multiple roots - take first one
         entryPoint = roots[0];
       }
     }
@@ -251,7 +234,6 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
       throw new Error('Workflow has no nodes');
     }
 
-    // Validate
     this.validate(nodesMap, edges, entryPoint);
 
     return {
@@ -268,12 +250,10 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
     edges: Edge[],
     entryPoint: string
   ): void {
-    // Check entry point exists
     if (!nodes.has(entryPoint)) {
       throw new Error(`Entry point '${entryPoint}' not found in nodes`);
     }
 
-    // Check all edge references exist
     for (const edge of edges) {
       if (!nodes.has(edge.from)) {
         throw new Error(`Edge references unknown node '${edge.from}'`);

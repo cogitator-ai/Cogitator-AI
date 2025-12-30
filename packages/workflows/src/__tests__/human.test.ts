@@ -156,7 +156,6 @@ describe('Human-in-the-Loop', () => {
       expect(retrieved?.decision).toBe(true);
       expect(retrieved?.comment).toBe('Looks good!');
 
-      // Should no longer be pending
       const pending = await store.getPendingRequests();
       expect(pending).toHaveLength(0);
     });
@@ -208,7 +207,6 @@ describe('Human-in-the-Loop', () => {
       const callback = vi.fn();
       store.onResponse('req-1', callback);
 
-      // Wait for microtask
       await new Promise(resolve => queueMicrotask(resolve));
 
       expect(callback).toHaveBeenCalled();
@@ -239,8 +237,6 @@ describe('Human-in-the-Loop', () => {
 
       const store = withDelegation(baseStore, { onDelegation });
 
-      // Use baseStore.createRequest because withDelegation uses object spread
-      // which doesn't copy prototype methods from the class
       await baseStore.createRequest({
         id: 'req-1',
         workflowId: 'wf-1',
@@ -252,7 +248,6 @@ describe('Human-in-the-Loop', () => {
         createdAt: Date.now(),
       });
 
-      // Alice delegates to Bob - use the wrapped store for submitResponse
       await store.submitResponse({
         requestId: 'req-1',
         decision: null,
@@ -294,7 +289,6 @@ describe('Human-in-the-Loop', () => {
       const fetchMock = vi.fn().mockResolvedValue({ ok: true });
       global.fetch = fetchMock;
 
-      // WebhookNotifier takes an options object with url property
       const notifier = new WebhookNotifier({ url: 'https://example.com/hook' });
 
       await notifier.notify({
@@ -452,13 +446,10 @@ describe('Human-in-the-Loop', () => {
         approvalStore: store,
       };
 
-      // Execute in background
       const resultPromise = executeHumanNode({ value: 10 }, config, context);
 
-      // Wait for request to be created
       await new Promise(resolve => setTimeout(resolve, 10));
 
-      // Submit response
       const pending = await store.getPendingRequests();
       expect(pending).toHaveLength(1);
 

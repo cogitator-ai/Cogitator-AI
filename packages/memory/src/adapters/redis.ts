@@ -28,15 +28,12 @@ export class RedisAdapter extends BaseMemoryAdapter {
   constructor(config: RedisAdapterConfig) {
     super();
     this.config = config;
-    // Use hash tag prefix for cluster mode to ensure keys route to same slot
     this.prefix = config.keyPrefix ?? (config.cluster ? '{cogitator}:' : 'cogitator:');
-    this.ttl = config.ttl ?? 86400; // 24 hours default
+    this.ttl = config.ttl ?? 86400;
   }
 
   async connect(): Promise<MemoryResult<void>> {
     try {
-      // Build Redis config based on standalone or cluster mode
-      // Note: We don't use keyPrefix at client level since key() method handles it
       if (this.config.cluster) {
         this.client = await createRedisClient({
           mode: 'cluster',
@@ -134,7 +131,6 @@ export class RedisAdapter extends BaseMemoryAdapter {
   async deleteThread(threadId: string): Promise<MemoryResult<void>> {
     if (!this.client) return this.failure('Not connected');
 
-    // Get all entry keys for this thread
     const setKey = this.key('thread:entries', threadId);
     const entryKeys = await this.client.zrange(setKey, 0, -1);
 
@@ -161,11 +157,9 @@ export class RedisAdapter extends BaseMemoryAdapter {
     const key = this.key('entry', full.id);
     await this.client.setex(key, this.ttl, JSON.stringify(full));
 
-    // Add to thread's entry set with score = timestamp for ordering
     const setKey = this.key('thread:entries', entry.threadId);
     await this.client.zadd(setKey, full.createdAt.getTime(), key);
 
-    // Refresh thread set TTL
     await this.client.expire(setKey, this.ttl);
 
     return this.success(full);
@@ -178,7 +172,6 @@ export class RedisAdapter extends BaseMemoryAdapter {
 
     const setKey = this.key('thread:entries', options.threadId);
 
-    // Get keys sorted by timestamp
     let keys: string[];
     if (options.before || options.after) {
       const min = options.after?.getTime() ?? '-inf';
@@ -190,12 +183,10 @@ export class RedisAdapter extends BaseMemoryAdapter {
 
     if (keys.length === 0) return this.success([]);
 
-    // Apply limit from end (most recent)
     if (options.limit && keys.length > options.limit) {
       keys = keys.slice(-options.limit);
     }
 
-    // Fetch all entries
     const values = await this.client.mget(...keys);
     const entries: MemoryEntry[] = values
       .filter((v): v is string => v !== null)

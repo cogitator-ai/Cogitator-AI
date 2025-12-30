@@ -34,13 +34,10 @@ export function errorHandler(
   request: FastifyRequest,
   reply: FastifyReply
 ) {
-  // Log error
   request.log.error(error);
 
-  // Determine status code
   let statusCode = error.statusCode ?? 500;
 
-  // Map common error types
   let errorType = 'server_error';
   let errorCode = 'internal_error';
 
@@ -61,7 +58,6 @@ export function errorHandler(
     errorCode = 'rate_limit_exceeded';
   }
 
-  // Send OpenAI-formatted error response
   return reply.status(statusCode).send(
     formatOpenAIError(
       errorCode,

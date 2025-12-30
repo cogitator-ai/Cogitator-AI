@@ -130,12 +130,11 @@ export default function ModelsPage() {
                   delete next[name];
                   return next;
                 });
-                fetchModels(); // Refresh models list
+                fetchModels();
               } else {
                 setPulling((prev) => ({ ...prev, [name]: progress }));
               }
             } catch {
-              // Ignore parse errors
             }
           }
         }

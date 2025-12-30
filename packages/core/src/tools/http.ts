@@ -63,7 +63,6 @@ export const httpRequest = tool({
         responseBody = await response.text();
       }
 
-      // Truncate large responses
       const maxBodySize = 100000;
       const truncated = responseBody.length > maxBodySize;
       if (truncated) {

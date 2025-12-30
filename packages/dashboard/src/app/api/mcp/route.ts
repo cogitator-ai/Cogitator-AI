@@ -6,10 +6,8 @@ import {
 import type { MCPClientConfig, MCPServerConfig } from '@cogitator/mcp';
 import { getAvailableTools, getCogitator } from '@/lib/cogitator';
 
-// Store active MCP clients
 const activeClients = new Map<string, MCPClient>();
 
-// Singleton MCP server instance
 let mcpServer: MCPServer | null = null;
 
 export async function GET(request: NextRequest) {
@@ -19,7 +17,6 @@ export async function GET(request: NextRequest) {
 
     switch (action) {
       case 'clients': {
-        // List all connected MCP clients
         const clients = Array.from(activeClients.entries()).map(([id, client]) => ({
           id,
           connected: client.isConnected(),
@@ -28,7 +25,6 @@ export async function GET(request: NextRequest) {
       }
 
       case 'tools': {
-        // Get tools from a specific client
         const clientId = searchParams.get('clientId');
         if (!clientId) {
           return NextResponse.json({ error: 'clientId required' }, { status: 400 });
@@ -49,7 +45,6 @@ export async function GET(request: NextRequest) {
       }
 
       case 'resources': {
-        // Get resources from a specific client
         const clientId = searchParams.get('clientId');
         if (!clientId) {
           return NextResponse.json({ error: 'clientId required' }, { status: 400 });
@@ -63,7 +58,6 @@ export async function GET(request: NextRequest) {
       }
 
       case 'prompts': {
-        // Get prompts from a specific client
         const clientId = searchParams.get('clientId');
         if (!clientId) {
           return NextResponse.json({ error: 'clientId required' }, { status: 400 });
@@ -77,7 +71,6 @@ export async function GET(request: NextRequest) {
       }
 
       case 'server-status': {
-        // Check if MCP server is running
         return NextResponse.json({
           running: mcpServer !== null,
           toolCount: getAvailableTools().length,
@@ -103,7 +96,6 @@ export async function POST(request: NextRequest) {
 
     switch (action) {
       case 'connect': {
-        // Connect to an MCP server
         const { config, clientId } = body;
         
         if (!config || !clientId) {
@@ -113,7 +105,6 @@ export async function POST(request: NextRequest) {
           );
         }
 
-        // Check if already connected
         if (activeClients.has(clientId)) {
           return NextResponse.json({ error: 'Client already exists' }, { status: 409 });
         }
@@ -132,7 +123,6 @@ export async function POST(request: NextRequest) {
         const client = await MCPClient.connect(mcpConfig);
         activeClients.set(clientId, client);
 
-        // Get initial capabilities
         const tools = await client.getTools();
         const capabilities = {
           tools: tools.length > 0,
@@ -159,7 +149,6 @@ export async function POST(request: NextRequest) {
       }
 
       case 'disconnect': {
-        // Disconnect from an MCP server
         const { clientId } = body;
         if (!clientId) {
           return NextResponse.json({ error: 'clientId required' }, { status: 400 });
@@ -177,7 +166,6 @@ export async function POST(request: NextRequest) {
       }
 
       case 'call-tool': {
-        // Call a tool on an MCP server
         const { clientId, toolName, args } = body;
         
         if (!clientId || !toolName) {
@@ -197,7 +185,6 @@ export async function POST(request: NextRequest) {
       }
 
       case 'read-resource': {
-        // Read a resource from an MCP server
         const { clientId, uri } = body;
         
         if (!clientId || !uri) {
@@ -217,7 +204,6 @@ export async function POST(request: NextRequest) {
       }
 
       case 'get-prompt': {
-        // Get a prompt from an MCP server
         const { clientId, promptName, args } = body;
         
         if (!clientId || !promptName) {
@@ -237,7 +223,6 @@ export async function POST(request: NextRequest) {
       }
 
       case 'import-tools': {
-        // Import MCP tools into Cogitator
         const { clientId } = body;
         
         if (!clientId) {
@@ -252,7 +237,6 @@ export async function POST(request: NextRequest) {
         const mcpTools = await client.getTools();
         const cogitator = await getCogitator();
 
-        // Register MCP tools with Cogitator
         for (const tool of mcpTools) {
           cogitator.tools.register(tool);
         }
@@ -264,7 +248,6 @@ export async function POST(request: NextRequest) {
       }
 
       case 'start-server': {
-        // Start MCP server to expose Cogitator tools
         if (mcpServer) {
           return NextResponse.json({ error: 'Server already running' }, { status: 409 });
         }
@@ -280,12 +263,8 @@ export async function POST(request: NextRequest) {
 
         mcpServer = new MCPServer(serverConfig);
 
-        // Register all Cogitator tools as MCP tools
-        // MCPServer.registerTool accepts Cogitator Tool directly
         mcpServer.registerTools(tools as Parameters<typeof mcpServer.registerTools>[0]);
 
-        // Start the server (this is for stdio, would need different handling for HTTP)
-        // For dashboard, we mainly expose the tools programmatically
         
         return NextResponse.json({
           started: true,
@@ -318,7 +297,6 @@ export async function POST(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    // Disconnect all clients
     for (const [id, client] of activeClients) {
       try {
         await client.close();
@@ -328,7 +306,6 @@ export async function DELETE(request: NextRequest) {
     }
     activeClients.clear();
 
-    // Stop server if running
     if (mcpServer) {
       await mcpServer.stop();
       mcpServer = null;

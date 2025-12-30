@@ -36,7 +36,6 @@ export function toolToSchema<TParams, TResult>(t: Tool<TParams, TResult>): ToolS
     $refStrategy: 'none',
   });
 
-  // Extract properties and required from the schema
   const schema = jsonSchema as Record<string, unknown>;
   const properties = (schema.properties ?? {}) as Record<string, unknown>;
   const required = schema.required as string[] | undefined;

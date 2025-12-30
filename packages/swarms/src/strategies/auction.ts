@@ -43,7 +43,6 @@ export class AuctionStrategy extends BaseStrategy {
       participants: agents.map(a => a.agent.name),
     });
 
-    // Initialize auction state on blackboard
     this.coordinator.blackboard.write('auction', {
       task: options.input,
       participants: agents.map(a => a.agent.name),
@@ -51,17 +50,14 @@ export class AuctionStrategy extends BaseStrategy {
       status: 'bidding',
     }, 'system');
 
-    // Collect bids from all agents
     const bids = await this.collectBids(agents, options);
 
-    // Filter bids below minimum
     const validBids = bids.filter(b => b.score >= (this.config.minBid ?? 0));
 
     if (validBids.length === 0) {
       throw new Error('No valid bids received (all below minimum threshold)');
     }
 
-    // Update blackboard with bids
     const auctionState = this.coordinator.blackboard.read<{ bids: Bid[] }>('auction');
     this.coordinator.blackboard.write('auction', {
       ...auctionState,
@@ -69,7 +65,6 @@ export class AuctionStrategy extends BaseStrategy {
       status: 'selecting',
     }, 'system');
 
-    // Select winner
     const winner = this.selectWinner(validBids);
 
     this.coordinator.events.emit('auction:winner', {
@@ -78,7 +73,6 @@ export class AuctionStrategy extends BaseStrategy {
       totalBids: validBids.length,
     });
 
-    // Update blackboard with winner
     const currentAuctionState = this.coordinator.blackboard.read<Record<string, unknown>>('auction') ?? {};
     this.coordinator.blackboard.write('auction', {
       ...currentAuctionState,
@@ -87,7 +81,6 @@ export class AuctionStrategy extends BaseStrategy {
       status: 'executing',
     }, 'system');
 
-    // Execute task with winning agent
     const winningAgent = agents.find(a => a.agent.name === winner.agentName)!;
 
     const winnerContext = {
@@ -108,7 +101,6 @@ export class AuctionStrategy extends BaseStrategy {
     );
     agentResults.set(winningAgent.agent.name, result);
 
-    // Finalize auction state
     const finalAuctionState = this.coordinator.blackboard.read<Record<string, unknown>>('auction') ?? {};
     this.coordinator.blackboard.write('auction', {
       ...finalAuctionState,
@@ -121,7 +113,6 @@ export class AuctionStrategy extends BaseStrategy {
       success: true,
     });
 
-    // Convert bids to Map for StrategyResult
     const bidsMap = new Map<string, number>();
     for (const bid of validBids) {
       bidsMap.set(bid.agentName, bid.score);
@@ -143,7 +134,6 @@ export class AuctionStrategy extends BaseStrategy {
     const bids: Bid[] = [];
 
     if (this.config.bidding === 'custom' && this.config.bidFunction) {
-      // Use custom bid function
       for (const agent of agents) {
         try {
           const score = await Promise.resolve(this.config.bidFunction(agent, options.input));
@@ -157,7 +147,6 @@ export class AuctionStrategy extends BaseStrategy {
             score,
           });
         } catch {
-          // Agent failed to bid, skip
           bids.push({
             agentName: agent.agent.name,
             score: 0,
@@ -166,7 +155,6 @@ export class AuctionStrategy extends BaseStrategy {
         }
       }
     } else {
-      // Capability-match bidding - ask agents to self-assess
       const bidResults = await this.coordinator.runAgentsParallel(
         agents.map(agent => ({
           name: agent.agent.name,
@@ -216,16 +204,14 @@ Be honest in your assessment. Only bid high if you're truly well-suited for the 
   }
 
   private parseBidResponse(agentName: string, output: string, agent: SwarmAgent): Bid {
-    // Parse score
     const scoreMatch = output.match(/SCORE:\s*([\d.]+)/i);
-    let score = 0.5; // Default
+    let score = 0.5;
 
     if (scoreMatch) {
       score = Math.min(1, Math.max(0, parseFloat(scoreMatch[1])));
       if (isNaN(score)) score = 0.5;
     }
 
-    // Parse capabilities
     const capMatch = output.match(/CAPABILITIES:\s*([^\n]+)/i);
     let capabilities = agent.metadata.expertise ?? [];
 
@@ -233,7 +219,6 @@ Be honest in your assessment. Only bid high if you're truly well-suited for the 
       capabilities = capMatch[1].split(',').map(c => c.trim()).filter(Boolean);
     }
 
-    // Parse reasoning
     const reasonMatch = output.match(/REASONING:\s*(.+)/is);
     const reasoning = reasonMatch ? reasonMatch[1].trim() : undefined;
 
@@ -254,7 +239,6 @@ Be honest in your assessment. Only bid high if you're truly well-suited for the 
       return this.weightedRandomSelect(bids);
     }
 
-    // Highest bid wins
     return bids.reduce((best, current) =>
       current.score > best.score ? current : best
     );
@@ -264,7 +248,6 @@ Be honest in your assessment. Only bid high if you're truly well-suited for the 
     const totalWeight = bids.reduce((sum, b) => sum + b.score, 0);
 
     if (totalWeight === 0) {
-      // All scores are 0, pick randomly
       return bids[Math.floor(Math.random() * bids.length)];
     }
 
@@ -278,7 +261,6 @@ Be honest in your assessment. Only bid high if you're truly well-suited for the 
       }
     }
 
-    // Fallback
     return bids[bids.length - 1];
   }
 }

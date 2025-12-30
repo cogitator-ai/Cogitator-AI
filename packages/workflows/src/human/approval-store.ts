@@ -27,7 +27,7 @@ export class InMemoryApprovalStore implements ApprovalStore {
   private cleanupInterval?: ReturnType<typeof setInterval>;
 
   constructor(options: { ttl?: number; cleanupInterval?: number } = {}) {
-    this.ttl = options.ttl ?? 7 * 24 * 60 * 60 * 1000; // 7 days default
+    this.ttl = options.ttl ?? 7 * 24 * 60 * 60 * 1000;
 
     if (options.cleanupInterval) {
       this.cleanupInterval = setInterval(
@@ -49,10 +49,8 @@ export class InMemoryApprovalStore implements ApprovalStore {
     const pending: ApprovalRequest[] = [];
 
     for (const request of this.requests.values()) {
-      // Skip if already responded
       if (this.responses.has(request.id)) continue;
 
-      // Filter by workflowId if specified
       if (workflowId && request.workflowId !== workflowId) continue;
 
       pending.push(request);
@@ -65,10 +63,8 @@ export class InMemoryApprovalStore implements ApprovalStore {
     const pending: ApprovalRequest[] = [];
 
     for (const request of this.requests.values()) {
-      // Skip if already responded
       if (this.responses.has(request.id)) continue;
 
-      // Check if assignee matches
       const isAssigned =
         request.assignee === assignee ||
         request.assigneeGroup?.includes(assignee);
@@ -84,14 +80,12 @@ export class InMemoryApprovalStore implements ApprovalStore {
   async submitResponse(response: ApprovalResponse): Promise<void> {
     this.responses.set(response.requestId, { ...response });
 
-    // Notify callbacks
     const callbacks = this.callbacks.get(response.requestId);
     if (callbacks) {
       for (const callback of callbacks) {
         try {
           callback(response);
         } catch {
-          // Ignore callback errors
         }
       }
       this.callbacks.delete(response.requestId);
@@ -112,15 +106,12 @@ export class InMemoryApprovalStore implements ApprovalStore {
     requestId: string,
     callback: (response: ApprovalResponse) => void
   ): () => void {
-    // Check if response already exists
     const existingResponse = this.responses.get(requestId);
     if (existingResponse) {
-      // Call immediately
       queueMicrotask(() => callback(existingResponse));
       return () => {};
     }
 
-    // Register callback
     let callbacks = this.callbacks.get(requestId);
     if (!callbacks) {
       callbacks = new Set();
@@ -128,7 +119,6 @@ export class InMemoryApprovalStore implements ApprovalStore {
     }
     callbacks.add(callback);
 
-    // Return unsubscribe function
     return () => {
       callbacks?.delete(callback);
       if (callbacks?.size === 0) {
@@ -199,7 +189,6 @@ export class FileApprovalStore implements ApprovalStore {
   }) {
     this.directory = options.directory;
 
-    // Poll for new responses
     if (options.pollInterval) {
       this.watchInterval = setInterval(
         () => this.checkForResponses(),
@@ -238,7 +227,6 @@ export class FileApprovalStore implements ApprovalStore {
     try {
       await fs.mkdir(requestsDir, { recursive: true });
     } catch {
-      // Directory already exists
     }
 
     const pending: ApprovalRequest[] = [];
@@ -252,12 +240,10 @@ export class FileApprovalStore implements ApprovalStore {
         const requestId = file.replace('.json', '');
         const responsePath = path.join(responsesDir, `${requestId}.json`);
 
-        // Check if response exists
         try {
           await fs.access(responsePath);
-          continue; // Has response, not pending
+          continue;
         } catch {
-          // No response, is pending
         }
 
         try {
@@ -271,11 +257,9 @@ export class FileApprovalStore implements ApprovalStore {
             pending.push(request);
           }
         } catch {
-          // Skip invalid files
         }
       }
     } catch {
-      // Directory doesn't exist yet
     }
 
     return pending;
@@ -296,14 +280,12 @@ export class FileApprovalStore implements ApprovalStore {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     await fs.writeFile(filePath, JSON.stringify(response, null, 2), 'utf-8');
 
-    // Notify callbacks
     const callbacks = this.callbacks.get(response.requestId);
     if (callbacks) {
       for (const callback of callbacks) {
         try {
           callback(response);
         } catch {
-          // Ignore callback errors
         }
       }
       this.callbacks.delete(response.requestId);
@@ -326,13 +308,11 @@ export class FileApprovalStore implements ApprovalStore {
     try {
       await fs.unlink(this.getRequestPath(id));
     } catch {
-      // File doesn't exist
     }
 
     try {
       await fs.unlink(this.getResponsePath(id));
     } catch {
-      // File doesn't exist
     }
 
     this.callbacks.delete(id);
@@ -342,14 +322,12 @@ export class FileApprovalStore implements ApprovalStore {
     requestId: string,
     callback: (response: ApprovalResponse) => void
   ): () => void {
-    // Check if response already exists
     this.getResponse(requestId).then((existingResponse) => {
       if (existingResponse) {
         callback(existingResponse);
       }
     });
 
-    // Register callback for future response
     let callbacks = this.callbacks.get(requestId);
     if (!callbacks) {
       callbacks = new Set();
@@ -357,7 +335,6 @@ export class FileApprovalStore implements ApprovalStore {
     }
     callbacks.add(callback);
 
-    // Return unsubscribe function
     return () => {
       callbacks?.delete(callback);
       if (callbacks?.size === 0) {
@@ -397,7 +374,6 @@ export class FileApprovalStore implements ApprovalStore {
             try {
               callback(response);
             } catch {
-              // Ignore callback errors
             }
           }
 
@@ -405,7 +381,6 @@ export class FileApprovalStore implements ApprovalStore {
         }
       }
     } catch {
-      // Directory doesn't exist yet
     }
   }
 
@@ -446,11 +421,9 @@ export class FileApprovalStore implements ApprovalStore {
             deleted++;
           }
         } catch {
-          // Skip invalid files
         }
       }
     } catch {
-      // Directory doesn't exist yet
     }
 
     return deleted;
@@ -475,12 +448,10 @@ export function withDelegation(
     ...store,
 
     async submitResponse(response: ApprovalResponse): Promise<void> {
-      // Check if this is a delegation
       if (response.delegatedTo) {
         const request = await store.getRequest(response.requestId);
 
         if (request) {
-          // Update the request with new assignee
           const delegatedRequest: ApprovalRequest = {
             ...request,
             assignee: response.delegatedTo,
@@ -492,10 +463,8 @@ export function withDelegation(
             },
           };
 
-          // Create new request with updated assignee
           await store.createRequest(delegatedRequest);
 
-          // Notify delegation
           await options.onDelegation?.(
             delegatedRequest,
             response.respondedBy,
@@ -506,7 +475,6 @@ export function withDelegation(
         }
       }
 
-      // Normal response
       await store.submitResponse(response);
     },
   };

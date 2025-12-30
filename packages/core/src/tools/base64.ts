@@ -17,7 +17,6 @@ export const base64Encode = tool({
   name: 'base64_encode',
   description: 'Encode a string to base64. Optionally use URL-safe encoding.',
   parameters: base64EncodeParams,
-  // eslint-disable-next-line @typescript-eslint/require-await
   execute: async ({ data, urlSafe = false }) => {
     let result = Buffer.from(data).toString('base64');
     if (urlSafe) {
@@ -39,13 +38,11 @@ export const base64Decode = tool({
   name: 'base64_decode',
   description: 'Decode a base64 string back to plain text.',
   parameters: base64DecodeParams,
-  // eslint-disable-next-line @typescript-eslint/require-await
   execute: async ({ data, urlSafe = false }) => {
     try {
       let input = data;
       if (urlSafe) {
         input = input.replace(/-/g, '+').replace(/_/g, '/');
-        // Add padding if needed
         while (input.length % 4 !== 0) {
           input += '=';
         }

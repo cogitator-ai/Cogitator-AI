@@ -156,7 +156,6 @@ describe('CircuitBreaker', () => {
 
       breaker.recordFailure();
 
-      // Should not have recorded the open state
       expect(states).toHaveLength(0);
     });
   });

@@ -172,11 +172,9 @@ async function executeWithConcurrency<T>(
     results[index] = result;
     onComplete?.(result);
 
-    // Continue with next item
     await executeNext();
   };
 
-  // Start initial batch
   const initialBatch = Math.min(concurrency, items.length);
   for (let i = 0; i < initialBatch; i++) {
     pending.push(executeNext());
@@ -203,12 +201,10 @@ async function executeItem<S, T>(
     try {
       let processedItem = item;
 
-      // Apply transform if defined
       if (config.transform) {
         processedItem = config.transform(item, index, state);
       }
 
-      // Execute with timeout if specified
       let resultPromise = Promise.resolve(config.mapper(processedItem, index, state));
 
       if (config.timeout) {
@@ -232,7 +228,6 @@ async function executeItem<S, T>(
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
 
-      // Apply retry delay if not last attempt
       if (attempt < maxAttempts - 1 && config.retry) {
         const delay = config.retry.delay ?? 1000;
         const actualDelay =
@@ -261,10 +256,8 @@ export async function executeMap<S, T>(
   state: S,
   config: MapNodeConfig<S, T>
 ): Promise<MapItemResult<T>[]> {
-  // Extract items from state
   let items = config.items(state);
 
-  // Apply filter if defined
   if (config.filter) {
     items = items.filter((item, index) => config.filter!(item, index, state));
   }
@@ -289,7 +282,6 @@ export async function executeMap<S, T>(
     }
   };
 
-  // Emit initial progress
   emitProgress();
 
   const mapper = async (item: unknown, index: number): Promise<MapItemResult<T>> => {
@@ -327,24 +319,20 @@ export function executeReduce<S, T, R>(
   state: S,
   config: ReduceNodeConfig<S, T, R>
 ): R {
-  // Get initial value
   const initial =
     typeof config.initial === 'function'
       ? (config.initial as (state: S) => R)(state)
       : config.initial;
 
-  // Filter to successful items if required
   const items = config.successOnly !== false
     ? results.filter((r) => r.success)
     : results;
 
-  // Apply reducer
   let result = items.reduce(
     (acc, item) => config.reducer(acc, item, state),
     initial
   );
 
-  // Apply finalize if defined
   if (config.finalize) {
     result = config.finalize(result, state);
   }
@@ -361,13 +349,11 @@ export async function executeMapReduce<S, T, R>(
 ): Promise<MapReduceResult<T, R>> {
   const startTime = Date.now();
 
-  // Execute map phase
   const mapConfig: MapNodeConfig<S, T> = {
     name: `${config.name}:map`,
     ...config.map,
   };
 
-  // For streaming reduce, we accumulate during map phase
   let streamingAccumulator: R | undefined;
   if (config.reduce.streaming) {
     streamingAccumulator =
@@ -397,7 +383,6 @@ export async function executeMapReduce<S, T, R>(
 
   const results = await executeMap(state, mapConfig);
 
-  // Execute reduce phase
   const reduceConfig: ReduceNodeConfig<S, T, R> = {
     name: `${config.name}:reduce`,
     ...config.reduce,
@@ -405,13 +390,11 @@ export async function executeMapReduce<S, T, R>(
 
   let reduced: R;
   if (config.reduce.streaming && streamingAccumulator !== undefined) {
-    // Use streaming result
     reduced = streamingAccumulator;
     if (reduceConfig.finalize) {
       reduced = reduceConfig.finalize(reduced, state);
     }
   } else {
-    // Normal batch reduce
     reduced = executeReduce(results, state, reduceConfig);
   }
 

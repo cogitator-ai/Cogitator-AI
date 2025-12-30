@@ -4,9 +4,6 @@
 
 import type { ToolSchema } from '@cogitator/types';
 
-// ============================================
-// Serialized Configurations
-// ============================================
 
 /**
  * Serialized agent configuration for queue transport
@@ -55,9 +52,6 @@ export interface SerializedSwarm {
   consensusThreshold?: number;
 }
 
-// ============================================
-// Job Payloads
-// ============================================
 
 export interface AgentJobPayload {
   type: 'agent';
@@ -87,9 +81,6 @@ export interface SwarmJobPayload {
 
 export type JobPayload = AgentJobPayload | WorkflowJobPayload | SwarmJobPayload;
 
-// ============================================
-// Job Results
-// ============================================
 
 export interface AgentJobResult {
   type: 'agent';
@@ -125,9 +116,6 @@ export interface SwarmJobResult {
 
 export type JobResult = AgentJobResult | WorkflowJobResult | SwarmJobResult;
 
-// ============================================
-// Queue Configuration
-// ============================================
 
 export interface QueueConfig {
   /** Queue name (default: 'cogitator-jobs') */
@@ -169,9 +157,6 @@ export interface WorkerConfig extends QueueConfig {
   stalledInterval?: number;
 }
 
-// ============================================
-// Queue Metrics
-// ============================================
 
 export interface QueueMetrics {
   /** Jobs waiting to be processed */

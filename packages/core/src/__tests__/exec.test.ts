@@ -27,7 +27,6 @@ describe('exec tool', () => {
 
   it('respects working directory', async () => {
     const result = await exec.execute({ command: 'pwd', cwd: '/tmp' }, mockContext);
-    // On macOS /tmp is symlinked to /private/tmp
     expect((result as { stdout: string }).stdout.trim()).toMatch(/\/?tmp$/);
   });
 
@@ -53,7 +52,6 @@ describe('exec tool', () => {
       { command: 'nonexistent-command-12345' },
       mockContext
     );
-    // Command not found returns exit code 127 with error in stderr
     expect((result as { exitCode: number }).exitCode).toBe(127);
   });
 

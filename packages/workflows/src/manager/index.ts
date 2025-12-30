@@ -12,7 +12,6 @@
  * - Cron-based recurring jobs
  */
 
-// Run stores
 export {
   InMemoryRunStore,
   FileRunStore,
@@ -20,7 +19,6 @@ export {
   createFileRunStore,
 } from './run-store.js';
 
-// Scheduler
 export {
   PriorityQueue,
   JobScheduler,
@@ -33,7 +31,6 @@ export type {
   CronJob,
 } from './scheduler.js';
 
-// Workflow manager
 export {
   DefaultWorkflowManager,
   createWorkflowManager,

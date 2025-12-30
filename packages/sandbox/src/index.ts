@@ -14,7 +14,6 @@ export {
 export { ContainerPool, type ContainerPoolOptions, type ContainerCreateOptions } from './pool/index.js';
 export { parseMemory, cpusToNanoCpus } from './utils/index.js';
 
-// Re-export types from @cogitator/types for convenience
 export type {
   SandboxType,
   SandboxConfig,

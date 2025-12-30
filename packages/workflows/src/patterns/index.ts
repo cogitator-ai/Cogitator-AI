@@ -13,7 +13,6 @@
  */
 
 export {
-  // Types
   type MapItemResult,
   type MapProgressEvent,
   type MapNodeConfig,
@@ -21,22 +20,18 @@ export {
   type MapReduceResult,
   type MapReduceNodeConfig,
 
-  // Core functions
   executeMap,
   executeReduce,
   executeMapReduce,
 
-  // Node factories
   mapNode,
   reduceNode,
   mapReduceNode,
 
-  // Helpers
   parallelMap,
   sequentialMap,
   batchedMap,
 
-  // Reducer helpers
   collect,
   sum,
   count,

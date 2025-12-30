@@ -30,7 +30,6 @@ export interface LoadConfigOptions {
 export function loadConfig(options: LoadConfigOptions = {}): CogitatorConfig {
   const configs: CogitatorConfigInput[] = [];
 
-  // Load YAML config (lowest priority)
   if (!options.skipYaml) {
     const yamlConfig = loadYamlConfig(options.configPath);
     if (yamlConfig) {
@@ -38,21 +37,17 @@ export function loadConfig(options: LoadConfigOptions = {}): CogitatorConfig {
     }
   }
 
-  // Load env config (medium priority)
   if (!options.skipEnv) {
     const envConfig = loadEnvConfig();
     configs.push(envConfig);
   }
 
-  // Add overrides (highest priority)
   if (options.overrides) {
     configs.push(options.overrides);
   }
 
-  // Merge all configs
   const merged = mergeConfigs(configs);
 
-  // Validate with Zod
   const result = CogitatorConfigSchema.safeParse(merged);
   if (!result.success) {
     throw new Error(`Invalid configuration: ${result.error.message}`);

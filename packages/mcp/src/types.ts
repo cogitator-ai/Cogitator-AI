@@ -4,9 +4,6 @@
 
 import type { Tool } from '@cogitator/types';
 
-// ============================================================================
-// Client Types
-// ============================================================================
 
 export type MCPTransportType = 'stdio' | 'http' | 'sse';
 
@@ -73,9 +70,6 @@ export interface MCPPromptMessage {
   };
 }
 
-// ============================================================================
-// Server Types
-// ============================================================================
 
 export interface MCPServerConfig {
   /** Server name */
@@ -117,9 +111,6 @@ export type MCPToolContent =
   | { type: 'image'; data: string; mimeType: string }
   | { type: 'resource'; resource: MCPResourceContent };
 
-// ============================================================================
-// Adapter Types
-// ============================================================================
 
 export interface ToolAdapterOptions {
   /** Prefix to add to converted tool names */

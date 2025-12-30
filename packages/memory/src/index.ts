@@ -4,7 +4,6 @@
  * Memory adapters for Cogitator AI agents
  */
 
-// Adapters
 export {
   BaseMemoryAdapter,
   InMemoryAdapter,
@@ -12,14 +11,11 @@ export {
   type MemoryAdapterConfigUnion,
 } from './adapters/index.js';
 
-// Lazy exports for optional adapters
 export { RedisAdapter } from './adapters/redis.js';
 export { PostgresAdapter } from './adapters/postgres.js';
 
-// Context builder
 export { ContextBuilder, type ContextBuilderDeps, type BuildContextOptions } from './context-builder.js';
 
-// Token utilities
 export {
   countTokens,
   countMessageTokens,
@@ -27,14 +23,12 @@ export {
   truncateToTokens,
 } from './token-counter.js';
 
-// Embedding services
 export {
   OpenAIEmbeddingService,
   OllamaEmbeddingService,
   createEmbeddingService,
 } from './embedding/index.js';
 
-// Schemas
 export {
   MemoryProviderSchema,
   InMemoryConfigSchema,
@@ -49,7 +43,6 @@ export {
   EmbeddingServiceConfigSchema,
 } from './schema.js';
 
-// Re-export types from @cogitator/types for convenience
 export type {
   MemoryType,
   Thread,

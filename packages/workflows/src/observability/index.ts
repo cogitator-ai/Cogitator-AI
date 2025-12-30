@@ -11,7 +11,6 @@
  * - Token usage and cost tracking
  */
 
-// Tracer
 export {
   WorkflowTracer,
   createTracer,
@@ -19,7 +18,6 @@ export {
   setGlobalTracer,
 } from './tracer.js';
 
-// Metrics
 export {
   WorkflowMetricsCollector,
   createMetricsCollector,
@@ -27,7 +25,6 @@ export {
   setGlobalMetrics,
 } from './metrics.js';
 
-// Exporters
 export {
   type SpanExporterInstance,
   type ExporterConfig,
@@ -39,19 +36,15 @@ export {
   createSpanExporter,
 } from './exporters.js';
 
-// Span attributes
 export {
-  // Headers
   TRACE_PARENT_HEADER,
   TRACE_STATE_HEADER,
   BAGGAGE_HEADER,
 
-  // Service
   SERVICE_NAME,
   SERVICE_VERSION,
   SERVICE_INSTANCE_ID,
 
-  // Workflow
   WORKFLOW_NAME,
   WORKFLOW_ID,
   WORKFLOW_RUN_ID,
@@ -60,7 +53,6 @@ export {
   WORKFLOW_NODE_COUNT,
   WORKFLOW_STATUS,
 
-  // Node
   NODE_NAME,
   NODE_TYPE,
   NODE_INDEX,
@@ -69,7 +61,6 @@ export {
   NODE_DURATION,
   NODE_STATUS,
 
-  // LLM
   LLM_SYSTEM,
   LLM_REQUEST_MODEL,
   LLM_RESPONSE_MODEL,
@@ -81,20 +72,17 @@ export {
   LLM_USAGE_TOTAL_TOKENS,
   LLM_USAGE_COST,
 
-  // Tool
   TOOL_NAME,
   TOOL_PARAMETERS,
   TOOL_RESULT,
   TOOL_DURATION,
   TOOL_SUCCESS,
 
-  // Error
   ERROR_TYPE,
   ERROR_MESSAGE,
   ERROR_STACK,
   ERROR_CODE,
 
-  // Retry/Saga
   RETRY_ATTEMPT,
   RETRY_MAX,
   RETRY_DELAY,
@@ -103,26 +91,22 @@ export {
   COMPENSATION_NODE,
   DEAD_LETTER_QUEUE,
 
-  // Approval
   APPROVAL_ID,
   APPROVAL_TYPE,
   APPROVAL_STATUS,
   APPROVAL_TIMEOUT,
   APPROVAL_ASSIGNEE,
 
-  // Timer
   TIMER_TYPE,
   TIMER_DELAY,
   TIMER_CRON,
   TIMER_SCHEDULED_AT,
   TIMER_FIRED_AT,
 
-  // Subworkflow
   SUBWORKFLOW_NAME,
   SUBWORKFLOW_DEPTH,
   SUBWORKFLOW_PARENT_ID,
 
-  // Trigger
   TRIGGER_TYPE,
   TRIGGER_ID,
   TRIGGER_SOURCE,
@@ -131,7 +115,6 @@ export {
   CRON_EXPRESSION,
   CRON_NEXT_RUN,
 
-  // Builders
   workflowSpanAttributes,
   nodeSpanAttributes,
   llmSpanAttributes,

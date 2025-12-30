@@ -24,7 +24,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Swarm not found' }, { status: 404 });
     }
 
-    // Get agents for this swarm
     const agentDataList = await Promise.all(
       swarmData.agentIds.map((agentId: string) => getAgent(agentId))
     );
@@ -37,7 +36,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    // Create run record
     const run = await createSwarmRun({
       swarmId: id,
       input,
@@ -51,7 +49,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       const cogitator = await getCogitator();
       console.log('[swarm-run] Got cogitator instance');
 
-      // Convert DB agents to Agent instances
       const agents = validAgentData
         .filter((d): d is NonNullable<typeof d> => d !== null)
         .map((agentData) =>
@@ -64,7 +61,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           })
         );
 
-      // Build SwarmConfig based on strategy
       const strategy = swarmData.strategy as SwarmStrategy;
       
       const swarmConfig: SwarmConfig = {
@@ -73,14 +69,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         agents,
       };
 
-      // Configure strategy-specific options
       switch (strategy) {
         case 'debate':
-          // For debate, we need at least 2 agents
           if (agents.length < 2) {
             throw new Error('Debate strategy requires at least 2 agents');
           }
-          // Set first agent as advocate, second as critic, rest as moderator
           swarmConfig.agents = agents.map((agent, i) => {
             const newAgent = agent.clone({
               instructions: i === 0 
@@ -91,7 +84,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
             });
             return newAgent;
           });
-          // Set moderator if we have 3+ agents
           if (agents.length >= 3) {
             swarmConfig.moderator = agents[2].clone({
               instructions: `${agents[2].instructions}\n\nAs MODERATOR, summarize debates and provide balanced conclusions.`,
@@ -123,7 +115,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           break;
 
         case 'hierarchical':
-          // First agent is supervisor, rest are workers
           if (agents.length < 2) {
             throw new Error('Hierarchical strategy requires at least 2 agents');
           }
@@ -131,7 +122,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
             instructions: `${agents[0].instructions}\n\nYou are the SUPERVISOR. Delegate tasks to workers and synthesize results.`,
           });
           swarmConfig.workers = agents.slice(1);
-          swarmConfig.agents = undefined; // Use supervisor/workers instead
+          swarmConfig.agents = undefined;
           break;
 
         case 'pipeline':
@@ -151,11 +142,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           break;
 
         default:
-          // Keep default config for unknown strategies
           break;
       }
 
-      // Create and run the real Swarm
       console.log('[swarm-run] Creating Swarm with config:', {
         name: swarmConfig.name,
         strategy: swarmConfig.strategy,
@@ -164,14 +153,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       const swarm = new Swarm(cogitator, swarmConfig);
       console.log('[swarm-run] Swarm created, id:', swarm.id);
       
-      // Subscribe to events for logging
       const eventLog: string[] = [];
       swarm.on('*', (event) => {
         console.log('[swarm-event]', event.type, event.data);
         eventLog.push(`[${new Date().toISOString()}] ${event.type}: ${JSON.stringify(event.data)}`);
       });
 
-      // Run the swarm with the configured strategy
       console.log('[swarm-run] Starting swarm.run() with input:', input.slice(0, 50));
       const result = await swarm.run({
         input,
@@ -183,7 +170,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
       const duration = Date.now() - startTime;
 
-      // Calculate total tokens from all agent results
       let totalTokens = 0;
       const agentsUsed: string[] = [];
       for (const [agentName, agentResult] of result.agentResults) {
@@ -191,12 +177,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         totalTokens += agentResult.usage?.totalTokens || 0;
       }
 
-      // Build detailed output with metadata
       const output = typeof result.output === 'string' 
         ? result.output 
         : JSON.stringify(result.output, null, 2);
 
-      // Update run with result
       await updateSwarmRun(run.id, {
         status: 'completed',
         output,
@@ -213,7 +197,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         agentsUsed,
         strategy: swarmData.strategy,
         structured: result.structured,
-        eventLog: eventLog.slice(-20), // Last 20 events
+        eventLog: eventLog.slice(-20),
       });
     } catch (runError) {
       const duration = Date.now() - startTime;

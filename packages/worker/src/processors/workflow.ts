@@ -18,13 +18,6 @@ export async function processWorkflowJob(
   const { workflowConfig, input, runId } = payload;
   const startTime = Date.now();
 
-  // TODO: Implement full workflow deserialization and execution
-  // This would require:
-  // 1. Creating a Cogitator instance
-  // 2. Recreating the workflow from serialized nodes/edges
-  // 3. Running the workflow executor
-  //
-  // For now, we return a placeholder to allow the infrastructure to work
 
   console.warn(
     `[worker] Workflow "${workflowConfig.name}" (${runId}) execution not fully implemented`

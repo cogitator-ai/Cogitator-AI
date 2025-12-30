@@ -162,11 +162,9 @@ async function executeWithConcurrency<T>(
       onComplete?.(item.id, undefined as T, err);
     }
 
-    // Continue with next item
     await executeNext();
   };
 
-  // Start initial batch
   const initialBatch = Math.min(concurrency, items.length);
   for (let i = 0; i < initialBatch; i++) {
     pending.push(executeNext());
@@ -175,7 +173,6 @@ async function executeWithConcurrency<T>(
   try {
     await Promise.all(pending);
   } catch {
-    // Error already handled
   }
 
   return results;
@@ -191,7 +188,6 @@ export async function executeParallelSubworkflows<S extends WorkflowState>(
 ): Promise<ParallelSubworkflowsResult<S>> {
   const startTime = Date.now();
 
-  // Get subworkflow definitions
   const definitions =
     typeof config.subworkflows === 'function'
       ? config.subworkflows(parentState)
@@ -218,10 +214,8 @@ export async function executeParallelSubworkflows<S extends WorkflowState>(
     }
   };
 
-  // Emit initial progress
   emitProgress();
 
-  // Prepare execution items
   const executionItems = definitions.map((def) => ({
     id: def.id,
     execute: async (): Promise<SubworkflowResult<S, WorkflowState>> => {
@@ -247,7 +241,6 @@ export async function executeParallelSubworkflows<S extends WorkflowState>(
     },
   }));
 
-  // Execute with concurrency
   const rawResults = await executeWithConcurrency(
     executionItems,
     concurrency,
@@ -268,7 +261,6 @@ export async function executeParallelSubworkflows<S extends WorkflowState>(
     }
   );
 
-  // Process results
   const results = new Map<string, SubworkflowResult<S, WorkflowState>>();
   const errors = new Map<string, Error>();
   let skipped = 0;
@@ -284,10 +276,8 @@ export async function executeParallelSubworkflows<S extends WorkflowState>(
     }
   }
 
-  // Check overall success
   const overallSuccess = failed === 0 || continueOnError;
 
-  // Aggregate results into parent state
   const newParentState = overallSuccess
     ? config.aggregator(results, parentState)
     : parentState;
@@ -419,7 +409,6 @@ export async function raceSubworkflows<
   const { signal } = controller;
 
   const promises = subworkflows.map(async (config) => {
-    // Check if aborted before starting
     if (signal.aborted) {
       throw new Error('Race cancelled');
     }
@@ -441,7 +430,6 @@ export async function raceSubworkflows<
     const result = await Promise.any(promises);
     return result;
   } catch {
-    // All failed
     return null;
   }
 }
@@ -478,7 +466,6 @@ export async function fallbackSubworkflows<
     }
   }
 
-  // Return last result or throw last error
   if (lastResult) {
     return lastResult;
   }

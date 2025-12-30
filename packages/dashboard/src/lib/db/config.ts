@@ -1,4 +1,5 @@
 import { query, queryOne, execute } from './index';
+import { encrypt, decrypt, isEncrypted, maskApiKey } from '../crypto';
 
 export async function getConfig<T>(key: string): Promise<T | null> {
   const row = await queryOne<{ value: T }>(
@@ -64,5 +65,72 @@ export async function getCogitatorConfig(): Promise<CogitatorConfig | null> {
 
 export async function setCogitatorConfig(config: CogitatorConfig): Promise<void> {
   await setConfig('cogitator', config);
+}
+
+
+export interface ApiKeysConfig {
+  openai?: string;
+  anthropic?: string;
+  google?: string;
+}
+
+export interface ApiKeysStatus {
+  openai: boolean;
+  anthropic: boolean;
+  google: boolean;
+}
+
+export async function setApiKeys(keys: ApiKeysConfig): Promise<void> {
+  const encrypted: ApiKeysConfig = {};
+
+  if (keys.openai) encrypted.openai = encrypt(keys.openai);
+  if (keys.anthropic) encrypted.anthropic = encrypt(keys.anthropic);
+  if (keys.google) encrypted.google = encrypt(keys.google);
+
+  await setConfig('api_keys_encrypted', encrypted);
+}
+
+export async function getApiKeys(): Promise<ApiKeysConfig> {
+  const encrypted = await getConfig<ApiKeysConfig>('api_keys_encrypted');
+  if (!encrypted) return {};
+
+  const decrypted: ApiKeysConfig = {};
+
+  try {
+    if (encrypted.openai && isEncrypted(encrypted.openai)) {
+      decrypted.openai = decrypt(encrypted.openai);
+    }
+    if (encrypted.anthropic && isEncrypted(encrypted.anthropic)) {
+      decrypted.anthropic = decrypt(encrypted.anthropic);
+    }
+    if (encrypted.google && isEncrypted(encrypted.google)) {
+      decrypted.google = decrypt(encrypted.google);
+    }
+  } catch {
+    return {};
+  }
+
+  return decrypted;
+}
+
+export async function getApiKeysStatus(): Promise<ApiKeysStatus> {
+  const encrypted = await getConfig<ApiKeysConfig>('api_keys_encrypted');
+
+  return {
+    openai: !!(encrypted?.openai || process.env.OPENAI_API_KEY),
+    anthropic: !!(encrypted?.anthropic || process.env.ANTHROPIC_API_KEY),
+    google: !!(encrypted?.google || process.env.GOOGLE_API_KEY),
+  };
+}
+
+export async function getMaskedApiKeys(): Promise<Record<string, string>> {
+  const keys = await getApiKeys();
+  const masked: Record<string, string> = {};
+
+  if (keys.openai) masked.openai = maskApiKey(keys.openai);
+  if (keys.anthropic) masked.anthropic = maskApiKey(keys.anthropic);
+  if (keys.google) masked.google = maskApiKey(keys.google);
+
+  return masked;
 }
 

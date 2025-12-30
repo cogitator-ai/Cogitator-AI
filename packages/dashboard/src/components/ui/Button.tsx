@@ -32,7 +32,6 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg-primary',
           'disabled:opacity-50 disabled:cursor-not-allowed',
           {
-            // Variants
             'bg-bg-elevated hover:bg-bg-hover text-text-primary border border-border-default':
               variant === 'default',
             'bg-accent hover:bg-accent-dim text-bg-primary glow-hover':
@@ -43,7 +42,6 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
               variant === 'outline',
             'bg-error/10 hover:bg-error/20 text-error border border-error/20':
               variant === 'danger',
-            // Sizes
             'h-8 px-3 text-sm rounded-md': size === 'sm',
             'h-10 px-4 text-sm rounded-lg': size === 'md',
             'h-12 px-6 text-base rounded-lg': size === 'lg',

@@ -16,7 +16,6 @@ export function loadYamlConfig(configPath?: string): CogitatorConfigInput | null
     return parseYamlFile(configPath);
   }
 
-  // Try default config file names
   for (const name of DEFAULT_CONFIG_NAMES) {
     if (existsSync(name)) {
       return parseYamlFile(name);

@@ -10,7 +10,6 @@
 
 import type { EmbeddingService, OllamaEmbeddingConfig } from '@cogitator/types';
 
-// Known model dimensions
 const MODEL_DIMENSIONS: Record<string, number> = {
   'nomic-embed-text': 768,
   'nomic-embed-text-v2-moe': 768,
@@ -29,7 +28,6 @@ export class OllamaEmbeddingService implements EmbeddingService {
     this.model = config.model ?? 'nomic-embed-text';
     this.baseUrl = config.baseUrl ?? 'http://localhost:11434';
 
-    // Get dimensions from known models or default to 768
     this.dimensions = MODEL_DIMENSIONS[this.model] ?? 768;
   }
 

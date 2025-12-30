@@ -46,11 +46,9 @@ export class ConsensusStrategy extends BaseStrategy {
       throw new Error('Consensus strategy requires at least 2 agents');
     }
 
-    // Find supervisor if exists (for escalation)
     const supervisors = this.coordinator.getAgentsByRole('supervisor');
     const supervisor = supervisors.length > 0 ? supervisors[0] : null;
 
-    // Initialize consensus state on blackboard
     this.coordinator.blackboard.write('consensus', {
       topic: options.input,
       maxRounds: this.config.maxRounds,
@@ -64,12 +62,10 @@ export class ConsensusStrategy extends BaseStrategy {
     let winningDecision: string | null = null;
     let finalRound = 0;
 
-    // Run consensus rounds
     for (let round = 1; round <= this.config.maxRounds && !consensusReached; round++) {
       finalRound = round;
       this.coordinator.events.emit('consensus:round', { round, total: this.config.maxRounds });
 
-      // Update round on blackboard
       const consensusState = this.coordinator.blackboard.read<{ votes: Vote[] }>('consensus');
       this.coordinator.blackboard.write('consensus', {
         ...consensusState,
@@ -78,12 +74,9 @@ export class ConsensusStrategy extends BaseStrategy {
 
       const roundVotes: Vote[] = [];
 
-      // Collect previous round discussion for context
       const previousDiscussion = this.getPreviousDiscussion(discussionTranscript, round);
 
-      // Each agent discusses and votes
       for (const swarmAgent of agents) {
-        // Skip supervisor in voting rounds
         if (swarmAgent.metadata.role === 'supervisor') continue;
 
         const agentContext = {
@@ -115,14 +108,12 @@ export class ConsensusStrategy extends BaseStrategy {
         );
         agentResults.set(`${swarmAgent.agent.name}_round${round}`, result);
 
-        // Extract vote from response
         const vote = this.extractVote(result.output, swarmAgent, round);
         if (vote) {
           roundVotes.push(vote);
           allVotes.push(vote);
         }
 
-        // Add to discussion transcript
         const message: SwarmMessage = {
           id: `consensus_${round}_${swarmAgent.agent.name}`,
           swarmId: '',
@@ -137,12 +128,10 @@ export class ConsensusStrategy extends BaseStrategy {
         discussionTranscript.push(message);
       }
 
-      // Update blackboard with votes
       const updatedState = this.coordinator.blackboard.read<{ votes: Vote[] }>('consensus');
       updatedState.votes = allVotes;
       this.coordinator.blackboard.write('consensus', updatedState, 'system');
 
-      // Check for consensus
       const consensusResult = this.checkConsensus(roundVotes, agents.filter(a => a.metadata.role !== 'supervisor'));
       if (consensusResult.reached) {
         consensusReached = true;
@@ -155,13 +144,11 @@ export class ConsensusStrategy extends BaseStrategy {
       }
     }
 
-    // Handle consensus outcome
     let finalOutput: string;
 
     if (consensusReached && winningDecision) {
       finalOutput = this.buildConsensusOutput(winningDecision, allVotes, finalRound, true);
     } else {
-      // No consensus reached - handle based on config
       switch (this.config.onNoConsensus) {
         case 'supervisor-decides':
           if (supervisor) {
@@ -188,7 +175,6 @@ export class ConsensusStrategy extends BaseStrategy {
       }
     }
 
-    // Convert votes to Map for StrategyResult
     const votesMap = new Map<string, unknown>();
     for (const vote of allVotes) {
       votesMap.set(`${vote.agentName}_round${vote.round}`, {
@@ -206,10 +192,8 @@ export class ConsensusStrategy extends BaseStrategy {
   }
 
   private extractVote(output: string, agent: SwarmAgent, round: number): Vote | null {
-    // Look for VOTE: pattern
     const voteMatch = output.match(/VOTE:\s*([^\n]+)/i);
     if (!voteMatch) {
-      // Try to extract from structured response
       const decisionMatch = output.match(/(?:decision|vote|choose|select):\s*([^\n]+)/i);
       if (!decisionMatch) return null;
 
@@ -232,15 +216,12 @@ export class ConsensusStrategy extends BaseStrategy {
   }
 
   private getAgentWeight(agent: SwarmAgent): number {
-    // Check explicit weight in config
     if (this.config.weights?.[agent.agent.name] !== undefined) {
       return this.config.weights[agent.agent.name];
     }
-    // Check metadata weight
     if (agent.metadata.weight !== undefined) {
       return agent.metadata.weight;
     }
-    // Default weight
     return 1;
   }
 
@@ -252,7 +233,6 @@ export class ConsensusStrategy extends BaseStrategy {
       return { reached: false, decision: null, voteCounts: [] };
     }
 
-    // Count votes
     const voteCounts = new Map<string, VoteCount>();
 
     for (const vote of votes) {
@@ -277,10 +257,8 @@ export class ConsensusStrategy extends BaseStrategy {
     const totalVotes = votes.length;
     const totalWeight = votes.reduce((sum, v) => sum + v.weight, 0);
 
-    // Check based on resolution strategy
     switch (this.config.resolution) {
       case 'unanimous': {
-        // All must agree
         if (countsArray.length === 1 && countsArray[0].count === agents.length) {
           return { reached: true, decision: countsArray[0].decision, voteCounts: countsArray };
         }
@@ -288,7 +266,6 @@ export class ConsensusStrategy extends BaseStrategy {
       }
 
       case 'weighted': {
-        // Check weighted threshold
         const sorted = countsArray.sort((a, b) => b.weightedCount - a.weightedCount);
         const topOption = sorted[0];
         const weightRatio = topOption.weightedCount / totalWeight;
@@ -301,7 +278,6 @@ export class ConsensusStrategy extends BaseStrategy {
 
       case 'majority':
       default: {
-        // Simple majority threshold
         const sorted = countsArray.sort((a, b) => b.count - a.count);
         const topOption = sorted[0];
         const voteRatio = topOption.count / totalVotes;
@@ -434,7 +410,6 @@ Provide your decision as: FINAL DECISION: [your decision]
       output += '\n';
     }
 
-    // Count final votes
     const finalVotes = votes.filter(v => v.round === rounds);
     const voteCounts = new Map<string, number>();
     for (const vote of finalVotes) {

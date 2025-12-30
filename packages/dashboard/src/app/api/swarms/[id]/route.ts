@@ -42,7 +42,6 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    // Validate agent IDs if provided
     if (body.agentIds && body.agentIds.length > 0) {
       const agents = await getAgents();
       const validIds = new Set(agents.map((a) => a.id));

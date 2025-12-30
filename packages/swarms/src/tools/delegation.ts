@@ -35,7 +35,6 @@ export function createDelegationTools(
         };
       }
 
-      // Record delegation on blackboard
       const tasks = blackboard.read<Array<{
         id: string;
         worker: string;
@@ -57,7 +56,6 @@ export function createDelegationTools(
       blackboard.write('tasks', tasks, currentAgent);
 
       if (!waitForCompletion) {
-        // Fire and forget
         coordinator.runAgent(worker, task, {
           ...context,
           delegationContext: {
@@ -66,7 +64,6 @@ export function createDelegationTools(
             priority,
           },
         }).then(result => {
-          // Update task status when complete
           const currentTasks = blackboard.read<typeof tasks>('tasks') ?? [];
           const taskIndex = currentTasks.findIndex(t => t.id === taskId);
           if (taskIndex >= 0) {
@@ -74,12 +71,10 @@ export function createDelegationTools(
           }
           blackboard.write('tasks', currentTasks, worker);
 
-          // Store result
           const workerResults = blackboard.read<Record<string, unknown>>('workerResults') ?? {};
           workerResults[taskId] = result.output;
           blackboard.write('workerResults', workerResults, worker);
         }).catch(() => {
-          // Update task status on failure
           const currentTasks = blackboard.read<typeof tasks>('tasks') ?? [];
           const taskIndex = currentTasks.findIndex(t => t.id === taskId);
           if (taskIndex >= 0) {
@@ -97,7 +92,6 @@ export function createDelegationTools(
         };
       }
 
-      // Wait for completion
       try {
         const result = await coordinator.runAgent(worker, task, {
           ...context,
@@ -108,7 +102,6 @@ export function createDelegationTools(
           },
         });
 
-        // Update task status
         const currentTasks = blackboard.read<typeof tasks>('tasks') ?? [];
         const taskIndex = currentTasks.findIndex(t => t.id === taskId);
         if (taskIndex >= 0) {
@@ -116,7 +109,6 @@ export function createDelegationTools(
         }
         blackboard.write('tasks', currentTasks, worker);
 
-        // Store result
         const workerResults = blackboard.read<Record<string, unknown>>('workerResults') ?? {};
         workerResults[taskId] = result.output;
         blackboard.write('workerResults', workerResults, worker);
@@ -133,7 +125,6 @@ export function createDelegationTools(
           },
         };
       } catch (error) {
-        // Update task status
         const currentTasks = blackboard.read<typeof tasks>('tasks') ?? [];
         const taskIndex = currentTasks.findIndex(t => t.id === taskId);
         if (taskIndex >= 0) {
@@ -167,7 +158,6 @@ export function createDelegationTools(
         };
       }
 
-      // Get tasks for this worker
       const tasks = blackboard.read<Array<{
         id: string;
         worker: string;
@@ -179,7 +169,6 @@ export function createDelegationTools(
       const workerTasks = tasks.filter(t => t.worker === worker);
       const lastTask = workerTasks[workerTasks.length - 1];
 
-      // Get last result if available
       const workerResults = blackboard.read<Record<string, unknown>>('workerResults') ?? {};
       const lastResult = lastTask ? workerResults[lastTask.id] : undefined;
 
@@ -222,7 +211,6 @@ export function createDelegationTools(
         };
       }
 
-      // Find the task to revise
       const tasks = blackboard.read<Array<{
         id: string;
         worker: string;
@@ -242,11 +230,9 @@ export function createDelegationTools(
         };
       }
 
-      // Get previous result
       const workerResults = blackboard.read<Record<string, unknown>>('workerResults') ?? {};
       const previousResult = workerResults[targetTask.id];
 
-      // Create revision request
       const revisionInput = `
 REVISION REQUEST
 
@@ -273,11 +259,9 @@ Please provide a revised response addressing the feedback.
         },
       });
 
-      // Update result
       workerResults[targetTask.id] = result.output;
       blackboard.write('workerResults', workerResults, worker);
 
-      // Update task status
       const updatedTasks = blackboard.read<typeof tasks>('tasks') ?? [];
       const taskIndex = updatedTasks.findIndex(t => t.id === targetTask.id);
       if (taskIndex >= 0) {

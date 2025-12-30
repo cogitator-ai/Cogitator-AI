@@ -45,31 +45,26 @@ export class SwarmEventEmitterImpl implements SwarmEventEmitter {
 
     this.events.push(swarmEvent);
 
-    // Trim events if exceeded max
     if (this.events.length > this.maxEvents) {
       this.events = this.events.slice(-this.maxEvents);
     }
 
-    // Notify specific handlers
     const handlers = this.handlers.get(event);
     if (handlers) {
       for (const handler of handlers) {
         try {
           handler(swarmEvent);
         } catch {
-          // Ignore handler errors
         }
       }
     }
 
-    // Notify wildcard handlers
     const wildcardHandlers = this.handlers.get('*');
     if (wildcardHandlers) {
       for (const handler of wildcardHandlers) {
         try {
           handler(swarmEvent);
         } catch {
-          // Ignore handler errors
         }
       }
     }

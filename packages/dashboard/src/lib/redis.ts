@@ -106,7 +106,6 @@ export async function closeRedis(): Promise<void> {
   }
 }
 
-// Real-time channels
 export const CHANNELS = {
   RUN_STARTED: 'cogitator:run:started',
   RUN_COMPLETED: 'cogitator:run:completed',

@@ -14,7 +14,6 @@ describe('loadEnvConfig()', () => {
   });
 
   it('returns empty config when no env vars set', () => {
-    // Clear any COGITATOR_ and standard vars
     const keysToDelete = Object.keys(process.env).filter(
       (key) =>
         key.startsWith('COGITATOR_') ||

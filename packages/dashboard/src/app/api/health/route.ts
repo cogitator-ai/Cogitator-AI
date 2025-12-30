@@ -23,7 +23,6 @@ export async function GET() {
     timestamp: new Date().toISOString(),
   };
 
-  // Check PostgreSQL
   try {
     const pool = getPool();
     const start = Date.now();
@@ -37,7 +36,6 @@ export async function GET() {
     health.status = 'degraded';
   }
 
-  // Check Redis
   try {
     const redis = await getRedis();
     const start = Date.now();
@@ -51,7 +49,6 @@ export async function GET() {
     health.status = 'degraded';
   }
 
-  // Check Ollama
   try {
     const ollamaUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
     const response = await fetch(`${ollamaUrl}/api/tags`, {
@@ -66,10 +63,8 @@ export async function GET() {
     }
   } catch {
     health.services.ollama = { status: 'down' };
-    // Ollama is optional, don't mark as degraded
   }
 
-  // If database is down, system is unhealthy
   if (health.services.database.status === 'down') {
     health.status = 'unhealthy';
   }

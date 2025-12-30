@@ -16,7 +16,6 @@ export const regexMatch = tool({
   description:
     'Find all matches of a regular expression in text. Returns an array of matches with their positions.',
   parameters: regexMatchParams,
-  // eslint-disable-next-line @typescript-eslint/require-await
   execute: async ({ text, pattern, flags = 'g' }) => {
     try {
       const regex = new RegExp(pattern, flags);
@@ -61,7 +60,6 @@ export const regexReplace = tool({
   description:
     'Replace matches of a regular expression in text. Use $1, $2, etc. to reference capture groups in the replacement.',
   parameters: regexReplaceParams,
-  // eslint-disable-next-line @typescript-eslint/require-await
   execute: async ({ text, pattern, replacement, flags = 'g' }) => {
     try {
       const regex = new RegExp(pattern, flags);

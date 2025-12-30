@@ -9,7 +9,6 @@
  * - Idempotency for safe retries
  */
 
-// Retry
 export {
   executeWithRetry,
   withRetry,
@@ -20,7 +19,6 @@ export {
   type RetryOptions,
 } from './retry.js';
 
-// Circuit Breaker
 export {
   CircuitBreaker,
   createCircuitBreaker,
@@ -31,7 +29,6 @@ export {
   type CircuitBreakerStats,
 } from './circuit-breaker.js';
 
-// Compensation
 export {
   CompensationManager,
   createCompensationManager,
@@ -43,7 +40,6 @@ export {
   type CompensationManagerSummary,
 } from './compensation.js';
 
-// Dead Letter Queue
 export {
   BaseDLQ,
   InMemoryDLQ,
@@ -55,7 +51,6 @@ export {
   type DLQFilters,
 } from './dead-letter.js';
 
-// Idempotency
 export {
   BaseIdempotencyStore,
   InMemoryIdempotencyStore,

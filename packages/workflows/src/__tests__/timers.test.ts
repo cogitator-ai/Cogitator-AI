@@ -17,7 +17,6 @@ describe('Timer System', () => {
       expect(isValidCronExpression('0 0 * * *')).toBe(true);
       expect(isValidCronExpression('*/5 * * * *')).toBe(true);
       expect(isValidCronExpression('invalid')).toBe(false);
-      // Note: cron-parser library accepts 4-field expressions as valid
     });
 
     it('supports cron presets', () => {
@@ -34,7 +33,6 @@ describe('Timer System', () => {
       expect(parsed.expression).toBe('0 9 * * 1-5');
       expect(parsed.fields.minute).toContain(0);
       expect(parsed.fields.hour).toContain(9);
-      // Days 1-5 (Mon-Fri)
       expect(parsed.fields.dayOfWeek).toEqual([1, 2, 3, 4, 5]);
     });
 
@@ -42,11 +40,8 @@ describe('Timer System', () => {
       const now = new Date('2024-01-15T10:00:00Z');
       const next = getNextCronOccurrence('0 12 * * *', { currentDate: now });
 
-      // Next occurrence should be in the future
       expect(next > now).toBe(true);
-      // Minutes should be 0 for "0 12 * * *"
       expect(next.getMinutes()).toBe(0);
-      // Should be at hour 12 (local time interpretation by cron-parser)
       expect(next.getHours()).toBe(12);
     });
 
@@ -58,14 +53,11 @@ describe('Timer System', () => {
       });
 
       expect(next).toBeDefined();
-      // 9 AM in New York during winter (EST = UTC-5)
-      // So should be 14:00 UTC
     });
 
     it('describes cron expressions', () => {
       const description = describeCronExpression('0 9 * * 1-5');
       expect(description).toContain('9');
-      // Should mention Monday-Friday or weekday
     });
 
     it('resolves presets', () => {
@@ -99,14 +91,13 @@ describe('Timer System', () => {
 
     it('throws on invalid format', () => {
       expect(() => parseDuration('invalid')).toThrow();
-      expect(() => parseDuration('5sec')).toThrow(); // sec not supported
-      expect(() => parseDuration('5 seconds')).toThrow(); // full word not supported
-      expect(() => parseDuration('1h 30m')).toThrow(); // compound not supported
-      expect(() => parseDuration('1000')).toThrow(); // numeric not supported
+      expect(() => parseDuration('5sec')).toThrow();
+      expect(() => parseDuration('5 seconds')).toThrow();
+      expect(() => parseDuration('1h 30m')).toThrow();
+      expect(() => parseDuration('1000')).toThrow();
     });
 
     it('formats durations', () => {
-      // formatDuration returns values with .toFixed(1) decimal
       expect(formatDuration(500)).toBe('500ms');
       expect(formatDuration(5000)).toBe('5.0s');
       expect(formatDuration(60000)).toBe('1.0m');
@@ -115,9 +106,7 @@ describe('Timer System', () => {
     });
 
     it('formats intermediate durations', () => {
-      // 90 seconds = 1.5 minutes
       expect(formatDuration(90000)).toBe('1.5m');
-      // 5.5 hours
       expect(formatDuration(19800000)).toBe('5.5h');
     });
   });
@@ -176,7 +165,7 @@ describe('Timer System', () => {
         workflowId: 'wf-1',
         runId: 'run-1',
         nodeId: 'delay-node',
-        firesAt: now - 1000, // In the past
+        firesAt: now - 1000,
         type: 'delay',
         payload: {},
       });
@@ -194,7 +183,7 @@ describe('Timer System', () => {
         workflowId: 'wf-1',
         runId: 'run-1',
         nodeId: 'node1',
-        firesAt: now + 60000, // Future
+        firesAt: now + 60000,
         type: 'delay',
         payload: {},
       });
@@ -203,7 +192,7 @@ describe('Timer System', () => {
         workflowId: 'wf-1',
         runId: 'run-1',
         nodeId: 'node2',
-        firesAt: now + 120000, // Future
+        firesAt: now + 120000,
         type: 'delay',
         payload: {},
       });
@@ -219,7 +208,7 @@ describe('Timer System', () => {
         workflowId: 'wf-1',
         runId: 'run-1',
         nodeId: 'past-node',
-        firesAt: now - 1000, // In the past
+        firesAt: now - 1000,
         type: 'delay',
         payload: {},
       });
@@ -228,7 +217,7 @@ describe('Timer System', () => {
         workflowId: 'wf-1',
         runId: 'run-1',
         nodeId: 'future-node',
-        firesAt: now + 60000, // In the future
+        firesAt: now + 60000,
         type: 'delay',
         payload: {},
       });
@@ -319,7 +308,6 @@ describe('Timer System', () => {
         payload: {},
       });
 
-      // Filter by firesBefore
       const soonTimers = await store.list({ firesBefore: now + 2000 });
       expect(soonTimers).toHaveLength(1);
       expect(soonTimers[0].nodeId).toBe('node1');
@@ -356,7 +344,6 @@ describe('Timer System', () => {
     it('cleans up old timers', async () => {
       const now = Date.now();
 
-      // Recent completed timer
       const recentId = await store.schedule({
         workflowId: 'wf-1',
         runId: 'run-2',
@@ -367,10 +354,8 @@ describe('Timer System', () => {
       });
       await store.markFired(recentId);
 
-      // Cleanup with 0 retention - should remove all completed timers
       const cleaned = await store.cleanup(0);
 
-      // All completed should be cleaned since retention is 0
       expect(cleaned).toBeGreaterThanOrEqual(0);
     });
 

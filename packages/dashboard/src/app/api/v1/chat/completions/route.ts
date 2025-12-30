@@ -77,15 +77,12 @@ export async function POST(request: NextRequest) {
 
     const cogitator = await getCogitator();
 
-    // Extract system message if present
     const systemMessage = messages.find(m => m.role === 'system');
     const chatMessages = messages.filter(m => m.role !== 'system');
 
-    // Get the last user message as input
     const lastUserMessage = [...chatMessages].reverse().find(m => m.role === 'user');
     const input = lastUserMessage?.content || '';
 
-    // Create a temporary agent with temperature and maxTokens in config
     const agent = new Agent({
       id: `openai-compat-${nanoid(8)}`,
       name: 'OpenAI Compatible Agent',
@@ -97,7 +94,6 @@ export async function POST(request: NextRequest) {
     });
 
     if (stream) {
-      // Streaming response
       const encoder = new TextEncoder();
       const streamResponse = new ReadableStream({
         async start(controller) {
@@ -109,9 +105,8 @@ export async function POST(request: NextRequest) {
             const completionId = `chatcmpl-${nanoid(24)}`;
             const created = Math.floor(Date.now() / 1000);
 
-            // Send chunks
             const content = result.output;
-            const chunks = splitIntoChunks(content, 20); // ~20 chars per chunk
+            const chunks = splitIntoChunks(content, 20);
 
             for (const chunk of chunks) {
               const data = {
@@ -126,10 +121,9 @@ export async function POST(request: NextRequest) {
                 }],
               };
               controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-              await new Promise(r => setTimeout(r, 50)); // Simulate streaming delay
+              await new Promise(r => setTimeout(r, 50));
             }
 
-            // Send final chunk
             const finalData = {
               id: completionId,
               object: 'chat.completion.chunk',
@@ -165,7 +159,6 @@ export async function POST(request: NextRequest) {
         },
       });
     } else {
-      // Non-streaming response
       const result = await cogitator.run(agent, {
         input: input as string,
       });

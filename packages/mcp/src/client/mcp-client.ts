@@ -124,7 +124,6 @@ export class MCPClient {
 
     this.connected = true;
 
-    // Check server capabilities
     const serverInfo = this.client.getServerCapabilities();
     this.serverCapabilities = {
       tools: !!serverInfo?.tools,
@@ -147,9 +146,6 @@ export class MCPClient {
     return { ...this.serverCapabilities };
   }
 
-  // ===========================================================================
-  // Tools
-  // ===========================================================================
 
   /**
    * List available tools from the MCP server
@@ -187,12 +183,10 @@ export class MCPClient {
       arguments: args,
     });
 
-    // Extract result from content
     const content = result.content;
     if (content && Array.isArray(content) && content.length > 0) {
       const firstContent = content[0];
       if (firstContent.type === 'text') {
-        // Try to parse as JSON
         try {
           return JSON.parse(firstContent.text);
         } catch {
@@ -205,9 +199,6 @@ export class MCPClient {
     return result;
   }
 
-  // ===========================================================================
-  // Resources
-  // ===========================================================================
 
   /**
    * List available resources from the MCP server
@@ -246,9 +237,6 @@ export class MCPClient {
     return { uri };
   }
 
-  // ===========================================================================
-  // Prompts
-  // ===========================================================================
 
   /**
    * List available prompts from the MCP server
@@ -305,9 +293,6 @@ export class MCPClient {
     });
   }
 
-  // ===========================================================================
-  // Lifecycle
-  // ===========================================================================
 
   /**
    * Close the connection to the MCP server

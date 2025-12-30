@@ -12,9 +12,6 @@ import { query, queryOne, execute, getPool } from '../db/index';
 import { nanoid } from 'nanoid';
 import type { AgentConfig, Tool } from '@cogitator/types';
 
-// ============================================================================
-// Extended Schema
-// ============================================================================
 
 export async function initializeExtendedSchema(): Promise<void> {
   const pool = getPool();
@@ -207,9 +204,6 @@ export async function initializeExtendedSchema(): Promise<void> {
   console.log('[db] Extended schema initialized');
 }
 
-// ============================================================================
-// Agent Queries
-// ============================================================================
 
 export interface AgentRow {
   id: string;
@@ -416,9 +410,6 @@ export async function incrementAgentStats(
   );
 }
 
-// ============================================================================
-// Run Queries
-// ============================================================================
 
 export interface RunRow {
   id: string;
@@ -581,9 +572,6 @@ export async function completeRun(
   return getRun(id);
 }
 
-// ============================================================================
-// Thread Queries
-// ============================================================================
 
 export interface ThreadRow {
   id: string;
@@ -672,9 +660,6 @@ export async function deleteThread(id: string): Promise<boolean> {
   return count > 0;
 }
 
-// ============================================================================
-// Workflow Queries
-// ============================================================================
 
 export interface WorkflowRow {
   id: string;
@@ -717,11 +702,41 @@ function rowToWorkflowData(row: WorkflowRow): WorkflowData {
   };
 }
 
-export async function getWorkflows(): Promise<WorkflowData[]> {
-  const rows = await query<WorkflowRow>(
-    'SELECT * FROM cogitator_workflows ORDER BY created_at DESC'
-  );
-  return rows.map(rowToWorkflowData);
+export async function getWorkflows(options?: {
+  limit?: number;
+  offset?: number;
+  search?: string;
+}): Promise<{ workflows: WorkflowData[]; total: number }> {
+  const limit = options?.limit || 50;
+  const offset = options?.offset || 0;
+
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  let idx = 1;
+
+  if (options?.search) {
+    conditions.push(`(name ILIKE $${idx} OR description ILIKE $${idx})`);
+    params.push(`%${options.search}%`);
+    idx++;
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const [rows, countResult] = await Promise.all([
+    query<WorkflowRow>(
+      `SELECT * FROM cogitator_workflows ${where} ORDER BY created_at DESC LIMIT $${idx++} OFFSET $${idx}`,
+      [...params, limit, offset]
+    ),
+    queryOne<{ count: string }>(
+      `SELECT COUNT(*) as count FROM cogitator_workflows ${where}`,
+      params
+    ),
+  ]);
+
+  return {
+    workflows: rows.map(rowToWorkflowData),
+    total: parseInt(countResult?.count || '0'),
+  };
 }
 
 export async function getWorkflow(id: string): Promise<WorkflowData | null> {
@@ -810,9 +825,6 @@ export async function deleteWorkflow(id: string): Promise<boolean> {
   return count > 0;
 }
 
-// ============================================================================
-// Workflow Runs
-// ============================================================================
 
 export interface WorkflowRunRow {
   id: string;
@@ -867,7 +879,6 @@ export async function createWorkflowRun(data: {
 
   if (!row) throw new Error('Failed to create workflow run');
   
-  // Update workflow total_runs
   await execute(
     'UPDATE cogitator_workflows SET total_runs = total_runs + 1, last_run_at = NOW() WHERE id = $1',
     [data.workflowId]
@@ -928,9 +939,6 @@ export async function getWorkflowRuns(workflowId: string): Promise<WorkflowRunDa
   return rows.map(rowToWorkflowRunData);
 }
 
-// ============================================================================
-// Swarm Queries
-// ============================================================================
 
 export interface SwarmRow {
   id: string;
@@ -973,11 +981,47 @@ function rowToSwarmData(row: SwarmRow): SwarmData {
   };
 }
 
-export async function getSwarms(): Promise<SwarmData[]> {
-  const rows = await query<SwarmRow>(
-    'SELECT * FROM cogitator_swarms ORDER BY created_at DESC'
-  );
-  return rows.map(rowToSwarmData);
+export async function getSwarms(options?: {
+  limit?: number;
+  offset?: number;
+  search?: string;
+  strategy?: string;
+}): Promise<{ swarms: SwarmData[]; total: number }> {
+  const limit = options?.limit || 50;
+  const offset = options?.offset || 0;
+
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  let idx = 1;
+
+  if (options?.search) {
+    conditions.push(`(name ILIKE $${idx} OR description ILIKE $${idx})`);
+    params.push(`%${options.search}%`);
+    idx++;
+  }
+
+  if (options?.strategy) {
+    conditions.push(`strategy = $${idx++}`);
+    params.push(options.strategy);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const [rows, countResult] = await Promise.all([
+    query<SwarmRow>(
+      `SELECT * FROM cogitator_swarms ${where} ORDER BY created_at DESC LIMIT $${idx++} OFFSET $${idx}`,
+      [...params, limit, offset]
+    ),
+    queryOne<{ count: string }>(
+      `SELECT COUNT(*) as count FROM cogitator_swarms ${where}`,
+      params
+    ),
+  ]);
+
+  return {
+    swarms: rows.map(rowToSwarmData),
+    total: parseInt(countResult?.count || '0'),
+  };
 }
 
 export async function getSwarm(id: string): Promise<SwarmData | null> {
@@ -1066,9 +1110,6 @@ export async function deleteSwarm(id: string): Promise<boolean> {
   return count > 0;
 }
 
-// ============================================================================
-// Swarm Runs
-// ============================================================================
 
 export interface SwarmRunData {
   id: string;
@@ -1172,7 +1213,6 @@ export async function updateSwarmRun(
     values
   );
 
-  // Update swarm last_run_at and increment total_runs if completed
   if (row && data.status === 'completed') {
     await execute(
       `UPDATE cogitator_swarms SET last_run_at = NOW(), total_runs = total_runs + 1 WHERE id = $1`,
@@ -1183,9 +1223,6 @@ export async function updateSwarmRun(
   return row ? rowToSwarmRun(row) : null;
 }
 
-// ============================================================================
-// Analytics Queries
-// ============================================================================
 
 export interface AnalyticsData {
   totalRuns: number;
@@ -1198,52 +1235,58 @@ export interface AnalyticsData {
 }
 
 export async function getAnalytics(days: number = 7): Promise<AnalyticsData> {
+  const safeDays = Math.max(1, Math.min(365, Math.floor(days)));
+
   const [totals] = await query<{
     total_runs: string;
     total_tokens: string;
     total_cost: string;
     avg_duration: string;
-  }>(`
-    SELECT 
+  }>(
+    `SELECT
       COUNT(*) as total_runs,
       COALESCE(SUM(total_tokens), 0) as total_tokens,
       COALESCE(SUM(cost), 0) as total_cost,
       COALESCE(AVG(duration), 0) as avg_duration
     FROM cogitator_runs
-    WHERE started_at > NOW() - INTERVAL '${days} days'
-  `);
+    WHERE started_at > NOW() - INTERVAL '1 day' * $1`,
+    [safeDays]
+  );
 
-  const runsPerDay = await query<{ date: string; count: string }>(`
-    SELECT 
+  const runsPerDay = await query<{ date: string; count: string }>(
+    `SELECT
       DATE(started_at) as date,
       COUNT(*) as count
     FROM cogitator_runs
-    WHERE started_at > NOW() - INTERVAL '${days} days'
+    WHERE started_at > NOW() - INTERVAL '1 day' * $1
     GROUP BY DATE(started_at)
-    ORDER BY date
-  `);
+    ORDER BY date`,
+    [safeDays]
+  );
 
-  const tokensByAgent = await query<{ model: string; tokens: string }>(`
-    SELECT 
+  const tokensByAgent = await query<{ model: string; tokens: string }>(
+    `SELECT
       a.model,
       COALESCE(SUM(r.total_tokens), 0) as tokens
     FROM cogitator_agents a
-    LEFT JOIN cogitator_runs r ON r.agent_id = a.id AND r.started_at > NOW() - INTERVAL '${days} days'
+    LEFT JOIN cogitator_runs r ON r.agent_id = a.id AND r.started_at > NOW() - INTERVAL '1 day' * $1
     GROUP BY a.model
     ORDER BY tokens DESC
-    LIMIT 10
-  `);
+    LIMIT 10`,
+    [safeDays]
+  );
 
-  const costByAgent = await query<{ model: string; cost: string }>(`
-    SELECT 
+  const costByAgent = await query<{ model: string; cost: string }>(
+    `SELECT
       a.model,
       COALESCE(SUM(r.cost), 0) as cost
     FROM cogitator_agents a
-    LEFT JOIN cogitator_runs r ON r.agent_id = a.id AND r.started_at > NOW() - INTERVAL '${days} days'
+    LEFT JOIN cogitator_runs r ON r.agent_id = a.id AND r.started_at > NOW() - INTERVAL '1 day' * $1
     GROUP BY a.model
     ORDER BY cost DESC
-    LIMIT 10
-  `);
+    LIMIT 10`,
+    [safeDays]
+  );
 
   return {
     totalRuns: parseInt(totals?.total_runs || '0'),

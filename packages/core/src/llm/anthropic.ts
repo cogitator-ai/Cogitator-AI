@@ -106,9 +106,13 @@ export class AnthropicBackend extends BaseLLMBackend {
     const toolCalls: ToolCall[] = [];
     let currentToolCall: Partial<ToolCall> | null = null;
     let inputJson = '';
+    let inputTokens = 0;
+    let outputTokens = 0;
 
     for await (const event of stream) {
-      if (event.type === 'content_block_start') {
+      if (event.type === 'message_start') {
+        inputTokens = event.message.usage.input_tokens;
+      } else if (event.type === 'content_block_start') {
         const block = event.content_block;
         if (block.type === 'tool_use') {
           currentToolCall = {
@@ -138,6 +142,8 @@ export class AnthropicBackend extends BaseLLMBackend {
           toolCalls.push(currentToolCall as ToolCall);
           currentToolCall = null;
         }
+      } else if (event.type === 'message_delta') {
+        outputTokens = event.usage.output_tokens;
       } else if (event.type === 'message_stop') {
         yield {
           id,
@@ -145,6 +151,11 @@ export class AnthropicBackend extends BaseLLMBackend {
             toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           },
           finishReason: toolCalls.length > 0 ? 'tool_calls' : 'stop',
+          usage: {
+            inputTokens,
+            outputTokens,
+            totalTokens: inputTokens + outputTokens,
+          },
         };
       }
     }

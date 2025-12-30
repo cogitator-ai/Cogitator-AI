@@ -4,9 +4,6 @@
  * Type definitions that mirror the OpenAI Assistants API
  */
 
-// ============================================================================
-// Common Types
-// ============================================================================
 
 export interface OpenAIError {
   error: {
@@ -25,9 +22,6 @@ export interface ListResponse<T> {
   has_more: boolean;
 }
 
-// ============================================================================
-// Assistant Types
-// ============================================================================
 
 export interface Assistant {
   id: string;
@@ -93,9 +87,6 @@ export interface UpdateAssistantRequest {
   response_format?: ResponseFormat;
 }
 
-// ============================================================================
-// Thread Types
-// ============================================================================
 
 export interface Thread {
   id: string;
@@ -120,9 +111,6 @@ export interface CreateThreadRequest {
   tool_resources?: ToolResources;
 }
 
-// ============================================================================
-// Message Types
-// ============================================================================
 
 export interface Message {
   id: string;
@@ -184,9 +172,6 @@ export type MessageContentPart =
   | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }
   | { type: 'image_file'; image_file: { file_id: string; detail?: 'auto' | 'low' | 'high' } };
 
-// ============================================================================
-// Run Types
-// ============================================================================
 
 export interface Run {
   id: string;
@@ -300,9 +285,6 @@ export interface ToolOutput {
   output: string;
 }
 
-// ============================================================================
-// Run Step Types
-// ============================================================================
 
 export interface RunStep {
   id: string;
@@ -362,9 +344,6 @@ export interface FunctionCall {
   output: string | null;
 }
 
-// ============================================================================
-// File Types
-// ============================================================================
 
 export interface FileObject {
   id: string;
@@ -392,9 +371,6 @@ export interface UploadFileRequest {
   filename?: string;
 }
 
-// ============================================================================
-// Streaming Event Types
-// ============================================================================
 
 export type StreamEvent =
   | { event: 'thread.created'; data: Thread }

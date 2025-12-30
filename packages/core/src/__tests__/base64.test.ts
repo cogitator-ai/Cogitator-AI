@@ -25,7 +25,6 @@ describe('base64Encode tool', () => {
   });
 
   it('produces URL-safe encoding', async () => {
-    // Data that produces + and / in standard base64
     const result = await base64Encode.execute({ data: '>>>???', urlSafe: true }, mockContext);
     const encoded = (result as { result: string }).result;
     expect(encoded).not.toContain('+');

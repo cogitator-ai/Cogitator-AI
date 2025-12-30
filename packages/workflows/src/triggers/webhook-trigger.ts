@@ -104,7 +104,6 @@ export class WebhookTriggerExecutor {
   } = {}) {
     this.onFire = options.onFire;
 
-    // Clean up deduplication cache periodically
     const cleanupMs = options.cleanupIntervalMs ?? 60000;
     this.cleanupInterval = setInterval(() => {
       this.cleanupDeduplicationCache();
@@ -134,7 +133,6 @@ export class WebhookTriggerExecutor {
 
     this.triggers.set(triggerId, state);
 
-    // Index by path and method
     const pathKey = this.normalizePathKey(config.path, config.method);
     let pathTriggers = this.triggersByPath.get(pathKey);
     if (!pathTriggers) {
@@ -143,7 +141,6 @@ export class WebhookTriggerExecutor {
     }
     pathTriggers.set(triggerId, state);
 
-    // Create rate limiter if configured
     if (config.rateLimit) {
       const rateLimiter = createRateLimiter({
         capacity: config.rateLimit.requests,
@@ -163,7 +160,6 @@ export class WebhookTriggerExecutor {
     const state = this.triggers.get(triggerId);
     if (!state) return;
 
-    // Remove from path index
     const pathKey = this.normalizePathKey(state.config.path, state.config.method);
     const pathTriggers = this.triggersByPath.get(pathKey);
     if (pathTriggers) {
@@ -173,7 +169,6 @@ export class WebhookTriggerExecutor {
       }
     }
 
-    // Clean up rate limiter
     const rateLimiter = this.rateLimiters.get(triggerId);
     if (rateLimiter) {
       rateLimiter.dispose();
@@ -209,10 +204,9 @@ export class WebhookTriggerExecutor {
     const pathTriggers = this.triggersByPath.get(pathKey);
 
     if (!pathTriggers || pathTriggers.size === 0) {
-      return null; // No trigger for this path
+      return null;
     }
 
-    // Find matching enabled trigger
     const trigger = Array.from(pathTriggers.values()).find(t => t.enabled);
     if (!trigger) {
       return null;
@@ -231,14 +225,11 @@ export class WebhookTriggerExecutor {
     const config = state.config;
 
     try {
-      // Check authentication
       await this.authenticate(request, config.auth);
 
-      // Check rate limit
       const clientKey = this.getClientKey(request);
       this.checkRateLimit(state.triggerId, clientKey);
 
-      // Check deduplication
       if (config.deduplicationKey && config.deduplicationWindow) {
         const dedupKey = config.deduplicationKey(request.body);
         if (this.isDuplicate(state.triggerId, dedupKey, config.deduplicationWindow)) {
@@ -252,7 +243,6 @@ export class WebhookTriggerExecutor {
         }
       }
 
-      // Validate payload
       if (config.validatePayload && !config.validatePayload(request.body)) {
         return {
           triggered: false,
@@ -263,12 +253,10 @@ export class WebhookTriggerExecutor {
         };
       }
 
-      // Transform payload
       const payload = config.transformPayload
         ? config.transformPayload(request.body)
         : request.body;
 
-      // Build context
       const context: TriggerContext = {
         triggerId: state.triggerId,
         triggerType: 'webhook',
@@ -283,7 +271,6 @@ export class WebhookTriggerExecutor {
         },
       };
 
-      // Fire the trigger
       state.lastTriggered = Date.now();
       state.triggerCount++;
 
@@ -459,7 +446,6 @@ export class WebhookTriggerExecutor {
           .update(payload)
           .digest('hex');
 
-        // Handle common signature formats
         const actualSignature = signature.replace(/^sha(256|512)=/, '');
 
         if (!crypto.timingSafeEqual(
@@ -517,7 +503,7 @@ export class WebhookTriggerExecutor {
 
   private cleanupDeduplicationCache(): void {
     const now = Date.now();
-    const maxAge = 24 * 60 * 60 * 1000; // 24 hours max
+    const maxAge = 24 * 60 * 60 * 1000;
 
     for (const [key, timestamp] of this.deduplicationCache) {
       if (now - timestamp > maxAge) {

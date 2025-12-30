@@ -46,14 +46,12 @@ export function useSSE(url: string, options: SSEOptions = {}) {
       eventSource.close();
       eventSourceRef.current = null;
 
-      // Retry connection
       if (retriesRef.current < maxRetries) {
         retriesRef.current += 1;
         setTimeout(connect, reconnectInterval);
       }
     };
 
-    // Handle generic messages
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
@@ -63,7 +61,6 @@ export function useSSE(url: string, options: SSEOptions = {}) {
       }
     };
 
-    // Handle specific events
     const events = ['started', 'completed', 'failed', 'entry', 'status', 'heartbeat', 'connected'];
     events.forEach((eventName) => {
       eventSource.addEventListener(eventName, (event: MessageEvent) => {

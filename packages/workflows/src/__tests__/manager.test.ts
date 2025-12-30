@@ -17,7 +17,6 @@ interface TestState {
   steps: string[];
 }
 
-// Mock Cogitator
 const mockCogitator = {} as Cogitator;
 
 describe('Workflow Manager', () => {
@@ -105,15 +104,12 @@ describe('Workflow Manager', () => {
         tags: ['test'],
       });
 
-      // Filter by workflow
       const workflowARuns = await store.list({ workflowName: 'workflow-a' });
       expect(workflowARuns).toHaveLength(2);
 
-      // Filter by status
       const completedRuns = await store.list({ status: ['completed'] });
       expect(completedRuns).toHaveLength(1);
 
-      // Filter by tag
       const testRuns = await store.list({ tags: ['test'] });
       expect(testRuns).toHaveLength(2);
     });
@@ -202,7 +198,7 @@ describe('Workflow Manager', () => {
 
     it('cleans up old runs', async () => {
       const now = Date.now();
-      const old = now - 86400000 * 10; // 10 days ago
+      const old = now - 86400000 * 10;
 
       await store.save({
         id: 'old-run',
@@ -230,7 +226,7 @@ describe('Workflow Manager', () => {
         tags: [],
       });
 
-      const cleaned = await store.cleanup(86400000 * 7); // 7 days
+      const cleaned = await store.cleanup(86400000 * 7);
       expect(cleaned).toBe(1);
 
       const remaining = await store.count();
@@ -247,8 +243,6 @@ describe('Workflow Manager', () => {
       queue.enqueue({ runId: 'sooner', workflowName: 'wf', priority: 1, scheduledFor: now });
       queue.enqueue({ runId: 'also-now', workflowName: 'wf', priority: 5, scheduledFor: now });
 
-      // First by scheduledFor (earlier first), then by priority (lower number = higher priority)
-      // 'sooner' has scheduledFor=now and priority=1 (highest priority at that time)
       const first = queue.dequeue();
       expect(first?.runId).toBe('sooner');
     });
@@ -326,7 +320,7 @@ describe('Workflow Manager', () => {
       scheduler = createJobScheduler({
         runStore: store,
         maxConcurrency: 2,
-        pollInterval: 10, // Fast polling for tests
+        pollInterval: 10,
         onRunReady,
       });
     });
@@ -352,7 +346,6 @@ describe('Workflow Manager', () => {
 
       const runId = await scheduler.scheduleRun(workflow);
 
-      // Wait for scheduler to process
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       expect(onRunReady).toHaveBeenCalledWith(runId);
@@ -369,11 +362,9 @@ describe('Workflow Manager', () => {
       const futureTime = Date.now() + 100;
       const runId = await scheduler.scheduleRun(workflow, { at: futureTime });
 
-      // Should not be called immediately
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(onRunReady).not.toHaveBeenCalled();
 
-      // Wait for scheduled time
       await new Promise((resolve) => setTimeout(resolve, 150));
       expect(onRunReady).toHaveBeenCalledWith(runId);
     });
@@ -384,10 +375,8 @@ describe('Workflow Manager', () => {
         .addNode('step1', async () => ({ state: { value: 1 } }))
         .build();
 
-      // Track which runs were started
       const startedRuns: string[] = [];
 
-      // Reconfigure with callback that marks runs as started
       scheduler.dispose();
       scheduler = createJobScheduler({
         runStore: store,
@@ -402,25 +391,19 @@ describe('Workflow Manager', () => {
 
       scheduler.start();
 
-      // Schedule 3 runs
       await scheduler.scheduleRun(workflow);
       await scheduler.scheduleRun(workflow);
       await scheduler.scheduleRun(workflow);
 
-      // Wait for tick to process ready runs
       await new Promise((resolve) => setTimeout(resolve, 50));
 
-      // First 2 should be ready (max concurrency = 2)
       expect(onRunReady).toHaveBeenCalledTimes(2);
       expect(startedRuns).toHaveLength(2);
 
-      // Complete one run
       scheduler.runCompleted(startedRuns[0]);
 
-      // Wait for tick to process the 3rd run
       await new Promise((resolve) => setTimeout(resolve, 50));
 
-      // Now third should be called
       expect(onRunReady).toHaveBeenCalledTimes(3);
     });
 
@@ -476,7 +459,6 @@ describe('Workflow Manager', () => {
 
       const result = await manager.execute(workflow);
 
-      // Get runs for this workflow
       const runs = await manager.listRuns({ workflowName: 'tracked' });
       expect(runs).toHaveLength(1);
       expect(runs[0].status).toBe('completed');
@@ -490,7 +472,6 @@ describe('Workflow Manager', () => {
         })
         .build();
 
-      // Executor returns result with error property instead of throwing
       const result = await manager.execute(workflow);
       expect(result.error).toBeDefined();
       expect(result.error?.message).toBe('Intentional failure');
@@ -509,20 +490,16 @@ describe('Workflow Manager', () => {
         })
         .build();
 
-      // Start execution in background
       const resultPromise = manager.execute(workflow);
 
-      // Wait a bit then cancel
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       const runs = await manager.listRuns({ workflowName: 'cancellable' });
       await manager.cancel(runs[0].id, 'Test cancellation');
 
-      // The execution should reject or the run should be cancelled
       try {
         await resultPromise;
       } catch {
-        // Expected
       }
 
       const updatedRuns = await manager.listRuns({ workflowName: 'cancellable' });
@@ -535,10 +512,8 @@ describe('Workflow Manager', () => {
         .addNode('step1', async () => ({ state: { value: 1 } }))
         .build();
 
-      // Start execution
       const resultPromise = manager.execute(workflow);
 
-      // Wait for it to start
       await new Promise((resolve) => setTimeout(resolve, 20));
 
       const runs = await manager.listRuns({ workflowName: 'pausable' });
@@ -570,22 +545,18 @@ describe('Workflow Manager', () => {
         })
         .build();
 
-      // First attempt fails (executor returns result with error)
       const result = await manager.execute(workflow);
       expect(result.error).toBeDefined();
 
       const failedRuns = await manager.listRuns({ status: ['failed'] });
       const failedRunId = failedRuns[0].id;
 
-      // Retry
       const newRunId = await manager.retry(failedRunId);
       expect(newRunId).not.toBe(failedRunId);
 
-      // Wait for new run to complete
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       const retryRun = await manager.getStatus(newRunId);
-      // Note: The actual behavior depends on how retry is implemented
       expect(retryRun).toBeDefined();
     });
 
@@ -602,7 +573,6 @@ describe('Workflow Manager', () => {
 
       await manager.execute(workflow);
 
-      // Should have at least created and completed states
       expect(stateChanges.length).toBeGreaterThanOrEqual(1);
     });
 
@@ -626,8 +596,7 @@ describe('Workflow Manager', () => {
 
       await manager.execute(workflow);
 
-      // Should not clean recent runs
-      const cleaned = await manager.cleanup(86400000); // 1 day
+      const cleaned = await manager.cleanup(86400000);
       expect(cleaned).toBe(0);
     });
 
@@ -640,14 +609,12 @@ describe('Workflow Manager', () => {
         })
         .build();
 
-      // Start execution in background
       const resultPromise = manager.execute(workflow);
 
-      // Wait for it to start
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       const activeCount = await manager.getActiveCount();
-      expect(activeCount).toBeGreaterThanOrEqual(0); // May vary depending on timing
+      expect(activeCount).toBeGreaterThanOrEqual(0);
 
       await resultPromise;
     });

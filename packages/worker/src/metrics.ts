@@ -116,7 +116,6 @@ export class DurationHistogram {
       lines.push(`${this.name}_bucket{${bucketLabels}} ${cumulative}`);
     }
 
-    // +Inf bucket
     const infLabels = labelStr ? `${labelStr},le="+Inf"` : `le="+Inf"`;
     lines.push(`${this.name}_bucket{${infLabels}} ${this.count}`);
 
@@ -171,7 +170,6 @@ export class MetricsCollector {
       this.jobDuration.format(labels),
     ];
 
-    // Jobs by type
     if (this.jobsByType.size > 0) {
       parts.push('# HELP cogitator_jobs_by_type_total Jobs processed by type');
       parts.push('# TYPE cogitator_jobs_by_type_total counter');

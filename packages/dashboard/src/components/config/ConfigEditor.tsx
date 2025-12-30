@@ -35,10 +35,10 @@ limits:
 memory:
   adapter: redis
   redis:
-    url: redis://localhost:6379
+    url: redis:
     prefix: cogitator
   postgres:
-    url: postgresql://localhost/cogitator
+    url: postgresql:
     
 sandbox:
   enabled: true
@@ -81,9 +81,7 @@ export function ConfigEditor() {
   const hasChanges = config !== savedConfig;
 
   const handleSave = () => {
-    // Validate YAML
     try {
-      // In real app, would validate against schema
       setSavedConfig(config);
       setErrors([]);
     } catch (e) {

@@ -138,11 +138,8 @@ export class CompensationManager<S = WorkflowState> {
     const compensated: CompensationResult[] = [];
     const partialFailures: string[] = [];
 
-    // Get nodes to compensate (only completed ones with compensation)
     const nodesToCompensate = this.getCompensableNodes();
 
-    // Sort by compensation order
-    // Default is reverse order (last completed first)
     const sortedNodes = this.sortByCompensationOrder(nodesToCompensate);
 
     for (const nodeId of sortedNodes) {
@@ -150,7 +147,6 @@ export class CompensationManager<S = WorkflowState> {
       const originalResult = this.completedNodes.get(nodeId);
       const stepStart = Date.now();
 
-      // Check condition
       if (step.condition && !step.condition(state, error)) {
         compensated.push({
           nodeId,
@@ -162,7 +158,6 @@ export class CompensationManager<S = WorkflowState> {
         continue;
       }
 
-      // Execute compensation with optional retries
       let lastError: Error | undefined;
       let success = false;
 
@@ -235,19 +230,14 @@ export class CompensationManager<S = WorkflowState> {
       }
     }
 
-    // Parallel goes first (will be executed in parallel later)
-    // Then reverse (sorted by execution order, reversed)
-    // Then forward (sorted by execution order)
 
     result.push(...parallel);
 
-    // Reverse order: last completed first
     const reverseOrder = [...this.executionOrder]
       .reverse()
       .filter((n) => reverse.includes(n));
     result.push(...reverseOrder);
 
-    // Forward order: first completed first
     const forwardOrder = this.executionOrder.filter((n) => forward.includes(n));
     result.push(...forwardOrder);
 

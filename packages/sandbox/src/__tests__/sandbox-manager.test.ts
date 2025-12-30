@@ -29,13 +29,11 @@ describe('SandboxManager', () => {
   describe('initialization', () => {
     it('initializes successfully', async () => {
       await manager.initialize();
-      // Should not throw
     });
 
     it('only initializes once', async () => {
       await manager.initialize();
-      await manager.initialize(); // Should be no-op
-      // Should not throw
+      await manager.initialize();
     });
   });
 
@@ -123,7 +121,6 @@ describe('SandboxManager', () => {
         image: 'alpine:3.19',
       };
 
-      // This should fall back to native if Docker is not available
       const result = await manager.execute(request, config);
       assertSuccess(result);
       expect(result.data.stdout.trim()).toBe('fallback test');
@@ -141,12 +138,11 @@ describe('SandboxManager', () => {
     it('shuts down cleanly', async () => {
       await manager.initialize();
       await manager.shutdown();
-      // Should be able to reinitialize after shutdown
       await manager.initialize();
     });
 
     it('can shutdown without initialization', async () => {
-      await manager.shutdown(); // Should not throw
+      await manager.shutdown();
     });
   });
 });

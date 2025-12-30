@@ -56,7 +56,6 @@ export async function executeHumanNode<S extends WorkflowState>(
 ): Promise<HumanNodeResult<S>> {
   const approval = config.approval;
 
-  // Resolve dynamic values
   const description =
     typeof approval.description === 'function'
       ? approval.description(state)
@@ -72,12 +71,10 @@ export async function executeHumanNode<S extends WorkflowState>(
       ? approval.assigneeGroup(state)
       : approval.assigneeGroup;
 
-  // Handle approval chain if present
   if (approval.chain && approval.chain.length > 0) {
     return executeApprovalChain(state, config, context, approval.chain);
   }
 
-  // Create approval request
   const request: ApprovalRequest = {
     id: nanoid(),
     workflowId: context.workflowId,
@@ -98,20 +95,16 @@ export async function executeHumanNode<S extends WorkflowState>(
     createdAt: Date.now(),
   };
 
-  // Store request
   await context.approvalStore.createRequest(request);
 
-  // Notify
   await context.approvalNotifier?.notify(request);
 
-  // Wait for response or timeout
   const response = await waitForResponse(
     request,
     context.approvalStore,
     context.approvalNotifier
   );
 
-  // Determine if approved based on type
   const approved = isApproved(request.type, response.decision);
 
   return {
@@ -140,7 +133,6 @@ async function executeApprovalChain<S extends WorkflowState>(
   for (let i = 0; i < chain.length; i++) {
     const step = chain[i];
 
-    // Convert 'skip' to 'fail' for the request - we handle skip logic separately
     const effectiveTimeoutAction = step.timeoutAction === 'skip' ? 'fail' : (step.timeoutAction ?? 'fail');
 
     const request: ApprovalRequest = {
@@ -182,7 +174,6 @@ async function executeApprovalChain<S extends WorkflowState>(
     responses.push(response);
     lastResponse = response;
 
-    // Check if rejected and is required step
     if (step.required && !isApproved(approval.type, response.decision)) {
       return {
         approved: false,
@@ -195,7 +186,6 @@ async function executeApprovalChain<S extends WorkflowState>(
     }
   }
 
-  // All required steps passed
   return {
     approved: true,
     decision: lastResponse?.decision,
@@ -221,13 +211,11 @@ async function waitForResponse(
       unsubscribe?.();
     };
 
-    // Subscribe to response
     unsubscribe = store.onResponse(request.id, (response) => {
       cleanup();
       resolve(response);
     });
 
-    // Set up timeout if configured
     if (request.timeout) {
       timeoutId = setTimeout(async () => {
         cleanup();
@@ -298,7 +286,6 @@ async function handleTimeout(
       if (request.escalateTo) {
         await notifier?.notifyEscalation(request, 'Timeout exceeded');
 
-        // Create new request for escalation target
         const escalatedRequest: ApprovalRequest = {
           ...request,
           id: nanoid(),
@@ -315,12 +302,10 @@ async function handleTimeout(
         await store.createRequest(escalatedRequest);
         await notifier?.notify(escalatedRequest);
 
-        // Wait for escalated response
         return new Promise((resolve) => {
           store.onResponse(escalatedRequest.id, resolve);
         });
       }
-      // No escalateTo configured, treat as fail
       return createFailResponse(request, store);
     }
 
@@ -339,16 +324,12 @@ function isApproved(type: ApprovalType, decision: unknown): boolean {
       return decision === true || decision === 'approve';
 
     case 'multi-choice':
-      // For multi-choice, any selection is considered "approved"
-      // The actual choice value should be used by the workflow
       return decision !== null && decision !== undefined;
 
     case 'free-form':
-      // For free-form, any non-empty response is approved
       return typeof decision === 'string' && decision.trim().length > 0;
 
     case 'numeric-rating':
-      // For rating, any numeric value is considered a valid response
       return typeof decision === 'number' && !isNaN(decision);
 
     default:

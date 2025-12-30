@@ -29,7 +29,6 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Stream the response
     const encoder = new TextEncoder();
     const reader = response.body.getReader();
     
@@ -43,7 +42,6 @@ export async function POST(request: NextRequest) {
             break;
           }
           
-          // Parse and forward progress
           const text = new TextDecoder().decode(value);
           const lines = text.split('\n').filter(Boolean);
           
@@ -51,14 +49,12 @@ export async function POST(request: NextRequest) {
             try {
               const progress = JSON.parse(line);
               
-              // Calculate percentage if possible
               if (progress.total && progress.completed) {
                 progress.percent = Math.round((progress.completed / progress.total) * 100);
               }
               
               controller.enqueue(encoder.encode(`data: ${JSON.stringify(progress)}\n\n`));
             } catch {
-              // Ignore parse errors
             }
           }
         }

@@ -1,8 +1,5 @@
-# Docker Compose for CPU-only systems (no NVIDIA GPU)
-# Usage: docker-compose -f docker-compose.cpu.yml up -d
 
 services:
-  # PostgreSQL - Primary database for agents, runs, workflows, swarms
   postgres:
     image: pgvector/pgvector:pg16
     container_name: cogitator-postgres
@@ -22,7 +19,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Redis - Cache, events, short-term memory
   redis:
     image: redis:7-alpine
     container_name: cogitator-redis
@@ -38,7 +34,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Ollama - Local LLM runtime (CPU only)
   ollama:
     image: ollama/ollama:latest
     container_name: cogitator-ollama
@@ -47,9 +42,7 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
-    # No GPU configuration - runs on CPU
 
-  # Ollama model initialization
   ollama-init:
     image: ollama/ollama:latest
     container_name: cogitator-ollama-init

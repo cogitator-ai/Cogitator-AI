@@ -114,7 +114,6 @@ export class CircuitBreaker {
     breaker.state = newState;
     breaker.lastStateChange = Date.now();
 
-    // Reset counters on state change
     if (newState === 'half-open') {
       breaker.halfOpenAttempts = 0;
       breaker.consecutiveSuccesses = 0;
@@ -123,7 +122,6 @@ export class CircuitBreaker {
       breaker.successes = 0;
     }
 
-    // Emit event
     const event: CircuitBreakerEvent = {
       type: 'state_change',
       from: oldState,
@@ -132,7 +130,6 @@ export class CircuitBreaker {
     };
     this.emit(event);
 
-    // Call config callback
     this.config.onStateChange?.(oldState, newState, nodeId);
   }
 
@@ -150,7 +147,6 @@ export class CircuitBreaker {
         return true;
 
       case 'open': {
-        // Check if reset timeout has passed
         const elapsed = now - breaker.lastStateChange;
         if (elapsed >= this.config.resetTimeout) {
           this.changeState(nodeId, breaker, 'half-open');
@@ -160,7 +156,6 @@ export class CircuitBreaker {
       }
 
       case 'half-open':
-        // Allow limited requests in half-open state
         return breaker.halfOpenAttempts < this.config.halfOpenMax;
 
       default:
@@ -185,7 +180,6 @@ export class CircuitBreaker {
     const breaker = this.getBreaker(nodeId);
     const startTime = Date.now();
 
-    // Track half-open attempts
     if (breaker.state === 'half-open') {
       breaker.halfOpenAttempts++;
     }
@@ -217,17 +211,14 @@ export class CircuitBreaker {
     };
     this.emit(event);
 
-    // Handle state transitions
     switch (breaker.state) {
       case 'half-open':
-        // Need consecutive successes to close circuit
         if (breaker.consecutiveSuccesses >= this.config.successThreshold) {
           this.changeState(nodeId, breaker, 'closed');
         }
         break;
 
       case 'closed':
-        // Reset failure count on success
         breaker.failures = 0;
         break;
     }
@@ -251,17 +242,14 @@ export class CircuitBreaker {
     };
     this.emit(event);
 
-    // Handle state transitions
     switch (breaker.state) {
       case 'closed':
-        // Open circuit if threshold exceeded
         if (breaker.failures >= this.config.threshold) {
           this.changeState(nodeId, breaker, 'open');
         }
         break;
 
       case 'half-open':
-        // Any failure in half-open goes back to open
         this.changeState(nodeId, breaker, 'open');
         break;
     }
@@ -360,7 +348,6 @@ export class CircuitBreaker {
       try {
         handler(event);
       } catch {
-        // Ignore handler errors
       }
     }
   }

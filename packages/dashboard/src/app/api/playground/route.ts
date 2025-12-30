@@ -40,26 +40,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get last user message as input
     const userMessages = messages.filter((m) => m.role === 'user');
     const input = userMessages[userMessages.length - 1]?.content || '';
     
-    // Get system message for instructions
     const systemMessage = messages.find((m) => m.role === 'system');
     const instructions = systemMessage?.content || 'You are a helpful assistant.';
 
-    // Get Cogitator instance
     const cogitator = await getCogitator();
 
-    // Get selected tools
     const selectedTools = tools
       .map((name) => getToolByName(name))
       .filter((t): t is NonNullable<typeof t> => t !== undefined);
 
-    // Build model string with provider prefix
     const modelString = buildModelString(model);
 
-    // Create a temporary agent for this request
     const agent = createAgentFromConfig({
       id: agentId || `playground_${nanoid(8)}`,
       name: 'Playground Agent',
@@ -70,7 +64,6 @@ export async function POST(request: NextRequest) {
       maxIterations: 5,
     });
 
-    // Ensure thread exists
     const actualThreadId = threadId || `thread_${nanoid(12)}`;
     const existingThread = await getThread(actualThreadId).catch(() => null);
     if (!existingThread) {
@@ -79,11 +72,9 @@ export async function POST(request: NextRequest) {
         agentId: agent.id,
         title: input.slice(0, 50),
       }).catch(() => {
-        // Thread creation failed, likely no database - continue anyway
       });
     }
 
-    // Create run record
     const runId = `run_${nanoid(12)}`;
     await createRun({
       id: runId,
@@ -91,10 +82,8 @@ export async function POST(request: NextRequest) {
       threadId: actualThreadId,
       input,
     }).catch(() => {
-      // Run creation failed, likely no database - continue anyway
     });
 
-    // Use streaming if supported
     const encoder = new TextEncoder();
     let fullContent = '';
     const allToolCalls: Array<{
@@ -155,7 +144,6 @@ export async function POST(request: NextRequest) {
             },
           });
 
-          // Complete run record
           await completeRun(runId, {
             status: 'completed',
             output: result.output,
@@ -167,7 +155,6 @@ export async function POST(request: NextRequest) {
             trace: result.trace,
           }).catch(() => {});
 
-          // Update agent stats if this was a saved agent
           if (agentId) {
             await incrementAgentStats(
               agentId,
@@ -176,7 +163,6 @@ export async function POST(request: NextRequest) {
             ).catch(() => {});
           }
 
-          // Send completion data
           controller.enqueue(
             encoder.encode(
               `data: ${JSON.stringify({
@@ -192,7 +178,6 @@ export async function POST(request: NextRequest) {
         } catch (error) {
           console.error('[playground] Run error:', error);
 
-          // Update run as failed
           await completeRun(runId, {
             status: 'failed',
             inputTokens: 0,
@@ -234,10 +219,8 @@ export async function POST(request: NextRequest) {
 }
 
 function buildModelString(model: string): string {
-  // Check if already has provider prefix
   if (model.includes('/')) return model;
 
-  // Determine provider from model name
   if (model.includes('gpt') || model.includes('o1') || model.includes('o3')) {
     return `openai/${model}`;
   }
@@ -248,6 +231,5 @@ function buildModelString(model: string): string {
     return `google/${model}`;
   }
 
-  // Default to Ollama for local models
   return `ollama/${model}`;
 }

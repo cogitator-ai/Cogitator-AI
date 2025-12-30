@@ -29,7 +29,6 @@ const cog = new Cogitator({
   },
 });
 
-// Pipeline stages tools
 const extractKeywords = tool({
   name: 'extract_keywords',
   description: 'Extract key concepts from text',
@@ -39,7 +38,6 @@ const extractKeywords = tool({
   }),
   execute: async ({ text, maxKeywords }) => {
     console.log('  🔑 Extracting keywords...');
-    // Simple keyword extraction (would use NLP in real scenario)
     const words = text.toLowerCase().split(/\W+/);
     const stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare', 'ought', 'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through', 'during', 'before', 'after', 'above', 'below', 'between', 'under', 'again', 'further', 'then', 'once', 'and', 'but', 'or', 'nor', 'so', 'yet', 'both', 'either', 'neither', 'not', 'only', 'own', 'same', 'than', 'too', 'very', 'just', 'also']);
     const filtered = words.filter(w => w.length > 3 && !stopWords.has(w));
@@ -85,7 +83,6 @@ const formatOutput = tool({
   },
 });
 
-// Pipeline agents - each has a specific role
 const ideaGenerator = new Agent({
   name: 'idea-generator',
   model: MODEL,
@@ -161,21 +158,18 @@ Output format:
   temperature: 0.2,
 });
 
-// Create pipeline swarm
 const contentPipeline = new Swarm({
   name: 'content-pipeline',
   strategy: 'pipeline',
 
-  // In pipeline mode, no supervisor - work flows through stages
   workers: [ideaGenerator, structurer, contentCreator, polisher],
 
   coordination: {
-    visibility: 'sequential', // Each stage sees only previous output
+    visibility: 'sequential',
     workerCommunication: false,
     maxParallelTasks: 1,
   },
 
-  // Pipeline-specific config
   strategyConfig: {
     stages: [
       { name: 'ideation', agent: 'idea-generator' },
@@ -183,8 +177,8 @@ const contentPipeline = new Swarm({
       { name: 'creation', agent: 'content-creator' },
       { name: 'polishing', agent: 'polisher' },
     ],
-    passFullContext: false, // Each stage only gets previous stage output
-    gating: { enabled: false }, // No quality gates for this example
+    passFullContext: false,
+    gating: { enabled: false },
   },
 
   resources: {
@@ -213,7 +207,6 @@ async function main() {
   console.log('  4️⃣  polisher → Final polish');
   console.log('\n');
 
-  // Input task
   const task = `Create a short blog post about "The Future of Remote Work"
 
 Requirements:
@@ -242,7 +235,6 @@ Requirements:
     console.log(`   Duration: ${(result.usage.duration / 1000).toFixed(1)}s`);
     console.log(`   Cost: $${result.usage.cost.toFixed(4)}`);
 
-    // Show stage timings
     if (result.trace?.spans) {
       console.log('\n⏱️  Stage Timings:');
       const stages = result.trace.spans.filter((s) =>

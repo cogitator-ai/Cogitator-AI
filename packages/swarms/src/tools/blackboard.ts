@@ -142,7 +142,6 @@ export function createBlackboardTools(blackboard: Blackboard, currentAgent: stri
         version: entry.version,
         writtenBy: entry.writtenBy,
         timestamp: entry.timestamp,
-        // Don't include full value for brevity
         hasValue: entry.value !== undefined,
       }));
 

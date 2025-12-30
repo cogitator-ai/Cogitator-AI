@@ -132,7 +132,7 @@ describe('Map-Reduce Pattern', () => {
         name: 'filter-test',
         items: (s) => s.items,
         mapper: async (item: unknown) => (item as number) * 2,
-        filter: (item) => (item as number) % 2 === 0, // Only even numbers
+        filter: (item) => (item as number) % 2 === 0,
       });
 
       expect(results).toHaveLength(2);
@@ -187,7 +187,7 @@ describe('Map-Reduce Pattern', () => {
         reducer: (acc, item) => acc + item.result,
       });
 
-      expect(result).toBe(4); // 1 + 3
+      expect(result).toBe(4);
     });
 
     it('includes failed results when successOnly is false', () => {
@@ -205,7 +205,7 @@ describe('Map-Reduce Pattern', () => {
         successOnly: false,
       });
 
-      expect(result).toBe(4); // 1 + 0 + 3
+      expect(result).toBe(4);
     });
 
     it('supports finalize option', () => {
@@ -222,7 +222,7 @@ describe('Map-Reduce Pattern', () => {
         finalize: (sum) => sum * 2,
       });
 
-      expect(result).toBe(12); // (2 + 4) * 2
+      expect(result).toBe(12);
     });
   });
 
@@ -242,7 +242,7 @@ describe('Map-Reduce Pattern', () => {
         },
       });
 
-      expect(result.reduced).toBe(30); // (1+2+3+4+5) * 2 = 30
+      expect(result.reduced).toBe(30);
       expect(result.results).toHaveLength(5);
       expect(result.stats.successful).toBe(5);
     });
@@ -266,7 +266,6 @@ describe('Map-Reduce Pattern', () => {
         },
       });
 
-      // Sum of successful: 2 + 4 + 8 + 10 = 24 (skipping 3*2=6)
       expect(result.reduced).toBe(24);
       expect(result.stats.failed).toBe(1);
     });
@@ -280,7 +279,7 @@ describe('Map-Reduce Pattern', () => {
         map: {
           items: (s) => s.items,
           mapper: async (item: unknown) => (item as number) * 2,
-          concurrency: 1, // Sequential for predictable order
+          concurrency: 1,
         },
         reduce: {
           initial: 0,
@@ -327,7 +326,7 @@ describe('Map-Reduce Pattern', () => {
         );
 
         expect(results.map((r) => r.result)).toEqual([2, 4, 6]);
-        expect(order).toEqual([1, 2, 3]); // Strictly sequential
+        expect(order).toEqual([1, 2, 3]);
       });
     });
 
@@ -347,7 +346,7 @@ describe('Map-Reduce Pattern', () => {
             concurrent--;
             return (item as number) * 2;
           },
-          2 // batchSize = concurrency
+          2
         );
 
         expect(results.map((r) => r.result)).toEqual([2, 4, 6, 8, 10, 12]);

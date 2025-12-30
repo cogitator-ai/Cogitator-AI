@@ -45,7 +45,6 @@ export function swarmNode<S extends WorkflowState = WorkflowState>(
   swarmOrConfig: Swarm | SwarmConfig,
   options?: SwarmNodeOptions<S>
 ): WorkflowNode<S> {
-  // Determine swarm name for the node
   const name = swarmOrConfig instanceof Swarm
     ? swarmOrConfig.name
     : swarmOrConfig.name;
@@ -55,12 +54,10 @@ export function swarmNode<S extends WorkflowState = WorkflowState>(
     fn: async (ctx): Promise<NodeResult<S>> => {
       const extCtx = ctx as SwarmNodeContext<S>;
 
-      // Get or create swarm instance
       const swarm = swarmOrConfig instanceof Swarm
         ? swarmOrConfig
         : new Swarm(extCtx.cogitator, swarmOrConfig);
 
-      // Determine input
       let input: string;
       if (options?.inputMapper) {
         input = options.inputMapper(ctx.state, ctx.input);
@@ -72,7 +69,6 @@ export function swarmNode<S extends WorkflowState = WorkflowState>(
         input = JSON.stringify(ctx.state);
       }
 
-      // Run swarm
       const result = await swarm.run({
         input,
         context: {
@@ -85,7 +81,6 @@ export function swarmNode<S extends WorkflowState = WorkflowState>(
         ...options?.runOptions,
       });
 
-      // Map result to state and output
       const stateUpdate = options?.stateMapper?.(result);
 
       return {
@@ -139,7 +134,6 @@ export function parallelSwarmsNode<S extends WorkflowState = WorkflowState>(
       const extCtx = ctx as SwarmNodeContext<S>;
       const results: Record<string, StrategyResult> = {};
 
-      // Run all swarms in parallel
       await Promise.all(
         swarms.map(async ({ swarm: swarmOrConfig, key, options }) => {
           const swarm = swarmOrConfig instanceof Swarm
@@ -166,7 +160,6 @@ export function parallelSwarmsNode<S extends WorkflowState = WorkflowState>(
         })
       );
 
-      // Merge results
       const stateUpdate = mergeResults?.(results);
 
       return {

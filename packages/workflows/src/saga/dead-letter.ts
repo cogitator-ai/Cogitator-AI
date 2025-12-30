@@ -58,9 +58,8 @@ export class InMemoryDLQ extends BaseDLQ {
 
   constructor(options: { defaultTTL?: number; cleanupIntervalMs?: number } = {}) {
     super();
-    this.defaultTTL = options.defaultTTL ?? 7 * 24 * 60 * 60 * 1000; // 7 days
+    this.defaultTTL = options.defaultTTL ?? 7 * 24 * 60 * 60 * 1000;
 
-    // Start cleanup interval
     if (options.cleanupIntervalMs) {
       this.cleanupInterval = setInterval(
         () => void this.cleanup(),
@@ -88,7 +87,6 @@ export class InMemoryDLQ extends BaseDLQ {
     const entry = this.entries.get(id);
     if (!entry) return null;
 
-    // Check expiration
     if (entry.expiresAt && entry.expiresAt < Date.now()) {
       this.entries.delete(id);
       return null;
@@ -102,10 +100,8 @@ export class InMemoryDLQ extends BaseDLQ {
     let results: DeadLetterEntry[] = [];
 
     for (const entry of this.entries.values()) {
-      // Skip expired
       if (entry.expiresAt && entry.expiresAt < now) continue;
 
-      // Apply filters
       if (filters.workflowId && entry.workflowId !== filters.workflowId) continue;
       if (filters.workflowName && entry.workflowName !== filters.workflowName) continue;
       if (filters.nodeId && entry.nodeId !== filters.nodeId) continue;
@@ -118,10 +114,8 @@ export class InMemoryDLQ extends BaseDLQ {
       results.push(entry);
     }
 
-    // Sort by creation time (newest first)
     results.sort((a, b) => b.createdAt - a.createdAt);
 
-    // Apply pagination
     if (filters.offset) {
       results = results.slice(filters.offset);
     }
@@ -136,7 +130,6 @@ export class InMemoryDLQ extends BaseDLQ {
     const entry = await this.get(id);
     if (!entry) return false;
 
-    // Update retry metadata
     entry.attempts++;
     entry.lastAttempt = Date.now();
 
@@ -208,7 +201,6 @@ export class FileDLQ extends BaseDLQ {
     try {
       await fs.mkdir(this.directory, { recursive: true });
     } catch {
-      // Directory may already exist
     }
     this.initialized = true;
   }
@@ -244,7 +236,6 @@ export class FileDLQ extends BaseDLQ {
       const content = await fs.readFile(filePath, 'utf-8');
       const entry = JSON.parse(content) as DeadLetterEntry;
 
-      // Check expiration
       if (entry.expiresAt && entry.expiresAt < Date.now()) {
         await this.remove(id);
         return null;
@@ -273,13 +264,11 @@ export class FileDLQ extends BaseDLQ {
           const content = await fs.readFile(filePath, 'utf-8');
           const entry = JSON.parse(content) as DeadLetterEntry;
 
-          // Skip expired
           if (entry.expiresAt && entry.expiresAt < now) {
             await fs.unlink(filePath).catch(() => {});
             continue;
           }
 
-          // Apply filters
           if (filters.workflowId && entry.workflowId !== filters.workflowId) continue;
           if (filters.workflowName && entry.workflowName !== filters.workflowName) continue;
           if (filters.nodeId && entry.nodeId !== filters.nodeId) continue;
@@ -291,17 +280,13 @@ export class FileDLQ extends BaseDLQ {
 
           results.push(entry);
         } catch {
-          // Skip invalid files
         }
       }
     } catch {
-      // Directory may not exist
     }
 
-    // Sort by creation time (newest first)
     results.sort((a, b) => b.createdAt - a.createdAt);
 
-    // Apply pagination
     if (filters.offset) {
       results = results.slice(filters.offset);
     }
@@ -316,7 +301,6 @@ export class FileDLQ extends BaseDLQ {
     const entry = await this.get(id);
     if (!entry) return false;
 
-    // Update retry metadata
     entry.attempts++;
     entry.lastAttempt = Date.now();
 
@@ -351,7 +335,6 @@ export class FileDLQ extends BaseDLQ {
           .map((f) => fs.unlink(join(this.directory, f)).catch(() => {}))
       );
     } catch {
-      // Directory may not exist
     }
   }
 }
@@ -374,7 +357,7 @@ export function createDLQEntry(
   } = {}
 ): DeadLetterEntry {
   return {
-    id: '', // Will be set by DLQ
+    id: '',
     nodeId,
     workflowId,
     workflowName,

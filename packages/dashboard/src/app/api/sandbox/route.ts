@@ -31,15 +31,14 @@ async function getSandboxManager(): Promise<SandboxManager> {
 
 export async function GET() {
   try {
-    // Initialize manager to ensure executors are available
     await getSandboxManager();
 
     return NextResponse.json({
       status: 'ready',
       capabilities: {
         native: true,
-        docker: false, // Docker availability checked dynamically during execution
-        wasm: false, // Not implemented yet
+        docker: false,
+        wasm: false,
       },
     });
   } catch (error) {
@@ -68,7 +67,6 @@ export async function POST(request: NextRequest) {
 
     const manager = await getSandboxManager();
 
-    // Convert code to command based on language
     let command: string[];
     switch (language) {
       case 'javascript':
@@ -95,14 +93,12 @@ export async function POST(request: NextRequest) {
         );
     }
 
-    // Build execution request
     const executionRequest: SandboxExecutionRequest = {
       command,
       env,
       timeout,
     };
 
-    // Build sandbox config
     const sandboxConfig: SandboxConfig = {
       type: sandboxType,
       timeout,

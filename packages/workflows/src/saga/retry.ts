@@ -89,10 +89,8 @@ function calculateDelay(
       break;
   }
 
-  // Apply max delay cap
   baseDelay = Math.min(baseDelay, config.maxDelay);
 
-  // Apply jitter: ±jitter% of delay
   const jitterRange = baseDelay * config.jitter;
   const jitter = (Math.random() * 2 - 1) * jitterRange;
 
@@ -161,7 +159,6 @@ export async function executeWithRetry<T>(
   let lastError: Error | undefined;
 
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
-    // Check abort signal
     if (options.abortSignal?.aborted) {
       return {
         success: false,
@@ -201,7 +198,6 @@ export async function executeWithRetry<T>(
       lastError = error instanceof Error ? error : new Error(String(error));
       const duration = Date.now() - attemptStart;
 
-      // Check if we should retry
       const canRetry = attempt <= maxRetries && isRetryable(lastError);
 
       if (!canRetry) {
@@ -217,7 +213,6 @@ export async function executeWithRetry<T>(
         break;
       }
 
-      // Calculate delay for next attempt
       const delay = calculateDelay(attempt, {
         backoff,
         initialDelay,
@@ -237,7 +232,6 @@ export async function executeWithRetry<T>(
       };
       options.onRetry?.(attemptInfo);
 
-      // Wait before next attempt
       await sleep(delay);
     }
   }

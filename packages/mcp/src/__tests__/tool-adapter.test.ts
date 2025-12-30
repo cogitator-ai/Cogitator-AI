@@ -110,11 +110,9 @@ describe('jsonSchemaToZod', () => {
 
     const zodSchema = jsonSchemaToZod(jsonSchema);
 
-    // Valid email
     const validEmail = zodSchema.safeParse({ email: 'test@example.com' });
     expect(validEmail.success).toBe(true);
 
-    // Invalid email
     const invalidEmail = zodSchema.safeParse({ email: 'not-an-email' });
     expect(invalidEmail.success).toBe(false);
   });
@@ -251,7 +249,6 @@ describe('mcpToCogitator', () => {
     expect(tool.name).toBe('get_weather');
     expect(tool.description).toBe('Get weather for a city');
 
-    // Execute the tool
     const context: ToolContext = {
       agentId: 'test',
       runId: 'run_1',
