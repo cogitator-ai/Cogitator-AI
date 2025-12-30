@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
   
   const stream = new ReadableStream({
     async start(controller) {
-      const subscriber = getSubscriber();
+      const subscriber = await getSubscriber();
       
       const sendEvent = (event: string, data: unknown) => {
         const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -34,9 +34,11 @@ export async function GET(request: NextRequest) {
       const channels = Object.values(CHANNELS);
       
       try {
-        await subscriber.subscribe(...channels);
-        
-        subscriber.on('message', (channel, message) => {
+        for (const channel of channels) {
+          await subscriber.subscribe(channel);
+        }
+
+        subscriber.on('message', (channel: string, message: string) => {
           try {
             const data = JSON.parse(message);
             const eventName = CHANNEL_TO_EVENT[channel] || channel.split(':').pop() || 'message';
@@ -65,9 +67,11 @@ export async function GET(request: NextRequest) {
         });
 
         // Handle client disconnect
-        request.signal.addEventListener('abort', () => {
+        request.signal.addEventListener('abort', async () => {
           clearInterval(heartbeat);
-          subscriber.unsubscribe(...channels);
+          for (const channel of channels) {
+            await subscriber.unsubscribe(channel);
+          }
         });
       } catch (error) {
         console.error('Redis subscription error:', error);

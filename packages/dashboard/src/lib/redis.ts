@@ -1,34 +1,43 @@
-import Redis from 'ioredis';
+import {
+  createRedisClient,
+  createConfigFromEnv,
+  type RedisClient,
+} from '@cogitator/redis';
 
-let redis: Redis | null = null;
-let subscriber: Redis | null = null;
+let redis: RedisClient | null = null;
+let subscriber: RedisClient | null = null;
+let initPromise: Promise<RedisClient> | null = null;
+let subscriberPromise: Promise<RedisClient> | null = null;
 
-export function getRedis(): Redis {
-  if (!redis) {
-    redis = new Redis({
-      host: process.env.REDIS_HOST || 'localhost',
-      port: parseInt(process.env.REDIS_PORT || '6379'),
-      maxRetriesPerRequest: 3,
-      lazyConnect: true,
-    });
-  }
-  return redis;
+async function initRedis(): Promise<RedisClient> {
+  const config = createConfigFromEnv();
+  return createRedisClient(config);
 }
 
-export function getSubscriber(): Redis {
-  if (!subscriber) {
-    subscriber = new Redis({
-      host: process.env.REDIS_HOST || 'localhost',
-      port: parseInt(process.env.REDIS_PORT || '6379'),
-      maxRetriesPerRequest: 3,
-      lazyConnect: true,
+export async function getRedis(): Promise<RedisClient> {
+  if (redis) return redis;
+  if (!initPromise) {
+    initPromise = initRedis().then((client) => {
+      redis = client;
+      return client;
     });
   }
-  return subscriber;
+  return initPromise;
+}
+
+export async function getSubscriber(): Promise<RedisClient> {
+  if (subscriber) return subscriber;
+  if (!subscriberPromise) {
+    subscriberPromise = initRedis().then((client) => {
+      subscriber = client;
+      return client;
+    });
+  }
+  return subscriberPromise;
 }
 
 export async function publish(channel: string, message: unknown): Promise<void> {
-  const client = getRedis();
+  const client = await getRedis();
   await client.publish(channel, JSON.stringify(message));
 }
 
@@ -36,10 +45,10 @@ export async function subscribe(
   channel: string,
   callback: (message: unknown) => void
 ): Promise<() => void> {
-  const sub = getSubscriber();
-  
+  const sub = await getSubscriber();
+
   await sub.subscribe(channel);
-  
+
   const handler = (ch: string, msg: string) => {
     if (ch === channel) {
       try {
@@ -49,9 +58,9 @@ export async function subscribe(
       }
     }
   };
-  
+
   sub.on('message', handler);
-  
+
   return () => {
     sub.off('message', handler);
     sub.unsubscribe(channel);
@@ -63,21 +72,21 @@ export async function cache<T>(
   fn: () => Promise<T>,
   ttlSeconds = 60
 ): Promise<T> {
-  const client = getRedis();
-  
+  const client = await getRedis();
+
   const cached = await client.get(key);
   if (cached) {
     return JSON.parse(cached) as T;
   }
-  
+
   const result = await fn();
   await client.setex(key, ttlSeconds, JSON.stringify(result));
-  
+
   return result;
 }
 
 export async function invalidateCache(pattern: string): Promise<void> {
-  const client = getRedis();
+  const client = await getRedis();
   const keys = await client.keys(pattern);
   if (keys.length > 0) {
     await client.del(...keys);
@@ -88,10 +97,12 @@ export async function closeRedis(): Promise<void> {
   if (redis) {
     await redis.quit();
     redis = null;
+    initPromise = null;
   }
   if (subscriber) {
     await subscriber.quit();
     subscriber = null;
+    subscriberPromise = null;
   }
 }
 
@@ -104,4 +115,3 @@ export const CHANNELS = {
   AGENT_STATUS: 'cogitator:agent:status',
   TOOL_CALL: 'cogitator:tool:call',
 } as const;
-

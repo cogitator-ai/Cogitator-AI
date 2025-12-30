@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cogitator.fullname" . }}-config
+  labels:
+    {{- include "cogitator.labels" . | nindent 4 }}
+data:
+  NODE_ENV: {{ .Values.config.nodeEnv | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  DEBUG: {{ .Values.config.debug | quote }}
+  {{- if or .Values.redis.enabled .Values.redis.external }}
+  REDIS_URL: {{ include "cogitator.redisUrl" . | quote }}
+  {{- end }}
+  {{- if or .Values.postgresql.enabled .Values.database.external }}
+  DATABASE_URL: {{ include "cogitator.databaseUrl" . | quote }}
+  {{- end }}
+  {{- if or .Values.ollama.enabled .Values.ollama.external }}
+  OLLAMA_URL: {{ include "cogitator.ollamaUrl" . | quote }}
+  {{- end }}
+  DB_POOL_MIN: {{ .Values.database.poolMin | quote }}
+  DB_POOL_MAX: {{ .Values.database.poolMax | quote }}

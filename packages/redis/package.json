@@ -1,7 +1,7 @@
 {
-  "name": "@cogitator/memory",
+  "name": "@cogitator/redis",
   "version": "0.1.0",
-  "description": "Memory adapters for Cogitator AI agents",
+  "description": "Unified Redis client for Cogitator with standalone and cluster support",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -23,30 +23,21 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@cogitator/redis": "workspace:*",
-    "@cogitator/types": "workspace:*",
-    "nanoid": "^5.0.4",
-    "zod": "^3.22.4"
+    "@cogitator/types": "workspace:*"
   },
   "optionalDependencies": {
-    "ioredis": "^5.3.2",
-    "pg": "^8.11.3",
-    "openai": "^4.24.0"
+    "ioredis": "^5.4.1"
   },
   "devDependencies": {
-    "@types/pg": "^8.10.9",
+    "@types/node": "^20.10.0",
     "typescript": "^5.3.0",
     "vitest": "^1.0.0"
   },
   "peerDependencies": {
-    "ioredis": "^5.0.0",
-    "pg": "^8.0.0"
+    "ioredis": "^5.0.0"
   },
   "peerDependenciesMeta": {
     "ioredis": {
-      "optional": true
-    },
-    "pg": {
       "optional": true
     }
   },

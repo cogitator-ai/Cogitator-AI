@@ -1,0 +1,25 @@
+{{- if .Values.worker.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cogitator.fullname" . }}-worker
+  labels:
+    {{- include "cogitator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+  {{- if .Values.worker.metrics.enabled }}
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "{{ .Values.worker.metrics.port }}"
+    prometheus.io/path: "{{ .Values.worker.metrics.path }}"
+  {{- end }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.worker.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    {{- include "cogitator.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+{{- end }}

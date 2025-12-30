@@ -1,7 +1,7 @@
 {
-  "name": "@cogitator/memory",
+  "name": "@cogitator/worker",
   "version": "0.1.0",
-  "description": "Memory adapters for Cogitator AI agents",
+  "description": "Distributed job queue for Cogitator agent execution",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -23,32 +23,21 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@cogitator/core": "workspace:*",
     "@cogitator/redis": "workspace:*",
+    "@cogitator/swarms": "workspace:*",
     "@cogitator/types": "workspace:*",
-    "nanoid": "^5.0.4",
+    "@cogitator/workflows": "workspace:*",
+    "bullmq": "^5.34.8",
+    "nanoid": "^5.0.9",
     "zod": "^3.22.4"
   },
-  "optionalDependencies": {
-    "ioredis": "^5.3.2",
-    "pg": "^8.11.3",
-    "openai": "^4.24.0"
-  },
   "devDependencies": {
-    "@types/pg": "^8.10.9",
     "typescript": "^5.3.0",
     "vitest": "^1.0.0"
   },
   "peerDependencies": {
-    "ioredis": "^5.0.0",
-    "pg": "^8.0.0"
-  },
-  "peerDependenciesMeta": {
-    "ioredis": {
-      "optional": true
-    },
-    "pg": {
-      "optional": true
-    }
+    "ioredis": "^5.0.0"
   },
   "license": "MIT"
 }

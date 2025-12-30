@@ -1,0 +1,269 @@
+# Default values for Cogitator
+# This is a YAML-formatted file.
+
+replicaCount: 1
+
+image:
+  repository: cogitator/dashboard
+  pullPolicy: IfNotPresent
+  tag: ""  # Defaults to chart appVersion
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 3000
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # kubernetes.io/tls-acme: "true"
+  hosts:
+    - host: cogitator.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: cogitator-tls
+  #    hosts:
+  #      - cogitator.local
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Health check probes
+probes:
+  liveness:
+    enabled: true
+    path: /api/health/live
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    path: /api/health/ready
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  # Optional startup probe for slow-starting containers
+  startup:
+    enabled: false
+    path: /api/health/ready
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 30
+
+# Cogitator configuration
+config:
+  # Node environment
+  nodeEnv: production
+
+  # Log level: debug, info, warn, error
+  logLevel: info
+
+  # Enable debug mode
+  debug: false
+
+# Secrets configuration
+secrets:
+  # JWT secret for authentication (will be auto-generated if not provided)
+  jwtSecret: ""
+
+  # Encryption key for API keys (will be auto-generated if not provided)
+  encryptionKey: ""
+
+  # LLM API keys (optional)
+  openaiApiKey: ""
+  anthropicApiKey: ""
+  googleApiKey: ""
+
+# Database configuration
+database:
+  # Use external database
+  external: false
+
+  # External database connection string
+  connectionString: ""
+
+  # Connection pool settings
+  poolMin: 2
+  poolMax: 10
+
+# Redis configuration
+redis:
+  # Enable built-in Redis
+  enabled: true
+
+  # Use external Redis
+  external: false
+
+  # External Redis URL
+  url: ""
+
+  # Redis Cluster mode
+  cluster:
+    enabled: false
+    nodes: []
+    # Example cluster nodes:
+    # - host: redis-0.redis.svc.cluster.local
+    #   port: 6379
+    # - host: redis-1.redis.svc.cluster.local
+    #   port: 6379
+    # - host: redis-2.redis.svc.cluster.local
+    #   port: 6379
+
+  # Bitnami Redis chart configuration
+  architecture: standalone
+  auth:
+    enabled: true
+    password: ""  # Will be auto-generated if not provided
+
+# Worker configuration (BullMQ job processor)
+worker:
+  # Enable worker deployment
+  enabled: false
+
+  # Number of worker replicas
+  replicas: 2
+
+  # Concurrent jobs per worker
+  concurrency: 5
+
+  image:
+    repository: cogitator/worker
+    pullPolicy: IfNotPresent
+    tag: ""  # Defaults to chart appVersion
+
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+
+  # Worker HPA configuration
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 20
+    # Scale based on queue depth metric
+    targetQueueDepth: 10  # Jobs per worker
+
+  # Grace period for shutdown (wait for jobs to complete)
+  terminationGracePeriodSeconds: 60
+
+  # Health probes
+  probes:
+    liveness:
+      path: /health/live
+      port: 9090
+      initialDelaySeconds: 10
+      periodSeconds: 10
+    readiness:
+      path: /health/ready
+      port: 9090
+      initialDelaySeconds: 5
+      periodSeconds: 5
+
+  # Prometheus metrics
+  metrics:
+    enabled: true
+    port: 9090
+    path: /metrics
+
+# PostgreSQL configuration
+postgresql:
+  # Enable built-in PostgreSQL
+  enabled: true
+
+  # Bitnami PostgreSQL chart configuration
+  auth:
+    username: cogitator
+    password: ""  # Will be auto-generated if not provided
+    database: cogitator
+
+  primary:
+    persistence:
+      enabled: true
+      size: 8Gi
+
+# Ollama configuration (for local LLM)
+ollama:
+  # Enable Ollama sidecar
+  enabled: false
+
+  # Use external Ollama
+  external: false
+
+  # External Ollama URL
+  url: "http://localhost:11434"
+
+  # Ollama image
+  image:
+    repository: ollama/ollama
+    tag: latest
+
+  # Resources for Ollama container
+  resources:
+    limits:
+      cpu: 4000m
+      memory: 8Gi
+    requests:
+      cpu: 1000m
+      memory: 4Gi
+
+  # GPU support
+  gpu:
+    enabled: false
+    count: 1
+
+# Persistence for data
+persistence:
+  enabled: false
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi

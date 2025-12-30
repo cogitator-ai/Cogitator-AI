@@ -89,9 +89,23 @@ export interface InMemoryAdapterConfig extends MemoryAdapterConfig {
 
 export interface RedisAdapterConfig extends MemoryAdapterConfig {
   provider: 'redis';
-  url: string;
+  /** Redis URL for standalone mode (e.g., redis://localhost:6379) */
+  url?: string;
+  /** Host for standalone mode (alternative to url) */
+  host?: string;
+  /** Port for standalone mode (alternative to url) */
+  port?: number;
+  /** Cluster nodes for Redis Cluster mode */
+  cluster?: {
+    nodes: Array<{ host: string; port: number }>;
+    scaleReads?: 'master' | 'slave' | 'all';
+  };
+  /** Key prefix (default: 'cogitator:' or '{cogitator}:' for cluster) */
   keyPrefix?: string;
+  /** TTL in seconds (default: 86400 = 24 hours) */
   ttl?: number;
+  /** Password for authentication */
+  password?: string;
 }
 
 export interface PostgresAdapterConfig extends MemoryAdapterConfig {

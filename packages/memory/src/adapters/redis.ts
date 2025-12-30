@@ -3,6 +3,7 @@
  *
  * Uses Redis sorted sets for ordered message retrieval.
  * Supports TTL for automatic expiration.
+ * Supports both standalone Redis and Redis Cluster modes via @cogitator/redis.
  */
 
 import type {
@@ -13,26 +14,8 @@ import type {
   RedisAdapterConfig,
   MemoryProvider,
 } from '@cogitator/types';
+import { createRedisClient, type RedisClient } from '@cogitator/redis';
 import { BaseMemoryAdapter } from './base.js';
-
-type RedisClient = {
-  ping(): Promise<string>;
-  quit(): Promise<string>;
-  get(key: string): Promise<string | null>;
-  setex(key: string, seconds: number, value: string): Promise<string>;
-  del(...keys: string[]): Promise<number>;
-  expire(key: string, seconds: number): Promise<number>;
-  zadd(key: string, score: number, member: string): Promise<number>;
-  zrange(key: string, start: number, stop: number): Promise<string[]>;
-  zrangebyscore(
-    key: string,
-    min: number | string,
-    max: number | string
-  ): Promise<string[]>;
-  zrem(key: string, ...members: string[]): Promise<number>;
-  smembers(key: string): Promise<string[]>;
-  mget(...keys: string[]): Promise<(string | null)[]>;
-};
 
 export class RedisAdapter extends BaseMemoryAdapter {
   readonly provider: MemoryProvider = 'redis';
@@ -45,18 +28,32 @@ export class RedisAdapter extends BaseMemoryAdapter {
   constructor(config: RedisAdapterConfig) {
     super();
     this.config = config;
-    this.prefix = config.keyPrefix ?? 'cogitator:';
+    // Use hash tag prefix for cluster mode to ensure keys route to same slot
+    this.prefix = config.keyPrefix ?? (config.cluster ? '{cogitator}:' : 'cogitator:');
     this.ttl = config.ttl ?? 86400; // 24 hours default
   }
 
   async connect(): Promise<MemoryResult<void>> {
     try {
-      const ioredis = await import('ioredis');
-      // Handle both ESM default export and CommonJS module.exports
-      const RedisClass = (ioredis.default ?? ioredis) as unknown as new (
-        url: string
-      ) => RedisClient;
-      this.client = new RedisClass(this.config.url);
+      // Build Redis config based on standalone or cluster mode
+      // Note: We don't use keyPrefix at client level since key() method handles it
+      if (this.config.cluster) {
+        this.client = await createRedisClient({
+          mode: 'cluster',
+          nodes: this.config.cluster.nodes,
+          scaleReads: this.config.cluster.scaleReads,
+          password: this.config.password,
+        });
+      } else {
+        this.client = await createRedisClient({
+          mode: 'standalone',
+          url: this.config.url,
+          host: this.config.host,
+          port: this.config.port,
+          password: this.config.password,
+        });
+      }
+
       await this.client.ping();
       return this.success(undefined);
     } catch (error) {

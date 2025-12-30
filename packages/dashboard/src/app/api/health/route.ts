@@ -39,7 +39,7 @@ export async function GET() {
 
   // Check Redis
   try {
-    const redis = getRedis();
+    const redis = await getRedis();
     const start = Date.now();
     await redis.ping();
     health.services.redis = {

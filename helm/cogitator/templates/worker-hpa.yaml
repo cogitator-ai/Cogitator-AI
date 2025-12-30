@@ -1,0 +1,47 @@
+{{- if and .Values.worker.enabled .Values.worker.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "cogitator.fullname" . }}-worker
+  labels:
+    {{- include "cogitator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "cogitator.fullname" . }}-worker
+  minReplicas: {{ .Values.worker.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.worker.autoscaling.maxReplicas }}
+  metrics:
+    # Scale based on queue depth (external metric from Prometheus)
+    # Requires Prometheus Adapter or KEDA
+    - type: External
+      external:
+        metric:
+          name: cogitator_queue_depth
+          selector:
+            matchLabels:
+              queue: cogitator-jobs
+        target:
+          type: AverageValue
+          averageValue: "{{ .Values.worker.autoscaling.targetQueueDepth }}"
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 4
+          periodSeconds: 60
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 120
+      selectPolicy: Min
+{{- end }}

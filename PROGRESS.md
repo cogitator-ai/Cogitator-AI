@@ -1,5 +1,69 @@
 # Cogitator Development Progress
 
+## Session: 2025-12-30 (Month 8: Horizontal Scaling)
+
+### ✅ Completed
+
+1. **@cogitator/redis Package** (`packages/redis/`)
+   - New package for unified Redis client (standalone + cluster modes)
+   - `createRedisClient()` factory function
+   - `createConfigFromEnv()` for environment-based configuration
+   - `detectRedisMode()` for auto-detection
+   - `parseClusterNodesEnv()` for REDIS_CLUSTER_NODES parsing
+   - Full RedisClient interface with all operations
+
+2. **Memory Adapter Update** (`packages/memory/`)
+   - Updated `RedisAdapter` to use `@cogitator/redis`
+   - Added cluster mode support via `config.cluster.nodes`
+   - Backwards compatible with standalone mode
+
+3. **Dashboard Redis Integration** (`packages/dashboard/`)
+   - Updated `src/lib/redis.ts` to use `@cogitator/redis`
+   - Async initialization with singleton pattern
+   - Cluster support via REDIS_CLUSTER_NODES env var
+
+4. **@cogitator/worker Package** (`packages/worker/`)
+   - New package for distributed job processing with BullMQ
+   - `JobQueue` class for adding jobs (agent, workflow, swarm)
+   - `WorkerPool` class for processing jobs
+   - Job processors for agent, workflow, and swarm execution
+   - `MetricsCollector` with Prometheus exposition format
+   - `formatPrometheusMetrics()` for HPA integration
+
+5. **Helm Chart Updates** (`helm/cogitator/`)
+   - Added `worker` configuration in values.yaml
+   - Added `redis.cluster` configuration
+   - Created `worker-deployment.yaml` template
+   - Created `worker-hpa.yaml` with queue-based scaling
+   - Created `worker-service.yaml` for metrics endpoint
+
+### 📦 New Packages
+
+| Package | Description |
+|---------|-------------|
+| `@cogitator/redis` | Unified Redis client (standalone + cluster) |
+| `@cogitator/worker` | BullMQ distributed job queue |
+
+### 🔧 Key Environment Variables
+
+- `REDIS_URL` - Standalone Redis URL
+- `REDIS_HOST`, `REDIS_PORT` - Alternative to URL
+- `REDIS_CLUSTER_NODES` - JSON array for cluster mode
+- `REDIS_PASSWORD` - Authentication
+- `REDIS_KEY_PREFIX` - Key prefix (auto-uses `{cogitator}:` for cluster)
+- `WORKER_CONCURRENCY` - Jobs per worker
+
+### 📊 Prometheus Metrics
+
+- `cogitator_queue_depth` - Total waiting + delayed jobs (HPA target)
+- `cogitator_queue_waiting` - Jobs waiting
+- `cogitator_queue_active` - Jobs processing
+- `cogitator_queue_completed_total` - Completed jobs counter
+- `cogitator_queue_failed_total` - Failed jobs counter
+- `cogitator_workers_total` - Active workers
+
+---
+
 ## Session: 2025-12-30 (Full Dashboard Integration with Cogitator Runtime)
 
 ### ✅ Completed

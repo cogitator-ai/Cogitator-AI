@@ -1,0 +1,25 @@
+apiVersion: v2
+name: cogitator
+description: A Helm chart for Cogitator - Self-hosted AI agent runtime
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - ai
+  - llm
+  - agents
+  - orchestration
+home: https://github.com/eL1Fe/cogitator
+sources:
+  - https://github.com/eL1Fe/cogitator
+maintainers:
+  - name: Cogitator Team
+dependencies:
+  - name: redis
+    version: "18.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled
+  - name: postgresql
+    version: "13.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
