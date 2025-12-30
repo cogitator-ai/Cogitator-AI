@@ -4,8 +4,8 @@
  * Creates unified Redis clients that work in both standalone and cluster modes.
  */
 
-import type { RedisConfig, RedisClient, RedisClusterConfig, RedisStandaloneConfig } from './types.js';
-import { isClusterConfig } from './types.js';
+import type { RedisConfig, RedisClient, RedisClusterConfig, RedisStandaloneConfig } from './types';
+import { isClusterConfig } from './types';
 
 interface RawRedisClient {
   ping(): Promise<string>;

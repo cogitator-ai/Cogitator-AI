@@ -1,3 +1,3 @@
-export * from './retry.js';
-export * from './circuit-breaker.js';
-export * from './fallback.js';
+export * from './retry';
+export * from './circuit-breaker';
+export * from './fallback';

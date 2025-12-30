@@ -4,42 +4,42 @@
  * DAG-based workflow engine for Cogitator agents
  */
 
-export { WorkflowBuilder } from './builder.js';
+export { WorkflowBuilder } from './builder';
 
-export { WorkflowExecutor } from './executor.js';
+export { WorkflowExecutor } from './executor';
 
-export { WorkflowScheduler } from './scheduler.js';
+export { WorkflowScheduler } from './scheduler';
 
 export {
   InMemoryCheckpointStore,
   FileCheckpointStore,
   createCheckpointId,
-} from './checkpoint.js';
+} from './checkpoint';
 
 export {
   agentNode,
   toolNode,
   functionNode,
   customNode,
-} from './nodes/index.js';
+} from './nodes/index';
 
 export type {
   AgentNodeOptions,
-} from './nodes/agent.js';
+} from './nodes/agent';
 
 export type {
   ToolNodeOptions,
-} from './nodes/tool.js';
+} from './nodes/tool';
 
 export type {
   SimpleNodeFn,
   FullNodeFn,
   FunctionNodeOptions,
-} from './nodes/function.js';
+} from './nodes/function';
 
 export type {
   ExtendedNodeContext,
-} from './nodes/base.js';
+} from './nodes/base';
 
 export {
   WorkflowTracer,
@@ -56,12 +56,12 @@ export {
   CompositeSpanExporter,
   NoopSpanExporter,
   createSpanExporter,
-} from './observability/index.js';
+} from './observability/index';
 
 export type {
   SpanExporterInstance,
   ExporterConfig,
-} from './observability/index.js';
+} from './observability/index';
 
 export {
   executeWithRetry,
@@ -91,7 +91,7 @@ export {
   generateCustomKey,
   idempotent,
   Idempotent,
-} from './saga/index.js';
+} from './saga/index';
 
 export type {
   RetryResult,
@@ -107,7 +107,7 @@ export type {
   ExtendedDeadLetterEntry,
   DLQFilters,
   IdempotencyCheckResult,
-} from './saga/index.js';
+} from './saga/index';
 
 export {
   InMemoryTimerStore,
@@ -143,7 +143,7 @@ export {
   createTimerManager,
   RecurringTimerScheduler,
   createRecurringScheduler,
-} from './timers/index.js';
+} from './timers/index';
 
 export type {
   TimerQueryOptions,
@@ -161,7 +161,7 @@ export type {
   TimerHandler,
   TimerManagerConfig,
   TimerManagerStats,
-} from './timers/index.js';
+} from './timers/index';
 
 export {
   executeMap,
@@ -182,7 +182,7 @@ export {
   partition,
   flatMap,
   stats,
-} from './patterns/index.js';
+} from './patterns/index';
 
 export type {
   MapItemResult,
@@ -191,7 +191,7 @@ export type {
   ReduceNodeConfig,
   MapReduceResult,
   MapReduceNodeConfig,
-} from './patterns/index.js';
+} from './patterns/index';
 
 export {
   executeSubworkflow,
@@ -206,7 +206,7 @@ export {
   scatterGather,
   raceSubworkflows,
   fallbackSubworkflows,
-} from './subworkflows/index.js';
+} from './subworkflows/index';
 
 export type {
   SubworkflowErrorStrategy,
@@ -218,7 +218,7 @@ export type {
   ParallelSubworkflowsConfig,
   ParallelProgress,
   ParallelSubworkflowsResult,
-} from './subworkflows/index.js';
+} from './subworkflows/index';
 
 export {
   InMemoryApprovalStore,
@@ -239,12 +239,12 @@ export {
   ratingNode,
   chainNode,
   managementChain,
-} from './human/index.js';
+} from './human/index';
 
 export type {
   HumanNodeContext,
   HumanNodeResult,
-} from './human/index.js';
+} from './human/index';
 
 export {
   InMemoryRunStore,
@@ -256,14 +256,14 @@ export {
   createJobScheduler,
   DefaultWorkflowManager,
   createWorkflowManager,
-} from './manager/index.js';
+} from './manager/index';
 
 export type {
   QueueItem,
   SchedulerConfig,
   CronJob,
   WorkflowManagerConfig,
-} from './manager/index.js';
+} from './manager/index';
 
 export {
   TokenBucket,
@@ -286,7 +286,7 @@ export {
   cronTrigger,
   webhookTrigger,
   eventTrigger,
-} from './triggers/index.js';
+} from './triggers/index';
 
 export type {
   TokenBucketConfig,
@@ -300,7 +300,7 @@ export type {
   TriggerStore,
   TriggerEventEmitter,
   TriggerManagerConfig,
-} from './triggers/index.js';
+} from './triggers/index';
 
 export type {
   Workflow,

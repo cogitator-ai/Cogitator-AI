@@ -10,23 +10,23 @@ export {
   SlidingWindowRateLimiter,
   createRateLimiter,
   createSlidingWindowLimiter,
-} from './rate-limiter.js';
+} from './rate-limiter';
 
 export type {
   TokenBucketConfig,
   RateLimitResult,
-} from './rate-limiter.js';
+} from './rate-limiter';
 
 export {
   CronTriggerExecutor,
   createCronTrigger,
   validateCronTriggerConfig,
-} from './cron-trigger.js';
+} from './cron-trigger';
 
 export type {
   CronTriggerState,
   CronTriggerResult,
-} from './cron-trigger.js';
+} from './cron-trigger';
 
 export {
   WebhookTriggerExecutor,
@@ -34,14 +34,14 @@ export {
   WebhookRateLimitError,
   createWebhookTrigger,
   validateWebhookTriggerConfig,
-} from './webhook-trigger.js';
+} from './webhook-trigger';
 
 export type {
   WebhookRequest,
   WebhookResponse,
   WebhookTriggerState,
   WebhookHandlerResult,
-} from './webhook-trigger.js';
+} from './webhook-trigger';
 
 export {
   InMemoryTriggerStore,
@@ -51,10 +51,10 @@ export {
   cronTrigger,
   webhookTrigger,
   eventTrigger,
-} from './trigger-manager.js';
+} from './trigger-manager';
 
 export type {
   TriggerStore,
   TriggerEventEmitter,
   TriggerManagerConfig,
-} from './trigger-manager.js';
+} from './trigger-manager';

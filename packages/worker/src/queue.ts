@@ -20,7 +20,7 @@ import type {
   SerializedAgent,
   SerializedWorkflow,
   SerializedSwarm,
-} from './types.js';
+} from './types';
 
 const DEFAULT_QUEUE_NAME = 'cogitator-jobs';
 

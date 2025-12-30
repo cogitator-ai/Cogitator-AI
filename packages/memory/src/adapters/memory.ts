@@ -10,7 +10,7 @@ import type {
   InMemoryAdapterConfig,
   MemoryProvider,
 } from '@cogitator/types';
-import { BaseMemoryAdapter } from './base.js';
+import { BaseMemoryAdapter } from './base';
 
 export class InMemoryAdapter extends BaseMemoryAdapter {
   readonly provider: MemoryProvider = 'memory';

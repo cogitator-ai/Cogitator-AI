@@ -1,7 +1,7 @@
-import type { ModelInfo, ModelFilter, RegistryOptions, ProviderInfo } from './types.js';
-import { ModelCache } from './cache.js';
-import { fetchLiteLLMData, transformLiteLLMData } from './fetcher.js';
-import { BUILTIN_MODELS, BUILTIN_PROVIDERS } from './providers/index.js';
+import type { ModelInfo, ModelFilter, RegistryOptions, ProviderInfo } from './types';
+import { ModelCache } from './cache';
+import { fetchLiteLLMData, transformLiteLLMData } from './fetcher';
+import { BUILTIN_MODELS, BUILTIN_PROVIDERS } from './providers/index';
 
 export class ModelRegistry {
   private models = new Map<string, ModelInfo>();

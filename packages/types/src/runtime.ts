@@ -2,10 +2,10 @@
  * Runtime types for Cogitator
  */
 
-import type { Message, ToolCall, ToolResult } from './message.js';
-import type { LLMProvider } from './llm.js';
-import type { MemoryConfig } from './memory.js';
-import type { SandboxManagerConfig } from './sandbox.js';
+import type { Message, ToolCall, ToolResult } from './message';
+import type { LLMProvider } from './llm';
+import type { MemoryConfig } from './memory';
+import type { SandboxManagerConfig } from './sandbox';
 
 export interface CogitatorConfig {
   llm?: {

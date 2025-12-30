@@ -15,8 +15,8 @@ import type {
   Blackboard,
   IStrategy,
 } from '@cogitator/types';
-import { SwarmCoordinator } from './coordinator.js';
-import { createStrategy } from './strategies/index.js';
+import { SwarmCoordinator } from './coordinator';
+import { createStrategy } from './strategies/index';
 
 export class Swarm {
   private config: SwarmConfig;

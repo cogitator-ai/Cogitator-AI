@@ -44,7 +44,7 @@ export {
   detectRedisMode,
   parseClusterNodesEnv,
   createConfigFromEnv,
-} from './factory.js';
+} from './factory';
 
 export {
   isClusterConfig,
@@ -56,4 +56,4 @@ export {
   type RedisConfig,
   type RedisClient,
   type QueueMetrics,
-} from './types.js';
+} from './types';

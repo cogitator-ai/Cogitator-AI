@@ -10,7 +10,7 @@ import type {
   ToolCall,
   Message,
 } from '@cogitator/types';
-import { BaseLLMBackend } from './base.js';
+import { BaseLLMBackend } from './base';
 
 interface OpenAIConfig {
   apiKey: string;

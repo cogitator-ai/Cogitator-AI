@@ -4,15 +4,15 @@
  * Docker-based sandbox execution for Cogitator agents
  */
 
-export { SandboxManager } from './sandbox-manager.js';
+export { SandboxManager } from './sandbox-manager';
 export {
   BaseSandboxExecutor,
   NativeSandboxExecutor,
   DockerSandboxExecutor,
   type DockerExecutorOptions,
-} from './executors/index.js';
-export { ContainerPool, type ContainerPoolOptions, type ContainerCreateOptions } from './pool/index.js';
-export { parseMemory, cpusToNanoCpus } from './utils/index.js';
+} from './executors/index';
+export { ContainerPool, type ContainerPoolOptions, type ContainerCreateOptions } from './pool/index';
+export { parseMemory, cpusToNanoCpus } from './utils/index';
 
 export type {
   SandboxType,

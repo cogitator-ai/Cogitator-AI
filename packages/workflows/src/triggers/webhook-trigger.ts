@@ -13,7 +13,7 @@ import type {
   TriggerContext,
   WorkflowTrigger,
 } from '@cogitator/types';
-import { type RateLimiter, createRateLimiter } from './rate-limiter.js';
+import { type RateLimiter, createRateLimiter } from './rate-limiter';
 
 /**
  * Incoming webhook request

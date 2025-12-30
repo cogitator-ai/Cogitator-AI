@@ -10,7 +10,7 @@ import type {
   SandboxDockerConfig,
   SandboxPoolConfig,
 } from '@cogitator/types';
-import { BaseSandboxExecutor } from './base.js';
+import { BaseSandboxExecutor } from './base';
 import { ContainerPool } from '../pool/container-pool.js';
 import { parseMemory } from '../utils/parse-resources.js';
 import type { Docker, DockerExec } from '../docker-types.js';

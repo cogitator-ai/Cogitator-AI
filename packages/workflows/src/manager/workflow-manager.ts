@@ -26,8 +26,8 @@ import type {
 } from '@cogitator/types';
 import type { Cogitator } from '@cogitator/core';
 import { WorkflowExecutor } from '../executor.js';
-import { type JobScheduler, createJobScheduler } from './scheduler.js';
-import { InMemoryRunStore } from './run-store.js';
+import { type JobScheduler, createJobScheduler } from './scheduler';
+import { InMemoryRunStore } from './run-store';
 
 /**
  * Workflow manager configuration

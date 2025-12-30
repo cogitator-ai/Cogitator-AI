@@ -2,8 +2,8 @@
  * LLM Backend types
  */
 
-import type { Message, ToolCall } from './message.js';
-import type { ToolSchema } from './tool.js';
+import type { Message, ToolCall } from './message';
+import type { ToolSchema } from './tool';
 
 export type LLMProvider = 'ollama' | 'openai' | 'anthropic' | 'google' | 'vllm';
 

@@ -1,3 +1,3 @@
-export { processAgentJob } from './agent.js';
-export { processWorkflowJob } from './workflow.js';
-export { processSwarmJob } from './swarm.js';
+export { processAgentJob } from './agent';
+export { processWorkflowJob } from './workflow';
+export { processSwarmJob } from './swarm';

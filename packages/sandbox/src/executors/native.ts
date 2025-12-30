@@ -11,7 +11,7 @@ import type {
   SandboxExecutionResult,
   SandboxResult,
 } from '@cogitator/types';
-import { BaseSandboxExecutor } from './base.js';
+import { BaseSandboxExecutor } from './base';
 
 const execPromise = promisify(execCallback);
 

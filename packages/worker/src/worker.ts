@@ -11,10 +11,10 @@ import type {
   JobPayload,
   JobResult,
   QueueMetrics,
-} from './types.js';
-import { processAgentJob } from './processors/agent.js';
-import { processWorkflowJob } from './processors/workflow.js';
-import { processSwarmJob } from './processors/swarm.js';
+} from './types';
+import { processAgentJob } from './processors/agent';
+import { processWorkflowJob } from './processors/workflow';
+import { processSwarmJob } from './processors/swarm';
 
 const DEFAULT_QUEUE_NAME = 'cogitator-jobs';
 

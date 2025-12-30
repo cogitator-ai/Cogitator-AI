@@ -2,7 +2,7 @@
  * Agent types
  */
 
-import type { Tool } from './tool.js';
+import type { Tool } from './tool';
 import type { ZodType } from 'zod';
 
 export interface AgentConfig {

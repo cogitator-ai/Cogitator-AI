@@ -7,7 +7,7 @@
 
 import { type Cogitator, Agent } from '@cogitator/core';
 import type { Tool } from '@cogitator/types';
-import { ThreadManager, type StoredAssistant } from './thread-manager.js';
+import { ThreadManager, type StoredAssistant } from './thread-manager';
 import { nanoid } from 'nanoid';
 import type {
   Assistant,

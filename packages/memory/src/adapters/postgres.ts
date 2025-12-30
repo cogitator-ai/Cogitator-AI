@@ -20,7 +20,7 @@ import type {
   FactAdapter,
   EmbeddingAdapter,
 } from '@cogitator/types';
-import { BaseMemoryAdapter } from './base.js';
+import { BaseMemoryAdapter } from './base';
 
 type Pool = {
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;

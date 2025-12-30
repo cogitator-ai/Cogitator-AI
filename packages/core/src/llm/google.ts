@@ -16,7 +16,7 @@ import type {
   Message,
   ToolSchema,
 } from '@cogitator/types';
-import { BaseLLMBackend } from './base.js';
+import { BaseLLMBackend } from './base';
 
 interface GoogleConfig {
   apiKey: string;

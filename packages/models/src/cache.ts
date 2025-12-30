@@ -1,4 +1,4 @@
-import type { ModelInfo, CacheOptions } from './types.js';
+import type { ModelInfo, CacheOptions } from './types';
 import { writeFile, readFile, mkdir } from 'fs/promises';
 import { dirname, join } from 'path';
 import { homedir } from 'os';

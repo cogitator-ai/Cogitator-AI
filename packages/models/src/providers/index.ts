@@ -1,11 +1,11 @@
 import type { ModelInfo } from '../types.js';
-import { OPENAI_MODELS } from './openai.js';
-import { ANTHROPIC_MODELS } from './anthropic.js';
-import { GOOGLE_MODELS } from './google.js';
+import { OPENAI_MODELS } from './openai';
+import { ANTHROPIC_MODELS } from './anthropic';
+import { GOOGLE_MODELS } from './google';
 
-export { OPENAI_MODELS } from './openai.js';
-export { ANTHROPIC_MODELS } from './anthropic.js';
-export { GOOGLE_MODELS } from './google.js';
+export { OPENAI_MODELS } from './openai';
+export { ANTHROPIC_MODELS } from './anthropic';
+export { GOOGLE_MODELS } from './google';
 
 export const BUILTIN_MODELS: ModelInfo[] = [
   ...OPENAI_MODELS,

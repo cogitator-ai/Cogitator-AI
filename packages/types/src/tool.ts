@@ -3,7 +3,7 @@
  */
 
 import type { ZodType } from 'zod';
-import type { SandboxConfig } from './sandbox.js';
+import type { SandboxConfig } from './sandbox';
 
 export interface ToolConfig<TParams = unknown, TResult = unknown> {
   name: string;

@@ -4,7 +4,7 @@
  * Configuration loading for Cogitator (YAML, env)
  */
 
-export { loadConfig, defineConfig, type LoadConfigOptions } from './config.js';
+export { loadConfig, defineConfig, type LoadConfigOptions } from './config';
 export {
   CogitatorConfigSchema,
   LLMConfigSchema,
@@ -13,6 +13,6 @@ export {
   LLMProviderSchema,
   type CogitatorConfigInput,
   type CogitatorConfigOutput,
-} from './schema.js';
-export { loadYamlConfig } from './loaders/yaml.js';
-export { loadEnvConfig } from './loaders/env.js';
+} from './schema';
+export { loadYamlConfig } from './loaders/yaml';
+export { loadEnvConfig } from './loaders/env';

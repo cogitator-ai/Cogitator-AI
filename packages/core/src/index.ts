@@ -4,15 +4,15 @@
  * Core runtime for Cogitator AI agents
  */
 
-export { Cogitator } from './cogitator.js';
-export { Agent } from './agent.js';
-export { tool, toolToSchema } from './tool.js';
-export { ToolRegistry } from './registry.js';
+export { Cogitator } from './cogitator';
+export { Agent } from './agent';
+export { tool, toolToSchema } from './tool';
+export { ToolRegistry } from './registry';
 
-export { calculator, datetime, builtinTools } from './tools/index.js';
+export { calculator, datetime, builtinTools } from './tools/index';
 
-export { Logger, getLogger, setLogger, createLogger } from './logger.js';
-export type { LogLevel, LogContext, LogEntry, LoggerOptions } from './logger.js';
+export { Logger, getLogger, setLogger, createLogger } from './logger';
+export type { LogLevel, LogContext, LogEntry, LoggerOptions } from './logger';
 
 export {
   BaseLLMBackend,
@@ -21,7 +21,7 @@ export {
   AnthropicBackend,
   createLLMBackend,
   parseModel,
-} from './llm/index.js';
+} from './llm/index';
 
 export {
   withRetry,
@@ -31,7 +31,7 @@ export {
   withFallback,
   withGracefulDegradation,
   createLLMFallbackExecutor,
-} from './utils/index.js';
+} from './utils/index';
 export type {
   RetryOptions,
   CircuitBreakerOptions,
@@ -39,7 +39,7 @@ export type {
   CircuitState,
   FallbackConfig,
   LLMFallbackConfig,
-} from './utils/index.js';
+} from './utils/index';
 
 export {
   CogitatorError,

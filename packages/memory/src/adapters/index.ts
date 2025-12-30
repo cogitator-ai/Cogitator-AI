@@ -8,10 +8,10 @@ import type {
   RedisAdapterConfig,
   PostgresAdapterConfig,
 } from '@cogitator/types';
-import { InMemoryAdapter } from './memory.js';
+import { InMemoryAdapter } from './memory';
 
-export { BaseMemoryAdapter } from './base.js';
-export { InMemoryAdapter } from './memory.js';
+export { BaseMemoryAdapter } from './base';
+export { InMemoryAdapter } from './memory';
 
 export type MemoryAdapterConfigUnion =
   | InMemoryAdapterConfig

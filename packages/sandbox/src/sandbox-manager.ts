@@ -10,10 +10,10 @@ import type {
   SandboxResult,
   SandboxType,
 } from '@cogitator/types';
-import { type BaseSandboxExecutor } from './executors/base.js';
-import { DockerSandboxExecutor } from './executors/docker.js';
-import { NativeSandboxExecutor } from './executors/native.js';
-import { WasmSandboxExecutor } from './executors/wasm.js';
+import { type BaseSandboxExecutor } from './executors/base';
+import { DockerSandboxExecutor } from './executors/docker';
+import { NativeSandboxExecutor } from './executors/native';
+import { WasmSandboxExecutor } from './executors/wasm';
 
 export class SandboxManager {
   private executors = new Map<SandboxType, BaseSandboxExecutor>();

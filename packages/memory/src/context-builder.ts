@@ -16,7 +16,7 @@ import type {
   EmbeddingAdapter,
   EmbeddingService,
 } from '@cogitator/types';
-import { countMessageTokens, countTokens } from './token-counter.js';
+import { countMessageTokens, countTokens } from './token-counter';
 
 export interface ContextBuilderDeps {
   memoryAdapter: MemoryAdapter;

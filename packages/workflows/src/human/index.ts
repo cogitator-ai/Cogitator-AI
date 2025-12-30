@@ -16,7 +16,7 @@ export {
   InMemoryApprovalStore,
   FileApprovalStore,
   withDelegation,
-} from './approval-store.js';
+} from './approval-store';
 
 export {
   ConsoleNotifier,
@@ -26,7 +26,7 @@ export {
   filteredNotifier,
   priorityRouter,
   nullNotifier,
-} from './notifiers.js';
+} from './notifiers';
 
 export {
   type HumanNodeContext,
@@ -39,4 +39,4 @@ export {
   ratingNode,
   chainNode,
   managementChain,
-} from './human-node.js';
+} from './human-node';

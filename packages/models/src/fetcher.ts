@@ -1,4 +1,4 @@
-import type { LiteLLMModelData, LiteLLMModelEntry, ModelInfo, ModelPricing } from './types.js';
+import type { LiteLLMModelData, LiteLLMModelEntry, ModelInfo, ModelPricing } from './types';
 
 const LITELLM_URL =
   'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';

@@ -10,7 +10,7 @@ import type {
   SwarmMessage,
   SwarmAgent,
 } from '@cogitator/types';
-import { BaseStrategy } from './base.js';
+import { BaseStrategy } from './base';
 import type { SwarmCoordinator } from '../coordinator.js';
 
 interface Vote {

@@ -16,14 +16,14 @@ export {
   createTracer,
   getGlobalTracer,
   setGlobalTracer,
-} from './tracer.js';
+} from './tracer';
 
 export {
   WorkflowMetricsCollector,
   createMetricsCollector,
   getGlobalMetrics,
   setGlobalMetrics,
-} from './metrics.js';
+} from './metrics';
 
 export {
   type SpanExporterInstance,
@@ -34,7 +34,7 @@ export {
   CompositeSpanExporter,
   NoopSpanExporter,
   createSpanExporter,
-} from './exporters.js';
+} from './exporters';
 
 export {
   TRACE_PARENT_HEADER,
@@ -121,4 +121,4 @@ export {
   toolSpanAttributes,
   errorSpanAttributes,
   retrySpanAttributes,
-} from './span-attributes.js';
+} from './span-attributes';

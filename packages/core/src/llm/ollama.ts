@@ -9,7 +9,7 @@ import type {
   ToolCall,
   Message,
 } from '@cogitator/types';
-import { BaseLLMBackend } from './base.js';
+import { BaseLLMBackend } from './base';
 
 interface OllamaConfig {
   baseUrl: string;

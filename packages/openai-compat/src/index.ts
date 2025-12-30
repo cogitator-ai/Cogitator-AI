@@ -6,10 +6,10 @@
  * - REST API server: Expose Cogitator as OpenAI-compatible API
  */
 
-export { OpenAIServer, createOpenAIServer } from './server/api-server.js';
+export { OpenAIServer, createOpenAIServer } from './server/api-server';
 
-export { OpenAIAdapter, createOpenAIAdapter } from './client/openai-adapter.js';
-export { ThreadManager } from './client/thread-manager.js';
+export { OpenAIAdapter, createOpenAIAdapter } from './client/openai-adapter';
+export { ThreadManager } from './client/thread-manager';
 
 export type {
   OpenAIError,
@@ -49,4 +49,4 @@ export type {
   StreamEvent,
   MessageDelta,
   RunStepDelta,
-} from './types/openai-types.js';
+} from './types/openai-types';

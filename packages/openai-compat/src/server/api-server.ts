@@ -9,12 +9,12 @@ import fastifyCors from '@fastify/cors';
 import type { Cogitator } from '@cogitator/core';
 import type { Tool } from '@cogitator/types';
 import { OpenAIAdapter } from '../client/openai-adapter.js';
-import { createAuthMiddleware, type AuthConfig } from './middleware/auth.js';
-import { errorHandler, notFoundHandler } from './middleware/error-handler.js';
-import { registerAssistantRoutes } from './routes/assistants.js';
-import { registerThreadRoutes } from './routes/threads.js';
-import { registerRunRoutes } from './routes/runs.js';
-import { registerFileRoutes } from './routes/files.js';
+import { createAuthMiddleware, type AuthConfig } from './middleware/auth';
+import { errorHandler, notFoundHandler } from './middleware/error-handler';
+import { registerAssistantRoutes } from './routes/assistants';
+import { registerThreadRoutes } from './routes/threads';
+import { registerRunRoutes } from './routes/runs';
+import { registerFileRoutes } from './routes/files';
 
 export interface OpenAIServerConfig {
   /** Port to listen on */

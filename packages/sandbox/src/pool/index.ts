@@ -1,1 +1,1 @@
-export * from './container-pool.js';
+export * from './container-pool';

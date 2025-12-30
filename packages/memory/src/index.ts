@@ -9,25 +9,25 @@ export {
   InMemoryAdapter,
   createMemoryAdapter,
   type MemoryAdapterConfigUnion,
-} from './adapters/index.js';
+} from './adapters/index';
 
-export { RedisAdapter } from './adapters/redis.js';
-export { PostgresAdapter } from './adapters/postgres.js';
+export { RedisAdapter } from './adapters/redis';
+export { PostgresAdapter } from './adapters/postgres';
 
-export { ContextBuilder, type ContextBuilderDeps, type BuildContextOptions } from './context-builder.js';
+export { ContextBuilder, type ContextBuilderDeps, type BuildContextOptions } from './context-builder';
 
 export {
   countTokens,
   countMessageTokens,
   countMessagesTokens,
   truncateToTokens,
-} from './token-counter.js';
+} from './token-counter';
 
 export {
   OpenAIEmbeddingService,
   OllamaEmbeddingService,
   createEmbeddingService,
-} from './embedding/index.js';
+} from './embedding/index';
 
 export {
   MemoryProviderSchema,
@@ -41,7 +41,7 @@ export {
   OpenAIEmbeddingConfigSchema,
   OllamaEmbeddingConfigSchema,
   EmbeddingServiceConfigSchema,
-} from './schema.js';
+} from './schema';
 
 export type {
   MemoryType,

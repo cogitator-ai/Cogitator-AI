@@ -27,10 +27,10 @@ import {
   type ContextBuilderDeps,
 } from '@cogitator/memory';
 import { getPrice } from '@cogitator/models';
-import { type Agent } from './agent.js';
-import { ToolRegistry } from './registry.js';
-import { createLLMBackend, parseModel } from './llm/index.js';
-import { getLogger } from './logger.js';
+import { type Agent } from './agent';
+import { ToolRegistry } from './registry';
+import { createLLMBackend, parseModel } from './llm/index';
+import { getLogger } from './logger';
 
 type SandboxManager = {
   initialize(): Promise<void>;

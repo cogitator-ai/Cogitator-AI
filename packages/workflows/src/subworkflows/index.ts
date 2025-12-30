@@ -24,7 +24,7 @@ export {
   simpleSubworkflow,
   nestedSubworkflow,
   conditionalSubworkflow,
-} from './subworkflow-node.js';
+} from './subworkflow-node';
 
 export {
   type ParallelSubworkflowDef,
@@ -37,4 +37,4 @@ export {
   scatterGather,
   raceSubworkflows,
   fallbackSubworkflows,
-} from './parallel-subworkflows.js';
+} from './parallel-subworkflows';

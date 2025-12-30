@@ -15,20 +15,20 @@ import type {
 } from '@cogitator/types';
 import type { SwarmCoordinator } from '../coordinator.js';
 
-export { BaseStrategy } from './base.js';
-export { HierarchicalStrategy } from './hierarchical.js';
-export { RoundRobinStrategy } from './round-robin.js';
-export { ConsensusStrategy } from './consensus.js';
-export { AuctionStrategy } from './auction.js';
-export { PipelineStrategy } from './pipeline.js';
-export { DebateStrategy } from './debate.js';
+export { BaseStrategy } from './base';
+export { HierarchicalStrategy } from './hierarchical';
+export { RoundRobinStrategy } from './round-robin';
+export { ConsensusStrategy } from './consensus';
+export { AuctionStrategy } from './auction';
+export { PipelineStrategy } from './pipeline';
+export { DebateStrategy } from './debate';
 
-import { HierarchicalStrategy } from './hierarchical.js';
-import { RoundRobinStrategy } from './round-robin.js';
-import { ConsensusStrategy } from './consensus.js';
-import { AuctionStrategy } from './auction.js';
-import { PipelineStrategy } from './pipeline.js';
-import { DebateStrategy } from './debate.js';
+import { HierarchicalStrategy } from './hierarchical';
+import { RoundRobinStrategy } from './round-robin';
+import { ConsensusStrategy } from './consensus';
+import { AuctionStrategy } from './auction';
+import { PipelineStrategy } from './pipeline';
+import { DebateStrategy } from './debate';
 
 /**
  * Create a strategy instance based on configuration

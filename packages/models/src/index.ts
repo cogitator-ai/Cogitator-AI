@@ -6,7 +6,7 @@ export type {
   ProviderInfo,
   CacheOptions,
   RegistryOptions,
-} from './types.js';
+} from './types';
 
 export {
   ModelRegistry,
@@ -15,14 +15,14 @@ export {
   getPrice,
   getModel,
   listModels,
-} from './registry.js';
+} from './registry';
 
-export { ModelCache } from './cache.js';
+export { ModelCache } from './cache';
 
 export {
   fetchLiteLLMData,
   transformLiteLLMData,
-} from './fetcher.js';
+} from './fetcher';
 
 export {
   BUILTIN_MODELS,
@@ -30,4 +30,4 @@ export {
   OPENAI_MODELS,
   ANTHROPIC_MODELS,
   GOOGLE_MODELS,
-} from './providers/index.js';
+} from './providers/index';

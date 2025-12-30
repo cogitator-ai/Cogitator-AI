@@ -4,9 +4,9 @@
  */
 
 import { Command } from 'commander';
-import { initCommand } from './commands/init.js';
-import { upCommand, downCommand } from './commands/up.js';
-import { runCommand } from './commands/run.js';
+import { initCommand } from './commands/init';
+import { upCommand, downCommand } from './commands/up';
+import { runCommand } from './commands/run';
 
 const program = new Command()
   .name('cogitator')

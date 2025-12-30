@@ -2,7 +2,7 @@
  * Memory types for conversation persistence and retrieval
  */
 
-import type { Message, ToolCall, ToolResult } from './message.js';
+import type { Message, ToolCall, ToolResult } from './message';
 
 export type MemoryType = 'conversation' | 'fact' | 'embedding';
 

@@ -13,8 +13,8 @@ import type {
 } from '@cogitator/types';
 import type { Cogitator } from '@cogitator/core';
 import { nanoid } from 'nanoid';
-import { WorkflowScheduler } from './scheduler.js';
-import { InMemoryCheckpointStore, createCheckpointId } from './checkpoint.js';
+import { WorkflowScheduler } from './scheduler';
+import { InMemoryCheckpointStore, createCheckpointId } from './checkpoint';
 
 const DEFAULT_MAX_CONCURRENCY = 4;
 const DEFAULT_MAX_ITERATIONS = 100;

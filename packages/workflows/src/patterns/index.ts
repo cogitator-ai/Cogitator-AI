@@ -41,4 +41,4 @@ export {
   partition,
   flatMap,
   stats,
-} from './map-reduce.js';
+} from './map-reduce';

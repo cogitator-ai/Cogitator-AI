@@ -20,9 +20,9 @@ import {
   SwarmEventEmitterImpl,
   InMemoryMessageBus,
   InMemoryBlackboard,
-} from './communication/index.js';
-import { ResourceTracker } from './resources/index.js';
-import { CircuitBreaker } from './resources/circuit-breaker.js';
+} from './communication/index';
+import { ResourceTracker } from './resources/index';
+import { CircuitBreaker } from './resources/circuit-breaker';
 
 export class SwarmCoordinator implements SwarmCoordinatorInterface {
   private cogitator: Cogitator;

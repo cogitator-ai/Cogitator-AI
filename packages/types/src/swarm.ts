@@ -2,8 +2,8 @@
  * Swarm types for multi-agent coordination
  */
 
-import type { Agent } from './agent.js';
-import type { RunResult, Span } from './runtime.js';
+import type { Agent } from './agent';
+import type { RunResult, Span } from './runtime';
 
 export type SwarmStrategy =
   | 'hierarchical'

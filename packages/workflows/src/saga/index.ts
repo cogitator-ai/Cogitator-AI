@@ -17,7 +17,7 @@ export {
   type RetryResult,
   type AttemptInfo,
   type RetryOptions,
-} from './retry.js';
+} from './retry';
 
 export {
   CircuitBreaker,
@@ -27,7 +27,7 @@ export {
   type CircuitBreakerEvent,
   type CircuitBreakerEventHandler,
   type CircuitBreakerStats,
-} from './circuit-breaker.js';
+} from './circuit-breaker';
 
 export {
   CompensationManager,
@@ -38,7 +38,7 @@ export {
   type CompensationResult,
   type CompensationReport,
   type CompensationManagerSummary,
-} from './compensation.js';
+} from './compensation';
 
 export {
   BaseDLQ,
@@ -49,7 +49,7 @@ export {
   createDLQEntry,
   type ExtendedDeadLetterEntry,
   type DLQFilters,
-} from './dead-letter.js';
+} from './dead-letter';
 
 export {
   BaseIdempotencyStore,
@@ -62,4 +62,4 @@ export {
   idempotent,
   Idempotent,
   type IdempotencyCheckResult,
-} from './idempotency.js';
+} from './idempotency';

@@ -15,7 +15,7 @@ import type {
   MemoryProvider,
 } from '@cogitator/types';
 import { createRedisClient, type RedisClient } from '@cogitator/redis';
-import { BaseMemoryAdapter } from './base.js';
+import { BaseMemoryAdapter } from './base';
 
 export class RedisAdapter extends BaseMemoryAdapter {
   readonly provider: MemoryProvider = 'redis';

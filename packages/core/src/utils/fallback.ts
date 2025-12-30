@@ -3,8 +3,8 @@
  */
 
 import { CogitatorError, ErrorCode } from '@cogitator/types';
-import { type CircuitBreakerRegistry } from './circuit-breaker.js';
-import { withRetry, type RetryOptions } from './retry.js';
+import { type CircuitBreakerRegistry } from './circuit-breaker';
+import { withRetry, type RetryOptions } from './retry';
 
 /**
  * Fallback chain configuration

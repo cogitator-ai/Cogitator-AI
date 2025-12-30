@@ -4,7 +4,7 @@
 
 import type { WorkflowNode, WorkflowState, NodeResult } from '@cogitator/types';
 import type { Agent, RunOptions, RunResult } from '@cogitator/core';
-import type { ExtendedNodeContext } from './base.js';
+import type { ExtendedNodeContext } from './base';
 
 export interface AgentNodeOptions<S = WorkflowState> {
   /**

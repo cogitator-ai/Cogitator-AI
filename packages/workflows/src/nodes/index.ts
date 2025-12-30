@@ -2,7 +2,7 @@
  * Pre-built workflow nodes
  */
 
-export * from './base.js';
-export * from './agent.js';
-export * from './tool.js';
-export * from './function.js';
+export * from './base';
+export * from './agent';
+export * from './tool';
+export * from './function';

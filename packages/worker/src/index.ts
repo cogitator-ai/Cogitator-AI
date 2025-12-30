@@ -8,19 +8,19 @@
  * - Prometheus metrics for HPA
  */
 
-export { JobQueue } from './queue.js';
-export { WorkerPool, type WorkerPoolEvents } from './worker.js';
+export { JobQueue } from './queue';
+export { WorkerPool, type WorkerPoolEvents } from './worker';
 export {
   formatPrometheusMetrics,
   DurationHistogram,
   MetricsCollector,
-} from './metrics.js';
+} from './metrics';
 
 export {
   processAgentJob,
   processWorkflowJob,
   processSwarmJob,
-} from './processors/index.js';
+} from './processors/index';
 
 export type {
   SerializedAgent,
@@ -39,4 +39,4 @@ export type {
   QueueConfig,
   WorkerConfig,
   QueueMetrics,
-} from './types.js';
+} from './types';

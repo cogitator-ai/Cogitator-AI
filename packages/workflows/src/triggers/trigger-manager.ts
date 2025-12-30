@@ -16,8 +16,8 @@ import type {
   Workflow,
   WorkflowState,
 } from '@cogitator/types';
-import { type CronTriggerExecutor, createCronTrigger } from './cron-trigger.js';
-import { type WebhookTriggerExecutor, createWebhookTrigger, type WebhookRequest } from './webhook-trigger.js';
+import { type CronTriggerExecutor, createCronTrigger } from './cron-trigger';
+import { type WebhookTriggerExecutor, createWebhookTrigger, type WebhookRequest } from './webhook-trigger';
 
 /**
  * Trigger store interface

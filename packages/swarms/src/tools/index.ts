@@ -2,17 +2,17 @@
  * Swarm tools exports
  */
 
-export { createMessagingTools, type MessagingTools } from './messaging.js';
-export { createBlackboardTools, type BlackboardTools } from './blackboard.js';
-export { createDelegationTools, type DelegationTools } from './delegation.js';
-export { createVotingTools, type VotingTools } from './voting.js';
+export { createMessagingTools, type MessagingTools } from './messaging';
+export { createBlackboardTools, type BlackboardTools } from './blackboard';
+export { createDelegationTools, type DelegationTools } from './delegation';
+export { createVotingTools, type VotingTools } from './voting';
 
 import type { Tool } from '@cogitator/types';
 import type { SwarmCoordinatorInterface, Blackboard, MessageBus, SwarmEventEmitter } from '@cogitator/types';
-import { createMessagingTools } from './messaging.js';
-import { createBlackboardTools } from './blackboard.js';
-import { createDelegationTools } from './delegation.js';
-import { createVotingTools } from './voting.js';
+import { createMessagingTools } from './messaging';
+import { createBlackboardTools } from './blackboard';
+import { createDelegationTools } from './delegation';
+import { createVotingTools } from './voting';
 
 export interface SwarmToolContext {
   coordinator: SwarmCoordinatorInterface;

@@ -3,8 +3,8 @@
  */
 
 import type { EmbeddingService, EmbeddingServiceConfig } from '@cogitator/types';
-import { OpenAIEmbeddingService } from './openai.js';
-import { OllamaEmbeddingService } from './ollama.js';
+import { OpenAIEmbeddingService } from './openai';
+import { OllamaEmbeddingService } from './ollama';
 
 export function createEmbeddingService(
   config: EmbeddingServiceConfig

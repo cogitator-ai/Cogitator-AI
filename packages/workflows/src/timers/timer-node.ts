@@ -13,7 +13,7 @@ import type {
   TimerEntry,
   TimerStore,
 } from '@cogitator/types';
-import { getNextCronOccurrence, isValidCronExpression } from './cron-parser.js';
+import { getNextCronOccurrence, isValidCronExpression } from './cron-parser';
 
 /**
  * Timer node type

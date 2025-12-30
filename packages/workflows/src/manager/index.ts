@@ -17,25 +17,25 @@ export {
   FileRunStore,
   createInMemoryRunStore,
   createFileRunStore,
-} from './run-store.js';
+} from './run-store';
 
 export {
   PriorityQueue,
   JobScheduler,
   createJobScheduler,
-} from './scheduler.js';
+} from './scheduler';
 
 export type {
   QueueItem,
   SchedulerConfig,
   CronJob,
-} from './scheduler.js';
+} from './scheduler';
 
 export {
   DefaultWorkflowManager,
   createWorkflowManager,
-} from './workflow-manager.js';
+} from './workflow-manager';
 
 export type {
   WorkflowManagerConfig,
-} from './workflow-manager.js';
+} from './workflow-manager';

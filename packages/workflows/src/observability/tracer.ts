@@ -23,7 +23,7 @@ import {
   type SpanExporterInstance,
   createSpanExporter,
   NoopSpanExporter,
-} from './exporters.js';
+} from './exporters';
 import {
   TRACE_PARENT_HEADER,
   TRACE_STATE_HEADER,
@@ -33,7 +33,7 @@ import {
   WORKFLOW_RUN_ID,
   SERVICE_NAME,
   SERVICE_VERSION,
-} from './span-attributes.js';
+} from './span-attributes';
 
 const TRACE_VERSION = '00';
 const DEFAULT_SAMPLE_RATE = 1.0;

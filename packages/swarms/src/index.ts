@@ -2,8 +2,8 @@
  * @cogitator/swarms - Multi-agent swarm coordination
  */
 
-export { Swarm, SwarmBuilder, swarm } from './swarm.js';
-export { SwarmCoordinator } from './coordinator.js';
+export { Swarm, SwarmBuilder, swarm } from './swarm';
+export { SwarmCoordinator } from './coordinator';
 
 export {
   BaseStrategy,
@@ -15,16 +15,16 @@ export {
   DebateStrategy,
   createStrategy,
   getDefaultStrategyConfig,
-} from './strategies/index.js';
+} from './strategies/index';
 
 export {
   SwarmEventEmitterImpl,
   InMemoryMessageBus,
   InMemoryBlackboard,
-} from './communication/index.js';
+} from './communication/index';
 
-export { ResourceTracker } from './resources/tracker.js';
-export { CircuitBreaker, type CircuitState, type CircuitBreakerConfig } from './resources/circuit-breaker.js';
+export { ResourceTracker } from './resources/tracker';
+export { CircuitBreaker, type CircuitState, type CircuitBreakerConfig } from './resources/circuit-breaker';
 
 export {
   createSwarmTools,
@@ -38,7 +38,7 @@ export {
   type BlackboardTools,
   type DelegationTools,
   type VotingTools,
-} from './tools/index.js';
+} from './tools/index';
 
 export {
   swarmNode,
@@ -46,7 +46,7 @@ export {
   parallelSwarmsNode,
   type SwarmNodeOptions,
   type SwarmNodeContext,
-} from './workflow/swarm-node.js';
+} from './workflow/swarm-node';
 
 export type {
   SwarmStrategy,

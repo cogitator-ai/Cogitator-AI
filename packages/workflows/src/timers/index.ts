@@ -18,7 +18,7 @@ export {
   FileTimerStore,
   createInMemoryTimerStore,
   createFileTimerStore,
-} from './timer-store.js';
+} from './timer-store';
 
 export {
   type ParsedCron,
@@ -37,7 +37,7 @@ export {
   isValidCronExpression,
   getSupportedTimezones,
   isValidTimezone,
-} from './cron-parser.js';
+} from './cron-parser';
 
 export {
   type TimerNodeType,
@@ -60,7 +60,7 @@ export {
   Duration,
   parseDuration,
   formatDuration,
-} from './timer-node.js';
+} from './timer-node';
 
 export {
   type TimerHandler,
@@ -70,4 +70,4 @@ export {
   createTimerManager,
   RecurringTimerScheduler,
   createRecurringScheduler,
-} from './timer-manager.js';
+} from './timer-manager';

@@ -13,7 +13,7 @@ import type {
   SandboxResult,
   SandboxWasmConfig,
 } from '@cogitator/types';
-import { BaseSandboxExecutor } from './base.js';
+import { BaseSandboxExecutor } from './base';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 

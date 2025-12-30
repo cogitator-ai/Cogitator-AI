@@ -3,9 +3,9 @@
  */
 
 import type { CogitatorConfig } from '@cogitator/types';
-import { CogitatorConfigSchema, type CogitatorConfigInput } from './schema.js';
-import { loadYamlConfig } from './loaders/yaml.js';
-import { loadEnvConfig } from './loaders/env.js';
+import { CogitatorConfigSchema, type CogitatorConfigInput } from './schema';
+import { loadYamlConfig } from './loaders/yaml';
+import { loadEnvConfig } from './loaders/env';
 
 export interface LoadConfigOptions {
   /** Path to YAML config file */

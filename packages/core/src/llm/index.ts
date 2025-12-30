@@ -2,17 +2,17 @@
  * LLM Backends
  */
 
-export { BaseLLMBackend } from './base.js';
-export { OllamaBackend } from './ollama.js';
-export { OpenAIBackend } from './openai.js';
-export { AnthropicBackend } from './anthropic.js';
-export { GoogleBackend } from './google.js';
+export { BaseLLMBackend } from './base';
+export { OllamaBackend } from './ollama';
+export { OpenAIBackend } from './openai';
+export { AnthropicBackend } from './anthropic';
+export { GoogleBackend } from './google';
 
 import type { LLMBackend, LLMProvider, CogitatorConfig } from '@cogitator/types';
-import { OllamaBackend } from './ollama.js';
-import { OpenAIBackend } from './openai.js';
-import { AnthropicBackend } from './anthropic.js';
-import { GoogleBackend } from './google.js';
+import { OllamaBackend } from './ollama';
+import { OpenAIBackend } from './openai';
+import { AnthropicBackend } from './anthropic';
+import { GoogleBackend } from './google';
 
 /**
  * Create an LLM backend from configuration

@@ -8,7 +8,7 @@
  * - Processing times
  */
 
-import type { QueueMetrics } from './types.js';
+import type { QueueMetrics } from './types';
 
 /**
  * Format queue metrics as Prometheus exposition format

@@ -19,7 +19,7 @@ import {
   type SubworkflowConfig,
   type SubworkflowResult,
   type SubworkflowErrorStrategy,
-} from './subworkflow-node.js';
+} from './subworkflow-node';
 
 /**
  * Parallel subworkflow definition

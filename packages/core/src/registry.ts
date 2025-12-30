@@ -3,7 +3,7 @@
  */
 
 import type { Tool, ToolSchema } from '@cogitator/types';
-import { toolToSchema } from './tool.js';
+import { toolToSchema } from './tool';
 
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
