@@ -1,137 +1,62 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Sidebar } from '@/components/layout/Sidebar';
-import { Header } from '@/components/layout/Header';
-import { StatCard } from '@/components/dashboard/StatCard';
-import { ActivityChart } from '@/components/dashboard/ActivityChart';
-import { RecentRuns } from '@/components/dashboard/RecentRuns';
-import { ActiveAgents } from '@/components/dashboard/ActiveAgents';
-import { SystemHealth } from '@/components/dashboard/SystemHealth';
-import { Activity, Cpu, DollarSign, Zap } from 'lucide-react';
+import { useState, useEffect, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
+import {
+  BackgroundGrid,
+  Hero,
+  FeaturesGrid,
+  AuthSection,
+  Footer,
+} from '@/components/landing';
 
-interface DashboardData {
-  stats: {
-    totalRuns: number;
-    activeAgents: number;
-    totalTokens: number;
-    totalCost: number;
-  };
-  hourly: Array<{ hour: string; runs: number; tokens: number }>;
-}
-
-export default function DashboardPage() {
-  const [data, setData] = useState<DashboardData | null>(null);
-  const [loading, setLoading] = useState(true);
+function LandingContent() {
+  const [showAuth, setShowAuth] = useState(false);
+  const searchParams = useSearchParams();
 
   useEffect(() => {
-    async function fetchData() {
-      try {
-        const response = await fetch('/api/analytics');
-        if (response.ok) {
-          const result = await response.json();
-          setData({
-            stats: result.dashboard,
-            hourly: result.hourly,
-          });
-        }
-      } catch (error) {
-        console.error('Failed to fetch dashboard data:', error);
-      } finally {
-        setLoading(false);
-      }
+    if (searchParams.get('auth') === 'login') {
+      setShowAuth(true);
     }
-
-    fetchData();
-    const interval = setInterval(fetchData, 30000);
-    return () => clearInterval(interval);
-  }, []);
+  }, [searchParams]);
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <Sidebar />
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <Header />
-        <main className="flex-1 overflow-auto p-6 bg-bg-primary bg-noise">
-          <div className="max-w-7xl mx-auto space-y-6">
-            {/* Welcome */}
-            <div className="animate-fade-in">
-              <h1 className="text-2xl font-semibold text-text-primary">
-                Welcome back
-              </h1>
-              <p className="text-text-secondary mt-1">
-                Here&apos;s what&apos;s happening with your agents
-              </p>
-            </div>
-
-            {/* Stats Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              <StatCard
-                title="Total Runs (24h)"
-                value={data?.stats.totalRuns ?? 0}
-                loading={loading}
-                icon={<Activity className="w-5 h-5" />}
-                delay={0}
-              />
-              <StatCard
-                title="Tokens Used"
-                value={data?.stats.totalTokens ?? 0}
-                format="compact"
-                loading={loading}
-                icon={<Zap className="w-5 h-5" />}
-                delay={1}
-              />
-              <StatCard
-                title="Total Cost"
-                value={data?.stats.totalCost ?? 0}
-                format="currency"
-                loading={loading}
-                icon={<DollarSign className="w-5 h-5" />}
-                delay={2}
-              />
-              <StatCard
-                title="Active Agents"
-                value={data?.stats.activeAgents ?? 0}
-                loading={loading}
-                icon={<Cpu className="w-5 h-5" />}
-                delay={3}
-              />
-            </div>
-
-            {/* Activity Chart */}
-            <div
-              className="animate-fade-in"
-              style={{ animationDelay: '200ms' }}
-            >
-              <ActivityChart data={data?.hourly} loading={loading} />
-            </div>
-
-            {/* Bottom Grid */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <div
-                className="lg:col-span-2 animate-fade-in"
-                style={{ animationDelay: '300ms' }}
-              >
-                <RecentRuns />
-              </div>
-              <div className="space-y-6">
-                <div
-                  className="animate-fade-in"
-                  style={{ animationDelay: '400ms' }}
-                >
-                  <ActiveAgents />
-                </div>
-                <div
-                  className="animate-fade-in"
-                  style={{ animationDelay: '500ms' }}
-                >
-                  <SystemHealth />
-                </div>
-              </div>
-            </div>
-          </div>
-        </main>
+    <>
+      <div className="relative z-10">
+        <Hero onGetStarted={() => setShowAuth(true)} />
+        <FeaturesGrid />
+        <Footer />
       </div>
+
+      <AuthSection isOpen={showAuth} onClose={() => setShowAuth(false)} />
+    </>
+  );
+}
+
+export default function LandingPage() {
+  return (
+    <div className="relative min-h-screen bg-[#0a0a0a] overflow-x-hidden">
+      <BackgroundGrid />
+
+      <Suspense fallback={null}>
+        <LandingContent />
+      </Suspense>
+
+      <style jsx global>{`
+        @keyframes gradient {
+          0%, 100% {
+            background-position: 0% 50%;
+          }
+          50% {
+            background-position: 100% 50%;
+          }
+        }
+
+        .animate-gradient {
+          background-size: 200% 200%;
+          animation: gradient 5s ease infinite;
+        }
+      `}</style>
     </div>
   );
 }

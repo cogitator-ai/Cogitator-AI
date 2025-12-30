@@ -525,6 +525,6 @@ MIT License - see [LICENSE](./LICENSE) for details.
 
 **Built for engineers who trust their agents to run while they sleep.**
 
-[⭐ Star on GitHub](https://github.com/eL1Fe/cogitator) • [📖 Documentation](./docs)
+[⭐ Star on GitHub](https://github.com/eL1Fe/cogitator) • [📖 Documentation](./docs) • [💬 Discord](https://discord.gg/SkmRsYvA)
 
 </div>

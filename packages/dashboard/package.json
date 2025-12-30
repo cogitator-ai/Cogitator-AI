@@ -23,6 +23,8 @@
     "@cogitator/types": "workspace:*",
     "@cogitator/workflows": "workspace:*",
     "@monaco-editor/react": "^4.7.0",
+    "@supabase/ssr": "^0.8.0",
+    "@supabase/supabase-js": "^2.89.0",
     "@xyflow/react": "^12.4.4",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",

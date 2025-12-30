@@ -1,6 +1,12 @@
 import { type NextRequest, NextResponse } from 'next/server';
-import { verifyToken, extractTokenFromHeader, type User } from './jwt';
+import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+
+export interface User {
+  id: string;
+  email?: string;
+  role: 'admin' | 'user' | 'readonly';
+}
 
 export interface AuthenticatedRequest extends NextRequest {
   user?: User;
@@ -17,7 +23,6 @@ export type AuthenticatedRouteHandler = (
 ) => Promise<NextResponse> | NextResponse;
 
 function isAuthEnabled(): boolean {
-
   if (process.env.NODE_ENV === 'production') {
     return process.env.COGITATOR_AUTH_ENABLED !== 'false';
   }
@@ -25,7 +30,6 @@ function isAuthEnabled(): boolean {
 }
 
 function getDefaultUser(): User {
-
   return {
     id: 'dev-admin',
     email: 'dev@localhost',
@@ -33,29 +37,56 @@ function getDefaultUser(): User {
   };
 }
 
-export async function getAuthenticatedUser(request: NextRequest): Promise<User | null> {
+async function createSupabaseClient() {
+  const cookieStore = await cookies();
+
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return cookieStore.getAll();
+        },
+        setAll(cookiesToSet) {
+          try {
+            cookiesToSet.forEach(({ name, value, options }) => {
+              cookieStore.set(name, value, options);
+            });
+          } catch {
+            // Server Component - cookies are read-only
+          }
+        },
+      },
+    }
+  );
+}
+
+export async function getAuthenticatedUser(_request: NextRequest): Promise<User | null> {
   if (!isAuthEnabled()) {
     return getDefaultUser();
   }
 
-  const authHeader = request.headers.get('Authorization');
-  let token = extractTokenFromHeader(authHeader);
-
-  if (!token) {
-    const cookieStore = await cookies();
-    token = cookieStore.get('cogitator_token')?.value || null;
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+    console.warn('[Auth] Supabase not configured, using default user');
+    return getDefaultUser();
   }
 
-  if (!token) return null;
+  try {
+    const supabase = await createSupabaseClient();
+    const { data: { user } } = await supabase.auth.getUser();
 
-  const payload = await verifyToken(token);
-  if (payload?.type !== 'access') return null;
+    if (!user) return null;
 
-  return {
-    id: payload.sub,
-    email: payload.email,
-    role: payload.role,
-  };
+    return {
+      id: user.id,
+      email: user.email,
+      role: (user.user_metadata?.role as User['role']) || 'user',
+    };
+  } catch (error) {
+    console.error('[Auth] Failed to get user:', error);
+    return null;
+  }
 }
 
 export function withAuth(handler: AuthenticatedRouteHandler): RouteHandler {

@@ -80,7 +80,7 @@ function normalizeProvider(litellmProvider: string | undefined, modelId: string)
     }
   }
 
-  const prefixMatch = /^([a-z_-]+)\
+  const prefixMatch = /^([a-z_-]+)\//.exec(modelId);
   if (prefixMatch) {
     const prefix = prefixMatch[1];
     return PROVIDER_MAPPINGS[prefix] ?? prefix;
