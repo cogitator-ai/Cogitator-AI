@@ -77,14 +77,23 @@
       - Spinners with ora
       - Interactive mode for `run` command
       - Auto-detect docker-compose.yml
+      - Auto-detect Ollama models via API
       - Project templates (package.json, agent.ts, cogitator.yml)
     - Dependencies: commander, chalk, ora
     - `init.test.ts` - 3 tests
     - Total: **254 tests passing** (251 → 254)
+    - Usage: `pnpm cli run "Hello"` or `pnpm cli run -m ollama/gemma3:4b "Hello"`
 
 ### 🔄 In Progress
 
 - None
+
+### ⏳ Roadmap (Next)
+
+- **Agent Sandboxing** - Docker-based isolation for code execution tools
+- **Workflow Engine** - DAG-based multi-step pipelines
+- **Multi-agent Swarms** - Coordination between multiple agents
+- **Getting Started Docs** - README, examples, tutorials
 
 ---
 
