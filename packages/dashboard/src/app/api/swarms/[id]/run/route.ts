@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSwarm, getAgent, createSwarmRun, updateSwarmRun } from '@/lib/cogitator/db';
 import { getCogitator } from '@/lib/cogitator';
+import { Swarm } from '@cogitator/swarms';
+import { Agent } from '@cogitator/core';
+import type { SwarmConfig, SwarmStrategy, DebateConfig, RoundRobinConfig, ConsensusConfig } from '@cogitator/types';
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -16,25 +19,25 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Input is required' }, { status: 400 });
     }
 
-    const swarm = await getSwarm(id);
-    if (!swarm) {
+    const swarmData = await getSwarm(id);
+    if (!swarmData) {
       return NextResponse.json({ error: 'Swarm not found' }, { status: 404 });
     }
 
     // Get agents for this swarm
-    const agents = await Promise.all(
-      swarm.agentIds.map((agentId: string) => getAgent(agentId))
+    const agentDataList = await Promise.all(
+      swarmData.agentIds.map((agentId: string) => getAgent(agentId))
     );
-    const validAgents = agents.filter(Boolean);
+    const validAgentData = agentDataList.filter(Boolean);
 
-    if (validAgents.length === 0) {
+    if (validAgentData.length === 0) {
       return NextResponse.json(
         { error: 'No valid agents found for this swarm' },
         { status: 400 }
       );
     }
 
-    // Create a run record
+    // Create run record
     const run = await createSwarmRun({
       swarmId: id,
       input,
@@ -44,51 +47,173 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const startTime = Date.now();
 
     try {
+      console.log('[swarm-run] Starting swarm execution for:', id);
       const cogitator = await getCogitator();
+      console.log('[swarm-run] Got cogitator instance');
 
-      // For now, run a simple sequential execution with first agent
-      // Full swarm execution would use @cogitator/swarms package
-      const firstAgent = validAgents[0]!;
+      // Convert DB agents to Agent instances
+      const agents = validAgentData
+        .filter((d): d is NonNullable<typeof d> => d !== null)
+        .map((agentData) =>
+          new Agent({
+            id: agentData.id,
+            name: agentData.name,
+            model: agentData.model,
+            instructions: agentData.instructions || `You are ${agentData.name}, a helpful assistant.`,
+            tools: [],
+          })
+        );
+
+      // Build SwarmConfig based on strategy
+      const strategy = swarmData.strategy as SwarmStrategy;
       
-      // Create a simple agent config for the run
-      const agentConfig = {
-        id: firstAgent.id,
-        name: firstAgent.name,
-        model: firstAgent.model,
-        instructions: firstAgent.instructions || `You are ${firstAgent.name}, part of a ${swarm.strategy} swarm. ${swarm.description || ''}`,
-        maxIterations: 5,
+      const swarmConfig: SwarmConfig = {
+        name: swarmData.name,
+        strategy,
+        agents,
       };
+
+      // Configure strategy-specific options
+      switch (strategy) {
+        case 'debate':
+          // For debate, we need at least 2 agents
+          if (agents.length < 2) {
+            throw new Error('Debate strategy requires at least 2 agents');
+          }
+          // Set first agent as advocate, second as critic, rest as moderator
+          swarmConfig.agents = agents.map((agent, i) => {
+            const newAgent = agent.clone({
+              instructions: i === 0 
+                ? `${agent.instructions}\n\nYou are an ADVOCATE. Argue IN FAVOR of propositions.`
+                : i === 1
+                ? `${agent.instructions}\n\nYou are a CRITIC. Argue AGAINST propositions and find weaknesses.`
+                : `${agent.instructions}\n\nYou are a MODERATOR. Synthesize arguments fairly.`,
+            });
+            return newAgent;
+          });
+          // Set moderator if we have 3+ agents
+          if (agents.length >= 3) {
+            swarmConfig.moderator = agents[2].clone({
+              instructions: `${agents[2].instructions}\n\nAs MODERATOR, summarize debates and provide balanced conclusions.`,
+            });
+          }
+          swarmConfig.debate = {
+            rounds: 2,
+            format: 'structured',
+          } as DebateConfig;
+          break;
+
+        case 'round-robin':
+          swarmConfig.roundRobin = {
+            sticky: false,
+            rotation: 'sequential',
+          } as RoundRobinConfig;
+          break;
+
+        case 'consensus':
+          if (agents.length < 2) {
+            throw new Error('Consensus strategy requires at least 2 agents');
+          }
+          swarmConfig.consensus = {
+            threshold: 0.6,
+            maxRounds: 3,
+            resolution: 'majority',
+            onNoConsensus: 'supervisor-decides',
+          } as ConsensusConfig;
+          break;
+
+        case 'hierarchical':
+          // First agent is supervisor, rest are workers
+          if (agents.length < 2) {
+            throw new Error('Hierarchical strategy requires at least 2 agents');
+          }
+          swarmConfig.supervisor = agents[0].clone({
+            instructions: `${agents[0].instructions}\n\nYou are the SUPERVISOR. Delegate tasks to workers and synthesize results.`,
+          });
+          swarmConfig.workers = agents.slice(1);
+          swarmConfig.agents = undefined; // Use supervisor/workers instead
+          break;
+
+        case 'pipeline':
+          swarmConfig.pipeline = {
+            stages: agents.map((agent, i) => ({
+              name: `stage_${i + 1}`,
+              agent,
+            })),
+          };
+          break;
+
+        case 'auction':
+          swarmConfig.auction = {
+            bidding: 'capability-match',
+            selection: 'highest-bid',
+          };
+          break;
+
+        default:
+          // Keep default config for unknown strategies
+          break;
+      }
+
+      // Create and run the real Swarm
+      console.log('[swarm-run] Creating Swarm with config:', {
+        name: swarmConfig.name,
+        strategy: swarmConfig.strategy,
+        agentCount: swarmConfig.agents?.length || 0,
+      });
+      const swarm = new Swarm(cogitator, swarmConfig);
+      console.log('[swarm-run] Swarm created, id:', swarm.id);
       
-      const result = await cogitator.run(
-        {
-          id: agentConfig.id,
-          name: agentConfig.name,
-          model: agentConfig.model,
-          instructions: agentConfig.instructions,
-          tools: [],
-          config: agentConfig,
-          clone: () => { throw new Error('Clone not supported'); },
+      // Subscribe to events for logging
+      const eventLog: string[] = [];
+      swarm.on('*', (event) => {
+        console.log('[swarm-event]', event.type, event.data);
+        eventLog.push(`[${new Date().toISOString()}] ${event.type}: ${JSON.stringify(event.data)}`);
+      });
+
+      // Run the swarm with the configured strategy
+      console.log('[swarm-run] Starting swarm.run() with input:', input.slice(0, 50));
+      const result = await swarm.run({
+        input,
+        context: {
+          swarmId: swarmData.id,
+          strategy: swarmData.strategy,
         },
-        { input }
-      );
+      });
 
       const duration = Date.now() - startTime;
+
+      // Calculate total tokens from all agent results
+      let totalTokens = 0;
+      const agentsUsed: string[] = [];
+      for (const [agentName, agentResult] of result.agentResults) {
+        agentsUsed.push(agentName);
+        totalTokens += agentResult.usage?.totalTokens || 0;
+      }
+
+      // Build detailed output with metadata
+      const output = typeof result.output === 'string' 
+        ? result.output 
+        : JSON.stringify(result.output, null, 2);
 
       // Update run with result
       await updateSwarmRun(run.id, {
         status: 'completed',
-        output: result.output,
+        output,
         duration,
-        tokensUsed: result.usage?.totalTokens || 0,
+        tokensUsed: totalTokens,
       });
 
       return NextResponse.json({
         runId: run.id,
-        output: result.output,
+        output,
         status: 'completed',
         duration,
-        tokensUsed: result.usage?.totalTokens || 0,
-        agentsUsed: [firstAgent.id],
+        tokensUsed: totalTokens,
+        agentsUsed,
+        strategy: swarmData.strategy,
+        structured: result.structured,
+        eventLog: eventLog.slice(-20), // Last 20 events
       });
     } catch (runError) {
       const duration = Date.now() - startTime;
@@ -118,4 +243,3 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     );
   }
 }
-
