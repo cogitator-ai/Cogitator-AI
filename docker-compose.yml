@@ -1,0 +1,66 @@
+# Docker Compose for Cogitator development environment
+# Provides Redis, Postgres+pgvector, and Ollama for memory adapters and LLM
+
+name: cogitator
+
+services:
+  # Redis for short-term memory (RedisAdapter)
+  redis:
+    image: redis:7-alpine
+    container_name: cogitator-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Postgres with pgvector for long-term memory (PostgresAdapter)
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: cogitator-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: cogitator
+      POSTGRES_PASSWORD: cogitator
+      POSTGRES_DB: cogitator
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/init-pgvector.sql:/docker-entrypoint-initdb.d/init-pgvector.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cogitator -d cogitator"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Ollama for local LLM and embeddings
+  ollama:
+    image: ollama/ollama:latest
+    container_name: cogitator-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    # GPU support (uncomment for NVIDIA GPU)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  redis-data:
+  postgres-data:
+  ollama-data:

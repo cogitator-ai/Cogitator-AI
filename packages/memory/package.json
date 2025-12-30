@@ -1,7 +1,7 @@
 {
-  "name": "@cogitator/core",
+  "name": "@cogitator/memory",
   "version": "0.1.0",
-  "description": "Core runtime for Cogitator AI agents",
+  "description": "Memory adapters for Cogitator AI agents",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -24,16 +24,30 @@
   },
   "dependencies": {
     "@cogitator/types": "workspace:*",
-    "@cogitator/memory": "workspace:*",
-    "zod": "^3.22.4",
-    "zod-to-json-schema": "^3.22.4",
-    "openai": "^4.24.0",
-    "@anthropic-ai/sdk": "^0.39.0",
-    "nanoid": "^5.0.4"
+    "nanoid": "^5.0.4",
+    "zod": "^3.22.4"
+  },
+  "optionalDependencies": {
+    "ioredis": "^5.3.2",
+    "pg": "^8.11.3",
+    "openai": "^4.24.0"
   },
   "devDependencies": {
+    "@types/pg": "^8.10.9",
     "typescript": "^5.3.0",
     "vitest": "^1.0.0"
+  },
+  "peerDependencies": {
+    "ioredis": "^5.0.0",
+    "pg": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ioredis": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    }
   },
   "license": "MIT"
 }

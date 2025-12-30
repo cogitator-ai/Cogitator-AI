@@ -11,7 +11,7 @@ export class Agent implements IAgent {
   readonly config: AgentConfig;
 
   constructor(config: AgentConfig) {
-    this.id = `agent_${nanoid(12)}`;
+    this.id = config.id ?? `agent_${nanoid(12)}`;
     this.name = config.name;
     this.config = {
       temperature: 0.7,

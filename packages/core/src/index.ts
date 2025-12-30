@@ -9,6 +9,13 @@ export { Agent } from './agent.js';
 export { tool, toolToSchema } from './tool.js';
 export { ToolRegistry } from './registry.js';
 
+// Built-in tools
+export { calculator, datetime, builtinTools } from './tools/index.js';
+
+// Logging
+export { Logger, getLogger, setLogger, createLogger } from './logger.js';
+export type { LogLevel, LogContext, LogEntry, LoggerOptions } from './logger.js';
+
 // LLM backends
 export {
   BaseLLMBackend,

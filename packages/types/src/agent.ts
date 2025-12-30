@@ -6,6 +6,7 @@ import type { Tool } from './tool.js';
 import type { ZodType } from 'zod';
 
 export interface AgentConfig {
+  id?: string;
   name: string;
   description?: string;
   model: string;

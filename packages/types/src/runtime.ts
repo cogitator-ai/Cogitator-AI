@@ -4,6 +4,7 @@
 
 import type { Message, ToolCall, ToolResult } from './message.js';
 import type { LLMProvider } from './llm.js';
+import type { MemoryConfig } from './memory.js';
 
 export interface CogitatorConfig {
   llm?: {
@@ -22,6 +23,7 @@ export interface CogitatorConfig {
     defaultTimeout?: number;
     maxTokensPerRun?: number;
   };
+  memory?: MemoryConfig;
 }
 
 export interface RunOptions {
@@ -33,6 +35,13 @@ export interface RunOptions {
   onToken?: (token: string) => void;
   onToolCall?: (call: ToolCall) => void;
   onToolResult?: (result: ToolResult) => void;
+
+  /** Enable/disable memory for this run. Default: true if adapter configured */
+  useMemory?: boolean;
+  /** Load conversation history from memory. Default: true */
+  loadHistory?: boolean;
+  /** Save messages to memory after each turn. Default: true */
+  saveHistory?: boolean;
 }
 
 export interface RunResult {
