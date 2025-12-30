@@ -125,13 +125,78 @@
       - `container-pool.test.ts` - 7 tests (6 skipped if Docker unavailable)
     - Total: **286 tests passing** (254 → 286)
 
+15. **@cogitator/workflows Package**
+    - New package: `packages/workflows/` with DAG-based workflow engine
+    - **Core Types** (`packages/types/src/workflow.ts`):
+      - `Workflow`, `WorkflowNode`, `WorkflowState`, `WorkflowResult`
+      - `NodeContext`, `NodeResult`, `NodeFn`, `NodeConfig`
+      - `Edge` types: `SequentialEdge`, `ConditionalEdge`, `ParallelEdge`, `LoopEdge`
+      - `WorkflowCheckpoint`, `CheckpointStore`, `WorkflowEvent`
+      - `WorkflowExecuteOptions`, builder options
+    - **WorkflowBuilder** (`builder.ts`):
+      - Fluent API for workflow construction
+      - `addNode(name, fn, options?)` - add execution node
+      - `addConditional(name, condition, options?)` - conditional routing
+      - `addLoop(name, { condition, back, exit })` - loop constructs
+      - `initialState()`, `entryPoint()`, `build()`
+      - Automatic entry point detection, validation
+    - **WorkflowScheduler** (`scheduler.ts`):
+      - DAG dependency graph building
+      - Topological sort for execution levels
+      - `getReadyNodes()` - find nodes ready to execute
+      - `getNextNodes()` - dynamic routing (sequential, conditional, loop)
+      - `runParallel()` - concurrent execution with concurrency limit
+    - **WorkflowExecutor** (`executor.ts`):
+      - Main execution engine with state management
+      - Parallel node execution with configurable concurrency
+      - Max iterations guard (default: 100) for loop protection
+      - Event callbacks: `onNodeStart`, `onNodeComplete`, `onNodeError`
+      - `execute()`, `resume()`, `stream()` methods
+    - **Checkpoint System** (`checkpoint.ts`):
+      - `InMemoryCheckpointStore` - for testing
+      - `FileCheckpointStore` - JSON files for persistence
+      - `createCheckpointId()` - nanoid-based IDs
+      - Save/load/list/delete operations
+    - **Pre-built Nodes** (`nodes/`):
+      - `agentNode()` - run Cogitator agent as workflow node
+      - `toolNode()` - run single tool with state mapping
+      - `functionNode()` - simple async function wrapper
+      - `customNode()` - full control with Cogitator access
+    - **Usage example**:
+      ```typescript
+      import { WorkflowBuilder, WorkflowExecutor } from '@cogitator/workflows';
+
+      const workflow = new WorkflowBuilder<{ count: number }>('counter')
+        .initialState({ count: 0 })
+        .addNode('increment', async (ctx) => ({
+          state: { count: ctx.state.count + 1 }
+        }))
+        .addLoop('check', {
+          condition: (state) => state.count < 5,
+          back: 'increment',
+          exit: 'done',
+          after: ['increment']
+        })
+        .addNode('done', async () => ({ output: 'finished' }))
+        .build();
+
+      const executor = new WorkflowExecutor(cogitator);
+      const result = await executor.execute(workflow);
+      // result.state.count === 5
+      ```
+
+16. **Workflow Package Tests**
+    - `builder.test.ts` - 10 tests (construction, validation, edges)
+    - `scheduler.test.ts` - 8 tests (dependencies, levels, routing, parallel)
+    - `executor.test.ts` - 9 tests (execution, conditionals, loops, checkpoints)
+    - Total: **307 tests passing** (286 → 307)
+
 ### 🔄 In Progress
 
 - None
 
 ### ⏳ Roadmap (Next)
 
-- **Workflow Engine** - DAG-based multi-step pipelines
 - **Multi-agent Swarms** - Coordination between multiple agents
 - **Getting Started Docs** - README, examples, tutorials
 
