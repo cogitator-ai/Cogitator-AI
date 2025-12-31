@@ -137,7 +137,7 @@ export interface FailureAnalysisResult {
 export function parseFailureAnalysisResponse(content: string): FailureAnalysisResult | null {
   try {
     let jsonStr = content;
-    const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    const codeBlockMatch = /```(?:json)?\s*([\s\S]*?)\s*```/.exec(content);
     if (codeBlockMatch) {
       jsonStr = codeBlockMatch[1];
     }
@@ -170,7 +170,7 @@ export interface InstructionCandidate {
 export function parseInstructionCandidatesResponse(content: string): InstructionCandidate[] {
   try {
     let jsonStr = content;
-    const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    const codeBlockMatch = /```(?:json)?\s*([\s\S]*?)\s*```/.exec(content);
     if (codeBlockMatch) {
       jsonStr = codeBlockMatch[1];
     }
@@ -198,7 +198,7 @@ export interface InstructionEvaluation {
 export function parseInstructionEvaluationResponse(content: string): InstructionEvaluation | null {
   try {
     let jsonStr = content;
-    const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    const codeBlockMatch = /```(?:json)?\s*([\s\S]*?)\s*```/.exec(content);
     if (codeBlockMatch) {
       jsonStr = codeBlockMatch[1];
     }
@@ -224,7 +224,7 @@ export interface InstructionRefinement {
 export function parseInstructionRefinementResponse(content: string): InstructionRefinement | null {
   try {
     let jsonStr = content;
-    const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    const codeBlockMatch = /```(?:json)?\s*([\s\S]*?)\s*```/.exec(content);
     if (codeBlockMatch) {
       jsonStr = codeBlockMatch[1];
     }

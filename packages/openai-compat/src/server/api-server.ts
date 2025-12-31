@@ -92,7 +92,7 @@ export class OpenAIServer {
         : false,
     });
 
-    this.setupServer();
+    void this.setupServer();
   }
 
   /**

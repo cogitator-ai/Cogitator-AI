@@ -1,8 +1,8 @@
 import type { Insight, InsightStore, InsightType } from '@cogitator-ai/types';
 
 export class InMemoryInsightStore implements InsightStore {
-  private insights: Map<string, Insight> = new Map();
-  private agentIndex: Map<string, Set<string>> = new Map();
+  private insights = new Map<string, Insight>();
+  private agentIndex = new Map<string, Set<string>>();
 
   async store(insight: Insight): Promise<void> {
     this.insights.set(insight.id, insight);

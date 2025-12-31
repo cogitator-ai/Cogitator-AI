@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { z } from 'zod';
 import { MCPServer, serveMCPTools } from '../server/mcp-server';
-import type { Tool, ToolContext, ToolSchema } from '@cogitator-ai/types';
+import type { Tool, ToolSchema } from '@cogitator-ai/types';
 
 vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
   McpServer: vi.fn().mockImplementation(() => ({

@@ -122,7 +122,7 @@ export class InMemoryApprovalStore implements ApprovalStore {
 
     for (const [id, request] of this.requests) {
       if (now - request.createdAt > this.ttl) {
-        this.deleteRequest(id);
+        void this.deleteRequest(id);
       }
     }
   }
@@ -285,7 +285,7 @@ export class FileApprovalStore implements ApprovalStore {
   }
 
   onResponse(requestId: string, callback: (response: ApprovalResponse) => void): () => void {
-    this.getResponse(requestId).then((existingResponse) => {
+    void this.getResponse(requestId).then((existingResponse) => {
       if (existingResponse) {
         callback(existingResponse);
       }

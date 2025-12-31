@@ -419,7 +419,7 @@ export class JobScheduler {
       if (!job.enabled) continue;
 
       if (job.nextRun <= now) {
-        this.scheduleRun(job.workflow, {
+        void this.scheduleRun(job.workflow, {
           ...job.options,
           triggerId: `cron:${job.id}`,
         });

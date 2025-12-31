@@ -270,7 +270,7 @@ Respond with JSON: { "score": 0.X, "reasoning": "..." }`;
   private parseMetricResponse(content: string): { score: number; reasoning: string } {
     try {
       let jsonStr = content;
-      const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      const codeBlockMatch = /```(?:json)?\s*([\s\S]*?)\s*```/.exec(content);
       if (codeBlockMatch) {
         jsonStr = codeBlockMatch[1];
       }

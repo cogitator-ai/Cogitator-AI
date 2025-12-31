@@ -7,6 +7,7 @@ import type { LLMProvider } from './llm';
 import type { MemoryConfig } from './memory';
 import type { SandboxManagerConfig } from './sandbox';
 import type { ReflectionConfig, Reflection, ReflectionSummary } from './reflection';
+import type { GuardrailConfig } from './constitutional';
 
 export interface CogitatorConfig {
   llm?: {
@@ -30,6 +31,8 @@ export interface CogitatorConfig {
   sandbox?: SandboxManagerConfig;
   /** Reflection configuration for self-analyzing agents */
   reflection?: ReflectionConfig;
+  /** Constitutional AI guardrails configuration */
+  guardrails?: GuardrailConfig;
 }
 
 export interface RunOptions {

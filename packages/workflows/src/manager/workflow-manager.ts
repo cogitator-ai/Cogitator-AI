@@ -146,15 +146,15 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       const result = await this.executor.execute(workflow, input, {
         ...options,
         onNodeStart: (node) => {
-          this.updateRunNodes(runId, node, 'start');
+          void this.updateRunNodes(runId, node, 'start');
           options?.onNodeStart?.(node);
         },
         onNodeComplete: (node, result, duration) => {
-          this.updateRunNodes(runId, node, 'complete');
+          void this.updateRunNodes(runId, node, 'complete');
           options?.onNodeComplete?.(node, result, duration);
         },
         onNodeError: (node, error) => {
-          this.updateRunNodes(runId, node, 'error');
+          void this.updateRunNodes(runId, node, 'error');
           options?.onNodeError?.(node, error);
         },
       });

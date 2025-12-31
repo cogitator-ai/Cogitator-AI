@@ -31,7 +31,7 @@ export class ReflectionEngine {
   private llm: LLMBackend;
   private insightStore: InsightStore;
   private config: ReflectionConfig;
-  private reflections: Map<string, Reflection[]> = new Map();
+  private reflections = new Map<string, Reflection[]>();
 
   constructor(options: ReflectionEngineOptions) {
     this.llm = options.llm;

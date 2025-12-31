@@ -255,11 +255,11 @@ export class ModelRegistry {
   }
 
   private refreshInBackground(): void {
-    fetchLiteLLMData()
-      .then((data) => {
+    void fetchLiteLLMData()
+      .then(async (data) => {
         const models = transformLiteLLMData(data);
         const allModels = this.mergeWithBuiltin(models);
-        this.cache.set(allModels);
+        await this.cache.set(allModels);
         this.loadModels(allModels);
       })
       .catch((error) => {

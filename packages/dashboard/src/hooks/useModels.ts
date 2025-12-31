@@ -39,7 +39,7 @@ export function useModels() {
       }
     }
 
-    fetchModels();
+    void fetchModels();
 
     return () => {
       mounted = false;
