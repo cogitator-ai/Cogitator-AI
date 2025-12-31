@@ -4,6 +4,7 @@
 
 import type { Agent } from './agent';
 import type { RunResult, Span } from './runtime';
+import type { NegotiationConfig, NegotiationResult } from './negotiation';
 
 export type SwarmStrategy =
   | 'hierarchical'
@@ -11,7 +12,8 @@ export type SwarmStrategy =
   | 'consensus'
   | 'auction'
   | 'pipeline'
-  | 'debate';
+  | 'debate'
+  | 'negotiation';
 
 export interface SwarmAgentMetadata {
   /** Agent's areas of expertise */
@@ -159,6 +161,7 @@ export interface MessageBus {
   getMessages(agentName: string, limit?: number): SwarmMessage[];
   getConversation(agent1: string, agent2: string): SwarmMessage[];
   getAllMessages(): SwarmMessage[];
+  getUnreadMessages(agentName: string): SwarmMessage[];
   clear(): void;
 }
 
@@ -240,7 +243,30 @@ export type SwarmEventType =
   | 'pipeline:gate:pass'
   | 'pipeline:gate:fail'
   | 'round-robin:assigned'
-  | 'assessor:complete';
+  | 'assessor:complete'
+  | 'negotiation:start'
+  | 'negotiation:phase-change'
+  | 'negotiation:round'
+  | 'negotiation:turn'
+  | 'negotiation:interests-declared'
+  | 'negotiation:offer-made'
+  | 'negotiation:offer-accepted'
+  | 'negotiation:offer-rejected'
+  | 'negotiation:offer-countered'
+  | 'negotiation:offer-expired'
+  | 'negotiation:coalition-proposed'
+  | 'negotiation:coalition-formed'
+  | 'negotiation:coalition-dissolved'
+  | 'negotiation:convergence-update'
+  | 'negotiation:stagnation-detected'
+  | 'negotiation:mediation-suggested'
+  | 'negotiation:approval-required'
+  | 'negotiation:approval-received'
+  | 'negotiation:agreement-reached'
+  | 'negotiation:deadlock'
+  | 'negotiation:escalation'
+  | 'negotiation:arbitration'
+  | 'negotiation:terminated';
 
 export interface SwarmEvent {
   type: SwarmEventType;
@@ -333,6 +359,7 @@ export interface SwarmConfig {
   auction?: AuctionConfig;
   pipeline?: PipelineConfig;
   debate?: DebateConfig;
+  negotiation?: NegotiationConfig;
 
   messaging?: MessageBusConfig;
   blackboard?: BlackboardConfig;
@@ -386,6 +413,8 @@ export interface SwarmResult {
   debateTranscript?: SwarmMessage[];
   /** Pipeline outputs per stage */
   pipelineOutputs?: Map<string, unknown>;
+  /** Negotiation result from negotiation strategy */
+  negotiationResult?: NegotiationResult;
 
   usage: SwarmResourceUsage;
 
@@ -425,6 +454,7 @@ export interface StrategyResult {
   auctionWinner?: string;
   debateTranscript?: SwarmMessage[];
   pipelineOutputs?: Map<string, unknown>;
+  negotiationResult?: NegotiationResult;
 }
 
 export interface SwarmCoordinatorInterface {

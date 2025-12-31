@@ -6,6 +6,7 @@ export { createMessagingTools, type MessagingTools } from './messaging';
 export { createBlackboardTools, type BlackboardTools } from './blackboard';
 export { createDelegationTools, type DelegationTools } from './delegation';
 export { createVotingTools, type VotingTools } from './voting';
+export { createNegotiationTools, type NegotiationTools } from './negotiation';
 
 import type { Tool } from '@cogitator-ai/types';
 import type {
@@ -18,6 +19,7 @@ import { createMessagingTools } from './messaging';
 import { createBlackboardTools } from './blackboard';
 import { createDelegationTools } from './delegation';
 import { createVotingTools } from './voting';
+import { createNegotiationTools } from './negotiation';
 
 export interface SwarmToolContext {
   coordinator: SwarmCoordinatorInterface;
@@ -71,7 +73,14 @@ export function createSwarmTools(context: SwarmToolContext): Tool<unknown, unkno
  * Create tools for a specific strategy
  */
 export function createStrategyTools(
-  strategy: 'hierarchical' | 'consensus' | 'debate' | 'auction' | 'pipeline' | 'round-robin',
+  strategy:
+    | 'hierarchical'
+    | 'consensus'
+    | 'debate'
+    | 'auction'
+    | 'pipeline'
+    | 'round-robin'
+    | 'negotiation',
   context: SwarmToolContext
 ): Tool<unknown, unknown>[] {
   const baseTools = [
@@ -98,6 +107,16 @@ export function createStrategyTools(
         context.agentWeight
       );
       return [...baseTools, ...Object.values(votingTools)] as Tool<unknown, unknown>[];
+    }
+
+    case 'negotiation': {
+      const negotiationTools = createNegotiationTools(
+        context.blackboard,
+        context.events,
+        context.agentName,
+        context.agentWeight
+      );
+      return [...baseTools, ...Object.values(negotiationTools)] as Tool<unknown, unknown>[];
     }
 
     case 'auction':

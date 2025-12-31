@@ -15,6 +15,9 @@ import type {
   Blackboard,
   SwarmEventEmitter,
   SwarmCoordinatorInterface,
+  SwarmMessage,
+  NegotiationState,
+  NegotiationOffer,
 } from '@cogitator-ai/types';
 import {
   SwarmEventEmitterImpl,
@@ -181,6 +184,9 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
     this._events.emit('agent:start', { agentName, input }, agentName);
 
     try {
+      const incomingMessages = this.buildIncomingMessagesContext(agentName);
+      const negotiationContext = this.buildNegotiationContext(agentName);
+
       const result = await this.cogitator.run(swarmAgent.agent, {
         input,
         context: {
@@ -191,6 +197,8 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
             agentRole: swarmAgent.metadata.role,
             availableAgents: Array.from(this.agents.keys()).filter((n) => n !== agentName),
           },
+          ...(incomingMessages && { _incomingMessages: incomingMessages }),
+          ...(negotiationContext && { _negotiation: negotiationContext }),
         },
       });
 
@@ -377,5 +385,53 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
 
     (this._messageBus as InMemoryMessageBus).clear();
     (this._blackboard as InMemoryBlackboard).clear();
+  }
+
+  private buildIncomingMessagesContext(agentName: string): string | null {
+    const unread = this._messageBus.getUnreadMessages(agentName);
+    if (unread.length === 0) return null;
+
+    const formatted = unread.map((m: SwarmMessage) => {
+      const timestamp = new Date(m.timestamp).toISOString();
+      return `[${timestamp}] ${m.from} → ${m.to}: ${m.content}`;
+    });
+
+    return `\n--- Incoming Messages ---\n${formatted.join('\n')}\n---`;
+  }
+
+  private buildNegotiationContext(agentName: string): Record<string, unknown> | null {
+    const state = this._blackboard.read<NegotiationState>('negotiation');
+    if (!state) return null;
+
+    const pendingOffers = state.offers.filter((o: NegotiationOffer) => o.status === 'pending');
+    const offersToMe = pendingOffers.filter((o: NegotiationOffer) => {
+      const recipients = Array.isArray(o.to) ? o.to : [o.to];
+      return recipients.includes(agentName);
+    });
+    const myOffers = pendingOffers.filter((o: NegotiationOffer) => o.from === agentName);
+
+    return {
+      phase: state.phase,
+      round: state.round,
+      maxRounds: state.maxRounds,
+      isMyTurn: state.currentTurn === agentName || state.currentTurn === null,
+      currentTurn: state.currentTurn,
+      offersAwaitingMyResponse: offersToMe.map((o: NegotiationOffer) => ({
+        id: o.id,
+        from: o.from,
+        reasoning: o.reasoning,
+        terms: o.terms,
+      })),
+      myPendingOffers: myOffers.map((o: NegotiationOffer) => ({
+        id: o.id,
+        to: o.to,
+        status: o.status,
+      })),
+      myInterests: state.interests[agentName],
+      coalitions: state.coalitions.filter(
+        (c) => c.members.includes(agentName) || c.status === 'forming'
+      ),
+      hasAgreement: !!state.agreement,
+    };
   }
 }

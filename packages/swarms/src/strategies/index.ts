@@ -12,7 +12,9 @@ import type {
   AuctionConfig,
   PipelineConfig,
   DebateConfig,
+  NegotiationConfig,
 } from '@cogitator-ai/types';
+import { DEFAULT_NEGOTIATION_CONFIG } from '@cogitator-ai/types';
 import type { SwarmCoordinator } from '../coordinator';
 
 export { BaseStrategy } from './base';
@@ -22,6 +24,7 @@ export { ConsensusStrategy } from './consensus';
 export { AuctionStrategy } from './auction';
 export { PipelineStrategy } from './pipeline';
 export { DebateStrategy } from './debate';
+export { NegotiationStrategy } from './negotiation';
 
 import { HierarchicalStrategy } from './hierarchical';
 import { RoundRobinStrategy } from './round-robin';
@@ -29,6 +32,7 @@ import { ConsensusStrategy } from './consensus';
 import { AuctionStrategy } from './auction';
 import { PipelineStrategy } from './pipeline';
 import { DebateStrategy } from './debate';
+import { NegotiationStrategy } from './negotiation';
 
 /**
  * Create a strategy instance based on configuration
@@ -67,6 +71,9 @@ export function createStrategy(coordinator: SwarmCoordinator, config: SwarmConfi
       }
       return new DebateStrategy(coordinator, config.debate);
 
+    case 'negotiation':
+      return new NegotiationStrategy(coordinator, config.negotiation);
+
     default:
       throw new Error(`Unknown swarm strategy: ${strategy}`);
   }
@@ -82,6 +89,7 @@ export function getDefaultStrategyConfig(strategy: SwarmStrategy): {
   auction?: AuctionConfig;
   pipeline?: PipelineConfig;
   debate?: DebateConfig;
+  negotiation?: NegotiationConfig;
 } {
   switch (strategy) {
     case 'hierarchical':
@@ -134,6 +142,11 @@ export function getDefaultStrategyConfig(strategy: SwarmStrategy): {
           rounds: 3,
           format: 'structured',
         },
+      };
+
+    case 'negotiation':
+      return {
+        negotiation: DEFAULT_NEGOTIATION_CONFIG,
       };
 
     default:

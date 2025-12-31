@@ -13,9 +13,16 @@ export {
   AuctionStrategy,
   PipelineStrategy,
   DebateStrategy,
+  NegotiationStrategy,
   createStrategy,
   getDefaultStrategyConfig,
 } from './strategies/index';
+
+export {
+  TurnManager,
+  ConvergenceCalculator,
+  ApprovalIntegration,
+} from './strategies/negotiation/index';
 
 export {
   SwarmEventEmitterImpl,
@@ -37,11 +44,13 @@ export {
   createBlackboardTools,
   createDelegationTools,
   createVotingTools,
+  createNegotiationTools,
   type SwarmToolContext,
   type MessagingTools,
   type BlackboardTools,
   type DelegationTools,
   type VotingTools,
+  type NegotiationTools,
 } from './tools/index';
 
 export {
@@ -89,6 +98,16 @@ export type {
   PipelineContext,
   PipelineGateConfig,
   DebateConfig,
+  NegotiationConfig,
+  NegotiationPhase,
+  NegotiationTerm,
+  NegotiationOffer,
+  NegotiationAgreement,
+  NegotiationState,
+  NegotiationResult,
+  NegotiationApprovalGate,
+  ConvergenceMetrics,
+  Coalition,
   StrategyResult,
   IStrategy,
   SwarmCoordinatorInterface,
