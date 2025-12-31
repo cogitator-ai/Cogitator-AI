@@ -55,10 +55,10 @@ export async function subscribe(
     }
   };
 
-  sub.on('message', handler);
+  sub.on('message', handler as (channel: string, message: string) => void);
 
   return () => {
-    sub.off('message', handler);
+    sub.off('message', handler as (...args: unknown[]) => void);
     sub.unsubscribe(channel);
   };
 }

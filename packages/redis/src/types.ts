@@ -88,11 +88,14 @@ export interface RedisClient {
   smembers(key: string): Promise<string[]>;
 
   publish(channel: string, message: string): Promise<number>;
-  subscribe(channel: string, callback?: (message: string) => void): Promise<void>;
+  subscribe(channel: string, callback?: (channel: string, message: string) => void): Promise<void>;
   unsubscribe(channel: string): Promise<void>;
 
-  on(event: string, callback: (...args: any[]) => void): void;
-  off(event: string, callback: (...args: any[]) => void): void;
+  on(event: 'message', callback: (channel: string, message: string) => void): void;
+  on(event: 'error', callback: (error: Error) => void): void;
+  on(event: 'connect' | 'ready' | 'close' | 'reconnecting' | 'end', callback: () => void): void;
+  on(event: string, callback: (...args: unknown[]) => void): void;
+  off(event: string, callback: (...args: unknown[]) => void): void;
 
   keys(pattern: string): Promise<string[]>;
 

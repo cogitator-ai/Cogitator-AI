@@ -7,6 +7,8 @@
 import type { RedisConfig, RedisClient, RedisClusterConfig, RedisStandaloneConfig } from './types';
 import { isClusterConfig } from './types';
 
+type EventCallback = (...args: unknown[]) => void;
+
 interface RawRedisClient {
   ping(): Promise<string>;
   quit(): Promise<string>;
@@ -25,8 +27,8 @@ interface RawRedisClient {
   subscribe(channel: string): Promise<void>;
   unsubscribe(channel: string): Promise<void>;
   keys(pattern: string): Promise<string[]>;
-  on(event: string, callback: (...args: any[]) => void): void;
-  off(event: string, callback: (...args: any[]) => void): void;
+  on(event: string, callback: EventCallback): void;
+  off(event: string, callback: EventCallback): void;
   duplicate(): RawRedisClient;
   info(section?: string): Promise<string>;
 }
@@ -145,17 +147,25 @@ function wrapClient(client: RawRedisClient): RedisClient {
     zrem: (key, ...members) => client.zrem(key, ...members),
     smembers: (key) => client.smembers(key),
     publish: (channel, message) => client.publish(channel, message),
-    subscribe: async (channel) => {
+    subscribe: async (channel, callback) => {
+      if (callback) {
+        const handler = (ch: unknown, msg: unknown) => {
+          if (ch === channel && typeof msg === 'string') {
+            callback(String(ch), msg);
+          }
+        };
+        client.on('message', handler);
+      }
       await client.subscribe(channel);
     },
     unsubscribe: async (channel) => {
       await client.unsubscribe(channel);
     },
     on: (event, callback) => {
-      client.on(event, callback);
+      client.on(event, callback as EventCallback);
     },
     off: (event, callback) => {
-      client.off(event, callback);
+      client.off(event, callback as EventCallback);
     },
     keys: (pattern) => client.keys(pattern),
     duplicate: () => wrapClient(client.duplicate()),
@@ -230,11 +240,13 @@ export function createConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Redis
     };
   }
 
+  const port = parseInt(env.REDIS_PORT ?? '6379', 10);
+
   return {
     mode: 'standalone',
     url: env.REDIS_URL,
     host: env.REDIS_HOST ?? 'localhost',
-    port: parseInt(env.REDIS_PORT ?? '6379', 10),
+    port: Number.isNaN(port) ? 6379 : port,
     password: env.REDIS_PASSWORD,
     keyPrefix: env.REDIS_KEY_PREFIX ?? 'cogitator:',
   };

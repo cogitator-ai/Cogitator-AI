@@ -1,5 +1,19 @@
 # @cogitator-ai/redis
 
+## 0.2.0
+
+### Minor Changes
+
+- Fix subscribe callback: now properly invokes callback with (channel, message) on received messages
+- Improve type safety: `any[]` → `unknown[]` for event callbacks
+- Add typed overloads for common events (message, error, connect, etc.)
+- Add port validation in `createConfigFromEnv()` (NaN defaults to 6379)
+
+### Tests
+
+- Add comprehensive tests for `parseClusterNodesEnv()`
+- Add comprehensive tests for `createConfigFromEnv()`
+
 ## 0.1.1
 
 ### Patch Changes
