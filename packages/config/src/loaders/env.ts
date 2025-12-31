@@ -27,8 +27,12 @@ const ENV_PREFIX = 'COGITATOR_';
  * - ANTHROPIC_API_KEY -> llm.providers.anthropic.apiKey
  * - OLLAMA_HOST -> llm.providers.ollama.baseUrl
  */
-type LLMConfig = NonNullable<CogitatorConfigInput['llm']>;
-type LLMProvider = LLMConfig['defaultProvider'];
+const VALID_PROVIDERS = ['ollama', 'openai', 'anthropic', 'google', 'vllm'] as const;
+type LLMProvider = (typeof VALID_PROVIDERS)[number];
+
+function isValidProvider(value: string): value is LLMProvider {
+  return VALID_PROVIDERS.includes(value as LLMProvider);
+}
 
 export function loadEnvConfig(): CogitatorConfigInput {
   const config: CogitatorConfigInput = {};
@@ -39,7 +43,7 @@ export function loadEnvConfig(): CogitatorConfigInput {
   if (defaultProvider || defaultModel) {
     config.llm = {
       ...config.llm,
-      defaultProvider: defaultProvider as LLMProvider,
+      defaultProvider: defaultProvider && isValidProvider(defaultProvider) ? defaultProvider : undefined,
       defaultModel,
     };
   }
@@ -113,6 +117,6 @@ function getEnv(key: string): string | undefined {
 function getEnvNumber(key: string): number | undefined {
   const value = getEnv(key);
   if (value === undefined) return undefined;
-  const num = parseInt(value, 10);
-  return isNaN(num) ? undefined : num;
+  if (!/^\d+$/.test(value)) return undefined;
+  return parseInt(value, 10);
 }
