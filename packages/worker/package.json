@@ -39,5 +39,13 @@
   "peerDependencies": {
     "ioredis": "^5.0.0"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eL1fe/cogitator.git",
+    "directory": "packages/worker"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "license": "MIT"
 }

@@ -26,11 +26,8 @@ const DEFAULT_QUEUE_NAME = 'cogitator-jobs';
 
 export class JobQueue {
   private queue: Queue<JobPayload>;
-  private readonly config: QueueConfig;
 
   constructor(config: QueueConfig) {
-    this.config = config;
-
     const connection = config.redis.cluster
       ? {
           host: config.redis.cluster.nodes[0]?.host ?? 'localhost',

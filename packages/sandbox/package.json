@@ -3,12 +3,12 @@
   "version": "0.1.0",
   "description": "Sandbox execution for Cogitator agents (Docker and WASM)",
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     }
   },
   "files": [
@@ -46,6 +46,14 @@
     "dockerode": {
       "optional": true
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eL1fe/cogitator.git",
+    "directory": "packages/sandbox"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "license": "MIT"
 }

@@ -31,5 +31,13 @@
     "esbuild": "^0.20.0",
     "typescript": "^5.3.0"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eL1fe/cogitator.git",
+    "directory": "packages/wasm-tools"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "license": "MIT"
 }
