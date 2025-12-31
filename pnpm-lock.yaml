@@ -101,6 +101,9 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
+      '@types/node':
+        specifier: ^20.10.0
+        version: 20.19.27
       yaml:
         specifier: ^2.3.4
         version: 2.8.2
@@ -132,6 +135,9 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
+      '@types/node':
+        specifier: ^20.10.0
+        version: 20.19.27
       nanoid:
         specifier: ^5.0.4
         version: 5.1.6
@@ -283,6 +289,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.0
         version: 1.25.1(hono@4.11.3)(zod@3.25.76)
+      '@types/node':
+        specifier: ^20.10.0
+        version: 20.19.27
       zod:
         specifier: ^3.22.4
         version: 3.25.76
@@ -290,9 +299,6 @@ importers:
         specifier: ^3.24.5
         version: 3.25.1(zod@3.25.76)
     devDependencies:
-      '@types/node':
-        specifier: ^20.10.0
-        version: 20.19.27
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
@@ -308,6 +314,9 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
+      '@types/node':
+        specifier: ^20.10.0
+        version: 20.19.27
       '@types/pg':
         specifier: ^8.10.9
         version: 8.16.0
@@ -340,13 +349,13 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.19.3
       zod:
         specifier: ^3.24.0
         version: 3.25.76
     devDependencies:
-      '@types/node':
-        specifier: ^22.10.0
-        version: 22.19.3
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
@@ -368,6 +377,9 @@ importers:
       '@fastify/multipart':
         specifier: ^9.3.0
         version: 9.3.0
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.19.3
       fastify:
         specifier: ^5.2.3
         version: 5.6.2
@@ -381,29 +393,26 @@ importers:
       '@types/busboy':
         specifier: ^1.5.4
         version: 1.5.4
-      '@types/node':
-        specifier: ^20.10.0
-        version: 20.19.27
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
       vitest:
         specifier: ^1.6.0
-        version: 1.6.1(@types/node@20.19.27)
+        version: 1.6.1(@types/node@22.19.3)
 
   packages/redis:
     dependencies:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
+      '@types/node':
+        specifier: ^20.10.0
+        version: 20.19.27
     optionalDependencies:
       ioredis:
         specifier: ^5.4.1
         version: 5.8.2
     devDependencies:
-      '@types/node':
-        specifier: ^20.10.0
-        version: 20.19.27
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
@@ -419,6 +428,9 @@ importers:
       '@types/dockerode':
         specifier: ^3.3.31
         version: 3.3.47
+      '@types/node':
+        specifier: ^20.10.0
+        version: 20.19.27
       nanoid:
         specifier: ^5.0.4
         version: 5.1.6
@@ -448,6 +460,9 @@ importers:
       '@cogitator-ai/workflows':
         specifier: workspace:*
         version: link:../workflows
+      '@types/node':
+        specifier: ^20.10.0
+        version: 20.19.27
       nanoid:
         specifier: ^5.0.4
         version: 5.1.6
@@ -536,6 +551,9 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
+      '@types/node':
+        specifier: ^20.10.0
+        version: 20.19.27
       cron-parser:
         specifier: ^4.9.0
         version: 4.9.0
@@ -2526,7 +2544,6 @@ packages:
     resolution: {integrity: sha512-N2clP5pJhB2YnZJ3PIHFk5RkygRX5WO/5f0WC08tp0wd+sv0rsJk3MqWn3CbNmT2J505a5336jaQj4ph1AdMug==}
     dependencies:
       undici-types: 6.21.0
-    dev: true
 
   /@types/node@22.19.3:
     resolution: {integrity: sha512-1N9SBnWYOJTrNZCdh/yJE+t910Y128BoyY+zBLWhL3r0TYzlTmFdXrPwHL9DyFZmlEXNQQolTZh3KHV31QDhyA==}
@@ -6568,6 +6585,28 @@ packages:
       - terser
     dev: true
 
+  /vite-node@1.6.1(@types/node@22.19.3):
+    resolution: {integrity: sha512-YAXkfvGtuTzwWbDSACdJSg4A4DZiAqckWe90Zapc/sEX3XvHcw1NdurM/6od8J207tSDqNbSsgdCacBgvJKFuA==}
+    engines: {node: ^18.0.0 || >=20.0.0}
+    hasBin: true
+    dependencies:
+      cac: 6.7.14
+      debug: 4.4.3
+      pathe: 1.1.2
+      picocolors: 1.1.1
+      vite: 5.4.21(@types/node@22.19.3)
+    transitivePeerDependencies:
+      - '@types/node'
+      - less
+      - lightningcss
+      - sass
+      - sass-embedded
+      - stylus
+      - sugarss
+      - supports-color
+      - terser
+    dev: true
+
   /vite-node@2.1.9(@types/node@22.19.3):
     resolution: {integrity: sha512-AM9aQ/IPrW/6ENLQg3AGY4K1N2TGZdR5e4gu/MmmR2xR3Ll1+dib+nook92g4TV3PXVyeyxdWwtaCAiUL0hMxA==}
     engines: {node: ^18.0.0 || >=20.0.0}
@@ -6713,6 +6752,63 @@ packages:
       tinypool: 0.8.4
       vite: 5.4.21(@types/node@20.19.27)
       vite-node: 1.6.1(@types/node@20.19.27)
+      why-is-node-running: 2.3.0
+    transitivePeerDependencies:
+      - less
+      - lightningcss
+      - sass
+      - sass-embedded
+      - stylus
+      - sugarss
+      - supports-color
+      - terser
+    dev: true
+
+  /vitest@1.6.1(@types/node@22.19.3):
+    resolution: {integrity: sha512-Ljb1cnSJSivGN0LqXd/zmDbWEM0RNNg2t1QW/XUhYl/qPqyu7CsqeWtqQXHVaJsecLPuDoak2oJcZN2QoRIOag==}
+    engines: {node: ^18.0.0 || >=20.0.0}
+    hasBin: true
+    peerDependencies:
+      '@edge-runtime/vm': '*'
+      '@types/node': ^18.0.0 || >=20.0.0
+      '@vitest/browser': 1.6.1
+      '@vitest/ui': 1.6.1
+      happy-dom: '*'
+      jsdom: '*'
+    peerDependenciesMeta:
+      '@edge-runtime/vm':
+        optional: true
+      '@types/node':
+        optional: true
+      '@vitest/browser':
+        optional: true
+      '@vitest/ui':
+        optional: true
+      happy-dom:
+        optional: true
+      jsdom:
+        optional: true
+    dependencies:
+      '@types/node': 22.19.3
+      '@vitest/expect': 1.6.1
+      '@vitest/runner': 1.6.1
+      '@vitest/snapshot': 1.6.1
+      '@vitest/spy': 1.6.1
+      '@vitest/utils': 1.6.1
+      acorn-walk: 8.3.4
+      chai: 4.5.0
+      debug: 4.4.3
+      execa: 8.0.1
+      local-pkg: 0.5.1
+      magic-string: 0.30.21
+      pathe: 1.1.2
+      picocolors: 1.1.1
+      std-env: 3.10.0
+      strip-literal: 2.1.1
+      tinybench: 2.9.0
+      tinypool: 0.8.4
+      vite: 5.4.21(@types/node@22.19.3)
+      vite-node: 1.6.1(@types/node@22.19.3)
       why-is-node-running: 2.3.0
     transitivePeerDependencies:
       - less
