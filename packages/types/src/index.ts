@@ -15,3 +15,4 @@ export * from './workflow';
 export * from './swarm';
 export * from './errors';
 export * from './reflection';
+export * from './reasoning';

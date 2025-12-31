@@ -18,6 +18,13 @@ export { ReflectionEngine, InMemoryInsightStore } from './reflection/index';
 export type { ReflectionEngineOptions } from './reflection/index';
 
 export {
+  ThoughtTreeExecutor,
+  BranchGenerator,
+  BranchEvaluator,
+} from './reasoning/index';
+export type { BranchEvaluatorOptions } from './reasoning/index';
+
+export {
   BaseLLMBackend,
   OllamaBackend,
   OpenAIBackend,
@@ -74,4 +81,15 @@ export type {
   RunOptions,
   RunResult,
   Span,
+  ToTConfig,
+  ToTResult,
+  ToTStats,
+  ToTRunOptions,
+  ThoughtTree,
+  ThoughtNode,
+  ThoughtBranch,
+  BranchScore,
+  ProposedAction,
+  ExplorationStrategy,
 } from '@cogitator-ai/types';
+export { DEFAULT_TOT_CONFIG } from '@cogitator-ai/types';
