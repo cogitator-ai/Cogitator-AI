@@ -15,9 +15,10 @@ Result: ${currentNode.result?.response ?? currentNode.result?.error ?? 'pending'
 Depth: ${currentNode.depth}`
     : 'CURRENT STATE: Starting fresh';
 
-  const exploredSection = exploredThoughts.length > 0
-    ? `\nALREADY EXPLORED (avoid similar approaches):\n${exploredThoughts.map(t => `- ${t}`).join('\n')}`
-    : '';
+  const exploredSection =
+    exploredThoughts.length > 0
+      ? `\nALREADY EXPLORED (avoid similar approaches):\n${exploredThoughts.map((t) => `- ${t}`).join('\n')}`
+      : '';
 
   return `You are exploring different approaches to solve a problem.
 
@@ -65,9 +66,10 @@ export function buildBranchEvaluationPrompt(
   goal: string,
   siblings: ThoughtBranch[]
 ): string {
-  const siblingsSection = siblings.length > 0
-    ? `\nOTHER APPROACHES BEING CONSIDERED:\n${siblings.map(s => `- ${s.thought}`).join('\n')}`
-    : '';
+  const siblingsSection =
+    siblings.length > 0
+      ? `\nOTHER APPROACHES BEING CONSIDERED:\n${siblings.map((s) => `- ${s.thought}`).join('\n')}`
+      : '';
 
   return `Evaluate this approach for solving a problem.
 
@@ -93,17 +95,16 @@ Respond ONLY with valid JSON (no markdown):
 }`;
 }
 
-export function buildSynthesisPrompt(
-  goal: string,
-  path: ThoughtNode[]
-): string {
-  const pathSummary = path.map((node, i) => {
-    const result = node.result?.response ?? node.result?.error ?? 'no result';
-    return `Step ${i + 1}:
+export function buildSynthesisPrompt(goal: string, path: ThoughtNode[]): string {
+  const pathSummary = path
+    .map((node, i) => {
+      const result = node.result?.response ?? node.result?.error ?? 'no result';
+      return `Step ${i + 1}:
   Thought: ${node.branch.thought}
   Action: ${JSON.stringify(node.branch.proposedAction)}
   Result: ${result}`;
-  }).join('\n\n');
+    })
+    .join('\n\n');
 
   return `Synthesize a final answer based on the explored path.
 
@@ -145,7 +146,7 @@ export function parseBranchResponse(response: string): ParsedBranches | null {
       return null;
     }
 
-    parsed.branches = parsed.branches.filter(b => {
+    parsed.branches = parsed.branches.filter((b) => {
       if (!b || typeof b !== 'object') return false;
       if (typeof b.thought !== 'string' || !b.thought) return false;
       if (!b.action || typeof b.action !== 'object') return false;

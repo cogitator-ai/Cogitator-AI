@@ -221,28 +221,28 @@ const schemas = registry.getSchemas();
 
 ### Built-in Tools
 
-| Tool | Description |
-|------|-------------|
-| `calculator` | Evaluate math expressions |
-| `datetime` | Get current date/time |
-| `uuid` | Generate UUIDs |
-| `randomNumber` | Random number generation |
-| `randomString` | Random string generation |
-| `hash` | Hash strings (md5, sha256, etc.) |
-| `base64Encode` | Encode to base64 |
-| `base64Decode` | Decode from base64 |
-| `sleep` | Delay execution |
-| `jsonParse` | Parse JSON strings |
-| `jsonStringify` | Stringify to JSON |
-| `regexMatch` | Match regex patterns |
-| `regexReplace` | Replace with regex |
-| `fileRead` | Read file contents |
-| `fileWrite` | Write to files |
-| `fileList` | List directory contents |
-| `fileExists` | Check if file exists |
-| `fileDelete` | Delete files |
-| `httpRequest` | Make HTTP requests |
-| `exec` | Execute shell commands |
+| Tool            | Description                      |
+| --------------- | -------------------------------- |
+| `calculator`    | Evaluate math expressions        |
+| `datetime`      | Get current date/time            |
+| `uuid`          | Generate UUIDs                   |
+| `randomNumber`  | Random number generation         |
+| `randomString`  | Random string generation         |
+| `hash`          | Hash strings (md5, sha256, etc.) |
+| `base64Encode`  | Encode to base64                 |
+| `base64Decode`  | Decode from base64               |
+| `sleep`         | Delay execution                  |
+| `jsonParse`     | Parse JSON strings               |
+| `jsonStringify` | Stringify to JSON                |
+| `regexMatch`    | Match regex patterns             |
+| `regexReplace`  | Replace with regex               |
+| `fileRead`      | Read file contents               |
+| `fileWrite`     | Write to files                   |
+| `fileList`      | List directory contents          |
+| `fileExists`    | Check if file exists             |
+| `fileDelete`    | Delete files                     |
+| `httpRequest`   | Make HTTP requests               |
+| `exec`          | Execute shell commands           |
 
 ```typescript
 import { builtinTools, calculator, datetime } from '@cogitator-ai/core';
@@ -263,7 +263,9 @@ const agent = new Agent({
 import { Cogitator, Agent } from '@cogitator-ai/core';
 
 const cog = new Cogitator();
-const agent = new Agent({ /* ... */ });
+const agent = new Agent({
+  /* ... */
+});
 
 const result = await cog.run(agent, {
   input: 'Analyze this data...',
@@ -545,21 +547,15 @@ const forkWithContext = await timeTravel.forkWithContext(
   'Additional context: the user is an expert'
 );
 
-const forkWithMock = await timeTravel.forkWithMockedTool(
-  agent,
-  checkpointId,
-  'api_call',
-  { status: 'success', data: 'mocked data' }
-);
+const forkWithMock = await timeTravel.forkWithMockedTool(agent, checkpointId, 'api_call', {
+  status: 'success',
+  data: 'mocked data',
+});
 
-const forkWithMocks = await timeTravel.forkWithMockedTools(
-  agent,
-  checkpointId,
-  {
-    api_call: { status: 'success' },
-    database_query: { rows: [] },
-  }
-);
+const forkWithMocks = await timeTravel.forkWithMockedTools(agent, checkpointId, {
+  api_call: { status: 'success' },
+  database_query: { rows: [] },
+});
 
 const forkWithNewInput = await timeTravel.forkWithNewInput(
   agent,
@@ -593,19 +589,16 @@ const liveReplay = await timeTravel.replayLive(agent, checkpointId, {
 ```typescript
 import { withRetry, retryable } from '@cogitator-ai/core';
 
-const result = await withRetry(
-  () => unreliableApiCall(),
-  {
-    maxRetries: 5,
-    baseDelay: 1000,
-    maxDelay: 30000,
-    backoff: 'exponential',
-    jitter: 0.1,
-    onRetry: (error, attempt, delay) => {
-      console.log(`Retry ${attempt} after ${delay}ms: ${error.message}`);
-    },
-  }
-);
+const result = await withRetry(() => unreliableApiCall(), {
+  maxRetries: 5,
+  baseDelay: 1000,
+  maxDelay: 30000,
+  backoff: 'exponential',
+  jitter: 0.1,
+  onRetry: (error, attempt, delay) => {
+    console.log(`Retry ${attempt} after ${delay}ms: ${error.message}`);
+  },
+});
 
 const retryableFetch = retryable(fetch, { maxRetries: 3 });
 const response = await retryableFetch('https://api.example.com');
@@ -640,7 +633,11 @@ breaker.onStateChange((state) => {
 ### Fallback Patterns
 
 ```typescript
-import { withFallback, withGracefulDegradation, createLLMFallbackExecutor } from '@cogitator-ai/core';
+import {
+  withFallback,
+  withGracefulDegradation,
+  createLLMFallbackExecutor,
+} from '@cogitator-ai/core';
 
 const result = await withFallback(
   () => primaryCall(),
@@ -649,11 +646,7 @@ const result = await withFallback(
 
 const degraded = await withGracefulDegradation(
   () => fullFeatureCall(),
-  [
-    () => reducedFeatureCall(),
-    () => minimalCall(),
-    () => cachedResult(),
-  ]
+  [() => reducedFeatureCall(), () => minimalCall(), () => cachedResult()]
 );
 
 const llmExecutor = createLLMFallbackExecutor([

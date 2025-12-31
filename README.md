@@ -450,10 +450,7 @@ const tot = new ThoughtTreeExecutor(cog, {
   terminationConfidence: 0.85, // Stop when 85% confident
 });
 
-const result = await tot.explore(
-  agent,
-  'Design a scalable architecture for real-time chat'
-);
+const result = await tot.explore(agent, 'Design a scalable architecture for real-time chat');
 
 console.log(result.output); // Best solution found
 console.log(result.stats);
@@ -512,6 +509,7 @@ console.log('New instructions:', compileResult.instructionsAfter);
 ```
 
 **Features:**
+
 - **Trace Capture** - Store execution traces as training data
 - **Metric Evaluation** - Built-in (success, accuracy) + LLM-based (completeness, coherence)
 - **BootstrapFewShot** - Auto-select best traces as few-shot demos
@@ -525,8 +523,12 @@ Debug agent executions like `git bisect` — checkpoint, replay, fork, and compa
 ```typescript
 import { Cogitator, Agent, TimeTravel } from '@cogitator-ai/core';
 
-const cog = new Cogitator({ /* ... */ });
-const agent = new Agent({ /* ... */ });
+const cog = new Cogitator({
+  /* ... */
+});
+const agent = new Agent({
+  /* ... */
+});
 const tt = new TimeTravel(cog);
 
 // Run and checkpoint every step
@@ -555,15 +557,13 @@ console.log(tt.formatDiff(diff));
 // Token delta: -1200 (fork more efficient)
 
 // Fork with mocked tool result for testing
-const mockFork = await tt.forkWithMockedTool(
-  agent,
-  checkpoints[1].id,
-  'web_search',
-  { results: [{ title: 'Custom Result', url: '...' }] }
-);
+const mockFork = await tt.forkWithMockedTool(agent, checkpoints[1].id, 'web_search', {
+  results: [{ title: 'Custom Result', url: '...' }],
+});
 ```
 
 **Features:**
+
 - **Checkpoint** - Save execution state at any step
 - **Replay** - Deterministic (cached) or live (new LLM calls)
 - **Fork** - Branch execution with modified context or mocked tools
@@ -575,22 +575,17 @@ const mockFork = await tt.forkWithMockedTool(
 Built-in safety guardrails with Constitutional AI — critique and revise harmful outputs automatically:
 
 ```typescript
-import {
-  Cogitator,
-  Agent,
-  DEFAULT_CONSTITUTION,
-  extendConstitution,
-} from '@cogitator-ai/core';
+import { Cogitator, Agent, DEFAULT_CONSTITUTION, extendConstitution } from '@cogitator-ai/core';
 
 // Enable guardrails with default constitution (16 safety principles)
 const cog = new Cogitator({
   guardrails: {
     enabled: true,
-    filterInput: true,      // Block harmful user inputs
-    filterOutput: true,     // Evaluate LLM responses
-    filterToolCalls: true,  // Guard dangerous tool operations
+    filterInput: true, // Block harmful user inputs
+    filterOutput: true, // Evaluate LLM responses
+    filterToolCalls: true, // Guard dangerous tool operations
     enableCritiqueRevision: true, // Auto-revise harmful outputs
-    strictMode: false,      // false = warn, true = block
+    strictMode: false, // false = warn, true = block
   },
 });
 
@@ -637,6 +632,7 @@ console.log('Violations:', guardrails?.getViolationLog());
 ```
 
 **Features:**
+
 - **Input Filtering** - Quick pattern matching + LLM-based evaluation
 - **Output Filtering** - Check responses against 16 safety principles
 - **Tool Guard** - Block dangerous commands (`rm -rf /`), validate paths, enforce approval
@@ -654,14 +650,14 @@ import { Cogitator, Agent } from '@cogitator-ai/core';
 const cog = new Cogitator({
   costRouting: {
     enabled: true,
-    autoSelectModel: true,    // Auto-pick optimal model based on task
-    preferLocal: true,        // Prefer Ollama when quality is similar
-    trackCosts: true,         // Track per-run costs
+    autoSelectModel: true, // Auto-pick optimal model based on task
+    preferLocal: true, // Prefer Ollama when quality is similar
+    trackCosts: true, // Track per-run costs
     budget: {
-      maxCostPerRun: 0.10,    // $0.10 per run
-      maxCostPerHour: 5.00,   // $5 per hour
-      maxCostPerDay: 50.00,   // $50 per day
-      warningThreshold: 0.8,  // Warn at 80% of budget
+      maxCostPerRun: 0.1, // $0.10 per run
+      maxCostPerHour: 5.0, // $5 per hour
+      maxCostPerDay: 50.0, // $50 per day
+      warningThreshold: 0.8, // Warn at 80% of budget
       onBudgetWarning: (current, limit) => {
         console.warn(`Budget warning: $${current.toFixed(2)} / $${limit}`);
       },
@@ -671,22 +667,22 @@ const cog = new Cogitator({
 
 const agent = new Agent({
   name: 'assistant',
-  model: 'openai/gpt-4o',  // Will be overridden if autoSelectModel=true
+  model: 'openai/gpt-4o', // Will be overridden if autoSelectModel=true
   instructions: 'You are helpful.',
 });
 
 // Simple task → routes to gpt-4o-mini or local model
 const result1 = await cog.run(agent, {
-  input: 'What is 2+2?'
+  input: 'What is 2+2?',
 });
-console.log(result1.modelUsed);  // 'gpt-4o-mini'
+console.log(result1.modelUsed); // 'gpt-4o-mini'
 console.log(result1.usage.cost); // 0.0001
 
 // Complex task → routes to gpt-4o
 const result2 = await cog.run(agent, {
-  input: 'Analyze this codebase and suggest architectural improvements...'
+  input: 'Analyze this codebase and suggest architectural improvements...',
 });
-console.log(result2.modelUsed);  // 'gpt-4o'
+console.log(result2.modelUsed); // 'gpt-4o'
 console.log(result2.usage.cost); // 0.05
 
 // Get cost summary
@@ -697,12 +693,14 @@ console.log(`By model:`, summary.byModel);
 ```
 
 **Task Analysis:**
+
 - Detects task complexity (simple/moderate/complex)
 - Identifies vision, tool, and long-context needs
 - Considers speed and cost sensitivity preferences
 - Recognizes domains (code, math, creative, analysis, etc.)
 
 **Model Selection:**
+
 - Scores models against requirements (0-100)
 - Prefers local models (Ollama) when quality is sufficient
 - Falls back to cloud models for advanced reasoning

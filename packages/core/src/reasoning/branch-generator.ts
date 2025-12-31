@@ -34,7 +34,8 @@ export class BranchGenerator {
       messages: [
         {
           role: 'system',
-          content: 'You are a strategic reasoning assistant. Generate diverse approaches to solve problems. Always respond with valid JSON.',
+          content:
+            'You are a strategic reasoning assistant. Generate diverse approaches to solve problems. Always respond with valid JSON.',
         },
         {
           role: 'user',
@@ -54,7 +55,7 @@ export class BranchGenerator {
     const parentId = currentNode?.id ?? null;
     const messagesSnapshot = currentNode?.messages ?? [];
 
-    return parsed.branches.slice(0, k).map(b => ({
+    return parsed.branches.slice(0, k).map((b) => ({
       id: generateId(),
       parentId,
       thought: b.thought,
@@ -71,15 +72,17 @@ export class BranchGenerator {
     const parentId = currentNode?.id ?? null;
     const messagesSnapshot = currentNode?.messages ?? [];
 
-    return [{
-      id: generateId(),
-      parentId,
-      thought: `Attempting to directly address: ${goal}`,
-      proposedAction: {
-        type: 'response',
-        content: `Let me work on: ${goal}`,
+    return [
+      {
+        id: generateId(),
+        parentId,
+        thought: `Attempting to directly address: ${goal}`,
+        proposedAction: {
+          type: 'response',
+          content: `Let me work on: ${goal}`,
+        },
+        messagesSnapshot: [...messagesSnapshot],
       },
-      messagesSnapshot: [...messagesSnapshot],
-    }];
+    ];
   }
 }

@@ -21,7 +21,8 @@ export const DEFAULT_PRINCIPLES: ConstitutionalPrinciple[] = [
     category: 'ethics',
     critiquePrompt:
       'Does this response contain discrimination, prejudice, slurs, or derogatory language targeting any group?',
-    revisionPrompt: 'Rewrite to be respectful and inclusive of all groups while addressing the legitimate question',
+    revisionPrompt:
+      'Rewrite to be respectful and inclusive of all groups while addressing the legitimate question',
     harmCategories: ['hate'],
     severity: 'high',
     appliesTo: ['output'],
@@ -31,8 +32,10 @@ export const DEFAULT_PRINCIPLES: ConstitutionalPrinciple[] = [
     name: 'No Explicit Sexual Content',
     description: 'Avoid generating explicit sexual or adult content',
     category: 'safety',
-    critiquePrompt: 'Does this response contain explicit sexual content, pornography, or sexually exploitative material?',
-    revisionPrompt: 'Rewrite to remove explicit content while addressing any legitimate underlying question',
+    critiquePrompt:
+      'Does this response contain explicit sexual content, pornography, or sexually exploitative material?',
+    revisionPrompt:
+      'Rewrite to remove explicit content while addressing any legitimate underlying question',
     harmCategories: ['sexual'],
     severity: 'high',
     appliesTo: ['output'],
@@ -57,7 +60,8 @@ export const DEFAULT_PRINCIPLES: ConstitutionalPrinciple[] = [
     category: 'legal',
     critiquePrompt:
       'Does this response provide specific instructions for illegal activities like hacking, fraud, theft, or drug manufacturing?',
-    revisionPrompt: 'Rewrite to decline the request while explaining the legal and ethical concerns',
+    revisionPrompt:
+      'Rewrite to decline the request while explaining the legal and ethical concerns',
     harmCategories: ['illegal'],
     severity: 'high',
     appliesTo: ['output', 'tool'],
@@ -69,7 +73,8 @@ export const DEFAULT_PRINCIPLES: ConstitutionalPrinciple[] = [
     category: 'privacy',
     critiquePrompt:
       'Does this response reveal personal information (addresses, phone numbers, SSN, private data) about real identifiable individuals?',
-    revisionPrompt: 'Rewrite to remove or generalize personal information while preserving helpful content',
+    revisionPrompt:
+      'Rewrite to remove or generalize personal information while preserving helpful content',
     harmCategories: ['privacy'],
     severity: 'high',
     appliesTo: ['output', 'tool'],
@@ -106,7 +111,8 @@ export const DEFAULT_PRINCIPLES: ConstitutionalPrinciple[] = [
     category: 'ethics',
     critiquePrompt:
       'Does this response falsely claim to be human, hide its AI nature when directly asked, or pretend to have human experiences?',
-    revisionPrompt: 'Rewrite to be transparent about AI nature while remaining helpful and conversational',
+    revisionPrompt:
+      'Rewrite to be transparent about AI nature while remaining helpful and conversational',
     harmCategories: ['manipulation'],
     severity: 'medium',
     appliesTo: ['output'],
@@ -118,7 +124,8 @@ export const DEFAULT_PRINCIPLES: ConstitutionalPrinciple[] = [
     category: 'ethics',
     critiquePrompt:
       'Is this response excessively preachy, condescending, or dismissive of legitimate user questions?',
-    revisionPrompt: 'Rewrite to be helpful and respectful while still noting any genuine safety concerns once',
+    revisionPrompt:
+      'Rewrite to be helpful and respectful while still noting any genuine safety concerns once',
     harmCategories: ['manipulation'],
     severity: 'low',
     appliesTo: ['output'],
@@ -130,7 +137,8 @@ export const DEFAULT_PRINCIPLES: ConstitutionalPrinciple[] = [
     category: 'ethics',
     critiquePrompt:
       'Does this response make inappropriate cultural assumptions or fail to consider non-Western perspectives?',
-    revisionPrompt: 'Rewrite to be culturally inclusive and acknowledge diverse perspectives where relevant',
+    revisionPrompt:
+      'Rewrite to be culturally inclusive and acknowledge diverse perspectives where relevant',
     harmCategories: ['hate'],
     severity: 'low',
     appliesTo: ['output'],
@@ -155,7 +163,8 @@ export const DEFAULT_PRINCIPLES: ConstitutionalPrinciple[] = [
     category: 'legal',
     critiquePrompt:
       'Does this response provide specific legal advice without appropriate disclaimers about consulting a lawyer?',
-    revisionPrompt: 'Rewrite to provide general legal information with clear disclaimers to consult legal professionals',
+    revisionPrompt:
+      'Rewrite to provide general legal information with clear disclaimers to consult legal professionals',
     harmCategories: ['misinformation'],
     severity: 'medium',
     appliesTo: ['output'],
@@ -180,7 +189,8 @@ export const DEFAULT_PRINCIPLES: ConstitutionalPrinciple[] = [
     category: 'safety',
     critiquePrompt:
       'Does this response contain content that sexualizes, exploits, or could harm minors in any way?',
-    revisionPrompt: 'Completely refuse the request and explain that such content violates child safety principles',
+    revisionPrompt:
+      'Completely refuse the request and explain that such content violates child safety principles',
     harmCategories: ['sexual', 'violence'],
     severity: 'high',
     appliesTo: ['input', 'output'],
@@ -240,9 +250,7 @@ export function filterPrinciplesByLayer(
   constitution: Constitution,
   layer: 'input' | 'output' | 'tool'
 ): ConstitutionalPrinciple[] {
-  return constitution.principles.filter(
-    (p) => !p.appliesTo || p.appliesTo.includes(layer)
-  );
+  return constitution.principles.filter((p) => !p.appliesTo || p.appliesTo.includes(layer));
 }
 
 export function getPrinciplesByCategory(

@@ -55,10 +55,12 @@ import { SwarmBuilder, Swarm } from '@cogitator-ai/swarms';
 
 const swarm = new SwarmBuilder('dev-team')
   .strategy('hierarchical')
-  .supervisor(new Agent({
-    name: 'tech-lead',
-    instructions: 'Break down tasks and delegate to workers',
-  }))
+  .supervisor(
+    new Agent({
+      name: 'tech-lead',
+      instructions: 'Break down tasks and delegate to workers',
+    })
+  )
   .workers([
     new Agent({ name: 'frontend-dev', instructions: 'Build UI components' }),
     new Agent({ name: 'backend-dev', instructions: 'Build API endpoints' }),
@@ -148,10 +150,12 @@ const swarm = new SwarmBuilder('analysis-team')
     new Agent({ name: 'skeptic', instructions: 'Challenge assumptions' }),
     new Agent({ name: 'pragmatist', instructions: 'Focus on practicality' }),
   ])
-  .moderator(new Agent({
-    name: 'moderator',
-    instructions: 'Guide discussion and synthesize conclusions',
-  }))
+  .moderator(
+    new Agent({
+      name: 'moderator',
+      instructions: 'Guide discussion and synthesize conclusions',
+    })
+  )
   .debate({
     rounds: 3,
     requireSynthesis: true,
@@ -202,7 +206,7 @@ const swarm = new SwarmBuilder('smart-team')
     mode: 'rules',
     preferLocal: true,
     minCapabilityMatch: 0.3,
-    maxCostPerRun: 0.50,
+    maxCostPerRun: 0.5,
   })
   .build(cogitator);
 
@@ -263,12 +267,12 @@ for (const model of candidates) {
 
 ### Assessor Components
 
-| Component | Description |
-|-----------|-------------|
-| `TaskAnalyzer` | Analyzes task complexity and requirements |
+| Component        | Description                                   |
+| ---------------- | --------------------------------------------- |
+| `TaskAnalyzer`   | Analyzes task complexity and requirements     |
 | `ModelDiscovery` | Discovers available models from all providers |
-| `ModelScorer` | Scores models against role requirements |
-| `RoleMatcher` | Matches agents to optimal models |
+| `ModelScorer`    | Scores models against role requirements       |
+| `RoleMatcher`    | Matches agents to optimal models              |
 
 ---
 
@@ -432,13 +436,12 @@ const result = await workflow.run({
 import { conditionalSwarmNode } from '@cogitator-ai/swarms';
 
 const workflow = new WorkflowBuilder('conditional-flow')
-  .addNode('expert-review', conditionalSwarmNode(
-    expertSwarm,
-    (state) => state.needsExpertReview,
-    {
+  .addNode(
+    'expert-review',
+    conditionalSwarmNode(expertSwarm, (state) => state.needsExpertReview, {
       stateMapper: (result) => ({ expertOpinion: result.output }),
-    }
-  ))
+    })
+  )
   .build();
 ```
 
@@ -448,15 +451,21 @@ const workflow = new WorkflowBuilder('conditional-flow')
 import { parallelSwarmsNode } from '@cogitator-ai/swarms';
 
 const workflow = new WorkflowBuilder('parallel-analysis')
-  .addNode('multi-analyze', parallelSwarmsNode([
-    { swarm: technicalSwarm, key: 'technical' },
-    { swarm: businessSwarm, key: 'business' },
-    { swarm: legalSwarm, key: 'legal' },
-  ], (results) => ({
-    technicalAnalysis: results.technical.output,
-    businessAnalysis: results.business.output,
-    legalAnalysis: results.legal.output,
-  })))
+  .addNode(
+    'multi-analyze',
+    parallelSwarmsNode(
+      [
+        { swarm: technicalSwarm, key: 'technical' },
+        { swarm: businessSwarm, key: 'business' },
+        { swarm: legalSwarm, key: 'legal' },
+      ],
+      (results) => ({
+        technicalAnalysis: results.technical.output,
+        businessAnalysis: results.business.output,
+        legalAnalysis: results.legal.output,
+      })
+    )
+  )
   .build();
 ```
 
@@ -627,22 +636,22 @@ swarm.once('swarm:complete', (event) => {
 
 ### Event Types
 
-| Event | Description |
-|-------|-------------|
-| `swarm:start` | Swarm execution started |
-| `swarm:complete` | Swarm execution completed |
-| `swarm:error` | Error during swarm execution |
-| `swarm:paused` | Swarm paused |
-| `swarm:resumed` | Swarm resumed |
-| `swarm:aborted` | Swarm aborted |
-| `swarm:reset` | Swarm reset |
-| `agent:start` | Agent started execution |
-| `agent:complete` | Agent completed execution |
-| `agent:error` | Agent encountered error |
-| `assessor:complete` | Model assessment completed |
-| `message:sent` | Message sent between agents |
-| `blackboard:write` | Blackboard updated |
-| `vote:cast` | Vote cast in consensus |
+| Event               | Description                  |
+| ------------------- | ---------------------------- |
+| `swarm:start`       | Swarm execution started      |
+| `swarm:complete`    | Swarm execution completed    |
+| `swarm:error`       | Error during swarm execution |
+| `swarm:paused`      | Swarm paused                 |
+| `swarm:resumed`     | Swarm resumed                |
+| `swarm:aborted`     | Swarm aborted                |
+| `swarm:reset`       | Swarm reset                  |
+| `agent:start`       | Agent started execution      |
+| `agent:complete`    | Agent completed execution    |
+| `agent:error`       | Agent encountered error      |
+| `assessor:complete` | Model assessment completed   |
+| `message:sent`      | Message sent between agents  |
+| `blackboard:write`  | Blackboard updated           |
+| `vote:cast`         | Vote cast in consensus       |
 
 ---
 
@@ -784,10 +793,12 @@ import type {
 ```typescript
 const swarm = new SwarmBuilder('research-team')
   .strategy('hierarchical')
-  .supervisor(new Agent({
-    name: 'lead-researcher',
-    instructions: 'Coordinate research and synthesize findings',
-  }))
+  .supervisor(
+    new Agent({
+      name: 'lead-researcher',
+      instructions: 'Coordinate research and synthesize findings',
+    })
+  )
   .workers([
     new Agent({
       name: 'web-researcher',

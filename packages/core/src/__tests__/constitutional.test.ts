@@ -31,7 +31,9 @@ import type {
 } from '@cogitator-ai/types';
 import { z } from 'zod';
 
-const createMockLLM = (response: string = '{"isHarmful": false, "harmScores": []}'): LLMBackend => ({
+const createMockLLM = (
+  response: string = '{"isHarmful": false, "harmScores": []}'
+): LLMBackend => ({
   chat: vi.fn().mockResolvedValue({
     id: 'test',
     content: response,
@@ -170,12 +172,16 @@ describe('Constitution', () => {
   describe('filterPrinciplesByLayer', () => {
     it('filters principles by input layer', () => {
       const inputPrinciples = filterPrinciplesByLayer(DEFAULT_CONSTITUTION, 'input');
-      expect(inputPrinciples.every((p) => !p.appliesTo || p.appliesTo.includes('input'))).toBe(true);
+      expect(inputPrinciples.every((p) => !p.appliesTo || p.appliesTo.includes('input'))).toBe(
+        true
+      );
     });
 
     it('filters principles by output layer', () => {
       const outputPrinciples = filterPrinciplesByLayer(DEFAULT_CONSTITUTION, 'output');
-      expect(outputPrinciples.every((p) => !p.appliesTo || p.appliesTo.includes('output'))).toBe(true);
+      expect(outputPrinciples.every((p) => !p.appliesTo || p.appliesTo.includes('output'))).toBe(
+        true
+      );
     });
 
     it('filters principles by tool layer', () => {
@@ -320,9 +326,7 @@ describe('Prompts', () => {
     it('normalizes invalid categories', () => {
       const response = JSON.stringify({
         isHarmful: true,
-        harmScores: [
-          { category: 'invalid_category', severity: 'high', confidence: 0.5 },
-        ],
+        harmScores: [{ category: 'invalid_category', severity: 'high', confidence: 0.5 }],
       });
 
       const parsed = parseEvaluationResponse(response);
@@ -332,9 +336,7 @@ describe('Prompts', () => {
     it('clamps confidence to valid range', () => {
       const response = JSON.stringify({
         isHarmful: true,
-        harmScores: [
-          { category: 'violence', severity: 'high', confidence: 1.5 },
-        ],
+        harmScores: [{ category: 'violence', severity: 'high', confidence: 1.5 }],
       });
 
       const parsed = parseEvaluationResponse(response);
@@ -410,9 +412,7 @@ describe('InputFilter', () => {
       id: 'test',
       content: JSON.stringify({
         isHarmful: true,
-        harmScores: [
-          { category: 'violence', severity: 'high', confidence: 0.95 },
-        ],
+        harmScores: [{ category: 'violence', severity: 'high', confidence: 0.95 }],
       }),
       finishReason: 'stop',
       usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
@@ -429,9 +429,7 @@ describe('InputFilter', () => {
       id: 'test',
       content: JSON.stringify({
         isHarmful: true,
-        harmScores: [
-          { category: 'violence', severity: 'high', confidence: 0.95 },
-        ],
+        harmScores: [{ category: 'violence', severity: 'high', confidence: 0.95 }],
       }),
       finishReason: 'stop',
       usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
@@ -487,9 +485,7 @@ describe('OutputFilter', () => {
       id: 'test',
       content: JSON.stringify({
         isHarmful: true,
-        harmScores: [
-          { category: 'hate', severity: 'high', confidence: 0.9 },
-        ],
+        harmScores: [{ category: 'hate', severity: 'high', confidence: 0.9 }],
       }),
       finishReason: 'stop',
       usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
@@ -505,9 +501,7 @@ describe('OutputFilter', () => {
       id: 'test',
       content: JSON.stringify({
         isHarmful: true,
-        harmScores: [
-          { category: 'hate', severity: 'high', confidence: 0.9 },
-        ],
+        harmScores: [{ category: 'hate', severity: 'high', confidence: 0.9 }],
       }),
       finishReason: 'stop',
       usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
@@ -565,11 +559,7 @@ describe('ToolGuard', () => {
       sideEffects: ['process'],
     });
 
-    const result = await guard.evaluate(
-      tool,
-      { command: 'rm -rf /' },
-      createContext()
-    );
+    const result = await guard.evaluate(tool, { command: 'rm -rf /' }, createContext());
 
     expect(result.approved).toBe(false);
     expect(result.riskLevel).toBe('high');
@@ -582,11 +572,7 @@ describe('ToolGuard', () => {
       sideEffects: ['filesystem'],
     });
 
-    const result = await guard.evaluate(
-      tool,
-      { path: '/etc/passwd' },
-      createContext()
-    );
+    const result = await guard.evaluate(tool, { path: '/etc/passwd' }, createContext());
 
     expect(result.approved).toBe(false);
     expect(result.reason).toContain('Dangerous file path');
@@ -604,18 +590,10 @@ describe('ToolGuard', () => {
       requiresApproval: (args) => (args as { dangerous?: boolean }).dangerous === true,
     });
 
-    const safeResult = await guard.evaluate(
-      tool,
-      { dangerous: false },
-      createContext()
-    );
+    const safeResult = await guard.evaluate(tool, { dangerous: false }, createContext());
     expect(safeResult.requiresConfirmation).toBe(false);
 
-    const dangerousResult = await guard.evaluate(
-      tool,
-      { dangerous: true },
-      createContext()
-    );
+    const dangerousResult = await guard.evaluate(tool, { dangerous: true }, createContext());
     expect(dangerousResult.requiresConfirmation).toBe(true);
   });
 
@@ -667,7 +645,12 @@ describe('CritiqueReviser', () => {
             isHarmful: true,
             critique: 'Contains harmful content',
             harmScores: [
-              { category: 'violence', severity: 'high', confidence: 0.9, principleViolated: 'no-violence' },
+              {
+                category: 'violence',
+                severity: 'high',
+                confidence: 0.9,
+                principleViolated: 'no-violence',
+              },
             ],
             principlesViolated: ['no-violence'],
           }),
@@ -710,7 +693,12 @@ describe('CritiqueReviser', () => {
         isHarmful: true,
         critique: 'Still harmful',
         harmScores: [
-          { category: 'violence', severity: 'high', confidence: 0.95, principleViolated: 'no-violence' },
+          {
+            category: 'violence',
+            severity: 'high',
+            confidence: 0.95,
+            principleViolated: 'no-violence',
+          },
         ],
         principlesViolated: ['no-violence'],
       }),
@@ -760,11 +748,15 @@ describe('ConstitutionalAI', () => {
       execute: async () => ({}),
     };
 
-    const result = await ai.guardTool(tool, {}, {
-      agentId: 'agent_1',
-      runId: 'run_1',
-      signal: new AbortController().signal,
-    });
+    const result = await ai.guardTool(
+      tool,
+      {},
+      {
+        agentId: 'agent_1',
+        runId: 'run_1',
+        signal: new AbortController().signal,
+      }
+    );
 
     expect(result.approved).toBe(true);
   });
@@ -805,9 +797,7 @@ describe('ConstitutionalAI', () => {
       id: 'test',
       content: JSON.stringify({
         isHarmful: true,
-        harmScores: [
-          { category: 'violence', severity: 'high', confidence: 0.9 },
-        ],
+        harmScores: [{ category: 'violence', severity: 'high', confidence: 0.9 }],
       }),
       finishReason: 'stop',
       usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
@@ -883,11 +873,15 @@ describe('ConstitutionalAI', () => {
       sideEffects: ['process'],
     };
 
-    const result = await aiDisabled.guardTool(tool, {}, {
-      agentId: 'a',
-      runId: 'r',
-      signal: new AbortController().signal,
-    });
+    const result = await aiDisabled.guardTool(
+      tool,
+      {},
+      {
+        agentId: 'a',
+        runId: 'r',
+        signal: new AbortController().signal,
+      }
+    );
 
     expect(result.approved).toBe(true);
   });

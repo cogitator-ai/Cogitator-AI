@@ -47,10 +47,7 @@ export const GET = withAuth(async (request) => {
     });
   } catch (error) {
     console.error('Failed to fetch logs:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch logs' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Failed to fetch logs' }, { status: 500 });
   }
 });
 
@@ -60,10 +57,7 @@ export const POST = withAuth(async (request) => {
     const body = await request.json();
 
     if (!body.level || !body.message) {
-      return NextResponse.json(
-        { error: 'level and message are required' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'level and message are required' }, { status: 400 });
     }
 
     const log = await createLog({
@@ -77,15 +71,11 @@ export const POST = withAuth(async (request) => {
 
     try {
       await publish(CHANNELS.LOG_ENTRY, log);
-    } catch {
-    }
+    } catch {}
 
     return NextResponse.json(log, { status: 201 });
   } catch (error) {
     console.error('Failed to create log:', error);
-    return NextResponse.json(
-      { error: 'Failed to create log' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Failed to create log' }, { status: 500 });
   }
 });

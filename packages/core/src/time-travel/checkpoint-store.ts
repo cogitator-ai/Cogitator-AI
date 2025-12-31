@@ -66,11 +66,11 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
     }
 
     if (query.before) {
-      candidates = candidates.filter(cp => cp.createdAt < query.before!);
+      candidates = candidates.filter((cp) => cp.createdAt < query.before!);
     }
 
     if (query.after) {
-      candidates = candidates.filter(cp => cp.createdAt > query.after!);
+      candidates = candidates.filter((cp) => cp.createdAt > query.after!);
     }
 
     candidates.sort((a, b) => a.stepIndex - b.stepIndex);
@@ -172,9 +172,8 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
     }
 
     const pendingStep = trace.steps[stepIndex];
-    const pendingToolCalls = pendingStep?.type === 'tool_call' && pendingStep.toolCall
-      ? [pendingStep.toolCall]
-      : [];
+    const pendingToolCalls =
+      pendingStep?.type === 'tool_call' && pendingStep.toolCall ? [pendingStep.toolCall] : [];
 
     const checkpoint: ExecutionCheckpoint = {
       id: `ckpt_${nanoid(12)}`,
@@ -239,7 +238,10 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
     return result;
   }
 
-  private extractToolResultsUpToStep(result: RunResult, stepIndex: number): Record<string, unknown> {
+  private extractToolResultsUpToStep(
+    result: RunResult,
+    stepIndex: number
+  ): Record<string, unknown> {
     const toolResults: Record<string, unknown> = {};
     let count = 0;
 
@@ -258,14 +260,17 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
     return toolResults;
   }
 
-  private extractPendingToolCalls(result: RunResult, stepIndex: number): typeof result.toolCalls[number][] {
+  private extractPendingToolCalls(
+    result: RunResult,
+    stepIndex: number
+  ): (typeof result.toolCalls)[number][] {
     let count = 0;
 
     for (const span of result.trace.spans) {
       if (span.name.startsWith('tool.')) {
         if (count === stepIndex) {
           const toolName = span.name.replace('tool.', '');
-          const toolCall = result.toolCalls.find(tc => tc.name === toolName);
+          const toolCall = result.toolCalls.find((tc) => tc.name === toolName);
           return toolCall ? [toolCall] : [];
         }
         count++;
@@ -278,7 +283,11 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
   private countStepsFromSpans(result: RunResult): number {
     let count = 0;
     for (const span of result.trace.spans) {
-      if (span.name.startsWith('tool.') || span.name.includes('llm') || span.name.includes('chat')) {
+      if (
+        span.name.startsWith('tool.') ||
+        span.name.includes('llm') ||
+        span.name.includes('chat')
+      ) {
         count++;
       }
     }

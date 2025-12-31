@@ -141,20 +141,12 @@ interface MemoryAdapter {
   connect(): Promise<MemoryResult<void>>;
   disconnect(): Promise<MemoryResult<void>>;
 
-  createThread(
-    agentId: string,
-    metadata?: Record<string, unknown>
-  ): Promise<MemoryResult<Thread>>;
+  createThread(agentId: string, metadata?: Record<string, unknown>): Promise<MemoryResult<Thread>>;
   getThread(threadId: string): Promise<MemoryResult<Thread | null>>;
-  updateThread(
-    threadId: string,
-    metadata: Record<string, unknown>
-  ): Promise<MemoryResult<Thread>>;
+  updateThread(threadId: string, metadata: Record<string, unknown>): Promise<MemoryResult<Thread>>;
   deleteThread(threadId: string): Promise<MemoryResult<void>>;
 
-  addEntry(
-    entry: Omit<MemoryEntry, 'id' | 'createdAt'>
-  ): Promise<MemoryResult<MemoryEntry>>;
+  addEntry(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): Promise<MemoryResult<MemoryEntry>>;
   getEntries(options: MemoryQueryOptions): Promise<MemoryResult<MemoryEntry[]>>;
   getEntry(entryId: string): Promise<MemoryResult<MemoryEntry | null>>;
   deleteEntry(entryId: string): Promise<MemoryResult<void>>;
@@ -483,7 +475,9 @@ const context = await builder.build({
 
 console.log(`Using ${context.tokenCount} tokens`);
 console.log(`Truncated: ${context.truncated}`);
-console.log(`Included ${context.metadata.includedMessageCount} of ${context.metadata.originalMessageCount} messages`);
+console.log(
+  `Included ${context.metadata.includedMessageCount} of ${context.metadata.originalMessageCount} messages`
+);
 ```
 
 ### Semantic Memory with PostgreSQL

@@ -148,9 +148,7 @@ const result = await docker.execute(
     network: {
       mode: 'none',
     },
-    mounts: [
-      { source: '/tmp/data', target: '/data', readOnly: true },
-    ],
+    mounts: [{ source: '/tmp/data', target: '/data', readOnly: true }],
     env: { GLOBAL_VAR: 'value' },
     workdir: '/workspace',
     user: 'nobody',
@@ -202,9 +200,9 @@ await pool.destroyAll();
 
 ### Pool Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `maxSize` | `number` | `5` | Maximum containers to keep warm |
+| Option          | Type     | Default | Description                            |
+| --------------- | -------- | ------- | -------------------------------------- |
+| `maxSize`       | `number` | `5`     | Maximum containers to keep warm        |
 | `idleTimeoutMs` | `number` | `60000` | Time before destroying idle containers |
 
 ---
@@ -349,6 +347,7 @@ Supported formats: `'256B'`, `'256KB'`, `'256MB'`, `'256GB'`
 ```
 
 Network modes:
+
 - `'none'` - No network access (default, most secure)
 - `'bridge'` - Docker bridge network
 - `'host'` - Host network (not recommended)
@@ -453,11 +452,15 @@ const cog = new Cogitator({
 ```typescript
 const result = await manager.execute(
   {
-    command: ['python', '-c', `
+    command: [
+      'python',
+      '-c',
+      `
 import json
 data = {"sum": 2 + 2}
 print(json.dumps(data))
-    `],
+    `,
+    ],
   },
   {
     type: 'docker',

@@ -11,9 +11,7 @@ export function buildInputEvaluationPrompt(
   input: string,
   principles: ConstitutionalPrinciple[]
 ): string {
-  const principlesList = principles
-    .map((p) => `- ${p.name}: ${p.description}`)
-    .join('\n');
+  const principlesList = principles.map((p) => `- ${p.name}: ${p.description}`).join('\n');
 
   return `You are a content safety evaluator. Analyze the following user input for potential policy violations.
 
@@ -98,9 +96,7 @@ export function buildCritiquePrompt(
   response: string,
   principles: ConstitutionalPrinciple[]
 ): string {
-  const critiques = principles
-    .map((p) => `- ${p.name}: ${p.critiquePrompt}`)
-    .join('\n');
+  const critiques = principles.map((p) => `- ${p.name}: ${p.critiquePrompt}`).join('\n');
 
   return `You are a thoughtful AI safety reviewer. Critique the following response against these principles:
 
@@ -167,7 +163,10 @@ Please rewrite the response to:
 Provide ONLY the revised response, no explanations or meta-commentary:`;
 }
 
-export function parseEvaluationResponse(content: string): { isHarmful: boolean; harmScores: HarmScore[] } {
+export function parseEvaluationResponse(content: string): {
+  isHarmful: boolean;
+  harmScores: HarmScore[];
+} {
   const cleaned = content
     .replace(/```json\n?/g, '')
     .replace(/```\n?/g, '')
@@ -216,7 +215,8 @@ function normalizeHarmScore(raw: unknown): HarmScore {
     category: normalizeCategory(obj.category),
     severity: normalizeSeverity(obj.severity),
     confidence: Math.max(0, Math.min(1, Number(obj.confidence) || 0)),
-    principleViolated: typeof obj.principleViolated === 'string' ? obj.principleViolated : undefined,
+    principleViolated:
+      typeof obj.principleViolated === 'string' ? obj.principleViolated : undefined,
     reasoning: typeof obj.reasoning === 'string' ? obj.reasoning : undefined,
   };
 }

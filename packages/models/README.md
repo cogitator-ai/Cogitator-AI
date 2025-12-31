@@ -83,14 +83,14 @@ interface CacheOptions {
 }
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `cache.ttl` | 24 hours | Cache time-to-live in milliseconds |
-| `cache.storage` | `'memory'` | Storage backend |
-| `cache.filePath` | - | File path for file-based cache |
-| `autoRefresh` | `false` | Enable automatic background refresh |
-| `refreshInterval` | 24 hours | Refresh interval in milliseconds |
-| `fallbackToBuiltin` | `true` | Use built-in models on fetch failure |
+| Option              | Default    | Description                          |
+| ------------------- | ---------- | ------------------------------------ |
+| `cache.ttl`         | 24 hours   | Cache time-to-live in milliseconds   |
+| `cache.storage`     | `'memory'` | Storage backend                      |
+| `cache.filePath`    | -          | File path for file-based cache       |
+| `autoRefresh`       | `false`    | Enable automatic background refresh  |
+| `refreshInterval`   | 24 hours   | Refresh interval in milliseconds     |
+| `fallbackToBuiltin` | `true`     | Use built-in models on fetch failure |
 
 ### Registry Methods
 
@@ -259,23 +259,23 @@ const anthropicVision = listModels({
 import { BUILTIN_PROVIDERS } from '@cogitator-ai/models';
 ```
 
-| Provider | Website |
-|----------|---------|
-| OpenAI | openai.com |
-| Anthropic | anthropic.com |
-| Google | ai.google.dev |
-| Ollama | ollama.com |
-| Azure OpenAI | azure.microsoft.com |
-| AWS Bedrock | aws.amazon.com/bedrock |
-| Mistral AI | mistral.ai |
-| Cohere | cohere.com |
-| Groq | groq.com |
-| Together AI | together.ai |
-| Fireworks AI | fireworks.ai |
-| DeepInfra | deepinfra.com |
-| Perplexity | perplexity.ai |
-| Replicate | replicate.com |
-| xAI | x.ai |
+| Provider     | Website                |
+| ------------ | ---------------------- |
+| OpenAI       | openai.com             |
+| Anthropic    | anthropic.com          |
+| Google       | ai.google.dev          |
+| Ollama       | ollama.com             |
+| Azure OpenAI | azure.microsoft.com    |
+| AWS Bedrock  | aws.amazon.com/bedrock |
+| Mistral AI   | mistral.ai             |
+| Cohere       | cohere.com             |
+| Groq         | groq.com               |
+| Together AI  | together.ai            |
+| Fireworks AI | fireworks.ai           |
+| DeepInfra    | deepinfra.com          |
+| Perplexity   | perplexity.ai          |
+| Replicate    | replicate.com          |
+| xAI          | x.ai                   |
 
 ### Provider Information
 
@@ -414,11 +414,7 @@ interface LiteLLMModelEntry {
 ```typescript
 import { getPrice } from '@cogitator-ai/models';
 
-function calculateCost(
-  modelId: string,
-  inputTokens: number,
-  outputTokens: number
-): number | null {
+function calculateCost(modelId: string, inputTokens: number, outputTokens: number): number | null {
   const price = getPrice(modelId);
   if (!price) return null;
 
@@ -485,8 +481,7 @@ async function showDashboard() {
     console.log(`${provider.name}: ${models.length} models`);
 
     const avgPrice =
-      models.reduce((sum, m) => sum + (m.pricing.input + m.pricing.output) / 2, 0) /
-      models.length;
+      models.reduce((sum, m) => sum + (m.pricing.input + m.pricing.output) / 2, 0) / models.length;
     console.log(`  Avg price: $${avgPrice.toFixed(2)}/M tokens`);
   }
 }

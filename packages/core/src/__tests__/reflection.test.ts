@@ -64,24 +64,30 @@ describe('InMemoryInsightStore', () => {
   });
 
   it('finds relevant insights by context matching', async () => {
-    await store.store(createInsight({
-      id: 'i1',
-      content: 'Always validate user input before processing',
-      context: 'When handling user data',
-      confidence: 0.9,
-    }));
-    await store.store(createInsight({
-      id: 'i2',
-      content: 'Use timeout for external API calls',
-      context: 'When calling external services',
-      confidence: 0.8,
-    }));
-    await store.store(createInsight({
-      id: 'i3',
-      content: 'Log errors with stack traces',
-      context: 'When debugging',
-      confidence: 0.7,
-    }));
+    await store.store(
+      createInsight({
+        id: 'i1',
+        content: 'Always validate user input before processing',
+        context: 'When handling user data',
+        confidence: 0.9,
+      })
+    );
+    await store.store(
+      createInsight({
+        id: 'i2',
+        content: 'Use timeout for external API calls',
+        context: 'When calling external services',
+        confidence: 0.8,
+      })
+    );
+    await store.store(
+      createInsight({
+        id: 'i3',
+        content: 'Log errors with stack traces',
+        context: 'When debugging',
+        confidence: 0.7,
+      })
+    );
 
     const relevant = await store.findRelevant('agent_1', 'handling user input validation', 2);
     expect(relevant.length).toBeLessThanOrEqual(2);
@@ -101,11 +107,13 @@ describe('InMemoryInsightStore', () => {
 
   it('prunes old insights when limit exceeded', async () => {
     for (let i = 0; i < 10; i++) {
-      await store.store(createInsight({
-        id: `insight_${i}`,
-        usageCount: i,
-        confidence: 0.5 + i * 0.05,
-      }));
+      await store.store(
+        createInsight({
+          id: `insight_${i}`,
+          usageCount: i,
+          confidence: 0.5 + i * 0.05,
+        })
+      );
     }
 
     const pruned = await store.prune('agent_1', 5);
@@ -155,9 +163,7 @@ describe('parseReflectionResponse', () => {
       reasoning: 'The tool call was appropriate',
       alternativesConsidered: ['other_tool'],
       whatCouldImprove: 'Add caching',
-      insights: [
-        { type: 'pattern', content: 'Cache results', context: 'When calling APIs' },
-      ],
+      insights: [{ type: 'pattern', content: 'Cache results', context: 'When calling APIs' }],
     });
 
     const parsed = parseReflectionResponse(response);
@@ -168,7 +174,8 @@ describe('parseReflectionResponse', () => {
   });
 
   it('handles markdown code blocks', () => {
-    const response = '```json\n{"wasSuccessful": true, "confidence": 0.9, "reasoning": "ok", "insights": []}\n```';
+    const response =
+      '```json\n{"wasSuccessful": true, "confidence": 0.9, "reasoning": "ok", "insights": []}\n```';
 
     const parsed = parseReflectionResponse(response);
     expect(parsed).not.toBeNull();
@@ -176,7 +183,8 @@ describe('parseReflectionResponse', () => {
   });
 
   it('handles plain code blocks', () => {
-    const response = '```\n{"wasSuccessful": false, "confidence": 0.3, "reasoning": "failed", "insights": []}\n```';
+    const response =
+      '```\n{"wasSuccessful": false, "confidence": 0.3, "reasoning": "failed", "insights": []}\n```';
 
     const parsed = parseReflectionResponse(response);
     expect(parsed).not.toBeNull();

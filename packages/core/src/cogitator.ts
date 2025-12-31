@@ -179,9 +179,7 @@ export class Cogitator {
   private async initializeReflection(agent: Agent): Promise<void> {
     if (this.reflectionInitialized || !this.config.reflection?.enabled) return;
 
-    const backend = this.getBackend(
-      this.config.reflection.reflectionModel ?? agent.model
-    );
+    const backend = this.getBackend(this.config.reflection.reflectionModel ?? agent.model);
 
     this.insightStore = new InMemoryInsightStore();
     this.reflectionEngine = new ReflectionEngine({
@@ -199,9 +197,7 @@ export class Cogitator {
   private initializeGuardrails(agent: Agent): void {
     if (this.guardrailsInitialized || !this.config.guardrails?.enabled) return;
 
-    const backend = this.getBackend(
-      this.config.guardrails.model ?? agent.model
-    );
+    const backend = this.getBackend(this.config.guardrails.model ?? agent.model);
 
     this.constitutionalAI = new ConstitutionalAI({
       llm: backend,
@@ -433,7 +429,7 @@ export class Cogitator {
       if (this.reflectionEngine && this.config.reflection?.enabled) {
         const insights = await this.reflectionEngine.getRelevantInsights(agentContext);
         if (insights.length > 0 && messages.length > 0 && messages[0].role === 'system') {
-          messages[0].content += `\n\nPast learnings that may help:\n${insights.map(i => `- ${i.content}`).join('\n')}`;
+          messages[0].content += `\n\nPast learnings that may help:\n${insights.map((i) => `- ${i.content}`).join('\n')}`;
         }
       }
 
@@ -500,7 +496,9 @@ export class Cogitator {
             if (outputResult.suggestedRevision) {
               outputContent = outputResult.suggestedRevision;
             } else {
-              throw new Error(`Output blocked: ${outputResult.blockedReason ?? 'Policy violation'}`);
+              throw new Error(
+                `Output blocked: ${outputResult.blockedReason ?? 'Policy violation'}`
+              );
             }
           }
         }
@@ -609,7 +607,10 @@ export class Cogitator {
                 }
               } catch (reflectionError) {
                 getLogger().warn('Reflection failed', {
-                  error: reflectionError instanceof Error ? reflectionError.message : String(reflectionError),
+                  error:
+                    reflectionError instanceof Error
+                      ? reflectionError.message
+                      : String(reflectionError),
                 });
               }
             }
@@ -638,7 +639,8 @@ export class Cogitator {
           allReflections.push(runReflection.reflection);
         } catch (reflectionError) {
           getLogger().warn('End-of-run reflection failed', {
-            error: reflectionError instanceof Error ? reflectionError.message : String(reflectionError),
+            error:
+              reflectionError instanceof Error ? reflectionError.message : String(reflectionError),
           });
         }
       }

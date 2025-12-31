@@ -341,16 +341,26 @@ describe('TraceComparator', () => {
         id: 'trace_1',
         steps: [
           { index: 0, type: 'llm_call', timestamp: Date.now(), duration: 100 },
-          { index: 1, type: 'tool_call', timestamp: Date.now() + 100, duration: 50,
-            toolCall: { id: 'call_1', name: 'tool_a', arguments: {} } },
+          {
+            index: 1,
+            type: 'tool_call',
+            timestamp: Date.now() + 100,
+            duration: 50,
+            toolCall: { id: 'call_1', name: 'tool_a', arguments: {} },
+          },
         ],
       });
       const trace2 = createMockTrace({
         id: 'trace_2',
         steps: [
           { index: 0, type: 'llm_call', timestamp: Date.now(), duration: 100 },
-          { index: 1, type: 'tool_call', timestamp: Date.now() + 100, duration: 50,
-            toolCall: { id: 'call_1', name: 'tool_b', arguments: {} } },
+          {
+            index: 1,
+            type: 'tool_call',
+            timestamp: Date.now() + 100,
+            duration: 50,
+            toolCall: { id: 'call_1', name: 'tool_b', arguments: {} },
+          },
         ],
       });
       await traceStore.store(trace1);
@@ -362,8 +372,9 @@ describe('TraceComparator', () => {
     });
 
     it('should throw error for non-existent trace', async () => {
-      await expect(comparator.compare('non_existent', 'trace_2'))
-        .rejects.toThrow('Trace not found: non_existent');
+      await expect(comparator.compare('non_existent', 'trace_2')).rejects.toThrow(
+        'Trace not found: non_existent'
+      );
     });
   });
 
@@ -390,9 +401,7 @@ describe('TraceComparator', () => {
       });
       const trace2 = createMockTrace({
         id: 'trace_2',
-        steps: [
-          { index: 0, type: 'llm_call', timestamp: Date.now(), duration: 100 },
-        ],
+        steps: [{ index: 0, type: 'llm_call', timestamp: Date.now(), duration: 100 }],
       });
 
       const diff = comparator.computeDiff(trace1, trace2);

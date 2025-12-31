@@ -1,9 +1,4 @@
-import type {
-  ExecutionTrace,
-  TraceStore,
-  TraceQuery,
-  TraceStoreStats,
-} from '@cogitator-ai/types';
+import type { ExecutionTrace, TraceStore, TraceQuery, TraceStoreStats } from '@cogitator-ai/types';
 
 export class InMemoryTraceStore implements TraceStore {
   private traces = new Map<string, ExecutionTrace>();
@@ -63,25 +58,25 @@ export class InMemoryTraceStore implements TraceStore {
     }
 
     if (query.isDemo !== undefined) {
-      candidates = candidates.filter(t => t.isDemo === query.isDemo);
+      candidates = candidates.filter((t) => t.isDemo === query.isDemo);
     }
 
     if (query.minScore !== undefined) {
-      candidates = candidates.filter(t => t.score >= query.minScore!);
+      candidates = candidates.filter((t) => t.score >= query.minScore!);
     }
 
     if (query.labels && query.labels.length > 0) {
-      candidates = candidates.filter(t =>
-        query.labels!.some(label => t.labels?.includes(label))
+      candidates = candidates.filter((t) =>
+        query.labels!.some((label) => t.labels?.includes(label))
       );
     }
 
     if (query.fromDate) {
-      candidates = candidates.filter(t => t.createdAt >= query.fromDate!);
+      candidates = candidates.filter((t) => t.createdAt >= query.fromDate!);
     }
 
     if (query.toDate) {
-      candidates = candidates.filter(t => t.createdAt <= query.toDate!);
+      candidates = candidates.filter((t) => t.createdAt <= query.toDate!);
     }
 
     candidates.sort((a, b) => b.score - a.score);
@@ -168,10 +163,10 @@ export class InMemoryTraceStore implements TraceStore {
       if (a.isDemo && !b.isDemo) return -1;
       if (!a.isDemo && b.isDemo) return 1;
 
-      const scoreA = a.score * 0.6 +
-        (Date.now() - a.createdAt.getTime()) / (1000 * 60 * 60 * 24) * -0.01;
-      const scoreB = b.score * 0.6 +
-        (Date.now() - b.createdAt.getTime()) / (1000 * 60 * 60 * 24) * -0.01;
+      const scoreA =
+        a.score * 0.6 + ((Date.now() - a.createdAt.getTime()) / (1000 * 60 * 60 * 24)) * -0.01;
+      const scoreB =
+        b.score * 0.6 + ((Date.now() - b.createdAt.getTime()) / (1000 * 60 * 60 * 24)) * -0.01;
       return scoreB - scoreA;
     });
 
@@ -233,7 +228,7 @@ export class InMemoryTraceStore implements TraceStore {
       .sort((a, b) => b.bucket.localeCompare(a.bucket));
 
     traces.sort((a, b) => b.score - a.score);
-    const topPerformers = traces.slice(0, 5).map(t => t.id);
+    const topPerformers = traces.slice(0, 5).map((t) => t.id);
 
     return {
       totalTraces: traces.length,

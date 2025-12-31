@@ -26,7 +26,7 @@ export class InMemoryInsightStore implements InsightStore {
     if (!agentInsights) return [];
 
     const contextLower = context.toLowerCase();
-    const contextWords = new Set(contextLower.split(/\s+/).filter(w => w.length > 3));
+    const contextWords = new Set(contextLower.split(/\s+/).filter((w) => w.length > 3));
 
     const scored: Array<{ insight: Insight; score: number }> = [];
 
@@ -66,7 +66,7 @@ export class InMemoryInsightStore implements InsightStore {
 
     scored.sort((a, b) => b.score - a.score);
 
-    return scored.slice(0, limit).map(s => s.insight);
+    return scored.slice(0, limit).map((s) => s.insight);
   }
 
   async getAll(agentId: string): Promise<Insight[]> {
@@ -106,10 +106,14 @@ export class InMemoryInsightStore implements InsightStore {
     }
 
     insights.sort((a, b) => {
-      const scoreA = a.usageCount * 0.5 + a.confidence * 0.3 +
-        (Date.now() - a.lastUsedAt.getTime()) / (1000 * 60 * 60 * 24) * -0.2;
-      const scoreB = b.usageCount * 0.5 + b.confidence * 0.3 +
-        (Date.now() - b.lastUsedAt.getTime()) / (1000 * 60 * 60 * 24) * -0.2;
+      const scoreA =
+        a.usageCount * 0.5 +
+        a.confidence * 0.3 +
+        ((Date.now() - a.lastUsedAt.getTime()) / (1000 * 60 * 60 * 24)) * -0.2;
+      const scoreB =
+        b.usageCount * 0.5 +
+        b.confidence * 0.3 +
+        ((Date.now() - b.lastUsedAt.getTime()) / (1000 * 60 * 60 * 24)) * -0.2;
       return scoreB - scoreA;
     });
 

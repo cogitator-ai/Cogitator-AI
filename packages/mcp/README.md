@@ -124,11 +124,11 @@ interface MCPClientConfig {
 
 ### Transport Types
 
-| Transport | Use Case |
-|-----------|----------|
-| `stdio` | Local MCP servers spawned as child processes |
-| `http` | Remote MCP servers over HTTP |
-| `sse` | Server-Sent Events for streaming |
+| Transport | Use Case                                     |
+| --------- | -------------------------------------------- |
+| `stdio`   | Local MCP servers spawned as child processes |
+| `http`    | Remote MCP servers over HTTP                 |
+| `sse`     | Server-Sent Events for streaming             |
 
 ### Client Methods
 
@@ -213,10 +213,10 @@ interface MCPServerConfig {
   transport: 'stdio' | 'http' | 'sse';
 
   // For HTTP transport
-  port?: number;        // Default: 3000
-  host?: string;        // Default: 'localhost'
+  port?: number; // Default: 3000
+  host?: string; // Default: 'localhost'
 
-  logging?: boolean;    // Enable console logging
+  logging?: boolean; // Enable console logging
 }
 ```
 
@@ -406,21 +406,21 @@ const result = zodSchema.parse({
 
 ### Supported Conversions
 
-| JSON Schema | Zod |
-|-------------|-----|
-| `string` | `z.string()` |
+| JSON Schema                      | Zod                      |
+| -------------------------------- | ------------------------ |
+| `string`                         | `z.string()`             |
 | `string` + `minLength/maxLength` | `z.string().min().max()` |
-| `string` + `pattern` | `z.string().regex()` |
-| `string` + `format: email` | `z.string().email()` |
-| `string` + `format: uri` | `z.string().url()` |
-| `number` | `z.number()` |
-| `integer` | `z.number().int()` |
-| `number` + `minimum/maximum` | `z.number().min().max()` |
-| `boolean` | `z.boolean()` |
-| `array` | `z.array()` |
-| `object` | `z.object()` |
-| `null` | `z.null()` |
-| `enum` | `z.enum()` |
+| `string` + `pattern`             | `z.string().regex()`     |
+| `string` + `format: email`       | `z.string().email()`     |
+| `string` + `format: uri`         | `z.string().url()`       |
+| `number`                         | `z.number()`             |
+| `integer`                        | `z.number().int()`       |
+| `number` + `minimum/maximum`     | `z.number().min().max()` |
+| `boolean`                        | `z.boolean()`            |
+| `array`                          | `z.array()`              |
+| `object`                         | `z.object()`             |
+| `null`                           | `z.null()`               |
+| `enum`                           | `z.enum()`               |
 
 ---
 
@@ -463,7 +463,7 @@ interface MCPResourceContent {
   uri: string;
   mimeType?: string;
   text?: string;
-  blob?: string;  // Base64 encoded
+  blob?: string; // Base64 encoded
 }
 ```
 
@@ -582,7 +582,7 @@ const capabilities = client.getCapabilities();
 const tools: Tool[] = [];
 
 if (capabilities.tools) {
-  tools.push(...await client.getTools());
+  tools.push(...(await client.getTools()));
 }
 
 if (capabilities.resources) {

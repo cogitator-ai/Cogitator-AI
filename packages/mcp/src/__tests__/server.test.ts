@@ -100,7 +100,9 @@ describe('MCPServer', () => {
 
       await server.start();
 
-      expect(() => server.registerTool(mockTool)).toThrow('Cannot register tools after server has started');
+      expect(() => server.registerTool(mockTool)).toThrow(
+        'Cannot register tools after server has started'
+      );
 
       await server.stop();
     });

@@ -22,11 +22,7 @@ export class ExecutionReplayer {
     this.checkpointStore = options.checkpointStore;
   }
 
-  async replay(
-    cogitator: Cogitator,
-    agent: Agent,
-    options: ReplayOptions
-  ): Promise<ReplayResult> {
+  async replay(cogitator: Cogitator, agent: Agent, options: ReplayOptions): Promise<ReplayResult> {
     const checkpoint = await this.checkpointStore.load(options.fromCheckpoint);
     if (!checkpoint) {
       throw new Error(`Checkpoint not found: ${options.fromCheckpoint}`);
@@ -57,7 +53,7 @@ export class ExecutionReplayer {
     const startTime = Date.now();
     const spans: Span[] = [];
 
-    const output = messages.filter(m => m.role === 'assistant').pop()?.content ?? '';
+    const output = messages.filter((m) => m.role === 'assistant').pop()?.content ?? '';
 
     const result: ReplayResult = {
       output,
@@ -148,15 +144,15 @@ export class ExecutionReplayer {
   }
 
   private extractUserInput(messages: Message[]): string {
-    const userMessages = messages.filter(m => m.role === 'user');
+    const userMessages = messages.filter((m) => m.role === 'user');
     return userMessages[userMessages.length - 1]?.content ?? '';
   }
 
   private createReplayAgent(agent: Agent, preloadedMessages: Message[]): Agent {
-    const systemMessage = preloadedMessages.find(m => m.role === 'system');
+    const systemMessage = preloadedMessages.find((m) => m.role === 'system');
     const contextFromHistory = preloadedMessages
-      .filter(m => m.role === 'assistant' || m.role === 'tool')
-      .map(m => `[${m.role}]: ${m.content}`)
+      .filter((m) => m.role === 'assistant' || m.role === 'tool')
+      .map((m) => `[${m.role}]: ${m.content}`)
       .join('\n');
 
     const newInstructions = systemMessage
@@ -173,14 +169,21 @@ export class ExecutionReplayer {
   private countSteps(result: RunResult): number {
     let count = 0;
     for (const span of result.trace.spans) {
-      if (span.name.startsWith('tool.') || span.name.includes('llm') || span.name.includes('chat')) {
+      if (
+        span.name.startsWith('tool.') ||
+        span.name.includes('llm') ||
+        span.name.includes('chat')
+      ) {
         count++;
       }
     }
     return count;
   }
 
-  private findDivergencePoint(checkpoint: ExecutionCheckpoint, result: RunResult): number | undefined {
+  private findDivergencePoint(
+    checkpoint: ExecutionCheckpoint,
+    result: RunResult
+  ): number | undefined {
     const originalToolCalls = checkpoint.pendingToolCalls;
     const newToolCalls = result.toolCalls;
 

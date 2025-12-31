@@ -43,7 +43,8 @@ export function loadEnvConfig(): CogitatorConfigInput {
   if (defaultProvider || defaultModel) {
     config.llm = {
       ...config.llm,
-      defaultProvider: defaultProvider && isValidProvider(defaultProvider) ? defaultProvider : undefined,
+      defaultProvider:
+        defaultProvider && isValidProvider(defaultProvider) ? defaultProvider : undefined,
       defaultModel,
     };
   }

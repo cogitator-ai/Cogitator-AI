@@ -93,23 +93,23 @@ const queue = new JobQueue({
 
 ```typescript
 interface QueueConfig {
-  name?: string;                    // Default: 'cogitator-jobs'
+  name?: string; // Default: 'cogitator-jobs'
   redis: {
-    host?: string;                  // Default: 'localhost'
-    port?: number;                  // Default: 6379
+    host?: string; // Default: 'localhost'
+    port?: number; // Default: 6379
     password?: string;
     cluster?: {
       nodes: { host: string; port: number }[];
     };
   };
   defaultJobOptions?: {
-    attempts?: number;              // Default: 3
+    attempts?: number; // Default: 3
     backoff?: {
       type: 'exponential' | 'fixed';
-      delay: number;                // Delay in ms
+      delay: number; // Delay in ms
     };
-    removeOnComplete?: boolean | number;  // Default: 100
-    removeOnFail?: boolean | number;      // Default: 500
+    removeOnComplete?: boolean | number; // Default: 100
+    removeOnFail?: boolean | number; // Default: 500
   };
 }
 ```
@@ -137,8 +137,8 @@ const agentConfig: SerializedAgent = {
 
 const job = await queue.addAgentJob(agentConfig, 'Research quantum computing', {
   threadId: 'thread-123',
-  priority: 1,             // Lower = higher priority
-  delay: 5000,             // Delay 5 seconds
+  priority: 1, // Lower = higher priority
+  delay: 5000, // Delay 5 seconds
   metadata: { userId: 'user-456' },
 });
 ```
@@ -160,10 +160,14 @@ const workflowConfig: SerializedWorkflow = {
   ],
 };
 
-await queue.addWorkflowJob(workflowConfig, { source: 'api' }, {
-  runId: 'run-789',
-  priority: 2,
-});
+await queue.addWorkflowJob(
+  workflowConfig,
+  { source: 'api' },
+  {
+    runId: 'run-789',
+    priority: 2,
+  }
+);
 ```
 
 **Swarm Jobs:**
@@ -246,19 +250,19 @@ await pool.start();
 
 ```typescript
 interface WorkerConfig extends QueueConfig {
-  workerCount?: number;     // Default: 1
-  concurrency?: number;     // Default: 5
-  lockDuration?: number;    // Default: 30000ms
+  workerCount?: number; // Default: 1
+  concurrency?: number; // Default: 5
+  lockDuration?: number; // Default: 30000ms
   stalledInterval?: number; // Default: 30000ms
 }
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `workerCount` | 1 | Number of worker instances |
-| `concurrency` | 5 | Concurrent jobs per worker |
-| `lockDuration` | 30000 | Lock timeout before job considered stalled |
-| `stalledInterval` | 30000 | Interval to check for stalled jobs |
+| Option            | Default | Description                                |
+| ----------------- | ------- | ------------------------------------------ |
+| `workerCount`     | 1       | Number of worker instances                 |
+| `concurrency`     | 5       | Concurrent jobs per worker                 |
+| `lockDuration`    | 30000   | Lock timeout before job considered stalled |
+| `stalledInterval` | 30000   | Interval to check for stalled jobs         |
 
 ### Worker Events
 
@@ -383,7 +387,12 @@ Built-in metrics for monitoring and Kubernetes HPA.
 ### Exposing Metrics
 
 ```typescript
-import { JobQueue, WorkerPool, MetricsCollector, formatPrometheusMetrics } from '@cogitator-ai/worker';
+import {
+  JobQueue,
+  WorkerPool,
+  MetricsCollector,
+  formatPrometheusMetrics,
+} from '@cogitator-ai/worker';
 import express from 'express';
 
 const queue = new JobQueue({ redis: { host: 'localhost', port: 6379 } });
@@ -403,27 +412,24 @@ app.listen(9090);
 
 ### Available Metrics
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `cogitator_queue_depth` | gauge | Total waiting + delayed jobs |
-| `cogitator_queue_waiting` | gauge | Jobs waiting to be processed |
-| `cogitator_queue_active` | gauge | Jobs currently being processed |
-| `cogitator_queue_completed_total` | counter | Total completed jobs |
-| `cogitator_queue_failed_total` | counter | Total failed jobs |
-| `cogitator_queue_delayed` | gauge | Scheduled/delayed jobs |
-| `cogitator_workers_total` | gauge | Active workers |
-| `cogitator_job_duration_seconds` | histogram | Job processing time |
-| `cogitator_jobs_by_type_total` | counter | Jobs by type |
+| Metric                            | Type      | Description                    |
+| --------------------------------- | --------- | ------------------------------ |
+| `cogitator_queue_depth`           | gauge     | Total waiting + delayed jobs   |
+| `cogitator_queue_waiting`         | gauge     | Jobs waiting to be processed   |
+| `cogitator_queue_active`          | gauge     | Jobs currently being processed |
+| `cogitator_queue_completed_total` | counter   | Total completed jobs           |
+| `cogitator_queue_failed_total`    | counter   | Total failed jobs              |
+| `cogitator_queue_delayed`         | gauge     | Scheduled/delayed jobs         |
+| `cogitator_workers_total`         | gauge     | Active workers                 |
+| `cogitator_job_duration_seconds`  | histogram | Job processing time            |
+| `cogitator_jobs_by_type_total`    | counter   | Jobs by type                   |
 
 ### Duration Histogram
 
 ```typescript
 import { DurationHistogram } from '@cogitator-ai/worker';
 
-const histogram = new DurationHistogram(
-  'my_duration_seconds',
-  'Custom duration tracking'
-);
+const histogram = new DurationHistogram('my_duration_seconds', 'Custom duration tracking');
 
 histogram.observe(0.5);
 histogram.observe(1.2);

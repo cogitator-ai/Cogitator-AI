@@ -1,11 +1,5 @@
 import { nanoid } from 'nanoid';
-import type {
-  Demo,
-  DemoStep,
-  DemoStats,
-  ExecutionTrace,
-  TraceStore,
-} from '@cogitator-ai/types';
+import type { Demo, DemoStep, DemoStats, ExecutionTrace, TraceStore } from '@cogitator-ai/types';
 
 export interface DemoSelectorOptions {
   traceStore: TraceStore;
@@ -27,11 +21,7 @@ export class DemoSelector {
     this.minScore = options.minScore ?? 0.8;
   }
 
-  async selectDemos(
-    agentId: string,
-    input: string,
-    limit: number
-  ): Promise<Demo[]> {
+  async selectDemos(agentId: string, input: string, limit: number): Promise<Demo[]> {
     const agentDemoIds = this.agentDemos.get(agentId);
     if (!agentDemoIds || agentDemoIds.size === 0) {
       return [];
@@ -44,9 +34,9 @@ export class DemoSelector {
     }
 
     const inputLower = input.toLowerCase();
-    const inputWords = new Set(inputLower.split(/\s+/).filter(w => w.length > 3));
+    const inputWords = new Set(inputLower.split(/\s+/).filter((w) => w.length > 3));
 
-    const scored = demos.map(demo => {
+    const scored = demos.map((demo) => {
       const relevance = this.calculateRelevance(inputWords, demo);
       const quality = demo.score;
       const usage = Math.min(demo.usageCount * 0.1, 0.5);
@@ -59,7 +49,7 @@ export class DemoSelector {
     scored.sort((a, b) => b.score - a.score);
 
     const selected = this.diversifySelection(
-      scored.map(s => s.demo),
+      scored.map((s) => s.demo),
       limit
     );
 
@@ -142,13 +132,14 @@ export class DemoSelector {
     const averageScore = totalScore / demos.length;
 
     const usageDistribution = demos
-      .map(d => ({ demoId: d.id, count: d.usageCount }))
+      .map((d) => ({ demoId: d.id, count: d.usageCount }))
       .sort((a, b) => b.count - a.count);
 
-    const unusedDemos = demos.filter(d => d.usageCount === 0);
-    const coverageGaps = unusedDemos.length > 0
-      ? ['Some demos have never been used - may indicate coverage gaps']
-      : [];
+    const unusedDemos = demos.filter((d) => d.usageCount === 0);
+    const coverageGaps =
+      unusedDemos.length > 0
+        ? ['Some demos have never been used - may indicate coverage gaps']
+        : [];
 
     return {
       totalDemos: demos.length,
@@ -258,7 +249,7 @@ export class DemoSelector {
     const parts: string[] = [];
 
     if (trace.toolCalls.length > 0) {
-      const tools = [...new Set(trace.toolCalls.map(t => t.name))];
+      const tools = [...new Set(trace.toolCalls.map((t) => t.name))];
       parts.push(`Tools: ${tools.join(', ')}`);
     }
 
@@ -295,9 +286,10 @@ export class DemoSelector {
     if (demos.length === 0) return '';
 
     const formatted = demos.map((demo, i) => {
-      const stepsStr = demo.keySteps.length > 0
-        ? `\nSteps: ${demo.keySteps.map(s => s.description).join(' → ')}`
-        : '';
+      const stepsStr =
+        demo.keySteps.length > 0
+          ? `\nSteps: ${demo.keySteps.map((s) => s.description).join(' → ')}`
+          : '';
 
       return `Example ${i + 1}:
 Input: ${demo.input}

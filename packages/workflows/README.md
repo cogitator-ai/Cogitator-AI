@@ -30,7 +30,9 @@ pnpm add @cogitator-ai/workflows
 import { WorkflowBuilder, WorkflowExecutor, agentNode } from '@cogitator-ai/workflows';
 import { Cogitator, Agent } from '@cogitator-ai/core';
 
-const cogitator = new Cogitator({ /* config */ });
+const cogitator = new Cogitator({
+  /* config */
+});
 const analyst = new Agent({ name: 'analyst', model: 'openai/gpt-4o', instructions: '...' });
 
 const workflow = new WorkflowBuilder('data-pipeline')
@@ -74,9 +76,13 @@ const workflow = new WorkflowBuilder<MyState>('my-workflow')
   .addNode('step1', async (ctx) => ({
     state: { ...ctx.state, count: ctx.state.count + 1 },
   }))
-  .addNode('step2', async (ctx) => ({
-    output: `Count: ${ctx.state.count}`,
-  }), { after: ['step1'] })
+  .addNode(
+    'step2',
+    async (ctx) => ({
+      output: `Count: ${ctx.state.count}`,
+    }),
+    { after: ['step1'] }
+  )
   .build();
 ```
 
@@ -109,12 +115,15 @@ Run an agent as a workflow node:
 import { agentNode } from '@cogitator-ai/workflows';
 
 const workflow = new WorkflowBuilder('agent-flow')
-  .addNode('research', agentNode(researchAgent, {
-    promptKey: 'researchPrompt',   // State key for input
-    outputKey: 'researchResult',   // State key for output
-    timeout: 30000,
-    onToolCall: (call) => console.log('Tool:', call.name),
-  }))
+  .addNode(
+    'research',
+    agentNode(researchAgent, {
+      promptKey: 'researchPrompt', // State key for input
+      outputKey: 'researchResult', // State key for output
+      timeout: 30000,
+      onToolCall: (call) => console.log('Tool:', call.name),
+    })
+  )
   .build();
 ```
 
@@ -138,10 +147,13 @@ Custom function as a node:
 import { functionNode } from '@cogitator-ai/workflows';
 
 const workflow = new WorkflowBuilder('func-flow')
-  .addNode('transform', functionNode(async (ctx) => {
-    const transformed = processData(ctx.state.data);
-    return { state: { ...ctx.state, transformed } };
-  }))
+  .addNode(
+    'transform',
+    functionNode(async (ctx) => {
+      const transformed = processData(ctx.state.data);
+      return { state: { ...ctx.state, transformed } };
+    })
+  )
   .build();
 ```
 
@@ -214,13 +226,19 @@ const workflow = new WorkflowBuilder('timer-flow')
   .addNode('wait', delayNode(5000)) // 5 seconds
 
   // Dynamic delay based on state
-  .addNode('dynamic-wait', dynamicDelayNode((state) => state.retryCount * 1000))
+  .addNode(
+    'dynamic-wait',
+    dynamicDelayNode((state) => state.retryCount * 1000)
+  )
 
   // Wait for cron schedule
   .addNode('cron-wait', cronWaitNode('0 9 * * *')) // Wait until 9 AM
 
   // Wait until specific date
-  .addNode('until', untilNode((state) => state.scheduledTime))
+  .addNode(
+    'until',
+    untilNode((state) => state.scheduledTime)
+  )
   .build();
 ```
 
@@ -257,11 +275,11 @@ const nextFive = getNextCronOccurrences('0 9 * * *', 5);
 const desc = describeCronExpression('0 9 * * 1-5'); // "At 09:00 on weekdays"
 
 // Presets
-CRON_PRESETS.EVERY_MINUTE;  // '* * * * *'
-CRON_PRESETS.HOURLY;        // '0 * * * *'
-CRON_PRESETS.DAILY;         // '0 0 * * *'
-CRON_PRESETS.WEEKLY;        // '0 0 * * 0'
-CRON_PRESETS.MONTHLY;       // '0 0 1 * *'
+CRON_PRESETS.EVERY_MINUTE; // '* * * * *'
+CRON_PRESETS.HOURLY; // '0 * * * *'
+CRON_PRESETS.DAILY; // '0 0 * * *'
+CRON_PRESETS.WEEKLY; // '0 0 * * 0'
+CRON_PRESETS.MONTHLY; // '0 0 1 * *'
 ```
 
 ### TimerManager
@@ -298,23 +316,18 @@ scheduler.schedule('daily-report', '0 9 * * *', async () => {
 import { executeWithRetry, withRetry, Retryable } from '@cogitator-ai/workflows';
 
 // Function wrapper
-const result = await executeWithRetry(
-  async () => await unreliableOperation(),
-  {
-    maxAttempts: 5,
-    initialDelay: 1000,
-    maxDelay: 30000,
-    backoffMultiplier: 2,
-    jitter: 0.1,
-    shouldRetry: (error) => error.code !== 'FATAL',
-    onRetry: (attempt, error, delay) => console.log(`Retry ${attempt} in ${delay}ms`),
-  }
-);
+const result = await executeWithRetry(async () => await unreliableOperation(), {
+  maxAttempts: 5,
+  initialDelay: 1000,
+  maxDelay: 30000,
+  backoffMultiplier: 2,
+  jitter: 0.1,
+  shouldRetry: (error) => error.code !== 'FATAL',
+  onRetry: (attempt, error, delay) => console.log(`Retry ${attempt} in ${delay}ms`),
+});
 
 // Decorator-style
-const retryableFetch = withRetry({ maxAttempts: 3 })(
-  async (url: string) => await fetch(url)
-);
+const retryableFetch = withRetry({ maxAttempts: 3 })(async (url: string) => await fetch(url));
 
 // Class decorator
 class ApiClient {
@@ -473,12 +486,15 @@ import { subworkflowNode, executeSubworkflow } from '@cogitator-ai/workflows';
 
 const mainWorkflow = new WorkflowBuilder('main')
   .addNode('prepare', prepareNode)
-  .addNode('process', subworkflowNode(processingWorkflow, {
-    inputMapper: (state) => ({ items: state.items }),
-    outputMapper: (result) => ({ processedItems: result.output }),
-    maxDepth: 5,
-    errorStrategy: 'fail', // 'fail' | 'continue' | 'compensate'
-  }))
+  .addNode(
+    'process',
+    subworkflowNode(processingWorkflow, {
+      inputMapper: (state) => ({ items: state.items }),
+      outputMapper: (result) => ({ processedItems: result.output }),
+      maxDepth: 5,
+      errorStrategy: 'fail', // 'fail' | 'continue' | 'compensate'
+    })
+  )
   .addNode('finalize', finalizeNode, { after: ['process'] })
   .build();
 ```
@@ -490,14 +506,20 @@ import { parallelSubworkflows, fanOutFanIn, scatterGather } from '@cogitator-ai/
 
 // Fan-out/Fan-in pattern
 const workflow = new WorkflowBuilder('parallel')
-  .addNode('distribute', fanOutFanIn([
-    { workflow: workflowA, input: { type: 'a' } },
-    { workflow: workflowB, input: { type: 'b' } },
-    { workflow: workflowC, input: { type: 'c' } },
-  ], {
-    concurrency: 3,
-    onProgress: (completed, total) => console.log(`${completed}/${total}`),
-  }))
+  .addNode(
+    'distribute',
+    fanOutFanIn(
+      [
+        { workflow: workflowA, input: { type: 'a' } },
+        { workflow: workflowB, input: { type: 'b' } },
+        { workflow: workflowC, input: { type: 'c' } },
+      ],
+      {
+        concurrency: 3,
+        onProgress: (completed, total) => console.log(`${completed}/${total}`),
+      }
+    )
+  )
   .build();
 
 // Scatter-Gather (collect all results)
@@ -523,13 +545,16 @@ const store = new InMemoryApprovalStore();
 const notifier = new WebhookNotifier('https://slack.webhook.url');
 
 const workflow = new WorkflowBuilder('approval-flow')
-  .addNode('request', approvalNode({
-    message: (state) => `Approve expense: $${state.amount}`,
-    approvers: ['manager@company.com'],
-    timeout: 24 * 60 * 60 * 1000, // 24 hours
-    store,
-    notifier,
-  }))
+  .addNode(
+    'request',
+    approvalNode({
+      message: (state) => `Approve expense: $${state.amount}`,
+      approvers: ['manager@company.com'],
+      timeout: 24 * 60 * 60 * 1000, // 24 hours
+      store,
+      notifier,
+    })
+  )
   .addConditional('check', (state) => state.approved, { after: ['request'] })
   .addNode('process', processNode, { after: ['check:true'] })
   .addNode('reject', rejectNode, { after: ['check:false'] })
@@ -542,15 +567,18 @@ const workflow = new WorkflowBuilder('approval-flow')
 import { choiceNode } from '@cogitator-ai/workflows';
 
 const workflow = new WorkflowBuilder('choice-flow')
-  .addNode('select', choiceNode({
-    message: 'Select processing method:',
-    choices: [
-      { id: 'fast', label: 'Fast (less accurate)', value: 'fast' },
-      { id: 'accurate', label: 'Accurate (slower)', value: 'accurate' },
-    ],
-    store,
-    notifier,
-  }))
+  .addNode(
+    'select',
+    choiceNode({
+      message: 'Select processing method:',
+      choices: [
+        { id: 'fast', label: 'Fast (less accurate)', value: 'fast' },
+        { id: 'accurate', label: 'Accurate (slower)', value: 'accurate' },
+      ],
+      store,
+      notifier,
+    })
+  )
   .build();
 ```
 
@@ -560,15 +588,18 @@ const workflow = new WorkflowBuilder('choice-flow')
 import { inputNode } from '@cogitator-ai/workflows';
 
 const workflow = new WorkflowBuilder('input-flow')
-  .addNode('get-details', inputNode({
-    message: 'Please provide additional details:',
-    fields: [
-      { name: 'reason', type: 'text', required: true },
-      { name: 'priority', type: 'select', options: ['low', 'medium', 'high'] },
-    ],
-    store,
-    notifier,
-  }))
+  .addNode(
+    'get-details',
+    inputNode({
+      message: 'Please provide additional details:',
+      fields: [
+        { name: 'reason', type: 'text', required: true },
+        { name: 'priority', type: 'select', options: ['low', 'medium', 'high'] },
+      ],
+      store,
+      notifier,
+    })
+  )
   .build();
 ```
 
@@ -578,15 +609,18 @@ const workflow = new WorkflowBuilder('input-flow')
 import { managementChain, chainNode } from '@cogitator-ai/workflows';
 
 const workflow = new WorkflowBuilder('chain-approval')
-  .addNode('approval', managementChain({
-    steps: [
-      { approver: 'team-lead@co.com', requiredFor: (state) => state.amount > 100 },
-      { approver: 'manager@co.com', requiredFor: (state) => state.amount > 1000 },
-      { approver: 'director@co.com', requiredFor: (state) => state.amount > 10000 },
-    ],
-    store,
-    notifier,
-  }))
+  .addNode(
+    'approval',
+    managementChain({
+      steps: [
+        { approver: 'team-lead@co.com', requiredFor: (state) => state.amount > 100 },
+        { approver: 'manager@co.com', requiredFor: (state) => state.amount > 1000 },
+        { approver: 'director@co.com', requiredFor: (state) => state.amount > 10000 },
+      ],
+      store,
+      notifier,
+    })
+  )
   .build();
 ```
 
@@ -600,14 +634,17 @@ const workflow = new WorkflowBuilder('chain-approval')
 import { mapNode, parallelMap, batchedMap } from '@cogitator-ai/workflows';
 
 const workflow = new WorkflowBuilder('map-flow')
-  .addNode('process-items', mapNode({
-    items: (state) => state.items,
-    mapper: async (item, index, ctx) => {
-      return await processItem(item);
-    },
-    concurrency: 5,
-    onProgress: ({ completed, total }) => console.log(`${completed}/${total}`),
-  }))
+  .addNode(
+    'process-items',
+    mapNode({
+      items: (state) => state.items,
+      mapper: async (item, index, ctx) => {
+        return await processItem(item);
+      },
+      concurrency: 5,
+      onProgress: ({ completed, total }) => console.log(`${completed}/${total}`),
+    })
+  )
   .build();
 
 // Batched processing
@@ -620,18 +657,21 @@ const results = await batchedMap(items, processItem, { batchSize: 10, concurrenc
 import { reduceNode, collect, sum, groupBy, stats } from '@cogitator-ai/workflows';
 
 const workflow = new WorkflowBuilder('reduce-flow')
-  .addNode('aggregate', reduceNode({
-    items: (state) => state.results,
-    reducer: (acc, item) => acc + item.value,
-    initialValue: 0,
-  }))
+  .addNode(
+    'aggregate',
+    reduceNode({
+      items: (state) => state.results,
+      reducer: (acc, item) => acc + item.value,
+      initialValue: 0,
+    })
+  )
   .build();
 
 // Built-in aggregators
-const collected = collect(items);                    // Collect all
-const total = sum(items, (i) => i.value);           // Sum values
+const collected = collect(items); // Collect all
+const total = sum(items, (i) => i.value); // Sum values
 const grouped = groupBy(items, (i) => i.category); // Group by key
-const statistics = stats(items, (i) => i.score);   // { min, max, avg, sum, count }
+const statistics = stats(items, (i) => i.score); // { min, max, avg, sum, count }
 ```
 
 ### Map-Reduce
@@ -640,20 +680,23 @@ const statistics = stats(items, (i) => i.score);   // { min, max, avg, sum, coun
 import { mapReduceNode, executeMapReduce } from '@cogitator-ai/workflows';
 
 const workflow = new WorkflowBuilder('mapreduce-flow')
-  .addNode('word-count', mapReduceNode({
-    items: (state) => state.documents,
-    mapper: async (doc) => {
-      const words = doc.text.split(/\s+/);
-      return words.map(w => ({ word: w, count: 1 }));
-    },
-    reducer: (results) => {
-      return results.flat().reduce((acc, { word, count }) => {
-        acc[word] = (acc[word] || 0) + count;
-        return acc;
-      }, {});
-    },
-    concurrency: 10,
-  }))
+  .addNode(
+    'word-count',
+    mapReduceNode({
+      items: (state) => state.documents,
+      mapper: async (doc) => {
+        const words = doc.text.split(/\s+/);
+        return words.map((w) => ({ word: w, count: 1 }));
+      },
+      reducer: (results) => {
+        return results.flat().reduce((acc, { word, count }) => {
+          acc[word] = (acc[word] || 0) + count;
+          return acc;
+        }, {});
+      },
+      concurrency: 10,
+    })
+  )
   .build();
 ```
 
@@ -706,24 +749,38 @@ const result = await webhook.handle(request);
 ### Trigger Manager
 
 ```typescript
-import { createTriggerManager, cronTrigger, webhookTrigger, eventTrigger } from '@cogitator-ai/workflows';
+import {
+  createTriggerManager,
+  cronTrigger,
+  webhookTrigger,
+  eventTrigger,
+} from '@cogitator-ai/workflows';
 
 const manager = createTriggerManager({ executor });
 
-manager.register('daily-report', cronTrigger({
-  expression: '0 9 * * *',
-  workflow: reportWorkflow,
-}));
+manager.register(
+  'daily-report',
+  cronTrigger({
+    expression: '0 9 * * *',
+    workflow: reportWorkflow,
+  })
+);
 
-manager.register('github-webhook', webhookTrigger({
-  path: '/hooks/github',
-  workflow: githubWorkflow,
-}));
+manager.register(
+  'github-webhook',
+  webhookTrigger({
+    path: '/hooks/github',
+    workflow: githubWorkflow,
+  })
+);
 
-manager.register('order-created', eventTrigger({
-  event: 'order.created',
-  workflow: orderProcessingWorkflow,
-}));
+manager.register(
+  'order-created',
+  eventTrigger({
+    event: 'order.created',
+    workflow: orderProcessingWorkflow,
+  })
+);
 
 await manager.startAll();
 ```

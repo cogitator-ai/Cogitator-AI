@@ -85,11 +85,7 @@ export class ToolGuard {
     return tool.requiresApproval ?? false;
   }
 
-  private assessRisk(
-    _tool: Tool,
-    args: Record<string, unknown>,
-    sideEffects: string[]
-  ): Severity {
+  private assessRisk(_tool: Tool, args: Record<string, unknown>, sideEffects: string[]): Severity {
     if (sideEffects.includes('process') || sideEffects.includes('filesystem')) {
       const command = String(args.command ?? args.cmd ?? args.path ?? '');
       if (this.isDangerousCommand(command)) {
@@ -167,7 +163,5 @@ export class ToolGuard {
     return true;
   }
 
-  updateConstitution(_constitution: Constitution): void {
-
-  }
+  updateConstitution(_constitution: Constitution): void {}
 }

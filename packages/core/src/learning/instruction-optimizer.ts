@@ -53,7 +53,7 @@ export class InstructionOptimizer {
       minScoreToConsider?: number;
     }
   ): Promise<InstructionOptimizationResult> {
-    const traces = options?.traces ?? await this.traceStore.getAll(agentId);
+    const traces = options?.traces ?? (await this.traceStore.getAll(agentId));
     const maxTraces = options?.maxTraces ?? 20;
     const relevantTraces = traces.slice(0, maxTraces);
 
@@ -85,11 +85,7 @@ export class InstructionOptimizer {
       ? await this.insightStore.findRelevant(agentId, currentInstructions, 10)
       : [];
 
-    const candidates = await this.generateCandidates(
-      currentInstructions,
-      gaps,
-      insights
-    );
+    const candidates = await this.generateCandidates(currentInstructions, gaps, insights);
 
     if (candidates.length === 0) {
       return {
@@ -120,24 +116,15 @@ export class InstructionOptimizer {
     for (let round = 0; round < this.refinementRounds; round++) {
       if (bestEvaluation.weaknesses.length === 0) break;
 
-      const refined = await this.refineInstructions(
-        finalInstructions,
-        bestEvaluation.weaknesses
-      );
+      const refined = await this.refineInstructions(finalInstructions, bestEvaluation.weaknesses);
 
       if (refined) {
         finalInstructions = refined;
       }
     }
 
-    const originalScore = await this.estimateInstructionScore(
-      currentInstructions,
-      relevantTraces
-    );
-    const newScore = await this.estimateInstructionScore(
-      finalInstructions,
-      relevantTraces
-    );
+    const originalScore = await this.estimateInstructionScore(currentInstructions, relevantTraces);
+    const newScore = await this.estimateInstructionScore(finalInstructions, relevantTraces);
 
     return {
       originalInstructions: currentInstructions,
@@ -175,11 +162,7 @@ export class InstructionOptimizer {
     gaps: InstructionGap[],
     insights: Insight[]
   ): Promise<string[]> {
-    const prompt = buildInstructionCandidatePrompt(
-      currentInstructions,
-      gaps,
-      insights
-    );
+    const prompt = buildInstructionCandidatePrompt(currentInstructions, gaps, insights);
 
     try {
       const response = await this.llm.chat({
@@ -191,8 +174,8 @@ export class InstructionOptimizer {
 
       const parsed = parseInstructionCandidatesResponse(response.content);
       return parsed
-        .map(c => c.instructions)
-        .filter(i => i.length > 0)
+        .map((c) => c.instructions)
+        .filter((i) => i.length > 0)
         .slice(0, this.candidateCount);
     } catch {
       return [];
@@ -258,19 +241,16 @@ export class InstructionOptimizer {
     instructions: string,
     traces: ExecutionTrace[]
   ): Promise<number> {
-    const successfulTraces = traces.filter(t => t.metrics.success);
+    const successfulTraces = traces.filter((t) => t.metrics.success);
 
-    const baseScore = traces.length > 0
-      ? successfulTraces.length / traces.length
-      : 0.5;
+    const baseScore = traces.length > 0 ? successfulTraces.length / traces.length : 0.5;
 
-    const avgTraceScore = traces.length > 0
-      ? traces.reduce((sum, t) => sum + t.score, 0) / traces.length
-      : 0.5;
+    const avgTraceScore =
+      traces.length > 0 ? traces.reduce((sum, t) => sum + t.score, 0) / traces.length : 0.5;
 
     const instructionLength = instructions.length;
     const conciseBonus = instructionLength < 500 ? 0.1 : instructionLength > 1500 ? -0.1 : 0;
 
-    return Math.max(0, Math.min(1, (baseScore * 0.4 + avgTraceScore * 0.5 + 0.5 + conciseBonus)));
+    return Math.max(0, Math.min(1, baseScore * 0.4 + avgTraceScore * 0.5 + 0.5 + conciseBonus));
   }
 }

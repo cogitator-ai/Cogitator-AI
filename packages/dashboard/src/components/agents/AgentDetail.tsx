@@ -263,12 +263,16 @@ export function AgentDetail({ agentId }: AgentDetailProps) {
         </Card>
         <Card className="text-center">
           <Clock className="w-5 h-5 text-chart-3 mx-auto mb-2" />
-          <p className="text-2xl font-semibold text-text-primary">{stats.avgDuration.toFixed(1)}s</p>
+          <p className="text-2xl font-semibold text-text-primary">
+            {stats.avgDuration.toFixed(1)}s
+          </p>
           <p className="text-xs text-text-secondary">Avg Duration</p>
         </Card>
         <Card className="text-center">
           <TrendingUp className="w-5 h-5 text-success mx-auto mb-2" />
-          <p className="text-2xl font-semibold text-text-primary">{stats.successRate.toFixed(0)}%</p>
+          <p className="text-2xl font-semibold text-text-primary">
+            {stats.successRate.toFixed(0)}%
+          </p>
           <p className="text-xs text-text-secondary">Success Rate</p>
         </Card>
       </div>
@@ -295,7 +299,11 @@ export function AgentDetail({ agentId }: AgentDetailProps) {
                     tickLine={false}
                     tick={{ fill: '#666666', fontSize: 12 }}
                   />
-                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#666666', fontSize: 12 }} />
+                  <YAxis
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: '#666666', fontSize: 12 }}
+                  />
                   <Tooltip
                     contentStyle={{
                       backgroundColor: '#1a1a1a',

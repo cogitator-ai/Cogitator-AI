@@ -39,7 +39,8 @@ describe('parseBranchResponse', () => {
   });
 
   it('handles markdown code blocks', () => {
-    const response = '```json\n{"branches": [{"thought": "test", "action": {"type": "response", "content": "ok"}}]}\n```';
+    const response =
+      '```json\n{"branches": [{"thought": "test", "action": {"type": "response", "content": "ok"}}]}\n```';
 
     const parsed = parseBranchResponse(response);
     expect(parsed).not.toBeNull();
@@ -47,7 +48,8 @@ describe('parseBranchResponse', () => {
   });
 
   it('handles plain code blocks', () => {
-    const response = '```\n{"branches": [{"thought": "analyze", "action": {"type": "sub_goal", "goal": "break down problem"}}]}\n```';
+    const response =
+      '```\n{"branches": [{"thought": "analyze", "action": {"type": "sub_goal", "goal": "break down problem"}}]}\n```';
 
     const parsed = parseBranchResponse(response);
     expect(parsed).not.toBeNull();
@@ -103,7 +105,8 @@ describe('parseEvaluationResponse', () => {
   });
 
   it('handles markdown code blocks', () => {
-    const response = '```json\n{"confidence": 0.9, "progress": 0.5, "novelty": 0.6, "reasoning": "good"}\n```';
+    const response =
+      '```json\n{"confidence": 0.9, "progress": 0.5, "novelty": 0.6, "reasoning": "good"}\n```';
 
     const parsed = parseEvaluationResponse(response);
     expect(parsed?.confidence).toBe(0.9);
@@ -189,13 +192,7 @@ describe('Reasoning Prompts', () => {
 
     it('includes current state from node', () => {
       const node = createNode();
-      const prompt = buildBranchGenerationPrompt(
-        'Solve problem',
-        node,
-        ['calculator'],
-        2,
-        []
-      );
+      const prompt = buildBranchGenerationPrompt('Solve problem', node, ['calculator'], 2, []);
 
       expect(prompt).toContain('Calculate the first part');
       expect(prompt).toContain('50');
@@ -204,13 +201,7 @@ describe('Reasoning Prompts', () => {
 
     it('includes explored thoughts to avoid', () => {
       const explored = ['Already tried approach A', 'Already tried approach B'];
-      const prompt = buildBranchGenerationPrompt(
-        'Goal',
-        null,
-        [],
-        2,
-        explored
-      );
+      const prompt = buildBranchGenerationPrompt('Goal', null, [], 2, explored);
 
       expect(prompt).toContain('ALREADY EXPLORED');
       expect(prompt).toContain('Already tried approach A');
@@ -218,13 +209,7 @@ describe('Reasoning Prompts', () => {
     });
 
     it('shows starting fresh for null node', () => {
-      const prompt = buildBranchGenerationPrompt(
-        'Goal',
-        null,
-        ['tool1'],
-        2,
-        []
-      );
+      const prompt = buildBranchGenerationPrompt('Goal', null, ['tool1'], 2, []);
 
       expect(prompt).toContain('Starting fresh');
     });
@@ -415,9 +400,7 @@ describe('BranchGenerator', () => {
 
   it('preserves parent id from current node', async () => {
     const mockResponse = JSON.stringify({
-      branches: [
-        { thought: 'Child branch', action: { type: 'response', content: 'ok' } },
-      ],
+      branches: [{ thought: 'Child branch', action: { type: 'response', content: 'ok' } }],
     });
 
     const llm = createMockLLM(mockResponse);
@@ -501,12 +484,7 @@ describe('BranchEvaluator', () => {
     const llm = createMockLLM(mockResponse);
     const evaluator = new BranchEvaluator({ llm, model: 'gpt-4' });
 
-    const score = await evaluator.evaluate(
-      createBranch(),
-      'Test goal',
-      createContext(),
-      []
-    );
+    const score = await evaluator.evaluate(createBranch(), 'Test goal', createContext(), []);
 
     expect(score.confidence).toBe(0.8);
     expect(score.progress).toBe(0.5);
@@ -532,12 +510,7 @@ describe('BranchEvaluator', () => {
       noveltyWeight: 0.2,
     });
 
-    const score = await evaluator.evaluate(
-      createBranch(),
-      'Goal',
-      createContext(),
-      []
-    );
+    const score = await evaluator.evaluate(createBranch(), 'Goal', createContext(), []);
 
     expect(score.composite).toBeCloseTo(1.0);
   });
@@ -546,12 +519,7 @@ describe('BranchEvaluator', () => {
     const llm = createMockLLM('invalid');
     const evaluator = new BranchEvaluator({ llm, model: 'gpt-4' });
 
-    const score = await evaluator.evaluate(
-      createBranch(),
-      'Goal',
-      createContext(),
-      []
-    );
+    const score = await evaluator.evaluate(createBranch(), 'Goal', createContext(), []);
 
     expect(score.confidence).toBe(0.5);
     expect(score.progress).toBe(0.3);
@@ -626,12 +594,7 @@ describe('BranchEvaluator', () => {
       }),
     ];
 
-    const score = await evaluator.evaluate(
-      mainBranch,
-      'Analyze data',
-      createContext(),
-      siblings
-    );
+    const score = await evaluator.evaluate(mainBranch, 'Analyze data', createContext(), siblings);
 
     expect(score).toBeDefined();
     expect(score.composite).toBeGreaterThan(0);

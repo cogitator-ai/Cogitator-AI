@@ -151,10 +151,9 @@ describe('PostgresAdapter', () => {
       const result = await adapter.deleteThread('thread_123');
 
       expect(result.success).toBe(true);
-      expect(mockPool.query).toHaveBeenCalledWith(
-        expect.stringContaining('DELETE FROM'),
-        ['thread_123']
-      );
+      expect(mockPool.query).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM'), [
+        'thread_123',
+      ]);
     });
   });
 
@@ -253,20 +252,18 @@ describe('PostgresAdapter', () => {
       const result = await adapter.deleteEntry('entry_123');
 
       expect(result.success).toBe(true);
-      expect(mockPool.query).toHaveBeenCalledWith(
-        expect.stringContaining('DELETE FROM'),
-        ['entry_123']
-      );
+      expect(mockPool.query).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM'), [
+        'entry_123',
+      ]);
     });
 
     it('clears thread entries', async () => {
       const result = await adapter.clearThread('thread_123');
 
       expect(result.success).toBe(true);
-      expect(mockPool.query).toHaveBeenCalledWith(
-        expect.stringContaining('DELETE FROM'),
-        ['thread_123']
-      );
+      expect(mockPool.query).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM'), [
+        'thread_123',
+      ]);
     });
   });
 
@@ -477,10 +474,9 @@ describe('PostgresAdapter', () => {
       const result = await adapter.deleteBySource('entry_123');
 
       expect(result.success).toBe(true);
-      expect(mockPool.query).toHaveBeenCalledWith(
-        expect.stringContaining('source_id = $1'),
-        ['entry_123']
-      );
+      expect(mockPool.query).toHaveBeenCalledWith(expect.stringContaining('source_id = $1'), [
+        'entry_123',
+      ]);
     });
   });
 

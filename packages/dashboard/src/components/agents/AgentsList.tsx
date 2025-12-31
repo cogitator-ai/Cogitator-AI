@@ -263,7 +263,8 @@ export function AgentsList() {
 
                   {agent.last_run_at && (
                     <p className="text-xs text-text-muted mt-3 text-center">
-                      Last run {formatDistanceToNow(new Date(agent.last_run_at), { addSuffix: true })}
+                      Last run{' '}
+                      {formatDistanceToNow(new Date(agent.last_run_at), { addSuffix: true })}
                     </p>
                   )}
                 </Card>

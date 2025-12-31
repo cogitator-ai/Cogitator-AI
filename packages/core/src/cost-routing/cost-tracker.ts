@@ -23,9 +23,7 @@ export class CostTracker {
   }
 
   getRunCost(runId: string): number {
-    return this.records
-      .filter((r) => r.runId === runId)
-      .reduce((sum, r) => sum + r.cost, 0);
+    return this.records.filter((r) => r.runId === runId).reduce((sum, r) => sum + r.cost, 0);
   }
 
   getHourlyCost(): number {
@@ -105,11 +103,7 @@ export class CostTracker {
 
   private pruneWindows(): void {
     const now = Date.now();
-    this.hourlyWindow = this.hourlyWindow.filter(
-      (r) => now - r.timestamp.getTime() < HOUR_MS
-    );
-    this.dailyWindow = this.dailyWindow.filter(
-      (r) => now - r.timestamp.getTime() < DAY_MS
-    );
+    this.hourlyWindow = this.hourlyWindow.filter((r) => now - r.timestamp.getTime() < HOUR_MS);
+    this.dailyWindow = this.dailyWindow.filter((r) => now - r.timestamp.getTime() < DAY_MS);
   }
 }

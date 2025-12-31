@@ -115,10 +115,7 @@ export class TimeTravel {
     });
   }
 
-  async replayDeterministic(
-    agent: Agent,
-    checkpointId: string
-  ): Promise<ReplayResult> {
+  async replayDeterministic(agent: Agent, checkpointId: string): Promise<ReplayResult> {
     return this.replay(agent, checkpointId, { mode: 'deterministic' });
   }
 
@@ -178,13 +175,7 @@ export class TimeTravel {
     mockResults: Record<string, unknown>,
     label?: string
   ): Promise<ForkResult> {
-    return this.forker.forkWithMockedTools(
-      this.cogitator,
-      agent,
-      checkpointId,
-      mockResults,
-      label
-    );
+    return this.forker.forkWithMockedTools(this.cogitator, agent, checkpointId, mockResults, label);
   }
 
   async forkWithNewInput(
@@ -193,13 +184,7 @@ export class TimeTravel {
     newInput: string,
     label?: string
   ): Promise<ForkResult> {
-    return this.forker.forkWithNewInput(
-      this.cogitator,
-      agent,
-      checkpointId,
-      newInput,
-      label
-    );
+    return this.forker.forkWithNewInput(this.cogitator, agent, checkpointId, newInput, label);
   }
 
   async forkMultiple(
@@ -237,7 +222,11 @@ export class TimeTravel {
   private countSteps(result: RunResult): number {
     let count = 0;
     for (const span of result.trace.spans) {
-      if (span.name.startsWith('tool.') || span.name.includes('llm') || span.name.includes('chat')) {
+      if (
+        span.name.startsWith('tool.') ||
+        span.name.includes('llm') ||
+        span.name.includes('chat')
+      ) {
         count++;
       }
     }

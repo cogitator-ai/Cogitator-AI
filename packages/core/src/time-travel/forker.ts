@@ -24,11 +24,7 @@ export class ExecutionForker {
     this.replayer = options.replayer;
   }
 
-  async fork(
-    cogitator: Cogitator,
-    agent: Agent,
-    options: ForkOptions
-  ): Promise<ForkResult> {
+  async fork(cogitator: Cogitator, agent: Agent, options: ForkOptions): Promise<ForkResult> {
     const checkpoint = await this.checkpointStore.load(options.checkpointId);
     if (!checkpoint) {
       throw new Error(`Checkpoint not found: ${options.checkpointId}`);
@@ -136,16 +132,20 @@ export class ExecutionForker {
       metadata: {
         ...original.metadata,
         forkedFrom: original.id,
-        forkType: options.additionalContext ? 'context' :
-                  options.input ? 'input' :
-                  options.mockToolResults ? 'mocked' : 'plain',
+        forkType: options.additionalContext
+          ? 'context'
+          : options.input
+            ? 'input'
+            : options.mockToolResults
+              ? 'mocked'
+              : 'plain',
       },
     };
   }
 
   private injectContext(messages: Message[], context: string): Message[] {
     const result = [...messages];
-    const systemIndex = result.findIndex(m => m.role === 'system');
+    const systemIndex = result.findIndex((m) => m.role === 'system');
 
     if (systemIndex >= 0) {
       result[systemIndex] = {

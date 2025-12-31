@@ -102,10 +102,7 @@ export class CritiqueReviser {
     return result.content;
   }
 
-  private selectPrinciples(
-    response: string,
-    iteration: number
-  ): ConstitutionalPrinciple[] {
+  private selectPrinciples(response: string, iteration: number): ConstitutionalPrinciple[] {
     if (iteration === 0) {
       return this.principles.filter((p) => p.severity === 'high');
     }

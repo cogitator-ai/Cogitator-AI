@@ -181,7 +181,7 @@ describe('InMemoryTraceStore', () => {
 
     const remaining = await store.getAll('agent1');
     expect(remaining).toHaveLength(2);
-    expect(remaining.every(t => t.score >= 0.7)).toBe(true);
+    expect(remaining.every((t) => t.score >= 0.7)).toBe(true);
   });
 
   it('should clear all traces for an agent', async () => {
@@ -227,13 +227,15 @@ describe('MetricEvaluator', () => {
 
       const successTrace = createMockTrace({ steps: [] });
       const failTrace = createMockTrace({
-        steps: [{
-          index: 0,
-          type: 'tool_call',
-          timestamp: Date.now(),
-          duration: 100,
-          toolResult: { callId: '1', name: 'test', result: null, error: 'something failed' },
-        }],
+        steps: [
+          {
+            index: 0,
+            type: 'tool_call',
+            timestamp: Date.now(),
+            duration: 100,
+            toolResult: { callId: '1', name: 'test', result: null, error: 'something failed' },
+          },
+        ],
       });
 
       expect(successMetric(successTrace).value).toBe(1);
@@ -367,7 +369,7 @@ describe('DemoSelector', () => {
     await selector.removeDemo(demo.id);
 
     const allDemos = selector.getAllDemos('agent1');
-    expect(allDemos.find(d => d.id === demo.id)).toBeUndefined();
+    expect(allDemos.find((d) => d.id === demo.id)).toBeUndefined();
   });
 
   it('should format demos for prompt', async () => {
@@ -439,7 +441,13 @@ describe('InstructionOptimizer', () => {
     vi.mocked(mockLLM.chat)
       .mockResolvedValueOnce({
         content: JSON.stringify({
-          gaps: [{ description: 'Missing error handling', frequency: 3, suggestedFix: 'Add error handling' }],
+          gaps: [
+            {
+              description: 'Missing error handling',
+              frequency: 3,
+              suggestedFix: 'Add error handling',
+            },
+          ],
           overallAnalysis: 'Needs improvement',
         }),
         usage: { inputTokens: 10, outputTokens: 20 },
@@ -447,13 +455,20 @@ describe('InstructionOptimizer', () => {
       })
       .mockResolvedValueOnce({
         content: JSON.stringify({
-          candidates: [{ instructions: 'Be helpful and handle errors', reasoning: 'Added error handling' }],
+          candidates: [
+            { instructions: 'Be helpful and handle errors', reasoning: 'Added error handling' },
+          ],
         }),
         usage: { inputTokens: 10, outputTokens: 20 },
         finishReason: 'stop',
       })
       .mockResolvedValue({
-        content: JSON.stringify({ score: 0.8, strengths: ['good'], weaknesses: [], reasoning: 'improved' }),
+        content: JSON.stringify({
+          score: 0.8,
+          strengths: ['good'],
+          weaknesses: [],
+          reasoning: 'improved',
+        }),
         usage: { inputTokens: 10, outputTokens: 20 },
         finishReason: 'stop',
       });
@@ -494,7 +509,12 @@ describe('AgentOptimizer', () => {
     const runResult = createMockRunResult({ output: 'Paris' });
 
     vi.mocked(mockLLM.chat).mockResolvedValue({
-      content: JSON.stringify({ score: 0.9, strengths: ['correct'], weaknesses: [], reasoning: 'good' }),
+      content: JSON.stringify({
+        score: 0.9,
+        strengths: ['correct'],
+        weaknesses: [],
+        reasoning: 'good',
+      }),
       usage: { inputTokens: 10, outputTokens: 20 },
       finishReason: 'stop',
     });
@@ -513,7 +533,12 @@ describe('AgentOptimizer', () => {
     ];
 
     vi.mocked(mockLLM.chat).mockResolvedValue({
-      content: JSON.stringify({ score: 0.9, strengths: ['good'], weaknesses: [], reasoning: 'good' }),
+      content: JSON.stringify({
+        score: 0.9,
+        strengths: ['good'],
+        weaknesses: [],
+        reasoning: 'good',
+      }),
       usage: { inputTokens: 10, outputTokens: 20 },
       finishReason: 'stop',
     });
@@ -530,7 +555,12 @@ describe('AgentOptimizer', () => {
     const runResult = createMockRunResult({ agentId: 'agent1' });
 
     vi.mocked(mockLLM.chat).mockResolvedValue({
-      content: JSON.stringify({ score: 0.95, strengths: ['excellent'], weaknesses: [], reasoning: 'great' }),
+      content: JSON.stringify({
+        score: 0.95,
+        strengths: ['excellent'],
+        weaknesses: [],
+        reasoning: 'great',
+      }),
       usage: { inputTokens: 10, outputTokens: 20 },
       finishReason: 'stop',
     });

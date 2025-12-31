@@ -49,7 +49,9 @@ export class CostAwareRouter {
     return this.modelSelector.selectModel(requirements);
   }
 
-  async recommendModelForRequirements(requirements: TaskRequirements): Promise<ModelRecommendation> {
+  async recommendModelForRequirements(
+    requirements: TaskRequirements
+  ): Promise<ModelRecommendation> {
     return this.modelSelector.selectModel(requirements);
   }
 

@@ -31,7 +31,12 @@ const result = await sandbox.execute({ expression: '2 + 2 * 3' });
 ```typescript
 import { tool } from '@cogitator-ai/core';
 import { WasmSandbox } from '@cogitator-ai/sandbox';
-import { calcToolConfig, calcToolSchema, jsonToolConfig, jsonToolSchema } from '@cogitator-ai/wasm-tools';
+import {
+  calcToolConfig,
+  calcToolSchema,
+  jsonToolConfig,
+  jsonToolSchema,
+} from '@cogitator-ai/wasm-tools';
 
 const calcSandbox = new WasmSandbox(calcToolConfig);
 
@@ -48,13 +53,13 @@ const calculator = tool({
 
 ### Available Exports
 
-| Export | Description |
-|--------|-------------|
-| `calcToolConfig` | Sandbox config for calculator WASM module |
-| `calcToolSchema` | Zod schema for calculator input |
-| `jsonToolConfig` | Sandbox config for JSON processor WASM module |
-| `jsonToolSchema` | Zod schema for JSON processor input |
-| `getWasmPath(name)` | Get path to a WASM module by name |
+| Export              | Description                                   |
+| ------------------- | --------------------------------------------- |
+| `calcToolConfig`    | Sandbox config for calculator WASM module     |
+| `calcToolSchema`    | Zod schema for calculator input               |
+| `jsonToolConfig`    | Sandbox config for JSON processor WASM module |
+| `jsonToolSchema`    | Zod schema for JSON processor input           |
+| `getWasmPath(name)` | Get path to a WASM module by name             |
 
 ## Security
 

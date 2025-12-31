@@ -12,7 +12,12 @@ import type { ToolCall, ToolResult } from './message';
 import type { Reflection, InsightStore } from './reflection';
 
 export type ExecutionStepType = 'llm_call' | 'tool_call' | 'reflection';
-export type BuiltinMetric = 'success' | 'tool_accuracy' | 'efficiency' | 'completeness' | 'coherence';
+export type BuiltinMetric =
+  | 'success'
+  | 'tool_accuracy'
+  | 'efficiency'
+  | 'completeness'
+  | 'coherence';
 
 export interface ExecutionStep {
   index: number;

@@ -197,10 +197,7 @@ export class ModelSelector {
     };
   }
 
-  private estimateCost(
-    model: ModelInfo,
-    complexity: 'simple' | 'moderate' | 'complex'
-  ): number {
+  private estimateCost(model: ModelInfo, complexity: 'simple' | 'moderate' | 'complex'): number {
     const tokenEstimates = {
       simple: { input: 500, output: 200 },
       moderate: { input: 2000, output: 1000 },

@@ -19,12 +19,14 @@ describe('TaskAnalyzer', () => {
   });
 
   it('detects complex tasks', () => {
-    const longComplexTask = Array(20).fill(
-      'Analyze this large codebase and then compare the architecture patterns. ' +
-      'First, identify all the design patterns used. Second, evaluate their effectiveness. ' +
-      'Third, suggest improvements. Finally, create a comprehensive report. ' +
-      'If there are issues, fix them. Otherwise, document the findings.'
-    ).join(' ');
+    const longComplexTask = Array(20)
+      .fill(
+        'Analyze this large codebase and then compare the architecture patterns. ' +
+          'First, identify all the design patterns used. Second, evaluate their effectiveness. ' +
+          'Third, suggest improvements. Finally, create a comprehensive report. ' +
+          'If there are issues, fix them. Otherwise, document the findings.'
+      )
+      .join(' ');
     const requirements = analyzer.analyze(longComplexTask);
     expect(requirements.complexity).toBe('complex');
   });
@@ -205,7 +207,7 @@ describe('BudgetEnforcer', () => {
 
   it('allows within budget', () => {
     const config: BudgetConfig = {
-      maxCostPerRun: 0.10,
+      maxCostPerRun: 0.1,
     };
     const enforcer = new BudgetEnforcer(config, tracker);
 
@@ -215,7 +217,7 @@ describe('BudgetEnforcer', () => {
 
   it('blocks over per-run limit', () => {
     const config: BudgetConfig = {
-      maxCostPerRun: 0.10,
+      maxCostPerRun: 0.1,
     };
     const enforcer = new BudgetEnforcer(config, tracker);
 
@@ -289,7 +291,7 @@ describe('BudgetEnforcer', () => {
   it('triggers exceeded callback', () => {
     const onExceeded = vi.fn();
     const config: BudgetConfig = {
-      maxCostPerRun: 0.10,
+      maxCostPerRun: 0.1,
       onBudgetExceeded: onExceeded,
     };
     const enforcer = new BudgetEnforcer(config, tracker);
@@ -362,7 +364,7 @@ describe('CostAwareRouter', () => {
       config: {
         enabled: true,
         budget: {
-          maxCostPerRun: 0.10,
+          maxCostPerRun: 0.1,
         },
       },
     });

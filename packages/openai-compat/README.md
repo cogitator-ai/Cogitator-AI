@@ -122,15 +122,15 @@ const server = new OpenAIServer(cogitator, {
 
 ### Configuration Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `port` | `number` | `8080` | Port to listen on |
-| `host` | `string` | `'0.0.0.0'` | Host to bind to |
-| `apiKeys` | `string[]` | `[]` | API keys for authentication. Empty disables auth |
-| `tools` | `Tool[]` | `[]` | Tools available to assistants |
-| `logging` | `boolean` | `false` | Enable request logging |
-| `cors.origin` | `string \| string[] \| boolean` | `true` | CORS origin configuration |
-| `cors.methods` | `string[]` | `['GET', 'POST', 'DELETE', 'OPTIONS']` | Allowed HTTP methods |
+| Option         | Type                            | Default                                | Description                                      |
+| -------------- | ------------------------------- | -------------------------------------- | ------------------------------------------------ |
+| `port`         | `number`                        | `8080`                                 | Port to listen on                                |
+| `host`         | `string`                        | `'0.0.0.0'`                            | Host to bind to                                  |
+| `apiKeys`      | `string[]`                      | `[]`                                   | API keys for authentication. Empty disables auth |
+| `tools`        | `Tool[]`                        | `[]`                                   | Tools available to assistants                    |
+| `logging`      | `boolean`                       | `false`                                | Enable request logging                           |
+| `cors.origin`  | `string \| string[] \| boolean` | `true`                                 | CORS origin configuration                        |
+| `cors.methods` | `string[]`                      | `['GET', 'POST', 'DELETE', 'OPTIONS']` | Allowed HTTP methods                             |
 
 ### Server Lifecycle
 
@@ -228,9 +228,7 @@ const run = await adapter.createRun(thread.id, {
   model: 'openai/gpt-4o',
   instructions: 'Be concise',
   temperature: 0.5,
-  additional_messages: [
-    { role: 'user', content: 'Extra context' },
-  ],
+  additional_messages: [{ role: 'user', content: 'Extra context' }],
   metadata: { source: 'api' },
 });
 
@@ -314,12 +312,7 @@ const message = manager.addMessage(thread.id, {
   content: 'Hello!',
 });
 
-const assistantMsg = manager.addAssistantMessage(
-  thread.id,
-  'Hi there!',
-  assistant.id,
-  run.id
-);
+const assistantMsg = manager.addAssistantMessage(thread.id, 'Hi there!', assistant.id, run.id);
 
 const messages = manager.listMessages(thread.id, {
   limit: 50,
@@ -332,10 +325,7 @@ const llmMessages = manager.getMessagesForLLM(thread.id);
 ### File Management
 
 ```typescript
-const file = manager.addFile(
-  Buffer.from('file content'),
-  'document.txt'
-);
+const file = manager.addFile(Buffer.from('file content'), 'document.txt');
 
 const fetched = manager.getFile(file.id);
 
@@ -350,54 +340,54 @@ manager.deleteFile(file.id);
 
 ### Models
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/v1/models` | List available models |
+| Method | Endpoint     | Description           |
+| ------ | ------------ | --------------------- |
+| GET    | `/v1/models` | List available models |
 
 ### Assistants
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/v1/assistants` | Create assistant |
-| GET | `/v1/assistants` | List assistants |
-| GET | `/v1/assistants/:id` | Get assistant |
-| POST | `/v1/assistants/:id` | Update assistant |
+| Method | Endpoint             | Description      |
+| ------ | -------------------- | ---------------- |
+| POST   | `/v1/assistants`     | Create assistant |
+| GET    | `/v1/assistants`     | List assistants  |
+| GET    | `/v1/assistants/:id` | Get assistant    |
+| POST   | `/v1/assistants/:id` | Update assistant |
 | DELETE | `/v1/assistants/:id` | Delete assistant |
 
 ### Threads
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/v1/threads` | Create thread |
-| GET | `/v1/threads/:id` | Get thread |
+| Method | Endpoint          | Description   |
+| ------ | ----------------- | ------------- |
+| POST   | `/v1/threads`     | Create thread |
+| GET    | `/v1/threads/:id` | Get thread    |
 | DELETE | `/v1/threads/:id` | Delete thread |
 
 ### Messages
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/v1/threads/:id/messages` | Add message |
-| GET | `/v1/threads/:id/messages` | List messages |
-| GET | `/v1/threads/:id/messages/:msg_id` | Get message |
+| Method | Endpoint                           | Description   |
+| ------ | ---------------------------------- | ------------- |
+| POST   | `/v1/threads/:id/messages`         | Add message   |
+| GET    | `/v1/threads/:id/messages`         | List messages |
+| GET    | `/v1/threads/:id/messages/:msg_id` | Get message   |
 
 ### Runs
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/v1/threads/:id/runs` | Create run |
-| GET | `/v1/threads/:id/runs/:run_id` | Get run status |
-| POST | `/v1/threads/:id/runs/:run_id/cancel` | Cancel run |
-| POST | `/v1/threads/:id/runs/:run_id/submit_tool_outputs` | Submit tool outputs |
+| Method | Endpoint                                           | Description         |
+| ------ | -------------------------------------------------- | ------------------- |
+| POST   | `/v1/threads/:id/runs`                             | Create run          |
+| GET    | `/v1/threads/:id/runs/:run_id`                     | Get run status      |
+| POST   | `/v1/threads/:id/runs/:run_id/cancel`              | Cancel run          |
+| POST   | `/v1/threads/:id/runs/:run_id/submit_tool_outputs` | Submit tool outputs |
 
 ### Files
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/v1/files` | Upload file |
-| GET | `/v1/files` | List files |
-| GET | `/v1/files/:id` | Get file metadata |
-| GET | `/v1/files/:id/content` | Download file content |
-| DELETE | `/v1/files/:id` | Delete file |
+| Method | Endpoint                | Description           |
+| ------ | ----------------------- | --------------------- |
+| POST   | `/v1/files`             | Upload file           |
+| GET    | `/v1/files`             | List files            |
+| GET    | `/v1/files/:id`         | Get file metadata     |
+| GET    | `/v1/files/:id/content` | Download file content |
+| DELETE | `/v1/files/:id`         | Delete file           |
 
 ---
 
@@ -418,12 +408,12 @@ interface OpenAIError {
 
 ### Error Types
 
-| HTTP Status | Type | Description |
-|-------------|------|-------------|
-| 400 | `invalid_request_error` | Invalid request parameters |
-| 401 | `authentication_error` | Invalid or missing API key |
-| 404 | `invalid_request_error` | Resource not found |
-| 500 | `server_error` | Internal server error |
+| HTTP Status | Type                    | Description                |
+| ----------- | ----------------------- | -------------------------- |
+| 400         | `invalid_request_error` | Invalid request parameters |
+| 401         | `authentication_error`  | Invalid or missing API key |
+| 404         | `invalid_request_error` | Resource not found         |
+| 500         | `server_error`          | Internal server error      |
 
 ### Client-Side Error Handling
 
@@ -473,11 +463,7 @@ in_progress → cancelling → cancelled
 ### Polling for Completion
 
 ```typescript
-async function waitForRun(
-  openai: OpenAI,
-  threadId: string,
-  runId: string
-): Promise<Run> {
+async function waitForRun(openai: OpenAI, threadId: string, runId: string): Promise<Run> {
   const terminalStates = ['completed', 'failed', 'cancelled', 'expired'];
 
   while (true) {
@@ -540,11 +526,7 @@ import type {
 ### Thread Types
 
 ```typescript
-import type {
-  Thread,
-  ToolResources,
-  CreateThreadRequest,
-} from '@cogitator-ai/openai-compat';
+import type { Thread, ToolResources, CreateThreadRequest } from '@cogitator-ai/openai-compat';
 ```
 
 ### Message Types
@@ -582,32 +564,19 @@ import type {
 ### Run Step Types
 
 ```typescript
-import type {
-  RunStep,
-  StepDetails,
-  StepToolCall,
-  RunStepDelta,
-} from '@cogitator-ai/openai-compat';
+import type { RunStep, StepDetails, StepToolCall, RunStepDelta } from '@cogitator-ai/openai-compat';
 ```
 
 ### File Types
 
 ```typescript
-import type {
-  FileObject,
-  FilePurpose,
-  UploadFileRequest,
-} from '@cogitator-ai/openai-compat';
+import type { FileObject, FilePurpose, UploadFileRequest } from '@cogitator-ai/openai-compat';
 ```
 
 ### Stream Types
 
 ```typescript
-import type {
-  StreamEvent,
-  MessageDelta,
-  RunStepDelta,
-} from '@cogitator-ai/openai-compat';
+import type { StreamEvent, MessageDelta, RunStepDelta } from '@cogitator-ai/openai-compat';
 ```
 
 ---

@@ -5,9 +5,10 @@ export function buildToolReflectionPrompt(
   context: AgentContext,
   relevantInsights: Insight[]
 ): string {
-  const insightsSection = relevantInsights.length > 0
-    ? `\nRelevant past learnings:\n${relevantInsights.map(i => `- ${i.content}`).join('\n')}`
-    : '';
+  const insightsSection =
+    relevantInsights.length > 0
+      ? `\nRelevant past learnings:\n${relevantInsights.map((i) => `- ${i.content}`).join('\n')}`
+      : '';
 
   return `You just executed a tool. Analyze the result and extract learnings.
 
@@ -48,15 +49,17 @@ export function buildErrorReflectionPrompt(
   context: AgentContext,
   relevantInsights: Insight[]
 ): string {
-  const previousActions = context.previousActions.length > 0
-    ? `\nPrevious actions:\n${context.previousActions.map((a, i) =>
-        `${i + 1}. ${a.type}${a.toolName ? `: ${a.toolName}` : ''}`
-      ).join('\n')}`
-    : '';
+  const previousActions =
+    context.previousActions.length > 0
+      ? `\nPrevious actions:\n${context.previousActions
+          .map((a, i) => `${i + 1}. ${a.type}${a.toolName ? `: ${a.toolName}` : ''}`)
+          .join('\n')}`
+      : '';
 
-  const insightsSection = relevantInsights.length > 0
-    ? `\nRelevant past learnings:\n${relevantInsights.map(i => `- ${i.content}`).join('\n')}`
-    : '';
+  const insightsSection =
+    relevantInsights.length > 0
+      ? `\nRelevant past learnings:\n${relevantInsights.map((i) => `- ${i.content}`).join('\n')}`
+      : '';
 
   return `An error occurred during agent execution. Analyze what went wrong.
 
@@ -98,10 +101,12 @@ export function buildRunReflectionPrompt(
   finalOutput: string,
   success: boolean
 ): string {
-  const actionsSummary = actions.map((a, i) => {
-    const result = a.error ? `ERROR: ${a.error}` : 'OK';
-    return `${i + 1}. ${a.type}${a.toolName ? `: ${a.toolName}` : ''} - ${result}`;
-  }).join('\n');
+  const actionsSummary = actions
+    .map((a, i) => {
+      const result = a.error ? `ERROR: ${a.error}` : 'OK';
+      return `${i + 1}. ${a.type}${a.toolName ? `: ${a.toolName}` : ''} - ${result}`;
+    })
+    .join('\n');
 
   return `The agent run has completed. Provide an overall analysis.
 
@@ -180,10 +185,12 @@ export function parseReflectionResponse(response: string): ParsedReflection | nu
     }
 
     parsed.insights = parsed.insights.filter(
-      i => i && typeof i === 'object' &&
-           typeof i.type === 'string' &&
-           typeof i.content === 'string' &&
-           typeof i.context === 'string'
+      (i) =>
+        i &&
+        typeof i === 'object' &&
+        typeof i.type === 'string' &&
+        typeof i.content === 'string' &&
+        typeof i.context === 'string'
     );
 
     return parsed;

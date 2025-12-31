@@ -4,16 +4,21 @@ export function buildFailureAnalysisPrompt(
   traces: ExecutionTrace[],
   currentInstructions: string
 ): string {
-  const failedTraces = traces.filter(t => !t.metrics.success || t.score < 0.7);
+  const failedTraces = traces.filter((t) => !t.metrics.success || t.score < 0.7);
 
-  const traceSummaries = failedTraces.slice(0, 5).map((t, i) => `
+  const traceSummaries = failedTraces
+    .slice(0, 5)
+    .map(
+      (t, i) => `
 Trace ${i + 1}:
 - Input: ${t.input.slice(0, 200)}${t.input.length > 200 ? '...' : ''}
 - Output: ${t.output.slice(0, 200)}${t.output.length > 200 ? '...' : ''}
 - Score: ${t.score.toFixed(2)}
-- Tools used: ${t.toolCalls.map(tc => tc.name).join(', ') || 'none'}
-- Error: ${t.steps.find(s => s.toolResult?.error)?.toolResult?.error ?? 'none'}
-`).join('\n');
+- Tools used: ${t.toolCalls.map((tc) => tc.name).join(', ') || 'none'}
+- Error: ${t.steps.find((s) => s.toolResult?.error)?.toolResult?.error ?? 'none'}
+`
+    )
+    .join('\n');
 
   return `Analyze these failed agent executions to identify instruction gaps.
 
@@ -43,13 +48,16 @@ export function buildInstructionCandidatePrompt(
   gaps: InstructionGap[],
   insights: Insight[]
 ): string {
-  const gapsList = gaps.map((g, i) =>
-    `${i + 1}. ${g.description} (frequency: ${g.frequency})\n   Fix: ${g.suggestedFix}`
-  ).join('\n');
+  const gapsList = gaps
+    .map(
+      (g, i) => `${i + 1}. ${g.description} (frequency: ${g.frequency})\n   Fix: ${g.suggestedFix}`
+    )
+    .join('\n');
 
-  const insightsList = insights.slice(0, 5).map((ins, i) =>
-    `${i + 1}. [${ins.type}] ${ins.content}`
-  ).join('\n');
+  const insightsList = insights
+    .slice(0, 5)
+    .map((ins, i) => `${i + 1}. [${ins.type}] ${ins.content}`)
+    .join('\n');
 
   return `Generate improved agent instructions based on identified gaps and learnings.
 
@@ -83,11 +91,16 @@ export function buildInstructionEvaluationPrompt(
   candidate: string,
   traces: ExecutionTrace[]
 ): string {
-  const traceSummaries = traces.slice(0, 3).map((t, i) => `
+  const traceSummaries = traces
+    .slice(0, 3)
+    .map(
+      (t, i) => `
 Example ${i + 1}:
 - Input: ${t.input.slice(0, 150)}
 - Expected behavior: ${t.metrics.success ? 'Success' : 'Should have succeeded'}
-`).join('\n');
+`
+    )
+    .join('\n');
 
   return `Evaluate if these instructions would have helped the agent perform better.
 
@@ -108,10 +121,7 @@ Respond with JSON:
 }`;
 }
 
-export function buildInstructionRefinementPrompt(
-  candidate: string,
-  feedback: string[]
-): string {
+export function buildInstructionRefinementPrompt(candidate: string, feedback: string[]): string {
   return `Refine these agent instructions based on feedback.
 
 Current Version:

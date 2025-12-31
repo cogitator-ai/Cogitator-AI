@@ -37,7 +37,10 @@ export class AgentOptimizer {
   private instructionOptimizer: InstructionOptimizer;
   private config: LearningConfig;
 
-  private optimizationRuns = new Map<string, { lastRun: Date; count: number; totalImprovement: number }>();
+  private optimizationRuns = new Map<
+    string,
+    { lastRun: Date; count: number; totalImprovement: number }
+  >();
 
   constructor(options: AgentOptimizerOptions) {
     this.llm = options.llm;
@@ -110,7 +113,8 @@ export class AgentOptimizer {
 
     const evaluation = await this.metricEvaluator.evaluate(trace, options?.expected);
     trace.score = evaluation.score;
-    trace.metrics.completeness = evaluation.results.find(r => r.name === 'completeness')?.value ?? metrics.completeness;
+    trace.metrics.completeness =
+      evaluation.results.find((r) => r.name === 'completeness')?.value ?? metrics.completeness;
 
     await this.traceStore.store(trace);
 
@@ -132,16 +136,17 @@ export class AgentOptimizer {
     let tokensUsed = 0;
 
     const existingTraces = await this.traceStore.getAll(agent.id);
-    const scoreBefore = existingTraces.length > 0
-      ? existingTraces.reduce((sum, t) => sum + t.score, 0) / existingTraces.length
-      : 0;
+    const scoreBefore =
+      existingTraces.length > 0
+        ? existingTraces.reduce((sum, t) => sum + t.score, 0) / existingTraces.length
+        : 0;
 
     const instructionsBefore = agent.instructions;
     let currentInstructions = instructionsBefore;
 
     for (let round = 0; round < maxRounds; round++) {
       const highScoringTraces = existingTraces
-        .filter(t => t.score >= (this.config.minScoreForDemo ?? 0.8))
+        .filter((t) => t.score >= (this.config.minScoreForDemo ?? 0.8))
         .sort((a, b) => b.score - a.score)
         .slice(0, maxBootstrappedDemos);
 
@@ -167,20 +172,25 @@ export class AgentOptimizer {
             currentInstructions = optimizationResult.optimizedInstructions;
           }
         } catch (e) {
-          errors.push(`Instruction optimization failed: ${e instanceof Error ? e.message : String(e)}`);
+          errors.push(
+            `Instruction optimization failed: ${e instanceof Error ? e.message : String(e)}`
+          );
         }
       }
     }
 
     const allTraces = await this.traceStore.getAll(agent.id);
-    const scoreAfter = allTraces.length > 0
-      ? allTraces.reduce((sum, t) => sum + t.score, 0) / allTraces.length
-      : 0;
+    const scoreAfter =
+      allTraces.length > 0 ? allTraces.reduce((sum, t) => sum + t.score, 0) / allTraces.length : 0;
 
-    const stats = this.optimizationRuns.get(agent.id) ?? { lastRun: new Date(), count: 0, totalImprovement: 0 };
+    const stats = this.optimizationRuns.get(agent.id) ?? {
+      lastRun: new Date(),
+      count: 0,
+      totalImprovement: 0,
+    };
     stats.lastRun = new Date();
     stats.count++;
-    stats.totalImprovement += (scoreAfter - scoreBefore);
+    stats.totalImprovement += scoreAfter - scoreBefore;
     this.optimizationRuns.set(agent.id, stats);
 
     return {
@@ -210,7 +220,7 @@ export class AgentOptimizer {
 
     const allTraces = await this.traceStore.getAll(agentId);
     const candidates = allTraces
-      .filter(t => !t.isDemo && t.score >= (this.config.minScoreForDemo ?? 0.8))
+      .filter((t) => !t.isDemo && t.score >= (this.config.minScoreForDemo ?? 0.8))
       .sort((a, b) => b.score - a.score);
 
     const newDemos: Demo[] = [];
@@ -228,11 +238,7 @@ export class AgentOptimizer {
     return [...this.demoSelector.getAllDemos(agentId)];
   }
 
-  async getDemosForPrompt(
-    agentId: string,
-    input: string,
-    count?: number
-  ): Promise<Demo[]> {
+  async getDemosForPrompt(agentId: string, input: string, count?: number): Promise<Demo[]> {
     return this.demoSelector.selectDemos(agentId, input, count ?? 3);
   }
 
@@ -264,9 +270,7 @@ export class AgentOptimizer {
 
     for (const span of runResult.trace.spans) {
       if (span.name.includes('tool_call') || span.attributes?.toolName) {
-        const toolCall = runResult.toolCalls.find(
-          tc => tc.name === span.attributes?.toolName
-        );
+        const toolCall = runResult.toolCalls.find((tc) => tc.name === span.attributes?.toolName);
 
         steps.push({
           index: index++,
@@ -274,12 +278,17 @@ export class AgentOptimizer {
           timestamp: span.startTime,
           duration: span.duration,
           toolCall,
-          toolResult: toolCall ? {
-            callId: toolCall.id,
-            name: toolCall.name,
-            result: span.attributes?.result,
-            error: span.status === 'error' ? String(span.attributes?.error ?? 'Unknown error') : undefined,
-          } : undefined,
+          toolResult: toolCall
+            ? {
+                callId: toolCall.id,
+                name: toolCall.name,
+                result: span.attributes?.result,
+                error:
+                  span.status === 'error'
+                    ? String(span.attributes?.error ?? 'Unknown error')
+                    : undefined,
+              }
+            : undefined,
         });
       } else if (span.name.includes('llm') || span.name.includes('chat')) {
         steps.push({
@@ -312,13 +321,11 @@ export class AgentOptimizer {
   }
 
   private computeQuickMetrics(runResult: RunResult, steps: ExecutionStep[]): TraceMetrics {
-    const toolSteps = steps.filter(s => s.type === 'tool_call');
-    const successfulTools = toolSteps.filter(s => !s.toolResult?.error);
+    const toolSteps = steps.filter((s) => s.type === 'tool_call');
+    const successfulTools = toolSteps.filter((s) => !s.toolResult?.error);
 
-    const hasErrors = steps.some(s => s.toolResult?.error);
-    const toolAccuracy = toolSteps.length > 0
-      ? successfulTools.length / toolSteps.length
-      : 1;
+    const hasErrors = steps.some((s) => s.toolResult?.error);
+    const toolAccuracy = toolSteps.length > 0 ? successfulTools.length / toolSteps.length : 1;
 
     const totalTokens = runResult.usage.inputTokens + runResult.usage.outputTokens;
     const efficiency = Math.min(1, 10000 / Math.max(totalTokens, 1));

@@ -38,12 +38,12 @@ export class TraceComparator {
     const stepDiffs = this.compareStepSequences(trace1.steps, trace2.steps);
     const divergencePoint = this.findDivergencePoint(trace1.steps, trace2.steps);
 
-    const commonSteps = stepDiffs.filter(d =>
-      d.status === 'identical' || d.status === 'similar'
+    const commonSteps = stepDiffs.filter(
+      (d) => d.status === 'identical' || d.status === 'similar'
     ).length;
 
-    const trace1OnlySteps = stepDiffs.filter(d => d.status === 'only_in_1').length;
-    const trace2OnlySteps = stepDiffs.filter(d => d.status === 'only_in_2').length;
+    const trace1OnlySteps = stepDiffs.filter((d) => d.status === 'only_in_1').length;
+    const trace2OnlySteps = stepDiffs.filter((d) => d.status === 'only_in_2').length;
 
     const tokens1 = trace1.usage.inputTokens + trace1.usage.outputTokens;
     const tokens2 = trace2.usage.inputTokens + trace2.usage.outputTokens;
@@ -80,10 +80,7 @@ export class TraceComparator {
     };
   }
 
-  findDivergencePoint(
-    steps1: ExecutionStep[],
-    steps2: ExecutionStep[]
-  ): number | undefined {
+  findDivergencePoint(steps1: ExecutionStep[], steps2: ExecutionStep[]): number | undefined {
     const minLength = Math.min(steps1.length, steps2.length);
 
     for (let i = 0; i < minLength; i++) {
@@ -234,12 +231,18 @@ export class TraceComparator {
 
     lines.push('─── Metrics ───');
     lines.push(`Success:  ${diff.metricsDiff.success.trace1} → ${diff.metricsDiff.success.trace2}`);
-    lines.push(`Score:    ${diff.metricsDiff.score.trace1.toFixed(3)} → ${diff.metricsDiff.score.trace2.toFixed(3)} (${this.formatDelta(diff.metricsDiff.score.delta)})`);
-    lines.push(`Tokens:   ${diff.metricsDiff.tokens.trace1} → ${diff.metricsDiff.tokens.trace2} (${this.formatDelta(diff.metricsDiff.tokens.delta)})`);
-    lines.push(`Duration: ${diff.metricsDiff.duration.trace1}ms → ${diff.metricsDiff.duration.trace2}ms (${this.formatDelta(diff.metricsDiff.duration.delta)}ms)`);
+    lines.push(
+      `Score:    ${diff.metricsDiff.score.trace1.toFixed(3)} → ${diff.metricsDiff.score.trace2.toFixed(3)} (${this.formatDelta(diff.metricsDiff.score.delta)})`
+    );
+    lines.push(
+      `Tokens:   ${diff.metricsDiff.tokens.trace1} → ${diff.metricsDiff.tokens.trace2} (${this.formatDelta(diff.metricsDiff.tokens.delta)})`
+    );
+    lines.push(
+      `Duration: ${diff.metricsDiff.duration.trace1}ms → ${diff.metricsDiff.duration.trace2}ms (${this.formatDelta(diff.metricsDiff.duration.delta)}ms)`
+    );
     lines.push('');
 
-    if (diff.stepDiffs.some(d => d.status !== 'identical')) {
+    if (diff.stepDiffs.some((d) => d.status !== 'identical')) {
       lines.push('─── Step Differences ───');
       for (const stepDiff of diff.stepDiffs) {
         if (stepDiff.status !== 'identical') {
@@ -260,10 +263,7 @@ export class TraceComparator {
     return lines.join('\n');
   }
 
-  private compareStepSequences(
-    steps1: ExecutionStep[],
-    steps2: ExecutionStep[]
-  ): StepDiff[] {
+  private compareStepSequences(steps1: ExecutionStep[], steps2: ExecutionStep[]): StepDiff[] {
     const diffs: StepDiff[] = [];
     const maxLength = Math.max(steps1.length, steps2.length);
 
@@ -298,12 +298,18 @@ export class TraceComparator {
 
   private getStatusIcon(status: StepDiffStatus): string {
     switch (status) {
-      case 'identical': return '✓';
-      case 'similar': return '≈';
-      case 'different': return '✗';
-      case 'only_in_1': return '◀';
-      case 'only_in_2': return '▶';
-      default: return '?';
+      case 'identical':
+        return '✓';
+      case 'similar':
+        return '≈';
+      case 'different':
+        return '✗';
+      case 'only_in_1':
+        return '◀';
+      case 'only_in_2':
+        return '▶';
+      default:
+        return '?';
     }
   }
 }

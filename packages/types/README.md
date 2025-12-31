@@ -27,18 +27,18 @@ import type {
 
 ## Type Categories
 
-| Category | Description |
-|----------|-------------|
-| [Message](#message-types) | Chat messages, tool calls, tool results |
-| [Tool](#tool-types) | Tool definitions with Zod schemas |
-| [Agent](#agent-types) | Agent configuration and interface |
-| [LLM](#llm-types) | LLM backend and provider types |
-| [Runtime](#runtime-types) | Cogitator config, run options, results |
-| [Errors](#error-types) | Structured error handling |
-| [Reflection](#reflection-types) | Self-analyzing agent types |
-| [Reasoning](#reasoning-types) | Tree-of-Thought reasoning |
-| [Learning](#learning-types) | DSPy-style optimization |
-| [Time Travel](#time-travel-types) | Execution debugging |
+| Category                          | Description                             |
+| --------------------------------- | --------------------------------------- |
+| [Message](#message-types)         | Chat messages, tool calls, tool results |
+| [Tool](#tool-types)               | Tool definitions with Zod schemas       |
+| [Agent](#agent-types)             | Agent configuration and interface       |
+| [LLM](#llm-types)                 | LLM backend and provider types          |
+| [Runtime](#runtime-types)         | Cogitator config, run options, results  |
+| [Errors](#error-types)            | Structured error handling               |
+| [Reflection](#reflection-types)   | Self-analyzing agent types              |
+| [Reasoning](#reasoning-types)     | Tree-of-Thought reasoning               |
+| [Learning](#learning-types)       | DSPy-style optimization                 |
+| [Time Travel](#time-travel-types) | Execution debugging                     |
 
 ---
 
@@ -86,14 +86,14 @@ const toolResult: ToolResultMessage = {
 
 ### Message Interfaces
 
-| Type | Description |
-|------|-------------|
-| `MessageRole` | `'system' \| 'user' \| 'assistant' \| 'tool'` |
-| `Message` | Base message with role, content, optional name/toolCallId |
-| `ToolCallMessage` | Assistant message containing tool calls |
-| `ToolResultMessage` | Tool execution result |
-| `ToolCall` | Tool invocation with id, name, arguments |
-| `ToolResult` | Tool execution result with callId, name, result, error |
+| Type                | Description                                               |
+| ------------------- | --------------------------------------------------------- |
+| `MessageRole`       | `'system' \| 'user' \| 'assistant' \| 'tool'`             |
+| `Message`           | Base message with role, content, optional name/toolCallId |
+| `ToolCallMessage`   | Assistant message containing tool calls                   |
+| `ToolResultMessage` | Tool execution result                                     |
+| `ToolCall`          | Tool invocation with id, name, arguments                  |
+| `ToolResult`        | Tool execution result with callId, name, result, error    |
 
 ---
 
@@ -131,13 +131,13 @@ interface ToolContext {
 
 ### Tool Interfaces
 
-| Type | Description |
-|------|-------------|
-| `ToolConfig<TParams, TResult>` | Tool definition with execute function |
-| `Tool<TParams, TResult>` | Full tool with toJSON() method |
-| `ToolContext` | Execution context with agentId, runId, signal |
-| `ToolSchema` | JSON Schema representation for LLM |
-| `ToolCategory` | `'math' \| 'text' \| 'file' \| 'network' \| 'system' \| 'utility'` |
+| Type                           | Description                                                        |
+| ------------------------------ | ------------------------------------------------------------------ |
+| `ToolConfig<TParams, TResult>` | Tool definition with execute function                              |
+| `Tool<TParams, TResult>`       | Full tool with toJSON() method                                     |
+| `ToolContext`                  | Execution context with agentId, runId, signal                      |
+| `ToolSchema`                   | JSON Schema representation for LLM                                 |
+| `ToolCategory`                 | `'math' \| 'text' \| 'file' \| 'network' \| 'system' \| 'utility'` |
 
 ### Tool Options
 
@@ -149,7 +149,9 @@ const advancedTool: ToolConfig = {
     path: z.string(),
     content: z.string(),
   }),
-  execute: async (params) => { /* ... */ },
+  execute: async (params) => {
+    /* ... */
+  },
 
   // Optional configuration
   category: 'file',
@@ -249,12 +251,7 @@ const response: ChatResponse = {
 Types for Cogitator runtime configuration and execution.
 
 ```typescript
-import type {
-  CogitatorConfig,
-  RunOptions,
-  RunResult,
-  Span,
-} from '@cogitator-ai/types';
+import type { CogitatorConfig, RunOptions, RunResult, Span } from '@cogitator-ai/types';
 
 // Cogitator configuration
 const config: CogitatorConfig = {
@@ -318,13 +315,21 @@ const result: RunResult = {
     duration: 1500,
   },
   toolCalls: [{ id: 'call_1', name: 'calculator', arguments: { expression: '2+2' } }],
-  messages: [/* conversation history */],
+  messages: [
+    /* conversation history */
+  ],
   trace: {
     traceId: 'trace_abc',
-    spans: [/* execution spans */],
+    spans: [
+      /* execution spans */
+    ],
   },
-  reflections: [/* if reflection enabled */],
-  reflectionSummary: { /* summary stats */ },
+  reflections: [
+    /* if reflection enabled */
+  ],
+  reflectionSummary: {
+    /* summary stats */
+  },
 };
 ```
 
@@ -354,9 +359,9 @@ const error = new CogitatorError({
 
 // Check error type
 if (CogitatorError.isCogitatorError(error)) {
-  console.log(error.code);        // 'LLM_UNAVAILABLE'
-  console.log(error.statusCode);  // 503
-  console.log(error.retryable);   // true
+  console.log(error.code); // 'LLM_UNAVAILABLE'
+  console.log(error.statusCode); // 503
+  console.log(error.retryable); // true
 }
 
 // Wrap any error
@@ -371,16 +376,16 @@ if (isRetryableError(error)) {
 
 ### Error Codes
 
-| Domain | Codes |
-|--------|-------|
-| LLM | `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_TIMEOUT`, `LLM_INVALID_RESPONSE`, `LLM_CONTEXT_LENGTH_EXCEEDED`, `LLM_CONTENT_FILTERED` |
-| Sandbox | `SANDBOX_UNAVAILABLE`, `SANDBOX_TIMEOUT`, `SANDBOX_OOM`, `SANDBOX_EXECUTION_FAILED`, `SANDBOX_INVALID_MODULE` |
-| Tool | `TOOL_NOT_FOUND`, `TOOL_INVALID_ARGS`, `TOOL_EXECUTION_FAILED`, `TOOL_TIMEOUT` |
-| Memory | `MEMORY_UNAVAILABLE`, `MEMORY_WRITE_FAILED`, `MEMORY_READ_FAILED` |
-| Agent | `AGENT_NOT_FOUND`, `AGENT_ALREADY_RUNNING`, `AGENT_MAX_ITERATIONS` |
-| Workflow | `WORKFLOW_NOT_FOUND`, `WORKFLOW_STEP_FAILED`, `WORKFLOW_CYCLE_DETECTED` |
-| Swarm | `SWARM_NO_WORKERS`, `SWARM_CONSENSUS_FAILED` |
-| General | `VALIDATION_ERROR`, `CONFIGURATION_ERROR`, `INTERNAL_ERROR`, `NOT_IMPLEMENTED`, `CIRCUIT_OPEN` |
+| Domain   | Codes                                                                                                                               |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| LLM      | `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_TIMEOUT`, `LLM_INVALID_RESPONSE`, `LLM_CONTEXT_LENGTH_EXCEEDED`, `LLM_CONTENT_FILTERED` |
+| Sandbox  | `SANDBOX_UNAVAILABLE`, `SANDBOX_TIMEOUT`, `SANDBOX_OOM`, `SANDBOX_EXECUTION_FAILED`, `SANDBOX_INVALID_MODULE`                       |
+| Tool     | `TOOL_NOT_FOUND`, `TOOL_INVALID_ARGS`, `TOOL_EXECUTION_FAILED`, `TOOL_TIMEOUT`                                                      |
+| Memory   | `MEMORY_UNAVAILABLE`, `MEMORY_WRITE_FAILED`, `MEMORY_READ_FAILED`                                                                   |
+| Agent    | `AGENT_NOT_FOUND`, `AGENT_ALREADY_RUNNING`, `AGENT_MAX_ITERATIONS`                                                                  |
+| Workflow | `WORKFLOW_NOT_FOUND`, `WORKFLOW_STEP_FAILED`, `WORKFLOW_CYCLE_DETECTED`                                                             |
+| Swarm    | `SWARM_NO_WORKERS`, `SWARM_CONSENSUS_FAILED`                                                                                        |
+| General  | `VALIDATION_ERROR`, `CONFIGURATION_ERROR`, `INTERNAL_ERROR`, `NOT_IMPLEMENTED`, `CIRCUIT_OPEN`                                      |
 
 ---
 
@@ -466,9 +471,9 @@ import type {
 
 // ToT configuration
 const totConfig: ToTConfig = {
-  branchFactor: 3,       // Generate 3 candidate thoughts per step
-  beamWidth: 2,          // Keep top 2 branches
-  maxDepth: 5,           // Max reasoning depth
+  branchFactor: 3, // Generate 3 candidate thoughts per step
+  beamWidth: 2, // Keep top 2 branches
+  maxDepth: 5, // Max reasoning depth
   explorationStrategy: 'beam', // 'beam' | 'best-first' | 'dfs'
 
   confidenceThreshold: 0.3,
@@ -490,7 +495,9 @@ const branch: ThoughtBranch = {
   thought: 'I should search for the latest information first',
   proposedAction: { type: 'tool_call', toolName: 'search', arguments: { query: 'AI news 2024' } },
   score: { confidence: 0.8, progress: 0.3, novelty: 0.6, composite: 0.57, reasoning: '...' },
-  messagesSnapshot: [/* ... */],
+  messagesSnapshot: [
+    /* ... */
+  ],
 };
 ```
 
@@ -538,7 +545,9 @@ const trace: ExecutionTrace = {
   agentId: 'agent_789',
   input: 'Calculate compound interest',
   output: 'The compound interest is $1,628.89',
-  steps: [/* execution steps */],
+  steps: [
+    /* execution steps */
+  ],
   metrics: {
     success: true,
     toolAccuracy: 0.95,
@@ -574,8 +583,10 @@ const checkpoint: ExecutionCheckpoint = {
   runId: 'run_789',
   agentId: 'agent_abc',
   stepIndex: 5,
-  messages: [/* conversation at this point */],
-  toolResults: { 'call_1': 42, 'call_2': 'result' },
+  messages: [
+    /* conversation at this point */
+  ],
+  toolResults: { call_1: 42, call_2: 'result' },
   pendingToolCalls: [],
   label: 'before-critical-decision',
   createdAt: new Date(),
@@ -585,7 +596,7 @@ const checkpoint: ExecutionCheckpoint = {
 const replayOptions: ReplayOptions = {
   fromCheckpoint: 'cp_123',
   mode: 'live', // 'deterministic' | 'live'
-  modifiedToolResults: { 'call_3': 'different_result' },
+  modifiedToolResults: { call_3: 'different_result' },
   skipTools: ['expensive_api'],
   onStep: (step, index) => console.log(`Step ${index}:`, step.type),
   pauseAt: 8,
@@ -596,7 +607,7 @@ const forkOptions: ForkOptions = {
   checkpointId: 'cp_123',
   input: 'Try a different approach',
   additionalContext: 'Focus on efficiency',
-  mockToolResults: { 'api_call': { mocked: true } },
+  mockToolResults: { api_call: { mocked: true } },
   label: 'efficiency-experiment',
 };
 
@@ -607,7 +618,16 @@ const diff: TraceDiff = {
   stepDiffs: [
     { index: 0, status: 'identical' },
     { index: 1, status: 'similar', differences: ['different tool args'] },
-    { index: 2, status: 'different', step1: {/* ... */}, step2: {/* ... */} },
+    {
+      index: 2,
+      status: 'different',
+      step1: {
+        /* ... */
+      },
+      step2: {
+        /* ... */
+      },
+    },
   ],
   divergencePoint: 2,
   metricsDiff: {

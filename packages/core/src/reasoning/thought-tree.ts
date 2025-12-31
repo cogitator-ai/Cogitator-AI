@@ -24,7 +24,18 @@ function generateId(): string {
 
 export class ThoughtTreeExecutor {
   private cogitator: Cogitator;
-  private config: Required<Omit<ToTConfig, 'timeout' | 'onBranchGenerated' | 'onBranchEvaluated' | 'onNodeExplored' | 'onBacktrack'>> & Partial<Pick<ToTConfig, 'timeout' | 'onBranchGenerated' | 'onBranchEvaluated' | 'onNodeExplored' | 'onBacktrack'>>;
+  private config: Required<
+    Omit<
+      ToTConfig,
+      'timeout' | 'onBranchGenerated' | 'onBranchEvaluated' | 'onNodeExplored' | 'onBacktrack'
+    >
+  > &
+    Partial<
+      Pick<
+        ToTConfig,
+        'timeout' | 'onBranchGenerated' | 'onBranchEvaluated' | 'onNodeExplored' | 'onBacktrack'
+      >
+    >;
   private branchGenerator!: BranchGenerator;
   private branchEvaluator!: BranchEvaluator;
   private currentModel: string = '';
@@ -110,7 +121,7 @@ export class ThoughtTreeExecutor {
       }
 
       const validBranches = branches
-        .filter(b => b.score && b.score.composite >= this.config.confidenceThreshold)
+        .filter((b) => b.score && b.score.composite >= this.config.confidenceThreshold)
         .sort((a, b) => (b.score?.composite ?? 0) - (a.score?.composite ?? 0))
         .slice(0, this.config.beamWidth);
 
@@ -262,10 +273,11 @@ export class ThoughtTreeExecutor {
       if (!parent) break;
 
       const unexplored = parent.children
-        .map(id => this.nodes.get(id))
-        .filter((n): n is ThoughtNode =>
-          n?.status === 'pending' &&
-          (n.branch.score?.composite ?? 0) >= this.config.confidenceThreshold
+        .map((id) => this.nodes.get(id))
+        .filter(
+          (n): n is ThoughtNode =>
+            n?.status === 'pending' &&
+            (n.branch.score?.composite ?? 0) >= this.config.confidenceThreshold
         )
         .sort((a, b) => (b.branch.score?.composite ?? 0) - (a.branch.score?.composite ?? 0));
 
@@ -309,8 +321,8 @@ export class ThoughtTreeExecutor {
 
   private getExploredThoughts(): string[] {
     return Array.from(this.nodes.values())
-      .filter(n => n.status === 'completed' || n.status === 'exploring')
-      .map(n => n.branch.thought);
+      .filter((n) => n.status === 'completed' || n.status === 'exploring')
+      .map((n) => n.branch.thought);
   }
 
   private async createResult(
@@ -345,7 +357,7 @@ export class ThoughtTreeExecutor {
       agentId,
       root: root ?? this.createRootNode(goal),
       nodes: new Map(this.nodes),
-      bestPath: bestPath.map(n => n.id),
+      bestPath: bestPath.map((n) => n.id),
       bestScore: bestNode?.cumulativeScore ?? 0,
       stats: { ...this.stats },
     };
@@ -368,15 +380,17 @@ export class ThoughtTreeExecutor {
     };
   }
 
-  private async synthesizeOutput(llm: LLMBackend, goal: string, path: ThoughtNode[]): Promise<string> {
+  private async synthesizeOutput(
+    llm: LLMBackend,
+    goal: string,
+    path: ThoughtNode[]
+  ): Promise<string> {
     const prompt = buildSynthesisPrompt(goal, path);
 
     try {
       const response = await llm.chat({
         model: this.currentModel,
-        messages: [
-          { role: 'user', content: prompt },
-        ],
+        messages: [{ role: 'user', content: prompt }],
         temperature: 0.5,
         maxTokens: 1000,
       });
@@ -395,8 +409,8 @@ export class ThoughtTreeExecutor {
     if (last.result?.response) return last.result.response;
 
     return path
-      .filter(n => n.result?.response)
-      .map(n => n.result!.response)
+      .filter((n) => n.result?.response)
+      .map((n) => n.result!.response)
       .join('\n\n');
   }
 
@@ -408,14 +422,16 @@ export class ThoughtTreeExecutor {
       threadId: `thread_${nanoid(8)}`,
       goal,
       iterationIndex: 0,
-      availableTools: agent.tools.map(t => t.name),
+      availableTools: agent.tools.map((t) => t.name),
       previousActions: [],
     };
   }
 
   private async getLLMBackend(agent: Agent): Promise<LLMBackend> {
     const parsed = this.parseModel(agent.model);
-    return (this.cogitator as unknown as { getOrCreateBackend(provider: string): Promise<LLMBackend> }).getOrCreateBackend(parsed.provider);
+    return (
+      this.cogitator as unknown as { getOrCreateBackend(provider: string): Promise<LLMBackend> }
+    ).getOrCreateBackend(parsed.provider);
   }
 
   private cachedLLM?: LLMBackend;

@@ -109,19 +109,19 @@ interface RedisStandaloneConfig {
   mode?: 'standalone';
 
   // Connection
-  url?: string;               // Redis URL (e.g., redis://localhost:6379)
-  host?: string;              // Host (alternative to url)
-  port?: number;              // Port (alternative to url)
-  db?: number;                // Database number
+  url?: string; // Redis URL (e.g., redis://localhost:6379)
+  host?: string; // Host (alternative to url)
+  port?: number; // Port (alternative to url)
+  db?: number; // Database number
 
   // Authentication
-  password?: string;          // Redis password
+  password?: string; // Redis password
 
   // Options
-  keyPrefix?: string;         // Prefix for all keys
-  tls?: boolean;              // Enable TLS
-  maxRetriesPerRequest?: number;  // Max retries (default: 3)
-  lazyConnect?: boolean;      // Don't connect immediately
+  keyPrefix?: string; // Prefix for all keys
+  tls?: boolean; // Enable TLS
+  maxRetriesPerRequest?: number; // Max retries (default: 3)
+  lazyConnect?: boolean; // Don't connect immediately
 }
 ```
 
@@ -136,33 +136,33 @@ interface RedisClusterConfig {
   password?: string;
 
   // Options
-  keyPrefix?: string;         // Use {hashtag}: format for cluster
+  keyPrefix?: string; // Use {hashtag}: format for cluster
   tls?: boolean;
   maxRetriesPerRequest?: number;
   lazyConnect?: boolean;
 
   // Cluster-specific
-  scaleReads?: 'master' | 'slave' | 'all';  // Where to read from
-  natMap?: Record<string, { host: string; port: number }>;  // NAT mapping
+  scaleReads?: 'master' | 'slave' | 'all'; // Where to read from
+  natMap?: Record<string, { host: string; port: number }>; // NAT mapping
 }
 ```
 
 ### Configuration Options
 
-| Option | Standalone | Cluster | Description |
-|--------|:----------:|:-------:|-------------|
-| `url` | ✓ | - | Redis connection URL |
-| `host` | ✓ | - | Redis host |
-| `port` | ✓ | - | Redis port |
-| `db` | ✓ | - | Database number |
-| `nodes` | - | ✓ | Cluster nodes array |
-| `password` | ✓ | ✓ | Authentication password |
-| `keyPrefix` | ✓ | ✓ | Key prefix |
-| `tls` | ✓ | ✓ | Enable TLS |
-| `maxRetriesPerRequest` | ✓ | ✓ | Max retry attempts |
-| `lazyConnect` | ✓ | ✓ | Lazy connection |
-| `scaleReads` | - | ✓ | Read from replicas |
-| `natMap` | - | ✓ | NAT address mapping |
+| Option                 | Standalone | Cluster | Description             |
+| ---------------------- | :--------: | :-----: | ----------------------- |
+| `url`                  |     ✓      |    -    | Redis connection URL    |
+| `host`                 |     ✓      |    -    | Redis host              |
+| `port`                 |     ✓      |    -    | Redis port              |
+| `db`                   |     ✓      |    -    | Database number         |
+| `nodes`                |     -      |    ✓    | Cluster nodes array     |
+| `password`             |     ✓      |    ✓    | Authentication password |
+| `keyPrefix`            |     ✓      |    ✓    | Key prefix              |
+| `tls`                  |     ✓      |    ✓    | Enable TLS              |
+| `maxRetriesPerRequest` |     ✓      |    ✓    | Max retry attempts      |
+| `lazyConnect`          |     ✓      |    ✓    | Lazy connection         |
+| `scaleReads`           |     -      |    ✓    | Read from replicas      |
+| `natMap`               |     -      |    ✓    | NAT address mapping     |
 
 ---
 
@@ -249,14 +249,14 @@ await redis.quit();
 
 ## Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `REDIS_URL` | Redis connection URL |
-| `REDIS_HOST` | Redis host (default: localhost) |
-| `REDIS_PORT` | Redis port (default: 6379) |
-| `REDIS_PASSWORD` | Redis password |
-| `REDIS_CLUSTER_NODES` | JSON array of cluster nodes |
-| `REDIS_KEY_PREFIX` | Key prefix |
+| Variable              | Description                     |
+| --------------------- | ------------------------------- |
+| `REDIS_URL`           | Redis connection URL            |
+| `REDIS_HOST`          | Redis host (default: localhost) |
+| `REDIS_PORT`          | Redis port (default: 6379)      |
+| `REDIS_PASSWORD`      | Redis password                  |
+| `REDIS_CLUSTER_NODES` | JSON array of cluster nodes     |
+| `REDIS_KEY_PREFIX`    | Key prefix                      |
 
 ### Environment Examples
 
@@ -292,9 +292,10 @@ const mode = await detectRedisMode({
 
 console.log(`Redis mode: ${mode}`);
 
-const config = mode === 'cluster'
-  ? { mode: 'cluster', nodes: [{ host: 'localhost', port: 6379 }] }
-  : { host: 'localhost', port: 6379 };
+const config =
+  mode === 'cluster'
+    ? { mode: 'cluster', nodes: [{ host: 'localhost', port: 6379 }] }
+    : { host: 'localhost', port: 6379 };
 
 const redis = await createRedisClient(config);
 ```
@@ -332,7 +333,7 @@ await redis.set('sessions:456', '...');  // → {myapp}:sessions:456
 
 ```typescript
 const redis = await createRedisClient({
-  url: 'rediss://secure.redis.host:6379',  // Note: rediss://
+  url: 'rediss://secure.redis.host:6379', // Note: rediss://
   tls: true,
 });
 ```
@@ -360,9 +361,7 @@ For cluster nodes behind NAT/load balancer:
 ```typescript
 const redis = await createRedisClient({
   mode: 'cluster',
-  nodes: [
-    { host: 'external.host', port: 6379 },
-  ],
+  nodes: [{ host: 'external.host', port: 6379 }],
   natMap: {
     '10.0.0.1:6379': { host: 'external-1.host', port: 6379 },
     '10.0.0.2:6379': { host: 'external-2.host', port: 6379 },
@@ -424,11 +423,7 @@ async function getOrFetch<T>(
   return data;
 }
 
-const user = await getOrFetch(
-  'user:123',
-  () => fetchUserFromDb(123),
-  600
-);
+const user = await getOrFetch('user:123', () => fetchUserFromDb(123), 600);
 ```
 
 ### Pub/Sub Pattern

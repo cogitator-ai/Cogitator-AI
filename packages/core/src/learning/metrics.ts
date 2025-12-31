@@ -15,8 +15,18 @@ export interface MetricEvaluatorOptions {
 
 const DEFAULT_CONFIG: MetricEvaluatorConfig = {
   metrics: [
-    { name: 'success', type: 'boolean', description: 'Did the run complete without errors?', weight: 0.4 },
-    { name: 'tool_accuracy', type: 'numeric', description: 'Did tools produce expected results?', weight: 0.3 },
+    {
+      name: 'success',
+      type: 'boolean',
+      description: 'Did the run complete without errors?',
+      weight: 0.4,
+    },
+    {
+      name: 'tool_accuracy',
+      type: 'numeric',
+      description: 'Did tools produce expected results?',
+      weight: 0.3,
+    },
     { name: 'efficiency', type: 'numeric', description: 'Token/time efficiency', weight: 0.3 },
   ],
   aggregation: 'weighted-average',
@@ -99,8 +109,10 @@ export class MetricEvaluator {
   }
 
   successMetric(trace: ExecutionTrace): MetricResult {
-    const hasErrors = trace.steps.some(step =>
-      step.toolResult?.error || step.type === 'reflection' && step.reflection?.analysis?.wasSuccessful === false
+    const hasErrors = trace.steps.some(
+      (step) =>
+        step.toolResult?.error ||
+        (step.type === 'reflection' && step.reflection?.analysis?.wasSuccessful === false)
     );
 
     const value = hasErrors ? 0 : 1;
@@ -109,12 +121,14 @@ export class MetricEvaluator {
       name: 'success',
       value,
       passed: value === 1,
-      reasoning: hasErrors ? 'Run had errors or failed reflections' : 'Run completed without errors',
+      reasoning: hasErrors
+        ? 'Run had errors or failed reflections'
+        : 'Run completed without errors',
     };
   }
 
   toolAccuracyMetric(trace: ExecutionTrace, expected?: unknown): MetricResult {
-    const toolSteps = trace.steps.filter(s => s.type === 'tool_call');
+    const toolSteps = trace.steps.filter((s) => s.type === 'tool_call');
 
     if (toolSteps.length === 0) {
       return {
@@ -160,7 +174,7 @@ export class MetricEvaluator {
     const tokenEfficiency = Math.min(1, 10000 / Math.max(totalTokens, 1));
     const timeEfficiency = Math.min(1, 30000 / Math.max(duration, 1));
 
-    const value = (tokenEfficiency * 0.6 + timeEfficiency * 0.4);
+    const value = tokenEfficiency * 0.6 + timeEfficiency * 0.4;
 
     return {
       name: 'efficiency',
@@ -232,7 +246,7 @@ Respond with JSON: { "score": 0.X, "reasoning": "..." }`;
     const prompt = `Evaluate the logical coherence of this agent execution.
 
 Input: ${trace.input}
-Steps taken: ${trace.steps.map(s => s.type === 'tool_call' ? `Tool: ${s.toolCall?.name}` : s.type).join(' → ')}
+Steps taken: ${trace.steps.map((s) => (s.type === 'tool_call' ? `Tool: ${s.toolCall?.name}` : s.type)).join(' → ')}
 Output: ${trace.output}
 
 Rate coherence from 0.0 to 1.0 where:
@@ -294,7 +308,7 @@ Respond with JSON: { "score": 0.X, "reasoning": "..." }`;
         let weightedSum = 0;
 
         for (const result of results) {
-          const metricDef = this.config.metrics.find(m => m.name === result.name);
+          const metricDef = this.config.metrics.find((m) => m.name === result.name);
           const weight = metricDef?.weight ?? 1;
           weightedSum += result.value * weight;
           totalWeight += weight;
@@ -304,7 +318,7 @@ Respond with JSON: { "score": 0.X, "reasoning": "..." }`;
       }
 
       case 'min':
-        return Math.min(...results.map(r => r.value));
+        return Math.min(...results.map((r) => r.value));
 
       case 'product':
         return results.reduce((acc, r) => acc * r.value, 1);
@@ -321,7 +335,7 @@ Respond with JSON: { "score": 0.X, "reasoning": "..." }`;
 
 export function createSuccessMetric(): MetricFn {
   return (trace: ExecutionTrace) => {
-    const hasErrors = trace.steps.some(step => step.toolResult?.error);
+    const hasErrors = trace.steps.some((step) => step.toolResult?.error);
     return {
       name: 'success',
       value: hasErrors ? 0 : 1,
@@ -336,12 +350,10 @@ export function createExactMatchMetric(fieldPath?: string): MetricFn {
       return { name: 'exact_match', value: 1, passed: true, reasoning: 'No expected value' };
     }
 
-    const outputValue = fieldPath
-      ? trace.output
-      : trace.output;
+    const outputValue = fieldPath ? trace.output : trace.output;
 
-    const matches = String(outputValue).toLowerCase().trim() ===
-                    String(expected).toLowerCase().trim();
+    const matches =
+      String(outputValue).toLowerCase().trim() === String(expected).toLowerCase().trim();
 
     return {
       name: 'exact_match',

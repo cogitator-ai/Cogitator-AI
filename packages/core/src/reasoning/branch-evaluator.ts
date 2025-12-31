@@ -55,8 +55,13 @@ export class BranchEvaluator {
     const results = new Map<string, BranchScore>();
 
     const evaluations = await Promise.all(
-      branches.map(branch =>
-        this.evaluate(branch, goal, context, branches.filter(b => b.id !== branch.id))
+      branches.map((branch) =>
+        this.evaluate(
+          branch,
+          goal,
+          context,
+          branches.filter((b) => b.id !== branch.id)
+        )
       )
     );
 
@@ -75,8 +80,10 @@ export class BranchEvaluator {
   ): Promise<BranchScore> {
     const action: ReflectionAction = {
       type: 'tool_call',
-      toolName: branch.proposedAction.type === 'tool_call' ? branch.proposedAction.toolName : undefined,
-      input: branch.proposedAction.type === 'tool_call' ? branch.proposedAction.arguments : undefined,
+      toolName:
+        branch.proposedAction.type === 'tool_call' ? branch.proposedAction.toolName : undefined,
+      input:
+        branch.proposedAction.type === 'tool_call' ? branch.proposedAction.arguments : undefined,
     };
 
     const reflectionContext: AgentContext = {
@@ -110,7 +117,8 @@ export class BranchEvaluator {
       messages: [
         {
           role: 'system',
-          content: 'You are an evaluation assistant. Assess approaches objectively. Always respond with valid JSON.',
+          content:
+            'You are an evaluation assistant. Assess approaches objectively. Always respond with valid JSON.',
         },
         {
           role: 'user',
@@ -152,15 +160,15 @@ export class BranchEvaluator {
     if (siblings.length === 0) return 1.0;
 
     const branchKey = this.getActionKey(branch);
-    const siblingKeys = siblings.map(s => this.getActionKey(s));
+    const siblingKeys = siblings.map((s) => this.getActionKey(s));
 
-    const sameAction = siblingKeys.filter(k => k === branchKey).length;
-    const similarThoughts = siblings.filter(s =>
-      this.calculateSimilarity(branch.thought, s.thought) > 0.5
+    const sameAction = siblingKeys.filter((k) => k === branchKey).length;
+    const similarThoughts = siblings.filter(
+      (s) => this.calculateSimilarity(branch.thought, s.thought) > 0.5
     ).length;
 
-    const actionNovelty = 1 - (sameAction / siblings.length);
-    const thoughtNovelty = 1 - (similarThoughts / siblings.length);
+    const actionNovelty = 1 - sameAction / siblings.length;
+    const thoughtNovelty = 1 - similarThoughts / siblings.length;
 
     return (actionNovelty + thoughtNovelty) / 2;
   }
@@ -174,8 +182,18 @@ export class BranchEvaluator {
   }
 
   private calculateSimilarity(a: string, b: string): number {
-    const wordsA = new Set(a.toLowerCase().split(/\s+/).filter(w => w.length > 3));
-    const wordsB = new Set(b.toLowerCase().split(/\s+/).filter(w => w.length > 3));
+    const wordsA = new Set(
+      a
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w.length > 3)
+    );
+    const wordsB = new Set(
+      b
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w.length > 3)
+    );
 
     if (wordsA.size === 0 || wordsB.size === 0) return 0;
 

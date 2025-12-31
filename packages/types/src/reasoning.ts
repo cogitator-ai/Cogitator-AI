@@ -125,7 +125,12 @@ export interface ToTRunOptions {
   onProgress?: (stats: ToTStats) => void;
 }
 
-export const DEFAULT_TOT_CONFIG: Required<Omit<ToTConfig, 'timeout' | 'onBranchGenerated' | 'onBranchEvaluated' | 'onNodeExplored' | 'onBacktrack'>> = {
+export const DEFAULT_TOT_CONFIG: Required<
+  Omit<
+    ToTConfig,
+    'timeout' | 'onBranchGenerated' | 'onBranchEvaluated' | 'onNodeExplored' | 'onBacktrack'
+  >
+> = {
   branchFactor: 3,
   beamWidth: 2,
   maxDepth: 5,

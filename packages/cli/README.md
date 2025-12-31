@@ -53,8 +53,8 @@ Create a new Cogitator project with all necessary files.
 cogitator init <name> [options]
 ```
 
-| Option | Description |
-|--------|-------------|
+| Option         | Description                            |
+| -------------- | -------------------------------------- |
 | `--no-install` | Skip automatic dependency installation |
 
 **Generated Project Structure:**
@@ -90,19 +90,19 @@ Start Docker services for local development.
 cogitator up [options]
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-d, --detach` | `true` | Run services in background |
-| `--no-detach` | - | Run services in foreground |
-| `--pull` | `false` | Pull latest images before starting |
+| Option         | Default | Description                        |
+| -------------- | ------- | ---------------------------------- |
+| `-d, --detach` | `true`  | Run services in background         |
+| `--no-detach`  | -       | Run services in foreground         |
+| `--pull`       | `false` | Pull latest images before starting |
 
 **Services Started:**
 
-| Service | Port | Description |
-|---------|------|-------------|
-| Redis | 6379 | In-memory cache and queue backend |
-| PostgreSQL | 5432 | Vector database with pgvector |
-| Ollama | 11434 | Local LLM inference server |
+| Service    | Port  | Description                       |
+| ---------- | ----- | --------------------------------- |
+| Redis      | 6379  | In-memory cache and queue backend |
+| PostgreSQL | 5432  | Vector database with pgvector     |
+| Ollama     | 11434 | Local LLM inference server        |
 
 **Connection Strings:**
 
@@ -135,8 +135,8 @@ Stop Docker services.
 cogitator down [options]
 ```
 
-| Option | Description |
-|--------|-------------|
+| Option          | Description                       |
+| --------------- | --------------------------------- |
 | `-v, --volumes` | Remove volumes (deletes all data) |
 
 **Examples:**
@@ -159,17 +159,18 @@ Run an agent with a message or start interactive mode.
 cogitator run [message] [options]
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-c, --config <path>` | `cogitator.yml` | Config file path |
-| `-m, --model <model>` | auto-detect | Model to use (e.g., `ollama/gemma3:4b`) |
-| `-i, --interactive` | `false` | Force interactive mode |
-| `-s, --stream` | `true` | Stream response tokens |
-| `--no-stream` | - | Disable streaming |
+| Option                | Default         | Description                             |
+| --------------------- | --------------- | --------------------------------------- |
+| `-c, --config <path>` | `cogitator.yml` | Config file path                        |
+| `-m, --model <model>` | auto-detect     | Model to use (e.g., `ollama/gemma3:4b`) |
+| `-i, --interactive`   | `false`         | Force interactive mode                  |
+| `-s, --stream`        | `true`          | Stream response tokens                  |
+| `--no-stream`         | -               | Disable streaming                       |
 
 **Model Auto-Detection:**
 
 If no model is specified, the CLI will:
+
 1. Check `COGITATOR_MODEL` environment variable
 2. Query Ollama for available models
 3. Select from preferred models: llama3.1:8b, llama3:8b, gemma3:4b, gemma2:9b, mistral:7b
@@ -225,12 +226,12 @@ Commands: /model <name>, /clear, /help, exit
 
 **Interactive Commands:**
 
-| Command | Description |
-|---------|-------------|
-| `/model [name]` | Show current model or switch to a new one |
-| `/clear` | Clear conversation history (start fresh) |
-| `/help` | Show available commands |
-| `exit` or `quit` | Exit interactive mode |
+| Command          | Description                               |
+| ---------------- | ----------------------------------------- |
+| `/model [name]`  | Show current model or switch to a new one |
+| `/clear`         | Clear conversation history (start fresh)  |
+| `/help`          | Show available commands                   |
+| `exit` or `quit` | Exit interactive mode                     |
 
 **Examples:**
 
@@ -286,11 +287,11 @@ View logs from Docker services.
 cogitator logs [service] [options]
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-f, --follow` | `false` | Follow log output (like `tail -f`) |
-| `-n, --tail <lines>` | `100` | Number of lines to show |
-| `-t, --timestamps` | `false` | Show timestamps |
+| Option               | Default | Description                        |
+| -------------------- | ------- | ---------------------------------- |
+| `-f, --follow`       | `false` | Follow log output (like `tail -f`) |
+| `-n, --tail <lines>` | `100`   | Number of lines to show            |
+| `-t, --timestamps`   | `false` | Show timestamps                    |
 
 **Available Services:**
 
@@ -327,8 +328,8 @@ List and manage Ollama models.
 cogitator models [options]
 ```
 
-| Option | Description |
-|--------|-------------|
+| Option           | Description                       |
+| ---------------- | --------------------------------- |
 | `--pull <model>` | Pull a model from Ollama registry |
 
 **Output Example:**
@@ -384,12 +385,12 @@ memory:
 
 ### Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `COGITATOR_CONFIG` | Path to config file (overrides auto-detection) |
-| `COGITATOR_MODEL` | Default model to use |
-| `OPENAI_API_KEY` | OpenAI API key |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
+| Variable            | Description                                    |
+| ------------------- | ---------------------------------------------- |
+| `COGITATOR_CONFIG`  | Path to config file (overrides auto-detection) |
+| `COGITATOR_MODEL`   | Default model to use                           |
+| `OPENAI_API_KEY`    | OpenAI API key                                 |
+| `ANTHROPIC_API_KEY` | Anthropic API key                              |
 
 **Example .env:**
 
@@ -491,14 +492,14 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - '6379:6379'
     volumes:
       - redis-data:/data
 
   postgres:
     image: pgvector/pgvector:pg16
     ports:
-      - "5432:5432"
+      - '5432:5432'
     environment:
       POSTGRES_USER: cogitator
       POSTGRES_PASSWORD: cogitator
@@ -509,7 +510,7 @@ services:
   ollama:
     image: ollama/ollama:latest
     ports:
-      - "11434:11434"
+      - '11434:11434'
     volumes:
       - ollama-data:/root/.ollama
 
@@ -531,6 +532,7 @@ Start Ollama with: ollama serve
 ```
 
 **Solutions:**
+
 1. Start Ollama: `ollama serve`
 2. Or use Docker: `cogitator up`
 3. Install Ollama: https://ollama.ai
@@ -543,6 +545,7 @@ Pull a model with: cogitator models --pull llama3.1:8b
 ```
 
 **Solution:**
+
 ```bash
 cogitator models --pull llama3.1:8b
 # or
@@ -557,6 +560,7 @@ Install Docker: https://docs.docker.com/get-docker/
 ```
 
 **Solutions:**
+
 1. Start Docker Desktop
 2. Or: `sudo systemctl start docker`
 
@@ -567,6 +571,7 @@ No config file found
 ```
 
 The CLI searches for config in this order:
+
 1. `COGITATOR_CONFIG` environment variable
 2. `-c` option value
 3. `cogitator.yml` in current directory

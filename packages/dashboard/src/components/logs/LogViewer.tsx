@@ -4,15 +4,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { cn } from '@/lib/cn';
-import {
-  Search,
-  Play,
-  Pause,
-  Trash2,
-  Download,
-  ChevronDown,
-  FileText,
-} from 'lucide-react';
+import { Search, Play, Pause, Trash2, Download, ChevronDown, FileText } from 'lucide-react';
 import { format } from 'date-fns';
 
 interface LogEntry {
@@ -136,7 +128,10 @@ export function LogViewer() {
 
   const downloadLogs = () => {
     const content = filteredLogs
-      .map((log) => `${format(log.timestamp, 'yyyy-MM-dd HH:mm:ss.SSS')} [${log.level.toUpperCase()}] [${log.source}] ${log.message}`)
+      .map(
+        (log) =>
+          `${format(log.timestamp, 'yyyy-MM-dd HH:mm:ss.SSS')} [${log.level.toUpperCase()}] [${log.source}] ${log.message}`
+      )
       .join('\n');
     const blob = new Blob([content], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
@@ -206,10 +201,7 @@ export function LogViewer() {
         </div>
       )}
 
-      <div
-        ref={containerRef}
-        className="flex-1 overflow-auto font-mono text-sm bg-bg-primary"
-      >
+      <div ref={containerRef} className="flex-1 overflow-auto font-mono text-sm bg-bg-primary">
         {loading ? (
           <div className="flex items-center justify-center h-full text-text-tertiary">
             Loading logs...
@@ -254,9 +246,7 @@ export function LogViewer() {
                     {log.source}
                   </span>
 
-                  <span className="flex-1 text-text-primary truncate">
-                    {log.message}
-                  </span>
+                  <span className="flex-1 text-text-primary truncate">{log.message}</span>
 
                   {log.metadata && (
                     <ChevronDown
@@ -284,8 +274,7 @@ export function LogViewer() {
       <div className="flex items-center justify-between px-4 py-2 border-t border-border-subtle bg-bg-secondary text-xs text-text-muted">
         <span>{filteredLogs.length} entries</span>
         <span>
-          {isLive ? 'Auto-refreshing' : 'Paused'} • Last updated:{' '}
-          {format(lastUpdate, 'HH:mm:ss')}
+          {isLive ? 'Auto-refreshing' : 'Paused'} • Last updated: {format(lastUpdate, 'HH:mm:ss')}
         </span>
       </div>
     </div>

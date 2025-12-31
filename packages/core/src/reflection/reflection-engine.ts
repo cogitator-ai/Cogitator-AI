@@ -43,11 +43,7 @@ export class ReflectionEngine {
     action: ReflectionAction,
     context: AgentContext
   ): Promise<ReflectionResult> {
-    const relevantInsights = await this.insightStore.findRelevant(
-      context.agentId,
-      context.goal,
-      5
-    );
+    const relevantInsights = await this.insightStore.findRelevant(context.agentId, context.goal, 5);
 
     const prompt = buildToolReflectionPrompt(action, context, relevantInsights);
     const response = await this.callLLM(prompt);
@@ -67,10 +63,7 @@ export class ReflectionEngine {
     };
   }
 
-  async reflectOnError(
-    action: ReflectionAction,
-    context: AgentContext
-  ): Promise<ReflectionResult> {
+  async reflectOnError(action: ReflectionAction, context: AgentContext): Promise<ReflectionResult> {
     const relevantInsights = await this.insightStore.findRelevant(
       context.agentId,
       `error ${action.error ?? ''}`,
@@ -125,11 +118,7 @@ export class ReflectionEngine {
   }
 
   async getRelevantInsights(context: AgentContext, limit = 5): Promise<Insight[]> {
-    const insights = await this.insightStore.findRelevant(
-      context.agentId,
-      context.goal,
-      limit
-    );
+    const insights = await this.insightStore.findRelevant(context.agentId, context.goal, limit);
 
     for (const insight of insights) {
       await this.insightStore.markUsed(insight.id);
@@ -147,24 +136,20 @@ export class ReflectionEngine {
 
     let allReflections: Reflection[] = [];
     for (const reflections of this.reflections.values()) {
-      allReflections = allReflections.concat(
-        reflections.filter(r => r.agentId === agentId)
-      );
+      allReflections = allReflections.concat(reflections.filter((r) => r.agentId === agentId));
     }
 
-    const successCount = allReflections.filter(r => r.analysis.wasSuccessful).length;
+    const successCount = allReflections.filter((r) => r.analysis.wasSuccessful).length;
     const totalConfidence = allReflections.reduce((sum, r) => sum + r.analysis.confidence, 0);
 
-    const mistakes = allInsights
-      .filter(i => i.type === 'mistake')
-      .map(i => i.content);
+    const mistakes = allInsights.filter((i) => i.type === 'mistake').map((i) => i.content);
 
     const patterns = allInsights
-      .filter(i => i.type === 'pattern' || i.type === 'success')
-      .map(i => i.content);
+      .filter((i) => i.type === 'pattern' || i.type === 'success')
+      .map((i) => i.content);
 
     const topInsights = [...allInsights]
-      .sort((a, b) => (b.usageCount * b.confidence) - (a.usageCount * a.confidence))
+      .sort((a, b) => b.usageCount * b.confidence - a.usageCount * a.confidence)
       .slice(0, 10);
 
     return {
@@ -183,7 +168,8 @@ export class ReflectionEngine {
       messages: [
         {
           role: 'system',
-          content: 'You are a reflection assistant. Analyze actions and extract learnings. Always respond with valid JSON only.',
+          content:
+            'You are a reflection assistant. Analyze actions and extract learnings. Always respond with valid JSON only.',
         },
         {
           role: 'user',
@@ -211,7 +197,7 @@ export class ReflectionEngine {
   ): Reflection {
     const reflectionId = generateId();
 
-    const insights: Insight[] = parsed.insights.map(i => ({
+    const insights: Insight[] = parsed.insights.map((i) => ({
       id: generateId(),
       type: this.validateInsightType(i.type),
       content: i.content,
@@ -256,7 +242,7 @@ export class ReflectionEngine {
 
     if (this.config.storeInsights !== false) {
       const minConfidence = this.config.minConfidenceToStore ?? 0.3;
-      const valuableInsights = reflection.insights.filter(i => i.confidence >= minConfidence);
+      const valuableInsights = reflection.insights.filter((i) => i.confidence >= minConfidence);
 
       if (valuableInsights.length > 0) {
         await this.insightStore.storeMany(valuableInsights);

@@ -1,5 +1,10 @@
 export { InMemoryTraceStore } from './trace-store';
-export { MetricEvaluator, createSuccessMetric, createExactMatchMetric, createContainsMetric } from './metrics';
+export {
+  MetricEvaluator,
+  createSuccessMetric,
+  createExactMatchMetric,
+  createContainsMetric,
+} from './metrics';
 export type { MetricEvaluatorOptions } from './metrics';
 export { DemoSelector } from './demo-selector';
 export type { DemoSelectorOptions } from './demo-selector';

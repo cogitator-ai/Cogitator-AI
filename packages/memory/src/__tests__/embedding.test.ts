@@ -161,10 +161,7 @@ describe('OllamaEmbeddingService', () => {
 
       await customService.embed('test');
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        'http://custom:11434/api/embed',
-        expect.any(Object)
-      );
+      expect(mockFetch).toHaveBeenCalledWith('http://custom:11434/api/embed', expect.any(Object));
     });
   });
 
