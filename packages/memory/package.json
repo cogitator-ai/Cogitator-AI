@@ -32,7 +32,7 @@
   },
   "optionalDependencies": {
     "ioredis": "^5.3.2",
-    "openai": "^4.24.0",
+    "openai": "^6.15.0",
     "pg": "^8.11.3"
   },
   "devDependencies": {
