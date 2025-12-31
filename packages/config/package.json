@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
-    "@types/node": "^20.10.0",
+    "@types/node": "^25.0.3",
     "yaml": "^2.3.4",
     "zod": "^3.22.4"
   },
