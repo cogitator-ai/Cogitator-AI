@@ -148,21 +148,13 @@ export class ContextBuilder {
           usedTokens += entry.tokenCount;
         }
       } else if (this.config.strategy === 'relevant') {
-        const selectedEntries = this.selectRecentEntries(entries, availableTokens - usedTokens);
-        truncated = selectedEntries.length < entries.length;
-
-        for (const entry of selectedEntries) {
-          messages.push(entry.message);
-          usedTokens += entry.tokenCount;
-        }
+        throw new Error(
+          'Strategy "relevant" is not yet implemented. Use "recent" or enable includeSemanticContext for semantic search.'
+        );
       } else if (this.config.strategy === 'hybrid') {
-        const selectedEntries = this.selectRecentEntries(entries, availableTokens - usedTokens);
-        truncated = selectedEntries.length < entries.length;
-
-        for (const entry of selectedEntries) {
-          messages.push(entry.message);
-          usedTokens += entry.tokenCount;
-        }
+        throw new Error(
+          'Strategy "hybrid" is not yet implemented. Use "recent" with includeSemanticContext enabled.'
+        );
       }
     }
 
