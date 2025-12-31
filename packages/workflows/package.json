@@ -23,8 +23,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@cogitator-ai/types": "workspace:*",
     "@cogitator-ai/core": "workspace:*",
+    "@cogitator-ai/types": "workspace:*",
+    "@types/node": "^20.10.0",
     "cron-parser": "^4.9.0",
     "nanoid": "^5.0.4"
   },
