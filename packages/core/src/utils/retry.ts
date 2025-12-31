@@ -75,11 +75,13 @@ function calculateDelay(
  */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
+    const abortError = new CogitatorError({
+      message: 'Retry aborted',
+      code: ErrorCode.INTERNAL_ERROR,
+    });
+
     if (signal?.aborted) {
-      reject(new CogitatorError({
-        message: 'Retry aborted',
-        code: ErrorCode.INTERNAL_ERROR,
-      }));
+      reject(abortError);
       return;
     }
 
@@ -87,10 +89,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
     signal?.addEventListener('abort', () => {
       clearTimeout(timeout);
-      reject(new CogitatorError({
-        message: 'Retry aborted',
-        code: ErrorCode.INTERNAL_ERROR,
-      }));
+      reject(abortError);
     });
   });
 }

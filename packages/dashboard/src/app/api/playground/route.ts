@@ -100,7 +100,7 @@ export const POST = withAuth(withRateLimit(RATE_LIMITS.playground, async (reques
     });
 
     const encoder = new TextEncoder();
-    let fullContent = '';
+    let _fullContent = '';
     const allToolCalls: {
       id: string;
       name: string;
@@ -118,7 +118,7 @@ export const POST = withAuth(withRateLimit(RATE_LIMITS.playground, async (reques
             useMemory: true,
             saveHistory: true,
             onToken: (token: string) => {
-              fullContent += token;
+              _fullContent += token;
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify({ content: token })}\n\n`)
               );

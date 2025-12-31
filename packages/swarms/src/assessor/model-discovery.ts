@@ -167,7 +167,7 @@ const CLOUD_MODELS: DiscoveredModel[] = [
 export class ModelDiscovery {
   private ollamaUrl: string;
   private enabledProviders: Set<ModelProvider>;
-  private cache: Map<string, { models: DiscoveredModel[]; timestamp: number }> = new Map();
+  private cache = new Map<string, { models: DiscoveredModel[]; timestamp: number }>();
   private cacheTTL: number;
 
   constructor(config: AssessorConfig) {

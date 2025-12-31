@@ -1,6 +1,7 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
+  serverExternalPackages: ['dockerode', 'ssh2', '@extism/extism'],
   experimental: {
     serverActions: {
       bodySizeLimit: '2mb',

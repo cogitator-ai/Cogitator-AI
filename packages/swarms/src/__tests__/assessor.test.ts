@@ -4,10 +4,10 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { TaskAnalyzer } from '../assessor/task-analyzer';
-import { ModelScorer, type ScoredModel } from '../assessor/scoring';
+import { ModelScorer, type ScoredModel as _ScoredModel } from '../assessor/scoring';
 import { RoleMatcher } from '../assessor/role-matcher';
 import { ModelDiscovery } from '../assessor/model-discovery';
-import { SwarmAssessor, createAssessor } from '../assessor/assessor';
+import { SwarmAssessor as _SwarmAssessor, createAssessor } from '../assessor/assessor';
 import type {
   TaskRequirements,
   RoleRequirements,

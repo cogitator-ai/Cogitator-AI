@@ -33,7 +33,7 @@ export class SwarmAssessor implements Assessor {
   private modelDiscovery: ModelDiscovery;
   private modelScorer: ModelScorer;
   private roleMatcher: RoleMatcher;
-  private assessmentCache: Map<string, { result: AssessmentResult; timestamp: number }> = new Map();
+  private assessmentCache = new Map<string, { result: AssessmentResult; timestamp: number }>();
 
   constructor(config: AssessorConfig = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config } as Required<AssessorConfig>;
@@ -299,7 +299,7 @@ export class SwarmAssessor implements Assessor {
       // Try fallback models
       for (const fallbackId of item.assignment.fallbackModels) {
         const fallbackModel = discoveredModels.find((m) => m.id === fallbackId);
-        if (fallbackModel && fallbackModel.isLocal) {
+        if (fallbackModel?.isLocal) {
           const oldModel = discoveredModels.find((m) => m.id === item.assignment.assignedModel);
           const oldCost = oldModel ? (oldModel.pricing.input + oldModel.pricing.output) / 2 : 0;
 
