@@ -1,0 +1,55 @@
+name: Feature Request
+description: Suggest a new feature or enhancement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a feature! Please fill out the form below.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What problem does this feature solve?
+      placeholder: I'm always frustrated when...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the solution you'd like
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Describe any alternative solutions you've considered
+
+  - type: dropdown
+    id: package
+    attributes:
+      label: Related Package
+      description: Which package would this feature affect?
+      options:
+        - "@cogitator-ai/core"
+        - "@cogitator-ai/cli"
+        - "@cogitator-ai/dashboard"
+        - "@cogitator-ai/swarms"
+        - "@cogitator-ai/workflows"
+        - "@cogitator-ai/memory"
+        - "@cogitator-ai/mcp"
+        - "New package"
+        - "Not sure"
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be willing to help implement this feature
