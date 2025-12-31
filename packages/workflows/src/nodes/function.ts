@@ -7,7 +7,7 @@ import type {
   WorkflowState,
   NodeResult,
   NodeContext,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 /**
  * Simple function that takes state and returns output

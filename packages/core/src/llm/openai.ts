@@ -9,7 +9,7 @@ import type {
   ChatStreamChunk,
   ToolCall,
   Message,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
 
 interface OpenAIConfig {

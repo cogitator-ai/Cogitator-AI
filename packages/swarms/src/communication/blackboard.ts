@@ -7,7 +7,7 @@ import type {
   BlackboardConfig,
   BlackboardSection,
   BlackboardHistoryEntry,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 export class InMemoryBlackboard implements Blackboard {
   private sections = new Map<string, BlackboardSection>();

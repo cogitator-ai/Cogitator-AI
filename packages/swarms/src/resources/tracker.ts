@@ -6,7 +6,7 @@ import type {
   SwarmResourceConfig,
   SwarmResourceUsage,
   RunResult,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 export class ResourceTracker {
   private config: SwarmResourceConfig;

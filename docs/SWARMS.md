@@ -44,7 +44,7 @@ Swarms enable multiple agents to work together on complex tasks. Cogitator suppo
 A supervisor agent delegates tasks to worker agents:
 
 ```typescript
-import { Swarm } from '@cogitator/swarms';
+import { Swarm } from '@cogitator-ai/swarms';
 
 const devTeam = new Swarm({
   name: 'dev-team',

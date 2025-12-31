@@ -1,11 +1,11 @@
-# @cogitator/swarms
+# @cogitator-ai/swarms
 
 Multi-agent swarm coordination for Cogitator. Orchestrate teams of AI agents with various collaboration strategies.
 
 ## Installation
 
 ```bash
-pnpm add @cogitator/swarms
+pnpm add @cogitator-ai/swarms
 ```
 
 ## Usage
@@ -15,7 +15,7 @@ pnpm add @cogitator/swarms
 Supervisor delegates tasks to workers:
 
 ```typescript
-import { Swarm, SwarmBuilder } from '@cogitator/swarms';
+import { Swarm, SwarmBuilder } from '@cogitator-ai/swarms';
 
 const swarm = new SwarmBuilder('dev-team')
   .strategy('hierarchical')

@@ -1,11 +1,11 @@
-# @cogitator/wasm-tools
+# @cogitator-ai/wasm-tools
 
 WASM-based tools for Cogitator agents. Secure, sandboxed tool execution using WebAssembly.
 
 ## Installation
 
 ```bash
-pnpm add @cogitator/wasm-tools
+pnpm add @cogitator-ai/wasm-tools
 ```
 
 ## Usage
@@ -13,7 +13,7 @@ pnpm add @cogitator/wasm-tools
 ### Built-in WASM Tools
 
 ```typescript
-import { wasmCalculator, wasmJsonProcessor } from '@cogitator/wasm-tools';
+import { wasmCalculator, wasmJsonProcessor } from '@cogitator-ai/wasm-tools';
 
 // Calculator - safe math expression evaluation
 const calc = wasmCalculator();
@@ -32,8 +32,8 @@ const data = await json.execute({
 ### Use with Cogitator
 
 ```typescript
-import { Cogitator, Agent } from '@cogitator/core';
-import { wasmCalculator, wasmJsonProcessor } from '@cogitator/wasm-tools';
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { wasmCalculator, wasmJsonProcessor } from '@cogitator-ai/wasm-tools';
 
 const agent = new Agent({
   name: 'data-processor',

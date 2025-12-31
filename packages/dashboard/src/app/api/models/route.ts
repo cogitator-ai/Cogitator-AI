@@ -10,7 +10,7 @@ import {
   OPENAI_MODELS,
   ANTHROPIC_MODELS,
   GOOGLE_MODELS,
-} from '@cogitator/models';
+} from '@cogitator-ai/models';
 import { withAuth } from '@/lib/auth/middleware';
 
 let modelsInitialized = false;

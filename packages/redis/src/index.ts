@@ -1,9 +1,9 @@
 /**
- * @cogitator/redis - Unified Redis client with cluster support
+ * @cogitator-ai/redis - Unified Redis client with cluster support
  *
  * @example Standalone mode
  * ```ts
- * import { createRedisClient } from '@cogitator/redis';
+ * import { createRedisClient } from '@cogitator-ai/redis';
  *
  * const client = await createRedisClient({
  *   url: 'redis://localhost:6379',
@@ -16,7 +16,7 @@
  *
  * @example Cluster mode
  * ```ts
- * import { createRedisClient } from '@cogitator/redis';
+ * import { createRedisClient } from '@cogitator-ai/redis';
  *
  * const client = await createRedisClient({
  *   mode: 'cluster',
@@ -31,7 +31,7 @@
  *
  * @example From environment
  * ```ts
- * import { createRedisClient, createConfigFromEnv } from '@cogitator/redis';
+ * import { createRedisClient, createConfigFromEnv } from '@cogitator-ai/redis';
  *
  * // Uses REDIS_URL, REDIS_CLUSTER_NODES, REDIS_PASSWORD, etc.
  * const config = createConfigFromEnv();

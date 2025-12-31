@@ -12,7 +12,7 @@ import type {
   AddConditionalOptions,
   AddLoopOptions,
   NodeConfig,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 interface InternalNode<S> {
   name: string;

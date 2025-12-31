@@ -9,7 +9,7 @@ import type {
   SandboxResult,
   SandboxDockerConfig,
   SandboxPoolConfig,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { BaseSandboxExecutor } from './base';
 import { ContainerPool } from '../pool/container-pool';
 import { parseMemory } from '../utils/parse-resources';

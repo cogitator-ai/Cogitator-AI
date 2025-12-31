@@ -7,7 +7,7 @@ import type {
   SandboxExecutionRequest,
   SandboxExecutionResult,
   SandboxResult,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 export abstract class BaseSandboxExecutor {
   abstract readonly type: string;

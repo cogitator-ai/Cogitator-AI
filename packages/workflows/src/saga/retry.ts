@@ -8,7 +8,7 @@
  * - Per-attempt hooks for logging/metrics
  */
 
-import type { RetryConfig, BackoffStrategy } from '@cogitator/types';
+import type { RetryConfig, BackoffStrategy } from '@cogitator-ai/types';
 
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_INITIAL_DELAY = 1000;

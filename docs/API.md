@@ -9,7 +9,7 @@
 The main entry point for running agents.
 
 ```typescript
-import { Cogitator } from '@cogitator/core';
+import { Cogitator } from '@cogitator-ai/core';
 
 const cog = new Cogitator(config?: CogitatorConfig);
 ```
@@ -164,7 +164,7 @@ interface RunResult {
 Represents a configured LLM agent.
 
 ```typescript
-import { Agent } from '@cogitator/core';
+import { Agent } from '@cogitator-ai/core';
 
 const agent = new Agent(config: AgentConfig);
 ```
@@ -255,7 +255,7 @@ class Agent {
 Represents a capability an agent can use.
 
 ```typescript
-import { tool } from '@cogitator/core';
+import { tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
 const myTool = tool(config: ToolConfig);
@@ -341,7 +341,7 @@ import {
   // Utilities
   calculator,
   datetime,
-} from '@cogitator/tools';
+} from '@cogitator-ai/tools';
 ```
 
 ---
@@ -351,7 +351,7 @@ import {
 Define multi-step agent orchestration.
 
 ```typescript
-import { Workflow, step } from '@cogitator/workflows';
+import { Workflow, step } from '@cogitator-ai/workflows';
 
 const workflow = new Workflow(config: WorkflowConfig);
 ```
@@ -499,7 +499,7 @@ interface WorkflowRunner {
 Multi-agent coordination.
 
 ```typescript
-import { Swarm } from '@cogitator/swarms';
+import { Swarm } from '@cogitator-ai/swarms';
 
 const swarm = new Swarm(config: SwarmConfig);
 ```
@@ -840,7 +840,7 @@ import {
   ValidationError, // Input validation errors
   RateLimitError, // Rate limiting errors
   AuthenticationError, // Auth errors
-} from '@cogitator/core';
+} from '@cogitator-ai/core';
 
 // Error handling
 try {
@@ -861,7 +861,7 @@ try {
 ## TypeScript Types
 
 ```typescript
-// Re-exported from @cogitator/types
+// Re-exported from @cogitator-ai/types
 
 export type {
   // Core

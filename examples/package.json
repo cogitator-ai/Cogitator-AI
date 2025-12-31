@@ -1,5 +1,5 @@
 {
-  "name": "@cogitator/examples",
+  "name": "@cogitator-ai/examples",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -15,9 +15,9 @@
     "pipeline": "tsx pipeline-swarm.ts"
   },
   "dependencies": {
-    "@cogitator/core": "workspace:*",
-    "@cogitator/swarms": "workspace:*",
-    "@cogitator/workflows": "workspace:*",
+    "@cogitator-ai/core": "workspace:*",
+    "@cogitator-ai/swarms": "workspace:*",
+    "@cogitator-ai/workflows": "workspace:*",
     "zod": "^3.22.4"
   },
   "devDependencies": {

@@ -188,13 +188,13 @@ function DocsContent({ activeSection }: { activeSection: string }) {
           Install Cogitator using npm, pnpm, or yarn.
         </p>
         <CodeBlock language="bash">{`# Using pnpm (recommended)
-pnpm add @cogitator/core @cogitator/dashboard
+pnpm add @cogitator-ai/core @cogitator-ai/dashboard
 
 # Using npm
-npm install @cogitator/core @cogitator/dashboard
+npm install @cogitator-ai/core @cogitator-ai/dashboard
 
 # Using yarn
-yarn add @cogitator/core @cogitator/dashboard`}</CodeBlock>
+yarn add @cogitator-ai/core @cogitator-ai/dashboard`}</CodeBlock>
         <Callout type="tip">
           We recommend using pnpm for faster installs and better disk space efficiency.
         </Callout>
@@ -214,7 +214,7 @@ yarn add @cogitator/core @cogitator/dashboard`}</CodeBlock>
           Create your first AI agent in minutes.
         </p>
         <h3 className="text-xl font-bold text-[#fafafa] mt-6 mb-4">1. Initialize Cogitator</h3>
-        <CodeBlock language="typescript">{`import { Cogitator } from '@cogitator/core';
+        <CodeBlock language="typescript">{`import { Cogitator } from '@cogitator-ai/core';
 
 const cogitator = new Cogitator({
   models: {
@@ -276,7 +276,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 OTEL_SERVICE_NAME=cogitator`}</CodeBlock>
         <h3 className="text-xl font-bold text-[#fafafa] mt-8 mb-4">Configuration File</h3>
         <CodeBlock language="typescript">{`// cogitator.config.ts
-import { defineConfig } from '@cogitator/core';
+import { defineConfig } from '@cogitator-ai/core';
 
 export default defineConfig({
   models: {
@@ -322,7 +322,7 @@ export default defineConfig({
         <p className="text-[#a1a1a1] mb-6">
           Learn how to create and configure agents.
         </p>
-        <CodeBlock language="typescript">{`import { Agent } from '@cogitator/core';
+        <CodeBlock language="typescript">{`import { Agent } from '@cogitator-ai/core';
 
 const agent = new Agent({
   name: 'assistant',
@@ -363,7 +363,7 @@ for await (const chunk of agent.stream('Hello!')) {
         <p className="text-[#a1a1a1] mb-6">
           Give agents the ability to interact with the world through tools.
         </p>
-        <CodeBlock language="typescript">{`import { tool } from '@cogitator/core';
+        <CodeBlock language="typescript">{`import { tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
 // Define a custom tool
@@ -467,7 +467,7 @@ const response = await agent.run('What is my favorite color?');
     'workflow-basics': (
       <>
         <h2 className="text-3xl font-bold text-[#fafafa] mb-4">Workflow Basics</h2>
-        <CodeBlock language="typescript">{`import { Workflow } from '@cogitator/workflows';
+        <CodeBlock language="typescript">{`import { Workflow } from '@cogitator-ai/workflows';
 
 const researchWorkflow = new Workflow({
   name: 'research-pipeline',
@@ -569,7 +569,7 @@ const result = await researchWorkflow.run({
     'swarm-basics': (
       <>
         <h2 className="text-3xl font-bold text-[#fafafa] mb-4">Swarm Basics</h2>
-        <CodeBlock language="typescript">{`import { Swarm } from '@cogitator/swarms';
+        <CodeBlock language="typescript">{`import { Swarm } from '@cogitator-ai/swarms';
 
 const reviewSwarm = new Swarm({
   name: 'code-review-swarm',
@@ -756,7 +756,7 @@ console.log(result.usage);
     'memory-rag': (
       <>
         <h2 className="text-3xl font-bold text-[#fafafa] mb-4">RAG Pipeline</h2>
-        <CodeBlock language="typescript">{`import { RAG } from '@cogitator/memory';
+        <CodeBlock language="typescript">{`import { RAG } from '@cogitator-ai/memory';
 
 // Create RAG pipeline
 const rag = new RAG({
@@ -820,7 +820,7 @@ const agent = new Agent({
     'sandbox-docker': (
       <>
         <h2 className="text-3xl font-bold text-[#fafafa] mb-4">Docker Executor</h2>
-        <CodeBlock language="typescript">{`import { DockerSandbox } from '@cogitator/sandbox';
+        <CodeBlock language="typescript">{`import { DockerSandbox } from '@cogitator-ai/sandbox';
 
 const sandbox = new DockerSandbox({
   image: 'python:3.11-slim',
@@ -847,7 +847,7 @@ console.log(result.stdout);`}</CodeBlock>
         <p className="text-[#a1a1a1] mb-6">
           Lightweight, fast execution without Docker overhead.
         </p>
-        <CodeBlock language="typescript">{`import { WasmSandbox } from '@cogitator/sandbox';
+        <CodeBlock language="typescript">{`import { WasmSandbox } from '@cogitator-ai/sandbox';
 
 const sandbox = new WasmSandbox({
   timeout: 5000,
@@ -956,7 +956,7 @@ const agent = new Agent({
       <>
         <h2 className="text-3xl font-bold text-[#fafafa] mb-4">Tool Registration</h2>
         <CodeBlock language="typescript">{`// Create your own MCP server
-import { MCPServer } from '@cogitator/mcp';
+import { MCPServer } from '@cogitator-ai/mcp';
 
 const server = new MCPServer({
   name: 'my-tools',

@@ -1,5 +1,5 @@
 /**
- * @cogitator/sandbox
+ * @cogitator-ai/sandbox
  *
  * Docker-based sandbox execution for Cogitator agents
  */
@@ -26,4 +26,4 @@ export type {
   SandboxPoolConfig,
   SandboxDockerConfig,
   SandboxResult,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';

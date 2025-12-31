@@ -1,5 +1,5 @@
 /**
- * @cogitator/workflows - Subworkflows module
+ * @cogitator-ai/workflows - Subworkflows module
  *
  * Enables nested and parallel workflow execution.
  *

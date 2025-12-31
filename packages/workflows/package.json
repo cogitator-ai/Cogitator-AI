@@ -1,5 +1,5 @@
 {
-  "name": "@cogitator/workflows",
+  "name": "@cogitator-ai/workflows",
   "version": "0.1.0",
   "description": "DAG-based workflow engine for Cogitator agents",
   "type": "module",
@@ -23,8 +23,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@cogitator/types": "workspace:*",
-    "@cogitator/core": "workspace:*",
+    "@cogitator-ai/types": "workspace:*",
+    "@cogitator-ai/core": "workspace:*",
     "cron-parser": "^4.9.0",
     "nanoid": "^5.0.4"
   },

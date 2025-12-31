@@ -14,7 +14,7 @@
  * - Event hooks for monitoring
  */
 
-import type { CircuitBreakerConfig, CircuitBreakerState } from '@cogitator/types';
+import type { CircuitBreakerConfig, CircuitBreakerState } from '@cogitator-ai/types';
 
 const DEFAULT_THRESHOLD = 5;
 const DEFAULT_RESET_TIMEOUT = 30000;

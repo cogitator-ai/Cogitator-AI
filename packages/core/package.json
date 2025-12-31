@@ -1,5 +1,5 @@
 {
-  "name": "@cogitator/core",
+  "name": "@cogitator-ai/core",
   "version": "0.1.0",
   "description": "Core runtime for Cogitator AI agents",
   "type": "module",
@@ -23,9 +23,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@cogitator/types": "workspace:*",
-    "@cogitator/memory": "workspace:*",
-    "@cogitator/models": "workspace:*",
+    "@cogitator-ai/types": "workspace:*",
+    "@cogitator-ai/memory": "workspace:*",
+    "@cogitator-ai/models": "workspace:*",
     "zod": "^3.22.4",
     "zod-to-json-schema": "^3.22.4",
     "openai": "^4.24.0",
@@ -37,10 +37,10 @@
     "vitest": "^1.0.0"
   },
   "peerDependencies": {
-    "@cogitator/sandbox": "workspace:*"
+    "@cogitator-ai/sandbox": "workspace:*"
   },
   "peerDependenciesMeta": {
-    "@cogitator/sandbox": {
+    "@cogitator-ai/sandbox": {
       "optional": true
     }
   },

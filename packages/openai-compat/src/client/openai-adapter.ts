@@ -5,8 +5,8 @@
  * Creates an in-process adapter that can be used with the SDK's baseURL.
  */
 
-import { type Cogitator, Agent } from '@cogitator/core';
-import type { Tool } from '@cogitator/types';
+import { type Cogitator, Agent } from '@cogitator-ai/core';
+import type { Tool } from '@cogitator-ai/types';
 import { ThreadManager, type StoredAssistant } from './thread-manager';
 import { nanoid } from 'nanoid';
 import type {
@@ -28,7 +28,7 @@ interface RunState {
  * @example
  * ```typescript
  * import OpenAI from 'openai';
- * import { createOpenAIAdapter } from '@cogitator/openai-compat';
+ * import { createOpenAIAdapter } from '@cogitator-ai/openai-compat';
  *
  * const adapter = createOpenAIAdapter(cogitator, {
  *   tools: [calculator, datetime],

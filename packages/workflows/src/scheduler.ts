@@ -5,7 +5,7 @@
 import type {
   Workflow,
   WorkflowState,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 interface DependencyGraph {
   dependencies: Map<string, Set<string>>;

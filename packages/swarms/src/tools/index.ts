@@ -7,8 +7,8 @@ export { createBlackboardTools, type BlackboardTools } from './blackboard';
 export { createDelegationTools, type DelegationTools } from './delegation';
 export { createVotingTools, type VotingTools } from './voting';
 
-import type { Tool } from '@cogitator/types';
-import type { SwarmCoordinatorInterface, Blackboard, MessageBus, SwarmEventEmitter } from '@cogitator/types';
+import type { Tool } from '@cogitator-ai/types';
+import type { SwarmCoordinatorInterface, Blackboard, MessageBus, SwarmEventEmitter } from '@cogitator-ai/types';
 import { createMessagingTools } from './messaging';
 import { createBlackboardTools } from './blackboard';
 import { createDelegationTools } from './delegation';

@@ -9,7 +9,7 @@ import type {
   RunResult,
   SwarmMessage,
   SwarmAgent,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { BaseStrategy } from './base';
 import type { SwarmCoordinator } from '../coordinator';
 

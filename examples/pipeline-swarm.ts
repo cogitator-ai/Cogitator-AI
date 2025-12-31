@@ -9,8 +9,8 @@
  * Run with: npx tsx examples/pipeline-swarm.ts
  */
 
-import { Cogitator, Agent, tool } from '@cogitator/core';
-import { Swarm } from '@cogitator/swarms';
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { Swarm } from '@cogitator-ai/swarms';
 import { z } from 'zod';
 
 const MODEL = process.env.MODEL || 'llama3.2:3b';

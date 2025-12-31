@@ -3,8 +3,8 @@
  */
 
 import { z } from 'zod';
-import { tool } from '@cogitator/core';
-import type { Blackboard } from '@cogitator/types';
+import { tool } from '@cogitator-ai/core';
+import type { Blackboard } from '@cogitator-ai/types';
 
 /**
  * Create blackboard tools bound to a blackboard instance

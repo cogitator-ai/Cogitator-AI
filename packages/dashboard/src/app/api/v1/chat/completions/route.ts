@@ -20,7 +20,7 @@
 
 import { NextResponse } from 'next/server';
 import { getCogitator } from '@/lib/cogitator';
-import { Agent } from '@cogitator/core';
+import { Agent } from '@cogitator-ai/core';
 import { nanoid } from 'nanoid';
 import { withAuth } from '@/lib/auth/middleware';
 

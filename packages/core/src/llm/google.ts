@@ -15,7 +15,7 @@ import type {
   ToolCall,
   Message,
   ToolSchema,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
 
 interface GoogleConfig {

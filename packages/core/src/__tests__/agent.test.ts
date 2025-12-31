@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import type { Tool } from '@cogitator/types';
+import type { Tool } from '@cogitator-ai/types';
 import { Agent } from '../agent';
 import { tool } from '../tool';
 

@@ -2,7 +2,7 @@
  * Configuration loading and merging
  */
 
-import type { CogitatorConfig } from '@cogitator/types';
+import type { CogitatorConfig } from '@cogitator-ai/types';
 import { CogitatorConfigSchema, type CogitatorConfigInput } from './schema';
 import { loadYamlConfig } from './loaders/yaml';
 import { loadEnvConfig } from './loaders/env';

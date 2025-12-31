@@ -1,5 +1,5 @@
 /**
- * @cogitator/workflows - Manager module
+ * @cogitator-ai/workflows - Manager module
  *
  * Workflow lifecycle management.
  *

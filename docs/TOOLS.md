@@ -43,7 +43,7 @@ Tools give agents the ability to interact with the outside world. In Cogitator, 
 ### Basic Tool
 
 ```typescript
-import { tool } from '@cogitator/core';
+import { tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
 const calculator = tool({
@@ -143,7 +143,7 @@ import {
   fileList,
   fileSearch,
   fileMove,
-} from '@cogitator/tools/filesystem';
+} from '@cogitator-ai/tools/filesystem';
 
 // Read file
 const content = await fileRead.execute({ path: './src/index.ts' });
@@ -172,7 +172,7 @@ const matches = await fileSearch.execute({
 ### Web Operations
 
 ```typescript
-import { webFetch, webSearch, webScreenshot } from '@cogitator/tools/web';
+import { webFetch, webSearch, webScreenshot } from '@cogitator-ai/tools/web';
 
 // Fetch URL
 const page = await webFetch.execute({
@@ -197,7 +197,7 @@ const screenshot = await webScreenshot.execute({
 ### Code Execution
 
 ```typescript
-import { codeInterpreter } from '@cogitator/tools/code';
+import { codeInterpreter } from '@cogitator-ai/tools/code';
 
 // Execute Python code
 const result = await codeInterpreter.execute({
@@ -223,7 +223,7 @@ const jsResult = await codeInterpreter.execute({
 ### Database Operations
 
 ```typescript
-import { sqlQuery, sqlExecute } from '@cogitator/tools/database';
+import { sqlQuery, sqlExecute } from '@cogitator-ai/tools/database';
 
 // Query database
 const users = await sqlQuery.execute({
@@ -247,7 +247,7 @@ await sqlExecute.execute({
 ### Connecting to MCP Servers
 
 ```typescript
-import { mcpServer } from '@cogitator/tools/mcp';
+import { mcpServer } from '@cogitator-ai/tools/mcp';
 
 // Connect to filesystem server
 const fsTools = await mcpServer({
@@ -276,7 +276,7 @@ const agent = new Agent({
 ### Creating MCP-Compatible Servers
 
 ```typescript
-import { MCPServer, MCPTool } from '@cogitator/tools/mcp';
+import { MCPServer, MCPTool } from '@cogitator-ai/tools/mcp';
 
 const server = new MCPServer({
   name: 'my-tools',
@@ -309,7 +309,7 @@ server.listen();
 ### Registering Tools
 
 ```typescript
-import { ToolRegistry } from '@cogitator/core';
+import { ToolRegistry } from '@cogitator-ai/core';
 
 const registry = new ToolRegistry();
 
@@ -415,7 +415,7 @@ const tool = tool({
 ### WASM Sandbox
 
 ```typescript
-import { wasmSandbox } from '@cogitator/sandbox';
+import { wasmSandbox } from '@cogitator-ai/sandbox';
 
 const tool = tool({
   name: 'run_wasm',
@@ -607,7 +607,7 @@ const longRunningTask = tool({
 ### Tool Errors
 
 ```typescript
-import { ToolError, ToolValidationError, ToolTimeoutError } from '@cogitator/core';
+import { ToolError, ToolValidationError, ToolTimeoutError } from '@cogitator-ai/core';
 
 const safeTool = tool({
   name: 'safe_tool',
@@ -682,7 +682,7 @@ console.log(result.trace.spans);
 ### Custom Metrics
 
 ```typescript
-import { metrics } from '@cogitator/observability';
+import { metrics } from '@cogitator-ai/observability';
 
 const apiTool = tool({
   name: 'external_api',
@@ -709,7 +709,7 @@ const apiTool = tool({
 ## Tool Testing
 
 ```typescript
-import { mockTool, ToolTestHarness } from '@cogitator/testing';
+import { mockTool, ToolTestHarness } from '@cogitator-ai/testing';
 
 describe('Calculator Tool', () => {
   it('should evaluate expressions', async () => {

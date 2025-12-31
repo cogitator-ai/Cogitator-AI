@@ -2,7 +2,7 @@
  * OpenAI Embedding Service
  */
 
-import type { EmbeddingService, OpenAIEmbeddingConfig } from '@cogitator/types';
+import type { EmbeddingService, OpenAIEmbeddingConfig } from '@cogitator-ai/types';
 
 export class OpenAIEmbeddingService implements EmbeddingService {
   readonly model: string;

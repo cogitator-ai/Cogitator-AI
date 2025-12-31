@@ -44,8 +44,8 @@ export const initCommand = new Command('init')
               build: 'tsc',
             },
             dependencies: {
-              '@cogitator/core': '^0.1.0',
-              '@cogitator/config': '^0.1.0',
+              '@cogitator-ai/core': '^0.1.0',
+              '@cogitator-ai/config': '^0.1.0',
               zod: '^3.22.4',
             },
             devDependencies: {
@@ -96,7 +96,7 @@ memory:
 
       writeFileSync(
         join(projectPath, 'src', 'agent.ts'),
-        `import { Cogitator, Agent, tool } from '@cogitator/core';
+        `import { Cogitator, Agent, tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
 const greet = tool({

@@ -10,7 +10,7 @@ import type {
   SandboxExecutionRequest,
   SandboxExecutionResult,
   SandboxResult,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { BaseSandboxExecutor } from './base';
 
 const execPromise = promisify(execCallback);

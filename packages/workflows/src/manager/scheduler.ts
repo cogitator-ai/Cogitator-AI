@@ -15,7 +15,7 @@ import type {
   WorkflowRun,
   ScheduleOptions,
   RunStore,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import {
   getNextCronOccurrence,
   validateCronExpression,

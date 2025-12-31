@@ -9,7 +9,7 @@
  * - Fire event callbacks
  */
 
-import type { TimerEntry, TimerStore } from '@cogitator/types';
+import type { TimerEntry, TimerStore } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { promises as fs } from 'fs';
 import { join } from 'path';

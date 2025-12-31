@@ -2,7 +2,7 @@
  * Swarm - Main facade for multi-agent swarm coordination
  */
 
-import type { Cogitator } from '@cogitator/core';
+import type { Cogitator } from '@cogitator-ai/core';
 import type {
   SwarmConfig,
   SwarmRunOptions,
@@ -14,7 +14,7 @@ import type {
   MessageBus,
   Blackboard,
   IStrategy,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { SwarmCoordinator } from './coordinator';
 import { createStrategy } from './strategies/index';
 

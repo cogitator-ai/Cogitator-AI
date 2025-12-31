@@ -5,7 +5,7 @@ import {
   loadConfig,
   CogitatorConfigSchema,
   loadEnvConfig,
-} from '@cogitator/config';
+} from '@cogitator-ai/config';
 import * as yaml from 'js-yaml';
 import { withRole } from '@/lib/auth/middleware';
 

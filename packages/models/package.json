@@ -1,5 +1,5 @@
 {
-  "name": "@cogitator/models",
+  "name": "@cogitator-ai/models",
   "version": "0.1.0",
   "description": "Dynamic model registry with pricing for Cogitator",
   "type": "module",
@@ -29,7 +29,7 @@
     "vitest": "^2.1.8"
   },
   "peerDependencies": {
-    "@cogitator/types": "workspace:*"
+    "@cogitator-ai/types": "workspace:*"
   },
   "repository": {
     "type": "git",

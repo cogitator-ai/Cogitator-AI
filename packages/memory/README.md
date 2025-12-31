@@ -1,11 +1,11 @@
-# @cogitator/memory
+# @cogitator-ai/memory
 
 Memory adapters for Cogitator AI agents. Supports in-memory, Redis (short-term), and PostgreSQL with pgvector (long-term semantic memory).
 
 ## Installation
 
 ```bash
-pnpm add @cogitator/memory
+pnpm add @cogitator-ai/memory
 
 # Optional peer dependencies
 pnpm add ioredis  # For Redis adapter
@@ -17,7 +17,7 @@ pnpm add pg       # For PostgreSQL adapter
 ### In-Memory Adapter
 
 ```typescript
-import { InMemoryAdapter } from '@cogitator/memory';
+import { InMemoryAdapter } from '@cogitator-ai/memory';
 
 const memory = new InMemoryAdapter();
 await memory.saveEntry(threadId, {
@@ -29,7 +29,7 @@ await memory.saveEntry(threadId, {
 ### Redis Adapter
 
 ```typescript
-import { RedisAdapter } from '@cogitator/memory';
+import { RedisAdapter } from '@cogitator-ai/memory';
 
 const memory = new RedisAdapter({
   url: 'redis://localhost:6379',
@@ -40,7 +40,7 @@ const memory = new RedisAdapter({
 ### PostgreSQL Adapter
 
 ```typescript
-import { PostgresAdapter } from '@cogitator/memory';
+import { PostgresAdapter } from '@cogitator-ai/memory';
 
 const memory = new PostgresAdapter({
   connectionString: 'postgresql://localhost:5432/cogitator',
@@ -52,7 +52,7 @@ const memory = new PostgresAdapter({
 Build token-aware context from memory:
 
 ```typescript
-import { ContextBuilder } from '@cogitator/memory';
+import { ContextBuilder } from '@cogitator-ai/memory';
 
 const builder = new ContextBuilder({
   maxTokens: 4000,
@@ -67,7 +67,7 @@ const context = await builder.build(memory, threadId, {
 ### Embedding Services
 
 ```typescript
-import { createEmbeddingService } from '@cogitator/memory';
+import { createEmbeddingService } from '@cogitator-ai/memory';
 
 // OpenAI embeddings
 const embeddings = createEmbeddingService('openai', {

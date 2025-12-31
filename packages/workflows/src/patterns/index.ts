@@ -1,5 +1,5 @@
 /**
- * @cogitator/workflows - Patterns module
+ * @cogitator-ai/workflows - Patterns module
  *
  * Advanced workflow patterns for complex data processing.
  *

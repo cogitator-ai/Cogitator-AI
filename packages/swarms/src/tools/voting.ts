@@ -3,8 +3,8 @@
  */
 
 import { z } from 'zod';
-import { tool } from '@cogitator/core';
-import type { Blackboard, SwarmEventEmitter } from '@cogitator/types';
+import { tool } from '@cogitator-ai/core';
+import type { Blackboard, SwarmEventEmitter } from '@cogitator-ai/types';
 
 interface Vote {
   agentName: string;

@@ -5,7 +5,7 @@
  * supervising specialized developer agents.
  */
 
-import { Cogitator, Agent, Swarm, tool } from '@cogitator/core';
+import { Cogitator, Agent, Swarm, tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
 const cog = new Cogitator({

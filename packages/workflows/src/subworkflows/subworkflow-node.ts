@@ -15,8 +15,8 @@ import type {
   WorkflowExecuteOptionsV2,
   WorkflowResult,
   CheckpointStore,
-} from '@cogitator/types';
-import type { Cogitator } from '@cogitator/core';
+} from '@cogitator-ai/types';
+import type { Cogitator } from '@cogitator-ai/core';
 import { WorkflowExecutor } from '../executor';
 
 /**

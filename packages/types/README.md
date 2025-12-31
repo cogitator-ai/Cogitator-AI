@@ -1,17 +1,17 @@
-# @cogitator/types
+# @cogitator-ai/types
 
 Shared TypeScript types for the Cogitator AI agent runtime.
 
 ## Installation
 
 ```bash
-pnpm add @cogitator/types
+pnpm add @cogitator-ai/types
 ```
 
 ## Usage
 
 ```typescript
-import type { Agent, Tool, Message, RunResult } from '@cogitator/types';
+import type { Agent, Tool, Message, RunResult } from '@cogitator-ai/types';
 
 const agent: Agent = {
   name: 'my-agent',

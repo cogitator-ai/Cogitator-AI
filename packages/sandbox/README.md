@@ -1,11 +1,11 @@
-# @cogitator/sandbox
+# @cogitator-ai/sandbox
 
 Sandbox execution for Cogitator agents. Supports Docker containers and WASM (via Extism) for secure code execution.
 
 ## Installation
 
 ```bash
-pnpm add @cogitator/sandbox
+pnpm add @cogitator-ai/sandbox
 
 # Optional peer dependencies
 pnpm add dockerode  # For Docker sandbox
@@ -17,7 +17,7 @@ pnpm add @extism/extism  # For WASM sandbox
 ### Docker Sandbox
 
 ```typescript
-import { DockerSandboxExecutor } from '@cogitator/sandbox';
+import { DockerSandboxExecutor } from '@cogitator-ai/sandbox';
 
 const sandbox = new DockerSandboxExecutor({
   image: 'cogitator/sandbox-node:latest',
@@ -39,7 +39,7 @@ console.log(result.stdout); // "Hello!"
 ### WASM Sandbox
 
 ```typescript
-import { WasmSandboxExecutor } from '@cogitator/sandbox';
+import { WasmSandboxExecutor } from '@cogitator-ai/sandbox';
 
 const sandbox = new WasmSandboxExecutor({
   timeout: 10000,
@@ -57,7 +57,7 @@ const result = await sandbox.execute({
 Automatic fallback between sandboxes:
 
 ```typescript
-import { SandboxManager } from '@cogitator/sandbox';
+import { SandboxManager } from '@cogitator-ai/sandbox';
 
 const manager = new SandboxManager({
   preferredType: 'docker',

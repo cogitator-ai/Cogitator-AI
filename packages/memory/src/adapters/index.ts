@@ -7,7 +7,7 @@ import type {
   InMemoryAdapterConfig,
   RedisAdapterConfig,
   PostgresAdapterConfig,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { InMemoryAdapter } from './memory';
 
 export { BaseMemoryAdapter } from './base';

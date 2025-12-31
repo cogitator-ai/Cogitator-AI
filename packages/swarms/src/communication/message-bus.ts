@@ -7,7 +7,7 @@ import type {
   MessageBus,
   MessageBusConfig,
   SwarmMessage,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 export class InMemoryMessageBus implements MessageBus {
   private messages: SwarmMessage[] = [];

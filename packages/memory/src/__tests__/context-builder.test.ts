@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { ContextBuilder } from '../context-builder';
 import { InMemoryAdapter } from '../adapters/memory';
-import type { Message } from '@cogitator/types';
+import type { Message } from '@cogitator-ai/types';
 
 describe('ContextBuilder', () => {
   let adapter: InMemoryAdapter;

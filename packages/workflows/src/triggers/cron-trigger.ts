@@ -10,7 +10,7 @@ import type {
   CronTriggerConfig,
   TriggerContext,
   WorkflowTrigger,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import {
   parseCronExpression,
   getNextCronOccurrence,

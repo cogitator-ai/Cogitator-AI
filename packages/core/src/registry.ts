@@ -2,7 +2,7 @@
  * Tool Registry for managing tools
  */
 
-import type { Tool, ToolSchema } from '@cogitator/types';
+import type { Tool, ToolSchema } from '@cogitator-ai/types';
 import { toolToSchema } from './tool';
 
 export class ToolRegistry {

@@ -12,7 +12,7 @@ import type {
   SandboxExecutionResult,
   SandboxResult,
   SandboxWasmConfig,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { BaseSandboxExecutor } from './base';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';

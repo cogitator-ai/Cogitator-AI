@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-describe('@cogitator/worker', () => {
+describe('@cogitator-ai/worker', () => {
   it('exports JobQueue', async () => {
     const { JobQueue } = await import('../index');
     expect(JobQueue).toBeDefined();

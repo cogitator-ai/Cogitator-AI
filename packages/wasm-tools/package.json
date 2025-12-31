@@ -1,5 +1,5 @@
 {
-  "name": "@cogitator/wasm-tools",
+  "name": "@cogitator-ai/wasm-tools",
   "version": "0.1.0",
   "description": "WASM-based tools for Cogitator agents",
   "type": "module",
@@ -23,7 +23,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cogitator/types": "workspace:*",
+    "@cogitator-ai/types": "workspace:*",
     "zod": "^3.22.0"
   },
   "devDependencies": {

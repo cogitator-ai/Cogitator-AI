@@ -1,5 +1,5 @@
 /**
- * @cogitator/wasm-tools - WASM-based tools for Cogitator agents
+ * @cogitator-ai/wasm-tools - WASM-based tools for Cogitator agents
  *
  * This package provides pre-built WASM tools that run in the Extism sandbox.
  * WASM tools offer:
@@ -9,7 +9,7 @@
  */
 
 import { z } from 'zod';
-import type { SandboxConfig } from '@cogitator/types';
+import type { SandboxConfig } from '@cogitator-ai/types';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 

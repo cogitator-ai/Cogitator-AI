@@ -13,7 +13,7 @@ import {
   chainNode,
   managementChain,
 } from '../human/index';
-import type { ApprovalRequest, ApprovalResponse, HumanNodeConfig } from '@cogitator/types';
+import type { ApprovalRequest, ApprovalResponse, HumanNodeConfig } from '@cogitator-ai/types';
 
 interface TestState {
   value: number;

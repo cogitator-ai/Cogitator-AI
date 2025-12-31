@@ -1,5 +1,5 @@
 {
-  "name": "@cogitator/redis",
+  "name": "@cogitator-ai/redis",
   "version": "0.1.0",
   "description": "Unified Redis client for Cogitator with standalone and cluster support",
   "type": "module",
@@ -23,7 +23,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@cogitator/types": "workspace:*"
+    "@cogitator-ai/types": "workspace:*"
   },
   "optionalDependencies": {
     "ioredis": "^5.4.1"

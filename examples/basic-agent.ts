@@ -4,7 +4,7 @@
  * This example demonstrates how to create a simple agent with tools.
  */
 
-import { Cogitator, Agent, tool } from '@cogitator/core';
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
 const cog = new Cogitator({

@@ -9,7 +9,7 @@ import type {
   SandboxManagerConfig,
   SandboxResult,
   SandboxType,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { type BaseSandboxExecutor } from './executors/base';
 import { DockerSandboxExecutor } from './executors/docker';
 import { NativeSandboxExecutor } from './executors/native';

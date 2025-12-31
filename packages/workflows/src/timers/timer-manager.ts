@@ -9,7 +9,7 @@
  * - Cleanup of old timers
  */
 
-import type { TimerEntry, TimerStore } from '@cogitator/types';
+import type { TimerEntry, TimerStore } from '@cogitator-ai/types';
 
 /**
  * Timer handler function

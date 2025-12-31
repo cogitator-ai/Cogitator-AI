@@ -32,7 +32,7 @@ The fastest way to get started is using the Cogitator CLI:
 
 ```bash
 # Install CLI globally
-npm install -g @cogitator/cli
+npm install -g @cogitator-ai/cli
 
 # Create a new project
 cogitator init my-agents
@@ -59,7 +59,7 @@ mkdir my-agents && cd my-agents
 pnpm init
 
 # Install Cogitator packages
-pnpm add @cogitator/core @cogitator/config zod
+pnpm add @cogitator-ai/core @cogitator-ai/config zod
 
 # Install dev dependencies
 pnpm add -D typescript tsx @types/node
@@ -72,7 +72,7 @@ pnpm add -D typescript tsx @types/node
 Create a file `src/agent.ts`:
 
 ```typescript
-import { Cogitator, Agent } from '@cogitator/core';
+import { Cogitator, Agent } from '@cogitator-ai/core';
 
 // 1. Create the Cogitator runtime
 const cog = new Cogitator({
@@ -116,7 +116,7 @@ npx tsx src/agent.ts
 Tools give your agent superpowers. Define them with Zod schemas for full type safety:
 
 ```typescript
-import { Cogitator, Agent, tool } from '@cogitator/core';
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
 // Define a custom tool
@@ -176,7 +176,7 @@ import {
   fileList,        // List directory
   httpRequest,     // HTTP calls
   exec,            // Shell commands (sandboxed)
-} from '@cogitator/core';
+} from '@cogitator-ai/core';
 
 const agent = new Agent({
   name: 'power-user',
@@ -193,7 +193,7 @@ const agent = new Agent({
 Enable persistent memory so your agent remembers conversations:
 
 ```typescript
-import { Cogitator, Agent } from '@cogitator/core';
+import { Cogitator, Agent } from '@cogitator-ai/core';
 
 const cog = new Cogitator({
   llm: {
@@ -403,8 +403,8 @@ logging:
 Load it automatically:
 
 ```typescript
-import { Cogitator } from '@cogitator/core';
-import { loadConfig } from '@cogitator/config';
+import { Cogitator } from '@cogitator-ai/core';
+import { loadConfig } from '@cogitator-ai/config';
 
 const config = await loadConfig();  // Loads cogitator.yml
 const cog = new Cogitator(config);

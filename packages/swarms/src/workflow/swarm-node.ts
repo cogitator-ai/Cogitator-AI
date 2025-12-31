@@ -10,8 +10,8 @@ import type {
   SwarmConfig,
   SwarmRunOptions,
   StrategyResult,
-} from '@cogitator/types';
-import type { Cogitator } from '@cogitator/core';
+} from '@cogitator-ai/types';
+import type { Cogitator } from '@cogitator-ai/core';
 import { Swarm } from '../swarm';
 
 /**

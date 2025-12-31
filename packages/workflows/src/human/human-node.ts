@@ -21,7 +21,7 @@ import type {
   ApprovalType,
   ApprovalChoice,
   ApprovalChainStep,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 /**
  * Context for human node execution

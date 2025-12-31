@@ -8,7 +8,7 @@
  * - Zipkin
  */
 
-import type { WorkflowSpan, SpanExporter } from '@cogitator/types';
+import type { WorkflowSpan, SpanExporter } from '@cogitator-ai/types';
 
 export interface SpanExporterInstance {
   export(spans: WorkflowSpan[]): Promise<void>;
@@ -137,7 +137,7 @@ export class OTLPSpanExporter implements SpanExporterInstance {
         scopeSpans: [
           {
             scope: {
-              name: '@cogitator/workflows',
+              name: '@cogitator-ai/workflows',
               version: '1.0.0',
             },
             spans: spans.map((span) => this.spanToOTLP(span)),

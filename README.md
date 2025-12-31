@@ -80,7 +80,7 @@ Cogitator is a **self-hosted, production-grade runtime** for orchestrating LLM s
 
 ```bash
 # Install CLI
-npm install -g @cogitator/cli
+npm install -g @cogitator-ai/cli
 
 # Initialize project
 cogitator init my-agents
@@ -93,7 +93,7 @@ cogitator up
 ### Your First Agent
 
 ```typescript
-import { Cogitator, Agent, tool } from '@cogitator/core';
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
 
 // Define a tool with full type safety
 const searchWeb = tool({
@@ -131,7 +131,7 @@ console.log(result.usage); // { tokens: 1234, cost: 0.002, latency: 1.2s }
 ### Multi-Agent Swarm
 
 ```typescript
-import { Cogitator, Agent, Swarm } from '@cogitator/core';
+import { Cogitator, Agent, Swarm } from '@cogitator-ai/core';
 
 const planner = new Agent({
   name: 'planner',
@@ -256,7 +256,7 @@ await cog.run(agent, { input: 'What is my name?' }); // "Your name is Alex"
 ### 🛠️ MCP-Compatible Tools
 
 ```typescript
-import { tool, mcpServer } from '@cogitator/tools';
+import { tool, mcpServer } from '@cogitator-ai/tools';
 
 // Define tools with Zod schemas
 const calculator = tool({
@@ -281,7 +281,7 @@ const agent = new Agent({
 ### 🔄 Workflow Engine
 
 ```typescript
-import { Workflow, step } from '@cogitator/workflows';
+import { Workflow, step } from '@cogitator-ai/workflows';
 
 const codeReviewWorkflow = new Workflow({
   name: 'code-review',

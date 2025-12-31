@@ -1,5 +1,5 @@
 /**
- * @cogitator/workflows - Timer module
+ * @cogitator-ai/workflows - Timer module
  *
  * Provides timer and scheduling capabilities for workflow execution.
  *

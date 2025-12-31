@@ -1,5 +1,5 @@
 /**
- * @cogitator/mcp - MCP (Model Context Protocol) Integration
+ * @cogitator-ai/mcp - MCP (Model Context Protocol) Integration
  *
  * This package provides full MCP support for Cogitator:
  * - MCPClient: Connect to external MCP servers and use their tools

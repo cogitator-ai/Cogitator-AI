@@ -1,11 +1,11 @@
-# @cogitator/mcp
+# @cogitator-ai/mcp
 
 MCP (Model Context Protocol) integration for Cogitator. Connect to external MCP servers or expose Cogitator tools as an MCP server.
 
 ## Installation
 
 ```bash
-pnpm add @cogitator/mcp
+pnpm add @cogitator-ai/mcp
 ```
 
 ## Usage
@@ -15,7 +15,7 @@ pnpm add @cogitator/mcp
 Connect to external MCP servers:
 
 ```typescript
-import { MCPClient } from '@cogitator/mcp';
+import { MCPClient } from '@cogitator-ai/mcp';
 
 const client = new MCPClient({
   transport: 'stdio',
@@ -42,8 +42,8 @@ const cogitatorTools = client.asCogitatorTools();
 Expose Cogitator tools as an MCP server:
 
 ```typescript
-import { MCPServer } from '@cogitator/mcp';
-import { builtinTools } from '@cogitator/core';
+import { MCPServer } from '@cogitator-ai/mcp';
+import { builtinTools } from '@cogitator-ai/core';
 
 const server = new MCPServer({
   name: 'cogitator-tools',
@@ -63,7 +63,7 @@ await server.start('http', { port: 3001 });
 Convert between Cogitator and MCP tool formats:
 
 ```typescript
-import { toMCPTool, toCogitatorTool } from '@cogitator/mcp';
+import { toMCPTool, toCogitatorTool } from '@cogitator-ai/mcp';
 
 // Cogitator → MCP
 const mcpTool = toMCPTool(cogitatorTool);

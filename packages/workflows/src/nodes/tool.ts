@@ -8,7 +8,7 @@ import type {
   NodeResult,
   Tool,
   ToolContext,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 export interface ToolNodeOptions<S = WorkflowState, TArgs = unknown> {
   /**

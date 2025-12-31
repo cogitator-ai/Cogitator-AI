@@ -2,7 +2,7 @@ import {
   createRedisClient,
   createConfigFromEnv,
   type RedisClient,
-} from '@cogitator/redis';
+} from '@cogitator-ai/redis';
 
 let redis: RedisClient | null = null;
 let subscriber: RedisClient | null = null;

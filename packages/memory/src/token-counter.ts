@@ -5,7 +5,7 @@
  * More accurate than nothing, avoids tiktoken WASM dependency.
  */
 
-import type { Message } from '@cogitator/types';
+import type { Message } from '@cogitator-ai/types';
 
 const CHARS_PER_TOKEN = 4;
 const MESSAGE_OVERHEAD = 4;

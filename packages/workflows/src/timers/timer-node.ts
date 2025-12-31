@@ -12,7 +12,7 @@
 import type {
   TimerEntry,
   TimerStore,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { getNextCronOccurrence, isValidCronExpression } from './cron-parser';
 
 /**

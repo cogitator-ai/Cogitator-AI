@@ -15,7 +15,7 @@ import type {
   EventTriggerConfig,
   Workflow,
   WorkflowState,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { type CronTriggerExecutor, createCronTrigger } from './cron-trigger';
 import { type WebhookTriggerExecutor, createWebhookTrigger, type WebhookRequest } from './webhook-trigger';
 

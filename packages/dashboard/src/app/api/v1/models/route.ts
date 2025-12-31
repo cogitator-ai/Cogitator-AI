@@ -6,7 +6,7 @@
 
 import { NextResponse } from 'next/server';
 import { getOllamaModels, checkOllamaHealth } from '@/lib/ollama';
-import { OPENAI_MODELS, ANTHROPIC_MODELS, GOOGLE_MODELS } from '@cogitator/models';
+import { OPENAI_MODELS, ANTHROPIC_MODELS, GOOGLE_MODELS } from '@cogitator-ai/models';
 import { withAuth } from '@/lib/auth/middleware';
 
 export const GET = withAuth(async () => {

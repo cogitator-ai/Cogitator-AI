@@ -7,7 +7,7 @@ import type {
   StrategyResult,
   HierarchicalConfig,
   RunResult,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { BaseStrategy } from './base';
 import type { SwarmCoordinator } from '../coordinator';
 

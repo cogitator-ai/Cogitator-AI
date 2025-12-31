@@ -45,7 +45,7 @@ Workflows allow you to orchestrate complex, multi-step tasks with:
 ### Basic Workflow
 
 ```typescript
-import { Workflow, step } from '@cogitator/workflows';
+import { Workflow, step } from '@cogitator-ai/workflows';
 
 const researchWorkflow = new Workflow({
   name: 'research-topic',

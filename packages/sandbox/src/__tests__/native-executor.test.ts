@@ -5,7 +5,7 @@ import type {
   SandboxExecutionRequest,
   SandboxExecutionResult,
   SandboxResult,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 function assertSuccess(
   result: SandboxResult<SandboxExecutionResult>

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-describe('@cogitator/redis', () => {
+describe('@cogitator-ai/redis', () => {
   it('exports createRedisClient', async () => {
     const { createRedisClient } = await import('../index');
     expect(createRedisClient).toBeDefined();

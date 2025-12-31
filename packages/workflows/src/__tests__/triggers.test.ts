@@ -16,7 +16,7 @@ import {
   webhookTrigger,
   eventTrigger,
 } from '../triggers/index';
-import type { CronTriggerConfig, WebhookTriggerConfig, TriggerContext } from '@cogitator/types';
+import type { CronTriggerConfig, WebhookTriggerConfig, TriggerContext } from '@cogitator-ai/types';
 
 describe('Triggers', () => {
   describe('Rate Limiter', () => {

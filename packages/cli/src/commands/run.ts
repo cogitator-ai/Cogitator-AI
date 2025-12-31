@@ -8,8 +8,8 @@ import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import chalk from 'chalk';
 import { log, printBanner } from '../utils/logger';
-import { Cogitator, Agent } from '@cogitator/core';
-import { loadConfig } from '@cogitator/config';
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { loadConfig } from '@cogitator-ai/config';
 
 interface RunOptions {
   config: string;

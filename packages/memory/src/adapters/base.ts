@@ -10,7 +10,7 @@ import type {
   Thread,
   MemoryEntry,
   MemoryQueryOptions,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 export abstract class BaseMemoryAdapter implements MemoryAdapter {
   abstract readonly provider: MemoryProvider;

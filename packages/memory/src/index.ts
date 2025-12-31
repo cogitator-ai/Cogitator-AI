@@ -1,5 +1,5 @@
 /**
- * @cogitator/memory
+ * @cogitator-ai/memory
  *
  * Memory adapters for Cogitator AI agents
  */
@@ -69,4 +69,4 @@ export type {
   ContextStrategy,
   BuiltContext,
   MemoryConfig,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';

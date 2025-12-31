@@ -2,7 +2,7 @@
  * Fallback utilities for graceful degradation
  */
 
-import { CogitatorError, ErrorCode } from '@cogitator/types';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { type CircuitBreakerRegistry } from './circuit-breaker';
 import { withRetry, type RetryOptions } from './retry';
 

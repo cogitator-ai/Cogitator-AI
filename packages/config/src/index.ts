@@ -1,5 +1,5 @@
 /**
- * @cogitator/config
+ * @cogitator-ai/config
  *
  * Configuration loading for Cogitator (YAML, env)
  */

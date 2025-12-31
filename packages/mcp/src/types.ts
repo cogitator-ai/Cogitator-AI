@@ -2,7 +2,7 @@
  * MCP Integration Types
  */
 
-import type { Tool } from '@cogitator/types';
+import type { Tool } from '@cogitator-ai/types';
 
 export type MCPTransportType = 'stdio' | 'http' | 'sse';
 

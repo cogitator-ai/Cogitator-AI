@@ -3,8 +3,8 @@
  */
 
 import { z } from 'zod';
-import { tool } from '@cogitator/core';
-import type { SwarmCoordinatorInterface, Blackboard } from '@cogitator/types';
+import { tool } from '@cogitator-ai/core';
+import type { SwarmCoordinatorInterface, Blackboard } from '@cogitator-ai/types';
 
 /**
  * Create delegation tools for supervisor agents

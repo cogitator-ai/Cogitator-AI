@@ -31,9 +31,9 @@ Build the definitive self-hosted AI agent runtime that developers trust to run i
 
 #### Week 3-4: Core Packages
 
-- [x] `@cogitator/core` — Agent, Tool, Cogitator classes
-- [x] `@cogitator/types` — Shared TypeScript types
-- [x] `@cogitator/config` — Configuration loading (YAML, env)
+- [x] `@cogitator-ai/core` — Agent, Tool, Cogitator classes
+- [x] `@cogitator-ai/types` — Shared TypeScript types
+- [x] `@cogitator-ai/config` — Configuration loading (YAML, env)
 - [x] Basic error handling and logging
 
 **Deliverables:**
@@ -76,14 +76,14 @@ Build the definitive self-hosted AI agent runtime that developers trust to run i
 
 #### Week 3-4: CLI & Docker
 
-- [x] `@cogitator/cli` — init, up, run commands
+- [x] `@cogitator-ai/cli` — init, up, run commands
 - [x] Docker Compose for local development
 - [x] Docker-based agent sandboxing
 - [x] Getting Started documentation
 
 **Deliverables:**
 
-- `npm install -g @cogitator/cli`
+- `npm install -g @cogitator-ai/cli`
 - One-command local setup
 - Complete Getting Started guide
 - 5 example agents
@@ -92,7 +92,7 @@ Build the definitive self-hosted AI agent runtime that developers trust to run i
 
 ```bash
 # This should work
-npm install -g @cogitator/cli
+npm install -g @cogitator-ai/cli
 cogitator init my-project
 cd my-project
 cogitator up
@@ -123,7 +123,7 @@ cogitator run "Hello, world!"
 
 **Deliverables:**
 
-- `@cogitator/workflows` package
+- `@cogitator-ai/workflows` package
 - 5 example workflows
 - Workflow documentation
 
@@ -145,7 +145,7 @@ cogitator run "Hello, world!"
 
 **Deliverables:**
 
-- `@cogitator/swarms` package
+- `@cogitator-ai/swarms` package
 - 5 example swarms
 - Swarm documentation
 
@@ -216,7 +216,7 @@ await cog.workflow(workflow).run({ task: 'Build a REST API' });
 
 **Deliverables:**
 
-- `@cogitator/dashboard` package ✅
+- `@cogitator-ai/dashboard` package ✅
 - Full OpenTelemetry support
 - Production monitoring guide
 
@@ -376,11 +376,11 @@ spec:
 
 | Package              | M3    | M6    | M9    | M12   |
 | -------------------- | ----- | ----- | ----- | ----- |
-| @cogitator/core      | 0.1.0 | 0.5.0 | 0.9.0 | 1.0.0 |
-| @cogitator/cli       | 0.1.0 | 0.5.0 | 0.9.0 | 1.0.0 |
-| @cogitator/workflows | -     | 0.3.0 | 0.7.0 | 1.0.0 |
-| @cogitator/swarms    | -     | 0.3.0 | 0.7.0 | 1.0.0 |
-| @cogitator/dashboard | -     | -     | 0.5.0 | 1.0.0 |
+| @cogitator-ai/core      | 0.1.0 | 0.5.0 | 0.9.0 | 1.0.0 |
+| @cogitator-ai/cli       | 0.1.0 | 0.5.0 | 0.9.0 | 1.0.0 |
+| @cogitator-ai/workflows | -     | 0.3.0 | 0.7.0 | 1.0.0 |
+| @cogitator-ai/swarms    | -     | 0.3.0 | 0.7.0 | 1.0.0 |
+| @cogitator-ai/dashboard | -     | -     | 0.5.0 | 1.0.0 |
 
 ---
 
@@ -432,7 +432,7 @@ spec:
 
 - [x] M2: Primary embedding model (OpenAI vs local) — Both supported via EmbeddingService
 - [x] M4: Workflow DSL syntax — WorkflowBuilder fluent API
-- [x] M6: MCP vs custom tool protocol — Both supported via @cogitator/mcp package
+- [x] M6: MCP vs custom tool protocol — Both supported via @cogitator-ai/mcp package
 - [ ] M8: Kubernetes operator vs Helm-only
 - [ ] M10: Cloud infrastructure (AWS/GCP/Fly.io)
 

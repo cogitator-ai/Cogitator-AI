@@ -17,7 +17,7 @@ import type {
   SpanLink,
   TraceContext,
   Baggage,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import {
   type SpanExporterInstance,

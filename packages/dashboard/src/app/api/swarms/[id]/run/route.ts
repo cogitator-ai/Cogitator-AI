@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getSwarm, getAgent, createSwarmRun, updateSwarmRun } from '@/lib/cogitator/db';
 import { getCogitator } from '@/lib/cogitator';
-import { Swarm } from '@cogitator/swarms';
-import { Agent } from '@cogitator/core';
-import type { SwarmConfig, SwarmStrategy, DebateConfig, RoundRobinConfig, ConsensusConfig } from '@cogitator/types';
+import { Swarm } from '@cogitator-ai/swarms';
+import { Agent } from '@cogitator-ai/core';
+import type { SwarmConfig, SwarmStrategy, DebateConfig, RoundRobinConfig, ConsensusConfig } from '@cogitator-ai/types';
 import { withAuth } from '@/lib/auth/middleware';
 import { swarmRunSchema } from '@/lib/validation';
 

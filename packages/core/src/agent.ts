@@ -2,7 +2,7 @@
  * Agent class implementation
  */
 
-import type { Agent as IAgent, AgentConfig, Tool } from '@cogitator/types';
+import type { Agent as IAgent, AgentConfig, Tool } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 
 export class Agent implements IAgent {

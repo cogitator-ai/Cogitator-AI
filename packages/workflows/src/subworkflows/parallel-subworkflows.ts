@@ -12,7 +12,7 @@ import type {
   Workflow,
   WorkflowState,
   WorkflowResult,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import {
   executeSubworkflow,
   type SubworkflowContext,

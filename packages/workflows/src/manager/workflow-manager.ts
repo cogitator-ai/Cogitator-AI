@@ -23,8 +23,8 @@ import type {
   WorkflowExecuteOptionsV2,
   RunStore,
   CheckpointStore,
-} from '@cogitator/types';
-import type { Cogitator } from '@cogitator/core';
+} from '@cogitator-ai/types';
+import type { Cogitator } from '@cogitator-ai/core';
 import { WorkflowExecutor } from '../executor';
 import { type JobScheduler, createJobScheduler } from './scheduler';
 import { InMemoryRunStore } from './run-store';

@@ -7,7 +7,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import type { Tool } from '@cogitator/types';
+import type { Tool } from '@cogitator-ai/types';
 import { createStdioTransport, createHttpTransport } from './transports';
 import type {
   MCPClientConfig,

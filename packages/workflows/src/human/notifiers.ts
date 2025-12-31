@@ -7,7 +7,7 @@
  * - Composite notifier for multiple channels
  */
 
-import type { ApprovalNotifier, ApprovalRequest } from '@cogitator/types';
+import type { ApprovalNotifier, ApprovalRequest } from '@cogitator-ai/types';
 
 /**
  * Console notifier for development and debugging

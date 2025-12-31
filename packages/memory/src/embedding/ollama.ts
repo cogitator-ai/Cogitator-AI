@@ -8,7 +8,7 @@
  * - all-minilm (384 dimensions)
  */
 
-import type { EmbeddingService, OllamaEmbeddingConfig } from '@cogitator/types';
+import type { EmbeddingService, OllamaEmbeddingConfig } from '@cogitator-ai/types';
 
 const MODEL_DIMENSIONS: Record<string, number> = {
   'nomic-embed-text': 768,

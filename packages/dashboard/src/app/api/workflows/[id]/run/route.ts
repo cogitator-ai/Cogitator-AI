@@ -8,9 +8,9 @@ import {
   toolNode,
   functionNode,
   InMemoryCheckpointStore,
-} from '@cogitator/workflows';
-import { Agent, type Tool } from '@cogitator/core';
-import type { WorkflowState, NodeResult } from '@cogitator/types';
+} from '@cogitator-ai/workflows';
+import { Agent, type Tool } from '@cogitator-ai/core';
+import type { WorkflowState, NodeResult } from '@cogitator-ai/types';
 import { withAuth } from '@/lib/auth/middleware';
 
 interface WorkflowNodeDefinition {

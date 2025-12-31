@@ -7,7 +7,7 @@
 
 import { z, type ZodTypeAny, type ZodObject, type ZodRawShape } from 'zod';
 import { zodToJsonSchema as zodToJsonSchemaLib } from 'zod-to-json-schema';
-import type { Tool, ToolSchema, ToolContext } from '@cogitator/types';
+import type { Tool, ToolSchema, ToolContext } from '@cogitator-ai/types';
 import type { MCPToolDefinition, MCPToolContent, ToolAdapterOptions } from '../types';
 import type { MCPClient } from '../client/mcp-client';
 

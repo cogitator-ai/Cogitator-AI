@@ -9,7 +9,7 @@
  * - Query and filtering
  */
 
-import type { DeadLetterEntry, WorkflowState } from '@cogitator/types';
+import type { DeadLetterEntry, WorkflowState } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { promises as fs } from 'fs';
 import { join } from 'path';

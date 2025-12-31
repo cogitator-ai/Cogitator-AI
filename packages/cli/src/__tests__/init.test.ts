@@ -49,7 +49,7 @@ describe('cogitator init', () => {
 
     const pkgJson = JSON.parse(readFileSync(join(projectPath, 'package.json'), 'utf-8'));
     expect(pkgJson.name).toBe(projectName);
-    expect(pkgJson.dependencies['@cogitator/core']).toBeDefined();
+    expect(pkgJson.dependencies['@cogitator-ai/core']).toBeDefined();
   });
 
   it('fails if directory already exists', () => {

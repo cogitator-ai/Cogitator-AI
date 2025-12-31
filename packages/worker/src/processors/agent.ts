@@ -4,9 +4,9 @@
  * Recreates an Agent from serialized config and executes it.
  */
 
-import { Cogitator, Agent, tool } from '@cogitator/core';
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
 import { z } from 'zod';
-import type { Tool, ToolSchema } from '@cogitator/types';
+import type { Tool, ToolSchema } from '@cogitator-ai/types';
 import type { AgentJobPayload, AgentJobResult } from '../types';
 
 /**

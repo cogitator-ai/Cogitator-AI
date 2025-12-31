@@ -6,8 +6,8 @@
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyCors from '@fastify/cors';
-import type { Cogitator } from '@cogitator/core';
-import type { Tool } from '@cogitator/types';
+import type { Cogitator } from '@cogitator-ai/core';
+import type { Tool } from '@cogitator-ai/types';
 import { OpenAIAdapter } from '../client/openai-adapter';
 import { createAuthMiddleware, type AuthConfig } from './middleware/auth';
 import { errorHandler, notFoundHandler } from './middleware/error-handler';
@@ -44,8 +44,8 @@ export interface OpenAIServerConfig {
  *
  * @example
  * ```typescript
- * import { Cogitator } from '@cogitator/core';
- * import { createOpenAIServer } from '@cogitator/openai-compat';
+ * import { Cogitator } from '@cogitator-ai/core';
+ * import { createOpenAIServer } from '@cogitator-ai/openai-compat';
  *
  * const cogitator = new Cogitator({ ... });
  * const server = createOpenAIServer(cogitator, {

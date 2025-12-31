@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createEmbeddingService } from '@cogitator/memory';
+import { createEmbeddingService } from '@cogitator-ai/memory';
 import { query, queryOne } from '@/lib/db';
 import { withAuth } from '@/lib/auth/middleware';
 

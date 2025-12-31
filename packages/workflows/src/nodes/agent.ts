@@ -2,8 +2,8 @@
  * AgentNode - Run a Cogitator agent as a workflow node
  */
 
-import type { WorkflowNode, WorkflowState, NodeResult } from '@cogitator/types';
-import type { Agent, RunOptions, RunResult } from '@cogitator/core';
+import type { WorkflowNode, WorkflowState, NodeResult } from '@cogitator-ai/types';
+import type { Agent, RunOptions, RunResult } from '@cogitator-ai/core';
 import type { ExtendedNodeContext } from './base';
 
 export interface AgentNodeOptions<S = WorkflowState> {

@@ -1,5 +1,5 @@
 {
-  "name": "@cogitator/config",
+  "name": "@cogitator-ai/config",
   "version": "0.1.0",
   "description": "Configuration loading for Cogitator (YAML, env)",
   "type": "module",
@@ -20,7 +20,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@cogitator/types": "workspace:*",
+    "@cogitator-ai/types": "workspace:*",
     "yaml": "^2.3.4",
     "zod": "^3.22.4"
   },

@@ -2,7 +2,7 @@
  * Embedding service factory
  */
 
-import type { EmbeddingService, EmbeddingServiceConfig } from '@cogitator/types';
+import type { EmbeddingService, EmbeddingServiceConfig } from '@cogitator-ai/types';
 import { OpenAIEmbeddingService } from './openai';
 import { OllamaEmbeddingService } from './ollama';
 

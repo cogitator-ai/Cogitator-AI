@@ -1,11 +1,11 @@
-# @cogitator/redis
+# @cogitator-ai/redis
 
 Unified Redis client for Cogitator with standalone and cluster support.
 
 ## Installation
 
 ```bash
-pnpm add @cogitator/redis ioredis
+pnpm add @cogitator-ai/redis ioredis
 ```
 
 ## Usage
@@ -13,7 +13,7 @@ pnpm add @cogitator/redis ioredis
 ### Standalone Mode
 
 ```typescript
-import { createRedisClient } from '@cogitator/redis';
+import { createRedisClient } from '@cogitator-ai/redis';
 
 const redis = await createRedisClient({
   url: 'redis://localhost:6379',
@@ -26,7 +26,7 @@ const value = await redis.get('key');
 ### Cluster Mode
 
 ```typescript
-import { createRedisClient } from '@cogitator/redis';
+import { createRedisClient } from '@cogitator-ai/redis';
 
 const redis = await createRedisClient({
   cluster: {
@@ -42,7 +42,7 @@ const redis = await createRedisClient({
 ### Environment Configuration
 
 ```typescript
-import { createConfigFromEnv } from '@cogitator/redis';
+import { createConfigFromEnv } from '@cogitator-ai/redis';
 
 // Reads from REDIS_URL, REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
 // REDIS_CLUSTER_NODES for cluster mode
@@ -53,7 +53,7 @@ const redis = await createRedisClient(config);
 ### Auto-Detection
 
 ```typescript
-import { detectRedisMode } from '@cogitator/redis';
+import { detectRedisMode } from '@cogitator-ai/redis';
 
 // Automatically detects standalone vs cluster
 const mode = await detectRedisMode(config);

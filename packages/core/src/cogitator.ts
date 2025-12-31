@@ -16,7 +16,7 @@ import type {
   ToolContext,
   MemoryAdapter,
   Tool,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import {
   InMemoryAdapter,
   RedisAdapter,
@@ -25,8 +25,8 @@ import {
   countMessageTokens,
   countMessagesTokens,
   type ContextBuilderDeps,
-} from '@cogitator/memory';
-import { getPrice } from '@cogitator/models';
+} from '@cogitator-ai/memory';
+import { getPrice } from '@cogitator-ai/models';
 import { type Agent } from './agent';
 import { ToolRegistry } from './registry';
 import { createLLMBackend, parseModel } from './llm/index';
@@ -129,7 +129,7 @@ export class Cogitator {
     if (this.sandboxInitialized) return;
 
     try {
-      const { SandboxManager } = await import('@cogitator/sandbox');
+      const { SandboxManager } = await import('@cogitator-ai/sandbox');
       this.sandboxManager = new SandboxManager(this.config.sandbox) as SandboxManager;
       await this.sandboxManager.initialize();
       this.sandboxInitialized = true;

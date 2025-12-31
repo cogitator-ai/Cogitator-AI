@@ -2,7 +2,7 @@
  * Tool factory and implementation
  */
 
-import type { Tool, ToolConfig, ToolSchema } from '@cogitator/types';
+import type { Tool, ToolConfig, ToolSchema } from '@cogitator-ai/types';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { ZodType } from 'zod';
 

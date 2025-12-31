@@ -10,7 +10,7 @@
  * - Prometheus-compatible output
  */
 
-import type { MetricsConfig, WorkflowMetrics, NodeMetrics } from '@cogitator/types';
+import type { MetricsConfig, WorkflowMetrics, NodeMetrics } from '@cogitator-ai/types';
 
 const DEFAULT_LATENCY_BUCKETS = [
   10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000,

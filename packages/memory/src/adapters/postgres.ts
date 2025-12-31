@@ -19,7 +19,7 @@ import type {
   SemanticSearchOptions,
   FactAdapter,
   EmbeddingAdapter,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { BaseMemoryAdapter } from './base';
 
 type Pool = {

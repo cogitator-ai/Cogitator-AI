@@ -3,7 +3,7 @@
  *
  * Uses Redis sorted sets for ordered message retrieval.
  * Supports TTL for automatic expiration.
- * Supports both standalone Redis and Redis Cluster modes via @cogitator/redis.
+ * Supports both standalone Redis and Redis Cluster modes via @cogitator-ai/redis.
  */
 
 import type {
@@ -13,8 +13,8 @@ import type {
   MemoryResult,
   RedisAdapterConfig,
   MemoryProvider,
-} from '@cogitator/types';
-import { createRedisClient, type RedisClient } from '@cogitator/redis';
+} from '@cogitator-ai/types';
+import { createRedisClient, type RedisClient } from '@cogitator-ai/redis';
 import { BaseMemoryAdapter } from './base';
 
 export class RedisAdapter extends BaseMemoryAdapter {

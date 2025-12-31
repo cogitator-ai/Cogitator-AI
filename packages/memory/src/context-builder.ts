@@ -15,7 +15,7 @@ import type {
   FactAdapter,
   EmbeddingAdapter,
   EmbeddingService,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { countMessageTokens, countTokens } from './token-counter';
 
 export interface ContextBuilderDeps {

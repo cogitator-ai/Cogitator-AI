@@ -1,5 +1,5 @@
 {
-  "name": "@cogitator/swarms",
+  "name": "@cogitator-ai/swarms",
   "version": "0.1.0",
   "description": "Multi-agent swarm coordination for Cogitator",
   "type": "module",
@@ -23,9 +23,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@cogitator/types": "workspace:*",
-    "@cogitator/core": "workspace:*",
-    "@cogitator/workflows": "workspace:*",
+    "@cogitator-ai/types": "workspace:*",
+    "@cogitator-ai/core": "workspace:*",
+    "@cogitator-ai/workflows": "workspace:*",
     "nanoid": "^5.0.4",
     "zod": "^3.22.0"
   },

@@ -4,10 +4,10 @@
  * Recreates a Swarm from serialized config and executes it.
  */
 
-import { Cogitator, Agent, tool } from '@cogitator/core';
-import { Swarm } from '@cogitator/swarms';
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { Swarm } from '@cogitator-ai/swarms';
 import { z } from 'zod';
-import type { Tool, ToolSchema, SwarmStrategy, SwarmConfig } from '@cogitator/types';
+import type { Tool, ToolSchema, SwarmStrategy, SwarmConfig } from '@cogitator-ai/types';
 import type { SwarmJobPayload, SwarmJobResult, SerializedAgent } from '../types';
 
 /**

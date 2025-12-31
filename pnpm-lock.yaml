@@ -51,13 +51,13 @@ importers:
 
   examples:
     dependencies:
-      '@cogitator/core':
+      '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../packages/core
-      '@cogitator/swarms':
+      '@cogitator-ai/swarms':
         specifier: workspace:*
         version: link:../packages/swarms
-      '@cogitator/workflows':
+      '@cogitator-ai/workflows':
         specifier: workspace:*
         version: link:../packages/workflows
       zod:
@@ -70,10 +70,10 @@ importers:
 
   packages/cli:
     dependencies:
-      '@cogitator/config':
+      '@cogitator-ai/config':
         specifier: workspace:*
         version: link:../config
-      '@cogitator/core':
+      '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
       chalk:
@@ -98,7 +98,7 @@ importers:
 
   packages/config:
     dependencies:
-      '@cogitator/types':
+      '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
       yaml:
@@ -120,16 +120,16 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.39.0
         version: 0.39.0
-      '@cogitator/memory':
+      '@cogitator-ai/memory':
         specifier: workspace:*
         version: link:../memory
-      '@cogitator/models':
+      '@cogitator-ai/models':
         specifier: workspace:*
         version: link:../models
-      '@cogitator/sandbox':
+      '@cogitator-ai/sandbox':
         specifier: workspace:*
         version: link:../sandbox
-      '@cogitator/types':
+      '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
       nanoid:
@@ -154,37 +154,37 @@ importers:
 
   packages/dashboard:
     dependencies:
-      '@cogitator/config':
+      '@cogitator-ai/config':
         specifier: workspace:*
         version: link:../config
-      '@cogitator/core':
+      '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@cogitator/mcp':
+      '@cogitator-ai/mcp':
         specifier: workspace:*
         version: link:../mcp
-      '@cogitator/memory':
+      '@cogitator-ai/memory':
         specifier: workspace:*
         version: link:../memory
-      '@cogitator/models':
+      '@cogitator-ai/models':
         specifier: workspace:*
         version: link:../models
-      '@cogitator/openai-compat':
+      '@cogitator-ai/openai-compat':
         specifier: workspace:*
         version: link:../openai-compat
-      '@cogitator/redis':
+      '@cogitator-ai/redis':
         specifier: workspace:*
         version: link:../redis
-      '@cogitator/sandbox':
+      '@cogitator-ai/sandbox':
         specifier: workspace:*
         version: link:../sandbox
-      '@cogitator/swarms':
+      '@cogitator-ai/swarms':
         specifier: workspace:*
         version: link:../swarms
-      '@cogitator/types':
+      '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
-      '@cogitator/workflows':
+      '@cogitator-ai/workflows':
         specifier: workspace:*
         version: link:../workflows
       '@monaco-editor/react':
@@ -277,7 +277,7 @@ importers:
 
   packages/mcp:
     dependencies:
-      '@cogitator/types':
+      '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
       '@modelcontextprotocol/sdk':
@@ -302,10 +302,10 @@ importers:
 
   packages/memory:
     dependencies:
-      '@cogitator/redis':
+      '@cogitator-ai/redis':
         specifier: workspace:*
         version: link:../redis
-      '@cogitator/types':
+      '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
       '@types/pg':
@@ -337,7 +337,7 @@ importers:
 
   packages/models:
     dependencies:
-      '@cogitator/types':
+      '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
       zod:
@@ -353,10 +353,10 @@ importers:
 
   packages/openai-compat:
     dependencies:
-      '@cogitator/core':
+      '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@cogitator/types':
+      '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
       '@fastify/cors':
@@ -390,7 +390,7 @@ importers:
 
   packages/redis:
     dependencies:
-      '@cogitator/types':
+      '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
     optionalDependencies:
@@ -410,7 +410,7 @@ importers:
 
   packages/sandbox:
     dependencies:
-      '@cogitator/types':
+      '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
       '@types/dockerode':
@@ -436,13 +436,13 @@ importers:
 
   packages/swarms:
     dependencies:
-      '@cogitator/core':
+      '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@cogitator/types':
+      '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
-      '@cogitator/workflows':
+      '@cogitator-ai/workflows':
         specifier: workspace:*
         version: link:../workflows
       nanoid:
@@ -471,7 +471,7 @@ importers:
 
   packages/wasm-tools:
     dependencies:
-      '@cogitator/types':
+      '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
       zod:
@@ -490,19 +490,19 @@ importers:
 
   packages/worker:
     dependencies:
-      '@cogitator/core':
+      '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@cogitator/redis':
+      '@cogitator-ai/redis':
         specifier: workspace:*
         version: link:../redis
-      '@cogitator/swarms':
+      '@cogitator-ai/swarms':
         specifier: workspace:*
         version: link:../swarms
-      '@cogitator/types':
+      '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
-      '@cogitator/workflows':
+      '@cogitator-ai/workflows':
         specifier: workspace:*
         version: link:../workflows
       bullmq:
@@ -527,10 +527,10 @@ importers:
 
   packages/workflows:
     dependencies:
-      '@cogitator/core':
+      '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@cogitator/types':
+      '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
       cron-parser:

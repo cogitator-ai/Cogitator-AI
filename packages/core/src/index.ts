@@ -1,5 +1,5 @@
 /**
- * @cogitator/core
+ * @cogitator-ai/core
  *
  * Core runtime for Cogitator AI agents
  */
@@ -47,8 +47,8 @@ export {
   ERROR_STATUS_CODES,
   isRetryableError,
   getRetryDelay,
-} from '@cogitator/types';
-export type { ErrorDetails, CogitatorErrorOptions } from '@cogitator/types';
+} from '@cogitator-ai/types';
+export type { ErrorDetails, CogitatorErrorOptions } from '@cogitator-ai/types';
 
 export type {
   AgentConfig,
@@ -71,4 +71,4 @@ export type {
   RunOptions,
   RunResult,
   Span,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';

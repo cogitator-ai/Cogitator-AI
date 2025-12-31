@@ -2,7 +2,7 @@
  * Event Publisher - integrates Cogitator callbacks with Redis pub/sub
  */
 
-import type { RunResult, Span, ToolCall, ToolResult } from '@cogitator/types';
+import type { RunResult, Span, ToolCall, ToolResult } from '@cogitator-ai/types';
 import { publish, CHANNELS } from '../redis';
 
 export interface RunStartEvent {

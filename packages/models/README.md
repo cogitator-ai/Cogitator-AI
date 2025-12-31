@@ -1,11 +1,11 @@
-# @cogitator/models
+# @cogitator-ai/models
 
 Dynamic model registry with pricing information for Cogitator. Fetches up-to-date model data from LiteLLM.
 
 ## Installation
 
 ```bash
-pnpm add @cogitator/models
+pnpm add @cogitator-ai/models
 ```
 
 ## Usage
@@ -13,7 +13,7 @@ pnpm add @cogitator/models
 ### Get Model Information
 
 ```typescript
-import { getModel, getPrice, listModels } from '@cogitator/models';
+import { getModel, getPrice, listModels } from '@cogitator-ai/models';
 
 // Get model details
 const model = await getModel('gpt-4o');
@@ -42,7 +42,7 @@ const models = await listModels({
 Model data is cached for 24 hours with automatic refresh:
 
 ```typescript
-import { ModelRegistry } from '@cogitator/models';
+import { ModelRegistry } from '@cogitator-ai/models';
 
 const registry = new ModelRegistry({
   cacheTtl: 3600 * 1000, // 1 hour

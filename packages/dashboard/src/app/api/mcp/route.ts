@@ -2,8 +2,8 @@ import { NextResponse } from 'next/server';
 import {
   MCPClient,
   MCPServer,
-} from '@cogitator/mcp';
-import type { MCPClientConfig, MCPServerConfig } from '@cogitator/mcp';
+} from '@cogitator-ai/mcp';
+import type { MCPClientConfig, MCPServerConfig } from '@cogitator-ai/mcp';
 import { getAvailableTools, getCogitator } from '@/lib/cogitator';
 import { withAuth } from '@/lib/auth/middleware';
 

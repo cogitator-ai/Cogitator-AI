@@ -12,7 +12,7 @@ import type {
   AuctionConfig,
   PipelineConfig,
   DebateConfig,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import type { SwarmCoordinator } from '../coordinator';
 
 export { BaseStrategy } from './base';

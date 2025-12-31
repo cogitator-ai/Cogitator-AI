@@ -13,7 +13,7 @@ import type {
   CompensationConfig,
   CompensationOrder,
   WorkflowState,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 /**
  * Compensation step definition

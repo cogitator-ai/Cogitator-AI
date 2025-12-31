@@ -1,11 +1,11 @@
-# @cogitator/config
+# @cogitator-ai/config
 
 Configuration loading for Cogitator. Supports YAML files, environment variables, and programmatic overrides.
 
 ## Installation
 
 ```bash
-pnpm add @cogitator/config
+pnpm add @cogitator-ai/config
 ```
 
 ## Usage
@@ -28,7 +28,7 @@ logging:
 ### Load Configuration
 
 ```typescript
-import { loadConfig } from '@cogitator/config';
+import { loadConfig } from '@cogitator-ai/config';
 
 const config = await loadConfig({
   configPath: './cogitator.yml',
@@ -59,7 +59,7 @@ COGITATOR_LOGGING_LEVEL=debug
 Configuration is validated using Zod schemas:
 
 ```typescript
-import { configSchema } from '@cogitator/config';
+import { configSchema } from '@cogitator-ai/config';
 
 const result = configSchema.safeParse(rawConfig);
 if (!result.success) {

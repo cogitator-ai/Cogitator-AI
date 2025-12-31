@@ -8,7 +8,7 @@ import type {
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 export abstract class BaseLLMBackend implements LLMBackend {
   abstract readonly provider: LLMProvider;

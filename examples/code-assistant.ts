@@ -5,7 +5,7 @@
  * and execute code with sandboxed execution.
  */
 
-import { Cogitator, Agent, tool } from '@cogitator/core';
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 import * as fs from 'fs/promises';
 import * as path from 'path';

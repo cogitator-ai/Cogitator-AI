@@ -10,8 +10,8 @@ import type {
   WorkflowEvent,
   CheckpointStore,
   NodeContext,
-} from '@cogitator/types';
-import type { Cogitator } from '@cogitator/core';
+} from '@cogitator-ai/types';
+import type { Cogitator } from '@cogitator-ai/core';
 import { nanoid } from 'nanoid';
 import { WorkflowScheduler } from './scheduler';
 import { InMemoryCheckpointStore, createCheckpointId } from './checkpoint';

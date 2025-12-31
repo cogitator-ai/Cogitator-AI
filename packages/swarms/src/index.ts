@@ -1,5 +1,5 @@
 /**
- * @cogitator/swarms - Multi-agent swarm coordination
+ * @cogitator-ai/swarms - Multi-agent swarm coordination
  */
 
 export { Swarm, SwarmBuilder, swarm } from './swarm';
@@ -80,4 +80,4 @@ export type {
   SwarmCoordinatorInterface,
   SwarmResourceConfig,
   SwarmErrorConfig,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';

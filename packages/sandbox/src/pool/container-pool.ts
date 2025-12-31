@@ -2,7 +2,7 @@
  * Container pool for reusing Docker containers
  */
 
-import type { SandboxMount } from '@cogitator/types';
+import type { SandboxMount } from '@cogitator-ai/types';
 import type { Docker, DockerContainer } from '../docker-types';
 
 interface PooledContainer {

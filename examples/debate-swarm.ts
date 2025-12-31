@@ -7,8 +7,8 @@
  * Run with: npx tsx examples/debate-swarm.ts
  */
 
-import { Cogitator, Agent } from '@cogitator/core';
-import { Swarm, DebateStrategy } from '@cogitator/swarms';
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { Swarm, DebateStrategy } from '@cogitator-ai/swarms';
 
 const MODEL = process.env.MODEL || 'llama3.2:3b';
 

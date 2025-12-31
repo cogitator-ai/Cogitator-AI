@@ -1,5 +1,5 @@
 {
-  "name": "@cogitator/mcp",
+  "name": "@cogitator-ai/mcp",
   "version": "0.1.0",
   "description": "MCP (Model Context Protocol) integration for Cogitator",
   "type": "module",
@@ -23,7 +23,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@cogitator/types": "workspace:*",
+    "@cogitator-ai/types": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "zod": "^3.22.4",
     "zod-to-json-schema": "^3.24.5"
@@ -34,7 +34,7 @@
     "vitest": "^1.6.0"
   },
   "peerDependencies": {
-    "@cogitator/types": "workspace:*"
+    "@cogitator-ai/types": "workspace:*"
   },
   "engines": {
     "node": ">=20.0.0"

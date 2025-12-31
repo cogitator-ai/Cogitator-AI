@@ -7,7 +7,7 @@ import type {
   SwarmEventType,
   SwarmEvent,
   SwarmEventHandler,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 export class SwarmEventEmitterImpl implements SwarmEventEmitter {
   private handlers = new Map<SwarmEventType | '*', Set<SwarmEventHandler>>();

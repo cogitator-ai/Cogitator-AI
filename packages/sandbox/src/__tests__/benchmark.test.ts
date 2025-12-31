@@ -11,7 +11,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { WasmSandboxExecutor } from '../executors/wasm';
 import { NativeSandboxExecutor } from '../executors/native';
 import { DockerSandboxExecutor } from '../executors/docker';
-import type { SandboxConfig, SandboxExecutionRequest } from '@cogitator/types';
+import type { SandboxConfig, SandboxExecutionRequest } from '@cogitator-ai/types';
 
 const ITERATIONS = 10;
 const WARMUP_ITERATIONS = 2;

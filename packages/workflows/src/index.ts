@@ -1,5 +1,5 @@
 /**
- * @cogitator/workflows
+ * @cogitator-ai/workflows
  *
  * DAG-based workflow engine for Cogitator agents
  */
@@ -376,4 +376,4 @@ export type {
   TriggerContext,
   WorkflowTrigger,
   TriggerManager,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';

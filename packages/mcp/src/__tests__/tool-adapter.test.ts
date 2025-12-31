@@ -12,7 +12,7 @@ import {
   resultToMCPContent,
   mcpContentToResult,
 } from '../adapter/tool-adapter';
-import type { Tool, ToolContext } from '@cogitator/types';
+import type { Tool, ToolContext } from '@cogitator-ai/types';
 import type { MCPClient } from '../client/mcp-client';
 
 describe('zodToJsonSchema', () => {

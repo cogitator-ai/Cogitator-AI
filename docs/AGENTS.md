@@ -48,7 +48,7 @@ interface Agent {
 ### Basic Agent
 
 ```typescript
-import { Agent } from '@cogitator/core';
+import { Agent } from '@cogitator-ai/core';
 
 const assistant = new Agent({
   name: 'assistant',
@@ -61,7 +61,7 @@ const assistant = new Agent({
 ### Agent with Tools
 
 ```typescript
-import { Agent, tool } from '@cogitator/core';
+import { Agent, tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
 const searchWeb = tool({
@@ -353,7 +353,7 @@ import {
   webFetch,
   calculator,
   codeInterpreter,
-} from '@cogitator/tools';
+} from '@cogitator-ai/tools';
 
 const agent = new Agent({
   tools: [fileRead, fileWrite, shellExecute],
@@ -363,7 +363,7 @@ const agent = new Agent({
 ### Custom Tools
 
 ```typescript
-import { tool } from '@cogitator/core';
+import { tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
 const sendEmail = tool({
@@ -386,7 +386,7 @@ const sendEmail = tool({
 ### MCP Tool Servers
 
 ```typescript
-import { mcpServer } from '@cogitator/tools';
+import { mcpServer } from '@cogitator-ai/tools';
 
 // Connect to MCP servers
 const filesystemTools = await mcpServer('npx -y @anthropic/mcp-server-filesystem');
@@ -557,7 +557,7 @@ timeout: 180000
 ### Load from YAML
 
 ```typescript
-import { loadAgent } from '@cogitator/core';
+import { loadAgent } from '@cogitator-ai/core';
 
 const researcher = await loadAgent('./agents/researcher.yaml');
 ```
@@ -569,7 +569,7 @@ const researcher = await loadAgent('./agents/researcher.yaml');
 ### Unit Testing
 
 ```typescript
-import { Agent, MockLLM, MockTool } from '@cogitator/testing';
+import { Agent, MockLLM, MockTool } from '@cogitator-ai/testing';
 
 describe('Researcher Agent', () => {
   it('should search and summarize results', async () => {
@@ -603,7 +603,7 @@ describe('Researcher Agent', () => {
 ### Integration Testing
 
 ```typescript
-import { Cogitator } from '@cogitator/core';
+import { Cogitator } from '@cogitator-ai/core';
 
 describe('Agent Integration', () => {
   let cog: Cogitator;
@@ -633,7 +633,7 @@ describe('Agent Integration', () => {
 ### Evaluation
 
 ```typescript
-import { evaluate, EvalDataset } from '@cogitator/eval';
+import { evaluate, EvalDataset } from '@cogitator-ai/eval';
 
 const dataset: EvalDataset = [
   {

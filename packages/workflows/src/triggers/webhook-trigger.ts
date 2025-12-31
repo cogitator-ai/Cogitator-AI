@@ -12,7 +12,7 @@ import type {
   WebhookAuthConfig,
   TriggerContext,
   WorkflowTrigger,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { type RateLimiter, createRateLimiter } from './rate-limiter';
 
 /**

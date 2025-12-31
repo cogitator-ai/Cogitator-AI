@@ -2,7 +2,7 @@
  * Worker types for distributed job processing
  */
 
-import type { ToolSchema } from '@cogitator/types';
+import type { ToolSchema } from '@cogitator-ai/types';
 
 /**
  * Serialized agent configuration for queue transport

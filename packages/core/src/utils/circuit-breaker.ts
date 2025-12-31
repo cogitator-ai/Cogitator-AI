@@ -8,7 +8,7 @@
  * - HALF_OPEN: Testing if service recovered
  */
 
-import { CogitatorError, ErrorCode, isRetryableError } from '@cogitator/types';
+import { CogitatorError, ErrorCode, isRetryableError } from '@cogitator-ai/types';
 
 export type CircuitState = 'closed' | 'open' | 'half-open';
 

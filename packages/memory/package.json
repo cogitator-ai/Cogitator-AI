@@ -1,5 +1,5 @@
 {
-  "name": "@cogitator/memory",
+  "name": "@cogitator-ai/memory",
   "version": "0.1.0",
   "description": "Memory adapters for Cogitator AI agents",
   "type": "module",
@@ -23,8 +23,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@cogitator/redis": "workspace:*",
-    "@cogitator/types": "workspace:*",
+    "@cogitator-ai/redis": "workspace:*",
+    "@cogitator-ai/types": "workspace:*",
     "@types/pg": "^8.10.9",
     "nanoid": "^5.0.4",
     "zod": "^3.22.4"

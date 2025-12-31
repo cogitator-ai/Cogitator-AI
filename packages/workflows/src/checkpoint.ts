@@ -2,7 +2,7 @@
  * Checkpoint stores for workflow resume support
  */
 
-import type { WorkflowCheckpoint, CheckpointStore } from '@cogitator/types';
+import type { WorkflowCheckpoint, CheckpointStore } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';

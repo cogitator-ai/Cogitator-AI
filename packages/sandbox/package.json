@@ -1,5 +1,5 @@
 {
-  "name": "@cogitator/sandbox",
+  "name": "@cogitator-ai/sandbox",
   "version": "0.1.0",
   "description": "Sandbox execution for Cogitator agents (Docker and WASM)",
   "type": "module",
@@ -23,7 +23,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@cogitator/types": "workspace:*",
+    "@cogitator-ai/types": "workspace:*",
     "@types/dockerode": "^3.3.31",
     "nanoid": "^5.0.4"
   },

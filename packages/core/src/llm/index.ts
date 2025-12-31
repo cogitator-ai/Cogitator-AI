@@ -8,7 +8,7 @@ export { OpenAIBackend } from './openai';
 export { AnthropicBackend } from './anthropic';
 export { GoogleBackend } from './google';
 
-import type { LLMBackend, LLMProvider, CogitatorConfig } from '@cogitator/types';
+import type { LLMBackend, LLMProvider, CogitatorConfig } from '@cogitator-ai/types';
 import { OllamaBackend } from './ollama';
 import { OpenAIBackend } from './openai';
 import { AnthropicBackend } from './anthropic';

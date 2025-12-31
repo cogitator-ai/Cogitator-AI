@@ -13,12 +13,12 @@ import {
   tool,
   ToolRegistry,
   builtinTools,
-} from '@cogitator/core';
+} from '@cogitator-ai/core';
 import type {
   CogitatorConfig,
   AgentConfig,
   LLMProvider,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 let cogitatorInstance: Cogitator | null = null;
 let isInitializing = false;

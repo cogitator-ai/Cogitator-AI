@@ -1,5 +1,5 @@
 /**
- * @cogitator/workflows - Saga module
+ * @cogitator-ai/workflows - Saga module
  *
  * Implements the Saga pattern for workflow resilience:
  * - Retry with exponential backoff and jitter

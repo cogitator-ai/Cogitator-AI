@@ -1,5 +1,5 @@
 /**
- * @cogitator/types
+ * @cogitator-ai/types
  *
  * Shared TypeScript types for Cogitator
  */

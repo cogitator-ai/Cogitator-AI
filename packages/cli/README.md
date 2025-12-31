@@ -1,11 +1,11 @@
-# @cogitator/cli
+# @cogitator-ai/cli
 
 Command-line interface for the Cogitator AI agent runtime.
 
 ## Installation
 
 ```bash
-pnpm add -g @cogitator/cli
+pnpm add -g @cogitator-ai/cli
 ```
 
 ## Commands

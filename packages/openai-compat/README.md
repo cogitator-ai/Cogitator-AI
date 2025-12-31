@@ -1,11 +1,11 @@
-# @cogitator/openai-compat
+# @cogitator-ai/openai-compat
 
 OpenAI Assistants API compatibility layer for Cogitator. Use OpenAI SDK clients with Cogitator backend.
 
 ## Installation
 
 ```bash
-pnpm add @cogitator/openai-compat
+pnpm add @cogitator-ai/openai-compat
 ```
 
 ## Usage
@@ -13,8 +13,8 @@ pnpm add @cogitator/openai-compat
 ### Start the Server
 
 ```typescript
-import { createOpenAIServer } from '@cogitator/openai-compat';
-import { Cogitator } from '@cogitator/core';
+import { createOpenAIServer } from '@cogitator-ai/openai-compat';
+import { Cogitator } from '@cogitator-ai/core';
 
 const cogitator = new Cogitator();
 const server = createOpenAIServer(cogitator, {

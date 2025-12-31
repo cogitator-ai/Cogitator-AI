@@ -9,7 +9,7 @@
  * - Multiple storage backends
  */
 
-import type { IdempotencyStore, IdempotencyRecord } from '@cogitator/types';
+import type { IdempotencyStore, IdempotencyRecord } from '@cogitator-ai/types';
 import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import { join } from 'path';

@@ -1,5 +1,5 @@
 /**
- * @cogitator/openai-compat - OpenAI Assistants API Compatibility
+ * @cogitator-ai/openai-compat - OpenAI Assistants API Compatibility
  *
  * This package provides:
  * - OpenAI SDK adapter: Use OpenAI SDK to interact with Cogitator

@@ -1,11 +1,11 @@
-# @cogitator/worker
+# @cogitator-ai/worker
 
 Distributed job queue for Cogitator agent execution. Built on BullMQ for reliable, scalable background processing.
 
 ## Installation
 
 ```bash
-pnpm add @cogitator/worker ioredis
+pnpm add @cogitator-ai/worker ioredis
 ```
 
 ## Usage
@@ -15,7 +15,7 @@ pnpm add @cogitator/worker ioredis
 Add jobs for background execution:
 
 ```typescript
-import { JobQueue } from '@cogitator/worker';
+import { JobQueue } from '@cogitator-ai/worker';
 
 const queue = new JobQueue({
   redis: { url: 'redis://localhost:6379' },
@@ -46,8 +46,8 @@ await queue.addSwarmJob({
 Process jobs with configurable concurrency:
 
 ```typescript
-import { WorkerPool } from '@cogitator/worker';
-import { Cogitator } from '@cogitator/core';
+import { WorkerPool } from '@cogitator-ai/worker';
+import { Cogitator } from '@cogitator-ai/core';
 
 const cogitator = new Cogitator();
 const pool = new WorkerPool(cogitator, {
@@ -63,7 +63,7 @@ await pool.start();
 Prometheus-compatible metrics for HPA:
 
 ```typescript
-import { MetricsCollector, formatPrometheusMetrics } from '@cogitator/worker';
+import { MetricsCollector, formatPrometheusMetrics } from '@cogitator-ai/worker';
 
 const metrics = new MetricsCollector(queue);
 

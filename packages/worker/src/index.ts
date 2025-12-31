@@ -1,5 +1,5 @@
 /**
- * @cogitator/worker - Distributed job queue for agent execution
+ * @cogitator-ai/worker - Distributed job queue for agent execution
  *
  * Provides BullMQ-based job processing with:
  * - Redis cluster support

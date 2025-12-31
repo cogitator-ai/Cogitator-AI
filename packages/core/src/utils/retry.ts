@@ -7,7 +7,7 @@ import {
   ErrorCode,
   isRetryableError,
   getRetryDelay,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 export interface RetryOptions {
   /** Maximum number of retry attempts (default: 3) */

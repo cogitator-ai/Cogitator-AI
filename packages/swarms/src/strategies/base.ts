@@ -8,7 +8,7 @@ import type {
   IStrategy,
   StrategyResult,
   RunResult,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 
 export abstract class BaseStrategy implements IStrategy {
   protected coordinator: SwarmCoordinatorInterface;

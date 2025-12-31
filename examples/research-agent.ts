@@ -5,7 +5,7 @@
  * and synthesize information from multiple sources.
  */
 
-import { Cogitator, Agent, tool } from '@cogitator/core';
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
 const cog = new Cogitator({

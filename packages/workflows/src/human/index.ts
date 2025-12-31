@@ -1,5 +1,5 @@
 /**
- * @cogitator/workflows - Human-in-the-Loop module
+ * @cogitator-ai/workflows - Human-in-the-Loop module
  *
  * Enables human approvals in workflow execution.
  *

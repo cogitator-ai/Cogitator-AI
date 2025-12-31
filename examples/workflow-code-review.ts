@@ -5,7 +5,7 @@
  * with human-in-the-loop approval.
  */
 
-import { Cogitator, Agent, Workflow, step, tool } from '@cogitator/core';
+import { Cogitator, Agent, Workflow, step, tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
 const cog = new Cogitator({

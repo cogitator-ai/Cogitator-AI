@@ -12,7 +12,7 @@ import type {
   ApprovalStore,
   ApprovalRequest,
   ApprovalResponse,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 

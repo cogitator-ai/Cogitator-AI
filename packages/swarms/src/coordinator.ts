@@ -3,7 +3,7 @@
  */
 
 import { nanoid } from 'nanoid';
-import type { Cogitator } from '@cogitator/core';
+import type { Cogitator } from '@cogitator-ai/core';
 import type {
   Agent,
   SwarmConfig,
@@ -15,7 +15,7 @@ import type {
   Blackboard,
   SwarmEventEmitter,
   SwarmCoordinatorInterface,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import {
   SwarmEventEmitterImpl,
   InMemoryMessageBus,

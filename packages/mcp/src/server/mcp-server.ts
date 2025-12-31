@@ -7,7 +7,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import type { Tool, ToolContext } from '@cogitator/types';
+import type { Tool, ToolContext } from '@cogitator-ai/types';
 import type { MCPServerConfig } from '../types';
 import { resultToMCPContent, zodToJsonSchema } from '../adapter/tool-adapter';
 

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { WorkflowExecutor } from '../executor';
 import { WorkflowBuilder } from '../builder';
 import { InMemoryCheckpointStore } from '../checkpoint';
-import type { Cogitator } from '@cogitator/core';
+import type { Cogitator } from '@cogitator-ai/core';
 
 interface TestState {
   value: number;

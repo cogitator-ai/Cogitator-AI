@@ -1,11 +1,11 @@
-# @cogitator/workflows
+# @cogitator-ai/workflows
 
 DAG-based workflow engine for Cogitator agents. Build complex multi-step workflows with branching, loops, and checkpoints.
 
 ## Installation
 
 ```bash
-pnpm add @cogitator/workflows
+pnpm add @cogitator-ai/workflows
 ```
 
 ## Usage
@@ -13,7 +13,7 @@ pnpm add @cogitator/workflows
 ### Basic Workflow
 
 ```typescript
-import { WorkflowBuilder, WorkflowExecutor } from '@cogitator/workflows';
+import { WorkflowBuilder, WorkflowExecutor } from '@cogitator-ai/workflows';
 
 const workflow = new WorkflowBuilder<{ count: number }>('counter')
   .initialState({ count: 0 })
@@ -62,7 +62,7 @@ const workflow = new WorkflowBuilder('retry')
 Resume workflows from saved state:
 
 ```typescript
-import { FileCheckpointStore } from '@cogitator/workflows';
+import { FileCheckpointStore } from '@cogitator-ai/workflows';
 
 const store = new FileCheckpointStore('./checkpoints');
 
@@ -79,7 +79,7 @@ const result = await executor.resume(checkpointId, store);
 ### Pre-built Nodes
 
 ```typescript
-import { agentNode, toolNode, functionNode } from '@cogitator/workflows';
+import { agentNode, toolNode, functionNode } from '@cogitator-ai/workflows';
 
 const workflow = new WorkflowBuilder('pipeline')
   .addNode('analyze', agentNode(analyzerAgent))

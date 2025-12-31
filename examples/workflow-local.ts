@@ -10,14 +10,14 @@
  * Run with: npx tsx examples/workflow-local.ts
  */
 
-import { Cogitator, Agent, tool } from '@cogitator/core';
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
 import {
   WorkflowBuilder,
   WorkflowExecutor,
   agentNode,
   functionNode,
   InMemoryCheckpointStore,
-} from '@cogitator/workflows';
+} from '@cogitator-ai/workflows';
 import { z } from 'zod';
 
 const MODEL = process.env.MODEL || 'llama3.2:3b';

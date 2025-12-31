@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { InMemoryAdapter } from '../adapters/memory';
-import type { Message } from '@cogitator/types';
+import type { Message } from '@cogitator-ai/types';
 
 describe('InMemoryAdapter', () => {
   let adapter: InMemoryAdapter;

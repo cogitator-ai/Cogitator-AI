@@ -1,17 +1,17 @@
-# @cogitator/core
+# @cogitator-ai/core
 
 Core runtime for Cogitator AI agents. Build and run LLM-powered agents with tool calling, streaming, and multi-provider support.
 
 ## Installation
 
 ```bash
-pnpm add @cogitator/core
+pnpm add @cogitator-ai/core
 ```
 
 ## Quick Start
 
 ```typescript
-import { Cogitator, Agent, tool } from '@cogitator/core';
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
 // Create a tool

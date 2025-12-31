@@ -3,8 +3,8 @@
  */
 
 import { z } from 'zod';
-import { tool } from '@cogitator/core';
-import type { MessageBus } from '@cogitator/types';
+import { tool } from '@cogitator-ai/core';
+import type { MessageBus } from '@cogitator-ai/types';
 
 /**
  * Create messaging tools bound to a message bus

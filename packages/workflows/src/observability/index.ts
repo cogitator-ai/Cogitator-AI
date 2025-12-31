@@ -1,5 +1,5 @@
 /**
- * @cogitator/workflows - Observability module
+ * @cogitator-ai/workflows - Observability module
  *
  * Provides distributed tracing and metrics collection for workflow execution.
  *

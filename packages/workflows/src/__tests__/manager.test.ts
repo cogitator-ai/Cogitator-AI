@@ -9,8 +9,8 @@ import {
   createWorkflowManager,
 } from '../manager/index';
 import { WorkflowBuilder } from '../builder';
-import type { Cogitator } from '@cogitator/core';
-import type { WorkflowRun } from '@cogitator/types';
+import type { Cogitator } from '@cogitator-ai/core';
+import type { WorkflowRun } from '@cogitator-ai/types';
 
 interface TestState {
   value: number;

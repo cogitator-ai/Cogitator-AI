@@ -9,7 +9,7 @@ import type {
   MemoryResult,
   InMemoryAdapterConfig,
   MemoryProvider,
-} from '@cogitator/types';
+} from '@cogitator-ai/types';
 import { BaseMemoryAdapter } from './base';
 
 export class InMemoryAdapter extends BaseMemoryAdapter {
