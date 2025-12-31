@@ -45,6 +45,7 @@ export interface CronTriggerResult {
  */
 export class CronTriggerExecutor {
   private triggers = new Map<string, CronTriggerState>();
+  private timeouts = new Map<string, ReturnType<typeof setTimeout>>();
   private intervals = new Map<string, ReturnType<typeof setInterval>>();
   private onFire?: (trigger: WorkflowTrigger, context: TriggerContext) => Promise<string>;
 
@@ -96,6 +97,11 @@ export class CronTriggerExecutor {
    * Unregister a trigger
    */
   unregister(triggerId: string): void {
+    const timeout = this.timeouts.get(triggerId);
+    if (timeout) {
+      clearTimeout(timeout);
+      this.timeouts.delete(triggerId);
+    }
     const interval = this.intervals.get(triggerId);
     if (interval) {
       clearInterval(interval);
@@ -127,6 +133,11 @@ export class CronTriggerExecutor {
     state.enabled = false;
     state.config.enabled = false;
 
+    const timeout = this.timeouts.get(triggerId);
+    if (timeout) {
+      clearTimeout(timeout);
+      this.timeouts.delete(triggerId);
+    }
     const interval = this.intervals.get(triggerId);
     if (interval) {
       clearInterval(interval);
@@ -281,6 +292,10 @@ export class CronTriggerExecutor {
    * Dispose all triggers
    */
   dispose(): void {
+    for (const timeout of this.timeouts.values()) {
+      clearTimeout(timeout);
+    }
+    this.timeouts.clear();
     for (const interval of this.intervals.values()) {
       clearInterval(interval);
     }
@@ -292,6 +307,11 @@ export class CronTriggerExecutor {
     const state = this.triggers.get(triggerId);
     if (!state?.enabled) return;
 
+    const existingTimeout = this.timeouts.get(triggerId);
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
+      this.timeouts.delete(triggerId);
+    }
     const existingInterval = this.intervals.get(triggerId);
     if (existingInterval) {
       clearInterval(existingInterval);
@@ -305,6 +325,7 @@ export class CronTriggerExecutor {
     const delay = Math.max(0, nextRun - now);
 
     const timeoutId = setTimeout(async () => {
+      this.timeouts.delete(triggerId);
       if (!this.triggers.has(triggerId)) return;
 
       await this.fire(triggerId);
@@ -326,7 +347,7 @@ export class CronTriggerExecutor {
       this.intervals.set(triggerId, interval);
     }, delay);
 
-    this.intervals.set(triggerId, timeoutId as unknown as ReturnType<typeof setInterval>);
+    this.timeouts.set(triggerId, timeoutId);
   }
 
   private calculateNextRun(config: CronTriggerConfig): number | undefined {

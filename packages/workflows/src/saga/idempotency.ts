@@ -296,7 +296,8 @@ export async function idempotent<T>(
     await store.store(key, result);
     return result;
   } catch (error) {
-    await store.store(key, undefined, error as Error);
+    const err = error instanceof Error ? error : new Error(String(error));
+    await store.store(key, undefined, err);
     throw error;
   }
 }

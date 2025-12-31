@@ -155,15 +155,17 @@ export class TimerManager {
     }
 
     this.pollTimer = setInterval(() => {
-      this.poll().catch((error) => {
-        this.config.onError?.(error as Error, {} as TimerEntry);
+      this.poll().catch((error: unknown) => {
+        const err = error instanceof Error ? error : new Error(String(error));
+        this.config.onError?.(err, {} as TimerEntry);
       });
     }, this.config.pollInterval);
 
     if (this.config.enableCleanup) {
       this.cleanupTimer = setInterval(() => {
-        this.cleanup().catch((error) => {
-          this.config.onError?.(error as Error, {} as TimerEntry);
+        this.cleanup().catch((error: unknown) => {
+          const err = error instanceof Error ? error : new Error(String(error));
+          this.config.onError?.(err, {} as TimerEntry);
         });
       }, this.config.cleanupInterval);
     }

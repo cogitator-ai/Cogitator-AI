@@ -189,7 +189,8 @@ export class CircuitBreaker {
       this.recordSuccess(nodeId, Date.now() - startTime);
       return result;
     } catch (error) {
-      this.recordFailure(nodeId, error as Error);
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.recordFailure(nodeId, err);
       throw error;
     }
   }
