@@ -67,6 +67,7 @@ Cogitator is a **self-hosted, production-grade runtime** for orchestrating LLM s
 - **Full Observability** — OpenTelemetry traces, cost tracking, token analytics
 - **Self-Reflection** — Agents learn from actions, accumulate insights, improve over time
 - **Tree of Thoughts** — Branching reasoning with beam search, evaluation, backtracking
+- **Agent Learning** — DSPy-style optimization with trace capture, metrics, and instruction tuning
 
 ---
 
@@ -473,6 +474,48 @@ result.bestPath.forEach((node, i) => {
 
 ToT shows **4-5x improvement** on complex reasoning tasks compared to linear agent loops.
 
+### 📈 Agent Learning (DSPy-Style)
+
+Agents automatically improve through execution trace analysis and instruction optimization:
+
+```typescript
+import { AgentOptimizer } from '@cogitator-ai/core';
+
+const optimizer = new AgentOptimizer({
+  llm: cog.getDefaultBackend(),
+  model: 'openai/gpt-4o',
+});
+
+// Capture traces from runs
+const result = await cog.run(agent, { input: 'What is the capital of France?' });
+const trace = await optimizer.captureTrace(result, 'What is the capital of France?', {
+  expected: 'Paris',
+});
+
+console.log('Score:', trace.score); // 0.95
+
+// Bootstrap demos from high-quality traces (BootstrapFewShot)
+await optimizer.bootstrapDemos(agent.id);
+
+// DSPy-style compile - optimize instructions based on training data
+const trainset = [
+  { input: 'What is 2+2?', expected: '4' },
+  { input: 'Capital of Japan?', expected: 'Tokyo' },
+];
+const compileResult = await optimizer.compile(agent, trainset);
+
+console.log('Improvement:', compileResult.improvement);
+console.log('New instructions:', compileResult.instructionsAfter);
+// Instructions are automatically refined based on failure analysis
+```
+
+**Features:**
+- **Trace Capture** - Store execution traces as training data
+- **Metric Evaluation** - Built-in (success, accuracy) + LLM-based (completeness, coherence)
+- **BootstrapFewShot** - Auto-select best traces as few-shot demos
+- **MIPROv2-style Optimization** - Failure analysis → candidate generation → evaluation → refinement
+- **DSPy-compatible compile()** - One-line optimization for agents
+
 ### 🔒 Sandboxed Execution
 
 ```typescript
@@ -568,6 +611,7 @@ const agent = new Agent({
 | MCP compatibility   | ✅        | ❌          | ❌                | ❌          |
 | Self-reflection     | ✅        | ❌          | ❌                | ❌          |
 | Tree of Thoughts    | ✅        | ❌          | ❌                | ❌          |
+| Agent Learning      | ✅        | ❌          | ❌                | ❌          |
 | Dependencies        | ~20       | 150+        | N/A               | ~30         |
 
 ---
