@@ -84,6 +84,19 @@ export type {
 } from './constitutional/index';
 
 export {
+  CostAwareRouter,
+  TaskAnalyzer,
+  ModelSelector,
+  CostTracker,
+  BudgetEnforcer,
+} from './cost-routing/index';
+export type {
+  CostAwareRouterOptions,
+  CostFilter,
+  BudgetCheckResult,
+} from './cost-routing/index';
+
+export {
   BaseLLMBackend,
   OllamaBackend,
   OpenAIBackend,
@@ -211,3 +224,17 @@ export type {
   ToolGuardResult,
 } from '@cogitator-ai/types';
 export { DEFAULT_GUARDRAIL_CONFIG } from '@cogitator-ai/types';
+
+export type {
+  CostRoutingConfig,
+  BudgetConfig,
+  CostRecord,
+  CostSummary,
+  ModelRecommendation,
+  TaskRequirements,
+  TaskComplexity,
+  ReasoningLevel,
+  SpeedPreference,
+  CostSensitivity,
+} from '@cogitator-ai/types';
+export { DEFAULT_COST_ROUTING_CONFIG } from '@cogitator-ai/types';

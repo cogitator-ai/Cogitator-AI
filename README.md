@@ -65,6 +65,7 @@ Cogitator is a **self-hosted, production-grade runtime** for orchestrating LLM s
 - **Workflow Engine** — DAG-based orchestration with retry, compensation, human-in-the-loop
 - **Sandboxed Execution** — Code runs in Docker/WASM, not on your host
 - **Full Observability** — OpenTelemetry traces, cost tracking, token analytics
+- **Cost-Aware Routing** — Auto-select cheap models for simple tasks, expensive for complex
 - **Self-Reflection** — Agents learn from actions, accumulate insights, improve over time
 - **Tree of Thoughts** — Branching reasoning with beam search, evaluation, backtracking
 - **Agent Learning** — DSPy-style optimization with trace capture, metrics, and instruction tuning
@@ -643,6 +644,69 @@ console.log('Violations:', guardrails?.getViolationLog());
 - **Custom Constitution** - Extend or replace default principles
 - **Flexible Mode** - Strict (block) or permissive (warn with harm scores)
 
+### 💰 Cost-Aware Routing
+
+Automatically select cheaper models for simple tasks, expensive ones for complex tasks — with per-run cost tracking and budget enforcement:
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  costRouting: {
+    enabled: true,
+    autoSelectModel: true,    // Auto-pick optimal model based on task
+    preferLocal: true,        // Prefer Ollama when quality is similar
+    trackCosts: true,         // Track per-run costs
+    budget: {
+      maxCostPerRun: 0.10,    // $0.10 per run
+      maxCostPerHour: 5.00,   // $5 per hour
+      maxCostPerDay: 50.00,   // $50 per day
+      warningThreshold: 0.8,  // Warn at 80% of budget
+      onBudgetWarning: (current, limit) => {
+        console.warn(`Budget warning: $${current.toFixed(2)} / $${limit}`);
+      },
+    },
+  },
+});
+
+const agent = new Agent({
+  name: 'assistant',
+  model: 'openai/gpt-4o',  // Will be overridden if autoSelectModel=true
+  instructions: 'You are helpful.',
+});
+
+// Simple task → routes to gpt-4o-mini or local model
+const result1 = await cog.run(agent, {
+  input: 'What is 2+2?'
+});
+console.log(result1.modelUsed);  // 'gpt-4o-mini'
+console.log(result1.usage.cost); // 0.0001
+
+// Complex task → routes to gpt-4o
+const result2 = await cog.run(agent, {
+  input: 'Analyze this codebase and suggest architectural improvements...'
+});
+console.log(result2.modelUsed);  // 'gpt-4o'
+console.log(result2.usage.cost); // 0.05
+
+// Get cost summary
+const summary = cog.getCostSummary();
+console.log(`Total: $${summary.totalCost.toFixed(4)}`);
+console.log(`By model:`, summary.byModel);
+// { 'gpt-4o-mini': 0.0001, 'gpt-4o': 0.05 }
+```
+
+**Task Analysis:**
+- Detects task complexity (simple/moderate/complex)
+- Identifies vision, tool, and long-context needs
+- Considers speed and cost sensitivity preferences
+- Recognizes domains (code, math, creative, analysis, etc.)
+
+**Model Selection:**
+- Scores models against requirements (0-100)
+- Prefers local models (Ollama) when quality is sufficient
+- Falls back to cloud models for advanced reasoning
+
 ### 🔒 Sandboxed Execution
 
 ```typescript
@@ -740,6 +804,7 @@ const agent = new Agent({
 | Tree of Thoughts    | ✅        | ❌          | ❌                | ❌          |
 | Agent Learning      | ✅        | ❌          | ❌                | ❌          |
 | Time-Travel Debug   | ✅        | ❌          | ❌                | ❌          |
+| Cost-Aware Routing  | ✅        | ❌          | ❌                | ❌          |
 | Dependencies        | ~20       | 150+        | N/A               | ~30         |
 
 ---

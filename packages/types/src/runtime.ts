@@ -8,6 +8,7 @@ import type { MemoryConfig } from './memory';
 import type { SandboxManagerConfig } from './sandbox';
 import type { ReflectionConfig, Reflection, ReflectionSummary } from './reflection';
 import type { GuardrailConfig } from './constitutional';
+import type { CostRoutingConfig } from './cost-routing';
 
 export interface CogitatorConfig {
   llm?: {
@@ -33,6 +34,8 @@ export interface CogitatorConfig {
   reflection?: ReflectionConfig;
   /** Constitutional AI guardrails configuration */
   guardrails?: GuardrailConfig;
+  /** Cost-aware model routing configuration */
+  costRouting?: CostRoutingConfig;
 }
 
 export interface RunOptions {
@@ -70,6 +73,8 @@ export interface RunResult {
   readonly runId: string;
   readonly agentId: string;
   readonly threadId: string;
+  /** Actual model used (may differ from agent.model if cost routing is enabled) */
+  readonly modelUsed?: string;
   readonly usage: {
     readonly inputTokens: number;
     readonly outputTokens: number;

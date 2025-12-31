@@ -21,6 +21,7 @@ import type {
   AgentContext,
   InsightStore,
   Constitution,
+  CostSummary,
 } from '@cogitator-ai/types';
 import {
   InMemoryAdapter,
@@ -38,6 +39,7 @@ import { createLLMBackend, parseModel } from './llm/index';
 import { getLogger } from './logger';
 import { ReflectionEngine, InMemoryInsightStore } from './reflection/index';
 import { ConstitutionalAI } from './constitutional/index';
+import { CostAwareRouter } from './cost-routing/index';
 
 type SandboxManager = {
   initialize(): Promise<void>;
@@ -83,6 +85,9 @@ export class Cogitator {
 
   private constitutionalAI?: ConstitutionalAI;
   private guardrailsInitialized = false;
+
+  private costRouter?: CostAwareRouter;
+  private costRoutingInitialized = false;
 
   constructor(config: CogitatorConfig = {}) {
     this.config = config;
@@ -205,6 +210,16 @@ export class Cogitator {
     });
 
     this.guardrailsInitialized = true;
+  }
+
+  /**
+   * Initialize cost-aware routing (lazy, on first run with cost routing enabled)
+   */
+  private initializeCostRouting(): void {
+    if (this.costRoutingInitialized || !this.config.costRouting?.enabled) return;
+
+    this.costRouter = new CostAwareRouter({ config: this.config.costRouting });
+    this.costRoutingInitialized = true;
   }
 
   /**
@@ -346,13 +361,29 @@ export class Cogitator {
         this.initializeGuardrails(agent);
       }
 
+      if (this.config.costRouting?.enabled && !this.costRoutingInitialized) {
+        this.initializeCostRouting();
+      }
+
       const registry = new ToolRegistry();
       if (agent.tools && agent.tools.length > 0) {
         registry.registerMany(agent.tools);
       }
 
-      const backend = this.getBackend(agent.model);
-      const { model } = parseModel(agent.model);
+      let effectiveModel = agent.model;
+
+      if (this.costRouter && this.config.costRouting?.autoSelectModel) {
+        const recommendation = await this.costRouter.recommendModel(options.input);
+        effectiveModel = `${recommendation.provider}/${recommendation.modelId}`;
+
+        const budgetCheck = this.costRouter.checkBudget(recommendation.estimatedCost);
+        if (!budgetCheck.allowed) {
+          throw new Error(`Budget exceeded: ${budgetCheck.reason}`);
+        }
+      }
+
+      const backend = this.getBackend(effectiveModel);
+      const { model } = parseModel(effectiveModel);
 
       const messages = await this.buildInitialMessages(agent, options, threadId);
 
@@ -635,16 +666,31 @@ export class Cogitator {
       );
       spans.unshift(rootSpan);
 
+      const runCost = this.calculateCost(effectiveModel, totalInputTokens, totalOutputTokens);
+
+      if (this.costRouter) {
+        this.costRouter.recordCost({
+          runId,
+          agentId: agent.id,
+          threadId,
+          model: effectiveModel,
+          inputTokens: totalInputTokens,
+          outputTokens: totalOutputTokens,
+          cost: runCost,
+        });
+      }
+
       const result: RunResult = {
         output: finalOutput,
         runId,
         agentId: agent.id,
         threadId,
+        modelUsed: this.config.costRouting?.enabled ? effectiveModel : undefined,
         usage: {
           inputTokens: totalInputTokens,
           outputTokens: totalOutputTokens,
           totalTokens: totalInputTokens + totalOutputTokens,
-          cost: this.calculateCost(agent.model, totalInputTokens, totalOutputTokens),
+          cost: runCost,
           duration: endTime - startTime,
         },
         toolCalls: allToolCalls,
@@ -984,6 +1030,20 @@ export class Cogitator {
   }
 
   /**
+   * Get cost-aware routing summary
+   */
+  getCostSummary(): CostSummary | undefined {
+    return this.costRouter?.getCostSummary();
+  }
+
+  /**
+   * Get the cost-aware router instance
+   */
+  getCostRouter(): CostAwareRouter | undefined {
+    return this.costRouter;
+  }
+
+  /**
    * Close all connections
    */
   async close(): Promise<void> {
@@ -1003,6 +1063,8 @@ export class Cogitator {
     this.reflectionInitialized = false;
     this.constitutionalAI = undefined;
     this.guardrailsInitialized = false;
+    this.costRouter = undefined;
+    this.costRoutingInitialized = false;
     this.backends.clear();
   }
 }
