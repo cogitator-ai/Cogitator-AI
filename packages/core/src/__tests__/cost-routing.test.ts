@@ -152,8 +152,8 @@ describe('CostTracker', () => {
     expect(summary.runCount).toBe(2);
     expect(summary.byModel['gpt-4o']).toBe(0.05);
     expect(summary.byModel['gpt-4o-mini']).toBe(0.01);
-    expect(summary.byAgent['agent1']).toBe(0.05);
-    expect(summary.byAgent['agent2']).toBe(0.01);
+    expect(summary.byAgent.agent1).toBe(0.05);
+    expect(summary.byAgent.agent2).toBe(0.01);
   });
 
   it('filters summary by agentId', () => {
