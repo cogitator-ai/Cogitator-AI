@@ -25,6 +25,23 @@ export {
 export type { BranchEvaluatorOptions } from './reasoning/index';
 
 export {
+  AgentOptimizer,
+  InMemoryTraceStore,
+  MetricEvaluator,
+  DemoSelector,
+  InstructionOptimizer,
+  createSuccessMetric,
+  createExactMatchMetric,
+  createContainsMetric,
+} from './learning/index';
+export type {
+  AgentOptimizerOptions,
+  MetricEvaluatorOptions,
+  DemoSelectorOptions,
+  InstructionOptimizerOptions,
+} from './learning/index';
+
+export {
   BaseLLMBackend,
   OllamaBackend,
   OpenAIBackend,
@@ -91,5 +108,28 @@ export type {
   BranchScore,
   ProposedAction,
   ExplorationStrategy,
+  ExecutionTrace,
+  ExecutionStep,
+  TraceStore,
+  TraceMetrics,
+  TraceQuery,
+  TraceStoreStats,
+  Demo,
+  DemoStep,
+  DemoStats,
+  MetricResult,
+  MetricFn,
+  MetricDefinition,
+  MetricEvaluatorConfig,
+  BuiltinMetric,
+  InstructionGap,
+  InstructionOptimizationResult,
+  OptimizerConfig,
+  OptimizationResult,
+  LearningConfig,
+  LearningRunOptions,
+  LearningRunResult,
+  CompileOptions,
+  LearningStats,
 } from '@cogitator-ai/types';
-export { DEFAULT_TOT_CONFIG } from '@cogitator-ai/types';
+export { DEFAULT_TOT_CONFIG, DEFAULT_LEARNING_CONFIG, DEFAULT_OPTIMIZER_CONFIG } from '@cogitator-ai/types';
