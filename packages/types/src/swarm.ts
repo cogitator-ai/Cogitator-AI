@@ -22,6 +22,8 @@ export interface SwarmAgentMetadata {
   role?: 'supervisor' | 'worker' | 'moderator' | 'router' | 'advocate' | 'critic';
   /** Weight for weighted voting */
   weight?: number;
+  /** Lock model - prevent assessor from changing it */
+  locked?: boolean;
   /** Custom metadata */
   custom?: Record<string, unknown>;
 }
@@ -428,4 +430,107 @@ export interface SwarmCoordinatorInterface {
 
 export interface IStrategy {
   execute(options: SwarmRunOptions): Promise<StrategyResult>;
+}
+
+// ============================================================================
+// Assessor Types - Dynamic Model Casting
+// ============================================================================
+
+export type ReasoningLevel = 'basic' | 'moderate' | 'advanced';
+export type SpeedPreference = 'fast' | 'balanced' | 'slow-ok';
+export type CostSensitivity = 'low' | 'medium' | 'high';
+export type TaskComplexity = 'simple' | 'moderate' | 'complex';
+export type AssessorMode = 'ai' | 'rules' | 'hybrid';
+export type ModelProvider = 'ollama' | 'openai' | 'anthropic' | 'google' | 'azure' | 'mistral';
+
+export interface TaskRequirements {
+  needsVision: boolean;
+  needsToolCalling: boolean;
+  needsLongContext: boolean;
+  needsReasoning: ReasoningLevel;
+  needsSpeed: SpeedPreference;
+  costSensitivity: CostSensitivity;
+  complexity: TaskComplexity;
+  domains?: string[];
+}
+
+export interface RoleRequirements extends TaskRequirements {
+  role: SwarmAgentMetadata['role'];
+  agentName: string;
+  customHints?: string[];
+}
+
+export interface ModelCapabilitiesInfo {
+  supportsVision?: boolean;
+  supportsTools?: boolean;
+  supportsStreaming?: boolean;
+  supportsJson?: boolean;
+}
+
+export interface DiscoveredModel {
+  id: string;
+  provider: ModelProvider;
+  displayName: string;
+  capabilities: ModelCapabilitiesInfo;
+  pricing: { input: number; output: number };
+  contextWindow: number;
+  isLocal: boolean;
+  isAvailable: boolean;
+}
+
+export interface ModelCandidate {
+  modelId: string;
+  provider: ModelProvider;
+  score: number;
+  reasons: string[];
+  isLocal: boolean;
+  estimatedCost: number;
+  capabilities: ModelCapabilitiesInfo;
+}
+
+export interface ModelAssignment {
+  agentName: string;
+  originalModel: string;
+  assignedModel: string;
+  provider: ModelProvider;
+  score: number;
+  reasons: string[];
+  fallbackModels: string[];
+  locked: boolean;
+}
+
+export interface AssessmentResult {
+  taskAnalysis: TaskRequirements;
+  roleAnalyses: Map<string, RoleRequirements>;
+  assignments: ModelAssignment[];
+  totalEstimatedCost: number;
+  warnings: string[];
+  discoveredModels: DiscoveredModel[];
+}
+
+export interface AssessorConfig {
+  /** Assessment mode: 'rules' (fast), 'ai' (smart), 'hybrid' (balanced) */
+  mode?: AssessorMode;
+  /** Model to use for AI-based assessment */
+  assessorModel?: string;
+  /** Prefer local Ollama models when capable */
+  preferLocal?: boolean;
+  /** Maximum cost budget per run in dollars */
+  maxCostPerRun?: number;
+  /** Minimum capability match score (0-1) to accept a model */
+  minCapabilityMatch?: number;
+  /** Ollama server URL */
+  ollamaUrl?: string;
+  /** Enabled model providers */
+  enabledProviders?: ModelProvider[];
+  /** Cache assessment results */
+  cacheAssessments?: boolean;
+  /** Cache TTL in milliseconds */
+  cacheTTL?: number;
+}
+
+export interface Assessor {
+  analyze(task: string, config: SwarmConfig): Promise<AssessmentResult>;
+  assignModels(config: SwarmConfig, result: AssessmentResult): SwarmConfig;
+  suggestModels(requirements: TaskRequirements): Promise<ModelCandidate[]>;
 }

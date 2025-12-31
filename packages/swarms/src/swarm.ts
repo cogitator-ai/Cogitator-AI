@@ -14,17 +14,26 @@ import type {
   MessageBus,
   Blackboard,
   IStrategy,
+  AssessorConfig,
+  AssessmentResult,
 } from '@cogitator-ai/types';
 import { SwarmCoordinator } from './coordinator';
 import { createStrategy } from './strategies/index';
+import { createAssessor } from './assessor/index';
 
 export class Swarm {
   private config: SwarmConfig;
+  private cogitator: Cogitator;
   private coordinator: SwarmCoordinator;
   private strategy: IStrategy;
+  private assessorConfig?: AssessorConfig;
+  private assessed = false;
+  private lastAssessment?: AssessmentResult;
 
-  constructor(cogitator: Cogitator, config: SwarmConfig) {
+  constructor(cogitator: Cogitator, config: SwarmConfig, assessorConfig?: AssessorConfig) {
     this.config = this.validateConfig(config);
+    this.cogitator = cogitator;
+    this.assessorConfig = assessorConfig;
     this.coordinator = new SwarmCoordinator(cogitator, config);
     this.strategy = createStrategy(this.coordinator, config);
   }
@@ -75,6 +84,11 @@ export class Swarm {
    * Run the swarm with the configured strategy
    */
   async run(options: SwarmRunOptions): Promise<StrategyResult> {
+    // Run assessment if configured and not yet done
+    if (this.assessorConfig && !this.assessed) {
+      await this.runAssessment(options.input);
+    }
+
     this.coordinator.events.emit('swarm:start', {
       swarmId: this.id,
       strategy: this.config.strategy,
@@ -99,6 +113,49 @@ export class Swarm {
 
       throw error;
     }
+  }
+
+  /**
+   * Dry run - analyze and preview model assignments without executing
+   */
+  async dryRun(options: { input: string }): Promise<AssessmentResult> {
+    if (!this.assessorConfig) {
+      throw new Error('Assessor not configured. Use SwarmBuilder.withAssessor() to enable.');
+    }
+
+    const assessor = createAssessor(this.assessorConfig);
+    return assessor.analyze(options.input, this.config);
+  }
+
+  /**
+   * Get the last assessment result (after run or dryRun)
+   */
+  getLastAssessment(): AssessmentResult | undefined {
+    return this.lastAssessment;
+  }
+
+  private async runAssessment(task: string): Promise<void> {
+    const assessor = createAssessor(this.assessorConfig!);
+    this.lastAssessment = await assessor.analyze(task, this.config);
+
+    this.coordinator.events.emit('assessor:complete', {
+      swarmId: this.id,
+      assignments: this.lastAssessment.assignments.map((a) => ({
+        agent: a.agentName,
+        model: a.assignedModel,
+        score: a.score,
+      })),
+      estimatedCost: this.lastAssessment.totalEstimatedCost,
+    });
+
+    // Apply model assignments
+    this.config = assessor.assignModels(this.config, this.lastAssessment);
+
+    // Reinitialize coordinator and strategy with updated config
+    this.coordinator = new SwarmCoordinator(this.cogitator, this.config);
+    this.strategy = createStrategy(this.coordinator, this.config);
+
+    this.assessed = true;
   }
 
   /**
@@ -242,6 +299,7 @@ export class Swarm {
  */
 export class SwarmBuilder {
   private config: Partial<SwarmConfig> = {};
+  private assessorConfig?: AssessorConfig;
 
   constructor(name: string) {
     this.config.name = name;
@@ -327,6 +385,11 @@ export class SwarmBuilder {
     return this;
   }
 
+  withAssessor(config: AssessorConfig = {}): this {
+    this.assessorConfig = config;
+    return this;
+  }
+
   build(cogitator: Cogitator): Swarm {
     if (!this.config.name) {
       throw new Error('Swarm name is required');
@@ -335,7 +398,7 @@ export class SwarmBuilder {
       throw new Error('Swarm strategy is required');
     }
 
-    return new Swarm(cogitator, this.config as SwarmConfig);
+    return new Swarm(cogitator, this.config as SwarmConfig, this.assessorConfig);
   }
 }
 

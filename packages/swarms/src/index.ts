@@ -48,6 +48,16 @@ export {
   type SwarmNodeContext,
 } from './workflow/swarm-node';
 
+export {
+  SwarmAssessor,
+  createAssessor,
+  TaskAnalyzer,
+  ModelDiscovery,
+  ModelScorer,
+  RoleMatcher,
+  type ScoredModel,
+} from './assessor/index';
+
 export type {
   SwarmStrategy,
   SwarmConfig,
@@ -80,4 +90,14 @@ export type {
   SwarmCoordinatorInterface,
   SwarmResourceConfig,
   SwarmErrorConfig,
+  TaskRequirements,
+  RoleRequirements,
+  ModelCandidate,
+  ModelAssignment,
+  AssessmentResult,
+  AssessorConfig,
+  Assessor,
+  DiscoveredModel,
+  ModelProvider,
+  ModelCapabilitiesInfo,
 } from '@cogitator-ai/types';
