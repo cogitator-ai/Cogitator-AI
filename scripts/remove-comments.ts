@@ -27,6 +27,21 @@ function findFiles(dir: string, extensions: string[]): string[] {
 const DRY_RUN = process.argv.includes('--dry-run');
 const VERBOSE = process.argv.includes('--verbose');
 
+function canPrecedeRegex(char: string): boolean {
+  if (!char) return true;
+  if (/[a-zA-Z0-9_$)\]]/.test(char)) return false;
+  return true;
+}
+
+function getPrevNonSpaceChar(line: string, pos: number): string {
+  for (let j = pos - 1; j >= 0; j--) {
+    if (line[j] !== ' ' && line[j] !== '\t') {
+      return line[j];
+    }
+  }
+  return '';
+}
+
 function removeLineComments(content: string): string {
   const lines = content.split('\n');
   const result: string[] = [];
@@ -38,24 +53,25 @@ function removeLineComments(content: string): string {
     let i = 0;
     let inString = false;
     let stringDelimiter = '';
+    let inRegex = false;
 
     while (i < line.length) {
       const char = line[i];
       const nextChar = line[i + 1];
       const prevChar = i > 0 ? line[i - 1] : '';
 
-      if (!inMultilineComment && !inString && char === '`') {
-        inTemplateString = !inTemplateString;
-        newLine += char;
-        i++;
-        continue;
-      }
-
       if (inTemplateString) {
         newLine += char;
         if (char === '`' && prevChar !== '\\') {
           inTemplateString = false;
         }
+        i++;
+        continue;
+      }
+
+      if (!inMultilineComment && !inString && char === '`') {
+        inTemplateString = true;
+        newLine += char;
         i++;
         continue;
       }
@@ -75,6 +91,25 @@ function removeLineComments(content: string): string {
         }
         i++;
         continue;
+      }
+
+      if (inRegex) {
+        newLine += char;
+        if (char === '/' && prevChar !== '\\') {
+          inRegex = false;
+        }
+        i++;
+        continue;
+      }
+
+      if (!inMultilineComment && char === '/' && nextChar !== '*' && nextChar !== '/') {
+        const prevNonSpace = getPrevNonSpaceChar(newLine, newLine.length);
+        if (canPrecedeRegex(prevNonSpace)) {
+          inRegex = true;
+          newLine += char;
+          i++;
+          continue;
+        }
       }
 
       if (!inMultilineComment && char === '/' && nextChar === '*') {
@@ -98,6 +133,12 @@ function removeLineComments(content: string): string {
       }
 
       if (char === '/' && nextChar === '/') {
+        const prevNonSpace = getPrevNonSpaceChar(newLine, newLine.length);
+        if (prevNonSpace === '>') {
+          newLine += char;
+          i++;
+          continue;
+        }
         break;
       }
 
@@ -122,6 +163,7 @@ function removeLineComments(content: string): string {
 
 function processFile(filePath: string): boolean {
   const original = readFileSync(filePath, 'utf-8');
+  if (!original.trim()) return false;
   const processed = removeLineComments(original);
 
   if (original !== processed) {
