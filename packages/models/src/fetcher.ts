@@ -193,7 +193,7 @@ export function transformLiteLLMData(data: LiteLLMModelData): ModelInfo[] {
         supportsFunctions: entry.supports_function_calling,
         supportsJson: entry.supports_response_schema,
       },
-      deprecated: isDeprecated || undefined,
+      deprecated: isDeprecated,
     };
 
     models.push(model);

@@ -15,6 +15,7 @@ export {
   getPrice,
   getModel,
   listModels,
+  shutdownModels,
 } from './registry';
 
 export { ModelCache } from './cache';

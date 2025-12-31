@@ -93,12 +93,6 @@ export class ModelRegistry {
       return this.models.get(aliasTarget) ?? null;
     }
 
-    for (const [modelId, model] of this.models) {
-      if (modelId.includes(normalized) || normalized.includes(modelId)) {
-        return model;
-      }
-    }
-
     return null;
   }
 
@@ -268,12 +262,16 @@ export class ModelRegistry {
         this.cache.set(allModels);
         this.loadModels(allModels);
       })
-      .catch(() => {});
+      .catch((error) => {
+        console.warn('[ModelRegistry] Background refresh failed:', error);
+      });
   }
 
   private startAutoRefresh(): void {
     this.refreshTimer = setInterval(() => {
-      this.refresh().catch(() => {});
+      this.refresh().catch((error) => {
+        console.warn('[ModelRegistry] Auto-refresh failed:', error);
+      });
     }, this.options.refreshInterval);
   }
 }
@@ -306,4 +304,11 @@ export function getModel(modelId: string): ModelInfo | null {
 
 export function listModels(filter?: ModelFilter): ModelInfo[] {
   return getModelRegistry().listModels(filter);
+}
+
+export function shutdownModels(): void {
+  if (defaultRegistry) {
+    defaultRegistry.shutdown();
+    defaultRegistry = null;
+  }
 }
