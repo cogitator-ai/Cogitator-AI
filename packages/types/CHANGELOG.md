@@ -1,5 +1,16 @@
 # @cogitator-ai/types
 
+## 0.3.0
+
+### Minor Changes
+
+- **Tool categories**: Added `category` and `tags` fields to `ToolConfig` and `Tool` interfaces
+- **Memory error callback**: Added `onMemoryError` callback to `RunOptions`
+
+### New Types
+
+- `ToolCategory` - union type for tool categorization
+
 ## 0.2.0
 
 ### Minor Changes

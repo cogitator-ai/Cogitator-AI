@@ -15,6 +15,8 @@ export function tool<TParams, TResult>(
   return {
     name: config.name,
     description: config.description,
+    category: config.category,
+    tags: config.tags,
     parameters: config.parameters,
     execute: config.execute,
     sideEffects: config.sideEffects,

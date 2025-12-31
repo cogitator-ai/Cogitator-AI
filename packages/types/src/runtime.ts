@@ -54,6 +54,8 @@ export interface RunOptions {
   onRunError?: (error: Error, runId: string) => void;
   /** Callback when a span is created */
   onSpan?: (span: Span) => void;
+  /** Callback when memory operation fails */
+  onMemoryError?: (error: Error, operation: 'save' | 'load') => void;
 }
 
 export interface RunResult {

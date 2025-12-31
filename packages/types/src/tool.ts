@@ -5,27 +5,31 @@
 import type { ZodType } from 'zod';
 import type { SandboxConfig } from './sandbox';
 
+export type ToolCategory = 'math' | 'text' | 'file' | 'network' | 'system' | 'utility' | string;
+
 export interface ToolConfig<TParams = unknown, TResult = unknown> {
   name: string;
   description: string;
+  category?: ToolCategory;
+  tags?: string[];
   parameters: ZodType<TParams>;
   execute: (params: TParams, context: ToolContext) => Promise<TResult>;
   sideEffects?: ('filesystem' | 'network' | 'database' | 'process')[];
   requiresApproval?: boolean | ((params: TParams) => boolean);
   timeout?: number;
-  /** Sandbox configuration for isolated execution */
   sandbox?: SandboxConfig;
 }
 
 export interface Tool<TParams = unknown, TResult = unknown> {
   name: string;
   description: string;
+  category?: ToolCategory;
+  tags?: string[];
   parameters: ZodType<TParams>;
   execute: (params: TParams, context: ToolContext) => Promise<TResult>;
   sideEffects?: ('filesystem' | 'network' | 'database' | 'process')[];
   requiresApproval?: boolean | ((params: TParams) => boolean);
   timeout?: number;
-  /** Sandbox configuration for isolated execution */
   sandbox?: SandboxConfig;
   toJSON: () => ToolSchema;
 }

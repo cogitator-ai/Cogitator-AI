@@ -206,7 +206,8 @@ export class Cogitator {
     threadId: string,
     message: Message,
     toolCalls?: ToolCall[],
-    toolResults?: ToolResult[]
+    toolResults?: ToolResult[],
+    onError?: (error: Error, operation: 'save' | 'load') => void
   ): Promise<void> {
     if (!this.memoryAdapter) return;
 
@@ -218,8 +219,10 @@ export class Cogitator {
         toolResults,
         tokenCount: countMessageTokens(message),
       });
-    } catch (error) {
-      getLogger().warn('Failed to save memory entry', { error });
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      getLogger().warn('Failed to save memory entry', { error: error.message });
+      onError?.(error, 'save');
     }
   }
 
@@ -263,6 +266,16 @@ export class Cogitator {
     const startTime = Date.now();
     const spans: Span[] = [];
 
+    const timeout = options.timeout ?? agent.config?.timeout;
+    const abortController = new AbortController();
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    if (timeout && timeout > 0) {
+      timeoutId = setTimeout(() => {
+        abortController.abort(new Error(`Run timed out after ${timeout}ms`));
+      }, timeout);
+    }
+
     options.onRunStart?.({ runId, agentId: agent.id, input: options.input, threadId });
 
     const rootSpanId = `span_${nanoid(12)}`;
@@ -290,7 +303,13 @@ export class Cogitator {
       }
 
       if (this.memoryAdapter && options.saveHistory !== false && options.useMemory !== false) {
-        await this.saveEntry(threadId, { role: 'user', content: options.input });
+        await this.saveEntry(
+          threadId,
+          { role: 'user', content: options.input },
+          undefined,
+          undefined,
+          options.onMemoryError
+        );
       }
 
       const allToolCalls: ToolCall[] = [];
@@ -300,6 +319,10 @@ export class Cogitator {
       const maxIterations = agent.config?.maxIterations ?? 10;
 
       while (iterations < maxIterations) {
+        if (abortController.signal.aborted) {
+          throw abortController.signal.reason ?? new Error('Run aborted');
+        }
+
         iterations++;
 
         const llmSpanStart = Date.now();
@@ -355,7 +378,13 @@ export class Cogitator {
         messages.push(assistantMessage);
 
         if (this.memoryAdapter && options.saveHistory !== false && options.useMemory !== false) {
-          await this.saveEntry(threadId, assistantMessage, response.toolCalls);
+          await this.saveEntry(
+            threadId,
+            assistantMessage,
+            response.toolCalls,
+            undefined,
+            options.onMemoryError
+          );
         }
 
         if (response.finishReason === 'tool_calls' && response.toolCalls) {
@@ -364,7 +393,13 @@ export class Cogitator {
             options.onToolCall?.(toolCall);
 
             const toolSpanStart = Date.now();
-            const result = await this.executeTool(registry, toolCall, runId, agent.id);
+            const result = await this.executeTool(
+              registry,
+              toolCall,
+              runId,
+              agent.id,
+              abortController.signal
+            );
             const toolSpanEnd = Date.now();
 
             const toolSpan = this.createSpan(
@@ -401,7 +436,13 @@ export class Cogitator {
               options.saveHistory !== false &&
               options.useMemory !== false
             ) {
-              await this.saveEntry(threadId, toolMessage, undefined, [result]);
+              await this.saveEntry(
+                threadId,
+                toolMessage,
+                undefined,
+                [result],
+                options.onMemoryError
+              );
             }
           }
         } else {
@@ -483,6 +524,10 @@ export class Cogitator {
       options.onRunError?.(error instanceof Error ? error : new Error(String(error)), runId);
 
       throw error;
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
     }
   }
 
@@ -557,7 +602,8 @@ export class Cogitator {
     registry: ToolRegistry,
     toolCall: ToolCall,
     runId: string,
-    agentId: string
+    agentId: string,
+    signal?: AbortSignal
   ): Promise<ToolResult> {
     const tool = registry.get(toolCall.name);
 
@@ -570,6 +616,16 @@ export class Cogitator {
       };
     }
 
+    const parseResult = tool.parameters.safeParse(toolCall.arguments);
+    if (!parseResult.success) {
+      return {
+        callId: toolCall.id,
+        name: toolCall.name,
+        result: null,
+        error: `Invalid arguments: ${parseResult.error.message}`,
+      };
+    }
+
     if (tool.sandbox?.type === 'docker' || tool.sandbox?.type === 'wasm') {
       return this.executeInSandbox(tool, toolCall, runId, agentId);
     }
@@ -577,11 +633,11 @@ export class Cogitator {
     const context: ToolContext = {
       agentId,
       runId,
-      signal: new AbortController().signal,
+      signal: signal ?? new AbortController().signal,
     };
 
     try {
-      const result = await tool.execute(toolCall.arguments, context);
+      const result = await tool.execute(parseResult.data, context);
       return {
         callId: toolCall.id,
         name: toolCall.name,
