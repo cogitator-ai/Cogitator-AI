@@ -64,8 +64,8 @@ importers:
         specifier: workspace:*
         version: link:../packages/workflows
       zod:
-        specifier: ^3.22.4
-        version: 3.25.76
+        specifier: ^4.3.2
+        version: 4.3.2
     devDependencies:
       tsx:
         specifier: ^4.21.0
@@ -111,8 +111,8 @@ importers:
         specifier: ^2.3.4
         version: 2.8.2
       zod:
-        specifier: ^3.22.4
-        version: 3.25.76
+        specifier: ^4.3.2
+        version: 4.3.2
     devDependencies:
       typescript:
         specifier: ^5.3.0
@@ -125,7 +125,7 @@ importers:
     dependencies:
       '@anthropic-ai/sdk':
         specifier: ^0.71.2
-        version: 0.71.2(zod@3.25.76)
+        version: 0.71.2(zod@4.3.2)
       '@cogitator-ai/memory':
         specifier: workspace:*
         version: link:../memory
@@ -146,13 +146,13 @@ importers:
         version: 5.1.6
       openai:
         specifier: ^4.24.0
-        version: 4.104.0(zod@3.25.76)
+        version: 4.104.0(zod@4.3.2)
       zod:
-        specifier: ^3.22.4
-        version: 3.25.76
+        specifier: ^4.3.2
+        version: 4.3.2
       zod-to-json-schema:
         specifier: ^3.22.4
-        version: 3.25.1(zod@3.25.76)
+        version: 3.25.1(zod@4.3.2)
     devDependencies:
       typescript:
         specifier: ^5.3.0
@@ -278,8 +278,8 @@ importers:
         specifier: ^5.7.2
         version: 5.9.3
       zod:
-        specifier: ^3.24.1
-        version: 3.25.76
+        specifier: ^4.3.2
+        version: 4.3.2
       zustand:
         specifier: ^5.0.3
         version: 5.0.9(@types/react@19.2.7)(react@19.2.3)
@@ -291,16 +291,16 @@ importers:
         version: link:../types
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.0
-        version: 1.25.1(hono@4.11.3)(zod@3.25.76)
+        version: 1.25.1(hono@4.11.3)(zod@4.3.2)
       '@types/node':
         specifier: ^25.0.0
         version: 25.0.3
       zod:
-        specifier: ^3.22.4
-        version: 3.25.76
+        specifier: ^4.3.2
+        version: 4.3.2
       zod-to-json-schema:
         specifier: ^3.24.5
-        version: 3.25.1(zod@3.25.76)
+        version: 3.25.1(zod@4.3.2)
     devDependencies:
       typescript:
         specifier: ^5.3.0
@@ -327,15 +327,15 @@ importers:
         specifier: ^5.0.4
         version: 5.1.6
       zod:
-        specifier: ^3.22.4
-        version: 3.25.76
+        specifier: ^4.3.2
+        version: 4.3.2
     optionalDependencies:
       ioredis:
         specifier: ^5.3.2
         version: 5.8.2
       openai:
         specifier: ^4.24.0
-        version: 4.104.0(zod@3.25.76)
+        version: 4.104.0(zod@4.3.2)
       pg:
         specifier: ^8.11.3
         version: 8.16.3
@@ -356,8 +356,8 @@ importers:
         specifier: ^25.0.0
         version: 25.0.3
       zod:
-        specifier: ^3.24.0
-        version: 3.25.76
+        specifier: ^4.3.2
+        version: 4.3.2
     devDependencies:
       typescript:
         specifier: ^5.7.2
@@ -390,8 +390,8 @@ importers:
         specifier: ^5.1.5
         version: 5.1.6
       zod:
-        specifier: ^3.22.4
-        version: 3.25.76
+        specifier: ^4.3.2
+        version: 4.3.2
     devDependencies:
       '@types/busboy':
         specifier: ^1.5.4
@@ -470,8 +470,8 @@ importers:
         specifier: ^5.0.4
         version: 5.1.6
       zod:
-        specifier: ^3.22.0
-        version: 3.25.76
+        specifier: ^4.3.2
+        version: 4.3.2
     devDependencies:
       typescript:
         specifier: ^5.3.0
@@ -483,8 +483,8 @@ importers:
   packages/types:
     dependencies:
       zod:
-        specifier: ^3.22.4
-        version: 3.25.76
+        specifier: ^4.3.2
+        version: 4.3.2
     devDependencies:
       typescript:
         specifier: ^5.3.0
@@ -496,8 +496,8 @@ importers:
         specifier: workspace:*
         version: link:../types
       zod:
-        specifier: ^3.22.0
-        version: 3.25.76
+        specifier: ^4.3.2
+        version: 4.3.2
     devDependencies:
       '@extism/js-pdk':
         specifier: ^1.0.0
@@ -536,8 +536,8 @@ importers:
         specifier: ^5.0.9
         version: 5.1.6
       zod:
-        specifier: ^3.22.4
-        version: 3.25.76
+        specifier: ^4.3.2
+        version: 4.3.2
     devDependencies:
       typescript:
         specifier: ^5.3.0
@@ -578,7 +578,7 @@ packages:
     engines: {node: '>=10'}
     dev: false
 
-  /@anthropic-ai/sdk@0.71.2(zod@3.25.76):
+  /@anthropic-ai/sdk@0.71.2(zod@4.3.2):
     resolution: {integrity: sha512-TGNDEUuEstk/DKu0/TflXAEt+p+p/WhTlFzEnoosvbaDU2LTjm42igSdlL0VijrKpWejtOKxX0b8A7uc+XiSAQ==}
     hasBin: true
     peerDependencies:
@@ -588,7 +588,7 @@ packages:
         optional: true
     dependencies:
       json-schema-to-ts: 3.1.1
-      zod: 3.25.76
+      zod: 4.3.2
     dev: false
 
   /@babel/runtime@7.28.4:
@@ -1761,7 +1761,7 @@ packages:
       read-yaml-file: 1.1.0
     dev: true
 
-  /@modelcontextprotocol/sdk@1.25.1(hono@4.11.3)(zod@3.25.76):
+  /@modelcontextprotocol/sdk@1.25.1(hono@4.11.3)(zod@4.3.2):
     resolution: {integrity: sha512-yO28oVFFC7EBoiKdAn+VqRm+plcfv4v0xp6osG/VsCB0NlPZWi87ajbCZZ8f/RvOFLEu7//rSRmuZZ7lMoe3gQ==}
     engines: {node: '>=18'}
     peerDependencies:
@@ -1785,8 +1785,8 @@ packages:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 3.25.76
-      zod-to-json-schema: 3.25.1(zod@3.25.76)
+      zod: 4.3.2
+      zod-to-json-schema: 3.25.1(zod@4.3.2)
     transitivePeerDependencies:
       - hono
       - supports-color
@@ -5283,7 +5283,7 @@ packages:
     dependencies:
       mimic-function: 5.0.1
 
-  /openai@4.104.0(zod@3.25.76):
+  /openai@4.104.0(zod@4.3.2):
     resolution: {integrity: sha512-p99EFNsA/yX6UhVO93f5kJsDRLAg+CTA2RBqdHK4RtK8u5IJw32Hyb2dTGKbnnFmnuoBv5r7Z2CURI9sGZpSuA==}
     hasBin: true
     peerDependencies:
@@ -5302,7 +5302,7 @@ packages:
       form-data-encoder: 1.7.2
       formdata-node: 4.4.1
       node-fetch: 2.7.0
-      zod: 3.25.76
+      zod: 4.3.2
     transitivePeerDependencies:
       - encoding
     dev: false
@@ -7228,16 +7228,16 @@ packages:
     engines: {node: '>=12.20'}
     dev: true
 
-  /zod-to-json-schema@3.25.1(zod@3.25.76):
+  /zod-to-json-schema@3.25.1(zod@4.3.2):
     resolution: {integrity: sha512-pM/SU9d3YAggzi6MtR4h7ruuQlqKtad8e9S0fmxcMi+ueAK5Korys/aWcV9LIIHTVbj01NdzxcnXSN+O74ZIVA==}
     peerDependencies:
       zod: ^3.25 || ^4
     dependencies:
-      zod: 3.25.76
+      zod: 4.3.2
     dev: false
 
-  /zod@3.25.76:
-    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+  /zod@4.3.2:
+    resolution: {integrity: sha512-b8L8yn4rIVfiXyHAmnr52/ZEpDumlT0bmxiq3Ws1ybrinhflGpt12Hvv54kYnEsGPRs6o/Ka3/ppA2OWY21IVg==}
     dev: false
 
   /zustand@4.5.7(@types/react@19.2.7)(react@19.2.3):

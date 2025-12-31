@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
-    "zod": "^3.22.0"
+    "zod": "^4.3.2"
   },
   "devDependencies": {
     "@extism/js-pdk": "^1.0.0",

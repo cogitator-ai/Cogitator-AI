@@ -18,7 +18,7 @@
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/swarms": "workspace:*",
     "@cogitator-ai/workflows": "workspace:*",
-    "zod": "^3.22.4"
+    "zod": "^4.3.2"
   },
   "devDependencies": {
     "tsx": "^4.21.0"
