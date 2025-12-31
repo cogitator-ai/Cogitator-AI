@@ -8,6 +8,7 @@
  * - Cause chaining for root cause analysis
  */
 
+
 /**
  * Error codes organized by domain
  */
@@ -147,9 +148,10 @@ export class CogitatorError extends Error {
     this.retryable = options.retryable ?? false;
     this.retryAfter = options.retryAfter;
 
-    if (Error.captureStackTrace) {
-      Error.captureStackTrace(this, CogitatorError);
-    }
+    const ErrorCtor = Error as typeof Error & {
+      captureStackTrace?: (target: object, ctor?: NewableFunction) => void;
+    };
+    ErrorCtor.captureStackTrace?.(this, CogitatorError);
   }
 
   /**
