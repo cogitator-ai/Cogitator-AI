@@ -1,11 +1,12 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { Github, BookOpen, MessageCircle, Cpu } from 'lucide-react';
+import { Github, BookOpen, MessageCircle, Cpu, ChefHat } from 'lucide-react';
 
 const links = [
   { name: 'GitHub', href: 'https://github.com/eL1fe/cogitator', icon: Github },
   { name: 'Docs', href: '/docs', icon: BookOpen },
+  { name: 'Cookbook', href: '/cookbook', icon: ChefHat },
   { name: 'Discord', href: 'https://discord.gg/SkmRsYvA', icon: MessageCircle },
 ];
 

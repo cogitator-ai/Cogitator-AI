@@ -2,7 +2,7 @@ import { MetadataRoute } from 'next';
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://cogitator.app';
-  const lastModified = new Date('2024-01-01');
+  const lastModified = new Date();
 
   return [
     {
@@ -13,6 +13,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
     {
       url: `${baseUrl}/docs`,
+      lastModified,
+      changeFrequency: 'weekly',
+      priority: 0.9,
+    },
+    {
+      url: `${baseUrl}/cookbook`,
       lastModified,
       changeFrequency: 'weekly',
       priority: 0.9,
