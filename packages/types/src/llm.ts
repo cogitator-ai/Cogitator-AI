@@ -58,4 +58,5 @@ export interface LLMBackend {
   readonly provider: LLMProvider;
   chat(request: ChatRequest): Promise<ChatResponse>;
   chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk>;
+  complete?(request: Omit<ChatRequest, 'model'> & { model?: string }): Promise<ChatResponse>;
 }

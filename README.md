@@ -139,22 +139,25 @@ console.log(result.usage); // { tokens: 1234, cost: 0.002, latency: 1.2s }
 
 Cogitator is a modular monorepo. Install only what you need:
 
-| Package                                                                                  | Description                              | Version                                                                                                                           |
-| ---------------------------------------------------------------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| [@cogitator-ai/core](https://www.npmjs.com/package/@cogitator-ai/core)                   | Core runtime (Agent, Tool, Cogitator)    | [![npm](https://img.shields.io/npm/v/@cogitator-ai/core.svg)](https://www.npmjs.com/package/@cogitator-ai/core)                   |
-| [@cogitator-ai/cli](https://www.npmjs.com/package/@cogitator-ai/cli)                     | CLI tool (`cogitator init/up/run`)       | [![npm](https://img.shields.io/npm/v/@cogitator-ai/cli.svg)](https://www.npmjs.com/package/@cogitator-ai/cli)                     |
-| [@cogitator-ai/types](https://www.npmjs.com/package/@cogitator-ai/types)                 | Shared TypeScript interfaces             | [![npm](https://img.shields.io/npm/v/@cogitator-ai/types.svg)](https://www.npmjs.com/package/@cogitator-ai/types)                 |
-| [@cogitator-ai/config](https://www.npmjs.com/package/@cogitator-ai/config)               | Configuration management                 | [![npm](https://img.shields.io/npm/v/@cogitator-ai/config.svg)](https://www.npmjs.com/package/@cogitator-ai/config)               |
-| [@cogitator-ai/memory](https://www.npmjs.com/package/@cogitator-ai/memory)               | Memory adapters (Postgres, Redis)        | [![npm](https://img.shields.io/npm/v/@cogitator-ai/memory.svg)](https://www.npmjs.com/package/@cogitator-ai/memory)               |
-| [@cogitator-ai/models](https://www.npmjs.com/package/@cogitator-ai/models)               | LLM backends (Ollama, OpenAI, Anthropic) | [![npm](https://img.shields.io/npm/v/@cogitator-ai/models.svg)](https://www.npmjs.com/package/@cogitator-ai/models)               |
-| [@cogitator-ai/workflows](https://www.npmjs.com/package/@cogitator-ai/workflows)         | DAG-based workflow engine                | [![npm](https://img.shields.io/npm/v/@cogitator-ai/workflows.svg)](https://www.npmjs.com/package/@cogitator-ai/workflows)         |
-| [@cogitator-ai/swarms](https://www.npmjs.com/package/@cogitator-ai/swarms)               | Multi-agent swarm coordination           | [![npm](https://img.shields.io/npm/v/@cogitator-ai/swarms.svg)](https://www.npmjs.com/package/@cogitator-ai/swarms)               |
-| [@cogitator-ai/mcp](https://www.npmjs.com/package/@cogitator-ai/mcp)                     | MCP (Model Context Protocol) support     | [![npm](https://img.shields.io/npm/v/@cogitator-ai/mcp.svg)](https://www.npmjs.com/package/@cogitator-ai/mcp)                     |
-| [@cogitator-ai/sandbox](https://www.npmjs.com/package/@cogitator-ai/sandbox)             | Docker/WASM sandboxed execution          | [![npm](https://img.shields.io/npm/v/@cogitator-ai/sandbox.svg)](https://www.npmjs.com/package/@cogitator-ai/sandbox)             |
-| [@cogitator-ai/redis](https://www.npmjs.com/package/@cogitator-ai/redis)                 | Redis client (standalone + cluster)      | [![npm](https://img.shields.io/npm/v/@cogitator-ai/redis.svg)](https://www.npmjs.com/package/@cogitator-ai/redis)                 |
-| [@cogitator-ai/worker](https://www.npmjs.com/package/@cogitator-ai/worker)               | Distributed job queue (BullMQ)           | [![npm](https://img.shields.io/npm/v/@cogitator-ai/worker.svg)](https://www.npmjs.com/package/@cogitator-ai/worker)               |
-| [@cogitator-ai/openai-compat](https://www.npmjs.com/package/@cogitator-ai/openai-compat) | OpenAI Assistants API compatibility      | [![npm](https://img.shields.io/npm/v/@cogitator-ai/openai-compat.svg)](https://www.npmjs.com/package/@cogitator-ai/openai-compat) |
-| [@cogitator-ai/wasm-tools](https://www.npmjs.com/package/@cogitator-ai/wasm-tools)       | WASM-based sandboxed tools               | [![npm](https://img.shields.io/npm/v/@cogitator-ai/wasm-tools.svg)](https://www.npmjs.com/package/@cogitator-ai/wasm-tools)       |
+| Package                                                                                    | Description                               | Version                                                                                                                             |
+| ------------------------------------------------------------------------------------------ | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| [@cogitator-ai/core](https://www.npmjs.com/package/@cogitator-ai/core)                     | Core runtime (Agent, Tool, Cogitator)     | [![npm](https://img.shields.io/npm/v/@cogitator-ai/core.svg)](https://www.npmjs.com/package/@cogitator-ai/core)                     |
+| [@cogitator-ai/cli](https://www.npmjs.com/package/@cogitator-ai/cli)                       | CLI tool (`cogitator init/up/run`)        | [![npm](https://img.shields.io/npm/v/@cogitator-ai/cli.svg)](https://www.npmjs.com/package/@cogitator-ai/cli)                       |
+| [@cogitator-ai/types](https://www.npmjs.com/package/@cogitator-ai/types)                   | Shared TypeScript interfaces              | [![npm](https://img.shields.io/npm/v/@cogitator-ai/types.svg)](https://www.npmjs.com/package/@cogitator-ai/types)                   |
+| [@cogitator-ai/config](https://www.npmjs.com/package/@cogitator-ai/config)                 | Configuration management                  | [![npm](https://img.shields.io/npm/v/@cogitator-ai/config.svg)](https://www.npmjs.com/package/@cogitator-ai/config)                 |
+| [@cogitator-ai/memory](https://www.npmjs.com/package/@cogitator-ai/memory)                 | Memory adapters (Postgres, Redis)         | [![npm](https://img.shields.io/npm/v/@cogitator-ai/memory.svg)](https://www.npmjs.com/package/@cogitator-ai/memory)                 |
+| [@cogitator-ai/models](https://www.npmjs.com/package/@cogitator-ai/models)                 | LLM backends (Ollama, OpenAI, Anthropic)  | [![npm](https://img.shields.io/npm/v/@cogitator-ai/models.svg)](https://www.npmjs.com/package/@cogitator-ai/models)                 |
+| [@cogitator-ai/workflows](https://www.npmjs.com/package/@cogitator-ai/workflows)           | DAG-based workflow engine                 | [![npm](https://img.shields.io/npm/v/@cogitator-ai/workflows.svg)](https://www.npmjs.com/package/@cogitator-ai/workflows)           |
+| [@cogitator-ai/swarms](https://www.npmjs.com/package/@cogitator-ai/swarms)                 | Multi-agent swarm coordination            | [![npm](https://img.shields.io/npm/v/@cogitator-ai/swarms.svg)](https://www.npmjs.com/package/@cogitator-ai/swarms)                 |
+| [@cogitator-ai/mcp](https://www.npmjs.com/package/@cogitator-ai/mcp)                       | MCP (Model Context Protocol) support      | [![npm](https://img.shields.io/npm/v/@cogitator-ai/mcp.svg)](https://www.npmjs.com/package/@cogitator-ai/mcp)                       |
+| [@cogitator-ai/sandbox](https://www.npmjs.com/package/@cogitator-ai/sandbox)               | Docker/WASM sandboxed execution           | [![npm](https://img.shields.io/npm/v/@cogitator-ai/sandbox.svg)](https://www.npmjs.com/package/@cogitator-ai/sandbox)               |
+| [@cogitator-ai/redis](https://www.npmjs.com/package/@cogitator-ai/redis)                   | Redis client (standalone + cluster)       | [![npm](https://img.shields.io/npm/v/@cogitator-ai/redis.svg)](https://www.npmjs.com/package/@cogitator-ai/redis)                   |
+| [@cogitator-ai/worker](https://www.npmjs.com/package/@cogitator-ai/worker)                 | Distributed job queue (BullMQ)            | [![npm](https://img.shields.io/npm/v/@cogitator-ai/worker.svg)](https://www.npmjs.com/package/@cogitator-ai/worker)                 |
+| [@cogitator-ai/openai-compat](https://www.npmjs.com/package/@cogitator-ai/openai-compat)   | OpenAI Assistants API compatibility       | [![npm](https://img.shields.io/npm/v/@cogitator-ai/openai-compat.svg)](https://www.npmjs.com/package/@cogitator-ai/openai-compat)   |
+| [@cogitator-ai/wasm-tools](https://www.npmjs.com/package/@cogitator-ai/wasm-tools)         | WASM-based sandboxed tools                | [![npm](https://img.shields.io/npm/v/@cogitator-ai/wasm-tools.svg)](https://www.npmjs.com/package/@cogitator-ai/wasm-tools)         |
+| [@cogitator-ai/self-modifying](https://www.npmjs.com/package/@cogitator-ai/self-modifying) | Self-modifying agents with meta-reasoning | [![npm](https://img.shields.io/npm/v/@cogitator-ai/self-modifying.svg)](https://www.npmjs.com/package/@cogitator-ai/self-modifying) |
+| [@cogitator-ai/neuro-symbolic](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) | Neuro-symbolic reasoning with SAT/SMT     | [![npm](https://img.shields.io/npm/v/@cogitator-ai/neuro-symbolic.svg)](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) |
+| [@cogitator-ai/dashboard](https://www.npmjs.com/package/@cogitator-ai/dashboard)           | Real-time observability dashboard         | [![npm](https://img.shields.io/npm/v/@cogitator-ai/dashboard.svg)](https://www.npmjs.com/package/@cogitator-ai/dashboard)           |
 
 ---
 
@@ -472,6 +475,63 @@ result.bestPath.forEach((node, i) => {
 ```
 
 ToT shows **4-5x improvement** on complex reasoning tasks compared to linear agent loops.
+
+### 🧬 Self-Modifying Agents
+
+Agents that evolve at runtime — generating new tools, adapting reasoning strategies, and optimizing their own architecture:
+
+```typescript
+import { SelfModifyingAgent } from '@cogitator-ai/self-modifying';
+
+const selfModifying = new SelfModifyingAgent({
+  agent,
+  llm: cog.getDefaultBackend(),
+  config: {
+    toolGeneration: {
+      enabled: true,
+      autoGenerate: true, // Auto-create tools when capabilities are missing
+      maxToolsPerSession: 3,
+      minConfidenceForGeneration: 0.7,
+    },
+    metaReasoning: {
+      enabled: true,
+      defaultMode: 'analytical', // analytical, creative, systematic, intuitive, exploratory
+      triggers: ['on_failure', 'on_low_confidence', 'periodic'],
+    },
+    architectureEvolution: {
+      enabled: true,
+      strategy: { type: 'ucb' }, // UCB, Thompson sampling, epsilon-greedy
+    },
+    constraints: {
+      enabled: true,
+      autoRollback: true, // Rollback on metric decline
+    },
+  },
+});
+
+// Subscribe to self-modification events
+selfModifying.on('tool_generation_completed', (e) => {
+  console.log('New tool created:', e.data.name);
+});
+
+selfModifying.on('strategy_changed', (e) => {
+  console.log(`Mode: ${e.data.previousMode} → ${e.data.newMode}`);
+});
+
+const result = await selfModifying.run('Analyze this CSV and visualize the trends');
+
+console.log('Tools generated:', result.toolsGenerated.length);
+console.log('Adaptations made:', result.adaptationsMade.length);
+console.log('Final config:', result.finalConfig);
+```
+
+**Capabilities:**
+
+- **Tool Self-Generation** — Detects missing capabilities and synthesizes new tools at runtime
+- **Meta-Reasoning** — Monitors reasoning process, switches between modes (analytical → creative)
+- **Architecture Evolution** — Optimizes model, temperature, tool strategy using multi-armed bandits
+- **Constraint Validation** — SAT-based safety checks prevent unsafe modifications
+- **Rollback System** — Checkpoint before changes, auto-revert on performance decline
 
 ### 📈 Agent Learning (DSPy-Style)
 
@@ -803,6 +863,7 @@ const agent = new Agent({
 | Agent Learning      | ✅        | ❌          | ❌                | ❌          |
 | Time-Travel Debug   | ✅        | ❌          | ❌                | ❌          |
 | Cost-Aware Routing  | ✅        | ❌          | ❌                | ❌          |
+| Self-Modifying      | ✅        | ❌          | ❌                | ❌          |
 | Dependencies        | ~20       | 150+        | N/A               | ~30         |
 
 ---
@@ -843,6 +904,8 @@ cogitator/
 │   ├── workflows/      # Workflow engine
 │   ├── swarms/         # Multi-agent coordination
 │   ├── sandbox/        # Execution isolation
+│   ├── self-modifying/ # Self-modifying agents
+│   ├── neuro-symbolic/ # SAT/SMT reasoning
 │   └── dashboard/      # Observability UI
 ├── examples/           # Example agents
 ├── docs/               # Documentation
