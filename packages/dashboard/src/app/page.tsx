@@ -1,29 +1,15 @@
 'use client';
 
-import { useState, useEffect, Suspense } from 'react';
-import { useSearchParams } from 'next/navigation';
-import { BackgroundGrid, Hero, FeaturesGrid, AuthSection, Footer } from '@/components/landing';
+import { Suspense } from 'react';
+import { BackgroundGrid, Hero, FeaturesGrid, Footer } from '@/components/landing';
 
 function LandingContent() {
-  const [showAuth, setShowAuth] = useState(false);
-  const searchParams = useSearchParams();
-
-  useEffect(() => {
-    if (searchParams.get('auth') === 'login') {
-      setShowAuth(true);
-    }
-  }, [searchParams]);
-
   return (
-    <>
-      <div className="relative z-10">
-        <Hero onGetStarted={() => setShowAuth(true)} />
-        <FeaturesGrid />
-        <Footer />
-      </div>
-
-      <AuthSection isOpen={showAuth} onClose={() => setShowAuth(false)} />
-    </>
+    <div className="relative z-10">
+      <Hero />
+      <FeaturesGrid />
+      <Footer />
+    </div>
   );
 }
 

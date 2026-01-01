@@ -1,14 +1,13 @@
 'use client';
 
-import { motion } from 'framer-motion';
-import { ArrowRight, Github, Cpu } from 'lucide-react';
+import { useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Github, Cpu, Construction } from 'lucide-react';
 import { TerminalDemo } from './TerminalDemo';
 
-interface HeroProps {
-  onGetStarted: () => void;
-}
+export function Hero() {
+  const [showWipTooltip, setShowWipTooltip] = useState(false);
 
-export function Hero({ onGetStarted }: HeroProps) {
   return (
     <section className="relative min-h-screen flex flex-col items-center justify-center px-6 py-20">
       <motion.div
@@ -53,29 +52,45 @@ export function Hero({ onGetStarted }: HeroProps) {
         </p>
 
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-          <motion.button
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={onGetStarted}
-            className="group relative px-8 py-4 bg-[#00ff88] text-[#0a0a0a] rounded-xl font-semibold text-lg overflow-hidden"
-          >
-            <span className="relative z-10 flex items-center gap-2">
-              Get Started
-              <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-            </span>
-            <motion.div
-              className="absolute inset-0 bg-gradient-to-r from-[#00ff88] to-[#00ddaa]"
-              animate={{
-                x: ['0%', '100%', '0%'],
-              }}
-              transition={{
-                duration: 3,
-                repeat: Infinity,
-                ease: 'linear',
-              }}
-              style={{ width: '200%', marginLeft: '-50%' }}
-            />
-          </motion.button>
+          <div className="relative">
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => setShowWipTooltip(true)}
+              onMouseEnter={() => setShowWipTooltip(true)}
+              onMouseLeave={() => setShowWipTooltip(false)}
+              className="group relative px-8 py-4 bg-[#333333] text-[#666666] rounded-xl font-semibold text-lg overflow-hidden cursor-not-allowed"
+            >
+              <span className="relative z-10 flex items-center gap-2">
+                <Construction className="w-5 h-5" />
+                Dashboard Coming Soon
+              </span>
+            </motion.button>
+
+            <AnimatePresence>
+              {showWipTooltip && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute left-1/2 -translate-x-1/2 top-full mt-3 w-72 p-4 bg-[#1a1a1a] border border-[#333333] rounded-xl shadow-xl z-50"
+                >
+                  <div className="absolute -top-2 left-1/2 -translate-x-1/2 w-4 h-4 bg-[#1a1a1a] border-l border-t border-[#333333] rotate-45" />
+                  <div className="relative z-10">
+                    <div className="flex items-center gap-2 text-[#00ff88] mb-2">
+                      <Construction className="w-4 h-4" />
+                      <span className="font-semibold text-sm">Work in Progress</span>
+                    </div>
+                    <p className="text-sm text-[#a1a1a1]">
+                      The dashboard is under active development. Star us on GitHub to get notified
+                      when it&apos;s ready!
+                    </p>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
 
           <motion.a
             href="https://github.com/eL1fe/cogitator"
