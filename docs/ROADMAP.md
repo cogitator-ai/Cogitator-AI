@@ -287,6 +287,64 @@ spec:
 
 ---
 
+## Phase 3.5: Advanced Reasoning 🔄
+
+> **Goal:** Build cutting-edge reasoning capabilities that differentiate Cogitator.
+
+### Self-Modifying Agents ✅
+
+- [x] Tool self-generation at runtime
+- [x] Meta-reasoning with mode switching (analytical, creative, systematic)
+- [x] Architecture evolution (multi-armed bandits: UCB, Thompson, ε-greedy)
+- [x] Constraint validation with SAT-based safety checks
+- [x] Rollback system with checkpoints
+
+### Neuro-Symbolic Reasoning ✅
+
+- [x] SAT/SMT solver integration (minisat.js)
+- [x] Symbolic constraint extraction from LLM outputs
+- [x] Hybrid reasoning pipeline (neural → symbolic → neural)
+- [x] Formal verification of agent decisions
+- [x] Mathematical proof generation
+
+### Causal Reasoning Engine ✅
+
+- [x] Pearl's Ladder of Causation (Association, Intervention, Counterfactual)
+- [x] Causal graph construction with fluent API
+- [x] D-separation algorithm (Bayes-Ball)
+- [x] Backdoor/Frontdoor adjustment criteria
+- [x] Effect prediction with side-effect analysis
+- [x] Root cause analysis and counterfactual generation
+- [x] Causal planning for goal achievement
+- [x] LLM-powered causal discovery from traces
+
+### Remaining Items
+
+- [ ] Multi-modal reasoning (vision, audio integration)
+- [ ] Long-context optimization (128k+ token handling)
+- [ ] Probabilistic reasoning with uncertainty quantification
+
+### Phase 3.5 Milestone
+
+```typescript
+// Advanced reasoning capabilities
+const agent = new SelfModifyingAgent({
+  agent: baseAgent,
+  llm: cog.getDefaultBackend(),
+  config: {
+    toolGeneration: { enabled: true, autoGenerate: true },
+    metaReasoning: { enabled: true, defaultMode: 'analytical' },
+    architectureEvolution: { enabled: true, strategy: { type: 'ucb' } },
+  },
+});
+
+const causal = new CausalReasoner({ llmBackend: cog.getDefaultBackend() });
+const effect = await causal.predictEffect('Increase marketing by 20%', ctx);
+const explanation = await causal.explainCause('sales_drop', 0.3, ctx);
+```
+
+---
+
 ## Phase 4: Ecosystem (Months 10-12)
 
 > **Goal:** Build community and sustainable business model.
