@@ -234,6 +234,7 @@ export class ToolSandbox {
       }, timeout);
 
       try {
+        // eslint-disable-next-line @typescript-eslint/no-implied-eval
         const factory = new Function(wrappedCode);
         const executor = factory();
 
@@ -259,6 +260,7 @@ export class ToolSandbox {
     startTime: number
   ): Promise<ToolSandboxResult> {
     try {
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval
       const factory = new Function(`
         "use strict";
         ${tool.implementation}

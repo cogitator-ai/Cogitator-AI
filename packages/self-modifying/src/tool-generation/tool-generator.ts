@@ -223,6 +223,7 @@ export class ToolGenerator {
 
   private compileImplementation(implementation: string): (params: unknown) => Promise<unknown> {
     return async (params: unknown): Promise<unknown> => {
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval
       const factory = new Function(`
         "use strict";
         ${implementation}

@@ -139,6 +139,16 @@ function removeLineComments(content: string): string {
           i++;
           continue;
         }
+        const restOfLine = line.slice(i + 2).trim();
+        if (
+          restOfLine.startsWith('eslint-disable') ||
+          restOfLine.startsWith('@ts-expect-error') ||
+          restOfLine.startsWith('@ts-ignore') ||
+          restOfLine.startsWith('@ts-nocheck')
+        ) {
+          newLine += line.slice(i);
+          break;
+        }
         break;
       }
 
