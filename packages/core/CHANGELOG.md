@@ -1,5 +1,28 @@
 # @cogitator-ai/core
 
+## 0.5.0
+
+### Minor Changes
+
+- f874e69: ### Memory improvements
+  - Add optional `threadId` parameter to `createThread()` in MemoryAdapter interface for proper thread linking
+  - Add Google embedding service using `text-embedding-004` model (768 dimensions)
+  - Implement hybrid context strategy (30% semantic + 70% recent messages)
+  - Fix foreign key constraint violation when saving entries before thread creation
+
+  ### Swarms improvements
+  - Add `saveHistory` option to `SwarmRunOptions` to control memory saving per run
+  - Fix negotiation strategy import conflict (renamed file to avoid directory resolution issue)
+  - Fix coordinator to properly register pipeline stages and handle missing negotiation section
+
+### Patch Changes
+
+- Updated dependencies [f874e69]
+  - @cogitator-ai/memory@0.4.0
+  - @cogitator-ai/types@0.6.0
+  - @cogitator-ai/models@4.0.0
+  - @cogitator-ai/sandbox@0.2.3
+
 ## 0.4.0
 
 ### Minor Changes

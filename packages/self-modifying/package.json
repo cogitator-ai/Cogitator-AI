@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/self-modifying",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Self-modifying agent capabilities for Cogitator - tool generation, meta-reasoning, architecture evolution",
   "type": "module",
   "main": "./dist/index.js",
