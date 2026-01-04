@@ -1,5 +1,11 @@
 # @cogitator-ai/neuro-symbolic
 
+## 2.0.1
+
+### Patch Changes
+
+- 004cce0: Add negation-as-failure operator (\+) support in Prolog-like parser
+
 ## 2.0.0
 
 ### Patch Changes
