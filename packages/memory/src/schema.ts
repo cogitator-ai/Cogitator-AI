@@ -42,7 +42,7 @@ export const ContextBuilderConfigSchema = z.object({
   includeSemanticContext: z.boolean().optional(),
 });
 
-export const EmbeddingProviderSchema = z.enum(['openai', 'ollama']);
+export const EmbeddingProviderSchema = z.enum(['openai', 'ollama', 'google']);
 
 export const OpenAIEmbeddingConfigSchema = z.object({
   provider: z.literal('openai'),
@@ -57,7 +57,14 @@ export const OllamaEmbeddingConfigSchema = z.object({
   baseUrl: z.string().url().optional(),
 });
 
+export const GoogleEmbeddingConfigSchema = z.object({
+  provider: z.literal('google'),
+  apiKey: z.string(),
+  model: z.string().optional(),
+});
+
 export const EmbeddingServiceConfigSchema = z.discriminatedUnion('provider', [
   OpenAIEmbeddingConfigSchema,
   OllamaEmbeddingConfigSchema,
+  GoogleEmbeddingConfigSchema,
 ]);

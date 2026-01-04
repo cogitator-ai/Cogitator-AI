@@ -386,6 +386,8 @@ export interface SwarmRunOptions {
   threadId?: string;
   /** Override timeout */
   timeout?: number;
+  /** Whether to save run history to memory (default: true) */
+  saveHistory?: boolean;
 
   onAgentStart?: (agentName: string) => void;
   onAgentComplete?: (agentName: string, result: RunResult) => void;

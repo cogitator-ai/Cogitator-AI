@@ -88,6 +88,10 @@ export class Swarm {
       await this.runAssessment(options.input);
     }
 
+    if (options.saveHistory !== undefined) {
+      this.coordinator.setSaveHistory(options.saveHistory);
+    }
+
     this.coordinator.events.emit('swarm:start', {
       swarmId: this.id,
       strategy: this.config.strategy,

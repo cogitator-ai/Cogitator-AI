@@ -152,11 +152,12 @@ export class PostgresAdapter extends BaseMemoryAdapter implements FactAdapter, E
 
   async createThread(
     agentId: string,
-    metadata: Record<string, unknown> = {}
+    metadata: Record<string, unknown> = {},
+    threadId?: string
   ): Promise<MemoryResult<Thread>> {
     if (!this.pool) return this.failure('Not connected');
 
-    const id = this.generateId('thread');
+    const id = threadId ?? this.generateId('thread');
     const now = new Date();
 
     await this.pool.query(

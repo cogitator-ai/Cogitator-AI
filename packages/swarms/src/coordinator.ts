@@ -39,6 +39,7 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
   private aborted = false;
   private paused = false;
   private swarmId: string;
+  private _saveHistory = true;
 
   constructor(cogitator: Cogitator, config: SwarmConfig) {
     this.cogitator = cogitator;
@@ -115,6 +116,15 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
       }
     }
 
+    if (this.config.pipeline?.stages) {
+      for (const stage of this.config.pipeline.stages) {
+        agentEntries.push({
+          agent: stage.agent,
+          metadata: { custom: { stageName: stage.name, isGate: stage.gate } },
+        });
+      }
+    }
+
     for (const { agent, metadata } of agentEntries) {
       this.agents.set(agent.name, {
         agent,
@@ -136,6 +146,10 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
 
   get events(): SwarmEventEmitter {
     return this._events;
+  }
+
+  setSaveHistory(value: boolean): void {
+    this._saveHistory = value;
   }
 
   getSwarmId(): string {
@@ -189,6 +203,7 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
 
       const result = await this.cogitator.run(swarmAgent.agent, {
         input,
+        saveHistory: this._saveHistory,
         context: {
           ...context,
           swarmContext: {
@@ -400,7 +415,12 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
   }
 
   private buildNegotiationContext(agentName: string): Record<string, unknown> | null {
-    const state = this._blackboard.read<NegotiationState>('negotiation');
+    let state: NegotiationState | null;
+    try {
+      state = this._blackboard.read<NegotiationState>('negotiation');
+    } catch {
+      return null;
+    }
     if (!state) return null;
 
     const pendingOffers = state.offers.filter((o: NegotiationOffer) => o.status === 'pending');

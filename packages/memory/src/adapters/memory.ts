@@ -38,10 +38,11 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
 
   async createThread(
     agentId: string,
-    metadata: Record<string, unknown> = {}
+    metadata: Record<string, unknown> = {},
+    threadId?: string
   ): Promise<MemoryResult<Thread>> {
     const thread: Thread = {
-      id: this.generateId('thread'),
+      id: threadId ?? this.generateId('thread'),
       agentId,
       metadata,
       createdAt: new Date(),

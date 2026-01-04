@@ -128,7 +128,11 @@ export interface SemanticSearchOptions {
 export interface MemoryAdapter {
   readonly provider: MemoryProvider;
 
-  createThread(agentId: string, metadata?: Record<string, unknown>): Promise<MemoryResult<Thread>>;
+  createThread(
+    agentId: string,
+    metadata?: Record<string, unknown>,
+    threadId?: string
+  ): Promise<MemoryResult<Thread>>;
   getThread(threadId: string): Promise<MemoryResult<Thread | null>>;
   updateThread(threadId: string, metadata: Record<string, unknown>): Promise<MemoryResult<Thread>>;
   deleteThread(threadId: string): Promise<MemoryResult<void>>;
@@ -189,7 +193,16 @@ export interface OllamaEmbeddingConfig {
   baseUrl?: string;
 }
 
-export type EmbeddingServiceConfig = OpenAIEmbeddingConfig | OllamaEmbeddingConfig;
+export interface GoogleEmbeddingConfig {
+  provider: 'google';
+  apiKey: string;
+  model?: string;
+}
+
+export type EmbeddingServiceConfig =
+  | OpenAIEmbeddingConfig
+  | OllamaEmbeddingConfig
+  | GoogleEmbeddingConfig;
 
 export type ContextStrategy = 'recent' | 'relevant' | 'hybrid';
 

@@ -17,7 +17,8 @@ export abstract class BaseMemoryAdapter implements MemoryAdapter {
 
   abstract createThread(
     agentId: string,
-    metadata?: Record<string, unknown>
+    metadata?: Record<string, unknown>,
+    threadId?: string
   ): Promise<MemoryResult<Thread>>;
 
   abstract getThread(threadId: string): Promise<MemoryResult<Thread | null>>;

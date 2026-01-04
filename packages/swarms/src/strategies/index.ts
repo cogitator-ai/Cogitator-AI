@@ -24,7 +24,7 @@ export { ConsensusStrategy } from './consensus';
 export { AuctionStrategy } from './auction';
 export { PipelineStrategy } from './pipeline';
 export { DebateStrategy } from './debate';
-export { NegotiationStrategy } from './negotiation';
+export { NegotiationStrategy } from './negotiation-strategy';
 
 import { HierarchicalStrategy } from './hierarchical';
 import { RoundRobinStrategy } from './round-robin';
@@ -32,7 +32,7 @@ import { ConsensusStrategy } from './consensus';
 import { AuctionStrategy } from './auction';
 import { PipelineStrategy } from './pipeline';
 import { DebateStrategy } from './debate';
-import { NegotiationStrategy } from './negotiation';
+import { NegotiationStrategy } from './negotiation-strategy';
 
 /**
  * Create a strategy instance based on configuration

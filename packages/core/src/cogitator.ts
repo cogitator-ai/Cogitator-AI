@@ -235,7 +235,7 @@ export class Cogitator {
 
     const threadResult = await this.memoryAdapter.getThread(threadId);
     if (!threadResult.success || !threadResult.data) {
-      await this.memoryAdapter.createThread(agent.id, { agentId: agent.id });
+      await this.memoryAdapter.createThread(agent.id, { agentId: agent.id }, threadId);
     }
 
     if (this.contextBuilder && options.loadHistory !== false) {
@@ -268,6 +268,7 @@ export class Cogitator {
    */
   private async saveEntry(
     threadId: string,
+    agentId: string,
     message: Message,
     toolCalls?: ToolCall[],
     toolResults?: ToolResult[],
@@ -276,6 +277,11 @@ export class Cogitator {
     if (!this.memoryAdapter) return;
 
     try {
+      const threadResult = await this.memoryAdapter.getThread(threadId);
+      if (!threadResult.success || !threadResult.data) {
+        await this.memoryAdapter.createThread(agentId, { agentId }, threadId);
+      }
+
       await this.memoryAdapter.addEntry({
         threadId,
         message,
@@ -400,6 +406,7 @@ export class Cogitator {
       if (this.memoryAdapter && options.saveHistory !== false && options.useMemory !== false) {
         await this.saveEntry(
           threadId,
+          agent.id,
           { role: 'user', content: options.input },
           undefined,
           undefined,
@@ -512,6 +519,7 @@ export class Cogitator {
         if (this.memoryAdapter && options.saveHistory !== false && options.useMemory !== false) {
           await this.saveEntry(
             threadId,
+            agent.id,
             assistantMessage,
             response.toolCalls,
             undefined,
@@ -570,6 +578,7 @@ export class Cogitator {
             ) {
               await this.saveEntry(
                 threadId,
+                agent.id,
                 toolMessage,
                 undefined,
                 [result],

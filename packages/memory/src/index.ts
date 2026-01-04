@@ -30,6 +30,7 @@ export {
 export {
   OpenAIEmbeddingService,
   OllamaEmbeddingService,
+  GoogleEmbeddingService,
   createEmbeddingService,
 } from './embedding/index';
 
@@ -44,6 +45,7 @@ export {
   EmbeddingProviderSchema,
   OpenAIEmbeddingConfigSchema,
   OllamaEmbeddingConfigSchema,
+  GoogleEmbeddingConfigSchema,
   EmbeddingServiceConfigSchema,
 } from './schema';
 
@@ -103,6 +105,7 @@ export type {
   EmbeddingServiceConfig,
   OpenAIEmbeddingConfig,
   OllamaEmbeddingConfig,
+  GoogleEmbeddingConfig,
   ContextBuilderConfig,
   ContextStrategy,
   BuiltContext,

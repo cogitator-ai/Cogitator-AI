@@ -154,9 +154,18 @@ export class ContextBuilder {
           'Strategy "relevant" is not yet implemented. Use "recent" or enable includeSemanticContext for semantic search.'
         );
       } else if (this.config.strategy === 'hybrid') {
-        throw new Error(
-          'Strategy "hybrid" is not yet implemented. Use "recent" with includeSemanticContext enabled.'
+        const selectedEntries = await this.selectHybridEntries(
+          entries,
+          availableTokens - usedTokens,
+          options.currentInput
         );
+
+        truncated = selectedEntries.length < entries.length;
+
+        for (const entry of selectedEntries) {
+          messages.push(entry.message);
+          usedTokens += entry.tokenCount;
+        }
       }
     }
 
@@ -193,5 +202,75 @@ export class ContextBuilder {
     }
 
     return selected;
+  }
+
+  private async selectHybridEntries(
+    entries: MemoryEntry[],
+    availableTokens: number,
+    currentInput?: string
+  ): Promise<MemoryEntry[]> {
+    const semanticBudget = Math.floor(availableTokens * 0.3);
+    const recentBudget = availableTokens - semanticBudget;
+
+    const selected: MemoryEntry[] = [];
+    const usedIds = new Set<string>();
+    let usedTokens = 0;
+
+    if (currentInput && this.deps.embeddingService && entries.length > 10) {
+      const inputVector = await this.deps.embeddingService.embed(currentInput);
+
+      const olderEntries = entries.slice(0, -10);
+      const scoredEntries: { entry: MemoryEntry; score: number }[] = [];
+
+      for (const entry of olderEntries) {
+        if (entry.message.role === 'user' || entry.message.role === 'assistant') {
+          const content = entry.message.content;
+          if (typeof content === 'string' && content.length > 20) {
+            try {
+              const entryVector = await this.deps.embeddingService.embed(content);
+              const score = this.cosineSimilarity(inputVector, entryVector);
+              if (score > 0.6) {
+                scoredEntries.push({ entry, score });
+              }
+            } catch {}
+          }
+        }
+      }
+
+      scoredEntries.sort((a, b) => b.score - a.score);
+
+      for (const { entry } of scoredEntries) {
+        if (usedTokens + entry.tokenCount <= semanticBudget) {
+          selected.push(entry);
+          usedIds.add(entry.id);
+          usedTokens += entry.tokenCount;
+        }
+      }
+    }
+
+    const recentEntries = this.selectRecentEntries(
+      entries.filter((e) => !usedIds.has(e.id)),
+      recentBudget
+    );
+
+    const semanticInOrder = entries.filter((e) => usedIds.has(e.id));
+    return [...semanticInOrder, ...recentEntries];
+  }
+
+  private cosineSimilarity(a: number[], b: number[]): number {
+    if (a.length !== b.length) return 0;
+
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+
+    for (let i = 0; i < a.length; i++) {
+      dotProduct += a[i] * b[i];
+      normA += a[i] * a[i];
+      normB += b[i] * b[i];
+    }
+
+    const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
+    return magnitude === 0 ? 0 : dotProduct / magnitude;
   }
 }
