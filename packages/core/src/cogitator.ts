@@ -385,7 +385,8 @@ export class Cogitator {
       }
 
       const backend = this.getBackend(effectiveModel, agent.config.provider);
-      const { model } = parseModel(effectiveModel);
+
+      const model = agent.config.provider ? effectiveModel : parseModel(effectiveModel).model;
 
       const messages = await this.buildInitialMessages(agent, options, threadId);
 
