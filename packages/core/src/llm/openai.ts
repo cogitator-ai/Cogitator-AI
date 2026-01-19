@@ -93,7 +93,8 @@ export class OpenAIBackend extends BaseLLMBackend {
       stream_options: { include_usage: true },
     });
 
-    const toolCallsAccum = new Map<number, Partial<ToolCall>>();
+    const toolCallsAccum = new Map<number, { id?: string; name?: string }>();
+    const toolCallArgsAccum = new Map<number, string>();
 
     for await (const chunk of stream) {
       const choice = chunk.choices[0];
@@ -121,22 +122,29 @@ export class OpenAIBackend extends BaseLLMBackend {
           toolCallsAccum.set(tc.index, {
             id: tc.id ?? existing.id,
             name: tc.function?.name ?? existing.name,
-            arguments: {
-              ...existing.arguments,
-              ...this.tryParseJson(tc.function?.arguments ?? ''),
-            },
           });
+
+          if (tc.function?.arguments) {
+            const existingArgs = toolCallArgsAccum.get(tc.index) ?? '';
+            toolCallArgsAccum.set(tc.index, existingArgs + tc.function.arguments);
+          }
         }
+      }
+
+      let finalToolCalls: ToolCall[] | undefined;
+      if (choice.finish_reason === 'tool_calls') {
+        finalToolCalls = Array.from(toolCallsAccum.entries()).map(([index, partial]) => ({
+          id: partial.id ?? '',
+          name: partial.name ?? '',
+          arguments: this.tryParseJson(toolCallArgsAccum.get(index) ?? '{}'),
+        }));
       }
 
       yield {
         id: chunk.id,
         delta: {
           content: delta.content ?? undefined,
-          toolCalls:
-            choice.finish_reason === 'tool_calls'
-              ? (Array.from(toolCallsAccum.values()) as ToolCall[])
-              : undefined,
+          toolCalls: finalToolCalls,
         },
         finishReason: choice.finish_reason ? this.mapFinishReason(choice.finish_reason) : undefined,
       };

@@ -16,6 +16,7 @@ import type {
   Message,
   ToolSchema,
 } from '@cogitator-ai/types';
+import { nanoid } from 'nanoid';
 import { BaseLLMBackend } from './base';
 
 interface GoogleConfig {
@@ -155,7 +156,6 @@ export class GoogleBackend extends BaseLLMBackend {
     const id = this.generateId();
     let buffer = '';
     const accumulatedToolCalls: ToolCall[] = [];
-    let toolCallIndex = 0;
 
     try {
       while (true) {
@@ -187,7 +187,7 @@ export class GoogleBackend extends BaseLLMBackend {
                     };
                   } else if ('functionCall' in part) {
                     const toolCall: ToolCall = {
-                      id: `call_${toolCallIndex++}`,
+                      id: `call_${nanoid(12)}`,
                       name: part.functionCall.name,
                       arguments: part.functionCall.args,
                     };
@@ -373,14 +373,13 @@ export class GoogleBackend extends BaseLLMBackend {
     const parts = candidate.content?.parts ?? [];
     let content = '';
     const toolCalls: ToolCall[] = [];
-    let toolCallIndex = 0;
 
     for (const part of parts) {
       if ('text' in part) {
         content += part.text;
       } else if ('functionCall' in part) {
         toolCalls.push({
-          id: `call_${toolCallIndex++}`,
+          id: `call_${nanoid(12)}`,
           name: part.functionCall.name,
           arguments: part.functionCall.args,
         });
