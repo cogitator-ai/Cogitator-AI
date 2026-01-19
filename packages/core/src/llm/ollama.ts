@@ -7,9 +7,11 @@ import type {
   ChatResponse,
   ChatStreamChunk,
   ToolCall,
+  ToolChoice,
   Message,
   LLMResponseFormat,
   MessageContent,
+  ToolSchema,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { BaseLLMBackend } from './base';
@@ -65,13 +67,15 @@ export class OllamaBackend extends BaseLLMBackend {
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
+    const tools = this.applyToolChoice(request.tools, request.toolChoice);
+
     const response = await fetch(`${this.baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: request.model,
         messages: this.convertMessages(request.messages),
-        tools: request.tools ? this.convertTools(request.tools) : undefined,
+        tools: tools ? this.convertTools(tools) : undefined,
         format: this.convertResponseFormat(request.responseFormat),
         stream: false,
         options: {
@@ -93,13 +97,15 @@ export class OllamaBackend extends BaseLLMBackend {
   }
 
   async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
+    const tools = this.applyToolChoice(request.tools, request.toolChoice);
+
     const response = await fetch(`${this.baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: request.model,
         messages: this.convertMessages(request.messages),
-        tools: request.tools ? this.convertTools(request.tools) : undefined,
+        tools: tools ? this.convertTools(tools) : undefined,
         format: this.convertResponseFormat(request.responseFormat),
         stream: true,
         options: {
@@ -240,5 +246,18 @@ export class OllamaBackend extends BaseLLMBackend {
     }
 
     return format.jsonSchema.schema;
+  }
+
+  private applyToolChoice(
+    tools: ToolSchema[] | undefined,
+    choice: ToolChoice | undefined
+  ): ToolSchema[] | undefined {
+    if (!tools || tools.length === 0) return undefined;
+    if (!choice || choice === 'auto') return tools;
+    if (choice === 'none') return undefined;
+
+    if (choice === 'required') return tools;
+
+    return tools.filter((t) => t.name === choice.function.name);
   }
 }

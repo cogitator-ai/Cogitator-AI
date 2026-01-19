@@ -13,6 +13,7 @@ import type {
   ChatResponse,
   ChatStreamChunk,
   ToolCall,
+  ToolChoice,
   Message,
   ToolSchema,
   LLMResponseFormat,
@@ -63,9 +64,17 @@ interface GeminiTool {
   functionDeclarations: GeminiFunctionDeclaration[];
 }
 
+interface GeminiToolConfig {
+  functionCallingConfig: {
+    mode: 'AUTO' | 'ANY' | 'NONE';
+    allowedFunctionNames?: string[];
+  };
+}
+
 interface GeminiRequest {
   contents: GeminiContent[];
   tools?: GeminiTool[];
+  toolConfig?: GeminiToolConfig;
   generationConfig?: {
     temperature?: number;
     topP?: number;
@@ -255,6 +264,11 @@ export class GoogleBackend extends BaseLLMBackend {
           functionDeclarations: request.tools.map((t) => this.convertTool(t)),
         },
       ];
+    }
+
+    const toolConfig = this.convertToolChoice(request.toolChoice);
+    if (toolConfig) {
+      geminiRequest.toolConfig = toolConfig;
     }
 
     geminiRequest.generationConfig = {};
@@ -478,6 +492,28 @@ export class GoogleBackend extends BaseLLMBackend {
     return {
       responseMimeType: 'application/json',
       responseSchema: format.jsonSchema.schema,
+    };
+  }
+
+  private convertToolChoice(choice: ToolChoice | undefined): GeminiToolConfig | null {
+    if (!choice) return null;
+
+    if (typeof choice === 'string') {
+      switch (choice) {
+        case 'auto':
+          return { functionCallingConfig: { mode: 'AUTO' } };
+        case 'none':
+          return { functionCallingConfig: { mode: 'NONE' } };
+        case 'required':
+          return { functionCallingConfig: { mode: 'ANY' } };
+      }
+    }
+
+    return {
+      functionCallingConfig: {
+        mode: 'ANY',
+        allowedFunctionNames: [choice.function.name],
+      },
     };
   }
 }

@@ -530,10 +530,14 @@ export class Cogitator {
         }
 
         if (response.finishReason === 'tool_calls' && response.toolCalls) {
-          for (const toolCall of response.toolCalls) {
+          const toolCalls = response.toolCalls;
+
+          for (const toolCall of toolCalls) {
             allToolCalls.push(toolCall);
             options.onToolCall?.(toolCall);
+          }
 
+          const executeToolCall = async (toolCall: ToolCall) => {
             const toolSpanStart = Date.now();
             const result = await this.executeTool(
               registry,
@@ -543,7 +547,20 @@ export class Cogitator {
               abortController.signal
             );
             const toolSpanEnd = Date.now();
+            return { toolCall, result, toolSpanStart, toolSpanEnd };
+          };
 
+          const toolResults = options.parallelToolCalls
+            ? await Promise.all(toolCalls.map(executeToolCall))
+            : await (async () => {
+                const results: Awaited<ReturnType<typeof executeToolCall>>[] = [];
+                for (const toolCall of toolCalls) {
+                  results.push(await executeToolCall(toolCall));
+                }
+                return results;
+              })();
+
+          for (const { toolCall, result, toolSpanStart, toolSpanEnd } of toolResults) {
             const toolSpan = this.createSpan(
               `tool.${toolCall.name}`,
               traceId,

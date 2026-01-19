@@ -8,6 +8,7 @@ import type {
   ChatResponse,
   ChatStreamChunk,
   ToolCall,
+  ToolChoice,
   Message,
   MessageContent,
   ContentPart,
@@ -303,13 +304,17 @@ export class AnthropicBackend extends BaseLLMBackend {
     const format = request.responseFormat;
 
     if (!format || format.type === 'text') {
-      return { tools: [], toolChoice: undefined, systemSuffix: '' };
+      return {
+        tools: [],
+        toolChoice: this.convertToolChoice(request.toolChoice),
+        systemSuffix: '',
+      };
     }
 
     if (format.type === 'json_object') {
       return {
         tools: [],
-        toolChoice: undefined,
+        toolChoice: this.convertToolChoice(request.toolChoice),
         systemSuffix:
           'You must respond with valid JSON only. Do not include any text before or after the JSON object.',
       };
@@ -333,6 +338,28 @@ export class AnthropicBackend extends BaseLLMBackend {
       tools: [jsonSchemaTool],
       toolChoice: { type: 'tool' as const, name: '__json_response' },
       systemSuffix: '',
+    };
+  }
+
+  private convertToolChoice(
+    choice: ToolChoice | undefined
+  ): Anthropic.MessageCreateParams['tool_choice'] {
+    if (!choice) return undefined;
+
+    if (typeof choice === 'string') {
+      switch (choice) {
+        case 'auto':
+          return { type: 'auto' };
+        case 'none':
+          return undefined;
+        case 'required':
+          return { type: 'any' };
+      }
+    }
+
+    return {
+      type: 'tool',
+      name: choice.function.name,
     };
   }
 }

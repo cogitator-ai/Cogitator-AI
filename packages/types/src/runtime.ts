@@ -75,6 +75,9 @@ export interface RunOptions {
   onSpan?: (span: Span) => void;
   /** Callback when memory operation fails */
   onMemoryError?: (error: Error, operation: 'save' | 'load') => void;
+
+  /** Execute tool calls in parallel. Default: false (sequential execution) */
+  parallelToolCalls?: boolean;
 }
 
 export interface RunResult {

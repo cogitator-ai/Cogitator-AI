@@ -8,6 +8,7 @@ import type {
   ChatResponse,
   ChatStreamChunk,
   ToolCall,
+  ToolChoice,
   Message,
   LLMResponseFormat,
   MessageContent,
@@ -46,6 +47,7 @@ export class OpenAIBackend extends BaseLLMBackend {
             },
           }))
         : undefined,
+      tool_choice: this.convertToolChoice(request.toolChoice),
       temperature: request.temperature,
       top_p: request.topP,
       max_tokens: request.maxTokens,
@@ -89,6 +91,7 @@ export class OpenAIBackend extends BaseLLMBackend {
             },
           }))
         : undefined,
+      tool_choice: this.convertToolChoice(request.toolChoice),
       temperature: request.temperature,
       top_p: request.topP,
       max_tokens: request.maxTokens,
@@ -268,5 +271,20 @@ export class OpenAIBackend extends BaseLLMBackend {
           },
         };
     }
+  }
+
+  private convertToolChoice(
+    choice: ToolChoice | undefined
+  ): OpenAI.Chat.ChatCompletionCreateParams['tool_choice'] {
+    if (!choice) return undefined;
+
+    if (typeof choice === 'string') {
+      return choice;
+    }
+
+    return {
+      type: 'function',
+      function: { name: choice.function.name },
+    };
   }
 }

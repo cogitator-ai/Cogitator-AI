@@ -37,10 +37,17 @@ export interface JsonSchemaFormat {
   strict?: boolean;
 }
 
+export type ToolChoice =
+  | 'auto'
+  | 'none'
+  | 'required'
+  | { type: 'function'; function: { name: string } };
+
 export interface ChatRequest {
   model: string;
   messages: Message[];
   tools?: ToolSchema[];
+  toolChoice?: ToolChoice;
   temperature?: number;
   topP?: number;
   maxTokens?: number;
