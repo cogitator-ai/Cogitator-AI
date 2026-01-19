@@ -9,6 +9,7 @@ import type {
   ToolCall,
   Message,
 } from '@cogitator-ai/types';
+import { nanoid } from 'nanoid';
 import { BaseLLMBackend } from './base';
 
 interface OllamaConfig {
@@ -133,8 +134,8 @@ export class OllamaBackend extends BaseLLMBackend {
           id,
           delta: {
             content: data.message.content,
-            toolCalls: data.message.tool_calls?.map((tc, i) => ({
-              id: `call_${i.toString()}`,
+            toolCalls: data.message.tool_calls?.map((tc) => ({
+              id: `call_${nanoid(12)}`,
               name: tc.function.name,
               arguments: tc.function.arguments,
             })),
@@ -175,8 +176,8 @@ export class OllamaBackend extends BaseLLMBackend {
   }
 
   private convertResponse(data: OllamaChatResponse): ChatResponse {
-    const toolCalls: ToolCall[] | undefined = data.message.tool_calls?.map((tc, i) => ({
-      id: `call_${i.toString()}`,
+    const toolCalls: ToolCall[] | undefined = data.message.tool_calls?.map((tc) => ({
+      id: `call_${nanoid(12)}`,
       name: tc.function.name,
       arguments: tc.function.arguments,
     }));
