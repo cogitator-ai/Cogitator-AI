@@ -9,6 +9,7 @@ import type {
   ToolCall,
   Message,
   LLMResponseFormat,
+  MessageContent,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { BaseLLMBackend } from './base';
@@ -20,6 +21,7 @@ interface OllamaConfig {
 interface OllamaMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  images?: string[];
   tool_calls?: OllamaToolCall[];
 }
 
@@ -160,10 +162,38 @@ export class OllamaBackend extends BaseLLMBackend {
   }
 
   private convertMessages(messages: Message[]): OllamaMessage[] {
-    return messages.map((m) => ({
-      role: m.role as OllamaMessage['role'],
-      content: m.content,
-    }));
+    return messages.map((m) => {
+      const { text, images } = this.extractContentAndImages(m.content);
+      return {
+        role: m.role as OllamaMessage['role'],
+        content: text,
+        images: images.length > 0 ? images : undefined,
+      };
+    });
+  }
+
+  private extractContentAndImages(content: MessageContent): { text: string; images: string[] } {
+    if (typeof content === 'string') {
+      return { text: content, images: [] };
+    }
+
+    const textParts: string[] = [];
+    const images: string[] = [];
+
+    for (const part of content) {
+      switch (part.type) {
+        case 'text':
+          textParts.push(part.text);
+          break;
+        case 'image_base64':
+          images.push(part.image_base64.data);
+          break;
+        case 'image_url':
+          break;
+      }
+    }
+
+    return { text: textParts.join(' '), images };
   }
 
   private convertTools(tools: ChatRequest['tools']): OllamaTool[] | undefined {

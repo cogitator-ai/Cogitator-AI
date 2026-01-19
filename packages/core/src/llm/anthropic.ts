@@ -9,6 +9,8 @@ import type {
   ChatStreamChunk,
   ToolCall,
   Message,
+  MessageContent,
+  ContentPart,
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
 
@@ -206,18 +208,18 @@ export class AnthropicBackend extends BaseLLMBackend {
     for (const m of messages) {
       switch (m.role) {
         case 'system':
-          system = m.content;
+          system = this.getTextContent(m.content);
           break;
         case 'user':
           anthropicMessages.push({
             role: 'user',
-            content: m.content,
+            content: this.convertContent(m.content),
           });
           break;
         case 'assistant':
           anthropicMessages.push({
             role: 'assistant',
-            content: m.content,
+            content: this.convertContent(m.content),
           });
           break;
         case 'tool':
@@ -227,7 +229,7 @@ export class AnthropicBackend extends BaseLLMBackend {
               {
                 type: 'tool_result',
                 tool_use_id: m.toolCallId ?? '',
-                content: m.content,
+                content: this.getTextContent(m.content),
               },
             ],
           });
@@ -236,6 +238,48 @@ export class AnthropicBackend extends BaseLLMBackend {
     }
 
     return { system, messages: anthropicMessages };
+  }
+
+  private convertContent(content: MessageContent): string | Anthropic.ContentBlockParam[] {
+    if (typeof content === 'string') {
+      return content;
+    }
+
+    return content.map((part) => this.convertContentPart(part));
+  }
+
+  private convertContentPart(part: ContentPart): Anthropic.ContentBlockParam {
+    switch (part.type) {
+      case 'text':
+        return { type: 'text', text: part.text };
+      case 'image_url':
+        return {
+          type: 'image',
+          source: {
+            type: 'url',
+            url: part.image_url.url,
+          },
+        };
+      case 'image_base64':
+        return {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: part.image_base64.media_type,
+            data: part.image_base64.data,
+          },
+        };
+    }
+  }
+
+  private getTextContent(content: MessageContent): string {
+    if (typeof content === 'string') {
+      return content;
+    }
+    return content
+      .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+      .map((part) => part.text)
+      .join(' ');
   }
 
   private mapStopReason(reason: string | null): ChatResponse['finishReason'] {

@@ -10,6 +10,8 @@ import type {
   ToolCall,
   Message,
   LLMResponseFormat,
+  MessageContent,
+  ContentPart,
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
 
@@ -155,19 +157,73 @@ export class OpenAIBackend extends BaseLLMBackend {
   }
 
   private convertMessages(messages: Message[]): OpenAI.Chat.ChatCompletionMessageParam[] {
-    return messages.map((m) => {
-      if (m.role === 'tool') {
-        return {
-          role: 'tool' as const,
-          content: m.content,
-          tool_call_id: m.toolCallId ?? '',
-        };
+    return messages.map((m): OpenAI.Chat.ChatCompletionMessageParam => {
+      switch (m.role) {
+        case 'system':
+          return {
+            role: 'system' as const,
+            content: this.getTextContent(m.content),
+          };
+        case 'user':
+          return {
+            role: 'user' as const,
+            content: this.convertContent(m.content),
+          };
+        case 'assistant':
+          return {
+            role: 'assistant' as const,
+            content: this.getTextContent(m.content),
+          };
+        case 'tool':
+          return {
+            role: 'tool' as const,
+            content: this.getTextContent(m.content),
+            tool_call_id: m.toolCallId ?? '',
+          };
       }
-      return {
-        role: m.role,
-        content: m.content,
-      };
     });
+  }
+
+  private convertContent(
+    content: MessageContent
+  ): string | OpenAI.Chat.ChatCompletionContentPart[] {
+    if (typeof content === 'string') {
+      return content;
+    }
+
+    return content.map((part) => this.convertContentPart(part));
+  }
+
+  private convertContentPart(part: ContentPart): OpenAI.Chat.ChatCompletionContentPart {
+    switch (part.type) {
+      case 'text':
+        return { type: 'text', text: part.text };
+      case 'image_url':
+        return {
+          type: 'image_url',
+          image_url: {
+            url: part.image_url.url,
+            detail: part.image_url.detail,
+          },
+        };
+      case 'image_base64':
+        return {
+          type: 'image_url',
+          image_url: {
+            url: `data:${part.image_base64.media_type};base64,${part.image_base64.data}`,
+          },
+        };
+    }
+  }
+
+  private getTextContent(content: MessageContent): string {
+    if (typeof content === 'string') {
+      return content;
+    }
+    return content
+      .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+      .map((part) => part.text)
+      .join(' ');
   }
 
   private mapFinishReason(reason: string | null): ChatResponse['finishReason'] {

@@ -4,6 +4,7 @@ import type {
   ReplayOptions,
   ReplayResult,
   Message,
+  MessageContent,
   Span,
   TimeTravelCheckpointStore,
   RunResult,
@@ -53,7 +54,8 @@ export class ExecutionReplayer {
     const startTime = Date.now();
     const spans: Span[] = [];
 
-    const output = messages.filter((m) => m.role === 'assistant').pop()?.content ?? '';
+    const lastAssistant = messages.filter((m) => m.role === 'assistant').pop();
+    const output = lastAssistant ? this.getTextContent(lastAssistant.content) : '';
 
     const result: ReplayResult = {
       output,
@@ -145,18 +147,19 @@ export class ExecutionReplayer {
 
   private extractUserInput(messages: Message[]): string {
     const userMessages = messages.filter((m) => m.role === 'user');
-    return userMessages[userMessages.length - 1]?.content ?? '';
+    const lastUserMessage = userMessages[userMessages.length - 1];
+    return lastUserMessage ? this.getTextContent(lastUserMessage.content) : '';
   }
 
   private createReplayAgent(agent: Agent, preloadedMessages: Message[]): Agent {
     const systemMessage = preloadedMessages.find((m) => m.role === 'system');
     const contextFromHistory = preloadedMessages
       .filter((m) => m.role === 'assistant' || m.role === 'tool')
-      .map((m) => `[${m.role}]: ${m.content}`)
+      .map((m) => `[${m.role}]: ${this.getTextContent(m.content)}`)
       .join('\n');
 
     const newInstructions = systemMessage
-      ? `${systemMessage.content}\n\n---\nReplay Context (conversation history up to checkpoint):\n${contextFromHistory}`
+      ? `${this.getTextContent(systemMessage.content)}\n\n---\nReplay Context (conversation history up to checkpoint):\n${contextFromHistory}`
       : agent.instructions;
 
     return new (agent.constructor as typeof Agent)({
@@ -207,5 +210,15 @@ export class ExecutionReplayer {
     }
 
     return undefined;
+  }
+
+  private getTextContent(content: MessageContent): string {
+    if (typeof content === 'string') {
+      return content;
+    }
+    return content
+      .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+      .map((part) => part.text)
+      .join(' ');
   }
 }

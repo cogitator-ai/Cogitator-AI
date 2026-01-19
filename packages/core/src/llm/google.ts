@@ -16,6 +16,8 @@ import type {
   Message,
   ToolSchema,
   LLMResponseFormat,
+  MessageContent,
+  ContentPart,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { BaseLLMBackend } from './base';
@@ -32,6 +34,8 @@ interface GeminiContent {
 
 type GeminiPart =
   | { text: string }
+  | { inlineData: { mimeType: string; data: string } }
+  | { fileData: { mimeType: string; fileUri: string } }
   | { functionCall: GeminiFunctionCall }
   | { functionResponse: GeminiFunctionResponse };
 
@@ -307,22 +311,18 @@ export class GoogleBackend extends BaseLLMBackend {
     for (const msg of messages) {
       switch (msg.role) {
         case 'system':
-          systemInstruction = msg.content;
+          systemInstruction = this.getTextContent(msg.content);
           break;
 
         case 'user':
           contents.push({
             role: 'user',
-            parts: [{ text: msg.content }],
+            parts: this.convertContentToParts(msg.content),
           });
           break;
 
         case 'assistant': {
-          const parts: GeminiPart[] = [];
-
-          if (msg.content) {
-            parts.push({ text: msg.content });
-          }
+          const parts = this.convertContentToParts(msg.content);
 
           if (parts.length > 0 || pendingToolResults.size === 0) {
             contents.push({
@@ -336,7 +336,7 @@ export class GoogleBackend extends BaseLLMBackend {
         case 'tool': {
           const functionResponse: GeminiFunctionResponse = {
             name: msg.name ?? '',
-            response: this.parseToolResult(msg.content),
+            response: this.parseToolResult(this.getTextContent(msg.content)),
           };
 
           contents.push({
@@ -349,6 +349,45 @@ export class GoogleBackend extends BaseLLMBackend {
     }
 
     return { systemInstruction, contents };
+  }
+
+  private convertContentToParts(content: MessageContent): GeminiPart[] {
+    if (typeof content === 'string') {
+      return content ? [{ text: content }] : [];
+    }
+
+    return content.map((part) => this.convertContentPart(part));
+  }
+
+  private convertContentPart(part: ContentPart): GeminiPart {
+    switch (part.type) {
+      case 'text':
+        return { text: part.text };
+      case 'image_url':
+        return {
+          fileData: {
+            mimeType: 'image/jpeg',
+            fileUri: part.image_url.url,
+          },
+        };
+      case 'image_base64':
+        return {
+          inlineData: {
+            mimeType: part.image_base64.media_type,
+            data: part.image_base64.data,
+          },
+        };
+    }
+  }
+
+  private getTextContent(content: MessageContent): string {
+    if (typeof content === 'string') {
+      return content;
+    }
+    return content
+      .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+      .map((part) => part.text)
+      .join(' ');
   }
 
   private parseToolResult(content: string): Record<string, unknown> {

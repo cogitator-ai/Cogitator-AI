@@ -8,6 +8,7 @@ import type {
   RunOptions,
   RunResult,
   Message,
+  MessageContent,
   ToolCall,
   ToolResult,
   LLMBackend,
@@ -632,7 +633,9 @@ export class Cogitator {
 
       const endTime = Date.now();
       const lastAssistantMessage = messages.filter((m) => m.role === 'assistant').pop();
-      const finalOutput = lastAssistantMessage?.content ?? '';
+      const finalOutput = lastAssistantMessage
+        ? this.getTextContent(lastAssistantMessage.content)
+        : '';
 
       if (
         this.reflectionEngine &&
@@ -1059,6 +1062,16 @@ export class Cogitator {
    */
   getCostRouter(): CostAwareRouter | undefined {
     return this.costRouter;
+  }
+
+  private getTextContent(content: MessageContent): string {
+    if (typeof content === 'string') {
+      return content;
+    }
+    return content
+      .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+      .map((part) => part.text)
+      .join(' ');
   }
 
   /**

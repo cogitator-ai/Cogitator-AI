@@ -19,10 +19,23 @@ export function countTokens(text: string): number {
 }
 
 /**
+ * Extract text content from a message
+ */
+function getTextContent(content: Message['content']): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  return content
+    .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+    .map((part) => part.text)
+    .join(' ');
+}
+
+/**
  * Estimate token count for a message (includes overhead)
  */
 export function countMessageTokens(message: Message): number {
-  return countTokens(message.content) + MESSAGE_OVERHEAD;
+  return countTokens(getTextContent(message.content)) + MESSAGE_OVERHEAD;
 }
 
 /**
