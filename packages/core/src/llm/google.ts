@@ -15,6 +15,7 @@ import type {
   ToolCall,
   Message,
   ToolSchema,
+  LLMResponseFormat,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { BaseLLMBackend } from './base';
@@ -66,6 +67,8 @@ interface GeminiRequest {
     topP?: number;
     maxOutputTokens?: number;
     stopSequences?: string[];
+    responseMimeType?: string;
+    responseSchema?: Record<string, unknown>;
   };
   systemInstruction?: {
     parts: { text: string }[];
@@ -265,6 +268,14 @@ export class GoogleBackend extends BaseLLMBackend {
       geminiRequest.generationConfig.stopSequences = request.stop;
     }
 
+    const jsonConfig = this.convertResponseFormat(request.responseFormat);
+    if (jsonConfig) {
+      geminiRequest.generationConfig.responseMimeType = jsonConfig.responseMimeType;
+      if (jsonConfig.responseSchema) {
+        geminiRequest.generationConfig.responseSchema = jsonConfig.responseSchema;
+      }
+    }
+
     if (Object.keys(geminiRequest.generationConfig).length === 0) {
       delete geminiRequest.generationConfig;
     }
@@ -412,5 +423,22 @@ export class GoogleBackend extends BaseLLMBackend {
       default:
         return 'stop';
     }
+  }
+
+  private convertResponseFormat(
+    format: LLMResponseFormat | undefined
+  ): { responseMimeType: string; responseSchema?: Record<string, unknown> } | null {
+    if (!format || format.type === 'text') {
+      return null;
+    }
+
+    if (format.type === 'json_object') {
+      return { responseMimeType: 'application/json' };
+    }
+
+    return {
+      responseMimeType: 'application/json',
+      responseSchema: format.jsonSchema.schema,
+    };
   }
 }

@@ -268,6 +268,43 @@ const agent = new Agent({
 });
 ```
 
+### 📋 Structured Outputs / JSON Mode
+
+```typescript
+// Simple JSON mode - returns valid JSON
+const result = await backend.chat({
+  model: 'gpt-4o',
+  messages: [{ role: 'user', content: 'List 3 colors as JSON array' }],
+  responseFormat: { type: 'json_object' },
+});
+// result.content: '["red", "green", "blue"]'
+
+// Strict schema validation with json_schema
+const result = await backend.chat({
+  model: 'gpt-4o',
+  messages: [{ role: 'user', content: 'Extract person info from: John is 30 years old' }],
+  responseFormat: {
+    type: 'json_schema',
+    jsonSchema: {
+      name: 'person',
+      description: 'Person information',
+      schema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          age: { type: 'number' },
+        },
+        required: ['name', 'age'],
+      },
+      strict: true,
+    },
+  },
+});
+// result.content: '{"name": "John", "age": 30}'
+```
+
+Works with all backends: OpenAI, Anthropic, Google, Ollama, Mistral, Groq, Together, DeepSeek.
+
 ### 🧠 Intelligent Memory
 
 ```typescript

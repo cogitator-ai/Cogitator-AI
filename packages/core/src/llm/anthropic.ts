@@ -36,18 +36,23 @@ export class AnthropicBackend extends BaseLLMBackend {
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const { system, messages } = this.convertMessages(request.messages);
+    const { tools, toolChoice, systemSuffix } = this.prepareJsonMode(request);
 
-    const tools = request.tools?.map((t) => ({
-      name: t.name,
-      description: t.description,
-      input_schema: t.parameters as AnthropicToolInput,
-    }));
+    const allTools = [
+      ...(request.tools?.map((t) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.parameters as AnthropicToolInput,
+      })) ?? []),
+      ...tools,
+    ];
 
     const response = await this.client.messages.create({
       model: request.model,
-      system,
+      system: systemSuffix ? `${system}\n\n${systemSuffix}` : system,
       messages,
-      tools,
+      tools: allTools.length > 0 ? allTools : undefined,
+      tool_choice: toolChoice,
       max_tokens: request.maxTokens ?? 4096,
       temperature: request.temperature,
       top_p: request.topP,
@@ -56,17 +61,26 @@ export class AnthropicBackend extends BaseLLMBackend {
 
     const toolCalls: ToolCall[] = [];
     let content = '';
+    let jsonSchemaResponse: Record<string, unknown> | null = null;
 
     for (const block of response.content) {
       if (block.type === 'text') {
         content += block.text;
       } else if (block.type === 'tool_use') {
-        toolCalls.push({
-          id: block.id,
-          name: block.name,
-          arguments: block.input as Record<string, unknown>,
-        });
+        if (block.name === '__json_response') {
+          jsonSchemaResponse = block.input as Record<string, unknown>;
+        } else {
+          toolCalls.push({
+            id: block.id,
+            name: block.name,
+            arguments: block.input as Record<string, unknown>,
+          });
+        }
       }
+    }
+
+    if (jsonSchemaResponse) {
+      content = JSON.stringify(jsonSchemaResponse);
     }
 
     return {
@@ -84,18 +98,23 @@ export class AnthropicBackend extends BaseLLMBackend {
 
   async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
     const { system, messages } = this.convertMessages(request.messages);
+    const { tools, toolChoice, systemSuffix } = this.prepareJsonMode(request);
 
-    const tools = request.tools?.map((t) => ({
-      name: t.name,
-      description: t.description,
-      input_schema: t.parameters as AnthropicToolInput,
-    }));
+    const allTools = [
+      ...(request.tools?.map((t) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.parameters as AnthropicToolInput,
+      })) ?? []),
+      ...tools,
+    ];
 
     const stream = this.client.messages.stream({
       model: request.model,
-      system,
+      system: systemSuffix ? `${system}\n\n${systemSuffix}` : system,
       messages,
-      tools,
+      tools: allTools.length > 0 ? allTools : undefined,
+      tool_choice: toolChoice,
       max_tokens: request.maxTokens ?? 4096,
       temperature: request.temperature,
       top_p: request.topP,
@@ -105,9 +124,11 @@ export class AnthropicBackend extends BaseLLMBackend {
     const id = this.generateId();
     const toolCalls: ToolCall[] = [];
     let currentToolCall: Partial<ToolCall> | null = null;
+    let currentToolName = '';
     let inputJson = '';
     let inputTokens = 0;
     let outputTokens = 0;
+    let jsonSchemaContent = '';
 
     for await (const event of stream) {
       if (event.type === 'message_start') {
@@ -120,6 +141,7 @@ export class AnthropicBackend extends BaseLLMBackend {
             name: block.name,
             arguments: {},
           };
+          currentToolName = block.name;
           inputJson = '';
         }
       } else if (event.type === 'content_block_delta') {
@@ -139,12 +161,25 @@ export class AnthropicBackend extends BaseLLMBackend {
           } catch {
             currentToolCall.arguments = {};
           }
-          toolCalls.push(currentToolCall as ToolCall);
+
+          if (currentToolName === '__json_response') {
+            jsonSchemaContent = JSON.stringify(currentToolCall.arguments);
+          } else {
+            toolCalls.push(currentToolCall as ToolCall);
+          }
           currentToolCall = null;
+          currentToolName = '';
         }
       } else if (event.type === 'message_delta') {
         outputTokens = event.usage.output_tokens;
       } else if (event.type === 'message_stop') {
+        if (jsonSchemaContent) {
+          yield {
+            id,
+            delta: { content: jsonSchemaContent },
+          };
+        }
+
         yield {
           id,
           delta: {
@@ -214,5 +249,46 @@ export class AnthropicBackend extends BaseLLMBackend {
       default:
         return 'stop';
     }
+  }
+
+  private prepareJsonMode(request: ChatRequest): {
+    tools: Array<{ name: string; description: string; input_schema: AnthropicToolInput }>;
+    toolChoice: Anthropic.MessageCreateParams['tool_choice'];
+    systemSuffix: string;
+  } {
+    const format = request.responseFormat;
+
+    if (!format || format.type === 'text') {
+      return { tools: [], toolChoice: undefined, systemSuffix: '' };
+    }
+
+    if (format.type === 'json_object') {
+      return {
+        tools: [],
+        toolChoice: undefined,
+        systemSuffix:
+          'You must respond with valid JSON only. Do not include any text before or after the JSON object.',
+      };
+    }
+
+    const schema = format.jsonSchema.schema;
+    const inputSchema: AnthropicToolInput = {
+      type: 'object',
+      properties: (schema.properties ?? {}) as Record<string, unknown>,
+      required: schema.required as string[] | undefined,
+      ...schema,
+    };
+
+    const jsonSchemaTool = {
+      name: '__json_response',
+      description: format.jsonSchema.description ?? 'Respond with structured JSON data',
+      input_schema: inputSchema,
+    };
+
+    return {
+      tools: [jsonSchemaTool],
+      toolChoice: { type: 'tool' as const, name: '__json_response' },
+      systemSuffix: '',
+    };
   }
 }

@@ -9,6 +9,7 @@ import type {
   ChatStreamChunk,
   ToolCall,
   Message,
+  LLMResponseFormat,
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
 
@@ -47,6 +48,7 @@ export class OpenAIBackend extends BaseLLMBackend {
       top_p: request.topP,
       max_tokens: request.maxTokens,
       stop: request.stop,
+      response_format: this.convertResponseFormat(request.responseFormat),
     });
 
     const choice = response.choices[0];
@@ -91,6 +93,7 @@ export class OpenAIBackend extends BaseLLMBackend {
       stop: request.stop,
       stream: true,
       stream_options: { include_usage: true },
+      response_format: this.convertResponseFormat(request.responseFormat),
     });
 
     const toolCallsAccum = new Map<number, { id?: string; name?: string }>();
@@ -185,6 +188,29 @@ export class OpenAIBackend extends BaseLLMBackend {
       return JSON.parse(str) as Record<string, unknown>;
     } catch {
       return {};
+    }
+  }
+
+  private convertResponseFormat(
+    format: LLMResponseFormat | undefined
+  ): OpenAI.Chat.ChatCompletionCreateParams['response_format'] {
+    if (!format) return undefined;
+
+    switch (format.type) {
+      case 'text':
+        return { type: 'text' };
+      case 'json_object':
+        return { type: 'json_object' };
+      case 'json_schema':
+        return {
+          type: 'json_schema',
+          json_schema: {
+            name: format.jsonSchema.name,
+            description: format.jsonSchema.description,
+            schema: format.jsonSchema.schema,
+            strict: format.jsonSchema.strict ?? true,
+          },
+        };
     }
   }
 }

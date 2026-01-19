@@ -8,6 +8,7 @@ import type {
   ChatStreamChunk,
   ToolCall,
   Message,
+  LLMResponseFormat,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { BaseLLMBackend } from './base';
@@ -69,6 +70,7 @@ export class OllamaBackend extends BaseLLMBackend {
         model: request.model,
         messages: this.convertMessages(request.messages),
         tools: request.tools ? this.convertTools(request.tools) : undefined,
+        format: this.convertResponseFormat(request.responseFormat),
         stream: false,
         options: {
           temperature: request.temperature,
@@ -96,6 +98,7 @@ export class OllamaBackend extends BaseLLMBackend {
         model: request.model,
         messages: this.convertMessages(request.messages),
         tools: request.tools ? this.convertTools(request.tools) : undefined,
+        format: this.convertResponseFormat(request.responseFormat),
         stream: true,
         options: {
           temperature: request.temperature,
@@ -193,5 +196,19 @@ export class OllamaBackend extends BaseLLMBackend {
         totalTokens: (data.prompt_eval_count ?? 0) + (data.eval_count ?? 0),
       },
     };
+  }
+
+  private convertResponseFormat(
+    format: LLMResponseFormat | undefined
+  ): 'json' | Record<string, unknown> | undefined {
+    if (!format || format.type === 'text') {
+      return undefined;
+    }
+
+    if (format.type === 'json_object') {
+      return 'json';
+    }
+
+    return format.jsonSchema.schema;
   }
 }

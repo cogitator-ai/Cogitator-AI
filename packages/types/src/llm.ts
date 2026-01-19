@@ -25,6 +25,18 @@ export interface LLMConfig {
   stopSequences?: string[];
 }
 
+export type LLMResponseFormat =
+  | { type: 'text' }
+  | { type: 'json_object' }
+  | { type: 'json_schema'; jsonSchema: JsonSchemaFormat };
+
+export interface JsonSchemaFormat {
+  name: string;
+  description?: string;
+  schema: Record<string, unknown>;
+  strict?: boolean;
+}
+
 export interface ChatRequest {
   model: string;
   messages: Message[];
@@ -34,6 +46,7 @@ export interface ChatRequest {
   maxTokens?: number;
   stop?: string[];
   stream?: boolean;
+  responseFormat?: LLMResponseFormat;
 }
 
 export interface ChatResponse {
