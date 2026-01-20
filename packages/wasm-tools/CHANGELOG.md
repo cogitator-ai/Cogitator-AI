@@ -1,5 +1,14 @@
 # @cogitator-ai/wasm-tools
 
+## 0.3.0
+
+### Minor Changes
+
+- Add hash and base64 WASM plugins
+  - New `createHashTool()` for SHA-256, SHA-1, MD5 hashing
+  - New `createBase64Tool()` for encode/decode with URL-safe support
+  - Both tools run in isolated Extism sandbox
+
 ## 0.2.8
 
 ### Patch Changes
