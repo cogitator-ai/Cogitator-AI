@@ -5,7 +5,19 @@
 import type { ZodType } from 'zod';
 import type { SandboxConfig } from './sandbox';
 
-export type ToolCategory = 'math' | 'text' | 'file' | 'network' | 'system' | 'utility';
+export type ToolCategory =
+  | 'math'
+  | 'text'
+  | 'file'
+  | 'network'
+  | 'system'
+  | 'utility'
+  | 'web'
+  | 'database'
+  | 'communication'
+  | 'development';
+
+export type SideEffectType = 'filesystem' | 'network' | 'database' | 'process' | 'external';
 
 export interface ToolConfig<TParams = unknown, TResult = unknown> {
   name: string;
@@ -14,7 +26,7 @@ export interface ToolConfig<TParams = unknown, TResult = unknown> {
   tags?: string[];
   parameters: ZodType<TParams>;
   execute: (params: TParams, context: ToolContext) => Promise<TResult>;
-  sideEffects?: ('filesystem' | 'network' | 'database' | 'process')[];
+  sideEffects?: SideEffectType[];
   requiresApproval?: boolean | ((params: TParams) => boolean);
   timeout?: number;
   sandbox?: SandboxConfig;
@@ -27,7 +39,7 @@ export interface Tool<TParams = unknown, TResult = unknown> {
   tags?: string[];
   parameters: ZodType<TParams>;
   execute: (params: TParams, context: ToolContext) => Promise<TResult>;
-  sideEffects?: ('filesystem' | 'network' | 'database' | 'process')[];
+  sideEffects?: SideEffectType[];
   requiresApproval?: boolean | ((params: TParams) => boolean);
   timeout?: number;
   sandbox?: SandboxConfig;

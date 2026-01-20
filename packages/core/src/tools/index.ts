@@ -1,7 +1,3 @@
-/**
- * Built-in tools for Cogitator
- */
-
 export { calculator } from './calculator';
 export { datetime } from './datetime';
 
@@ -21,6 +17,13 @@ export { httpRequest } from './http';
 
 export { exec } from './exec';
 
+export { webSearch } from './web-search';
+export { webScrape } from './web-scrape';
+export { sqlQuery } from './sql-query';
+export { vectorSearch } from './vector-search';
+export { sendEmail } from './email';
+export { githubApi } from './github';
+
 import { calculator } from './calculator';
 import { datetime } from './datetime';
 import { uuid } from './uuid';
@@ -33,6 +36,12 @@ import { regexMatch, regexReplace } from './regex';
 import { fileRead, fileWrite, fileList, fileExists, fileDelete } from './filesystem';
 import { httpRequest } from './http';
 import { exec } from './exec';
+import { webSearch } from './web-search';
+import { webScrape } from './web-scrape';
+import { sqlQuery } from './sql-query';
+import { vectorSearch } from './vector-search';
+import { sendEmail } from './email';
+import { githubApi } from './github';
 
 export const builtinTools = [
   calculator,
@@ -55,4 +64,10 @@ export const builtinTools = [
   fileDelete,
   httpRequest,
   exec,
+  webSearch,
+  webScrape,
+  sqlQuery,
+  vectorSearch,
+  sendEmail,
+  githubApi,
 ] as const;

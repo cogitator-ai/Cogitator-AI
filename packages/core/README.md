@@ -46,7 +46,7 @@ console.log(result.output);
 - **Type-Safe Tools** - Zod-validated tool definitions
 - **Streaming Responses** - Real-time token streaming
 - **Memory Integration** - Redis, PostgreSQL, in-memory adapters
-- **20+ Built-in Tools** - Calculator, filesystem, HTTP, regex, and more
+- **26 Built-in Tools** - Web search, SQL, email, GitHub, filesystem, and more
 - **Reflection Engine** - Self-improvement through tool call analysis
 - **Tree-of-Thought** - Advanced reasoning with branch exploration
 - **Agent Optimizer** - DSPy-style learning from traces
@@ -222,6 +222,8 @@ const schemas = registry.getSchemas();
 
 ### Built-in Tools
 
+#### Utility Tools
+
 | Tool            | Description                      |
 | --------------- | -------------------------------- |
 | `calculator`    | Evaluate math expressions        |
@@ -245,6 +247,32 @@ const schemas = registry.getSchemas();
 | `httpRequest`   | Make HTTP requests               |
 | `exec`          | Execute shell commands           |
 
+#### Web & Search Tools
+
+| Tool        | Description                            |
+| ----------- | -------------------------------------- |
+| `webSearch` | Search the web (Tavily, Brave, Serper) |
+| `webScrape` | Extract content from web pages         |
+
+#### Database Tools
+
+| Tool           | Description                                |
+| -------------- | ------------------------------------------ |
+| `sqlQuery`     | Execute SQL queries (PostgreSQL, SQLite)   |
+| `vectorSearch` | Semantic search with embeddings (pgvector) |
+
+#### Communication Tools
+
+| Tool        | Description                    |
+| ----------- | ------------------------------ |
+| `sendEmail` | Send emails (Resend API, SMTP) |
+
+#### Development Tools
+
+| Tool        | Description                                      |
+| ----------- | ------------------------------------------------ |
+| `githubApi` | GitHub API (issues, PRs, files, commits, search) |
+
 ```typescript
 import { builtinTools, calculator, datetime } from '@cogitator-ai/core';
 
@@ -254,6 +282,106 @@ const agent = new Agent({
   model: 'openai/gpt-4o',
   tools: builtinTools,
 });
+```
+
+### Web Search Tool
+
+Search the web using Tavily, Brave, or Serper APIs:
+
+```typescript
+import { webSearch } from '@cogitator-ai/core';
+
+// Auto-detects from TAVILY_API_KEY, BRAVE_API_KEY, or SERPER_API_KEY
+const agent = new Agent({
+  tools: [webSearch],
+});
+
+// Or specify provider explicitly in tool call
+// provider: 'tavily' | 'brave' | 'serper'
+```
+
+### Web Scrape Tool
+
+Extract content from web pages:
+
+```typescript
+import { webScrape } from '@cogitator-ai/core';
+
+const agent = new Agent({
+  tools: [webScrape],
+});
+
+// Supports CSS selectors, text/markdown/html output, link/image extraction
+```
+
+### SQL Query Tool
+
+Execute SQL queries against PostgreSQL or SQLite:
+
+```typescript
+import { sqlQuery } from '@cogitator-ai/core';
+
+const agent = new Agent({
+  tools: [sqlQuery],
+});
+
+// Uses DATABASE_URL env var by default
+// Supports parameterized queries for safety
+// Read-only by default (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN)
+```
+
+**Dependencies:** `pg` for PostgreSQL, `better-sqlite3` for SQLite
+
+### Vector Search Tool
+
+Semantic search using embeddings with pgvector:
+
+```typescript
+import { vectorSearch } from '@cogitator-ai/core';
+
+const agent = new Agent({
+  tools: [vectorSearch],
+});
+
+// Embedding providers: OpenAI, Ollama, Google
+// Auto-detects from OPENAI_API_KEY, OLLAMA_BASE_URL, or GOOGLE_API_KEY
+```
+
+**Dependencies:** `pg` with pgvector extension
+
+### Email Tool
+
+Send emails via Resend API or SMTP:
+
+```typescript
+import { sendEmail } from '@cogitator-ai/core';
+
+const agent = new Agent({
+  tools: [sendEmail],
+});
+
+// Resend: Set RESEND_API_KEY
+// SMTP: Set SMTP_HOST, SMTP_USER, SMTP_PASS
+// Supports HTML, CC/BCC, reply-to
+```
+
+**Dependencies:** `nodemailer` for SMTP
+
+### GitHub API Tool
+
+Interact with GitHub repositories:
+
+```typescript
+import { githubApi } from '@cogitator-ai/core';
+
+const agent = new Agent({
+  tools: [githubApi],
+});
+
+// Set GITHUB_TOKEN env var
+// Actions: get_repo, list_issues, get_issue, create_issue, update_issue,
+//          list_prs, get_pr, create_pr, get_file, list_commits,
+//          search_code, search_issues
 ```
 
 ---
