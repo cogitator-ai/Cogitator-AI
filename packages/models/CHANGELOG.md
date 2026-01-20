@@ -1,5 +1,15 @@
 # @cogitator-ai/models
 
+## 6.0.0
+
+### Patch Changes
+
+- Updated dependencies [70679b8]
+- Updated dependencies [2f599f0]
+- Updated dependencies [10956ae]
+- Updated dependencies [218d91f]
+  - @cogitator-ai/types@0.8.0
+
 ## 5.0.0
 
 ### Patch Changes

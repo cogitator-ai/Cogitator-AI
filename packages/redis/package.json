@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/redis",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Unified Redis client for Cogitator with standalone and cluster support",
   "type": "module",
   "main": "./dist/index.js",

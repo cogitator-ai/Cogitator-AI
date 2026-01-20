@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/sandbox",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Sandbox execution for Cogitator agents (Docker and WASM)",
   "type": "module",
   "main": "./dist/index.js",

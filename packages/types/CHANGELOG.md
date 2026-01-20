@@ -1,5 +1,92 @@
 # @cogitator-ai/types
 
+## 0.8.0
+
+### Minor Changes
+
+- 70679b8: feat(core): add Azure OpenAI and AWS Bedrock backends
+
+  Enterprise LLM providers for production deployments:
+
+  **Azure OpenAI:**
+  - Full chat and streaming support via official OpenAI SDK
+  - Configurable deployment, endpoint, and API version
+  - Tool calling, structured outputs, vision
+
+  **AWS Bedrock:**
+  - Uses Converse API for unified chat interface
+  - Dynamic SDK import (optional peer dependency)
+  - Supports Claude, Llama, Mistral, Cohere, Titan models
+  - Tool calling with proper type safety
+
+  Both backends integrate seamlessly with the universal LLM interface.
+
+- 2f599f0: feat: add parallel tool execution and tool choice support
+
+  **Parallel Tool Execution:**
+  - New `parallelToolCalls` option in `RunOptions` enables concurrent tool execution
+  - When enabled, independent tool calls execute via `Promise.all` for improved performance
+  - Default remains sequential execution for deterministic behavior
+
+  **Tool Choice:**
+  - New `ToolChoice` type: `'auto' | 'none' | 'required' | { type: 'function'; function: { name: string } }`
+  - New `toolChoice` field in `ChatRequest` interface
+  - Provider-specific implementations:
+    - OpenAI: native tool_choice support
+    - Anthropic: maps to `tool_choice` with `type: 'auto' | 'any' | 'tool'`
+    - Google: uses `functionCallingConfig` with mode and allowedFunctionNames
+    - Ollama: filters tools based on choice (workaround for no native API support)
+
+- 10956ae: feat: add structured outputs / JSON mode support
+
+  Implement responseFormat parameter across all LLM backends for guaranteed JSON output:
+  - **json_object**: Simple JSON mode - model returns valid JSON
+  - **json_schema**: Strict schema validation with name, description, and schema definition
+
+  Works with all backends:
+  - OpenAI: Native response_format support
+  - Anthropic: Tool-based JSON schema forcing
+  - Google: responseMimeType and responseSchema in generationConfig
+  - Ollama: format parameter with 'json' or schema object
+
+  ```typescript
+  // Simple JSON mode
+  const result = await backend.chat({
+    model: 'gpt-4o',
+    messages: [{ role: 'user', content: 'List 3 colors as JSON array' }],
+    responseFormat: { type: 'json_object' },
+  });
+
+  // Strict schema validation
+  const result = await backend.chat({
+    model: 'gpt-4o',
+    messages: [{ role: 'user', content: 'Extract person info' }],
+    responseFormat: {
+      type: 'json_schema',
+      jsonSchema: {
+        name: 'person',
+        schema: {
+          type: 'object',
+          properties: { name: { type: 'string' }, age: { type: 'number' } },
+          required: ['name', 'age'],
+        },
+      },
+    },
+  });
+  ```
+
+- 218d91f: feat: add vision / multi-modal support
+
+  Message content now supports images in addition to text:
+  - `MessageContent` = `string | ContentPart[]`
+  - `ContentPart` can be `text`, `image_url`, or `image_base64`
+
+  All LLM backends updated to handle multi-modal content:
+  - **OpenAI**: `image_url` parts with detail level support
+  - **Anthropic**: `image` source with URL or base64
+  - **Google Gemini**: `inlineData` and `fileData` parts
+  - **Ollama**: `images` array with base64 data
+
 ## 0.7.0
 
 ### Minor Changes

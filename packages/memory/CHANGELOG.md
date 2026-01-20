@@ -1,5 +1,28 @@
 # @cogitator-ai/memory
 
+## 0.4.2
+
+### Patch Changes
+
+- 218d91f: feat: add vision / multi-modal support
+
+  Message content now supports images in addition to text:
+  - `MessageContent` = `string | ContentPart[]`
+  - `ContentPart` can be `text`, `image_url`, or `image_base64`
+
+  All LLM backends updated to handle multi-modal content:
+  - **OpenAI**: `image_url` parts with detail level support
+  - **Anthropic**: `image` source with URL or base64
+  - **Google Gemini**: `inlineData` and `fileData` parts
+  - **Ollama**: `images` array with base64 data
+
+- Updated dependencies [70679b8]
+- Updated dependencies [2f599f0]
+- Updated dependencies [10956ae]
+- Updated dependencies [218d91f]
+  - @cogitator-ai/types@0.8.0
+  - @cogitator-ai/redis@0.2.5
+
 ## 0.4.1
 
 ### Patch Changes
