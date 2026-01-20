@@ -91,3 +91,97 @@ export interface LLMBackend {
   chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk>;
   complete?(request: Omit<ChatRequest, 'model'> & { model?: string }): Promise<ChatResponse>;
 }
+
+/**
+ * Type-safe provider configuration interfaces
+ */
+
+export interface OllamaProviderConfig {
+  baseUrl: string;
+}
+
+export interface OpenAIProviderConfig {
+  apiKey: string;
+  baseUrl?: string;
+}
+
+export interface AnthropicProviderConfig {
+  apiKey: string;
+}
+
+export interface GoogleProviderConfig {
+  apiKey: string;
+}
+
+export interface AzureProviderConfig {
+  endpoint: string;
+  apiKey: string;
+  apiVersion?: string;
+  deployment?: string;
+}
+
+export interface BedrockProviderConfig {
+  region?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+}
+
+export interface VLLMProviderConfig {
+  baseUrl: string;
+}
+
+export interface MistralProviderConfig {
+  apiKey: string;
+}
+
+export interface GroqProviderConfig {
+  apiKey: string;
+}
+
+export interface TogetherProviderConfig {
+  apiKey: string;
+}
+
+export interface DeepSeekProviderConfig {
+  apiKey: string;
+}
+
+/**
+ * Map of provider names to their config types
+ */
+export interface ProviderConfigMap {
+  ollama: OllamaProviderConfig;
+  openai: OpenAIProviderConfig;
+  anthropic: AnthropicProviderConfig;
+  google: GoogleProviderConfig;
+  azure: AzureProviderConfig;
+  bedrock: BedrockProviderConfig;
+  vllm: VLLMProviderConfig;
+  mistral: MistralProviderConfig;
+  groq: GroqProviderConfig;
+  together: TogetherProviderConfig;
+  deepseek: DeepSeekProviderConfig;
+}
+
+/**
+ * All provider configs as a partial record
+ */
+export type LLMProvidersConfig = {
+  [K in LLMProvider]?: ProviderConfigMap[K];
+};
+
+/**
+ * Discriminated union for type-safe backend initialization
+ */
+export type LLMBackendConfig =
+  | { provider: 'ollama'; config: OllamaProviderConfig }
+  | { provider: 'openai'; config: OpenAIProviderConfig }
+  | { provider: 'anthropic'; config: AnthropicProviderConfig }
+  | { provider: 'google'; config: GoogleProviderConfig }
+  | { provider: 'azure'; config: AzureProviderConfig }
+  | { provider: 'bedrock'; config: BedrockProviderConfig }
+  | { provider: 'vllm'; config: VLLMProviderConfig }
+  | { provider: 'mistral'; config: MistralProviderConfig }
+  | { provider: 'groq'; config: GroqProviderConfig }
+  | { provider: 'together'; config: TogetherProviderConfig }
+  | { provider: 'deepseek'; config: DeepSeekProviderConfig };

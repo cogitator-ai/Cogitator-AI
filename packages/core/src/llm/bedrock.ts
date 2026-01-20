@@ -17,12 +17,14 @@ import type {
   ToolSchema,
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
+import { createLLMError, llmUnavailable, llmConfigError, type LLMErrorContext } from './errors';
 
 import type {
   BedrockRuntimeClient as BedrockRuntimeClientType,
   ConverseCommandInput,
   ConverseCommandOutput,
   ConverseStreamCommandInput,
+  ConverseStreamCommandOutput,
   Message as BedrockMessage,
   ContentBlock,
   Tool,
@@ -57,6 +59,7 @@ export class BedrockBackend extends BaseLLMBackend {
   private async getClient(): Promise<BedrockRuntimeClientType> {
     if (!this.clientPromise) {
       this.clientPromise = (async () => {
+        const ctx: LLMErrorContext = { provider: this.provider };
         try {
           const { BedrockRuntimeClient } = await import('@aws-sdk/client-bedrock-runtime');
 
@@ -73,7 +76,10 @@ export class BedrockBackend extends BaseLLMBackend {
 
           return new BedrockRuntimeClient(clientConfig);
         } catch {
-          throw new Error('AWS SDK not installed. Run: pnpm add @aws-sdk/client-bedrock-runtime');
+          throw llmConfigError(
+            ctx,
+            'AWS SDK not installed. Run: pnpm add @aws-sdk/client-bedrock-runtime'
+          );
         }
       })();
     }
@@ -81,6 +87,11 @@ export class BedrockBackend extends BaseLLMBackend {
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
+    const ctx: LLMErrorContext = {
+      provider: this.provider,
+      model: request.model,
+    };
+
     const client = await this.getClient();
     const { ConverseCommand } = await import('@aws-sdk/client-bedrock-runtime');
 
@@ -115,13 +126,23 @@ export class BedrockBackend extends BaseLLMBackend {
       input.inferenceConfig = inferenceConfig;
     }
 
-    const command = new ConverseCommand(input);
-    const response = await client.send(command);
+    let response: ConverseCommandOutput;
+    try {
+      const command = new ConverseCommand(input);
+      response = await client.send(command);
+    } catch (e) {
+      throw this.wrapBedrockError(e, ctx);
+    }
 
     return this.parseResponse(response);
   }
 
   async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
+    const ctx: LLMErrorContext = {
+      provider: this.provider,
+      model: request.model,
+    };
+
     const client = await this.getClient();
     const { ConverseStreamCommand } = await import('@aws-sdk/client-bedrock-runtime');
 
@@ -157,7 +178,12 @@ export class BedrockBackend extends BaseLLMBackend {
     }
 
     const command = new ConverseStreamCommand(input);
-    const response = await client.send(command);
+    let response: ConverseStreamCommandOutput;
+    try {
+      response = await client.send(command);
+    } catch (e) {
+      throw this.wrapBedrockError(e, ctx);
+    }
 
     const id = this.generateId();
     const toolCalls: ToolCall[] = [];
@@ -403,5 +429,32 @@ export class BedrockBackend extends BaseLLMBackend {
     } catch {
       return {};
     }
+  }
+
+  private wrapBedrockError(error: unknown, ctx: LLMErrorContext): never {
+    if (error instanceof Error) {
+      const message = error.message.toLowerCase();
+
+      if (message.includes('throttl') || message.includes('rate')) {
+        throw createLLMError({ ...ctx, statusCode: 429 }, 429, error.message);
+      }
+      if (
+        message.includes('access denied') ||
+        message.includes('unauthorized') ||
+        message.includes('credentials')
+      ) {
+        throw createLLMError({ ...ctx, statusCode: 403 }, 403, error.message);
+      }
+      if (message.includes('not found') || message.includes('does not exist')) {
+        throw createLLMError({ ...ctx, statusCode: 404 }, 404, error.message);
+      }
+      if (message.includes('validation') || message.includes('invalid')) {
+        throw createLLMError({ ...ctx, statusCode: 400 }, 400, error.message);
+      }
+
+      throw llmUnavailable(ctx, error.message, error);
+    }
+
+    throw llmUnavailable(ctx, String(error));
   }
 }

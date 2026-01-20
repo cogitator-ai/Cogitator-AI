@@ -3,7 +3,7 @@
  */
 
 import type { Message, ToolCall, ToolResult } from './message';
-import type { LLMProvider } from './llm';
+import type { LLMProvider, LLMProvidersConfig } from './llm';
 import type { MemoryConfig } from './memory';
 import type { SandboxManagerConfig } from './sandbox';
 import type { ReflectionConfig, Reflection, ReflectionSummary } from './reflection';
@@ -16,19 +16,7 @@ export interface CogitatorConfig {
   llm?: {
     defaultProvider?: LLMProvider;
     defaultModel?: string;
-    providers?: {
-      ollama?: { baseUrl: string };
-      openai?: { apiKey: string; baseUrl?: string };
-      anthropic?: { apiKey: string };
-      google?: { apiKey: string };
-      azure?: { endpoint: string; apiKey: string; apiVersion?: string; deployment?: string };
-      bedrock?: { region?: string; accessKeyId?: string; secretAccessKey?: string };
-      vllm?: { baseUrl: string };
-      mistral?: { apiKey: string };
-      groq?: { apiKey: string };
-      together?: { apiKey: string };
-      deepseek?: { apiKey: string };
-    };
+    providers?: LLMProvidersConfig;
   };
   limits?: {
     maxConcurrentRuns?: number;

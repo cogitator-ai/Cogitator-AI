@@ -17,7 +17,9 @@ import type {
   MessageContent,
   ContentPart,
 } from '@cogitator-ai/types';
+import { ErrorCode, CogitatorError } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
+import { LLMError, type LLMErrorContext } from './errors';
 
 interface AzureOpenAIConfig {
   endpoint: string;
@@ -44,27 +46,37 @@ export class AzureOpenAIBackend extends BaseLLMBackend {
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const model = request.model || this.defaultDeployment || '';
-
-    const response = await this.client.chat.completions.create({
+    const ctx: LLMErrorContext = {
+      provider: this.provider,
       model,
-      messages: this.convertMessages(request.messages),
-      tools: request.tools
-        ? request.tools.map((t) => ({
-            type: 'function' as const,
-            function: {
-              name: t.name,
-              description: t.description,
-              parameters: t.parameters,
-            },
-          }))
-        : undefined,
-      tool_choice: this.convertToolChoice(request.toolChoice),
-      temperature: request.temperature,
-      top_p: request.topP,
-      max_tokens: request.maxTokens,
-      stop: request.stop,
-      response_format: this.convertResponseFormat(request.responseFormat),
-    });
+      endpoint: this.client.baseURL,
+    };
+
+    let response: OpenAI.Chat.ChatCompletion;
+    try {
+      response = await this.client.chat.completions.create({
+        model,
+        messages: this.convertMessages(request.messages),
+        tools: request.tools
+          ? request.tools.map((t) => ({
+              type: 'function' as const,
+              function: {
+                name: t.name,
+                description: t.description,
+                parameters: t.parameters,
+              },
+            }))
+          : undefined,
+        tool_choice: this.convertToolChoice(request.toolChoice),
+        temperature: request.temperature,
+        top_p: request.topP,
+        max_tokens: request.maxTokens,
+        stop: request.stop,
+        response_format: this.convertResponseFormat(request.responseFormat),
+      });
+    } catch (e) {
+      throw this.wrapAzureError(e, ctx);
+    }
 
     const choice = response.choices[0];
     const message = choice.message;
@@ -72,7 +84,7 @@ export class AzureOpenAIBackend extends BaseLLMBackend {
     const toolCalls: ToolCall[] | undefined = message.tool_calls?.map((tc) => ({
       id: tc.id,
       name: tc.function.name,
-      arguments: JSON.parse(tc.function.arguments) as Record<string, unknown>,
+      arguments: this.tryParseJson(tc.function.arguments, ctx),
     }));
 
     return {
@@ -90,29 +102,39 @@ export class AzureOpenAIBackend extends BaseLLMBackend {
 
   async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
     const model = request.model || this.defaultDeployment || '';
-
-    const stream = await this.client.chat.completions.create({
+    const ctx: LLMErrorContext = {
+      provider: this.provider,
       model,
-      messages: this.convertMessages(request.messages),
-      tools: request.tools
-        ? request.tools.map((t) => ({
-            type: 'function' as const,
-            function: {
-              name: t.name,
-              description: t.description,
-              parameters: t.parameters,
-            },
-          }))
-        : undefined,
-      tool_choice: this.convertToolChoice(request.toolChoice),
-      temperature: request.temperature,
-      top_p: request.topP,
-      max_tokens: request.maxTokens,
-      stop: request.stop,
-      stream: true,
-      stream_options: { include_usage: true },
-      response_format: this.convertResponseFormat(request.responseFormat),
-    });
+      endpoint: this.client.baseURL,
+    };
+
+    let stream: AsyncIterable<OpenAI.Chat.ChatCompletionChunk>;
+    try {
+      stream = await this.client.chat.completions.create({
+        model,
+        messages: this.convertMessages(request.messages),
+        tools: request.tools
+          ? request.tools.map((t) => ({
+              type: 'function' as const,
+              function: {
+                name: t.name,
+                description: t.description,
+                parameters: t.parameters,
+              },
+            }))
+          : undefined,
+        tool_choice: this.convertToolChoice(request.toolChoice),
+        temperature: request.temperature,
+        top_p: request.topP,
+        max_tokens: request.maxTokens,
+        stop: request.stop,
+        stream: true,
+        stream_options: { include_usage: true },
+        response_format: this.convertResponseFormat(request.responseFormat),
+      });
+    } catch (e) {
+      throw this.wrapAzureError(e, ctx);
+    }
 
     const toolCallsAccum = new Map<number, { id?: string; name?: string }>();
     const toolCallArgsAccum = new Map<number, string>();
@@ -157,7 +179,7 @@ export class AzureOpenAIBackend extends BaseLLMBackend {
         finalToolCalls = Array.from(toolCallsAccum.entries()).map(([index, partial]) => ({
           id: partial.id ?? '',
           name: partial.name ?? '',
-          arguments: this.tryParseJson(toolCallArgsAccum.get(index) ?? '{}'),
+          arguments: this.tryParseJson(toolCallArgsAccum.get(index) ?? '{}', ctx),
         }));
       }
 
@@ -254,12 +276,65 @@ export class AzureOpenAIBackend extends BaseLLMBackend {
     }
   }
 
-  private tryParseJson(str: string): Record<string, unknown> {
+  private tryParseJson(str: string, ctx: LLMErrorContext): Record<string, unknown> {
     try {
       return JSON.parse(str) as Record<string, unknown>;
-    } catch {
-      return {};
+    } catch (e) {
+      throw new LLMError(
+        `Failed to parse tool call arguments: ${str.slice(0, 100)}`,
+        ErrorCode.LLM_INVALID_RESPONSE,
+        ctx,
+        { cause: e instanceof Error ? e : undefined }
+      );
     }
+  }
+
+  private wrapAzureError(error: unknown, ctx: LLMErrorContext): CogitatorError {
+    if (error instanceof OpenAI.APIError) {
+      const statusCode = error.status ?? 500;
+      ctx.statusCode = statusCode;
+      ctx.responseBody = error.message;
+
+      if (statusCode === 429) {
+        return new LLMError('Rate limit exceeded', ErrorCode.LLM_RATE_LIMITED, ctx, {
+          cause: error,
+          retryable: true,
+          retryAfter: 60000,
+        });
+      }
+      if (statusCode === 401 || statusCode === 403) {
+        return new LLMError(
+          `Authentication failed: ${error.message}`,
+          ErrorCode.LLM_UNAVAILABLE,
+          ctx,
+          {
+            cause: error,
+            retryable: false,
+          }
+        );
+      }
+      if (statusCode >= 500) {
+        return new LLMError(`Server error: ${error.message}`, ErrorCode.LLM_UNAVAILABLE, ctx, {
+          cause: error,
+          retryable: true,
+          retryAfter: 5000,
+        });
+      }
+      return new LLMError(error.message, ErrorCode.LLM_INVALID_RESPONSE, ctx, {
+        cause: error,
+        retryable: false,
+      });
+    }
+
+    if (error instanceof Error) {
+      return new LLMError(`Request failed: ${error.message}`, ErrorCode.LLM_UNAVAILABLE, ctx, {
+        cause: error,
+        retryable: true,
+        retryAfter: 1000,
+      });
+    }
+
+    return new LLMError(`Unknown error: ${String(error)}`, ErrorCode.INTERNAL_ERROR, ctx);
   }
 
   private convertResponseFormat(

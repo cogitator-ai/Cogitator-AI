@@ -15,6 +15,7 @@ import type {
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { BaseLLMBackend } from './base';
+import { createLLMError, llmUnavailable, llmInvalidResponse, type LLMErrorContext } from './errors';
 
 interface OllamaConfig {
   baseUrl: string;
@@ -68,28 +69,39 @@ export class OllamaBackend extends BaseLLMBackend {
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const tools = this.applyToolChoice(request.tools, request.toolChoice);
+    const endpoint = `${this.baseUrl}/api/chat`;
+    const ctx: LLMErrorContext = {
+      provider: this.provider,
+      model: request.model,
+      endpoint,
+    };
 
-    const response = await fetch(`${this.baseUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: request.model,
-        messages: this.convertMessages(request.messages),
-        tools: tools ? this.convertTools(tools) : undefined,
-        format: this.convertResponseFormat(request.responseFormat),
-        stream: false,
-        options: {
-          temperature: request.temperature,
-          top_p: request.topP,
-          num_predict: request.maxTokens,
-          stop: request.stop,
-        },
-      }),
-    });
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: request.model,
+          messages: this.convertMessages(request.messages),
+          tools: tools ? this.convertTools(tools) : undefined,
+          format: this.convertResponseFormat(request.responseFormat),
+          stream: false,
+          options: {
+            temperature: request.temperature,
+            top_p: request.topP,
+            num_predict: request.maxTokens,
+            stop: request.stop,
+          },
+        }),
+      });
+    } catch (e) {
+      throw llmUnavailable(ctx, 'Failed to connect to Ollama', e instanceof Error ? e : undefined);
+    }
 
     if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Ollama API error: ${response.status.toString()} - ${error}`);
+      const errorBody = await response.text();
+      throw createLLMError(ctx, response.status, errorBody);
     }
 
     const data = (await response.json()) as OllamaChatResponse;
@@ -98,32 +110,43 @@ export class OllamaBackend extends BaseLLMBackend {
 
   async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
     const tools = this.applyToolChoice(request.tools, request.toolChoice);
+    const endpoint = `${this.baseUrl}/api/chat`;
+    const ctx: LLMErrorContext = {
+      provider: this.provider,
+      model: request.model,
+      endpoint,
+    };
 
-    const response = await fetch(`${this.baseUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: request.model,
-        messages: this.convertMessages(request.messages),
-        tools: tools ? this.convertTools(tools) : undefined,
-        format: this.convertResponseFormat(request.responseFormat),
-        stream: true,
-        options: {
-          temperature: request.temperature,
-          top_p: request.topP,
-          num_predict: request.maxTokens,
-          stop: request.stop,
-        },
-      }),
-    });
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: request.model,
+          messages: this.convertMessages(request.messages),
+          tools: tools ? this.convertTools(tools) : undefined,
+          format: this.convertResponseFormat(request.responseFormat),
+          stream: true,
+          options: {
+            temperature: request.temperature,
+            top_p: request.topP,
+            num_predict: request.maxTokens,
+            stop: request.stop,
+          },
+        }),
+      });
+    } catch (e) {
+      throw llmUnavailable(ctx, 'Failed to connect to Ollama', e instanceof Error ? e : undefined);
+    }
 
     if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Ollama API error: ${response.status.toString()} - ${error}`);
+      const errorBody = await response.text();
+      throw createLLMError(ctx, response.status, errorBody);
     }
 
     const reader = response.body?.getReader();
-    if (!reader) throw new Error('No response body');
+    if (!reader) throw llmInvalidResponse(ctx, 'No response body from stream');
 
     const decoder = new TextDecoder();
     let buffer = '';

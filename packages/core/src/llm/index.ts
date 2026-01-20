@@ -9,6 +9,29 @@ export { AnthropicBackend } from './anthropic';
 export { GoogleBackend } from './google';
 export { AzureOpenAIBackend } from './azure';
 export { BedrockBackend } from './bedrock';
+export {
+  LLMError,
+  createLLMError,
+  llmUnavailable,
+  llmInvalidResponse,
+  llmTimeout,
+  llmConfigError,
+  llmNotImplemented,
+  type LLMErrorContext,
+} from './errors';
+export { LLMDebugWrapper, withDebug, type LLMDebugOptions, type LLMDebugLogger } from './debug';
+export {
+  llmPluginRegistry,
+  registerLLMBackend,
+  unregisterLLMBackend,
+  createLLMBackendFromPlugin,
+  listLLMPlugins,
+  hasLLMPlugin,
+  defineBackend,
+  type LLMBackendFactory,
+  type LLMPluginMetadata,
+  type LLMPlugin,
+} from './plugin';
 
 import type { LLMBackend, LLMProvider, CogitatorConfig } from '@cogitator-ai/types';
 import { OllamaBackend } from './ollama';

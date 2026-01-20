@@ -921,6 +921,83 @@ const agent = new Agent({
 });
 ```
 
+### 🛠️ Developer Experience
+
+**Debug Mode** — Full request/response logging for LLM calls:
+
+```typescript
+import { withDebug, OpenAIBackend } from '@cogitator-ai/core';
+
+const backend = withDebug(new OpenAIBackend({ apiKey: process.env.OPENAI_API_KEY }), {
+  logRequest: true,
+  logResponse: true,
+  logStream: false,
+  maxContentLength: 500, // Truncate long messages
+});
+
+// All LLM calls are now logged with timing, tokens, and content
+```
+
+**Structured LLM Errors** — Rich error context for debugging:
+
+```typescript
+import { LLMError, createLLMError } from '@cogitator-ai/core';
+
+try {
+  await backend.chat({ model: 'gpt-4o', messages: [...] });
+} catch (e) {
+  if (e instanceof LLMError) {
+    console.log(e.provider);    // 'openai'
+    console.log(e.model);       // 'gpt-4o'
+    console.log(e.retryable);   // true (for 429 rate limits)
+    console.log(e.retryAfter);  // 30 (seconds)
+  }
+}
+```
+
+**Plugin System** — Register custom LLM backends:
+
+```typescript
+import { defineBackend, registerLLMBackend } from '@cogitator-ai/core';
+
+const myPlugin = defineBackend({
+  metadata: { name: 'my-llm', version: '1.0.0' },
+  provider: 'custom',
+  create: (config) => new MyCustomBackend(config),
+  validateConfig: (c): c is MyConfig => 'apiKey' in c,
+});
+
+registerLLMBackend(myPlugin);
+
+// Now use your backend
+const backend = createLLMBackendFromPlugin('custom', { apiKey: '...' });
+```
+
+**Type-Safe Provider Configs** — Full TypeScript inference:
+
+```typescript
+import type { LLMBackendConfig, LLMProvidersConfig } from '@cogitator-ai/types';
+
+// Discriminated union — TypeScript knows exact config shape
+function createBackend(config: LLMBackendConfig) {
+  switch (config.provider) {
+    case 'openai':
+      // config.config is OpenAIProviderConfig
+      return new OpenAIBackend(config.config);
+    case 'anthropic':
+      // config.config is AnthropicProviderConfig
+      return new AnthropicBackend(config.config);
+  }
+}
+
+// Type-safe multi-provider config
+const providers: LLMProvidersConfig = {
+  openai: { apiKey: '...' },
+  anthropic: { apiKey: '...' },
+  ollama: { baseUrl: 'http://localhost:11434' },
+};
+```
+
 ---
 
 ## Documentation
