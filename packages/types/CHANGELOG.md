@@ -1,5 +1,15 @@
 # @cogitator-ai/types
 
+## 0.10.0
+
+### Minor Changes
+
+- 58a7271: Phase 6: DX Improvements
+  - Add structured LLM errors with rich context (provider, model, endpoint, statusCode, retryable, retryAfter)
+  - Add debug mode wrapper with request/response logging
+  - Add type-safe provider configurations with discriminated unions
+  - Add plugin system for registering custom LLM backends
+
 ## 0.9.0
 
 ### Minor Changes
