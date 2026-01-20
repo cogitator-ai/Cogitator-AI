@@ -1,5 +1,23 @@
 # @cogitator-ai/mcp
 
+## 8.1.0
+
+### Minor Changes
+
+- DX Improvements - Phases 1-3
+
+  Phase 1: Foundation
+  - Added comprehensive JSDoc documentation to core public APIs
+  - Extended config schema with memory, sandbox, reflection, guardrails, costRouting, logging
+
+  Phase 2: Critical Fixes
+  - ThreadManager: Added persistent storage with InMemoryThreadStorage, RedisThreadStorage, PostgresThreadStorage
+  - SSE Streaming: EventEmitter-based real-time streaming for openai-compat
+  - MCP Retry: Exponential backoff with auto-reconnect and connection recovery
+
+  Phase 3: Polish
+  - New examples: memory-persistence, openai-compat-server, mcp-integration, constitutional-guardrails
+
 ## 8.0.0
 
 ### Patch Changes
