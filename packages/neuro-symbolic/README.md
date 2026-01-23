@@ -423,6 +423,97 @@ const repairResult = await ns.repairPlan(plan, validationResult);
 
 ---
 
+## Agent Tools
+
+Expose neuro-symbolic capabilities as tools for AI agents.
+
+```typescript
+import { createNeuroSymbolicTools, MemoryGraphAdapter } from '@cogitator-ai/neuro-symbolic';
+import { Agent, Cogitator } from '@cogitator-ai/core';
+
+// Create tools (optionally with graph adapter for knowledge graph features)
+const graphAdapter = new MemoryGraphAdapter();
+const nsTools = createNeuroSymbolicTools({ graphAdapter });
+
+// Pre-load some logic rules
+nsTools.instance.loadLogicProgram(`
+  parent(tom, mary).
+  parent(mary, ann).
+  grandparent(X, Z) :- parent(X, Y), parent(Y, Z).
+`);
+
+// Use with an agent
+const agent = new Agent({
+  name: 'reasoning-agent',
+  model: 'gpt-4o',
+  tools: nsTools.all,
+  instructions: `You have formal reasoning capabilities.
+Use queryLogic for Prolog-style queries.
+Use solveConstraints for SAT/SMT problems.
+Use validatePlan to verify action sequences.`,
+});
+
+const cogitator = new Cogitator({ model: 'gpt-4o' });
+const result = await cogitator.run(agent, {
+  input: 'Who are the grandparents of ann?',
+});
+```
+
+### Available Tools
+
+| Tool               | Description                                             |
+| ------------------ | ------------------------------------------------------- |
+| `queryLogic`       | Execute Prolog-style queries against the knowledge base |
+| `assertFact`       | Add a fact or rule to the knowledge base                |
+| `loadProgram`      | Load a full Prolog program with multiple clauses        |
+| `solveConstraints` | Solve SAT/SMT constraint problems                       |
+| `validatePlan`     | Validate a plan against action schemas                  |
+| `repairPlan`       | Attempt to repair an invalid plan                       |
+| `registerAction`   | Register an action schema for planning                  |
+| `findPath`\*       | Find shortest path between graph nodes                  |
+| `queryGraph`\*     | Query knowledge graph nodes and edges                   |
+| `addGraphNode`\*   | Add a node to the knowledge graph                       |
+| `addGraphEdge`\*   | Add an edge between graph nodes                         |
+
+\*Graph tools only available when `graphAdapter` is provided.
+
+### Factory Options
+
+```typescript
+interface NeuroSymbolicToolsOptions {
+  // Use existing NeuroSymbolic instance
+  instance?: NeuroSymbolic;
+
+  // Or provide config for new instance
+  graphAdapter?: GraphAdapter;
+  config?: NeuroSymbolicConfig;
+  agentId?: string;
+}
+```
+
+### Memory Graph Adapter
+
+Built-in in-memory graph adapter for testing and simple use cases:
+
+```typescript
+import { MemoryGraphAdapter } from '@cogitator-ai/neuro-symbolic';
+
+const adapter = new MemoryGraphAdapter();
+
+// Use with tools
+const tools = createNeuroSymbolicTools({ graphAdapter: adapter });
+
+// Or use directly
+await adapter.addNode({
+  agentId: 'agent-1',
+  name: 'Alice',
+  type: 'person',
+  properties: { age: 30 },
+});
+```
+
+---
+
 ## Module Imports
 
 Each module can be imported separately:
