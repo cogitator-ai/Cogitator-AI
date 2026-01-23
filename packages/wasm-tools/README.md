@@ -8,6 +8,7 @@ WASM-based tools for Cogitator agents. Secure, sandboxed tool execution using We
 - 🔒 **Memory-safe execution** in isolated Extism sandbox
 - 📦 **~20x lower memory footprint** compared to containers
 - 🛠️ **Custom tool framework** - create your own WASM tools
+- 🔄 **Hot-reload support** - update WASM modules without restart
 
 ## Installation
 
@@ -73,6 +74,41 @@ const agent = new Agent({
   name: 'hasher',
   tools: [hashTool],
 });
+```
+
+### Hot-Reload with WasmToolManager
+
+Watch WASM files and automatically reload on changes:
+
+```typescript
+import { WasmToolManager } from '@cogitator-ai/wasm-tools';
+import { Cogitator, Agent } from '@cogitator-ai/core';
+
+const manager = new WasmToolManager({ debounceMs: 200 });
+
+// Watch directory for WASM plugins
+await manager.watch('./plugins/*.wasm', {
+  onLoad: (name) => console.log(`✓ Loaded: ${name}`),
+  onReload: (name) => console.log(`↻ Reloaded: ${name}`),
+  onUnload: (name) => console.log(`✗ Unloaded: ${name}`),
+  onError: (name, _, err) => console.error(`Error ${name}: ${err.message}`),
+});
+
+// Or load a single module
+const calcTool = await manager.load('./plugins/calc.wasm');
+
+// Get all tools for agent
+const agent = new Agent({
+  name: 'wasm-agent',
+  tools: manager.getTools(),
+});
+
+// Tools automatically use the latest plugin version after reload
+const cogitator = new Cogitator({ llm: { defaultProvider: 'openai' } });
+await cogitator.run(agent, 'Calculate 2 + 2');
+
+// Cleanup when done
+await manager.close();
 ```
 
 ## API Reference
@@ -149,6 +185,47 @@ import { getWasmPath } from '@cogitator-ai/wasm-tools';
 
 const calcPath = getWasmPath('calc'); // Path to calc.wasm
 const jsonPath = getWasmPath('json'); // Path to json.wasm
+```
+
+### WasmToolManager
+
+Manage WASM tools with hot-reload support.
+
+```typescript
+interface WasmToolManagerOptions {
+  debounceMs?: number; // File change debounce delay (default: 100ms)
+  useWasi?: boolean; // Enable WASI for all modules
+}
+
+interface WasmToolCallbacks {
+  onLoad?: (name: string, path: string) => void;
+  onReload?: (name: string, path: string) => void;
+  onUnload?: (name: string, path: string) => void;
+  onError?: (name: string, path: string, error: Error) => void;
+}
+
+class WasmToolManager {
+  constructor(options?: WasmToolManagerOptions);
+
+  // Watch a glob pattern for WASM files
+  watch(pattern: string, callbacks?: WasmToolCallbacks): Promise<void>;
+
+  // Load a single WASM module
+  load(wasmPath: string): Promise<Tool>;
+
+  // Get all loaded tools
+  getTools(): Tool[];
+
+  // Get a tool by module name
+  getTool(name: string): Tool | undefined;
+
+  // Get module metadata
+  getModule(name: string): LoadedModule | undefined;
+  getModules(): LoadedModule[];
+
+  // Close watcher and all plugins
+  close(): Promise<void>;
+}
 ```
 
 ### Legacy Exports
