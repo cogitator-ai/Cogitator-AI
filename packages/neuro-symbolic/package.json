@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/neuro-symbolic",
-  "version": "10.0.0",
+  "version": "11.0.0",
   "description": "Neuro-symbolic AI for hybrid neural-symbolic reasoning",
   "type": "module",
   "main": "./dist/index.js",

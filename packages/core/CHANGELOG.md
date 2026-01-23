@@ -1,5 +1,27 @@
 # @cogitator-ai/core
 
+## 0.13.0
+
+### Minor Changes
+
+- feat(security): implement prompt injection detection
+
+  Add PromptInjectionDetector to protect agents from adversarial inputs:
+  - Local classifier: fast regex + heuristics (<5ms latency)
+  - LLM classifier: semantic analysis for complex attacks
+  - 30+ built-in patterns for 5 threat types (direct injection, jailbreak, roleplay, context manipulation, encoding)
+  - Allowlist support for false positive prevention
+  - Custom pattern support with runtime add/remove
+  - Integration with Cogitator via security.promptInjection config
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.14.0
+  - @cogitator-ai/memory@0.6.4
+  - @cogitator-ai/models@12.0.0
+  - @cogitator-ai/sandbox@0.2.14
+
 ## 0.12.0
 
 ### Minor Changes
