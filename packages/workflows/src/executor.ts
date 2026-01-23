@@ -7,7 +7,7 @@ import type {
   WorkflowState,
   WorkflowResult,
   WorkflowExecuteOptions,
-  WorkflowEvent,
+  StreamingWorkflowEvent,
   CheckpointStore,
   NodeContext,
 } from '@cogitator-ai/types';
@@ -81,6 +81,10 @@ export class WorkflowExecutor {
             nodeId: nodeName,
             workflowId,
             step: iterations,
+            reportProgress: (progress: number) => {
+              const clamped = Math.max(0, Math.min(100, progress));
+              options?.onNodeProgress?.(nodeName, clamped);
+            },
           };
 
           const deps = graph.dependencies.get(nodeName);
@@ -215,12 +219,25 @@ export class WorkflowExecutor {
   async *stream<S extends WorkflowState>(
     workflow: Workflow<S>,
     input?: Partial<S>,
-    options?: Omit<WorkflowExecuteOptions, 'onNodeStart' | 'onNodeComplete' | 'onNodeError'>
-  ): AsyncIterable<WorkflowEvent> {
-    const events: WorkflowEvent[] = [];
+    options?: Omit<
+      WorkflowExecuteOptions,
+      'onNodeStart' | 'onNodeComplete' | 'onNodeError' | 'onNodeProgress'
+    >
+  ): AsyncIterable<StreamingWorkflowEvent> {
+    const workflowId = `wf_${nanoid(12)}`;
+    const startTime = Date.now();
+
+    yield {
+      type: 'workflow_started',
+      workflowId,
+      workflowName: workflow.name,
+      timestamp: Date.now(),
+    };
+
+    const events: StreamingWorkflowEvent[] = [];
     let resolveNext: (() => void) | null = null;
 
-    const pushEvent = (event: WorkflowEvent) => {
+    const pushEvent = (event: StreamingWorkflowEvent) => {
       events.push(event);
       resolveNext?.();
     };
@@ -228,13 +245,16 @@ export class WorkflowExecutor {
     const resultPromise = this.execute(workflow, input, {
       ...options,
       onNodeStart: (node) => {
-        pushEvent({ type: 'node:start', node, timestamp: Date.now() });
+        pushEvent({ type: 'node_started', nodeName: node, timestamp: Date.now() });
+      },
+      onNodeProgress: (node, progress) => {
+        pushEvent({ type: 'node_progress', nodeName: node, progress, timestamp: Date.now() });
       },
       onNodeComplete: (node, output, duration) => {
-        pushEvent({ type: 'node:complete', node, output, duration });
+        pushEvent({ type: 'node_completed', nodeName: node, output, duration });
       },
       onNodeError: (node, error) => {
-        pushEvent({ type: 'node:error', node, error });
+        pushEvent({ type: 'node_error', nodeName: node, error, timestamp: Date.now() });
       },
     });
 
@@ -255,9 +275,10 @@ export class WorkflowExecutor {
           }
 
           yield {
-            type: 'workflow:complete',
-            state: raceResult.result.state,
-            duration: raceResult.result.duration,
+            type: 'workflow_completed',
+            workflowId,
+            result: raceResult.result,
+            duration: Date.now() - startTime,
           };
 
           break;

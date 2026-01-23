@@ -488,6 +488,48 @@ const codeReviewWorkflow = new Workflow({
 await cog.workflow(codeReviewWorkflow).run({ pullRequest: pr });
 ```
 
+### 📡 Real-time Workflow Streaming
+
+Stream workflow execution events for live progress visualization:
+
+```typescript
+import { WorkflowExecutor, WorkflowBuilder } from '@cogitator-ai/workflows';
+
+const executor = new WorkflowExecutor(cogitator);
+
+const workflow = new WorkflowBuilder<MyState>('data-pipeline')
+  .initialState({ items: [] })
+  .addNode('process', async (ctx) => {
+    ctx.reportProgress?.(0);
+    const data = await fetchData();
+    ctx.reportProgress?.(50);
+    const result = await processData(data);
+    ctx.reportProgress?.(100);
+    return { state: { items: result } };
+  })
+  .build();
+
+for await (const event of executor.stream(workflow)) {
+  switch (event.type) {
+    case 'workflow_started':
+      console.log(`Started: ${event.workflowId}`);
+      break;
+    case 'node_started':
+      console.log(`Node ${event.nodeName} started`);
+      break;
+    case 'node_progress':
+      console.log(`Progress: ${event.progress}%`);
+      break;
+    case 'node_completed':
+      console.log(`Node ${event.nodeName} completed`, event.output);
+      break;
+    case 'workflow_completed':
+      console.log(`Done!`, event.result);
+      break;
+  }
+}
+```
+
 ### 🐝 Swarm Patterns
 
 ```typescript

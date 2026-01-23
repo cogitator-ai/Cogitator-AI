@@ -28,6 +28,7 @@ export interface NodeContext<S = WorkflowState> {
   nodeId: string;
   workflowId: string;
   step: number;
+  reportProgress?: (progress: number) => void;
 }
 
 export interface NodeResult<S = WorkflowState> {
@@ -88,6 +89,7 @@ export interface WorkflowExecuteOptions {
   onNodeStart?: (node: string) => void;
   onNodeComplete?: (node: string, result: unknown, duration: number) => void;
   onNodeError?: (node: string, error: Error) => void;
+  onNodeProgress?: (node: string, progress: number) => void;
 }
 
 export interface WorkflowResult<S = WorkflowState> {
@@ -105,6 +107,19 @@ export type WorkflowEvent =
   | { type: 'node:complete'; node: string; output: unknown; duration: number }
   | { type: 'node:error'; node: string; error: Error }
   | { type: 'workflow:complete'; state: unknown; duration: number };
+
+export type StreamingWorkflowEvent =
+  | { type: 'workflow_started'; workflowId: string; workflowName: string; timestamp: number }
+  | { type: 'node_started'; nodeName: string; timestamp: number }
+  | { type: 'node_progress'; nodeName: string; progress: number; timestamp: number }
+  | { type: 'node_completed'; nodeName: string; output: unknown; duration: number }
+  | { type: 'node_error'; nodeName: string; error: Error; timestamp: number }
+  | {
+      type: 'workflow_completed';
+      workflowId: string;
+      result: WorkflowResult<unknown>;
+      duration: number;
+    };
 
 export interface WorkflowCheckpoint {
   id: string;

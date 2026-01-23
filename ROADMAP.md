@@ -7,41 +7,6 @@
 - 🟡 **Medium** — Quality of life improvements
 - 🟢 **Nice to Have** — Polish and extras
 
----
-
-### ~~3. Hybrid Search (BM25 + Vector)~~ ✅ COMPLETED
-
-**Package:** `packages/memory`
-
-**Status:** Implemented in `packages/memory/src/search/`
-
-**Features:**
-
-- `BM25Index` — Pure JS Okapi BM25 with inverted index
-- `HybridSearch` — Combines vector + keyword search with RRF
-- `PostgresAdapter` — tsvector full-text search with GIN index
-- `InMemoryEmbeddingAdapter` — In-memory vector + BM25 for testing
-
-**Usage:**
-
-```typescript
-import { HybridSearch, InMemoryEmbeddingAdapter } from '@cogitator-ai/memory';
-
-const search = new HybridSearch({
-  embeddingAdapter,
-  embeddingService,
-  defaultWeights: { bm25: 0.4, vector: 0.6 },
-});
-
-const results = await search.search({
-  query: 'authentication flow',
-  strategy: 'hybrid',
-  limit: 10,
-});
-```
-
----
-
 ### 4. Real-time Streaming for Workflows
 
 **Package:** `packages/workflows`
@@ -509,7 +474,7 @@ const executor = new WorkflowExecutor({
 
 ### Phase 3: DX & Polish
 
-8. Real-time workflow streaming (#4)
+8. ~~Real-time workflow streaming (#4)~~ ✅
 9. Tool caching (#6)
 10. Cost prediction (#8)
 11. Agent serialization (#9)

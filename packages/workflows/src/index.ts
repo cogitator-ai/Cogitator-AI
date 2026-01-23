@@ -278,6 +278,7 @@ export type {
   WorkflowNode,
   WorkflowResult,
   WorkflowEvent,
+  StreamingWorkflowEvent,
   WorkflowExecuteOptions,
   WorkflowCheckpoint,
   CheckpointStore,
