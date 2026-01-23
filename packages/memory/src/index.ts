@@ -16,6 +16,21 @@ export { PostgresAdapter } from './adapters/postgres';
 export { SQLiteAdapter } from './adapters/sqlite';
 export { MongoDBAdapter } from './adapters/mongodb';
 export { QdrantAdapter } from './adapters/qdrant';
+export { InMemoryEmbeddingAdapter } from './adapters/memory-embedding';
+
+export {
+  HybridSearch,
+  BM25Index,
+  fuseSearchResults,
+  reciprocalRankFusion,
+  tokenize,
+  getTermFrequency,
+  type BM25Config,
+  type BM25Document,
+  type BM25Result,
+  type RRFConfig,
+  type TokenizerConfig,
+} from './search/index';
 
 export {
   ContextBuilder,
@@ -144,4 +159,12 @@ export type {
   KnowledgeGraphExtractionConfig,
   KnowledgeGraphInferenceConfig,
   KnowledgeGraphContextConfig,
+  SearchStrategy,
+  HybridSearchWeights,
+  SearchFilter,
+  SearchOptions,
+  SearchResult,
+  KeywordSearchOptions,
+  KeywordSearchAdapter,
+  HybridSearchConfig,
 } from '@cogitator-ai/types';

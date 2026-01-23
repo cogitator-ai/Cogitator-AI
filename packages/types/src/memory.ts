@@ -278,3 +278,53 @@ export interface MemoryConfig {
   embedding?: EmbeddingServiceConfig;
   contextBuilder?: Partial<ContextBuilderConfig>;
 }
+
+export type SearchStrategy = 'vector' | 'keyword' | 'hybrid';
+
+export interface HybridSearchWeights {
+  bm25: number;
+  vector: number;
+}
+
+export interface SearchFilter {
+  sourceType?: Embedding['sourceType'];
+  threadId?: string;
+  agentId?: string;
+}
+
+export interface SearchOptions {
+  query: string;
+  strategy: SearchStrategy;
+  weights?: HybridSearchWeights;
+  limit?: number;
+  threshold?: number;
+  filter?: SearchFilter;
+}
+
+export interface SearchResult {
+  id: string;
+  sourceId: string;
+  sourceType: Embedding['sourceType'];
+  content: string;
+  score: number;
+  vectorScore?: number;
+  keywordScore?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface KeywordSearchOptions {
+  query: string;
+  limit?: number;
+  filter?: SearchFilter;
+}
+
+export interface KeywordSearchAdapter {
+  keywordSearch(options: KeywordSearchOptions): Promise<MemoryResult<SearchResult[]>>;
+}
+
+export interface HybridSearchConfig {
+  embeddingAdapter: EmbeddingAdapter;
+  embeddingService: EmbeddingService;
+  keywordAdapter?: KeywordSearchAdapter;
+  defaultWeights?: HybridSearchWeights;
+}

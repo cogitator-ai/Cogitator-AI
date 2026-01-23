@@ -19,6 +19,9 @@ import type {
   SemanticSearchOptions,
   FactAdapter,
   EmbeddingAdapter,
+  KeywordSearchAdapter,
+  KeywordSearchOptions,
+  SearchResult,
 } from '@cogitator-ai/types';
 import { BaseMemoryAdapter } from './base';
 
@@ -28,7 +31,10 @@ type Pool = {
   end(): Promise<void>;
 };
 
-export class PostgresAdapter extends BaseMemoryAdapter implements FactAdapter, EmbeddingAdapter {
+export class PostgresAdapter
+  extends BaseMemoryAdapter
+  implements FactAdapter, EmbeddingAdapter, KeywordSearchAdapter
+{
   readonly provider: MemoryProvider = 'postgres';
 
   private pool: Pool | null = null;
@@ -138,6 +144,18 @@ export class PostgresAdapter extends BaseMemoryAdapter implements FactAdapter, E
         CREATE INDEX IF NOT EXISTS idx_embeddings_vector
         ON ${this.schema}.embeddings
         USING ivfflat (vector vector_cosine_ops) WITH (lists = 100)
+      `);
+    } catch {}
+
+    try {
+      await this.pool.query(`
+        ALTER TABLE ${this.schema}.embeddings
+        ADD COLUMN IF NOT EXISTS content_tsv tsvector
+        GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
+      `);
+      await this.pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_embeddings_tsv
+        ON ${this.schema}.embeddings USING GIN (content_tsv)
       `);
     } catch {}
   }
@@ -565,6 +583,42 @@ export class PostgresAdapter extends BaseMemoryAdapter implements FactAdapter, E
     if (!this.pool) return this.failure('Not connected');
     await this.pool.query(`DELETE FROM ${this.schema}.embeddings WHERE source_id = $1`, [sourceId]);
     return this.success(undefined);
+  }
+
+  async keywordSearch(options: KeywordSearchOptions): Promise<MemoryResult<SearchResult[]>> {
+    if (!this.pool) return this.failure('Not connected');
+
+    const limit = options.limit ?? 10;
+    const params: unknown[] = [options.query, limit];
+    let paramIndex = 3;
+
+    let filterClause = '';
+    if (options.filter?.sourceType) {
+      filterClause += ` AND source_type = $${paramIndex++}`;
+      params.splice(1, 0, options.filter.sourceType);
+    }
+
+    const result = await this.pool.query(
+      `SELECT id, source_id, source_type, content, metadata, created_at,
+              ts_rank(content_tsv, plainto_tsquery('english', $1)) as keyword_score
+       FROM ${this.schema}.embeddings
+       WHERE content_tsv @@ plainto_tsquery('english', $1)${filterClause}
+       ORDER BY keyword_score DESC
+       LIMIT $2`,
+      params
+    );
+
+    return this.success(
+      result.rows.map((row) => ({
+        id: row.id as string,
+        sourceId: row.source_id as string,
+        sourceType: row.source_type as Embedding['sourceType'],
+        content: row.content as string,
+        score: row.keyword_score as number,
+        keywordScore: row.keyword_score as number,
+        metadata: row.metadata as Record<string, unknown>,
+      }))
+    );
   }
 
   setVectorDimensions(dimensions: number): void {

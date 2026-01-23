@@ -9,94 +9,36 @@
 
 ---
 
-## 🟠 High Impact Features
-
-### 2. Semantic Memory Consolidation
+### ~~3. Hybrid Search (BM25 + Vector)~~ ✅ COMPLETED
 
 **Package:** `packages/memory`
 
-**What:** Automatic extraction of facts from conversations into long-term knowledge base.
+**Status:** Implemented in `packages/memory/src/search/`
 
-**API Design:**
+**Features:**
 
-```typescript
-const memory = createMemory({ adapter: 'postgres' });
+- `BM25Index` — Pure JS Okapi BM25 with inverted index
+- `HybridSearch` — Combines vector + keyword search with RRF
+- `PostgresAdapter` — tsvector full-text search with GIN index
+- `InMemoryEmbeddingAdapter` — In-memory vector + BM25 for testing
 
-// After conversation ends or periodically
-await memory.consolidate({
-  threadId: 'thread-123',
-  extractFacts: true, // "User prefers dark mode", "Project uses TypeScript"
-  summarizeOldThreads: true, // Compress threads older than 7 days
-  pruneStrategy: 'importance', // Keep high-importance entries longer
-  minImportance: 0.3,
-});
-
-// Facts are now queryable
-const facts = await memory.getFacts({
-  agentId: 'assistant',
-  category: 'user-preferences',
-});
-```
-
-**Implementation locations:**
-
-- `packages/memory/src/consolidation/fact-extractor.ts` — LLM-based fact extraction
-- `packages/memory/src/consolidation/thread-summarizer.ts` — Thread compression
-- `packages/memory/src/consolidation/importance-scorer.ts` — Importance ranking
-
-**Why:** Agents will remember important things from past conversations, not just last N messages.
-
----
-
-### 3. Hybrid Search (BM25 + Vector)
-
-**Package:** `packages/memory`
-
-**What:** Reciprocal Rank Fusion combining keyword search (BM25) with semantic search (vector).
-
-**API Design:**
+**Usage:**
 
 ```typescript
-const results = await memory.search({
-  query: 'authentication flow implementation',
+import { HybridSearch, InMemoryEmbeddingAdapter } from '@cogitator-ai/memory';
+
+const search = new HybridSearch({
+  embeddingAdapter,
+  embeddingService,
+  defaultWeights: { bm25: 0.4, vector: 0.6 },
+});
+
+const results = await search.search({
+  query: 'authentication flow',
   strategy: 'hybrid',
-  weights: {
-    bm25: 0.4, // Exact keyword matching
-    vector: 0.6, // Semantic similarity
-  },
   limit: 10,
 });
 ```
-
-**Implementation:**
-
-```typescript
-// packages/memory/src/search/hybrid-search.ts
-export async function hybridSearch(
-  query: string,
-  bm25Results: SearchResult[],
-  vectorResults: SearchResult[],
-  weights: { bm25: number; vector: number }
-): Promise<SearchResult[]> {
-  // Reciprocal Rank Fusion
-  const scores = new Map<string, number>();
-  const k = 60; // RRF constant
-
-  bm25Results.forEach((r, i) => {
-    const score = weights.bm25 * (1 / (k + i + 1));
-    scores.set(r.id, (scores.get(r.id) || 0) + score);
-  });
-
-  vectorResults.forEach((r, i) => {
-    const score = weights.vector * (1 / (k + i + 1));
-    scores.set(r.id, (scores.get(r.id) || 0) + score);
-  });
-
-  return [...scores.entries()].sort((a, b) => b[1] - a[1]).map(([id, score]) => ({ id, score }));
-}
-```
-
-**Why:** Vector search misses exact terms, BM25 misses synonyms. Hybrid = best of both worlds.
 
 ---
 
@@ -562,7 +504,7 @@ const executor = new WorkflowExecutor({
 
 4. ~~Agent-as-Tool composition~~ ✅
 5. Semantic memory consolidation (#2)
-6. Hybrid search (#3)
+6. ~~Hybrid search (#3)~~ ✅
 7. Neuro-symbolic tools integration (#5)
 
 ### Phase 3: DX & Polish

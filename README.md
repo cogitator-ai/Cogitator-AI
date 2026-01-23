@@ -377,6 +377,57 @@ await cog.run(agent, { input: 'What is my name?' }); // "Your name is Alex"
 - **MongoDB** — Flexible document storage
 - **Qdrant** — High-performance vector similarity search
 
+### 🔍 Hybrid Search (BM25 + Vector)
+
+Combine keyword search (BM25) with semantic search (vector) using Reciprocal Rank Fusion:
+
+```typescript
+import {
+  HybridSearch,
+  InMemoryEmbeddingAdapter,
+  OpenAIEmbeddingService,
+} from '@cogitator-ai/memory';
+
+const embeddingService = new OpenAIEmbeddingService({ apiKey: process.env.OPENAI_API_KEY });
+const embeddingAdapter = new InMemoryEmbeddingAdapter();
+
+const search = new HybridSearch({
+  embeddingAdapter,
+  embeddingService,
+  keywordAdapter: embeddingAdapter, // PostgresAdapter also implements KeywordSearchAdapter
+  defaultWeights: { bm25: 0.4, vector: 0.6 },
+});
+
+// Add documents
+await embeddingAdapter.addEmbedding({
+  sourceId: 'doc1',
+  sourceType: 'document',
+  vector: await embeddingService.embed('authentication flow implementation'),
+  content: 'authentication flow implementation',
+});
+
+// Hybrid search — combines keyword matches with semantic similarity
+const results = await search.search({
+  query: 'auth implementation',
+  strategy: 'hybrid', // or 'vector', 'keyword'
+  weights: { bm25: 0.4, vector: 0.6 },
+  limit: 10,
+});
+
+results.data.forEach((r) => {
+  console.log(`${r.content} — score: ${r.score}`);
+  console.log(`  vector: ${r.vectorScore}, keyword: ${r.keywordScore}`);
+});
+```
+
+**Search Strategies:**
+
+- **`vector`** — Pure semantic search using embeddings
+- **`keyword`** — BM25 keyword search (PostgreSQL uses tsvector, in-memory uses Okapi BM25)
+- **`hybrid`** — Combines both using Reciprocal Rank Fusion (RRF) with configurable weights
+
+**Why Hybrid?** Vector search misses exact terms, BM25 misses synonyms. Hybrid gives you the best of both worlds.
+
 ### 🛠️ MCP-Compatible Tools
 
 ```typescript
