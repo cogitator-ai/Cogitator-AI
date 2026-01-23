@@ -1,5 +1,19 @@
 # @cogitator-ai/mcp
 
+## 14.1.0
+
+### Minor Changes
+
+- feat(mcp): add server-side resources and prompts support
+
+  Add full MCP specification compliance for MCPServer with:
+  - registerResource() for static and dynamic (templated) resources
+  - registerPrompt() for reusable prompt templates with arguments
+  - Support for URI templates like 'memory://thread/{id}'
+  - Batch registration methods: registerResources(), registerPrompts()
+  - Getter methods: getRegisteredResources(), getRegisteredPrompts()
+  - Unregister methods: unregisterResource(), unregisterPrompt()
+
 ## 14.0.0
 
 ### Patch Changes
