@@ -5,11 +5,17 @@
  * other MCP clients (e.g., Claude Desktop, other AI assistants).
  */
 
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Tool, ToolContext } from '@cogitator-ai/types';
-import type { MCPServerConfig } from '../types';
+import type {
+  MCPServerConfig,
+  MCPResourceConfig,
+  MCPResourceContent,
+  MCPPromptConfig,
+} from '../types';
 import { resultToMCPContent, zodToJsonSchema } from '../adapter/tool-adapter';
+import { z } from 'zod';
 
 interface MCPCallToolResult {
   [key: string]: unknown;
@@ -42,6 +48,8 @@ export class MCPServer {
   private server: McpServer;
   private config: MCPServerConfig;
   private tools = new Map<string, Tool>();
+  private resources = new Map<string, MCPResourceConfig>();
+  private prompts = new Map<string, MCPPromptConfig>();
   private started = false;
   private httpServer?: import('node:http').Server;
 
@@ -86,6 +94,76 @@ export class MCPServer {
    */
   getRegisteredTools(): string[] {
     return Array.from(this.tools.keys());
+  }
+
+  /**
+   * Register a single resource
+   */
+  registerResource(config: MCPResourceConfig): void {
+    if (this.started) {
+      throw new Error('Cannot register resources after server has started');
+    }
+
+    this.resources.set(config.uri, config);
+    this.registerMCPResource(config);
+  }
+
+  /**
+   * Register multiple resources
+   */
+  registerResources(configs: MCPResourceConfig[]): void {
+    for (const config of configs) {
+      this.registerResource(config);
+    }
+  }
+
+  /**
+   * Unregister a resource by URI
+   */
+  unregisterResource(uri: string): boolean {
+    return this.resources.delete(uri);
+  }
+
+  /**
+   * Get list of registered resource URIs
+   */
+  getRegisteredResources(): string[] {
+    return Array.from(this.resources.keys());
+  }
+
+  /**
+   * Register a single prompt
+   */
+  registerPrompt(config: MCPPromptConfig): void {
+    if (this.started) {
+      throw new Error('Cannot register prompts after server has started');
+    }
+
+    this.prompts.set(config.name, config);
+    this.registerMCPPrompt(config);
+  }
+
+  /**
+   * Register multiple prompts
+   */
+  registerPrompts(configs: MCPPromptConfig[]): void {
+    for (const config of configs) {
+      this.registerPrompt(config);
+    }
+  }
+
+  /**
+   * Unregister a prompt by name
+   */
+  unregisterPrompt(name: string): boolean {
+    return this.prompts.delete(name);
+  }
+
+  /**
+   * Get list of registered prompt names
+   */
+  getRegisteredPrompts(): string[] {
+    return Array.from(this.prompts.keys());
   }
 
   /**
@@ -172,6 +250,132 @@ export class MCPServer {
   }
 
   /**
+   * Register a resource with the MCP server
+   */
+  private registerMCPResource(config: MCPResourceConfig): void {
+    const isTemplate = config.uri.includes('{');
+
+    const formatContents = (result: MCPResourceContent | MCPResourceContent[], uriHref: string) => {
+      const contents = Array.isArray(result) ? result : [result];
+      return contents.map((c: MCPResourceContent) => {
+        const base: { uri: string; mimeType?: string } = {
+          uri: c.uri || uriHref,
+        };
+        if (c.mimeType || config.mimeType) {
+          base.mimeType = c.mimeType || config.mimeType;
+        }
+        if (c.blob) {
+          return { ...base, blob: c.blob };
+        }
+        return { ...base, text: c.text || '' };
+      });
+    };
+
+    if (isTemplate) {
+      this.server.registerResource(
+        config.name,
+        new ResourceTemplate(config.uri, { list: undefined }),
+        {
+          description: config.description,
+          mimeType: config.mimeType,
+        },
+        async (uri: URL, variables: Record<string, string | string[]>) => {
+          try {
+            const params: Record<string, string> = {};
+            for (const [key, value] of Object.entries(variables)) {
+              params[key] = Array.isArray(value) ? value[0] || '' : value;
+            }
+            const result = await config.read(params);
+            return { contents: formatContents(result, uri.href) };
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            if (this.config.logging) {
+              console.error(`[MCPServer] Resource ${config.name} error:`, errorMessage);
+            }
+            return { contents: [{ uri: uri.href, text: `Error: ${errorMessage}` }] };
+          }
+        }
+      );
+    } else {
+      this.server.registerResource(
+        config.name,
+        config.uri,
+        {
+          description: config.description,
+          mimeType: config.mimeType,
+        },
+        async (uri: URL) => {
+          try {
+            const result = await config.read({});
+            return { contents: formatContents(result, uri.href) };
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            if (this.config.logging) {
+              console.error(`[MCPServer] Resource ${config.name} error:`, errorMessage);
+            }
+            return { contents: [{ uri: uri.href, text: `Error: ${errorMessage}` }] };
+          }
+        }
+      );
+    }
+  }
+
+  /**
+   * Register a prompt with the MCP server
+   */
+  private registerMCPPrompt(config: MCPPromptConfig): void {
+    const argsSchema: Record<string, z.ZodTypeAny> = {};
+
+    for (const arg of config.arguments || []) {
+      let schema: z.ZodTypeAny = z.string();
+      if (arg.description) {
+        schema = schema.describe(arg.description);
+      }
+      if (!arg.required) {
+        schema = schema.optional();
+      }
+      argsSchema[arg.name] = schema;
+    }
+
+    this.server.registerPrompt(
+      config.name,
+      {
+        title: config.title || config.name,
+        description: config.description,
+        argsSchema,
+      },
+      async (args: Record<string, string>) => {
+        try {
+          const result = await config.get(args);
+          return {
+            description: result.description,
+            messages: result.messages.map((m) => ({
+              role: m.role as 'user' | 'assistant',
+              content: {
+                type: 'text' as const,
+                text: typeof m.content === 'string' ? m.content : m.content.text || '',
+              },
+            })),
+          };
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          if (this.config.logging) {
+            console.error(`[MCPServer] Prompt ${config.name} error:`, errorMessage);
+          }
+          return {
+            messages: [
+              {
+                role: 'assistant' as const,
+                content: { type: 'text' as const, text: `Error: ${errorMessage}` },
+              },
+            ],
+          };
+        }
+      }
+    );
+  }
+
+  /**
    * Start the MCP server
    */
   async start(): Promise<void> {
@@ -181,7 +385,15 @@ export class MCPServer {
 
     if (this.config.logging) {
       console.log(`[MCPServer] Starting ${this.config.name} v${this.config.version}`);
-      console.log(`[MCPServer] Registered tools: ${this.getRegisteredTools().join(', ')}`);
+      console.log(
+        `[MCPServer] Registered tools: ${this.getRegisteredTools().join(', ') || '(none)'}`
+      );
+      console.log(
+        `[MCPServer] Registered resources: ${this.getRegisteredResources().join(', ') || '(none)'}`
+      );
+      console.log(
+        `[MCPServer] Registered prompts: ${this.getRegisteredPrompts().join(', ') || '(none)'}`
+      );
     }
 
     switch (this.config.transport) {

@@ -6,8 +6,13 @@ import type { Tool, ToolSchema } from '@cogitator-ai/types';
 vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
   McpServer: vi.fn().mockImplementation(() => ({
     tool: vi.fn(),
+    registerResource: vi.fn(),
+    registerPrompt: vi.fn(),
     connect: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockResolvedValue(undefined),
+  })),
+  ResourceTemplate: vi.fn().mockImplementation((uri: string) => ({
+    uriTemplate: { template: uri },
   })),
 }));
 
@@ -217,5 +222,255 @@ describe('serveMCPTools', () => {
     expect(server.getRegisteredTools()).toContain('test_tool');
 
     await server.stop();
+  });
+});
+
+describe('MCPServer Resources', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  describe('registerResource', () => {
+    it('registers a static resource', () => {
+      const server = new MCPServer({
+        name: 'test',
+        version: '1.0.0',
+        transport: 'stdio',
+      });
+
+      server.registerResource({
+        uri: 'memory://threads',
+        name: 'Threads',
+        description: 'List of threads',
+        mimeType: 'application/json',
+        read: async () => ({ text: '[]' }),
+      });
+
+      expect(server.getRegisteredResources()).toContain('memory://threads');
+    });
+
+    it('registers a dynamic resource with template', () => {
+      const server = new MCPServer({
+        name: 'test',
+        version: '1.0.0',
+        transport: 'stdio',
+      });
+
+      server.registerResource({
+        uri: 'memory://thread/{id}',
+        name: 'Thread',
+        read: async ({ id }) => ({ text: JSON.stringify({ id }) }),
+      });
+
+      expect(server.getRegisteredResources()).toContain('memory://thread/{id}');
+    });
+
+    it('registers multiple resources', () => {
+      const server = new MCPServer({
+        name: 'test',
+        version: '1.0.0',
+        transport: 'stdio',
+      });
+
+      server.registerResources([
+        {
+          uri: 'memory://threads',
+          name: 'Threads',
+          read: async () => ({ text: '[]' }),
+        },
+        {
+          uri: 'memory://thread/{id}',
+          name: 'Thread',
+          read: async () => ({ text: '{}' }),
+        },
+      ]);
+
+      expect(server.getRegisteredResources()).toHaveLength(2);
+    });
+
+    it('throws when registering after start', async () => {
+      const server = new MCPServer({
+        name: 'test',
+        version: '1.0.0',
+        transport: 'stdio',
+      });
+
+      await server.start();
+
+      expect(() =>
+        server.registerResource({
+          uri: 'memory://test',
+          name: 'Test',
+          read: async () => ({ text: 'test' }),
+        })
+      ).toThrow('Cannot register resources after server has started');
+
+      await server.stop();
+    });
+  });
+
+  describe('unregisterResource', () => {
+    it('removes a registered resource', () => {
+      const server = new MCPServer({
+        name: 'test',
+        version: '1.0.0',
+        transport: 'stdio',
+      });
+
+      server.registerResource({
+        uri: 'memory://test',
+        name: 'Test',
+        read: async () => ({ text: 'test' }),
+      });
+
+      const removed = server.unregisterResource('memory://test');
+
+      expect(removed).toBe(true);
+      expect(server.getRegisteredResources()).not.toContain('memory://test');
+    });
+
+    it('returns false for non-existent resource', () => {
+      const server = new MCPServer({
+        name: 'test',
+        version: '1.0.0',
+        transport: 'stdio',
+      });
+
+      expect(server.unregisterResource('memory://nonexistent')).toBe(false);
+    });
+  });
+});
+
+describe('MCPServer Prompts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  describe('registerPrompt', () => {
+    it('registers a simple prompt', () => {
+      const server = new MCPServer({
+        name: 'test',
+        version: '1.0.0',
+        transport: 'stdio',
+      });
+
+      server.registerPrompt({
+        name: 'summarize',
+        description: 'Summarize content',
+        get: async () => ({
+          messages: [{ role: 'user', content: { type: 'text', text: 'Summarize this' } }],
+        }),
+      });
+
+      expect(server.getRegisteredPrompts()).toContain('summarize');
+    });
+
+    it('registers a prompt with arguments', () => {
+      const server = new MCPServer({
+        name: 'test',
+        version: '1.0.0',
+        transport: 'stdio',
+      });
+
+      server.registerPrompt({
+        name: 'review-code',
+        title: 'Code Review',
+        description: 'Review code for issues',
+        arguments: [
+          { name: 'code', description: 'Code to review', required: true },
+          { name: 'style', description: 'Review style', required: false },
+        ],
+        get: async ({ code, style }) => ({
+          messages: [
+            {
+              role: 'user',
+              content: { type: 'text', text: `Review (${style || 'default'}): ${code}` },
+            },
+          ],
+        }),
+      });
+
+      expect(server.getRegisteredPrompts()).toContain('review-code');
+    });
+
+    it('registers multiple prompts', () => {
+      const server = new MCPServer({
+        name: 'test',
+        version: '1.0.0',
+        transport: 'stdio',
+      });
+
+      server.registerPrompts([
+        {
+          name: 'summarize',
+          get: async () => ({
+            messages: [{ role: 'user', content: { type: 'text', text: 'Summarize' } }],
+          }),
+        },
+        {
+          name: 'translate',
+          get: async () => ({
+            messages: [{ role: 'user', content: { type: 'text', text: 'Translate' } }],
+          }),
+        },
+      ]);
+
+      expect(server.getRegisteredPrompts()).toHaveLength(2);
+      expect(server.getRegisteredPrompts()).toContain('summarize');
+      expect(server.getRegisteredPrompts()).toContain('translate');
+    });
+
+    it('throws when registering after start', async () => {
+      const server = new MCPServer({
+        name: 'test',
+        version: '1.0.0',
+        transport: 'stdio',
+      });
+
+      await server.start();
+
+      expect(() =>
+        server.registerPrompt({
+          name: 'test',
+          get: async () => ({
+            messages: [{ role: 'user', content: { type: 'text', text: 'Test' } }],
+          }),
+        })
+      ).toThrow('Cannot register prompts after server has started');
+
+      await server.stop();
+    });
+  });
+
+  describe('unregisterPrompt', () => {
+    it('removes a registered prompt', () => {
+      const server = new MCPServer({
+        name: 'test',
+        version: '1.0.0',
+        transport: 'stdio',
+      });
+
+      server.registerPrompt({
+        name: 'test',
+        get: async () => ({
+          messages: [{ role: 'user', content: { type: 'text', text: 'Test' } }],
+        }),
+      });
+
+      const removed = server.unregisterPrompt('test');
+
+      expect(removed).toBe(true);
+      expect(server.getRegisteredPrompts()).not.toContain('test');
+    });
+
+    it('returns false for non-existent prompt', () => {
+      const server = new MCPServer({
+        name: 'test',
+        version: '1.0.0',
+        transport: 'stdio',
+      });
+
+      expect(server.unregisterPrompt('nonexistent')).toBe(false);
+    });
   });
 });

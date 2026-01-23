@@ -299,19 +299,171 @@ interface MCPServerConfig {
 ```typescript
 const server = new MCPServer(config);
 
+// Tools
 server.registerTool(tool);
-
 server.registerTools([tool1, tool2]);
-
 server.unregisterTool('tool_name');
-
 server.getRegisteredTools();
 
+// Resources
+server.registerResource(resourceConfig);
+server.registerResources([resource1, resource2]);
+server.unregisterResource('memory://threads');
+server.getRegisteredResources();
+
+// Prompts
+server.registerPrompt(promptConfig);
+server.registerPrompts([prompt1, prompt2]);
+server.unregisterPrompt('summarize');
+server.getRegisteredPrompts();
+
+// Lifecycle
 await server.start();
-
 server.isRunning();
-
 await server.stop();
+```
+
+### Registering Resources
+
+Expose data to MCP clients via resources. Supports both static URIs and dynamic URI templates.
+
+```typescript
+const server = new MCPServer({
+  name: 'memory-server',
+  version: '1.0.0',
+  transport: 'stdio',
+});
+
+// Static resource with fixed URI
+server.registerResource({
+  uri: 'memory://threads',
+  name: 'Conversation Threads',
+  description: 'List of all conversation threads',
+  mimeType: 'application/json',
+  read: async () => ({
+    text: JSON.stringify(await getAllThreads()),
+  }),
+});
+
+// Dynamic resource with URI template
+server.registerResource({
+  uri: 'memory://thread/{id}',
+  name: 'Thread Content',
+  description: 'Content of a specific thread',
+  mimeType: 'application/json',
+  read: async ({ id }) => ({
+    text: JSON.stringify(await getThread(id)),
+  }),
+});
+
+// Resource returning binary data
+server.registerResource({
+  uri: 'files://avatar/{userId}',
+  name: 'User Avatar',
+  mimeType: 'image/png',
+  read: async ({ userId }) => ({
+    blob: await getAvatarBase64(userId),
+  }),
+});
+```
+
+### Registering Prompts
+
+Expose reusable prompt templates to MCP clients.
+
+```typescript
+const server = new MCPServer({
+  name: 'prompt-server',
+  version: '1.0.0',
+  transport: 'stdio',
+});
+
+// Simple prompt
+server.registerPrompt({
+  name: 'summarize',
+  title: 'Summarize Content',
+  description: 'Generate a summary of the provided content',
+  arguments: [
+    { name: 'content', description: 'Content to summarize', required: true },
+    { name: 'style', description: 'Summary style (brief/detailed)', required: false },
+  ],
+  get: async ({ content, style = 'brief' }) => ({
+    messages: [
+      {
+        role: 'user',
+        content: {
+          type: 'text',
+          text: `Please provide a ${style} summary of:\n\n${content}`,
+        },
+      },
+    ],
+  }),
+});
+
+// Code review prompt
+server.registerPrompt({
+  name: 'review-code',
+  title: 'Code Review',
+  description: 'Review code for issues and improvements',
+  arguments: [
+    { name: 'code', description: 'Code to review', required: true },
+    { name: 'language', description: 'Programming language', required: false },
+  ],
+  get: async ({ code, language }) => ({
+    description: `Reviewing ${language || 'code'}`,
+    messages: [
+      {
+        role: 'user',
+        content: {
+          type: 'text',
+          text: `Review this ${language || ''} code for best practices and issues:\n\n\`\`\`${language || ''}\n${code}\n\`\`\``,
+        },
+      },
+    ],
+  }),
+});
+```
+
+### Resource Configuration
+
+```typescript
+interface MCPResourceConfig {
+  uri: string; // Static URI or template like 'memory://thread/{id}'
+  name: string;
+  description?: string;
+  mimeType?: string;
+  read: (params: Record<string, string>) => Promise<MCPResourceContent | MCPResourceContent[]>;
+}
+
+interface MCPResourceContent {
+  uri?: string;
+  mimeType?: string;
+  text?: string; // Text content
+  blob?: string; // Base64 encoded binary
+}
+```
+
+### Prompt Configuration
+
+```typescript
+interface MCPPromptConfig {
+  name: string;
+  title?: string;
+  description?: string;
+  arguments?: MCPPromptArgumentConfig[];
+  get: (args: Record<string, string>) => Promise<MCPPromptResult> | MCPPromptResult;
+}
+
+interface MCPPromptArgumentConfig {
+  name: string;
+  description?: string;
+  required?: boolean;
+}
+
+interface MCPPromptResult {
+  messages: MCPPromptMessage[];
+  description?: string;
+}
 ```
 
 ### HTTP Server
@@ -725,6 +877,10 @@ import type {
 
   // Server
   MCPServerConfig,
+  MCPResourceConfig,
+  MCPPromptConfig,
+  MCPPromptArgumentConfig,
+  MCPPromptResult,
 
   // Tools
   MCPToolDefinition,

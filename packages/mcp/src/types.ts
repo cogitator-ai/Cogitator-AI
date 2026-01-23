@@ -101,6 +101,33 @@ export interface MCPPromptMessage {
   };
 }
 
+export interface MCPResourceConfig {
+  uri: string;
+  name: string;
+  description?: string;
+  mimeType?: string;
+  read: (params: Record<string, string>) => Promise<MCPResourceContent | MCPResourceContent[]>;
+}
+
+export interface MCPPromptArgumentConfig {
+  name: string;
+  description?: string;
+  required?: boolean;
+}
+
+export interface MCPPromptResult {
+  messages: MCPPromptMessage[];
+  description?: string;
+}
+
+export interface MCPPromptConfig {
+  name: string;
+  title?: string;
+  description?: string;
+  arguments?: MCPPromptArgumentConfig[];
+  get: (args: Record<string, string>) => Promise<MCPPromptResult> | MCPPromptResult;
+}
+
 export interface MCPServerConfig {
   /** Server name */
   name: string;
