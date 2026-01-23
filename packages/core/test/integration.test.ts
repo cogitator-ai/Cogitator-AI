@@ -10,7 +10,11 @@ async function isOllamaAvailable(): Promise<boolean> {
     const response = await fetch(`${OLLAMA_URL}/api/tags`, {
       signal: AbortSignal.timeout(5000),
     });
-    return response.ok;
+    if (!response.ok) return false;
+
+    const data = (await response.json()) as { models?: Array<{ name: string }> };
+    const models = data.models || [];
+    return models.some((m) => m.name === TEST_MODEL || m.name.startsWith(`${TEST_MODEL}:`));
   } catch {
     return false;
   }
