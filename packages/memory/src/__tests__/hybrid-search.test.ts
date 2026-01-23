@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { BM25Index } from '../search/bm25';
 import { tokenize, getTermFrequency } from '../search/tokenizer';
-import { reciprocalRankFusion, fuseSearchResults } from '../search/rrf';
+import { fuseSearchResults } from '../search/rrf';
 import { HybridSearch } from '../search/hybrid-search';
 import { InMemoryEmbeddingAdapter } from '../adapters/memory-embedding';
 import type { EmbeddingService, SearchResult } from '@cogitator-ai/types';

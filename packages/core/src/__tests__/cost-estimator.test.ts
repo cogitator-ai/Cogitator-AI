@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { TokenEstimator } from '../cost-routing/token-estimator';
 import { CostEstimator } from '../cost-routing/cost-estimator';
 import { Agent } from '../agent';

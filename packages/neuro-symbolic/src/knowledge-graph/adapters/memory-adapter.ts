@@ -166,7 +166,7 @@ export class MemoryGraphAdapter implements GraphAdapter {
     }
 
     const scored = nodesResult.data
-      .filter((n) => n.embedding && n.embedding.length === options.vector!.length)
+      .filter((n) => n.embedding?.length === options.vector!.length)
       .map((node) => ({
         ...node,
         score: cosineSimilarity(node.embedding!, options.vector!),
@@ -219,7 +219,7 @@ export class MemoryGraphAdapter implements GraphAdapter {
 
     for (const edgeId of sourceEdges) {
       const edge = this.edges.get(edgeId);
-      if (edge && edge.targetNodeId === targetNodeId) {
+      if (edge?.targetNodeId === targetNodeId) {
         results.push(edge);
       }
     }

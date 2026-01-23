@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { SwarmEvent, SwarmEventType } from '@cogitator-ai/types';
+import type { SwarmEvent } from '@cogitator-ai/types';
 import { RedisSwarmEventEmitter } from '../../communication/redis-event-emitter.js';
 
 function createMockRedis() {

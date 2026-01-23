@@ -49,7 +49,7 @@ export const INJECTION_PATTERNS: InjectionPattern[] = [
 
   {
     type: 'jailbreak',
-    pattern: /you\s+are\s+(now\s+)?DAN(\s|,|\.|\!|$)/i,
+    pattern: /you\s+are\s+(now\s+)?DAN(\s|,|\.|!|$)/i,
     confidence: 0.98,
     description: 'DAN jailbreak',
   },
@@ -331,7 +331,7 @@ export function detectUnicodeThreats(input: string): InjectionThreat[] {
     });
   }
 
-  const zeroWidthRegex = /[\u200B\u200C\u200D\uFEFF]/g;
+  const zeroWidthRegex = /\u200B|\u200C|\u200D|\uFEFF/g;
   const zeroWidthMatches = input.match(zeroWidthRegex);
 
   if (zeroWidthMatches && zeroWidthMatches.length > 5) {

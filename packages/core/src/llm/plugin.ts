@@ -6,9 +6,7 @@
 
 import type { LLMBackend } from '@cogitator-ai/types';
 
-export interface LLMBackendFactory<TConfig = unknown> {
-  (config: TConfig): LLMBackend;
-}
+export type LLMBackendFactory<TConfig = unknown> = (config: TConfig) => LLMBackend;
 
 export interface LLMPluginMetadata {
   name: string;

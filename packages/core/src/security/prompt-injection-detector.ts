@@ -6,13 +6,13 @@ import type {
 import { LocalInjectionClassifier } from './classifiers/local-classifier';
 import { LLMInjectionClassifier } from './classifiers/llm-classifier';
 
-export interface PromptInjectionDetectorOptions extends Partial<PromptInjectionConfig> {}
+export type PromptInjectionDetectorOptions = Partial<PromptInjectionConfig>;
 
 export class PromptInjectionDetector {
   private classifier: InjectionClassifier;
   private config: PromptInjectionConfig;
   private customPatterns: RegExp[] = [];
-  private allowlistSet: Set<string> = new Set();
+  private allowlistSet = new Set<string>();
   private stats = { analyzed: 0, blocked: 0, warned: 0 };
 
   constructor(options: PromptInjectionDetectorOptions = {}) {

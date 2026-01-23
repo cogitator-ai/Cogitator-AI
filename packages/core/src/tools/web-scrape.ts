@@ -109,12 +109,12 @@ function htmlToMarkdown(html: string): string {
 }
 
 function extractTitle(html: string): string {
-  const titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/i);
+  const titleMatch = /<title[^>]*>(.*?)<\/title>/i.exec(html);
   if (titleMatch) {
     return titleMatch[1].replace(/&[^;]+;/g, ' ').trim();
   }
 
-  const h1Match = html.match(/<h1[^>]*>(.*?)<\/h1>/i);
+  const h1Match = /<h1[^>]*>(.*?)<\/h1>/i.exec(html);
   if (h1Match) {
     return h1Match[1].replace(/<[^>]+>/g, '').trim();
   }
@@ -158,7 +158,7 @@ function extractImages(html: string, baseUrl: string): ExtractedImage[] {
 
   while ((match = regex.exec(html)) !== null) {
     const src = match[1];
-    const altMatch = match[0].match(/alt=["']([^"']*?)["']/i);
+    const altMatch = /alt=["']([^"']*?)["']/i.exec(match[0]);
     const alt = altMatch ? altMatch[1] : '';
 
     if (!src || src.startsWith('data:')) {

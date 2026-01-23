@@ -17,7 +17,6 @@ import type {
   AssessorConfig,
   AssessmentResult,
   SwarmCoordinatorInterface,
-  DistributedSwarmConfig,
 } from '@cogitator-ai/types';
 import { SwarmCoordinator } from './coordinator.js';
 import { createStrategy } from './strategies/index.js';
@@ -45,7 +44,7 @@ export class Swarm {
     if (this.isDistributed) {
       this.distributedCoordinator = new DistributedSwarmCoordinator({
         config,
-        distributed: config.distributed as DistributedSwarmConfig,
+        distributed: config.distributed!,
       });
       this.coordinator = this.distributedCoordinator;
     } else {
@@ -184,7 +183,7 @@ export class Swarm {
     if (this.isDistributed) {
       this.distributedCoordinator = new DistributedSwarmCoordinator({
         config: this.config,
-        distributed: this.config.distributed as DistributedSwarmConfig,
+        distributed: this.config.distributed!,
       });
       this.coordinator = this.distributedCoordinator;
     } else {

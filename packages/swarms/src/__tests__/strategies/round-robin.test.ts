@@ -166,8 +166,8 @@ describe('RoundRobinStrategy', () => {
       await strategy.execute({ input: 'user2:msg' });
 
       const state = strategy.getState();
-      expect(state.stickyAssignments['user1']).toBe('agent-1');
-      expect(state.stickyAssignments['user2']).toBe('agent-1');
+      expect(state.stickyAssignments.user1).toBe('agent-1');
+      expect(state.stickyAssignments.user2).toBe('agent-1');
     });
   });
 

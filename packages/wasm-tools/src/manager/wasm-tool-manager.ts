@@ -136,7 +136,6 @@ export class WasmToolManager {
   }
 
   private createProxyTool(name: string, _plugin: ExtismPlugin): Tool<unknown, unknown> {
-    const self = this;
     const parameters = z.record(z.unknown());
 
     const tool: Tool<unknown, unknown> = {
@@ -144,7 +143,7 @@ export class WasmToolManager {
       description: `WASM tool: ${name}`,
       parameters,
       execute: async (params: unknown, _context: ToolContext) => {
-        const mod = self.modules.get(name);
+        const mod = this.modules.get(name);
         if (!mod) {
           throw new Error(`Module ${name} not loaded`);
         }

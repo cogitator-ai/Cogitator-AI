@@ -73,8 +73,7 @@ function decodeBase64(input: string, urlSafe: boolean): string {
   let buffer = 0;
   let bits = 0;
 
-  for (let i = 0; i < normalized.length; i++) {
-    const char = normalized[i];
+  for (const char of normalized) {
     const value = lookup[char];
     if (value === undefined) {
       continue;
