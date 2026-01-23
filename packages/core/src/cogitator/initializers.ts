@@ -10,6 +10,7 @@ import { getLogger } from '../logger';
 import { ReflectionEngine, InMemoryInsightStore } from '../reflection/index';
 import { ConstitutionalAI } from '../constitutional/index';
 import { CostAwareRouter } from '../cost-routing/index';
+import { PromptInjectionDetector } from '../security/index';
 import type { Agent } from '../agent';
 
 export type SandboxManager = {
@@ -51,6 +52,8 @@ export interface InitializerState {
   guardrailsInitialized: boolean;
   costRouter?: CostAwareRouter;
   costRoutingInitialized: boolean;
+  injectionDetector?: PromptInjectionDetector;
+  securityInitialized: boolean;
 }
 
 export async function initializeMemory(
@@ -179,6 +182,24 @@ export function initializeCostRouting(config: CogitatorConfig, state: Initialize
   state.costRoutingInitialized = true;
 }
 
+export function initializeSecurity(
+  config: CogitatorConfig,
+  state: InitializerState,
+  getBackend: (model: string) => LLMBackend
+): void {
+  if (state.securityInitialized || !config.security?.promptInjection) return;
+
+  const injectionConfig = config.security.promptInjection;
+
+  if (injectionConfig.classifier === 'llm' && !injectionConfig.llmBackend) {
+    const model = injectionConfig.llmModel ?? 'gpt-4o-mini';
+    injectionConfig.llmBackend = getBackend(model);
+  }
+
+  state.injectionDetector = new PromptInjectionDetector(injectionConfig);
+  state.securityInitialized = true;
+}
+
 export async function cleanupState(state: InitializerState): Promise<void> {
   if (state.memoryAdapter) {
     await state.memoryAdapter.disconnect();
@@ -198,4 +219,6 @@ export async function cleanupState(state: InitializerState): Promise<void> {
   state.guardrailsInitialized = false;
   state.costRouter = undefined;
   state.costRoutingInitialized = false;
+  state.injectionDetector = undefined;
+  state.securityInitialized = false;
 }

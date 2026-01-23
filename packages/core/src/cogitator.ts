@@ -26,8 +26,10 @@ import {
   initializeReflection,
   initializeGuardrails,
   initializeCostRouting,
+  initializeSecurity,
   cleanupState,
 } from './cogitator/initializers';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import {
   buildInitialMessages,
   saveEntry,
@@ -98,6 +100,7 @@ export class Cogitator {
     reflectionInitialized: false,
     guardrailsInitialized: false,
     costRoutingInitialized: false,
+    securityInitialized: false,
   };
 
   /**
@@ -200,6 +203,18 @@ export class Cogitator {
         this.state.memoryAdapter,
         this.state.contextBuilder
       );
+
+      if (this.state.injectionDetector) {
+        const injectionResult = await this.state.injectionDetector.analyze(options.input);
+        if (injectionResult.action === 'blocked') {
+          const threatTypes = injectionResult.threats.map((t) => t.type).join(', ');
+          throw new CogitatorError({
+            message: `Prompt injection detected: ${threatTypes}`,
+            code: ErrorCode.PROMPT_INJECTION_DETECTED,
+            details: { threats: injectionResult.threats },
+          });
+        }
+      }
 
       if (this.state.constitutionalAI && this.config.guardrails?.filterInput) {
         const inputResult = await this.state.constitutionalAI.filterInput(options.input);
@@ -595,6 +610,10 @@ export class Cogitator {
 
     if (this.config.costRouting?.enabled && !this.state.costRoutingInitialized) {
       initializeCostRouting(this.config, this.state);
+    }
+
+    if (this.config.security?.promptInjection && !this.state.securityInitialized) {
+      initializeSecurity(this.config, this.state, (model) => this.getBackend(model));
     }
   }
 

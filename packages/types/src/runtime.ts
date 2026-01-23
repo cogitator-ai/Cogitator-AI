@@ -11,6 +11,7 @@ import type { GuardrailConfig } from './constitutional';
 import type { CostRoutingConfig } from './cost-routing';
 import type { PromptOptimizationConfig } from './prompt-optimization';
 import type { KnowledgeGraphConfig } from './knowledge-graph';
+import type { PromptInjectionConfig } from './security';
 
 export interface CogitatorConfig {
   llm?: {
@@ -36,6 +37,10 @@ export interface CogitatorConfig {
   knowledgeGraph?: KnowledgeGraphConfig;
   /** Prompt inspection and auto-optimization configuration */
   promptOptimization?: PromptOptimizationConfig;
+  /** Security configuration for prompt injection detection */
+  security?: {
+    promptInjection?: PromptInjectionConfig;
+  };
 }
 
 export interface RunOptions {

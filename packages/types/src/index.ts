@@ -27,3 +27,4 @@ export * from './neuro-symbolic';
 export * from './self-modifying';
 export * from './causal';
 export * from './tool-cache';
+export * from './security';

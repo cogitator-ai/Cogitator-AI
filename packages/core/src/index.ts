@@ -337,3 +337,25 @@ export type {
   WithCacheOptions,
   RedisClientLike,
 } from '@cogitator-ai/types';
+
+export {
+  PromptInjectionDetector,
+  LocalInjectionClassifier,
+  LLMInjectionClassifier,
+  INJECTION_PATTERNS,
+  detectEncodingThreats,
+  detectUnicodeThreats,
+  matchPatterns,
+} from './security/index';
+export type { PromptInjectionDetectorOptions } from './security/index';
+
+export type {
+  InjectionThreatType,
+  InjectionAction,
+  InjectionThreat,
+  InjectionDetectionResult,
+  PromptInjectionConfig,
+  InjectionClassifier,
+  InjectionPattern,
+} from '@cogitator-ai/types';
+export { DEFAULT_INJECTION_CONFIG } from '@cogitator-ai/types';

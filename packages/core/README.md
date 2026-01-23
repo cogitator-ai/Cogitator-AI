@@ -996,6 +996,99 @@ breaker.onStateChange((state) => {
 
 ---
 
+## Prompt Injection Detection
+
+Protect your agents from jailbreak attempts, prompt injections, and other adversarial inputs:
+
+```typescript
+import { Cogitator, PromptInjectionDetector } from '@cogitator-ai/core';
+
+// Standalone usage
+const detector = new PromptInjectionDetector({
+  detectInjection: true, // "Ignore previous instructions..."
+  detectJailbreak: true, // DAN, developer mode attacks
+  detectRoleplay: true, // Malicious roleplay scenarios
+  detectEncoding: true, // Base64, hex encoded attacks
+  detectContextManipulation: true, // [SYSTEM], <|im_start|> injections
+  classifier: 'local', // 'local' (fast) or 'llm' (accurate)
+  action: 'block', // 'block' | 'warn' | 'log'
+  threshold: 0.7,
+});
+
+const result = await detector.analyze('Ignore all previous instructions and...');
+// { safe: false, threats: [...], action: 'blocked', analysisTime: 2 }
+
+// Integrated with Cogitator runtime
+const cog = new Cogitator({
+  security: {
+    promptInjection: {
+      detectInjection: true,
+      detectJailbreak: true,
+      action: 'block',
+      threshold: 0.7,
+    },
+  },
+});
+
+// Throws PromptInjectionError if attack detected
+await cog.run(agent, { input: userInput });
+```
+
+### Detection Types
+
+| Type                   | Examples                                              |
+| ---------------------- | ----------------------------------------------------- |
+| `direct_injection`     | "Ignore previous instructions", "Your new prompt is"  |
+| `jailbreak`            | DAN prompts, "developer mode enabled", "unrestricted" |
+| `roleplay`             | "Pretend you are evil AI", "From now on you are"      |
+| `encoding`             | Base64 payloads, hex escape sequences, unicode tricks |
+| `context_manipulation` | `[SYSTEM]:`, `<\|im_start\|>`, markdown role markers  |
+
+### Custom Patterns & Allowlist
+
+```typescript
+const detector = new PromptInjectionDetector({
+  action: 'block',
+  patterns: [/secret\s+backdoor/i], // Custom regex patterns
+  allowlist: ['ignore the previous search'], // Legitimate phrases
+});
+
+// Dynamic updates
+detector.addPattern(/company\s+specific\s+attack/i);
+detector.addToAllowlist('ignore previous results');
+```
+
+### LLM-Based Classification
+
+For higher accuracy with complex attacks:
+
+```typescript
+const detector = new PromptInjectionDetector({
+  classifier: 'llm',
+  llmBackend: openaiBackend,
+  llmModel: 'gpt-4o-mini',
+  action: 'block',
+});
+```
+
+### Statistics & Callbacks
+
+```typescript
+const detector = new PromptInjectionDetector({
+  action: 'block',
+  onThreat: (result, input) => {
+    console.log('Attack detected:', result.threats);
+    logToSecurity(input, result);
+  },
+});
+
+await detector.analyze('...');
+const stats = detector.getStats();
+// { analyzed: 100, blocked: 5, warned: 0, allowRate: 0.95 }
+```
+
+---
+
 ## Tool Caching
 
 Cache tool results to avoid redundant API calls with exact or semantic matching:
