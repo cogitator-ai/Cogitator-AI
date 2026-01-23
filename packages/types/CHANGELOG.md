@@ -1,5 +1,30 @@
 # @cogitator-ai/types
 
+## 0.10.1
+
+### Patch Changes
+
+- feat(workflows): implement ParallelEdge support in WorkflowBuilder
+
+  Added `addParallel()` method to WorkflowBuilder for creating parallel fan-out edges:
+
+  ```typescript
+  const workflow = new WorkflowBuilder<MyState>('parallel-workflow')
+    .addNode('start', async () => ({ output: 'ready' }))
+    .addParallel('fanout', ['a', 'b', 'c'], { after: ['start'] })
+    .addNode('a', async () => ({ output: 'a' }))
+    .addNode('b', async () => ({ output: 'b' }))
+    .addNode('c', async () => ({ output: 'c' }))
+    .addNode('merge', async (ctx) => ({ output: ctx.input }), {
+      after: ['a', 'b', 'c'],
+    })
+    .build();
+  ```
+
+  - Parallel nodes execute concurrently (respects maxConcurrency)
+  - Fan-in support: merge node receives array of outputs from parallel branches
+  - Works with existing conditional and loop edges
+
 ## 0.10.0
 
 ### Minor Changes
