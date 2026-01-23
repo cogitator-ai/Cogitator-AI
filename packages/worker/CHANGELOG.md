@@ -1,5 +1,16 @@
 # @cogitator-ai/worker
 
+## 0.3.0
+
+### Minor Changes
+
+- feat: distributed swarm execution via Redis
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/swarms@0.4.0
+
 ## 0.2.20
 
 ### Patch Changes

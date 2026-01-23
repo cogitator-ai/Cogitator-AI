@@ -1,5 +1,11 @@
 # @cogitator-ai/swarms
 
+## 0.4.0
+
+### Minor Changes
+
+- feat: distributed swarm execution via Redis
+
 ## 0.3.20
 
 ### Patch Changes
