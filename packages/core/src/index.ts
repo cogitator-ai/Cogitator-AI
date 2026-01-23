@@ -313,3 +313,27 @@ export {
   createOTLPExporter,
 } from './observability/index';
 export type { LangfuseConfig, OTLPExporterConfig } from './observability/index';
+
+export {
+  withCache,
+  createToolCacheStorage,
+  InMemoryToolCacheStorage,
+  RedisToolCacheStorage,
+  generateCacheKey,
+  paramsToQueryString,
+  cosineSimilarity,
+  parseDuration,
+} from './cache/index';
+export type { RedisToolCacheStorageConfig } from './cache/index';
+
+export type {
+  CacheStrategy,
+  DurationString,
+  ToolCacheConfig,
+  CacheEntry,
+  CacheStats,
+  ToolCacheStorage,
+  CachedTool,
+  WithCacheOptions,
+  RedisClientLike,
+} from '@cogitator-ai/types';

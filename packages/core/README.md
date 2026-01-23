@@ -994,6 +994,125 @@ breaker.onStateChange((state) => {
 });
 ```
 
+---
+
+## Tool Caching
+
+Cache tool results to avoid redundant API calls with exact or semantic matching:
+
+### Exact Match Caching
+
+```typescript
+import { tool, withCache } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const webSearch = tool({
+  name: 'web_search',
+  description: 'Search the web',
+  parameters: z.object({ query: z.string() }),
+  execute: async ({ query }) => {
+    return await searchApi(query);
+  },
+});
+
+const cachedSearch = withCache(webSearch, {
+  strategy: 'exact',
+  ttl: '1h',
+  maxSize: 1000,
+  storage: 'memory',
+});
+
+await cachedSearch.execute({ query: 'weather in Paris' }, ctx);
+await cachedSearch.execute({ query: 'weather in Paris' }, ctx); // cache hit
+
+console.log(cachedSearch.cache.stats());
+// { hits: 1, misses: 1, size: 1, evictions: 0, hitRate: 0.5 }
+```
+
+### Semantic Caching
+
+Similar queries hit the cache based on embedding similarity:
+
+```typescript
+import { withCache } from '@cogitator-ai/core';
+import type { EmbeddingService } from '@cogitator-ai/types';
+
+const embeddingService: EmbeddingService = {
+  embed: async (text) => openai.embeddings.create({ input: text }),
+  embedBatch: async (texts) => /* ... */,
+  dimensions: 1536,
+  model: 'text-embedding-3-small',
+};
+
+const cachedSearch = withCache(webSearch, {
+  strategy: 'semantic',
+  similarity: 0.95,         // 95% similarity threshold
+  ttl: '1h',
+  maxSize: 1000,
+  storage: 'memory',
+  embeddingService,
+});
+
+await cachedSearch.execute({ query: 'weather in Paris' }, ctx);
+await cachedSearch.execute({ query: 'Paris weather forecast' }, ctx); // semantic hit
+```
+
+### Redis Storage
+
+For production with persistence:
+
+```typescript
+import { withCache, RedisToolCacheStorage } from '@cogitator-ai/core';
+
+const cachedTool = withCache(webSearch, {
+  strategy: 'semantic',
+  similarity: 0.95,
+  ttl: '1h',
+  maxSize: 1000,
+  storage: 'redis',
+  redisClient: redisClient, // ioredis compatible client
+  keyPrefix: 'myapp:cache',
+  embeddingService,
+});
+```
+
+### Cache Management
+
+```typescript
+const cached = withCache(tool, config);
+
+// Get statistics
+const stats = cached.cache.stats();
+
+// Invalidate specific entry
+await cached.cache.invalidate({ query: 'specific query' });
+
+// Clear all entries
+await cached.cache.clear();
+
+// Pre-warm cache
+await cached.cache.warmup([
+  { params: { query: 'common query 1' }, result: { data: '...' } },
+  { params: { query: 'common query 2' }, result: { data: '...' } },
+]);
+```
+
+### Cache Callbacks
+
+```typescript
+const cached = withCache(tool, {
+  strategy: 'exact',
+  ttl: '1h',
+  maxSize: 100,
+  storage: 'memory',
+  onHit: (key, params) => console.log('Cache hit:', key),
+  onMiss: (key, params) => console.log('Cache miss:', key),
+  onEvict: (key) => console.log('Evicted:', key),
+});
+```
+
+---
+
 ### Fallback Patterns
 
 ```typescript

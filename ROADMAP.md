@@ -7,37 +7,40 @@
 - 🟡 **Medium** — Quality of life improvements
 - 🟢 **Nice to Have** — Polish and extras
 
-### 6. Tool Caching Layer
+### ~~6. Tool Caching Layer~~ ✅
 
 **Package:** `packages/core`
 
-**What:** Semantic cache for tool results to avoid redundant API calls.
+**Status:** Implemented in `packages/core/src/cache/`
 
-**API Design:**
+**Features:**
+
+- `withCache()` wrapper for any tool
+- Exact match caching (SHA256 hash of params)
+- Semantic caching with embedding similarity threshold
+- In-memory storage with LRU eviction
+- Redis storage with TTL and sorted sets
+- Cache stats, invalidation, warmup, callbacks
+
+**API:**
 
 ```typescript
-import { tool, withCache } from '@cogitator-ai/core';
+import { withCache } from '@cogitator-ai/core';
 
-const webSearch = tool({
-  name: 'webSearch',
-  parameters: z.object({ query: z.string() }),
-  execute: async ({ query }) => {
-    /* ... */
-  },
+const cachedSearch = withCache(webSearch, {
+  strategy: 'semantic',
+  similarity: 0.95,
+  ttl: '1h',
+  maxSize: 1000,
+  storage: 'redis',
+  embeddingService,
 });
 
-const cachedWebSearch = withCache(webSearch, {
-  strategy: 'semantic', // Similar queries hit cache
-  similarity: 0.95, // 95% similarity threshold
-  ttl: '1h', // Cache for 1 hour
-  maxSize: 1000, // Max cached entries
-  storage: 'redis', // or 'memory'
-});
+await cachedSearch.execute({ query: 'weather in Paris' }, ctx);
+await cachedSearch.execute({ query: 'Paris weather' }, ctx); // semantic hit
+
+console.log(cachedSearch.cache.stats());
 ```
-
-**Implementation location:** `packages/core/src/cache/tool-cache.ts`
-
-**Why:** Same query "weather in Paris" won't hit external API 100 times.
 
 ---
 
@@ -405,7 +408,7 @@ const executor = new WorkflowExecutor({
 ### Phase 3: DX & Polish
 
 8. ~~Real-time workflow streaming (#4)~~ ✅
-9. Tool caching (#6)
+9. ~~Tool caching (#6)~~ ✅
 10. Cost prediction (#8)
 11. Agent serialization (#9)
 
