@@ -1,5 +1,23 @@
 # @cogitator-ai/workflows
 
+## 0.4.0
+
+### Minor Changes
+
+- feat(workflows): implement real-time streaming with progress reporting
+
+  Add Server-Sent Events style streaming for workflow execution:
+  - Add StreamingWorkflowEvent type with modern underscore-style events
+  - Add workflow_started, node_started, node_progress, node_completed, workflow_completed events
+  - Add reportProgress callback to NodeContext for nodes to report 0-100% progress
+  - Add onNodeProgress callback to WorkflowExecuteOptions
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.12.0
+  - @cogitator-ai/core@0.11.4
+
 ## 0.3.1
 
 ### Patch Changes
