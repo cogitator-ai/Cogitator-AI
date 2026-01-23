@@ -1,5 +1,34 @@
 # @cogitator-ai/neuro-symbolic
 
+## 9.1.0
+
+### Minor Changes
+
+- feat: implement agent tools for formal reasoning
+
+  Add `createNeuroSymbolicTools()` factory that exposes neuro-symbolic capabilities as tools that agents can use:
+
+  **Logic tools:**
+  - `queryLogic` - Execute Prolog-style queries with variable bindings
+  - `assertFact` - Add facts/rules to the knowledge base
+  - `loadProgram` - Load complete Prolog programs
+
+  **Constraint tools:**
+  - `solveConstraints` - Solve SAT/SMT problems with Z3 or simple solver
+
+  **Planning tools:**
+  - `validatePlan` - Verify action sequences against preconditions
+  - `repairPlan` - Suggest fixes for invalid plans
+  - `registerAction` - Define action schemas for planning
+
+  **Graph tools** (when graphAdapter provided):
+  - `findPath` - Find shortest paths in knowledge graphs
+  - `queryGraph` - Pattern match against graph nodes/edges
+  - `addGraphNode` - Add entities to the knowledge graph
+  - `addGraphEdge` - Add relationships between entities
+
+  Also adds `MemoryGraphAdapter` - full in-memory GraphAdapter implementation for testing and development.
+
 ## 9.0.1
 
 ### Patch Changes
