@@ -39,4 +39,39 @@ export interface Agent {
   /** Tools accessor (shortcut to config.tools) */
   readonly tools: Tool[];
   clone(overrides: Partial<AgentConfig>): Agent;
+  serialize(): AgentSnapshot;
+}
+
+export interface AgentSnapshot {
+  version: string;
+  id: string;
+  name: string;
+  config: SerializedAgentConfig;
+  metadata?: AgentSnapshotMetadata;
+}
+
+export interface AgentSnapshotMetadata {
+  createdAt?: string;
+  serializedAt: string;
+  description?: string;
+}
+
+export interface SerializedAgentConfig {
+  model: string;
+  provider?: string;
+  instructions: string;
+  tools: string[];
+  description?: string;
+  temperature?: number;
+  topP?: number;
+  maxTokens?: number;
+  stopSequences?: string[];
+  maxIterations?: number;
+  timeout?: number;
+}
+
+export interface DeserializeOptions {
+  toolRegistry?: { get(name: string): Tool | undefined };
+  tools?: Tool[];
+  overrides?: Partial<AgentConfig>;
 }

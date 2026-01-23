@@ -5,7 +5,7 @@
  */
 
 export { Cogitator } from './cogitator';
-export { Agent } from './agent';
+export { Agent, AgentDeserializationError } from './agent';
 export { tool, toolToSchema } from './tool';
 export { agentAsTool } from './agent-tool';
 export type { AgentAsToolOptions, AgentToolResult } from './agent-tool';

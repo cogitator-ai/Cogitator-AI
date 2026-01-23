@@ -1166,6 +1166,90 @@ console.log(localEstimate.warnings); // ['Local model (Ollama) - no API cost']
 - **Local Model Detection** — Automatically returns $0 for Ollama models
 - **Warnings** — Alerts for unpredictable costs, missing pricing data
 
+### 💾 Agent Serialization
+
+Save agents to JSON and restore them later — perfect for persistence, sharing, and database storage:
+
+```typescript
+import { Agent, ToolRegistry, tool, AgentDeserializationError } from '@cogitator-ai/core';
+import fs from 'fs/promises';
+
+// Create tools and registry
+const calculator = tool({
+  name: 'calculator',
+  description: 'Math operations',
+  parameters: z.object({ expr: z.string() }),
+  execute: async ({ expr }) => eval(expr),
+});
+
+const registry = new ToolRegistry();
+registry.register(calculator);
+
+// Create and configure agent
+const agent = new Agent({
+  name: 'math-helper',
+  model: 'openai/gpt-4o',
+  instructions: 'You help with math.',
+  tools: [calculator],
+  temperature: 0.7,
+  maxIterations: 10,
+});
+
+// Serialize to JSON-safe object
+const snapshot = agent.serialize();
+// {
+//   version: '1.0.0',
+//   id: 'abc123',
+//   name: 'math-helper',
+//   config: {
+//     model: 'openai/gpt-4o',
+//     instructions: 'You help with math.',
+//     tools: ['calculator'],  // Only tool names!
+//     temperature: 0.7,
+//     maxIterations: 10,
+//   },
+//   metadata: { serializedAt: '2025-01-23T...' }
+// }
+
+// Save to file or database
+await fs.writeFile('agent.json', JSON.stringify(snapshot, null, 2));
+
+// Later: load and restore
+const loaded = JSON.parse(await fs.readFile('agent.json', 'utf-8'));
+
+// Validate before deserializing (optional)
+if (!Agent.validateSnapshot(loaded)) {
+  throw new Error('Invalid snapshot');
+}
+
+// Restore with tool registry
+const restored = Agent.deserialize(loaded, { toolRegistry: registry });
+
+// Or provide tools directly
+const restored2 = Agent.deserialize(loaded, { tools: [calculator] });
+
+// Override config during restore
+const restored3 = Agent.deserialize(loaded, {
+  toolRegistry: registry,
+  overrides: { temperature: 0.5, maxIterations: 5 },
+});
+
+// Agent is ready to use
+console.log(restored.name); // 'math-helper'
+console.log(restored.tools.length); // 1
+```
+
+**Why tool names only?** Tools contain non-serializable elements (functions, ZodType schemas), so we store only names and resolve them from a registry during deserialization.
+
+**Features:**
+
+- **Version Field** — Snapshot format versioning for future migrations
+- **Tool Resolution** — Resolve tools by name from ToolRegistry or direct array
+- **Config Overrides** — Override any config field during restore
+- **Validation** — `Agent.validateSnapshot()` for runtime type checking
+- **Error Handling** — `AgentDeserializationError` with helpful messages
+- **ID Preservation** — Original agent ID is preserved across serialize/deserialize
+
 ### 🗄️ Tool Caching
 
 Cache tool results to avoid redundant API calls with exact or semantic matching:
@@ -1496,6 +1580,7 @@ const providers: LLMProvidersConfig = {
 | Causal Reasoning    | ✅        | ❌          | ❌                | ❌          |
 | Tool Caching        | ✅        | ❌          | ❌                | ❌          |
 | Injection Detection | ✅        | ❌          | ❌                | ❌          |
+| Agent Serialization | ✅        | ⚠️ Basic    | ❌                | ❌          |
 | Dependencies        | ~20       | 150+        | N/A               | ~30         |
 
 ---
