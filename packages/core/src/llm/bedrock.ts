@@ -19,19 +19,6 @@ import type {
 import { BaseLLMBackend } from './base';
 import { createLLMError, llmUnavailable, llmConfigError, type LLMErrorContext } from './errors';
 
-import type {
-  BedrockRuntimeClient as BedrockRuntimeClientType,
-  ConverseCommandInput,
-  ConverseCommandOutput,
-  ConverseStreamCommandInput,
-  ConverseStreamCommandOutput,
-  Message as BedrockMessage,
-  ContentBlock,
-  Tool,
-  ToolConfiguration,
-  InferenceConfiguration,
-} from '@aws-sdk/client-bedrock-runtime';
-
 type DocumentType =
   | null
   | boolean
@@ -39,6 +26,21 @@ type DocumentType =
   | string
   | DocumentType[]
   | { [key: string]: DocumentType };
+
+type BedrockRuntimeClientType = InstanceType<
+  typeof import('@aws-sdk/client-bedrock-runtime').BedrockRuntimeClient
+>;
+type ConverseCommandInput = import('@aws-sdk/client-bedrock-runtime').ConverseCommandInput;
+type ConverseCommandOutput = import('@aws-sdk/client-bedrock-runtime').ConverseCommandOutput;
+type ConverseStreamCommandInput =
+  import('@aws-sdk/client-bedrock-runtime').ConverseStreamCommandInput;
+type ConverseStreamCommandOutput =
+  import('@aws-sdk/client-bedrock-runtime').ConverseStreamCommandOutput;
+type BedrockMessage = import('@aws-sdk/client-bedrock-runtime').Message;
+type ContentBlock = import('@aws-sdk/client-bedrock-runtime').ContentBlock;
+type BedrockTool = import('@aws-sdk/client-bedrock-runtime').Tool;
+type ToolConfiguration = import('@aws-sdk/client-bedrock-runtime').ToolConfiguration;
+type InferenceConfiguration = import('@aws-sdk/client-bedrock-runtime').InferenceConfiguration;
 
 interface BedrockConfig {
   region?: string;
@@ -347,7 +349,7 @@ export class BedrockBackend extends BaseLLMBackend {
       .join(' ');
   }
 
-  private convertTool(tool: ToolSchema): Tool {
+  private convertTool(tool: ToolSchema): BedrockTool {
     return {
       toolSpec: {
         name: tool.name,
