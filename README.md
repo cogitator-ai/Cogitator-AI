@@ -1104,6 +1104,53 @@ console.log(`By model:`, summary.byModel);
 - Prefers local models (Ollama) when quality is sufficient
 - Falls back to cloud models for advanced reasoning
 
+### 🗄️ Tool Caching
+
+Cache tool results to avoid redundant API calls with exact or semantic matching:
+
+```typescript
+import { tool, withCache } from '@cogitator-ai/core';
+
+const webSearch = tool({
+  name: 'web_search',
+  description: 'Search the web',
+  parameters: z.object({ query: z.string() }),
+  execute: async ({ query }) => searchApi(query),
+});
+
+// Exact match caching
+const cachedSearch = withCache(webSearch, {
+  strategy: 'exact',
+  ttl: '1h',
+  maxSize: 1000,
+  storage: 'memory', // or 'redis'
+});
+
+// Semantic caching — similar queries hit cache
+const semanticCache = withCache(webSearch, {
+  strategy: 'semantic',
+  similarity: 0.95, // 95% similarity threshold
+  ttl: '1h',
+  maxSize: 1000,
+  storage: 'redis',
+  embeddingService, // Your embedding provider
+});
+
+await semanticCache.execute({ query: 'weather in Paris' }, ctx);
+await semanticCache.execute({ query: 'Paris weather forecast' }, ctx); // cache hit!
+
+console.log(semanticCache.cache.stats());
+// { hits: 1, misses: 1, size: 1, evictions: 0, hitRate: 0.5 }
+```
+
+**Features:**
+
+- **Exact Match** — SHA256 hash of params for precise matching
+- **Semantic Match** — Embedding similarity for conceptually similar queries
+- **LRU Eviction** — Auto-evict oldest entries when at capacity
+- **Redis Storage** — Persistent cache with TTL support
+- **Cache Management** — `stats()`, `invalidate()`, `clear()`, `warmup()`
+
 ### 🔒 Sandboxed Execution
 
 ```typescript
@@ -1289,6 +1336,7 @@ const providers: LLMProvidersConfig = {
 | Cost-Aware Routing  | ✅        | ❌          | ❌                | ❌          |
 | Self-Modifying      | ✅        | ❌          | ❌                | ❌          |
 | Causal Reasoning    | ✅        | ❌          | ❌                | ❌          |
+| Tool Caching        | ✅        | ❌          | ❌                | ❌          |
 | Dependencies        | ~20       | 150+        | N/A               | ~30         |
 
 ---
