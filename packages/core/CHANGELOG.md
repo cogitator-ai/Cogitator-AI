@@ -1,5 +1,24 @@
 # @cogitator-ai/core
 
+## 0.12.0
+
+### Minor Changes
+
+- feat(core): implement tool caching layer with semantic matching
+  - Add withCache() wrapper for caching tool execution results
+  - Support exact match (SHA256 hash) and semantic (embedding similarity) caching
+  - InMemoryToolCacheStorage with LRU eviction
+  - RedisToolCacheStorage with TTL and sorted sets
+  - Cache stats, invalidation, warmup, and callbacks
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.13.0
+  - @cogitator-ai/memory@0.6.3
+  - @cogitator-ai/models@11.0.0
+  - @cogitator-ai/sandbox@0.2.13
+
 ## 0.11.5
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/workflows",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "DAG-based workflow engine for Cogitator agents",
   "type": "module",
   "main": "./dist/index.js",

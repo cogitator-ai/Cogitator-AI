@@ -1,5 +1,14 @@
 # @cogitator-ai/self-modifying
 
+## 11.0.0
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/core@0.12.0
+  - @cogitator-ai/types@0.13.0
+  - @cogitator-ai/neuro-symbolic@10.0.0
+
 ## 10.0.1
 
 ### Patch Changes
