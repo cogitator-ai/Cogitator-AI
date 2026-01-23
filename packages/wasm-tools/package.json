@@ -27,7 +27,7 @@
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
     "chokidar": "^5.0.0",
-    "zod": "^3.22.0",
+    "zod": "^4.3.6",
     "zod-to-json-schema": "^3.22.0"
   },
   "devDependencies": {

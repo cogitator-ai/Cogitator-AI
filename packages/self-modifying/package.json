@@ -27,7 +27,7 @@
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
     "nanoid": "^5.0.4",
-    "zod": "^3.22.4"
+    "zod": "^4.3.6"
   },
   "peerDependencies": {
     "@cogitator-ai/core": "workspace:*",
