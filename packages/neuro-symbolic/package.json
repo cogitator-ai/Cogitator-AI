@@ -80,7 +80,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/eL1fe/cogitator.git",
+    "url": "https://github.com/cogitator-ai/Cogitator-AI.git",
     "directory": "packages/neuro-symbolic"
   },
   "publishConfig": {
@@ -107,7 +107,7 @@
   ],
   "author": "Cogitator AI",
   "bugs": {
-    "url": "https://github.com/eL1fe/cogitator/issues"
+    "url": "https://github.com/cogitator-ai/Cogitator-AI/issues"
   },
-  "homepage": "https://github.com/eL1fe/cogitator/tree/main/packages/neuro-symbolic#readme"
+  "homepage": "https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/neuro-symbolic#readme"
 }
