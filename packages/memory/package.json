@@ -25,7 +25,7 @@
   "dependencies": {
     "@cogitator-ai/redis": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "@types/node": "^25.0.0",
+    "@types/node": "^25.0.10",
     "@types/pg": "^8.10.9",
     "nanoid": "^5.0.4",
     "zod": "^3.22.4"

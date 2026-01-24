@@ -27,7 +27,7 @@
     "@cogitator-ai/memory": "workspace:*",
     "@cogitator-ai/models": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "@types/node": "^25.0.0",
+    "@types/node": "^25.0.10",
     "@types/pg": "^8.10.9",
     "nanoid": "^5.0.4",
     "openai": "^4.24.0",
