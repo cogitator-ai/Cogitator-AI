@@ -1,5 +1,12 @@
 # @cogitator-ai/neuro-symbolic
 
+## 15.1.1
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/core@0.17.2
+
 ## 15.1.0
 
 ### Minor Changes

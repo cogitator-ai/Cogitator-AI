@@ -1,5 +1,20 @@
 # @cogitator-ai/core
 
+## 0.17.2
+
+### Patch Changes
+
+- Update model registry to January 2026 models
+  - Add Claude Opus 4.5, Sonnet 4.5, Haiku 4.5
+  - Add GPT-4.1, GPT-4.1 Mini/Nano, o3, o4-mini
+  - Add Gemini 3 Pro/Flash Preview, Gemini 2.5 Pro/Flash/Flash-Lite
+  - Mark deprecated models (Claude 3.x, GPT-4 Turbo, Gemini 1.5/2.0)
+  - Fix model selector and cost estimator for new models
+  - Export all 26 built-in tools from @cogitator-ai/core
+
+- Updated dependencies
+  - @cogitator-ai/models@17.1.0
+
 ## 0.17.1
 
 ### Patch Changes
