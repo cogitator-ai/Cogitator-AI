@@ -18,6 +18,7 @@ import type {
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
 import { createLLMError, llmUnavailable, llmConfigError, type LLMErrorContext } from './errors';
+import { fetchImageAsBase64 } from '../utils/image-fetch';
 
 type DocumentType =
   | null
@@ -97,7 +98,7 @@ export class BedrockBackend extends BaseLLMBackend {
     const client = await this.getClient();
     const { ConverseCommand } = await import('@aws-sdk/client-bedrock-runtime');
 
-    const { system, messages } = this.convertMessages(request.messages);
+    const { system, messages } = await this.convertMessages(request.messages);
     const input: ConverseCommandInput = {
       modelId: request.model,
       messages,
@@ -148,7 +149,7 @@ export class BedrockBackend extends BaseLLMBackend {
     const client = await this.getClient();
     const { ConverseStreamCommand } = await import('@aws-sdk/client-bedrock-runtime');
 
-    const { system, messages } = this.convertMessages(request.messages);
+    const { system, messages } = await this.convertMessages(request.messages);
     const input: ConverseStreamCommandInput = {
       modelId: request.model,
       messages,
@@ -261,10 +262,10 @@ export class BedrockBackend extends BaseLLMBackend {
     }
   }
 
-  private convertMessages(messages: Message[]): {
+  private async convertMessages(messages: Message[]): Promise<{
     system: string | null;
     messages: BedrockMessage[];
-  } {
+  }> {
     let system: string | null = null;
     const bedrockMessages: BedrockMessage[] = [];
 
@@ -277,14 +278,14 @@ export class BedrockBackend extends BaseLLMBackend {
         case 'user':
           bedrockMessages.push({
             role: 'user',
-            content: this.convertContentToBlocks(msg.content),
+            content: await this.convertContentToBlocks(msg.content),
           });
           break;
 
         case 'assistant':
           bedrockMessages.push({
             role: 'assistant',
-            content: this.convertContentToBlocks(msg.content),
+            content: await this.convertContentToBlocks(msg.content),
           });
           break;
 
@@ -307,17 +308,16 @@ export class BedrockBackend extends BaseLLMBackend {
     return { system, messages: bedrockMessages };
   }
 
-  private convertContentToBlocks(content: MessageContent): ContentBlock[] {
+  private async convertContentToBlocks(content: MessageContent): Promise<ContentBlock[]> {
     if (typeof content === 'string') {
       return content ? [{ text: content }] : [];
     }
 
-    return content
-      .map((part) => this.convertContentPart(part))
-      .filter((b): b is ContentBlock => b !== null);
+    const blocks = await Promise.all(content.map((part) => this.convertContentPart(part)));
+    return blocks.filter((b): b is ContentBlock => b !== null);
   }
 
-  private convertContentPart(part: ContentPart): ContentBlock | null {
+  private async convertContentPart(part: ContentPart): Promise<ContentBlock | null> {
     switch (part.type) {
       case 'text':
         return { text: part.text };
@@ -334,8 +334,22 @@ export class BedrockBackend extends BaseLLMBackend {
             },
           },
         };
-      case 'image_url':
-        return null;
+      case 'image_url': {
+        const fetched = await fetchImageAsBase64(part.image_url.url);
+        const format = (fetched.mediaType.split('/')[1] || 'png') as
+          | 'png'
+          | 'jpeg'
+          | 'gif'
+          | 'webp';
+        return {
+          image: {
+            format,
+            source: {
+              bytes: Uint8Array.from(atob(fetched.data), (c) => c.charCodeAt(0)),
+            },
+          },
+        };
+      }
     }
   }
 

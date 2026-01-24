@@ -1,9 +1,44 @@
-import type { Message, RunOptions, MemoryAdapter, ToolCall, ToolResult } from '@cogitator-ai/types';
+import type {
+  Message,
+  RunOptions,
+  MemoryAdapter,
+  ToolCall,
+  ToolResult,
+  ContentPart,
+  ImageInput,
+} from '@cogitator-ai/types';
 import { ContextBuilder, countMessageTokens } from '@cogitator-ai/memory';
 import { getLogger } from '../logger';
 import type { Agent } from '../agent';
 import type { ReflectionEngine } from '../reflection/index';
 import type { AgentContext } from '@cogitator-ai/types';
+
+function buildUserContent(input: string, images?: ImageInput[]): string | ContentPart[] {
+  if (!images || images.length === 0) {
+    return input;
+  }
+
+  const parts: ContentPart[] = [{ type: 'text', text: input }];
+
+  for (const image of images) {
+    if (typeof image === 'string') {
+      parts.push({
+        type: 'image_url',
+        image_url: { url: image, detail: 'auto' },
+      });
+    } else {
+      parts.push({
+        type: 'image_base64',
+        image_base64: {
+          data: image.data,
+          media_type: image.mimeType,
+        },
+      });
+    }
+  }
+
+  return parts;
+}
 
 export async function buildInitialMessages(
   agent: Agent,
@@ -12,10 +47,12 @@ export async function buildInitialMessages(
   memoryAdapter: MemoryAdapter | undefined,
   contextBuilder: ContextBuilder | undefined
 ): Promise<Message[]> {
+  const userContent = buildUserContent(options.input, options.images);
+
   if (!memoryAdapter || options.useMemory === false) {
     return [
       { role: 'system', content: agent.instructions },
-      { role: 'user', content: options.input },
+      { role: 'user', content: userContent },
     ];
   }
 
@@ -30,7 +67,7 @@ export async function buildInitialMessages(
       agentId: agent.id,
       systemPrompt: agent.instructions,
     });
-    return [...ctx.messages, { role: 'user', content: options.input }];
+    return [...ctx.messages, { role: 'user', content: userContent }];
   }
 
   if (options.loadHistory !== false) {
@@ -39,13 +76,13 @@ export async function buildInitialMessages(
     if (entries.success) {
       messages.push(...entries.data.map((e) => e.message));
     }
-    messages.push({ role: 'user', content: options.input });
+    messages.push({ role: 'user', content: userContent });
     return messages;
   }
 
   return [
     { role: 'system', content: agent.instructions },
-    { role: 'user', content: options.input },
+    { role: 'user', content: userContent },
   ];
 }
 

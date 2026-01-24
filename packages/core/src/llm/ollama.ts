@@ -16,6 +16,7 @@ import type {
 import { nanoid } from 'nanoid';
 import { BaseLLMBackend } from './base';
 import { createLLMError, llmUnavailable, llmInvalidResponse, type LLMErrorContext } from './errors';
+import { fetchImageAsBase64 } from '../utils/image-fetch';
 
 interface OllamaConfig {
   baseUrl: string;
@@ -76,6 +77,8 @@ export class OllamaBackend extends BaseLLMBackend {
       endpoint,
     };
 
+    const messages = await this.convertMessages(request.messages);
+
     let response: Response;
     try {
       response = await fetch(endpoint, {
@@ -83,7 +86,7 @@ export class OllamaBackend extends BaseLLMBackend {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: request.model,
-          messages: this.convertMessages(request.messages),
+          messages,
           tools: tools ? this.convertTools(tools) : undefined,
           format: this.convertResponseFormat(request.responseFormat),
           stream: false,
@@ -117,6 +120,8 @@ export class OllamaBackend extends BaseLLMBackend {
       endpoint,
     };
 
+    const messages = await this.convertMessages(request.messages);
+
     let response: Response;
     try {
       response = await fetch(endpoint, {
@@ -124,7 +129,7 @@ export class OllamaBackend extends BaseLLMBackend {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: request.model,
-          messages: this.convertMessages(request.messages),
+          messages,
           tools: tools ? this.convertTools(tools) : undefined,
           format: this.convertResponseFormat(request.responseFormat),
           stream: true,
@@ -190,18 +195,22 @@ export class OllamaBackend extends BaseLLMBackend {
     }
   }
 
-  private convertMessages(messages: Message[]): OllamaMessage[] {
-    return messages.map((m) => {
-      const { text, images } = this.extractContentAndImages(m.content);
-      return {
-        role: m.role as OllamaMessage['role'],
-        content: text,
-        images: images.length > 0 ? images : undefined,
-      };
-    });
+  private async convertMessages(messages: Message[]): Promise<OllamaMessage[]> {
+    return Promise.all(
+      messages.map(async (m) => {
+        const { text, images } = await this.extractContentAndImages(m.content);
+        return {
+          role: m.role as OllamaMessage['role'],
+          content: text,
+          images: images.length > 0 ? images : undefined,
+        };
+      })
+    );
   }
 
-  private extractContentAndImages(content: MessageContent): { text: string; images: string[] } {
+  private async extractContentAndImages(
+    content: MessageContent
+  ): Promise<{ text: string; images: string[] }> {
     if (typeof content === 'string') {
       return { text: content, images: [] };
     }
@@ -217,8 +226,11 @@ export class OllamaBackend extends BaseLLMBackend {
         case 'image_base64':
           images.push(part.image_base64.data);
           break;
-        case 'image_url':
+        case 'image_url': {
+          const fetched = await fetchImageAsBase64(part.image_url.url);
+          images.push(fetched.data);
           break;
+        }
       }
     }
 

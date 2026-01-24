@@ -802,6 +802,90 @@ console.log(plan.robustness.vulnerabilities);
 - **LLM-Powered Discovery** — Extract causal relationships from text, traces, and observations
 - **Hypothesis Generation & Validation** — Generate and test causal hypotheses from execution data
 
+### 👁️ Vision & Multi-Modal
+
+Send images to vision-capable models and generate images with DALL-E:
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+
+const cog = new Cogitator();
+
+const visionAgent = new Agent({
+  name: 'vision-assistant',
+  model: 'gpt-4o', // or 'claude-3-5-sonnet', 'gemini-pro-vision', 'ollama/llava'
+  instructions: 'You can see and analyze images.',
+});
+
+// Simple: pass images with input
+const result = await cog.run(visionAgent, {
+  input: 'What do you see in this image?',
+  images: ['https://example.com/photo.jpg'],
+});
+
+// Multiple images
+const comparison = await cog.run(visionAgent, {
+  input: 'Compare these two charts and explain the differences',
+  images: ['https://example.com/chart-2024.png', 'https://example.com/chart-2025.png'],
+});
+
+// Base64 images (for local files)
+const localImage = await cog.run(visionAgent, {
+  input: 'Analyze this diagram',
+  images: [
+    {
+      data: fs.readFileSync('diagram.png').toString('base64'),
+      mimeType: 'image/png',
+    },
+  ],
+});
+```
+
+**Image Tools for Agents:**
+
+```typescript
+import { createAnalyzeImageTool, createGenerateImageTool } from '@cogitator-ai/core';
+
+// Create tools
+const analyzeImage = createAnalyzeImageTool({
+  llmBackend: cog.getDefaultBackend(),
+  defaultModel: 'gpt-4o',
+});
+
+const generateImage = createGenerateImageTool({
+  apiKey: process.env.OPENAI_API_KEY,
+  defaultSize: '1024x1024',
+  defaultQuality: 'hd',
+});
+
+// Agent with image capabilities
+const creativeAgent = new Agent({
+  name: 'creative-assistant',
+  model: 'gpt-4o',
+  instructions: `You can analyze and generate images.
+Use analyzeImage to understand visual content.
+Use generateImage to create images with DALL-E 3.`,
+  tools: [analyzeImage, generateImage],
+});
+
+// Agent can now see and create images
+await cog.run(creativeAgent, {
+  input: 'Analyze this logo and create a minimalist version of it',
+  images: ['https://example.com/logo.png'],
+});
+```
+
+**Supported Providers:**
+
+| Provider  | Models                      | URL Images | Base64 | Generation |
+| --------- | --------------------------- | ---------- | ------ | ---------- |
+| OpenAI    | gpt-4o, gpt-4o-mini         | ✅         | ✅     | ✅ DALL-E  |
+| Anthropic | claude-3-5-sonnet, claude-3 | ✅         | ✅     | ❌         |
+| Google    | gemini-pro-vision           | ✅         | ✅     | ❌         |
+| Ollama    | llava, bakllava             | ✅         | ✅     | ❌         |
+| Azure     | gpt-4o (via Azure)          | ✅         | ✅     | ✅ DALL-E  |
+| Bedrock   | claude-3 (via AWS)          | ✅         | ✅     | ❌         |
+
 ### 🧮 Neuro-Symbolic Agent Tools
 
 Give your agents formal reasoning capabilities — Prolog-style logic, constraint solving, and knowledge graphs:
@@ -1542,7 +1626,7 @@ const providers: LLMProvidersConfig = {
 - [x] Self-Modifying Agents (tool generation, meta-reasoning, architecture evolution)
 - [x] Neuro-Symbolic Reasoning (SAT/SMT integration, formal verification)
 - [x] Causal Reasoning Engine (Pearl's Ladder, d-separation, counterfactuals)
-- [ ] Multi-modal reasoning (vision, audio)
+- [x] Multi-modal Vision (image analysis, generation with DALL-E)
 - [ ] Long-context optimization (128k+ tokens)
 
 ### Phase 4: Ecosystem (Months 10-12)
@@ -1578,6 +1662,7 @@ const providers: LLMProvidersConfig = {
 | Cost-Aware Routing  | ✅        | ❌          | ❌                | ❌          |
 | Self-Modifying      | ✅        | ❌          | ❌                | ❌          |
 | Causal Reasoning    | ✅        | ❌          | ❌                | ❌          |
+| Vision/Multi-Modal  | ✅        | ✅          | ✅                | ⚠️ Basic    |
 | Tool Caching        | ✅        | ❌          | ❌                | ❌          |
 | Injection Detection | ✅        | ❌          | ❌                | ❌          |
 | Agent Serialization | ✅        | ⚠️ Basic    | ❌                | ❌          |
@@ -1640,6 +1725,7 @@ Run any example with `npx tsx examples/<name>.ts`:
 | `openai-compat-server.ts`      | OpenAI-compatible REST API server        |
 | `mcp-integration.ts`           | MCP server integration                   |
 | `constitutional-guardrails.ts` | Safety guardrails with Constitutional AI |
+| `vision-agent.ts`              | Image analysis and generation            |
 | `research-agent.ts`            | Web research agent                       |
 | `code-assistant.ts`            | Code assistant with file tools           |
 | `dev-team-swarm.ts`            | Hierarchical dev team swarm              |

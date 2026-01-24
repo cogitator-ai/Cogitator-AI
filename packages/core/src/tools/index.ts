@@ -24,6 +24,17 @@ export { vectorSearch } from './vector-search';
 export { sendEmail } from './email';
 export { githubApi } from './github';
 
+export {
+  createAnalyzeImageTool,
+  type AnalyzeImageConfig,
+  type AnalyzeImageInput,
+} from './image-analyze';
+export {
+  createGenerateImageTool,
+  type GenerateImageConfig,
+  type GenerateImageInput,
+} from './image-generate';
+
 import { calculator } from './calculator';
 import { datetime } from './datetime';
 import { uuid } from './uuid';

@@ -43,8 +43,14 @@ export interface CogitatorConfig {
   };
 }
 
+export type ImageInput =
+  | string
+  | { data: string; mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' };
+
 export interface RunOptions {
   input: string;
+  /** Images to include with the input. Can be URLs or base64 encoded data. */
+  images?: ImageInput[];
   context?: Record<string, unknown>;
   threadId?: string;
   timeout?: number;
