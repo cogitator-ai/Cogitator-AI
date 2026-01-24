@@ -28,18 +28,38 @@ import {
   createJsonTool,
   createHashTool,
   createBase64Tool,
+  createSlugTool,
+  createValidationTool,
+  createDiffTool,
+  createRegexTool,
+  createCsvTool,
+  createMarkdownTool,
+  createXmlTool,
+  createDatetimeTool,
+  createCompressionTool,
+  createSigningTool,
 } from '@cogitator-ai/wasm-tools';
 import { Cogitator, Agent } from '@cogitator-ai/core';
-
-const calc = createCalcTool();
-const json = createJsonTool();
-const hash = createHashTool();
-const base64 = createBase64Tool();
 
 const agent = new Agent({
   name: 'utility-assistant',
   model: 'gpt-4o',
-  tools: [calc, json, hash, base64],
+  tools: [
+    createCalcTool(),
+    createJsonTool(),
+    createHashTool(),
+    createBase64Tool(),
+    createSlugTool(),
+    createValidationTool(),
+    createDiffTool(),
+    createRegexTool(),
+    createCsvTool(),
+    createMarkdownTool(),
+    createXmlTool(),
+    createDatetimeTool(),
+    createCompressionTool(),
+    createSigningTool(),
+  ],
 });
 
 const cog = new Cogitator({ llm: { defaultProvider: 'openai' } });
@@ -174,6 +194,121 @@ const base64 = createBase64Tool({ timeout: 10000 });
 // Example: { text: "hello", operation: "encode" } → "aGVsbG8="
 // Example: { text: "aGVsbG8=", operation: "decode" } → "hello"
 // URL-safe: { text: "hello", operation: "encode", urlSafe: true }
+```
+
+### createSlugTool(options?)
+
+Generate URL-safe slugs from text with Unicode transliteration.
+
+```typescript
+const slug = createSlugTool({ timeout: 10000 });
+
+// Example: { text: "Hello World!" } → "hello-world"
+// Example: { text: "Привет мир", separator: "_" } → "privet_mir"
+```
+
+### createValidationTool(options?)
+
+Validate common formats: email, URL, UUID, IPv4, IPv6.
+
+```typescript
+const validation = createValidationTool({ timeout: 10000 });
+
+// Example: { value: "test@example.com", type: "email" } → { valid: true }
+// Example: { value: "192.168.1.1", type: "ipv4" } → { valid: true }
+```
+
+### createDiffTool(options?)
+
+Compare texts using Myers diff algorithm.
+
+```typescript
+const diff = createDiffTool({ timeout: 10000 });
+
+// Example: { original: "hello", modified: "hallo" }
+// Returns unified diff with additions/deletions count
+```
+
+### createRegexTool(options?)
+
+Safe regex operations with ReDoS protection.
+
+```typescript
+const regex = createRegexTool({ timeout: 10000 });
+
+// Example: { text: "hello world", pattern: "\\w+", operation: "matchAll" }
+// Supports: match, matchAll, test, replace, split
+```
+
+### createCsvTool(options?)
+
+RFC 4180 compliant CSV parsing and generation.
+
+```typescript
+const csv = createCsvTool({ timeout: 10000 });
+
+// Parse: { data: "a,b\n1,2", operation: "parse" }
+// Stringify: { data: [["a","b"],["1","2"]], operation: "stringify" }
+```
+
+### createMarkdownTool(options?)
+
+Convert Markdown to HTML (GFM subset).
+
+```typescript
+const markdown = createMarkdownTool({ timeout: 10000 });
+
+// Example: { markdown: "# Hello\n**bold**" }
+// Returns: { html: "<h1>Hello</h1>\n<p><strong>bold</strong></p>" }
+// Supports: headers, bold, italic, links, code, lists, tables
+```
+
+### createXmlTool(options?)
+
+Parse XML to JSON with XPath-like queries.
+
+```typescript
+const xml = createXmlTool({ timeout: 10000 });
+
+// Example: { xml: "<root><item>1</item></root>", query: "/root/item" }
+// Supports: elements, attributes, CDATA, comments
+```
+
+### createDatetimeTool(options?)
+
+Date/time operations with UTC and offset timezone support.
+
+```typescript
+const datetime = createDatetimeTool({ timeout: 10000 });
+
+// Parse: { date: "2024-01-15", operation: "parse" }
+// Format: { date: "2024-01-15T10:30:00Z", operation: "format", format: "YYYY-MM-DD" }
+// Add: { date: "2024-01-15", operation: "add", amount: 7, unit: "days" }
+// Diff: { date: "2024-01-01", operation: "diff", endDate: "2024-01-15", unit: "days" }
+```
+
+### createCompressionTool(options?)
+
+Gzip/deflate/zlib compression and decompression.
+
+```typescript
+const compression = createCompressionTool({ timeout: 30000 });
+
+// Compress: { data: "hello", algorithm: "gzip", operation: "compress" }
+// Decompress: { data: "H4sIAAAA...", algorithm: "gzip", operation: "decompress" }
+// Returns base64-encoded compressed data with size info
+```
+
+### createSigningTool(options?)
+
+Ed25519 digital signatures for message authentication.
+
+```typescript
+const signing = createSigningTool({ timeout: 10000 });
+
+// Generate keypair: { operation: "generateKeypair", algorithm: "ed25519" }
+// Sign: { operation: "sign", algorithm: "ed25519", message: "hello", privateKey: "..." }
+// Verify: { operation: "verify", algorithm: "ed25519", message: "hello", publicKey: "...", signature: "..." }
 ```
 
 ### getWasmPath(name)
