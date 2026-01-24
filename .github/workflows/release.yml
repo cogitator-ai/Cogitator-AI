@@ -32,23 +32,40 @@ jobs:
         run: |
           echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" > ~/.npmrc
           echo "@cogitator-ai:registry=https://npm.pkg.github.com" >> ~/.npmrc
-          cat ~/.npmrc
 
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm build
 
-      - name: Create Release Pull Request or Publish
+      - name: Check for changesets
         id: changesets
-        uses: changesets/action@v1
-        with:
-          publish: pnpm release
-          version: pnpm version
-          title: 'chore: version packages'
-          commit: 'chore: version packages'
-          setupGitUser: true
+        run: |
+          if ls .changeset/*.md 1> /dev/null 2>&1; then
+            # Check if there are actual changeset files (not just README.md)
+            count=$(ls .changeset/*.md 2>/dev/null | grep -v README.md | wc -l)
+            if [ "$count" -gt "0" ]; then
+              echo "has_changesets=true" >> $GITHUB_OUTPUT
+            else
+              echo "has_changesets=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "has_changesets=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Version packages
+        if: steps.changesets.outputs.has_changesets == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          pnpm changeset version
+          git add -A
+          git commit -m "chore: version packages" || echo "No changes to commit"
+          git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish packages
+        run: |
+          pnpm publish -r --access public --no-git-checks
+        env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_CONFIG_REGISTRY: https://npm.pkg.github.com
-          NPM_CONFIG__AUTH: ${{ secrets.GITHUB_TOKEN }}
