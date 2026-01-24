@@ -50,7 +50,7 @@
   },
   "optionalDependencies": {
     "neo4j-driver": "^5.27.0",
-    "pg": "^8.11.3",
+    "pg": "^8.17.2",
     "z3-solver": "^4.13.0"
   },
   "devDependencies": {
