@@ -1,5 +1,18 @@
 # @cogitator-ai/cli
 
+## 0.2.24
+
+### Patch Changes
+
+- Configure GitHub Packages publishing
+  - Add GitHub Packages registry configuration to all packages
+  - Add integration tests for LLM backends (OpenAI, Anthropic, Google, Ollama)
+  - Add comprehensive context-manager tests
+
+- Updated dependencies
+  - @cogitator-ai/core@0.17.3
+  - @cogitator-ai/config@0.3.12
+
 ## 0.2.23
 
 ### Patch Changes

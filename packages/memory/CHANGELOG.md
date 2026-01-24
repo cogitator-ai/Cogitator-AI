@@ -1,5 +1,18 @@
 # @cogitator-ai/memory
 
+## 0.6.10
+
+### Patch Changes
+
+- Configure GitHub Packages publishing
+  - Add GitHub Packages registry configuration to all packages
+  - Add integration tests for LLM backends (OpenAI, Anthropic, Google, Ollama)
+  - Add comprehensive context-manager tests
+
+- Updated dependencies
+  - @cogitator-ai/types@0.19.1
+  - @cogitator-ai/redis@0.2.19
+
 ## 0.6.9
 
 ### Patch Changes

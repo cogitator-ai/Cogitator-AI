@@ -1,5 +1,17 @@
 # @cogitator-ai/sandbox
 
+## 0.2.20
+
+### Patch Changes
+
+- Configure GitHub Packages publishing
+  - Add GitHub Packages registry configuration to all packages
+  - Add integration tests for LLM backends (OpenAI, Anthropic, Google, Ollama)
+  - Add comprehensive context-manager tests
+
+- Updated dependencies
+  - @cogitator-ai/types@0.19.1
+
 ## 0.2.19
 
 ### Patch Changes

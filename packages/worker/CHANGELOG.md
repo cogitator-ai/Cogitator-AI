@@ -1,5 +1,21 @@
 # @cogitator-ai/worker
 
+## 0.3.5
+
+### Patch Changes
+
+- Configure GitHub Packages publishing
+  - Add GitHub Packages registry configuration to all packages
+  - Add integration tests for LLM backends (OpenAI, Anthropic, Google, Ollama)
+  - Add comprehensive context-manager tests
+
+- Updated dependencies
+  - @cogitator-ai/core@0.17.3
+  - @cogitator-ai/types@0.19.1
+  - @cogitator-ai/swarms@0.4.5
+  - @cogitator-ai/workflows@0.5.2
+  - @cogitator-ai/redis@0.2.19
+
 ## 0.3.4
 
 ### Patch Changes
