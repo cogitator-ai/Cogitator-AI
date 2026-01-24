@@ -30,7 +30,7 @@
     "@types/node": "^25.0.10",
     "@types/pg": "^8.10.9",
     "nanoid": "^5.0.4",
-    "openai": "^4.24.0",
+    "openai": "^6.16.0",
     "zod": "^3.22.4",
     "zod-to-json-schema": "^3.22.4"
   },
