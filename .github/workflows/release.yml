@@ -16,6 +16,7 @@ jobs:
       contents: write
       packages: write
       pull-requests: write
+      id-token: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -27,11 +28,8 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
-
-      - name: Configure npm for GitHub Packages
-        run: |
-          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" > ~/.npmrc
-          echo "@cogitator-ai:registry=https://npm.pkg.github.com" >> ~/.npmrc
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@cogitator-ai'
 
       - run: pnpm install --frozen-lockfile
 
@@ -41,7 +39,6 @@ jobs:
         id: changesets
         run: |
           if ls .changeset/*.md 1> /dev/null 2>&1; then
-            # Check if there are actual changeset files (not just README.md)
             count=$(ls .changeset/*.md 2>/dev/null | grep -v README.md | wc -l)
             if [ "$count" -gt "0" ]; then
               echo "has_changesets=true" >> $GITHUB_OUTPUT
@@ -66,6 +63,17 @@ jobs:
 
       - name: Publish packages
         run: |
-          pnpm publish -r --access public --no-git-checks
+          # Publish and ignore "already exists" errors
+          pnpm publish -r --access public --no-git-checks 2>&1 | tee publish.log || true
+          # Check if there were real errors (not just "already published")
+          if grep -q "npm error" publish.log; then
+            if ! grep -q "You cannot publish over the previously published versions" publish.log && \
+               ! grep -q "cannot publish over" publish.log; then
+              echo "Real publish error occurred"
+              cat publish.log
+              exit 1
+            fi
+          fi
+          echo "Publish completed successfully (some packages may have been already published)"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
