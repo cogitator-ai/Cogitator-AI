@@ -1191,6 +1191,47 @@ const answer = await cog.run(reasoningAgent, {
 | `addGraphNode`     | Add entities to the knowledge graph                 |
 | `addGraphEdge`     | Add relationships between entities                  |
 
+**Knowledge Graph Adapters:**
+
+Choose the right storage backend for your knowledge graph:
+
+```typescript
+import {
+  createMemoryGraphAdapter,
+  createPostgresGraphAdapter,
+  createNeo4jGraphAdapter,
+} from '@cogitator-ai/neuro-symbolic';
+
+// In-memory (for testing/development)
+const memoryAdapter = createMemoryGraphAdapter();
+
+// PostgreSQL with pgvector (production, SQL-based)
+const postgresAdapter = createPostgresGraphAdapter({
+  connectionString: 'postgresql://user:pass@localhost:5432/mydb',
+  schema: 'knowledge_graph', // optional, default: 'cogitator_graph'
+  vectorDimensions: 1536, // optional, for semantic search
+});
+await postgresAdapter.connect();
+
+// Neo4j (native graph database, optimal for traversals)
+const neo4jAdapter = createNeo4jGraphAdapter({
+  uri: 'bolt://localhost:7687',
+  username: 'neo4j',
+  password: 'password',
+  database: 'neo4j', // optional
+});
+await neo4jAdapter.connect();
+
+// Use with neuro-symbolic tools
+const nsTools = createNeuroSymbolicTools({ graphAdapter: postgresAdapter });
+```
+
+| Adapter                | Best For                      | Semantic Search  | Native Traversal |
+| ---------------------- | ----------------------------- | ---------------- | ---------------- |
+| `MemoryGraphAdapter`   | Testing, small graphs         | ✅ (cosine)      | BFS in-memory    |
+| `PostgresGraphAdapter` | Production, SQL integration   | ✅ (pgvector)    | Recursive CTE    |
+| `Neo4jGraphAdapter`    | Large graphs, complex queries | ✅ (Neo4j 5.11+) | Native Cypher    |
+
 ### 📈 Agent Learning (DSPy-Style)
 
 Agents automatically improve through execution trace analysis and instruction optimization:

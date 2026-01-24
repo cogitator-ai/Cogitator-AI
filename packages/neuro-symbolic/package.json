@@ -49,21 +49,32 @@
     "zod": "^3.22.4"
   },
   "optionalDependencies": {
+    "neo4j-driver": "^5.27.0",
+    "pg": "^8.11.3",
     "z3-solver": "^4.13.0"
   },
   "devDependencies": {
+    "@types/pg": "^8.16.0",
     "typescript": "^5.3.0",
     "vitest": "^1.0.0"
   },
   "peerDependencies": {
     "@cogitator-ai/core": "workspace:*",
-    "@cogitator-ai/memory": "workspace:*"
+    "@cogitator-ai/memory": "workspace:*",
+    "neo4j-driver": "^5.0.0",
+    "pg": "^8.0.0"
   },
   "peerDependenciesMeta": {
     "@cogitator-ai/core": {
       "optional": true
     },
     "@cogitator-ai/memory": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    },
+    "neo4j-driver": {
       "optional": true
     }
   },

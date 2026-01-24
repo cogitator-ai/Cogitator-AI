@@ -13,7 +13,13 @@ export {
 export {
   MemoryGraphAdapter,
   createMemoryGraphAdapter,
-} from './knowledge-graph/adapters/memory-adapter';
+  PostgresGraphAdapter,
+  createPostgresGraphAdapter,
+  Neo4jGraphAdapter,
+  createNeo4jGraphAdapter,
+  type PostgresGraphAdapterConfig,
+  type Neo4jGraphAdapterConfig,
+} from './knowledge-graph/adapters';
 
 export * from './logic';
 
