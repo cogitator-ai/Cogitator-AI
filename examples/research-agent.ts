@@ -16,8 +16,12 @@ const cog = new Cogitator({
     },
   },
   memory: {
-    redis: { url: 'redis://localhost:6379' },
+    adapter: 'postgres',
     postgres: { connectionString: process.env.DATABASE_URL! },
+    embedding: {
+      provider: 'openai',
+      apiKey: process.env.OPENAI_API_KEY!,
+    },
   },
 });
 
@@ -66,7 +70,7 @@ const readUrl = tool({
 
 const researcher = new Agent({
   name: 'researcher',
-  model: 'gpt-4o',
+  model: 'gpt-4.1',
   instructions: `You are a thorough research assistant. When asked to research a topic:
 
     1. First, search the web for relevant information
@@ -77,11 +81,6 @@ const researcher = new Agent({
     Be thorough but concise. Focus on accurate, up-to-date information.`,
   tools: [searchWeb, readUrl],
   temperature: 0.3,
-  memory: {
-    shortTerm: 'redis',
-    longTerm: 'postgres',
-    semantic: 'pgvector',
-  },
 });
 
 async function main() {

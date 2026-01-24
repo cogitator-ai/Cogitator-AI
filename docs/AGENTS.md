@@ -124,21 +124,35 @@ const analyzer = new Agent({
 
 ### Agent with Persistent Memory
 
+Memory is configured at the Cogitator runtime level, not on individual agents:
+
 ```typescript
-const personalAssistant = new Agent({
-  name: 'personal-assistant',
-  model: 'gpt-4o',
-  instructions: `You are a personal assistant. Remember user preferences
-                 and context from previous conversations.`,
+const cog = new Cogitator({
   memory: {
-    shortTerm: 'redis',
-    longTerm: 'postgres',
-    semantic: 'pgvector',
-    summarization: {
-      enabled: true,
-      threshold: 50_000,
+    adapter: 'postgres',
+    postgres: { connectionString: process.env.DATABASE_URL },
+    embedding: {
+      provider: 'openai',
+      apiKey: process.env.OPENAI_API_KEY,
+    },
+    contextBuilder: {
+      maxTokens: 8000,
+      strategy: 'hybrid',
     },
   },
+});
+
+const personalAssistant = new Agent({
+  name: 'personal-assistant',
+  model: 'gpt-4.1',
+  instructions: `You are a personal assistant. Remember user preferences
+                 and context from previous conversations.`,
+});
+
+// Use threadId to maintain conversation context
+await cog.run(personalAssistant, {
+  input: 'Remember I prefer dark mode',
+  threadId: 'user-alice',
 });
 ```
 
@@ -534,7 +548,7 @@ Agents can be saved and loaded as configuration files.
 ```yaml
 # agents/researcher.yaml
 name: researcher
-model: gpt-4o
+model: gpt-4.1
 temperature: 0.3
 
 instructions: |
@@ -545,14 +559,11 @@ tools:
   - search_web
   - read_url
 
-memory:
-  shortTerm: redis
-  longTerm: postgres
-  semantic: pgvector
-
 maxIterations: 15
 timeout: 180000
 ```
+
+> **Note:** Memory is configured at the Cogitator runtime level, not in agent YAML files.
 
 ### Load from YAML
 

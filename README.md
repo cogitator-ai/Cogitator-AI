@@ -229,7 +229,7 @@ const reviewer = new Agent({
 const devTeam = new Swarm({
   supervisor: planner,
   workers: [coder, reviewer],
-  strategy: 'hierarchical', // or 'round-robin', 'consensus', 'auction'
+  strategy: 'hierarchical', // or 'round-robin', 'consensus', 'auction', 'pipeline', 'debate', 'negotiation'
 });
 
 const result = await cog.run(devTeam, {
@@ -349,24 +349,34 @@ Works with all backends: OpenAI, Anthropic, Google, Ollama, Mistral, Groq, Toget
 ### 🧠 Intelligent Memory
 
 ```typescript
-const agent = new Agent({
+const cog = new Cogitator({
   memory: {
-    shortTerm: 'redis', // Fast context window
-    longTerm: 'postgres', // Persistent storage (or 'sqlite', 'mongodb')
-    semantic: 'pgvector', // Similarity search (or 'qdrant')
-
-    // Auto-summarization when context exceeds limit
-    summarization: {
-      threshold: 100_000, // tokens
-      strategy: 'hierarchical',
+    adapter: 'postgres', // 'memory' | 'redis' | 'postgres' | 'sqlite' | 'mongodb' | 'qdrant'
+    postgres: {
+      connectionString: process.env.DATABASE_URL,
+    },
+    embedding: {
+      provider: 'openai',
+      apiKey: process.env.OPENAI_API_KEY,
+      model: 'text-embedding-3-small',
+    },
+    contextBuilder: {
+      maxTokens: 8000,
+      strategy: 'hybrid', // 'recent' | 'relevant' | 'hybrid'
     },
   },
 });
 
-// Memory is automatically managed
-await cog.run(agent, { input: 'Remember that my name is Alex' });
-// ... days later ...
-await cog.run(agent, { input: 'What is my name?' }); // "Your name is Alex"
+const agent = new Agent({
+  name: 'assistant',
+  model: 'gpt-4.1',
+  instructions: 'You are a helpful assistant. Remember user preferences.',
+});
+
+// Memory is automatically managed per thread
+await cog.run(agent, { input: 'My name is Alex', threadId: 'user-123' });
+// ... later ...
+await cog.run(agent, { input: 'What is my name?', threadId: 'user-123' }); // "Your name is Alex"
 ```
 
 **Memory Adapters:**
@@ -1885,7 +1895,7 @@ const providers: LLMProvidersConfig = {
 ### Phase 2: Intelligence (Months 4-6) ✅
 
 - [x] Workflow engine (DAG-based)
-- [x] Multi-agent swarms (6 strategies)
+- [x] Multi-agent swarms (7 strategies)
 - [x] MCP tool compatibility
 - [x] Semantic memory with pgvector
 - [x] Real-time observability dashboard (Next.js)

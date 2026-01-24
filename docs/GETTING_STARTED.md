@@ -164,29 +164,61 @@ await cog.close();
 
 ### Built-in Tools
 
-Cogitator includes 20+ ready-to-use tools:
+Cogitator includes 26 ready-to-use tools:
 
 ```typescript
 import {
+  // Math & Utils
   calculator, // Math expressions
   datetime, // Current time with timezone
   uuid, // Generate UUIDs
+  randomNumber, // Random numbers
+  randomString, // Random strings
   hash, // MD5, SHA256, etc.
-  base64, // Encode/decode
-  json, // Parse/stringify
-  regex, // Pattern matching
+  sleep, // Pause execution
+
+  // Data Processing
+  base64Encode, // Encode to base64
+  base64Decode, // Decode from base64
+  jsonParse, // Parse JSON
+  jsonStringify, // Stringify to JSON
+  regexMatch, // Pattern matching
+  regexReplace, // Pattern replacement
+
+  // File System
   fileRead, // Read files
   fileWrite, // Write files
   fileList, // List directory
+  fileExists, // Check file exists
+  fileDelete, // Delete files
+
+  // Network & External
   httpRequest, // HTTP calls
   exec, // Shell commands (sandboxed)
+  webSearch, // Web search
+  webScrape, // Scrape web pages
+  sqlQuery, // SQL queries
+  vectorSearch, // Vector similarity search
+  sendEmail, // Send emails
+  githubApi, // GitHub API
+
+  // Or import all at once
+  builtinTools, // Array of all tools above
 } from '@cogitator-ai/core';
 
 const agent = new Agent({
   name: 'power-user',
-  model: 'gpt-4o',
+  model: 'gpt-4.1',
   instructions: 'You are a powerful assistant with many tools.',
   tools: [calculator, datetime, fileRead, httpRequest],
+});
+
+// Or use all built-in tools
+const superAgent = new Agent({
+  name: 'super-agent',
+  model: 'gpt-4.1',
+  instructions: 'You have access to all tools.',
+  tools: builtinTools,
 });
 ```
 
@@ -318,7 +350,7 @@ const cog = new Cogitator({
 });
 
 const agent = new Agent({
-  model: 'gpt-4o', // or 'gpt-4o-mini', 'o1-preview'
+  model: 'gpt-4o', // or 'gpt-4.1', 'o3'
   // ...
 });
 ```
@@ -359,24 +391,29 @@ const cog = new Cogitator({
   },
 });
 
-// Uses Ollama (default)
+// Uses Ollama (default provider)
 const localAgent = new Agent({
   model: 'llama3.3:8b',
   // ...
 });
 
-// Uses OpenAI
+// Uses OpenAI (provider prefix overrides default)
 const smartAgent = new Agent({
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-4.1',
   // ...
 });
 
-// Uses Anthropic
+// Uses Anthropic (provider prefix overrides default)
 const creativeAgent = new Agent({
   model: 'anthropic/claude-sonnet-4-5',
   // ...
 });
 ```
+
+**Model name format:**
+
+- `model-name` — Uses the default provider (e.g., `gpt-4.1`, `llama3.3:8b`)
+- `provider/model-name` — Explicitly specify provider (e.g., `openai/gpt-4.1`, `anthropic/claude-sonnet-4-5`)
 
 ---
 

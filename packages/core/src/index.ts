@@ -11,7 +11,35 @@ export { agentAsTool } from './agent-tool';
 export type { AgentAsToolOptions, AgentToolResult } from './agent-tool';
 export { ToolRegistry } from './registry';
 
-export { calculator, datetime, builtinTools } from './tools/index';
+export {
+  calculator,
+  datetime,
+  uuid,
+  randomNumber,
+  randomString,
+  hash,
+  base64Encode,
+  base64Decode,
+  sleep,
+  jsonParse,
+  jsonStringify,
+  regexMatch,
+  regexReplace,
+  fileRead,
+  fileWrite,
+  fileList,
+  fileExists,
+  fileDelete,
+  httpRequest,
+  exec,
+  webSearch,
+  webScrape,
+  sqlQuery,
+  vectorSearch,
+  sendEmail,
+  githubApi,
+  builtinTools,
+} from './tools/index';
 
 export {
   createAnalyzeImageTool,
