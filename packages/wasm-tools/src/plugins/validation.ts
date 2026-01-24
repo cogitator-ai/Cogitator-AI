@@ -35,7 +35,7 @@ function validateUrl(value: string): { valid: boolean; normalized?: string } {
     const hasProtocol = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed);
     const urlStr = hasProtocol ? trimmed : `https://${trimmed}`;
 
-    const parts = urlStr.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/([^/?#]+)(.*)$/);
+    const parts = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/([^/?#]+)(.*)$/.exec(urlStr);
     if (!parts) return { valid: false };
 
     const [, protocol, host] = parts;

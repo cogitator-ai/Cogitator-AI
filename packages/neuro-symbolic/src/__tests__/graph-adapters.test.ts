@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import type { GraphAdapter } from '@cogitator-ai/types';
 import { MemoryGraphAdapter } from '../knowledge-graph/adapters/memory-adapter';
 import { PostgresGraphAdapter } from '../knowledge-graph/adapters/postgres-adapter';

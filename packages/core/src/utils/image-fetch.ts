@@ -66,7 +66,7 @@ export function isDataUrl(url: string): boolean {
 }
 
 export function parseDataUrl(dataUrl: string): FetchedImage | null {
-  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  const match = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
   if (!match) return null;
 
   const [, contentType, data] = match;

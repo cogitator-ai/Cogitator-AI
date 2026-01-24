@@ -136,7 +136,7 @@ function deflateRaw(data: Uint8Array, level: number = 6): Uint8Array {
   }
 
   const windowSize = 32768;
-  const hashTable: Map<number, number[]> = new Map();
+  const hashTable = new Map<number, number[]>();
 
   const getHash = (pos: number): number => {
     if (pos + 2 >= len) return 0;
@@ -485,8 +485,8 @@ function decodeSymbol(tree: HuffmanNode, readBit: () => number): number {
 function crc32(data: Uint8Array): number {
   let crc = 0xffffffff;
 
-  for (let i = 0; i < data.length; i++) {
-    crc ^= data[i];
+  for (const byte of data) {
+    crc ^= byte;
     for (let j = 0; j < 8; j++) {
       crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
     }

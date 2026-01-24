@@ -90,7 +90,7 @@ export async function audioInputToBuffer(
 ): Promise<{ buffer: Buffer; filename: string; format: AudioFormat }> {
   if (typeof input === 'string') {
     if (input.startsWith('data:audio/')) {
-      const match = input.match(/^data:audio\/([^;]+);base64,(.+)$/);
+      const match = /^data:audio\/([^;]+);base64,(.+)$/.exec(input);
       if (match) {
         const format = (match[1] === 'mpeg' ? 'mp3' : match[1]) as AudioFormat;
         const buffer = Buffer.from(match[2], 'base64');

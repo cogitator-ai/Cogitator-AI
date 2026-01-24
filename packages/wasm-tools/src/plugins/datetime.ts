@@ -19,7 +19,7 @@ interface DatetimeOutput {
 function parseOffset(tz?: string): number {
   if (!tz || tz === 'UTC' || tz === 'Z') return 0;
 
-  const match = tz.match(/^([+-])(\d{2}):?(\d{2})$/);
+  const match = /^([+-])(\d{2}):?(\d{2})$/.exec(tz);
   if (!match) return 0;
 
   const sign = match[1] === '+' ? 1 : -1;
@@ -30,9 +30,10 @@ function parseOffset(tz?: string): number {
 }
 
 function parseDate(dateStr: string): Date {
-  const isoMatch = dateStr.match(
-    /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{3}))?(?:Z|([+-]\d{2}:?\d{2}))?)?$/
-  );
+  const isoMatch =
+    /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{3}))?(?:Z|([+-]\d{2}:?\d{2}))?)?$/.exec(
+      dateStr
+    );
 
   if (isoMatch) {
     const [, year, month, day, hour = '0', min = '0', sec = '0', ms = '0', tz] = isoMatch;
@@ -172,12 +173,13 @@ export function datetime(): number {
         result = date.toISOString();
         break;
 
-      case 'format':
+      case 'format': {
         if (!input.date) throw new Error('date is required for format operation');
         date = parseDate(input.date);
         const format = input.format ?? 'YYYY-MM-DDTHH:mm:ssZ';
         result = formatDate(date, format, offsetMs);
         break;
+      }
 
       case 'add':
         if (!input.date) throw new Error('date is required for add operation');
@@ -198,13 +200,14 @@ export function datetime(): number {
         result = date.toISOString();
         break;
 
-      case 'diff':
+      case 'diff': {
         if (!input.date) throw new Error('date is required for diff operation');
         if (!input.endDate) throw new Error('endDate is required for diff operation');
         date = parseDate(input.date);
         const endDate = parseDate(input.endDate);
         result = dateDiff(date, endDate, input.unit ?? 'milliseconds');
         break;
+      }
 
       default:
         throw new Error(`Unknown operation: ${input.operation}`);

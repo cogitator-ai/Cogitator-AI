@@ -125,11 +125,12 @@ export function regex(): number {
         matchCount = result ? 1 : 0;
         break;
 
-      case 'matchAll':
+      case 'matchAll': {
         const matches = safeMatchAll(input.text, regex, limit);
         result = matches;
         matchCount = matches.length;
         break;
+      }
 
       case 'replace':
         if (input.replacement === undefined) {

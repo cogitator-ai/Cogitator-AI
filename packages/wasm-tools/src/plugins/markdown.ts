@@ -114,7 +114,7 @@ function parseMarkdown(md: string, sanitize: boolean, gfm: boolean): string {
       continue;
     }
 
-    const headerMatch = line.match(/^(#{1,6})\s+(.+)$/);
+    const headerMatch = /^(#{1,6})\s+(.+)$/.exec(line);
     if (headerMatch) {
       flushParagraph();
       flushBlockquote();
@@ -133,7 +133,7 @@ function parseMarkdown(md: string, sanitize: boolean, gfm: boolean): string {
       continue;
     }
 
-    const blockquoteMatch = line.match(/^>\s?(.*)$/);
+    const blockquoteMatch = /^>\s?(.*)$/.exec(line);
     if (blockquoteMatch) {
       flushParagraph();
       flushList();
@@ -142,7 +142,7 @@ function parseMarkdown(md: string, sanitize: boolean, gfm: boolean): string {
       continue;
     }
 
-    const ulMatch = line.match(/^[-*+]\s+(.+)$/);
+    const ulMatch = /^[-*+]\s+(.+)$/.exec(line);
     if (ulMatch) {
       flushParagraph();
       flushBlockquote();
@@ -156,7 +156,7 @@ function parseMarkdown(md: string, sanitize: boolean, gfm: boolean): string {
       continue;
     }
 
-    const olMatch = line.match(/^\d+\.\s+(.+)$/);
+    const olMatch = /^\d+\.\s+(.+)$/.exec(line);
     if (olMatch) {
       flushParagraph();
       flushBlockquote();
