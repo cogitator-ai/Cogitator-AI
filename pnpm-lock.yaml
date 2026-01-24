@@ -410,8 +410,8 @@ importers:
         version: 3.25.76
     optionalDependencies:
       neo4j-driver:
-        specifier: ^5.27.0
-        version: 5.28.3
+        specifier: ^6.0.1
+        version: 6.0.1
       pg:
         specifier: ^8.17.2
         version: 8.17.2
@@ -6007,28 +6007,29 @@ packages:
     engines: {node: '>= 0.6'}
     dev: false
 
-  /neo4j-driver-bolt-connection@5.28.3:
-    resolution: {integrity: sha512-wqHBYcU0FVRDmdsoZ+Fk0S/InYmu9/4BT6fPYh45Jimg/J7vQBUcdkiHGU7nop7HRb1ZgJmL305mJb6g5Bv35Q==}
+  /neo4j-driver-bolt-connection@6.0.1:
+    resolution: {integrity: sha512-1KyG73TO+CwnYJisdHD0sjUw9yR+P5q3JFcmVPzsHT4/whzCjuXSMpmY4jZcHH2PdY2cBUq4l/6WcDiPMxW2UA==}
     requiresBuild: true
     dependencies:
       buffer: 6.0.3
-      neo4j-driver-core: 5.28.3
+      neo4j-driver-core: 6.0.1
       string_decoder: 1.3.0
     dev: false
     optional: true
 
-  /neo4j-driver-core@5.28.3:
-    resolution: {integrity: sha512-Jk+hAmjFmO5YzVH/U7FyKXigot9zmIfLz6SZQy0xfr4zfTE/S8fOYFOGqKQTHBE86HHOWH2RbTslbxIb+XtU2g==}
+  /neo4j-driver-core@6.0.1:
+    resolution: {integrity: sha512-5I2KxICAvcHxnWdJyDqwu8PBAQvWVTlQH2ve3VQmtVdJScPqWhpXN1PiX5IIl+cRF3pFpz9GQF53B5n6s0QQUQ==}
     requiresBuild: true
     dev: false
     optional: true
 
-  /neo4j-driver@5.28.3:
-    resolution: {integrity: sha512-k7c0wEh3HoONv1v5AyLp9/BDAbYHJhz2TZvzWstSEU3g3suQcXmKEaYBfrK2UMzxcy3bCT0DrnfRbzsOW5G/Ag==}
+  /neo4j-driver@6.0.1:
+    resolution: {integrity: sha512-8DDF2MwEJNz7y7cp97x4u8fmVIP4CWS8qNBxdwxTG0fWtsS+2NdeC+7uXwmmuFOpHvkfXqv63uWY73bfDtOH8Q==}
+    engines: {node: '>=18.0.0'}
     requiresBuild: true
     dependencies:
-      neo4j-driver-bolt-connection: 5.28.3
-      neo4j-driver-core: 5.28.3
+      neo4j-driver-bolt-connection: 6.0.1
+      neo4j-driver-core: 6.0.1
       rxjs: 7.8.2
     dev: false
     optional: true
