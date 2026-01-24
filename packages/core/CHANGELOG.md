@@ -1,5 +1,37 @@
 # @cogitator-ai/core
 
+## 0.16.0
+
+### Minor Changes
+
+- feat: add audio/speech support with Whisper and TTS
+
+  Audio Transcription (Whisper API):
+  - `createTranscribeAudioTool` factory for speech-to-text
+  - Support for whisper-1, gpt-4o-transcribe, gpt-4o-mini-transcribe models
+  - Word-level timestamps with verbose_json response format
+  - URL and base64 audio input support
+
+  Text-to-Speech (TTS API):
+  - `createGenerateSpeechTool` factory for TTS generation
+  - Support for tts-1, tts-1-hd, gpt-4o-mini-tts models
+  - 13 voices: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse, marin, cedar
+  - Output formats: mp3, opus, aac, flac, wav, pcm
+  - Speed control: 0.25x to 4.0x
+
+  Integration:
+  - `AudioInput` and `AudioFormat` types
+  - `audio` option in `cog.run()` for automatic transcription
+  - `fetchAudioAsBuffer` and `audioInputToBuffer` helpers
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.17.0
+  - @cogitator-ai/memory@0.6.7
+  - @cogitator-ai/models@15.0.0
+  - @cogitator-ai/sandbox@0.2.17
+
 ## 0.15.0
 
 ### Minor Changes

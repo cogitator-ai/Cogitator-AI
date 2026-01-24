@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/openai-compat",
-  "version": "16.0.0",
+  "version": "17.0.0",
   "description": "OpenAI Assistants API compatibility layer for Cogitator",
   "type": "module",
   "main": "./dist/index.js",
