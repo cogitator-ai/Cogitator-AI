@@ -198,6 +198,152 @@ describe('WorkflowExecutor', () => {
       const checkpoints = await checkpointStore.list('checkpoint');
       expect(checkpoints.length).toBeGreaterThan(0);
     });
+
+    it('saves checkpoint per-iteration by default', async () => {
+      const checkpointStore = new InMemoryCheckpointStore();
+
+      const workflow = new WorkflowBuilder<TestState>('per-iteration')
+        .initialState({ value: 0, steps: [] })
+        .addNode('step1', async () => ({ state: { value: 1 } }))
+        .addNode('step2', async () => ({ state: { value: 2 } }), { after: ['step1'] })
+        .addNode('step3', async () => ({ state: { value: 3 } }), { after: ['step2'] })
+        .build();
+
+      const executor = new WorkflowExecutor(mockCogitator, checkpointStore);
+      await executor.execute(workflow, undefined, {
+        checkpoint: true,
+        checkpointStrategy: 'per-iteration',
+      });
+
+      const checkpoints = await checkpointStore.list('per-iteration');
+      expect(checkpoints.length).toBe(3);
+    });
+
+    it('saves checkpoint per-node when strategy is per-node', async () => {
+      const checkpointStore = new InMemoryCheckpointStore();
+
+      const workflow = new WorkflowBuilder<TestState>('per-node')
+        .initialState({ value: 0, steps: [] })
+        .addNode('step1', async () => ({ state: { value: 1 } }))
+        .addNode('step2', async () => ({ state: { value: 2 } }), { after: ['step1'] })
+        .addNode('step3', async () => ({ state: { value: 3 } }), { after: ['step2'] })
+        .build();
+
+      const executor = new WorkflowExecutor(mockCogitator, checkpointStore);
+      await executor.execute(workflow, undefined, {
+        checkpoint: true,
+        checkpointStrategy: 'per-node',
+      });
+
+      const checkpoints = await checkpointStore.list('per-node');
+      expect(checkpoints.length).toBe(3);
+    });
+
+    it('per-node saves more checkpoints than per-iteration for parallel nodes', async () => {
+      const perIterationStore = new InMemoryCheckpointStore();
+      const perNodeStore = new InMemoryCheckpointStore();
+
+      const buildWorkflow = (name: string) =>
+        new WorkflowBuilder<TestState>(name)
+          .initialState({ value: 0, steps: [] })
+          .addNode('start', async () => ({}))
+          .addParallel('fanout', ['a', 'b', 'c'], { after: ['start'] })
+          .addNode('a', async () => ({ output: 'a' }))
+          .addNode('b', async () => ({ output: 'b' }))
+          .addNode('c', async () => ({ output: 'c' }))
+          .build();
+
+      const executor1 = new WorkflowExecutor(mockCogitator, perIterationStore);
+      await executor1.execute(buildWorkflow('per-iter-parallel'), undefined, {
+        checkpoint: true,
+        checkpointStrategy: 'per-iteration',
+      });
+
+      const executor2 = new WorkflowExecutor(mockCogitator, perNodeStore);
+      await executor2.execute(buildWorkflow('per-node-parallel'), undefined, {
+        checkpoint: true,
+        checkpointStrategy: 'per-node',
+      });
+
+      const perIterCheckpoints = await perIterationStore.list('per-iter-parallel');
+      const perNodeCheckpoints = await perNodeStore.list('per-node-parallel');
+
+      expect(perNodeCheckpoints.length).toBeGreaterThan(perIterCheckpoints.length);
+    });
+
+    it('per-node checkpoints capture incremental progress', async () => {
+      const checkpointStore = new InMemoryCheckpointStore();
+      const completionOrder: string[] = [];
+
+      const workflow = new WorkflowBuilder<TestState>('incremental')
+        .initialState({ value: 0, steps: [] })
+        .addNode('start', async () => ({}))
+        .addParallel('fanout', ['a', 'b'], { after: ['start'] })
+        .addNode('a', async () => {
+          completionOrder.push('a');
+          return { output: 'result-a' };
+        })
+        .addNode('b', async () => {
+          await new Promise((r) => setTimeout(r, 20));
+          completionOrder.push('b');
+          return { output: 'result-b' };
+        })
+        .build();
+
+      const executor = new WorkflowExecutor(mockCogitator, checkpointStore);
+      await executor.execute(workflow, undefined, {
+        checkpoint: true,
+        checkpointStrategy: 'per-node',
+      });
+
+      const checkpoints = await checkpointStore.list('incremental');
+      checkpoints.sort((a, b) => a.timestamp - b.timestamp);
+
+      const secondCheckpoint = checkpoints[1];
+      expect(secondCheckpoint.completedNodes).toContain('start');
+      expect(secondCheckpoint.completedNodes.length).toBe(2);
+
+      const thirdCheckpoint = checkpoints[2];
+      expect(thirdCheckpoint.completedNodes.length).toBe(3);
+    });
+
+    it('per-node checkpoint stores completed nodes incrementally', async () => {
+      const checkpointStore = new InMemoryCheckpointStore();
+
+      const workflow = new WorkflowBuilder<TestState>('incremental-store')
+        .initialState({ value: 0, steps: [] })
+        .addNode('start', async () => ({}))
+        .addParallel('fanout', ['a', 'b'], { after: ['start'] })
+        .addNode('a', async () => {
+          await new Promise((r) => setTimeout(r, 10));
+          return { output: 'result-a' };
+        })
+        .addNode('b', async () => {
+          await new Promise((r) => setTimeout(r, 30));
+          return { output: 'result-b' };
+        })
+        .build();
+
+      const executor = new WorkflowExecutor(mockCogitator, checkpointStore);
+      await executor.execute(workflow, undefined, {
+        checkpoint: true,
+        checkpointStrategy: 'per-node',
+      });
+
+      const checkpoints = await checkpointStore.list('incremental-store');
+      checkpoints.sort((a, b) => a.timestamp - b.timestamp);
+
+      expect(checkpoints[0].completedNodes).toEqual(['start']);
+
+      const secondCheckpoint = checkpoints[1];
+      expect(secondCheckpoint.completedNodes).toContain('start');
+      expect(secondCheckpoint.completedNodes.length).toBe(2);
+
+      const lastCheckpoint = checkpoints[checkpoints.length - 1];
+      expect(lastCheckpoint.completedNodes).toContain('start');
+      expect(lastCheckpoint.completedNodes).toContain('a');
+      expect(lastCheckpoint.completedNodes).toContain('b');
+    });
   });
 
   describe('parallel execution', () => {

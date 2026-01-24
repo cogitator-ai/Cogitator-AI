@@ -530,6 +530,48 @@ for await (const event of executor.stream(workflow)) {
 }
 ```
 
+### 💾 Workflow Checkpointing
+
+Resume workflows from failures with configurable checkpoint granularity:
+
+```typescript
+import { WorkflowExecutor, WorkflowBuilder } from '@cogitator-ai/workflows';
+
+const executor = new WorkflowExecutor(cogitator, checkpointStore);
+
+const workflow = new WorkflowBuilder<MyState>('parallel-pipeline')
+  .initialState({ results: [] })
+  .addNode('start', async () => ({}))
+  .addParallel('fanout', ['processA', 'processB', 'processC'], { after: ['start'] })
+  .addNode('processA', async () => ({ output: 'A' }))
+  .addNode('processB', async () => ({ output: 'B' }))
+  .addNode('processC', async () => ({ output: 'C' }))
+  .build();
+
+// Per-iteration (default): checkpoint after ALL parallel nodes complete
+const result1 = await executor.execute(workflow, undefined, {
+  checkpoint: true,
+  checkpointStrategy: 'per-iteration',
+});
+
+// Per-node: checkpoint after EACH node completes
+// Enables resume from partial parallel execution if crash occurs
+const result2 = await executor.execute(workflow, undefined, {
+  checkpoint: true,
+  checkpointStrategy: 'per-node',
+});
+
+// Resume from checkpoint
+const resumed = await executor.resume(workflow, result2.checkpointId!);
+```
+
+**Checkpoint Strategies:**
+
+| Strategy        | Checkpoint Frequency       | Use Case                         |
+| --------------- | -------------------------- | -------------------------------- |
+| `per-iteration` | After all parallel nodes   | Default, lower I/O overhead      |
+| `per-node`      | After each individual node | Critical workflows, crash safety |
+
 ### 🐝 Swarm Patterns
 
 ```typescript

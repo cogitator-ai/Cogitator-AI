@@ -82,10 +82,13 @@ export interface Workflow<S = WorkflowState> {
   entryPoint: string;
 }
 
+export type CheckpointStrategy = 'per-iteration' | 'per-node';
+
 export interface WorkflowExecuteOptions {
   maxConcurrency?: number;
   maxIterations?: number;
   checkpoint?: boolean;
+  checkpointStrategy?: CheckpointStrategy;
   onNodeStart?: (node: string) => void;
   onNodeComplete?: (node: string, result: unknown, duration: number) => void;
   onNodeError?: (node: string, error: Error) => void;

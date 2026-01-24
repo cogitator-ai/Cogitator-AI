@@ -178,4 +178,44 @@ export class WorkflowScheduler {
 
     return results;
   }
+
+  /**
+   * Run parallel tasks with per-completion callback
+   * Uses pool-based execution to respect concurrency while allowing immediate callbacks
+   */
+  async runParallelWithCallback<T>(
+    tasks: (() => Promise<T>)[],
+    maxConcurrency: number,
+    onComplete: (result: T, index: number) => Promise<void>
+  ): Promise<T[]> {
+    if (tasks.length === 0) return [];
+
+    const results: T[] = new Array(tasks.length);
+    let nextIndex = 0;
+    let completedCount = 0;
+
+    return new Promise((resolve, reject) => {
+      const startNext = () => {
+        while (nextIndex < tasks.length && nextIndex - completedCount < maxConcurrency) {
+          const index = nextIndex++;
+
+          tasks[index]()
+            .then(async (result) => {
+              results[index] = result;
+              await onComplete(result, index);
+              completedCount++;
+
+              if (completedCount === tasks.length) {
+                resolve(results);
+              } else {
+                startNext();
+              }
+            })
+            .catch(reject);
+        }
+      };
+
+      startNext();
+    });
+  }
 }

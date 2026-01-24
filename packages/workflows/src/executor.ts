@@ -10,6 +10,8 @@ import type {
   StreamingWorkflowEvent,
   CheckpointStore,
   NodeContext,
+  CheckpointStrategy,
+  NodeResult,
 } from '@cogitator-ai/types';
 import type { Cogitator } from '@cogitator-ai/core';
 import { nanoid } from 'nanoid';
@@ -44,6 +46,7 @@ export class WorkflowExecutor {
     const maxConcurrency = options?.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
     const maxIterations = options?.maxIterations ?? DEFAULT_MAX_ITERATIONS;
     const shouldCheckpoint = options?.checkpoint ?? false;
+    const checkpointStrategy: CheckpointStrategy = options?.checkpointStrategy ?? 'per-iteration';
 
     let state: S = { ...workflow.initialState, ...input } as S;
     const nodeResults = new Map<string, { output: unknown; duration: number }>();
@@ -56,97 +59,119 @@ export class WorkflowExecutor {
 
     let currentNodes = [workflow.entryPoint];
 
+    const saveCheckpoint = async () => {
+      checkpointId = createCheckpointId();
+      await this.checkpointStore.save({
+        id: checkpointId,
+        workflowId,
+        workflowName: workflow.name,
+        state,
+        completedNodes: Array.from(completedNodes),
+        nodeResults: Object.fromEntries(
+          Array.from(nodeResults.entries()).map(([k, v]) => [k, v.output])
+        ),
+        timestamp: Date.now(),
+      });
+    };
+
+    const createTask = (nodeName: string, currentIteration: number) => async () => {
+      const node = workflow.nodes.get(nodeName);
+      if (!node) {
+        throw new Error(`Node '${nodeName}' not found`);
+      }
+
+      options?.onNodeStart?.(nodeName);
+
+      const nodeStart = Date.now();
+
+      const ctx: NodeContext<S> = {
+        state: { ...state },
+        nodeId: nodeName,
+        workflowId,
+        step: currentIteration,
+        reportProgress: (progress: number) => {
+          const clamped = Math.max(0, Math.min(100, progress));
+          options?.onNodeProgress?.(nodeName, clamped);
+        },
+      };
+
+      const deps = graph.dependencies.get(nodeName);
+      if (deps && deps.size > 0) {
+        const inputs: unknown[] = [];
+        for (const dep of deps) {
+          const depResult = nodeResults.get(dep);
+          if (depResult) {
+            inputs.push(depResult.output);
+          }
+        }
+        ctx.input = inputs.length === 1 ? inputs[0] : inputs;
+      }
+
+      (ctx as NodeContext<S> & { cogitator: Cogitator }).cogitator = this.cogitator;
+
+      const result = await node.fn(ctx);
+      const duration = Date.now() - nodeStart;
+
+      options?.onNodeComplete?.(nodeName, result.output, duration);
+
+      return { nodeName, result, duration };
+    };
+
+    const processNodeResult = (
+      nodeName: string,
+      result: NodeResult<S>,
+      duration: number,
+      nextNodes: string[]
+    ) => {
+      if (result.state) {
+        state = { ...state, ...result.state } as S;
+      }
+
+      nodeResults.set(nodeName, {
+        output: result.output,
+        duration,
+      });
+
+      completedNodes.add(nodeName);
+
+      if (result.next) {
+        const next = Array.isArray(result.next) ? result.next : [result.next];
+        nextNodes.push(...next);
+      } else {
+        const edgeNext = this.scheduler.getNextNodes(workflow, nodeName, state);
+        nextNodes.push(...edgeNext);
+      }
+    };
+
     try {
       while (currentNodes.length > 0 && iterations < maxIterations) {
         iterations++;
 
-        const nodesToRun = currentNodes.filter((n) => {
-          return workflow.nodes.has(n);
-        });
-
+        const nodesToRun = currentNodes.filter((n) => workflow.nodes.has(n));
         if (nodesToRun.length === 0) break;
 
-        const tasks = nodesToRun.map((nodeName) => async () => {
-          const node = workflow.nodes.get(nodeName);
-          if (!node) {
-            throw new Error(`Node '${nodeName}' not found`);
-          }
-
-          options?.onNodeStart?.(nodeName);
-
-          const nodeStart = Date.now();
-
-          const ctx: NodeContext<S> = {
-            state: { ...state },
-            nodeId: nodeName,
-            workflowId,
-            step: iterations,
-            reportProgress: (progress: number) => {
-              const clamped = Math.max(0, Math.min(100, progress));
-              options?.onNodeProgress?.(nodeName, clamped);
-            },
-          };
-
-          const deps = graph.dependencies.get(nodeName);
-          if (deps && deps.size > 0) {
-            const inputs: unknown[] = [];
-            for (const dep of deps) {
-              const depResult = nodeResults.get(dep);
-              if (depResult) {
-                inputs.push(depResult.output);
-              }
-            }
-            ctx.input = inputs.length === 1 ? inputs[0] : inputs;
-          }
-
-          (ctx as NodeContext<S> & { cogitator: Cogitator }).cogitator = this.cogitator;
-
-          const result = await node.fn(ctx);
-          const duration = Date.now() - nodeStart;
-
-          options?.onNodeComplete?.(nodeName, result.output, duration);
-
-          return { nodeName, result, duration };
-        });
-
-        const results = await this.scheduler.runParallel(tasks, maxConcurrency);
-
+        const tasks = nodesToRun.map((nodeName) => createTask(nodeName, iterations));
         const nextNodes: string[] = [];
 
-        for (const { nodeName, result, duration } of results) {
-          if (result.state) {
-            state = { ...state, ...result.state } as S;
+        if (shouldCheckpoint && checkpointStrategy === 'per-node') {
+          await this.scheduler.runParallelWithCallback(
+            tasks,
+            maxConcurrency,
+            async ({ nodeName, result, duration }) => {
+              processNodeResult(nodeName, result, duration, nextNodes);
+              await saveCheckpoint();
+            }
+          );
+        } else {
+          const results = await this.scheduler.runParallel(tasks, maxConcurrency);
+
+          for (const { nodeName, result, duration } of results) {
+            processNodeResult(nodeName, result, duration, nextNodes);
           }
 
-          nodeResults.set(nodeName, {
-            output: result.output,
-            duration,
-          });
-
-          completedNodes.add(nodeName);
-
-          if (result.next) {
-            const next = Array.isArray(result.next) ? result.next : [result.next];
-            nextNodes.push(...next);
-          } else {
-            const edgeNext = this.scheduler.getNextNodes(workflow, nodeName, state);
-            nextNodes.push(...edgeNext);
+          if (shouldCheckpoint) {
+            await saveCheckpoint();
           }
-        }
-
-        if (shouldCheckpoint) {
-          checkpointId = createCheckpointId();
-          await this.checkpointStore.save({
-            id: checkpointId,
-            workflowId,
-            workflowName: workflow.name,
-            state,
-            completedNodes: Array.from(completedNodes),
-            nodeResults: Object.fromEntries(
-              Array.from(nodeResults.entries()).map(([k, v]) => [k, v.output])
-            ),
-            timestamp: Date.now(),
-          });
         }
 
         currentNodes = [...new Set(nextNodes)];
