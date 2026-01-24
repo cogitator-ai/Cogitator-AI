@@ -55,7 +55,7 @@ export const GET = withRole(['admin'], async (request) => {
         const result = CogitatorConfigSchema.safeParse(parsed);
         return NextResponse.json({
           valid: result.success,
-          errors: result.success ? undefined : result.error.errors,
+          errors: result.success ? undefined : result.error.issues,
           config: result.success ? result.data : undefined,
         });
       } catch (error) {

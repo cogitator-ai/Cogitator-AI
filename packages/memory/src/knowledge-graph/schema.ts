@@ -33,7 +33,7 @@ export const GraphNodeSchema = z.object({
   name: z.string().min(1),
   aliases: z.array(z.string()).default([]),
   description: z.string().optional(),
-  properties: z.record(z.unknown()).default({}),
+  properties: z.record(z.string(), z.unknown()).default({}),
   embedding: z.array(z.number()).optional(),
   confidence: z.number().min(0).max(1),
   source: NodeSourceSchema,
@@ -41,7 +41,7 @@ export const GraphNodeSchema = z.object({
   updatedAt: z.date(),
   lastAccessedAt: z.date(),
   accessCount: z.number().int().min(0),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const GraphEdgeSchema = z.object({
@@ -53,14 +53,14 @@ export const GraphEdgeSchema = z.object({
   label: z.string().optional(),
   weight: z.number().min(0).max(1).default(1),
   bidirectional: z.boolean().default(false),
-  properties: z.record(z.unknown()).default({}),
+  properties: z.record(z.string(), z.unknown()).default({}),
   confidence: z.number().min(0).max(1),
   source: NodeSourceSchema,
   createdAt: z.date(),
   updatedAt: z.date(),
   validFrom: z.date().optional(),
   validUntil: z.date().optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const ExtractedEntitySchema = z.object({
@@ -68,7 +68,7 @@ export const ExtractedEntitySchema = z.object({
   type: EntityTypeSchema,
   aliases: z.array(z.string()).optional(),
   description: z.string().optional(),
-  properties: z.record(z.unknown()).optional(),
+  properties: z.record(z.string(), z.unknown()).optional(),
   confidence: z.number().min(0).max(1),
 });
 
@@ -79,7 +79,7 @@ export const ExtractedRelationSchema = z.object({
   label: z.string().optional(),
   weight: z.number().min(0).max(1).optional(),
   bidirectional: z.boolean().optional(),
-  properties: z.record(z.unknown()).optional(),
+  properties: z.record(z.string(), z.unknown()).optional(),
   confidence: z.number().min(0).max(1),
 });
 
@@ -136,7 +136,7 @@ export const InferencePatternSchema = z.object({
   edgeTypes: z.array(RelationTypeSchema).min(1),
   minPathLength: z.number().int().min(2),
   maxPathLength: z.number().int().min(2),
-  nodeTypeConstraints: z.record(z.array(EntityTypeSchema)).optional(),
+  nodeTypeConstraints: z.record(z.string(), z.array(EntityTypeSchema)).optional(),
 });
 
 export const InferenceConclusionSchema = z.object({

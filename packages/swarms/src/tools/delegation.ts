@@ -20,7 +20,10 @@ export function createDelegationTools(
     parameters: z.object({
       worker: z.string().describe('Name of the worker agent to delegate to'),
       task: z.string().describe('The task description to delegate'),
-      context: z.record(z.unknown()).optional().describe('Additional context for the worker'),
+      context: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe('Additional context for the worker'),
       priority: z.enum(['high', 'normal', 'low']).optional().describe('Task priority'),
       waitForCompletion: z
         .boolean()

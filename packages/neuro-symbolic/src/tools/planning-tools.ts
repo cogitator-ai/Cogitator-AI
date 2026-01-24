@@ -6,12 +6,12 @@ import type { NeuroSymbolic } from '../orchestrator';
 
 const actionInputSchema = z.object({
   name: z.string().describe('Action schema name'),
-  parameters: z.record(z.unknown()).describe('Action parameters'),
+  parameters: z.record(z.string(), z.unknown()).describe('Action parameters'),
 });
 
 const planInputSchema = z.object({
   actions: z.array(actionInputSchema).describe('Sequence of actions in the plan'),
-  initialState: z.record(z.unknown()).describe('Initial state variables'),
+  initialState: z.record(z.string(), z.unknown()).describe('Initial state variables'),
   goals: z.array(z.string()).describe('Goal conditions as variable names that should be true'),
 });
 

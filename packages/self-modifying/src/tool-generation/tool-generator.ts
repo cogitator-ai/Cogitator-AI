@@ -208,7 +208,7 @@ export class ToolGenerator {
     return {
       name: generated.name,
       description: generated.description,
-      parameters: z.record(z.unknown()) as ZodType<unknown>,
+      parameters: z.record(z.string(), z.unknown()) as ZodType<unknown>,
       execute,
       toJSON: () => ({
         name: generated.name,

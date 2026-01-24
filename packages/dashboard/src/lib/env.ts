@@ -35,7 +35,7 @@ export function validateEnv(): Env {
   const result = envSchema.safeParse(process.env);
 
   if (!result.success) {
-    const errors = result.error.errors.map((e) => `  - ${e.path.join('.')}: ${e.message}`);
+    const errors = result.error.issues.map((e) => `  - ${e.path.join('.')}: ${e.message}`);
     console.error('Environment validation failed:');
     console.error(errors.join('\n'));
 

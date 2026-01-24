@@ -32,7 +32,6 @@
 
 import { z, type ZodType } from 'zod';
 import type { Tool, SandboxConfig, ToolContext, ToolCategory } from '@cogitator-ai/types';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -110,9 +109,9 @@ export function defineWasmTool<TParams>(config: WasmToolConfig<TParams>): Tool<T
 }
 
 function wasmToolToSchema<TParams>(t: Tool<TParams, unknown>) {
-  const jsonSchema = zodToJsonSchema(t.parameters as ZodType, {
-    target: 'openApi3',
-    $refStrategy: 'none',
+  const jsonSchema = z.toJSONSchema(t.parameters as ZodType, {
+    target: 'openapi-3.0',
+    unrepresentable: 'any',
   });
 
   const schema = jsonSchema as Record<string, unknown>;

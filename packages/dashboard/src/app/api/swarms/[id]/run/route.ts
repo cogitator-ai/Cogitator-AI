@@ -23,7 +23,7 @@ export const POST = withAuth(async (request, context) => {
       return NextResponse.json(
         {
           error: 'Validation failed',
-          details: parsed.error.errors.map((e) => ({
+          details: parsed.error.issues.map((e) => ({
             path: e.path.join('.'),
             message: e.message,
           })),

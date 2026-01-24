@@ -161,7 +161,7 @@ export function createGraphTools(_ns: NeuroSymbolic, graphAdapter: GraphAdapter)
         .describe('Entity type'),
       description: z.string().optional().describe('Node description'),
       aliases: z.array(z.string()).optional().describe('Alternative names'),
-      properties: z.record(z.unknown()).optional().describe('Additional properties'),
+      properties: z.record(z.string(), z.unknown()).optional().describe('Additional properties'),
     }),
     sideEffects: ['database'],
     execute: async ({ name, type, description, aliases, properties }, context: ToolContext) => {

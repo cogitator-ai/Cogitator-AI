@@ -5,8 +5,7 @@
  * Enables bidirectional interoperability.
  */
 
-import { z, type ZodTypeAny, type ZodObject, type ZodRawShape } from 'zod';
-import { zodToJsonSchema as zodToJsonSchemaLib } from 'zod-to-json-schema';
+import { z, type ZodTypeAny, type ZodObject } from 'zod';
 import type { Tool, ToolSchema, ToolContext } from '@cogitator-ai/types';
 import type { MCPToolDefinition, MCPToolContent, ToolAdapterOptions } from '../types';
 import type { MCPClient } from '../client/mcp-client';
@@ -19,9 +18,10 @@ export function zodToJsonSchema(schema: ZodTypeAny): {
   properties: Record<string, unknown>;
   required?: string[];
 } {
-  const jsonSchema = zodToJsonSchemaLib(schema, {
-    $refStrategy: 'none',
-    target: 'openApi3',
+  const jsonSchema = z.toJSONSchema(schema, {
+    unrepresentable: 'any',
+    io: 'output',
+    target: 'openapi-3.0',
   });
 
   const result = jsonSchema as Record<string, unknown>;
@@ -44,12 +44,12 @@ export function jsonSchemaToZod(schema: {
   type: string;
   properties?: Record<string, JsonSchemaProperty>;
   required?: string[];
-}): ZodObject<ZodRawShape> {
+}): ZodObject<Record<string, ZodTypeAny>> {
   if (schema.type !== 'object' || !schema.properties) {
     return z.object({});
   }
 
-  const shape: ZodRawShape = {};
+  const shape: Record<string, ZodTypeAny> = {};
   const required = new Set(schema.required ?? []);
 
   for (const [key, prop] of Object.entries(schema.properties)) {
@@ -151,7 +151,7 @@ function jsonSchemaPropertyToZod(prop: JsonSchemaProperty): ZodTypeAny {
           required: prop.required,
         });
       }
-      return z.record(z.unknown());
+      return z.record(z.string(), z.unknown());
     }
 
     case 'null':

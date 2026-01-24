@@ -7,7 +7,7 @@ const createJobSchema = z.object({
   type: z.enum(['agent', 'workflow', 'swarm']),
   targetId: z.string().min(1),
   input: z.string().min(1),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const GET = withAuth(async (request: AuthenticatedRequest) => {
@@ -56,7 +56,7 @@ export const POST = withAuth(async (request: AuthenticatedRequest) => {
       return NextResponse.json(
         {
           error: 'Validation failed',
-          details: parsed.error.errors.map((e) => ({
+          details: parsed.error.issues.map((e) => ({
             path: e.path.join('.'),
             message: e.message,
           })),

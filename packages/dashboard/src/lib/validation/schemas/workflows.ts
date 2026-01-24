@@ -9,7 +9,7 @@ const workflowNodeSchema = z.object({
       y: z.number(),
     })
     .optional(),
-  data: z.record(z.unknown()).optional(),
+  data: z.record(z.string(), z.unknown()).optional(),
 });
 
 const workflowEdgeSchema = z.object({
@@ -26,14 +26,14 @@ export const createWorkflowSchema = z.object({
   description: z.string().max(1000, 'Description too long').optional(),
   nodes: z.array(workflowNodeSchema).optional(),
   edges: z.array(workflowEdgeSchema).optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const updateWorkflowSchema = createWorkflowSchema.partial();
 
 export const workflowRunSchema = z.object({
-  input: z.union([z.string(), z.record(z.unknown())]),
-  context: z.record(z.unknown()).optional(),
+  input: z.union([z.string(), z.record(z.string(), z.unknown())]),
+  context: z.record(z.string(), z.unknown()).optional(),
   checkpointId: z.string().optional(),
 });
 

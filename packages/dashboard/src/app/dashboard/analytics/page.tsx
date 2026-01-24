@@ -235,7 +235,9 @@ export default function AnalyticsPage() {
                       border: '1px solid rgba(255,255,255,0.1)',
                       borderRadius: '8px',
                     }}
-                    formatter={(value: number) => `$${value.toFixed(4)}`}
+                    formatter={(value) =>
+                      value !== undefined ? `$${Number(value).toFixed(4)}` : ''
+                    }
                   />
                 </PieChart>
               </ResponsiveContainer>

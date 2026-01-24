@@ -1,6 +1,5 @@
 import type { Tool, ToolConfig, ToolSchema } from '@cogitator-ai/types';
-import { zodToJsonSchema } from 'zod-to-json-schema';
-import type { ZodType } from 'zod';
+import { z, type ZodType } from 'zod';
 
 /**
  * Create a type-safe tool for agent use.
@@ -75,9 +74,9 @@ export function tool<TParams, TResult>(
  * @returns JSON Schema representation of the tool
  */
 export function toolToSchema<TParams, TResult>(t: Tool<TParams, TResult>): ToolSchema {
-  const jsonSchema = zodToJsonSchema(t.parameters as ZodType, {
-    target: 'openApi3',
-    $refStrategy: 'none',
+  const jsonSchema = z.toJSONSchema(t.parameters as ZodType, {
+    target: 'openapi-3.0',
+    unrepresentable: 'any',
   });
 
   const schema = jsonSchema as Record<string, unknown>;

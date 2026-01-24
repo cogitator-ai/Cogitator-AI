@@ -344,9 +344,9 @@ export class MCPServer {
         description: config.description,
         argsSchema,
       },
-      async (args: Record<string, string>) => {
+      async (args) => {
         try {
-          const result = await config.get(args);
+          const result = await config.get(args as Record<string, string>);
           return {
             description: result.description,
             messages: result.messages.map((m) => ({

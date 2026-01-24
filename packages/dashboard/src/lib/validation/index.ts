@@ -25,7 +25,7 @@ export function withValidation<T extends ZodSchema>(
         return NextResponse.json(
           {
             error: 'Validation failed',
-            details: error.errors.map((e) => ({
+            details: error.issues.map((e) => ({
               path: e.path.join('.'),
               message: e.message,
             })),
@@ -66,7 +66,7 @@ export function withQueryValidation<T extends ZodSchema>(
         return NextResponse.json(
           {
             error: 'Validation failed',
-            details: error.errors.map((e) => ({
+            details: error.issues.map((e) => ({
               path: e.path.join('.'),
               message: e.message,
             })),

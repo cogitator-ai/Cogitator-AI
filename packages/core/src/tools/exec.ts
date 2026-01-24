@@ -19,7 +19,7 @@ const execParams = z.object({
     .max(300000)
     .optional()
     .describe('Command timeout in milliseconds (default: 30000, max: 300000 = 5 minutes)'),
-  env: z.record(z.string()).optional().describe('Additional environment variables'),
+  env: z.record(z.string(), z.string()).optional().describe('Additional environment variables'),
 });
 
 export const exec = tool({

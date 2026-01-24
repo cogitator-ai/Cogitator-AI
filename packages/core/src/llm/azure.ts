@@ -81,11 +81,13 @@ export class AzureOpenAIBackend extends BaseLLMBackend {
     const choice = response.choices[0];
     const message = choice.message;
 
-    const toolCalls: ToolCall[] | undefined = message.tool_calls?.map((tc) => ({
-      id: tc.id,
-      name: tc.function.name,
-      arguments: this.tryParseJson(tc.function.arguments, ctx),
-    }));
+    const toolCalls: ToolCall[] | undefined = message.tool_calls
+      ?.filter((tc): tc is typeof tc & { type: 'function' } => tc.type === 'function')
+      .map((tc) => ({
+        id: tc.id,
+        name: tc.function.name,
+        arguments: this.tryParseJson(tc.function.arguments, ctx),
+      }));
 
     return {
       id: response.id,

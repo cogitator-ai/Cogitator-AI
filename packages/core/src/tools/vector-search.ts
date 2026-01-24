@@ -17,7 +17,10 @@ const vectorSearchParams = z.object({
     .max(1)
     .optional()
     .describe('Minimum similarity threshold 0-1 (default: 0.7)'),
-  filter: z.record(z.unknown()).optional().describe('Metadata filter as key-value pairs'),
+  filter: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe('Metadata filter as key-value pairs'),
   embeddingProvider: z
     .enum(['openai', 'ollama', 'google'])
     .optional()

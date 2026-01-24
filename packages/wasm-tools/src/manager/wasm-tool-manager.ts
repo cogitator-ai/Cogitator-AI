@@ -1,7 +1,6 @@
 import { basename } from 'node:path';
-import { z, type ZodType } from 'zod';
+import { z } from 'zod';
 import type { Tool, ToolContext, ToolSchema } from '@cogitator-ai/types';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 import { FileWatcher } from './file-watcher.js';
 import { WasmLoader } from './wasm-loader.js';
 import type {
@@ -136,7 +135,7 @@ export class WasmToolManager {
   }
 
   private createProxyTool(name: string, _plugin: ExtismPlugin): Tool<unknown, unknown> {
-    const parameters = z.record(z.unknown());
+    const parameters = z.record(z.string(), z.unknown());
 
     const tool: Tool<unknown, unknown> = {
       name,
@@ -156,9 +155,9 @@ export class WasmToolManager {
         }
       },
       toJSON: (): ToolSchema => {
-        const jsonSchema = zodToJsonSchema(parameters as ZodType, {
-          target: 'openApi3',
-          $refStrategy: 'none',
+        const jsonSchema = z.toJSONSchema(parameters, {
+          target: 'openapi-3.0',
+          unrepresentable: 'any',
         });
         const schema = jsonSchema as Record<string, unknown>;
         return {

@@ -11,7 +11,10 @@ const httpRequestParams = z.object({
     .enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])
     .optional()
     .describe('HTTP method (default: GET)'),
-  headers: z.record(z.string()).optional().describe('Request headers as key-value pairs'),
+  headers: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe('Request headers as key-value pairs'),
   body: z
     .string()
     .optional()
