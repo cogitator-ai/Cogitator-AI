@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/test-utils",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Shared testing utilities for Cogitator packages",
   "type": "module",
   "main": "./dist/index.js",

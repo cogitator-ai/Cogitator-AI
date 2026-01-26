@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/core",
-  "version": "0.17.4",
+  "version": "0.17.5",
   "description": "Core runtime for Cogitator AI agents",
   "type": "module",
   "main": "./dist/index.js",

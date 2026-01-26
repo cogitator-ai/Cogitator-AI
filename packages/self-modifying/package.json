@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/self-modifying",
-  "version": "17.0.3",
+  "version": "17.0.4",
   "description": "Self-modifying agent capabilities for Cogitator - tool generation, meta-reasoning, architecture evolution",
   "type": "module",
   "main": "./dist/index.js",
@@ -55,7 +55,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/eL1fe/Cogitator.git",
+    "url": "https://github.com/cogitator-ai/Cogitator-AI.git",
     "directory": "packages/self-modifying"
   },
   "publishConfig": {
