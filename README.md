@@ -15,11 +15,119 @@
 
 **Kubernetes for AI Agents. Self-hosted. Production-grade. TypeScript-native.**
 
-[Quick Start](#-quick-start) • [Architecture](#-architecture) • [Documentation](./docs) • [Roadmap](#-roadmap) • [Contributing](#-contributing)
+[What is Cogitator?](#-what-is-cogitator) • [Quick Start](#-quick-start) • [Documentation](./docs) • [Roadmap](#-roadmap)
 
 </div>
 
 ---
+
+## 🤔 What is Cogitator?
+
+**Cogitator is a toolkit for building AI agents that actually do things.**
+
+Think of it this way: ChatGPT and Claude are great for conversations, but what if you want an AI that can:
+
+- Search the web and summarize findings
+- Read your codebase and fix bugs
+- Monitor your servers and alert you when something's wrong
+- Process data files and generate reports
+- Coordinate with other AI agents to solve complex problems
+
+That's what Cogitator does. It's a TypeScript framework that lets you create **agents** — AI systems that can use **tools**, remember **context**, and work together in **teams**.
+
+### A Simple Example
+
+Here's a basic agent that can search the web:
+
+```typescript
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+// Define what the agent can do
+const searchWeb = tool({
+  name: 'search_web',
+  description: 'Search the web for information',
+  parameters: z.object({
+    query: z.string(),
+  }),
+  execute: async ({ query }) => {
+    // Your search implementation
+    return await mySearchAPI(query);
+  },
+});
+
+// Create the agent
+const researcher = new Agent({
+  name: 'researcher',
+  model: 'gpt-4o', // or 'claude-sonnet-4-5', 'llama3.3', etc.
+  instructions: 'You are a research assistant. Search the web to find accurate information.',
+  tools: [searchWeb],
+});
+
+// Run it
+const cog = new Cogitator();
+const result = await cog.run(researcher, {
+  input: 'What are the latest developments in AI?',
+});
+
+console.log(result.output);
+```
+
+The agent will:
+
+1. Read your question
+2. Decide it needs to search the web
+3. Call the `search_web` tool
+4. Synthesize the results into an answer
+
+### What Makes Cogitator Different?
+
+**🔌 Works with any LLM** — Use OpenAI, Anthropic, Google, or run models locally with Ollama. Same code, swap one line.
+
+**🧠 Built-in memory** — Agents remember previous conversations. Store in Redis for speed, Postgres for persistence, or SQLite for simplicity.
+
+**🛠️ Type-safe tools** — Define tools with Zod schemas. Full TypeScript autocomplete and validation.
+
+**👥 Multi-agent teams** — Create swarms of agents that collaborate: one researches, another writes, a third reviews.
+
+**📊 Production-ready** — Built-in tracing, cost tracking, error handling, and retry logic. See exactly what your agents are doing.
+
+**🏠 Self-hosted** — Your data stays on your servers. No vendor lock-in.
+
+### Common Use Cases
+
+| Use Case               | How Cogitator Helps                                                  |
+| ---------------------- | -------------------------------------------------------------------- |
+| **Research Assistant** | Agent searches web, reads documents, summarizes findings             |
+| **Code Assistant**     | Agent reads codebase, understands context, suggests fixes            |
+| **Data Pipeline**      | Workflow chains agents: extract → transform → validate → load        |
+| **Customer Support**   | Agent checks knowledge base, drafts responses, escalates when needed |
+| **Content Creation**   | Multi-agent team: researcher → writer → editor → publisher           |
+| **DevOps Automation**  | Agent monitors logs, detects issues, runs diagnostics                |
+
+### Quick Comparison
+
+| Feature                | Cogitator    | LangChain         | OpenAI Assistants |
+| ---------------------- | ------------ | ----------------- | ----------------- |
+| Self-hosted            | ✅           | ✅                | ❌                |
+| Any LLM provider       | ✅           | ✅                | ❌ OpenAI only    |
+| TypeScript-native      | ✅           | ❌ Python-first   | ❌ REST API       |
+| Multi-agent swarms     | ✅           | ⚠️ Limited        | ❌                |
+| Built-in observability | ✅           | ⚠️ Requires setup | ⚠️ Dashboard only |
+| Memory adapters        | ✅ 6 options | ✅ Many           | ✅ Built-in       |
+| Lightweight            | ✅ ~20 deps  | ❌ 150+ deps      | N/A               |
+
+### Next Steps
+
+- **[Quick Start](#-quick-start)** — Install and run your first agent in 5 minutes
+- **[Examples](./examples)** — Real-world agent implementations
+- **[Architecture](#-architecture)** — How it all fits together
+- **[Documentation](./docs)** — Full API reference
+
+---
+
+<details>
+<summary><strong>📚 Deep Dive: The Problem We're Solving</strong></summary>
 
 ## The Problem
 
@@ -72,9 +180,11 @@ Cogitator is a **self-hosted, production-grade runtime** for orchestrating LLM s
 - **Time-Travel Debugging** — Checkpoint, replay, fork executions like git bisect for AI agents
 - **Causal Reasoning** — Pearl's Ladder of Causation with d-separation, do-calculus, and counterfactuals
 
+</details>
+
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
 ### Prerequisites
 
