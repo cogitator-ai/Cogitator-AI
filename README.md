@@ -159,6 +159,79 @@ Cogitator is a modular monorepo. Install only what you need:
 | [@cogitator-ai/self-modifying](https://www.npmjs.com/package/@cogitator-ai/self-modifying) | Self-modifying agents with meta-reasoning                  | [![npm](https://img.shields.io/npm/v/@cogitator-ai/self-modifying.svg)](https://www.npmjs.com/package/@cogitator-ai/self-modifying) |
 | [@cogitator-ai/neuro-symbolic](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) | Neuro-symbolic reasoning with SAT/SMT                      | [![npm](https://img.shields.io/npm/v/@cogitator-ai/neuro-symbolic.svg)](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) |
 | [@cogitator-ai/dashboard](https://www.npmjs.com/package/@cogitator-ai/dashboard)           | Real-time observability dashboard                          | [![npm](https://img.shields.io/npm/v/@cogitator-ai/dashboard.svg)](https://www.npmjs.com/package/@cogitator-ai/dashboard)           |
+| [@cogitator-ai/next](https://www.npmjs.com/package/@cogitator-ai/next)                     | Next.js App Router integration                             | [![npm](https://img.shields.io/npm/v/@cogitator-ai/next.svg)](https://www.npmjs.com/package/@cogitator-ai/next)                     |
+
+---
+
+### Next.js Integration
+
+Build AI-powered Next.js apps with streaming chat and tool calls — compatible with Vercel AI SDK:
+
+```typescript
+// lib/cogitator.ts
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+
+export const cogitator = new Cogitator({
+  memory: { adapter: 'postgres', connectionString: process.env.DATABASE_URL },
+});
+
+export const chatAgent = new Agent({
+  name: 'assistant',
+  model: 'gpt-4o',
+  instructions: 'You are a helpful assistant.',
+  tools: [webSearch, calculator],
+});
+```
+
+```typescript
+// app/api/chat/route.ts
+import { createChatHandler } from '@cogitator-ai/next';
+import { cogitator, chatAgent } from '@/lib/cogitator';
+
+export const POST = createChatHandler(cogitator, chatAgent, {
+  beforeRun: async (req) => {
+    const session = await getSession(req);
+    if (!session) throw new Error('Unauthorized');
+    return { threadId: session.userId };
+  },
+});
+```
+
+```tsx
+// components/Chat.tsx
+'use client';
+import { useCogitatorChat } from '@cogitator-ai/next/client';
+
+export function Chat() {
+  const { messages, input, setInput, send, isLoading, stop } = useCogitatorChat({
+    api: '/api/chat',
+  });
+
+  return (
+    <div>
+      {messages.map((m) => (
+        <div key={m.id}>
+          <strong>{m.role}:</strong> {m.content}
+        </div>
+      ))}
+      <input value={input} onChange={(e) => setInput(e.target.value)} />
+      <button onClick={() => send()} disabled={isLoading}>
+        {isLoading ? 'Thinking...' : 'Send'}
+      </button>
+      {isLoading && <button onClick={stop}>Stop</button>}
+    </div>
+  );
+}
+```
+
+**Features:**
+
+- **Streaming** — Real-time text and tool call streaming with SSE
+- **AI SDK Compatible** — Works with Vercel AI SDK's `useChat` hook out of the box
+- **Zero Dependencies** — Our `useCogitatorChat` hook has no external dependencies
+- **Tool Calls** — Stream tool execution in real-time (`tool-call-start/delta/end`)
+- **Error Handling** — Graceful error events with stream cleanup
+- **Auth Hooks** — `beforeRun`/`afterRun` for authentication and logging
 
 ---
 
