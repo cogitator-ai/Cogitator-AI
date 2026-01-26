@@ -175,8 +175,9 @@ export class BedrockBackend extends BaseLLMBackend {
       this.clientPromise = (async () => {
         const ctx: LLMErrorContext = { provider: this.provider };
         try {
+          const moduleName = '@aws-sdk/client-bedrock-runtime';
           // @ts-ignore - optional peer dependency, resolved at runtime
-          const { BedrockRuntimeClient } = await import('@aws-sdk/client-bedrock-runtime');
+          const { BedrockRuntimeClient } = await import(/* webpackIgnore: true */ moduleName);
 
           const clientConfig: Record<string, unknown> = {};
           if (this.config.region) {
@@ -208,8 +209,9 @@ export class BedrockBackend extends BaseLLMBackend {
     };
 
     const client = await this.getClient();
+    const moduleName = '@aws-sdk/client-bedrock-runtime';
     // @ts-ignore - optional peer dependency, resolved at runtime
-    const { ConverseCommand } = await import('@aws-sdk/client-bedrock-runtime');
+    const { ConverseCommand } = await import(/* webpackIgnore: true */ moduleName);
 
     const { system, messages } = await this.convertMessages(request.messages);
     const input: ConverseCommandInput = {
@@ -261,8 +263,9 @@ export class BedrockBackend extends BaseLLMBackend {
     };
 
     const client = await this.getClient();
+    const moduleName = '@aws-sdk/client-bedrock-runtime';
     // @ts-ignore - optional peer dependency, resolved at runtime
-    const { ConverseStreamCommand } = await import('@aws-sdk/client-bedrock-runtime');
+    const { ConverseStreamCommand } = await import(/* webpackIgnore: true */ moduleName);
 
     const { system, messages } = await this.convertMessages(request.messages);
     const input: ConverseStreamCommandInput = {
