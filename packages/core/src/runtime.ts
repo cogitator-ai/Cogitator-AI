@@ -15,6 +15,7 @@ import type {
   CostSummary,
   CostEstimate,
   EstimateOptions,
+  MemoryAdapter,
 } from '@cogitator-ai/types';
 import { getPrice } from '@cogitator-ai/models';
 import { type Agent } from './agent';
@@ -772,6 +773,14 @@ export class Cogitator {
       this.costEstimator = new CostEstimator();
     }
     return this.costEstimator.estimate(params);
+  }
+
+  /**
+   * Get the memory adapter if configured and initialized.
+   * Returns undefined if memory is not configured or not yet initialized.
+   */
+  get memory(): MemoryAdapter | undefined {
+    return this.state.memoryAdapter;
   }
 
   /**

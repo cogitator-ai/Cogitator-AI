@@ -271,6 +271,7 @@ Cogitator is a modular monorepo. Install only what you need:
 | [@cogitator-ai/dashboard](https://www.npmjs.com/package/@cogitator-ai/dashboard)           | Real-time observability dashboard                          | [![npm](https://img.shields.io/npm/v/@cogitator-ai/dashboard.svg)](https://www.npmjs.com/package/@cogitator-ai/dashboard)           |
 | [@cogitator-ai/next](https://www.npmjs.com/package/@cogitator-ai/next)                     | Next.js App Router integration                             | [![npm](https://img.shields.io/npm/v/@cogitator-ai/next.svg)](https://www.npmjs.com/package/@cogitator-ai/next)                     |
 | [@cogitator-ai/ai-sdk](https://www.npmjs.com/package/@cogitator-ai/ai-sdk)                 | Vercel AI SDK adapter (bidirectional)                      | [![npm](https://img.shields.io/npm/v/@cogitator-ai/ai-sdk.svg)](https://www.npmjs.com/package/@cogitator-ai/ai-sdk)                 |
+| [@cogitator-ai/express](https://www.npmjs.com/package/@cogitator-ai/express)               | Express.js REST API server                                 | [![npm](https://img.shields.io/npm/v/@cogitator-ai/express.svg)](https://www.npmjs.com/package/@cogitator-ai/express)               |
 
 ---
 
@@ -383,6 +384,69 @@ const aiTool = toAISDKTool(cogitatorTool);
 - **Streaming** — Full streaming support with tool calls
 - **Tool Conversion** — Seamless tool format conversion
 - **useChat Compatible** — Works with `@ai-sdk/react` hooks
+
+---
+
+### Express.js Integration
+
+Mount Cogitator as a REST API in any Express app with auto-generated endpoints:
+
+```typescript
+import express from 'express';
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { CogitatorServer } from '@cogitator-ai/express';
+
+const app = express();
+const cogitator = new Cogitator();
+
+const chatAgent = new Agent({
+  name: 'assistant',
+  model: 'gpt-4o',
+  instructions: 'You are a helpful assistant.',
+});
+
+const server = new CogitatorServer({
+  app,
+  cogitator,
+  agents: { chat: chatAgent },
+  config: {
+    basePath: '/api/cogitator',
+    enableSwagger: true,
+    enableWebSocket: true,
+    auth: async (req) => {
+      const token = req.headers.authorization;
+      return { userId: await validateToken(token) };
+    },
+    rateLimit: { windowMs: 60000, max: 100 },
+  },
+});
+
+await server.init();
+app.listen(3000);
+```
+
+**Auto-generated endpoints:**
+
+```
+GET  /api/cogitator/agents              # List agents
+POST /api/cogitator/agents/:name/run    # Run agent (JSON response)
+POST /api/cogitator/agents/:name/stream # Run agent (SSE streaming)
+GET  /api/cogitator/threads/:id         # Get conversation thread
+POST /api/cogitator/threads/:id/messages # Add message to thread
+GET  /api/cogitator/tools               # List available tools
+GET  /api/cogitator/health              # Health check
+GET  /api/cogitator/docs                # Swagger UI
+WS   /api/cogitator/ws                  # WebSocket (real-time)
+```
+
+**Features:**
+
+- **SSE Streaming** — Real-time text and tool call streaming
+- **WebSocket Support** — Bidirectional real-time communication
+- **Swagger/OpenAPI** — Auto-generated API documentation
+- **Auth Middleware** — Custom authentication per request
+- **Rate Limiting** — Built-in rate limiting with headers
+- **Workflow/Swarm Support** — Optional endpoints for workflows and swarms
 
 ---
 
