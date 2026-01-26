@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Github, Cpu, Construction } from 'lucide-react';
+import { Github, Cpu, Construction, Rocket } from 'lucide-react';
 import { TerminalDemo } from './TerminalDemo';
 
 export function Hero() {
@@ -50,23 +50,6 @@ export function Hero() {
         <p className="text-xl md:text-2xl text-[#a1a1a1] mb-10 font-light">
           Self-hosted. <span className="text-[#fafafa]">Production-grade.</span> TypeScript-native.
         </p>
-
-        <motion.a
-          href="https://www.producthunt.com/products/cogitator?utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-cogitator"
-          target="_blank"
-          rel="noopener noreferrer"
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3, duration: 0.5 }}
-          className="mb-6"
-        >
-          <img
-            src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1068317&theme=dark&t=1769429113383"
-            alt="Cogitator - Self-hosted runtime for production AI agents | Product Hunt"
-            width="250"
-            height="54"
-          />
-        </motion.a>
 
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
           <div className="relative">
@@ -119,6 +102,18 @@ export function Hero() {
           >
             <Github className="w-5 h-5" />
             View on GitHub
+          </motion.a>
+
+          <motion.a
+            href="https://www.producthunt.com/posts/cogitator?utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-cogitator"
+            target="_blank"
+            rel="noopener noreferrer"
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            className="group flex items-center gap-2 px-8 py-4 bg-transparent border border-[#333333] text-[#fafafa] rounded-xl font-semibold text-lg hover:border-[#ff6154]/50 hover:bg-[#ff6154]/5 transition-all"
+          >
+            <Rocket className="w-5 h-5 text-[#ff6154]" />
+            Product Hunt
           </motion.a>
         </div>
       </motion.div>
