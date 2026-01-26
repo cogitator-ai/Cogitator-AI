@@ -1,6 +1,6 @@
 import type { Tool, ToolContext } from '@cogitator-ai/types';
 import type { Agent } from './agent';
-import type { Cogitator } from './cogitator';
+import type { Cogitator } from './runtime';
 import { tool } from './tool';
 import { z } from 'zod';
 

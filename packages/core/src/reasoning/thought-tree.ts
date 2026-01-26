@@ -12,7 +12,7 @@ import type {
   LLMBackend,
 } from '@cogitator-ai/types';
 import { DEFAULT_TOT_CONFIG } from '@cogitator-ai/types';
-import type { Cogitator } from '../cogitator';
+import type { Cogitator } from '../runtime';
 import { BranchGenerator } from './branch-generator';
 import { BranchEvaluator } from './branch-evaluator';
 import { buildSynthesisPrompt } from './prompts';

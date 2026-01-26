@@ -13,7 +13,7 @@ import { Cogitator, Agent, tool } from '@cogitator-ai/core';
 import { Swarm } from '@cogitator-ai/swarms';
 import { z } from 'zod';
 
-const MODEL = process.env.MODEL || 'llama3.3:8b';
+const MODEL = process.env.MODEL || 'qwen2.5:7b';
 
 console.log(`\n🤖 Using model: ${MODEL}`);
 console.log('   (Set MODEL env var to use a different one)\n');

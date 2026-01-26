@@ -38,7 +38,7 @@ const tools = await client.getTools();
 
 const agent = new Agent({
   name: 'File Agent',
-  model: 'ollama/llama3.3:8b',
+  model: 'ollama/llama3.1:8b',
   instructions: 'You can read and write files.',
   tools,
 });
@@ -782,7 +782,7 @@ const gitTools = await wrapMCPTools(gitClient, { namePrefix: 'git_' });
 
 const agent = new Agent({
   name: 'Dev Assistant',
-  model: 'ollama/llama3.3:8b',
+  model: 'ollama/llama3.1:8b',
   instructions: 'You can manage files and git repositories.',
   tools: [...fsTools, ...gitTools],
 });

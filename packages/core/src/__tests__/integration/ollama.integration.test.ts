@@ -32,7 +32,7 @@ describeIfOllama('Ollama Integration', () => {
       if (!ollamaAvailable) return;
 
       const response = await backend.chat({
-        model: 'llama3.2:1b',
+        model: 'llama3.1:8b',
         messages: [{ role: 'user', content: 'Say "hello" and nothing else.' }],
         maxTokens: 10,
       });
@@ -45,7 +45,7 @@ describeIfOllama('Ollama Integration', () => {
       if (!ollamaAvailable) return;
 
       const response = await backend.chat({
-        model: 'llama3.2:1b',
+        model: 'llama3.1:8b',
         messages: [
           { role: 'system', content: 'Always respond with exactly one word.' },
           { role: 'user', content: 'What color is the sky?' },
@@ -60,7 +60,7 @@ describeIfOllama('Ollama Integration', () => {
       if (!ollamaAvailable) return;
 
       const response = await backend.chat({
-        model: 'llama3.2:1b',
+        model: 'llama3.1:8b',
         messages: [{ role: 'user', content: 'What is 2+2? Reply with just the number.' }],
         maxTokens: 5,
         temperature: 0,
@@ -77,7 +77,7 @@ describeIfOllama('Ollama Integration', () => {
       const chunks: string[] = [];
 
       for await (const chunk of backend.chatStream({
-        model: 'llama3.2:1b',
+        model: 'llama3.1:8b',
         messages: [{ role: 'user', content: 'Count from 1 to 3.' }],
         maxTokens: 30,
       })) {
@@ -109,12 +109,12 @@ describeIfOllama('Ollama Integration', () => {
       const agent = new Agent({
         name: 'MathAgent',
         instructions: 'You are a math assistant. Use tools to calculate.',
-        model: 'ollama:llama3.2:1b',
+        model: 'ollama:llama3.1:8b',
         tools: [calculatorTool],
       });
 
       const cogitator = new Cogitator({
-        defaultModel: 'ollama:llama3.2:1b',
+        defaultModel: 'ollama:llama3.1:8b',
       });
 
       const result = await cogitator.run(agent, 'What is 6 times 7?', {

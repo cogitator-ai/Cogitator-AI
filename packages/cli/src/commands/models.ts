@@ -64,8 +64,8 @@ export const modelsCommand = new Command('models')
       if (data.models.length === 0) {
         log.warn('No models installed');
         console.log();
-        log.dim('Pull a model with: cogitator models --pull llama3.3:8b');
-        log.dim('Or directly: ollama pull llama3.3:8b');
+        log.dim('Pull a model with: cogitator models --pull llama3.1:8b');
+        log.dim('Or directly: ollama pull llama3.1:8b');
         return;
       }
 

@@ -173,7 +173,7 @@ If no model is specified, the CLI will:
 
 1. Check `COGITATOR_MODEL` environment variable
 2. Query Ollama for available models
-3. Select from preferred models: llama3.3:8b, llama3.3:8b, gemma3:4b, gemma2:9b, mistral:7b
+3. Select from preferred models: llama3.1:8b, llama3.1:8b, gemma3:4b, gemma2:9b, mistral:7b
 4. Fall back to first available model
 
 **Examples:**
@@ -212,7 +212,7 @@ When running without a message or with `-i`, you enter interactive mode:
 
   AI Agent Runtime v0.1.0
 
-Model: llama3.3:8b
+Model: llama3.1:8b
 Commands: /model <name>, /clear, /help, exit
 
 > Hello!
@@ -237,7 +237,7 @@ Commands: /model <name>, /clear, /help, exit
 
 ```
 > /model
-Current model: ollama/llama3.3:8b
+Current model: ollama/llama3.1:8b
 
 > /model gemma3:4b
 ✓ Switched to model: ollama/gemma3:4b
@@ -337,7 +337,7 @@ cogitator models [options]
 ```
 ✓ Found 3 model(s)
 
-  llama3.3:8b               4.7 GB  2 days ago
+  llama3.1:8b               4.7 GB  2 days ago
   gemma3:4b                 2.8 GB  1 week ago
   mistral:7b                4.1 GB  3 weeks ago
 
@@ -351,7 +351,7 @@ Use with: cogitator run -m ollama/<model> "message"
 cogitator models
 
 # Pull a new model
-cogitator models --pull llama3.3:8b
+cogitator models --pull llama3.1:8b
 cogitator models --pull gemma3:4b
 cogitator models --pull mistral:7b
 ```
@@ -395,7 +395,7 @@ memory:
 **Example .env:**
 
 ```bash
-COGITATOR_MODEL=ollama/llama3.3:8b
+COGITATOR_MODEL=ollama/llama3.1:8b
 OPENAI_API_KEY=sk-...
 ```
 
@@ -422,7 +422,7 @@ const greet = tool({
 const agent = new Agent({
   id: 'my-agent',
   name: 'My Agent',
-  model: 'ollama/llama3.3:8b',
+  model: 'ollama/llama3.1:8b',
   instructions: 'You are a helpful assistant. Use the greet tool when asked to greet someone.',
   tools: [greet],
 });
@@ -465,7 +465,7 @@ const datetime = tool({
 
 const agent = new Agent({
   name: 'Assistant',
-  model: 'ollama/llama3.3:8b',
+  model: 'ollama/llama3.1:8b',
   instructions: 'You are a helpful assistant with calculator and datetime tools.',
   tools: [calculator, datetime],
 });
@@ -541,15 +541,15 @@ Start Ollama with: ollama serve
 
 ```
 ⚠ No models installed
-Pull a model with: cogitator models --pull llama3.3:8b
+Pull a model with: cogitator models --pull llama3.1:8b
 ```
 
 **Solution:**
 
 ```bash
-cogitator models --pull llama3.3:8b
+cogitator models --pull llama3.1:8b
 # or
-ollama pull llama3.3:8b
+ollama pull llama3.1:8b
 ```
 
 ### Docker Not Running

@@ -33,7 +33,7 @@ async function useFilesystemMCP() {
 
   const fileAgent = new Agent({
     name: 'file-manager',
-    model: 'llama3.3:8b',
+    model: 'qwen2.5:7b',
     instructions: `You can read and write files in /tmp directory.
       Use the available filesystem tools to help the user.`,
     tools,
@@ -87,7 +87,7 @@ async function useMultipleMCPServers() {
 
   const multiAgent = new Agent({
     name: 'multi-tool-agent',
-    model: 'llama3.3:8b',
+    model: 'qwen2.5:7b',
     instructions: 'You have access to filesystem and knowledge graph tools.',
     tools: [...fsTools, ...memoryTools],
   });

@@ -68,7 +68,7 @@ const openai = new OpenAI({
 const assistant = await openai.beta.assistants.create({
   name: 'Math Tutor',
   instructions: 'You help with math problems',
-  model: 'ollama/llama3.3:8b',
+  model: 'ollama/llama3.2:latest',
 });
 
 const thread = await openai.beta.threads.create();
@@ -894,7 +894,7 @@ import { Cogitator } from '@cogitator-ai/core';
 import OpenAI from 'openai';
 
 const cogitator = new Cogitator({
-  defaultModel: 'ollama/llama3.3:8b',
+  defaultModel: 'ollama/llama3.2:latest',
 });
 
 const server = createOpenAIServer(cogitator, { port: 8080 });
@@ -908,7 +908,7 @@ const openai = new OpenAI({
 const assistant = await openai.beta.assistants.create({
   name: 'Chat Bot',
   instructions: 'You are a friendly chat bot. Remember previous messages.',
-  model: 'ollama/llama3.3:8b',
+  model: 'ollama/llama3.2:latest',
 });
 
 const thread = await openai.beta.threads.create();
@@ -1013,7 +1013,7 @@ await openai.files.del(file.id);
 
 ```typescript
 const cogitator = new Cogitator({
-  defaultModel: 'ollama/llama3.3:8b',
+  defaultModel: 'ollama/llama3.2:latest',
 });
 
 const server = createOpenAIServer(cogitator, { port: 8080 });
@@ -1026,7 +1026,7 @@ const openai = new OpenAI({
 
 const localAssistant = await openai.beta.assistants.create({
   name: 'Local Assistant',
-  model: 'ollama/llama3.3:8b',
+  model: 'ollama/llama3.2:latest',
   instructions: 'Fast local responses',
 });
 

@@ -86,7 +86,7 @@ const greet = tool({
 const agent = new Agent({
   id: 'my-agent',
   name: 'My Agent',
-  model: 'ollama/llama3.3:8b',
+  model: 'ollama/llama3.1:8b',
   instructions: 'You are a helpful assistant.',
   tools: [greet],
 });

@@ -29,7 +29,7 @@ docker-compose up -d
 
 # Wait for services to be ready, then pull models
 docker-compose exec ollama ollama pull nomic-embed-text-v2-moe
-docker-compose exec ollama ollama pull llama3.3:8b
+docker-compose exec ollama ollama pull llama3.1:8b
 
 # Install dependencies and build
 pnpm install
@@ -64,7 +64,7 @@ The setup includes:
 | Model                     | Purpose               | Size   |
 | ------------------------- | --------------------- | ------ |
 | `nomic-embed-text-v2-moe` | Embeddings for memory | ~274MB |
-| `llama3.3:8b`             | Default chat model    | ~2GB   |
+| `llama3.1:8b`             | Default chat model    | ~2GB   |
 
 ## Commands Reference
 
@@ -144,7 +144,7 @@ EMBEDDING_MODEL=nomic-embed-text-v2-moe
     │                      │
     │  Models:             │
     │  • nomic-embed-text  │
-    │  • llama3.3:8b       │
+    │  • llama3.1:8b       │
     └──────────────────────┘
 ```
 
@@ -194,7 +194,7 @@ docker-compose up -d postgres redis
 
 # Pull models
 ollama pull nomic-embed-text-v2-moe
-ollama pull llama3.3:8b
+ollama pull llama3.1:8b
 ```
 
 ## Troubleshooting
@@ -219,7 +219,7 @@ docker-compose restart postgres
 docker-compose logs ollama
 
 # Try pulling manually
-docker-compose exec ollama ollama pull llama3.3:8b
+docker-compose exec ollama ollama pull llama3.1:8b
 ```
 
 ### Out of memory
@@ -227,8 +227,8 @@ docker-compose exec ollama ollama pull llama3.3:8b
 For systems with limited RAM, use smaller models:
 
 ```bash
-# Instead of llama3.3:8b
-docker-compose exec ollama ollama pull llama3.3:3b  # ~1GB
+# Instead of llama3.1:8b
+docker-compose exec ollama ollama pull llama3.1:8b  # ~1GB
 docker-compose exec ollama ollama pull phi3:mini    # ~2GB
 ```
 

@@ -37,7 +37,7 @@ async function getOllamaModels(): Promise<string[]> {
 async function detectModel(): Promise<string | null> {
   const models = await getOllamaModels();
   if (models.length === 0) return null;
-  const preferred = ['llama3.3:8b', 'llama3:8b', 'gemma3:4b', 'gemma2:9b', 'mistral:7b'];
+  const preferred = ['llama3.1:8b', 'llama3:8b', 'gemma3:4b', 'gemma2:9b', 'mistral:7b'];
   for (const p of preferred) {
     if (models.includes(p)) return `ollama/${p}`;
   }

@@ -10,7 +10,7 @@ import type {
   RunResult,
 } from '@cogitator-ai/types';
 import type { Agent } from '../agent';
-import type { Cogitator } from '../cogitator';
+import type { Cogitator } from '../runtime';
 
 export interface ExecutionReplayerOptions {
   checkpointStore: TimeTravelCheckpointStore;

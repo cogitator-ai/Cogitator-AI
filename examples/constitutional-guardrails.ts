@@ -80,7 +80,7 @@ async function basicGuardrails() {
 
   const assistant = new Agent({
     name: 'safe-assistant',
-    model: 'llama3.3:8b',
+    model: 'qwen2.5:7b',
     instructions: 'You are a helpful assistant.',
   });
 
@@ -145,7 +145,7 @@ async function toolCallGuardrails() {
 
   const agent = new Agent({
     name: 'restricted-agent',
-    model: 'llama3.3:8b',
+    model: 'qwen2.5:7b',
     instructions: 'You can send emails, execute code, and search the database.',
     tools: [sendEmail, executeCode, searchDatabase],
   });
@@ -227,7 +227,7 @@ async function customConstitution() {
 
   const techAgent = new Agent({
     name: 'tech-advisor',
-    model: 'llama3.3:8b',
+    model: 'qwen2.5:7b',
     instructions: 'You are a technical advisor. Be precise and professional.',
   });
 
@@ -270,7 +270,7 @@ async function outputRevision() {
 
   const assistant = new Agent({
     name: 'inclusive-assistant',
-    model: 'llama3.3:8b',
+    model: 'qwen2.5:7b',
     instructions: 'You are a helpful assistant.',
   });
 
@@ -308,7 +308,7 @@ async function guardrailsWithReflection() {
 
   const agent = new Agent({
     name: 'reflective-safe-agent',
-    model: 'llama3.3:8b',
+    model: 'qwen2.5:7b',
     instructions: 'You can execute code safely.',
     tools: [executeCode],
   });

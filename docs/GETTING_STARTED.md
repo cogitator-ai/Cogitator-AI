@@ -87,7 +87,7 @@ const cog = new Cogitator({
 // 2. Create an agent
 const assistant = new Agent({
   name: 'assistant',
-  model: 'llama3.3:8b', // or 'gpt-4o', 'claude-sonnet-4-5'
+  model: 'llama3.1:8b', // or 'gpt-4o', 'claude-sonnet-4-5'
   instructions: `You are a helpful assistant. Be concise and friendly.`,
 });
 
@@ -141,7 +141,7 @@ const getWeather = tool({
 // Create agent with tools
 const weatherBot = new Agent({
   name: 'weather-bot',
-  model: 'llama3.3:8b',
+  model: 'llama3.1:8b',
   instructions:
     'You are a weather assistant. Use the get_weather tool to answer questions about weather.',
   tools: [getWeather],
@@ -245,7 +245,7 @@ const cog = new Cogitator({
 
 const assistant = new Agent({
   name: 'memory-assistant',
-  model: 'llama3.3:8b',
+  model: 'llama3.1:8b',
   instructions: 'You are a helpful assistant. Remember what the user tells you.',
 });
 
@@ -330,7 +330,7 @@ const cog = new Cogitator({
 });
 
 const agent = new Agent({
-  model: 'llama3.3:8b', // or 'codellama:13b', 'mistral:7b'
+  model: 'llama3.1:8b', // or 'codellama:13b', 'mistral:7b'
   // ...
 });
 ```
@@ -393,7 +393,7 @@ const cog = new Cogitator({
 
 // Uses Ollama (default provider)
 const localAgent = new Agent({
-  model: 'llama3.3:8b',
+  model: 'llama3.1:8b',
   // ...
 });
 
@@ -412,7 +412,7 @@ const creativeAgent = new Agent({
 
 **Model name format:**
 
-- `model-name` — Uses the default provider (e.g., `gpt-4.1`, `llama3.3:8b`)
+- `model-name` — Uses the default provider (e.g., `gpt-4.1`, `llama3.1:8b`)
 - `provider/model-name` — Explicitly specify provider (e.g., `openai/gpt-4.1`, `anthropic/claude-sonnet-4-5`)
 
 ---
@@ -474,7 +474,7 @@ This starts:
 Pull an Ollama model:
 
 ```bash
-ollama pull llama3.3:8b
+ollama pull llama3.1:8b
 ```
 
 ---
@@ -531,13 +531,13 @@ ollama serve
 ### Model Not Found
 
 ```
-Error: model 'llama3.3:8b' not found
+Error: model 'llama3.1:8b' not found
 ```
 
 Pull the model first:
 
 ```bash
-ollama pull llama3.3:8b
+ollama pull llama3.1:8b
 ```
 
 ### Docker Services Not Starting

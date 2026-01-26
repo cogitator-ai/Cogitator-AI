@@ -4,7 +4,7 @@
  * Core runtime for Cogitator AI agents
  */
 
-export { Cogitator } from './cogitator';
+export { Cogitator } from './runtime';
 export { Agent, AgentDeserializationError } from './agent';
 export { tool, toolToSchema } from './tool';
 export { agentAsTool } from './agent-tool';

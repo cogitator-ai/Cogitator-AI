@@ -47,7 +47,7 @@ describe('Cogitator with Memory', () => {
       agent = new Agent({
         id: 'test-agent',
         name: 'Test Agent',
-        model: 'ollama/llama3.3:8b',
+        model: 'ollama/llama3.1:8b',
         instructions: 'You are helpful.',
       });
 
@@ -73,7 +73,7 @@ describe('Cogitator with Memory', () => {
       agent = new Agent({
         id: 'test-agent',
         name: 'Test Agent',
-        model: 'ollama/llama3.3:8b',
+        model: 'ollama/llama3.1:8b',
         instructions: 'You are helpful.',
       });
 
@@ -90,7 +90,7 @@ describe('Cogitator with Memory', () => {
       agent = new Agent({
         id: 'test-agent',
         name: 'Test Agent',
-        model: 'ollama/llama3.3:8b',
+        model: 'ollama/llama3.1:8b',
         instructions: 'You are helpful.',
       });
 
@@ -111,7 +111,7 @@ describe('Cogitator with Memory', () => {
       agent = new Agent({
         id: 'test-agent',
         name: 'Test Agent',
-        model: 'ollama/llama3.3:8b',
+        model: 'ollama/llama3.1:8b',
         instructions: 'You are helpful.',
       });
 
@@ -129,7 +129,7 @@ describe('Cogitator with Memory', () => {
       agent = new Agent({
         id: 'test-agent',
         name: 'Test Agent',
-        model: 'ollama/llama3.3:8b',
+        model: 'ollama/llama3.1:8b',
         instructions: 'You are helpful.',
       });
 
@@ -153,7 +153,7 @@ describe('Cogitator with Memory', () => {
       agent = new Agent({
         id: 'test-agent',
         name: 'Test Agent',
-        model: 'ollama/llama3.3:8b',
+        model: 'ollama/llama3.1:8b',
         instructions: 'You are helpful.',
       });
 
@@ -173,7 +173,7 @@ describe('Cogitator with Memory', () => {
       agent = new Agent({
         id: 'test-agent',
         name: 'Test Agent',
-        model: 'ollama/llama3.3:8b',
+        model: 'ollama/llama3.1:8b',
         instructions: 'You are helpful.',
       });
 
@@ -204,7 +204,7 @@ describe('Cogitator with Memory', () => {
       agent = new Agent({
         id: 'test-agent',
         name: 'Test Agent',
-        model: 'ollama/llama3.3:8b',
+        model: 'ollama/llama3.1:8b',
         instructions: 'You are helpful.',
       });
 

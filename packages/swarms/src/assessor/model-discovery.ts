@@ -47,8 +47,8 @@ const KNOWN_MODEL_CAPABILITIES: Record<string, Partial<ModelCapabilitiesInfo>> =
 };
 
 const KNOWN_CONTEXT_WINDOWS: Record<string, number> = {
-  'llama3.3:3b': 128000,
-  'llama3.3:8b': 128000,
+  'llama3.2:1b': 128000,
+  'llama3.2:latest': 128000,
   'llama3.1': 128000,
   llama3: 8192,
   'qwen2.5': 128000,

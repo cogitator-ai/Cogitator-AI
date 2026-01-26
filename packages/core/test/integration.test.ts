@@ -3,7 +3,7 @@ import { Cogitator, Agent, tool } from '../src/index';
 import { z } from 'zod';
 
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
-const TEST_MODEL = process.env.TEST_MODEL || 'llama3.3:3b';
+const TEST_MODEL = process.env.TEST_MODEL || 'llama3.1:8b';
 
 async function isOllamaAvailable(): Promise<boolean> {
   try {

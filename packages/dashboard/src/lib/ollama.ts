@@ -155,9 +155,9 @@ export async function checkOllamaHealth(): Promise<{ available: boolean; version
 }
 
 export const POPULAR_MODELS = [
-  { name: 'llama3.3:8b', description: 'Llama 3.2 3B - Fast and efficient', size: '2.0 GB' },
-  { name: 'llama3.3:3b', description: 'Llama 3.2 1B - Ultra-lightweight', size: '1.3 GB' },
-  { name: 'llama3.3:8b', description: 'Llama 3.1 8B - Balanced performance', size: '4.7 GB' },
+  { name: 'llama3.1:8b', description: 'Llama 3.2 3B - Fast and efficient', size: '2.0 GB' },
+  { name: 'llama3.1:8b', description: 'Llama 3.2 1B - Ultra-lightweight', size: '1.3 GB' },
+  { name: 'llama3.1:8b', description: 'Llama 3.1 8B - Balanced performance', size: '4.7 GB' },
   { name: 'llama3.1:70b', description: 'Llama 3.1 70B - High capability', size: '40 GB' },
   { name: 'mistral:7b', description: 'Mistral 7B - Strong reasoning', size: '4.1 GB' },
   { name: 'mixtral:8x7b', description: 'Mixtral 8x7B MoE - Expert mixture', size: '26 GB' },

@@ -63,7 +63,7 @@ console.log(result.output);
 
 ```typescript
 // Ollama (local, default)
-const cog = new Cogitator({ defaultModel: 'ollama/llama3.3:8b' });
+const cog = new Cogitator({ defaultModel: 'ollama/llama3.1:8b' });
 
 // OpenAI
 const cog = new Cogitator({ defaultModel: 'openai/gpt-4o' });

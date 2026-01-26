@@ -26,7 +26,7 @@ describe('CogitatorConfigSchema', () => {
     const config = {
       llm: {
         defaultProvider: 'ollama',
-        defaultModel: 'llama3.3:8b',
+        defaultModel: 'llama3.1:8b',
         providers: {
           ollama: { baseUrl: 'http://localhost:11434' },
           openai: { apiKey: 'sk-xxx', baseUrl: 'https://api.openai.com/v1' },

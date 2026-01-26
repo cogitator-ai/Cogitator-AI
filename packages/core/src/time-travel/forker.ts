@@ -7,7 +7,7 @@ import type {
   TimeTravelCheckpointStore,
 } from '@cogitator-ai/types';
 import type { Agent } from '../agent';
-import type { Cogitator } from '../cogitator';
+import type { Cogitator } from '../runtime';
 import { ExecutionReplayer } from './replayer';
 
 export interface ExecutionForkerOptions {

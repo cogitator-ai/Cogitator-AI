@@ -12,7 +12,7 @@ import type {
 } from '@cogitator-ai/types';
 import { DEFAULT_TIME_TRAVEL_CONFIG } from '@cogitator-ai/types';
 import type { Agent } from '../agent';
-import type { Cogitator } from '../cogitator';
+import type { Cogitator } from '../runtime';
 import { InMemoryCheckpointStore } from './checkpoint-store';
 import { ExecutionReplayer } from './replayer';
 import { ExecutionForker } from './forker';

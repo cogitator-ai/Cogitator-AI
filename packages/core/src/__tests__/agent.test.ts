@@ -7,7 +7,7 @@ import { tool } from '../tool';
 describe('Agent', () => {
   const createBasicConfig = () => ({
     name: 'test-agent',
-    model: 'ollama/llama3.3:8b',
+    model: 'ollama/llama3.1:8b',
     instructions: 'You are a helpful assistant.',
   });
 
@@ -16,7 +16,7 @@ describe('Agent', () => {
       const agent = new Agent(createBasicConfig());
 
       expect(agent.name).toBe('test-agent');
-      expect(agent.model).toBe('ollama/llama3.3:8b');
+      expect(agent.model).toBe('ollama/llama3.1:8b');
       expect(agent.instructions).toBe('You are a helpful assistant.');
     });
 

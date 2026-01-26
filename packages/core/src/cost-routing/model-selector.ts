@@ -25,7 +25,7 @@ const FAST_MODELS = [
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
   'gemini-3-flash',
-  'llama3.3:8b',
+  'llama3.1:8b',
   'phi4',
   'qwen2.5:1.5b',
   'qwen2.5:3b',
