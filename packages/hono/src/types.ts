@@ -49,12 +49,17 @@ export interface WebSocketConfig {
   maxPayloadSize?: number;
 }
 
+export type { SwaggerConfig } from '@cogitator-ai/server-shared';
+import type { SwaggerConfig } from '@cogitator-ai/server-shared';
+
 export interface CogitatorAppOptions {
   cogitator: Cogitator;
   agents?: Record<string, Agent>;
   workflows?: Record<string, Workflow<WorkflowState>>;
   swarms?: Record<string, SwarmConfig>;
   auth?: AuthFunction;
+  enableSwagger?: boolean;
+  swagger?: SwaggerConfig;
   enableWebSocket?: boolean;
   websocket?: WebSocketConfig;
   requestTimeout?: number;

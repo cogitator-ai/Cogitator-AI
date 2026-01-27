@@ -14,6 +14,7 @@ import {
   createWorkflowRoutes,
   createSwarmRoutes,
 } from './routes/index.js';
+import { createSwaggerRoutes } from './swagger/index.js';
 
 export function cogitatorApp(opts: CogitatorAppOptions): Router<CogitatorState> {
   const router = new Router<CogitatorState>();
@@ -34,6 +35,10 @@ export function cogitatorApp(opts: CogitatorAppOptions): Router<CogitatorState> 
     createWorkflowRoutes(),
     createSwarmRoutes(),
   ];
+
+  if (opts.enableSwagger) {
+    subrouters.push(createSwaggerRoutes(opts.swagger));
+  }
 
   for (const sub of subrouters) {
     router.use(sub.routes());

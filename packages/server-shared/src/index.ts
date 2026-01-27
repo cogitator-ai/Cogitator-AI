@@ -31,3 +31,7 @@ export type {
 } from './protocol.js';
 
 export { generateId, encodeSSE, encodeDone } from './helpers.js';
+
+export { generateOpenAPISpec, generateSwaggerHTML } from './openapi.js';
+
+export type { OpenAPISpec, SwaggerConfig, OpenAPIContext } from './openapi-types.js';

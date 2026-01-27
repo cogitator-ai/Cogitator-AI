@@ -23,6 +23,7 @@ export type {
   BlackboardResponse,
   HealthResponse,
   ErrorResponse,
+  SwaggerConfig,
   WebSocketMessage,
   WebSocketResponse,
 } from './types.js';
@@ -41,6 +42,8 @@ export {
   createWorkflowRoutes,
   createSwarmRoutes,
 } from './routes/index.js';
+
+export { createSwaggerRoutes } from './swagger/index.js';
 
 export type { StreamEvent, Usage } from '@cogitator-ai/server-shared';
 

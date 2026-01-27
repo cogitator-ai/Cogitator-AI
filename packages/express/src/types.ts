@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction, Router } from 'express';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
+import type { SwaggerConfig } from '@cogitator-ai/server-shared';
 import type {
   Message,
   ToolCall,
@@ -68,21 +69,7 @@ export interface CorsConfig {
   maxAge?: number;
 }
 
-export interface SwaggerConfig {
-  title?: string;
-  description?: string;
-  version?: string;
-  contact?: {
-    name?: string;
-    email?: string;
-    url?: string;
-  };
-  license?: {
-    name: string;
-    url?: string;
-  };
-  servers?: Array<{ url: string; description?: string }>;
-}
+export type { SwaggerConfig } from '@cogitator-ai/server-shared';
 
 export interface WebSocketConfig {
   path?: string;
@@ -273,28 +260,4 @@ export interface WebSocketResponse {
   error?: string;
 }
 
-export interface OpenAPISpec {
-  openapi: string;
-  info: {
-    title: string;
-    description?: string;
-    version: string;
-    contact?: {
-      name?: string;
-      email?: string;
-      url?: string;
-    };
-    license?: {
-      name: string;
-      url?: string;
-    };
-  };
-  servers?: Array<{ url: string; description?: string }>;
-  paths: Record<string, Record<string, unknown>>;
-  components?: {
-    schemas?: Record<string, unknown>;
-    securitySchemes?: Record<string, unknown>;
-  };
-  security?: Array<Record<string, string[]>>;
-  tags?: Array<{ name: string; description?: string }>;
-}
+export type { OpenAPISpec } from '@cogitator-ai/server-shared';

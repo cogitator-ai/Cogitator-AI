@@ -11,6 +11,7 @@ import {
   createWorkflowRoutes,
   createSwarmRoutes,
 } from './routes/index.js';
+import { createSwaggerRoutes } from './swagger/index.js';
 
 export function cogitatorApp(opts: CogitatorAppOptions): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
@@ -27,6 +28,10 @@ export function cogitatorApp(opts: CogitatorAppOptions): Hono<HonoEnv> {
   app.route('/', createToolRoutes());
   app.route('/', createWorkflowRoutes());
   app.route('/', createSwarmRoutes());
+
+  if (opts.enableSwagger) {
+    app.route('/', createSwaggerRoutes(opts.swagger));
+  }
 
   if (opts.enableWebSocket) {
     void import('./websocket/handler.js').then(({ createWebSocketRoutes }) => {
