@@ -23,6 +23,7 @@
   "dependencies": {
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
+    "@cogitator-ai/server-shared": "workspace:*",
     "fastify-plugin": "^5.0.0"
   },
   "peerDependencies": {

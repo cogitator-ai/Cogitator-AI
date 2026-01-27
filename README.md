@@ -273,6 +273,7 @@ Cogitator is a modular monorepo. Install only what you need:
 | [@cogitator-ai/ai-sdk](https://www.npmjs.com/package/@cogitator-ai/ai-sdk)                 | Vercel AI SDK adapter (bidirectional)                      | [![npm](https://img.shields.io/npm/v/@cogitator-ai/ai-sdk.svg)](https://www.npmjs.com/package/@cogitator-ai/ai-sdk)                 |
 | [@cogitator-ai/express](https://www.npmjs.com/package/@cogitator-ai/express)               | Express.js REST API server                                 | [![npm](https://img.shields.io/npm/v/@cogitator-ai/express.svg)](https://www.npmjs.com/package/@cogitator-ai/express)               |
 | [@cogitator-ai/fastify](https://www.npmjs.com/package/@cogitator-ai/fastify)               | Fastify REST API server                                    | [![npm](https://img.shields.io/npm/v/@cogitator-ai/fastify.svg)](https://www.npmjs.com/package/@cogitator-ai/fastify)               |
+| [@cogitator-ai/hono](https://www.npmjs.com/package/@cogitator-ai/hono)                     | Hono multi-runtime server (Edge, Bun, Deno, Node.js)       | [![npm](https://img.shields.io/npm/v/@cogitator-ai/hono.svg)](https://www.npmjs.com/package/@cogitator-ai/hono)                     |
 
 ---
 
@@ -493,6 +494,50 @@ await fastify.listen({ port: 3000 });
 - **@fastify/swagger** — Native Swagger integration
 - **@fastify/websocket** — Native WebSocket support
 - **@fastify/rate-limit** — Native rate limiting
+
+---
+
+### Hono Integration
+
+Deploy Cogitator agents anywhere Hono runs — Node.js, Bun, Deno, Cloudflare Workers, AWS Lambda:
+
+```bash
+pnpm add @cogitator-ai/hono @cogitator-ai/core hono
+```
+
+```typescript
+import { Hono } from 'hono';
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { cogitatorApp } from '@cogitator-ai/hono';
+
+const cogitator = new Cogitator({
+  /* ... */
+});
+const chatAgent = new Agent({ name: 'chat', instructions: 'You are helpful.' });
+
+const app = new Hono();
+
+app.route(
+  '/cogitator',
+  cogitatorApp({
+    cogitator,
+    agents: { chat: chatAgent },
+    auth: async (ctx) => {
+      return { userId: 'user-123' };
+    },
+  })
+);
+
+export default app; // works on any runtime
+```
+
+**Same endpoints as Express/Fastify**, plus Hono-specific features:
+
+- **Multi-Runtime** — Node.js, Bun, Deno, Cloudflare Workers, AWS Lambda
+- **Built-in SSE** — Uses Hono's native `streamSSE` for streaming
+- **Typed Context** — Full type safety via Hono's `Variables` system
+- **Zero Dependencies** — No extra middleware packages needed
+- **Edge-Ready** — Deploy to Cloudflare Workers or Vercel Edge Functions
 
 ---
 

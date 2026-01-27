@@ -1,0 +1,39 @@
+{
+  "name": "@cogitator-ai/server-shared",
+  "version": "0.1.0",
+  "description": "Shared streaming protocol and utilities for Cogitator server adapters",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cogitator-ai/Cogitator-AI.git",
+    "directory": "packages/server-shared"
+  },
+  "license": "MIT",
+  "keywords": [
+    "cogitator",
+    "ai",
+    "streaming",
+    "sse",
+    "protocol"
+  ]
+}

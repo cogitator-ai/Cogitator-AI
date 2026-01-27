@@ -339,6 +339,9 @@ importers:
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@cogitator-ai/server-shared':
+        specifier: workspace:*
+        version: link:../server-shared
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
@@ -371,6 +374,9 @@ importers:
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@cogitator-ai/server-shared':
+        specifier: workspace:*
+        version: link:../server-shared
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
@@ -406,6 +412,35 @@ importers:
       fastify:
         specifier: ^5.2.1
         version: 5.7.1
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+
+  packages/hono:
+    dependencies:
+      '@cogitator-ai/core':
+        specifier: workspace:*
+        version: link:../core
+      '@cogitator-ai/server-shared':
+        specifier: workspace:*
+        version: link:../server-shared
+      '@cogitator-ai/types':
+        specifier: workspace:*
+        version: link:../types
+    optionalDependencies:
+      '@cogitator-ai/swarms':
+        specifier: workspace:*
+        version: link:../swarms
+      '@cogitator-ai/workflows':
+        specifier: workspace:*
+        version: link:../workflows
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.7
+      hono:
+        specifier: ^4.7.0
+        version: 4.11.5
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
@@ -662,6 +697,12 @@ importers:
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
+
+  packages/server-shared:
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
 
   packages/swarms:
     dependencies:
@@ -5745,7 +5786,6 @@ packages:
   /hono@4.11.5:
     resolution: {integrity: sha512-WemPi9/WfyMwZs+ZUXdiwcCh9Y+m7L+8vki9MzDw3jJ+W9Lc+12HGsd368Qc1vZi1xwW8BWMMsnK5efYKPdt4g==}
     engines: {node: '>=16.9.0'}
-    dev: false
 
   /html-escaper@2.0.2:
     resolution: {integrity: sha512-H2iMtd0I4Mt5eYiapRdIDjp+XzelXQ0tFE4JS7YFwFevXXMmOp9myNrUvCg0D6ws8iqkRPBfKHgbwig1SmlLfg==}

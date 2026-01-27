@@ -11,7 +11,7 @@ export {
   createFinishEvent,
   createWorkflowEvent,
   createSwarmEvent,
-} from '@cogitator-ai/server-shared';
+} from './protocol.js';
 
 export type {
   Usage,
@@ -28,4 +28,6 @@ export type {
   FinishEvent,
   WorkflowEvent,
   SwarmEvent,
-} from '@cogitator-ai/server-shared';
+} from './protocol.js';
+
+export { generateId, encodeSSE, encodeDone } from './helpers.js';
