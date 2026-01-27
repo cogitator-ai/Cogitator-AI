@@ -93,6 +93,18 @@ const sections: Section[] = [
     ],
   },
   {
+    id: 'servers',
+    title: 'Server Adapters',
+    icon: '🖥️',
+    subsections: [
+      { id: 'server-express', title: 'Express' },
+      { id: 'server-fastify', title: 'Fastify' },
+      { id: 'server-hono', title: 'Hono' },
+      { id: 'server-koa', title: 'Koa' },
+      { id: 'server-openapi', title: 'OpenAPI / Swagger' },
+    ],
+  },
+  {
     id: 'api',
     title: 'API Reference',
     icon: '📡',
@@ -1057,6 +1069,288 @@ server.addTool({
 });
 
 server.start();`}</CodeBlock>
+      </>
+    ),
+    servers: (
+      <>
+        <h1 className="text-4xl font-bold text-[#fafafa] mb-4">Server Adapters</h1>
+        <p className="text-[#a1a1a1] text-lg mb-8">
+          Mount Cogitator agents as production REST APIs with any Node.js framework. All adapters
+          share the same endpoints, SSE streaming, WebSocket support, and auto-generated OpenAPI
+          documentation.
+        </p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+          {[
+            { name: 'Express', desc: 'Battle-tested', pkg: '@cogitator-ai/express' },
+            { name: 'Fastify', desc: 'High performance', pkg: '@cogitator-ai/fastify' },
+            { name: 'Hono', desc: 'Multi-runtime', pkg: '@cogitator-ai/hono' },
+            { name: 'Koa', desc: 'Middleware-first', pkg: '@cogitator-ai/koa' },
+          ].map((f) => (
+            <div key={f.name} className="p-4 bg-[#111] border border-[#222] rounded-lg text-center">
+              <h3 className="text-[#fafafa] font-semibold">{f.name}</h3>
+              <p className="text-[#666] text-xs mb-1">{f.desc}</p>
+              <code className="text-[#00ff88] text-xs">{f.pkg}</code>
+            </div>
+          ))}
+        </div>
+        <Callout type="tip">
+          All adapters generate the same endpoints. Pick the framework you already use.
+        </Callout>
+      </>
+    ),
+    'server-express': (
+      <>
+        <h2 className="text-3xl font-bold text-[#fafafa] mb-4">Express</h2>
+        <p className="text-[#a1a1a1] mb-6">Mount Cogitator as a REST API in any Express app.</p>
+        <CodeBlock language="bash">{`pnpm add @cogitator-ai/express @cogitator-ai/core express`}</CodeBlock>
+        <CodeBlock language="typescript">{`import express from 'express';
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { CogitatorServer } from '@cogitator-ai/express';
+
+const app = express();
+const cogitator = new Cogitator();
+const agent = new Agent({ name: 'chat', model: 'gpt-4o', instructions: 'You are helpful.' });
+
+const server = new CogitatorServer({
+  app,
+  cogitator,
+  agents: { chat: agent },
+  config: {
+    basePath: '/api/cogitator',
+    enableSwagger: true,
+    enableWebSocket: true,
+    auth: async (req) => {
+      const token = req.headers.authorization;
+      return { userId: await validateToken(token) };
+    },
+    rateLimit: { windowMs: 60000, max: 100 },
+  },
+});
+
+await server.init();
+app.listen(3000);`}</CodeBlock>
+        <h3 className="text-xl font-bold text-[#fafafa] mt-8 mb-4">Features</h3>
+        <div className="space-y-2 text-sm text-[#a1a1a1]">
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> SSE streaming for real-time responses
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> WebSocket bidirectional communication
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Swagger UI at{' '}
+            <code className="text-[#00ff88]">/docs</code>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Built-in rate limiting and CORS
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Custom auth middleware
+          </div>
+        </div>
+      </>
+    ),
+    'server-fastify': (
+      <>
+        <h2 className="text-3xl font-bold text-[#fafafa] mb-4">Fastify</h2>
+        <p className="text-[#a1a1a1] mb-6">
+          High-performance Fastify adapter with native plugin system.
+        </p>
+        <CodeBlock language="bash">{`pnpm add @cogitator-ai/fastify @cogitator-ai/core fastify`}</CodeBlock>
+        <CodeBlock language="typescript">{`import Fastify from 'fastify';
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { cogitatorPlugin } from '@cogitator-ai/fastify';
+
+const fastify = Fastify({ logger: true });
+const cogitator = new Cogitator();
+const agent = new Agent({ name: 'chat', model: 'gpt-4o', instructions: 'You are helpful.' });
+
+await fastify.register(cogitatorPlugin, {
+  cogitator,
+  agents: { chat: agent },
+  prefix: '/api/cogitator',
+  enableSwagger: true,
+  enableWebSocket: true,
+});
+
+await fastify.listen({ port: 3000 });`}</CodeBlock>
+        <h3 className="text-xl font-bold text-[#fafafa] mt-8 mb-4">Features</h3>
+        <div className="space-y-2 text-sm text-[#a1a1a1]">
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Native Fastify plugin encapsulation
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> JSON Schema request validation
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span>{' '}
+            <code className="text-[#00ff88]">@fastify/swagger</code> integration
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span>{' '}
+            <code className="text-[#00ff88]">@fastify/websocket</code> support
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span>{' '}
+            <code className="text-[#00ff88]">@fastify/rate-limit</code> support
+          </div>
+        </div>
+      </>
+    ),
+    'server-hono': (
+      <>
+        <h2 className="text-3xl font-bold text-[#fafafa] mb-4">Hono</h2>
+        <p className="text-[#a1a1a1] mb-6">
+          Deploy anywhere Hono runs — Node.js, Bun, Deno, Cloudflare Workers, AWS Lambda.
+        </p>
+        <CodeBlock language="bash">{`pnpm add @cogitator-ai/hono @cogitator-ai/core hono`}</CodeBlock>
+        <CodeBlock language="typescript">{`import { Hono } from 'hono';
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { cogitatorApp } from '@cogitator-ai/hono';
+
+const app = new Hono();
+const cogitator = new Cogitator();
+const agent = new Agent({ name: 'chat', model: 'gpt-4o', instructions: 'You are helpful.' });
+
+app.route('/cogitator', cogitatorApp({
+  cogitator,
+  agents: { chat: agent },
+  enableSwagger: true,
+}));
+
+export default app;`}</CodeBlock>
+        <h3 className="text-xl font-bold text-[#fafafa] mt-8 mb-4">Features</h3>
+        <div className="space-y-2 text-sm text-[#a1a1a1]">
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Runs on Node.js, Bun, Deno, Cloudflare
+            Workers
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Native{' '}
+            <code className="text-[#00ff88]">streamSSE</code> streaming
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Swagger UI at{' '}
+            <code className="text-[#00ff88]">/docs</code>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Full type safety via Hono Variables
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Edge-ready deployment
+          </div>
+        </div>
+      </>
+    ),
+    'server-koa': (
+      <>
+        <h2 className="text-3xl font-bold text-[#fafafa] mb-4">Koa</h2>
+        <p className="text-[#a1a1a1] mb-6">
+          Middleware-first architecture with Koa&apos;s elegant async flow.
+        </p>
+        <CodeBlock language="bash">{`pnpm add @cogitator-ai/koa @cogitator-ai/core koa @koa/router`}</CodeBlock>
+        <CodeBlock language="typescript">{`import Koa from 'koa';
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { cogitatorApp } from '@cogitator-ai/koa';
+
+const app = new Koa();
+const cogitator = new Cogitator();
+const agent = new Agent({ name: 'chat', model: 'gpt-4o', instructions: 'You are helpful.' });
+
+const router = cogitatorApp({
+  cogitator,
+  agents: { chat: agent },
+  enableSwagger: true,
+});
+
+app.use(router.routes());
+app.use(router.allowedMethods());
+app.listen(3000);`}</CodeBlock>
+        <h3 className="text-xl font-bold text-[#fafafa] mt-8 mb-4">Features</h3>
+        <div className="space-y-2 text-sm text-[#a1a1a1]">
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Idiomatic Koa async middleware chain
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Typed{' '}
+            <code className="text-[#00ff88]">ctx.state</code> context
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Swagger UI at{' '}
+            <code className="text-[#00ff88]">/docs</code>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Built-in JSON body parser (no extra
+            deps)
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> WebSocket via{' '}
+            <code className="text-[#00ff88]">ws</code>
+          </div>
+        </div>
+      </>
+    ),
+    'server-openapi': (
+      <>
+        <h2 className="text-3xl font-bold text-[#fafafa] mb-4">OpenAPI / Swagger</h2>
+        <p className="text-[#a1a1a1] mb-6">
+          All server adapters can auto-generate an OpenAPI 3.0.3 spec and serve Swagger UI. The spec
+          dynamically includes all registered agents, workflows, and swarms.
+        </p>
+        <CodeBlock language="typescript">{`// Enable in any adapter
+const options = {
+  cogitator,
+  agents: { chat: chatAgent },
+  enableSwagger: true,
+  swagger: {
+    title: 'My AI API',
+    description: 'Cogitator-powered agent API',
+    version: '1.0.0',
+    contact: { name: 'Team', email: 'team@example.com' },
+    servers: [{ url: 'https://api.example.com', description: 'Production' }],
+  },
+};`}</CodeBlock>
+        <h3 className="text-xl font-bold text-[#fafafa] mt-8 mb-4">Endpoints</h3>
+        <div className="space-y-3">
+          <div className="flex items-center gap-4 p-3 bg-[#111] border border-[#222] rounded-lg font-mono text-sm">
+            <span className="px-2 py-1 rounded text-xs bg-[#00aaff]/20 text-[#00aaff]">GET</span>
+            <code className="text-[#fafafa]">/openapi.json</code>
+            <span className="text-[#666] ml-auto">Full OpenAPI 3.0.3 spec</span>
+          </div>
+          <div className="flex items-center gap-4 p-3 bg-[#111] border border-[#222] rounded-lg font-mono text-sm">
+            <span className="px-2 py-1 rounded text-xs bg-[#00aaff]/20 text-[#00aaff]">GET</span>
+            <code className="text-[#fafafa]">/docs</code>
+            <span className="text-[#666] ml-auto">Interactive Swagger UI</span>
+          </div>
+        </div>
+        <h3 className="text-xl font-bold text-[#fafafa] mt-8 mb-4">Dynamic Spec Generation</h3>
+        <p className="text-[#a1a1a1] mb-4">
+          The OpenAPI spec is generated at request time based on the current runtime state. It
+          automatically documents:
+        </p>
+        <div className="space-y-2 text-sm text-[#a1a1a1]">
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> All registered agents with their tools
+            and instructions
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Workflow endpoints with node topology
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Swarm endpoints with strategy metadata
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Thread management and health check
+            endpoints
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[#00ff88]">&#10003;</span> Full request/response schemas
+          </div>
+        </div>
+        <Callout type="info">
+          The spec includes all agent tool parameters as JSON Schema, so consumers get full type
+          information.
+        </Callout>
       </>
     ),
     api: (

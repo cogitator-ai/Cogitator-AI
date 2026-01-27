@@ -2,7 +2,7 @@
 
 import { motion } from 'framer-motion';
 import { FeatureCard } from './FeatureCard';
-import { Layers, GitBranch, Users, Brain, Shield, Plug, Activity } from 'lucide-react';
+import { Layers, GitBranch, Users, Brain, Shield, Plug, Activity, Server } from 'lucide-react';
 
 const features = [
   {
@@ -47,6 +47,14 @@ const features = [
       'First-class support for Model Context Protocol. Connect any MCP server as a tool.',
     icon: <Plug className="w-6 h-6" />,
     glowColor: '#00aaff',
+  },
+  {
+    title: 'Server Adapters',
+    description:
+      'Express, Fastify, Hono, Koa — mount agents as REST APIs with SSE streaming, WebSocket, and auto-generated Swagger docs.',
+    icon: <Server className="w-6 h-6" />,
+    glowColor: '#00aaff',
+    className: 'md:col-span-2',
   },
   {
     title: 'Full Observability',

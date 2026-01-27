@@ -523,6 +523,7 @@ app.route(
   cogitatorApp({
     cogitator,
     agents: { chat: chatAgent },
+    enableSwagger: true,
     auth: async (ctx) => {
       return { userId: 'user-123' };
     },
@@ -536,6 +537,7 @@ export default app; // works on any runtime
 
 - **Multi-Runtime** — Node.js, Bun, Deno, Cloudflare Workers, AWS Lambda
 - **Built-in SSE** — Uses Hono's native `streamSSE` for streaming
+- **Swagger/OpenAPI** — Auto-generated API docs at `/docs` and `/openapi.json`
 - **Typed Context** — Full type safety via Hono's `Variables` system
 - **Zero Dependencies** — No extra middleware packages needed
 - **Edge-Ready** — Deploy to Cloudflare Workers or Vercel Edge Functions
@@ -564,6 +566,7 @@ const app = new Koa();
 const router = cogitatorApp({
   cogitator,
   agents: { chat: chatAgent },
+  enableSwagger: true,
   auth: async (ctx) => {
     const token = ctx.get('authorization');
     return { userId: 'user-123' };
@@ -580,6 +583,7 @@ app.listen(3000);
 
 - **Middleware-First** — Idiomatic Koa async middleware chain
 - **Context-Based** — Uses `ctx.state` for typed request state
+- **Swagger/OpenAPI** — Auto-generated API docs at `/docs` and `/openapi.json`
 - **Built-in Body Parser** — No extra dependency for JSON parsing
 - **SSE Streaming** — Via `ctx.respond = false` for raw response control
 - **WebSocket** — Optional `ws` integration
