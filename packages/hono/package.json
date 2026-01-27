@@ -36,7 +36,7 @@
     "@cogitator-ai/workflows": "workspace:*",
     "@cogitator-ai/swarms": "workspace:*",
     "@types/node": "^22.0.0",
-    "hono": "^4.7.0",
+    "hono": "^4.11.6",
     "typescript": "^5.6.0"
   },
   "repository": {
