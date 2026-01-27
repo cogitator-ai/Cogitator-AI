@@ -278,7 +278,8 @@ Cogitator is a modular monorepo. Install only what you need:
 
 ---
 
-### Next.js Integration
+<details>
+<summary><strong>Next.js Integration</strong></summary>
 
 Build AI-powered Next.js apps with streaming chat and tool calls — compatible with Vercel AI SDK:
 
@@ -348,9 +349,12 @@ export function Chat() {
 - **Error Handling** — Graceful error events with stream cleanup
 - **Auth Hooks** — `beforeRun`/`afterRun` for authentication and logging
 
+</details>
+
 ---
 
-### Vercel AI SDK Integration
+<details>
+<summary><strong>Vercel AI SDK Integration</strong></summary>
 
 Use Cogitator agents with AI SDK's `generateText`/`streamText`, or use any AI SDK model in Cogitator:
 
@@ -388,9 +392,12 @@ const aiTool = toAISDKTool(cogitatorTool);
 - **Tool Conversion** — Seamless tool format conversion
 - **useChat Compatible** — Works with `@ai-sdk/react` hooks
 
+</details>
+
 ---
 
-### Express.js Integration
+<details>
+<summary><strong>Express.js Integration</strong></summary>
 
 Mount Cogitator as a REST API in any Express app with auto-generated endpoints:
 
@@ -451,9 +458,12 @@ WS   /api/cogitator/ws                  # WebSocket (real-time)
 - **Rate Limiting** — Built-in rate limiting with headers
 - **Workflow/Swarm Support** — Optional endpoints for workflows and swarms
 
+</details>
+
 ---
 
-### Fastify Integration
+<details>
+<summary><strong>Fastify Integration</strong></summary>
 
 High-performance Fastify adapter with native plugin system and JSON Schema validation:
 
@@ -496,9 +506,12 @@ await fastify.listen({ port: 3000 });
 - **@fastify/websocket** — Native WebSocket support
 - **@fastify/rate-limit** — Native rate limiting
 
+</details>
+
 ---
 
-### Hono Integration
+<details>
+<summary><strong>Hono Integration</strong></summary>
 
 Deploy Cogitator agents anywhere Hono runs — Node.js, Bun, Deno, Cloudflare Workers, AWS Lambda:
 
@@ -542,9 +555,12 @@ export default app; // works on any runtime
 - **Zero Dependencies** — No extra middleware packages needed
 - **Edge-Ready** — Deploy to Cloudflare Workers or Vercel Edge Functions
 
+</details>
+
 ---
 
-### Koa Integration
+<details>
+<summary><strong>Koa Integration</strong></summary>
 
 Use Cogitator with Koa's middleware-first architecture:
 
@@ -588,9 +604,12 @@ app.listen(3000);
 - **SSE Streaming** — Via `ctx.respond = false` for raw response control
 - **WebSocket** — Optional `ws` integration
 
+</details>
+
 ---
 
-### Agent-as-Tool Composition
+<details>
+<summary><strong>Agent-as-Tool Composition</strong></summary>
 
 Use one agent as a tool for another — simple hierarchical delegation without swarm overhead:
 
@@ -629,7 +648,12 @@ const result = await cog.run(writer, {
 // Writer automatically delegates research to the specialist agent
 ```
 
-### Multi-Agent Swarm
+</details>
+
+---
+
+<details>
+<summary><strong>Multi-Agent Swarm</strong></summary>
 
 ```typescript
 import { Cogitator, Agent, Swarm } from '@cogitator-ai/core';
@@ -665,9 +689,12 @@ const result = await cog.run(devTeam, {
 });
 ```
 
+</details>
+
 ---
 
-## Architecture
+<details>
+<summary><strong>🏗️ Architecture</strong></summary>
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -715,11 +742,14 @@ const result = await cog.run(devTeam, {
 
 [📖 Full Architecture Documentation](./docs/ARCHITECTURE.md)
 
+</details>
+
 ---
 
 ## Features
 
-### 🔌 Universal LLM Interface
+<details>
+<summary><strong>🔌 Universal LLM Interface</strong></summary>
 
 ```typescript
 // Same code, any provider
@@ -737,7 +767,10 @@ const agent = new Agent({
 });
 ```
 
-### 📋 Structured Outputs / JSON Mode
+</details>
+
+<details>
+<summary><strong>📋 Structured Outputs / JSON Mode</strong></summary>
 
 ```typescript
 // Simple JSON mode - returns valid JSON
@@ -774,7 +807,10 @@ const result = await backend.chat({
 
 Works with all backends: OpenAI, Anthropic, Google, Ollama, Mistral, Groq, Together, DeepSeek.
 
-### 🧠 Intelligent Memory
+</details>
+
+<details>
+<summary><strong>🧠 Intelligent Memory</strong></summary>
 
 ```typescript
 const cog = new Cogitator({
@@ -815,7 +851,10 @@ await cog.run(agent, { input: 'What is my name?', threadId: 'user-123' }); // "Y
 - **MongoDB** — Flexible document storage
 - **Qdrant** — High-performance vector similarity search
 
-### 🔍 Hybrid Search (BM25 + Vector)
+</details>
+
+<details>
+<summary><strong>🔍 Hybrid Search (BM25 + Vector)</strong></summary>
 
 Combine keyword search (BM25) with semantic search (vector) using Reciprocal Rank Fusion:
 
@@ -866,7 +905,10 @@ results.data.forEach((r) => {
 
 **Why Hybrid?** Vector search misses exact terms, BM25 misses synonyms. Hybrid gives you the best of both worlds.
 
-### 🛠️ MCP-Compatible Tools
+</details>
+
+<details>
+<summary><strong>🛠️ MCP-Compatible Tools</strong></summary>
 
 ```typescript
 import { tool, mcpServer } from '@cogitator-ai/tools';
@@ -891,7 +933,10 @@ const agent = new Agent({
 });
 ```
 
-### 🔄 Workflow Engine
+</details>
+
+<details>
+<summary><strong>🔄 Workflow Engine</strong></summary>
 
 ```typescript
 import { Workflow, step } from '@cogitator-ai/workflows';
@@ -926,7 +971,10 @@ const codeReviewWorkflow = new Workflow({
 await cog.workflow(codeReviewWorkflow).run({ pullRequest: pr });
 ```
 
-### 📡 Real-time Workflow Streaming
+</details>
+
+<details>
+<summary><strong>📡 Real-time Workflow Streaming</strong></summary>
 
 Stream workflow execution events for live progress visualization:
 
@@ -968,7 +1016,10 @@ for await (const event of executor.stream(workflow)) {
 }
 ```
 
-### 💾 Workflow Checkpointing
+</details>
+
+<details>
+<summary><strong>💾 Workflow Checkpointing</strong></summary>
 
 Resume workflows from failures with configurable checkpoint granularity:
 
@@ -1010,7 +1061,10 @@ const resumed = await executor.resume(workflow, result2.checkpointId!);
 | `per-iteration` | After all parallel nodes   | Default, lower I/O overhead      |
 | `per-node`      | After each individual node | Critical workflows, crash safety |
 
-### 🐝 Swarm Patterns
+</details>
+
+<details>
+<summary><strong>🐝 Swarm Patterns</strong></summary>
 
 ```typescript
 // Hierarchical: Supervisor delegates to workers
@@ -1041,7 +1095,10 @@ const pipeline = new Swarm({
 });
 ```
 
-### 📊 Full Observability
+</details>
+
+<details>
+<summary><strong>📊 Full Observability</strong></summary>
 
 ```typescript
 // Built-in OpenTelemetry integration
@@ -1088,7 +1145,10 @@ await langfuse.init();
 - **OpenTelemetry OTLP** — Universal tracing to Jaeger, Grafana, Datadog
 - **Langfuse** — LLM-native observability with prompt management
 
-### 🧠 Self-Reflection
+</details>
+
+<details>
+<summary><strong>🧠 Self-Reflection</strong></summary>
 
 Agents learn from their actions and accumulate insights over time:
 
@@ -1120,7 +1180,10 @@ console.log(insights);
 // ]
 ```
 
-### 🌳 Tree of Thoughts
+</details>
+
+<details>
+<summary><strong>🌳 Tree of Thoughts</strong></summary>
 
 For complex problems, explore multiple reasoning paths with branching and backtracking:
 
@@ -1157,7 +1220,10 @@ result.bestPath.forEach((node, i) => {
 
 ToT shows **4-5x improvement** on complex reasoning tasks compared to linear agent loops.
 
-### 🧬 Self-Modifying Agents
+</details>
+
+<details>
+<summary><strong>🧬 Self-Modifying Agents</strong></summary>
 
 Agents that evolve at runtime — generating new tools, adapting reasoning strategies, and optimizing their own architecture:
 
@@ -1214,7 +1280,10 @@ console.log('Final config:', result.finalConfig);
 - **Constraint Validation** — SAT-based safety checks prevent unsafe modifications
 - **Rollback System** — Checkpoint before changes, auto-revert on performance decline
 
-### 🔬 Causal Reasoning Engine
+</details>
+
+<details>
+<summary><strong>🔬 Causal Reasoning Engine</strong></summary>
 
 Full causal inference framework implementing Pearl's Ladder of Causation — association, intervention, and counterfactual reasoning:
 
@@ -1282,7 +1351,10 @@ console.log(plan.robustness.vulnerabilities);
 - **LLM-Powered Discovery** — Extract causal relationships from text, traces, and observations
 - **Hypothesis Generation & Validation** — Generate and test causal hypotheses from execution data
 
-### 👁️ Vision & Multi-Modal
+</details>
+
+<details>
+<summary><strong>👁️ Vision & Multi-Modal</strong></summary>
 
 Send images to vision-capable models and generate images with DALL-E:
 
@@ -1366,7 +1438,10 @@ await cog.run(creativeAgent, {
 | Azure     | gpt-4o (via Azure)          | ✅         | ✅     | ✅ DALL-E  |
 | Bedrock   | claude-3 (via AWS)          | ✅         | ✅     | ❌         |
 
-### 🎤 Audio & Speech
+</details>
+
+<details>
+<summary><strong>🎤 Audio & Speech</strong></summary>
 
 Transcribe audio with OpenAI Whisper and generate speech with TTS:
 
@@ -1478,7 +1553,10 @@ const result = await transcribeAudio.execute(
 | marin   | Natural, modern        |
 | cedar   | Grounded, trustworthy  |
 
-### 📏 Long Context Management
+</details>
+
+<details>
+<summary><strong>📏 Long Context Management</strong></summary>
 
 Automatic context compression when conversations exceed model token limits — supports 128k+ token contexts with intelligent strategies:
 
@@ -1559,7 +1637,10 @@ The system automatically detects model limits from the registry:
 - Gemini Pro: 1M tokens
 - Llama 3.2: 8k tokens
 
-### 🧮 Neuro-Symbolic Agent Tools
+</details>
+
+<details>
+<summary><strong>🧮 Neuro-Symbolic Agent Tools</strong></summary>
 
 Give your agents formal reasoning capabilities — Prolog-style logic, constraint solving, and knowledge graphs:
 
@@ -1670,7 +1751,10 @@ const nsTools = createNeuroSymbolicTools({ graphAdapter: postgresAdapter });
 | `PostgresGraphAdapter` | Production, SQL integration   | ✅ (pgvector)    | Recursive CTE    |
 | `Neo4jGraphAdapter`    | Large graphs, complex queries | ✅ (Neo4j 5.11+) | Native Cypher    |
 
-### 📈 Agent Learning (DSPy-Style)
+</details>
+
+<details>
+<summary><strong>📈 Agent Learning (DSPy-Style)</strong></summary>
 
 Agents automatically improve through execution trace analysis and instruction optimization:
 
@@ -1713,7 +1797,10 @@ console.log('New instructions:', compileResult.instructionsAfter);
 - **MIPROv2-style Optimization** - Failure analysis → candidate generation → evaluation → refinement
 - **DSPy-compatible compile()** - One-line optimization for agents
 
-### ⏪ Time-Travel Debugging
+</details>
+
+<details>
+<summary><strong>⏪ Time-Travel Debugging</strong></summary>
 
 Debug agent executions like `git bisect` — checkpoint, replay, fork, and compare:
 
@@ -1767,7 +1854,10 @@ const mockFork = await tt.forkWithMockedTool(agent, checkpoints[1].id, 'web_sear
 - **Compare** - Diff traces step-by-step, find divergence point
 - **A/B Testing** - Fork multiple variants to compare approaches
 
-### 🛡️ Constitutional AI Guardrails
+</details>
+
+<details>
+<summary><strong>🛡️ Constitutional AI Guardrails</strong></summary>
 
 Built-in safety guardrails with Constitutional AI — critique and revise harmful outputs automatically:
 
@@ -1837,7 +1927,10 @@ console.log('Violations:', guardrails?.getViolationLog());
 - **Custom Constitution** - Extend or replace default principles
 - **Flexible Mode** - Strict (block) or permissive (warn with harm scores)
 
-### 💰 Cost-Aware Routing
+</details>
+
+<details>
+<summary><strong>💰 Cost-Aware Routing</strong></summary>
 
 Automatically select cheaper models for simple tasks, expensive ones for complex tasks — with per-run cost tracking and budget enforcement:
 
@@ -1902,7 +1995,10 @@ console.log(`By model:`, summary.byModel);
 - Prefers local models (Ollama) when quality is sufficient
 - Falls back to cloud models for advanced reasoning
 
-### 💵 Cost Prediction
+</details>
+
+<details>
+<summary><strong>💵 Cost Prediction</strong></summary>
 
 Estimate the cost of running an agent **before** execution — perfect for expensive tasks:
 
@@ -1964,7 +2060,10 @@ console.log(localEstimate.warnings); // ['Local model (Ollama) - no API cost']
 - **Local Model Detection** — Automatically returns $0 for Ollama models
 - **Warnings** — Alerts for unpredictable costs, missing pricing data
 
-### 💾 Agent Serialization
+</details>
+
+<details>
+<summary><strong>💾 Agent Serialization</strong></summary>
 
 Save agents to JSON and restore them later — perfect for persistence, sharing, and database storage:
 
@@ -2048,7 +2147,10 @@ console.log(restored.tools.length); // 1
 - **Error Handling** — `AgentDeserializationError` with helpful messages
 - **ID Preservation** — Original agent ID is preserved across serialize/deserialize
 
-### 🗄️ Tool Caching
+</details>
+
+<details>
+<summary><strong>🗄️ Tool Caching</strong></summary>
 
 Cache tool results to avoid redundant API calls with exact or semantic matching:
 
@@ -2095,7 +2197,10 @@ console.log(semanticCache.cache.stats());
 - **Redis Storage** — Persistent cache with TTL support
 - **Cache Management** — `stats()`, `invalidate()`, `clear()`, `warmup()`
 
-### 🛡️ Prompt Injection Detection
+</details>
+
+<details>
+<summary><strong>🛡️ Prompt Injection Detection</strong></summary>
 
 Protect your agents from jailbreak attempts and prompt injections — separate from Constitutional AI (which filters harmful outputs, not adversarial inputs):
 
@@ -2191,7 +2296,10 @@ console.log(detector.getStats());
 - **Local** — Fast (<5ms), pattern-based + heuristics, good for most attacks
 - **LLM** — Slower (100-500ms), semantic understanding, catches novel attacks
 
-### 🔒 Sandboxed Execution
+</details>
+
+<details>
+<summary><strong>🔒 Sandboxed Execution</strong></summary>
 
 ```typescript
 const agent = new Agent({
@@ -2210,7 +2318,10 @@ const agent = new Agent({
 });
 ```
 
-### 🛠️ Developer Experience
+</details>
+
+<details>
+<summary><strong>🛠️ Developer Experience</strong></summary>
 
 **Debug Mode** — Full request/response logging for LLM calls:
 
@@ -2287,9 +2398,12 @@ const providers: LLMProvidersConfig = {
 };
 ```
 
+</details>
+
 ---
 
-## Documentation
+<details>
+<summary><strong>📖 Documentation</strong></summary>
 
 | Document                                         | Description                      |
 | ------------------------------------------------ | -------------------------------- |
@@ -2306,9 +2420,12 @@ const providers: LLMProvidersConfig = {
 | [Deployment](./docs/DEPLOYMENT.md)               | Production deployment guide      |
 | [API Reference](./docs/API.md)                   | Complete API documentation       |
 
+</details>
+
 ---
 
-## Roadmap
+<details>
+<summary><strong>🗺️ Roadmap</strong></summary>
 
 ### Phase 1: Foundation (Months 1-3) ✅
 
@@ -2358,9 +2475,12 @@ const providers: LLMProvidersConfig = {
 
 [📖 Detailed Roadmap](./docs/ROADMAP.md)
 
+</details>
+
 ---
 
-## Comparison
+<details>
+<summary><strong>⚖️ Comparison</strong></summary>
 
 | Feature             | Cogitator | LangChain   | OpenAI Assistants | AutoGen     |
 | ------------------- | --------- | ----------- | ----------------- | ----------- |
@@ -2388,9 +2508,12 @@ const providers: LLMProvidersConfig = {
 | Long Context Mgmt   | ✅        | ❌          | ❌                | ❌          |
 | Dependencies        | ~20       | 150+        | N/A               | ~30         |
 
+</details>
+
 ---
 
-## Contributing
+<details>
+<summary><strong>🤝 Contributing</strong></summary>
 
 We welcome contributions! See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 
@@ -2452,6 +2575,8 @@ Run any example with `npx tsx examples/<name>.ts`:
 | `dev-team-swarm.ts`            | Hierarchical dev team swarm              |
 | `debate-swarm.ts`              | Debate between multiple agents           |
 | `workflow-code-review.ts`      | Code review workflow with DAG            |
+
+</details>
 
 ---
 
