@@ -23,21 +23,21 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.71.2",
+    "@anthropic-ai/sdk": "^0.72.1",
     "@cogitator-ai/memory": "workspace:*",
     "@cogitator-ai/models": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "@types/node": "^25.0.10",
     "@types/pg": "^8.10.9",
     "nanoid": "^5.0.4",
-    "openai": "^6.16.0",
+    "openai": "^6.17.0",
     "zod": "^4.3.6"
   },
   "optionalDependencies": {
-    "pg": "^8.17.2"
+    "pg": "^8.18.0"
   },
   "devDependencies": {
-    "@aws-sdk/client-bedrock-runtime": "^3.975.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.981.0",
     "typescript": "^5.3.0",
     "vitest": "^4.0.18"
   },

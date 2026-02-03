@@ -32,8 +32,8 @@
   },
   "optionalDependencies": {
     "ioredis": "^5.9.2",
-    "openai": "^6.16.0",
-    "pg": "^8.17.2"
+    "openai": "^6.17.0",
+    "pg": "^8.18.0"
   },
   "devDependencies": {
     "typescript": "^5.3.0",

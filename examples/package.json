@@ -25,7 +25,7 @@
     "@cogitator-ai/openai-compat": "workspace:*",
     "@cogitator-ai/swarms": "workspace:*",
     "@cogitator-ai/workflows": "workspace:*",
-    "openai": "^6.16.0",
+    "openai": "^6.17.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
