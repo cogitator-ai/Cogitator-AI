@@ -1,0 +1,11 @@
+{
+  "title": "Core",
+  "pages": [
+    "cogitator",
+    "agents",
+    "tools",
+    "llm-backends",
+    "structured-outputs",
+    "vision-and-audio"
+  ]
+}

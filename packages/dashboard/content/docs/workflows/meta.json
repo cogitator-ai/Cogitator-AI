@@ -1,0 +1,4 @@
+{
+  "title": "Workflows",
+  "pages": ["index", "builder", "nodes", "execution", "sagas", "scheduling", "patterns"]
+}

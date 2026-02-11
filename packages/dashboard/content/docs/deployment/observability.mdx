@@ -1,0 +1,156 @@
+---
+title: Observability
+description: Trace agent executions with Langfuse and OpenTelemetry — cost tracking, span visualization, and production debugging.
+---
+
+## Overview
+
+Cogitator ships two observability exporters in `@cogitator-ai/core`: **Langfuse** for AI-native tracing with cost tracking, and **OpenTelemetry (OTLP)** for standard distributed tracing. Both hook into the agent lifecycle to capture runs, LLM calls, and tool executions.
+
+## Langfuse Integration
+
+[Langfuse](https://langfuse.com) provides purpose-built observability for LLM applications -- traces, generations, cost analysis, and evaluation scores.
+
+```bash
+pnpm add langfuse
+```
+
+```typescript
+import { createLangfuseExporter } from '@cogitator-ai/core';
+
+const langfuse = createLangfuseExporter({
+  publicKey: process.env.LANGFUSE_PUBLIC_KEY!,
+  secretKey: process.env.LANGFUSE_SECRET_KEY!,
+  baseUrl: 'https://cloud.langfuse.com',
+  flushAt: 10,
+  flushInterval: 5000,
+  enabled: true,
+});
+
+await langfuse.init();
+```
+
+### Tracing Runs and LLM Calls
+
+```typescript
+langfuse.onRunStart({
+  runId: 'run_abc123',
+  agentId: 'agent_001',
+  agentName: 'researcher',
+  input: 'Summarize recent papers on chain-of-thought reasoning',
+  threadId: 'thread_xyz',
+  model: 'gpt-4o',
+});
+
+const generationId = langfuse.onLLMCall({
+  runId: 'run_abc123',
+  model: 'gpt-4o',
+  messages: [{ role: 'user', content: 'Summarize recent papers...' }],
+  temperature: 0.7,
+  maxTokens: 4096,
+});
+
+langfuse.onLLMResponse({
+  generationId,
+  output: 'Here is a summary...',
+  inputTokens: 150,
+  outputTokens: 820,
+});
+
+langfuse.onRunComplete({
+  runId: 'run_abc123',
+  output: 'Here is a summary...',
+  usage: { prompt: 150, completion: 820, total: 970 },
+  toolCalls: [],
+});
+```
+
+### Tool Call Tracing
+
+Tool executions appear as child spans on the trace:
+
+```typescript
+langfuse.onToolCall('run_abc123', {
+  id: 'call_001',
+  name: 'search_papers',
+  arguments: { query: 'chain-of-thought reasoning 2025' },
+});
+
+langfuse.onToolResult('run_abc123', {
+  callId: 'call_001',
+  result: { papers: ['...'] },
+});
+```
+
+## OpenTelemetry (OTLP)
+
+For teams using Jaeger, Grafana Tempo, or Datadog, the OTLP exporter sends spans in standard OpenTelemetry format.
+
+```typescript
+import { createOTLPExporter } from '@cogitator-ai/core';
+
+const otlp = createOTLPExporter({
+  endpoint: 'http://localhost:4318/v1/traces',
+  serviceName: 'cogitator-production',
+  serviceVersion: '1.0.0',
+  headers: { Authorization: `Bearer ${process.env.OTLP_TOKEN}` },
+  enabled: true,
+});
+
+otlp.start();
+```
+
+Export Cogitator spans to the OTLP wire format:
+
+```typescript
+otlp.exportSpan('run_abc123', {
+  id: 'span_001',
+  traceId: 'run_abc123',
+  name: 'agent.run',
+  kind: 'server',
+  status: 'ok',
+  startTime: Date.now() - 1500,
+  endTime: Date.now(),
+  duration: 1500,
+  attributes: { 'agent.name': 'researcher', 'llm.model': 'gpt-4o' },
+});
+
+await otlp.flush();
+```
+
+Spans are batched and flushed every 5 seconds, or when the buffer reaches 100 spans.
+
+### Span Kinds
+
+| Cogitator Kind | OTLP Kind | Typical Use                 |
+| -------------- | --------- | --------------------------- |
+| `internal`     | INTERNAL  | Agent planning, reasoning   |
+| `client`       | CLIENT    | Outbound LLM API calls      |
+| `server`       | SERVER    | Incoming agent run requests |
+| `producer`     | PRODUCER  | Job queue dispatch          |
+| `consumer`     | CONSUMER  | Worker job processing       |
+
+## Cost Tracking
+
+Langfuse computes cost from token usage on generations. Group costs by agent, model, or session in the dashboard:
+
+```typescript
+langfuse.onLLMResponse({
+  generationId,
+  output: responseText,
+  inputTokens: usage.promptTokens,
+  outputTokens: usage.completionTokens,
+});
+```
+
+## Shutdown
+
+Flush exporters before process exit to avoid losing buffered data:
+
+```typescript
+process.on('SIGTERM', async () => {
+  await langfuse.flush();
+  await langfuse.shutdown();
+  otlp.stop();
+});
+```

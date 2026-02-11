@@ -1,0 +1,172 @@
+---
+title: Cogitator Runtime
+description: The main runtime that orchestrates agent execution, LLM routing, memory, and observability.
+---
+
+## Overview
+
+The `Cogitator` class is the central runtime for executing AI agents. It manages LLM backend connections, memory persistence, tool registries, and observability. You create one instance and use it to run any number of agents.
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  llm: {
+    defaultProvider: 'openai',
+    providers: {
+      openai: { apiKey: process.env.OPENAI_API_KEY! },
+    },
+  },
+});
+
+const agent = new Agent({
+  name: 'assistant',
+  model: 'openai/gpt-4o',
+  instructions: 'You are a helpful assistant.',
+});
+
+const result = await cog.run(agent, { input: 'Hello!' });
+console.log(result.output);
+
+await cog.close();
+```
+
+## Constructor
+
+```typescript
+const cog = new Cogitator(config?: CogitatorConfig);
+```
+
+The config object is entirely optional. Without it, Cogitator defaults to Ollama at `localhost:11434`.
+
+### Configuration
+
+```typescript
+interface CogitatorConfig {
+  llm?: {
+    defaultProvider?: LLMProvider;
+    defaultModel?: string;
+    providers?: LLMProvidersConfig;
+  };
+  limits?: {
+    maxConcurrentRuns?: number;
+    defaultTimeout?: number;
+    maxTokensPerRun?: number;
+  };
+  memory?: MemoryConfig;
+  sandbox?: SandboxManagerConfig;
+  reflection?: ReflectionConfig;
+  guardrails?: GuardrailConfig;
+  costRouting?: CostRoutingConfig;
+  security?: { promptInjection?: PromptInjectionConfig };
+  context?: ContextManagerConfig;
+}
+```
+
+## Multi-Provider Setup
+
+Configure multiple LLM providers and let agents route to whichever they need:
+
+```typescript
+const cog = new Cogitator({
+  llm: {
+    defaultProvider: 'ollama',
+    providers: {
+      ollama: { baseUrl: 'http://localhost:11434' },
+      openai: { apiKey: process.env.OPENAI_API_KEY! },
+      anthropic: { apiKey: process.env.ANTHROPIC_API_KEY! },
+      google: { apiKey: process.env.GOOGLE_API_KEY! },
+    },
+  },
+});
+```
+
+Backends are created lazily -- Cogitator only instantiates a provider's client the first time an agent requests it. The provider is determined by the model string prefix (`openai/gpt-4o` routes to OpenAI, `anthropic/claude-sonnet-4-20250514` routes to Anthropic).
+
+## Running Agents
+
+The `run()` method executes an agent and returns a `RunResult`:
+
+```typescript
+const result = await cog.run(agent, {
+  input: 'Search for TypeScript tutorials',
+  threadId: 'session-123',
+  stream: true,
+  onToken: (token) => process.stdout.write(token),
+  onToolCall: (call) => console.log('Tool:', call.name),
+  onToolResult: (result) => console.log('Result:', result),
+});
+```
+
+### RunOptions
+
+| Option              | Type                           | Description                                    |
+| ------------------- | ------------------------------ | ---------------------------------------------- |
+| `input`             | `string`                       | User prompt (required)                         |
+| `images`            | `ImageInput[]`                 | Images to include with the input               |
+| `audio`             | `AudioInput[]`                 | Audio files to transcribe and include          |
+| `threadId`          | `string`                       | Thread ID for memory persistence               |
+| `context`           | `Record<string, unknown>`      | Additional context injected into system prompt |
+| `stream`            | `boolean`                      | Enable token streaming                         |
+| `onToken`           | `(token: string) => void`      | Streaming callback                             |
+| `onToolCall`        | `(call: ToolCall) => void`     | Called when agent invokes a tool               |
+| `onToolResult`      | `(result: ToolResult) => void` | Called when a tool returns                     |
+| `onSpan`            | `(span: Span) => void`         | Observability callback for tracing             |
+| `timeout`           | `number`                       | Override agent timeout (ms)                    |
+| `parallelToolCalls` | `boolean`                      | Execute tool calls in parallel                 |
+| `useMemory`         | `boolean`                      | Enable/disable memory for this run             |
+
+### RunResult
+
+```typescript
+interface RunResult {
+  output: string;
+  runId: string;
+  agentId: string;
+  threadId: string;
+  modelUsed?: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    cost: number;
+    duration: number;
+  };
+  toolCalls: ToolCall[];
+  messages: Message[];
+  trace: { traceId: string; spans: Span[] };
+}
+```
+
+## Cost Estimation
+
+Estimate the cost before running an agent:
+
+```typescript
+const estimate = await cog.estimateCost({
+  agent,
+  input: 'Analyze this document and summarize key points',
+  options: { assumeIterations: 3, assumeToolCalls: 5 },
+});
+
+console.log(`Expected cost: $${estimate.expectedCost.toFixed(4)}`);
+console.log(`Confidence: ${(estimate.confidence * 100).toFixed(0)}%`);
+```
+
+## Global Tool Registry
+
+Cogitator exposes a shared `tools` registry. Tools registered here are available to all agents:
+
+```typescript
+cog.tools.register(myGlobalTool);
+```
+
+## Cleanup
+
+Always call `close()` when done to release connections:
+
+```typescript
+await cog.close();
+```
+
+This disconnects memory adapters, shuts down sandbox containers, and clears backend connections.

@@ -1,0 +1,201 @@
+---
+title: WASM Tools
+description: Run tools in isolated WebAssembly sandboxes with Extism for security, speed, and portability.
+---
+
+## Overview
+
+The `@cogitator-ai/wasm-tools` package provides tools that execute inside WebAssembly sandboxes powered by [Extism](https://extism.org/). Compared to Docker-based sandboxing, WASM tools offer:
+
+- **100-500x faster cold start** than Docker containers
+- **~20x lower memory footprint** per tool instance
+- **Memory-safe execution** in an isolated linear memory space
+- **No network access** by default -- tools cannot make outbound calls unless WASI is enabled
+
+```typescript
+import { createCalcTool, createHashTool, createCsvTool } from '@cogitator-ai/wasm-tools';
+
+const agent = new Agent({
+  name: 'data-processor',
+  model: 'openai/gpt-4o',
+  tools: [createCalcTool(), createHashTool(), createCsvTool()],
+});
+```
+
+---
+
+## Pre-built WASM Tools
+
+The package ships with **14 ready-to-use** WASM tool factories. Each returns a `Tool` instance backed by a compiled `.wasm` module.
+
+| Factory                   | Tool Name      | Description                                         |
+| ------------------------- | -------------- | --------------------------------------------------- |
+| `createCalcTool()`        | `calculate`    | Evaluate math expressions (+, -, \*, /, %, parens)  |
+| `createJsonTool()`        | `process_json` | Parse JSON and query with JSONPath                  |
+| `createHashTool()`        | `hash_text`    | Cryptographic hashes (SHA-256, SHA-1, MD5)          |
+| `createBase64Tool()`      | `base64`       | Encode/decode Base64 (standard and URL-safe)        |
+| `createSlugTool()`        | `slug`         | Convert text to URL-safe slugs with transliteration |
+| `createValidationTool()`  | `validate`     | Validate email, URL, UUID, IPv4, IPv6               |
+| `createDiffTool()`        | `diff`         | Generate diffs between texts (Myers algorithm)      |
+| `createRegexTool()`       | `regex`        | Regex operations with ReDoS protection              |
+| `createCsvTool()`         | `csv`          | Parse/generate CSV data (RFC 4180)                  |
+| `createMarkdownTool()`    | `markdown`     | Convert Markdown to HTML (GFM subset)               |
+| `createXmlTool()`         | `xml`          | Parse XML to JSON with XPath-like queries           |
+| `createDatetimeTool()`    | `datetime`     | Parse, format, manipulate dates (UTC + offsets)     |
+| `createCompressionTool()` | `compression`  | Gzip compress/decompress data                       |
+| `createSigningTool()`     | `signing`      | Ed25519 keypair generation, sign, and verify        |
+
+Every factory accepts an optional `{ timeout }` config:
+
+```typescript
+const calc = createCalcTool({ timeout: 10000 });
+```
+
+---
+
+## Defining Custom WASM Tools
+
+Use `defineWasmTool()` to wrap any `.wasm` module as a Cogitator tool:
+
+```typescript
+import { defineWasmTool } from '@cogitator-ai/wasm-tools';
+import { z } from 'zod';
+
+const imageProcessor = defineWasmTool({
+  name: 'process_image',
+  description: 'Resize and crop images in a WASM sandbox',
+  wasmModule: './plugins/image-proc.wasm',
+  wasmFunction: 'process',
+  parameters: z.object({
+    imageData: z.string().describe('Base64-encoded image'),
+    operation: z.enum(['resize', 'crop', 'rotate']),
+    width: z.number().optional(),
+    height: z.number().optional(),
+  }),
+  category: 'utility',
+  tags: ['image', 'processing'],
+  timeout: 10000,
+  wasi: false,
+});
+```
+
+### WasmToolConfig
+
+| Field          | Type           | Description                                |
+| -------------- | -------------- | ------------------------------------------ |
+| `name`         | `string`       | Tool name for LLM function calling         |
+| `description`  | `string`       | What the tool does (shown to the LLM)      |
+| `wasmModule`   | `string`       | Path or URL to the `.wasm` file            |
+| `wasmFunction` | `string`       | Exported function to call (default: `run`) |
+| `parameters`   | `ZodType`      | Zod schema for input validation            |
+| `category`     | `ToolCategory` | Optional category for grouping             |
+| `tags`         | `string[]`     | Optional tags for discovery                |
+| `timeout`      | `number`       | Execution timeout in ms (default: 5000)    |
+| `wasi`         | `boolean`      | Enable WASI for filesystem/env access      |
+| `memoryPages`  | `number`       | WASM linear memory pages to allocate       |
+
+---
+
+## WasmToolManager
+
+For dynamic loading, hot-reloading, and managing multiple WASM modules at runtime, use `WasmToolManager`:
+
+```typescript
+import { WasmToolManager } from '@cogitator-ai/wasm-tools';
+
+const manager = new WasmToolManager({ debounceMs: 100, useWasi: false });
+
+const tool = await manager.load('./plugins/calc.wasm');
+
+const agent = new Agent({
+  name: 'dynamic-agent',
+  model: 'openai/gpt-4o',
+  tools: manager.getTools(),
+});
+```
+
+### File Watching
+
+The manager can watch a glob pattern for `.wasm` files and automatically load, reload, or unload modules as they change on disk:
+
+```typescript
+await manager.watch('./plugins/*.wasm', {
+  onLoad: (name, path) => console.log(`Loaded: ${name}`),
+  onReload: (name, path) => console.log(`Reloaded: ${name}`),
+  onUnload: (name, path) => console.log(`Unloaded: ${name}`),
+  onError: (name, path, error) => console.error(`Error: ${name}`, error),
+});
+```
+
+When a `.wasm` file is modified, the manager closes the old plugin instance and loads the new one -- zero-downtime hot reload for agent tools.
+
+### Manager API
+
+```typescript
+const tool = await manager.load('./path/to/module.wasm');
+
+const allTools = manager.getTools();
+
+const specific = manager.getTool('calc');
+
+const mod = manager.getModule('calc');
+// { name, path, plugin, tool, loadedAt }
+
+await manager.close();
+```
+
+---
+
+## How WASM Sandboxing Works
+
+Each WASM tool runs inside an Extism plugin -- a lightweight WebAssembly runtime with strict isolation:
+
+1. **Loading**: The `WasmLoader` reads the `.wasm` binary from disk or URL and instantiates it via the Extism SDK
+2. **Execution**: Input parameters are JSON-serialized and passed to the exported WASM function via `plugin.call(functionName, input)`
+3. **Output**: The WASM function returns a byte buffer, which is parsed as JSON (or returned as raw text if parsing fails)
+4. **Isolation**: Each plugin has its own linear memory space -- it cannot access the host process memory, file system, or network unless WASI is explicitly enabled
+
+```
+┌─────────────────────────────────────┐
+│          Host Process (Node.js)      │
+│                                      │
+│  params ──► JSON.stringify ──────┐   │
+│                                  │   │
+│  ┌───────────────────────────────▼─┐ │
+│  │        Extism WASM Sandbox      │ │
+│  │                                 │ │
+│  │  ┌─────────────────────────┐    │ │
+│  │  │   Linear Memory (64MB)  │    │ │
+│  │  │   No host access        │    │ │
+│  │  │   No network            │    │ │
+│  │  │   No filesystem         │    │ │
+│  │  └─────────────────────────┘    │ │
+│  │                                 │ │
+│  └───────────────────────────────┬─┘ │
+│                                  │   │
+│  result ◄── JSON.parse ◄────────┘   │
+└─────────────────────────────────────┘
+```
+
+### Security Benefits
+
+- **No `eval` or dynamic code execution** -- computation is compiled ahead of time into WASM bytecode
+- **Memory bounds checking** -- buffer overflows in WASM trap instead of corrupting host memory
+- **Deterministic execution** -- same input always produces same output (no ambient authority)
+- **Timeout enforcement** -- long-running computations are killed after the configured timeout
+- **ReDoS protection** -- regex tools in WASM are immune to catastrophic backtracking in the host runtime
+
+---
+
+## WASM vs Docker Sandboxing
+
+| Aspect          | WASM (Extism)      | Docker                   |
+| --------------- | ------------------ | ------------------------ |
+| Cold start      | < 5 ms             | 500 ms - 2 s             |
+| Memory overhead | ~2 MB per instance | ~50 MB per container     |
+| Isolation       | Linear memory      | Full OS-level            |
+| Network access  | None (unless WASI) | Configurable             |
+| File system     | None (unless WASI) | Mountable volumes        |
+| Best for        | Pure computation   | I/O-heavy, multi-process |
+
+Use WASM tools when you need fast, lightweight sandboxing for pure computation (hashing, parsing, math, text processing). Use Docker sandboxing when tools need file system access, network calls, or a full OS environment.

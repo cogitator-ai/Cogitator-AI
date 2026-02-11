@@ -1,0 +1,127 @@
+---
+title: Docker Deployment
+description: Run Cogitator with Docker Compose — PostgreSQL, Redis, Ollama, and production container setup.
+---
+
+## Infrastructure Services
+
+Cogitator uses three core services: PostgreSQL with pgvector for memory storage, Redis for caching and job queues, and Ollama for local LLM inference.
+
+```bash
+docker-compose up -d
+```
+
+| Service    | Image                    | Port  | Purpose                    |
+| ---------- | ------------------------ | ----- | -------------------------- |
+| PostgreSQL | `pgvector/pgvector:pg16` | 5432  | Vector memory, agent state |
+| Redis      | `redis:7-alpine`         | 6379  | Cache, events, job queues  |
+| Ollama     | `ollama/ollama:latest`   | 11434 | Local LLM runtime          |
+
+## Docker Compose Configuration
+
+```yaml
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: cogitator
+      POSTGRES_PASSWORD: cogitator_dev
+      POSTGRES_DB: cogitator
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U cogitator -d cogitator']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - '11434:11434'
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+```
+
+## Environment Variables
+
+Create a `.env` file in your project root:
+
+```env
+DATABASE_URL=postgresql://cogitator:cogitator_dev@localhost:5432/cogitator
+REDIS_URL=redis://localhost:6379
+OLLAMA_URL=http://localhost:11434
+
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+EMBEDDING_PROVIDER=ollama
+EMBEDDING_MODEL=nomic-embed-text-v2-moe
+```
+
+## Production Dockerfile
+
+Multi-stage build for deploying a Cogitator application as a container:
+
+```dockerfile
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN corepack enable && pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+CMD ["node", "dist/index.js"]
+```
+
+## GPU and CPU-Only Mode
+
+The default compose file reserves NVIDIA GPUs for Ollama. On Apple Silicon, run Ollama natively:
+
+```bash
+brew install ollama && ollama serve
+docker-compose up -d postgres redis
+```
+
+Without a GPU, use the CPU compose variant and smaller models:
+
+```bash
+docker-compose -f docker-compose.cpu.yml up -d
+docker-compose exec ollama ollama pull llama3.2:3b
+```
+
+## Production Checklist
+
+- **External PostgreSQL** with backups, connection pooling (PgBouncer), and pgvector
+- **Redis Cluster** or managed Redis (ElastiCache, Upstash) for HA
+- **Dedicated GPU server** for Ollama, or cloud providers (OpenAI, Anthropic)
+- **Reverse proxy** (nginx, Caddy) with TLS termination
+- **Secrets management** via Vault, AWS SSM, or Kubernetes secrets
+- **Health checks** on all services to enable orchestrator restarts

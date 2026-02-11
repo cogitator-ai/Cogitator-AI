@@ -1,0 +1,238 @@
+---
+title: OpenAI Compatibility
+description: Drop-in OpenAI Assistants API compatibility layer that lets existing OpenAI SDK clients interact with Cogitator agents.
+---
+
+## Overview
+
+The `@cogitator-ai/openai-compat` package exposes Cogitator as an OpenAI-compatible API server. Any application built on the OpenAI SDK can point at your Cogitator instance and work without code changes -- assistants, threads, messages, and runs all map to Cogitator concepts under the hood.
+
+```bash
+pnpm add @cogitator-ai/openai-compat @cogitator-ai/core
+```
+
+## Quick Start
+
+Spin up a compatibility server in a few lines:
+
+```typescript
+import { Cogitator } from '@cogitator-ai/core';
+import { createOpenAIServer } from '@cogitator-ai/openai-compat';
+
+const cog = new Cogitator({
+  llm: {
+    defaultProvider: 'openai',
+    providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
+  },
+});
+
+const server = createOpenAIServer(cog, {
+  port: 8080,
+  apiKeys: ['sk-my-secret-key'],
+  tools: [calculator, webSearch],
+});
+
+await server.start();
+```
+
+Now use the standard OpenAI SDK against your local server:
+
+```typescript
+import OpenAI from 'openai';
+
+const openai = new OpenAI({
+  apiKey: 'sk-my-secret-key',
+  baseURL: 'http://localhost:8080/v1',
+});
+
+const assistant = await openai.beta.assistants.create({
+  model: 'gpt-4o',
+  name: 'My Assistant',
+  instructions: 'You are a helpful assistant with access to tools.',
+});
+
+const thread = await openai.beta.threads.create();
+
+await openai.beta.threads.messages.create(thread.id, {
+  role: 'user',
+  content: 'What is the square root of 144?',
+});
+
+const run = await openai.beta.threads.runs.create(thread.id, {
+  assistant_id: assistant.id,
+});
+```
+
+## OpenAIServer
+
+The server is built on Fastify and implements the full Assistants API surface:
+
+```typescript
+const server = new OpenAIServer(cogitator, config);
+await server.start();
+
+console.log(server.getBaseUrl());
+console.log(server.isRunning());
+
+await server.stop();
+```
+
+### OpenAIServerConfig
+
+| Option    | Type                  | Default            | Description                                 |
+| --------- | --------------------- | ------------------ | ------------------------------------------- |
+| `port`    | `number`              | `8080`             | Port to listen on                           |
+| `host`    | `string`              | `'0.0.0.0'`        | Host to bind to                             |
+| `apiKeys` | `string[]`            | `[]`               | API keys for auth (empty = no auth)         |
+| `tools`   | `Tool[]`              | `[]`               | Cogitator tools available to all assistants |
+| `logging` | `boolean`             | `false`            | Enable request logging via pino             |
+| `cors`    | `{ origin, methods }` | `{ origin: true }` | CORS configuration                          |
+
+## Supported Endpoints
+
+The server implements these OpenAI API routes:
+
+| Method   | Endpoint                                        | Description           |
+| -------- | ----------------------------------------------- | --------------------- |
+| `GET`    | `/v1/models`                                    | List available models |
+| `POST`   | `/v1/assistants`                                | Create assistant      |
+| `GET`    | `/v1/assistants`                                | List assistants       |
+| `GET`    | `/v1/assistants/:id`                            | Get assistant         |
+| `POST`   | `/v1/assistants/:id`                            | Update assistant      |
+| `DELETE` | `/v1/assistants/:id`                            | Delete assistant      |
+| `POST`   | `/v1/threads`                                   | Create thread         |
+| `GET`    | `/v1/threads/:id`                               | Get thread            |
+| `DELETE` | `/v1/threads/:id`                               | Delete thread         |
+| `POST`   | `/v1/threads/:id/messages`                      | Add message           |
+| `GET`    | `/v1/threads/:id/messages`                      | List messages         |
+| `GET`    | `/v1/threads/:id/messages/:mid`                 | Get message           |
+| `POST`   | `/v1/threads/:id/runs`                          | Create run            |
+| `GET`    | `/v1/threads/:id/runs/:rid`                     | Get run status        |
+| `POST`   | `/v1/threads/:id/runs/:rid/cancel`              | Cancel run            |
+| `POST`   | `/v1/threads/:id/runs/:rid/submit_tool_outputs` | Submit tool outputs   |
+| `POST`   | `/v1/files`                                     | Upload file           |
+| `GET`    | `/v1/files`                                     | List files            |
+| `DELETE` | `/v1/files/:id`                                 | Delete file           |
+
+## OpenAIAdapter
+
+For in-process usage without a network server, use `OpenAIAdapter` directly. It provides the same Assistants API as programmatic methods:
+
+```typescript
+import { createOpenAIAdapter } from '@cogitator-ai/openai-compat';
+
+const adapter = createOpenAIAdapter(cog, { tools: [calculator] });
+
+const assistant = await adapter.createAssistant({
+  model: 'gpt-4o',
+  name: 'Math Helper',
+  instructions: 'Help with math problems.',
+});
+
+const thread = await adapter.createThread();
+
+await adapter.addMessage(thread.id, {
+  role: 'user',
+  content: 'What is 15! (factorial)?',
+});
+
+const run = await adapter.createRun(thread.id, {
+  assistant_id: assistant.id,
+});
+```
+
+### Streaming Runs
+
+Pass `stream: true` in the run request to get real-time events:
+
+```typescript
+const run = await adapter.createRun(thread.id, {
+  assistant_id: assistant.id,
+  stream: true,
+});
+
+const emitter = adapter.getStreamEmitter(run.id);
+
+emitter?.on('event', (type, data) => {
+  switch (type) {
+    case 'thread.message.delta':
+      process.stdout.write(data.delta.content[0].text.value);
+      break;
+    case 'thread.run.completed':
+      console.log('\nRun finished, tokens:', data.usage);
+      break;
+  }
+});
+```
+
+## Thread Storage
+
+By default, threads and messages are stored in memory. For production, plug in Redis or PostgreSQL:
+
+```typescript
+import {
+  RedisThreadStorage,
+  PostgresThreadStorage,
+  ThreadManager,
+  createOpenAIAdapter,
+} from '@cogitator-ai/openai-compat';
+
+const storage = new RedisThreadStorage({
+  url: 'redis://localhost:6379',
+  keyPrefix: 'cogitator:',
+  ttl: 86400,
+});
+await storage.connect();
+
+const manager = new ThreadManager(storage);
+```
+
+Or use the factory function:
+
+```typescript
+import { createThreadStorage } from '@cogitator-ai/openai-compat';
+
+const storage = createThreadStorage({
+  type: 'postgres',
+  connectionString: 'postgresql://user:pass@localhost/mydb',
+  tableName: 'assistant_threads',
+});
+await storage.connect?.();
+```
+
+### Storage Options
+
+| Backend    | Package Required | Config                                   |
+| ---------- | ---------------- | ---------------------------------------- |
+| In-memory  | (none)           | `{ type: 'memory' }`                     |
+| Redis      | `ioredis`        | `{ type: 'redis', url, keyPrefix, ttl }` |
+| PostgreSQL | `pg`             | `{ type: 'postgres', connectionString }` |
+
+## Full Example: Migration from OpenAI
+
+If you have an existing OpenAI-powered app, migration is straightforward. Just change the `baseURL`:
+
+```typescript
+import OpenAI from 'openai';
+
+const openai = new OpenAI({
+  apiKey: process.env.COGITATOR_API_KEY,
+  baseURL: process.env.COGITATOR_URL + '/v1',
+});
+
+const thread = await openai.beta.threads.create();
+
+await openai.beta.threads.messages.create(thread.id, {
+  role: 'user',
+  content: 'Analyze the sentiment of this review: "Absolutely loved this product!"',
+});
+
+const run = await openai.beta.threads.runs.createAndPoll(thread.id, {
+  assistant_id: 'asst_abc123',
+});
+
+if (run.status === 'completed') {
+  const messages = await openai.beta.threads.messages.list(thread.id);
+  console.log(messages.data[0].content[0].text.value);
+}
+```

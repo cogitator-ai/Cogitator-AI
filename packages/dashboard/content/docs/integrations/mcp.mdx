@@ -1,0 +1,339 @@
+---
+title: Model Context Protocol (MCP)
+description: Full MCP support -- connect to external MCP servers to use their tools, or expose Cogitator tools as an MCP server.
+---
+
+## Overview
+
+The `@cogitator-ai/mcp` package provides bidirectional MCP integration:
+
+- **MCPClient** -- connect to any MCP server (filesystem, database, GitHub, etc.) and use its tools inside Cogitator agents.
+- **MCPServer** -- expose your Cogitator tools, resources, and prompts as an MCP server for Claude Desktop, other AI assistants, or any MCP client.
+- **Tool Adapter** -- convert between Cogitator and MCP tool formats, including Zod-to-JSON Schema conversion.
+
+```bash
+pnpm add @cogitator-ai/mcp @cogitator-ai/core
+```
+
+## MCPClient
+
+### Connecting to an MCP Server
+
+Use `MCPClient.connect()` to establish a connection. The client discovers server capabilities automatically and provides access to tools, resources, and prompts.
+
+```typescript
+import { MCPClient } from '@cogitator-ai/mcp';
+
+const client = await MCPClient.connect({
+  transport: 'stdio',
+  command: 'npx',
+  args: ['-y', '@anthropic/mcp-server-filesystem', '/home/user/documents'],
+  timeout: 10000,
+});
+
+console.log(client.getCapabilities());
+
+const tools = await client.getTools();
+const resources = await client.listResources();
+const prompts = await client.listPrompts();
+
+await client.close();
+```
+
+### Using MCP Tools with Agents
+
+The tools returned by `getTools()` are standard Cogitator `Tool` instances -- pass them directly to an agent:
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { MCPClient } from '@cogitator-ai/mcp';
+
+const fsClient = await MCPClient.connect({
+  transport: 'stdio',
+  command: 'npx',
+  args: ['-y', '@anthropic/mcp-server-filesystem', '/workspace'],
+});
+
+const dbClient = await MCPClient.connect({
+  transport: 'http',
+  url: 'http://localhost:3001/mcp',
+});
+
+const fsTools = await fsClient.getTools();
+const dbTools = await dbClient.getTools();
+
+const agent = new Agent({
+  name: 'file-manager',
+  model: 'openai/gpt-4o',
+  instructions: 'Help users manage files and query databases.',
+  tools: [...fsTools, ...dbTools],
+});
+
+const cog = new Cogitator({
+  /* ... */
+});
+const result = await cog.run(agent, {
+  input: 'List all .ts files in /workspace/src and count them',
+});
+
+await fsClient.close();
+await dbClient.close();
+```
+
+### connectMCPServer Helper
+
+For the common pattern of connect-get-tools-cleanup, use the shorthand:
+
+```typescript
+import { connectMCPServer } from '@cogitator-ai/mcp';
+
+const { tools, cleanup } = await connectMCPServer({
+  transport: 'stdio',
+  command: 'npx',
+  args: ['-y', '@anthropic/mcp-server-github'],
+  env: { GITHUB_TOKEN: process.env.GITHUB_TOKEN! },
+});
+
+const agent = new Agent({
+  name: 'github-bot',
+  model: 'openai/gpt-4o',
+  tools,
+});
+
+await cleanup();
+```
+
+### MCPClientConfig
+
+| Option          | Type                         | Description                                       |
+| --------------- | ---------------------------- | ------------------------------------------------- |
+| `transport`     | `'stdio' \| 'http' \| 'sse'` | Transport protocol                                |
+| `command`       | `string`                     | Command for stdio transport                       |
+| `args`          | `string[]`                   | Command arguments for stdio                       |
+| `env`           | `Record<string, string>`     | Environment variables for stdio                   |
+| `url`           | `string`                     | Server URL for HTTP/SSE transport                 |
+| `timeout`       | `number`                     | Connection timeout in ms                          |
+| `clientName`    | `string`                     | Client identification name                        |
+| `clientVersion` | `string`                     | Client version string                             |
+| `retry`         | `MCPRetryConfig`             | Retry settings for failed operations              |
+| `autoReconnect` | `boolean`                    | Auto-reconnect on connection loss (default: true) |
+
+### Retry and Reconnection
+
+The client has built-in retry with exponential backoff for all operations. On connection loss, it automatically reconnects:
+
+```typescript
+const client = await MCPClient.connect({
+  transport: 'http',
+  url: 'http://mcp-server:3000/mcp',
+  retry: {
+    maxRetries: 5,
+    initialDelay: 1000,
+    maxDelay: 30000,
+    backoffMultiplier: 2,
+    retryOnConnectionLoss: true,
+  },
+  onReconnecting: (attempt) => console.log(`Reconnecting (attempt ${attempt})...`),
+  onReconnected: () => console.log('Reconnected'),
+  onReconnectFailed: (err) => console.error('Reconnection failed:', err),
+});
+```
+
+### Resources and Prompts
+
+Beyond tools, MCP servers can expose resources (data sources) and prompts (reusable prompt templates):
+
+```typescript
+const resources = await client.listResources();
+
+const content = await client.readResource('file:///workspace/config.json');
+console.log(content.text);
+
+const prompts = await client.listPrompts();
+
+const messages = await client.getPrompt('code-review', {
+  language: 'typescript',
+  style: 'thorough',
+});
+```
+
+## MCPServer
+
+### Exposing Cogitator Tools
+
+Create an MCP server to make your Cogitator tools available to any MCP client:
+
+```typescript
+import { MCPServer } from '@cogitator-ai/mcp';
+import { tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const calculator = tool({
+  name: 'calculate',
+  description: 'Evaluate a math expression',
+  parameters: z.object({ expression: z.string() }),
+  execute: async ({ expression }) => eval(expression),
+});
+
+const server = new MCPServer({
+  name: 'my-tools',
+  version: '1.0.0',
+  transport: 'stdio',
+});
+
+server.registerTools([calculator]);
+await server.start();
+```
+
+### HTTP Transport
+
+For remote access, use the HTTP transport:
+
+```typescript
+const server = new MCPServer({
+  name: 'remote-tools',
+  version: '1.0.0',
+  transport: 'http',
+  port: 3000,
+  host: 'localhost',
+  logging: true,
+});
+
+server.registerTools([calculator, webSearch, fileReader]);
+await server.start();
+```
+
+Clients connect to `http://localhost:3000/mcp`.
+
+### Registering Resources
+
+Expose data sources as MCP resources:
+
+```typescript
+server.registerResource({
+  uri: 'config://app/settings',
+  name: 'App Settings',
+  description: 'Current application configuration',
+  mimeType: 'application/json',
+  read: async () => ({
+    uri: 'config://app/settings',
+    text: JSON.stringify(await loadAppSettings()),
+  }),
+});
+
+server.registerResource({
+  uri: 'db://users/{userId}',
+  name: 'User Profile',
+  description: 'Fetch a user profile by ID',
+  read: async (params) => ({
+    uri: `db://users/${params.userId}`,
+    text: JSON.stringify(await db.getUser(params.userId)),
+  }),
+});
+```
+
+### Registering Prompts
+
+Expose reusable prompt templates:
+
+```typescript
+server.registerPrompt({
+  name: 'code-review',
+  title: 'Code Review',
+  description: 'Generate a code review for the given language',
+  arguments: [
+    { name: 'language', description: 'Programming language', required: true },
+    { name: 'style', description: 'Review depth: quick or thorough' },
+  ],
+  get: async (args) => ({
+    messages: [
+      {
+        role: 'user',
+        content: {
+          type: 'text',
+          text: `Review this ${args.language} code. Style: ${args.style ?? 'thorough'}.`,
+        },
+      },
+    ],
+  }),
+});
+```
+
+## Tool Adapter
+
+Convert tools between Cogitator and MCP formats manually when you need fine-grained control.
+
+### Cogitator to MCP
+
+```typescript
+import { cogitatorToMCP } from '@cogitator-ai/mcp';
+
+const mcpDef = cogitatorToMCP(calculator);
+```
+
+### MCP to Cogitator
+
+```typescript
+import { mcpToCogitator, wrapMCPTools } from '@cogitator-ai/mcp';
+
+const cogTool = mcpToCogitator(mcpToolDefinition, client, {
+  namePrefix: 'github_',
+  descriptionTransform: (desc) => `[GitHub] ${desc}`,
+});
+
+const allTools = await wrapMCPTools(client, { namePrefix: 'fs_' });
+```
+
+### Schema Conversion
+
+The adapter includes utilities for converting between Zod schemas and JSON Schema, which is useful when working with MCP's JSON Schema-based tool definitions:
+
+```typescript
+import { zodToJsonSchema, jsonSchemaToZod } from '@cogitator-ai/mcp';
+import { z } from 'zod';
+
+const schema = z.object({
+  query: z.string().describe('Search query'),
+  limit: z.number().int().min(1).max(100).optional(),
+});
+
+const jsonSchema = zodToJsonSchema(schema);
+
+const zodSchema = jsonSchemaToZod({
+  type: 'object',
+  properties: {
+    query: { type: 'string', description: 'Search query' },
+    limit: { type: 'integer', minimum: 1, maximum: 100 },
+  },
+  required: ['query'],
+});
+```
+
+## Claude Desktop Integration
+
+To use your Cogitator tools in Claude Desktop, run an MCP server with stdio transport and add it to your Claude config:
+
+```json title="claude_desktop_config.json"
+{
+  "mcpServers": {
+    "my-cogitator-tools": {
+      "command": "node",
+      "args": ["./dist/mcp-server.js"]
+    }
+  }
+}
+```
+
+```typescript title="mcp-server.ts"
+import { MCPServer } from '@cogitator-ai/mcp';
+import { calculator, webSearch } from './tools';
+
+const server = new MCPServer({
+  name: 'my-cogitator-tools',
+  version: '1.0.0',
+  transport: 'stdio',
+});
+
+server.registerTools([calculator, webSearch]);
+await server.start();
+```

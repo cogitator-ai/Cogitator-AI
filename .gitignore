@@ -45,6 +45,9 @@ coverage/
 # Docker
 docker-compose.override.yml
 
+# Fumadocs
+.source/
+
 # Temporary
 tmp/
 temp/

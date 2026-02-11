@@ -1,0 +1,135 @@
+---
+title: Quick Start
+description: Build your first AI agent in 5 minutes.
+---
+
+## Your First Agent
+
+Create a file `src/agent.ts`:
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+
+const cogitator = new Cogitator({
+  llm: {
+    defaultProvider: 'ollama',
+    providers: {
+      ollama: { type: 'ollama', host: 'http://localhost:11434', model: 'llama3.2' },
+    },
+  },
+});
+
+const assistant = new Agent({
+  name: 'assistant',
+  instructions: 'You are a helpful assistant. Be concise and friendly.',
+});
+
+const result = await cogitator.run(assistant, 'Hello! What can you help me with?');
+
+console.log('Agent:', result.text);
+console.log('Tokens:', result.usage?.totalTokens);
+```
+
+Run it:
+
+```bash
+npx tsx src/agent.ts
+```
+
+## Adding Tools
+
+Tools give your agent the ability to take actions. Define them with Zod schemas for full type safety:
+
+```typescript
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const getWeather = tool({
+  name: 'get_weather',
+  description: 'Get the current weather for a city',
+  parameters: z.object({
+    city: z.string().describe('City name'),
+    units: z.enum(['celsius', 'fahrenheit']).default('celsius'),
+  }),
+  execute: async ({ city, units }) => ({
+    city,
+    temperature: units === 'celsius' ? 22 : 72,
+    condition: 'sunny',
+  }),
+});
+
+const weatherBot = new Agent({
+  name: 'weather-bot',
+  instructions: 'You are a weather assistant. Use the get_weather tool to answer questions.',
+  tools: [getWeather],
+});
+
+const cogitator = new Cogitator({
+  llm: {
+    defaultProvider: 'ollama',
+    providers: {
+      ollama: { type: 'ollama', host: 'http://localhost:11434', model: 'llama3.2' },
+    },
+  },
+});
+
+const result = await cogitator.run(weatherBot, 'What is the weather like in Tokyo?');
+console.log(result.text);
+```
+
+## Streaming Responses
+
+For real-time output, use streaming:
+
+```typescript
+const result = await cogitator.run(assistant, {
+  input: 'Write a short poem about coding.',
+  stream: true,
+  onToken: (token) => {
+    process.stdout.write(token);
+  },
+});
+```
+
+## Multiple Providers
+
+Configure multiple LLM providers and route agents to different models:
+
+```typescript
+const cogitator = new Cogitator({
+  llm: {
+    defaultProvider: 'ollama',
+    providers: {
+      ollama: { type: 'ollama', host: 'http://localhost:11434', model: 'llama3.2' },
+      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' },
+      anthropic: {
+        type: 'anthropic',
+        apiKey: process.env.ANTHROPIC_API_KEY!,
+        model: 'claude-sonnet-4-5-20250929',
+      },
+    },
+  },
+});
+
+// uses default ollama provider
+const localAgent = new Agent({ name: 'local', instructions: '...' });
+
+// override per-agent
+const smartAgent = new Agent({ name: 'smart', instructions: '...', model: 'openai/gpt-4o' });
+const creativeAgent = new Agent({
+  name: 'creative',
+  instructions: '...',
+  model: 'anthropic/claude-sonnet-4-5-20250929',
+});
+```
+
+Model name format:
+
+- `model-name` — uses the default provider
+- `provider/model-name` — explicitly routes to a specific provider
+
+## Next Steps
+
+- [Project Structure](/docs/getting-started/project-structure) — understand how projects are organized
+- [Configuration](/docs/getting-started/configuration) — `cogitator.yml`, environment variables, provider setup
+- [Core Concepts](/docs/core/cogitator) — deep dive into the Cogitator runtime

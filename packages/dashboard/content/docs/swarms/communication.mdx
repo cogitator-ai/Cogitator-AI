@@ -1,0 +1,256 @@
+---
+title: Agent Communication
+description: Blackboard shared state, MessageBus direct messaging, and EventEmitter coordination for inter-agent communication.
+---
+
+## Overview
+
+Agents in a swarm communicate through three complementary primitives:
+
+| Primitive        | Purpose                                                  | Pattern                       |
+| ---------------- | -------------------------------------------------------- | ----------------------------- |
+| **Blackboard**   | Shared key-value state that any agent can read/write     | Publish-subscribe on sections |
+| **MessageBus**   | Direct agent-to-agent or broadcast messaging             | Point-to-point or broadcast   |
+| **EventEmitter** | Coordination signals emitted by the swarm and strategies | Observer pattern              |
+
+Every `Swarm` instance exposes all three via `swarm.blackboard`, `swarm.messageBus`, and `swarm.events`. The `SwarmCoordinator` initializes them automatically based on your configuration.
+
+## Blackboard
+
+The blackboard is a shared state store organized into named sections. Agents read and write to sections, enabling asynchronous collaboration without direct messaging.
+
+### Configuration
+
+```typescript
+import { swarm } from '@cogitator-ai/swarms';
+
+const team = swarm('research-team')
+  .strategy('hierarchical')
+  .supervisor(leadAgent)
+  .workers([searcherAgent, analyzerAgent])
+  .blackboardConfig({
+    enabled: true,
+    sections: {
+      sources: [],
+      facts: [],
+      conclusions: [],
+    },
+    trackHistory: true,
+  })
+  .build(cogitator);
+```
+
+### API
+
+```typescript
+const bb = team.blackboard;
+
+bb.write('sources', ['https://example.com/paper.pdf'], 'searcher');
+
+const sources = bb.read<string[]>('sources');
+
+bb.append('facts', { claim: 'X is true', source: 'paper.pdf' }, 'analyzer');
+
+bb.has('conclusions');
+
+bb.getSections();
+
+const section = bb.getSection<string[]>('sources');
+// { name, data, lastModified, modifiedBy, version }
+```
+
+### History Tracking
+
+When `trackHistory: true`, every write is recorded with the author, timestamp, and version number:
+
+```typescript
+const history = bb.getHistory('facts');
+// [
+//   { value: [...], writtenBy: 'analyzer', timestamp: 1700000000, version: 1 },
+//   { value: [...], writtenBy: 'analyzer', timestamp: 1700000005, version: 2 },
+// ]
+```
+
+### Subscriptions
+
+React to changes in real-time:
+
+```typescript
+const unsubscribe = bb.subscribe('conclusions', (data, agentName) => {
+  console.log(`${agentName} updated conclusions:`, data);
+});
+
+// later
+unsubscribe();
+```
+
+## MessageBus
+
+The message bus enables direct communication between agents. Messages are typed, routable, and support both point-to-point and broadcast patterns.
+
+### Configuration
+
+```typescript
+const team = swarm('collab-team')
+  .strategy('consensus')
+  .agents([agentA, agentB, agentC])
+  .messaging({
+    enabled: true,
+    protocol: 'direct',
+    maxMessageLength: 2000,
+    maxMessagesPerTurn: 5,
+    maxTotalMessages: 100,
+  })
+  .build(cogitator);
+```
+
+### Sending Messages
+
+```typescript
+const bus = team.messageBus;
+
+await bus.send({
+  swarmId: team.id,
+  from: 'agent-a',
+  to: 'agent-b',
+  type: 'request',
+  content: 'Can you review my analysis?',
+  channel: 'reviews',
+});
+
+await bus.broadcast('agent-a', 'I found something important', 'announcements');
+```
+
+### Querying Messages
+
+```typescript
+const myMessages = bus.getMessages('agent-b');
+const unread = bus.getUnreadMessages('agent-b');
+const thread = bus.getConversation('agent-a', 'agent-b');
+const all = bus.getAllMessages();
+```
+
+### Subscribing to Incoming Messages
+
+```typescript
+const unsubscribe = bus.subscribe('agent-b', (message) => {
+  console.log(`${message.from}: ${message.content}`);
+});
+```
+
+### Rate Limiting
+
+The `InMemoryMessageBus` enforces the limits you set in the configuration:
+
+- `maxMessageLength` — rejects messages that exceed the character limit
+- `maxMessagesPerTurn` — per-agent message cap, reset between turns via `bus.resetTurnCounts()`
+- `maxTotalMessages` — hard cap on total messages to prevent infinite loops
+
+## EventEmitter
+
+The swarm event system tracks all coordination activity. Strategies emit events at key points, and you can subscribe from outside the swarm for logging, metrics, or UI updates.
+
+### Subscribing
+
+```typescript
+team.on('agent:start', (event) => {
+  console.log(`[${event.type}] ${event.agentName} at ${event.timestamp}`);
+});
+
+team.on('swarm:complete', (event) => {
+  console.log('Swarm finished:', event.data);
+});
+
+// wildcard catches everything
+team.on('*', (event) => {
+  metrics.record(event.type, event.data);
+});
+
+// one-time listener
+team.once('consensus:reached', (event) => {
+  alert(`Decision: ${event.data.decision}`);
+});
+```
+
+### Built-in Event Types
+
+Events emitted by the core coordinator:
+
+| Event            | Data                                    |
+| ---------------- | --------------------------------------- |
+| `swarm:start`    | `{ swarmId, strategy, input }`          |
+| `swarm:complete` | `{ swarmId, outputLength, agentCount }` |
+| `swarm:error`    | `{ swarmId, error }`                    |
+| `swarm:paused`   | `{ swarmId }`                           |
+| `swarm:resumed`  | `{ swarmId }`                           |
+| `swarm:aborted`  | `{ swarmId }`                           |
+| `agent:start`    | `{ agentName, input }`                  |
+| `agent:complete` | `{ agentName, result }`                 |
+| `agent:error`    | `{ agentName, error }`                  |
+
+Strategy-specific events:
+
+| Event                                                                                                                         | Strategy    |
+| ----------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| `consensus:round`, `consensus:reached`                                                                                        | Consensus   |
+| `auction:start`, `auction:bid`, `auction:winner`, `auction:complete`                                                          | Auction     |
+| `pipeline:stage`, `pipeline:stage:complete`, `pipeline:gate:pass`, `pipeline:gate:fail`                                       | Pipeline    |
+| `debate:round`, `debate:turn`                                                                                                 | Debate      |
+| `negotiation:start`, `negotiation:round`, `negotiation:phase-change`, `negotiation:agreement-reached`, `negotiation:deadlock` | Negotiation |
+
+### Querying Event History
+
+The event emitter keeps a rolling buffer of recent events (default 1000):
+
+```typescript
+const events = team.events;
+
+const allEvents = events.getEvents();
+const agentEvents = events.getEventsByAgent('frontend-dev');
+const roundEvents = events.getEventsByType('consensus:round');
+
+events.clearEvents();
+```
+
+## Using Tools for Communication
+
+Strategies automatically inject swarm context into agent runs, but you can also create explicit communication tools:
+
+```typescript
+import { tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const readBoard = tool({
+  name: 'read_blackboard',
+  description: 'Read a section from the shared blackboard',
+  parameters: z.object({ section: z.string() }),
+  execute: async ({ section }, { swarm }) => {
+    return swarm.blackboard.read(section);
+  },
+});
+
+const writeBoard = tool({
+  name: 'write_blackboard',
+  description: 'Write data to a blackboard section',
+  parameters: z.object({
+    section: z.string(),
+    data: z.unknown(),
+  }),
+  execute: async ({ section, data }, { swarm }) => {
+    swarm.blackboard.write(section, data, 'agent');
+    return { success: true };
+  },
+});
+```
+
+The `@cogitator-ai/swarms` package exports ready-made tool factories via `createBlackboardTools()`, `createMessagingTools()`, `createDelegationTools()`, `createVotingTools()`, and `createNegotiationTools()`.
+
+## Redis-Backed Variants
+
+For distributed swarms, all three communication primitives have Redis-backed implementations that synchronize state across machines:
+
+- `RedisMessageBus` — messages persisted in Redis lists, delivered via pub/sub
+- `RedisBlackboard` — sections stored in Redis keys, changes broadcast via pub/sub
+- `RedisSwarmEventEmitter` — events stored in Redis lists, live-streamed via pub/sub
+
+These are used automatically when you enable distributed mode. See [Distributed Swarms](/docs/swarms/distributed) for details.

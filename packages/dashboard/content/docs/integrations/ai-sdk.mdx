@@ -1,0 +1,228 @@
+---
+title: Vercel AI SDK
+description: Bidirectional bridge between Cogitator and the Vercel AI SDK -- use Cogitator agents as AI SDK providers or use AI SDK models inside Cogitator.
+---
+
+## Overview
+
+The `@cogitator-ai/ai-sdk` package connects the two ecosystems in both directions:
+
+- **Cogitator as provider** -- expose Cogitator agents as `LanguageModelV1` instances, so you can use them with `generateText`, `streamText`, and other AI SDK functions.
+- **AI SDK as backend** -- wrap any AI SDK model as a Cogitator `LLMBackend`, so your agents can run on AI SDK providers like Google, Mistral, or Cohere.
+
+```bash
+pnpm add @cogitator-ai/ai-sdk @cogitator-ai/core ai @ai-sdk/provider
+```
+
+## Cogitator as AI SDK Provider
+
+### cogitatorModel
+
+The simplest way to use a Cogitator agent inside the AI SDK. Pass a `Cogitator` instance, an `Agent`, and get back a `LanguageModelV1`:
+
+```typescript
+import { generateText, streamText } from 'ai';
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { cogitatorModel } from '@cogitator-ai/ai-sdk';
+
+const cog = new Cogitator({
+  llm: {
+    defaultProvider: 'openai',
+    providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
+  },
+});
+
+const agent = new Agent({
+  name: 'researcher',
+  model: 'openai/gpt-4o',
+  instructions: 'You are an expert researcher. Always cite sources.',
+  tools: [webSearch, readUrl],
+});
+
+const model = cogitatorModel(cog, agent, { temperature: 0.7 });
+
+const { text } = await generateText({
+  model,
+  prompt: 'What are the latest advances in quantum computing?',
+});
+```
+
+The model supports both `doGenerate` (full response) and `doStream` (streaming), so it works with all AI SDK functions.
+
+### createCogitatorProvider
+
+When you have multiple agents registered with Cogitator, use `createCogitatorProvider` to create a provider function that resolves agents by name:
+
+```typescript
+import { generateText } from 'ai';
+import { createCogitatorProvider } from '@cogitator-ai/ai-sdk';
+
+const provider = createCogitatorProvider(cog);
+
+const { text } = await generateText({
+  model: provider('researcher', { temperature: 0.5 }),
+  prompt: 'Explain CRISPR gene editing',
+});
+
+const { text: summary } = await generateText({
+  model: provider('summarizer'),
+  prompt: text,
+});
+```
+
+The provider also exposes a `.languageModel()` method for explicit usage:
+
+```typescript
+const model = provider.languageModel('researcher', { maxTokens: 2048 });
+```
+
+### CogitatorProviderOptions
+
+| Option        | Type     | Description                      |
+| ------------- | -------- | -------------------------------- |
+| `temperature` | `number` | Override the agent's temperature |
+| `maxTokens`   | `number` | Override the agent's max tokens  |
+| `topP`        | `number` | Override top-p sampling          |
+
+## AI SDK Models in Cogitator
+
+### fromAISDK
+
+Wrap any AI SDK `LanguageModelV1` as a Cogitator `LLMBackend`. This lets you use providers that Cogitator doesn't natively support -- Google Gemini, Mistral, Cohere, or any custom provider.
+
+```typescript
+import { google } from '@ai-sdk/google';
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { fromAISDK } from '@cogitator-ai/ai-sdk';
+
+const geminiBackend = fromAISDK(google('gemini-2.0-flash'));
+
+const cog = new Cogitator();
+
+const agent = new Agent({
+  name: 'gemini-agent',
+  instructions: 'You are a creative writing assistant.',
+  backend: geminiBackend,
+});
+
+const result = await cog.run(agent, { input: 'Write a haiku about TypeScript' });
+```
+
+The `AISDKBackend` class implements both `chat()` and `chatStream()`, so streaming works out of the box:
+
+```typescript
+const result = await cog.run(agent, {
+  input: 'Tell me a story',
+  stream: true,
+  onToken: (token) => process.stdout.write(token),
+});
+```
+
+## Tool Conversion
+
+Tools can be converted between the two systems, so you never need to rewrite tool definitions.
+
+### Cogitator to AI SDK
+
+```typescript
+import { toAISDKTool, convertToolsToAISDK } from '@cogitator-ai/ai-sdk';
+
+const aiTool = toAISDKTool(cogitatorCalculator);
+
+const allTools = convertToolsToAISDK([calculator, webSearch, fileReader]);
+
+const { text, toolCalls } = await generateText({
+  model: provider('assistant'),
+  prompt: 'What is 42 * 17?',
+  tools: allTools,
+});
+```
+
+### AI SDK to Cogitator
+
+```typescript
+import { tool } from 'ai';
+import { z } from 'zod';
+import { fromAISDKTool, convertToolsFromAISDK } from '@cogitator-ai/ai-sdk';
+
+const weatherTool = tool({
+  description: 'Get current weather for a location',
+  parameters: z.object({
+    location: z.string().describe('City name'),
+    unit: z.enum(['celsius', 'fahrenheit']).optional(),
+  }),
+  execute: async ({ location, unit }) => {
+    return { temperature: 22, unit: unit ?? 'celsius', location };
+  },
+});
+
+const cogWeather = fromAISDKTool(weatherTool, 'get_weather');
+
+const agent = new Agent({
+  name: 'weather-bot',
+  model: 'openai/gpt-4o',
+  instructions: 'Help users check the weather.',
+  tools: [cogWeather],
+});
+```
+
+Convert multiple tools at once with `convertToolsFromAISDK`:
+
+```typescript
+import { convertToolsFromAISDK } from '@cogitator-ai/ai-sdk';
+
+const aiTools = { weather: weatherTool, search: searchTool, calc: calcTool };
+const cogTools = convertToolsFromAISDK(aiTools);
+
+const agent = new Agent({
+  name: 'multi-tool',
+  model: 'openai/gpt-4o',
+  tools: cogTools,
+});
+```
+
+## Full Example: AI SDK + Cogitator in Next.js
+
+Combining both packages for a Next.js app that uses Cogitator agents through the AI SDK's `streamText`:
+
+```typescript title="app/api/chat/route.ts"
+import { streamText } from 'ai';
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { cogitatorModel, convertToolsToAISDK } from '@cogitator-ai/ai-sdk';
+import { z } from 'zod';
+
+const cog = new Cogitator({
+  llm: {
+    defaultProvider: 'anthropic',
+    providers: { anthropic: { apiKey: process.env.ANTHROPIC_API_KEY! } },
+  },
+});
+
+const agent = new Agent({
+  name: 'assistant',
+  model: 'anthropic/claude-sonnet-4-20250514',
+  instructions: 'You are a helpful coding assistant.',
+  tools: [
+    tool({
+      name: 'run_code',
+      description: 'Execute a JavaScript expression',
+      parameters: z.object({ code: z.string() }),
+      execute: async ({ code }) => eval(code),
+    }),
+  ],
+});
+
+const model = cogitatorModel(cog, agent);
+
+export async function POST(req: Request) {
+  const { messages } = await req.json();
+
+  const result = streamText({
+    model,
+    messages,
+    tools: convertToolsToAISDK(agent.tools),
+  });
+
+  return result.toDataStreamResponse();
+}
+```

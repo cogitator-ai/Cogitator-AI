@@ -1,0 +1,137 @@
+---
+title: Architecture
+description: System architecture and component diagram for the Cogitator runtime.
+---
+
+## High-Level Architecture
+
+Cogitator is designed as a **distributed agent runtime** with clear separation of concerns across four layers:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                      USER LAYER                          │
+│   SDK (TypeScript)  │  REST API  │  WebSocket  │  CLI   │
+└─────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│                    CONTROL PLANE                         │
+│  Gateway  │  Orchestrator  │  Scheduler  │  Registry    │
+└─────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│                     DATA PLANE                           │
+│  Agent Execution Engine  │  Workflow Engine  │  Swarms   │
+│  Worker Pools (Docker/WASM/Native)                       │
+└─────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│                    STORAGE LAYER                         │
+│  Redis (sessions, cache, pub/sub)                        │
+│  Postgres + pgvector (memory, embeddings, search)        │
+│  Object Storage (artifacts, files, snapshots)            │
+└─────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────┐
+│                    LLM BACKENDS                          │
+│  Ollama │ OpenAI │ Anthropic │ Google │ Azure │ Bedrock  │
+└─────────────────────────────────────────────────────────┘
+```
+
+## Package Architecture
+
+The 26 packages follow a layered dependency model:
+
+### Layer 0: Types
+
+`@cogitator-ai/types` — zero-dependency shared TypeScript interfaces. Every other package depends on this.
+
+### Layer 1: Core Runtime
+
+`@cogitator-ai/core` — the `Cogitator` class, `Agent`, `tool()`, tool registry, built-in tools. Depends only on `types`.
+
+### Layer 2: Infrastructure
+
+- `@cogitator-ai/models` — LLM backend implementations (Ollama, OpenAI, Anthropic, Google, Azure, Bedrock)
+- `@cogitator-ai/config` — YAML/env config loading
+- `@cogitator-ai/redis` — Redis pub/sub, streams, distributed state
+
+### Layer 3: Capabilities
+
+- `@cogitator-ai/memory` — memory adapters, embeddings, RAG, hybrid search, knowledge graphs
+- `@cogitator-ai/workflows` — DAG engine, sagas, scheduling, checkpoints
+- `@cogitator-ai/swarms` — multi-agent coordination, 8 strategies, assessment
+- `@cogitator-ai/sandbox` — Docker/WASM sandboxed execution
+- `@cogitator-ai/mcp` — Model Context Protocol client & server
+- `@cogitator-ai/tools` — extended tool library
+- `@cogitator-ai/wasm-tools` — WASM-based tools
+
+### Layer 4: Server Adapters
+
+- `@cogitator-ai/express` — Express.js server
+- `@cogitator-ai/fastify` — Fastify server
+- `@cogitator-ai/hono` — Hono multi-runtime server
+- `@cogitator-ai/koa` — Koa server
+
+### Layer 5: Integrations
+
+- `@cogitator-ai/next` — Next.js integration
+- `@cogitator-ai/ai-sdk` — Vercel AI SDK bridge
+- `@cogitator-ai/openai-compat` — OpenAI API compatibility
+
+### Layer 6: Observability
+
+- `@cogitator-ai/langfuse` — Langfuse tracing and cost tracking
+
+## Agent Execution Flow
+
+```
+User Input
+    │
+    ▼
+Cogitator.run(agent, input)
+    │
+    ├─── Build message history (system prompt + context)
+    │
+    ├─── Send to LLM Backend
+    │         │
+    │         ▼
+    │    LLM Response
+    │         │
+    │         ├── Text only → Return result
+    │         │
+    │         └── Tool calls → Execute tools
+    │                   │
+    │                   ▼
+    │              Tool Results
+    │                   │
+    │                   └── Append to messages, loop back to LLM
+    │
+    └─── Return final AgentResult
+           (text, toolCalls, usage, metadata)
+```
+
+## Key Design Decisions
+
+| Decision          | Choice          | Rationale                                  |
+| ----------------- | --------------- | ------------------------------------------ |
+| Language          | TypeScript      | Type safety, Node.js ecosystem, full-stack |
+| Package manager   | pnpm            | Fast, disk-efficient, workspace support    |
+| Module system     | ESM             | Modern standard, tree-shaking              |
+| Schema validation | Zod             | Runtime + static types from single source  |
+| Build tool        | tsup            | Fast esbuild-based builds, DTS generation  |
+| Monorepo          | pnpm workspaces | Simple, no extra tooling needed            |
+
+## Extensibility
+
+Every layer is pluggable:
+
+- **LLM Backends** — implement the `LLMBackend` interface
+- **Memory Adapters** — implement the `MemoryAdapter` interface
+- **Tools** — use `tool()` factory with any async function
+- **Workflow Nodes** — `functionNode()` wraps arbitrary code
+- **Swarm Strategies** — implement `SwarmStrategy` interface
+- **Server Adapters** — follow the adapter pattern from existing packages

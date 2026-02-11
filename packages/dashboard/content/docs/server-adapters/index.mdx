@@ -1,0 +1,109 @@
+---
+title: Server Adapters
+description: Expose your Cogitator agents, workflows, and swarms as REST APIs with built-in streaming, WebSocket, and OpenAPI support.
+---
+
+Cogitator ships four server adapters that turn your agent runtime into a production-ready HTTP API. Every adapter provides the same set of endpoints, streaming protocol, and OpenAPI generation — pick the one that matches your stack.
+
+## Available Adapters
+
+| Package                 | Framework | Min Version | Style                         |
+| ----------------------- | --------- | ----------- | ----------------------------- |
+| `@cogitator-ai/express` | Express   | 4.18+       | Class-based `CogitatorServer` |
+| `@cogitator-ai/fastify` | Fastify   | 5.x         | Plugin `cogitatorPlugin`      |
+| `@cogitator-ai/hono`    | Hono      | 4.x         | Factory `cogitatorApp`        |
+| `@cogitator-ai/koa`     | Koa       | 2.15+       | Factory `cogitatorApp`        |
+
+## Common Endpoints
+
+All adapters register the same route structure under a configurable base path (default: `/cogitator`):
+
+| Method   | Path                       | Description                  |
+| -------- | -------------------------- | ---------------------------- |
+| `GET`    | `/health`                  | Health check                 |
+| `GET`    | `/ready`                   | Readiness probe              |
+| `GET`    | `/agents`                  | List registered agents       |
+| `POST`   | `/agents/:name/run`        | Run an agent (JSON response) |
+| `POST`   | `/agents/:name/stream`     | Run an agent (SSE stream)    |
+| `GET`    | `/threads/:id`             | Get thread messages          |
+| `POST`   | `/threads/:id/messages`    | Add a message to a thread    |
+| `DELETE` | `/threads/:id`             | Delete a thread              |
+| `GET`    | `/tools`                   | List all registered tools    |
+| `GET`    | `/workflows`               | List workflows               |
+| `POST`   | `/workflows/:name/run`     | Execute a workflow           |
+| `POST`   | `/workflows/:name/stream`  | Stream workflow execution    |
+| `GET`    | `/swarms`                  | List swarms                  |
+| `POST`   | `/swarms/:name/run`        | Execute a swarm              |
+| `POST`   | `/swarms/:name/stream`     | Stream swarm execution       |
+| `GET`    | `/swarms/:name/blackboard` | Get swarm blackboard state   |
+| `GET`    | `/openapi.json`            | OpenAPI 3.0 spec             |
+| `GET`    | `/docs`                    | Swagger UI                   |
+
+## Streaming Protocol
+
+Every adapter implements the same SSE streaming protocol. Events are sent as `text/event-stream` with the following event types:
+
+```
+event: start
+data: {"id":"msg_abc123","type":"start"}
+
+event: text_start
+data: {"id":"txt_def456","type":"text_start"}
+
+event: text_delta
+data: {"id":"txt_def456","type":"text_delta","delta":"Hello"}
+
+event: text_end
+data: {"id":"txt_def456","type":"text_end"}
+
+event: tool_call_start
+data: {"id":"tool_ghi789","type":"tool_call_start","name":"get_weather"}
+
+event: tool_call_end
+data: {"id":"tool_ghi789","type":"tool_call_end"}
+
+event: tool_result
+data: {"id":"res_jkl012","type":"tool_result","callId":"tool_ghi789","result":{...}}
+
+event: finish
+data: {"id":"msg_abc123","type":"finish","usage":{"inputTokens":50,"outputTokens":120,"totalTokens":170}}
+
+event: done
+data: [DONE]
+```
+
+## Shared Features
+
+All adapters support:
+
+- **Authentication** — custom auth function receives the request and returns an `AuthContext`
+- **Swagger / OpenAPI** — auto-generated spec with Swagger UI at `/docs`
+- **WebSocket** — real-time bidirectional communication (subscribe, run, stop)
+- **SSE Streaming** — Server-Sent Events for agent, workflow, and swarm execution
+
+## Choosing an Adapter
+
+| Use case                                  | Recommended             |
+| ----------------------------------------- | ----------------------- |
+| Existing Express codebase                 | `@cogitator-ai/express` |
+| High-performance, schema validation       | `@cogitator-ai/fastify` |
+| Edge / multi-runtime (Workers, Bun, Deno) | `@cogitator-ai/hono`    |
+| Koa-based middleware stack                | `@cogitator-ai/koa`     |
+
+## Quick Install
+
+```bash
+# pick one
+pnpm add @cogitator-ai/express express
+pnpm add @cogitator-ai/fastify fastify
+pnpm add @cogitator-ai/hono hono
+pnpm add @cogitator-ai/koa koa @koa/router
+```
+
+## Next Steps
+
+- [Express Adapter](/docs/server-adapters/express) — class-based setup with middleware
+- [Fastify Adapter](/docs/server-adapters/fastify) — native Fastify plugin with schema validation
+- [Hono Adapter](/docs/server-adapters/hono) — multi-runtime edge deployment
+- [Koa Adapter](/docs/server-adapters/koa) — middleware-chain pattern
+- [OpenAPI Generation](/docs/server-adapters/openapi) — customizing the generated spec

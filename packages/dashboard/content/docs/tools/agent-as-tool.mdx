@@ -1,0 +1,272 @@
+---
+title: Agent as Tool
+description: Wrap agents as tools with agentAsTool() to enable hierarchical delegation between agents.
+---
+
+## Overview
+
+The `agentAsTool()` function wraps a Cogitator agent as a tool that other agents can call. This enables hierarchical delegation -- a manager agent can delegate subtasks to specialist agents, each with their own models, instructions, and tool sets.
+
+```typescript
+import { Cogitator, Agent, agentAsTool } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  llm: {
+    providers: {
+      openai: { apiKey: process.env.OPENAI_API_KEY! },
+    },
+  },
+});
+
+const researcher = new Agent({
+  name: 'researcher',
+  model: 'openai/gpt-4o',
+  instructions: 'You research topics thoroughly and return detailed findings.',
+  tools: [webSearch, webScrape],
+});
+
+const writer = new Agent({
+  name: 'writer',
+  model: 'openai/gpt-4o',
+  instructions: 'You write clear, well-structured articles from research notes.',
+});
+
+const manager = new Agent({
+  name: 'manager',
+  model: 'openai/gpt-4o',
+  instructions:
+    'You coordinate research and writing tasks. Delegate research to the researcher and writing to the writer.',
+  tools: [
+    agentAsTool(cog, researcher, {
+      name: 'research',
+      description: 'Delegate a research task. Provide a clear research question.',
+    }),
+    agentAsTool(cog, writer, {
+      name: 'write_article',
+      description: 'Delegate writing an article. Provide the research notes and topic.',
+    }),
+  ],
+});
+
+const result = await cog.run(manager, {
+  input: 'Write a comprehensive article about WebAssembly in production',
+});
+```
+
+---
+
+## Function Signature
+
+```typescript
+function agentAsTool(
+  cogitator: Cogitator,
+  agent: Agent,
+  options: AgentAsToolOptions
+): Tool<{ task: string }, AgentToolResult>;
+```
+
+The returned tool has a single `task` parameter -- a string that becomes the input to the inner agent's `cog.run()` call.
+
+---
+
+## Options
+
+```typescript
+interface AgentAsToolOptions {
+  name: string;
+  description: string;
+  timeout?: number;
+  includeUsage?: boolean;
+  includeToolCalls?: boolean;
+}
+```
+
+| Field              | Type      | Required | Description                                         |
+| ------------------ | --------- | -------- | --------------------------------------------------- |
+| `name`             | `string`  | Yes      | Tool name visible to the parent agent               |
+| `description`      | `string`  | Yes      | What this agent-tool does (shown to the LLM)        |
+| `timeout`          | `number`  | No       | Override timeout for the inner agent run (ms)       |
+| `includeUsage`     | `boolean` | No       | Include token usage and cost in the result          |
+| `includeToolCalls` | `boolean` | No       | Include the list of tool calls the inner agent made |
+
+### Writing Good Descriptions
+
+The `description` is what the parent agent reads to decide when to delegate. Be specific about what the wrapped agent specializes in and what kind of input it expects:
+
+```typescript
+agentAsTool(cog, sqlAgent, {
+  name: 'query_database',
+  description:
+    'Run a natural language query against the database. Provide the question in plain English -- the agent will generate and execute the SQL.',
+});
+```
+
+---
+
+## Result Shape
+
+The wrapped agent returns an `AgentToolResult`:
+
+```typescript
+interface AgentToolResult {
+  output: string;
+  success: boolean;
+  error?: string;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    cost: number;
+    duration: number;
+  };
+  toolCalls?: Array<{ name: string; arguments: unknown }>;
+}
+```
+
+On success, `output` contains the agent's final text response. On failure, `success` is `false` and `error` contains the error message. The parent agent sees this result and can decide how to proceed -- retry, try a different approach, or report the failure.
+
+---
+
+## Patterns
+
+### Manager-Worker Hierarchy
+
+One manager agent coordinates multiple specialist workers:
+
+```typescript
+const codeReviewer = new Agent({
+  name: 'code-reviewer',
+  model: 'openai/gpt-4o',
+  instructions: 'Review code for bugs, security issues, and style problems.',
+});
+
+const testWriter = new Agent({
+  name: 'test-writer',
+  model: 'openai/gpt-4o',
+  instructions: 'Write comprehensive unit tests for the provided code.',
+  tools: [fileRead, fileWrite],
+});
+
+const leadDev = new Agent({
+  name: 'lead-developer',
+  model: 'openai/gpt-4o',
+  instructions: 'You are a tech lead. Review code with the reviewer, then have tests written.',
+  tools: [
+    agentAsTool(cog, codeReviewer, {
+      name: 'review_code',
+      description: 'Get a code review. Send the code or file path to review.',
+    }),
+    agentAsTool(cog, testWriter, {
+      name: 'write_tests',
+      description: 'Generate unit tests for code. Send the code to test.',
+    }),
+  ],
+});
+```
+
+### Routing by Capability
+
+Use different models for different sub-agents based on task complexity:
+
+```typescript
+const cheapSummarizer = new Agent({
+  name: 'summarizer',
+  model: 'openai/gpt-4o-mini',
+  instructions: 'Summarize text concisely.',
+});
+
+const deepAnalyst = new Agent({
+  name: 'analyst',
+  model: 'anthropic/claude-sonnet-4-20250514',
+  instructions: 'Perform deep analysis with nuanced reasoning.',
+});
+
+const router = new Agent({
+  name: 'router',
+  model: 'openai/gpt-4o-mini',
+  instructions:
+    'Route tasks: use summarize for simple summaries, use analyze for complex analysis.',
+  tools: [
+    agentAsTool(cog, cheapSummarizer, {
+      name: 'summarize',
+      description: 'Quick text summarization. Use for straightforward content.',
+    }),
+    agentAsTool(cog, deepAnalyst, {
+      name: 'analyze',
+      description: 'Deep analysis with reasoning. Use for complex questions.',
+      includeUsage: true,
+    }),
+  ],
+});
+```
+
+### Tracking Inner Agent Usage
+
+Enable `includeUsage` and `includeToolCalls` to give the parent agent visibility into what the sub-agent did:
+
+```typescript
+const researchTool = agentAsTool(cog, researcher, {
+  name: 'research',
+  description: 'Research a topic thoroughly',
+  includeUsage: true,
+  includeToolCalls: true,
+  timeout: 120_000,
+});
+```
+
+The parent agent receives:
+
+```json
+{
+  "output": "WebAssembly (Wasm) is a binary instruction format...",
+  "success": true,
+  "usage": {
+    "inputTokens": 2340,
+    "outputTokens": 1856,
+    "totalTokens": 4196,
+    "cost": 0.042,
+    "duration": 8500
+  },
+  "toolCalls": [
+    { "name": "web_search", "arguments": { "query": "WebAssembly production use cases 2025" } },
+    { "name": "web_scrape", "arguments": { "url": "https://..." } }
+  ]
+}
+```
+
+---
+
+## Error Handling
+
+`agentAsTool` catches all errors from the inner agent run and returns them as structured results instead of throwing. The parent agent always gets a response it can work with:
+
+```typescript
+// if the inner agent times out or fails
+{
+  "output": "",
+  "success": false,
+  "error": "Agent run timed out after 30000ms"
+}
+```
+
+The parent agent sees `success: false` and can decide to retry with simpler instructions, try a different agent, or inform the user.
+
+---
+
+## Timeout Behavior
+
+The timeout resolution follows this priority:
+
+1. `timeout` in `AgentAsToolOptions` (if set)
+2. `timeout` in the inner agent's config
+3. Cogitator runtime's `defaultTimeout`
+
+For long-running sub-agents (research, code generation), explicitly set a generous timeout:
+
+```typescript
+agentAsTool(cog, researcher, {
+  name: 'deep_research',
+  description: 'Extensive multi-source research',
+  timeout: 300_000,
+});
+```

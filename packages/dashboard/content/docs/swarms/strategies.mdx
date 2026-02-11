@@ -1,0 +1,264 @@
+---
+title: Coordination Strategies
+description: All 8 built-in strategies for multi-agent coordination — hierarchical, round-robin, consensus, auction, pipeline, debate, negotiation, and distributed.
+---
+
+## Overview
+
+Every swarm is driven by a **strategy** that controls how agents are coordinated. Strategies decide which agents run, in what order, how their outputs combine, and how decisions are reached.
+
+All strategies extend `BaseStrategy` and implement a single `execute(options)` method. You can use the built-in `createStrategy` factory or configure them through the `swarm()` builder.
+
+## Hierarchical
+
+A supervisor agent receives the task, breaks it down, and delegates subtasks to worker agents. The supervisor coordinates outputs and produces the final result.
+
+```typescript
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { swarm } from '@cogitator-ai/swarms';
+
+const team = swarm('dev-team')
+  .strategy('hierarchical')
+  .supervisor(
+    new Agent({
+      name: 'tech-lead',
+      model: 'openai/gpt-4o',
+      instructions: 'Break down tasks and delegate to your team members.',
+    })
+  )
+  .workers([
+    new Agent({ name: 'frontend-dev', instructions: 'Build UI components.' }),
+    new Agent({ name: 'backend-dev', instructions: 'Build API endpoints.' }),
+  ])
+  .hierarchical({
+    maxDelegationDepth: 3,
+    workerCommunication: false,
+    routeThrough: 'supervisor',
+    visibility: 'full',
+  })
+  .build(cogitator);
+```
+
+| Option                | Default        | Description                                     |
+| --------------------- | -------------- | ----------------------------------------------- |
+| `maxDelegationDepth`  | `3`            | How many levels deep delegation can go          |
+| `workerCommunication` | `false`        | Whether workers can message each other directly |
+| `routeThrough`        | `'supervisor'` | All communication routes through the supervisor |
+| `visibility`          | `'full'`       | Supervisor can see all worker outputs           |
+
+**Best for:** Complex projects, team-style delegation, coordinated multi-step work.
+
+## Round-Robin
+
+Tasks rotate between agents. Each incoming request goes to the next agent in sequence. Supports sticky sessions for follow-up routing.
+
+```typescript
+const pool = swarm('support-pool')
+  .strategy('round-robin')
+  .agents([
+    new Agent({ name: 'support-1', instructions: 'Handle customer tickets.' }),
+    new Agent({ name: 'support-2', instructions: 'Handle customer tickets.' }),
+    new Agent({ name: 'support-3', instructions: 'Handle customer tickets.' }),
+  ])
+  .roundRobin({
+    sticky: true,
+    stickyKey: (input) => extractTicketId(input),
+    rotation: 'sequential',
+  })
+  .build(cogitator);
+```
+
+| Option      | Default        | Description                                            |
+| ----------- | -------------- | ------------------------------------------------------ |
+| `sticky`    | `false`        | Enable sticky sessions — same agent handles follow-ups |
+| `stickyKey` | `undefined`    | Function to extract a routing key from the input       |
+| `rotation`  | `'sequential'` | `'sequential'` or `'random'`                           |
+
+**Best for:** Load balancing, support teams, distributing work evenly.
+
+## Consensus
+
+All agents independently evaluate the task and cast votes. Consensus is checked against a configurable threshold and resolution method.
+
+```typescript
+const reviewBoard = swarm('review-board')
+  .strategy('consensus')
+  .agents([
+    new Agent({ name: 'security-reviewer', instructions: 'Focus on security issues.' }),
+    new Agent({ name: 'perf-reviewer', instructions: 'Focus on performance.' }),
+    new Agent({ name: 'quality-reviewer', instructions: 'Focus on code quality.' }),
+  ])
+  .consensus({
+    threshold: 0.66,
+    maxRounds: 3,
+    resolution: 'majority',
+    onNoConsensus: 'supervisor-decides',
+  })
+  .build(cogitator);
+
+const result = await reviewBoard.run({ input: 'Should we merge this PR?' });
+```
+
+| Option          | Default      | Description                                       |
+| --------------- | ------------ | ------------------------------------------------- |
+| `threshold`     | `0.5`        | Proportion of votes needed (0.0 - 1.0)            |
+| `maxRounds`     | `3`          | Maximum discussion rounds before giving up        |
+| `resolution`    | `'majority'` | `'majority'`, `'unanimous'`, or `'weighted'`      |
+| `onNoConsensus` | `'fail'`     | `'fail'`, `'escalate'`, or `'supervisor-decides'` |
+| `weights`       | `undefined`  | Per-agent vote weights for weighted resolution    |
+
+Agents vote by including `VOTE: <decision>` in their output. Across multiple rounds, agents see previous votes and can change their position. The result includes the full vote history.
+
+**Best for:** Critical decisions, code reviews, risk assessments.
+
+## Auction
+
+Agents bid on tasks based on their capability. The winner executes the task. Supports both LLM-based bidding (agents self-assess) and custom bid functions.
+
+```typescript
+const expertPool = swarm('expert-pool')
+  .strategy('auction')
+  .agents([
+    new Agent({
+      name: 'python-expert',
+      instructions: 'Python and data science specialist.',
+      metadata: { expertise: ['python', 'pandas', 'ml'] },
+    }),
+    new Agent({
+      name: 'typescript-expert',
+      instructions: 'TypeScript and Node.js specialist.',
+      metadata: { expertise: ['typescript', 'node', 'react'] },
+    }),
+  ])
+  .auction({
+    bidding: 'capability-match',
+    selection: 'highest-bid',
+    minBid: 0.3,
+  })
+  .build(cogitator);
+```
+
+| Option        | Default              | Description                                              |
+| ------------- | -------------------- | -------------------------------------------------------- |
+| `bidding`     | `'capability-match'` | `'capability-match'` (LLM self-assessment) or `'custom'` |
+| `bidFunction` | `undefined`          | Custom `(agent, task) => number` scoring function        |
+| `selection`   | `'highest-bid'`      | `'highest-bid'` or `'weighted-random'`                   |
+| `minBid`      | `0`                  | Minimum score to be eligible                             |
+
+The result includes a `bids` map and `auctionWinner` field showing which agent won and all bid scores.
+
+**Best for:** Expert routing, dynamic task assignment, capability-based matching.
+
+## Pipeline
+
+Sequential processing through specialized stages. Each stage's output feeds into the next. Stages can act as quality gates that reject bad output and trigger retries.
+
+```typescript
+const contentPipeline = swarm('content-pipeline')
+  .strategy('pipeline')
+  .pipeline({
+    stages: [
+      { name: 'research', agent: researcherAgent },
+      { name: 'draft', agent: writerAgent },
+      { name: 'review', agent: reviewerAgent, gate: true },
+      { name: 'polish', agent: editorAgent },
+    ],
+    gates: {
+      review: {
+        condition: (output) => !output.includes('NEEDS_REVISION'),
+        onFail: 'retry-previous',
+        maxRetries: 3,
+      },
+    },
+    stageInput: (prevOutput, stage, ctx) => {
+      return `Previous output:\n${prevOutput}\n\nOriginal request: ${ctx.input}`;
+    },
+  })
+  .build(cogitator);
+```
+
+| Gate `onFail` Option | Description                                 |
+| -------------------- | ------------------------------------------- |
+| `'abort'`            | Stop the pipeline with an error             |
+| `'skip'`             | Skip the gate and continue                  |
+| `'retry-previous'`   | Re-run the previous stage                   |
+| `'goto:<stage>'`     | Jump to a named stage (e.g. `'goto:draft'`) |
+
+The result includes `pipelineOutputs` — a map of each stage name to its output.
+
+**Best for:** Content creation, data processing, multi-step refinement.
+
+## Debate
+
+Agents argue opposing positions across multiple rounds. An optional moderator synthesizes the arguments into a balanced conclusion.
+
+```typescript
+const debateTeam = swarm('risk-assessment')
+  .strategy('debate')
+  .agents([
+    new Agent({
+      name: 'advocate',
+      instructions: 'Argue IN FAVOR.',
+      metadata: { role: 'advocate' },
+    }),
+    new Agent({ name: 'critic', instructions: 'Argue AGAINST.', metadata: { role: 'critic' } }),
+  ])
+  .moderator(
+    new Agent({
+      name: 'moderator',
+      model: 'openai/gpt-4o',
+      instructions: 'Synthesize both sides into a balanced recommendation.',
+    })
+  )
+  .debate({ rounds: 3, format: 'structured' })
+  .build(cogitator);
+```
+
+| Option   | Default        | Description                            |
+| -------- | -------------- | -------------------------------------- |
+| `rounds` | `3`            | Number of back-and-forth debate rounds |
+| `format` | `'structured'` | `'structured'` or `'freeform'`         |
+
+Each round, debaters see previous arguments and refine their positions. The moderator (if present) produces the final output; otherwise a summary of all arguments is generated.
+
+**Best for:** Risk assessment, decision analysis, exploring trade-offs.
+
+## Negotiation
+
+Multi-party negotiation with structured terms, offers, counteroffers, convergence tracking, and deadlock resolution. The most complex strategy, designed for scenarios where agents must reach binding agreements.
+
+```typescript
+const dealTeam = swarm('contract-negotiation')
+  .strategy('negotiation')
+  .agents([
+    new Agent({ name: 'buyer', instructions: 'Negotiate the best deal for the buyer.' }),
+    new Agent({ name: 'seller', instructions: 'Negotiate the best deal for the seller.' }),
+  ])
+  .build(cogitator);
+```
+
+The negotiation proceeds through phases: **initialization** (declare interests) -> **proposal** (make offers) -> **counter** (accept/reject/counter) -> **refinement** (break deadlocks) -> **agreement** or **escalation**.
+
+| Option                | Default         | Description                                                                       |
+| --------------------- | --------------- | --------------------------------------------------------------------------------- |
+| `maxRounds`           | `10`            | Maximum negotiation rounds                                                        |
+| `turnOrder`           | `'round-robin'` | `'round-robin'`, `'random'`, or `'dynamic'`                                       |
+| `onDeadlock`          | `'fail'`        | `'fail'`, `'escalate'`, `'supervisor-decides'`, `'majority-rules'`, `'arbitrate'` |
+| `stagnationThreshold` | `0.05`          | Convergence delta below which negotiation is considered stagnant                  |
+| `approvalGates`       | `[]`            | Human-in-the-loop approval gates for agreements                                   |
+
+Includes convergence tracking, coalition formation, and automatic mediation suggestions when negotiations stall.
+
+**Best for:** Contract negotiations, resource allocation, multi-stakeholder decisions.
+
+## Strategy Selection Guide
+
+| Scenario                                | Strategy       |
+| --------------------------------------- | -------------- |
+| Team of specialists with a coordinator  | `hierarchical` |
+| Distribute load across identical agents | `round-robin`  |
+| Multiple reviewers must agree           | `consensus`    |
+| Route to the best-suited expert         | `auction`      |
+| Step-by-step content or data processing | `pipeline`     |
+| Evaluate pros and cons of a decision    | `debate`       |
+| Agents must reach a binding agreement   | `negotiation`  |

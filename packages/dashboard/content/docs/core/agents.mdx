@@ -1,0 +1,189 @@
+---
+title: Agents
+description: Configure and run AI agents with tools, instructions, and model parameters.
+---
+
+## Overview
+
+An `Agent` is a configured LLM instance with a name, system prompt, tools, and model parameters. Agents are stateless blueprints -- the `Cogitator` runtime handles execution, memory, and lifecycle.
+
+```typescript
+import { Agent } from '@cogitator-ai/core';
+
+const agent = new Agent({
+  name: 'researcher',
+  model: 'anthropic/claude-sonnet-4-20250514',
+  instructions: 'You are a research assistant. Find accurate information and cite sources.',
+});
+```
+
+## AgentConfig
+
+```typescript
+interface AgentConfig {
+  id?: string;
+  name: string;
+  description?: string;
+  model: string;
+  provider?: string;
+  instructions: string;
+  tools?: Tool[];
+  temperature?: number; // default: 0.7
+  topP?: number;
+  maxTokens?: number;
+  stopSequences?: string[];
+  responseFormat?: ResponseFormat;
+  maxIterations?: number; // default: 10
+  timeout?: number; // default: 120000 (2 min)
+}
+```
+
+### Model String Format
+
+The `model` field uses a `provider/model-name` convention to route to the correct backend:
+
+```typescript
+model: 'openai/gpt-4o';
+model: 'anthropic/claude-sonnet-4-20250514';
+model: 'ollama/llama3.3:latest';
+model: 'google/gemini-2.5-flash';
+```
+
+If you omit the provider prefix, Cogitator uses the `defaultProvider` from your runtime config.
+
+### Provider Override
+
+For OpenAI-compatible APIs (OpenRouter, local vLLM, etc.), use the `provider` field to explicitly route:
+
+```typescript
+const agent = new Agent({
+  name: 'openrouter-agent',
+  model: 'meta-llama/llama-3.3-70b-instruct',
+  provider: 'openai',
+  instructions: '...',
+});
+```
+
+## Agent with Tools
+
+```typescript
+import { Agent, tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const searchWeb = tool({
+  name: 'search_web',
+  description: 'Search the internet for current information',
+  parameters: z.object({
+    query: z.string().describe('The search query'),
+    limit: z.number().default(5),
+  }),
+  execute: async ({ query, limit }) => {
+    const results = await searchAPI.search(query, limit);
+    return results.map((r) => ({ title: r.title, url: r.url }));
+  },
+});
+
+const researcher = new Agent({
+  name: 'researcher',
+  model: 'openai/gpt-4o',
+  instructions: 'You are a research assistant. Use tools to find accurate information.',
+  tools: [searchWeb],
+  maxIterations: 15,
+});
+```
+
+The agent loops up to `maxIterations` times. Each iteration the LLM may call tools or produce a final response. The loop ends when the LLM responds without tool calls.
+
+## Agent with Structured Output
+
+Force the LLM to respond with a specific JSON shape using Zod schemas:
+
+```typescript
+const analyzer = new Agent({
+  name: 'analyzer',
+  model: 'openai/gpt-4o',
+  instructions: 'Analyze the given text and extract structured information.',
+  responseFormat: {
+    type: 'json_schema',
+    schema: z.object({
+      summary: z.string(),
+      sentiment: z.enum(['positive', 'negative', 'neutral']),
+      keyPoints: z.array(z.string()),
+    }),
+  },
+});
+```
+
+See [Structured Outputs](/docs/core/structured-outputs) for details on `json` and `json_schema` modes.
+
+## Cloning Agents
+
+Create variations of an agent with `clone()`:
+
+```typescript
+const baseAgent = new Agent({
+  name: 'coder',
+  model: 'anthropic/claude-sonnet-4-20250514',
+  instructions: 'You are a senior software engineer.',
+  temperature: 0.3,
+});
+
+const creativeAgent = baseAgent.clone({
+  name: 'creative-coder',
+  temperature: 0.9,
+});
+
+const fastAgent = baseAgent.clone({
+  model: 'anthropic/claude-haiku',
+});
+```
+
+## Serialization
+
+Agents can be serialized to JSON for storage and restored later:
+
+```typescript
+const snapshot = agent.serialize();
+await fs.writeFile('agent.json', JSON.stringify(snapshot, null, 2));
+```
+
+Restore with a tool registry to re-attach tool implementations:
+
+```typescript
+const snapshot = JSON.parse(await fs.readFile('agent.json', 'utf-8'));
+const restored = Agent.deserialize(snapshot, {
+  tools: [searchWeb, readUrl],
+});
+```
+
+Tools are stored by name in the snapshot. During deserialization, each tool name is resolved from the provided `tools` array or `toolRegistry`.
+
+## Agents as Tools
+
+Wrap an agent as a tool so other agents can delegate to it:
+
+```typescript
+import { agentAsTool } from '@cogitator-ai/core';
+
+const researchTool = agentAsTool(cogitator, researcher, {
+  name: 'research',
+  description: 'Delegate a research task to the research agent',
+});
+
+const orchestrator = new Agent({
+  name: 'orchestrator',
+  model: 'openai/gpt-4o',
+  instructions: 'You coordinate tasks. Use the research tool for information gathering.',
+  tools: [researchTool],
+});
+```
+
+## Temperature Guidelines
+
+| Use Case                  | Temperature | Notes                       |
+| ------------------------- | ----------- | --------------------------- |
+| Code generation           | 0.0 -- 0.2  | Deterministic, correct code |
+| Planning / classification | 0.2 -- 0.4  | Consistent but flexible     |
+| General assistant         | 0.5 -- 0.7  | Balanced (default: 0.7)     |
+| Creative writing          | 0.8 -- 1.2  | More varied output          |
+| Brainstorming             | 1.0 -- 1.5  | Maximum creativity          |

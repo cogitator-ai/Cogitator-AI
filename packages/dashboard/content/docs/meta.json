@@ -1,0 +1,31 @@
+{
+  "title": "Cogitator",
+  "pages": [
+    "---Getting Started---",
+    "getting-started",
+    "---Core---",
+    "core",
+    "---Tools---",
+    "tools",
+    "---Memory & RAG---",
+    "memory",
+    "---Workflows---",
+    "workflows",
+    "---Swarms---",
+    "swarms",
+    "---Server Adapters---",
+    "server-adapters",
+    "---Integrations---",
+    "integrations",
+    "---Advanced---",
+    "advanced",
+    "---Deployment---",
+    "deployment",
+    "---Testing---",
+    "testing",
+    "---API Reference---",
+    "api-reference",
+    "---Architecture---",
+    "architecture"
+  ]
+}

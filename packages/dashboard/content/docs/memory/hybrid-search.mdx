@@ -1,0 +1,239 @@
+---
+title: Hybrid Search
+description: Combine BM25 keyword search with vector similarity using Reciprocal Rank Fusion for accurate, recall-maximizing retrieval.
+---
+
+## Why Hybrid Search
+
+Vector search is great at finding semantically similar content, but it can miss results that match on exact terms. Keyword search finds exact matches but misses paraphrases. Hybrid search combines both to maximize recall and precision.
+
+Cogitator's hybrid search pipeline:
+
+```
+Query ──┬── Vector Search (cosine similarity) ──┐
+        │                                        ├── RRF Fusion ── Ranked Results
+        └── Keyword Search (BM25) ──────────────┘
+```
+
+## HybridSearch Class
+
+The `HybridSearch` class orchestrates vector and keyword search, then fuses results using Reciprocal Rank Fusion (RRF).
+
+```typescript
+import { HybridSearch, PostgresAdapter, OpenAIEmbeddingService } from '@cogitator-ai/memory';
+
+const db = new PostgresAdapter({
+  provider: 'postgres',
+  connectionString: process.env.DATABASE_URL!,
+});
+await db.connect();
+
+const embeddings = new OpenAIEmbeddingService({
+  apiKey: process.env.OPENAI_API_KEY!,
+});
+
+const search = new HybridSearch({
+  embeddingAdapter: db,
+  embeddingService: embeddings,
+  keywordAdapter: db,
+  defaultWeights: { bm25: 0.4, vector: 0.6 },
+});
+
+const { data: results } = await search.search({
+  query: 'How do agents use tools?',
+  strategy: 'hybrid',
+  limit: 10,
+});
+
+for (const result of results) {
+  console.log(`[${result.score.toFixed(3)}] ${result.content}`);
+  console.log(
+    `  vector: ${result.vectorScore?.toFixed(3)}, keyword: ${result.keywordScore?.toFixed(3)}`
+  );
+}
+```
+
+### Search Strategies
+
+You can switch between strategies per query:
+
+```typescript
+// vector only
+const vectorResults = await search.search({
+  query: 'agent memory architecture',
+  strategy: 'vector',
+  limit: 5,
+});
+
+// keyword only
+const keywordResults = await search.search({
+  query: 'agent memory architecture',
+  strategy: 'keyword',
+  limit: 5,
+});
+
+// hybrid (combines both)
+const hybridResults = await search.search({
+  query: 'agent memory architecture',
+  strategy: 'hybrid',
+  limit: 5,
+  weights: { bm25: 0.5, vector: 0.5 },
+});
+```
+
+### Constructor Options
+
+| Option             | Type                   | Default                      | Description                           |
+| ------------------ | ---------------------- | ---------------------------- | ------------------------------------- |
+| `embeddingAdapter` | `EmbeddingAdapter`     | —                            | Backend for vector search             |
+| `embeddingService` | `EmbeddingService`     | —                            | Converts query text to vectors        |
+| `keywordAdapter`   | `KeywordSearchAdapter` | —                            | Backend for keyword search (optional) |
+| `defaultWeights`   | `HybridSearchWeights`  | `{ bm25: 0.4, vector: 0.6 }` | Default fusion weights                |
+
+When no `keywordAdapter` is provided, `HybridSearch` falls back to a built-in local BM25 index. You can populate it manually:
+
+```typescript
+search.indexDocument('doc-1', 'Agent memory architecture overview');
+search.indexDocument('doc-2', 'Tool execution and sandboxing');
+
+console.log(search.indexSize); // 2
+```
+
+## BM25 Index
+
+The `BM25Index` class implements the Okapi BM25 ranking algorithm for full-text keyword search. It tokenizes documents, builds an inverted index, and scores queries using term frequency and inverse document frequency.
+
+```typescript
+import { BM25Index } from '@cogitator-ai/memory';
+
+const index = new BM25Index({ k1: 1.5, b: 0.75 });
+
+index.addDocument({ id: 'doc-1', content: 'Cogitator is an AI agent runtime' });
+index.addDocument({ id: 'doc-2', content: 'Agents can use tools for external actions' });
+index.addDocument({ id: 'doc-3', content: 'Memory adapters persist conversation history' });
+
+const results = index.search('agent tools', 10);
+for (const r of results) {
+  console.log(`${r.id}: ${r.score.toFixed(3)} — ${r.content}`);
+}
+```
+
+### BM25 Parameters
+
+| Parameter | Type   | Default | Description                                                                 |
+| --------- | ------ | ------- | --------------------------------------------------------------------------- |
+| `k1`      | number | 1.5     | Term frequency saturation. Higher = more weight to repeated terms           |
+| `b`       | number | 0.75    | Document length normalization. 0 = no normalization, 1 = full normalization |
+
+### Document Management
+
+```typescript
+index.addDocuments([
+  { id: 'a', content: 'First doc' },
+  { id: 'b', content: 'Second doc' },
+]);
+
+index.removeDocument('a');
+index.getDocument('b'); // { id: 'b', content: 'Second doc' }
+index.clear(); // removes all documents
+console.log(index.size); // 0
+```
+
+## Tokenizer
+
+The BM25 index uses a configurable tokenizer that normalizes text before indexing and searching.
+
+```typescript
+import { tokenize, getTermFrequency } from '@cogitator-ai/memory';
+
+const tokens = tokenize('The quick brown fox jumps over the lazy dog', {
+  lowercase: true,
+  removeStopwords: true,
+  minLength: 2,
+});
+// ['quick', 'brown', 'fox', 'jumps', 'over', 'lazy', 'dog']
+
+const freq = getTermFrequency(tokens);
+// Map { 'quick' => 1, 'brown' => 1, 'fox' => 1, ... }
+```
+
+| Option            | Type    | Default | Description                      |
+| ----------------- | ------- | ------- | -------------------------------- |
+| `lowercase`       | boolean | true    | Convert text to lowercase        |
+| `removeStopwords` | boolean | true    | Remove common English stop words |
+| `minLength`       | number  | 2       | Minimum token length to keep     |
+
+## Reciprocal Rank Fusion
+
+RRF merges ranked lists from different search methods into a single ranking. Each result's score is based on its rank position rather than raw score, which normalizes across different scoring scales.
+
+The formula for each result:
+
+```
+RRF_score = weight * (1 / (k + rank + 1))
+```
+
+Where `k` is a constant (default: 60) that dampens the contribution of lower-ranked results.
+
+```typescript
+import { reciprocalRankFusion, fuseSearchResults } from '@cogitator-ai/memory';
+
+const vectorResults = [
+  { id: 'a', score: 0.95 /* ... */ },
+  { id: 'b', score: 0.82 /* ... */ },
+];
+
+const keywordResults = [
+  { id: 'b', score: 4.2 /* ... */ },
+  { id: 'c', score: 3.1 /* ... */ },
+];
+
+const fused = fuseSearchResults(vectorResults, keywordResults, { bm25: 0.4, vector: 0.6 });
+// 'b' ranks high in both lists, so it gets the top combined score
+```
+
+The `fuseSearchResults` function preserves both individual scores on each result:
+
+```typescript
+for (const result of fused) {
+  console.log(result.id);
+  console.log(`  combined: ${result.score}`);
+  console.log(`  vector:   ${result.vectorScore}`);
+  console.log(`  keyword:  ${result.keywordScore}`);
+}
+```
+
+### Low-Level RRF
+
+For custom fusion scenarios, use `reciprocalRankFusion` directly:
+
+```typescript
+const scores = reciprocalRankFusion(
+  [
+    [
+      { id: 'a', rank: 0, score: 0.9 },
+      { id: 'b', rank: 1, score: 0.8 },
+    ],
+    [
+      { id: 'b', rank: 0, score: 4.2 },
+      { id: 'c', rank: 1, score: 3.1 },
+    ],
+  ],
+  [0.6, 0.4],
+  { k: 60 }
+);
+// Map { 'a' => 0.00984, 'b' => 0.01613, 'c' => 0.00645 }
+```
+
+## Tuning Weights
+
+The balance between BM25 and vector search depends on your data:
+
+| Scenario                          | Recommended Weights          |
+| --------------------------------- | ---------------------------- |
+| General knowledge retrieval       | `{ bm25: 0.4, vector: 0.6 }` |
+| Technical docs with exact terms   | `{ bm25: 0.6, vector: 0.4 }` |
+| Conversational / paraphrase-heavy | `{ bm25: 0.2, vector: 0.8 }` |
+| Code search                       | `{ bm25: 0.7, vector: 0.3 }` |
+
+The `HybridSearch` class oversamples by 3x (fetches `limit * 3` from each backend) before fusion, ensuring good candidate coverage for the final ranking.

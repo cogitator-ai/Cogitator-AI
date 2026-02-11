@@ -1,0 +1,199 @@
+---
+title: Self-Modifying Agents
+description: Build agents that generate new tools at runtime, reason about their own reasoning, and improve across iterations.
+---
+
+## Overview
+
+Self-modifying agents go beyond static configurations. They can create new tools on the fly, reflect on their own reasoning process, optimize their instructions based on past performance, and evolve across runs. Cogitator provides the building blocks for this through the reflection engine, agent optimizer, and dynamic tool generation.
+
+## Dynamic Tool Generation
+
+Agents can create new tools at runtime based on what they need. This is useful when the required functionality cannot be predicted at design time.
+
+```typescript
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const toolFactory = tool({
+  name: 'create_tool',
+  description: 'Create a new computational tool from a specification',
+  parameters: z.object({
+    name: z.string().describe('Tool name'),
+    description: z.string().describe('What the tool does'),
+    formula: z.string().describe('JavaScript expression to evaluate'),
+    inputSchema: z.record(z.string()).describe('Input parameter names and types'),
+  }),
+  execute: async ({ name, description, formula, inputSchema }) => {
+    const paramSchema: Record<string, z.ZodTypeAny> = {};
+    for (const [key, type] of Object.entries(inputSchema)) {
+      paramSchema[key] = type === 'number' ? z.number() : z.string();
+    }
+
+    const newTool = tool({
+      name,
+      description,
+      parameters: z.object(paramSchema),
+      execute: async (params) => {
+        const fn = new Function(...Object.keys(params), `return ${formula}`);
+        return fn(...Object.values(params));
+      },
+    });
+
+    return { created: name, description };
+  },
+});
+```
+
+A more practical pattern is to wrap this in an agent that maintains a registry of generated tools and can use them in subsequent iterations:
+
+```typescript
+const selfExtendingAgent = new Agent({
+  name: 'self-extending',
+  model: 'openai/gpt-4o',
+  instructions: `You can create new computational tools when needed. If a user asks
+for a calculation you don't have a tool for, create one first, then
+use it. Always verify the tool works correctly before reporting results.`,
+  tools: [toolFactory, calculator],
+  maxIterations: 20,
+});
+```
+
+## Meta-Reasoning
+
+Meta-reasoning is reasoning about your own reasoning process. Cogitator's `ReflectionEngine` gives agents the ability to analyze their tool calls, identify mistakes, and adjust strategy mid-run.
+
+```typescript
+import { Cogitator } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  llm: {
+    providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
+  },
+  reflection: {
+    enabled: true,
+    reflectOnToolCalls: true,
+    reflectOnErrors: true,
+    reflectAfterRun: true,
+    reflectionModel: 'openai/gpt-4o-mini',
+    storeInsights: true,
+    maxInsightsPerAgent: 100,
+    minConfidenceToStore: 0.3,
+  },
+});
+```
+
+After each tool call, the reflection engine asks the LLM to evaluate what happened:
+
+- Was the action successful?
+- What alternatives were considered?
+- What could improve next time?
+
+Insights are extracted and stored for future runs:
+
+```typescript
+const result = await cog.run(agent, { input: 'Analyze the Q4 sales data' });
+
+// insights accumulate across runs
+const summary = await reflectionEngine.getSummary('agent-001');
+
+console.log(summary.successRate); // 0.87
+console.log(summary.commonMistakes); // ["Missing date filter", ...]
+console.log(summary.learnedPatterns); // ["Always validate data shape first", ...]
+console.log(summary.topInsights); // ranked by usage * confidence
+```
+
+Insights are typed as `pattern`, `mistake`, `success`, `tip`, or `warning`, and are pruned to stay within the configured limit.
+
+## Agent Optimization
+
+The `AgentOptimizer` implements a compile-time optimization loop inspired by DSPy. It captures execution traces, evaluates them with configurable metrics, bootstraps few-shot demonstrations, and rewrites agent instructions.
+
+```typescript
+import { AgentOptimizer } from '@cogitator-ai/core';
+
+const optimizer = new AgentOptimizer({
+  llm: backend,
+  model: 'openai/gpt-4o',
+  config: {
+    enabled: true,
+    captureTraces: true,
+    autoOptimize: false,
+    maxDemosPerAgent: 5,
+    minScoreForDemo: 0.8,
+    defaultMetrics: ['success', 'tool_accuracy', 'efficiency'],
+  },
+});
+```
+
+### Capturing Traces
+
+Every run can be captured as an execution trace with scored metrics:
+
+```typescript
+const result = await cog.run(agent, { input: 'Summarize this report' });
+
+const trace = await optimizer.captureTrace(result, 'Summarize this report', {
+  expected: 'A concise summary covering key financials',
+  labels: ['summarization', 'finance'],
+});
+
+console.log(trace.score); // 0.85
+console.log(trace.metrics.success); // true
+console.log(trace.metrics.toolAccuracy); // 1.0
+```
+
+### Compiling Optimized Agents
+
+The `compile` method runs multiple optimization rounds -- analyzing failures, generating instruction candidates, evaluating them against traces, and refining the best candidate:
+
+```typescript
+const optimized = await optimizer.compile(agent, trainset, {
+  maxRounds: 3,
+  maxBootstrappedDemos: 5,
+  optimizeInstructions: true,
+});
+
+console.log(optimized.scoreBefore); // 0.72
+console.log(optimized.scoreAfter); // 0.89
+console.log(optimized.improvement); // 0.17
+console.log(optimized.gapsAddressed); // instruction gaps that were fixed
+console.log(optimized.instructionsAfter); // the new system prompt
+```
+
+The optimizer identifies instruction gaps from failed traces, generates candidate rewrites, evaluates each against historical performance, and iteratively refines weaknesses.
+
+### Few-Shot Demonstrations
+
+High-scoring traces are automatically promoted to demonstrations that get injected into the agent's prompt:
+
+```typescript
+const demos = await optimizer.getDemosForPrompt('agent-001', userInput, 3);
+const demoText = optimizer.formatDemosForPrompt(demos);
+```
+
+## Evolution Across Iterations
+
+Combining reflection, optimization, and dynamic tools creates agents that genuinely improve over time:
+
+```typescript
+const cog = new Cogitator({
+  llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } } },
+  reflection: {
+    enabled: true,
+    reflectAfterRun: true,
+    storeInsights: true,
+    reflectionModel: 'openai/gpt-4o-mini',
+  },
+});
+
+for (const task of taskBatch) {
+  const result = await cog.run(agent, { input: task.input });
+  await optimizer.captureTrace(result, task.input, { expected: task.expected });
+}
+
+const optimized = await optimizer.compile(agent, taskBatch);
+agent.instructions = optimized.instructionsAfter;
+```
+
+Each cycle of run-capture-compile produces an agent with better instructions, richer demonstrations, and accumulated insights. The agent's performance converges as it internalizes patterns from its own execution history.

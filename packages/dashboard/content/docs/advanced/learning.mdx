@@ -1,0 +1,198 @@
+---
+title: Agent Learning & Optimization
+description: Automatically improve agent performance over time with DSPy-style compilation, A/B testing, prompt monitoring, and metric-driven optimization.
+---
+
+## Overview
+
+The learning system captures execution traces, evaluates agent performance against metrics, and optimizes instructions and examples through an iterative compilation process. It brings ideas from DSPy — bootstrapped demonstrations, instruction optimization, and automated evaluation — into the Cogitator runtime.
+
+## AgentOptimizer
+
+The `AgentOptimizer` is the central class that coordinates trace capture, demo selection, and instruction optimization:
+
+```typescript
+import { AgentOptimizer } from '@cogitator-ai/core/learning';
+
+const optimizer = new AgentOptimizer({
+  llm: backend,
+  model: 'openai/gpt-4o',
+  config: {
+    enabled: true,
+    captureTraces: true,
+    autoOptimize: false,
+    maxDemosPerAgent: 5,
+    minScoreForDemo: 0.8,
+    defaultMetrics: ['success', 'tool_accuracy', 'efficiency'],
+  },
+});
+```
+
+## Capturing Traces
+
+Every agent run can be captured as an `ExecutionTrace` with step-by-step details and computed metrics:
+
+```typescript
+const result = await cogitator.run(agent, { input: 'Summarize this article...' });
+
+const trace = await optimizer.captureTrace(result, 'Summarize this article...', {
+  expected: 'A concise 3-sentence summary covering key points',
+  labels: ['summarization', 'production'],
+});
+
+console.log(`Score: ${trace.score}`);
+console.log(`Tool accuracy: ${trace.metrics.toolAccuracy}`);
+console.log(`Efficiency: ${trace.metrics.efficiency}`);
+```
+
+The trace records every LLM call, tool execution, and reflection — along with token usage, latency, and cost. Metrics like `toolAccuracy` (ratio of successful tool calls) and `efficiency` (token economy) are computed automatically.
+
+## Compiling (DSPy-Style Optimization)
+
+The `compile()` method runs multi-round optimization that improves both instructions and in-context examples:
+
+```typescript
+const result = await optimizer.compile(agent, trainset, {
+  maxRounds: 3,
+  maxBootstrappedDemos: 5,
+  optimizeInstructions: true,
+});
+
+console.log(`Score: ${result.scoreBefore} → ${result.scoreAfter}`);
+console.log(`Improvement: ${(result.improvement * 100).toFixed(1)}%`);
+console.log(`Demos added: ${result.demosAdded.length}`);
+console.log(`New instructions: ${result.instructionsAfter}`);
+```
+
+Each round: high-scoring traces become bootstrapped demos, the `InstructionOptimizer` analyzes failures and generates improved instruction candidates, and the best candidate is selected through LLM-based evaluation.
+
+## Bootstrapping Demos
+
+Demos are high-quality execution examples that get injected into the agent's prompt as few-shot examples:
+
+```typescript
+const demos = await optimizer.bootstrapDemos('research-agent');
+
+const relevantDemos = await optimizer.getDemosForPrompt(
+  'research-agent',
+  'Find papers on transformer architectures',
+  3
+);
+
+const formatted = optimizer.formatDemosForPrompt(relevantDemos);
+```
+
+Only traces scoring above `minScoreForDemo` (default 0.8) are promoted to demos. The `DemoSelector` picks the most relevant demos for each new input based on content similarity.
+
+## A/B Testing
+
+Test instruction changes in production with statistical rigor using the `ABTestingFramework`:
+
+```typescript
+import { ABTestingFramework } from '@cogitator-ai/core/learning';
+
+const abTesting = new ABTestingFramework({
+  store: abTestStore,
+  defaultConfidenceLevel: 0.95,
+  defaultMinSampleSize: 50,
+  autoDeployWinner: false,
+});
+
+const test = await abTesting.createTest({
+  agentId: 'support-agent',
+  name: 'Concise vs detailed instructions',
+  controlInstructions: 'You are a helpful support agent...',
+  treatmentInstructions: 'You are a support agent. Be concise, use bullet points...',
+  treatmentAllocation: 0.5,
+  metricToOptimize: 'score',
+});
+
+await abTesting.startTest(test.id);
+```
+
+For each incoming request, the framework selects a variant and tracks results:
+
+```typescript
+const variant = abTesting.selectVariant(test);
+const instructions = abTesting.getInstructionsForVariant(test, variant);
+
+await abTesting.recordResult(test.id, variant, score, latency, cost);
+
+const outcome = await abTesting.checkAndCompleteIfReady(test.id);
+if (outcome?.isSignificant) {
+  console.log(`Winner: ${outcome.winner} (p=${outcome.pValue.toFixed(4)})`);
+  console.log(outcome.recommendation);
+}
+```
+
+The framework uses Welch's t-test for statistical significance with configurable confidence levels.
+
+## Prompt Monitoring
+
+Track prompt performance in real-time and detect degradation with the `PromptMonitor`:
+
+```typescript
+import { PromptMonitor } from '@cogitator-ai/core/learning';
+
+const monitor = new PromptMonitor({
+  windowSize: 60 * 60 * 1000, // 1 hour window
+  scoreDropThreshold: 0.15, // 15% score drop triggers alert
+  latencySpikeThreshold: 2.0, // 2x latency increase
+  errorRateThreshold: 0.1, // 10% error rate
+  enableAutoRollback: true,
+  onAlert: (alert) => {
+    console.log(
+      `[${alert.severity}] ${alert.type}: ${alert.currentValue} vs baseline ${alert.baselineValue}`
+    );
+  },
+});
+
+monitor.setBaseline('support-agent', baselineMetrics);
+
+const alerts = monitor.recordExecution(trace);
+for (const alert of alerts) {
+  if (alert.severity === 'critical') {
+    console.log('Critical degradation detected!');
+  }
+}
+```
+
+The monitor tracks four alert types: `score_drop`, `latency_spike`, `error_rate_increase`, and `cost_spike`. When `enableAutoRollback` is set, critical alerts trigger automatic rollback to the previous instruction version.
+
+## AutoOptimizer
+
+The `AutoOptimizer` ties everything together into a fully automated improvement loop:
+
+```typescript
+import { AutoOptimizer } from '@cogitator-ai/core/learning';
+
+const autoOptimizer = new AutoOptimizer({
+  enabled: true,
+  triggerAfterRuns: 100,
+  minRunsForOptimization: 20,
+  requireABTest: true,
+  maxOptimizationsPerDay: 3,
+  agentOptimizer: optimizer,
+  abTesting,
+  monitor,
+  rollbackManager,
+  onOptimizationComplete: (run) => {
+    console.log(`Optimization ${run.id}: ${run.status}`);
+  },
+});
+
+await autoOptimizer.recordExecution(trace);
+```
+
+After every N runs, the `AutoOptimizer` triggers compilation, creates an A/B test for the new instructions, monitors performance, and either deploys the winner or rolls back — all without manual intervention.
+
+## Learning Stats
+
+```typescript
+const stats = await optimizer.getStats('support-agent');
+
+console.log(`Traces: ${stats.traces.total}`);
+console.log(`Demos: ${stats.demos.total}`);
+console.log(`Optimization runs: ${stats.optimization.runsOptimized}`);
+console.log(`Avg improvement: ${(stats.optimization.averageImprovement * 100).toFixed(1)}%`);
+```

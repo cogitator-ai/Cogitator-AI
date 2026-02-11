@@ -1,0 +1,192 @@
+---
+title: OpenAPI Generation
+description: Auto-generate OpenAPI 3.0 specs and serve Swagger UI from any Cogitator server adapter.
+---
+
+Every Cogitator server adapter can generate an OpenAPI 3.0.3 specification dynamically from your registered agents, workflows, and swarms. The spec is served as JSON at `/openapi.json` and rendered as Swagger UI at `/docs`. The generation logic lives in the shared `@cogitator-ai/server-shared` package, so the output is identical across all adapters.
+
+## How It Works
+
+When you set `enableSwagger: true` in any adapter, two routes are registered:
+
+| Route           | Content-Type       | Description                  |
+| --------------- | ------------------ | ---------------------------- |
+| `/openapi.json` | `application/json` | Raw OpenAPI 3.0.3 spec       |
+| `/docs`         | `text/html`        | Swagger UI (loaded from CDN) |
+
+The spec is generated at request time, so it always reflects the current state of your registered agents, workflows, and swarms.
+
+## Enabling Swagger
+
+### Express
+
+```typescript
+const server = new CogitatorServer({
+  app,
+  cogitator,
+  agents: { assistant },
+  config: {
+    enableSwagger: true,
+    swagger: {
+      title: 'My API',
+      version: '2.0.0',
+    },
+  },
+});
+```
+
+### Fastify
+
+Fastify uses `@fastify/swagger` and `@fastify/swagger-ui` under the hood. Install them as dependencies:
+
+```bash
+pnpm add @fastify/swagger @fastify/swagger-ui
+```
+
+```typescript
+await fastify.register(cogitatorPlugin, {
+  cogitator,
+  agents: { assistant },
+  enableSwagger: true,
+  swagger: { title: 'My API' },
+});
+```
+
+### Hono & Koa
+
+Both use the shared generator directly — no extra dependencies needed:
+
+```typescript
+const app = cogitatorApp({
+  cogitator,
+  agents: { assistant },
+  enableSwagger: true,
+  swagger: { title: 'My API' },
+});
+```
+
+## SwaggerConfig
+
+All adapters accept the same `SwaggerConfig` shape:
+
+```typescript
+interface SwaggerConfig {
+  title?: string; // default: 'Cogitator API'
+  description?: string; // default: 'AI Agent Runtime API'
+  version?: string; // default: '1.0.0'
+  contact?: {
+    name?: string;
+    email?: string;
+    url?: string;
+  };
+  license?: {
+    name: string;
+    url?: string;
+  };
+  servers?: Array<{
+    url: string;
+    description?: string;
+  }>;
+}
+```
+
+Example with full configuration:
+
+```typescript
+const swagger: SwaggerConfig = {
+  title: 'Acme AI Platform',
+  description: 'Internal agent runtime for Acme Corp',
+  version: '3.1.0',
+  contact: {
+    name: 'Platform Team',
+    email: 'platform@acme.com',
+    url: 'https://docs.acme.com',
+  },
+  license: {
+    name: 'MIT',
+    url: 'https://opensource.org/licenses/MIT',
+  },
+  servers: [
+    { url: 'https://api.acme.com/cogitator', description: 'Production' },
+    { url: 'https://staging-api.acme.com/cogitator', description: 'Staging' },
+    { url: 'http://localhost:3000/cogitator', description: 'Local' },
+  ],
+};
+```
+
+## Generated Spec Structure
+
+The spec organizes endpoints into six tags:
+
+| Tag         | Endpoints                                                                          |
+| ----------- | ---------------------------------------------------------------------------------- |
+| `health`    | `/health`, `/ready`                                                                |
+| `agents`    | `/agents`, `/agents/:name/run`, `/agents/:name/stream`                             |
+| `threads`   | `/threads/:id`, `/threads/:id/messages`                                            |
+| `tools`     | `/tools`                                                                           |
+| `workflows` | `/workflows`, `/workflows/:name/run`, `/workflows/:name/stream`                    |
+| `swarms`    | `/swarms`, `/swarms/:name/run`, `/swarms/:name/stream`, `/swarms/:name/blackboard` |
+
+Agent, workflow, and swarm endpoints are generated dynamically. If you register agents named `assistant` and `coder`, the spec will include `/agents/assistant/run`, `/agents/assistant/stream`, `/agents/coder/run`, and `/agents/coder/stream`.
+
+## Component Schemas
+
+The generated spec includes schemas for all request and response types:
+
+- `HealthResponse` — status, uptime, timestamp
+- `AgentListResponse` — list of agent names, descriptions, and tool names
+- `AgentRunRequest` — input (required), context, threadId
+- `AgentRunResponse` — output, threadId, usage, toolCalls
+- `ThreadResponse` — id, messages, createdAt, updatedAt
+- `AddMessageRequest` — role, content, metadata
+- `ToolListResponse` — tool names, descriptions, parameters
+- `WorkflowListResponse` — workflow names, entry points, node lists
+- `WorkflowRunRequest` — input, options (maxConcurrency, maxIterations, checkpoint)
+- `WorkflowRunResponse` — workflowId, state, duration, nodeResults
+- `SwarmListResponse` — swarm names, strategies, agent lists
+- `SwarmRunRequest` — input (required), context, threadId, timeout
+- `SwarmRunResponse` — swarmId, strategy, output, agentResults, usage
+- `BlackboardResponse` — sections
+- `ErrorResponse` — error message and code
+
+## Security Scheme
+
+The spec includes a `bearerAuth` security scheme:
+
+```json
+{
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}
+```
+
+## Using the Shared Generator Directly
+
+If you need the OpenAPI spec outside of a server adapter (for code generation, testing, or CI), import the generator from `@cogitator-ai/server-shared`:
+
+```typescript
+import { generateOpenAPISpec, generateSwaggerHTML } from '@cogitator-ai/server-shared';
+import type { OpenAPIContext, SwaggerConfig } from '@cogitator-ai/server-shared';
+
+const context: OpenAPIContext = {
+  agents: { assistant: myAgent },
+  workflows: {},
+  swarms: {},
+};
+
+const config: SwaggerConfig = {
+  title: 'My API',
+  version: '1.0.0',
+};
+
+const spec = generateOpenAPISpec(context, config);
+const html = generateSwaggerHTML(spec);
+```
+
+The `generateSwaggerHTML` function returns a self-contained HTML page that loads Swagger UI from a CDN and embeds the spec inline. No server-side rendering or static files required.

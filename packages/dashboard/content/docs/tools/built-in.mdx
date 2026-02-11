@@ -1,0 +1,302 @@
+---
+title: Built-in Tools
+description: Reference for all 26 built-in tools that ship with @cogitator-ai/core, organized by category.
+---
+
+## Overview
+
+Cogitator ships with **26 built-in tools** covering math, data processing, file system operations, network, databases, and more. Every tool is type-safe with Zod schemas and returns structured results.
+
+```typescript
+import { builtinTools, calculator, fileRead, httpRequest } from '@cogitator-ai/core';
+
+const agent = new Agent({
+  name: 'assistant',
+  model: 'openai/gpt-4o',
+  tools: builtinTools,
+});
+```
+
+You can also pick individual tools instead of loading the full set.
+
+---
+
+## Math & Utilities
+
+### `calculator`
+
+Evaluates mathematical expressions safely without `eval`. Supports `+`, `-`, `*`, `/`, `^` (power), parentheses, and functions: `sqrt`, `sin`, `cos`, `tan`, `log`, `abs`, `round`, `floor`, `ceil`. Constants: `pi`, `e`.
+
+| Parameter    | Type     | Description                         |
+| ------------ | -------- | ----------------------------------- |
+| `expression` | `string` | Math expression, e.g. `"2 + 3 * 4"` |
+
+### `uuid`
+
+Generates one or more UUID v4 identifiers using Node's `crypto.randomUUID`.
+
+| Parameter | Type     | Description                           |
+| --------- | -------- | ------------------------------------- |
+| `count`   | `number` | Number of UUIDs to generate (1 - 100) |
+
+### `random_number`
+
+Generates a random number within a range.
+
+| Parameter | Type      | Description                     |
+| --------- | --------- | ------------------------------- |
+| `min`     | `number`  | Minimum value (default: 0)      |
+| `max`     | `number`  | Maximum value (default: 1)      |
+| `integer` | `boolean` | Return integer (default: false) |
+
+### `random_string`
+
+Generates a cryptographically secure random string using `crypto.randomBytes`.
+
+| Parameter | Type     | Description                                     |
+| --------- | -------- | ----------------------------------------------- |
+| `length`  | `number` | String length (1 - 1000)                        |
+| `charset` | `enum`   | `alphanumeric` \| `alpha` \| `numeric` \| `hex` |
+
+### `hash`
+
+Computes cryptographic hashes. Supports `md5`, `sha1`, `sha256`, `sha512`.
+
+| Parameter   | Type     | Description                      |
+| ----------- | -------- | -------------------------------- |
+| `data`      | `string` | String to hash                   |
+| `algorithm` | `enum`   | Hash algorithm (default: sha256) |
+| `encoding`  | `enum`   | `hex` \| `base64` (default: hex) |
+
+### `sleep`
+
+Pauses execution for a specified duration. Maximum 60 seconds.
+
+| Parameter | Type     | Description                       |
+| --------- | -------- | --------------------------------- |
+| `ms`      | `number` | Milliseconds to sleep (0 - 60000) |
+
+### `datetime`
+
+Returns the current date and time in various formats and timezones.
+
+| Parameter  | Type     | Description                                       |
+| ---------- | -------- | ------------------------------------------------- |
+| `timezone` | `string` | IANA timezone, e.g. `"America/New_York"`          |
+| `format`   | `enum`   | `iso` \| `unix` \| `readable` \| `date` \| `time` |
+
+---
+
+## Data Processing
+
+### `json_parse`
+
+Parses a JSON string into an object. Returns `{ result, valid: true }` on success, `{ error, valid: false }` on failure.
+
+| Parameter | Type     | Description          |
+| --------- | -------- | -------------------- |
+| `json`    | `string` | JSON string to parse |
+
+### `json_stringify`
+
+Converts a value to a JSON string with optional pretty-printing.
+
+| Parameter | Type      | Description                         |
+| --------- | --------- | ----------------------------------- |
+| `data`    | `unknown` | Data to serialize                   |
+| `pretty`  | `boolean` | Enable indentation (default: false) |
+| `indent`  | `number`  | Spaces for indent (0 - 8)           |
+
+### `base64_encode` / `base64_decode`
+
+Encode strings to Base64 or decode Base64 back to plain text. Both support URL-safe variants.
+
+| Parameter | Type      | Description             |
+| --------- | --------- | ----------------------- |
+| `data`    | `string`  | Input string            |
+| `urlSafe` | `boolean` | URL-safe Base64 variant |
+
+### `regex_match`
+
+Finds all matches of a regular expression in text, returning match strings, indices, and named groups.
+
+| Parameter | Type     | Description                  |
+| --------- | -------- | ---------------------------- |
+| `text`    | `string` | Text to search               |
+| `pattern` | `string` | Regular expression pattern   |
+| `flags`   | `string` | Regex flags (default: `"g"`) |
+
+### `regex_replace`
+
+Replaces regex matches in text. Supports `$1`, `$2` capture group references.
+
+| Parameter     | Type     | Description                  |
+| ------------- | -------- | ---------------------------- |
+| `text`        | `string` | Input text                   |
+| `pattern`     | `string` | Regex pattern                |
+| `replacement` | `string` | Replacement string           |
+| `flags`       | `string` | Regex flags (default: `"g"`) |
+
+---
+
+## File System
+
+All file system tools declare `sideEffects: ['filesystem']` where applicable.
+
+### `file_read`
+
+Reads file contents. Use `base64` encoding for binary files.
+
+| Parameter  | Type     | Description                          |
+| ---------- | -------- | ------------------------------------ |
+| `path`     | `string` | Path to the file                     |
+| `encoding` | `enum`   | `utf-8` \| `base64` (default: utf-8) |
+
+### `file_write`
+
+Writes content to a file. Creates parent directories by default.
+
+| Parameter    | Type      | Description                        |
+| ------------ | --------- | ---------------------------------- |
+| `path`       | `string`  | File path                          |
+| `content`    | `string`  | Content to write                   |
+| `encoding`   | `enum`    | `utf-8` \| `base64`                |
+| `createDirs` | `boolean` | Create parent dirs (default: true) |
+
+### `file_list`
+
+Lists directory contents with file names, paths, types, and sizes.
+
+| Parameter       | Type      | Description                 |
+| --------------- | --------- | --------------------------- |
+| `path`          | `string`  | Directory path              |
+| `recursive`     | `boolean` | Recurse into subdirectories |
+| `includeHidden` | `boolean` | Include dotfiles            |
+
+### `file_exists`
+
+Checks if a file or directory exists and returns its type and size.
+
+| Parameter | Type     | Description   |
+| --------- | -------- | ------------- |
+| `path`    | `string` | Path to check |
+
+### `file_delete`
+
+Deletes a file or directory. Use `recursive: true` for non-empty directories.
+
+| Parameter   | Type      | Description                 |
+| ----------- | --------- | --------------------------- |
+| `path`      | `string`  | Path to delete              |
+| `recursive` | `boolean` | Delete contents recursively |
+
+---
+
+## Network & Web
+
+### `http_request`
+
+Makes HTTP requests with custom headers, body, and timeout. Responses larger than 100 KB are truncated.
+
+| Parameter | Type                     | Description                                                            |
+| --------- | ------------------------ | ---------------------------------------------------------------------- |
+| `url`     | `string`                 | Request URL                                                            |
+| `method`  | `enum`                   | `GET` \| `POST` \| `PUT` \| `PATCH` \| `DELETE` \| `HEAD` \| `OPTIONS` |
+| `headers` | `Record<string, string>` | Request headers                                                        |
+| `body`    | `string`                 | Request body (for POST/PUT/PATCH)                                      |
+| `timeout` | `number`                 | Timeout in ms (default: 30000, max: 60000)                             |
+
+### `web_search`
+
+Searches the web via Tavily, Brave Search, or Serper APIs. Auto-detects the provider from environment variables (`TAVILY_API_KEY`, `BRAVE_API_KEY`, `SERPER_API_KEY`).
+
+| Parameter       | Type      | Description                         |
+| --------------- | --------- | ----------------------------------- |
+| `query`         | `string`  | Search query                        |
+| `provider`      | `enum`    | `tavily` \| `brave` \| `serper`     |
+| `maxResults`    | `number`  | Max results (default: 5, max: 20)   |
+| `searchDepth`   | `enum`    | `basic` \| `advanced` (Tavily only) |
+| `includeAnswer` | `boolean` | Include AI summary (Tavily only)    |
+
+### `web_scrape`
+
+Fetches and extracts content from web pages. Supports text, markdown, or raw HTML output, CSS selector extraction, and link/image collection.
+
+| Parameter       | Type      | Description                                |
+| --------------- | --------- | ------------------------------------------ |
+| `url`           | `string`  | URL to scrape                              |
+| `selector`      | `string`  | CSS selector to extract (e.g. `"article"`) |
+| `format`        | `enum`    | `text` \| `markdown` \| `html`             |
+| `maxLength`     | `number`  | Max content length (default: 50000)        |
+| `includeLinks`  | `boolean` | Extract links                              |
+| `includeImages` | `boolean` | Extract image URLs                         |
+
+---
+
+## Database & Search
+
+### `sql_query`
+
+Executes SQL queries against PostgreSQL or SQLite. Supports parameterized queries and read-only mode by default for safety.
+
+| Parameter          | Type        | Description                                    |
+| ------------------ | ----------- | ---------------------------------------------- |
+| `query`            | `string`    | SQL query                                      |
+| `database`         | `enum`      | `postgres` \| `sqlite` (auto-detected)         |
+| `connectionString` | `string`    | Connection string (defaults to `DATABASE_URL`) |
+| `params`           | `unknown[]` | Parameterized query values                     |
+| `maxRows`          | `number`    | Max rows returned (default: 100, max: 1000)    |
+| `readOnly`         | `boolean`   | Only allow SELECT queries (default: true)      |
+
+### `vector_search`
+
+Performs semantic similarity search using pgvector. Converts queries to embeddings via OpenAI, Ollama, or Google, then finds similar documents in PostgreSQL.
+
+| Parameter           | Type     | Description                           |
+| ------------------- | -------- | ------------------------------------- |
+| `query`             | `string` | Search query (converted to embedding) |
+| `collection`        | `string` | Table name (default: `"documents"`)   |
+| `topK`              | `number` | Number of results (default: 5)        |
+| `threshold`         | `number` | Minimum similarity 0-1 (default: 0.7) |
+| `filter`            | `Record` | Metadata filter as key-value pairs    |
+| `embeddingProvider` | `enum`   | `openai` \| `ollama` \| `google`      |
+
+---
+
+## Communication & Dev
+
+### `send_email`
+
+Sends email via Resend API or SMTP. Supports HTML body, CC/BCC, and reply-to.
+
+| Parameter  | Type                 | Description                        |
+| ---------- | -------------------- | ---------------------------------- |
+| `to`       | `string \| string[]` | Recipient(s)                       |
+| `subject`  | `string`             | Email subject                      |
+| `body`     | `string`             | Email body (plain text or HTML)    |
+| `html`     | `boolean`            | Treat body as HTML                 |
+| `provider` | `enum`               | `resend` \| `smtp` (auto-detected) |
+
+### `github_api`
+
+Full GitHub API integration. Supports 12 actions: `get_repo`, `list_issues`, `get_issue`, `create_issue`, `update_issue`, `list_prs`, `get_pr`, `create_pr`, `get_file`, `list_commits`, `search_code`, `search_issues`. Requires `GITHUB_TOKEN`.
+
+```typescript
+const agent = new Agent({
+  name: 'github-bot',
+  model: 'openai/gpt-4o',
+  tools: [githubApi],
+  instructions: 'You help manage GitHub repositories.',
+});
+```
+
+### `exec`
+
+Executes shell commands. Declares side effects for `process`, `filesystem`, and `network`. Configured with `requiresApproval: true` and a Docker sandbox by default.
+
+| Parameter | Type     | Description                               |
+| --------- | -------- | ----------------------------------------- |
+| `command` | `string` | Shell command to execute                  |
+| `cwd`     | `string` | Working directory                         |
+| `timeout` | `number` | Timeout in ms (default: 30000, max: 300s) |
+| `env`     | `Record` | Additional environment variables          |

@@ -1,0 +1,247 @@
+---
+title: Time-Travel Debugging
+description: Capture execution snapshots at any step, replay from checkpoints, fork alternate timelines, and compare runs side-by-side to debug agent behavior.
+---
+
+## Overview
+
+Time-travel debugging lets you capture snapshots of agent execution at any point, then replay, fork, or compare runs. Instead of re-running an entire agent from scratch to debug a failure at step 47, you load the checkpoint at step 46 and explore what happens with different inputs, tools, or context.
+
+## Setting Up TimeTravel
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { TimeTravel } from '@cogitator-ai/core/time-travel';
+
+const cogitator = new Cogitator({
+  /* ... */
+});
+
+const timeTravel = new TimeTravel(cogitator, {
+  config: {
+    enabled: true,
+    autoCheckpoint: true,
+    maxCheckpointsPerTrace: 50,
+    checkpointInterval: 1,
+  },
+});
+```
+
+## Creating Checkpoints
+
+Checkpoints capture the full state at a given step: messages, tool results, and pending tool calls.
+
+```typescript
+const result = await cogitator.run(agent, { input: 'Research quantum computing advances' });
+
+// checkpoint a specific step
+const checkpoint = await timeTravel.checkpoint(result, 3, 'after-web-search');
+
+// checkpoint every step
+const allCheckpoints = await timeTravel.checkpointAll(result, 'research-run');
+
+// checkpoint every N steps
+const sparseCheckpoints = await timeTravel.checkpointEvery(result, 2, 'sparse');
+```
+
+Each checkpoint stores:
+
+- The conversation messages up to that step
+- All tool results collected so far
+- Any pending tool calls at that exact moment
+- An optional label for easy retrieval
+
+## Browsing Checkpoints
+
+Retrieve checkpoints by trace, agent, or label:
+
+```typescript
+const checkpoints = await timeTravel.getCheckpoints(result.trace.traceId);
+
+for (const cp of checkpoints) {
+  console.log(`Step ${cp.stepIndex}: ${cp.label ?? 'unlabeled'}`);
+  console.log(`  Messages: ${cp.messages.length}`);
+  console.log(`  Tool results: ${Object.keys(cp.toolResults).length}`);
+  console.log(`  Created: ${cp.createdAt.toISOString()}`);
+}
+
+const specific = await timeTravel.getCheckpoint('ckpt_abc123');
+```
+
+## Replaying from a Checkpoint
+
+Replay re-executes the agent from a saved checkpoint. Two modes are available:
+
+### Deterministic Replay
+
+Returns the exact state at the checkpoint without making any new LLM calls:
+
+```typescript
+const replay = await timeTravel.replayDeterministic(agent, checkpoint.id);
+
+console.log('Output:', replay.output);
+console.log('Steps replayed:', replay.stepsReplayed);
+console.log('Steps executed:', replay.stepsExecuted); // 0 in deterministic mode
+```
+
+### Live Replay
+
+Resumes execution from the checkpoint, letting the agent continue with fresh LLM calls:
+
+```typescript
+const replay = await timeTravel.replayLive(agent, checkpoint.id);
+
+console.log('Output:', replay.output);
+console.log('Steps replayed:', replay.stepsReplayed);
+console.log('Steps executed:', replay.stepsExecuted);
+
+if (replay.divergedAt !== undefined) {
+  console.log(`Execution diverged at step ${replay.divergedAt}`);
+}
+```
+
+The divergence point tells you exactly where the new execution took a different path from the original.
+
+## Forking Execution
+
+Forking creates an alternate timeline from a checkpoint with modified conditions. This is the core debugging primitive.
+
+### Fork with Additional Context
+
+Inject new information into the system prompt:
+
+```typescript
+const fork = await timeTravel.forkWithContext(
+  agent,
+  checkpoint.id,
+  'The user is a premium subscriber with access to advanced features',
+  'premium-context'
+);
+
+console.log('Fork output:', fork.result.output);
+```
+
+### Fork with Mocked Tools
+
+Override tool results to test "what if" scenarios:
+
+```typescript
+const fork = await timeTravel.forkWithMockedTool(
+  agent,
+  checkpoint.id,
+  'web_search',
+  { results: [], error: 'Service unavailable' },
+  'search-failure'
+);
+
+// mock multiple tools at once
+const multiFork = await timeTravel.forkWithMockedTools(
+  agent,
+  checkpoint.id,
+  {
+    web_search: { results: [] },
+    database_query: { rows: [], error: 'Connection timeout' },
+  },
+  'all-services-down'
+);
+```
+
+### Fork with New Input
+
+Change the user's original question while preserving all context up to the checkpoint:
+
+```typescript
+const fork = await timeTravel.forkWithNewInput(
+  agent,
+  checkpoint.id,
+  'Now focus specifically on quantum error correction',
+  'refined-question'
+);
+```
+
+### Fork Multiple Variants
+
+Explore several alternatives from the same checkpoint in one call:
+
+```typescript
+const forks = await timeTravel.forkMultiple(agent, checkpoint.id, [
+  { additionalContext: 'Focus on practical applications', label: 'practical' },
+  { additionalContext: 'Focus on theoretical foundations', label: 'theoretical' },
+  { mockToolResults: { web_search: { results: [] } }, label: 'no-search' },
+  { input: 'Explain quantum entanglement instead', label: 'different-topic' },
+]);
+
+for (const fork of forks) {
+  console.log(`${fork.checkpoint.label}: ${fork.result.output.slice(0, 100)}...`);
+}
+```
+
+## Comparing Runs
+
+The `TraceComparator` produces structured diffs between any two execution traces:
+
+```typescript
+const diff = await timeTravel.compare(originalTraceId, replayTraceId);
+
+console.log(`Common steps: ${diff.commonSteps}`);
+console.log(`Only in original: ${diff.trace1OnlySteps}`);
+console.log(`Only in replay: ${diff.trace2OnlySteps}`);
+
+if (diff.divergencePoint !== undefined) {
+  console.log(`Diverged at step ${diff.divergencePoint}`);
+}
+
+console.log(`Score delta: ${diff.metricsDiff.score.delta}`);
+console.log(`Token delta: ${diff.metricsDiff.tokens.delta}`);
+console.log(`Duration delta: ${diff.metricsDiff.duration.delta}ms`);
+```
+
+After a replay, compare directly against the original:
+
+```typescript
+const diff = await timeTravel.compareWithOriginal(replayResult);
+console.log(timeTravel.formatDiff(diff));
+```
+
+The formatted diff output looks like:
+
+```
+═══════════════════════════════════════════
+              TRACE COMPARISON
+═══════════════════════════════════════════
+
+Trace 1: trace_abc123
+Trace 2: trace_def456
+
+⚠ Traces diverged at step 3
+
+─── Summary ───
+Common steps:     3
+Only in trace 1:  2
+Only in trace 2:  1
+
+─── Metrics ───
+Success:  true → true
+Score:    0.850 → 0.920 (+0.070)
+Tokens:   4200 → 3800 (-400)
+Duration: 2300ms → 1900ms (-400ms)
+
+─── Step Differences ───
+✗ Step 3: different
+   └─ Tool: web_search → database_query
+≈ Step 4: similar
+   └─ LLM response differs
+```
+
+Step diff statuses: `identical` (exact match), `similar` (same structure, different LLM text), `different` (structural change), `only_in_1`, or `only_in_2`.
+
+## Debugging Workflow
+
+A typical debugging session:
+
+1. Run the agent and observe the failure
+2. Create checkpoints for the entire run with `checkpointAll()`
+3. Identify the last good step by browsing checkpoints
+4. Fork from that step with different conditions to isolate the cause
+5. Compare the fork against the original to quantify the improvement
+6. Use insights to fix the agent's instructions or tool configuration

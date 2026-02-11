@@ -1,0 +1,86 @@
+---
+title: Workflows API
+description: Complete API reference for @cogitator-ai/workflows — DAG-based orchestration.
+---
+
+## Classes
+
+### WorkflowBuilder
+
+Fluent API for constructing workflow DAGs:
+
+```typescript
+import { WorkflowBuilder } from '@cogitator-ai/workflows';
+
+const workflow = new WorkflowBuilder()
+  .addNode('step1', agentNode(agent))
+  .addNode('step2', toolNode(myTool))
+  .addEdge('step1', 'step2')
+  .build();
+```
+
+**Methods:**
+
+| Method    | Signature                                       | Description           |
+| --------- | ----------------------------------------------- | --------------------- |
+| `addNode` | `addNode(id: string, node: WorkflowNode)`       | Add a node to the DAG |
+| `addEdge` | `addEdge(from: string, to: string, condition?)` | Connect two nodes     |
+| `build`   | `build(): Workflow`                             | Compile the workflow  |
+
+### WorkflowExecutor
+
+Execute compiled workflows:
+
+```typescript
+import { WorkflowExecutor } from '@cogitator-ai/workflows';
+
+const executor = new WorkflowExecutor(workflow, options?);
+const result = await executor.execute(input);
+```
+
+**ExecutorOptions:**
+
+| Property         | Type        | Description             |
+| ---------------- | ----------- | ----------------------- |
+| `cogitator`      | `Cogitator` | Runtime for agent nodes |
+| `checkpointing`  | `boolean`   | Enable checkpoints      |
+| `maxConcurrency` | `number`    | Max parallel nodes      |
+| `timeout`        | `number`    | Execution timeout (ms)  |
+
+## Node Factories
+
+```typescript
+import { agentNode, toolNode, functionNode, humanNode, customNode } from '@cogitator-ai/workflows';
+```
+
+| Factory               | Description                      |
+| --------------------- | -------------------------------- |
+| `agentNode(agent)`    | Run an Agent, returns its output |
+| `toolNode(tool)`      | Execute a tool directly          |
+| `functionNode(fn)`    | Run arbitrary async function     |
+| `humanNode(options)`  | Pause for human input            |
+| `customNode(handler)` | Fully custom node logic          |
+
+## Saga Support
+
+```typescript
+import { SagaExecutor, CompensationRegistry } from '@cogitator-ai/workflows';
+```
+
+| Class                  | Description                         |
+| ---------------------- | ----------------------------------- |
+| `SagaExecutor`         | Execute workflows with compensation |
+| `CompensationRegistry` | Register rollback actions per node  |
+
+## Scheduling
+
+```typescript
+import { WorkflowScheduler, CronTrigger, WebhookTrigger } from '@cogitator-ai/workflows';
+```
+
+| Class               | Description                  |
+| ------------------- | ---------------------------- |
+| `WorkflowScheduler` | Schedule workflow executions |
+| `CronTrigger`       | Cron-based scheduling        |
+| `WebhookTrigger`    | HTTP webhook triggers        |
+| `TimerTrigger`      | One-shot delayed execution   |

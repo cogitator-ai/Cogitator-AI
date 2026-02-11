@@ -1,0 +1,225 @@
+---
+title: Koa Adapter
+description: Integrate Cogitator into your Koa application using the middleware-chain pattern with @koa/router.
+---
+
+The `@cogitator-ai/koa` package provides `cogitatorApp`, a factory function that returns a `@koa/router` instance with all Cogitator routes, middleware, and error handling pre-configured. It follows Koa's middleware-chain philosophy — body parsing, context injection, auth, and error handling are composed as middleware layers.
+
+## Installation
+
+```bash
+pnpm add @cogitator-ai/koa koa @koa/router
+```
+
+## Basic Setup
+
+```typescript
+import Koa from 'koa';
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { cogitatorApp } from '@cogitator-ai/koa';
+import { z } from 'zod';
+
+const app = new Koa();
+
+const cogitator = new Cogitator({
+  llm: {
+    defaultProvider: 'openai',
+    providers: {
+      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' },
+    },
+  },
+});
+
+const translator = tool({
+  name: 'translate',
+  description: 'Translate text to a target language',
+  parameters: z.object({
+    text: z.string(),
+    targetLanguage: z.string(),
+  }),
+  execute: async ({ text, targetLanguage }) => ({
+    translated: `[${targetLanguage}] ${text}`,
+  }),
+});
+
+const agent = new Agent({
+  name: 'translator',
+  instructions: 'You translate text between languages. Use the translate tool.',
+  tools: [translator],
+});
+
+const cogitatorRouter = cogitatorApp({
+  cogitator,
+  agents: { translator: agent },
+  enableSwagger: true,
+});
+
+app.use(cogitatorRouter.routes());
+app.use(cogitatorRouter.allowedMethods());
+
+app.listen(3000, () => {
+  console.log('Koa server running on http://localhost:3000');
+  console.log('Swagger UI: http://localhost:3000/docs');
+});
+```
+
+## App Options
+
+```typescript
+interface CogitatorAppOptions {
+  cogitator: Cogitator;
+  agents?: Record<string, Agent>;
+  workflows?: Record<string, Workflow>;
+  swarms?: Record<string, SwarmConfig>;
+  auth?: AuthFunction;
+  enableSwagger?: boolean;
+  swagger?: SwaggerConfig;
+  enableWebSocket?: boolean;
+  websocket?: WebSocketConfig;
+}
+```
+
+## Middleware Chain
+
+The returned router applies middleware in this order:
+
+1. **Error handler** — catches errors and returns structured JSON responses
+2. **Body parser** — parses JSON request bodies
+3. **Context middleware** — injects `CogitatorState` into `ctx.state`
+4. **Auth middleware** — optional, runs your auth function
+5. **Route handlers** — health, agents, threads, tools, workflows, swarms
+6. **Swagger routes** — optional, `/openapi.json` and `/docs`
+
+## Authentication
+
+The auth function receives a Koa `Context` and returns an `AuthContext`:
+
+```typescript
+const cogitatorRouter = cogitatorApp({
+  cogitator,
+  agents: { translator: agent },
+  auth: async (ctx) => {
+    const token = ctx.headers.authorization?.replace('Bearer ', '');
+    if (!token) return undefined;
+
+    const user = await verifyToken(token);
+    return { userId: user.id, roles: user.roles, permissions: user.permissions };
+  },
+});
+```
+
+The auth result is stored in `ctx.state.auth` for use in downstream middleware.
+
+## Mounting Under a Prefix
+
+Use `@koa/router`'s prefix feature to nest the Cogitator routes:
+
+```typescript
+import Router from '@koa/router';
+
+const root = new Router();
+
+root.get('/', (ctx) => {
+  ctx.body = { message: 'Welcome' };
+});
+
+const cogitatorRouter = cogitatorApp({
+  cogitator,
+  agents: { translator: agent },
+  enableSwagger: true,
+});
+
+const prefixed = new Router({ prefix: '/api/v1' });
+prefixed.use(cogitatorRouter.routes());
+prefixed.use(cogitatorRouter.allowedMethods());
+
+app.use(root.routes());
+app.use(prefixed.routes());
+app.use(prefixed.allowedMethods());
+```
+
+All Cogitator routes are now under `/api/v1/agents/...`, `/api/v1/docs`, etc.
+
+## Streaming
+
+The `KoaStreamWriter` manages SSE responses through Koa's raw `ctx.res` object:
+
+```typescript
+const response = await fetch('http://localhost:3000/agents/translator/stream', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    input: 'Translate "good morning" to Japanese, French, and Spanish.',
+  }),
+});
+
+const reader = response.body!.getReader();
+const decoder = new TextDecoder();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  process.stdout.write(decoder.decode(value));
+}
+```
+
+## WebSocket
+
+WebSocket support requires the `ws` package. After creating your Koa app, call `setupWebSocket` with the HTTP server:
+
+```typescript
+import { createServer } from 'http';
+import { setupWebSocket } from '@cogitator-ai/koa';
+
+const httpServer = createServer(app.callback());
+
+setupWebSocket(httpServer, {
+  cogitator,
+  agents: { translator: agent },
+  path: '/ws',
+  pingInterval: 30_000,
+});
+
+httpServer.listen(3000);
+```
+
+## State Type
+
+The router is typed with `CogitatorState`, which provides full type safety in custom middleware:
+
+```typescript
+import type { CogitatorState, RouteContext } from '@cogitator-ai/koa';
+import Router from '@koa/router';
+
+const custom = new Router<CogitatorState>();
+
+custom.get('/custom', async (ctx) => {
+  const { cogitator: routeCtx } = ctx.state;
+  const { agents, workflows, swarms } = routeCtx;
+  ctx.body = { agentCount: Object.keys(agents).length };
+});
+```
+
+## Exported Utilities
+
+```typescript
+import {
+  cogitatorApp,
+  createContextMiddleware,
+  createAuthMiddleware,
+  createBodyParser,
+  createErrorHandler,
+  createHealthRoutes,
+  createAgentRoutes,
+  createThreadRoutes,
+  createToolRoutes,
+  createWorkflowRoutes,
+  createSwarmRoutes,
+  createSwaggerRoutes,
+  KoaStreamWriter,
+  setupSSEHeaders,
+  setupWebSocket,
+} from '@cogitator-ai/koa';
+```
+
+Each `create*Routes()` function returns a `@koa/router` instance that you can mount individually.

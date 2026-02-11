@@ -1,0 +1,285 @@
+---
+title: Swarm Builder
+description: Build swarms with the fluent SwarmBuilder API or the Swarm class directly.
+---
+
+## The `swarm()` Builder
+
+The recommended way to create swarms is the `swarm()` factory function. It returns a `SwarmBuilder` with a chainable API for configuring every aspect of your swarm.
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { swarm } from '@cogitator-ai/swarms';
+
+const cogitator = new Cogitator({
+  /* ... */
+});
+
+const team = swarm('my-team')
+  .strategy('hierarchical')
+  .supervisor(supervisorAgent)
+  .workers([workerA, workerB])
+  .resources({ maxConcurrency: 4, tokenBudget: 50_000 })
+  .errorHandling({ onAgentFailure: 'retry', retry: { maxRetries: 2, backoff: 'exponential' } })
+  .build(cogitator);
+```
+
+The `build(cogitator)` call validates the configuration and returns a ready-to-run `Swarm` instance.
+
+## Builder Methods
+
+### Required
+
+Every swarm needs a name (passed to `swarm()`) and a strategy:
+
+```typescript
+swarm('team-name').strategy('hierarchical'); // required
+```
+
+### Agent Configuration
+
+Different strategies expect agents in different roles:
+
+```typescript
+// hierarchical: supervisor + workers
+swarm('dev-team').strategy('hierarchical').supervisor(leadAgent).workers([devAgent, qaAgent]);
+
+// consensus, round-robin, auction: flat agent list
+swarm('review-board').strategy('consensus').agents([reviewerA, reviewerB, reviewerC]);
+
+// debate: agents + optional moderator
+swarm('debate-team')
+  .strategy('debate')
+  .agents([advocateAgent, criticAgent])
+  .moderator(moderatorAgent);
+
+// pipeline: configured via strategy-specific options
+swarm('pipeline').strategy('pipeline').pipeline({
+  stages: [
+    /* ... */
+  ],
+});
+```
+
+### Strategy-Specific Configuration
+
+Each strategy has its own configuration method that matches the strategy name:
+
+```typescript
+swarm('team').strategy('hierarchical').hierarchical({
+  maxDelegationDepth: 3,
+  workerCommunication: false,
+  routeThrough: 'supervisor',
+  visibility: 'full',
+});
+
+swarm('pool')
+  .strategy('round-robin')
+  .roundRobin({
+    sticky: true,
+    stickyKey: (input) => extractSessionId(input),
+    rotation: 'sequential',
+  });
+
+swarm('board').strategy('consensus').consensus({
+  threshold: 0.66,
+  maxRounds: 3,
+  resolution: 'majority',
+  onNoConsensus: 'supervisor-decides',
+});
+
+swarm('experts').strategy('auction').auction({
+  bidding: 'capability-match',
+  selection: 'highest-bid',
+  minBid: 0.3,
+});
+
+swarm('pipe')
+  .strategy('pipeline')
+  .pipeline({
+    stages: [
+      { name: 'research', agent: researchAgent },
+      { name: 'write', agent: writerAgent },
+      { name: 'review', agent: reviewAgent, gate: true },
+    ],
+    gates: {
+      review: {
+        condition: (out) => out.includes('APPROVED'),
+        onFail: 'retry-previous',
+        maxRetries: 2,
+      },
+    },
+  });
+
+swarm('debate').strategy('debate').debate({
+  rounds: 3,
+  format: 'structured',
+});
+```
+
+### Communication
+
+Configure how agents communicate within the swarm:
+
+```typescript
+swarm('team')
+  .strategy('hierarchical')
+  .messaging({
+    enabled: true,
+    protocol: 'direct',
+    maxMessageLength: 2000,
+    maxMessagesPerTurn: 5,
+    maxTotalMessages: 100,
+  })
+  .blackboardConfig({
+    enabled: true,
+    sections: { tasks: [], results: {} },
+    trackHistory: true,
+  });
+```
+
+### Resources and Error Handling
+
+```typescript
+swarm('team')
+  .strategy('hierarchical')
+  .resources({
+    maxConcurrency: 5,
+    tokenBudget: 100_000,
+    costLimit: 2.0,
+    timeout: 300_000,
+  })
+  .errorHandling({
+    onAgentFailure: 'retry',
+    retry: { maxRetries: 3, backoff: 'exponential', initialDelay: 1000, maxDelay: 30000 },
+    failover: { 'primary-coder': 'backup-coder' },
+    circuitBreaker: { enabled: true, threshold: 5, resetTimeout: 60_000 },
+  });
+```
+
+### Distributed Mode
+
+Enable Redis-backed distributed coordination:
+
+```typescript
+swarm('distributed-team')
+  .strategy('hierarchical')
+  .distributed({
+    enabled: true,
+    redis: { host: 'localhost', port: 6379 },
+    queue: 'swarm-agent-jobs',
+    timeout: 300_000,
+  });
+```
+
+### Assessment
+
+Enable automatic model selection with the assessor:
+
+```typescript
+swarm('smart-team')
+  .strategy('hierarchical')
+  .withAssessor({
+    preferLocal: true,
+    minCapabilityMatch: 0.3,
+    maxCostPerRun: 0.5,
+    enabledProviders: ['ollama', 'openai', 'anthropic'],
+  });
+```
+
+## The `Swarm` Class
+
+If you prefer imperative construction, use the `Swarm` class directly:
+
+```typescript
+import { Swarm } from '@cogitator-ai/swarms';
+
+const team = new Swarm(cogitator, {
+  name: 'dev-team',
+  strategy: 'hierarchical',
+  supervisor: leadAgent,
+  workers: [devAgent, qaAgent],
+  resources: { maxConcurrency: 4 },
+});
+```
+
+The constructor validates configuration immediately and throws if required fields are missing (e.g. no supervisor for hierarchical, no stages for pipeline).
+
+## Running a Swarm
+
+Both `Swarm` and the builder result expose the same API:
+
+```typescript
+const result = await team.run({
+  input: 'Build a REST API for user management',
+  context: { language: 'typescript', framework: 'express' },
+  saveHistory: false,
+});
+
+console.log(result.output);
+console.log(result.agentResults);
+```
+
+The `SwarmRunOptions`:
+
+| Field         | Type                      | Description                                              |
+| ------------- | ------------------------- | -------------------------------------------------------- |
+| `input`       | `string`                  | The task to execute                                      |
+| `context`     | `Record<string, unknown>` | Additional context passed to all agents                  |
+| `saveHistory` | `boolean`                 | Whether to persist conversation history (default `true`) |
+
+## Swarm Instance API
+
+Once built, a `Swarm` provides these methods:
+
+```typescript
+// execution
+await team.run({ input: '...' });
+
+// introspection
+team.name;
+team.id;
+team.strategyType;
+team.getAgents();
+team.getAgent('frontend-dev');
+team.getResourceUsage();
+team.getLastAssessment();
+
+// events
+const unsub = team.on('agent:complete', (event) => {
+  /* ... */
+});
+team.once('swarm:complete', (event) => {
+  /* ... */
+});
+
+// control
+team.pause();
+team.resume();
+team.abort();
+team.reset();
+
+// distributed cleanup
+await team.close();
+```
+
+## Dry Run
+
+Preview model assignments without executing the swarm:
+
+```typescript
+const team = swarm('team')
+  .strategy('hierarchical')
+  .supervisor(leadAgent)
+  .workers([devAgent, qaAgent])
+  .withAssessor({ preferLocal: true })
+  .build(cogitator);
+
+const assessment = await team.dryRun({ input: 'Build a REST API' });
+
+for (const assignment of assessment.assignments) {
+  console.log(`${assignment.agentName}: ${assignment.assignedModel} (score: ${assignment.score})`);
+}
+
+console.log(`Estimated cost: $${assessment.totalEstimatedCost.toFixed(4)}`);
+```

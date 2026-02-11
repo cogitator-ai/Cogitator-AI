@@ -1,0 +1,109 @@
+---
+title: Test Utilities
+description: MockLLMBackend, fixtures, and stream helpers for testing Cogitator agents.
+---
+
+## MockLLMBackend
+
+The mock backend lets you script exact LLM responses, making tests deterministic:
+
+```typescript
+import { MockLLMBackend } from '@cogitator-ai/core/testing';
+
+const mock = new MockLLMBackend({
+  responses: [
+    { text: 'Hello! How can I help you?' },
+    {
+      text: 'Let me search for that.',
+      toolCalls: [{ name: 'web_search', arguments: { query: 'TypeScript AI frameworks' } }],
+    },
+    { text: 'Here are the results...' },
+  ],
+});
+```
+
+### Asserting Call History
+
+```typescript
+const result = await cogitator.run(agent, 'Search for TypeScript AI frameworks');
+
+expect(mock.calls).toHaveLength(2);
+expect(mock.calls[0].messages).toContainEqual(
+  expect.objectContaining({ role: 'user', content: expect.stringContaining('TypeScript') })
+);
+```
+
+### Dynamic Responses
+
+For more complex scenarios, provide a function instead of static responses:
+
+```typescript
+const mock = new MockLLMBackend({
+  handler: async (messages, options) => {
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage.content?.includes('weather')) {
+      return {
+        text: 'Checking weather...',
+        toolCalls: [{ name: 'get_weather', arguments: { city: 'London' } }],
+      };
+    }
+    return { text: 'I can help with that.' };
+  },
+});
+```
+
+## Stream Helpers
+
+Test streaming responses:
+
+```typescript
+import { collectStream } from '@cogitator-ai/core/testing';
+
+const result = await cogitator.run(agent, {
+  input: 'Tell me a story',
+  stream: true,
+});
+
+const tokens = await collectStream(result.stream);
+expect(tokens.join('')).toContain('Once upon a time');
+```
+
+## Fixtures
+
+Create reusable test fixtures:
+
+```typescript
+import { createTestCogitator, createTestAgent } from '@cogitator-ai/core/testing';
+
+function setupTestEnv(responses: MockResponse[]) {
+  const mock = new MockLLMBackend({ responses });
+  const cogitator = createTestCogitator({ mock });
+  const agent = createTestAgent({
+    name: 'test-agent',
+    tools: [calculator, webSearch],
+  });
+  return { mock, cogitator, agent };
+}
+
+describe('agent with tools', () => {
+  it('uses calculator for math questions', async () => {
+    const { cogitator, agent, mock } = setupTestEnv([
+      { text: '', toolCalls: [{ name: 'calculator', arguments: { expression: '2+2' } }] },
+      { text: 'The answer is 4.' },
+    ]);
+
+    const result = await cogitator.run(agent, 'What is 2+2?');
+    expect(result.text).toContain('4');
+  });
+});
+```
+
+## Testing Patterns
+
+| Pattern                 | Use Case                        |
+| ----------------------- | ------------------------------- |
+| Static mock responses   | Deterministic tool call testing |
+| Dynamic handler         | Complex branching logic         |
+| Stream collection       | Verify streaming output         |
+| Call history assertions | Verify LLM was called correctly |
+| Fixture factories       | Reusable test setup             |

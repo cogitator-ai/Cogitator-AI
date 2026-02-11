@@ -1,0 +1,64 @@
+---
+title: Welcome to Cogitator
+description: The Sovereign AI Agent Runtime — self-hosted, production-grade orchestration for LLM swarms and autonomous agents.
+---
+
+## What is Cogitator?
+
+Cogitator is a self-hosted, production-grade AI agent runtime for TypeScript. It provides everything you need to build, orchestrate, and deploy autonomous AI agents — from simple chat assistants to complex multi-agent swarms with memory, tools, workflows, and sandboxed code execution.
+
+## Key Features
+
+- **Multi-Model Support** — Ollama, OpenAI, Anthropic, Google Gemini, Azure OpenAI, AWS Bedrock
+- **Agent Framework** — Type-safe tool creation, structured outputs, vision & audio
+- **Swarm Intelligence** — 8 coordination strategies for multi-agent systems
+- **Workflow Engine** — DAG-based orchestration with sagas, scheduling, and checkpoints
+- **Memory & RAG** — Vector search, hybrid BM25+vector, knowledge graphs
+- **Server Adapters** — Express, Fastify, Hono, Koa with OpenAPI generation
+- **Sandboxed Execution** — Docker and WASM sandboxes for safe code execution
+- **MCP Protocol** — Full Model Context Protocol client and server support
+- **Observability** — Langfuse, OpenTelemetry, cost tracking
+
+## Quick Start
+
+```bash
+npx create-cogitator-app my-agent
+cd my-agent
+npm install
+npm run dev
+```
+
+Or install manually:
+
+```bash
+npm install @cogitator-ai/core @cogitator-ai/types
+```
+
+```typescript
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+
+const cogitator = new Cogitator({
+  llm: {
+    defaultProvider: 'ollama',
+    providers: {
+      ollama: { type: 'ollama', host: 'http://localhost:11434', model: 'llama3.2' },
+    },
+  },
+});
+
+const agent = new Agent({
+  name: 'assistant',
+  instructions: 'You are a helpful assistant.',
+  tools: [
+    tool({
+      name: 'greet',
+      description: 'Greet someone',
+      parameters: z.object({ name: z.string() }),
+      execute: async ({ name }) => `Hello, ${name}!`,
+    }),
+  ],
+});
+
+const result = await cogitator.run(agent, 'Say hello to the world');
+console.log(result.text);
+```

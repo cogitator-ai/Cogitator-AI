@@ -1,0 +1,216 @@
+---
+title: LLM Backends
+description: Supported LLM providers, configuration, and provider-prefix routing.
+---
+
+## Overview
+
+Cogitator supports 11 LLM providers out of the box. Backends are created lazily -- a provider's client is only instantiated the first time an agent needs it. The provider is determined by the model string prefix.
+
+```typescript
+const cog = new Cogitator({
+  llm: {
+    defaultProvider: 'openai',
+    providers: {
+      openai: { apiKey: process.env.OPENAI_API_KEY! },
+      anthropic: { apiKey: process.env.ANTHROPIC_API_KEY! },
+      ollama: { baseUrl: 'http://localhost:11434' },
+    },
+  },
+});
+```
+
+## Provider Routing
+
+Model strings follow the `provider/model-name` format:
+
+```typescript
+'openai/gpt-4o'; // routes to OpenAI
+'anthropic/claude-sonnet-4-20250514'; // routes to Anthropic
+'ollama/llama3.3:latest'; // routes to Ollama
+'google/gemini-2.5-flash'; // routes to Google
+```
+
+If the model string has no prefix, Cogitator falls back to `defaultProvider` (or `ollama` if unset).
+
+The `parseModel()` utility handles this splitting:
+
+```typescript
+import { parseModel } from '@cogitator-ai/core';
+
+parseModel('openai/gpt-4o');
+// { provider: 'openai', model: 'gpt-4o' }
+
+parseModel('llama3.3:latest');
+// { provider: null, model: 'llama3.3:latest' }
+```
+
+## Supported Providers
+
+### Ollama
+
+Local inference with Ollama. No API key required.
+
+```typescript
+providers: {
+  ollama: {
+    baseUrl: 'http://localhost:11434', // default
+  },
+}
+```
+
+```typescript
+model: 'ollama/llama3.3:latest';
+model: 'ollama/codellama:34b';
+model: 'ollama/mistral:7b-instruct';
+```
+
+### OpenAI
+
+```typescript
+providers: {
+  openai: {
+    apiKey: process.env.OPENAI_API_KEY!,
+    baseUrl: 'https://api.openai.com/v1', // optional, for proxies
+  },
+}
+```
+
+```typescript
+model: 'openai/gpt-4o';
+model: 'openai/gpt-4o-mini';
+model: 'openai/o1';
+```
+
+### Anthropic
+
+```typescript
+providers: {
+  anthropic: {
+    apiKey: process.env.ANTHROPIC_API_KEY!,
+  },
+}
+```
+
+```typescript
+model: 'anthropic/claude-sonnet-4-20250514';
+model: 'anthropic/claude-opus-4-20250514';
+```
+
+### Google (Gemini)
+
+```typescript
+providers: {
+  google: {
+    apiKey: process.env.GOOGLE_API_KEY!,
+  },
+}
+```
+
+```typescript
+model: 'google/gemini-2.5-flash';
+model: 'google/gemini-2.5-pro';
+```
+
+### Azure OpenAI
+
+```typescript
+providers: {
+  azure: {
+    endpoint: 'https://your-resource.openai.azure.com',
+    apiKey: process.env.AZURE_OPENAI_API_KEY!,
+    apiVersion: '2024-02-01',  // optional
+    deployment: 'gpt-4o',      // optional default deployment
+  },
+}
+```
+
+### AWS Bedrock
+
+```typescript
+providers: {
+  bedrock: {
+    region: 'us-east-1',
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
+}
+```
+
+### OpenAI-Compatible Providers
+
+Mistral, Groq, Together, and DeepSeek use the OpenAI SDK under the hood with a custom base URL. The configuration is straightforward:
+
+```typescript
+providers: {
+  mistral: { apiKey: process.env.MISTRAL_API_KEY! },
+  groq: { apiKey: process.env.GROQ_API_KEY! },
+  together: { apiKey: process.env.TOGETHER_API_KEY! },
+  deepseek: { apiKey: process.env.DEEPSEEK_API_KEY! },
+}
+```
+
+```typescript
+model: 'mistral/mistral-large-latest';
+model: 'groq/llama-3.3-70b-versatile';
+model: 'together/meta-llama/Llama-3.3-70B-Instruct-Turbo';
+model: 'deepseek/deepseek-chat';
+```
+
+## Custom Backends (Plugin System)
+
+Register custom LLM backends for providers not included by default:
+
+```typescript
+import { defineBackend, registerLLMBackend } from '@cogitator-ai/core';
+
+const myBackend = defineBackend({
+  name: 'my-provider',
+  factory: (config) => new MyCustomBackend(config),
+});
+
+registerLLMBackend(myBackend);
+```
+
+List registered plugins:
+
+```typescript
+import { listLLMPlugins, hasLLMPlugin } from '@cogitator-ai/core';
+
+console.log(listLLMPlugins());
+console.log(hasLLMPlugin('my-provider'));
+```
+
+## Debug Wrapper
+
+Wrap any backend with debug logging to inspect requests and responses:
+
+```typescript
+import { withDebug } from '@cogitator-ai/core';
+
+const debugBackend = withDebug(backend, {
+  logRequest: true,
+  logResponse: true,
+  logger: (msg) => console.log('[LLM]', msg),
+});
+```
+
+## Error Handling
+
+All backends throw typed `LLMError` instances with structured error codes:
+
+```typescript
+import { LLMError, ErrorCode } from '@cogitator-ai/core';
+
+try {
+  await cog.run(agent, { input: 'Hello' });
+} catch (e) {
+  if (e instanceof LLMError) {
+    if (e.code === ErrorCode.LLM_RATE_LIMITED) {
+      // retry after e.retryAfter ms
+    }
+  }
+}
+```
+
+Error codes include `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_INVALID_RESPONSE`, and `LLM_TIMEOUT`. Rate limit and server errors are automatically marked as retryable.

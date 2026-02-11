@@ -1,25 +1,30 @@
-import { Metadata } from 'next';
+import { DocsLayout } from 'fumadocs-ui/layouts/docs';
+import { source } from '@/lib/source';
+import type { ReactNode } from 'react';
+import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title: 'Documentation',
-  description:
-    'Complete documentation for Cogitator - the self-hosted AI agent orchestration platform. Learn about agents, workflows, swarms, memory/RAG, sandboxed execution, and more.',
-  keywords: [
-    'Cogitator documentation',
-    'AI agent tutorial',
-    'LLM orchestration guide',
-    'workflow automation',
-    'multi-agent systems tutorial',
-    'RAG implementation',
-    'TypeScript AI agents',
-  ],
-  openGraph: {
-    title: 'Cogitator Documentation',
-    description: 'Complete guide to building AI agents, workflows, and swarms with Cogitator.',
-    type: 'website',
+  title: {
+    default: 'Documentation',
+    template: '%s | Cogitator Docs',
   },
+  description:
+    'Complete documentation for Cogitator — the self-hosted AI agent orchestration platform.',
 };
 
-export default function DocsLayout({ children }: { children: React.ReactNode }) {
-  return children;
+export default function Layout({ children }: { children: ReactNode }) {
+  return (
+    <DocsLayout
+      tree={source.pageTree}
+      nav={{
+        title: 'Cogitator',
+        url: '/',
+      }}
+      sidebar={{
+        defaultOpenLevel: 1,
+      }}
+    >
+      {children}
+    </DocsLayout>
+  );
 }

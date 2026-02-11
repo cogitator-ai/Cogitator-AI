@@ -1,0 +1,222 @@
+---
+title: Structured Outputs
+description: Get typed JSON responses from LLMs using Zod schemas and response format modes.
+---
+
+## Overview
+
+Structured outputs let you constrain the LLM to return data in a specific JSON shape. Cogitator supports three response format modes and handles the provider-specific differences for you.
+
+```typescript
+import { Agent } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const agent = new Agent({
+  name: 'extractor',
+  model: 'openai/gpt-4o',
+  instructions: 'Extract structured data from the given text.',
+  responseFormat: {
+    type: 'json_schema',
+    schema: z.object({
+      title: z.string(),
+      topics: z.array(z.string()),
+      sentiment: z.enum(['positive', 'negative', 'neutral']),
+    }),
+  },
+});
+```
+
+## Response Format Modes
+
+### `text` (default)
+
+The LLM responds with free-form text. This is the default when no `responseFormat` is set.
+
+```typescript
+responseFormat: {
+  type: 'text';
+}
+```
+
+### `json`
+
+The LLM is instructed to return valid JSON, but without a specific schema. Useful when you need flexible JSON output.
+
+```typescript
+const agent = new Agent({
+  name: 'json-agent',
+  model: 'openai/gpt-4o',
+  instructions: 'Respond with a JSON object containing your analysis.',
+  responseFormat: { type: 'json' },
+});
+
+const result = await cog.run(agent, { input: 'Analyze this sentence: "I love TypeScript"' });
+const data = JSON.parse(result.output);
+```
+
+### `json_schema`
+
+The LLM is constrained to a specific JSON structure defined by a Zod schema. This is the most powerful mode -- the output is guaranteed to match your schema.
+
+```typescript
+const sentimentSchema = z.object({
+  text: z.string(),
+  sentiment: z.enum(['positive', 'negative', 'neutral']),
+  confidence: z.number(),
+  keywords: z.array(z.string()),
+  entities: z.array(
+    z.object({
+      name: z.string(),
+      type: z.enum(['person', 'organization', 'location', 'other']),
+    })
+  ),
+});
+
+const agent = new Agent({
+  name: 'sentiment-analyzer',
+  model: 'openai/gpt-4o',
+  instructions: 'Analyze the sentiment and extract entities from the input text.',
+  responseFormat: {
+    type: 'json_schema',
+    schema: sentimentSchema,
+  },
+});
+```
+
+## How Providers Handle It
+
+Each LLM provider implements structured outputs differently. Cogitator abstracts these differences away, but understanding them helps pick the right provider.
+
+### OpenAI
+
+OpenAI natively supports all three modes. For `json_schema`, it uses the `response_format` parameter with strict schema enforcement:
+
+```typescript
+// what Cogitator sends under the hood
+response_format: {
+  type: 'json_schema',
+  json_schema: {
+    name: 'response',
+    schema: { /* your Zod schema converted to JSON Schema */ },
+    strict: true,
+  },
+}
+```
+
+### Anthropic
+
+Anthropic does not have native JSON schema support. Cogitator uses a **tool trick** -- it creates a synthetic tool named `__json_response` with your schema as its parameters and forces the LLM to call it:
+
+- `json` mode: Appends "respond with valid JSON only" to the system prompt
+- `json_schema` mode: Injects a tool with your schema and sets `tool_choice` to require it
+
+The output is extracted from the tool call arguments, so you get the same structured response regardless of provider.
+
+### Google (Gemini)
+
+Google supports structured outputs via `responseMimeType` and `responseSchema`:
+
+- `json` mode: Sets `responseMimeType: 'application/json'`
+- `json_schema` mode: Sets both `responseMimeType` and `responseSchema`
+
+### Ollama
+
+Ollama supports structured outputs via the `format` field:
+
+- `json` mode: Sets `format: 'json'`
+- `json_schema` mode: Passes the full JSON Schema as the `format` value
+
+### Azure OpenAI
+
+Azure uses the same format as OpenAI since it's backed by the same API.
+
+## Defining Schemas with Zod
+
+Use the full power of Zod to define your output shapes:
+
+```typescript
+const analysisSchema = z.object({
+  summary: z.string().describe('A brief summary of the content'),
+
+  categories: z
+    .array(z.enum(['tech', 'business', 'science', 'politics', 'entertainment']))
+    .describe('Relevant categories'),
+
+  metrics: z.object({
+    readability: z.number().min(0).max(100),
+    complexity: z.enum(['simple', 'moderate', 'complex']),
+    wordCount: z.number().int().positive(),
+  }),
+
+  references: z
+    .array(
+      z.object({
+        title: z.string(),
+        url: z.string().url().optional(),
+        relevance: z.number().min(0).max(1),
+      })
+    )
+    .optional(),
+});
+```
+
+Field descriptions (`.describe()`) are included in the JSON Schema sent to the LLM, which improves output quality.
+
+## Parsing the Output
+
+The `result.output` is always a string. For structured outputs, parse it:
+
+```typescript
+const result = await cog.run(agent, { input: 'Analyze this article...' });
+const data = JSON.parse(result.output);
+```
+
+Since the LLM is constrained by the schema, the parsed JSON will match your Zod type. You can validate it for extra safety:
+
+```typescript
+const parsed = analysisSchema.parse(JSON.parse(result.output));
+```
+
+## Common Patterns
+
+### Classification
+
+```typescript
+const classifier = new Agent({
+  name: 'classifier',
+  model: 'openai/gpt-4o-mini',
+  instructions: 'Classify the support ticket into a category and priority.',
+  temperature: 0,
+  responseFormat: {
+    type: 'json_schema',
+    schema: z.object({
+      category: z.enum(['billing', 'technical', 'account', 'feature_request', 'other']),
+      priority: z.enum(['low', 'medium', 'high', 'critical']),
+      reasoning: z.string(),
+    }),
+  },
+});
+```
+
+### Data Extraction
+
+```typescript
+const extractor = new Agent({
+  name: 'extractor',
+  model: 'anthropic/claude-sonnet-4-20250514',
+  instructions: 'Extract all contact information from the given text.',
+  responseFormat: {
+    type: 'json_schema',
+    schema: z.object({
+      contacts: z.array(
+        z.object({
+          name: z.string(),
+          email: z.string().email().optional(),
+          phone: z.string().optional(),
+          company: z.string().optional(),
+        })
+      ),
+    }),
+  },
+});
+```

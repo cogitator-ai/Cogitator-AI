@@ -1,0 +1,96 @@
+---
+title: Memory API
+description: Complete API reference for @cogitator-ai/memory — memory adapters, embeddings, and RAG.
+---
+
+## Memory Adapters
+
+```typescript
+import {
+  InMemoryAdapter,
+  RedisMemoryAdapter,
+  PostgresMemoryAdapter,
+  SQLiteMemoryAdapter,
+  MongoMemoryAdapter,
+  QdrantMemoryAdapter,
+} from '@cogitator-ai/memory';
+```
+
+### Common Interface
+
+All adapters implement the `MemoryAdapter` interface:
+
+| Method     | Signature                                              | Description               |
+| ---------- | ------------------------------------------------------ | ------------------------- |
+| `store`    | `store(entry: MemoryEntry): Promise<void>`             | Store a memory entry      |
+| `retrieve` | `retrieve(query: MemoryQuery): Promise<MemoryEntry[]>` | Retrieve matching entries |
+| `delete`   | `delete(id: string): Promise<void>`                    | Delete an entry           |
+| `clear`    | `clear(threadId?: string): Promise<void>`              | Clear entries             |
+
+### Adapter Comparison
+
+| Adapter                 | Persistence | Vector Search      | Best For                    |
+| ----------------------- | ----------- | ------------------ | --------------------------- |
+| `InMemoryAdapter`       | None        | Yes (brute force)  | Development, testing        |
+| `RedisMemoryAdapter`    | Session     | No                 | Short-term, fast access     |
+| `PostgresMemoryAdapter` | Permanent   | Yes (pgvector)     | Production, semantic search |
+| `SQLiteMemoryAdapter`   | Permanent   | No                 | Embedded, single-node       |
+| `MongoMemoryAdapter`    | Permanent   | Yes (Atlas Search) | Document-oriented           |
+| `QdrantMemoryAdapter`   | Permanent   | Yes (native)       | Heavy vector workloads      |
+
+## Embedding Providers
+
+```typescript
+import {
+  OpenAIEmbeddingProvider,
+  OllamaEmbeddingProvider,
+  GoogleEmbeddingProvider,
+} from '@cogitator-ai/memory';
+```
+
+| Provider                  | Models                                             | Dimensions  |
+| ------------------------- | -------------------------------------------------- | ----------- |
+| `OpenAIEmbeddingProvider` | `text-embedding-3-small`, `text-embedding-3-large` | 1536 / 3072 |
+| `OllamaEmbeddingProvider` | `nomic-embed-text`, `mxbai-embed-large`            | 768 / 1024  |
+| `GoogleEmbeddingProvider` | `text-embedding-004`                               | 768         |
+
+## Search
+
+```typescript
+import { HybridSearch, BM25Search, VectorSearch } from '@cogitator-ai/memory';
+```
+
+| Class          | Description                     |
+| -------------- | ------------------------------- |
+| `VectorSearch` | Cosine similarity on embeddings |
+| `BM25Search`   | Full-text keyword search        |
+| `HybridSearch` | Combines BM25 + vector with RRF |
+
+**HybridSearch config:**
+
+| Property       | Type     | Default | Description               |
+| -------------- | -------- | ------- | ------------------------- |
+| `vectorWeight` | `number` | `0.7`   | Weight for vector results |
+| `bm25Weight`   | `number` | `0.3`   | Weight for BM25 results   |
+| `k`            | `number` | `60`    | RRF constant              |
+| `topK`         | `number` | `10`    | Results to return         |
+
+## Knowledge Graphs
+
+```typescript
+import {
+  KnowledgeGraph,
+  InMemoryGraphAdapter,
+  PostgresGraphAdapter,
+  Neo4jGraphAdapter,
+  EntityExtractor,
+} from '@cogitator-ai/memory';
+```
+
+| Class                  | Description                          |
+| ---------------------- | ------------------------------------ |
+| `KnowledgeGraph`       | Main graph interface                 |
+| `EntityExtractor`      | Extract entities from text using LLM |
+| `InMemoryGraphAdapter` | In-memory graph storage              |
+| `PostgresGraphAdapter` | Postgres-backed graph                |
+| `Neo4jGraphAdapter`    | Neo4j native graph database          |

@@ -1,0 +1,212 @@
+---
+title: Core API
+description: Complete API reference for @cogitator-ai/core — the main runtime package.
+---
+
+## Classes
+
+### Cogitator
+
+The main runtime class. Creates and manages agent execution.
+
+```typescript
+import { Cogitator } from '@cogitator-ai/core';
+
+const cogitator = new Cogitator(config: CogitatorConfig);
+```
+
+**Methods:**
+
+| Method  | Signature                                                            | Description           |
+| ------- | -------------------------------------------------------------------- | --------------------- |
+| `run`   | `run(agent: Agent, input: string \| RunOptions): Promise<RunResult>` | Execute an agent      |
+| `close` | `close(): Promise<void>`                                             | Cleanup all resources |
+
+### Agent
+
+Represents an LLM agent with tools and instructions.
+
+```typescript
+import { Agent } from '@cogitator-ai/core';
+
+const agent = new Agent(config: AgentConfig);
+```
+
+**AgentConfig:**
+
+| Property         | Type             | Default  | Description                       |
+| ---------------- | ---------------- | -------- | --------------------------------- |
+| `name`           | `string`         | required | Agent identifier                  |
+| `instructions`   | `string`         | `''`     | System prompt                     |
+| `tools`          | `Tool[]`         | `[]`     | Available tools                   |
+| `model`          | `string`         | —        | Model override (`provider/model`) |
+| `temperature`    | `number`         | —        | Sampling temperature              |
+| `maxTokens`      | `number`         | —        | Max tokens in response            |
+| `responseFormat` | `ResponseFormat` | —        | JSON mode / json_schema           |
+
+### ToolRegistry
+
+Manages tool registration and lookup.
+
+```typescript
+import { ToolRegistry } from '@cogitator-ai/core';
+
+const registry = new ToolRegistry();
+registry.register(tool);
+registry.get('tool_name');
+registry.list();
+```
+
+### ReflectionEngine
+
+Self-reflection and insight generation.
+
+```typescript
+import { ReflectionEngine } from '@cogitator-ai/core';
+```
+
+### ThoughtTreeExecutor
+
+Tree-of-Thought reasoning over multiple paths.
+
+```typescript
+import { ThoughtTreeExecutor } from '@cogitator-ai/core';
+```
+
+### ConstitutionalAI
+
+Safety guardrails with constitutional principles.
+
+```typescript
+import { ConstitutionalAI, InputFilter, OutputFilter, ToolGuard } from '@cogitator-ai/core';
+```
+
+### CostAwareRouter
+
+Route requests to the cheapest capable model.
+
+```typescript
+import { CostAwareRouter, BudgetEnforcer, ModelSelector } from '@cogitator-ai/core';
+```
+
+### TimeTravel
+
+Snapshot, replay, and fork agent executions.
+
+```typescript
+import {
+  TimeTravel,
+  ExecutionReplayer,
+  ExecutionForker,
+  TraceComparator,
+} from '@cogitator-ai/core';
+```
+
+### CausalReasoner
+
+Causal graph construction and counterfactual reasoning.
+
+```typescript
+import { CausalReasoner, CausalGraphBuilder, CounterfactualReasoner } from '@cogitator-ai/core';
+```
+
+### ContextManager
+
+Manage conversation context within token limits.
+
+```typescript
+import { ContextManager, SummarizeStrategy, SlidingWindowStrategy } from '@cogitator-ai/core';
+```
+
+### PromptInjectionDetector
+
+Detect and block prompt injection attacks.
+
+```typescript
+import { PromptInjectionDetector } from '@cogitator-ai/core';
+```
+
+## Factory Functions
+
+### tool()
+
+Create a type-safe tool:
+
+```typescript
+import { tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const myTool = tool({
+  name: string,
+  description: string,
+  parameters: ZodSchema,
+  execute: async (params, context?) => result,
+});
+```
+
+### agentAsTool()
+
+Wrap an agent as a callable tool:
+
+```typescript
+import { agentAsTool } from '@cogitator-ai/core';
+
+const delegateTool = agentAsTool(agent, options?: AgentAsToolOptions);
+```
+
+### withCache()
+
+Add caching to any tool:
+
+```typescript
+import { withCache } from '@cogitator-ai/core';
+
+const cachedTool = withCache(myTool, { ttl: '5m', storage: cacheStorage });
+```
+
+## LLM Backends
+
+```typescript
+import {
+  OllamaBackend,
+  OpenAIBackend,
+  AnthropicBackend,
+  createLLMBackend,
+} from '@cogitator-ai/core';
+```
+
+| Backend            | Provider String | Description          |
+| ------------------ | --------------- | -------------------- |
+| `OllamaBackend`    | `ollama`        | Local Ollama models  |
+| `OpenAIBackend`    | `openai`        | OpenAI API           |
+| `AnthropicBackend` | `anthropic`     | Anthropic Claude API |
+
+## Built-in Tools
+
+```typescript
+import { builtinTools, calculator, datetime, httpRequest /* ... */ } from '@cogitator-ai/core';
+```
+
+26 built-in tools: `calculator`, `datetime`, `uuid`, `randomNumber`, `randomString`, `hash`, `base64Encode`, `base64Decode`, `sleep`, `jsonParse`, `jsonStringify`, `regexMatch`, `regexReplace`, `fileRead`, `fileWrite`, `fileList`, `fileExists`, `fileDelete`, `httpRequest`, `exec`, `webSearch`, `webScrape`, `sqlQuery`, `vectorSearch`, `sendEmail`, `githubApi`.
+
+## Observability
+
+```typescript
+import {
+  LangfuseExporter,
+  createLangfuseExporter,
+  OTLPExporter,
+  createOTLPExporter,
+} from '@cogitator-ai/core';
+```
+
+## Resilience Utilities
+
+```typescript
+import {
+  withRetry,
+  CircuitBreaker,
+  withFallback,
+  withGracefulDegradation,
+} from '@cogitator-ai/core';
+```

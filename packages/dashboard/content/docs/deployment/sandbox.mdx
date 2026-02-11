@@ -1,0 +1,136 @@
+---
+title: Sandboxed Execution
+description: Run untrusted code safely with Docker containers and WASM isolation.
+---
+
+## Overview
+
+The `@cogitator-ai/sandbox` package provides isolated execution for agent-generated code. It ships three backends -- Docker containers, WASM via Extism, and a native fallback -- managed through `SandboxManager`.
+
+```bash
+pnpm add @cogitator-ai/sandbox
+```
+
+## SandboxManager
+
+Initializes available executors and routes requests with automatic fallback when Docker or WASM is unavailable.
+
+```typescript
+import { SandboxManager } from '@cogitator-ai/sandbox';
+
+const sandbox = new SandboxManager({
+  docker: { socketPath: '/var/run/docker.sock' },
+  pool: { maxSize: 10, idleTimeoutMs: 60_000 },
+  defaults: {
+    timeout: 30_000,
+    resources: { memory: '256m', cpus: 0.5, pidsLimit: 100 },
+    network: { mode: 'none' },
+  },
+});
+
+await sandbox.initialize();
+
+const result = await sandbox.execute(
+  { command: ['python3', '-c', 'print("hello from sandbox")'] },
+  { type: 'docker', image: 'python:3.12-slim' }
+);
+
+if (result.success) {
+  console.log(result.data.stdout);
+}
+
+await sandbox.shutdown();
+```
+
+## DockerSandboxExecutor
+
+Runs commands inside isolated Docker containers. Containers are created with all capabilities dropped, `no-new-privileges` enforced, and network disabled by default.
+
+```typescript
+import { DockerSandboxExecutor } from '@cogitator-ai/sandbox';
+
+const executor = new DockerSandboxExecutor({
+  docker: { socketPath: '/var/run/docker.sock' },
+  pool: { maxSize: 5, idleTimeoutMs: 60_000 },
+});
+
+await executor.connect();
+
+const result = await executor.execute(
+  { command: ['node', '-e', 'console.log(2 + 2)'], timeout: 10_000 },
+  {
+    type: 'docker',
+    image: 'node:20-alpine',
+    resources: { memory: '128m', cpus: 0.5, pidsLimit: 50 },
+    network: { mode: 'none' },
+  }
+);
+
+await executor.disconnect();
+```
+
+### Security Defaults
+
+| Setting       | Value               | Purpose                      |
+| ------------- | ------------------- | ---------------------------- |
+| `CapDrop`     | `ALL`               | Drop all Linux capabilities  |
+| `SecurityOpt` | `no-new-privileges` | Prevent privilege escalation |
+| `NetworkMode` | `none`              | No network access            |
+| `PidsLimit`   | `100`               | Prevent fork bombs           |
+
+## WasmSandboxExecutor
+
+Runs code inside WASM modules via Extism. Cold start is 1-10ms (vs 1-5s for Docker) with 1-10MB memory per plugin.
+
+```typescript
+import { WasmSandboxExecutor } from '@cogitator-ai/sandbox';
+
+const executor = new WasmSandboxExecutor({ wasm: { cacheSize: 10 } });
+await executor.connect();
+
+const result = await executor.execute(
+  { command: ['run'], stdin: JSON.stringify({ code: 'return 2 + 2' }) },
+  { type: 'wasm', wasmModule: 'https://example.com/sandbox.wasm', wasi: true }
+);
+
+await executor.disconnect();
+```
+
+Modules load from URLs, local paths, or npm packages. An LRU cache avoids reloading on repeated calls.
+
+## ContainerPool
+
+Reuses Docker containers across executions. Containers stay alive with `sleep infinity` and commands run via `docker exec`, amortizing startup cost.
+
+```typescript
+import { ContainerPool } from '@cogitator-ai/sandbox';
+
+const pool = new ContainerPool(dockerClient, {
+  maxSize: 10,
+  idleTimeoutMs: 120_000,
+});
+
+const container = await pool.acquire('python:3.12-slim', {
+  memory: 256 * 1024 * 1024,
+  cpus: 1,
+  networkMode: 'none',
+});
+
+await pool.release(container);
+await pool.release(container, { corrupted: true });
+```
+
+Releasing with `corrupted: true` destroys the container instead of returning it. Idle containers are cleaned up automatically.
+
+## Fallback Chain
+
+`SandboxManager` falls back when a requested executor is unavailable:
+
+1. **WASM requested** -- Docker -- Native
+2. **Docker requested** -- Native
+3. **Native** -- always available, no isolation
+
+```typescript
+const hasDocker = await sandbox.isDockerAvailable();
+const hasWasm = await sandbox.isWasmAvailable();
+```

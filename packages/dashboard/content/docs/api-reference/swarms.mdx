@@ -1,0 +1,103 @@
+---
+title: Swarms API
+description: Complete API reference for @cogitator-ai/swarms — multi-agent coordination.
+---
+
+## Classes
+
+### Swarm
+
+The main swarm orchestrator:
+
+```typescript
+import { Swarm } from '@cogitator-ai/swarms';
+
+const swarm = new Swarm({
+  name: 'my-swarm',
+  agents: [agent1, agent2, agent3],
+  strategy: 'hierarchical',
+  options: { maxRounds: 10 },
+});
+
+const result = await swarm.run(cogitator, 'Build a landing page');
+```
+
+**SwarmConfig:**
+
+| Property   | Type            | Description               |
+| ---------- | --------------- | ------------------------- |
+| `name`     | `string`        | Swarm identifier          |
+| `agents`   | `Agent[]`       | Participating agents      |
+| `strategy` | `SwarmStrategy` | Coordination strategy     |
+| `options`  | `SwarmOptions`  | Strategy-specific options |
+
+### SwarmAssessor
+
+Analyze tasks and auto-configure swarms:
+
+```typescript
+import { SwarmAssessor } from '@cogitator-ai/swarms';
+
+const assessor = new SwarmAssessor(cogitator);
+const config = await assessor.assess('Build a full-stack web app');
+```
+
+### TaskAnalyzer
+
+Analyze task complexity and requirements:
+
+```typescript
+import { TaskAnalyzer } from '@cogitator-ai/swarms';
+```
+
+### RoleMatcher
+
+Match agents to roles based on capabilities:
+
+```typescript
+import { RoleMatcher } from '@cogitator-ai/swarms';
+```
+
+## Builder Function
+
+### swarm()
+
+Fluent builder for swarm construction:
+
+```typescript
+import { swarm } from '@cogitator-ai/swarms';
+
+const mySwarm = swarm('dev-team')
+  .agent(architect, { role: 'lead' })
+  .agent(developer)
+  .agent(reviewer)
+  .strategy('hierarchical')
+  .maxRounds(10)
+  .build();
+```
+
+## Strategies
+
+| Strategy     | Key              | Description                           |
+| ------------ | ---------------- | ------------------------------------- |
+| Hierarchical | `'hierarchical'` | Leader delegates to workers           |
+| Round Robin  | `'round-robin'`  | Agents take turns                     |
+| Consensus    | `'consensus'`    | Agents vote on decisions              |
+| Auction      | `'auction'`      | Agents bid for tasks                  |
+| Pipeline     | `'pipeline'`     | Sequential processing chain           |
+| Debate       | `'debate'`       | Agents argue positions                |
+| Negotiation  | `'negotiation'`  | Agents negotiate solutions            |
+| Distributed  | `'distributed'`  | Redis-backed distributed coordination |
+
+## Communication
+
+```typescript
+import { Blackboard, MessageBus, RedisMessageBus, RedisBlackboard } from '@cogitator-ai/swarms';
+```
+
+| Class             | Description                   |
+| ----------------- | ----------------------------- |
+| `Blackboard`      | Shared state store for agents |
+| `MessageBus`      | In-memory agent messaging     |
+| `RedisBlackboard` | Redis-backed shared state     |
+| `RedisMessageBus` | Redis-backed messaging        |

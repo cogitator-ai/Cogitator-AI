@@ -1,0 +1,227 @@
+---
+title: Vision & Audio
+description: Multi-modal capabilities including image analysis, image generation, audio transcription, and text-to-speech.
+---
+
+## Overview
+
+Cogitator provides four multi-modal tool factories for working with images and audio. Each factory returns a standard tool that can be given to any agent.
+
+```typescript
+import {
+  createAnalyzeImageTool,
+  createGenerateImageTool,
+  createTranscribeAudioTool,
+  createGenerateSpeechTool,
+} from '@cogitator-ai/core';
+```
+
+## Image Analysis
+
+`createAnalyzeImageTool` creates a tool that sends images to a vision-capable model for analysis. It supports both URL and base64 image inputs.
+
+```typescript
+import { Cogitator, Agent, createAnalyzeImageTool, OpenAIBackend } from '@cogitator-ai/core';
+
+const openai = new OpenAIBackend({ apiKey: process.env.OPENAI_API_KEY! });
+
+const analyzeImage = createAnalyzeImageTool({
+  llm: openai,
+  defaultModel: 'gpt-4o',
+});
+
+const agent = new Agent({
+  name: 'vision-assistant',
+  model: 'openai/gpt-4o',
+  instructions: 'You can analyze images. Use the analyzeImage tool when given an image URL.',
+  tools: [analyzeImage],
+});
+```
+
+### Parameters
+
+| Parameter | Type                           | Description                                     |
+| --------- | ------------------------------ | ----------------------------------------------- |
+| `image`   | `string \| { data, mimeType }` | URL or base64-encoded image data                |
+| `prompt`  | `string`                       | Question or instruction about the image         |
+| `detail`  | `'auto' \| 'low' \| 'high'`    | Analysis detail level (`high` uses more tokens) |
+| `model`   | `string`                       | Override the vision model                       |
+
+### Inline Images via RunOptions
+
+You can also pass images directly through `RunOptions` without needing the analyze tool:
+
+```typescript
+const result = await cog.run(agent, {
+  input: 'What do you see in this image?',
+  images: [
+    'https://example.com/photo.jpg',
+    {
+      data: base64EncodedImage,
+      mimeType: 'image/png',
+    },
+  ],
+});
+```
+
+The `images` array accepts URLs as strings or objects with `data` (base64) and `mimeType` fields. Supported MIME types: `image/jpeg`, `image/png`, `image/gif`, `image/webp`.
+
+## Image Generation
+
+`createGenerateImageTool` creates images using DALL-E 3 via the OpenAI API.
+
+```typescript
+const generateImage = createGenerateImageTool({
+  apiKey: process.env.OPENAI_API_KEY!,
+});
+
+const agent = new Agent({
+  name: 'artist',
+  model: 'openai/gpt-4o',
+  instructions: 'You create images based on user descriptions. Use the generateImage tool.',
+  tools: [generateImage],
+});
+```
+
+### Parameters
+
+| Parameter | Type                                        | Description                                   |
+| --------- | ------------------------------------------- | --------------------------------------------- |
+| `prompt`  | `string`                                    | Detailed description of the image to generate |
+| `size`    | `'1024x1024' \| '1792x1024' \| '1024x1792'` | Image dimensions                              |
+| `quality` | `'standard' \| 'hd'`                        | HD produces finer textures and detail         |
+| `style`   | `'vivid' \| 'natural'`                      | Vivid for dramatic, natural for realistic     |
+
+### Result
+
+```typescript
+{
+  url: 'https://oaidalleapiprodscus.blob.core.windows.net/...',
+  revisedPrompt: 'A detailed painting of...',
+  size: '1024x1024',
+  quality: 'standard',
+  style: 'vivid',
+}
+```
+
+## Audio Transcription
+
+`createTranscribeAudioTool` transcribes audio to text using OpenAI Whisper or GPT-4o transcribe models.
+
+```typescript
+const transcribe = createTranscribeAudioTool({
+  apiKey: process.env.OPENAI_API_KEY!,
+  defaultModel: 'whisper-1',
+  defaultLanguage: 'en',
+});
+
+const agent = new Agent({
+  name: 'transcriber',
+  model: 'openai/gpt-4o',
+  instructions: 'Transcribe audio files. Use the transcribeAudio tool.',
+  tools: [transcribe],
+});
+```
+
+### Parameters
+
+| Parameter    | Type                                                             | Description                                           |
+| ------------ | ---------------------------------------------------------------- | ----------------------------------------------------- |
+| `audio`      | `string \| { data, format }`                                     | URL or base64-encoded audio data                      |
+| `language`   | `string`                                                         | ISO-639-1 code (`'en'`, `'es'`, `'fr'`, `'ja'`, etc.) |
+| `model`      | `'whisper-1' \| 'gpt-4o-transcribe' \| 'gpt-4o-mini-transcribe'` | Transcription model                                   |
+| `timestamps` | `boolean`                                                        | Include word-level timestamps (whisper-1 only)        |
+
+Supported audio formats: `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`, `ogg`, `flac` (up to 25MB).
+
+### Result
+
+```typescript
+{
+  text: 'The transcribed content of the audio file...',
+  language: 'en',
+  duration: 42.5,
+  words: [
+    { word: 'The', start: 0.0, end: 0.1 },
+    { word: 'transcribed', start: 0.1, end: 0.5 },
+    // ...
+  ],
+}
+```
+
+### Inline Audio via RunOptions
+
+Audio files can be passed directly to the run:
+
+```typescript
+const result = await cog.run(agent, {
+  input: 'Summarize what was said in this recording.',
+  audio: ['https://example.com/meeting.mp3', { data: base64Audio, format: 'wav' }],
+});
+```
+
+## Text-to-Speech
+
+`createGenerateSpeechTool` converts text to natural-sounding speech using OpenAI TTS.
+
+```typescript
+const speak = createGenerateSpeechTool({
+  apiKey: process.env.OPENAI_API_KEY!,
+  defaultModel: 'tts-1',
+  defaultVoice: 'nova',
+  defaultFormat: 'mp3',
+});
+
+const agent = new Agent({
+  name: 'narrator',
+  model: 'openai/gpt-4o',
+  instructions: 'Read text aloud using the generateSpeech tool.',
+  tools: [speak],
+});
+```
+
+### Parameters
+
+| Parameter | Type                                                   | Description                                |
+| --------- | ------------------------------------------------------ | ------------------------------------------ |
+| `text`    | `string`                                               | Text to convert (max 4096 characters)      |
+| `voice`   | `string`                                               | Voice selection (see below)                |
+| `model`   | `'tts-1' \| 'tts-1-hd' \| 'gpt-4o-mini-tts'`           | TTS model                                  |
+| `speed`   | `number`                                               | Playback speed, 0.25 to 4.0 (default: 1.0) |
+| `format`  | `'mp3' \| 'opus' \| 'aac' \| 'flac' \| 'wav' \| 'pcm'` | Output format                              |
+
+### Available Voices
+
+`alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `nova`, `onyx`, `sage`, `shimmer`, `verse`, `marin`, `cedar`
+
+### Result
+
+```typescript
+{
+  audioBase64: 'AAAA...',  // base64-encoded audio
+  format: 'mp3',
+  voice: 'nova',
+  model: 'tts-1',
+  textLength: 256,
+}
+```
+
+## Utilities
+
+Cogitator exports helpers for working with image and audio data:
+
+```typescript
+import {
+  fetchImageAsBase64,
+  fetchAudioAsBuffer,
+  audioInputToBuffer,
+  isValidAudioFormat,
+  getAudioMimeType,
+} from '@cogitator-ai/core';
+
+const image = await fetchImageAsBase64('https://example.com/photo.jpg');
+// { data: 'base64...', mimeType: 'image/jpeg' }
+
+const audio = await fetchAudioAsBuffer('https://example.com/audio.mp3');
+// { buffer: ArrayBuffer, filename: 'audio.mp3' }
+```

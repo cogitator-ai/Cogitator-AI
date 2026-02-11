@@ -1,0 +1,219 @@
+---
+title: Swarm Assessment
+description: Automatically analyze tasks and assign optimal models to agents with SwarmAssessor, TaskAnalyzer, RoleMatcher, and ModelDiscovery.
+---
+
+## Overview
+
+The Swarm Assessor analyzes incoming tasks and automatically assigns the best available LLM model to each agent in the swarm. Instead of hardcoding models, let the assessor match agents to models based on task requirements, agent roles, model capabilities, and cost constraints.
+
+```
+Task Input
+    │
+    ▼
+┌──────────────┐     ┌────────────────┐     ┌──────────────┐
+│ TaskAnalyzer │────▶│  RoleMatcher   │────▶│ ModelScorer  │
+│              │     │                │     │              │
+│ complexity   │     │ role needs     │     │ score models │
+│ domains      │     │ expertise      │     │ rank & pick  │
+│ reasoning    │     │ custom hints   │     │              │
+└──────────────┘     └────────────────┘     └──────────────┘
+                                                    │
+                            ┌───────────────────────┘
+                            ▼
+                     ┌──────────────┐
+                     │ModelDiscovery│
+                     │              │
+                     │ local Ollama │
+                     │ cloud APIs   │
+                     └──────────────┘
+```
+
+## Enabling the Assessor
+
+Use `withAssessor()` on the swarm builder:
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { swarm } from '@cogitator-ai/swarms';
+
+const team = swarm('dev-team')
+  .strategy('hierarchical')
+  .supervisor(new Agent({ name: 'lead', instructions: 'Coordinate the team.' }))
+  .workers([
+    new Agent({ name: 'coder', instructions: 'Write code.', metadata: { expertise: ['code'] } }),
+    new Agent({ name: 'reviewer', instructions: 'Review code quality.' }),
+  ])
+  .withAssessor({
+    preferLocal: true,
+    minCapabilityMatch: 0.3,
+    maxCostPerRun: 0.5,
+    enabledProviders: ['ollama', 'openai', 'anthropic'],
+  })
+  .build(cogitator);
+```
+
+When you call `team.run(...)`, the assessor runs automatically before execution, analyzes the task, discovers available models, and reassigns each agent to its optimal model.
+
+## Assessor Configuration
+
+| Option               | Default                                       | Description                                                                    |
+| -------------------- | --------------------------------------------- | ------------------------------------------------------------------------------ |
+| `mode`               | `'rules'`                                     | Assessment mode (rules-based scoring)                                          |
+| `preferLocal`        | `true`                                        | Prefer local Ollama models when they score within 80% of the best cloud option |
+| `minCapabilityMatch` | `0.3`                                         | Minimum score (0-1) for a model to be considered                               |
+| `maxCostPerRun`      | `undefined`                                   | Budget cap in dollars; triggers cost optimization if set                       |
+| `ollamaUrl`          | `'http://localhost:11434'`                    | Ollama API endpoint for model discovery                                        |
+| `enabledProviders`   | `['ollama', 'openai', 'anthropic', 'google']` | Which providers to include                                                     |
+| `cacheAssessments`   | `true`                                        | Cache results for identical task/config combinations                           |
+| `cacheTTL`           | `300000`                                      | Cache lifetime in milliseconds (5 minutes)                                     |
+
+## TaskAnalyzer
+
+The `TaskAnalyzer` examines the input text and extracts structured requirements:
+
+```typescript
+import { TaskAnalyzer } from '@cogitator-ai/swarms';
+
+const analyzer = new TaskAnalyzer();
+const reqs = analyzer.analyze('Analyze this screenshot and write a detailed code review');
+```
+
+The analysis returns a `TaskRequirements` object:
+
+| Field              | Type                                  | Detection                                                                              |
+| ------------------ | ------------------------------------- | -------------------------------------------------------------------------------------- |
+| `needsVision`      | `boolean`                             | Keywords like "image", "screenshot", "diagram"                                         |
+| `needsToolCalling` | `boolean`                             | Keywords like "search", "execute", "api", "database"                                   |
+| `needsLongContext` | `boolean`                             | Large input (500+ words) or keywords like "codebase", "repository"                     |
+| `needsReasoning`   | `'basic' \| 'moderate' \| 'advanced'` | "analyze", "synthesize" -> advanced; "explain", "summarize" -> moderate                |
+| `needsSpeed`       | `'fast' \| 'balanced' \| 'slow-ok'`   | "quick", "urgent" -> fast; "thorough", "detailed" -> slow-ok                           |
+| `costSensitivity`  | `'low' \| 'medium' \| 'high'`         | "cheap", "budget" -> high; "best", "premium" -> low                                    |
+| `complexity`       | `'simple' \| 'moderate' \| 'complex'` | Word count, sentence count, multi-step indicators, conditionals                        |
+| `domains`          | `string[]`                            | Detected from domain patterns: code, math, creative, analysis, legal, medical, finance |
+
+## RoleMatcher
+
+The `RoleMatcher` takes each agent's role and metadata and adjusts the task requirements to match what that specific agent needs:
+
+```typescript
+import { RoleMatcher } from '@cogitator-ai/swarms';
+
+const matcher = new RoleMatcher();
+const roleReqs = matcher.analyzeRole(swarmAgent, taskRequirements);
+```
+
+Role-based adjustments:
+
+| Role                  | Adjustments                                                                           |
+| --------------------- | ------------------------------------------------------------------------------------- |
+| `supervisor`          | Upgrades reasoning to advanced, lowers cost sensitivity                               |
+| `worker`              | Applies expertise-based requirements (code, vision, etc.), increases cost sensitivity |
+| `critic` / `advocate` | Upgrades reasoning level                                                              |
+| `moderator`           | Sets moderate reasoning, balanced speed                                               |
+| `router`              | Sets moderate reasoning, fast speed                                                   |
+
+Agent metadata like `expertise: ['code', 'typescript']` further refines requirements -- a coding worker will require tool calling support and get the `code` domain added automatically.
+
+## ModelDiscovery
+
+The `ModelDiscovery` class discovers all available models across providers:
+
+```typescript
+import { ModelDiscovery } from '@cogitator-ai/swarms';
+
+const discovery = new ModelDiscovery({
+  ollamaUrl: 'http://localhost:11434',
+  enabledProviders: ['ollama', 'openai', 'anthropic', 'google'],
+});
+
+const models = await discovery.discoverAll();
+```
+
+Discovery sources:
+
+- **Ollama** — queries the `/api/tags` endpoint to find locally installed models, infers capabilities from known model families (llama3, qwen, mistral, llava, etc.)
+- **Cloud APIs** — includes a curated catalog of OpenAI (GPT-4o, GPT-4o-mini), Anthropic (Claude Sonnet 4, Claude 3.5 Haiku, Claude 3 Opus), and Google (Gemini 2.5 Pro, Gemini 2.0 Flash) models with known pricing and capabilities
+
+Each discovered model includes:
+
+```typescript
+interface DiscoveredModel {
+  id: string;
+  provider: 'ollama' | 'openai' | 'anthropic' | 'google' | 'mistral';
+  displayName: string;
+  capabilities: {
+    supportsVision?: boolean;
+    supportsTools?: boolean;
+    supportsJson?: boolean;
+    supportsStreaming?: boolean;
+  };
+  pricing: { input: number; output: number };
+  contextWindow: number;
+  isLocal: boolean;
+  isAvailable: boolean;
+}
+```
+
+## ModelScorer
+
+The `ModelScorer` ranks every discovered model against role-specific requirements. Scoring factors include:
+
+- **Hard requirements** — vision or tool-calling support; models without required capabilities score 0
+- **Context window** — penalty for < 32K tokens when long context is needed
+- **Cost** — local models get a +15 bonus; expensive models are penalized for cost-sensitive tasks
+- **Reasoning** — advanced models (GPT-4o, Claude Sonnet, etc.) are boosted for advanced reasoning tasks
+- **Speed** — fast models (GPT-4o-mini, Haiku, Gemini Flash) are boosted for speed-sensitive tasks
+- **Domain match** — coding models get a boost for code tasks
+- **Role fit** — supervisors prefer advanced models, workers prefer cost-effective ones
+
+## Dry Run
+
+Preview assignments without executing the swarm:
+
+```typescript
+const assessment = await team.dryRun({ input: 'Build a REST API with authentication' });
+
+console.log('Task complexity:', assessment.taskAnalysis.complexity);
+console.log('Detected domains:', assessment.taskAnalysis.domains);
+
+for (const a of assessment.assignments) {
+  console.log(`${a.agentName}: ${a.originalModel} -> ${a.assignedModel} (score: ${a.score})`);
+  console.log(`  Reasons: ${a.reasons.join(', ')}`);
+  console.log(`  Fallbacks: ${a.fallbackModels.join(', ')}`);
+}
+
+console.log(`Estimated cost: $${assessment.totalEstimatedCost.toFixed(4)}`);
+console.log('Warnings:', assessment.warnings);
+```
+
+## Budget Optimization
+
+When `maxCostPerRun` is set, the assessor automatically downgrades expensive models to cheaper alternatives (preferring local models) until the estimated cost fits the budget. Agents are downgraded in order of most expensive first, using their fallback model list.
+
+```typescript
+const team = swarm('budget-team')
+  .strategy('hierarchical')
+  .supervisor(leadAgent)
+  .workers([devA, devB, devC])
+  .withAssessor({
+    maxCostPerRun: 0.1,
+    preferLocal: true,
+  })
+  .build(cogitator);
+```
+
+## Locked Models
+
+If an agent should always use a specific model regardless of assessment, set `locked: true` in the agent metadata:
+
+```typescript
+const criticalAgent = new Agent({
+  name: 'auditor',
+  model: 'openai/gpt-4o',
+  instructions: 'Perform security audit.',
+  metadata: { locked: true },
+});
+```
+
+Locked agents are skipped during assessment and keep their original model assignment.

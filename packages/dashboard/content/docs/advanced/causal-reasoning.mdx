@@ -1,0 +1,163 @@
+---
+title: Causal Reasoning
+description: Build causal graphs, run d-separation analysis, perform counterfactual reasoning, and predict intervention effects.
+---
+
+## Overview
+
+The `CausalReasoner` lets agents understand cause-and-effect relationships. Instead of relying on correlations, agents can build directed acyclic graphs (DAGs) that model causal structure, then use those graphs to predict effects of actions, explain outcomes, and reason about counterfactuals.
+
+```typescript
+import { CausalReasoner, CausalGraphBuilder } from '@cogitator-ai/core';
+
+const reasoner = new CausalReasoner({
+  llmBackend: backend,
+  config: {
+    enableCounterfactual: true,
+    enableLLMDiscovery: true,
+    enableSafetyChecks: true,
+    minEdgeConfidence: 0.6,
+  },
+});
+```
+
+## Building Causal Graphs
+
+Use `CausalGraphBuilder` to construct a graph with a fluent API. Nodes represent variables, edges represent causal relationships.
+
+```typescript
+import { CausalGraphBuilder } from '@cogitator-ai/core';
+
+const graph = CausalGraphBuilder.create('user-engagement')
+  .treatment('marketing_spend', 'Marketing Spend')
+  .mediator('site_traffic', 'Site Traffic')
+  .confounder('seasonality', 'Seasonality')
+  .outcome('revenue', 'Revenue')
+  .from('marketing_spend')
+  .causes('site_traffic', { strength: 0.8, confidence: 0.9 })
+  .from('site_traffic')
+  .causes('revenue', { strength: 0.7 })
+  .from('seasonality')
+  .causes('site_traffic', { strength: 0.4 })
+  .causes('revenue', { strength: 0.3 })
+  .build();
+```
+
+The builder supports typed variable roles -- `treatment`, `outcome`, `confounder`, `mediator`, `instrumental`, `collider`, and `latent` -- along with relation types like `causes`, `enables`, `prevents`, `mediates`, and `confounds`.
+
+You can also attach structural equations to nodes for quantitative counterfactual analysis:
+
+```typescript
+const graph = CausalGraphBuilder.create('linear-model')
+  .variable('X', 'Treatment')
+  .withEquation({ type: 'linear', intercept: 0, coefficients: {} })
+  .variable('Y', 'Outcome')
+  .withEquation({ type: 'linear', intercept: 2, coefficients: { X: 0.5 } })
+  .from('X')
+  .causes('Y')
+  .build();
+```
+
+## D-Separation
+
+D-separation determines whether two variables are conditionally independent given a set of observed variables. This is essential for identifying valid adjustment sets and testing causal assumptions.
+
+```typescript
+import { dSeparation, findMinimalSeparatingSet } from '@cogitator-ai/core';
+
+const result = dSeparation(graph, 'marketing_spend', 'revenue', ['seasonality']);
+
+console.log(result.separated); // true if conditionally independent
+console.log(result.openPaths); // paths that remain unblocked
+console.log(result.blockedPaths); // paths blocked by conditioning set
+
+const minimal = findMinimalSeparatingSet(graph, 'marketing_spend', 'revenue');
+```
+
+The algorithm handles all three types of triples -- chains, forks, and colliders -- following the standard rules: conditioning on a chain or fork node blocks the path, while conditioning on a collider (or its descendants) opens it.
+
+## Causal Inference Engine
+
+The `CausalInferenceEngine` provides higher-level inference operations built on top of d-separation and adjustment formulas.
+
+```typescript
+import { CausalInferenceEngine } from '@cogitator-ai/core';
+
+const engine = new CausalInferenceEngine(graph);
+
+const identifiable = engine.isIdentifiable('marketing_spend', 'revenue');
+// { identifiable: true, reason: 'Identifiable via backdoor criterion', adjustmentSet: ... }
+
+const ate = engine.estimateATE('marketing_spend', 'revenue', observedData);
+
+const independence = engine.checkConditionalIndependence('X', 'Y', ['Z']);
+
+const instruments = engine.findInstrumentalVariables('marketing_spend', 'revenue');
+```
+
+The engine automatically searches for valid backdoor and frontdoor adjustment sets and generates the corresponding identification formulas.
+
+## Counterfactual Reasoning
+
+Counterfactuals answer "what if?" questions using Pearl's three-step process: abduction (infer noise from observations), action (apply intervention), and prediction (compute outcome in the modified world).
+
+```typescript
+import { CounterfactualReasoner } from '@cogitator-ai/core';
+
+const cfReasoner = new CounterfactualReasoner({
+  defaultNoiseStd: 0.5,
+  maxIterations: 100,
+});
+
+const result = cfReasoner.evaluate(graph, {
+  factual: { marketing_spend: 100, site_traffic: 5000, revenue: 50000 },
+  intervention: { marketing_spend: 200 },
+  target: 'revenue',
+});
+
+console.log(result.factualValue); // 50000
+console.log(result.counterfactualValue); // predicted revenue under intervention
+console.log(result.explanation);
+// "Given the factual observation where revenue=50000,
+//  if we had intervened to set marketing_spend=200,
+//  then revenue would have been 62500."
+```
+
+Structural equations support `linear`, `logistic`, `polynomial`, and `custom` types with configurable noise distributions (`gaussian`, `uniform`, `bernoulli`).
+
+## Intervention Analysis
+
+The `CausalReasoner` combines graph-based reasoning with LLM capabilities to predict effects, explain outcomes, and plan interventions.
+
+```typescript
+const effect = await reasoner.predictEffect('increase marketing_spend by 50%', 'agent-001', {
+  observedVariables: { revenue: 50000, site_traffic: 5000 },
+});
+// { effects: [...], sideEffects: [...], confidence: 0.82 }
+
+const explanation = await reasoner.explainCause('revenue', 50000, 'agent-001');
+
+const plan = await reasoner.planForGoal('revenue', 100000, 'agent-001', undefined, {
+  forbidden: ['layoffs'],
+  required: ['marketing_spend'],
+});
+```
+
+### Learning from Execution
+
+The reasoner learns causal structure from agent execution traces and refines edge confidences based on intervention outcomes:
+
+```typescript
+await reasoner.learnFromTrace(executionTrace, 'agent-001');
+
+await reasoner.learnFromIntervention(
+  { marketing_spend: 200 }, // intervention
+  { revenue: 50000 }, // observed before
+  { revenue: 65000 }, // observed after
+  predictedEffect, // what we expected
+  true, // was it successful?
+  'agent-001'
+);
+```
+
+Edge confidence values are adjusted upward on successful predictions and downward on failures, allowing the causal graph to become more accurate over time.

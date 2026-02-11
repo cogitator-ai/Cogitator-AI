@@ -1,0 +1,218 @@
+---
+title: Next.js
+description: First-class Next.js integration with streaming API route handlers and React hooks for building chat interfaces.
+---
+
+## Overview
+
+The `@cogitator-ai/next` package provides everything you need to build AI-powered Next.js applications: server-side route handlers that stream responses via SSE, and client-side React hooks that consume them with full tool call support.
+
+```bash
+pnpm add @cogitator-ai/next @cogitator-ai/core
+```
+
+## Server: Chat Handler
+
+`createChatHandler` turns a Cogitator agent into a streaming API route handler. It accepts a standard `Request`, runs the agent, and returns an SSE stream compatible with the Vercel AI UI protocol.
+
+```typescript title="app/api/chat/route.ts"
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { createChatHandler } from '@cogitator-ai/next';
+
+const cog = new Cogitator({
+  llm: {
+    defaultProvider: 'openai',
+    providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
+  },
+});
+
+const agent = new Agent({
+  name: 'assistant',
+  model: 'openai/gpt-4o',
+  instructions: 'You are a helpful assistant.',
+});
+
+const handler = createChatHandler(cog, agent);
+
+export const POST = handler;
+```
+
+### ChatHandlerOptions
+
+You can pass options to customize parsing, authentication, and post-processing:
+
+```typescript
+const handler = createChatHandler(cog, agent, {
+  beforeRun: async (req, input) => {
+    const token = req.headers.get('authorization');
+    if (!token) throw new Error('Unauthorized');
+    const user = await verifyToken(token);
+    return { userId: user.id };
+  },
+
+  afterRun: async (result) => {
+    await db.saveChatMessage(result.threadId, result.output);
+  },
+});
+```
+
+| Option        | Type                                                          | Description                                  |
+| ------------- | ------------------------------------------------------------- | -------------------------------------------- |
+| `parseInput`  | `(req: Request) => Promise<ChatInput>`                        | Custom request body parser                   |
+| `beforeRun`   | `(req: Request, input: ChatInput) => Promise<object \| void>` | Auth/context hook, runs before the agent     |
+| `afterRun`    | `(result: RunResult) => Promise<void>`                        | Post-processing hook (save to DB, log, etc.) |
+| `maxDuration` | `number`                                                      | Maximum execution time in ms                 |
+
+## Server: Agent Handler
+
+For non-streaming use cases, `createAgentHandler` returns a JSON response with the full result including tool calls, traces, and usage:
+
+```typescript title="app/api/agent/route.ts"
+import { createAgentHandler } from '@cogitator-ai/next';
+
+const handler = createAgentHandler(cog, agent, {
+  beforeRun: async (req, input) => {
+    return { userId: 'user-123' };
+  },
+});
+
+export const POST = handler;
+```
+
+The response shape:
+
+```typescript
+interface AgentResponse {
+  output: string;
+  threadId: string;
+  usage: { inputTokens: number; outputTokens: number; totalTokens: number };
+  toolCalls: ToolCall[];
+  trace: { traceId: string; spans: unknown[] };
+}
+```
+
+## Client: useCogitatorChat
+
+The `useCogitatorChat` hook manages the entire chat lifecycle -- sending messages, processing the SSE stream, handling tool calls, and tracking loading state.
+
+```tsx title="components/chat.tsx"
+'use client';
+
+import { useCogitatorChat } from '@cogitator-ai/next/client';
+
+export function Chat() {
+  const { messages, input, setInput, send, isLoading, stop, reload, error } = useCogitatorChat({
+    api: '/api/chat',
+    onToolCall: (toolCall) => {
+      console.log(`Tool invoked: ${toolCall.name}`, toolCall.arguments);
+    },
+    onFinish: (message) => {
+      console.log('Assistant replied:', message.content);
+    },
+    retry: { maxRetries: 2, backoff: 'exponential' },
+  });
+
+  return (
+    <div>
+      {messages.map((msg) => (
+        <div key={msg.id}>
+          <strong>{msg.role}:</strong> {msg.content}
+        </div>
+      ))}
+
+      {error && <p>Error: {error.message}</p>}
+
+      <input
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && send()}
+        disabled={isLoading}
+      />
+
+      {isLoading && <button onClick={stop}>Stop</button>}
+    </div>
+  );
+}
+```
+
+### UseChatOptions
+
+| Option            | Type                                | Description                                |
+| ----------------- | ----------------------------------- | ------------------------------------------ |
+| `api`             | `string`                            | API endpoint URL (required)                |
+| `threadId`        | `string`                            | Initial thread ID for conversation context |
+| `initialMessages` | `ChatMessage[]`                     | Pre-populate the message list              |
+| `headers`         | `Record<string, string>`            | Custom headers sent with each request      |
+| `onError`         | `(error: Error) => void`            | Error callback                             |
+| `onFinish`        | `(message: ChatMessage) => void`    | Called when assistant message is complete  |
+| `onToolCall`      | `(toolCall: ToolCall) => void`      | Called when a tool is invoked              |
+| `onToolResult`    | `(result: ToolResultEvent) => void` | Called when a tool returns a result        |
+| `retry`           | `RetryConfig`                       | Automatic retry on network failure         |
+
+### Return Values
+
+| Field           | Type                            | Description                           |
+| --------------- | ------------------------------- | ------------------------------------- |
+| `messages`      | `ChatMessage[]`                 | All messages including live streaming |
+| `input`         | `string`                        | Current input value                   |
+| `setInput`      | `(value: string) => void`       | Update input                          |
+| `send`          | `(input?, metadata?) => void`   | Send a message                        |
+| `isLoading`     | `boolean`                       | Whether agent is running              |
+| `error`         | `Error \| null`                 | Last error                            |
+| `stop`          | `() => void`                    | Abort the current stream              |
+| `reload`        | `() => Promise<void>`           | Re-send the last user message         |
+| `threadId`      | `string \| undefined`           | Current thread ID                     |
+| `setThreadId`   | `(id: string) => void`          | Switch conversation thread            |
+| `clearMessages` | `() => void`                    | Reset conversation                    |
+| `setMessages`   | `(msgs: ChatMessage[]) => void` | Replace message list                  |
+
+## Client: useCogitatorAgent
+
+For non-streaming agent calls (task execution, one-shot questions), use `useCogitatorAgent`:
+
+```tsx
+'use client';
+
+import { useCogitatorAgent } from '@cogitator-ai/next/client';
+
+export function AgentRunner() {
+  const { run, result, isLoading, error, reset } = useCogitatorAgent({
+    api: '/api/agent',
+    onSuccess: (res) => console.log('Done:', res.output),
+  });
+
+  return (
+    <div>
+      <button onClick={() => run({ input: "Summarize today's news" })} disabled={isLoading}>
+        Run Agent
+      </button>
+      {result && <pre>{JSON.stringify(result, null, 2)}</pre>}
+    </div>
+  );
+}
+```
+
+## Server Actions
+
+You can also use Cogitator directly inside Next.js Server Actions without the HTTP layer:
+
+```typescript title="app/actions.ts"
+'use server';
+
+import { Cogitator, Agent } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  /* ... */
+});
+
+const agent = new Agent({
+  name: 'summarizer',
+  model: 'openai/gpt-4o-mini',
+  instructions: 'Summarize the given text concisely.',
+});
+
+export async function summarize(text: string) {
+  const result = await cog.run(agent, { input: text });
+  return { summary: result.output, usage: result.usage };
+}
+```

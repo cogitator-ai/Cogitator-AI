@@ -1,6 +1,7 @@
-import type { NextConfig } from 'next';
+import { createMDX } from 'fumadocs-mdx/next';
 
-const nextConfig: NextConfig = {
+/** @type {import('next').NextConfig} */
+const nextConfig = {
   serverExternalPackages: [
     'dockerode',
     'ssh2',
@@ -33,4 +34,6 @@ const nextConfig: NextConfig = {
   ],
 };
 
-export default nextConfig;
+const withMDX = createMDX();
+
+export default withMDX(nextConfig);

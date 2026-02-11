@@ -1,0 +1,205 @@
+---
+title: Fastify Adapter
+description: Register Cogitator as a native Fastify plugin with automatic schema validation, Swagger UI, rate limiting, and WebSocket support.
+---
+
+The `@cogitator-ai/fastify` package provides `cogitatorPlugin` — a [fastify-plugin](https://github.com/fastify/fastify-plugin) compatible with Fastify 5.x. It leverages Fastify's native ecosystem: `@fastify/swagger` for OpenAPI, `@fastify/rate-limit` for throttling, and `@fastify/websocket` for real-time communication.
+
+## Installation
+
+```bash
+pnpm add @cogitator-ai/fastify fastify
+
+# optional — install for Swagger UI, rate limiting, or WebSocket
+pnpm add @fastify/swagger @fastify/swagger-ui
+pnpm add @fastify/rate-limit
+pnpm add @fastify/websocket
+```
+
+## Basic Setup
+
+```typescript
+import Fastify from 'fastify';
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { cogitatorPlugin } from '@cogitator-ai/fastify';
+import { z } from 'zod';
+
+const fastify = Fastify({ logger: true });
+
+const cogitator = new Cogitator({
+  llm: {
+    defaultProvider: 'openai',
+    providers: {
+      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' },
+    },
+  },
+});
+
+const calculator = tool({
+  name: 'calculate',
+  description: 'Evaluate a math expression',
+  parameters: z.object({ expression: z.string() }),
+  execute: async ({ expression }) => ({ result: eval(expression) }),
+});
+
+const mathAgent = new Agent({
+  name: 'math',
+  instructions: 'You are a math assistant. Use the calculate tool for arithmetic.',
+  tools: [calculator],
+});
+
+await fastify.register(cogitatorPlugin, {
+  cogitator,
+  agents: { math: mathAgent },
+  prefix: '/cogitator',
+  enableSwagger: true,
+  enableWebSocket: true,
+});
+
+await fastify.listen({ port: 3000 });
+```
+
+After startup, all Cogitator endpoints are available under `/cogitator` and Swagger UI is at `/cogitator/docs`.
+
+## Plugin Options
+
+```typescript
+interface CogitatorPluginOptions {
+  cogitator: Cogitator;
+  agents?: Record<string, Agent>;
+  workflows?: Record<string, Workflow>;
+  swarms?: Record<string, SwarmConfig>;
+  prefix?: string; // default: '/cogitator'
+  auth?: AuthFunction;
+  rateLimit?: RateLimitConfig;
+  enableSwagger?: boolean;
+  enableWebSocket?: boolean;
+  swagger?: SwaggerConfig;
+  websocket?: WebSocketConfig;
+  requestTimeout?: number;
+}
+```
+
+## Authentication
+
+The auth function receives a Fastify request and returns an `AuthContext`. It runs as an `onRequest` hook:
+
+```typescript
+await fastify.register(cogitatorPlugin, {
+  cogitator,
+  agents: { math: mathAgent },
+  auth: async (request) => {
+    const token = request.headers.authorization?.replace('Bearer ', '');
+    if (!token) return undefined;
+
+    const user = await verifyToken(token);
+    return { userId: user.id, roles: user.roles };
+  },
+});
+```
+
+The auth context is available on `request.cogitatorAuth` inside route handlers.
+
+## Rate Limiting
+
+When `rateLimit` is provided, the plugin registers `@fastify/rate-limit` automatically:
+
+```typescript
+await fastify.register(cogitatorPlugin, {
+  cogitator,
+  agents: { math: mathAgent },
+  rateLimit: {
+    max: 100,
+    timeWindow: '1 minute',
+  },
+});
+```
+
+If `@fastify/rate-limit` is not installed, the plugin logs a warning and continues without throttling.
+
+## Swagger & OpenAPI
+
+When `enableSwagger` is `true`, the plugin registers `@fastify/swagger` and `@fastify/swagger-ui`. The generated spec includes all registered agents, workflows, and swarms with their respective endpoints.
+
+```typescript
+await fastify.register(cogitatorPlugin, {
+  cogitator,
+  agents: { math: mathAgent },
+  enableSwagger: true,
+  swagger: {
+    title: 'My AI API',
+    description: 'Production agent runtime',
+    version: '2.0.0',
+    contact: { name: 'Team', email: 'team@example.com' },
+    servers: [{ url: 'https://api.example.com', description: 'Production' }],
+  },
+});
+```
+
+Fastify's native Swagger integration means routes automatically include JSON Schema validation in the docs. The plugin registers six tags: `agents`, `threads`, `tools`, `workflows`, `swarms`, and `health`.
+
+## WebSocket
+
+When `enableWebSocket` is `true`, the plugin registers `@fastify/websocket` and exposes a WebSocket endpoint:
+
+```typescript
+await fastify.register(cogitatorPlugin, {
+  cogitator,
+  agents: { math: mathAgent },
+  enableWebSocket: true,
+  websocket: {
+    path: '/ws',
+    pingInterval: 30_000,
+    maxPayloadSize: 1_048_576,
+  },
+});
+```
+
+## Streaming
+
+The streaming endpoints use SSE, identical to other adapters. The `FastifyStreamWriter` handles response flushing:
+
+```typescript
+const response = await fetch('http://localhost:3000/cogitator/agents/math/stream', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ input: 'What is 42 * 17?' }),
+});
+
+const reader = response.body!.getReader();
+const decoder = new TextDecoder();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  console.log(decoder.decode(value));
+}
+```
+
+## Accessing the Context
+
+Inside custom Fastify routes, the Cogitator context is available via the `cogitator` decorator:
+
+```typescript
+fastify.get('/custom', async (request, reply) => {
+  const { runtime, agents, workflows, swarms } = fastify.cogitator;
+  const result = await runtime.run(agents.math, { input: '2 + 2' });
+  return { answer: result.output };
+});
+```
+
+## Exported Schemas
+
+The package exports JSON Schema objects for request/response validation:
+
+```typescript
+import {
+  AgentRunRequestSchema,
+  AgentRunResponseSchema,
+  AddMessageRequestSchema,
+  WorkflowRunRequestSchema,
+  SwarmRunRequestSchema,
+} from '@cogitator-ai/fastify';
+```
+
+These can be used in custom Fastify route schemas for native validation.

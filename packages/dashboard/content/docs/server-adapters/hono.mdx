@@ -1,0 +1,220 @@
+---
+title: Hono Adapter
+description: Deploy Cogitator agents to any JavaScript runtime — Node.js, Bun, Deno, and Cloudflare Workers — using the lightweight Hono adapter.
+---
+
+The `@cogitator-ai/hono` package provides `cogitatorApp`, a factory function that returns a Hono app with all Cogitator routes pre-configured. Hono's multi-runtime design means you can deploy the same agent API to Node.js, Bun, Deno, or Cloudflare Workers without code changes.
+
+## Installation
+
+```bash
+pnpm add @cogitator-ai/hono hono
+```
+
+## Basic Setup
+
+```typescript
+import { serve } from '@hono/node-server';
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { cogitatorApp } from '@cogitator-ai/hono';
+import { z } from 'zod';
+
+const cogitator = new Cogitator({
+  llm: {
+    defaultProvider: 'anthropic',
+    providers: {
+      anthropic: {
+        type: 'anthropic',
+        apiKey: process.env.ANTHROPIC_API_KEY!,
+        model: 'claude-sonnet-4-5-20250929',
+      },
+    },
+  },
+});
+
+const summarizer = new Agent({
+  name: 'summarizer',
+  instructions: 'You summarize text concisely. Keep it under 3 sentences.',
+});
+
+const app = cogitatorApp({
+  cogitator,
+  agents: { summarizer },
+  enableSwagger: true,
+});
+
+serve({ fetch: app.fetch, port: 3000 });
+```
+
+## App Options
+
+```typescript
+interface CogitatorAppOptions {
+  cogitator: Cogitator;
+  agents?: Record<string, Agent>;
+  workflows?: Record<string, Workflow>;
+  swarms?: Record<string, SwarmConfig>;
+  auth?: AuthFunction;
+  enableSwagger?: boolean;
+  swagger?: SwaggerConfig;
+  enableWebSocket?: boolean;
+  websocket?: WebSocketConfig;
+  requestTimeout?: number;
+}
+```
+
+## Multi-Runtime Deployment
+
+The same `cogitatorApp` works across runtimes. Only the server entry point changes.
+
+### Node.js
+
+```typescript
+import { serve } from '@hono/node-server';
+
+const app = cogitatorApp({ cogitator, agents: { summarizer } });
+serve({ fetch: app.fetch, port: 3000 });
+```
+
+### Bun
+
+```typescript
+const app = cogitatorApp({ cogitator, agents: { summarizer } });
+export default { fetch: app.fetch, port: 3000 };
+```
+
+### Deno
+
+```typescript
+const app = cogitatorApp({ cogitator, agents: { summarizer } });
+Deno.serve({ port: 3000 }, app.fetch);
+```
+
+### Cloudflare Workers
+
+```typescript
+const app = cogitatorApp({ cogitator, agents: { summarizer } });
+export default { fetch: app.fetch };
+```
+
+## Authentication
+
+The auth function receives a `CogitatorContext` object and returns an `AuthContext`:
+
+```typescript
+const app = cogitatorApp({
+  cogitator,
+  agents: { summarizer },
+  auth: async (c) => {
+    const token = c.runtime; // access context as needed
+    // your validation logic
+    return { userId: 'user_123', roles: ['admin'] };
+  },
+});
+```
+
+The auth middleware applies to all routes via `app.use('*', ...)`.
+
+## Mounting Under a Prefix
+
+Since `cogitatorApp` returns a standard Hono app, you can mount it under any path in a parent app:
+
+```typescript
+import { Hono } from 'hono';
+
+const root = new Hono();
+
+root.get('/', (c) => c.text('Welcome'));
+root.route(
+  '/cogitator',
+  cogitatorApp({
+    cogitator,
+    agents: { summarizer },
+    enableSwagger: true,
+  })
+);
+
+serve({ fetch: root.fetch, port: 3000 });
+```
+
+All Cogitator endpoints are now available under `/cogitator/agents/...`, `/cogitator/docs`, etc.
+
+## Swagger & OpenAPI
+
+When `enableSwagger` is `true`, the app registers `/openapi.json` and `/docs` routes. The spec is generated dynamically from the registered agents, workflows, and swarms using the shared `@cogitator-ai/server-shared` generator.
+
+```typescript
+const app = cogitatorApp({
+  cogitator,
+  agents: { summarizer },
+  enableSwagger: true,
+  swagger: {
+    title: 'Summarization API',
+    version: '1.0.0',
+    servers: [{ url: 'https://api.example.com/cogitator', description: 'Production' }],
+  },
+});
+```
+
+## Streaming
+
+The `HonoStreamWriter` uses Hono's native streaming support, which works across all target runtimes:
+
+```typescript
+const response = await fetch('http://localhost:3000/agents/summarizer/stream', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    input: 'Summarize the history of the internet in detail.',
+  }),
+});
+
+const reader = response.body!.getReader();
+const decoder = new TextDecoder();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  process.stdout.write(decoder.decode(value));
+}
+```
+
+## Context Variables
+
+Inside custom Hono routes, the Cogitator context is available via Hono's `c.get()`:
+
+```typescript
+import { Hono } from 'hono';
+import type { HonoEnv } from '@cogitator-ai/hono';
+
+const app = new Hono<HonoEnv>();
+
+app.get('/custom', async (c) => {
+  const ctx = c.get('cogitator');
+  const auth = c.get('cogitatorAuth');
+  const requestId = c.get('cogitatorRequestId');
+
+  return c.json({ runtime: 'ready', requestId });
+});
+```
+
+## Exported Utilities
+
+```typescript
+import {
+  cogitatorApp,
+  createContextMiddleware,
+  createAuthMiddleware,
+  errorHandler,
+  createHealthRoutes,
+  createAgentRoutes,
+  createThreadRoutes,
+  createToolRoutes,
+  createWorkflowRoutes,
+  createSwarmRoutes,
+  createSwaggerRoutes,
+  HonoStreamWriter,
+} from '@cogitator-ai/hono';
+```
+
+Individual route factories return Hono sub-apps, so you can compose only the routes you need.

@@ -1,0 +1,211 @@
+---
+title: Tools
+description: Create type-safe tools that give agents the ability to interact with external systems.
+---
+
+## Overview
+
+Tools enable agents to take actions -- call APIs, read files, execute code, query databases. Cogitator tools are defined with Zod schemas for full type safety and automatic JSON Schema generation for LLM function calling.
+
+```typescript
+import { tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const getWeather = tool({
+  name: 'get_weather',
+  description: 'Get the current weather for a city',
+  parameters: z.object({
+    city: z.string().describe('City name'),
+    units: z.enum(['celsius', 'fahrenheit']).default('celsius'),
+  }),
+  execute: async ({ city, units }) => {
+    const response = await fetch(`https://api.weather.com/${city}?units=${units}`);
+    return response.json();
+  },
+});
+```
+
+## The `tool()` Factory
+
+```typescript
+function tool<TParams, TResult>(config: ToolConfig<TParams, TResult>): Tool<TParams, TResult>;
+```
+
+### ToolConfig
+
+| Field              | Type                                     | Description                                                      |
+| ------------------ | ---------------------------------------- | ---------------------------------------------------------------- |
+| `name`             | `string`                                 | Unique tool name (used in LLM function calling)                  |
+| `description`      | `string`                                 | What the tool does (sent to the LLM)                             |
+| `parameters`       | `ZodType`                                | Zod schema defining accepted parameters                          |
+| `execute`          | `(params, context?) => Promise<TResult>` | Implementation function                                          |
+| `category`         | `string`                                 | Optional grouping category                                       |
+| `tags`             | `string[]`                               | Optional tags for filtering                                      |
+| `sideEffects`      | `string[]`                               | Declare side effects (`'network'`, `'filesystem'`, `'external'`) |
+| `requiresApproval` | `boolean`                                | Require human approval before execution                          |
+| `timeout`          | `number`                                 | Per-call timeout in milliseconds                                 |
+| `sandbox`          | `SandboxConfig`                          | Run in isolated environment                                      |
+
+## Parameter Schemas
+
+The `parameters` field accepts any Zod schema. Cogitator converts it to JSON Schema (OpenAPI 3.0 format) before sending it to the LLM.
+
+```typescript
+const createIssue = tool({
+  name: 'create_github_issue',
+  description: 'Create a new issue in a GitHub repository',
+  parameters: z.object({
+    repo: z.string().describe('Repository in owner/repo format'),
+    title: z.string().max(256).describe('Issue title'),
+    body: z.string().describe('Issue description in markdown'),
+    labels: z.array(z.string()).optional().describe('Labels to apply'),
+    priority: z.enum(['low', 'medium', 'high']).default('medium'),
+  }),
+  execute: async ({ repo, title, body, labels, priority }) => {
+    const issue = await github.createIssue(repo, { title, body, labels, priority });
+    return { issueNumber: issue.number, url: issue.html_url };
+  },
+});
+```
+
+Use `.describe()` on each field -- these descriptions are sent to the LLM and significantly improve tool call accuracy.
+
+## Tool Results
+
+The `execute` function can return any serializable value. Cogitator converts the result to JSON and feeds it back to the LLM as a tool response:
+
+```typescript
+const calculator = tool({
+  name: 'calculator',
+  description: 'Evaluate a mathematical expression',
+  parameters: z.object({
+    expression: z.string().describe('Math expression to evaluate'),
+  }),
+  execute: async ({ expression }) => {
+    const result = eval(expression);
+    return { result, expression };
+  },
+});
+```
+
+If the execute function throws, the error message is sent back to the LLM so it can retry or adjust its approach.
+
+## Built-in Tools
+
+Cogitator ships with ready-to-use tools:
+
+```typescript
+import {
+  calculator,
+  datetime,
+  uuid,
+  fileRead,
+  fileWrite,
+  fileList,
+  fileExists,
+  fileDelete,
+  httpRequest,
+  exec,
+  webSearch,
+  webScrape,
+  sqlQuery,
+  vectorSearch,
+  sendEmail,
+  githubApi,
+  jsonParse,
+  jsonStringify,
+  regexMatch,
+  regexReplace,
+  hash,
+  base64Encode,
+  base64Decode,
+  sleep,
+  randomNumber,
+  randomString,
+} from '@cogitator-ai/core';
+```
+
+Use them directly:
+
+```typescript
+const agent = new Agent({
+  name: 'file-assistant',
+  model: 'openai/gpt-4o',
+  instructions: 'You help users manage files.',
+  tools: [fileRead, fileWrite, fileList, fileDelete],
+});
+```
+
+## Tool Registry
+
+The `ToolRegistry` class manages collections of tools and provides lookup by name:
+
+```typescript
+import { ToolRegistry } from '@cogitator-ai/core';
+
+const registry = new ToolRegistry();
+registry.register(getWeather);
+registry.register(createIssue);
+registry.registerMany([calculator, datetime]);
+
+const weatherTool = registry.get('get_weather');
+const allNames = registry.getNames();
+const schemas = registry.getSchemas();
+```
+
+The Cogitator runtime uses `ToolRegistry` internally to resolve tool calls from the LLM.
+
+## Tool Schema Conversion
+
+Under the hood, `toolToSchema()` converts a Zod-based tool into the JSON Schema format that LLM providers expect:
+
+```typescript
+import { toolToSchema } from '@cogitator-ai/core';
+
+const schema = toolToSchema(getWeather);
+// {
+//   name: 'get_weather',
+//   description: 'Get the current weather for a city',
+//   parameters: {
+//     type: 'object',
+//     properties: {
+//       city: { type: 'string', description: 'City name' },
+//       units: { type: 'string', enum: ['celsius', 'fahrenheit'], default: 'celsius' }
+//     },
+//     required: ['city']
+//   }
+// }
+```
+
+## Sandboxed Execution
+
+Tools that execute untrusted code can declare a sandbox:
+
+```typescript
+const runCode = tool({
+  name: 'run_code',
+  description: 'Execute Python code in a sandboxed environment',
+  parameters: z.object({
+    code: z.string().describe('Python code to execute'),
+  }),
+  execute: async ({ code }) => ({ code }),
+  sandbox: { type: 'docker', image: 'python:3.12-slim' },
+});
+```
+
+When sandbox is configured, the tool's execute function runs inside an isolated container managed by the Cogitator runtime.
+
+## Tool Caching
+
+Wrap tools with `withCache` to avoid repeated expensive calls:
+
+```typescript
+import { withCache } from '@cogitator-ai/core';
+
+const cachedWeather = withCache(getWeather, {
+  ttl: '5m',
+  strategy: 'exact',
+});
+```
+
+See [Tool Caching](/docs/advanced/caching) for TTL strategies, semantic matching, and Redis-backed storage.

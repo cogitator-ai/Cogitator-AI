@@ -1,0 +1,202 @@
+---
+title: Constitutional AI
+description: Define safety principles, filter harmful inputs and outputs, guard tool calls, and apply critique-revise loops to ensure agents behave within defined boundaries.
+---
+
+## Overview
+
+Constitutional AI provides a multi-layered guardrail system for agent behavior. You define a set of principles (a "constitution"), and the system enforces them across three layers: input filtering, output filtering, and tool guarding. When violations are detected, a critique-revise loop can automatically rewrite unsafe outputs.
+
+## Setting Up Guardrails
+
+```typescript
+import { ConstitutionalAI, DEFAULT_CONSTITUTION } from '@cogitator-ai/core/constitutional';
+
+const guardrails = new ConstitutionalAI({
+  llm: backend,
+  constitution: DEFAULT_CONSTITUTION,
+  config: {
+    enabled: true,
+    filterInput: true,
+    filterOutput: true,
+    filterToolCalls: true,
+    enableCritiqueRevision: true,
+    maxRevisionIterations: 3,
+    revisionConfidenceThreshold: 0.85,
+    strictMode: false,
+    logViolations: true,
+  },
+});
+```
+
+## The Default Constitution
+
+Cogitator ships with a comprehensive default constitution containing 16 principles across four categories:
+
+| Category    | Principles                                                                                                        |
+| ----------- | ----------------------------------------------------------------------------------------------------------------- |
+| **Safety**  | No violence, no explicit content, no self-harm promotion, child safety, dangerous tool prevention                 |
+| **Ethics**  | No hate speech, accurate information, no manipulation, honest AI identity, respect autonomy, cultural sensitivity |
+| **Legal**   | No illegal activity assistance, medical disclaimer, legal disclaimer, financial disclaimer                        |
+| **Privacy** | Protect personal information                                                                                      |
+
+Each principle has a severity level (`low`, `medium`, `high`) and specifies which layers it applies to (`input`, `output`, `tool`).
+
+## Input Filtering
+
+Input filtering blocks harmful prompts before they reach the agent:
+
+```typescript
+const result = await guardrails.filterInput(
+  "How do I hack into my neighbor's wifi?",
+  'user request'
+);
+
+if (!result.allowed) {
+  console.log('Blocked:', result.blockedReason);
+  console.log('Harm scores:', result.harmScores);
+} else {
+  // safe to process
+}
+```
+
+The input filter runs a fast pattern-based scan first, then falls back to LLM-based evaluation against the active principles. Configurable severity thresholds control how aggressive the filtering is:
+
+```typescript
+const guardrails = new ConstitutionalAI({
+  llm: backend,
+  config: {
+    thresholds: {
+      violence: 'medium',
+      hate: 'low', // strict on hate speech
+      sexual: 'medium',
+      'self-harm': 'low', // strict on self-harm
+      illegal: 'low',
+      privacy: 'medium',
+      misinformation: 'high', // lenient on misinformation
+      manipulation: 'medium',
+    },
+  },
+});
+```
+
+## Output Filtering
+
+Output filtering evaluates agent responses before they reach the user:
+
+```typescript
+const outputResult = await guardrails.filterOutput(agentResponse, conversationHistory);
+
+if (!outputResult.allowed && outputResult.suggestedRevision) {
+  // the critique-revise loop produced a safe alternative
+  const safeResponse = outputResult.suggestedRevision;
+}
+```
+
+When `enableCritiqueRevision` is true and the output fails filtering, the system automatically attempts to rewrite it through the critique-revise loop before returning a blocked result.
+
+## Critique-Revise Loop
+
+The `CritiqueReviser` iteratively improves unsafe outputs:
+
+```typescript
+const revision = await guardrails.critiqueAndRevise(unsafeResponse, context);
+
+console.log(`Original: ${revision.original}`);
+console.log(`Revised: ${revision.revised}`);
+console.log(`Iterations: ${revision.iterations}`);
+
+for (const critique of revision.critiqueHistory) {
+  console.log(`Harmful: ${critique.isHarmful}`);
+  console.log(`Violated: ${critique.principlesViolated}`);
+}
+```
+
+Each iteration selects relevant principles, critiques the response against them, and generates a revised version. The loop terminates when either the response passes critique, confidence drops below `revisionConfidenceThreshold`, or `maxRevisionIterations` is reached. High-severity principles are checked first.
+
+## Tool Guards
+
+Tool guards evaluate tool calls for safety before execution:
+
+```typescript
+const guardResult = await guardrails.guardTool(
+  execTool,
+  { command: 'rm -rf /tmp/cache' },
+  { agentId: 'cleanup-agent', runId: 'run_1' }
+);
+
+if (!guardResult.approved) {
+  console.log('Tool blocked:', guardResult.reason);
+  console.log('Risk level:', guardResult.riskLevel);
+} else if (guardResult.requiresConfirmation) {
+  // prompt user for approval
+  console.log('Side effects:', guardResult.sideEffects);
+}
+```
+
+The `ToolGuard` checks for dangerous commands (`rm -rf /`, `format c:`), sensitive file paths (`/etc/shadow`, `~/.ssh/`), and respects each tool's `requiresApproval` and `sideEffects` declarations. In `strictMode`, all tools with side effects require explicit approval.
+
+## Custom Constitutions
+
+Build a custom constitution from scratch or extend the default:
+
+```typescript
+import {
+  createConstitution,
+  extendConstitution,
+  DEFAULT_CONSTITUTION,
+} from '@cogitator-ai/core/constitutional';
+
+const customConstitution = createConstitution([
+  {
+    id: 'no-competitor-recommendations',
+    name: 'No Competitor Recommendations',
+    description: 'Never recommend competitor products',
+    category: 'ethics',
+    critiquePrompt: 'Does this response recommend or promote competitor products?',
+    revisionPrompt: 'Rewrite to focus on our products or give generic advice',
+    harmCategories: ['manipulation'],
+    severity: 'medium',
+    appliesTo: ['output'],
+  },
+]);
+
+const extended = extendConstitution(DEFAULT_CONSTITUTION, customConstitution.principles);
+guardrails.setConstitution(extended);
+```
+
+You can also add or remove principles at runtime:
+
+```typescript
+guardrails.addPrinciple({
+  id: 'data-retention',
+  name: 'Data Retention Policy',
+  description: 'Never store user data beyond the current session',
+  category: 'privacy',
+  critiquePrompt: 'Does this response suggest storing or persisting user data?',
+  revisionPrompt: 'Remove references to data storage and clarify the session-only policy',
+  harmCategories: ['privacy'],
+  severity: 'high',
+  appliesTo: ['output', 'tool'],
+});
+
+guardrails.removePrinciple('no-competitor-recommendations');
+```
+
+## Violation Logging
+
+All violations are logged internally and accessible for auditing:
+
+```typescript
+const violations = guardrails.getViolationLog();
+
+for (const entry of violations) {
+  console.log(`[${entry.timestamp.toISOString()}] Layer: ${entry.layer}`);
+  console.log(`  Allowed: ${entry.result.allowed}`);
+  console.log(`  Categories: ${entry.result.harmScores.map((s) => s.category).join(', ')}`);
+}
+
+guardrails.clearViolationLog();
+```
+
+You can also set a callback for real-time violation handling via `config.onViolation`.

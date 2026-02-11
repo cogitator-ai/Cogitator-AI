@@ -1,0 +1,154 @@
+---
+title: Reflection Engine
+description: Enable agents to reflect on their own outputs, extract insights from past executions, and continuously improve through self-evaluation loops.
+---
+
+## Overview
+
+The Reflection Engine lets agents analyze their own actions, learn from mistakes, and build up a knowledge base of insights over time. Every tool call, error, and completed run can be reflected upon — producing structured learnings that inform future decisions.
+
+The reflection cycle follows four phases: **generate** a response, **evaluate** its quality, **reflect** on what worked or failed, and **improve** through accumulated insights.
+
+## Setting Up Reflection
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { ReflectionEngine, InMemoryInsightStore } from '@cogitator-ai/core/reflection';
+
+const insightStore = new InMemoryInsightStore();
+
+const reflectionEngine = new ReflectionEngine({
+  llm: backend,
+  insightStore,
+  config: {
+    reflectionModel: 'openai/gpt-4o-mini',
+    storeInsights: true,
+    minConfidenceToStore: 0.3,
+    maxInsightsPerAgent: 100,
+  },
+});
+```
+
+The `ReflectionEngine` requires an LLM backend for generating reflections, an `InsightStore` for persistence, and a config that controls quality thresholds.
+
+## Reflecting on Tool Calls
+
+After a tool executes, the engine can evaluate whether it was the right choice:
+
+```typescript
+const result = await reflectionEngine.reflectOnToolCall(
+  {
+    type: 'tool_call',
+    toolName: 'web_search',
+    input: { query: 'TypeScript generics tutorial' },
+    output: '10 results found...',
+  },
+  {
+    agentId: 'research-agent',
+    agentName: 'Researcher',
+    runId: 'run_abc123',
+    threadId: 'thread_1',
+    goal: 'Find the best TypeScript learning resources',
+    iterationIndex: 0,
+    availableTools: ['web_search', 'web_scrape'],
+    previousActions: [],
+  }
+);
+
+if (result.shouldAdjustStrategy) {
+  console.log('Suggested adjustment:', result.suggestedAction);
+}
+```
+
+The result includes a `Reflection` object with confidence scores, reasoning, and extracted insights. When confidence drops below 0.5, the engine signals that the agent should adjust its strategy.
+
+## Reflecting on Errors
+
+Error reflection is particularly valuable — it helps agents avoid repeating the same mistakes:
+
+```typescript
+const errorResult = await reflectionEngine.reflectOnError(
+  {
+    type: 'tool_call',
+    toolName: 'sql_query',
+    input: { query: 'SELECT * FROM users WEHRE id = 1' },
+    error: 'Syntax error near WEHRE',
+  },
+  context
+);
+```
+
+Error reflections always set `shouldAdjustStrategy: true` and provide a suggested alternative approach.
+
+## End-of-Run Reflection
+
+After a complete agent run, reflect on the entire execution to capture high-level patterns:
+
+```typescript
+const runResult = await reflectionEngine.reflectOnRun(
+  context,
+  allActions,
+  finalOutput,
+  true // success
+);
+```
+
+This produces insights about the overall strategy — what worked, what was inefficient, and what could be done differently next time.
+
+## Working with Insights
+
+Insights are the persistent output of reflection. They're categorized by type: `pattern`, `mistake`, `success`, `tip`, or `warning`.
+
+```typescript
+const insights = await reflectionEngine.getRelevantInsights(context, 5);
+
+for (const insight of insights) {
+  console.log(`[${insight.type}] ${insight.content}`);
+  console.log(`  Confidence: ${insight.confidence}`);
+  console.log(`  Used ${insight.usageCount} times`);
+}
+```
+
+Insights are ranked by relevance using word overlap, confidence scores, recency, and type priority (mistakes and warnings rank higher to prevent repeated errors).
+
+## Reflection Summary
+
+Get an aggregate view of an agent's learning progress:
+
+```typescript
+const summary = await reflectionEngine.getSummary('research-agent');
+
+console.log(`Total reflections: ${summary.totalReflections}`);
+console.log(`Success rate: ${(summary.successRate * 100).toFixed(1)}%`);
+console.log(`Avg confidence: ${summary.averageConfidence.toFixed(2)}`);
+console.log('Common mistakes:', summary.commonMistakes);
+console.log('Learned patterns:', summary.learnedPatterns);
+console.log(
+  'Top insights:',
+  summary.topInsights.map((i) => i.content)
+);
+```
+
+## Insight Store
+
+The `InMemoryInsightStore` provides the default storage. It supports relevance-based retrieval, usage tracking, and automatic pruning to keep the insight count within configured limits.
+
+```typescript
+const store = new InMemoryInsightStore();
+
+await store.store(insight);
+await store.storeMany(insights);
+
+const relevant = await store.findRelevant('agent-id', 'current task context', 5);
+
+await store.prune('agent-id', 100);
+
+const stats = store.getStats();
+console.log(`${stats.totalInsights} insights across ${stats.agentCount} agents`);
+```
+
+For production use, implement the `InsightStore` interface backed by a database to persist insights across restarts.
+
+## Integration with Other Systems
+
+The Reflection Engine integrates with [Tree-of-Thought Reasoning](/docs/advanced/reasoning) — the `BranchEvaluator` uses reflections to score reasoning branches based on past experience. It also feeds into the [Agent Learning](/docs/advanced/learning) system, where reflection insights contribute to instruction optimization.

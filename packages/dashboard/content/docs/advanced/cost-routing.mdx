@@ -1,0 +1,197 @@
+---
+title: Cost-Aware Routing
+description: Route tasks to the cheapest capable model, enforce spending budgets, estimate token usage before calling, and track costs across agents and runs.
+---
+
+## Overview
+
+Cost-aware routing analyzes incoming tasks, selects the optimal model based on capability requirements and price, enforces budget limits, and tracks spending in real-time. The system ensures you never overspend while always using a model capable enough for the task at hand.
+
+## CostAwareRouter
+
+The `CostAwareRouter` orchestrates all cost-related decisions:
+
+```typescript
+import { CostAwareRouter } from '@cogitator-ai/core/cost-routing';
+
+const router = new CostAwareRouter({
+  config: {
+    enabled: true,
+    autoSelectModel: true,
+    preferLocal: true,
+    minCapabilityMatch: 0.3,
+    trackCosts: true,
+    budget: {
+      maxCostPerRun: 0.5,
+      maxCostPerHour: 5.0,
+      maxCostPerDay: 50.0,
+      warningThreshold: 0.8,
+      onBudgetWarning: (current, limit) => {
+        console.log(`Budget warning: $${current.toFixed(2)} / $${limit}`);
+      },
+      onBudgetExceeded: (current, limit) => {
+        console.log(`Budget exceeded: $${current.toFixed(2)} > $${limit}`);
+      },
+    },
+  },
+});
+```
+
+## Task Analysis
+
+The `TaskAnalyzer` inspects the input text to determine what capabilities the task requires:
+
+```typescript
+const requirements = router.analyzeTask(
+  'Analyze this screenshot of our dashboard and write optimized SQL queries for the slow endpoints'
+);
+
+console.log(requirements);
+// {
+//   needsVision: true,
+//   needsToolCalling: true,
+//   needsLongContext: false,
+//   needsReasoning: 'advanced',
+//   needsSpeed: 'balanced',
+//   costSensitivity: 'medium',
+//   complexity: 'complex',
+//   domains: ['code', 'analysis'],
+// }
+```
+
+The analyzer detects vision needs (image/screenshot keywords), tool requirements (search/execute keywords), reasoning level (analyze/synthesize vs explain/list), speed preferences (urgent vs thorough), and domain-specific requirements (code, math, creative, legal, medical, finance).
+
+## Model Selection
+
+The `ModelSelector` scores every available model against the task requirements and picks the best fit:
+
+```typescript
+const recommendation = await router.recommendModel('Write a quick summary of this text');
+
+console.log(recommendation.modelId); // 'gpt-4o-mini'
+console.log(recommendation.provider); // 'openai'
+console.log(recommendation.score); // 85
+console.log(recommendation.reasons); // ['Cost-effective', 'Fast response time', ...]
+console.log(recommendation.estimatedCost); // 0.0003
+console.log(recommendation.fallbacks); // ['claude-haiku-4-5', 'gemini-2.5-flash']
+```
+
+Scoring factors include:
+
+- **Capability match** — vision, tool calling, context window support
+- **Cost efficiency** — cheaper models score higher when `costSensitivity` is high
+- **Speed** — fast models (gpt-4o-mini, claude-haiku, gemini-flash) score higher for urgent tasks
+- **Reasoning** — advanced models (gpt-4o, claude-sonnet, o3) score higher for complex reasoning
+- **Domain fit** — code-specialized models score higher for programming tasks
+- **Local preference** — Ollama models get a scoring boost when `preferLocal` is true
+
+## Budget Enforcement
+
+The `BudgetEnforcer` checks spending limits before each run:
+
+```typescript
+const check = router.checkBudget(estimatedCost);
+
+if (!check.allowed) {
+  console.log('Budget blocked:', check.reason);
+  // "Would exceed daily budget ($48.50 + $2.00 > $50.00)"
+}
+```
+
+Three budget levels are enforced independently:
+
+| Level   | Config Key       | Description                               |
+| ------- | ---------------- | ----------------------------------------- |
+| Per-run | `maxCostPerRun`  | Caps the cost of a single agent execution |
+| Hourly  | `maxCostPerHour` | Rolling 1-hour window limit               |
+| Daily   | `maxCostPerDay`  | Rolling 24-hour window limit              |
+
+When spending reaches the `warningThreshold` (default 80%), the `onBudgetWarning` callback fires. When a limit would be exceeded, the `onBudgetExceeded` callback fires and the run is blocked.
+
+```typescript
+const status = router.getBudgetStatus();
+
+console.log(`Hourly: $${status.hourlyUsed.toFixed(2)} / $${status.hourlyLimit}`);
+console.log(`Daily: $${status.dailyUsed.toFixed(2)} / $${status.dailyLimit}`);
+console.log(`Remaining today: $${status.dailyRemaining?.toFixed(2)}`);
+```
+
+## Token Estimation
+
+The `TokenEstimator` predicts token usage before making any API calls:
+
+```typescript
+import { TokenEstimator } from '@cogitator-ai/core/cost-routing';
+
+const estimator = new TokenEstimator();
+
+const inputTokens = estimator.estimateInputTokens({
+  systemPrompt: agent.instructions,
+  userInput: 'Analyze this codebase...',
+  toolSchemas: agent.tools.map((t) => t.toJSON()),
+  iterations: 2,
+  includeMemory: true,
+});
+
+const outputTokens = estimator.estimateOutputTokens({
+  complexity: 'complex',
+  hasTools: true,
+  toolCallCount: 3,
+  iterations: 2,
+});
+
+console.log(`Input: ${inputTokens.expected} tokens (${inputTokens.min}-${inputTokens.max})`);
+console.log(`Output: ${outputTokens.expected} tokens (${outputTokens.min}-${outputTokens.max})`);
+```
+
+Each estimate returns `min`, `max`, and `expected` values accounting for system prompt size, tool schemas, memory context, and estimated iteration count.
+
+## Cost Estimation
+
+The `CostEstimator` combines token estimation with model pricing for a full cost prediction:
+
+```typescript
+import { CostEstimator } from '@cogitator-ai/core/cost-routing';
+
+const costEstimator = new CostEstimator();
+
+const estimate = await costEstimator.estimate({
+  agent,
+  input: 'Design a microservices architecture for an e-commerce platform',
+});
+
+console.log(`Expected: $${estimate.expectedCost}`);
+console.log(`Range: $${estimate.minCost} - $${estimate.maxCost}`);
+console.log(`Confidence: ${(estimate.confidence * 100).toFixed(0)}%`);
+console.log(`Warnings:`, estimate.warnings);
+console.log(`Breakdown:`, estimate.breakdown);
+```
+
+Local models (Ollama) are automatically detected and reported as zero-cost. When model pricing data is unavailable, the estimator uses conservative defaults and flags a warning.
+
+## Cost Tracking
+
+The `CostTracker` records actual spending and provides real-time aggregations:
+
+```typescript
+router.recordCost({
+  runId: 'run_abc',
+  agentId: 'research-agent',
+  model: 'gpt-4o',
+  inputTokens: 2500,
+  outputTokens: 800,
+  cost: 0.035,
+});
+
+console.log(`This run: $${router.getRunCost('run_abc').toFixed(4)}`);
+console.log(`Last hour: $${router.getHourlyCost().toFixed(2)}`);
+console.log(`Today: $${router.getDailyCost().toFixed(2)}`);
+
+const summary = router.getCostSummary();
+console.log(`Total: $${summary.totalCost.toFixed(2)}`);
+console.log(`By model:`, summary.byModel);
+console.log(`By agent:`, summary.byAgent);
+console.log(`Runs: ${summary.runCount}`);
+```
+
+The tracker maintains sliding windows for hourly and daily costs, automatically pruning old records. Use `clearCostHistory()` to reset all tracking data.

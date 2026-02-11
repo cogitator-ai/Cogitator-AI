@@ -1,0 +1,4 @@
+{
+  "title": "Tools",
+  "pages": ["built-in", "wasm-tools", "custom-tools", "agent-as-tool", "tool-caching"]
+}

@@ -1,0 +1,186 @@
+---
+title: Neuro-Symbolic AI
+description: Combine neural LLM reasoning with symbolic logic, constraint solving, knowledge graphs, and AI planning.
+---
+
+## Overview
+
+Pure LLM reasoning excels at natural language understanding but struggles with strict logical constraints, guaranteed correctness, and systematic search. Cogitator's neuro-symbolic layer bridges this gap by combining the flexibility of neural agents with the precision of symbolic solvers.
+
+The approach is simple: the LLM formulates problems in symbolic terms, the symbolic engine solves them exactly, and the LLM interprets the results back into natural language.
+
+```typescript
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const logicSolver = tool({
+  name: 'solve_logic',
+  description: 'Solve a logic programming query against a knowledge base',
+  parameters: z.object({
+    facts: z.array(z.string()).describe('Prolog-style facts, e.g. ["parent(tom, bob)"]'),
+    rules: z
+      .array(z.string())
+      .describe('Prolog-style rules, e.g. ["grandparent(X,Z) :- parent(X,Y), parent(Y,Z)"]'),
+    query: z.string().describe('Query to solve, e.g. "grandparent(tom, X)"'),
+  }),
+  execute: async ({ facts, rules, query }) => {
+    const engine = new LogicEngine();
+    engine.loadFacts(facts);
+    engine.loadRules(rules);
+    return engine.query(query);
+  },
+});
+```
+
+## Logic Programming
+
+Give agents the ability to perform deductive reasoning over structured knowledge bases. The LLM translates natural language into logical facts and rules, then queries a solver for guaranteed-correct answers.
+
+```typescript
+const reasoner = new Agent({
+  name: 'logic-reasoner',
+  model: 'openai/gpt-4o',
+  instructions: `You are a logical reasoning assistant. When users ask questions that
+require deductive reasoning, translate the problem into facts and rules,
+then use the solve_logic tool to find the answer. Explain the result
+in natural language.`,
+  tools: [logicSolver],
+});
+
+const result = await cog.run(reasoner, {
+  input: "Tom is Bob's parent. Bob is Alice's parent. Is Tom Alice's grandparent?",
+});
+```
+
+## Constraint Solving (SAT/SMT)
+
+For combinatorial problems -- scheduling, configuration, resource allocation -- agents can delegate to SAT/SMT solvers that explore the full solution space.
+
+```typescript
+const constraintSolver = tool({
+  name: 'solve_constraints',
+  description: 'Solve a constraint satisfaction problem',
+  parameters: z.object({
+    variables: z.array(
+      z.object({
+        name: z.string(),
+        domain: z.array(z.number()),
+      })
+    ),
+    constraints: z.array(z.string()).describe('Constraints as expressions, e.g. ["x + y <= 10"]'),
+    objective: z.enum(['satisfy', 'minimize', 'maximize']).optional(),
+    objectiveVar: z.string().optional(),
+  }),
+  execute: async ({ variables, constraints, objective, objectiveVar }) => {
+    const solver = new ConstraintSolver();
+    for (const v of variables) {
+      solver.addVariable(v.name, v.domain);
+    }
+    for (const c of constraints) {
+      solver.addConstraint(c);
+    }
+    if (objective && objectiveVar) {
+      return solver.optimize(objective, objectiveVar);
+    }
+    return solver.solve();
+  },
+});
+
+const scheduler = new Agent({
+  name: 'scheduler',
+  model: 'anthropic/claude-sonnet-4-20250514',
+  instructions: `You schedule meetings. Translate scheduling requests into constraint
+problems and use solve_constraints to find valid time slots.`,
+  tools: [constraintSolver],
+});
+```
+
+## Knowledge Graph Reasoning
+
+Combine the causal graph infrastructure with LLM-powered queries for structured knowledge retrieval and multi-hop reasoning.
+
+```typescript
+import { CausalGraphBuilder, CausalInferenceEngine } from '@cogitator-ai/core';
+
+const kg = CausalGraphBuilder.create('company-knowledge')
+  .variable('eng_team', 'Engineering Team', 'observed')
+  .variable('code_quality', 'Code Quality', 'observed')
+  .variable('deployment_freq', 'Deployment Frequency', 'observed')
+  .variable('customer_satisfaction', 'Customer Satisfaction', 'outcome')
+  .from('eng_team')
+  .causes('code_quality', { strength: 0.8 })
+  .from('code_quality')
+  .causes('deployment_freq', { strength: 0.6 })
+  .from('deployment_freq')
+  .causes('customer_satisfaction', { strength: 0.7 })
+  .build();
+
+const engine = new CausalInferenceEngine(kg);
+
+const paths = kg.findPaths('eng_team', 'customer_satisfaction');
+const blanket = kg.getMarkovBlanket('deployment_freq');
+const sorted = kg.topologicalSort();
+```
+
+The graph supports path finding, ancestor/descendant traversal, Markov blanket computation, topological sorting, and cycle detection -- all useful primitives for multi-hop knowledge reasoning.
+
+## AI Planning (STRIPS-Style)
+
+Agents can use symbolic planners for goal-directed task decomposition. Define the world state, available actions with preconditions and effects, and let the planner find a valid action sequence.
+
+```typescript
+const planner = tool({
+  name: 'plan_actions',
+  description: 'Create an action plan to reach a goal state from the current state',
+  parameters: z.object({
+    initialState: z
+      .array(z.string())
+      .describe('Current state predicates, e.g. ["at(robot, room_a)"]'),
+    goalState: z.array(z.string()).describe('Desired state predicates'),
+    actions: z.array(
+      z.object({
+        name: z.string(),
+        preconditions: z.array(z.string()),
+        effects: z.object({
+          add: z.array(z.string()),
+          remove: z.array(z.string()),
+        }),
+      })
+    ),
+  }),
+  execute: async ({ initialState, goalState, actions }) => {
+    const solver = new STRIPSPlanner();
+    return solver.plan(new Set(initialState), new Set(goalState), actions);
+  },
+});
+
+const taskAgent = new Agent({
+  name: 'task-planner',
+  model: 'openai/gpt-4o',
+  instructions: `You are a planning agent. Break complex tasks into STRIPS-style
+planning problems and use plan_actions to find optimal action sequences.
+Translate the plan back into actionable steps for the user.`,
+  tools: [planner],
+});
+```
+
+## Combining Neural and Symbolic
+
+The real power comes from combining these approaches. The LLM handles natural language understanding, ambiguity resolution, and explanation, while symbolic engines handle correctness-critical computation.
+
+```typescript
+const hybridAgent = new Agent({
+  name: 'hybrid-reasoner',
+  model: 'openai/gpt-4o',
+  instructions: `You are a hybrid reasoning agent with access to both neural and
+symbolic tools. For questions requiring strict logical deduction, use
+the logic solver. For optimization and scheduling, use the constraint
+solver. For planning multi-step tasks, use the planner. Always explain
+your reasoning and verify symbolic results make sense in context.`,
+  tools: [logicSolver, constraintSolver, planner],
+  temperature: 0.2,
+  maxIterations: 15,
+});
+```
+
+This pattern lets you get the best of both worlds: the LLM's ability to interpret vague requests and generate explanations, combined with the solver's ability to guarantee correct, complete, and optimal solutions.

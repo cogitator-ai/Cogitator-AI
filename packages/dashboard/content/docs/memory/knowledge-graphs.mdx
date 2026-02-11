@@ -1,0 +1,320 @@
+---
+title: Knowledge Graphs
+description: Extract entities and relationships from conversations, store them in a graph, run inference rules, and enrich agent context with structured knowledge.
+---
+
+## Overview
+
+Knowledge graphs give agents structured memory beyond flat conversation history. Instead of treating past messages as opaque text, the knowledge graph extracts **entities** (people, organizations, concepts) and **relationships** (knows, works_at, part_of) into a queryable graph.
+
+This enables agents to:
+
+- Answer questions about relationships between entities
+- Discover indirect connections through graph traversal
+- Infer new facts from existing relationships
+- Build richer context by injecting relevant graph data into prompts
+
+## Architecture
+
+```
+Conversation ──► LLMEntityExtractor ──► GraphAdapter (storage)
+                                              │
+                                    GraphInferenceEngine (rules)
+                                              │
+                                    GraphContextBuilder (retrieval)
+                                              │
+                                        Agent Prompt
+```
+
+## Entity Extraction
+
+The `LLMEntityExtractor` uses an LLM to identify entities and relationships from text. It prompts the model for structured JSON output, then validates and filters the results.
+
+```typescript
+import { LLMEntityExtractor } from '@cogitator-ai/memory';
+
+const extractor = new LLMEntityExtractor(llmBackend, {
+  minConfidence: 0.7,
+  maxEntitiesPerText: 20,
+  maxRelationsPerText: 30,
+});
+
+const result = await extractor.extract(
+  'Alice works at Acme Corp in New York. She knows Bob from the engineering team.'
+);
+
+console.log(result.entities);
+// [
+//   { name: 'Alice', type: 'person', confidence: 0.95 },
+//   { name: 'Acme Corp', type: 'organization', confidence: 0.95 },
+//   { name: 'New York', type: 'location', confidence: 0.9 },
+//   { name: 'Bob', type: 'person', confidence: 0.9 },
+// ]
+
+console.log(result.relations);
+// [
+//   { sourceEntity: 'Alice', targetEntity: 'Acme Corp', type: 'works_at', confidence: 0.95 },
+//   { sourceEntity: 'Acme Corp', targetEntity: 'New York', type: 'located_in', confidence: 0.85 },
+//   { sourceEntity: 'Alice', targetEntity: 'Bob', type: 'knows', confidence: 0.9 },
+// ]
+```
+
+### Entity Types
+
+`person`, `organization`, `location`, `concept`, `event`, `object`
+
+### Relation Types
+
+`knows`, `works_at`, `located_in`, `part_of`, `related_to`, `created_by`, `belongs_to`, `associated_with`, `causes`, `precedes`
+
+### Extraction Context
+
+Provide hints to improve extraction quality:
+
+```typescript
+const result = await extractor.extract(text, {
+  entityTypeHints: ['person', 'organization'],
+  relationTypeHints: ['works_at', 'knows'],
+  existingEntities: ['Alice', 'Acme Corp'],
+});
+```
+
+Existing entities help the LLM disambiguate references and avoid creating duplicates.
+
+## Graph Adapter
+
+The `PostgresGraphAdapter` stores nodes and edges in PostgreSQL with full indexing, semantic search via pgvector, and recursive traversal using CTEs.
+
+```typescript
+import { PostgresGraphAdapter } from '@cogitator-ai/memory';
+import pg from 'pg';
+
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL!,
+});
+
+const graph = new PostgresGraphAdapter({
+  pool,
+  schema: 'cogitator',
+  vectorDimensions: 1536,
+});
+```
+
+The adapter auto-creates `graph_nodes` and `graph_edges` tables on first use.
+
+### Adding Nodes and Edges
+
+```typescript
+const { data: alice } = await graph.addNode({
+  agentId: 'agent-1',
+  type: 'person',
+  name: 'Alice',
+  aliases: ['alice'],
+  description: 'Engineer at Acme Corp',
+  properties: { role: 'backend' },
+  confidence: 0.95,
+  source: 'inferred',
+});
+
+const { data: acme } = await graph.addNode({
+  agentId: 'agent-1',
+  type: 'organization',
+  name: 'Acme Corp',
+  aliases: ['Acme'],
+  properties: {},
+  confidence: 0.95,
+  source: 'inferred',
+});
+
+await graph.addEdge({
+  agentId: 'agent-1',
+  sourceNodeId: alice.id,
+  targetNodeId: acme.id,
+  type: 'works_at',
+  weight: 1.0,
+  bidirectional: false,
+  properties: {},
+  confidence: 0.95,
+  source: 'inferred',
+});
+```
+
+### Querying
+
+```typescript
+const { data: people } = await graph.queryNodes({
+  agentId: 'agent-1',
+  types: ['person'],
+  namePattern: 'Ali',
+  minConfidence: 0.8,
+  limit: 10,
+});
+
+const { data: edges } = await graph.queryEdges({
+  agentId: 'agent-1',
+  types: ['works_at', 'knows'],
+  minConfidence: 0.7,
+});
+```
+
+### Graph Traversal
+
+Traverse the graph from a starting node, following edges up to a specified depth:
+
+```typescript
+const { data: traversal } = await graph.traverse({
+  agentId: 'agent-1',
+  startNodeId: alice.id,
+  maxDepth: 2,
+  direction: 'both',
+  edgeTypes: ['knows', 'works_at'],
+  minConfidence: 0.6,
+});
+
+for (const path of traversal.paths) {
+  const names = path.nodes.map((n) => n.name).join(' -> ');
+  console.log(`${names} (weight: ${path.totalWeight})`);
+}
+```
+
+### Shortest Path
+
+Find the shortest path between two nodes using recursive CTEs:
+
+```typescript
+const { data: path } = await graph.findShortestPath('agent-1', alice.id, bobNodeId, 5);
+
+if (path) {
+  console.log(`Path length: ${path.length}, weight: ${path.totalWeight}`);
+}
+```
+
+### Semantic Node Search
+
+When nodes have embeddings, search by meaning:
+
+```typescript
+const vector = await embeddingService.embed('backend engineering');
+const { data: nodes } = await graph.searchNodesSemantic({
+  agentId: 'agent-1',
+  vector,
+  limit: 5,
+  threshold: 0.7,
+  entityTypes: ['person', 'concept'],
+});
+```
+
+### Node Merging
+
+Merge duplicate nodes, redirecting all edges to the target:
+
+```typescript
+await graph.mergeNodes(primaryNodeId, [duplicateId1, duplicateId2]);
+```
+
+## Inference Engine
+
+The `GraphInferenceEngine` applies rules to discover implicit relationships. It ships with default rules and supports custom ones.
+
+```typescript
+import { GraphInferenceEngine } from '@cogitator-ai/memory';
+
+const engine = new GraphInferenceEngine(graph);
+
+const inferred = await engine.infer('agent-1', {
+  minConfidence: 0.6,
+  maxInferences: 100,
+});
+
+console.log(`Found ${inferred.length} inferred relationships`);
+```
+
+### Default Rules
+
+| Rule               | Pattern                        | Conclusion                      | Confidence |
+| ------------------ | ------------------------------ | ------------------------------- | ---------- |
+| transitive_knows   | A knows B, B knows C           | A related_to C                  | 0.6        |
+| colleagues         | A works_at X, B works_at X     | A associated_with B (colleague) | 0.8        |
+| location_hierarchy | A located_in B, B located_in C | A located_in C                  | 0.9        |
+| part_of_hierarchy  | A part_of B, B part_of C       | A part_of C                     | 0.85       |
+| causality_chain    | A causes B, B causes C         | A causes C (indirect)           | 0.7        |
+
+### Custom Rules
+
+```typescript
+engine.registerRule({
+  name: 'team_membership',
+  description: 'People who belong to the same team are associated',
+  pattern: {
+    edgeTypes: ['belongs_to', 'belongs_to'],
+    minPathLength: 2,
+    maxPathLength: 2,
+    nodeTypeConstraints: {
+      0: ['person'],
+      1: ['concept'],
+      2: ['person'],
+    },
+  },
+  conclusion: {
+    edgeType: 'associated_with',
+    label: 'teammate',
+    weightFormula: 'min',
+    bidirectional: true,
+  },
+  confidence: 0.75,
+  enabled: true,
+});
+```
+
+Weight formulas: `min`, `max`, `average`, `product` -- applied to the weights of edges in the matched path.
+
+### Materializing Inferences
+
+Save inferred edges back to the graph:
+
+```typescript
+const { data: materialized } = await engine.materialize(inferred);
+console.log(`Materialized ${materialized.length} edges`);
+```
+
+Materialized edges include metadata tracking the rule that created them and the supporting path.
+
+## Graph Context Builder
+
+The `GraphContextBuilder` retrieves relevant graph data for a given input and formats it as structured text to inject into the agent's prompt.
+
+```typescript
+import { GraphContextBuilder } from '@cogitator-ai/memory';
+
+const contextBuilder = new GraphContextBuilder(graph, embeddingService, {
+  maxNodes: 20,
+  maxEdges: 50,
+  maxDepth: 3,
+});
+
+const context = await contextBuilder.buildContext('agent-1', 'What does Alice do at Acme Corp?');
+
+console.log(context.formattedContext);
+// ## Knowledge Graph Context
+//
+// ### Entities
+// - **Alice** (Person): Engineer at Acme Corp
+// - **Acme Corp** (Organization)
+//
+// ### Relationships
+// - Alice -> works at -> Acme Corp
+
+console.log(`Nodes: ${context.nodes.length}, Edges: ${context.edges.length}`);
+console.log(`Estimated tokens: ${context.tokenCount}`);
+```
+
+The builder performs keyword matching and semantic search on graph nodes, then traverses outward from matched nodes to gather related context. Nodes are ranked by name match, alias match, keyword overlap, access frequency, and confidence.
+
+| Option            | Type    | Default | Description                              |
+| ----------------- | ------- | ------- | ---------------------------------------- |
+| `maxNodes`        | number  | 20      | Maximum nodes to include in context      |
+| `maxEdges`        | number  | 50      | Maximum edges to include in context      |
+| `maxDepth`        | number  | 3       | Graph traversal depth from matched nodes |
+| `includeInferred` | boolean | true    | Include edges created by inference rules |
+| `tokensPerNode`   | number  | 30      | Estimated tokens per node for budget     |
+| `tokensPerEdge`   | number  | 15      | Estimated tokens per edge for budget     |

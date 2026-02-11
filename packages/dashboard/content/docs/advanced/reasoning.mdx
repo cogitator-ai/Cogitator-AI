@@ -1,0 +1,181 @@
+---
+title: Tree-of-Thought Reasoning
+description: Explore multiple reasoning paths simultaneously using the ThoughtTreeExecutor, evaluate branches with configurable strategies, and select the best reasoning chain.
+---
+
+## Overview
+
+Tree-of-Thought (ToT) reasoning allows agents to explore multiple approaches to a problem in parallel, evaluate each branch, backtrack from dead ends, and synthesize the best result. Instead of committing to a single chain-of-thought, the agent builds a tree of possibilities and navigates it intelligently.
+
+## Basic Usage
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { ThoughtTreeExecutor } from '@cogitator-ai/core/reasoning';
+
+const cogitator = new Cogitator({
+  llm: {
+    defaultProvider: 'openai',
+    providers: {
+      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' },
+    },
+  },
+});
+
+const executor = new ThoughtTreeExecutor(cogitator, {
+  maxDepth: 4,
+  branchFactor: 3,
+  beamWidth: 2,
+  confidenceThreshold: 0.3,
+  terminationConfidence: 0.9,
+  maxTotalNodes: 50,
+});
+
+const agent = new Agent({
+  name: 'problem-solver',
+  instructions: 'You solve complex problems by exploring multiple approaches.',
+  model: 'openai/gpt-4o',
+});
+
+const result = await executor.explore(agent, 'Design a caching strategy for a real-time dashboard');
+
+console.log('Success:', result.success);
+console.log('Output:', result.output);
+console.log('Best path depth:', result.bestPath.length);
+console.log('Nodes explored:', result.stats.exploredNodes);
+```
+
+## How It Works
+
+The executor builds a tree where each node represents a reasoning step:
+
+1. **Root creation** — the goal becomes the root node
+2. **Branch generation** — the `BranchGenerator` produces `branchFactor` candidate approaches per node
+3. **Branch evaluation** — the `BranchEvaluator` scores each branch on confidence, progress, and novelty
+4. **Pruning** — branches below `confidenceThreshold` are discarded
+5. **Expansion** — surviving branches become child nodes and are executed via `cogitator.run()`
+6. **Termination** — when a branch reaches `terminationConfidence` or the tree hits `maxTotalNodes`
+7. **Synthesis** — the best path is synthesized into a final output
+
+## Configuration
+
+```typescript
+const executor = new ThoughtTreeExecutor(cogitator, {
+  maxDepth: 5, // how deep the tree can grow
+  branchFactor: 3, // candidates generated per node
+  beamWidth: 2, // how many branches survive per level
+  confidenceThreshold: 0.3, // minimum score to keep a branch
+  terminationConfidence: 0.9, // score that triggers early stop
+  maxTotalNodes: 100, // hard cap on tree size
+});
+```
+
+Higher `branchFactor` explores more possibilities but costs more tokens. Lower `beamWidth` focuses the search but risks missing good paths.
+
+## Branch Generation
+
+The `BranchGenerator` asks the LLM to propose diverse approaches for a given node:
+
+```typescript
+import { BranchGenerator } from '@cogitator-ai/core/reasoning';
+
+const generator = new BranchGenerator(llmBackend, 'gpt-4o');
+
+const branches = await generator.generate(
+  currentNode,
+  'Optimize database query performance',
+  3,
+  agentContext,
+  exploredThoughts
+);
+```
+
+Each branch includes a `thought` (the reasoning), a `proposedAction` (tool call, sub-goal, or direct response), and a snapshot of the conversation state. Previously explored thoughts are passed in to encourage novelty.
+
+## Branch Evaluation
+
+The `BranchEvaluator` scores branches on three dimensions:
+
+- **Confidence** — how likely is this approach to succeed?
+- **Progress** — how much closer does it get to the goal?
+- **Novelty** — how different is it from sibling branches?
+
+```typescript
+import { BranchEvaluator } from '@cogitator-ai/core/reasoning';
+
+const evaluator = new BranchEvaluator({
+  llm: llmBackend,
+  model: 'gpt-4o',
+  reflectionEngine, // optional, enables reflection-based evaluation
+  confidenceWeight: 0.5,
+  progressWeight: 0.3,
+  noveltyWeight: 0.2,
+});
+
+const scores = await evaluator.evaluateBatch(branches, goal, context);
+```
+
+When a `ReflectionEngine` is provided, tool-call branches are evaluated using past insights, giving the tree historical awareness.
+
+## Backtracking
+
+When all branches from a node score below the threshold, the executor backtracks to the nearest ancestor with unexplored children:
+
+```typescript
+const executor = new ThoughtTreeExecutor(cogitator, {
+  onBacktrack: (failedNode, nextTarget) => {
+    if (nextTarget) {
+      console.log(`Backtracking from depth ${failedNode.depth} to ${nextTarget.depth}`);
+    } else {
+      console.log('No viable backtrack target found');
+    }
+  },
+});
+```
+
+## Progress Monitoring
+
+Track exploration in real-time with callbacks and progress events:
+
+```typescript
+const result = await executor.explore(agent, goal, {
+  timeout: 30_000,
+  abortSignal: controller.signal,
+  onProgress: (stats) => {
+    console.log(`Explored: ${stats.exploredNodes}/${stats.totalNodes}`);
+    console.log(`Depth: ${stats.maxDepthReached}, Backtracks: ${stats.backtrackCount}`);
+    console.log(`LLM calls: ${stats.llmCalls}`);
+  },
+});
+```
+
+## Result Structure
+
+```typescript
+interface ToTResult {
+  success: boolean;
+  output: string;
+  tree: ThoughtTree;
+  bestPath: ThoughtNode[];
+  stats: ToTStats;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    cost: number;
+    duration: number;
+  };
+}
+```
+
+The `bestPath` array contains every node from root to the highest-scoring leaf, letting you trace exactly how the agent reached its conclusion. The full `tree` is available for visualization or debugging.
+
+## When to Use ToT
+
+Tree-of-Thought reasoning is most effective for:
+
+- Problems with multiple valid approaches (architecture decisions, optimization)
+- Tasks where the first attempt often fails (complex debugging, multi-step reasoning)
+- Situations where exploring alternatives has high value (research, strategy)
+
+For straightforward tasks, standard single-pass execution is faster and cheaper. Use ToT when the cost of exploring is worth the improvement in output quality.

@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import { Geist, Geist_Mono } from 'next/font/google';
+import { RootProvider } from 'fumadocs-ui/provider/next';
 import './globals.css';
 
 const geistSans = Geist({
@@ -172,7 +173,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" className="dark" suppressHydrationWarning>
       <head>
         <script
           type="application/ld+json"
@@ -182,7 +183,7 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-bg-primary text-text-primary`}
       >
-        {children}
+        <RootProvider>{children}</RootProvider>
       </body>
     </html>
   );

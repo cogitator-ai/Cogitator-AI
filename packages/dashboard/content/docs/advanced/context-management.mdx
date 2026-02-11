@@ -1,0 +1,176 @@
+---
+title: Context Management
+description: Automatically manage conversation length with truncation, summarization, sliding window, and smart hybrid compression strategies.
+---
+
+## Overview
+
+Long-running agents accumulate conversation history that can exceed a model's context window. The `ContextManager` automatically detects when messages are approaching the limit and compresses them using one of four strategies -- keeping agents running indefinitely without losing critical context.
+
+```typescript
+import { Cogitator } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } } },
+  context: {
+    enabled: true,
+    strategy: 'hybrid',
+    compressionThreshold: 0.8,
+    outputReserve: 0.15,
+    windowSize: 10,
+  },
+});
+```
+
+Context management is built into the runtime -- when enabled, it runs transparently before each LLM call.
+
+## Configuration
+
+```typescript
+interface ContextManagerConfig {
+  enabled?: boolean; // default: true
+  strategy?: 'truncate' | 'sliding-window' | 'summarize' | 'hybrid';
+  compressionThreshold?: number; // 0-1, triggers at this % of max tokens (default: 0.8)
+  outputReserve?: number; // fraction of context reserved for output (default: 0.15)
+  summaryModel?: string; // model for summarization (defaults to agent's model)
+  windowSize?: number; // messages to keep in sliding window (default: 10)
+  windowOverlap?: number; // overlap between windows (default: 2)
+}
+```
+
+The `compressionThreshold` controls when compression kicks in. At `0.8`, compression triggers when token usage exceeds 80% of the available context (after reserving space for output tokens).
+
+## Token Counting
+
+Cogitator uses a fast heuristic token counter (4 characters per token + message overhead) for real-time decisions, and knows the context window sizes for all major models:
+
+```typescript
+import { ContextManager } from '@cogitator-ai/core';
+
+const manager = new ContextManager({
+  enabled: true,
+  strategy: 'hybrid',
+  compressionThreshold: 0.8,
+});
+
+const limit = manager.getModelContextLimit('openai/gpt-4o'); // 128000
+const limit2 = manager.getModelContextLimit('anthropic/claude-sonnet-4-20250514'); // 200000
+```
+
+## Checking Context State
+
+Before compressing, you can inspect the current state:
+
+```typescript
+const state = manager.checkState(messages, 'openai/gpt-4o');
+
+console.log(state.currentTokens); // estimated tokens used
+console.log(state.maxTokens); // effective limit (minus output reserve)
+console.log(state.availableTokens); // remaining space
+console.log(state.utilizationPercent); // e.g. 85.3
+console.log(state.needsCompression); // true if above threshold
+```
+
+## Strategies
+
+### Truncate
+
+Drops the oldest non-system messages to fit within the token budget. Fast and stateless -- no LLM call required.
+
+```typescript
+const cog = new Cogitator({
+  context: { strategy: 'truncate', compressionThreshold: 0.8 },
+  // ...
+});
+```
+
+System messages are always preserved. History is trimmed from the beginning, keeping the most recent exchanges intact. Best for scenarios where older context is rarely needed.
+
+### Sliding Window
+
+Keeps a fixed window of recent messages and optionally summarizes older ones. Provides a good balance between context preservation and token efficiency.
+
+```typescript
+const cog = new Cogitator({
+  context: {
+    strategy: 'sliding-window',
+    windowSize: 15,
+    summaryModel: 'openai/gpt-4o-mini',
+  },
+  // ...
+});
+```
+
+When an LLM backend is available, older messages outside the window are summarized into a single system message. Without an LLM, a basic extractive summary is generated from the most recent user and assistant messages.
+
+### Summarize
+
+Uses an LLM to generate a comprehensive summary of older conversation history, preserving key facts, decisions, and pending tasks.
+
+```typescript
+const cog = new Cogitator({
+  context: {
+    strategy: 'summarize',
+    summaryModel: 'openai/gpt-4o-mini',
+    windowSize: 5,
+  },
+  // ...
+});
+```
+
+The summarizer keeps the most recent 20% of messages (minimum 2) as-is and compresses everything else. The summary prompt instructs the LLM to preserve user preferences, key decisions, and critical context. Falls back to extractive summarization if the LLM call fails.
+
+### Hybrid (Default)
+
+Automatically selects the best strategy based on how far over the limit the conversation is:
+
+| Utilization      | Strategy       | Reasoning                                    |
+| ---------------- | -------------- | -------------------------------------------- |
+| Up to 1.5x       | Sliding Window | Mild overflow, window is sufficient          |
+| 1.5x+ (with LLM) | Summarize      | Heavy overflow, need intelligent compression |
+| 1.5x-2x (no LLM) | Sliding Window | Best effort without LLM                      |
+| 2x+              | Truncate       | Extreme overflow, aggressive trimming needed |
+
+```typescript
+const cog = new Cogitator({
+  context: { strategy: 'hybrid' },
+  // ...
+});
+```
+
+This is the recommended default -- it adapts to the situation without manual tuning.
+
+## Compression Results
+
+Every compression call returns detailed metrics:
+
+```typescript
+const result = await manager.compress(messages, 'openai/gpt-4o');
+
+console.log(result.messages); // compressed message array
+console.log(result.originalTokens); // tokens before compression
+console.log(result.compressedTokens); // tokens after compression
+console.log(result.strategy); // which strategy was used
+console.log(result.truncated); // messages dropped (truncate)
+console.log(result.summarized); // messages summarized (summarize/sliding-window)
+```
+
+## Standalone Usage
+
+You can use `ContextManager` outside of the Cogitator runtime for custom pipelines:
+
+```typescript
+import { ContextManager } from '@cogitator-ai/core';
+
+const manager = new ContextManager(
+  { enabled: true, strategy: 'sliding-window', windowSize: 10 },
+  { getBackend: (model) => myBackendRegistry.get(model) }
+);
+
+if (manager.shouldCompress(messages, 'openai/gpt-4o')) {
+  const { messages: compressed } = await manager.compress(messages, 'openai/gpt-4o');
+  messages = compressed;
+}
+```
+
+The second constructor argument provides a `getBackend` function so the manager can access an LLM for summarization strategies.

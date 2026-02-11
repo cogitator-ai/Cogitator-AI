@@ -1,0 +1,145 @@
+---
+title: Swarms
+description: Multi-agent coordination for complex tasks that require collaboration between specialized agents.
+---
+
+## What Are Swarms?
+
+A swarm is a group of agents working together under a coordination strategy. Instead of a single agent handling everything, swarms let you decompose complex tasks across multiple specialized agents that communicate, delegate, and synthesize results.
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { swarm } from '@cogitator-ai/swarms';
+
+const cogitator = new Cogitator({
+  /* ... */
+});
+
+const devTeam = swarm('dev-team')
+  .strategy('hierarchical')
+  .supervisor(
+    new Agent({
+      name: 'tech-lead',
+      model: 'openai/gpt-4o',
+      instructions: 'You are a tech lead. Break down tasks and delegate to your team.',
+    })
+  )
+  .workers([
+    new Agent({ name: 'frontend-dev', instructions: 'Build React components.' }),
+    new Agent({ name: 'backend-dev', instructions: 'Build APIs and services.' }),
+  ])
+  .build(cogitator);
+
+const result = await devTeam.run({ input: 'Build a user authentication system' });
+console.log(result.output);
+```
+
+## Core Concepts
+
+Every swarm has three fundamental pieces:
+
+| Concept           | Description                                                                                                                                        |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Agents**        | The individual LLM agents that form the swarm. Each has a name, instructions, model, and optional tools.                                           |
+| **Strategy**      | The coordination pattern that determines how agents interact: who runs when, how results flow, and how decisions are made.                         |
+| **Communication** | The infrastructure for inter-agent messaging: blackboard (shared state), message bus (direct messaging), and event emitter (coordination signals). |
+
+## Available Strategies
+
+Cogitator ships with 8 built-in coordination strategies:
+
+| Strategy       | Use Case                                                           |
+| -------------- | ------------------------------------------------------------------ |
+| `hierarchical` | Supervisor delegates to workers, coordinates results               |
+| `round-robin`  | Rotate tasks across agents for load balancing                      |
+| `consensus`    | Agents vote and reach agreement on decisions                       |
+| `auction`      | Agents bid on tasks based on capability                            |
+| `pipeline`     | Sequential stages with optional quality gates                      |
+| `debate`       | Agents argue opposing positions, moderator synthesizes             |
+| `negotiation`  | Multi-party negotiation with offers, counteroffers, and agreements |
+| `distributed`  | Redis-backed coordination across multiple machines                 |
+
+## Swarms vs Workflows
+
+Both swarms and workflows coordinate multiple steps, but they solve different problems:
+
+|                     | Swarms                                                            | Workflows                                                         |
+| ------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------- |
+| **Coordination**    | Agent-to-agent, strategy-driven                                   | DAG-based, node-to-node                                           |
+| **Communication**   | Agents message each other via blackboard and message bus          | Data flows through edges between nodes                            |
+| **Decision making** | Dynamic: agents vote, bid, debate, negotiate                      | Static: predefined graph with conditional branches                |
+| **Best for**        | Tasks requiring collaboration, deliberation, or emergent behavior | Tasks with clear sequential/parallel steps and deterministic flow |
+
+Use **swarms** when agents need to discuss, delegate, or reach consensus. Use **workflows** when the execution path is well-defined upfront.
+
+## The Swarm Lifecycle
+
+```
+1. Build     → Configure agents, strategy, communication
+2. Assess    → (Optional) Auto-assign optimal models via SwarmAssessor
+3. Execute   → Strategy coordinates agent runs
+4. Observe   → Events stream progress in real-time
+5. Result    → Aggregated output with per-agent results
+```
+
+When a swarm runs, the `SwarmCoordinator` manages agent execution, tracks resource usage, and handles errors according to your configuration. Each strategy implements its own execution flow on top of the coordinator.
+
+## Resource Management
+
+Swarms support built-in resource tracking and circuit breakers:
+
+```typescript
+const team = swarm('team')
+  .strategy('hierarchical')
+  .supervisor(supervisor)
+  .workers(workers)
+  .resources({
+    maxConcurrency: 5,
+    tokenBudget: 100_000,
+    costLimit: 1.0,
+    timeout: 300_000,
+  })
+  .errorHandling({
+    onAgentFailure: 'retry',
+    retry: { maxRetries: 3, backoff: 'exponential' },
+    circuitBreaker: { enabled: true, threshold: 5, resetTimeout: 60_000 },
+  })
+  .build(cogitator);
+```
+
+## Events
+
+Every swarm emits structured events you can subscribe to:
+
+```typescript
+const team = swarm('team')
+  .strategy('pipeline')
+  .pipeline({
+    stages: [
+      /* ... */
+    ],
+  })
+  .build(cogitator);
+
+team.on('agent:start', (event) => {
+  console.log(`Agent ${event.agentName} started`);
+});
+
+team.on('agent:complete', (event) => {
+  console.log(`Agent ${event.agentName} finished`);
+});
+
+team.on('swarm:complete', (event) => {
+  console.log(`Swarm done, ${event.data.agentCount} agents ran`);
+});
+```
+
+Use the wildcard `'*'` to capture all events for logging or observability.
+
+## Next Steps
+
+- [Coordination Strategies](/docs/swarms/strategies) — detailed guide to all 8 strategies
+- [Swarm Builder](/docs/swarms/builder) — fluent API for configuring swarms
+- [Agent Communication](/docs/swarms/communication) — blackboard, message bus, events
+- [Swarm Assessment](/docs/swarms/assessment) — auto-assign optimal models
+- [Distributed Swarms](/docs/swarms/distributed) — scale across machines with Redis

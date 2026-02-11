@@ -1,0 +1,206 @@
+---
+title: Express Adapter
+description: Serve your Cogitator agents over HTTP with Express.js — class-based setup with middleware, SSE streaming, and WebSocket support.
+---
+
+The `@cogitator-ai/express` package provides `CogitatorServer`, a class that mounts a full REST API onto your existing Express router. It handles JSON parsing, authentication, rate limiting, CORS, error handling, Swagger docs, and WebSocket support out of the box.
+
+## Installation
+
+```bash
+pnpm add @cogitator-ai/express express
+```
+
+## Basic Setup
+
+```typescript
+import express from 'express';
+import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { CogitatorServer } from '@cogitator-ai/express';
+import { z } from 'zod';
+
+const app = express();
+
+const cogitator = new Cogitator({
+  llm: {
+    defaultProvider: 'openai',
+    providers: {
+      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' },
+    },
+  },
+});
+
+const search = tool({
+  name: 'web_search',
+  description: 'Search the web',
+  parameters: z.object({ query: z.string() }),
+  execute: async ({ query }) => ({ results: [`Result for: ${query}`] }),
+});
+
+const assistant = new Agent({
+  name: 'assistant',
+  instructions: 'You are a helpful assistant with web search capabilities.',
+  tools: [search],
+});
+
+const server = new CogitatorServer({
+  app: app,
+  cogitator,
+  agents: { assistant },
+  config: {
+    basePath: '/cogitator',
+    enableSwagger: true,
+    enableWebSocket: false,
+  },
+});
+
+await server.init();
+
+app.listen(3000, () => {
+  console.log('Server running on http://localhost:3000');
+  console.log('Swagger UI: http://localhost:3000/cogitator/docs');
+});
+```
+
+## Configuration
+
+The `CogitatorServerConfig` interface accepts:
+
+```typescript
+interface CogitatorServerConfig {
+  app: Router;
+  cogitator: Cogitator;
+  agents?: Record<string, Agent>;
+  workflows?: Record<string, Workflow>;
+  swarms?: Record<string, SwarmConfig>;
+  config?: {
+    basePath?: string; // default: '/cogitator'
+    enableWebSocket?: boolean; // default: false
+    enableSwagger?: boolean; // default: true
+    requestTimeout?: number; // default: 30000ms
+    auth?: AuthFunction;
+    rateLimit?: RateLimitConfig;
+    cors?: CorsConfig;
+    swagger?: SwaggerConfig;
+    websocket?: WebSocketConfig;
+  };
+}
+```
+
+## Authentication
+
+Pass a custom `auth` function that receives the Express request and returns an `AuthContext`:
+
+```typescript
+const server = new CogitatorServer({
+  app,
+  cogitator,
+  agents: { assistant },
+  config: {
+    auth: async (req) => {
+      const token = req.headers.authorization?.replace('Bearer ', '');
+      if (!token) return undefined;
+
+      const user = await verifyToken(token);
+      return { userId: user.id, roles: user.roles };
+    },
+  },
+});
+```
+
+When `auth` returns `undefined`, the request proceeds as unauthenticated. The `AuthContext` is attached to `req.cogitator.auth` for downstream use.
+
+## Rate Limiting
+
+```typescript
+config: {
+  rateLimit: {
+    windowMs: 60_000,
+    max: 100,
+    message: 'Too many requests',
+    keyGenerator: (req) => req.ip ?? 'unknown',
+  },
+}
+```
+
+## CORS
+
+```typescript
+config: {
+  cors: {
+    origin: ['https://app.example.com'],
+    credentials: true,
+    methods: ['GET', 'POST', 'DELETE'],
+  },
+}
+```
+
+## Streaming
+
+The `/agents/:name/stream` endpoint returns an SSE stream. Use any EventSource client to consume it:
+
+```typescript
+const response = await fetch('http://localhost:3000/cogitator/agents/assistant/stream', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ input: 'Explain quantum computing' }),
+});
+
+const reader = response.body!.getReader();
+const decoder = new TextDecoder();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  console.log(decoder.decode(value));
+}
+```
+
+## WebSocket
+
+WebSocket support requires the `ws` package. Call `setupWebSocket` with your HTTP server after initialization:
+
+```typescript
+import { createServer } from 'http';
+import { setupWebSocket } from '@cogitator-ai/express';
+
+const httpServer = createServer(app);
+
+setupWebSocket(httpServer, {
+  cogitator,
+  agents: { assistant },
+  path: '/cogitator/ws',
+});
+
+httpServer.listen(3000);
+```
+
+Clients can send JSON messages over the WebSocket connection:
+
+```json
+{ "type": "run", "id": "req_1", "channel": "assistant", "payload": { "input": "Hello" } }
+```
+
+## Exported Utilities
+
+The package also exports individual building blocks if you need to compose routes manually:
+
+```typescript
+import {
+  createAuthMiddleware,
+  createRateLimitMiddleware,
+  createCorsMiddleware,
+  createHealthRoutes,
+  createAgentRoutes,
+  createThreadRoutes,
+  createToolRoutes,
+  createWorkflowRoutes,
+  createSwarmRoutes,
+  errorHandler,
+  notFoundHandler,
+  ExpressStreamWriter,
+  setupSSEHeaders,
+  generateOpenAPISpec,
+  serveSwaggerUI,
+} from '@cogitator-ai/express';
+```

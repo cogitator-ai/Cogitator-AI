@@ -1,0 +1,97 @@
+---
+title: Installation
+description: Install Cogitator and set up your development environment.
+---
+
+## Prerequisites
+
+- **Node.js 20+** — [Download](https://nodejs.org/)
+- **pnpm** (recommended) — `npm install -g pnpm`
+- **Docker** (optional) — For Redis, Postgres, and sandboxed execution
+- **Ollama** (for local LLMs) — [Download](https://ollama.ai/) or use OpenAI/Anthropic API
+
+```bash
+node --version    # v20.0.0 or higher
+pnpm --version    # 8.0.0 or higher
+```
+
+## Scaffolding a Project
+
+The fastest way to start is with the CLI scaffolder:
+
+```bash
+npx create-cogitator-app my-agent
+cd my-agent
+npm install
+npm run dev
+```
+
+`create-cogitator-app` supports 6 templates:
+
+| Template     | Description                          |
+| ------------ | ------------------------------------ |
+| `basic`      | Simple agent with tools              |
+| `memory`     | Agent with persistent memory and RAG |
+| `swarm`      | Multi-agent swarm coordination       |
+| `workflow`   | DAG-based workflow orchestration     |
+| `api-server` | REST API server with Express         |
+| `nextjs`     | Next.js app with chat UI             |
+
+You can also pass flags for non-interactive mode:
+
+```bash
+npx create-cogitator-app my-agent \
+  --template swarm \
+  --provider openai \
+  --package-manager pnpm
+```
+
+## Manual Installation
+
+Add Cogitator to an existing project:
+
+```bash
+pnpm add @cogitator-ai/core @cogitator-ai/types zod
+```
+
+Optional packages depending on your needs:
+
+```bash
+# Memory & RAG
+pnpm add @cogitator-ai/memory
+
+# Multi-agent swarms
+pnpm add @cogitator-ai/swarms
+
+# Workflow orchestration
+pnpm add @cogitator-ai/workflows
+
+# Server adapters
+pnpm add @cogitator-ai/express    # or fastify, hono, koa
+
+# Config file support
+pnpm add @cogitator-ai/config
+
+# MCP protocol
+pnpm add @cogitator-ai/mcp
+```
+
+## Docker Services
+
+For production features (memory, RAG, queues), start infrastructure:
+
+```bash
+docker-compose up -d
+```
+
+This starts:
+
+- **Redis** (port 6379) — Short-term memory, pub/sub, job queues
+- **Postgres + pgvector** (port 5432) — Long-term memory, semantic search
+- **Ollama** (port 11434) — Local LLM inference
+
+Pull a model:
+
+```bash
+ollama pull llama3.2
+```

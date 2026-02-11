@@ -1,0 +1,287 @@
+---
+title: Tool Caching
+description: Cache tool results with TTL, LRU eviction, and semantic similarity matching using in-memory or Redis storage.
+---
+
+## Overview
+
+The `withCache()` function wraps any tool with a caching layer. Repeated calls with the same (or semantically similar) parameters return cached results instantly, saving API calls, database queries, and compute time.
+
+```typescript
+import { withCache } from '@cogitator-ai/core';
+
+const cachedSearch = withCache(webSearch, {
+  strategy: 'exact',
+  ttl: '10m',
+  maxSize: 500,
+  storage: 'memory',
+});
+
+const agent = new Agent({
+  name: 'assistant',
+  model: 'openai/gpt-4o',
+  tools: [cachedSearch],
+});
+```
+
+The cached tool is a drop-in replacement -- it has the same name, description, and parameters as the original, plus a `.cache` object for management.
+
+---
+
+## `withCache()` API
+
+```typescript
+function withCache<TParams, TResult>(
+  tool: Tool<TParams, TResult>,
+  config: WithCacheOptions
+): CachedTool<TParams, TResult>;
+```
+
+### Configuration
+
+```typescript
+interface WithCacheOptions {
+  strategy: 'exact' | 'semantic';
+  ttl: DurationString;
+  maxSize: number;
+  storage: 'memory' | 'redis';
+  similarity?: number;
+  keyPrefix?: string;
+  embeddingService?: EmbeddingService;
+  redisClient?: RedisClientLike;
+  onHit?: (key: string, params: unknown) => void;
+  onMiss?: (key: string, params: unknown) => void;
+  onEvict?: (key: string) => void;
+}
+```
+
+| Field              | Type                    | Default       | Description                                       |
+| ------------------ | ----------------------- | ------------- | ------------------------------------------------- |
+| `strategy`         | `'exact' \| 'semantic'` | required      | Cache matching strategy                           |
+| `ttl`              | `DurationString`        | required      | Time-to-live: `"30s"`, `"5m"`, `"2h"`, `"1d"`     |
+| `maxSize`          | `number`                | required      | Maximum number of cached entries                  |
+| `storage`          | `'memory' \| 'redis'`   | required      | Storage backend                                   |
+| `similarity`       | `number`                | `0.95`        | Cosine similarity threshold for semantic matching |
+| `keyPrefix`        | `string`                | `"toolcache"` | Key prefix for namespacing                        |
+| `embeddingService` | `EmbeddingService`      | --            | Required for semantic strategy                    |
+| `redisClient`      | `RedisClientLike`       | --            | Required for redis storage                        |
+| `onHit`            | `function`              | --            | Callback on cache hit                             |
+| `onMiss`           | `function`              | --            | Callback on cache miss                            |
+| `onEvict`          | `function`              | --            | Callback on entry eviction                        |
+
+### Duration Strings
+
+TTL values use human-readable duration strings:
+
+| Suffix | Meaning      | Example   |
+| ------ | ------------ | --------- |
+| `ms`   | Milliseconds | `"500ms"` |
+| `s`    | Seconds      | `"30s"`   |
+| `m`    | Minutes      | `"10m"`   |
+| `h`    | Hours        | `"2h"`    |
+| `d`    | Days         | `"1d"`    |
+| `w`    | Weeks        | `"1w"`    |
+
+---
+
+## Cache Strategies
+
+### Exact Matching
+
+The default strategy. Generates a deterministic cache key from the tool name and serialized parameters. Two calls with identical parameters hit the same cache entry.
+
+```typescript
+const cachedHash = withCache(hash, {
+  strategy: 'exact',
+  ttl: '1h',
+  maxSize: 1000,
+  storage: 'memory',
+});
+```
+
+### Semantic Matching
+
+Uses embedding vectors to find cached results for semantically similar inputs. Requires an `embeddingService` that converts parameter strings to vectors.
+
+```typescript
+const cachedSearch = withCache(webSearch, {
+  strategy: 'semantic',
+  ttl: '30m',
+  maxSize: 200,
+  storage: 'memory',
+  similarity: 0.92,
+  embeddingService: myEmbeddingService,
+});
+```
+
+With semantic matching, a query like `"TypeScript best practices"` might match a cached result for `"best practices for TypeScript development"` if their cosine similarity exceeds the threshold.
+
+The lookup flow:
+
+1. Check for an exact key match first
+2. If no exact match, embed the current parameters and search for similar entries above the `similarity` threshold
+3. If a similar entry is found, return its cached result
+4. Otherwise, execute the tool and cache the result with its embedding
+
+---
+
+## Storage Backends
+
+### In-Memory (LRU)
+
+The default storage. Entries are stored in a `Map` with LRU eviction -- when `maxSize` is reached, the least recently accessed entry is evicted.
+
+```typescript
+const cached = withCache(sqlQuery, {
+  strategy: 'exact',
+  ttl: '5m',
+  maxSize: 500,
+  storage: 'memory',
+});
+```
+
+In-memory storage is fast and requires no external dependencies, but entries are lost when the process restarts.
+
+### Redis
+
+For persistent, shared caching across multiple processes or server instances. Uses Redis sorted sets for LRU tracking and key-value storage for entries.
+
+```typescript
+import { createClient } from 'redis';
+
+const redis = createClient({ url: 'redis://localhost:6379' });
+await redis.connect();
+
+const cached = withCache(webScrape, {
+  strategy: 'exact',
+  ttl: '1h',
+  maxSize: 5000,
+  storage: 'redis',
+  redisClient: redis,
+  keyPrefix: 'myapp:tools',
+});
+```
+
+The `RedisClientLike` interface is compatible with the standard `redis` npm package. It requires these methods:
+
+```typescript
+interface RedisClientLike {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<string>;
+  setex(key: string, seconds: number, value: string): Promise<string>;
+  del(...keys: string[]): Promise<number>;
+  keys(pattern: string): Promise<string[]>;
+  mget(...keys: string[]): Promise<(string | null)[]>;
+  zadd(key: string, score: number, member: string): Promise<number>;
+  zrange(key: string, start: number, stop: number): Promise<string[]>;
+  zrem(key: string, ...members: string[]): Promise<number>;
+}
+```
+
+You can also create storage instances directly:
+
+```typescript
+import { createToolCacheStorage } from '@cogitator-ai/core';
+
+const memoryStorage = createToolCacheStorage('memory', { maxSize: 1000 });
+
+const redisStorage = createToolCacheStorage('redis', {
+  redisClient: redis,
+  keyPrefix: 'cache:',
+  maxSize: 5000,
+});
+```
+
+---
+
+## Cache Management
+
+Every cached tool exposes a `.cache` object for runtime management:
+
+### Stats
+
+```typescript
+const stats = cachedSearch.cache.stats();
+// {
+//   hits: 142,
+//   misses: 38,
+//   size: 38,
+//   evictions: 12,
+//   hitRate: 0.789,
+// }
+```
+
+### Clear
+
+```typescript
+await cachedSearch.cache.clear();
+```
+
+### Invalidate
+
+Remove a specific entry by its parameters:
+
+```typescript
+const existed = await cachedSearch.cache.invalidate({
+  query: 'TypeScript tutorials',
+  maxResults: 5,
+});
+```
+
+### Warmup
+
+Pre-populate the cache with known parameter-result pairs:
+
+```typescript
+await cachedSearch.cache.warmup([
+  {
+    params: { query: 'React hooks guide', maxResults: 5 },
+    result: { query: 'React hooks guide', provider: 'tavily', results: [...] },
+  },
+  {
+    params: { query: 'Node.js streams', maxResults: 5 },
+    result: { query: 'Node.js streams', provider: 'tavily', results: [...] },
+  },
+]);
+```
+
+---
+
+## When to Cache
+
+Cache tools that:
+
+- **Call external APIs** (web search, scraping) -- save quota and reduce latency
+- **Run expensive queries** (SQL, vector search) -- avoid duplicate database load
+- **Perform deterministic computation** (hashing, math) -- same input always gives same output
+- **Have rate limits** -- cache prevents hitting API rate limits on repeated queries
+
+Avoid caching tools that:
+
+- **Have side effects** (file_write, send_email, exec) -- caching would silently skip the action
+- **Must return real-time data** (datetime, random_number) -- cached values would be stale
+- **Depend on external state** that changes frequently between calls
+
+---
+
+## Observability Callbacks
+
+Use the `onHit`, `onMiss`, and `onEvict` callbacks to integrate with your monitoring:
+
+```typescript
+const cached = withCache(webSearch, {
+  strategy: 'exact',
+  ttl: '10m',
+  maxSize: 500,
+  storage: 'memory',
+  onHit: (key, params) => {
+    metrics.increment('tool_cache.hit', { tool: 'web_search' });
+  },
+  onMiss: (key, params) => {
+    metrics.increment('tool_cache.miss', { tool: 'web_search' });
+  },
+  onEvict: (key) => {
+    metrics.increment('tool_cache.evict', { tool: 'web_search' });
+  },
+});
+```

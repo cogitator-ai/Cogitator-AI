@@ -1,0 +1,109 @@
+---
+title: Testing Overview
+description: Testing strategies for Cogitator agents, workflows, and swarms.
+---
+
+## Why Test AI Agents?
+
+AI agents are non-deterministic by nature — the same input can produce different outputs. Testing focuses on:
+
+- **Behavioral correctness** — does the agent call the right tools?
+- **Tool execution** — do tools produce expected results?
+- **Workflow logic** — do DAG nodes execute in the right order?
+- **Swarm coordination** — do agents communicate correctly?
+- **Error handling** — does the system recover gracefully?
+
+## Testing Strategy
+
+### Unit Tests
+
+Test individual components in isolation:
+
+```typescript
+import { tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+import { describe, it, expect } from 'vitest';
+
+const calculator = tool({
+  name: 'calculator',
+  description: 'Evaluate math expressions',
+  parameters: z.object({ expression: z.string() }),
+  execute: async ({ expression }) => {
+    return { result: eval(expression) };
+  },
+});
+
+describe('calculator tool', () => {
+  it('evaluates simple expressions', async () => {
+    const result = await calculator.execute({ expression: '2 + 2' });
+    expect(result.result).toBe(4);
+  });
+});
+```
+
+### Integration Tests with MockLLMBackend
+
+Use the mock backend to test agent behavior without real LLM calls:
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { MockLLMBackend } from '@cogitator-ai/core/testing';
+
+const mock = new MockLLMBackend({
+  responses: [
+    {
+      text: 'I will check the weather.',
+      toolCalls: [{ name: 'get_weather', arguments: { city: 'Tokyo' } }],
+    },
+    { text: 'The weather in Tokyo is sunny and 22°C.' },
+  ],
+});
+
+const cogitator = new Cogitator({
+  llm: { defaultProvider: 'mock', providers: { mock: { backend: mock } } },
+});
+
+const agent = new Agent({
+  name: 'test-agent',
+  instructions: 'You are a weather assistant.',
+  tools: [weatherTool],
+});
+
+const result = await cogitator.run(agent, 'What is the weather in Tokyo?');
+expect(result.text).toContain('Tokyo');
+expect(mock.calls).toHaveLength(2);
+```
+
+### Workflow Tests
+
+Test workflow execution with deterministic node outputs:
+
+```typescript
+import { WorkflowBuilder, WorkflowExecutor } from '@cogitator-ai/workflows';
+
+const workflow = new WorkflowBuilder()
+  .addNode(
+    'fetch',
+    functionNode(async () => ({ data: 'test' }))
+  )
+  .addNode(
+    'process',
+    functionNode(async (input) => ({ processed: true, ...input }))
+  )
+  .addEdge('fetch', 'process')
+  .build();
+
+const executor = new WorkflowExecutor(workflow);
+const result = await executor.execute({});
+
+expect(result.processed).toBe(true);
+expect(result.data).toBe('test');
+```
+
+## Running Tests
+
+```bash
+pnpm test              # run all tests
+pnpm test --watch      # watch mode
+pnpm test --coverage   # with coverage report
+```

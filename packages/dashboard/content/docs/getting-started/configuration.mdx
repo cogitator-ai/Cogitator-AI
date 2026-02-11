@@ -1,0 +1,178 @@
+---
+title: Configuration
+description: Configure Cogitator with YAML files, environment variables, and provider settings.
+---
+
+## Configuration File
+
+Create a `cogitator.yml` in your project root:
+
+```yaml
+llm:
+  defaultProvider: ollama
+  providers:
+    ollama:
+      type: ollama
+      host: http://localhost:11434
+      model: llama3.2
+    openai:
+      type: openai
+      apiKey: ${OPENAI_API_KEY}
+      model: gpt-4o
+    anthropic:
+      type: anthropic
+      apiKey: ${ANTHROPIC_API_KEY}
+      model: claude-sonnet-4-5-20250929
+
+memory:
+  adapter: redis
+  redis:
+    url: redis://localhost:6379
+  embedding:
+    provider: ollama
+    model: nomic-embed-text
+
+logging:
+  level: info
+  format: pretty
+```
+
+Load it with `@cogitator-ai/config`:
+
+```typescript
+import { Cogitator } from '@cogitator-ai/core';
+import { loadConfig } from '@cogitator-ai/config';
+
+const config = await loadConfig();
+const cogitator = new Cogitator(config);
+```
+
+`loadConfig()` automatically:
+
+- Reads `cogitator.yml` from the current working directory
+- Expands `${ENV_VAR}` references from environment variables
+- Validates the config against the expected schema
+- Merges with sensible defaults
+
+## Environment Variables
+
+Store secrets in `.env`:
+
+```bash
+# LLM Providers
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+GOOGLE_API_KEY=AIza...
+AZURE_OPENAI_API_KEY=...
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
+
+# Infrastructure
+REDIS_URL=redis://localhost:6379
+DATABASE_URL=postgresql://user:pass@localhost:5432/cogitator
+
+# Observability
+LANGFUSE_PUBLIC_KEY=pk-...
+LANGFUSE_SECRET_KEY=sk-...
+```
+
+## Programmatic Configuration
+
+You can skip the YAML file and configure directly:
+
+```typescript
+const cogitator = new Cogitator({
+  llm: {
+    defaultProvider: 'openai',
+    providers: {
+      openai: {
+        type: 'openai',
+        apiKey: process.env.OPENAI_API_KEY!,
+        model: 'gpt-4o',
+      },
+    },
+  },
+  memory: {
+    adapter: 'postgres',
+    connectionString: process.env.DATABASE_URL!,
+    embedding: {
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+    },
+  },
+});
+```
+
+## Provider Configuration
+
+### Ollama (Local)
+
+```yaml
+providers:
+  ollama:
+    type: ollama
+    host: http://localhost:11434
+    model: llama3.2
+```
+
+### OpenAI
+
+```yaml
+providers:
+  openai:
+    type: openai
+    apiKey: ${OPENAI_API_KEY}
+    model: gpt-4o
+    organization: org-... # optional
+```
+
+### Anthropic
+
+```yaml
+providers:
+  anthropic:
+    type: anthropic
+    apiKey: ${ANTHROPIC_API_KEY}
+    model: claude-sonnet-4-5-20250929
+```
+
+### Google Gemini
+
+```yaml
+providers:
+  google:
+    type: google
+    apiKey: ${GOOGLE_API_KEY}
+    model: gemini-2.0-flash
+```
+
+### Azure OpenAI
+
+```yaml
+providers:
+  azure:
+    type: azure
+    apiKey: ${AZURE_OPENAI_API_KEY}
+    endpoint: ${AZURE_OPENAI_ENDPOINT}
+    deployment: gpt-4o
+    apiVersion: '2024-02-15-preview'
+```
+
+### AWS Bedrock
+
+```yaml
+providers:
+  bedrock:
+    type: bedrock
+    region: us-east-1
+    model: anthropic.claude-3-sonnet-20240229-v1:0
+    # Uses AWS SDK default credential chain
+```
+
+## Config Merging
+
+Configs are merged with this priority (highest wins):
+
+1. Programmatic options passed to `new Cogitator({...})`
+2. Environment variables (`${ENV_VAR}` expansions in YAML)
+3. `cogitator.yml` file values
+4. Built-in defaults

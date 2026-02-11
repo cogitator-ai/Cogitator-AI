@@ -1,4 +1,6 @@
 @import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
 
 @theme {
   /* Background colors */
@@ -49,6 +51,24 @@
   /* Shadows */
   --shadow-glow: 0 0 20px var(--color-accent-glow), 0 0 40px var(--color-accent-glow);
   --shadow-glow-sm: 0 0 10px var(--color-accent-glow);
+
+  /* Fumadocs overrides */
+  --color-fd-background: #0a0a0a;
+  --color-fd-foreground: #fafafa;
+  --color-fd-muted: #1a1a1a;
+  --color-fd-muted-foreground: #a1a1a1;
+  --color-fd-card: #111111;
+  --color-fd-card-foreground: #fafafa;
+  --color-fd-border: #262626;
+  --color-fd-primary: #00ff88;
+  --color-fd-primary-foreground: #0a0a0a;
+  --color-fd-accent: rgba(0, 255, 136, 0.1);
+  --color-fd-accent-foreground: #00ff88;
+  --color-fd-ring: #00ff88;
+  --color-fd-popover: #111111;
+  --color-fd-popover-foreground: #fafafa;
+  --color-fd-secondary: #1a1a1a;
+  --color-fd-secondary-foreground: #fafafa;
 }
 
 @layer base {
@@ -92,7 +112,9 @@
     background: var(--color-text-tertiary);
   }
 
-  code, pre, kbd {
+  code,
+  pre,
+  kbd {
     font-family: var(--font-mono);
   }
 }
@@ -124,8 +146,12 @@
       transparent 50%,
       var(--color-accent-dim) 100%
     );
-    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask:
+      linear-gradient(#fff 0 0) content-box,
+      linear-gradient(#fff 0 0);
+    mask:
+      linear-gradient(#fff 0 0) content-box,
+      linear-gradient(#fff 0 0);
     -webkit-mask-composite: xor;
     mask-composite: exclude;
     opacity: 0.5;
@@ -153,8 +179,14 @@
 
   /* Terminal cursor blink */
   @keyframes cursor-blink {
-    0%, 50% { opacity: 1; }
-    51%, 100% { opacity: 0; }
+    0%,
+    50% {
+      opacity: 1;
+    }
+    51%,
+    100% {
+      opacity: 0;
+    }
   }
 
   .terminal-cursor::after {
@@ -165,7 +197,8 @@
 
   /* Pulse animation for live indicators */
   @keyframes pulse-glow {
-    0%, 100% {
+    0%,
+    100% {
       opacity: 1;
       box-shadow: 0 0 0 0 var(--color-accent-glow);
     }
@@ -181,8 +214,14 @@
 
   /* Fade in animation */
   @keyframes fade-in {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   .animate-fade-in {
@@ -191,8 +230,14 @@
 
   /* Slide in from left */
   @keyframes slide-in-left {
-    from { opacity: 0; transform: translateX(-20px); }
-    to { opacity: 1; transform: translateX(0); }
+    from {
+      opacity: 0;
+      transform: translateX(-20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
   }
 
   .animate-slide-in {
@@ -201,8 +246,14 @@
 
   /* Number counter animation */
   @keyframes count-up {
-    from { opacity: 0; transform: scale(0.8); }
-    to { opacity: 1; transform: scale(1); }
+    from {
+      opacity: 0;
+      transform: scale(0.8);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
   }
 
   .animate-count {
@@ -222,4 +273,3 @@
     background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.02'/%3E%3C/svg%3E");
   }
 }
-

@@ -1,0 +1,181 @@
+---
+title: Types Reference
+description: Key TypeScript type definitions from @cogitator-ai/types.
+---
+
+## Agent Types
+
+```typescript
+interface AgentConfig {
+  name: string;
+  instructions?: string;
+  tools?: Tool[];
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  responseFormat?: ResponseFormat;
+}
+
+type ResponseFormat =
+  | { type: 'text' }
+  | { type: 'json_object' }
+  | { type: 'json_schema'; schema: Record<string, unknown> };
+
+interface RunOptions {
+  input: string;
+  threadId?: string;
+  stream?: boolean;
+  onToken?: (token: string) => void;
+  signal?: AbortSignal;
+}
+
+interface RunResult {
+  text: string;
+  toolCalls: ToolCall[];
+  usage?: TokenUsage;
+  metadata?: Record<string, unknown>;
+}
+```
+
+## Tool Types
+
+```typescript
+interface Tool {
+  name: string;
+  description: string;
+  parameters: ZodSchema;
+  execute: (params: unknown, context?: ToolContext) => Promise<unknown>;
+}
+
+interface ToolConfig {
+  name: string;
+  description: string;
+  parameters: ZodSchema;
+  execute: (params: unknown, context?: ToolContext) => Promise<unknown>;
+}
+
+interface ToolContext {
+  agentName: string;
+  threadId?: string;
+  signal?: AbortSignal;
+}
+
+interface ToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+interface ToolResult {
+  toolCallId: string;
+  result: unknown;
+  error?: string;
+}
+
+interface ToolSchema {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+```
+
+## Message Types
+
+```typescript
+type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
+
+interface Message {
+  role: MessageRole;
+  content?: string;
+  toolCalls?: ToolCall[];
+  toolCallId?: string;
+  name?: string;
+}
+
+interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+```
+
+## LLM Types
+
+```typescript
+type LLMProvider = 'ollama' | 'openai' | 'anthropic' | 'google' | 'azure' | 'bedrock';
+
+interface LLMConfig {
+  defaultProvider: LLMProvider;
+  providers: Record<string, ProviderConfig>;
+}
+
+interface ChatRequest {
+  messages: Message[];
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  tools?: ToolSchema[];
+  responseFormat?: ResponseFormat;
+  stream?: boolean;
+}
+
+interface ChatResponse {
+  message: Message;
+  usage: TokenUsage;
+  finishReason: 'stop' | 'tool_calls' | 'length';
+}
+
+interface ChatStreamChunk {
+  delta: string;
+  toolCalls?: ToolCall[];
+  finishReason?: string;
+}
+
+interface LLMBackend {
+  chat(request: ChatRequest): Promise<ChatResponse>;
+  chatStream(request: ChatRequest): AsyncIterable<ChatStreamChunk>;
+}
+```
+
+## Configuration Types
+
+```typescript
+interface CogitatorConfig {
+  llm: LLMConfig;
+  memory?: MemoryConfig;
+  logging?: LoggingConfig;
+}
+
+interface MemoryConfig {
+  adapter: 'memory' | 'redis' | 'postgres' | 'sqlite' | 'mongodb' | 'qdrant';
+  connectionString?: string;
+  embedding?: EmbeddingConfig;
+}
+
+interface EmbeddingConfig {
+  provider: 'openai' | 'ollama' | 'google';
+  model: string;
+  dimensions?: number;
+}
+```
+
+## Error Types
+
+```typescript
+class CogitatorError extends Error {
+  code: ErrorCode;
+  statusCode: number;
+  details?: ErrorDetails;
+}
+
+enum ErrorCode {
+  UNKNOWN = 'UNKNOWN',
+  INVALID_CONFIG = 'INVALID_CONFIG',
+  LLM_ERROR = 'LLM_ERROR',
+  TOOL_ERROR = 'TOOL_ERROR',
+  MEMORY_ERROR = 'MEMORY_ERROR',
+  TIMEOUT = 'TIMEOUT',
+  RATE_LIMIT = 'RATE_LIMIT',
+  AUTH_ERROR = 'AUTH_ERROR',
+}
+```

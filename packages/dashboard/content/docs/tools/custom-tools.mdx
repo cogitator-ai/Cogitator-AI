@@ -1,0 +1,318 @@
+---
+title: Creating Custom Tools
+description: Build type-safe tools for your agents using the tool() factory, Zod schemas, and structured error handling.
+---
+
+## Overview
+
+The `tool()` factory is how you give agents new capabilities. Every tool has a name, description, a Zod schema for parameter validation, and an async `execute` function. The LLM sees the name and description to decide when to call the tool, and the schema ensures parameters are always valid.
+
+```typescript
+import { tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const weatherTool = tool({
+  name: 'get_weather',
+  description: 'Get current weather for a city',
+  parameters: z.object({
+    city: z.string().describe('City name'),
+    units: z.enum(['celsius', 'fahrenheit']).default('celsius'),
+  }),
+  execute: async ({ city, units }) => {
+    const res = await fetch(`https://api.weather.com/v1/${city}?units=${units}`);
+    return res.json();
+  },
+});
+```
+
+---
+
+## The `tool()` Factory
+
+### Signature
+
+```typescript
+function tool<TParams, TResult>(config: ToolConfig<TParams, TResult>): Tool<TParams, TResult>;
+```
+
+### ToolConfig Fields
+
+| Field              | Type                                    | Required | Description                                       |
+| ------------------ | --------------------------------------- | -------- | ------------------------------------------------- |
+| `name`             | `string`                                | Yes      | Unique tool name (used in LLM function calling)   |
+| `description`      | `string`                                | Yes      | What the tool does (shown to the LLM)             |
+| `parameters`       | `ZodType<TParams>`                      | Yes      | Zod schema for input validation                   |
+| `execute`          | `(params, context) => Promise<TResult>` | Yes      | The function that runs when the tool is called    |
+| `category`         | `ToolCategory`                          | No       | Grouping: `math`, `text`, `file`, `network`, etc. |
+| `tags`             | `string[]`                              | No       | Tags for discovery and filtering                  |
+| `sideEffects`      | `SideEffectType[]`                      | No       | Declares what the tool affects                    |
+| `requiresApproval` | `boolean \| (params) => boolean`        | No       | Require human approval before execution           |
+| `timeout`          | `number`                                | No       | Execution timeout in milliseconds                 |
+| `sandbox`          | `SandboxConfig`                         | No       | Run in Docker or WASM sandbox                     |
+
+---
+
+## Defining Parameters with Zod
+
+Every tool uses a Zod schema that gets converted to JSON Schema for the LLM. Use `.describe()` on each field -- this text is what the LLM reads to understand each parameter.
+
+### Basic Schema
+
+```typescript
+const params = z.object({
+  query: z.string().describe('Search query'),
+  limit: z.number().int().min(1).max(100).default(10).describe('Max results'),
+});
+```
+
+### Optional and Default Values
+
+```typescript
+const params = z.object({
+  path: z.string().describe('File path'),
+  encoding: z.enum(['utf-8', 'base64']).default('utf-8').describe('File encoding'),
+  createDirs: z.boolean().optional().describe('Create parent directories'),
+});
+```
+
+### Complex Schemas
+
+```typescript
+const params = z.object({
+  to: z.union([z.string().email(), z.array(z.string().email())]).describe('Recipient email(s)'),
+  headers: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe('Custom headers as key-value pairs'),
+  filters: z
+    .array(
+      z.object({
+        field: z.string(),
+        operator: z.enum(['eq', 'gt', 'lt', 'contains']),
+        value: z.unknown(),
+      })
+    )
+    .optional()
+    .describe('Filter conditions'),
+});
+```
+
+Cogitator converts Zod schemas to OpenAPI 3.0-compatible JSON Schema via `z.toJSONSchema()`. This means `z.string()`, `z.number()`, `z.enum()`, `z.object()`, `z.array()`, `z.union()`, `z.record()`, `z.boolean()`, and `z.unknown()` all work correctly with every LLM provider.
+
+---
+
+## The Execute Function
+
+The `execute` function receives validated parameters and a `ToolContext`:
+
+```typescript
+interface ToolContext {
+  agentId: string;
+  runId: string;
+  signal: AbortSignal;
+}
+```
+
+### Async Execution
+
+All execute functions are async. You can call APIs, read files, query databases, or run any asynchronous operation:
+
+```typescript
+const searchTool = tool({
+  name: 'search_docs',
+  description: 'Search internal documentation',
+  parameters: z.object({
+    query: z.string().describe('Search query'),
+    department: z.enum(['engineering', 'sales', 'support']).optional(),
+  }),
+  execute: async ({ query, department }, context) => {
+    const results = await db.search({
+      query,
+      department,
+      signal: context.signal,
+    });
+    return { results, count: results.length };
+  },
+});
+```
+
+### Using AbortSignal
+
+The `context.signal` is tied to the agent's run timeout. Pass it to fetch calls and other cancellable operations so they abort cleanly when the run times out:
+
+```typescript
+execute: async ({ url }, context) => {
+  const response = await fetch(url, { signal: context.signal });
+  return response.json();
+};
+```
+
+---
+
+## Return Types
+
+Tool results can be any serializable value. Return structured objects so the LLM gets clear, actionable data:
+
+```typescript
+// structured result
+return {
+  results: searchResults,
+  count: searchResults.length,
+  query,
+  truncated: searchResults.length > maxResults,
+};
+
+// error as result (agent can interpret and retry)
+return {
+  error: 'File not found',
+  path: requestedPath,
+  suggestion: 'Check the file path or list the directory first',
+};
+```
+
+Avoid returning raw strings when you can return an object. Structured results let the LLM make better decisions about what to do next.
+
+---
+
+## Error Handling
+
+There are two approaches to errors in tools:
+
+### Recoverable Errors -- Return Them
+
+When the error is something the agent can understand and act on, return it as part of the result:
+
+```typescript
+const fileTool = tool({
+  name: 'read_config',
+  description: 'Read a configuration file',
+  parameters: z.object({ path: z.string() }),
+  execute: async ({ path }) => {
+    try {
+      const content = await readFile(path, 'utf-8');
+      return { content, path };
+    } catch (err) {
+      const error = err as NodeJS.ErrnoException;
+      if (error.code === 'ENOENT') {
+        return { error: `File not found: ${path}`, path };
+      }
+      return { error: error.message, path };
+    }
+  },
+});
+```
+
+### Fatal Errors -- Throw Them
+
+When something is fundamentally broken and the agent cannot recover, throw:
+
+```typescript
+execute: async ({ connectionString }) => {
+  if (!connectionString && !process.env.DATABASE_URL) {
+    throw new Error('No database connection configured');
+  }
+  // ...
+};
+```
+
+Thrown errors surface as tool execution failures in the agent's run trace.
+
+---
+
+## Side Effects and Approval
+
+Declare side effects so the runtime can audit and control tool behavior:
+
+```typescript
+const deployTool = tool({
+  name: 'deploy_service',
+  description: 'Deploy a service to production',
+  parameters: z.object({
+    service: z.string(),
+    version: z.string(),
+  }),
+  sideEffects: ['network', 'external'],
+  requiresApproval: true,
+  execute: async ({ service, version }) => {
+    // ...
+  },
+});
+```
+
+`requiresApproval` can also be a function for conditional approval:
+
+```typescript
+requiresApproval: (params) => {
+  const dangerous = ['rm', 'sudo', 'chmod', 'kill'];
+  return dangerous.some((cmd) => params.command.includes(cmd));
+};
+```
+
+### Side Effect Types
+
+| Type         | Description                        |
+| ------------ | ---------------------------------- |
+| `filesystem` | Reads or writes files              |
+| `network`    | Makes HTTP/network requests        |
+| `database`   | Queries or mutates a database      |
+| `process`    | Spawns processes or runs commands  |
+| `external`   | Calls third-party APIs or services |
+
+---
+
+## Sandbox Configuration
+
+Tools can declare a sandbox for isolated execution:
+
+```typescript
+const unsafeTool = tool({
+  name: 'run_code',
+  description: 'Execute user-provided code safely',
+  parameters: z.object({ code: z.string(), language: z.enum(['python', 'javascript']) }),
+  sandbox: {
+    type: 'docker',
+    image: 'cogitator/sandbox:python3.11',
+    resources: { memory: '512MB', pidsLimit: 100 },
+    network: { mode: 'none' },
+    timeout: 30_000,
+  },
+  execute: async ({ code, language }) => {
+    return { code, language };
+  },
+});
+```
+
+For lightweight computation, use WASM sandboxing instead:
+
+```typescript
+sandbox: {
+  type: 'wasm',
+  wasmModule: './plugins/parser.wasm',
+  wasmFunction: 'parse',
+  timeout: 5000,
+}
+```
+
+---
+
+## Schema Serialization
+
+Every tool created with `tool()` has a `toJSON()` method that converts it to the JSON Schema format used by LLM providers:
+
+```typescript
+const schema = weatherTool.toJSON();
+// {
+//   name: 'get_weather',
+//   description: 'Get current weather for a city',
+//   parameters: {
+//     type: 'object',
+//     properties: {
+//       city: { type: 'string', description: 'City name' },
+//       units: { type: 'string', enum: ['celsius', 'fahrenheit'], default: 'celsius' },
+//     },
+//     required: ['city'],
+//   },
+// }
+```
+
+This conversion happens automatically when the agent sends tools to the LLM backend. You never need to write JSON Schema by hand.
