@@ -31,9 +31,9 @@
     "zod": "^4.3.6"
   },
   "optionalDependencies": {
-    "ioredis": "^5.9.2",
-    "openai": "^6.16.0",
-    "pg": "^8.17.2"
+    "ioredis": "^5.9.3",
+    "openai": "^6.22.0",
+    "pg": "^8.18.0"
   },
   "devDependencies": {
     "typescript": "^5.3.0",
