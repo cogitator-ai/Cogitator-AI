@@ -90,6 +90,8 @@ The agent will:
 
 **👥 Multi-agent teams** — Create swarms of agents that collaborate: one researches, another writes, a third reviews.
 
+**🌐 A2A Protocol** — Native [Google A2A](https://a2a-protocol.org) support. Expose agents as A2A services or connect to any A2A-compatible agent across frameworks.
+
 **📊 Production-ready** — Built-in tracing, cost tracking, error handling, and retry logic. See exactly what your agents are doing.
 
 **🏠 Self-hosted** — Your data stays on your servers. No vendor lock-in.
@@ -113,6 +115,7 @@ The agent will:
 | Any LLM provider       | ✅           | ✅                | ❌ OpenAI only    |
 | TypeScript-native      | ✅           | ❌ Python-first   | ❌ REST API       |
 | Multi-agent swarms     | ✅           | ⚠️ Limited        | ❌                |
+| A2A Protocol           | ✅           | ❌                | ❌                |
 | Built-in observability | ✅           | ⚠️ Requires setup | ⚠️ Dashboard only |
 | Memory adapters        | ✅ 6 options | ✅ Many           | ✅ Built-in       |
 | Lightweight            | ✅ ~20 deps  | ❌ 150+ deps      | N/A               |
@@ -170,6 +173,7 @@ Cogitator is a **self-hosted, production-grade runtime** for orchestrating LLM s
 - **Run Any LLM** — Ollama, OpenAI, Anthropic, Google, Azure, Bedrock, Mistral, Groq, Together, DeepSeek — all unified
 - **Production Memory** — Hybrid storage: Redis (fast) + pgvector (semantic) + SQLite (portable)
 - **Tool Ecosystem** — MCP-compatible, build once, use everywhere
+- **A2A Protocol** — Google's Agent-to-Agent standard for cross-framework interoperability
 - **Workflow Engine** — DAG-based orchestration with retry, compensation, human-in-the-loop
 - **Sandboxed Execution** — Code runs in Docker/WASM, not on your host
 - **Full Observability** — OpenTelemetry traces, cost tracking, token analytics
@@ -268,6 +272,7 @@ Cogitator is a modular monorepo. Install only what you need:
 | [@cogitator-ai/workflows](https://www.npmjs.com/package/@cogitator-ai/workflows)           | DAG-based workflow engine                                    | [![npm](https://img.shields.io/npm/v/@cogitator-ai/workflows.svg)](https://www.npmjs.com/package/@cogitator-ai/workflows)           |
 | [@cogitator-ai/swarms](https://www.npmjs.com/package/@cogitator-ai/swarms)                 | Multi-agent swarm coordination                               | [![npm](https://img.shields.io/npm/v/@cogitator-ai/swarms.svg)](https://www.npmjs.com/package/@cogitator-ai/swarms)                 |
 | [@cogitator-ai/mcp](https://www.npmjs.com/package/@cogitator-ai/mcp)                       | MCP (Model Context Protocol) support                         | [![npm](https://img.shields.io/npm/v/@cogitator-ai/mcp.svg)](https://www.npmjs.com/package/@cogitator-ai/mcp)                       |
+| [@cogitator-ai/a2a](https://www.npmjs.com/package/@cogitator-ai/a2a)                       | A2A Protocol v0.3 — cross-agent interoperability             | [![npm](https://img.shields.io/npm/v/@cogitator-ai/a2a.svg)](https://www.npmjs.com/package/@cogitator-ai/a2a)                       |
 | [@cogitator-ai/sandbox](https://www.npmjs.com/package/@cogitator-ai/sandbox)               | Docker/WASM sandboxed execution                              | [![npm](https://img.shields.io/npm/v/@cogitator-ai/sandbox.svg)](https://www.npmjs.com/package/@cogitator-ai/sandbox)               |
 | [@cogitator-ai/redis](https://www.npmjs.com/package/@cogitator-ai/redis)                   | Redis client (standalone + cluster)                          | [![npm](https://img.shields.io/npm/v/@cogitator-ai/redis.svg)](https://www.npmjs.com/package/@cogitator-ai/redis)                   |
 | [@cogitator-ai/worker](https://www.npmjs.com/package/@cogitator-ai/worker)                 | Distributed job queue (BullMQ)                               | [![npm](https://img.shields.io/npm/v/@cogitator-ai/worker.svg)](https://www.npmjs.com/package/@cogitator-ai/worker)                 |
@@ -939,6 +944,54 @@ const agent = new Agent({
   tools: [calculator, ...mcpTools],
 });
 ```
+
+</details>
+
+<details>
+<summary><strong>🌐 A2A Protocol (Agent-to-Agent)</strong></summary>
+
+Native implementation of [Google's A2A Protocol v0.3](https://a2a-protocol.org) — the open standard for cross-framework agent interoperability.
+
+**Server — Expose any agent via A2A:**
+
+```typescript
+import { A2AServer } from '@cogitator-ai/a2a';
+import { a2aExpress } from '@cogitator-ai/a2a/express';
+
+const a2aServer = new A2AServer({
+  agents: { researcher: myAgent },
+  cogitator,
+});
+
+app.use(a2aExpress(a2aServer));
+// Agent Card: GET /.well-known/agent.json
+// JSON-RPC: POST /a2a
+```
+
+**Client — Connect to any A2A agent:**
+
+```typescript
+import { A2AClient } from '@cogitator-ai/a2a';
+
+const client = new A2AClient('https://remote-agent.example.com');
+const card = await client.agentCard();
+
+// Use as a Cogitator tool
+const remoteTool = client.asToolFromCard(card);
+const agent = new Agent({
+  tools: [remoteTool],
+  // ...
+});
+```
+
+**Features:**
+
+- **Agent Card Discovery** — `GET /.well-known/agent.json` for capability advertisement
+- **JSON-RPC 2.0** — Standard protocol with `tasks/send`, `tasks/get`, `tasks/cancel`
+- **Streaming** — SSE-based streaming via `tasks/sendSubscribe`
+- **Push Notifications** — Webhook-based task updates
+- **Multi-Turn** — Stateful conversations with task history
+- **Framework Adapters** — Express, Hono, Fastify, Koa, Next.js
 
 </details>
 
@@ -2500,6 +2553,7 @@ const providers: LLMProvidersConfig = {
 | OpenTelemetry       | ✅        | ❌          | ❌                | ❌          |
 | Multi-agent swarms  | ✅        | ⚠️ Basic    | ❌                | ✅          |
 | MCP compatibility   | ✅        | ❌          | ❌                | ❌          |
+| A2A Protocol        | ✅        | ❌          | ❌                | ❌          |
 | Self-reflection     | ✅        | ❌          | ❌                | ❌          |
 | Tree of Thoughts    | ✅        | ❌          | ❌                | ❌          |
 | Agent Learning      | ✅        | ❌          | ❌                | ❌          |
@@ -2574,6 +2628,8 @@ Run any example with `npx tsx examples/<name>.ts`:
 | `memory-persistence.ts`        | Redis/PostgreSQL memory persistence      |
 | `openai-compat-server.ts`      | OpenAI-compatible REST API server        |
 | `mcp-integration.ts`           | MCP server integration                   |
+| `a2a-basic.ts`                 | Two agents communicating via A2A         |
+| `a2a-external.ts`              | Connect to external A2A agent            |
 | `constitutional-guardrails.ts` | Safety guardrails with Constitutional AI |
 | `vision-agent.ts`              | Image analysis and generation            |
 | `audio-agent.ts`               | Audio transcription and speech synthesis |
