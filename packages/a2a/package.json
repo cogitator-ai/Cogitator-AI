@@ -81,6 +81,14 @@
       "optional": true
     }
   },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cogitator-ai/Cogitator-AI.git",
+    "directory": "packages/a2a"
+  },
   "publishConfig": {
     "access": "public",
     "registry": "https://npm.pkg.github.com"
