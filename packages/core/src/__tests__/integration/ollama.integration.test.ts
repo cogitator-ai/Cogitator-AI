@@ -111,12 +111,12 @@ describeIfOllama('Ollama Integration', () => {
       const agent = new Agent({
         name: 'MathAgent',
         instructions: 'You are a math assistant. Use tools to calculate.',
-        model: `ollama:${TEST_MODEL}`,
+        model: `ollama/${TEST_MODEL}`,
         tools: [calculatorTool],
       });
 
       const cogitator = new Cogitator({
-        defaultModel: `ollama:${TEST_MODEL}`,
+        defaultModel: `ollama/${TEST_MODEL}`,
       });
 
       const result = await cogitator.run(agent, 'What is 6 times 7?', {

@@ -215,6 +215,10 @@ export class OllamaBackend extends BaseLLMBackend {
       return { text: content, images: [] };
     }
 
+    if (!Array.isArray(content)) {
+      return { text: String(content ?? ''), images: [] };
+    }
+
     const textParts: string[] = [];
     const images: string[] = [];
 

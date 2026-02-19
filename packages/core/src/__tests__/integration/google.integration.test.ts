@@ -19,7 +19,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', () => {
       const response = await backend.chat({
         model: 'gemini-2.5-flash',
         messages: [{ role: 'user', content: 'Say "hello" and nothing else.' }],
-        maxTokens: 10,
+        maxTokens: 256,
       });
 
       expect(response.content.toLowerCase()).toContain('hello');
@@ -43,7 +43,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', () => {
       const response = await backend.chat({
         model: 'gemini-2.5-flash',
         messages: [{ role: 'user', content: 'What is 2+2? Reply with just the number.' }],
-        maxTokens: 5,
+        maxTokens: 256,
         temperature: 0,
       });
 
@@ -58,10 +58,10 @@ describe.skipIf(!hasGoogleKey)('Google Integration', () => {
       for await (const chunk of backend.chatStream({
         model: 'gemini-2.5-flash',
         messages: [{ role: 'user', content: 'Count from 1 to 5.' }],
-        maxTokens: 50,
+        maxTokens: 256,
       })) {
-        if (chunk.content) {
-          chunks.push(chunk.content);
+        if (chunk.delta.content) {
+          chunks.push(chunk.delta.content);
         }
       }
 
@@ -91,7 +91,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', () => {
             },
           },
         ],
-        maxTokens: 100,
+        maxTokens: 512,
       });
 
       expect(response.toolCalls).toBeDefined();
@@ -115,12 +115,12 @@ describe.skipIf(!hasGoogleKey)('Google Integration', () => {
       const agent = new Agent({
         name: 'MathAgent',
         instructions: 'You are a math assistant. Use tools to calculate.',
-        model: 'google:gemini-2.5-flash',
+        model: 'google/gemini-2.5-flash',
         tools: [calculatorTool],
       });
 
       const cogitator = new Cogitator({
-        defaultModel: 'google:gemini-2.5-flash',
+        defaultModel: 'google/gemini-2.5-flash',
         llm: {
           providers: {
             google: { apiKey: process.env.GOOGLE_API_KEY! },
