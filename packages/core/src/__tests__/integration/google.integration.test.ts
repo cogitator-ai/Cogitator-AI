@@ -17,7 +17,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', () => {
   describe('chat()', () => {
     it('completes a simple prompt', async () => {
       const response = await backend.chat({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-2.5-flash',
         messages: [{ role: 'user', content: 'Say "hello" and nothing else.' }],
         maxTokens: 10,
       });
@@ -28,7 +28,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', () => {
 
     it('handles system messages', async () => {
       const response = await backend.chat({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-2.5-flash',
         messages: [
           { role: 'system', content: 'You are a pirate. Always say "Arrr!" at the start.' },
           { role: 'user', content: 'Hello' },
@@ -41,7 +41,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', () => {
 
     it('respects temperature setting', async () => {
       const response = await backend.chat({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-2.5-flash',
         messages: [{ role: 'user', content: 'What is 2+2? Reply with just the number.' }],
         maxTokens: 5,
         temperature: 0,
@@ -56,7 +56,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', () => {
       const chunks: string[] = [];
 
       for await (const chunk of backend.chatStream({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-2.5-flash',
         messages: [{ role: 'user', content: 'Count from 1 to 5.' }],
         maxTokens: 50,
       })) {
@@ -74,7 +74,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', () => {
   describe('tool calling', () => {
     it('calls a tool and returns result', async () => {
       const response = await backend.chat({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-2.5-flash',
         messages: [{ role: 'user', content: 'What is 15 * 7? Use the calculator tool.' }],
         tools: [
           {
@@ -115,12 +115,17 @@ describe.skipIf(!hasGoogleKey)('Google Integration', () => {
       const agent = new Agent({
         name: 'MathAgent',
         instructions: 'You are a math assistant. Use tools to calculate.',
-        model: 'google:gemini-2.0-flash',
+        model: 'google:gemini-2.5-flash',
         tools: [calculatorTool],
       });
 
       const cogitator = new Cogitator({
-        defaultModel: 'google:gemini-2.0-flash',
+        defaultModel: 'google:gemini-2.5-flash',
+        llm: {
+          providers: {
+            google: { apiKey: process.env.GOOGLE_API_KEY! },
+          },
+        },
       });
 
       const result = await cogitator.run(agent, 'What is 12 times 8?', {
