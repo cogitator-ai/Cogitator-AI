@@ -151,6 +151,9 @@ export {
   OllamaBackend,
   OpenAIBackend,
   AnthropicBackend,
+  GoogleBackend,
+  AzureOpenAIBackend,
+  BedrockBackend,
   createLLMBackend,
   parseModel,
 } from './llm/index';

@@ -1,0 +1,30 @@
+{
+  "name": "@cogitator-ai/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "End-to-end tests for Cogitator AI",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@cogitator-ai/core": "workspace:*",
+    "@cogitator-ai/a2a": "workspace:*",
+    "@cogitator-ai/types": "workspace:*",
+    "express": "^5.1.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.2",
+    "@types/node": "^22.15.0",
+    "typescript": "^5.3.0",
+    "vitest": "^4.0.18"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

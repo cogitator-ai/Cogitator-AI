@@ -408,6 +408,37 @@ importers:
         specifier: ^5.0.11
         version: 5.0.11(@types/react@19.2.9)(react@19.2.3)
 
+  packages/e2e:
+    dependencies:
+      '@cogitator-ai/a2a':
+        specifier: workspace:*
+        version: link:../a2a
+      '@cogitator-ai/core':
+        specifier: workspace:*
+        version: link:../core
+      '@cogitator-ai/types':
+        specifier: workspace:*
+        version: link:../types
+      express:
+        specifier: ^5.1.0
+        version: 5.2.1
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.2
+        version: 5.0.6
+      '@types/node':
+        specifier: ^22.15.0
+        version: 22.19.7
+      typescript:
+        specifier: ^5.3.0
+        version: 5.9.3
+      vitest:
+        specifier: ^4.0.18
+        version: 4.0.18(@types/node@22.19.7)(tsx@4.21.0)
+
   packages/express:
     dependencies:
       '@cogitator-ai/core':
@@ -4983,20 +5014,20 @@ packages:
   /@types/accepts@1.3.7:
     resolution: {integrity: sha512-Pay9fq2lM2wXPWbteBsRAGiWH2hig4ZE2asK+mm7kUzlxRTfL961rj89I6zV/E3PcIkDqyuBEcMxFT7rccugeQ==}
     dependencies:
-      '@types/node': 25.0.10
+      '@types/node': 22.19.7
     dev: true
 
   /@types/body-parser@1.19.6:
     resolution: {integrity: sha512-HLFeCYgz89uk22N5Qg3dvGvsv46B8GLvKKo1zKG4NybA8U2DiEO3w9lqGg29t/tfLRJpJ6iQxnVw4OnB7MoM9g==}
     dependencies:
       '@types/connect': 3.4.38
-      '@types/node': 25.0.10
+      '@types/node': 22.19.7
     dev: true
 
   /@types/busboy@1.5.4:
     resolution: {integrity: sha512-kG7WrUuAKK0NoyxfQHsVE6j1m01s6kMma64E+OZenQABMQyTJop1DumUWcLwAQ2JzpefU7PDYoRDKl8uZosFjw==}
     dependencies:
-      '@types/node': 25.0.10
+      '@types/node': 22.19.7
     dev: true
 
   /@types/chai@5.2.3:
@@ -5009,7 +5040,7 @@ packages:
   /@types/connect@3.4.38:
     resolution: {integrity: sha512-K6uROf1LD88uDQqJCktA4yzL1YYAK6NgfsI0v/mTgyPKWsX1CnJ0XPSDhViejru1GcRkLWb8RlzFYJRqGUbaug==}
     dependencies:
-      '@types/node': 25.0.10
+      '@types/node': 22.19.7
     dev: true
 
   /@types/content-disposition@0.5.9:
@@ -5022,7 +5053,7 @@ packages:
       '@types/connect': 3.4.38
       '@types/express': 4.17.25
       '@types/keygrip': 1.0.6
-      '@types/node': 25.0.10
+      '@types/node': 22.19.7
     dev: true
 
   /@types/d3-array@3.2.2:
@@ -5107,7 +5138,7 @@ packages:
   /@types/docker-modem@3.0.6:
     resolution: {integrity: sha512-yKpAGEuKRSS8wwx0joknWxsmLha78wNMe9R2S3UNsVOkZded8UqOrV8KoeDXoXsjndxwyF3eIhyClGbO1SEhEg==}
     dependencies:
-      '@types/node': 25.0.10
+      '@types/node': 22.19.7
       '@types/ssh2': 1.15.5
     dev: false
 
@@ -5115,7 +5146,7 @@ packages:
     resolution: {integrity: sha512-ShM1mz7rCjdssXt7Xz0u1/R2BJC7piWa3SJpUBiVjCf2A3XNn4cP6pUVaD8bLanpPVVn4IKzJuw3dOvkJ8IbYw==}
     dependencies:
       '@types/docker-modem': 3.0.6
-      '@types/node': 25.0.10
+      '@types/node': 22.19.7
       '@types/ssh2': 1.15.5
     dev: false
 
@@ -5131,7 +5162,16 @@ packages:
   /@types/express-serve-static-core@4.19.8:
     resolution: {integrity: sha512-02S5fmqeoKzVZCHPZid4b8JH2eM5HzQLZWN2FohQEy/0eXTq8VXZfSN6Pcr3F6N9R/vNrj7cpgbhjie6m/1tCA==}
     dependencies:
-      '@types/node': 25.0.10
+      '@types/node': 22.19.7
+      '@types/qs': 6.14.0
+      '@types/range-parser': 1.2.7
+      '@types/send': 1.2.1
+    dev: true
+
+  /@types/express-serve-static-core@5.1.1:
+    resolution: {integrity: sha512-v4zIMr/cX7/d2BpAEX3KNKL/JrT1s43s96lLvvdTmza1oEvDudCqK9aF/djc/SWgy8Yh0h30TZx5VpzqFCxk5A==}
+    dependencies:
+      '@types/node': 22.19.7
       '@types/qs': 6.14.0
       '@types/range-parser': 1.2.7
       '@types/send': 1.2.1
@@ -5144,6 +5184,14 @@ packages:
       '@types/express-serve-static-core': 4.19.8
       '@types/qs': 6.14.0
       '@types/serve-static': 1.15.10
+    dev: true
+
+  /@types/express@5.0.6:
+    resolution: {integrity: sha512-sKYVuV7Sv9fbPIt/442koC7+IIwK5olP1KWeD88e/idgoJqDm3JV/YUiPwkoKK92ylff2MGxSz1CSjsXelx0YA==}
+    dependencies:
+      '@types/body-parser': 1.19.6
+      '@types/express-serve-static-core': 5.1.1
+      '@types/serve-static': 2.2.0
     dev: true
 
   /@types/hast@3.0.4:
@@ -5229,7 +5277,6 @@ packages:
     resolution: {integrity: sha512-MciR4AKGHWl7xwxkBa6xUGxQJ4VBOmPTF7sL+iGzuahOFaO0jHCsuEfS80pan1ef4gWId1oWOweIhrDEYLuaOw==}
     dependencies:
       undici-types: 6.21.0
-    dev: true
 
   /@types/node@25.0.10:
     resolution: {integrity: sha512-zWW5KPngR/yvakJgGOmZ5vTBemDoSqF3AcV/LrO5u5wTWyEAVVh+IT39G4gtyAkh3CtTZs8aX/yRM82OfzHJRg==}
@@ -5284,21 +5331,28 @@ packages:
     resolution: {integrity: sha512-Uqt8rPBE8SY0RK8JB1EzVOIZ32uqy8HwdxCnoCOsYrvnswqmFZ/k+9Ikidlk/ImhsdvBsloHbAlewb2IEBV/Og==}
     dependencies:
       '@types/mime': 1.3.5
-      '@types/node': 25.0.10
+      '@types/node': 22.19.7
     dev: true
 
   /@types/send@1.2.1:
     resolution: {integrity: sha512-arsCikDvlU99zl1g69TcAB3mzZPpxgw0UQnaHeC1Nwb015xp8bknZv5rIfri9xTOcMuaVgvabfIRA7PSZVuZIQ==}
     dependencies:
-      '@types/node': 25.0.10
+      '@types/node': 22.19.7
     dev: true
 
   /@types/serve-static@1.15.10:
     resolution: {integrity: sha512-tRs1dB+g8Itk72rlSI2ZrW6vZg0YrLI81iQSTkMmOqnqCaNr/8Ek4VwWcN5vZgCYWbg/JJSGBlUaYGAOP73qBw==}
     dependencies:
       '@types/http-errors': 2.0.5
-      '@types/node': 25.0.10
+      '@types/node': 22.19.7
       '@types/send': 0.17.6
+    dev: true
+
+  /@types/serve-static@2.2.0:
+    resolution: {integrity: sha512-8mam4H1NHLtu7nmtalF7eyBH14QyOASmcxHhSfEoRyr0nP/YdoesEtU+uSRvMe96TW/HPTtkoKqQLl53N7UXMQ==}
+    dependencies:
+      '@types/http-errors': 2.0.5
+      '@types/node': 22.19.7
     dev: true
 
   /@types/ssh2@1.15.5:
@@ -5328,7 +5382,7 @@ packages:
   /@types/ws@8.18.1:
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
     dependencies:
-      '@types/node': 25.0.10
+      '@types/node': 22.19.7
 
   /@typescript-eslint/eslint-plugin@8.53.1(@typescript-eslint/parser@8.53.1)(eslint@9.39.2)(typescript@5.9.3):
     resolution: {integrity: sha512-cFYYFZ+oQFi6hUnBTbLRXfTJiaQtYE3t4O692agbBl+2Zy+eqSKWtPjhPXJu1G7j4RLjKgeJPDdq3EqOwmX5Ag==}
@@ -9821,7 +9875,7 @@ packages:
       '@protobufjs/path': 1.1.2
       '@protobufjs/pool': 1.1.0
       '@protobufjs/utf8': 1.1.0
-      '@types/node': 25.0.10
+      '@types/node': 22.19.7
       long: 5.3.2
     dev: false
     optional: true
@@ -11177,7 +11231,6 @@ packages:
 
   /undici-types@6.21.0:
     resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
-    dev: true
 
   /undici-types@7.16.0:
     resolution: {integrity: sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==}
