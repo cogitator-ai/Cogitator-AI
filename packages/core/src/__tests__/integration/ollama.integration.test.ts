@@ -83,8 +83,8 @@ describeIfOllama('Ollama Integration', () => {
         messages: [{ role: 'user', content: 'Count from 1 to 3.' }],
         maxTokens: 30,
       })) {
-        if (chunk.content) {
-          chunks.push(chunk.content);
+        if (chunk.delta.content) {
+          chunks.push(chunk.delta.content);
         }
       }
 
