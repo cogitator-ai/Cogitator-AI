@@ -1,0 +1,273 @@
+---
+title: A2A Protocol (Agent-to-Agent)
+description: Native implementation of Google's A2A Protocol v0.3 for cross-framework agent interoperability.
+---
+
+## Overview
+
+The `@cogitator-ai/a2a` package implements [Google's A2A Protocol v0.3](https://a2a-protocol.org) — the open standard for agent-to-agent communication. It enables Cogitator agents to interoperate with agents from any framework (LangChain, CrewAI, etc.) via a standardized JSON-RPC protocol.
+
+- **A2AServer** -- expose any Cogitator agent as an A2A-compliant service with auto-generated Agent Cards
+- **A2AClient** -- connect to any remote A2A agent, with discovery, messaging, and streaming
+- **asTool() Bridge** -- wrap remote A2A agents as local Cogitator tools for seamless delegation
+- **Framework Adapters** -- Express, Hono, Fastify, Koa, Next.js
+
+```bash
+pnpm add @cogitator-ai/a2a
+```
+
+## A2AServer
+
+### Exposing Agents
+
+Create an A2A server to expose your agents to any A2A-compatible client:
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { A2AServer } from '@cogitator-ai/a2a';
+import { a2aExpress } from '@cogitator-ai/a2a/express';
+import express from 'express';
+
+const cogitator = new Cogitator();
+
+const researcher = new Agent({
+  name: 'researcher',
+  description: 'Research agent that finds information',
+  model: 'openai/gpt-4o',
+  instructions: 'You are a research assistant.',
+});
+
+const a2aServer = new A2AServer({
+  agents: { researcher },
+  cogitator,
+  cardUrl: 'https://my-server.com',
+});
+
+const app = express();
+app.use(a2aExpress(a2aServer));
+app.listen(3000);
+```
+
+This exposes:
+- `GET /.well-known/agent.json` -- Agent Card discovery
+- `POST /a2a` -- JSON-RPC endpoint for messaging, streaming, and task management
+
+### Agent Cards
+
+Agent Cards are auto-generated from your Agent configuration. Each tool becomes a skill in the card:
+
+```typescript
+const card = a2aServer.getAgentCard('researcher');
+```
+
+```json
+{
+  "name": "researcher",
+  "description": "Research agent that finds information",
+  "url": "https://my-server.com",
+  "version": "0.3",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false
+  },
+  "skills": [
+    {
+      "id": "web_search",
+      "name": "web_search",
+      "description": "Search the web for information"
+    }
+  ]
+}
+```
+
+### Multiple Agents
+
+Register multiple agents on a single server:
+
+```typescript
+const a2aServer = new A2AServer({
+  agents: {
+    researcher: researchAgent,
+    writer: writerAgent,
+    analyst: analystAgent,
+  },
+  cogitator,
+});
+```
+
+## A2AClient
+
+### Connecting to a Remote Agent
+
+```typescript
+import { A2AClient } from '@cogitator-ai/a2a';
+
+const client = new A2AClient('https://remote-agent.example.com');
+
+const card = await client.agentCard();
+console.log(`Agent: ${card.name}`);
+console.log(`Skills: ${card.skills.map(s => s.name).join(', ')}`);
+```
+
+### Sending Messages
+
+```typescript
+const task = await client.sendMessage({
+  role: 'user',
+  parts: [{ type: 'text', text: 'Research quantum computing trends' }],
+});
+
+console.log(task.status.state);
+
+for (const artifact of task.artifacts) {
+  for (const part of artifact.parts) {
+    if (part.type === 'text') console.log(part.text);
+  }
+}
+```
+
+### Streaming
+
+```typescript
+for await (const event of client.sendMessageStream({
+  role: 'user',
+  parts: [{ type: 'text', text: 'Analyze market trends' }],
+})) {
+  if (event.type === 'status-update') {
+    console.log(`Status: ${event.status.state}`);
+  } else if (event.type === 'artifact-update') {
+    console.log(`Artifact: ${event.artifact.id}`);
+  }
+}
+```
+
+### Task Management
+
+```typescript
+const task = await client.getTask('task_abc123');
+
+await client.cancelTask('task_abc123');
+```
+
+## asTool() Bridge
+
+The killer feature -- wrap any remote A2A agent as a local Cogitator tool:
+
+```typescript
+const client = new A2AClient('https://research-agent.example.com');
+const card = await client.agentCard();
+
+const remoteTool = client.asToolFromCard(card, {
+  name: 'remote_researcher',
+  description: 'Delegate research to remote agent',
+});
+
+const orchestrator = new Agent({
+  name: 'orchestrator',
+  model: 'openai/gpt-4o',
+  instructions: 'Use the remote_researcher for information gathering.',
+  tools: [remoteTool],
+});
+
+const result = await cogitator.run(orchestrator, {
+  input: 'Write a report on AI trends',
+});
+```
+
+The orchestrator agent calls the remote researcher via A2A protocol transparently -- it looks like a regular tool call.
+
+## Framework Adapters
+
+### Express
+
+```typescript
+import { a2aExpress } from '@cogitator-ai/a2a/express';
+app.use(a2aExpress(a2aServer));
+```
+
+### Hono
+
+```typescript
+import { a2aHono } from '@cogitator-ai/a2a/hono';
+app.route('/a2a', a2aHono(a2aServer));
+```
+
+### Fastify
+
+```typescript
+import { a2aFastify } from '@cogitator-ai/a2a/fastify';
+fastify.register(a2aFastify(a2aServer));
+```
+
+### Koa
+
+```typescript
+import { a2aKoa } from '@cogitator-ai/a2a/koa';
+app.use(a2aKoa(a2aServer));
+```
+
+### Next.js
+
+```typescript
+import { a2aNext } from '@cogitator-ai/a2a/next';
+export const { GET, POST } = a2aNext(a2aServer);
+```
+
+## Task Store
+
+Tasks are stored in memory by default. For production, implement the `TaskStore` interface:
+
+```typescript
+import { A2AServer, InMemoryTaskStore } from '@cogitator-ai/a2a';
+
+const a2aServer = new A2AServer({
+  agents: { researcher },
+  cogitator,
+  taskStore: new InMemoryTaskStore(),
+});
+```
+
+## Authentication
+
+```typescript
+const a2aServer = new A2AServer({
+  agents: { researcher },
+  cogitator,
+  auth: {
+    type: 'bearer',
+    validate: async (token) => {
+      return token === process.env.A2A_SECRET;
+    },
+  },
+});
+```
+
+Clients include credentials via headers:
+
+```typescript
+const client = new A2AClient('https://remote-agent.example.com', {
+  headers: {
+    Authorization: 'Bearer my-secret-token',
+  },
+});
+```
+
+## A2A Protocol Methods
+
+| Method | Description |
+|---|---|
+| `message/send` | Send a message and get a completed task |
+| `message/stream` | Send a message with SSE streaming |
+| `tasks/get` | Retrieve a task by ID |
+| `tasks/cancel` | Cancel a running task |
+
+## Task States
+
+| State | Description |
+|---|---|
+| `working` | Agent is processing |
+| `completed` | Task finished successfully |
+| `failed` | Task encountered an error |
+| `input-required` | Agent needs more input |
+| `canceled` | Task was canceled |
+| `rejected` | Server rejected the task |

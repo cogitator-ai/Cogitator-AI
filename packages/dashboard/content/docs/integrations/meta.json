@@ -1,4 +1,4 @@
 {
   "title": "Integrations",
-  "pages": ["nextjs", "ai-sdk", "openai-compat", "mcp"]
+  "pages": ["nextjs", "ai-sdk", "openai-compat", "mcp", "a2a"]
 }
