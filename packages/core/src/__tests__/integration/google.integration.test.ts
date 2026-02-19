@@ -115,13 +115,9 @@ describe.skipIf(!hasGoogleKey)('Google Integration', () => {
         model: 'google/gemini-2.5-flash',
       });
 
-      const result = await cogitator.run(
-        agent,
-        'What is the capital of France? Reply in one word.',
-        {
-          maxIterations: 1,
-        }
-      );
+      const result = await cogitator.run(agent, {
+        input: 'What is the capital of France? Reply in one word.',
+      });
 
       expect(typeof result.output).toBe('string');
       expect(result.usage.totalTokens).toBeGreaterThan(0);

@@ -31,12 +31,16 @@ export function createTestAgent(opts?: {
   instructions?: string;
   tools?: ReturnType<typeof tool>[];
   model?: string;
+  maxIterations?: number;
+  responseFormat?: { type: 'text' } | { type: 'json' };
 }): Agent {
   return new Agent({
     name: opts?.name ?? 'TestAgent',
     instructions: opts?.instructions ?? 'You are a helpful assistant. Keep responses brief.',
     model: opts?.model ?? `ollama/${TEST_MODEL}`,
     tools: opts?.tools,
+    maxIterations: opts?.maxIterations,
+    responseFormat: opts?.responseFormat,
   });
 }
 
