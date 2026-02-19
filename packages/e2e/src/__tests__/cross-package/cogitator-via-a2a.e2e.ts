@@ -56,7 +56,7 @@ describeE2E('Cross-Package: Cogitator via A2A', () => {
     const textPart = task.artifacts[0].parts.find((p) => p.type === 'text');
     expect(textPart).toBeDefined();
 
-    if (textPart && textPart.type === 'text') {
+    if (textPart?.type === 'text') {
       await expectJudge(textPart.text, {
         question: 'What is 8 times 12?',
         criteria: 'Answer contains 96',

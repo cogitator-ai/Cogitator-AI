@@ -80,7 +80,7 @@ describeE2E('A2A: Server-Client Flow', () => {
       expect(task.status.state).toBe('completed');
 
       const textPart = task.artifacts?.[0]?.parts.find((p) => p.type === 'text');
-      if (textPart && textPart.type === 'text') {
+      if (textPart?.type === 'text') {
         await expectJudge(textPart.text, {
           question: 'What is 6 times 7?',
           criteria: 'Answer contains 42',

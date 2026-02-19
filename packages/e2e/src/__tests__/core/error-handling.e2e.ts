@@ -44,6 +44,7 @@ describeE2E('Core: Error Handling', () => {
         messages: [{ role: 'user', content: 'Hello' }],
         maxTokens: 10,
       })) {
+        void _chunk;
       }
     }).rejects.toThrow();
   });

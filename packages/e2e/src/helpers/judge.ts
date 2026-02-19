@@ -48,7 +48,7 @@ export class LLMJudge {
     });
 
     const text = response.content.trim();
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    const jsonMatch = /\{[\s\S]*\}/.exec(text);
     if (!jsonMatch) {
       return { pass: false, reason: `Judge returned non-JSON: ${text}` };
     }

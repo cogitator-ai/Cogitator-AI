@@ -72,7 +72,7 @@ describeE2E('A2A: Streaming SSE', () => {
       const art = artifactEvents[0];
       if (art.type === 'artifact-update') {
         const textPart = art.artifact.parts.find((p) => p.type === 'text');
-        if (textPart && textPart.type === 'text') {
+        if (textPart?.type === 'text') {
           await expectJudge(textPart.text, {
             question: 'What is the capital of France?',
             criteria: 'Answer mentions Paris',
