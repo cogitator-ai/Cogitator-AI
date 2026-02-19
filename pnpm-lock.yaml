@@ -622,7 +622,7 @@ importers:
         version: 8.18.0
       z3-solver:
         specifier: ^4.13.0
-        version: 4.15.8
+        version: 4.16.0
     devDependencies:
       '@types/pg':
         specifier: ^8.16.0
@@ -910,8 +910,8 @@ importers:
         specifier: ^25.0.10
         version: 25.0.10
       cron-parser:
-        specifier: ^4.9.0
-        version: 4.9.0
+        specifier: ^5.5.0
+        version: 5.5.0
       nanoid:
         specifier: ^5.0.4
         version: 5.1.6
@@ -6172,6 +6172,13 @@ packages:
   /cron-parser@4.9.0:
     resolution: {integrity: sha512-p0SaNjrHOnQeR8/VnfGbmg9te2kfyYSQ7Sc/j/6DtPL3JQvKxmjO9TSjNFpujqV3vEYYBvNNvXSxzyksBWAx1Q==}
     engines: {node: '>=12.0.0'}
+    dependencies:
+      luxon: 3.7.2
+    dev: false
+
+  /cron-parser@5.5.0:
+    resolution: {integrity: sha512-oML4lKUXxizYswqmxuOCpgFS8BNUJpIu6k/2HVHyaL8Ynnf3wdf9tkns0yRdJLSIjkJ+b0DXHMZEHGpMwjnPww==}
+    engines: {node: '>=18'}
     dependencies:
       luxon: 3.7.2
     dev: false
@@ -11537,8 +11544,8 @@ packages:
     engines: {node: '>=18'}
     dev: false
 
-  /z3-solver@4.15.8:
-    resolution: {integrity: sha512-H15njxfgn3k6PQFROG74/2my5KKGHlTcHfyVYI8CJGZ7zJyGiH38VTYvx3n4Kkn0eT+PUvm6MuOv8/efiw5GAw==}
+  /z3-solver@4.16.0:
+    resolution: {integrity: sha512-vWT+I5Yz0dXtseLVZsnkwAIrRmbxw0rCX5a6Xglc6n1CyPESNMnHB3iAWh7XTQQHZRlpWYnKJXTJ0ahTTNHZEg==}
     engines: {node: '>=16'}
     requiresBuild: true
     dependencies:
