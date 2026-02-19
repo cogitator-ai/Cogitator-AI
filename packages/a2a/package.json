@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/a2a",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A2A (Agent-to-Agent) Protocol v0.3 implementation for Cogitator",
   "type": "module",
   "main": "./dist/index.js",
@@ -32,7 +32,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
     "build": "tsc",
