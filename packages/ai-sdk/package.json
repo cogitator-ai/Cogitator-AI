@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@ai-sdk/provider": "^1.0.0",
-    "@ai-sdk/provider-utils": "^2.0.0"
+    "@ai-sdk/provider-utils": "^4.0.15"
   },
   "peerDependencies": {
     "@cogitator-ai/core": "workspace:*",
