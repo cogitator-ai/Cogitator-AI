@@ -273,6 +273,7 @@ Cogitator is a modular monorepo. Install only what you need:
 | [@cogitator-ai/swarms](https://www.npmjs.com/package/@cogitator-ai/swarms)                 | Multi-agent swarm coordination                               | [![npm](https://img.shields.io/npm/v/@cogitator-ai/swarms.svg)](https://www.npmjs.com/package/@cogitator-ai/swarms)                 |
 | [@cogitator-ai/mcp](https://www.npmjs.com/package/@cogitator-ai/mcp)                       | MCP (Model Context Protocol) support                         | [![npm](https://img.shields.io/npm/v/@cogitator-ai/mcp.svg)](https://www.npmjs.com/package/@cogitator-ai/mcp)                       |
 | [@cogitator-ai/a2a](https://www.npmjs.com/package/@cogitator-ai/a2a)                       | A2A Protocol v0.3 — cross-agent interoperability             | [![npm](https://img.shields.io/npm/v/@cogitator-ai/a2a.svg)](https://www.npmjs.com/package/@cogitator-ai/a2a)                       |
+| @cogitator-ai/e2e                                                                          | E2E test suite (37 tests, LLM-as-judge, Ollama + Gemini)     | Private                                                                                                                             |
 | [@cogitator-ai/sandbox](https://www.npmjs.com/package/@cogitator-ai/sandbox)               | Docker/WASM sandboxed execution                              | [![npm](https://img.shields.io/npm/v/@cogitator-ai/sandbox.svg)](https://www.npmjs.com/package/@cogitator-ai/sandbox)               |
 | [@cogitator-ai/redis](https://www.npmjs.com/package/@cogitator-ai/redis)                   | Redis client (standalone + cluster)                          | [![npm](https://img.shields.io/npm/v/@cogitator-ai/redis.svg)](https://www.npmjs.com/package/@cogitator-ai/redis)                   |
 | [@cogitator-ai/worker](https://www.npmjs.com/package/@cogitator-ai/worker)                 | Distributed job queue (BullMQ)                               | [![npm](https://img.shields.io/npm/v/@cogitator-ai/worker.svg)](https://www.npmjs.com/package/@cogitator-ai/worker)                 |
@@ -2591,8 +2592,11 @@ pnpm install
 # Start development
 pnpm dev
 
-# Run tests
+# Run unit tests
 pnpm test
+
+# Run e2e tests (requires Ollama)
+TEST_OLLAMA=true pnpm --filter @cogitator-ai/e2e test
 
 # Build
 pnpm build
@@ -2612,7 +2616,8 @@ cogitator/
 │   ├── sandbox/        # Execution isolation
 │   ├── self-modifying/ # Self-modifying agents
 │   ├── neuro-symbolic/ # SAT/SMT reasoning
-│   └── dashboard/      # Observability UI
+│   ├── dashboard/      # Observability UI
+│   └── e2e/            # E2E test suite
 ├── examples/           # Example agents
 ├── docs/               # Documentation
 └── deploy/             # Deployment configs
