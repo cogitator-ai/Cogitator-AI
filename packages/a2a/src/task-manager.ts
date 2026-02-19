@@ -7,42 +7,18 @@ import type {
   TaskStatus,
   A2AStreamEvent,
   Artifact,
+  CogitatorLike,
+  AgentRunResult,
 } from './types.js';
 import { InMemoryTaskStore } from './task-store.js';
 import { isTerminalState } from './types.js';
 import { A2AError } from './errors.js';
 import * as errors from './errors.js';
 
+export type { CogitatorLike, AgentRunResult };
+
 export interface TaskManagerConfig {
   taskStore?: TaskStore;
-}
-
-export interface AgentRunResult {
-  output: string;
-  structured?: unknown;
-  runId: string;
-  agentId: string;
-  threadId: string;
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-    cost: number;
-    duration: number;
-  };
-  toolCalls: ReadonlyArray<{ name: string; arguments: unknown }>;
-}
-
-export interface CogitatorLike {
-  run(
-    agent: unknown,
-    options: {
-      input: string;
-      signal?: AbortSignal;
-      stream?: boolean;
-      onToken?: (token: string) => void;
-    }
-  ): Promise<AgentRunResult>;
 }
 
 export class TaskManager extends EventEmitter {
@@ -88,6 +64,10 @@ export class TaskManager extends EventEmitter {
       return await this.completeTask(task.id, result);
     } catch (error) {
       if (abortController.signal.aborted) {
+        const current = await this.store.get(task.id);
+        if (current && isTerminalState(current.status.state)) {
+          return current;
+        }
         return await this.cancelTask(task.id);
       }
       return await this.failTask(task.id, error instanceof Error ? error.message : String(error));
@@ -97,6 +77,9 @@ export class TaskManager extends EventEmitter {
   }
 
   async completeTask(taskId: string, result: AgentRunResult): Promise<A2ATask> {
+    const existing = await this.store.get(taskId);
+    if (!existing) throw new A2AError(errors.taskNotFound(taskId));
+
     const artifacts = this.buildArtifacts(result);
     const agentMessage: A2AMessage = {
       role: 'agent',
@@ -117,23 +100,18 @@ export class TaskManager extends EventEmitter {
       timestamp: new Date().toISOString(),
     };
 
-    await this.store.update(taskId, { status, artifacts });
-
-    const task = await this.store.get(taskId);
-    if (task) {
-      task.history.push(agentMessage);
-      await this.store.update(taskId, { history: task.history });
-    }
+    const history = [...existing.history, agentMessage];
+    await this.store.update(taskId, { status, artifacts, history });
 
     const updatedTask = await this.store.get(taskId);
-    if (updatedTask) {
-      this.emitStatusUpdate(updatedTask);
-      for (const artifact of artifacts) {
-        this.emitArtifactUpdate(updatedTask.id, artifact);
-      }
+    if (!updatedTask) throw new A2AError(errors.taskNotFound(taskId));
+
+    this.emitStatusUpdate(updatedTask);
+    for (const artifact of artifacts) {
+      this.emitArtifactUpdate(updatedTask.id, artifact);
     }
 
-    return updatedTask!;
+    return updatedTask;
   }
 
   async failTask(taskId: string, errorMessage: string): Promise<A2ATask> {
@@ -146,8 +124,9 @@ export class TaskManager extends EventEmitter {
 
     await this.store.update(taskId, { status });
     const task = await this.store.get(taskId);
-    if (task) this.emitStatusUpdate(task);
-    return task!;
+    if (!task) throw new A2AError(errors.taskNotFound(taskId));
+    this.emitStatusUpdate(task);
+    return task;
   }
 
   async cancelTask(taskId: string): Promise<A2ATask> {
@@ -167,8 +146,9 @@ export class TaskManager extends EventEmitter {
     await this.store.update(taskId, { status });
 
     const updated = await this.store.get(taskId);
-    if (updated) this.emitStatusUpdate(updated);
-    return updated!;
+    if (!updated) throw new A2AError(errors.taskNotFound(taskId));
+    this.emitStatusUpdate(updated);
+    return updated;
   }
 
   async getTask(taskId: string): Promise<A2ATask> {

@@ -155,6 +155,34 @@ export interface TaskArtifactUpdateEvent {
 
 export type A2AStreamEvent = TaskStatusUpdateEvent | TaskArtifactUpdateEvent;
 
+export interface AgentRunResult {
+  output: string;
+  structured?: unknown;
+  runId: string;
+  agentId: string;
+  threadId: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    cost: number;
+    duration: number;
+  };
+  toolCalls: ReadonlyArray<{ name: string; arguments: unknown }>;
+}
+
+export interface CogitatorLike {
+  run(
+    agent: unknown,
+    options: {
+      input: string;
+      signal?: AbortSignal;
+      stream?: boolean;
+      onToken?: (token: string) => void;
+    }
+  ): Promise<AgentRunResult>;
+}
+
 export interface A2AAuthConfig {
   type: 'bearer' | 'apiKey';
   validate: (credentials: string) => Promise<boolean>;
@@ -162,7 +190,7 @@ export interface A2AAuthConfig {
 
 export interface A2AServerConfig {
   agents: Record<string, Agent>;
-  cogitator: unknown;
+  cogitator: CogitatorLike;
   basePath?: string;
   taskStore?: TaskStore;
   cardUrl?: string;

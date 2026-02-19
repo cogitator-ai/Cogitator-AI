@@ -1,70 +1,93 @@
-# Disaster Recovery Guide
+# Disaster Recovery Playbook
 
-This document outlines backup strategies, recovery procedures, and failure scenarios for Cogitator deployments.
+This document provides procedures for recovering Cogitator from various failure scenarios.
 
-## Backup Strategies
+## Overview
 
-### PostgreSQL Backup
+Cogitator's architecture is designed for resilience with stateless workers and persistent backing stores. This playbook covers recovery procedures for common failure scenarios.
 
-PostgreSQL stores agent configurations, run history, and long-term memory.
+### Recovery Time Objectives (RTO)
 
-#### Automated Backups (pg_dump)
+| Scenario                 | Target RTO   | Priority |
+| ------------------------ | ------------ | -------- |
+| Single worker failure    | < 1 minute   | Low      |
+| Redis failure            | < 5 minutes  | High     |
+| Postgres failure         | < 15 minutes | Critical |
+| Complete cluster failure | < 30 minutes | Critical |
+| Data corruption          | < 1 hour     | Critical |
+
+### Recovery Point Objectives (RPO)
+
+| Data Type                | Target RPO    | Backup Frequency |
+| ------------------------ | ------------- | ---------------- |
+| Agent runs (in-progress) | 0 (real-time) | Continuous       |
+| Agent definitions        | < 5 minutes   | Every 5 min      |
+| Memory store             | < 1 hour      | Hourly           |
+| Vector embeddings        | < 24 hours    | Daily            |
+| Audit logs               | 0 (real-time) | Continuous       |
+
+---
+
+## Backup Procedures
+
+### PostgreSQL Backups
+
+#### Automated Daily Backups
 
 ```bash
 #!/bin/bash
-# backup-postgres.sh
-BACKUP_DIR="/backups/postgres"
+# /opt/cogitator/scripts/backup-postgres.sh
+
+BACKUP_DIR="/var/backups/cogitator/postgres"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_FILE="${BACKUP_DIR}/cogitator_${TIMESTAMP}.sql.gz"
+RETENTION_DAYS=30
 
-pg_dump -h $PGHOST -U $PGUSER -d cogitator | gzip > $BACKUP_FILE
-
-# Keep last 7 daily backups
-find $BACKUP_DIR -name "*.sql.gz" -mtime +7 -delete
+# Create backup
+pg_dump -h localhost -U cogitator -Fc cogitator > "${BACKUP_DIR}/cogitator_${TIMESTAMP}.dump"
 
 # Upload to S3 (optional)
-aws s3 cp $BACKUP_FILE s3://cogitator-backups/postgres/
+aws s3 cp "${BACKUP_DIR}/cogitator_${TIMESTAMP}.dump" \
+  "s3://cogitator-backups/postgres/cogitator_${TIMESTAMP}.dump"
+
+# Cleanup old backups
+find "${BACKUP_DIR}" -name "*.dump" -mtime +${RETENTION_DAYS} -delete
 ```
 
-#### Point-in-Time Recovery (WAL Archiving)
+#### Point-in-Time Recovery Setup
 
-Enable WAL archiving in `postgresql.conf`:
-
-```
-wal_level = replica
-archive_mode = on
-archive_command = 'aws s3 cp %p s3://cogitator-backups/wal/%f'
-```
-
-Recovery:
-
-```bash
-# Restore base backup
-pg_restore -d cogitator /backups/base_backup.tar
-
-# Apply WAL logs up to target time
-recovery_target_time = '2025-01-15 10:00:00 UTC'
+```sql
+-- Enable WAL archiving in postgresql.conf
+-- wal_level = replica
+-- archive_mode = on
+-- archive_command = 'cp %p /var/lib/postgresql/wal_archive/%f'
 ```
 
-### Redis Backup
-
-Redis stores short-term memory and session state.
+### Redis Backups
 
 #### RDB Snapshots
 
 ```bash
-# redis.conf
-save 900 1      # Save if 1 key changed in 900 seconds
-save 300 10     # Save if 10 keys changed in 300 seconds
-save 60 10000   # Save if 10000 keys changed in 60 seconds
+#!/bin/bash
+# /opt/cogitator/scripts/backup-redis.sh
 
-dbfilename dump.rdb
-dir /var/lib/redis/
+BACKUP_DIR="/var/backups/cogitator/redis"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+# Trigger RDB save
+redis-cli BGSAVE
+sleep 5
+
+# Copy dump file
+cp /var/lib/redis/dump.rdb "${BACKUP_DIR}/dump_${TIMESTAMP}.rdb"
+
+# Upload to S3
+aws s3 cp "${BACKUP_DIR}/dump_${TIMESTAMP}.rdb" \
+  "s3://cogitator-backups/redis/dump_${TIMESTAMP}.rdb"
 ```
 
 #### AOF Persistence
 
-```bash
+```conf
 # redis.conf
 appendonly yes
 appendfsync everysec
@@ -72,276 +95,488 @@ auto-aof-rewrite-percentage 100
 auto-aof-rewrite-min-size 64mb
 ```
 
-#### Backup Script
+### Configuration Backups
 
 ```bash
 #!/bin/bash
-# backup-redis.sh
-BACKUP_DIR="/backups/redis"
+# Backup all configuration files
+
+BACKUP_DIR="/var/backups/cogitator/config"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
-# Trigger background save
-redis-cli BGSAVE
-sleep 10
+tar -czf "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
+  /opt/cogitator/config/ \
+  /opt/cogitator/.env \
+  /etc/cogitator/
 
-# Copy RDB file
-cp /var/lib/redis/dump.rdb "${BACKUP_DIR}/dump_${TIMESTAMP}.rdb"
-
-# Upload to S3
-aws s3 cp "${BACKUP_DIR}/dump_${TIMESTAMP}.rdb" s3://cogitator-backups/redis/
+aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
+  "s3://cogitator-backups/config/config_${TIMESTAMP}.tar.gz"
 ```
+
+---
 
 ## Recovery Procedures
 
-### Complete System Recovery
+### Scenario 1: Single Worker Failure
 
-1. **Provision Infrastructure**
+**Symptoms:**
+
+- Worker process exits unexpectedly
+- Health check fails for one instance
+- Load balancer removes instance from pool
+
+**Recovery Steps:**
+
+1. **Automatic recovery** (Kubernetes/systemd)
+   - Kubernetes will restart the pod automatically
+   - systemd will restart the service if configured with `Restart=always`
+
+2. **Manual verification**
 
    ```bash
-   # Using Terraform or manual setup
-   terraform apply -var-file=prod.tfvars
+   # Check worker status
+   kubectl get pods -l app=cogitator-worker
+
+   # Check logs for failure cause
+   kubectl logs <pod-name> --previous
+
+   # Verify worker rejoined cluster
+   curl http://localhost:3000/health
    ```
 
-2. **Restore PostgreSQL**
+3. **In-progress runs**
+   - Runs assigned to failed worker will timeout
+   - BullMQ will retry failed jobs automatically
+   - No data loss for completed steps
+
+### Scenario 2: Redis Failure
+
+**Symptoms:**
+
+- Connection refused to Redis
+- Memory operations failing
+- Job queue stalled
+
+**Recovery Steps:**
+
+1. **Identify failure type**
 
    ```bash
-   # Download latest backup
-   aws s3 cp s3://cogitator-backups/postgres/latest.sql.gz /tmp/
+   # Check Redis status
+   redis-cli ping
 
-   # Restore
-   gunzip -c /tmp/latest.sql.gz | psql -h $PGHOST -U $PGUSER -d cogitator
+   # Check memory usage
+   redis-cli INFO memory
+
+   # Check for OOM issues
+   journalctl -u redis -n 100
    ```
 
-3. **Restore Redis**
+2. **Restart Redis**
+
+   ```bash
+   # Kubernetes
+   kubectl rollout restart statefulset/redis
+
+   # Systemd
+   systemctl restart redis
+   ```
+
+3. **Restore from backup (if data lost)**
 
    ```bash
    # Stop Redis
    systemctl stop redis
 
-   # Download and restore RDB
-   aws s3 cp s3://cogitator-backups/redis/latest.rdb /var/lib/redis/dump.rdb
+   # Restore RDB file
+   cp /var/backups/cogitator/redis/dump_latest.rdb /var/lib/redis/dump.rdb
    chown redis:redis /var/lib/redis/dump.rdb
 
    # Start Redis
    systemctl start redis
    ```
 
-4. **Deploy Application**
+4. **Failover to replica (Redis Cluster)**
 
    ```bash
-   # Using Kubernetes
-   kubectl apply -f deploy/kubernetes/
+   # Check cluster status
+   redis-cli CLUSTER INFO
 
-   # Or Docker Compose
-   docker compose up -d
+   # Force failover if needed
+   redis-cli -h <replica-host> CLUSTER FAILOVER TAKEOVER
    ```
 
-5. **Verify Health**
+5. **Reconnect workers**
    ```bash
-   curl http://localhost:3000/api/health
+   # Workers will auto-reconnect, but force restart if needed
+   kubectl rollout restart deployment/cogitator-worker
    ```
 
-### Partial Failure Recovery
+### Scenario 3: PostgreSQL Failure
 
-#### Database Connection Lost
+**Symptoms:**
 
-**Symptoms**: API returns 503, health check shows database "down"
+- Database connection errors
+- Agent definitions not loading
+- Long-term memory unavailable
 
-**Resolution**:
+**Recovery Steps:**
 
-1. Check PostgreSQL status: `systemctl status postgresql`
-2. Check connection limits: `SELECT count(*) FROM pg_stat_activity;`
-3. Restart if needed: `systemctl restart postgresql`
-4. Application auto-reconnects via connection pool
+1. **Check database status**
 
-#### Redis Connection Lost
+   ```bash
+   # Check if Postgres is running
+   pg_isready -h localhost -p 5432
 
-**Symptoms**: Short-term memory unavailable, degraded mode active
+   # Check connection count
+   psql -c "SELECT count(*) FROM pg_stat_activity;"
 
-**Resolution**:
+   # Check for locks
+   psql -c "SELECT * FROM pg_locks WHERE NOT granted;"
+   ```
 
-1. Check Redis status: `redis-cli ping`
-2. Check memory: `redis-cli info memory`
-3. Restart if needed: `systemctl restart redis`
-4. Cogitator continues with in-memory fallback
+2. **Restart PostgreSQL**
 
-#### LLM Provider Unavailable
+   ```bash
+   # Kubernetes
+   kubectl rollout restart statefulset/postgres
 
-**Symptoms**: Circuit breaker open, fallback providers in use
+   # Systemd
+   systemctl restart postgresql
+   ```
 
-**Resolution**:
+3. **Recover from backup**
 
-1. Check circuit breaker status in health endpoint
-2. Verify provider status (Ollama, OpenAI, Anthropic)
-3. Circuit breaker auto-resets after timeout (default: 30s)
-4. Fallback chain: Ollama → OpenAI → Anthropic
+   ```bash
+   # Stop Postgres
+   systemctl stop postgresql
 
-## Failure Scenarios
+   # Restore from dump
+   pg_restore -h localhost -U cogitator -d cogitator \
+     /var/backups/cogitator/postgres/cogitator_latest.dump
 
-### Scenario 1: Database Corruption
+   # Start Postgres
+   systemctl start postgresql
+   ```
 
-**Detection**: Query errors, inconsistent data
+4. **Point-in-time recovery**
 
-**Response**:
+   ```bash
+   # Create recovery.conf
+   cat > /var/lib/postgresql/data/recovery.conf << EOF
+   restore_command = 'cp /var/lib/postgresql/wal_archive/%f %p'
+   recovery_target_time = '2024-12-15 14:30:00'
+   EOF
 
-1. Stop all Cogitator instances
-2. Assess damage: `pg_dump --schema-only cogitator > /tmp/schema.sql`
-3. Restore from latest backup
-4. Apply WAL logs for point-in-time recovery
-5. Restart services
+   # Start Postgres in recovery mode
+   systemctl start postgresql
+   ```
 
-**Prevention**:
+5. **Verify data integrity**
 
-- Enable checksums: `initdb --data-checksums`
-- Regular VACUUM and ANALYZE
-- Monitor disk health
+   ```bash
+   # Check tables
+   psql -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';"
 
-### Scenario 2: Memory Exhaustion
+   # Verify agent count
+   psql -c "SELECT COUNT(*) FROM agents;"
 
-**Detection**: OOMKilled containers, slow responses
+   # Check for orphaned records
+   psql -c "SELECT COUNT(*) FROM runs WHERE status = 'running' AND updated_at < NOW() - INTERVAL '1 hour';"
+   ```
 
-**Response**:
+### Scenario 4: Complete Cluster Failure
 
-1. Scale horizontally: `kubectl scale deployment cogitator --replicas=3`
-2. Clear Redis cache: `redis-cli FLUSHDB`
-3. Implement memory TTLs
-4. Increase container limits
+**Symptoms:**
 
-**Prevention**:
+- All nodes unreachable
+- No workers processing requests
+- Complete service outage
 
-- Set resource limits in Kubernetes
-- Configure memory TTLs for Redis keys
-- Monitor memory usage with Prometheus
+**Recovery Steps:**
 
-### Scenario 3: Cascading LLM Failures
+1. **Assess infrastructure status**
 
-**Detection**: All LLM providers failing, circuit breakers open
+   ```bash
+   # Check Kubernetes cluster
+   kubectl cluster-info
+   kubectl get nodes
 
-**Response**:
+   # Check cloud provider status
+   aws ec2 describe-instances --filters "Name=tag:service,Values=cogitator"
+   ```
 
-1. Check provider status pages
-2. Manually close circuit breakers if needed: `POST /api/admin/circuit-breakers/reset`
-3. Switch to local Ollama if cloud providers down
-4. Enable queue mode to buffer requests
+2. **Restore infrastructure**
 
-**Prevention**:
+   ```bash
+   # Terraform/Pulumi rebuild
+   cd infrastructure/
+   terraform apply
 
-- Multiple LLM provider fallbacks
-- Local Ollama as last resort
-- Request queueing for transient failures
+   # Or restore from IaC
+   pulumi up
+   ```
 
-### Scenario 4: Complete Data Center Failure
+3. **Restore data stores first**
 
-**Detection**: All services unreachable
+   ```bash
+   # 1. Restore PostgreSQL
+   ./scripts/restore-postgres.sh latest
 
-**Response**:
+   # 2. Restore Redis
+   ./scripts/restore-redis.sh latest
+   ```
 
-1. Activate disaster recovery site
-2. Update DNS to point to DR site
-3. Restore from off-site backups
-4. Verify data consistency
-5. Notify users of recovery status
+4. **Deploy application**
 
-**Prevention**:
+   ```bash
+   # Apply Kubernetes manifests
+   kubectl apply -f k8s/
 
-- Multi-region deployment
-- Cross-region backup replication
-- Regular DR drills
+   # Or use Helm
+   helm upgrade --install cogitator ./charts/cogitator
+   ```
+
+5. **Verify recovery**
+
+   ```bash
+   # Check all pods running
+   kubectl get pods
+
+   # Run health checks
+   curl http://api.cogitator.dev/health
+
+   # Test agent execution
+   curl -X POST http://api.cogitator.dev/api/runs \
+     -H "Content-Type: application/json" \
+     -d '{"agentId": "test-agent", "input": "hello"}'
+   ```
+
+### Scenario 5: Data Corruption
+
+**Symptoms:**
+
+- JSON parse errors from database
+- Inconsistent agent state
+- Vector search returning invalid results
+
+**Recovery Steps:**
+
+1. **Identify corruption scope**
+
+   ```bash
+   # Check for invalid JSON in runs
+   psql -c "SELECT id FROM runs WHERE NOT (result IS NULL OR result::text <> '');"
+
+   # Check vector dimensions
+   psql -c "SELECT id FROM memory_vectors WHERE array_length(embedding, 1) != 1536;"
+   ```
+
+2. **Isolate affected data**
+
+   ```bash
+   # Mark corrupted runs
+   psql -c "UPDATE runs SET status = 'corrupted' WHERE id IN (SELECT id FROM corrupted_runs_view);"
+
+   # Disable affected agents
+   psql -c "UPDATE agents SET enabled = false WHERE id IN (SELECT DISTINCT agent_id FROM corrupted_runs_view);"
+   ```
+
+3. **Restore from known good backup**
+
+   ```bash
+   # Find last good backup
+   aws s3 ls s3://cogitator-backups/postgres/ | tail -10
+
+   # Restore specific tables
+   pg_restore -h localhost -U cogitator -d cogitator \
+     --table=runs --table=memory_vectors \
+     /var/backups/cogitator/postgres/cogitator_20241214.dump
+   ```
+
+4. **Reindex vectors**
+   ```bash
+   # Rebuild vector index
+   psql -c "REINDEX INDEX memory_vectors_embedding_idx;"
+   ```
+
+---
+
+## Sandbox Recovery
+
+### Docker Sandbox Failures
+
+**Container stuck or unresponsive:**
+
+```bash
+# List stuck containers
+docker ps --filter "label=cogitator.sandbox=true" --filter "status=running"
+
+# Force cleanup
+docker rm -f $(docker ps -q --filter "label=cogitator.sandbox=true")
+
+# Clear container pool
+curl -X POST http://localhost:3000/admin/sandbox/reset
+```
+
+**Image corruption:**
+
+```bash
+# Remove and repull sandbox image
+docker rmi cogitator/sandbox:latest
+docker pull cogitator/sandbox:latest
+```
+
+### WASM Sandbox Failures
+
+**Plugin cache corruption:**
+
+```bash
+# Clear WASM plugin cache
+rm -rf /var/cache/cogitator/wasm/*
+
+# Restart workers to rebuild cache
+kubectl rollout restart deployment/cogitator-worker
+```
+
+**Extism runtime issues:**
+
+```bash
+# Check Extism version
+node -e "console.log(require('@extism/extism').version)"
+
+# Reinstall if needed
+pnpm install @extism/extism@latest
+```
+
+---
 
 ## Monitoring and Alerts
 
-### Key Metrics to Monitor
+### Critical Alerts
+
+Configure alerts for:
 
 ```yaml
-# Prometheus alerting rules
+# alertmanager.yml
 groups:
-  - name: cogitator
+  - name: cogitator-critical
     rules:
-      - alert: DatabaseDown
-        expr: cogitator_health_database_up == 0
+      - alert: PostgresDown
+        expr: pg_up == 0
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: 'Database connection lost'
+          summary: 'PostgreSQL is down'
 
       - alert: RedisDown
-        expr: cogitator_health_redis_up == 0
+        expr: redis_up == 0
         for: 1m
         labels:
-          severity: warning
-        annotations:
-          summary: 'Redis connection lost (degraded mode)'
+          severity: critical
 
-      - alert: CircuitBreakerOpen
-        expr: cogitator_circuit_breaker_state{state="open"} == 1
-        for: 5m
+      - alert: AllWorkersDown
+        expr: sum(cogitator_workers_active) == 0
+        for: 2m
         labels:
-          severity: warning
-        annotations:
-          summary: 'Circuit breaker open for {{ $labels.service }}'
+          severity: critical
 
       - alert: HighErrorRate
-        expr: rate(cogitator_requests_errors_total[5m]) > 0.1
+        expr: rate(cogitator_runs_failed_total[5m]) > 0.1
         for: 5m
         labels:
           severity: warning
-        annotations:
-          summary: 'High error rate detected'
 ```
 
-### Health Check Endpoint
+### Health Check Endpoints
 
-The `/api/health` endpoint returns:
+| Endpoint        | Purpose                 | Expected Response |
+| --------------- | ----------------------- | ----------------- |
+| `/health`       | Overall health          | `200 OK`          |
+| `/health/ready` | Ready to accept traffic | `200 OK`          |
+| `/health/live`  | Process is alive        | `200 OK`          |
+| `/health/db`    | Database connectivity   | `200 OK`          |
+| `/health/redis` | Redis connectivity      | `200 OK`          |
 
-```json
-{
-  "status": "healthy|degraded|unhealthy",
-  "services": {
-    "database": { "status": "up", "latency": 5 },
-    "redis": { "status": "up", "latency": 2 },
-    "ollama": { "status": "up", "models": ["llama3.2"] },
-    "wasm": { "status": "up", "available": true }
-  },
-  "circuitBreakers": {
-    "ollama": "closed",
-    "openai": "closed",
-    "anthropic": "closed"
-  }
-}
-```
+---
 
-## Recovery Time Objectives
+## Post-Incident Procedures
 
-| Component     | RTO        | RPO       | Backup Frequency |
-| ------------- | ---------- | --------- | ---------------- |
-| PostgreSQL    | 1 hour     | 5 minutes | Continuous WAL   |
-| Redis         | 15 minutes | 1 minute  | Every minute     |
-| Application   | 5 minutes  | N/A       | Container images |
-| Configuration | 5 minutes  | N/A       | Git repository   |
+### Incident Documentation
 
-## Runbook Checklist
+After recovery, document:
 
-### Daily
+1. **Timeline** - When detected, escalated, resolved
+2. **Root cause** - What caused the failure
+3. **Impact** - Users affected, data lost
+4. **Recovery steps** - What was done to recover
+5. **Prevention** - How to prevent recurrence
 
-- [ ] Verify backup completion
-- [ ] Check health endpoint status
-- [ ] Review error logs
+### Post-Mortem Template
 
-### Weekly
+```markdown
+# Incident Report: [Title]
 
-- [ ] Test backup restoration (non-prod)
-- [ ] Review circuit breaker events
-- [ ] Check disk space usage
+**Date:** YYYY-MM-DD
+**Duration:** HH:MM - HH:MM (X hours)
+**Severity:** P1/P2/P3
 
-### Monthly
+## Summary
 
-- [ ] Full DR drill
+Brief description of what happened.
+
+## Timeline
+
+- HH:MM - Issue detected
+- HH:MM - Team alerted
+- HH:MM - Root cause identified
+- HH:MM - Recovery started
+- HH:MM - Service restored
+
+## Root Cause
+
+Detailed explanation of why this happened.
+
+## Impact
+
+- X runs failed
+- Y users affected
+- Z minutes of downtime
+
+## Recovery Actions
+
+Steps taken to restore service.
+
+## Prevention
+
+Changes to prevent recurrence.
+
+## Action Items
+
+- [ ] Implement fix for root cause
+- [ ] Add monitoring for early detection
 - [ ] Update runbooks
-- [ ] Review RTO/RPO targets
+```
 
-### Quarterly
+---
 
-- [ ] Cross-region failover test
-- [ ] Security audit
-- [ ] Capacity planning review
+## Emergency Contacts
+
+| Role             | Contact                | Escalation Path           |
+| ---------------- | ---------------------- | ------------------------- |
+| On-call Engineer | PagerDuty              | Auto-escalate after 15m   |
+| Platform Lead    | @platform-lead         | If P1 not resolved in 30m |
+| Security         | security@cogitator.dev | Any security incident     |
+
+---
+
+## Runbook Maintenance
+
+This document should be:
+
+- Reviewed quarterly
+- Updated after each incident
+- Tested via disaster recovery drills (quarterly)
+
+Last updated: December 2024

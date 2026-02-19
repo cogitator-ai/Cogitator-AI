@@ -6,6 +6,7 @@ import type {
   A2ATask,
   A2AStreamEvent,
   SendMessageConfiguration,
+  CogitatorLike,
 } from './types.js';
 import type { JsonRpcRequest, JsonRpcResponse } from './json-rpc.js';
 import {
@@ -14,7 +15,7 @@ import {
   createErrorResponse,
   JsonRpcParseError,
 } from './json-rpc.js';
-import { TaskManager, type CogitatorLike } from './task-manager.js';
+import { TaskManager } from './task-manager.js';
 import { generateAgentCard } from './agent-card.js';
 import { A2AError } from './errors.js';
 import * as errors from './errors.js';
@@ -36,7 +37,7 @@ export class A2AServer {
     }
 
     this.agents = config.agents;
-    this.cogitator = config.cogitator as CogitatorLike;
+    this.cogitator = config.cogitator;
     this.basePath = config.basePath ?? '/a2a';
     this.cardUrl = config.cardUrl ?? '';
 
@@ -71,7 +72,10 @@ export class A2AServer {
     let request: JsonRpcRequest;
     try {
       const parsed = parseJsonRpcRequest(body);
-      request = Array.isArray(parsed) ? parsed[0] : parsed;
+      if (Array.isArray(parsed)) {
+        return createErrorResponse(null, errors.invalidRequest('Batch requests are not supported'));
+      }
+      request = parsed;
     } catch (e) {
       if (e instanceof JsonRpcParseError) {
         return createErrorResponse(null, errors.parseError(e.message));
@@ -97,23 +101,80 @@ export class A2AServer {
     let request: JsonRpcRequest;
     try {
       const parsed = parseJsonRpcRequest(body);
-      request = Array.isArray(parsed) ? parsed[0] : parsed;
-    } catch {
+      if (Array.isArray(parsed)) {
+        yield {
+          type: 'status-update',
+          taskId: '',
+          status: {
+            state: 'failed',
+            timestamp: new Date().toISOString(),
+            message: 'Batch requests are not supported',
+          },
+          timestamp: new Date().toISOString(),
+        };
+        return;
+      }
+      request = parsed;
+    } catch (e) {
+      yield {
+        type: 'status-update',
+        taskId: '',
+        status: {
+          state: 'failed',
+          timestamp: new Date().toISOString(),
+          message: e instanceof Error ? e.message : 'Invalid JSON-RPC request',
+        },
+        timestamp: new Date().toISOString(),
+      };
       return;
     }
 
     if (request.method !== 'message/stream') {
+      yield {
+        type: 'status-update',
+        taskId: '',
+        status: {
+          state: 'failed',
+          timestamp: new Date().toISOString(),
+          message: `Unsupported method for streaming: ${request.method}`,
+        },
+        timestamp: new Date().toISOString(),
+      };
       return;
     }
 
     const params = request.params as
       | { message: A2AMessage; configuration?: SendMessageConfiguration; agentName?: string }
       | undefined;
-    if (!params?.message) return;
+    if (!params?.message) {
+      yield {
+        type: 'status-update',
+        taskId: '',
+        status: {
+          state: 'failed',
+          timestamp: new Date().toISOString(),
+          message: 'Missing required parameter: message',
+        },
+        timestamp: new Date().toISOString(),
+      };
+      return;
+    }
 
     const agentName = params.agentName ?? Object.keys(this.agents)[0];
     const agent = this.agents[agentName];
-    if (!agent) return;
+    if (!agent) {
+      yield {
+        type: 'status-update',
+        taskId: '',
+        status: {
+          state: 'failed',
+          timestamp: new Date().toISOString(),
+          message: `Agent not found: ${agentName}`,
+        },
+        timestamp: new Date().toISOString(),
+      };
+      return;
+    }
 
     const task = await this.taskManager.createTask(params.message);
 
@@ -132,13 +193,16 @@ export class A2AServer {
 
     this.taskManager.on('event', onEvent);
 
-    const executionPromise = this.taskManager.executeTask(
-      task,
-      this.cogitator,
-      agent,
-      params.message,
-      (_token: string) => {}
-    );
+    let executionDone = false;
+    const executionPromise = this.taskManager
+      .executeTask(task, this.cogitator, agent, params.message)
+      .then(() => {
+        executionDone = true;
+        if (resolve) {
+          resolve();
+          resolve = null;
+        }
+      });
 
     try {
       yield {
@@ -156,33 +220,20 @@ export class A2AServer {
           if (event.type === 'status-update' && isTerminalState(event.status.state)) {
             done = true;
           }
-        } else {
-          await Promise.race([
-            new Promise<void>((r) => {
-              resolve = r;
-            }),
-            executionPromise.then(() => {
-              if (resolve) {
-                resolve();
-                resolve = null;
-              }
-            }),
-          ]);
-
-          if (eventQueue.length === 0) {
-            try {
-              const finalTask = await this.taskManager.getTask(task.id);
-              if (isTerminalState(finalTask.status.state)) {
-                done = true;
-              }
-            } catch {
-              done = true;
-            }
+        } else if (executionDone) {
+          const finalTask = await this.taskManager.getTask(task.id);
+          if (isTerminalState(finalTask.status.state)) {
+            done = true;
           }
+        } else {
+          await new Promise<void>((r) => {
+            resolve = r;
+          });
         }
       }
     } finally {
       this.taskManager.removeListener('event', onEvent);
+      await executionPromise.catch(() => {});
     }
   }
 

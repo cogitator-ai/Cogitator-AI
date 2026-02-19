@@ -25,4 +25,6 @@ export type {
   A2AAuthConfig,
   A2AServerConfig,
   A2AClientConfig,
+  AgentRunResult,
+  CogitatorLike,
 } from './types.js';

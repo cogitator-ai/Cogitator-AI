@@ -262,7 +262,7 @@ describe('A2AServer', () => {
       }
     });
 
-    it('should yield nothing for non-stream methods', async () => {
+    it('should yield failed event for non-stream methods', async () => {
       const events: A2AStreamEvent[] = [];
       for await (const event of server.handleJsonRpcStream({
         jsonrpc: '2.0',
@@ -272,7 +272,69 @@ describe('A2AServer', () => {
       })) {
         events.push(event);
       }
-      expect(events).toHaveLength(0);
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe('status-update');
+      if (events[0].type === 'status-update') {
+        expect(events[0].status.state).toBe('failed');
+      }
+    });
+
+    it('should yield failed event for malformed JSON-RPC request', async () => {
+      const events: A2AStreamEvent[] = [];
+      for await (const event of server.handleJsonRpcStream('not valid json-rpc')) {
+        events.push(event);
+      }
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe('status-update');
+      if (events[0].type === 'status-update') {
+        expect(events[0].status.state).toBe('failed');
+      }
+    });
+
+    it('should yield failed event for missing message params', async () => {
+      const events: A2AStreamEvent[] = [];
+      for await (const event of server.handleJsonRpcStream({
+        jsonrpc: '2.0',
+        method: 'message/stream',
+        params: {},
+        id: 1,
+      })) {
+        events.push(event);
+      }
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe('status-update');
+      if (events[0].type === 'status-update') {
+        expect(events[0].status.state).toBe('failed');
+        expect(events[0].status.message).toContain('message');
+      }
+    });
+
+    it('should yield failed event for batch requests', async () => {
+      const events: A2AStreamEvent[] = [];
+      for await (const event of server.handleJsonRpcStream([
+        { jsonrpc: '2.0', method: 'message/stream', params: { message: userMessage('a') }, id: 1 },
+        { jsonrpc: '2.0', method: 'message/stream', params: { message: userMessage('b') }, id: 2 },
+      ])) {
+        events.push(event);
+      }
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe('status-update');
+      if (events[0].type === 'status-update') {
+        expect(events[0].status.state).toBe('failed');
+        expect(events[0].status.message).toContain('Batch');
+      }
+    });
+  });
+
+  describe('handleJsonRpc — batch rejection', () => {
+    it('should reject batch requests with error', async () => {
+      const response = await server.handleJsonRpc([
+        { jsonrpc: '2.0', method: 'message/send', params: { message: userMessage('a') }, id: 1 },
+        { jsonrpc: '2.0', method: 'message/send', params: { message: userMessage('b') }, id: 2 },
+      ]);
+      expect(response.error).toBeDefined();
+      expect(response.error!.code).toBe(-32600);
+      expect(response.error!.message).toContain('Batch');
     });
   });
 });
