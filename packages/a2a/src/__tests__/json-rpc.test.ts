@@ -6,7 +6,7 @@ import {
   createErrorResponse,
   JsonRpcParseError,
 } from '../json-rpc';
-import type { JsonRpcRequest, JsonRpcResponse, JsonRpcError } from '../json-rpc';
+import type { JsonRpcRequest, JsonRpcError } from '../json-rpc';
 
 describe('JSON-RPC 2.0', () => {
   describe('isValidRequest', () => {

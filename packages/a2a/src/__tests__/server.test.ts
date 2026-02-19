@@ -257,7 +257,7 @@ describe('A2AServer', () => {
 
       const lastStatus = [...events].reverse().find((e) => e.type === 'status-update');
       expect(lastStatus).toBeDefined();
-      if (lastStatus && lastStatus.type === 'status-update') {
+      if (lastStatus?.type === 'status-update') {
         expect(['completed', 'failed']).toContain(lastStatus.status.state);
       }
     });

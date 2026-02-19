@@ -259,7 +259,7 @@ export class A2AServer {
       agentName?: string;
     };
 
-    if (!message || !message.parts || !message.role) {
+    if (!message?.parts || !message.role) {
       throw new A2AError(errors.invalidParams('message is required with role and parts'));
     }
 

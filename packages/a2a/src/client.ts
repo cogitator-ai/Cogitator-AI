@@ -100,7 +100,6 @@ export class A2AClient {
   }
 
   asTool(options?: A2AToolOptions): Tool<{ task: string }, A2AToolResult> {
-    const client = this;
     const toolName = options?.name ?? 'a2a_remote_agent';
     const toolDescription = options?.description ?? 'Remote A2A agent';
     const toolTimeout = options?.timeout ?? this.timeout;
@@ -116,17 +115,17 @@ export class A2AClient {
       timeout: toolTimeout,
       sideEffects: ['external'],
 
-      async execute(params: { task: string }, _context: ToolContext): Promise<A2AToolResult> {
+      execute: async (params: { task: string }, _context: ToolContext): Promise<A2AToolResult> => {
         try {
           const message: A2AMessage = {
             role: 'user',
             parts: [{ type: 'text', text: params.task }],
           };
 
-          const task = await client.sendMessage(message);
+          const task = await this.sendMessage(message);
 
           if (task.status.state === 'completed') {
-            const output = client.extractOutputFromTask(task);
+            const output = this.extractOutputFromTask(task);
             return { output, success: true };
           }
 
