@@ -2,8 +2,6 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { GoogleBackend } from '../../llm/google';
 import { Cogitator } from '../../cogitator';
 import { Agent } from '../../agent';
-import { tool } from '../../tool';
-import { z } from 'zod';
 
 const hasGoogleKey = !!process.env.GOOGLE_API_KEY;
 
