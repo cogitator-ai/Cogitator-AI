@@ -5,6 +5,8 @@ import { Agent } from '../../agent';
 import { tool } from '../../tool';
 import { z } from 'zod';
 
+const TEST_MODEL = process.env.TEST_MODEL || 'qwen2.5:0.5b';
+
 async function isOllamaRunning(): Promise<boolean> {
   try {
     const res = await fetch('http://localhost:11434/api/tags');
@@ -32,7 +34,7 @@ describeIfOllama('Ollama Integration', () => {
       if (!ollamaAvailable) return;
 
       const response = await backend.chat({
-        model: 'llama3.1:8b',
+        model: TEST_MODEL,
         messages: [{ role: 'user', content: 'Say "hello" and nothing else.' }],
         maxTokens: 10,
       });
@@ -45,7 +47,7 @@ describeIfOllama('Ollama Integration', () => {
       if (!ollamaAvailable) return;
 
       const response = await backend.chat({
-        model: 'llama3.1:8b',
+        model: TEST_MODEL,
         messages: [
           { role: 'system', content: 'Always respond with exactly one word.' },
           { role: 'user', content: 'What color is the sky?' },
@@ -60,7 +62,7 @@ describeIfOllama('Ollama Integration', () => {
       if (!ollamaAvailable) return;
 
       const response = await backend.chat({
-        model: 'llama3.1:8b',
+        model: TEST_MODEL,
         messages: [{ role: 'user', content: 'What is 2+2? Reply with just the number.' }],
         maxTokens: 5,
         temperature: 0,
@@ -77,7 +79,7 @@ describeIfOllama('Ollama Integration', () => {
       const chunks: string[] = [];
 
       for await (const chunk of backend.chatStream({
-        model: 'llama3.1:8b',
+        model: TEST_MODEL,
         messages: [{ role: 'user', content: 'Count from 1 to 3.' }],
         maxTokens: 30,
       })) {
@@ -109,12 +111,12 @@ describeIfOllama('Ollama Integration', () => {
       const agent = new Agent({
         name: 'MathAgent',
         instructions: 'You are a math assistant. Use tools to calculate.',
-        model: 'ollama:llama3.1:8b',
+        model: `ollama:${TEST_MODEL}`,
         tools: [calculatorTool],
       });
 
       const cogitator = new Cogitator({
-        defaultModel: 'ollama:llama3.1:8b',
+        defaultModel: `ollama:${TEST_MODEL}`,
       });
 
       const result = await cogitator.run(agent, 'What is 6 times 7?', {

@@ -1,0 +1,81 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ollama:
+    name: Ollama Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Start Ollama
+        run: |
+          ollama serve &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:11434/api/tags > /dev/null && break
+            sleep 1
+          done
+
+      - name: Pull model
+        run: ollama pull qwen2.5:0.5b
+
+      - name: Run Ollama integration tests
+        run: |
+          pnpm --filter @cogitator-ai/core exec vitest run \
+            src/__tests__/integration/ollama.integration.test.ts \
+            test/integration.test.ts
+        env:
+          TEST_OLLAMA: 'true'
+          TEST_MODEL: qwen2.5:0.5b
+          NODE_OPTIONS: '--max-old-space-size=4096'
+
+  google:
+    name: Google Gemini Integration
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Run Google integration tests
+        run: |
+          pnpm --filter @cogitator-ai/core exec vitest run \
+            src/__tests__/integration/google.integration.test.ts
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          NODE_OPTIONS: '--max-old-space-size=4096'
