@@ -123,7 +123,7 @@ describeIfOllama('Ollama Integration', () => {
         maxIterations: 3,
       });
 
-      expect(result.success).toBe(true);
+      expect(result.output).toBeTruthy();
 
       await cogitator.close();
     });

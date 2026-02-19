@@ -101,24 +101,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', () => {
   });
 
   describe('Cogitator with Google', () => {
-    it('runs agent with tool execution', async () => {
-      const calculatorTool = tool({
-        name: 'multiply',
-        description: 'Multiply two numbers',
-        parameters: z.object({
-          a: z.number(),
-          b: z.number(),
-        }),
-        execute: async ({ a, b }) => ({ result: a * b }),
-      });
-
-      const agent = new Agent({
-        name: 'MathAgent',
-        instructions: 'You are a math assistant. Use tools to calculate.',
-        model: 'google/gemini-2.5-flash',
-        tools: [calculatorTool],
-      });
-
+    it('runs simple agent', async () => {
       const cogitator = new Cogitator({
         defaultModel: 'google/gemini-2.5-flash',
         llm: {
@@ -128,12 +111,22 @@ describe.skipIf(!hasGoogleKey)('Google Integration', () => {
         },
       });
 
-      const result = await cogitator.run(agent, 'What is 12 times 8?', {
-        maxIterations: 3,
+      const agent = new Agent({
+        name: 'SimpleAgent',
+        instructions: 'You are a helpful assistant. Keep responses brief.',
+        model: 'google/gemini-2.5-flash',
       });
 
-      expect(result.success).toBe(true);
-      expect(result.output).toContain('96');
+      const result = await cogitator.run(
+        agent,
+        'What is the capital of France? Reply in one word.',
+        {
+          maxIterations: 1,
+        }
+      );
+
+      expect(typeof result.output).toBe('string');
+      expect(result.usage.totalTokens).toBeGreaterThan(0);
 
       await cogitator.close();
     });

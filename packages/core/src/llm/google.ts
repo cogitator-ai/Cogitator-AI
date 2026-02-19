@@ -395,6 +395,10 @@ export class GoogleBackend extends BaseLLMBackend {
       return content ? [{ text: content }] : [];
     }
 
+    if (!Array.isArray(content)) {
+      return [{ text: String(content ?? '') }];
+    }
+
     return content.map((part) => this.convertContentPart(part));
   }
 
