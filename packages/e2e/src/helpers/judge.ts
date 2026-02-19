@@ -31,7 +31,7 @@ export class LLMJudge {
             'determine if the answer meets the criteria.',
             'Reply ONLY with valid JSON: {"pass": true, "reason": "brief explanation"}',
             'or {"pass": false, "reason": "brief explanation"}.',
-            'Nothing else. No markdown. No code fences.',
+            'Keep the reason under 20 words. Nothing else. No markdown. No code fences.',
           ].join(' '),
         },
         {
@@ -44,19 +44,29 @@ export class LLMJudge {
         },
       ],
       temperature: 0,
-      maxTokens: 256,
+      maxTokens: 512,
     });
 
     const text = response.content.trim();
+    return this.parseJudgeResponse(text);
+  }
+
+  private parseJudgeResponse(text: string): JudgeResult {
     const jsonMatch = /\{[\s\S]*\}/.exec(text);
-    if (!jsonMatch) {
-      return { pass: false, reason: `Judge returned non-JSON: ${text}` };
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]) as JudgeResult;
+        return { pass: Boolean(parsed.pass), reason: parsed.reason };
+      } catch {}
     }
 
-    const parsed = JSON.parse(jsonMatch[0]) as JudgeResult;
-    return {
-      pass: Boolean(parsed.pass),
-      reason: parsed.reason,
-    };
+    const passMatch = /"pass"\s*:\s*(true|false)/.exec(text);
+    if (passMatch) {
+      const pass = passMatch[1] === 'true';
+      const reasonMatch = /"reason"\s*:\s*"([^"]*)/i.exec(text);
+      return { pass, reason: reasonMatch?.[1] ?? 'truncated response' };
+    }
+
+    return { pass: false, reason: `Judge returned unparseable: ${text.slice(0, 200)}` };
   }
 }

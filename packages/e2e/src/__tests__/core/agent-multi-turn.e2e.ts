@@ -17,7 +17,7 @@ describeE2E('Core: Agent Multi-Turn', () => {
   beforeAll(async () => {
     const available = await isOllamaRunning();
     if (!available) throw new Error('Ollama not running');
-    cogitator = createTestCogitator();
+    cogitator = createTestCogitator({ memory: true });
     setJudge(createTestJudge());
   });
 

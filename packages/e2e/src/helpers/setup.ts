@@ -14,11 +14,12 @@ export async function isOllamaRunning(): Promise<boolean> {
   }
 }
 
-export function createTestCogitator(): Cogitator {
+export function createTestCogitator(opts?: { memory?: boolean }): Cogitator {
   return new Cogitator({
     llm: {
       defaultModel: `ollama/${TEST_MODEL}`,
     },
+    ...(opts?.memory && { memory: { adapter: 'memory' as const } }),
   });
 }
 
