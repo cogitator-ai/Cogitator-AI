@@ -262,6 +262,40 @@ export const LoggingConfigSchema = z.object({
   filePath: z.string().optional(),
 });
 
+export const DeployTargetSchema = z.enum(['docker', 'fly', 'railway', 'k8s', 'ssh']);
+export const DeployServerSchema = z.enum(['express', 'fastify', 'hono', 'koa']);
+
+export const DeployConfigSchema = z.object({
+  target: DeployTargetSchema.optional(),
+  server: DeployServerSchema.optional(),
+  port: z.number().positive().optional(),
+  registry: z.string().optional(),
+  image: z.string().optional(),
+  region: z.string().optional(),
+  instances: z.number().positive().optional(),
+  services: z
+    .object({
+      redis: z.boolean().optional(),
+      postgres: z.boolean().optional(),
+    })
+    .optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  secrets: z.array(z.string()).optional(),
+  health: z
+    .object({
+      path: z.string().optional(),
+      interval: z.string().optional(),
+      timeout: z.string().optional(),
+    })
+    .optional(),
+  resources: z
+    .object({
+      memory: z.string().optional(),
+      cpu: z.number().positive().optional(),
+    })
+    .optional(),
+});
+
 export const CogitatorConfigSchema = z.object({
   llm: LLMConfigSchema.optional(),
   limits: LimitsConfigSchema.optional(),
@@ -271,6 +305,7 @@ export const CogitatorConfigSchema = z.object({
   guardrails: GuardrailConfigSchema.optional(),
   costRouting: CostRoutingConfigSchema.optional(),
   logging: LoggingConfigSchema.optional(),
+  deploy: DeployConfigSchema.optional(),
 });
 
 export type CogitatorConfigInput = z.input<typeof CogitatorConfigSchema>;

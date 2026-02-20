@@ -59,6 +59,17 @@ export function loadEnvConfig(): CogitatorConfigInput {
     config.limits = limits;
   }
 
+  const deployTarget = getEnv('DEPLOY_TARGET');
+  const deployPort = getEnvNumber('DEPLOY_PORT');
+  const deployRegistry = getEnv('DEPLOY_REGISTRY');
+  if (deployTarget || deployPort || deployRegistry) {
+    (config as Record<string, unknown>).deploy = {
+      ...(deployTarget ? { target: deployTarget } : {}),
+      ...(deployPort ? { port: deployPort } : {}),
+      ...(deployRegistry ? { registry: deployRegistry } : {}),
+    };
+  }
+
   return config;
 }
 

@@ -271,10 +271,21 @@ function createTestTools(): Record<string, Tool>; // calculator, echo, failing t
 
 Environment gates: `TEST_REDIS=true` for Redis/worker queue tests, `TEST_DOCKER=true` for Docker sandbox tests.
 
-## Totals (Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5)
+### Phase 6 (Reliability & Resilience) — Done
 
-- **42 test files** (12 Phase 1 + 8 Phase 2 + 7 Phase 3 + 9 Phase 4 + 6 Phase 5)
-- **267 test cases** (37 Phase 1 + 33 Phase 2 + 33 Phase 3 + 98 Phase 4 + 66 Phase 5)
+| Test File                              | Tests  | What's covered                                                                                                      |
+| -------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------- |
+| `reliability/llm-resilience.e2e.ts`    | 10     | Mid-stream disconnect, malformed JSON, dead server, stall timeout, withRetry, CircuitBreaker, withFallback          |
+| `reliability/memory-stability.e2e.ts`  | 4      | Agent loop heap check (Ollama-gated), Cogitator create/close cycles, InMemoryAdapter add/clear, maxEntries eviction |
+| `reliability/error-propagation.e2e.ts` | 8      | HTTP status→error mapping (429, 500, 401, 400, 404), A2A task failure, SSE stream errors, streaming 429             |
+| **Total**                              | **22** |                                                                                                                     |
+
+Environment gates: `TEST_OLLAMA=true` for agent memory leak test.
+
+## Totals (Phase 1–6)
+
+- **45 test files** (12 + 8 + 7 + 9 + 6 + 3)
+- **289 test cases** (37 + 33 + 33 + 98 + 66 + 22)
 - **26 packages covered** (all user-facing packages)
 - **3 assertion tiers** (hard, structured, judge)
 - **2 CI modes** (PR: hard only, main: hard + judge)
