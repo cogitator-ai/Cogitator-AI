@@ -1,0 +1,148 @@
+---
+title: Datasets
+description: Load evaluation test cases from JSONL files, CSV files, or build them programmatically with filtering, sampling, and shuffling.
+---
+
+## Overview
+
+A `Dataset` is an immutable collection of `EvalCase` objects. Each case has an `input` string and optional `expected`, `context`, and `metadata` fields. Datasets are validated with Zod on construction — invalid cases throw immediately.
+
+```typescript
+interface EvalCase {
+  input: string;
+  expected?: string;
+  context?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+```
+
+## Programmatic Construction
+
+Build a dataset from an array of cases:
+
+```typescript
+import { Dataset } from '@cogitator-ai/evals';
+
+const dataset = Dataset.from([
+  { input: 'What is 2+2?', expected: '4' },
+  { input: 'Capital of France?', expected: 'Paris' },
+  {
+    input: 'Summarize this document',
+    context: { document: 'Long text here...' },
+    metadata: { category: 'summarization' },
+  },
+]);
+
+console.log(dataset.length); // 3
+```
+
+The `expected` field is optional — some metrics (like LLM-as-judge) don't need it.
+
+## JSONL Loading
+
+Load cases from a JSONL file where each line is a JSON object:
+
+```typescript
+const dataset = await Dataset.fromJsonl('./data/eval-cases.jsonl');
+```
+
+Example JSONL file:
+
+```json
+{"input": "What is 2+2?", "expected": "4"}
+{"input": "Capital of France?", "expected": "Paris"}
+{"input": "Translate hello to Spanish", "expected": "hola"}
+```
+
+Each line is validated against the `EvalCase` schema. Invalid JSON or missing `input` fields throw with the line number.
+
+You can also use the standalone loader:
+
+```typescript
+import { loadJsonl } from '@cogitator-ai/evals';
+
+const cases = await loadJsonl('./data/eval-cases.jsonl');
+const dataset = Dataset.from(cases);
+```
+
+## CSV Loading
+
+Load cases from a CSV file. Requires `papaparse` as a peer dependency.
+
+```bash
+pnpm add papaparse
+```
+
+```typescript
+const dataset = await Dataset.fromCsv('./data/eval-cases.csv');
+```
+
+Example CSV file:
+
+```csv
+input,expected,metadata.category,context.topic
+What is 2+2?,4,math,arithmetic
+Capital of France?,Paris,geography,europe
+```
+
+The CSV must have an `input` column. The `expected` column is optional. Columns prefixed with `metadata.` are extracted into the metadata object, and columns prefixed with `context.` go into the context object.
+
+Standalone loader:
+
+```typescript
+import { loadCsv } from '@cogitator-ai/evals';
+
+const cases = await loadCsv('./data/eval-cases.csv');
+```
+
+## Filtering
+
+Create a subset of cases matching a predicate. Returns a new `Dataset` — the original is unchanged.
+
+```typescript
+const mathOnly = dataset.filter((c) => c.metadata?.category === 'math');
+
+const withExpected = dataset.filter((c) => c.expected !== undefined);
+```
+
+## Sampling
+
+Randomly sample `n` cases from the dataset. Useful for quick smoke tests on large datasets.
+
+```typescript
+const sample = dataset.sample(10);
+console.log(sample.length); // 10 (or less if dataset is smaller)
+```
+
+If `n` exceeds the dataset size, all cases are returned (shuffled).
+
+## Shuffling
+
+Randomize the order of cases. Returns a new `Dataset`.
+
+```typescript
+const shuffled = dataset.shuffle();
+```
+
+## Iteration
+
+Datasets are iterable and expose a `cases` property:
+
+```typescript
+for (const evalCase of dataset) {
+  console.log(evalCase.input);
+}
+
+const allCases = dataset.cases; // readonly EvalCase[]
+```
+
+## Chaining
+
+Filter, sample, and shuffle are chainable:
+
+```typescript
+const subset = dataset
+  .filter((c) => c.metadata?.difficulty === 'hard')
+  .shuffle()
+  .sample(50);
+```

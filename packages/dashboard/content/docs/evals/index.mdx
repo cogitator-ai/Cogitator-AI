@@ -1,0 +1,149 @@
+---
+title: Evaluation Framework
+description: Systematically evaluate LLM agents with @cogitator-ai/evals — dataset-driven testing, deterministic and LLM-as-judge metrics, assertions, A/B comparison, and CI-ready reporters.
+---
+
+## Why Evaluate?
+
+LLM outputs are non-deterministic. A prompt change that improves one response might degrade ten others. Without systematic evaluation, you're flying blind. `@cogitator-ai/evals` gives you a structured way to measure agent quality, catch regressions, and compare model configurations — all with statistical rigor.
+
+## Installation
+
+```bash
+pnpm add @cogitator-ai/evals
+```
+
+Optional peer dependency for CSV dataset loading:
+
+```bash
+pnpm add papaparse
+```
+
+## Quick Start
+
+```typescript
+import { Dataset, EvalSuite, exactMatch, contains, threshold } from '@cogitator-ai/evals';
+
+const dataset = Dataset.from([
+  { input: 'What is 2+2?', expected: '4' },
+  { input: 'Capital of France?', expected: 'Paris' },
+  { input: 'Largest planet?', expected: 'Jupiter' },
+]);
+
+const suite = new EvalSuite({
+  dataset,
+  target: {
+    fn: async (input) => {
+      // your agent or LLM call here
+      return 'some response';
+    },
+  },
+  metrics: [exactMatch(), contains()],
+  assertions: [threshold('exactMatch', 0.8)],
+});
+
+const result = await suite.run();
+result.report('console');
+```
+
+## Architecture
+
+```
+┌──────────┐    ┌───────────┐    ┌─────────┐    ┌────────────┐
+│ Dataset  │───▶│ EvalSuite │───▶│ Metrics │───▶│ Assertions │
+└──────────┘    └───────────┘    └─────────┘    └────────────┘
+                      │                                │
+                      ▼                                ▼
+                ┌───────────┐                   ┌────────────┐
+                │  Target   │                   │ Reporters  │
+                └───────────┘                   └────────────┘
+```
+
+**Eval flow:** Load test cases from a Dataset (JSONL, CSV, or programmatic) → EvalSuite runs each case against a Target (agent or function) with concurrency control → Metrics score each response → Scores are aggregated (mean, median, p95, etc.) → Assertions check thresholds and regressions → Reporters output results to console, JSON, CSV, or CI.
+
+## EvalSuite
+
+The core class that orchestrates evaluation runs.
+
+```typescript
+const suite = new EvalSuite({
+  dataset,                // required — Dataset instance
+  target: { fn },         // required — what to evaluate
+  metrics: [...],         // optional — per-case scoring functions
+  statisticalMetrics: [], // optional — aggregate metrics (latency, cost)
+  judge: { model: '...'}, // required if using LLM metrics
+  assertions: [...],      // optional — pass/fail checks
+  concurrency: 5,         // optional — parallel case execution
+  timeout: 30000,         // optional — per-case timeout in ms
+  retries: 0,             // optional — retry failed cases
+  onProgress: (p) => {},  // optional — progress callback
+});
+```
+
+### Target
+
+The target defines what you're evaluating. Use `fn` for a simple function, or `agent` + `cogitator` for a full Cogitator agent:
+
+```typescript
+// function target
+const target = {
+  fn: async (input: string) => {
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [{ role: 'user', content: input }],
+    });
+    return response.choices[0].message.content!;
+  },
+};
+
+// agent target
+const target = {
+  agent: myAgent,
+  cogitator: runtime,
+};
+```
+
+### Results
+
+`suite.run()` returns `EvalSuiteResult` with everything you need:
+
+```typescript
+const result = await suite.run();
+
+result.results;     // per-case outputs and scores
+result.aggregated;  // { exactMatch: { mean, median, p95, ... }, ... }
+result.assertions;  // [{ name, passed, message }, ...]
+result.stats;       // { total, duration, cost }
+
+result.report('console');
+result.report(['json', 'csv'], { path: './eval-report' });
+result.saveBaseline('./baseline.json');
+```
+
+## EvalBuilder
+
+Fluent builder API as an alternative to direct `EvalSuite` construction:
+
+```typescript
+import { EvalBuilder, Dataset, exactMatch, contains, latency, threshold } from '@cogitator-ai/evals';
+
+const suite = new EvalBuilder()
+  .withDataset(dataset)
+  .withTarget({ fn: myFn })
+  .withMetrics([exactMatch(), contains()])
+  .withStatisticalMetrics([latency()])
+  .withAssertions([threshold('exactMatch', 0.9)])
+  .withConcurrency(10)
+  .withTimeout(15000)
+  .build();
+
+const result = await suite.run();
+```
+
+## Next Steps
+
+- [Datasets](/docs/evals/datasets) — load test cases from JSONL, CSV, or build programmatically
+- [Metrics](/docs/evals/metrics) — deterministic, LLM-as-judge, statistical, and custom metrics
+- [Assertions](/docs/evals/assertions) — threshold checks, regression detection, custom assertions
+- [A/B Comparison](/docs/evals/comparison) — compare two targets with statistical significance testing
+- [Reporters](/docs/evals/reporters) — console, JSON, CSV, and CI output formats

@@ -1,0 +1,162 @@
+---
+title: Assertions
+description: Set pass/fail criteria with threshold checks, baseline regression detection, and custom assertion logic.
+---
+
+## Overview
+
+Assertions run after all metrics are aggregated and produce pass/fail results. They're the quality gates that determine whether an eval run succeeded. Use them in CI to block deployments when quality drops.
+
+```typescript
+interface AssertionResult {
+  name: string;
+  passed: boolean;
+  message: string;
+  actual?: number;
+  expected?: number;
+}
+```
+
+Assertions receive aggregated metric data — mean, median, p95, min, max, stdDev for each metric — plus overall suite stats (total cases, duration, cost).
+
+## threshold
+
+The most common assertion. Checks that a metric's mean score meets a minimum value. For latency and cost metrics (detected by name prefix), the check is inverted — the actual value must be at or below the threshold.
+
+```typescript
+import { threshold } from '@cogitator-ai/evals';
+
+const suite = new EvalSuite({
+  dataset,
+  target: { fn },
+  metrics: [exactMatch(), contains()],
+  assertions: [
+    threshold('exactMatch', 0.9),    // mean exactMatch >= 0.9
+    threshold('contains', 0.95),     // mean contains >= 0.95
+    threshold('latency.p95', 5000),  // p95 latency <= 5000ms
+    threshold('cost.mean', 0.01),    // mean cost <= $0.01
+  ],
+});
+```
+
+### Dot-path Access
+
+You can access nested aggregation fields with dot notation:
+
+| Path              | Resolves to                          |
+| ----------------- | ------------------------------------ |
+| `exactMatch`      | `aggregated.exactMatch.mean`         |
+| `exactMatch.p95`  | `aggregated.exactMatch.p95`          |
+| `latency.p99`     | `aggregated.latency.p99`            |
+| `cost.median`     | `aggregated.cost.median`             |
+
+### Direction Detection
+
+Metrics whose names start with `latency` or `cost` (or end with `Duration` or `Latency`) are treated as "lower is better" — the assertion passes when the actual value is at or below the threshold. All other metrics are "higher is better".
+
+## noRegression
+
+Compares current results against a saved baseline file. Fails if any metric regresses beyond a tolerance percentage.
+
+### Step 1: Save a baseline
+
+Run your eval suite and save the baseline:
+
+```typescript
+const result = await suite.run();
+result.saveBaseline('./baseline.json');
+```
+
+This writes a JSON file mapping metric names to their mean scores:
+
+```json
+{
+  "exactMatch": 0.92,
+  "contains": 0.97
+}
+```
+
+### Step 2: Assert no regression
+
+In subsequent runs, compare against the baseline:
+
+```typescript
+import { noRegression } from '@cogitator-ai/evals';
+
+const suite = new EvalSuite({
+  dataset,
+  target: { fn },
+  metrics: [exactMatch(), contains()],
+  assertions: [
+    noRegression('./baseline.json'),
+    noRegression('./baseline.json', { tolerance: 0.1 }),  // 10% tolerance
+  ],
+});
+```
+
+| Option      | Type   | Default | Description                                           |
+| ----------- | ------ | ------- | ----------------------------------------------------- |
+| `tolerance` | number | 0.05    | Allowed regression as a fraction (0.05 = 5%)          |
+
+For "higher is better" metrics, the assertion fails if `actual < baseline * (1 - tolerance)`. For "lower is better" metrics (latency, cost), it fails if `actual > baseline * (1 + tolerance)`.
+
+### Baseline Workflow
+
+A typical CI workflow:
+
+1. Establish a baseline on `main`: run evals, `saveBaseline('./baseline.json')`, commit it
+2. On each PR: run evals with `noRegression('./baseline.json')`
+3. If the PR improves scores: update the baseline file
+4. If the PR regresses: fix the issue or adjust tolerance
+
+## Custom Assertions
+
+Build arbitrary pass/fail logic with the `assertion()` factory:
+
+```typescript
+import { assertion } from '@cogitator-ai/evals';
+
+const budgetCheck = assertion({
+  name: 'budgetCheck',
+  check: (_aggregated, stats) => stats.cost < 1.0,
+  message: 'Total eval cost exceeded $1.00 budget',
+});
+
+const speedCheck = assertion({
+  name: 'speedCheck',
+  check: (aggregated) => {
+    const latency = aggregated.latency;
+    return latency ? latency.p95 < 3000 : true;
+  },
+  message: 'P95 latency exceeded 3 seconds',
+});
+
+const suite = new EvalSuite({
+  dataset,
+  target: { fn },
+  metrics: [exactMatch()],
+  statisticalMetrics: [latency()],
+  assertions: [budgetCheck, speedCheck],
+});
+```
+
+The `check` function receives:
+- `aggregated` — `Record<string, AggregatedMetric>` with per-metric stats
+- `stats` — `{ total: number, duration: number, cost: number }` for the full run
+
+Return `true` for pass, `false` for fail. The optional `message` is shown on failure.
+
+## Combining Assertions
+
+Pass multiple assertions — all must pass for the suite to be considered successful:
+
+```typescript
+assertions: [
+  threshold('exactMatch', 0.9),
+  threshold('relevance', 0.8),
+  noRegression('./baseline.json'),
+  budgetCheck,
+]
+```
+
+The `report('ci')` reporter exits with code 1 if any assertion fails, making it straightforward to integrate with CI pipelines.

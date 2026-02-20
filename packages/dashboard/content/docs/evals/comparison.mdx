@@ -1,0 +1,183 @@
+---
+title: A/B Comparison
+description: Compare two agent configurations with statistical significance testing using paired t-tests and McNemar's test.
+---
+
+## Overview
+
+`EvalComparison` runs the same dataset against two targets (baseline and challenger) and determines which performs better — with statistical significance. It uses paired t-tests for continuous metrics and McNemar's test for binary metrics (0 or 1 scores).
+
+```typescript
+interface ComparisonResult {
+  summary: {
+    winner: 'baseline' | 'challenger' | 'tie';
+    metrics: Record<string, MetricComparison>;
+  };
+  baseline: EvalSuiteResult;
+  challenger: EvalSuiteResult;
+}
+
+interface MetricComparison {
+  baseline: number;      // mean score
+  challenger: number;    // mean score
+  pValue: number;        // statistical significance
+  significant: boolean;  // p < 0.05
+  winner: 'baseline' | 'challenger' | 'tie';
+}
+```
+
+## Basic Usage
+
+```typescript
+import { Dataset, EvalComparison, exactMatch, contains } from '@cogitator-ai/evals';
+
+const dataset = Dataset.from([
+  { input: 'What is 2+2?', expected: '4' },
+  { input: 'Capital of France?', expected: 'Paris' },
+  { input: 'Largest ocean?', expected: 'Pacific' },
+  // ... more cases for statistical power
+]);
+
+const comparison = new EvalComparison({
+  dataset,
+  targets: {
+    baseline: {
+      fn: async (input) => callModel('gpt-4o-mini', input),
+    },
+    challenger: {
+      fn: async (input) => callModel('gpt-4o', input),
+    },
+  },
+  metrics: [exactMatch(), contains()],
+});
+
+const result = await comparison.run();
+```
+
+## Reading Results
+
+```typescript
+const { summary, baseline, challenger } = result;
+
+console.log(`Winner: ${summary.winner}`);
+
+for (const [metric, comp] of Object.entries(summary.metrics)) {
+  console.log(
+    `${metric}: baseline=${comp.baseline.toFixed(3)} ` +
+    `challenger=${comp.challenger.toFixed(3)} ` +
+    `p=${comp.pValue.toFixed(4)} ` +
+    `significant=${comp.significant} ` +
+    `winner=${comp.winner}`
+  );
+}
+
+// full suite results are available too
+baseline.report('console');
+challenger.report('console');
+```
+
+## Statistical Tests
+
+The comparison automatically selects the right test based on the data:
+
+### Paired t-Test
+
+Used for continuous scores (e.g., faithfulness: 0.73, 0.85, 0.91). Tests whether the mean difference between paired observations is significantly different from zero.
+
+### McNemar's Test
+
+Used for binary scores (all values are exactly 0 or 1, e.g., exactMatch). Tests whether the proportion of disagreements between baseline and challenger is significantly different from random.
+
+Both tests use p < 0.05 as the significance threshold. A metric's winner is only declared when the difference is statistically significant.
+
+## Winner Determination
+
+The overall winner is determined by majority vote across metrics:
+
+1. Each metric independently determines its winner (or tie) based on statistical significance
+2. Count wins for baseline and challenger across all metrics
+3. If challenger has more wins: `'challenger'`
+4. If baseline has more wins: `'baseline'`
+5. If equal: `'tie'`
+
+## Full Example
+
+```typescript
+import {
+  Dataset,
+  EvalComparison,
+  exactMatch,
+  contains,
+  faithfulness,
+  latency,
+} from '@cogitator-ai/evals';
+
+const dataset = await Dataset.fromJsonl('./data/eval-cases.jsonl');
+
+const comparison = new EvalComparison({
+  dataset,
+  targets: {
+    baseline: {
+      fn: async (input) => {
+        const res = await fetch('http://localhost:3000/v1/chat', {
+          method: 'POST',
+          body: JSON.stringify({ model: 'gpt-4o-mini', input }),
+        });
+        const json = await res.json();
+        return json.output;
+      },
+    },
+    challenger: {
+      fn: async (input) => {
+        const res = await fetch('http://localhost:3000/v1/chat', {
+          method: 'POST',
+          body: JSON.stringify({ model: 'gpt-4o', input }),
+        });
+        const json = await res.json();
+        return json.output;
+      },
+    },
+  },
+  metrics: [exactMatch(), contains(), faithfulness()],
+  statisticalMetrics: [latency()],
+  judge: { model: 'gpt-4o', temperature: 0 },
+  concurrency: 10,
+  timeout: 30000,
+  onProgress: ({ target, completed, total }) => {
+    console.log(`[${target}] ${completed}/${total}`);
+  },
+});
+
+const result = await comparison.run();
+
+console.log(`\nOverall winner: ${result.summary.winner}`);
+for (const [name, mc] of Object.entries(result.summary.metrics)) {
+  const sig = mc.significant ? '***' : '';
+  console.log(
+    `  ${name}: ${mc.baseline.toFixed(3)} vs ${mc.challenger.toFixed(3)} ` +
+    `(p=${mc.pValue.toFixed(4)}) ${mc.winner}${sig}`
+  );
+}
+```
+
+## Options
+
+| Option               | Type                | Default | Description                           |
+| -------------------- | ------------------- | ------- | ------------------------------------- |
+| `dataset`            | Dataset             | —       | Test cases to run                     |
+| `targets.baseline`   | EvalTarget          | —       | Baseline target                       |
+| `targets.challenger` | EvalTarget          | —       | Challenger target                     |
+| `metrics`            | MetricFn[]          | —       | Per-case metrics                      |
+| `statisticalMetrics` | StatisticalMetricFn[] | —     | Aggregate metrics                     |
+| `judge`              | JudgeConfig         | —       | Required for LLM metrics              |
+| `concurrency`        | number              | 5       | Parallel case execution per target    |
+| `timeout`            | number              | 30000   | Per-case timeout in ms                |
+| `retries`            | number              | 0       | Retry count for failed cases          |
+| `onProgress`         | function            | —       | Progress callback with target label   |
+
+## Tips for Meaningful Comparisons
+
+- **Use enough data.** Statistical tests need sample sizes to detect real differences. 30+ cases is a minimum; 100+ is better.
+- **Control variables.** Change one thing at a time — model, prompt, temperature — so you know what caused the difference.
+- **Check p-values.** A metric showing `significant: false` means the observed difference could be due to random variation.
+- **Run both targets concurrently.** `EvalComparison` runs baseline and challenger in parallel, so external factors (API latency, rate limits) affect both equally.

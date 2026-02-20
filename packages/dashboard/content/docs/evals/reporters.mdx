@@ -1,0 +1,181 @@
+---
+title: Reporters
+description: Output evaluation results to the console, JSON files, CSV files, or CI-friendly format with automatic failure exit codes.
+---
+
+## Overview
+
+Reporters format and output eval suite results. Call `result.report()` with one or more reporter types after a run completes.
+
+```typescript
+const result = await suite.run();
+
+result.report('console');
+result.report('json', { path: './reports/eval.json' });
+result.report(['console', 'json', 'csv'], { path: './reports/eval' });
+```
+
+You can also use the standalone `report()` function:
+
+```typescript
+import { report } from '@cogitator-ai/evals';
+
+report(resultData, 'console');
+report(resultData, ['json', 'csv'], { path: './eval-report' });
+```
+
+## Console Reporter
+
+Prints a formatted table of aggregated metrics, assertion results, and a summary line to stdout.
+
+```typescript
+result.report('console');
+```
+
+Example output:
+
+```
+Metric        Mean      Median    P95       Min       Max
+──────────────────────────────────────────────────────────
+exactMatch    0.9200    1.0000    1.0000    0.0000    1.0000
+contains      0.9600    1.0000    1.0000    0.0000    1.0000
+
+Assertions
+  ✓ threshold(exactMatch) exactMatch = 0.92 >= 0.9
+  ✗ threshold(contains) contains = 0.96, expected >= 0.98
+
+Summary: 50 cases | 12340ms | $0.52 | 1 passed 1 failed
+```
+
+Assertions show green check marks for passes and red crosses for failures.
+
+## JSON Reporter
+
+Writes the full result data to a JSON file. Includes per-case results with scores, aggregated metrics, assertions, and stats.
+
+```typescript
+result.report('json', { path: './eval-report.json' });
+```
+
+Default path: `eval-report.json`
+
+The JSON output includes:
+
+```json
+{
+  "results": [
+    {
+      "case": { "input": "...", "expected": "..." },
+      "output": "...",
+      "duration": 1234,
+      "scores": [
+        { "name": "exactMatch", "score": 1 },
+        { "name": "contains", "score": 1 }
+      ]
+    }
+  ],
+  "aggregated": {
+    "exactMatch": { "name": "exactMatch", "mean": 0.92, "median": 1, "p95": 1, ... }
+  },
+  "assertions": [
+    { "name": "threshold(exactMatch)", "passed": true, "message": "..." }
+  ],
+  "stats": { "total": 50, "duration": 12340, "cost": 0.52 }
+}
+```
+
+## CSV Reporter
+
+Writes per-case results to a CSV file with one row per eval case. Metric scores are included as additional columns.
+
+```typescript
+result.report('csv', { path: './eval-report.csv' });
+```
+
+Default path: `eval-report.csv`
+
+Output format:
+
+```csv
+input,expected,output,duration,exactMatch,contains
+What is 2+2?,4,4,89,1,1
+Capital of France?,Paris,paris,124,0,1
+```
+
+Fields containing commas, quotes, or newlines are properly escaped.
+
+## CI Reporter
+
+Minimal output designed for CI pipelines. Prints one line per assertion and exits with code 1 if any assertion fails.
+
+```typescript
+result.report('ci');
+```
+
+Example output:
+
+```
+Eval: 50 cases | 12340ms | $0.52
+  PASS threshold(exactMatch)
+  FAIL threshold(contains): contains = 0.96, expected >= 0.98
+Result: 1 passed, 1 failed
+```
+
+The process exits with code 1 when failures are detected, which causes CI jobs to fail automatically. Use this in your test scripts:
+
+```json
+{
+  "scripts": {
+    "eval": "tsx eval/run.ts",
+    "eval:ci": "tsx eval/run-ci.ts"
+  }
+}
+```
+
+```typescript
+// eval/run-ci.ts
+const result = await suite.run();
+result.report('ci');
+```
+
+## Multiple Reporters
+
+Pass an array of reporter types to output in multiple formats at once:
+
+```typescript
+result.report(['console', 'json', 'csv'], { path: './reports/eval' });
+```
+
+The `path` option is shared across file-based reporters. JSON appends `.json` and CSV appends `.csv` to the base path automatically if needed.
+
+## CI Integration Example
+
+```typescript
+import {
+  Dataset,
+  EvalSuite,
+  exactMatch,
+  contains,
+  latency,
+  threshold,
+  noRegression,
+} from '@cogitator-ai/evals';
+
+const dataset = await Dataset.fromJsonl('./eval/dataset.jsonl');
+
+const suite = new EvalSuite({
+  dataset,
+  target: { fn: myAgentFn },
+  metrics: [exactMatch(), contains()],
+  statisticalMetrics: [latency()],
+  assertions: [
+    threshold('exactMatch', 0.9),
+    threshold('contains', 0.95),
+    threshold('latency.p95', 5000),
+    noRegression('./eval/baseline.json'),
+  ],
+});
+
+const result = await suite.run();
+result.report(['console', 'json', 'ci'], { path: './eval/report' });
+```

@@ -1,0 +1,241 @@
+---
+title: Metrics
+description: Score agent responses with deterministic checks, LLM-as-judge evaluation, statistical aggregation, and custom metric functions.
+---
+
+## Overview
+
+Metrics score individual eval case results. Each metric receives the case input, expected output, actual output, and timing data — and returns a score between 0 and 1. Scores are automatically aggregated across the dataset into mean, median, p95, min, max, and standard deviation.
+
+```typescript
+interface MetricScore {
+  name: string;
+  score: number;
+  details?: string;
+  metadata?: Record<string, unknown>;
+}
+```
+
+## Deterministic Metrics
+
+Fast, zero-cost metrics that compare output against expected values using string operations or schema validation.
+
+### exactMatch
+
+Binary check — does the output exactly match the expected value? Trims whitespace from both sides.
+
+```typescript
+import { exactMatch } from '@cogitator-ai/evals';
+
+const suite = new EvalSuite({
+  dataset,
+  target: { fn },
+  metrics: [exactMatch()],
+});
+```
+
+Case-sensitive mode:
+
+```typescript
+exactMatch({ caseSensitive: true })
+```
+
+| Option          | Type    | Default | Description                     |
+| --------------- | ------- | ------- | ------------------------------- |
+| `caseSensitive` | boolean | false   | Require exact case match        |
+
+### contains
+
+Checks whether the output contains the expected string as a substring.
+
+```typescript
+import { contains } from '@cogitator-ai/evals';
+
+contains()                          // case-insensitive (default)
+contains({ caseSensitive: true })   // case-sensitive
+```
+
+### regex
+
+Tests the output against a regular expression pattern.
+
+```typescript
+import { regex } from '@cogitator-ai/evals';
+
+regex(/\d{4}-\d{2}-\d{2}/)   // matches date format
+regex('^(yes|no)$')           // string pattern
+```
+
+### jsonSchema
+
+Validates that the output is valid JSON conforming to a Zod schema. Useful for evaluating structured output agents.
+
+```typescript
+import { z } from 'zod';
+import { jsonSchema } from '@cogitator-ai/evals';
+
+const schema = z.object({
+  answer: z.string(),
+  confidence: z.number().min(0).max(1),
+});
+
+jsonSchema(schema)
+```
+
+Returns score 1 if the output parses as JSON and passes validation, 0 otherwise. The `details` field contains the parse or validation error on failure.
+
+## LLM-as-Judge Metrics
+
+Use an LLM to evaluate subjective qualities like faithfulness, relevance, and coherence. These metrics require a `judge` config in the EvalSuite.
+
+```typescript
+import { EvalSuite, faithfulness, relevance, coherence, helpfulness } from '@cogitator-ai/evals';
+
+const suite = new EvalSuite({
+  dataset,
+  target: { fn },
+  metrics: [faithfulness(), relevance(), coherence(), helpfulness()],
+  judge: {
+    model: 'gpt-4o',
+    temperature: 0,
+  },
+});
+```
+
+Each judge metric prompts the LLM to score the response on a 0–1 scale and return JSON with `score` and `reasoning`. The score is clamped to [0, 1].
+
+### Built-in Judge Metrics
+
+| Metric           | Evaluates                                                  |
+| ---------------- | ---------------------------------------------------------- |
+| `faithfulness()`  | Whether the response is faithful to facts in the input    |
+| `relevance()`     | Whether the response addresses the question asked         |
+| `coherence()`     | Whether the response is logical and well-structured       |
+| `helpfulness()`   | Whether the response would be useful to the user          |
+
+### Custom Judge Metrics
+
+Create a judge metric with your own evaluation prompt:
+
+```typescript
+import { llmMetric } from '@cogitator-ai/evals';
+
+const tone = llmMetric({
+  name: 'professionalTone',
+  prompt: 'Evaluate whether the response maintains a professional, business-appropriate tone.',
+});
+
+const suite = new EvalSuite({
+  dataset,
+  target: { fn },
+  metrics: [tone],
+  judge: { model: 'gpt-4o', temperature: 0 },
+});
+```
+
+The framework appends scoring instructions to your prompt automatically.
+
+### Manual Judge Binding
+
+For advanced use cases, you can bind the judge context manually instead of passing it through EvalSuite:
+
+```typescript
+import { faithfulness, bindJudgeContext } from '@cogitator-ai/evals';
+
+const bound = bindJudgeContext(faithfulness(), {
+  cogitator: { run: async ({ input }) => ({ output: await callLLM(input) }) },
+  judgeConfig: { model: 'gpt-4o', temperature: 0 },
+});
+```
+
+## Statistical Metrics
+
+Aggregate metrics that operate on the full result set rather than individual cases. They compute distributions over latency, cost, and token usage.
+
+```typescript
+import { latency, cost, tokenUsage } from '@cogitator-ai/evals';
+
+const suite = new EvalSuite({
+  dataset,
+  target: { agent, cogitator },
+  metrics: [exactMatch()],
+  statisticalMetrics: [latency(), cost(), tokenUsage()],
+});
+```
+
+### latency
+
+Reports execution time distribution across all cases.
+
+```typescript
+// result.aggregated.latency.metadata:
+// { p50, p95, p99, mean, median, min, max }
+```
+
+### cost
+
+Reports cost distribution. Requires the target to return `usage` data with a `cost` field.
+
+```typescript
+// result.aggregated.cost.metadata:
+// { total, mean, median, min, max }
+```
+
+### tokenUsage
+
+Reports token consumption. Requires `usage` data with `inputTokens` and `outputTokens`.
+
+```typescript
+// result.aggregated.tokenUsage.metadata:
+// { totalInput, totalOutput, totalTokens, meanInput, meanOutput }
+```
+
+## Custom Metrics
+
+Create a fully custom metric with the `metric()` factory:
+
+```typescript
+import { metric } from '@cogitator-ai/evals';
+
+const wordCount = metric({
+  name: 'wordCount',
+  evaluate: ({ output, expected }) => {
+    const actual = output.split(/\s+/).length;
+    const target = expected ? parseInt(expected) : 100;
+    const ratio = Math.min(actual, target) / Math.max(actual, target);
+    return { score: ratio, details: `${actual} words (target: ${target})` };
+  },
+});
+
+const responseLength = metric({
+  name: 'responseLength',
+  evaluate: async ({ output }) => {
+    const len = output.length;
+    const score = Math.min(len / 500, 1);
+    return { score };
+  },
+});
+```
+
+The `evaluate` function receives `{ input, output, expected, context }` and must return `{ score, details? }`. The score is automatically clamped to [0, 1]. Both sync and async evaluate functions are supported.
+
+## Combining Metrics
+
+Pass any combination of metric types to EvalSuite:
+
+```typescript
+const suite = new EvalSuite({
+  dataset,
+  target: { fn },
+  metrics: [
+    exactMatch(),
+    contains(),
+    faithfulness(),
+    wordCount,
+  ],
+  statisticalMetrics: [latency(), cost()],
+  judge: { model: 'gpt-4o', temperature: 0 },
+});
+```
+
+Deterministic and LLM metrics run per-case. Statistical metrics run once over the full result set after all cases complete.
