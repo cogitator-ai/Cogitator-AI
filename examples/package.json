@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@ai-sdk/provider": "^1.0.0",
     "@cogitator-ai/a2a": "workspace:*",
     "@cogitator-ai/ai-sdk": "workspace:*",
     "@cogitator-ai/core": "workspace:*",
@@ -23,8 +24,13 @@
     "@cogitator-ai/wasm-tools": "workspace:*",
     "@cogitator-ai/worker": "workspace:*",
     "@cogitator-ai/workflows": "workspace:*",
+    "@koa/router": "^15.3.0",
+    "ai": "^4.0.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.0",
+    "fastify": "^5.7.4",
+    "hono": "^4.12.0",
+    "koa": "^2.15.0",
     "openai": "^6.22.0",
     "zod": "^4.3.6"
   },
