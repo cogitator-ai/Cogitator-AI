@@ -7,6 +7,7 @@ import type {
   A2AStreamEvent,
   A2AClientConfig,
   SendMessageConfiguration,
+  TaskFilter,
 } from './types.js';
 import { isTerminalState } from './types.js';
 import type { JsonRpcResponse } from './json-rpc.js';
@@ -97,6 +98,26 @@ export class A2AClient {
   async cancelTask(taskId: string): Promise<A2ATask> {
     const result = await this.rpc('tasks/cancel', { id: taskId });
     return result as A2ATask;
+  }
+
+  async continueTask(
+    taskId: string,
+    text: string,
+    config?: SendMessageConfiguration
+  ): Promise<A2ATask> {
+    return this.sendMessage(
+      {
+        role: 'user',
+        parts: [{ type: 'text', text }],
+        taskId,
+      },
+      config
+    );
+  }
+
+  async listTasks(filter?: TaskFilter): Promise<A2ATask[]> {
+    const result = (await this.rpc('tasks/list', filter ?? {})) as { tasks: A2ATask[] };
+    return result.tasks;
   }
 
   asTool(options?: A2AToolOptions): Tool<{ task: string }, A2AToolResult> {

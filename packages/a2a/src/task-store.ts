@@ -28,6 +28,12 @@ export class InMemoryTaskStore implements TaskStore {
       tasks = tasks.filter((t) => t.status.state === filter.state);
     }
 
+    tasks.sort((a, b) => {
+      const ta = new Date(a.status.timestamp).getTime();
+      const tb = new Date(b.status.timestamp).getTime();
+      return tb - ta;
+    });
+
     const offset = filter?.offset ?? 0;
     const limit = filter?.limit ?? tasks.length;
     tasks = tasks.slice(offset, offset + limit);

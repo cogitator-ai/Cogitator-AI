@@ -5,8 +5,8 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['src/__tests__/**/*.e2e.ts'],
-    testTimeout: 60000,
-    hookTimeout: 30000,
+    testTimeout: 120000,
+    hookTimeout: 60000,
     fileParallelism: false,
     coverage: {
       provider: 'v8',

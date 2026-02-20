@@ -416,9 +416,21 @@ importers:
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@cogitator-ai/mcp':
+        specifier: workspace:*
+        version: link:../mcp
+      '@cogitator-ai/memory':
+        specifier: workspace:*
+        version: link:../memory
+      '@cogitator-ai/swarms':
+        specifier: workspace:*
+        version: link:../swarms
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
+      '@cogitator-ai/workflows':
+        specifier: workspace:*
+        version: link:../workflows
       express:
         specifier: ^5.1.0
         version: 5.2.1

@@ -4,6 +4,7 @@ import type {
   A2ATask,
   A2AMessage,
   TaskStore,
+  TaskFilter,
   TaskStatus,
   A2AStreamEvent,
   Artifact,
@@ -149,6 +150,37 @@ export class TaskManager extends EventEmitter {
     if (!updated) throw new A2AError(errors.taskNotFound(taskId));
     this.emitStatusUpdate(updated);
     return updated;
+  }
+
+  async continueTask(taskId: string, message: A2AMessage): Promise<A2ATask> {
+    const task = await this.store.get(taskId);
+    if (!task) throw new A2AError(errors.taskNotFound(taskId));
+
+    const continuableStates = ['input-required', 'completed'];
+    if (!continuableStates.includes(task.status.state)) {
+      throw new A2AError(errors.taskNotContinuable(taskId, task.status.state));
+    }
+
+    const history = [...task.history, message];
+    const status: TaskStatus = {
+      state: 'working',
+      timestamp: new Date().toISOString(),
+    };
+
+    await this.store.update(taskId, { history, status });
+    const updated = await this.store.get(taskId);
+    if (!updated) throw new A2AError(errors.taskNotFound(taskId));
+
+    this.emitStatusUpdate(updated);
+    return updated;
+  }
+
+  async listTasks(filter?: TaskFilter): Promise<A2ATask[]> {
+    return this.store.list(filter);
+  }
+
+  async getTasksByContext(contextId: string): Promise<A2ATask[]> {
+    return this.store.list({ contextId });
   }
 
   async getTask(taskId: string): Promise<A2ATask> {

@@ -8,6 +8,9 @@ export type { AgentCardOptions } from './agent-card.js';
 
 export { InMemoryTaskStore } from './task-store.js';
 
+export { RedisTaskStore } from './redis-task-store.js';
+export type { RedisClientLike, RedisTaskStoreConfig } from './redis-task-store.js';
+
 export { TaskManager } from './task-manager.js';
 export type { TaskManagerConfig } from './task-manager.js';
 
@@ -23,6 +26,7 @@ export type { JsonRpcRequest, JsonRpcResponse, JsonRpcError } from './json-rpc.j
 export {
   taskNotFound,
   taskNotCancelable,
+  taskNotContinuable,
   pushNotificationsNotSupported,
   unsupportedOperation,
   contentTypeNotSupported,
@@ -58,6 +62,7 @@ export type {
   TaskStore,
   TaskStatusUpdateEvent,
   TaskArtifactUpdateEvent,
+  TokenStreamEvent,
   A2AStreamEvent,
   AgentRunResult,
   CogitatorLike,

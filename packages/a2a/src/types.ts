@@ -153,7 +153,14 @@ export interface TaskArtifactUpdateEvent {
   timestamp: string;
 }
 
-export type A2AStreamEvent = TaskStatusUpdateEvent | TaskArtifactUpdateEvent;
+export interface TokenStreamEvent {
+  type: 'token';
+  taskId: string;
+  token: string;
+  timestamp: string;
+}
+
+export type A2AStreamEvent = TaskStatusUpdateEvent | TaskArtifactUpdateEvent | TokenStreamEvent;
 
 export interface AgentRunResult {
   output: string;

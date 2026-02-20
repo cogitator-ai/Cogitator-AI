@@ -1,4 +1,16 @@
-import { Cogitator, Agent, tool, OllamaBackend, GoogleBackend } from '@cogitator-ai/core';
+import {
+  Cogitator,
+  Agent,
+  tool,
+  OllamaBackend,
+  GoogleBackend,
+  parseModel,
+  createLLMBackend,
+} from '@cogitator-ai/core';
+import { InMemoryAdapter } from '@cogitator-ai/memory';
+import { WorkflowExecutor } from '@cogitator-ai/workflows';
+import { Swarm } from '@cogitator-ai/swarms';
+import type { SwarmConfig } from '@cogitator-ai/swarms';
 import { z } from 'zod';
 import { LLMJudge } from './judge';
 
@@ -92,3 +104,21 @@ export function createTestJudge(): LLMJudge | null {
 export function getTestModel(): string {
   return TEST_MODEL;
 }
+
+export function getOllamaUrl(): string {
+  return OLLAMA_URL;
+}
+
+export function createTestMemoryAdapter(): InMemoryAdapter {
+  return new InMemoryAdapter({ provider: 'memory' });
+}
+
+export function createTestWorkflowExecutor(cogitator: Cogitator): WorkflowExecutor {
+  return new WorkflowExecutor(cogitator);
+}
+
+export function createTestSwarm(cogitator: Cogitator, config: SwarmConfig): Swarm {
+  return new Swarm(cogitator, config);
+}
+
+export { parseModel, createLLMBackend, GoogleBackend };

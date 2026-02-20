@@ -8,6 +8,14 @@ export function taskNotCancelable(taskId: string): JsonRpcError {
   return { code: -32002, message: `Task is not cancelable: ${taskId}`, data: { taskId } };
 }
 
+export function taskNotContinuable(taskId: string, state: string): JsonRpcError {
+  return {
+    code: -32008,
+    message: `Task cannot be continued in state '${state}': ${taskId}`,
+    data: { taskId, state },
+  };
+}
+
 export function pushNotificationsNotSupported(): JsonRpcError {
   return { code: -32003, message: 'Push notifications are not supported' };
 }

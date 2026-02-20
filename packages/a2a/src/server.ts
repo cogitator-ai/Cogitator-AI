@@ -5,7 +5,9 @@ import type {
   A2AMessage,
   A2ATask,
   A2AStreamEvent,
+  TokenStreamEvent,
   SendMessageConfiguration,
+  TaskFilter,
   CogitatorLike,
 } from './types.js';
 import type { JsonRpcRequest, JsonRpcResponse } from './json-rpc.js';
@@ -176,7 +178,12 @@ export class A2AServer {
       return;
     }
 
-    const task = await this.taskManager.createTask(params.message);
+    let task: A2ATask;
+    if (params.message.taskId) {
+      task = await this.taskManager.continueTask(params.message.taskId, params.message);
+    } else {
+      task = await this.taskManager.createTask(params.message, params.message.contextId);
+    }
 
     const eventQueue: A2AStreamEvent[] = [];
     let resolve: (() => void) | null = null;
@@ -193,9 +200,23 @@ export class A2AServer {
 
     this.taskManager.on('event', onEvent);
 
+    const onToken = (token: string) => {
+      const event: TokenStreamEvent = {
+        type: 'token',
+        taskId: task.id,
+        token,
+        timestamp: new Date().toISOString(),
+      };
+      eventQueue.push(event);
+      if (resolve) {
+        resolve();
+        resolve = null;
+      }
+    };
+
     let executionDone = false;
     const executionPromise = this.taskManager
-      .executeTask(task, this.cogitator, agent, params.message)
+      .executeTask(task, this.cogitator, agent, params.message, onToken)
       .then(() => {
         executionDone = true;
         if (resolve) {
@@ -247,6 +268,8 @@ export class A2AServer {
         return this.handleGetTask(params);
       case 'tasks/cancel':
         return this.handleCancelTask(params);
+      case 'tasks/list':
+        return this.handleListTasks(params);
       default:
         throw new A2AError(errors.methodNotFound(method));
     }
@@ -267,9 +290,13 @@ export class A2AServer {
     const agent = this.agents[resolvedAgentName];
     if (!agent) throw new A2AError(errors.agentNotFound(resolvedAgentName));
 
-    const task = await this.taskManager.createTask(message);
-    const completed = await this.taskManager.executeTask(task, this.cogitator, agent, message);
-    return completed;
+    if (message.taskId) {
+      const task = await this.taskManager.continueTask(message.taskId, message);
+      return await this.taskManager.executeTask(task, this.cogitator, agent, message);
+    }
+
+    const task = await this.taskManager.createTask(message, message.contextId);
+    return await this.taskManager.executeTask(task, this.cogitator, agent, message);
   }
 
   private async handleGetTask(params: unknown): Promise<A2ATask> {
@@ -282,5 +309,11 @@ export class A2AServer {
     const { id } = params as { id: string };
     if (!id) throw new A2AError(errors.invalidParams('id is required'));
     return this.taskManager.cancelTask(id);
+  }
+
+  private async handleListTasks(params: unknown): Promise<{ tasks: A2ATask[] }> {
+    const filter = (params ?? {}) as TaskFilter;
+    const tasks = await this.taskManager.listTasks(filter);
+    return { tasks };
   }
 }

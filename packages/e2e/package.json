@@ -15,6 +15,10 @@
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/a2a": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
+    "@cogitator-ai/memory": "workspace:*",
+    "@cogitator-ai/workflows": "workspace:*",
+    "@cogitator-ai/mcp": "workspace:*",
+    "@cogitator-ai/swarms": "workspace:*",
     "express": "^5.1.0",
     "zod": "^4.3.6"
   },
