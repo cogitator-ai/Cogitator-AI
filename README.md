@@ -92,6 +92,8 @@ npx tsx examples/core/01-basic-agent.ts
 | **REST API server**          | Mount agents as HTTP endpoints with Swagger, SSE streaming, WebSocket  | [`examples/integrations/01-express-server.ts`](./examples/integrations/01-express-server.ts) |
 | **Data processing workflow** | Analyze documents in parallel, aggregate with map-reduce               | [`examples/workflows/03-map-reduce.ts`](./examples/workflows/03-map-reduce.ts)               |
 | **Knowledge graph**          | Extract entities from text, build a graph, traverse relationships      | [`examples/memory/04-knowledge-graph.ts`](./examples/memory/04-knowledge-graph.ts)           |
+| **RAG Q&A system**           | Load docs, chunk, embed, retrieve relevant context, answer questions   | [`examples/rag/01-basic-retrieval.ts`](./examples/rag/01-basic-retrieval.ts)                 |
+| **Agent evaluation**         | Measure accuracy, compare models, run A/B tests with LLM judges        | [`examples/evals/01-basic-eval.ts`](./examples/evals/01-basic-eval.ts)                       |
 | **Cross-framework agents**   | Expose your agent via Google's A2A protocol, consume external agents   | [`examples/a2a/01-a2a-server.ts`](./examples/a2a/01-a2a-server.ts)                           |
 
 ---
@@ -112,6 +114,8 @@ Install only what you need. Everything is a separate npm package.
 | [`@cogitator-ai/wasm-tools`](https://www.npmjs.com/package/@cogitator-ai/wasm-tools)         | 14 pre-built tools running in WASM sandbox (calc, json, hash, csv, markdown...)     | [wasm example](./examples/advanced/03-wasm-tools.ts)               |
 | [`@cogitator-ai/self-modifying`](https://www.npmjs.com/package/@cogitator-ai/self-modifying) | Agents that generate new tools at runtime and evolve their own architecture         | [self-modifying example](./examples/advanced/01-self-modifying.ts) |
 | [`@cogitator-ai/neuro-symbolic`](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) | Prolog-style logic, constraint solving, knowledge graphs for agents                 | [neuro-symbolic example](./examples/advanced/02-neuro-symbolic.ts) |
+| [`@cogitator-ai/rag`](https://www.npmjs.com/package/@cogitator-ai/rag)                       | RAG pipeline - document loaders, chunking, retrieval, reranking                     | [3 rag examples](./examples/rag/)                                  |
+| [`@cogitator-ai/evals`](https://www.npmjs.com/package/@cogitator-ai/evals)                   | Evaluation framework - metrics, LLM judges, A/B testing, assertions                 | [3 eval examples](./examples/evals/)                               |
 | [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy)                 | Deploy your agents to Docker or Fly.io                                              | [deploy example](./examples/infrastructure/04-deploy-docker.ts)    |
 | [`@cogitator-ai/cli`](https://www.npmjs.com/package/@cogitator-ai/cli)                       | `cogitator init` / `up` / `run` / `deploy` from your terminal                       | -                                                                  |
 
@@ -148,6 +152,7 @@ All with Swagger docs, SSE streaming, and WebSocket support. See [integration ex
 | **6 storage backends** | Redis, Postgres, SQLite, MongoDB, Qdrant, in-memory              |
 | **Semantic search**    | BM25 + vector hybrid search with Reciprocal Rank Fusion          |
 | **Knowledge graphs**   | Extract entities, build graphs, traverse multi-hop relationships |
+| **RAG pipeline**       | Document loaders, smart chunking, hybrid retrieval, reranking    |
 | **Context management** | Auto-compress long conversations to fit model limits             |
 
 ### Multi-Agent
@@ -189,6 +194,7 @@ All with Swagger docs, SSE streaming, and WebSocket support. See [integration ex
 | **Tool caching**        | Cache tool results (exact or semantic matching) |
 | **Agent serialization** | Save agents to JSON, restore later              |
 | **Debug mode**          | Full request/response logging for LLM calls     |
+| **Evals framework**     | Metrics, LLM judges, A/B testing, assertions    |
 | **Plugin system**       | Register custom LLM backends                    |
 
 ---
@@ -207,7 +213,7 @@ All with Swagger docs, SSE streaming, and WebSocket support. See [integration ex
 
 ---
 
-## 38 Runnable Examples
+## 44 Runnable Examples
 
 Every major feature has a working example you can run right now.
 
@@ -223,6 +229,8 @@ npx tsx examples/core/01-basic-agent.ts
 | [`workflows/`](./examples/workflows/)           | 3     | DAG workflows, human-in-the-loop, map-reduce                                                                                                                   |
 | [`a2a/`](./examples/a2a/)                       | 2     | A2A server and client                                                                                                                                          |
 | [`mcp/`](./examples/mcp/)                       | 1     | MCP server integration                                                                                                                                         |
+| [`rag/`](./examples/rag/)                       | 3     | Basic retrieval, chunking strategies, agent with RAG                                                                                                           |
+| [`evals/`](./examples/evals/)                   | 3     | Basic evaluation, LLM judge, A/B comparison                                                                                                                    |
 | [`integrations/`](./examples/integrations/)     | 7     | Express, Fastify, Hono, Koa, Next.js, OpenAI compat, AI SDK                                                                                                    |
 | [`infrastructure/`](./examples/infrastructure/) | 4     | Redis, PostgreSQL, job queues, Docker deploy                                                                                                                   |
 | [`advanced/`](./examples/advanced/)             | 3     | Self-modifying agents, neuro-symbolic reasoning, WASM tools                                                                                                    |
@@ -266,6 +274,8 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 | [@cogitator-ai/wasm-tools](https://www.npmjs.com/package/@cogitator-ai/wasm-tools)         | WASM-based sandboxed tools (14 built-in)                     | [![npm](https://img.shields.io/npm/v/@cogitator-ai/wasm-tools.svg)](https://www.npmjs.com/package/@cogitator-ai/wasm-tools)         |
 | [@cogitator-ai/self-modifying](https://www.npmjs.com/package/@cogitator-ai/self-modifying) | Self-modifying agents with meta-reasoning                    | [![npm](https://img.shields.io/npm/v/@cogitator-ai/self-modifying.svg)](https://www.npmjs.com/package/@cogitator-ai/self-modifying) |
 | [@cogitator-ai/neuro-symbolic](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) | Neuro-symbolic reasoning with SAT/SMT                        | [![npm](https://img.shields.io/npm/v/@cogitator-ai/neuro-symbolic.svg)](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) |
+| [@cogitator-ai/rag](https://www.npmjs.com/package/@cogitator-ai/rag)                       | RAG pipeline with loaders, chunking, retrieval, reranking    | [![npm](https://img.shields.io/npm/v/@cogitator-ai/rag.svg)](https://www.npmjs.com/package/@cogitator-ai/rag)                       |
+| [@cogitator-ai/evals](https://www.npmjs.com/package/@cogitator-ai/evals)                   | Evaluation framework with metrics, A/B testing, assertions   | [![npm](https://img.shields.io/npm/v/@cogitator-ai/evals.svg)](https://www.npmjs.com/package/@cogitator-ai/evals)                   |
 | [@cogitator-ai/dashboard](https://www.npmjs.com/package/@cogitator-ai/dashboard)           | Real-time observability dashboard                            | [![npm](https://img.shields.io/npm/v/@cogitator-ai/dashboard.svg)](https://www.npmjs.com/package/@cogitator-ai/dashboard)           |
 | [@cogitator-ai/next](https://www.npmjs.com/package/@cogitator-ai/next)                     | Next.js App Router integration                               | [![npm](https://img.shields.io/npm/v/@cogitator-ai/next.svg)](https://www.npmjs.com/package/@cogitator-ai/next)                     |
 | [@cogitator-ai/ai-sdk](https://www.npmjs.com/package/@cogitator-ai/ai-sdk)                 | Vercel AI SDK adapter (bidirectional)                        | [![npm](https://img.shields.io/npm/v/@cogitator-ai/ai-sdk.svg)](https://www.npmjs.com/package/@cogitator-ai/ai-sdk)                 |
