@@ -233,7 +233,10 @@ export class GoogleBackend extends BaseLLMBackend {
                 }
 
                 if (candidate.finishReason) {
-                  const finishReason = this.mapFinishReason(candidate.finishReason);
+                  const finishReason =
+                    accumulatedToolCalls.length > 0
+                      ? ('tool_calls' as const)
+                      : this.mapFinishReason(candidate.finishReason);
                   const streamChunk: ChatStreamChunk = {
                     id,
                     delta: {
@@ -483,7 +486,8 @@ export class GoogleBackend extends BaseLLMBackend {
       id: this.generateId(),
       content,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      finishReason: this.mapFinishReason(candidate.finishReason),
+      finishReason:
+        toolCalls.length > 0 ? 'tool_calls' : this.mapFinishReason(candidate.finishReason),
       usage: {
         inputTokens: data.usageMetadata.promptTokenCount,
         outputTokens: data.usageMetadata.candidatesTokenCount,
