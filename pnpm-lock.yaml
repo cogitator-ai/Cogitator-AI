@@ -982,6 +982,9 @@ importers:
       '@types/papaparse':
         specifier: ^5.3.15
         version: 5.5.2
+      '@types/pdf-parse':
+        specifier: ^1.1.5
+        version: 1.1.5
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
@@ -5589,6 +5592,12 @@ packages:
       '@types/node': 22.19.7
     dev: true
 
+  /@types/pdf-parse@1.1.5:
+    resolution: {integrity: sha512-kBfrSXsloMnUJOKi25s3+hRmkycHfLK6A09eRGqF/N8BkQoPUmaCr+q8Cli5FnfohEz/rsv82zAiPz/LXtOGhA==}
+    dependencies:
+      '@types/node': 22.19.7
+    dev: true
+
   /@types/pg@8.16.0:
     resolution: {integrity: sha512-RmhMd/wD+CF8Dfo+cVIy3RR5cl8CyfXQ0tGgW6XBL8L4LM/UTEbNXYRbLwU6w+CgrKBNbrQWt4FUtTfaU5jSYQ==}
     dependencies:
@@ -7033,6 +7042,7 @@ packages:
   /entities@6.0.1:
     resolution: {integrity: sha512-aN97NXWF6AWBTahfVOIrB/NShkzi5H7F9r1s9mD3cDj4Ko5f2qhhVoYMibXF7GlLveb/D2ioWay8lxI97Ven3g==}
     engines: {node: '>=0.12'}
+    requiresBuild: true
     dev: false
 
   /entities@7.0.1:
