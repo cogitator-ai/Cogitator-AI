@@ -7,3 +7,4 @@ export * from './rerankers';
 export * from './schema';
 export { RAGPipeline, type RAGPipelineDeps } from './rag-pipeline';
 export { RAGPipelineBuilder } from './rag-builder';
+export { createSearchTool, createIngestTool, ragTools, type RAGTool } from './tools';
