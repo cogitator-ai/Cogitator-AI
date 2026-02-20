@@ -3,11 +3,6 @@ description: Report a bug or unexpected behavior
 title: "[Bug]: "
 labels: ["bug", "triage"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Thanks for taking the time to fill out this bug report!
-
   - type: textarea
     id: description
     attributes:
@@ -21,7 +16,7 @@ body:
     id: reproduction
     attributes:
       label: Steps to Reproduce
-      description: Steps to reproduce the behavior
+      description: Minimal steps to reproduce the behavior
       placeholder: |
         1. Create an agent with...
         2. Run the command...
@@ -52,11 +47,24 @@ body:
       options:
         - "@cogitator-ai/core"
         - "@cogitator-ai/cli"
-        - "@cogitator-ai/dashboard"
+        - "@cogitator-ai/config"
+        - "@cogitator-ai/deploy"
+        - "@cogitator-ai/types"
+        - "@cogitator-ai/memory"
         - "@cogitator-ai/swarms"
         - "@cogitator-ai/workflows"
-        - "@cogitator-ai/memory"
+        - "@cogitator-ai/a2a"
         - "@cogitator-ai/mcp"
+        - "@cogitator-ai/express"
+        - "@cogitator-ai/fastify"
+        - "@cogitator-ai/hono"
+        - "@cogitator-ai/koa"
+        - "@cogitator-ai/next"
+        - "@cogitator-ai/dashboard"
+        - "@cogitator-ai/models"
+        - "@cogitator-ai/sandbox"
+        - "@cogitator-ai/ai-sdk"
+        - "@cogitator-ai/neuro-symbolic"
         - "Other"
     validations:
       required: true
@@ -65,8 +73,18 @@ body:
     id: version
     attributes:
       label: Version
-      description: What version are you using?
-      placeholder: "0.1.0"
+      description: What version are you using? (check package.json or `npm ls`)
+      placeholder: "0.17.0"
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - Node.js
+        - Bun
+        - Deno
+        - Other
 
   - type: dropdown
     id: os

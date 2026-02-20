@@ -3,11 +3,6 @@ description: Suggest a new feature or enhancement
 title: "[Feature]: "
 labels: ["enhancement"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Thanks for suggesting a feature! Please fill out the form below.
-
   - type: textarea
     id: problem
     attributes:
@@ -39,11 +34,24 @@ body:
       options:
         - "@cogitator-ai/core"
         - "@cogitator-ai/cli"
-        - "@cogitator-ai/dashboard"
+        - "@cogitator-ai/config"
+        - "@cogitator-ai/deploy"
+        - "@cogitator-ai/types"
+        - "@cogitator-ai/memory"
         - "@cogitator-ai/swarms"
         - "@cogitator-ai/workflows"
-        - "@cogitator-ai/memory"
+        - "@cogitator-ai/a2a"
         - "@cogitator-ai/mcp"
+        - "@cogitator-ai/express"
+        - "@cogitator-ai/fastify"
+        - "@cogitator-ai/hono"
+        - "@cogitator-ai/koa"
+        - "@cogitator-ai/next"
+        - "@cogitator-ai/dashboard"
+        - "@cogitator-ai/models"
+        - "@cogitator-ai/sandbox"
+        - "@cogitator-ai/ai-sdk"
+        - "@cogitator-ai/neuro-symbolic"
         - "New package"
         - "Not sure"
 
