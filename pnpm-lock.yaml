@@ -416,6 +416,9 @@ importers:
       '@cogitator-ai/ai-sdk':
         specifier: workspace:*
         version: link:../ai-sdk
+      '@cogitator-ai/cli':
+        specifier: workspace:*
+        version: link:../cli
       '@cogitator-ai/config':
         specifier: workspace:*
         version: link:../config
@@ -452,6 +455,12 @@ importers:
       '@cogitator-ai/openai-compat':
         specifier: workspace:*
         version: link:../openai-compat
+      '@cogitator-ai/redis':
+        specifier: workspace:*
+        version: link:../redis
+      '@cogitator-ai/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
       '@cogitator-ai/self-modifying':
         specifier: workspace:*
         version: link:../self-modifying
@@ -464,6 +473,12 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
+      '@cogitator-ai/wasm-tools':
+        specifier: workspace:*
+        version: link:../wasm-tools
+      '@cogitator-ai/worker':
+        specifier: workspace:*
+        version: link:../worker
       '@cogitator-ai/workflows':
         specifier: workspace:*
         version: link:../workflows
@@ -473,6 +488,9 @@ importers:
       '@koa/router':
         specifier: ^12.0.0
         version: 12.0.2
+      create-cogitator-app:
+        specifier: workspace:*
+        version: link:../create-cogitator-app
       express:
         specifier: ^5.1.0
         version: 5.2.1

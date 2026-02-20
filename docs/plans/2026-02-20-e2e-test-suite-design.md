@@ -257,17 +257,25 @@ function createTestTools(): Record<string, Tool>; // calculator, echo, failing t
 | `@cogitator-ai/self-modifying` | 17     | Sandbox, validator, store, observations, strategies, evolution, rollback, events |
 | **Total**                      | **98** |                                                                                  |
 
-### Phase 5 — Not started
+### Phase 5 — Done
 
-| Package                 | Priority | What to test                                           |
-| ----------------------- | -------- | ------------------------------------------------------ |
-| `@cogitator-ai/sandbox` | Medium   | Docker sandbox execution, WASM sandbox, timeout/limits |
-| `@cogitator-ai/worker`  | Low      | BullMQ job queue, distributed agent execution          |
+| Package                    | Tests  | What's covered                                                                              |
+| -------------------------- | ------ | ------------------------------------------------------------------------------------------- |
+| `@cogitator-ai/sandbox`    | 10     | Native executor (echo, stderr, exit codes, timeout, env vars), SandboxManager, Docker gated |
+| `@cogitator-ai/worker`     | 11     | MetricsCollector, DurationHistogram, formatPrometheusMetrics, JobQueue (Redis-gated)        |
+| `@cogitator-ai/redis`      | 9      | Config utilities (parseClusterNodes, createConfigFromEnv), client ops (Redis-gated)         |
+| `@cogitator-ai/wasm-tools` | 11     | Tool creation, schemas, defineWasmTool, WasmToolManager, getWasmPath                        |
+| `@cogitator-ai/cli`        | 8      | Init command scaffolding (package.json, tsconfig, cogitator.yml, agent.ts, docker)          |
+| `create-cogitator-app`     | 17     | Argument parsing, scaffold all 6 templates, docker-compose inclusion/exclusion              |
+| **Total**                  | **66** |                                                                                             |
 
-## Totals (Phase 1 + Phase 2 + Phase 3 + Phase 4)
+Environment gates: `TEST_REDIS=true` for Redis/worker queue tests, `TEST_DOCKER=true` for Docker sandbox tests.
 
-- **36 test files** (12 Phase 1 + 8 Phase 2 + 7 Phase 3 + 9 Phase 4)
-- **201 test cases** (37 Phase 1 + 33 Phase 2 + 33 Phase 3 + 98 Phase 4)
-- **20 packages covered** (core, a2a, cross-package, memory, workflows, multi-provider, mcp, swarms, server-shared, express, fastify, hono, koa, next, openai-compat, ai-sdk, config, models, neuro-symbolic, self-modifying)
+## Totals (Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5)
+
+- **42 test files** (12 Phase 1 + 8 Phase 2 + 7 Phase 3 + 9 Phase 4 + 6 Phase 5)
+- **267 test cases** (37 Phase 1 + 33 Phase 2 + 33 Phase 3 + 98 Phase 4 + 66 Phase 5)
+- **26 packages covered** (all user-facing packages)
 - **3 assertion tiers** (hard, structured, judge)
 - **2 CI modes** (PR: hard only, main: hard + judge)
+- **Environment gates** (TEST_OLLAMA, TEST_REDIS, TEST_DOCKER, GOOGLE_API_KEY)

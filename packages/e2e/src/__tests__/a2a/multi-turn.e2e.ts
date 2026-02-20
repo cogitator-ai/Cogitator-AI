@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { A2AClient, A2AServer, type CogitatorLike, type A2ATask } from '@cogitator-ai/a2a';
+import { A2AClient, type CogitatorLike, type A2ATask } from '@cogitator-ai/a2a';
 import type { AgentRunResult } from '@cogitator-ai/a2a';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
 import { startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';

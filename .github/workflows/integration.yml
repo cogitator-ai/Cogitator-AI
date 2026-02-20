@@ -85,6 +85,16 @@ jobs:
     name: E2E Tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v6
 
@@ -118,5 +128,7 @@ jobs:
         env:
           TEST_OLLAMA: 'true'
           TEST_MODEL: qwen2.5:0.5b
+          TEST_REDIS: 'true'
+          TEST_DOCKER: 'true'
           GOOGLE_API_KEY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.GOOGLE_API_KEY || '' }}
           NODE_OPTIONS: '--max-old-space-size=4096'

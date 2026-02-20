@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { createNeuroSymbolic } from '@cogitator-ai/neuro-symbolic';
 import type { NeuroSymbolic } from '@cogitator-ai/neuro-symbolic';
 import { createAction } from '@cogitator-ai/neuro-symbolic';
-import { ConstraintBuilder, constant, or, not } from '@cogitator-ai/neuro-symbolic';
+import { constant, not } from '@cogitator-ai/neuro-symbolic';
 import type { Plan, ActionSchema } from '@cogitator-ai/types';
 
 describe('Neuro-Symbolic: Logic Programming', () => {
