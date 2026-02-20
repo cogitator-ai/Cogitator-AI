@@ -18,6 +18,7 @@
     "@cogitator-ai/neuro-symbolic": "workspace:*",
     "@cogitator-ai/next": "workspace:*",
     "@cogitator-ai/openai-compat": "workspace:*",
+    "@cogitator-ai/rag": "workspace:*",
     "@cogitator-ai/redis": "workspace:*",
     "@cogitator-ai/self-modifying": "workspace:*",
     "@cogitator-ai/swarms": "workspace:*",
