@@ -31,7 +31,7 @@ describe('Sandbox: Native Executor', () => {
 
   it('NativeSandboxExecutor captures stderr', async () => {
     const request: SandboxExecutionRequest = {
-      command: ['node', '-e', 'console.error("err output")'],
+      command: ['node -e "console.error(\'err output\')"'],
     };
     const config: SandboxConfig = { type: 'native' };
 
@@ -44,7 +44,7 @@ describe('Sandbox: Native Executor', () => {
 
   it('NativeSandboxExecutor handles non-zero exit code', async () => {
     const request: SandboxExecutionRequest = {
-      command: ['node', '-e', 'process.exit(42)'],
+      command: ['node -e "process.exit(42)"'],
     };
     const config: SandboxConfig = { type: 'native' };
 
