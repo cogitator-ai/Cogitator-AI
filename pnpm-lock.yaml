@@ -528,6 +528,9 @@ importers:
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@cogitator-ai/evals':
+        specifier: workspace:*
+        version: link:../evals
       '@cogitator-ai/express':
         specifier: workspace:*
         version: link:../express

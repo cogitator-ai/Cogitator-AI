@@ -17,6 +17,7 @@
     "@cogitator-ai/cli": "workspace:*",
     "@cogitator-ai/config": "workspace:*",
     "@cogitator-ai/core": "workspace:*",
+    "@cogitator-ai/evals": "workspace:*",
     "@cogitator-ai/express": "workspace:*",
     "@cogitator-ai/fastify": "workspace:*",
     "@cogitator-ai/hono": "workspace:*",

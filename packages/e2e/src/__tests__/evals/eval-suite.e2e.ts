@@ -8,24 +8,36 @@ import {
   contains,
   faithfulness,
   bindJudgeContext,
-} from '../index';
+} from '@cogitator-ai/evals';
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const hasApiKey = !!GOOGLE_API_KEY || !!OPENAI_API_KEY;
 
 function getModel(): string {
-  if (GOOGLE_API_KEY) return 'google/gemini-2.0-flash';
+  if (GOOGLE_API_KEY) return 'google/gemini-2.5-flash';
   return 'openai/gpt-4o-mini';
 }
 
-describe.skipIf(!hasApiKey)('evals e2e', () => {
+function createCogitator(): Cogitator {
+  return new Cogitator({
+    llm: {
+      defaultModel: getModel(),
+      providers: {
+        ...(GOOGLE_API_KEY && { google: { apiKey: GOOGLE_API_KEY } }),
+        ...(OPENAI_API_KEY && { openai: { apiKey: OPENAI_API_KEY } }),
+      },
+    },
+  });
+}
+
+const describeIf = hasApiKey ? describe : describe.skip;
+
+describeIf('Evals E2E', () => {
   let cogitator: Cogitator;
 
   beforeAll(() => {
-    cogitator = new Cogitator({
-      llm: { defaultModel: getModel() },
-    });
+    cogitator = createCogitator();
   });
 
   afterAll(async () => {
@@ -82,7 +94,7 @@ describe.skipIf(!hasApiKey)('evals e2e', () => {
 
     expect(result.stats.duration).toBeGreaterThan(0);
     expect(result.stats.total).toBe(5);
-  }, 60_000);
+  }, 120_000);
 
   it('LLM-as-judge with faithfulness', async () => {
     const dataset = Dataset.from([
@@ -114,9 +126,7 @@ describe.skipIf(!hasApiKey)('evals e2e', () => {
       temperature: 0,
     });
 
-    const judgeCogitator = new Cogitator({
-      llm: { defaultModel: getModel() },
-    });
+    const judgeCogitator = createCogitator();
 
     const boundFaithfulness = bindJudgeContext(faithfulness(), {
       cogitator: {
@@ -152,7 +162,7 @@ describe.skipIf(!hasApiKey)('evals e2e', () => {
     expect(result.aggregated.faithfulness).toBeDefined();
     expect(result.aggregated.faithfulness.mean).toBeGreaterThanOrEqual(0);
     expect(result.aggregated.faithfulness.mean).toBeLessThanOrEqual(1);
-  }, 60_000);
+  }, 120_000);
 
   it('A/B comparison with different temperatures', async () => {
     const dataset = Dataset.from([
@@ -207,5 +217,5 @@ describe.skipIf(!hasApiKey)('evals e2e', () => {
     expect(emComparison.baseline).toBeLessThanOrEqual(1);
     expect(emComparison.challenger).toBeGreaterThanOrEqual(0);
     expect(emComparison.challenger).toBeLessThanOrEqual(1);
-  }, 60_000);
+  }, 120_000);
 });
