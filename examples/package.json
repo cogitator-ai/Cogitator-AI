@@ -24,6 +24,7 @@
     "@cogitator-ai/wasm-tools": "workspace:*",
     "@cogitator-ai/worker": "workspace:*",
     "@cogitator-ai/workflows": "workspace:*",
+    "@hono/node-server": "^1.0.0",
     "@koa/router": "^15.3.0",
     "ai": "^4.0.0",
     "dotenv": "^16.4.7",

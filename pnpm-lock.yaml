@@ -120,6 +120,9 @@ importers:
       '@cogitator-ai/workflows':
         specifier: workspace:*
         version: link:../packages/workflows
+      '@hono/node-server':
+        specifier: ^1.0.0
+        version: 1.19.9(hono@4.12.0)
       '@koa/router':
         specifier: ^15.3.0
         version: 15.3.0(koa@2.16.3)
@@ -2885,6 +2888,15 @@ packages:
       hono: ^4
     dependencies:
       hono: 4.11.9
+    dev: false
+
+  /@hono/node-server@1.19.9(hono@4.12.0):
+    resolution: {integrity: sha512-vHL6w3ecZsky+8P5MD+eFfaGTyCeOHUIFYMGpQGbrBTSmNNoxv0if69rEZ5giu36weC5saFuznL411gRX7bJDw==}
+    engines: {node: '>=18.14.1'}
+    peerDependencies:
+      hono: ^4
+    dependencies:
+      hono: 4.12.0
     dev: false
 
   /@humanfs/core@0.19.1:
