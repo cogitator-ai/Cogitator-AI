@@ -4,3 +4,6 @@ export * from './loaders';
 export * from './chunkers';
 export * from './retrievers';
 export * from './rerankers';
+export * from './schema';
+export { RAGPipeline, type RAGPipelineDeps } from './rag-pipeline';
+export { RAGPipelineBuilder } from './rag-builder';
