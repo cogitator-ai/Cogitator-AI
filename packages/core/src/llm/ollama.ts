@@ -74,7 +74,7 @@ export class OllamaBackend extends BaseLLMBackend {
   private get headers(): Record<string, string> {
     const h: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.apiKey) {
-      h['Authorization'] = `Bearer ${this.apiKey}`;
+      h.Authorization = `Bearer ${this.apiKey}`;
     }
     return h;
   }

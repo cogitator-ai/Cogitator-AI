@@ -230,7 +230,11 @@ describe('Reliability: LLM Resilience', () => {
     });
 
     for (let i = 0; i < 3; i++) {
-      await breaker.execute(() => Promise.reject(retryableError)).catch(() => {});
+      await breaker
+        .execute(() => {
+          throw retryableError;
+        })
+        .catch(() => {});
     }
     expect(breaker.getState()).toBe('open');
 

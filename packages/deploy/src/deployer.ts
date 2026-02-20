@@ -26,7 +26,7 @@ export interface DeployPlan {
 }
 
 export class Deployer {
-  private providers: Map<string, DeployProvider> = new Map();
+  private providers = new Map<string, DeployProvider>();
   private analyzer = new ProjectAnalyzer();
   private generator = new ArtifactGenerator();
 
