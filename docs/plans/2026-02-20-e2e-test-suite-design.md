@@ -232,7 +232,20 @@ function createTestTools(): Record<string, Tool>; // calculator, echo, failing t
 | `@cogitator-ai/mcp`                   | 4      | Tool adapter (cogitatorToMCP, mcpToCogitator, zodToJsonSchema, round-trip)        |
 | **Total**                             | **33** |                                                                                   |
 
-### Phase 3 — Not started
+### Phase 3 — Done
+
+| Package                       | Tests  | What's covered                                                         |
+| ----------------------------- | ------ | ---------------------------------------------------------------------- |
+| `@cogitator-ai/server-shared` | 4      | Event factories, SSE encoding, ID generation, OpenAPI spec generation  |
+| `@cogitator-ai/express`       | 5      | Health, agent list, agent run, SSE streaming, error handling           |
+| `@cogitator-ai/fastify`       | 5      | Health, agent list, agent run, SSE streaming, error handling           |
+| `@cogitator-ai/hono`          | 5      | Health, agent list, agent run, SSE streaming, error handling           |
+| `@cogitator-ai/koa`           | 5      | Health, agent list, agent run, SSE streaming, error handling           |
+| `@cogitator-ai/next`          | 3      | Agent handler, chat handler streaming, error handling                  |
+| `@cogitator-ai/openai-compat` | 6      | Health, models, assistant/thread/message CRUD, run lifecycle, messages |
+| **Total**                     | **33** |                                                                        |
+
+### Phase 4 — Not started
 
 | Package                 | Priority | What to test                                                |
 | ----------------------- | -------- | ----------------------------------------------------------- |
@@ -240,10 +253,10 @@ function createTestTools(): Record<string, Tool>; // calculator, echo, failing t
 | `@cogitator-ai/worker`  | Low      | BullMQ job queue, distributed agent execution               |
 | `@cogitator-ai/types`   | Low      | Zod schema serialization/deserialization, config validation |
 
-## Totals (Phase 1 + Phase 2)
+## Totals (Phase 1 + Phase 2 + Phase 3)
 
-- **20 test files** (12 Phase 1 + 8 Phase 2)
-- **70 test cases** (37 Phase 1 + 33 Phase 2)
-- **7 packages covered** (core, a2a, cross-package, memory, workflows, multi-provider, mcp, swarms)
+- **27 test files** (12 Phase 1 + 8 Phase 2 + 7 Phase 3)
+- **103 test cases** (37 Phase 1 + 33 Phase 2 + 33 Phase 3)
+- **14 packages covered** (core, a2a, cross-package, memory, workflows, multi-provider, mcp, swarms, server-shared, express, fastify, hono, koa, next, openai-compat)
 - **3 assertion tiers** (hard, structured, judge)
 - **2 CI modes** (PR: hard only, main: hard + judge)
