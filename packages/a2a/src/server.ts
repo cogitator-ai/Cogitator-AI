@@ -86,16 +86,26 @@ export class A2AServer {
   }
 
   getAgentCard(agentName?: string): AgentCard {
+    let card: AgentCard;
     if (agentName) {
-      const card = this.agentCards.get(agentName);
-      if (!card) throw new A2AError(errors.agentNotFound(agentName));
-      return card;
+      const found = this.agentCards.get(agentName);
+      if (!found) throw new A2AError(errors.agentNotFound(agentName));
+      card = found;
+    } else {
+      card = this.agentCards.values().next().value!;
     }
-    return this.agentCards.values().next().value!;
+    if (this.cardSigning) {
+      return signAgentCard(card, this.cardSigning);
+    }
+    return card;
   }
 
   getAgentCards(): AgentCard[] {
-    return Array.from(this.agentCards.values());
+    const cards = Array.from(this.agentCards.values());
+    if (this.cardSigning) {
+      return cards.map((c) => signAgentCard(c, this.cardSigning!));
+    }
+    return cards;
   }
 
   async handleJsonRpc(body: unknown): Promise<JsonRpcResponse> {
@@ -298,6 +308,16 @@ export class A2AServer {
         return this.handleCancelTask(params);
       case 'tasks/list':
         return this.handleListTasks(params);
+      case 'tasks/pushNotification/create':
+        return this.handleCreatePushNotification(params);
+      case 'tasks/pushNotification/get':
+        return this.handleGetPushNotification(params);
+      case 'tasks/pushNotification/list':
+        return this.handleListPushNotifications(params);
+      case 'tasks/pushNotification/delete':
+        return this.handleDeletePushNotification(params);
+      case 'agent/extendedCard':
+        return this.handleExtendedCard(params);
       default:
         throw new A2AError(errors.methodNotFound(method));
     }
@@ -343,5 +363,46 @@ export class A2AServer {
     const filter = (params ?? {}) as TaskFilter;
     const tasks = await this.taskManager.listTasks(filter);
     return { tasks };
+  }
+
+  private async handleCreatePushNotification(params: unknown): Promise<PushNotificationConfig> {
+    const { taskId, config } = params as { taskId: string; config: PushNotificationConfig };
+    if (!taskId) throw new A2AError(errors.invalidParams('taskId is required'));
+    if (!config?.webhookUrl)
+      throw new A2AError(errors.invalidParams('config.webhookUrl is required'));
+    return this.pushNotificationStore.create(taskId, config);
+  }
+
+  private async handleGetPushNotification(params: unknown): Promise<PushNotificationConfig | null> {
+    const { taskId, configId } = params as { taskId: string; configId: string };
+    if (!taskId || !configId) {
+      throw new A2AError(errors.invalidParams('taskId and configId are required'));
+    }
+    return this.pushNotificationStore.get(taskId, configId);
+  }
+
+  private async handleListPushNotifications(params: unknown): Promise<PushNotificationConfig[]> {
+    const { taskId } = params as { taskId: string };
+    if (!taskId) throw new A2AError(errors.invalidParams('taskId is required'));
+    return this.pushNotificationStore.list(taskId);
+  }
+
+  private async handleDeletePushNotification(params: unknown): Promise<{ success: boolean }> {
+    const { taskId, configId } = params as { taskId: string; configId: string };
+    if (!taskId || !configId) {
+      throw new A2AError(errors.invalidParams('taskId and configId are required'));
+    }
+    await this.pushNotificationStore.delete(taskId, configId);
+    return { success: true };
+  }
+
+  private async handleExtendedCard(params: unknown): Promise<ExtendedAgentCard> {
+    if (!this.extendedCardGenerator) {
+      throw new A2AError(errors.unsupportedOperation('Extended agent card is not configured'));
+    }
+    const { agentName } = (params ?? {}) as { agentName?: string };
+    const name = agentName ?? Object.keys(this.agents)[0];
+    if (!this.agents[name]) throw new A2AError(errors.agentNotFound(name));
+    return this.extendedCardGenerator(name);
   }
 }

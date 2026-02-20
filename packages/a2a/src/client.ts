@@ -2,17 +2,20 @@ import type { Tool, ToolContext, ToolSchema } from '@cogitator-ai/types';
 import { z } from 'zod';
 import type {
   AgentCard,
+  ExtendedAgentCard,
   A2AMessage,
   A2ATask,
   A2AStreamEvent,
   A2AClientConfig,
   SendMessageConfiguration,
   TaskFilter,
+  PushNotificationConfig,
 } from './types.js';
 import { isTerminalState } from './types.js';
 import type { JsonRpcResponse } from './json-rpc.js';
 import { A2AError } from './errors.js';
 import * as errors from './errors.js';
+import { verifyAgentCardSignature } from './agent-card.js';
 
 export interface A2AToolOptions {
   name?: string;
@@ -186,6 +189,41 @@ export class A2AClient {
         };
       },
     };
+  }
+
+  async createPushNotification(
+    taskId: string,
+    config: PushNotificationConfig
+  ): Promise<PushNotificationConfig> {
+    const result = await this.rpc('tasks/pushNotification/create', { taskId, config });
+    return result as PushNotificationConfig;
+  }
+
+  async getPushNotification(
+    taskId: string,
+    configId: string
+  ): Promise<PushNotificationConfig | null> {
+    const result = await this.rpc('tasks/pushNotification/get', { taskId, configId });
+    return result as PushNotificationConfig | null;
+  }
+
+  async listPushNotifications(taskId: string): Promise<PushNotificationConfig[]> {
+    const result = await this.rpc('tasks/pushNotification/list', { taskId });
+    return result as PushNotificationConfig[];
+  }
+
+  async deletePushNotification(taskId: string, configId: string): Promise<void> {
+    await this.rpc('tasks/pushNotification/delete', { taskId, configId });
+  }
+
+  async verifyAgentCard(secret: string): Promise<boolean> {
+    const card = await this.agentCard();
+    return verifyAgentCardSignature(card as AgentCard & { signature?: string }, secret);
+  }
+
+  async extendedAgentCard(): Promise<ExtendedAgentCard> {
+    const result = await this.rpc('agent/extendedCard', {});
+    return result as ExtendedAgentCard;
   }
 
   asToolFromCard(card: AgentCard, options?: A2AToolOptions): Tool<{ task: string }, A2AToolResult> {

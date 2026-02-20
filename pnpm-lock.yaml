@@ -416,12 +416,33 @@ importers:
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@cogitator-ai/express':
+        specifier: workspace:*
+        version: link:../express
+      '@cogitator-ai/fastify':
+        specifier: workspace:*
+        version: link:../fastify
+      '@cogitator-ai/hono':
+        specifier: workspace:*
+        version: link:../hono
+      '@cogitator-ai/koa':
+        specifier: workspace:*
+        version: link:../koa
       '@cogitator-ai/mcp':
         specifier: workspace:*
         version: link:../mcp
       '@cogitator-ai/memory':
         specifier: workspace:*
         version: link:../memory
+      '@cogitator-ai/next':
+        specifier: workspace:*
+        version: link:../next
+      '@cogitator-ai/openai-compat':
+        specifier: workspace:*
+        version: link:../openai-compat
+      '@cogitator-ai/server-shared':
+        specifier: workspace:*
+        version: link:../server-shared
       '@cogitator-ai/swarms':
         specifier: workspace:*
         version: link:../swarms
@@ -431,9 +452,24 @@ importers:
       '@cogitator-ai/workflows':
         specifier: workspace:*
         version: link:../workflows
+      '@hono/node-server':
+        specifier: ^1.0.0
+        version: 1.19.9(hono@4.11.9)
+      '@koa/router':
+        specifier: ^12.0.0
+        version: 12.0.2
       express:
         specifier: ^5.1.0
         version: 5.2.1
+      fastify:
+        specifier: ^5.0.0
+        version: 5.7.4
+      hono:
+        specifier: ^4.0.0
+        version: 4.11.9
+      koa:
+        specifier: ^2.15.0
+        version: 2.16.3
       zod:
         specifier: ^4.3.6
         version: 4.3.6
@@ -441,6 +477,9 @@ importers:
       '@types/express':
         specifier: ^5.0.2
         version: 5.0.6
+      '@types/koa':
+        specifier: ^2.15.0
+        version: 2.15.0
       '@types/node':
         specifier: ^22.15.0
         version: 22.19.7
@@ -2984,6 +3023,20 @@ packages:
     requiresBuild: true
     dev: false
     optional: true
+
+  /@koa/router@12.0.2:
+    resolution: {integrity: sha512-sYcHglGKTxGF+hQ6x67xDfkE9o+NhVlRHBqq6gLywaMc6CojK/5vFZByphdonKinYlMLkEkacm+HEse9HzwgTA==}
+    engines: {node: '>= 12'}
+    deprecated: Please upgrade to v15 or higher. All reported bugs in this version are fixed in newer releases, dependencies have been updated, and security has been improved.
+    dependencies:
+      debug: 4.4.3
+      http-errors: 2.0.1
+      koa-compose: 4.1.0
+      methods: 1.1.2
+      path-to-regexp: 6.3.0
+    transitivePeerDependencies:
+      - supports-color
+    dev: false
 
   /@koa/router@13.1.1:
     resolution: {integrity: sha512-JQEuMANYRVHs7lm7KY9PCIjkgJk73h4m4J+g2mkw2Vo1ugPZ17UJVqEH8F+HeAdjKz5do1OaLe7ArDz+z308gw==}
@@ -9632,7 +9685,6 @@ packages:
 
   /path-to-regexp@6.3.0:
     resolution: {integrity: sha512-Yhpw4T9C6hPpgPeA28us07OJeqZ5EzQTkbfwuhsUg0c237RomFoETJgmp2sa3F/41gfLE6G5cqcYwznmeEeOlQ==}
-    dev: true
 
   /path-to-regexp@8.3.0:
     resolution: {integrity: sha512-7jdwVIRtsP8MYpdXSwOS0YdD0Du+qOoF/AEPIt88PcCFrZCzx41oxku1jD88hZBwbNUIEfpqvuhjFaMAqMTWnA==}
