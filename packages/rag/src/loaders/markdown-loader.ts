@@ -36,7 +36,7 @@ export class MarkdownLoader implements DocumentLoader {
     let metadata: Record<string, unknown> | undefined;
 
     if (this.stripFrontmatter) {
-      const match = raw.match(FRONTMATTER_RE);
+      const match = FRONTMATTER_RE.exec(raw);
       if (match) {
         metadata = this.parseFrontmatter(match[1]);
         content = raw.slice(match[0].length);
@@ -55,7 +55,7 @@ export class MarkdownLoader implements DocumentLoader {
   private parseFrontmatter(raw: string): Record<string, unknown> {
     const result: Record<string, unknown> = {};
     for (const line of raw.split('\n')) {
-      const match = line.match(/^(\w[\w\s-]*?):\s*(.+)$/);
+      const match = /^(\w[\w\s-]*?):\s*(.+)$/.exec(line);
       if (match) {
         result[match[1].trim()] = match[2].trim();
       }

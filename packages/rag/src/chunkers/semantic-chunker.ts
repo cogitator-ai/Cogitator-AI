@@ -122,12 +122,12 @@ export class SemanticChunker implements AsyncChunker {
     const chunks: DocumentChunk[] = [];
     let searchFrom = 0;
 
-    for (let i = 0; i < groups.length; i++) {
-      const content = groups[i].join(' ');
+    for (const group of groups) {
+      const content = group.join(' ');
 
       if (content.length <= this.maxChunkSize) {
-        const startOffset = originalText.indexOf(groups[i][0], searchFrom);
-        const lastSentence = groups[i][groups[i].length - 1];
+        const startOffset = originalText.indexOf(group[0], searchFrom);
+        const lastSentence = group[group.length - 1];
         const lastStart = originalText.indexOf(lastSentence, startOffset >= 0 ? startOffset : 0);
         const endOffset =
           lastStart >= 0 ? lastStart + lastSentence.length : startOffset + content.length;
@@ -144,7 +144,7 @@ export class SemanticChunker implements AsyncChunker {
         searchFrom = endOffset;
       } else {
         const subChunks = this.splitLargeGroup(
-          groups[i],
+          group,
           originalText,
           documentId,
           searchFrom,

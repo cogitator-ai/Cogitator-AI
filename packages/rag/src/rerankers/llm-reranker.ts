@@ -54,7 +54,7 @@ export class LLMReranker implements Reranker {
   }
 
   private parseScores(response: string, count: number): Array<{ index: number; score: number }> {
-    const jsonMatch = response.match(/\[[\s\S]*\]/);
+    const jsonMatch = /\[[\s\S]*\]/.exec(response);
     if (!jsonMatch) throw new Error('No JSON array found in response');
 
     const parsed: unknown = JSON.parse(jsonMatch[0]);
