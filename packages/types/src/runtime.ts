@@ -12,6 +12,7 @@ import type { CostRoutingConfig } from './cost-routing';
 import type { PromptOptimizationConfig } from './prompt-optimization';
 import type { KnowledgeGraphConfig } from './knowledge-graph';
 import type { PromptInjectionConfig } from './security';
+import type { DeployConfig } from './deploy';
 import type { ContextManagerConfig } from './context';
 
 export interface CogitatorConfig {
@@ -44,6 +45,7 @@ export interface CogitatorConfig {
   };
   /** Context management for long conversations (128k+ tokens) */
   context?: ContextManagerConfig;
+  deploy?: DeployConfig;
 }
 
 export type ImageInput =
