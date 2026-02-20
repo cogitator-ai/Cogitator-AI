@@ -60,21 +60,69 @@ importers:
 
   examples:
     dependencies:
+      '@cogitator-ai/a2a':
+        specifier: workspace:*
+        version: link:../packages/a2a
+      '@cogitator-ai/ai-sdk':
+        specifier: workspace:*
+        version: link:../packages/ai-sdk
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../packages/core
+      '@cogitator-ai/deploy':
+        specifier: workspace:*
+        version: link:../packages/deploy
+      '@cogitator-ai/express':
+        specifier: workspace:*
+        version: link:../packages/express
+      '@cogitator-ai/fastify':
+        specifier: workspace:*
+        version: link:../packages/fastify
+      '@cogitator-ai/hono':
+        specifier: workspace:*
+        version: link:../packages/hono
+      '@cogitator-ai/koa':
+        specifier: workspace:*
+        version: link:../packages/koa
       '@cogitator-ai/mcp':
         specifier: workspace:*
         version: link:../packages/mcp
+      '@cogitator-ai/memory':
+        specifier: workspace:*
+        version: link:../packages/memory
+      '@cogitator-ai/neuro-symbolic':
+        specifier: workspace:*
+        version: link:../packages/neuro-symbolic
+      '@cogitator-ai/next':
+        specifier: workspace:*
+        version: link:../packages/next
       '@cogitator-ai/openai-compat':
         specifier: workspace:*
         version: link:../packages/openai-compat
+      '@cogitator-ai/redis':
+        specifier: workspace:*
+        version: link:../packages/redis
+      '@cogitator-ai/self-modifying':
+        specifier: workspace:*
+        version: link:../packages/self-modifying
       '@cogitator-ai/swarms':
         specifier: workspace:*
         version: link:../packages/swarms
+      '@cogitator-ai/wasm-tools':
+        specifier: workspace:*
+        version: link:../packages/wasm-tools
+      '@cogitator-ai/worker':
+        specifier: workspace:*
+        version: link:../packages/worker
       '@cogitator-ai/workflows':
         specifier: workspace:*
         version: link:../packages/workflows
+      dotenv:
+        specifier: ^16.4.7
+        version: 16.6.1
+      express:
+        specifier: ^4.21.0
+        version: 4.22.1
       openai:
         specifier: ^6.22.0
         version: 6.22.0(zod@4.3.6)
@@ -6651,6 +6699,11 @@ packages:
     resolution: {integrity: sha512-WhL/YuveyGXJaerVlMYGWhvQswa7myDG17P7Vu65EWC05o8vfeNbvNf4d/BOvH99+ZW+LlQsc1GDKMa1vNK6dw==}
     optionalDependencies:
       '@types/trusted-types': 2.0.7
+    dev: false
+
+  /dotenv@16.6.1:
+    resolution: {integrity: sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==}
+    engines: {node: '>=12'}
     dev: false
 
   /dunder-proto@1.0.1:
