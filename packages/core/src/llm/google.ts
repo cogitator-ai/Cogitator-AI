@@ -329,6 +329,7 @@ export class GoogleBackend extends BaseLLMBackend {
     const stripped = model.startsWith('google/') ? model.slice(7) : model;
 
     const modelMap: Record<string, string> = {
+      default: 'gemini-2.5-flash',
       'gemini-pro': 'gemini-2.5-pro',
       'gemini-flash': 'gemini-2.5-flash',
       'gemini-3-pro': 'gemini-3-pro-preview',

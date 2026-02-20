@@ -238,7 +238,7 @@ export class ModificationValidator {
     request: ModificationRequest
   ): Promise<ConstraintCheckResult[]> {
     const results: ConstraintCheckResult[] = [];
-    const payload = request.payload as {
+    const payload = (request.payload ?? {}) as {
       tokensUsed?: number;
       cost?: number;
       activeTools?: number;

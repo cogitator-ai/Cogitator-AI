@@ -142,14 +142,11 @@ After all delegations complete, synthesize worker outputs into a unified project
   const strategy = new HierarchicalStrategy(coordinator, config.hierarchical);
 
   const result = await strategy.execute({
-    input: `Plan the implementation of a real-time analytics dashboard that shows:
-- Live user activity (page views, clicks, sessions)
-- System health metrics (CPU, memory, error rates)
-- Business KPIs (conversion rate, revenue)
-
-The dashboard needs WebSocket updates, role-based access, and must handle 1000+ concurrent viewers.
-Delegate specific parts to your specialist workers and synthesize a unified plan.`,
+    input: `Plan a real-time analytics dashboard with WebSocket updates and role-based access.
+Delegate the frontend part to the frontend-specialist and the backend part to the backend-specialist.
+Then synthesize their responses into a short unified plan.`,
     saveHistory: false,
+    timeout: 180_000,
   });
 
   section('Blackboard state');
