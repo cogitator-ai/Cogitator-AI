@@ -176,6 +176,256 @@ const result = await cogitator.run(orchestrator, {
 
 The orchestrator agent calls the remote researcher via A2A protocol transparently -- it looks like a regular tool call.
 
+## Multi-Turn Conversations
+
+A2A supports multi-turn conversations where follow-up messages continue an existing task. Each task belongs to a `contextId` that groups related tasks into a conversation.
+
+### Client-Side
+
+Use `continueTask` to send follow-up messages to an existing task:
+
+```typescript
+const client = new A2AClient('https://remote-agent.example.com');
+
+const task = await client.sendMessage({
+  role: 'user',
+  parts: [{ type: 'text', text: 'Research quantum computing' }],
+});
+
+const followUp = await client.continueTask(
+  task.id,
+  'Now compare it with classical computing'
+);
+
+console.log(task.contextId === followUp.contextId); // true
+```
+
+### Server-Side
+
+On the server, multi-turn is handled automatically. When a message includes a `taskId`, the server appends the new message to the existing task history and re-runs the agent with the full conversation context. No additional configuration needed.
+
+## Listing Tasks
+
+Query stored tasks with filtering and pagination via the `tasks/list` method:
+
+```typescript
+const client = new A2AClient('https://remote-agent.example.com');
+
+const allTasks = await client.listTasks();
+
+const conversationTasks = await client.listTasks({
+  contextId: 'ctx_abc123',
+});
+
+const completedTasks = await client.listTasks({
+  state: 'completed',
+  limit: 10,
+  offset: 0,
+});
+```
+
+Tasks are returned sorted by timestamp (newest first). The `TaskFilter` supports:
+
+| Field       | Type        | Description                        |
+|-------------|-------------|------------------------------------|
+| `contextId` | `string`    | Filter by conversation context     |
+| `state`     | `TaskState` | Filter by task state               |
+| `limit`     | `number`    | Max number of tasks to return      |
+| `offset`    | `number`    | Number of tasks to skip            |
+
+## Token Streaming
+
+SSE streaming now includes `TokenStreamEvent` alongside status and artifact updates, giving clients real-time character-by-character output:
+
+```typescript
+for await (const event of client.sendMessageStream({
+  role: 'user',
+  parts: [{ type: 'text', text: 'Write a poem about the ocean' }],
+})) {
+  switch (event.type) {
+    case 'token':
+      process.stdout.write(event.token);
+      break;
+    case 'status-update':
+      console.log(`\nStatus: ${event.status.state}`);
+      break;
+    case 'artifact-update':
+      console.log(`\nArtifact: ${event.artifact.id}`);
+      break;
+  }
+}
+```
+
+The `A2AStreamEvent` union type includes three event types:
+
+| Event Type        | Description                              |
+|-------------------|------------------------------------------|
+| `status-update`   | Task state changed (working, completed)  |
+| `artifact-update` | New artifact produced by the agent       |
+| `token`           | Individual token from LLM output         |
+
+The server emits token events via the `onToken` callback passed to `Cogitator.run()`.
+
+## RedisTaskStore
+
+For production deployments, use `RedisTaskStore` instead of the default in-memory store:
+
+```typescript
+import { A2AServer, RedisTaskStore } from '@cogitator-ai/a2a';
+import Redis from 'ioredis';
+
+const redis = new Redis('redis://localhost:6379');
+
+const a2aServer = new A2AServer({
+  agents: { researcher },
+  cogitator,
+  taskStore: new RedisTaskStore({
+    client: redis,
+    keyPrefix: 'a2a:task:',
+    ttl: 86400,
+  }),
+});
+```
+
+`RedisTaskStore` accepts any Redis client that implements the `RedisClientLike` interface (`get`, `set`, `del`, `keys`, and optionally `setex`). This works with `ioredis`, `redis`, and most Redis client libraries.
+
+Configuration options:
+
+| Option      | Type             | Default       | Description                            |
+|-------------|------------------|---------------|----------------------------------------|
+| `client`    | `RedisClientLike`| required      | Redis client instance                  |
+| `keyPrefix` | `string`         | `a2a:task:`   | Key prefix for task storage            |
+| `ttl`       | `number`         | none          | TTL in seconds (uses `SETEX` if set)   |
+
+## Push Notifications
+
+Register webhooks to receive task event notifications instead of polling or holding open SSE connections. When a task's status or artifacts change, the server POSTs the event to all registered webhook URLs.
+
+### Registering Webhooks
+
+```typescript
+const client = new A2AClient('https://remote-agent.example.com');
+
+const task = await client.sendMessage({
+  role: 'user',
+  parts: [{ type: 'text', text: 'Run a long analysis' }],
+});
+
+const config = await client.createPushNotification(task.id, {
+  webhookUrl: 'https://my-app.com/webhooks/a2a',
+  authenticationInfo: {
+    scheme: 'bearer',
+    credentials: { token: 'my-webhook-secret' },
+  },
+});
+```
+
+### Managing Webhooks
+
+```typescript
+const configs = await client.listPushNotifications(task.id);
+
+const single = await client.getPushNotification(task.id, config.id!);
+
+await client.deletePushNotification(task.id, config.id!);
+```
+
+### Server Configuration
+
+Enable push notifications by providing a `PushNotificationStore`:
+
+```typescript
+import { A2AServer, InMemoryPushNotificationStore } from '@cogitator-ai/a2a';
+
+const a2aServer = new A2AServer({
+  agents: { researcher },
+  cogitator,
+  pushNotificationStore: new InMemoryPushNotificationStore(),
+});
+```
+
+The server automatically sends `A2AStreamEvent` payloads to registered webhooks on status and artifact updates. Authentication schemes supported: `bearer`, `apiKey`, `basic`, `oauth2`.
+
+## Agent Card Signing
+
+Sign Agent Cards with HMAC-SHA256 to let clients verify card integrity:
+
+### Server-Side
+
+Configure `cardSigning` on the server to automatically sign all Agent Cards:
+
+```typescript
+const a2aServer = new A2AServer({
+  agents: { researcher },
+  cogitator,
+  cardSigning: {
+    algorithm: 'hmac-sha256',
+    secret: process.env.CARD_SIGNING_SECRET!,
+  },
+});
+```
+
+### Client-Side Verification
+
+```typescript
+const client = new A2AClient('https://remote-agent.example.com');
+const isValid = await client.verifyAgentCard(process.env.CARD_SIGNING_SECRET!);
+```
+
+### Manual Signing and Verification
+
+```typescript
+import { signAgentCard, verifyAgentCardSignature } from '@cogitator-ai/a2a';
+
+const signed = signAgentCard(card, { secret: 'shared-secret' });
+console.log(signed.signature); // "hmac-sha256:a1b2c3..."
+
+const valid = verifyAgentCardSignature(signed, 'shared-secret');
+```
+
+## Extended Agent Card
+
+The `agent/extendedCard` method provides an authenticated endpoint that returns additional agent details not included in the public Agent Card -- rate limits, pricing, extended skills, and custom metadata.
+
+### Server Configuration
+
+```typescript
+const a2aServer = new A2AServer({
+  agents: { researcher },
+  cogitator,
+  extendedCardGenerator: (agentName) => ({
+    ...a2aServer.getAgentCard(agentName),
+    extendedSkills: [
+      {
+        id: 'deep_research',
+        name: 'deep_research',
+        description: 'Multi-source deep research',
+        inputModes: ['text/plain'],
+        outputModes: ['text/plain', 'application/json'],
+      },
+    ],
+    rateLimit: { requestsPerMinute: 60 },
+    pricing: { model: 'per-request', details: '$0.01 per task' },
+    metadata: { version: '2.1.0', region: 'us-east-1' },
+  }),
+});
+```
+
+### Fetching from Client
+
+```typescript
+const client = new A2AClient('https://remote-agent.example.com', {
+  headers: { Authorization: 'Bearer my-token' },
+});
+
+const extendedCard = await client.extendedAgentCard();
+console.log(extendedCard.rateLimit);
+console.log(extendedCard.pricing);
+console.log(extendedCard.extendedSkills);
+```
+
+The Agent Card advertises this capability via `capabilities.extendedAgentCard: true`.
+
 ## Framework Adapters
 
 ### Express
@@ -257,9 +507,15 @@ const client = new A2AClient('https://remote-agent.example.com', {
 | Method | Description |
 |---|---|
 | `message/send` | Send a message and get a completed task |
-| `message/stream` | Send a message with SSE streaming |
+| `message/stream` | Send a message with SSE streaming (incl. token events) |
 | `tasks/get` | Retrieve a task by ID |
 | `tasks/cancel` | Cancel a running task |
+| `tasks/list` | List tasks with filtering and pagination |
+| `tasks/pushNotification/create` | Register a webhook for task events |
+| `tasks/pushNotification/get` | Get a push notification config |
+| `tasks/pushNotification/list` | List push notification configs for a task |
+| `tasks/pushNotification/delete` | Remove a push notification config |
+| `agent/extendedCard` | Fetch extended Agent Card (authenticated) |
 
 ## Task States
 

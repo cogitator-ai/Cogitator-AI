@@ -983,15 +983,33 @@ const agent = new Agent({
   tools: [remoteTool],
   // ...
 });
+
+// Multi-turn conversations
+const task = await client.sendMessage({
+  role: 'user',
+  parts: [{ type: 'text', text: 'Research AI' }],
+});
+const followUp = await client.continueTask(task.id, 'Now summarize it');
+
+// Token-level streaming
+for await (const event of client.sendMessageStream({
+  role: 'user',
+  parts: [{ type: 'text', text: 'Write a report' }],
+})) {
+  if (event.type === 'token') process.stdout.write(event.token);
+}
 ```
 
 **Features:**
 
 - **Agent Card Discovery** — `GET /.well-known/agent.json` for capability advertisement
-- **JSON-RPC 2.0** — Standard protocol with `tasks/send`, `tasks/get`, `tasks/cancel`
-- **Streaming** — SSE-based streaming via `tasks/sendSubscribe`
-- **Push Notifications** — Webhook-based task updates
-- **Multi-Turn** — Stateful conversations with task history
+- **JSON-RPC 2.0** — `message/send`, `message/stream`, `tasks/get`, `tasks/cancel`, `tasks/list`
+- **Multi-Turn** — Stateful conversations with `contextId` and `continueTask`
+- **Token Streaming** — SSE with token-level events for real-time output
+- **Push Notifications** — Webhook-based task event notifications
+- **Agent Card Signing** — HMAC-SHA256 integrity verification
+- **Extended Agent Card** — Authenticated endpoint with rate limits, pricing, extended skills
+- **RedisTaskStore** — Production-grade task persistence with TTL
 - **Framework Adapters** — Express, Hono, Fastify, Koa, Next.js
 
 </details>
