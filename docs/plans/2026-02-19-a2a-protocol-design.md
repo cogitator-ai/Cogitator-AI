@@ -203,25 +203,30 @@ All adapters delegate to `A2AServer.handleRequest()`.
 
 ## Scope
 
-### v1 (this release)
+### v1 (complete)
 
 - A2AServer with Agent Card discovery
 - A2AClient with `asTool()` bridge
-- JSON-RPC: message/send, message/sendStream, tasks/get, tasks/cancel
+- JSON-RPC: message/send, message/stream, tasks/get, tasks/cancel
 - SSE streaming
 - InMemoryTaskStore
 - All 5 framework adapters
 - Agent Card auto-generation from Agent metadata
 
-### v2 (future)
+### v2 (complete)
+
+- Multi-turn conversations with contextId (continueTask, context linking)
+- ListTasks with pagination (tasks/list method with filters)
+- Token-level streaming (onToken → TokenStreamEvent in SSE)
+- RedisTaskStore for production persistence
+- Timestamp-based sorting in task stores
+
+### v3 (future)
 
 - Push notifications (webhooks)
 - gRPC binding
 - Agent Card signing
-- ListTasks with pagination
 - Extended Agent Card (authenticated)
-- Multi-turn conversations with contextId
-- RedisTaskStore
 
 ## Dependencies
 
