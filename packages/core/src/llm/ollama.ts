@@ -20,6 +20,7 @@ import { fetchImageAsBase64 } from '../utils/image-fetch';
 
 interface OllamaConfig {
   baseUrl: string;
+  apiKey?: string;
 }
 
 interface OllamaMessage {
@@ -62,10 +63,20 @@ interface OllamaChatResponse {
 export class OllamaBackend extends BaseLLMBackend {
   readonly provider = 'ollama' as const;
   private baseUrl: string;
+  private apiKey?: string;
 
   constructor(config: OllamaConfig) {
     super();
     this.baseUrl = config.baseUrl.replace(/\/$/, '');
+    this.apiKey = config.apiKey;
+  }
+
+  private get headers(): Record<string, string> {
+    const h: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.apiKey) {
+      h['Authorization'] = `Bearer ${this.apiKey}`;
+    }
+    return h;
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
@@ -83,7 +94,7 @@ export class OllamaBackend extends BaseLLMBackend {
     try {
       response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: this.headers,
         body: JSON.stringify({
           model: request.model,
           messages,
@@ -126,7 +137,7 @@ export class OllamaBackend extends BaseLLMBackend {
     try {
       response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: this.headers,
         body: JSON.stringify({
           model: request.model,
           messages,
