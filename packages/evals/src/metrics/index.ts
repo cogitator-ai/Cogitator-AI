@@ -3,3 +3,12 @@ export { exactMatch, contains, regex, jsonSchema } from './deterministic';
 export { metric } from './custom';
 export type { CustomMetricConfig } from './custom';
 export { latency, cost, tokenUsage } from './statistical';
+export {
+  faithfulness,
+  relevance,
+  coherence,
+  helpfulness,
+  llmMetric,
+  bindJudgeContext,
+} from './llm-judge';
+export type { JudgeContext, LLMMetricFn } from './llm-judge';
