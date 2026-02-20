@@ -2497,7 +2497,7 @@ const providers: LLMProvidersConfig = {
 | [Security](./docs/SECURITY.md)                   | Security model and hardening     |
 | [SOC2 Compliance](./docs/SOC2-COMPLIANCE.md)     | Enterprise compliance docs       |
 | [Disaster Recovery](./docs/DISASTER_RECOVERY.md) | Backup and recovery procedures   |
-| [Deployment](./docs/DEPLOYMENT.md)               | Production deployment guide      |
+| [Deployment](./docs/DEPLOY.md)                   | Production deployment guide      |
 | [API Reference](./docs/API.md)                   | Complete API documentation       |
 
 </details>
