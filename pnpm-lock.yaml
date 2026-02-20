@@ -629,6 +629,35 @@ importers:
         specifier: ^4.0.18
         version: 4.0.18(@types/node@22.19.7)(tsx@4.21.0)
 
+  packages/evals:
+    dependencies:
+      '@cogitator-ai/types':
+        specifier: workspace:*
+        version: link:../types
+      nanoid:
+        specifier: ^5.0.4
+        version: 5.1.6
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
+    optionalDependencies:
+      papaparse:
+        specifier: ^5.5.0
+        version: 5.5.3
+    devDependencies:
+      '@cogitator-ai/core':
+        specifier: workspace:*
+        version: link:../core
+      '@types/papaparse':
+        specifier: ^5.3.15
+        version: 5.5.2
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^4.0.18
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+
   packages/express:
     dependencies:
       '@cogitator-ai/core':
