@@ -133,7 +133,7 @@ const jsonLd = {
         '@type': 'ImageObject',
         url: `${siteUrl}/favicon.svg`,
       },
-      sameAs: ['https://github.com/eL1Fe/cogitator', 'https://discord.gg/SkmRsYvA'],
+      sameAs: ['https://github.com/cogitator-ai/Cogitator-AI', 'https://discord.gg/SkmRsYvA'],
     },
     {
       '@type': 'SoftwareApplication',
@@ -149,7 +149,7 @@ const jsonLd = {
         priceCurrency: 'USD',
       },
       author: { '@id': `${siteUrl}/#organization` },
-      downloadUrl: 'https://github.com/eL1Fe/cogitator',
+      downloadUrl: 'https://github.com/cogitator-ai/Cogitator-AI',
       softwareVersion: '0.0.1',
       programmingLanguage: 'TypeScript',
       runtimePlatform: 'Node.js',

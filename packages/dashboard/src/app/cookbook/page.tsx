@@ -5015,7 +5015,7 @@ export default function CookbookPage() {
             <div className="mt-16 pt-8 border-t border-[#1a1a1a] flex items-center justify-between text-sm">
               <div className="text-[#666]">
                 <a
-                  href="https://github.com/eL1fe/cogitator/tree/main/examples"
+                  href="https://github.com/cogitator-ai/Cogitator-AI/tree/main/examples"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-[#00ff88] hover:underline"

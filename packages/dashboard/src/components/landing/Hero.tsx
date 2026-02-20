@@ -93,7 +93,7 @@ export function Hero() {
           </div>
 
           <motion.a
-            href="https://github.com/eL1fe/cogitator"
+            href="https://github.com/cogitator-ai/Cogitator-AI"
             target="_blank"
             rel="noopener noreferrer"
             whileHover={{ scale: 1.02 }}

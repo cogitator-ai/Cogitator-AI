@@ -244,7 +244,7 @@ export const webScrape = tool({
       const response = await fetch(url, {
         headers: {
           'User-Agent':
-            'Mozilla/5.0 (compatible; CogitatorBot/1.0; +https://github.com/eL1fe/cogitator)',
+            'Mozilla/5.0 (compatible; CogitatorBot/1.0; +https://github.com/cogitator-ai/Cogitator-AI)',
           Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         },
         signal: controller.signal,

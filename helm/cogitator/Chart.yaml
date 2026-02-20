@@ -9,9 +9,9 @@ keywords:
   - llm
   - agents
   - orchestration
-home: https://github.com/eL1Fe/cogitator
+home: https://github.com/cogitator-ai/Cogitator-AI
 sources:
-  - https://github.com/eL1Fe/cogitator
+  - https://github.com/cogitator-ai/Cogitator-AI
 maintainers:
   - name: Cogitator Team
 dependencies:

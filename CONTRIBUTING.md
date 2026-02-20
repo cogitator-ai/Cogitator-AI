@@ -18,9 +18,10 @@ By participating in this project, you agree to abide by our code of conduct: be 
 ### Setup
 
 ```bash
-# Clone the repository
-git clone https://github.com/eL1Fe/cogitator.git
+# Fork the repo on GitHub, then:
+git clone https://github.com/YOUR_USERNAME/cogitator.git
 cd cogitator
+git remote add upstream https://github.com/cogitator-ai/Cogitator-AI.git
 
 # Install dependencies
 pnpm install

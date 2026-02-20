@@ -6,7 +6,7 @@
   "description": "The Sovereign AI Agent Runtime - Self-hosted, production-grade orchestration for LLM swarms and autonomous agents",
   "repository": {
     "type": "git",
-    "url": "https://github.com/eL1Fe/cogitator.git"
+    "url": "https://github.com/cogitator-ai/Cogitator-AI.git"
   },
   "license": "MIT",
   "author": "Your Name",

@@ -739,7 +739,7 @@ These targets are planned but not yet implemented:
 
 <div align="center">
 
-**Need help?** [GitHub Issues](https://github.com/eL1Fe/cogitator/issues)
+**Need help?** [GitHub Issues](https://github.com/cogitator-ai/Cogitator-AI/issues)
 
 [Back to Getting Started](./GETTING_STARTED.md) | [Architecture](./ARCHITECTURE.md)
 
