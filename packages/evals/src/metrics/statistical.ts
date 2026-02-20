@@ -1,13 +1,17 @@
-import type { EvalCaseResult, StatisticalMetricFn } from './types';
+import type { EvalCaseResult, MetricScore, StatisticalMetricFn } from './types';
 import { aggregate, mean } from '../stats';
 
-function createStatisticalFn(name: string, fn: StatisticalMetricFn): StatisticalMetricFn {
-  fn.metricName = name;
-  return fn;
+function createStatisticalFn(
+  name: string,
+  fn: (results: EvalCaseResult[]) => MetricScore
+): StatisticalMetricFn {
+  const statFn = fn as StatisticalMetricFn;
+  statFn.metricName = name;
+  return statFn;
 }
 
 export function latency(): StatisticalMetricFn {
-  return createStatisticalFn('latency', ((results: EvalCaseResult[]) => {
+  return createStatisticalFn('latency', (results: EvalCaseResult[]) => {
     const durations = results.map((r) => r.duration);
     const stats = aggregate(durations);
 
@@ -24,11 +28,11 @@ export function latency(): StatisticalMetricFn {
         max: stats.max,
       },
     };
-  }) as StatisticalMetricFn);
+  });
 }
 
 export function cost(): StatisticalMetricFn {
-  return createStatisticalFn('cost', ((results: EvalCaseResult[]) => {
+  return createStatisticalFn('cost', (results: EvalCaseResult[]) => {
     const costs = results.filter((r) => r.usage).map((r) => r.usage!.cost);
 
     if (costs.length === 0) {
@@ -56,11 +60,11 @@ export function cost(): StatisticalMetricFn {
         max: stats.max,
       },
     };
-  }) as StatisticalMetricFn);
+  });
 }
 
 export function tokenUsage(): StatisticalMetricFn {
-  return createStatisticalFn('tokenUsage', ((results: EvalCaseResult[]) => {
+  return createStatisticalFn('tokenUsage', (results: EvalCaseResult[]) => {
     const withUsage = results.filter((r) => r.usage);
 
     if (withUsage.length === 0) {
@@ -92,5 +96,5 @@ export function tokenUsage(): StatisticalMetricFn {
         meanOutput: mean(outputTokens),
       },
     };
-  }) as StatisticalMetricFn);
+  });
 }
