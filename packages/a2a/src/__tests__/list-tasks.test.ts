@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { TaskManager, type CogitatorLike, type AgentRunResult } from '../task-manager';
 import { A2AServer } from '../server';
 import { InMemoryTaskStore } from '../task-store';
-import type { A2AMessage, A2ATask, A2AStreamEvent } from '../types';
+import type { A2AMessage, A2ATask } from '../types';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
 
 function createUserMessage(text: string): A2AMessage {

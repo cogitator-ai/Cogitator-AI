@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { A2AServer } from '../server';
 import type { ExtendedAgentCard } from '../types';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';

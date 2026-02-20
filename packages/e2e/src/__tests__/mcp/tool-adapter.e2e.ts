@@ -1,10 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  cogitatorToMCP,
-  mcpToCogitator,
-  zodToJsonSchema,
-  jsonSchemaToZod,
-} from '@cogitator-ai/mcp';
+import { cogitatorToMCP, mcpToCogitator, zodToJsonSchema } from '@cogitator-ai/mcp';
 import type { MCPToolDefinition } from '@cogitator-ai/mcp';
 import type { MCPClient } from '@cogitator-ai/mcp';
 import { tool } from '@cogitator-ai/core';

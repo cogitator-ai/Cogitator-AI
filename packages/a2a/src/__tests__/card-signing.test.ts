@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { signAgentCard, verifyAgentCardSignature, generateAgentCard } from '../agent-card';
+import { signAgentCard, verifyAgentCardSignature } from '../agent-card';
 import { A2AServer } from '../server';
 import type { AgentCard } from '../types';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';

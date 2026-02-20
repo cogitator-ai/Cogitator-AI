@@ -45,12 +45,11 @@ export class PushNotificationSender {
     if (config.authenticationInfo) {
       const { scheme, credentials } = config.authenticationInfo;
       if (scheme === 'bearer' && credentials.token) {
-        headers['Authorization'] = `Bearer ${credentials.token}`;
+        headers.Authorization = `Bearer ${credentials.token}`;
       } else if (scheme === 'apiKey' && credentials.key) {
         headers[credentials.headerName ?? 'X-API-Key'] = credentials.key;
       } else if (scheme === 'basic' && credentials.username && credentials.password) {
-        headers['Authorization'] =
-          `Basic ${btoa(`${credentials.username}:${credentials.password}`)}`;
+        headers.Authorization = `Basic ${btoa(`${credentials.username}:${credentials.password}`)}`;
       }
     }
 
