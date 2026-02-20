@@ -558,6 +558,9 @@ importers:
       '@cogitator-ai/openai-compat':
         specifier: workspace:*
         version: link:../openai-compat
+      '@cogitator-ai/rag':
+        specifier: workspace:*
+        version: link:../rag
       '@cogitator-ai/redis':
         specifier: workspace:*
         version: link:../redis
