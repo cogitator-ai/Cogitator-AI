@@ -413,6 +413,12 @@ importers:
       '@cogitator-ai/a2a':
         specifier: workspace:*
         version: link:../a2a
+      '@cogitator-ai/ai-sdk':
+        specifier: workspace:*
+        version: link:../ai-sdk
+      '@cogitator-ai/config':
+        specifier: workspace:*
+        version: link:../config
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
@@ -434,12 +440,21 @@ importers:
       '@cogitator-ai/memory':
         specifier: workspace:*
         version: link:../memory
+      '@cogitator-ai/models':
+        specifier: workspace:*
+        version: link:../models
+      '@cogitator-ai/neuro-symbolic':
+        specifier: workspace:*
+        version: link:../neuro-symbolic
       '@cogitator-ai/next':
         specifier: workspace:*
         version: link:../next
       '@cogitator-ai/openai-compat':
         specifier: workspace:*
         version: link:../openai-compat
+      '@cogitator-ai/self-modifying':
+        specifier: workspace:*
+        version: link:../self-modifying
       '@cogitator-ai/server-shared':
         specifier: workspace:*
         version: link:../server-shared

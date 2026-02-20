@@ -245,18 +245,29 @@ function createTestTools(): Record<string, Tool>; // calculator, echo, failing t
 | `@cogitator-ai/openai-compat` | 6      | Health, models, assistant/thread/message CRUD, run lifecycle, messages |
 | **Total**                     | **33** |                                                                        |
 
-### Phase 4 — Not started
+### Phase 4 — Done
 
-| Package                 | Priority | What to test                                                |
-| ----------------------- | -------- | ----------------------------------------------------------- |
-| `@cogitator-ai/sandbox` | Medium   | Docker sandbox execution, WASM sandbox, timeout/limits      |
-| `@cogitator-ai/worker`  | Low      | BullMQ job queue, distributed agent execution               |
-| `@cogitator-ai/types`   | Low      | Zod schema serialization/deserialization, config validation |
+| Package                        | Tests  | What's covered                                                                   |
+| ------------------------------ | ------ | -------------------------------------------------------------------------------- |
+| `@cogitator-ai/a2a` (v2/v3)    | 26     | Multi-turn, listTasks, token streaming, push notifications, card signing/ext     |
+| `@cogitator-ai/ai-sdk`         | 11     | Tool conversion (to/from AI SDK), batch conversion, round-trip, edge cases       |
+| `@cogitator-ai/config`         | 9      | defineConfig, loadConfig merging, schema validation, env vars, nested configs    |
+| `@cogitator-ai/models`         | 26     | Registry init, model lookup, filtering, pricing, LiteLLM transform, lifecycle    |
+| `@cogitator-ai/neuro-symbolic` | 9      | Logic programming, fact assertion/query, constraint solving, plan validation     |
+| `@cogitator-ai/self-modifying` | 17     | Sandbox, validator, store, observations, strategies, evolution, rollback, events |
+| **Total**                      | **98** |                                                                                  |
 
-## Totals (Phase 1 + Phase 2 + Phase 3)
+### Phase 5 — Not started
 
-- **27 test files** (12 Phase 1 + 8 Phase 2 + 7 Phase 3)
-- **103 test cases** (37 Phase 1 + 33 Phase 2 + 33 Phase 3)
-- **14 packages covered** (core, a2a, cross-package, memory, workflows, multi-provider, mcp, swarms, server-shared, express, fastify, hono, koa, next, openai-compat)
+| Package                 | Priority | What to test                                           |
+| ----------------------- | -------- | ------------------------------------------------------ |
+| `@cogitator-ai/sandbox` | Medium   | Docker sandbox execution, WASM sandbox, timeout/limits |
+| `@cogitator-ai/worker`  | Low      | BullMQ job queue, distributed agent execution          |
+
+## Totals (Phase 1 + Phase 2 + Phase 3 + Phase 4)
+
+- **36 test files** (12 Phase 1 + 8 Phase 2 + 7 Phase 3 + 9 Phase 4)
+- **201 test cases** (37 Phase 1 + 33 Phase 2 + 33 Phase 3 + 98 Phase 4)
+- **20 packages covered** (core, a2a, cross-package, memory, workflows, multi-provider, mcp, swarms, server-shared, express, fastify, hono, koa, next, openai-compat, ai-sdk, config, models, neuro-symbolic, self-modifying)
 - **3 assertion tiers** (hard, structured, judge)
 - **2 CI modes** (PR: hard only, main: hard + judge)
