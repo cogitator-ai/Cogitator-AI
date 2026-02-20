@@ -31,6 +31,7 @@ import { InMemoryInterventionLog } from './stores/intervention-log';
 
 export interface CausalReasonerOptions {
   llmBackend: LLMBackend;
+  model?: string;
   config?: Partial<CausalReasoningConfig>;
   graphStore?: InMemoryCausalGraphStore;
   patternStore?: InMemoryCausalPatternStore;
@@ -77,8 +78,11 @@ export class CausalReasoner {
     this.patternStore = options.patternStore ?? new InMemoryCausalPatternStore();
     this.interventionLog = options.interventionLog ?? new InMemoryInterventionLog();
 
+    const model = options.model;
+
     this.extractor = new CausalExtractor({
       llmBackend: this.llm,
+      model,
       minConfidence: this.config.minEdgeConfidence,
       minStrength: this.config.minEdgeStrength,
       batchSize: this.config.discoveryBatchSize,
@@ -86,23 +90,28 @@ export class CausalReasoner {
 
     this.hypothesisGenerator = new CausalHypothesisGenerator({
       llmBackend: this.llm,
+      model,
     });
 
     this.validator = new CausalValidator({
       llmBackend: this.llm,
+      model,
       validationThreshold: this.config.hypothesisValidationThreshold,
     });
 
     this.effectPredictor = new CausalEffectPredictor({
       llmBackend: this.llm,
+      model,
     });
 
     this.explainer = new CausalExplainer({
       llmBackend: this.llm,
+      model,
     });
 
     this.planner = new CausalPlanner({
       llmBackend: this.llm,
+      model,
     });
   }
 
