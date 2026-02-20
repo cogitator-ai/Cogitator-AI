@@ -120,6 +120,12 @@ importers:
       '@cogitator-ai/workflows':
         specifier: workspace:*
         version: link:../packages/workflows
+      '@fastify/cors':
+        specifier: ^11.0.1
+        version: 11.2.0
+      '@fastify/multipart':
+        specifier: ^9.3.0
+        version: 9.4.0
       '@hono/node-server':
         specifier: ^1.0.0
         version: 1.19.9(hono@4.12.0)
