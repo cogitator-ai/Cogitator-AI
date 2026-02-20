@@ -11,7 +11,7 @@ export const LLMProviderSchema = z.enum([
 ]);
 
 export const ProvidersConfigSchema = z.object({
-  ollama: z.object({ baseUrl: z.string() }).optional(),
+  ollama: z.object({ baseUrl: z.string(), apiKey: z.string().optional() }).optional(),
   openai: z.object({ apiKey: z.string(), baseUrl: z.string().optional() }).optional(),
   anthropic: z.object({ apiKey: z.string() }).optional(),
   google: z.object({ apiKey: z.string() }).optional(),

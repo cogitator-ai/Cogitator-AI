@@ -98,6 +98,7 @@ export interface LLMBackend {
 
 export interface OllamaProviderConfig {
   baseUrl: string;
+  apiKey?: string;
 }
 
 export interface OpenAIProviderConfig {
