@@ -9,9 +9,9 @@ export interface ExecResult {
 export function exec(command: string, options?: ExecSyncOptions): ExecResult {
   try {
     const output = execSync(command, {
-      encoding: 'utf-8',
       stdio: 'pipe',
       ...options,
+      encoding: 'utf-8',
     });
     return { success: true, output: output.trim() };
   } catch (err) {
