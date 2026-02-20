@@ -1,0 +1,222 @@
+---
+title: Document Loaders
+description: Load documents from text files, markdown, JSON, CSV, HTML, PDFs, and web URLs into the RAG pipeline.
+---
+
+## Overview
+
+Document loaders convert raw sources into `RAGDocument` objects that the pipeline can chunk and embed. Every loader implements the `DocumentLoader` interface:
+
+```typescript
+interface DocumentLoader {
+  load(source: string): Promise<RAGDocument[]>;
+  readonly supportedTypes: string[];
+}
+```
+
+The `source` parameter is a file path for file-based loaders, or a URL for `WebLoader`. Directory paths are supported by `TextLoader` and `MarkdownLoader` — they'll load all matching files in the directory.
+
+## TextLoader
+
+Loads plain text files (`.txt`, `.text`). Accepts a file path or directory.
+
+```typescript
+import { TextLoader } from '@cogitator-ai/rag';
+
+const loader = new TextLoader();
+
+const docs = await loader.load('./data/notes.txt');
+const allDocs = await loader.load('./data/text-files/');
+```
+
+No options. Documents get `sourceType: 'text'`.
+
+## MarkdownLoader
+
+Loads `.md` and `.mdx` files. Optionally strips YAML frontmatter and extracts it as metadata.
+
+```typescript
+import { MarkdownLoader } from '@cogitator-ai/rag';
+
+const loader = new MarkdownLoader({ stripFrontmatter: true });
+const docs = await loader.load('./docs/');
+
+console.log(docs[0].metadata);
+// { title: 'Getting Started', description: 'Quick start guide' }
+```
+
+| Option             | Type    | Default | Description                                      |
+| ------------------ | ------- | ------- | ------------------------------------------------ |
+| `stripFrontmatter` | boolean | false   | Remove YAML frontmatter and parse it as metadata |
+
+## JSONLoader
+
+Loads JSON files. Handles both single objects and arrays. Automatically detects `content`, `text`, or `body` fields, or you can specify a custom content field.
+
+```typescript
+import { JSONLoader } from '@cogitator-ai/rag';
+
+const loader = new JSONLoader({
+  contentField: 'description',
+  metadataFields: ['category', 'author'],
+});
+
+const docs = await loader.load('./data/articles.json');
+```
+
+If no content field is found, the entire object is serialized as the document content.
+
+| Option           | Type     | Default | Description                            |
+| ---------------- | -------- | ------- | -------------------------------------- |
+| `contentField`   | string   | auto    | Field name to use as document content  |
+| `metadataFields` | string[] | —       | Fields to extract as document metadata |
+
+Auto-detected content fields (in order): `content`, `text`, `body`.
+
+## CSVLoader
+
+Loads CSV files. Each row becomes a separate document. Requires `papaparse` as a peer dependency.
+
+```bash
+pnpm add papaparse
+```
+
+```typescript
+import { CSVLoader } from '@cogitator-ai/rag';
+
+const loader = new CSVLoader({
+  contentColumn: 'description',
+  metadataColumns: ['id', 'category'],
+  delimiter: ',',
+});
+
+const docs = await loader.load('./data/products.csv');
+```
+
+If no `contentColumn` is specified, the first column is used.
+
+| Option            | Type     | Default      | Description                       |
+| ----------------- | -------- | ------------ | --------------------------------- |
+| `contentColumn`   | string   | first column | Column to use as document content |
+| `metadataColumns` | string[] | —            | Columns to extract as metadata    |
+| `delimiter`       | string   | auto         | CSV delimiter character           |
+
+## HTMLLoader
+
+Loads HTML files and extracts text content using CSS selectors. Requires `cheerio` as a peer dependency.
+
+```bash
+pnpm add cheerio
+```
+
+```typescript
+import { HTMLLoader } from '@cogitator-ai/rag';
+
+const loader = new HTMLLoader({ selector: 'article' });
+const docs = await loader.load('./pages/about.html');
+
+console.log(docs[0].metadata);
+// { title: 'About Us' }
+```
+
+The `<title>` tag is automatically extracted as metadata if present.
+
+| Option     | Type   | Default | Description                         |
+| ---------- | ------ | ------- | ----------------------------------- |
+| `selector` | string | `body`  | CSS selector for content extraction |
+
+## PDFLoader
+
+Loads PDF files and extracts text. Optionally splits into one document per page. Requires `pdf-parse` as a peer dependency.
+
+```bash
+pnpm add pdf-parse
+```
+
+```typescript
+import { PDFLoader } from '@cogitator-ai/rag';
+
+const loader = new PDFLoader();
+const docs = await loader.load('./papers/research.pdf');
+console.log(docs[0].metadata);
+// { pages: 42 }
+
+const perPage = new PDFLoader({ splitPages: true });
+const pageDocs = await perPage.load('./papers/research.pdf');
+console.log(pageDocs[0].metadata);
+// { pageNumber: 1, totalPages: 42 }
+```
+
+| Option       | Type    | Default | Description                                 |
+| ------------ | ------- | ------- | ------------------------------------------- |
+| `splitPages` | boolean | false   | Create one document per page instead of one |
+
+## WebLoader
+
+Fetches a URL and extracts text content. Uses `HTMLLoader` internally, so it requires `cheerio`.
+
+```bash
+pnpm add cheerio
+```
+
+```typescript
+import { WebLoader } from '@cogitator-ai/rag';
+
+const loader = new WebLoader({
+  selector: 'main',
+  headers: { 'User-Agent': 'CogitatorBot/1.0' },
+});
+
+const docs = await loader.load('https://example.com/docs/getting-started');
+```
+
+| Option    | Type                       | Default | Description                         |
+| --------- | -------------------------- | ------- | ----------------------------------- |
+| `selector`| string                     | `body`  | CSS selector for content extraction |
+| `headers` | Record\<string, string\>   | —       | Custom HTTP headers for the request |
+
+## Custom Loaders
+
+Implement the `DocumentLoader` interface to load from any source:
+
+```typescript
+import { nanoid } from 'nanoid';
+import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
+
+class NotionLoader implements DocumentLoader {
+  readonly supportedTypes = ['notion'];
+  private apiKey: string;
+
+  constructor(apiKey: string) {
+    this.apiKey = apiKey;
+  }
+
+  async load(source: string): Promise<RAGDocument[]> {
+    const pageId = source;
+    const content = await this.fetchNotionPage(pageId);
+
+    return [{
+      id: nanoid(),
+      content,
+      source: `notion://${pageId}`,
+      sourceType: 'text',
+    }];
+  }
+
+  private async fetchNotionPage(pageId: string): Promise<string> {
+    // your Notion API logic here
+    return '';
+  }
+}
+```
+
+Pass your custom loader to the pipeline builder:
+
+```typescript
+const pipeline = new RAGPipelineBuilder()
+  .withLoader(new NotionLoader(process.env.NOTION_API_KEY!))
+  // ...
+  .build();
+
+await pipeline.ingest('page-id-here');
+```

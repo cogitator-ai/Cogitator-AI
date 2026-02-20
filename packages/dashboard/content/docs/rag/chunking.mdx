@@ -1,0 +1,152 @@
+---
+title: Chunking Strategies
+description: Split documents into embeddable chunks using fixed-size, recursive, or semantic chunking strategies.
+---
+
+## Why Chunking Matters
+
+Embedding models have token limits and perform best on focused text segments. Chunking splits large documents into smaller pieces that can be individually embedded and retrieved. The chunking strategy you choose directly affects retrieval quality.
+
+## Fixed-Size Chunking
+
+Splits text into chunks of exactly `chunkSize` characters with a configurable overlap. Fast and predictable, but splits can land in the middle of sentences or paragraphs.
+
+```typescript
+import { FixedSizeChunker } from '@cogitator-ai/rag';
+
+const chunker = new FixedSizeChunker({
+  chunkSize: 500,
+  chunkOverlap: 50,
+});
+
+const chunks = chunker.chunk(documentText, 'doc-1');
+```
+
+| Option         | Type   | Description                                      |
+| -------------- | ------ | ------------------------------------------------ |
+| `chunkSize`    | number | Maximum characters per chunk                     |
+| `chunkOverlap` | number | Characters to overlap between consecutive chunks |
+
+**When to use:** Uniform-length data (logs, code), or when you need predictable chunk sizes and don't care about semantic boundaries.
+
+## Recursive Chunking
+
+Splits text hierarchically using a list of separators — first by double newlines (paragraphs), then single newlines, then sentences, then words. Produces chunks that respect natural text boundaries while staying under the size limit.
+
+```typescript
+import { RecursiveChunker } from '@cogitator-ai/rag';
+
+const chunker = new RecursiveChunker({
+  chunkSize: 512,
+  chunkOverlap: 50,
+  separators: ['\n\n', '\n', '. ', ' '],
+});
+
+const chunks = chunker.chunk(documentText, 'doc-1');
+```
+
+Default separators: `['\n\n', '\n', '. ', ' ', '']`
+
+| Option         | Type     | Description                                      |
+| -------------- | -------- | ------------------------------------------------ |
+| `chunkSize`    | number   | Maximum characters per chunk                     |
+| `chunkOverlap` | number   | Characters to overlap between consecutive chunks |
+| `separators`   | string[] | Ordered list of separators to try (most to least granular) |
+
+**When to use:** General-purpose documents (articles, documentation, books). This is the recommended default for most use cases.
+
+## Semantic Chunking
+
+Groups sentences by semantic similarity using embeddings. Adjacent sentences are embedded, and a new chunk boundary is created when the cosine similarity between consecutive sentences drops below a threshold. This is an async chunker since it calls the embedding service.
+
+```typescript
+import { SemanticChunker } from '@cogitator-ai/rag';
+import { OpenAIEmbeddingService } from '@cogitator-ai/memory';
+
+const embeddings = new OpenAIEmbeddingService({
+  apiKey: process.env.OPENAI_API_KEY!,
+});
+
+const chunker = new SemanticChunker({
+  embeddingService: embeddings,
+  breakpointThreshold: 0.5,
+  minChunkSize: 100,
+  maxChunkSize: 2000,
+});
+
+const chunks = await chunker.chunk(documentText, 'doc-1');
+```
+
+| Option                | Type             | Default | Description                                                 |
+| --------------------- | ---------------- | ------- | ----------------------------------------------------------- |
+| `embeddingService`    | EmbeddingService | —       | Embedding service for computing sentence similarity         |
+| `breakpointThreshold` | number           | 0.5     | Similarity threshold — below this starts a new chunk        |
+| `minChunkSize`        | number           | 100     | Minimum chunk size in characters (small chunks get merged)  |
+| `maxChunkSize`        | number           | 2000    | Maximum chunk size in characters                            |
+
+**When to use:** Documents where topic boundaries don't align with formatting (transcripts, long-form prose, research papers). Produces the highest quality chunks but is slower due to embedding calls.
+
+## createChunker Factory
+
+Create a chunker from a config object without importing individual classes:
+
+```typescript
+import { createChunker } from '@cogitator-ai/rag';
+
+const chunker = createChunker({
+  strategy: 'recursive',
+  chunkSize: 512,
+  chunkOverlap: 50,
+});
+```
+
+For semantic chunking, pass the embedding service as the second argument:
+
+```typescript
+const chunker = createChunker(
+  { strategy: 'semantic', chunkSize: 2000, chunkOverlap: 0 },
+  embeddingService
+);
+```
+
+## Comparison
+
+| Strategy    | Speed   | Quality | Async | Best For                                   |
+| ----------- | ------- | ------- | ----- | ------------------------------------------ |
+| `fixed`     | Fastest | Low     | No    | Logs, code, uniform data                   |
+| `recursive` | Fast    | Good    | No    | General-purpose text (recommended default) |
+| `semantic`  | Slow    | Best    | Yes   | Transcripts, research, long-form prose     |
+
+## Custom Chunkers
+
+Implement `Chunker` for synchronous chunking or `AsyncChunker` for async:
+
+```typescript
+import { nanoid } from 'nanoid';
+import type { Chunker, DocumentChunk } from '@cogitator-ai/types';
+
+class ParagraphChunker implements Chunker {
+  chunk(text: string, documentId: string): DocumentChunk[] {
+    return text
+      .split('\n\n')
+      .filter((p) => p.trim().length > 0)
+      .map((content, i) => ({
+        id: nanoid(),
+        documentId,
+        content: content.trim(),
+        startOffset: text.indexOf(content),
+        endOffset: text.indexOf(content) + content.length,
+        order: i,
+      }));
+  }
+}
+```
+
+Pass it to the builder:
+
+```typescript
+const pipeline = new RAGPipelineBuilder()
+  .withChunker(new ParagraphChunker())
+  // ...
+  .build();
+```
