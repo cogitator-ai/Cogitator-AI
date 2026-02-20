@@ -1,8 +1,8 @@
 export function mean(values: number[]): number {
   if (values.length === 0) return 0;
   let sum = 0;
-  for (let i = 0; i < values.length; i++) {
-    sum += values[i];
+  for (const v of values) {
+    sum += v;
   }
   return sum / values.length;
 }
@@ -11,8 +11,8 @@ export function stdDev(values: number[]): number {
   if (values.length < 2) return 0;
   const m = mean(values);
   let sumSq = 0;
-  for (let i = 0; i < values.length; i++) {
-    const d = values[i] - m;
+  for (const v of values) {
+    const d = v - m;
     sumSq += d * d;
   }
   return Math.sqrt(sumSq / (values.length - 1));

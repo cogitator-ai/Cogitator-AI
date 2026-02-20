@@ -45,8 +45,8 @@ export function cost(): StatisticalMetricFn {
 
     const stats = aggregate(costs);
     let total = 0;
-    for (let i = 0; i < costs.length; i++) {
-      total += costs[i];
+    for (const c of costs) {
+      total += c;
     }
 
     return {

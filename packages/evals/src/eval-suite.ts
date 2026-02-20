@@ -139,7 +139,7 @@ export class EvalSuite {
             const evalCase = cases[i];
             active++;
 
-            this.executeCase(evalCase)
+            void this.executeCase(evalCase)
               .then((caseResult) =>
                 this.evaluateCaseMetrics(caseResult).then((scores) => ({ ...caseResult, scores }))
               )

@@ -22,7 +22,7 @@ function parseJudgeOutput(raw: string): { score: number; reasoning?: string } | 
     }
     return null;
   } catch {
-    const match = raw.match(SCORE_REGEX);
+    const match = SCORE_REGEX.exec(raw);
     if (match) {
       return { score: parseFloat(match[1]) };
     }

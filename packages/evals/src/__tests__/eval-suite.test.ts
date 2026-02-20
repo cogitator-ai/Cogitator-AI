@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,7 +6,7 @@ import { EvalSuite } from '../eval-suite';
 import { Dataset } from '../datasets';
 import type { EvalCaseResult, MetricFn, MetricScore, StatisticalMetricFn } from '../metrics/types';
 import type { LLMMetricFn } from '../metrics/llm-judge';
-import type { AssertionFn, AggregatedMetric, AssertionResult } from '../assertions';
+import type { AssertionFn, AggregatedMetric } from '../assertions';
 import type { EvalProgress, EvalTarget } from '../eval-suite';
 
 function makeMetricFn(name: string, scoreFn: (r: EvalCaseResult) => number = () => 0.9): MetricFn {
@@ -390,10 +390,6 @@ describe('EvalSuite', () => {
     it('detects requiresJudge and binds with judge context', async () => {
       const llmMetric = makeLLMMetricFn('faithfulness');
 
-      const mockCogitator = {
-        run: vi.fn().mockResolvedValue({ output: '{"score": 0.95, "reasoning": "good"}' }),
-      };
-
       const suite = new EvalSuite({
         dataset: Dataset.from([{ input: 'test', expected: 'expected' }]),
         target: simpleFnTarget(),
@@ -461,7 +457,7 @@ describe('EvalSuite', () => {
   describe('assertions', () => {
     it('runs assertions after metrics and includes in result', async () => {
       const metric = makeMetricFn('accuracy', () => 0.7);
-      const assertFn: AssertionFn = (aggregated, stats) => ({
+      const assertFn: AssertionFn = (aggregated, _stats) => ({
         name: 'accuracy >= 0.8',
         passed: (aggregated.accuracy?.mean ?? 0) >= 0.8,
         message: `accuracy mean ${aggregated.accuracy?.mean ?? 0}`,
@@ -484,11 +480,11 @@ describe('EvalSuite', () => {
     });
 
     it('passes correct aggregated and stats to assertion', async () => {
-      let capturedAgg: Record<string, AggregatedMetric> = {};
+      let _capturedAgg: Record<string, AggregatedMetric> = {};
       let capturedStats = { total: 0, duration: 0, cost: 0 };
 
       const assertFn: AssertionFn = (agg, stats) => {
-        capturedAgg = agg;
+        _capturedAgg = agg;
         capturedStats = stats;
         return { name: 'capture', passed: true, message: 'ok' };
       };

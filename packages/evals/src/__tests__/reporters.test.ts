@@ -365,7 +365,7 @@ describe('report() dispatcher', () => {
   it('runs all reporters when given an array', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'evals-multi-'));
     const jsonPath = join(tempDir, 'out.json');
-    const csvPath = join(tempDir, 'out.csv');
+    const _csvPath = join(tempDir, 'out.csv');
 
     const result = makeSuiteResult({ assertions: [{ name: 'x', passed: true, message: 'ok' }] });
 
