@@ -83,8 +83,7 @@ function loadProviderConfigs(): ProvidersConfig {
   const ollamaApiKey = getEnv('OLLAMA_API_KEY') ?? process.env.OLLAMA_API_KEY;
   if (ollamaBaseUrl || ollamaApiKey) {
     providers.ollama = {
-      baseUrl:
-        ollamaBaseUrl ?? (ollamaApiKey ? 'https://api.ollama.com' : 'http://localhost:11434'),
+      baseUrl: ollamaBaseUrl ?? (ollamaApiKey ? 'https://ollama.com' : 'http://localhost:11434'),
       ...(ollamaApiKey ? { apiKey: ollamaApiKey } : {}),
     };
   }

@@ -26,7 +26,7 @@ describe('OllamaBackend Cloud Support', () => {
 
   it('sends Authorization header when apiKey is set', async () => {
     const backend = new OllamaBackend({
-      baseUrl: 'https://api.ollama.com',
+      baseUrl: 'https://ollama.com',
       apiKey: 'test-key-123',
     });
 
