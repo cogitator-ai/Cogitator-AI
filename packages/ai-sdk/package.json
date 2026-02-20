@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/ai-sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Vercel AI SDK adapter for Cogitator - bidirectional compatibility",
   "type": "module",
   "exports": {

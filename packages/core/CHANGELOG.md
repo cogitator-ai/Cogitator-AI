@@ -1,5 +1,24 @@
 # @cogitator-ai/core
 
+## 0.18.0
+
+### Minor Changes
+
+- Add Ollama Cloud support with API key authentication
+  - `apiKey` field in `OllamaProviderConfig` for cloud authentication
+  - `OLLAMA_API_KEY` env variable auto-detection with default base URL `https://ollama.com`
+  - `Authorization: Bearer` header in OllamaBackend when API key is configured
+
+### Patch Changes
+
+- Fix ESM directory import conflicts, streaming content handling, and integration test stability
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/types@0.20.0
+  - @cogitator-ai/memory@0.6.13
+  - @cogitator-ai/models@17.1.4
+  - @cogitator-ai/sandbox@0.2.23
+
 ## 0.17.4
 
 ### Patch Changes

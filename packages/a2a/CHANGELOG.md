@@ -1,5 +1,24 @@
 # @cogitator-ai/a2a
 
+## 0.3.0
+
+### Minor Changes
+
+- Add push notifications, Agent Card signing, and production persistence
+  - Push notifications with webhook delivery and HMAC verification
+  - Extended Agent Card with authenticated access and capability negotiation
+  - Agent Card cryptographic signing and verification
+  - RedisTaskStore for production task persistence
+  - Token-level streaming in SSE responses
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.18.0
+  - @cogitator-ai/types@0.20.0
+
 ## 0.2.0
 
 ### Minor Changes

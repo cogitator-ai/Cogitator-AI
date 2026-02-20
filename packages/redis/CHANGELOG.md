@@ -1,5 +1,13 @@
 # @cogitator-ai/redis
 
+## 0.2.22
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/types@0.20.0
+
 ## 0.2.20
 
 ### Patch Changes

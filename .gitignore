@@ -56,3 +56,6 @@ ROADMAP.md
 INTEGRATIONS.md
 A2A-PROGRESS.md
 .npmrc
+
+# Internal planning docs (used by Claude, not for public repo)
+docs/plans/

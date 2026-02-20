@@ -1,5 +1,25 @@
 # @cogitator-ai/config
 
+## 0.4.0
+
+### Minor Changes
+
+- Add one-command deployment engine (`cogitator deploy`)
+  - New deploy types: `DeployTarget`, `DeployConfig`, `DeployResult`, `DeployPlan`
+  - Deploy section in `cogitator.yml` schema with target, port, region, instances, registry, services, secrets
+  - CLI `deploy` command with `--target`, `--dry-run`, `--push`, `status`, and `destroy` subcommands
+
+- Add Ollama Cloud support with API key authentication
+  - `apiKey` field in `OllamaProviderConfig` for cloud authentication
+  - `OLLAMA_API_KEY` env variable auto-detection with default base URL `https://ollama.com`
+  - `Authorization: Bearer` header in OllamaBackend when API key is configured
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/types@0.20.0
+
 ## 0.3.13
 
 ### Patch Changes

@@ -1,5 +1,25 @@
 # @cogitator-ai/cli
 
+## 0.3.0
+
+### Minor Changes
+
+- Add one-command deployment engine (`cogitator deploy`)
+  - New deploy types: `DeployTarget`, `DeployConfig`, `DeployResult`, `DeployPlan`
+  - Deploy section in `cogitator.yml` schema with target, port, region, instances, registry, services, secrets
+  - CLI `deploy` command with `--target`, `--dry-run`, `--push`, `status`, and `destroy` subcommands
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.18.0
+  - @cogitator-ai/types@0.20.0
+  - @cogitator-ai/config@0.4.0
+  - @cogitator-ai/deploy@0.1.1
+
 ## 0.2.25
 
 ### Patch Changes
