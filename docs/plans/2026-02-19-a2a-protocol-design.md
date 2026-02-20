@@ -228,6 +228,12 @@ All adapters delegate to `A2AServer.handleRequest()`.
 - Agent Card signing
 - Extended Agent Card (authenticated)
 
+### Post-release docs updates
+
+- [ ] Update dashboard docs (`packages/dashboard/content/docs/integrations/a2a.mdx`) with v2 features: multi-turn, listTasks, token streaming, RedisTaskStore
+- [ ] Update `packages/a2a/README.md` with v2 API additions (continueTask, listTasks, tasks/list method)
+- [ ] Update root README.md A2A section with multi-turn and streaming examples
+
 ## Dependencies
 
 Zero external — all implemented from spec. Uses only:
