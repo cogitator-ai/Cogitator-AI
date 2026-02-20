@@ -221,24 +221,29 @@ function createTestTools(): Record<string, Tool>; // calculator, echo, failing t
 | Cross-package        | 6      | Cogitator-via-A2A full stack, remote tool execution via `asTool()`                            |
 | **Total**            | **37** |                                                                                               |
 
-### Phase 2 — Not started
+### Phase 2 — Done
 
-| Package                               | Priority | What to test                                                                                     |
-| ------------------------------------- | -------- | ------------------------------------------------------------------------------------------------ |
-| `@cogitator-ai/memory`                | High     | In-memory/Redis/Postgres adapters, thread history load/save, context builder, embedding search   |
-| `@cogitator-ai/core` (multi-provider) | High     | OpenAI backend, Anthropic backend, Google backend as primary (not just judge), provider fallback |
-| `@cogitator-ai/workflows`             | Medium   | DAG execution, conditional branching, parallel nodes, error propagation                          |
-| `@cogitator-ai/swarms`                | Medium   | Multi-agent coordination, debate patterns, delegation                                            |
-| `@cogitator-ai/mcp`                   | Medium   | MCP tool discovery, MCP server integration                                                       |
-| `@cogitator-ai/sandbox`               | Medium   | Docker sandbox execution, WASM sandbox, timeout/resource limits                                  |
-| `@cogitator-ai/types`                 | Low      | Zod schema serialization/deserialization, config validation                                      |
-| `@cogitator-ai/worker`                | Low      | BullMQ job queue, distributed agent execution                                                    |
+| Package                               | Tests  | What's covered                                                                    |
+| ------------------------------------- | ------ | --------------------------------------------------------------------------------- |
+| `@cogitator-ai/memory`                | 9      | InMemoryAdapter CRUD, context builder, agent memory integration, thread isolation |
+| `@cogitator-ai/core` (multi-provider) | 7      | parseModel routing, backend creation, Google Gemini chat/streaming/tools          |
+| `@cogitator-ai/workflows`             | 9      | DAG execution (sequential, conditional, parallel, loop), agent nodes, checkpoint  |
+| `@cogitator-ai/swarms`                | 4      | Round-robin, pipeline strategies, error handling, event emission                  |
+| `@cogitator-ai/mcp`                   | 4      | Tool adapter (cogitatorToMCP, mcpToCogitator, zodToJsonSchema, round-trip)        |
+| **Total**                             | **33** |                                                                                   |
 
-Estimated Phase 2 scope: ~40-60 additional tests.
+### Phase 3 — Not started
 
-## Totals (Phase 1)
+| Package                 | Priority | What to test                                                |
+| ----------------------- | -------- | ----------------------------------------------------------- |
+| `@cogitator-ai/sandbox` | Medium   | Docker sandbox execution, WASM sandbox, timeout/limits      |
+| `@cogitator-ai/worker`  | Low      | BullMQ job queue, distributed agent execution               |
+| `@cogitator-ai/types`   | Low      | Zod schema serialization/deserialization, config validation |
 
-- **12 test files**
-- **37 test cases**
+## Totals (Phase 1 + Phase 2)
+
+- **20 test files** (12 Phase 1 + 8 Phase 2)
+- **70 test cases** (37 Phase 1 + 33 Phase 2)
+- **7 packages covered** (core, a2a, cross-package, memory, workflows, multi-provider, mcp, swarms)
 - **3 assertion tiers** (hard, structured, judge)
 - **2 CI modes** (PR: hard only, main: hard + judge)

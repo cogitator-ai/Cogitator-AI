@@ -202,6 +202,33 @@ export interface A2AServerConfig {
   taskStore?: TaskStore;
   cardUrl?: string;
   auth?: A2AAuthConfig;
+  pushNotificationStore?: PushNotificationStore;
+  cardSigning?: { algorithm?: 'hmac-sha256'; secret: string };
+  extendedCardGenerator?: (agentName: string) => ExtendedAgentCard;
+}
+
+export interface PushNotificationConfig {
+  webhookUrl: string;
+  authenticationInfo?: {
+    scheme: 'apiKey' | 'basic' | 'bearer' | 'oauth2';
+    credentials: Record<string, string>;
+  };
+  id?: string;
+  createdAt?: string;
+}
+
+export interface PushNotificationStore {
+  create(taskId: string, config: PushNotificationConfig): Promise<PushNotificationConfig>;
+  get(taskId: string, configId: string): Promise<PushNotificationConfig | null>;
+  list(taskId: string): Promise<PushNotificationConfig[]>;
+  delete(taskId: string, configId: string): Promise<void>;
+}
+
+export interface ExtendedAgentCard extends AgentCard {
+  extendedSkills?: AgentSkill[];
+  rateLimit?: { requestsPerMinute: number };
+  pricing?: { model: string; details?: string };
+  metadata?: Record<string, unknown>;
 }
 
 export interface A2AClientConfig {

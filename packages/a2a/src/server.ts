@@ -2,6 +2,7 @@ import type { Agent as IAgent } from '@cogitator-ai/types';
 import type {
   A2AServerConfig,
   AgentCard,
+  ExtendedAgentCard,
   A2AMessage,
   A2ATask,
   A2AStreamEvent,
@@ -9,6 +10,8 @@ import type {
   SendMessageConfiguration,
   TaskFilter,
   CogitatorLike,
+  PushNotificationConfig,
+  PushNotificationStore,
 } from './types.js';
 import type { JsonRpcRequest, JsonRpcResponse } from './json-rpc.js';
 import {
@@ -18,10 +21,12 @@ import {
   JsonRpcParseError,
 } from './json-rpc.js';
 import { TaskManager } from './task-manager.js';
-import { generateAgentCard } from './agent-card.js';
+import { generateAgentCard, signAgentCard } from './agent-card.js';
+import type { AgentCardSigningOptions } from './agent-card.js';
 import { A2AError } from './errors.js';
 import * as errors from './errors.js';
 import { InMemoryTaskStore } from './task-store.js';
+import { InMemoryPushNotificationStore, PushNotificationSender } from './push-notifications.js';
 import { isTerminalState } from './types.js';
 
 export class A2AServer {
@@ -31,6 +36,10 @@ export class A2AServer {
   private agentCards: Map<string, AgentCard>;
   private basePath: string;
   private cardUrl: string;
+  private pushNotificationStore: PushNotificationStore;
+  private pushSender: PushNotificationSender;
+  private cardSigning?: AgentCardSigningOptions;
+  private extendedCardGenerator?: (agentName: string) => ExtendedAgentCard;
 
   constructor(config: A2AServerConfig) {
     const agentNames = Object.keys(config.agents);
@@ -42,16 +51,35 @@ export class A2AServer {
     this.cogitator = config.cogitator;
     this.basePath = config.basePath ?? '/a2a';
     this.cardUrl = config.cardUrl ?? '';
+    this.cardSigning = config.cardSigning;
+    this.extendedCardGenerator = config.extendedCardGenerator;
+
+    this.pushNotificationStore =
+      config.pushNotificationStore ?? new InMemoryPushNotificationStore();
+    this.pushSender = new PushNotificationSender(this.pushNotificationStore);
 
     this.taskManager = new TaskManager({
       taskStore: config.taskStore ?? new InMemoryTaskStore(),
     });
 
+    this.taskManager.on('event', (event: A2AStreamEvent) => {
+      if (event.type === 'status-update' || event.type === 'artifact-update') {
+        this.pushSender.notify(event.taskId, event).catch(() => {});
+      }
+    });
+
+    const hasPushNotifications = !!config.pushNotificationStore;
+    const hasExtendedCard = !!config.extendedCardGenerator;
+
     this.agentCards = new Map();
     for (const [name, agent] of Object.entries(this.agents)) {
       const card = generateAgentCard(agent, {
         url: this.cardUrl || this.basePath,
-        capabilities: { streaming: true, pushNotifications: false },
+        capabilities: {
+          streaming: true,
+          pushNotifications: hasPushNotifications,
+          extendedAgentCard: hasExtendedCard || undefined,
+        },
       });
       this.agentCards.set(name, card);
     }

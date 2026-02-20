@@ -20,6 +20,14 @@ export function pushNotificationsNotSupported(): JsonRpcError {
   return { code: -32003, message: 'Push notifications are not supported' };
 }
 
+export function pushNotificationsNotConfigured(taskId: string): JsonRpcError {
+  return {
+    code: -32009,
+    message: `Push notifications not configured for task: ${taskId}`,
+    data: { taskId },
+  };
+}
+
 export function unsupportedOperation(method: string): JsonRpcError {
   return { code: -32004, message: `Unsupported operation: ${method}`, data: { method } };
 }
