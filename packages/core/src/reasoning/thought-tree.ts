@@ -56,6 +56,7 @@ export class ThoughtTreeExecutor {
     this.stats = this.createInitialStats();
 
     const llm = await this.getLLMBackend(agent);
+    this.cachedLLM = llm;
     this.currentModel = agent.model;
 
     this.branchGenerator = new BranchGenerator(llm, this.currentModel);
@@ -428,23 +429,14 @@ export class ThoughtTreeExecutor {
   }
 
   private async getLLMBackend(agent: Agent): Promise<LLMBackend> {
-    const parsed = this.parseModel(agent.model);
-    return (
-      this.cogitator as unknown as { getOrCreateBackend(provider: string): Promise<LLMBackend> }
-    ).getOrCreateBackend(parsed.provider);
+    return (this.cogitator as unknown as { getBackend(model: string): LLMBackend }).getBackend(
+      agent.model
+    );
   }
 
   private cachedLLM?: LLMBackend;
   private async getLLMBackendFromCache(): Promise<LLMBackend | undefined> {
     return this.cachedLLM;
-  }
-
-  private parseModel(model: string): { provider: string; model: string } {
-    const parts = model.split('/');
-    if (parts.length >= 2) {
-      return { provider: parts[0], model: parts.slice(1).join('/') };
-    }
-    return { provider: 'openai', model };
   }
 
   private getReflectionEngine(): ReflectionEngine | undefined {
