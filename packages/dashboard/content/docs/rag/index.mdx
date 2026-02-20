@@ -1,0 +1,154 @@
+---
+title: RAG Pipeline
+description: Build retrieval-augmented generation pipelines with @cogitator-ai/rag — document loading, chunking, embedding, retrieval, and reranking in a single composable pipeline.
+---
+
+## What is RAG?
+
+Retrieval-Augmented Generation grounds LLM responses in your actual data. Instead of relying solely on the model's training data, a RAG pipeline retrieves relevant documents at query time and includes them in the prompt context.
+
+`@cogitator-ai/rag` provides a complete pipeline: load documents from any source, chunk them into embeddable segments, store embeddings in a vector database, retrieve relevant chunks at query time, and optionally rerank results for precision.
+
+## Installation
+
+```bash
+pnpm add @cogitator-ai/rag @cogitator-ai/memory
+```
+
+The RAG package uses `@cogitator-ai/memory` for embedding storage and search. You'll also need an embedding provider — see [Embedding Providers](/docs/memory/embeddings) for setup.
+
+Optional peer dependencies based on your document sources:
+
+```bash
+pnpm add cheerio        # HTMLLoader, WebLoader
+pnpm add papaparse      # CSVLoader
+pnpm add pdf-parse      # PDFLoader
+```
+
+## Quick Start
+
+```typescript
+import { RAGPipelineBuilder, TextLoader, RecursiveChunker } from '@cogitator-ai/rag';
+import { InMemoryEmbeddingAdapter, OpenAIEmbeddingService } from '@cogitator-ai/memory';
+
+const embeddings = new OpenAIEmbeddingService({
+  apiKey: process.env.OPENAI_API_KEY!,
+});
+
+const store = new InMemoryEmbeddingAdapter();
+
+const pipeline = new RAGPipelineBuilder()
+  .withLoader(new TextLoader())
+  .withChunker(new RecursiveChunker({ chunkSize: 512, chunkOverlap: 50 }))
+  .withEmbeddingService(embeddings)
+  .withEmbeddingAdapter(store)
+  .withConfig({
+    chunking: { strategy: 'recursive', chunkSize: 512, chunkOverlap: 50 },
+  })
+  .build();
+
+await pipeline.ingest('./docs/');
+
+const results = await pipeline.query('How do agents use tools?');
+for (const result of results) {
+  console.log(`[${result.score.toFixed(3)}] ${result.content.slice(0, 100)}...`);
+}
+```
+
+## Pipeline Architecture
+
+```
+┌──────────┐    ┌──────────┐    ┌────────────┐    ┌─────────┐
+│  Loader  │───▶│ Chunker  │───▶│ Embeddings │───▶│  Store  │
+└──────────┘    └──────────┘    └────────────┘    └─────────┘
+                                                       │
+┌──────────┐    ┌──────────┐                           │
+│ Reranker │◀───│Retriever │◀──────────────────────────┘
+└──────────┘    └──────────┘
+```
+
+**Ingest flow:** Loader reads documents from a source (files, URLs, etc.) → Chunker splits them into smaller segments → Embedding service converts chunks to vectors → Embedding adapter stores vectors for later search.
+
+**Query flow:** Retriever embeds the query and searches the store for similar chunks → Reranker (optional) re-scores results using an LLM or Cohere for higher precision.
+
+## RAGPipelineBuilder
+
+The builder is the primary way to construct a pipeline. All components are pluggable.
+
+```typescript
+const pipeline = new RAGPipelineBuilder()
+  .withLoader(loader)           // required
+  .withChunker(chunker)         // optional — defaults based on config
+  .withEmbeddingService(svc)    // required
+  .withEmbeddingAdapter(store)  // required
+  .withRetriever(retriever)     // optional — defaults to SimilarityRetriever
+  .withReranker(reranker)       // optional
+  .withConfig(config)           // required
+  .build();
+```
+
+If you don't provide a chunker, one is created automatically from your config's `chunking.strategy`. If you don't provide a retriever, `SimilarityRetriever` is used by default.
+
+## RAGPipeline
+
+The built pipeline exposes two main methods:
+
+### `ingest(source)`
+
+Loads documents from `source`, chunks them, embeds all chunks, and stores the embeddings.
+
+```typescript
+const { documents, chunks } = await pipeline.ingest('./data/knowledge-base/');
+console.log(`Ingested ${documents} documents (${chunks} chunks)`);
+```
+
+### `query(text, options?)`
+
+Retrieves relevant chunks for the given query. If a reranker is configured and `reranking.enabled` is true in the config, results are reranked before returning.
+
+```typescript
+const results = await pipeline.query('What is the agent lifecycle?', {
+  topK: 5,
+  threshold: 0.7,
+});
+```
+
+### `getStats()`
+
+Returns ingestion and query statistics.
+
+```typescript
+const stats = pipeline.getStats();
+// { documentsIngested: 12, chunksStored: 347, queriesProcessed: 5 }
+```
+
+## Configuration
+
+Pipeline config is validated with Zod at build time:
+
+```typescript
+const config = {
+  chunking: {
+    strategy: 'recursive',  // 'fixed' | 'recursive' | 'semantic'
+    chunkSize: 512,
+    chunkOverlap: 50,
+    separators: ['\n\n', '\n', '. ', ' '],  // recursive only
+  },
+  retrieval: {
+    strategy: 'similarity',  // 'similarity' | 'mmr' | 'hybrid' | 'multi-query'
+    topK: 10,
+    threshold: 0.0,
+  },
+  reranking: {
+    enabled: true,
+    topN: 5,
+  },
+};
+```
+
+## Next Steps
+
+- [Document Loaders](/docs/rag/loaders) — load from text, markdown, JSON, CSV, HTML, PDF, or web URLs
+- [Chunking Strategies](/docs/rag/chunking) — fixed, recursive, and semantic chunking
+- [Retrieval Strategies](/docs/rag/retrieval) — similarity, MMR, hybrid, and multi-query retrieval
+- [Reranking](/docs/rag/reranking) — LLM-based and Cohere reranking

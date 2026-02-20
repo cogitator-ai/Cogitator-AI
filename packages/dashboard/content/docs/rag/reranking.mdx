@@ -1,0 +1,138 @@
+---
+title: Reranking
+description: Improve retrieval precision by re-scoring results with an LLM or Cohere's reranking API.
+---
+
+## Why Rerank?
+
+Vector similarity is a good first pass, but it can miss nuance. A document might be semantically close to the query but not actually answer the question. Reranking takes the top retrieval results and re-scores them with a more powerful model that reads both the query and each document, producing a more accurate ranking.
+
+Rerankers implement the `Reranker` interface:
+
+```typescript
+interface Reranker {
+  rerank(
+    query: string,
+    results: RetrievalResult[],
+    topN?: number
+  ): Promise<RetrievalResult[]>;
+}
+```
+
+## LLM Reranker
+
+Uses any LLM to score each document's relevance to the query on a 0–10 scale. You provide a `generateFn` that takes a prompt string and returns the LLM's text response.
+
+```typescript
+import { LLMReranker } from '@cogitator-ai/rag';
+
+const reranker = new LLMReranker({
+  generateFn: async (prompt) => {
+    const response = await agent.run(prompt);
+    return response.text;
+  },
+});
+
+const reranked = await reranker.rerank(
+  'How do agents handle tool errors?',
+  retrievalResults,
+  5
+);
+```
+
+The reranker builds a prompt asking the LLM to score each document and return a JSON array of `{ index, score }` objects. Scores are normalized to 0–1 in the output. If the LLM response can't be parsed, the original order is preserved as a fallback.
+
+| Option        | Type                                    | Description             |
+| ------------- | --------------------------------------- | ----------------------- |
+| `generateFn`  | (prompt: string) => Promise\<string\>   | LLM generation function |
+
+**When to use:** When you already have an LLM backend in your stack and want better precision without an external reranking service. Works with any model — local Ollama, OpenAI, Anthropic.
+
+## Cohere Reranker
+
+Uses the [Cohere Rerank API](https://docs.cohere.com/reference/rerank) for high-quality cross-encoder reranking. No LLM prompt engineering needed — Cohere's model is trained specifically for relevance scoring.
+
+```typescript
+import { CohereReranker } from '@cogitator-ai/rag';
+
+const reranker = new CohereReranker({
+  apiKey: process.env.COHERE_API_KEY!,
+  model: 'rerank-v3.5',
+});
+
+const reranked = await reranker.rerank(
+  'How do agents handle tool errors?',
+  retrievalResults,
+  5
+);
+```
+
+| Option   | Type   | Default       | Description              |
+| -------- | ------ | ------------- | ------------------------ |
+| `apiKey` | string | —             | Cohere API key           |
+| `model`  | string | `rerank-v3.5` | Cohere rerank model name |
+
+**When to use:** Production deployments where retrieval quality is critical. Cohere's reranking models are fast, accurate, and purpose-built for this task.
+
+## Using with RAGPipeline
+
+Pass a reranker to the builder and enable it in the config:
+
+```typescript
+import { RAGPipelineBuilder, TextLoader, CohereReranker } from '@cogitator-ai/rag';
+
+const pipeline = new RAGPipelineBuilder()
+  .withLoader(new TextLoader())
+  .withEmbeddingService(embeddings)
+  .withEmbeddingAdapter(store)
+  .withReranker(new CohereReranker({
+    apiKey: process.env.COHERE_API_KEY!,
+  }))
+  .withConfig({
+    chunking: { strategy: 'recursive', chunkSize: 512, chunkOverlap: 50 },
+    reranking: { enabled: true, topN: 5 },
+  })
+  .build();
+
+const results = await pipeline.query('What is the agent lifecycle?');
+```
+
+The pipeline first retrieves candidates using the configured retriever, then reranks them if `reranking.enabled` is true. The `topN` parameter controls how many results survive reranking.
+
+## Comparison
+
+| Reranker | Latency  | Quality   | Cost               | Dependencies     |
+| -------- | -------- | --------- | ------------------ | ---------------- |
+| LLM      | Variable | Good      | Per-token LLM cost | Any LLM backend  |
+| Cohere   | ~100ms   | Excellent | Per-request        | Cohere API key   |
+
+## Custom Rerankers
+
+Implement the `Reranker` interface:
+
+```typescript
+import type { Reranker, RetrievalResult } from '@cogitator-ai/types';
+
+class CrossEncoderReranker implements Reranker {
+  async rerank(
+    query: string,
+    results: RetrievalResult[],
+    topN?: number
+  ): Promise<RetrievalResult[]> {
+    const scored = await Promise.all(
+      results.map(async (result) => {
+        const score = await this.crossEncode(query, result.content);
+        return { ...result, score };
+      })
+    );
+
+    scored.sort((a, b) => b.score - a.score);
+    return topN ? scored.slice(0, topN) : scored;
+  }
+
+  private async crossEncode(query: string, document: string): Promise<number> {
+    // call your cross-encoder model
+    return 0;
+  }
+}
+```

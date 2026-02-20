@@ -1,0 +1,206 @@
+---
+title: Retrieval Strategies
+description: Retrieve relevant document chunks using similarity search, MMR diversity, hybrid vector+keyword search, or multi-query expansion.
+---
+
+## Overview
+
+Retrievers take a query string, embed it, and search the vector store for relevant chunks. All retrievers implement the `Retriever` interface:
+
+```typescript
+interface Retriever {
+  retrieve(query: string, options?: Partial<RetrievalConfig>): Promise<RetrievalResult[]>;
+}
+```
+
+Each result contains the chunk content, a relevance score, and metadata linking back to the source document.
+
+## Similarity Retriever
+
+Pure cosine similarity search. Embeds the query and returns the closest vectors from the store. Simple and effective for most cases.
+
+```typescript
+import { SimilarityRetriever } from '@cogitator-ai/rag';
+
+const retriever = new SimilarityRetriever({
+  embeddingAdapter: store,
+  embeddingService: embeddings,
+  defaultTopK: 10,
+  defaultThreshold: 0.5,
+});
+
+const results = await retriever.retrieve('How do agents handle errors?');
+```
+
+| Option             | Type             | Default | Description                         |
+| ------------------ | ---------------- | ------- | ----------------------------------- |
+| `embeddingAdapter` | EmbeddingAdapter | —       | Vector store to search              |
+| `embeddingService` | EmbeddingService | —       | Embedding service for query vectors |
+| `defaultTopK`      | number           | 10      | Default number of results           |
+| `defaultThreshold` | number           | 0.5     | Minimum similarity score            |
+
+**When to use:** Default choice. Works well when your queries are specific and you don't need diversity in results.
+
+## MMR Retriever
+
+Maximal Marginal Relevance balances relevance with diversity. It fetches 3x candidates, then iteratively selects results that are relevant to the query but dissimilar to already-selected results. This avoids returning near-duplicate chunks.
+
+```typescript
+import { MMRRetriever } from '@cogitator-ai/rag';
+
+const retriever = new MMRRetriever({
+  embeddingAdapter: store,
+  embeddingService: embeddings,
+  defaultLambda: 0.7,
+  defaultTopK: 10,
+});
+
+const results = await retriever.retrieve('What tools are available?');
+```
+
+The `lambda` parameter controls the relevance/diversity tradeoff:
+- `lambda = 1.0` — pure relevance (same as similarity search)
+- `lambda = 0.5` — balanced
+- `lambda = 0.0` — maximum diversity
+
+| Option             | Type             | Default | Description                                 |
+| ------------------ | ---------------- | ------- | ------------------------------------------- |
+| `embeddingAdapter` | EmbeddingAdapter | —       | Vector store to search                      |
+| `embeddingService` | EmbeddingService | —       | Embedding service for query vectors         |
+| `defaultLambda`    | number           | 0.7     | Relevance vs diversity tradeoff (0.0 – 1.0) |
+| `defaultTopK`      | number           | 10      | Default number of results                   |
+| `defaultThreshold` | number           | 0.0     | Minimum similarity score for candidates     |
+
+**When to use:** When top results tend to be repetitive (e.g., similar paragraphs from different sections). Great for building diverse context windows.
+
+## Hybrid Retriever
+
+Combines vector similarity search with BM25 keyword search using Reciprocal Rank Fusion. Requires a store that implements `HybridSearch` (e.g., `PostgresAdapter` from `@cogitator-ai/memory`).
+
+```typescript
+import { HybridRetriever } from '@cogitator-ai/rag';
+import { PostgresAdapter } from '@cogitator-ai/memory';
+
+const db = new PostgresAdapter({
+  provider: 'postgres',
+  connectionString: process.env.DATABASE_URL!,
+});
+await db.connect();
+
+const retriever = new HybridRetriever({
+  hybridSearch: db,
+  defaultWeights: { bm25: 0.3, vector: 0.7 },
+  defaultTopK: 10,
+});
+
+const results = await retriever.retrieve('error handling in tool execution');
+```
+
+Each result includes `vectorScore` and `keywordScore` in its metadata, so you can inspect how each signal contributed.
+
+| Option             | Type         | Default | Description                                |
+| ------------------ | ------------ | ------- | ------------------------------------------ |
+| `hybridSearch`     | HybridSearch | —       | Store implementing hybrid search           |
+| `defaultWeights`   | object       | —       | `{ bm25: number, vector: number }` weights |
+| `defaultTopK`      | number       | 10      | Default number of results                  |
+| `defaultThreshold` | number       | 0.0     | Minimum score                              |
+
+**When to use:** When queries contain specific terms (error codes, function names, product IDs) that benefit from exact keyword matching alongside semantic understanding.
+
+## MultiQuery Retriever
+
+Expands a single query into multiple variants, retrieves results for each, and merges them by taking the highest score per chunk. You provide the query expansion function — typically an LLM call.
+
+```typescript
+import { MultiQueryRetriever, SimilarityRetriever } from '@cogitator-ai/rag';
+
+const baseRetriever = new SimilarityRetriever({
+  embeddingAdapter: store,
+  embeddingService: embeddings,
+});
+
+const retriever = new MultiQueryRetriever({
+  baseRetriever,
+  expandQuery: async (query) => {
+    const response = await llm.generate(
+      `Generate 3 alternative search queries for: "${query}"\n` +
+      'Return one query per line, no numbering.'
+    );
+    return response.split('\n').filter(Boolean);
+  },
+});
+
+const results = await retriever.retrieve('How do I configure memory?');
+```
+
+| Option          | Type                                      | Default | Description                            |
+| --------------- | ----------------------------------------- | ------- | -------------------------------------- |
+| `baseRetriever` | Retriever                                 | —       | Underlying retriever for each query    |
+| `expandQuery`   | (query: string) => Promise\<string[]\>    | —       | Function that generates query variants |
+
+**When to use:** When user queries are ambiguous or under-specified. The LLM generates variations that cover different angles of the question.
+
+## createRetriever Factory
+
+Create a retriever from a config object:
+
+```typescript
+import { createRetriever } from '@cogitator-ai/rag';
+
+const retriever = createRetriever({
+  strategy: 'mmr',
+  embeddingAdapter: store,
+  embeddingService: embeddings,
+  lambda: 0.6,
+  topK: 15,
+});
+```
+
+Supported strategy configs:
+
+```typescript
+createRetriever({
+  strategy: 'similarity',
+  embeddingAdapter: store,
+  embeddingService: embeddings,
+});
+
+createRetriever({
+  strategy: 'mmr',
+  embeddingAdapter: store,
+  embeddingService: embeddings,
+  lambda: 0.7,
+});
+
+createRetriever({
+  strategy: 'hybrid',
+  hybridSearch: postgresAdapter,
+  weights: { bm25: 0.3, vector: 0.7 },
+});
+
+createRetriever({
+  strategy: 'multi-query',
+  baseRetriever: similarityRetriever,
+  expandQuery: queryExpansionFn,
+});
+```
+
+## Comparison
+
+| Strategy      | Diversity | Keyword Support | LLM Calls | Best For                         |
+| ------------- | --------- | --------------- | --------- | -------------------------------- |
+| `similarity`  | Low       | No              | No        | Specific queries, default choice |
+| `mmr`         | High      | No              | No        | Diverse context windows          |
+| `hybrid`      | Medium    | Yes             | No        | Queries with exact terms         |
+| `multi-query` | High      | Depends on base | Yes       | Ambiguous or broad queries       |
+
+## Per-Query Options
+
+All retrievers accept per-query overrides:
+
+```typescript
+const results = await retriever.retrieve('query', {
+  topK: 5,
+  threshold: 0.7,
+});
+```
