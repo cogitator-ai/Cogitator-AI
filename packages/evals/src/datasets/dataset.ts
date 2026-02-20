@@ -1,5 +1,7 @@
 import { EvalCaseSchema } from '../schema';
 import type { EvalCase } from '../schema';
+import { loadJsonl } from './jsonl-loader';
+import { loadCsv } from './csv-loader';
 
 export class Dataset {
   private readonly _cases: readonly EvalCase[];
@@ -10,6 +12,16 @@ export class Dataset {
 
   static from(cases: EvalCase[]): Dataset {
     return new Dataset(cases);
+  }
+
+  static async fromJsonl(path: string): Promise<Dataset> {
+    const cases = await loadJsonl(path);
+    return Dataset.from(cases);
+  }
+
+  static async fromCsv(path: string): Promise<Dataset> {
+    const cases = await loadCsv(path);
+    return Dataset.from(cases);
   }
 
   get length(): number {
