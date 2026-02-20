@@ -1,6 +1,6 @@
 /**
  * Google AI Embedding Service
- * Uses Gemini text-embedding-004 model
+ * Uses Gemini gemini-embedding-001 model
  */
 
 import type { EmbeddingService, GoogleEmbeddingConfig } from '@cogitator-ai/types';
@@ -15,8 +15,8 @@ export class GoogleEmbeddingService implements EmbeddingService {
 
   constructor(config: Omit<GoogleEmbeddingConfig, 'provider'>) {
     this.apiKey = config.apiKey;
-    this.model = config.model ?? 'text-embedding-004';
-    this.dimensions = 768;
+    this.model = config.model ?? 'gemini-embedding-001';
+    this.dimensions = config.dimensions ?? 3072;
   }
 
   async embed(text: string): Promise<number[]> {

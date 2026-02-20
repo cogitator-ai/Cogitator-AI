@@ -227,6 +227,7 @@ export interface GoogleEmbeddingConfig {
   provider: 'google';
   apiKey: string;
   model?: string;
+  dimensions?: number;
 }
 
 export type EmbeddingServiceConfig =
