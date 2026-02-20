@@ -210,9 +210,35 @@ function createTestTools(): Record<string, Tool>; // calculator, echo, failing t
 - `testTimeout: 60_000` — LLM calls can be slow
 - `NODE_OPTIONS: --max-old-space-size=4096`
 
-## Totals
+## Coverage Status
+
+### Phase 1 — Done
+
+| Package              | Tests  | What's covered                                                                                |
+| -------------------- | ------ | --------------------------------------------------------------------------------------------- |
+| `@cogitator-ai/core` | 17     | Agent chat, tool execution, multi-turn (memory), structured output, streaming, error handling |
+| `@cogitator-ai/a2a`  | 14     | Server/client flow, SSE streaming, agent card discovery, task lifecycle                       |
+| Cross-package        | 6      | Cogitator-via-A2A full stack, remote tool execution via `asTool()`                            |
+| **Total**            | **37** |                                                                                               |
+
+### Phase 2 — Not started
+
+| Package                               | Priority | What to test                                                                                     |
+| ------------------------------------- | -------- | ------------------------------------------------------------------------------------------------ |
+| `@cogitator-ai/memory`                | High     | In-memory/Redis/Postgres adapters, thread history load/save, context builder, embedding search   |
+| `@cogitator-ai/core` (multi-provider) | High     | OpenAI backend, Anthropic backend, Google backend as primary (not just judge), provider fallback |
+| `@cogitator-ai/workflows`             | Medium   | DAG execution, conditional branching, parallel nodes, error propagation                          |
+| `@cogitator-ai/swarms`                | Medium   | Multi-agent coordination, debate patterns, delegation                                            |
+| `@cogitator-ai/mcp`                   | Medium   | MCP tool discovery, MCP server integration                                                       |
+| `@cogitator-ai/sandbox`               | Medium   | Docker sandbox execution, WASM sandbox, timeout/resource limits                                  |
+| `@cogitator-ai/types`                 | Low      | Zod schema serialization/deserialization, config validation                                      |
+| `@cogitator-ai/worker`                | Low      | BullMQ job queue, distributed agent execution                                                    |
+
+Estimated Phase 2 scope: ~40-60 additional tests.
+
+## Totals (Phase 1)
 
 - **12 test files**
-- **~38 test cases**
+- **37 test cases**
 - **3 assertion tiers** (hard, structured, judge)
 - **2 CI modes** (PR: hard only, main: hard + judge)
