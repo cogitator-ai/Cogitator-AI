@@ -26,3 +26,5 @@ export { RealtimeSession } from './realtime/index.js';
 export { WebSocketTransport, VoiceClient } from './transport/index.js';
 
 export { VoiceAgent } from './voice-agent.js';
+
+export { transcribeTool, speakTool, voiceTools, type VoiceTool } from './tools.js';
