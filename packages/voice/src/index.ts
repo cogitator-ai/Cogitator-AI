@@ -18,3 +18,6 @@ export { OpenAITTS, type OpenAITTSConfig } from './tts/index.js';
 export { ElevenLabsTTS, type ElevenLabsTTSConfig } from './tts/index.js';
 
 export { VoicePipeline, PipelineSession } from './pipeline/index.js';
+
+export { OpenAIRealtimeAdapter } from './realtime/index.js';
+export { GeminiRealtimeAdapter } from './realtime/index.js';
