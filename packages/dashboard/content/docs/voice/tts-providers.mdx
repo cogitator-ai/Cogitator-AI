@@ -1,0 +1,161 @@
+---
+title: TTS Providers
+description: Text-to-speech providers for @cogitator-ai/voice — OpenAI (gpt-4o-mini-tts with 13 voices and instructions) and ElevenLabs (eleven_flash_v2_5 with low-latency streaming).
+---
+
+## Overview
+
+TTS providers convert text to audio. Every provider implements the `TTSProvider` interface:
+
+```typescript
+interface TTSProvider {
+  readonly name: string;
+  synthesize(text: string, options?: TTSOptions): Promise<Buffer>;
+  streamSynthesize(text: string, options?: TTSOptions): AsyncGenerator<Buffer>;
+}
+```
+
+Both providers support batch synthesis via `synthesize()` and streaming via `streamSynthesize()`.
+
+## Provider Comparison
+
+| Feature | OpenAI TTS | ElevenLabs TTS |
+| --- | --- | --- |
+| Default model | `gpt-4o-mini-tts` | `eleven_flash_v2_5` |
+| Streaming | Yes | Yes |
+| Voice selection | By name (13 built-in) | By voice ID |
+| Voice instructions | Yes (style, tone, etc.) | No |
+| Speed control | 0.25x - 4.0x | No |
+| Output formats | mp3, opus, aac, flac, wav, pcm | mp3, pcm |
+| Other models | `tts-1`, `tts-1-hd` | `eleven_turbo_v2_5`, `eleven_multilingual_v2`, `eleven_v3` |
+
+## OpenAI TTS
+
+Uses the OpenAI Audio Speech API. Default model is `gpt-4o-mini-tts` with 13 built-in voices.
+
+```typescript
+import { OpenAITTS } from '@cogitator-ai/voice';
+
+const tts = new OpenAITTS({
+  apiKey: process.env.OPENAI_API_KEY!,
+  model: 'gpt-4o-mini-tts',
+  voice: 'coral',
+});
+```
+
+### Batch Synthesis
+
+```typescript
+const audio = await tts.synthesize('Hello, world!', {
+  speed: 1.0,
+  format: 'mp3',
+  instructions: 'Speak in a warm, friendly tone',
+});
+
+fs.writeFileSync('output.mp3', audio);
+```
+
+### Streaming
+
+```typescript
+for await (const chunk of tts.streamSynthesize('Streaming response...')) {
+  playAudio(chunk);
+}
+```
+
+### Voice Instructions
+
+The `gpt-4o-mini-tts` model supports the `instructions` parameter to control speaking style:
+
+```typescript
+await tts.synthesize('Welcome to the show!', {
+  instructions: 'Speak with excitement and energy, like a TV host',
+});
+
+await tts.synthesize('I am sorry for the inconvenience.', {
+  instructions: 'Speak softly with genuine empathy',
+});
+```
+
+### Available Voices
+
+`alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `onyx`, `nova`, `sage`, `shimmer`, `verse`, `marin`, `cedar`
+
+### Configuration
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `apiKey` | `string` | required | OpenAI API key |
+| `model` | `string` | `gpt-4o-mini-tts` | Model ID |
+| `voice` | `string` | `alloy` | Default voice name |
+| `baseURL` | `string` | — | Custom API base URL |
+
+## ElevenLabs TTS
+
+Uses the ElevenLabs text-to-speech API. Default model is `eleven_flash_v2_5` which offers low latency (~75ms).
+
+```typescript
+import { ElevenLabsTTS } from '@cogitator-ai/voice';
+
+const tts = new ElevenLabsTTS({
+  apiKey: process.env.ELEVENLABS_API_KEY!,
+  model: 'eleven_flash_v2_5',
+  voiceId: '21m00Tcm4TlvDq8ikWAM',
+});
+```
+
+### Batch Synthesis
+
+```typescript
+const audio = await tts.synthesize('Hello!', { format: 'mp3' });
+fs.writeFileSync('output.mp3', audio);
+```
+
+### Streaming
+
+```typescript
+for await (const chunk of tts.streamSynthesize('Streaming audio...')) {
+  playAudio(chunk);
+}
+```
+
+### Configuration
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `apiKey` | `string` | required | ElevenLabs API key |
+| `voiceId` | `string` | `21m00Tcm4TlvDq8ikWAM` | Default voice ID |
+| `model` | `string` | `eleven_flash_v2_5` | Model ID |
+
+## TTS Options
+
+Options shared by both providers:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `voice` | `string` | Override the default voice |
+| `speed` | `number` | Playback speed (OpenAI only, 0.25 - 4.0) |
+| `format` | `VoiceAudioFormat` | Output format: `"mp3"`, `"pcm16"`, etc. |
+| `instructions` | `string` | Voice style instructions (OpenAI `gpt-4o-mini-tts` only) |
+
+## Custom TTS Provider
+
+Implement `TTSProvider` to integrate any speech synthesis service:
+
+```typescript
+import type { TTSProvider, TTSOptions } from '@cogitator-ai/voice';
+
+class PiperTTS implements TTSProvider {
+  readonly name = 'piper';
+
+  async synthesize(text: string, options?: TTSOptions): Promise<Buffer> {
+    // call your local Piper instance
+    return Buffer.alloc(0);
+  }
+
+  async *streamSynthesize(text: string, options?: TTSOptions): AsyncGenerator<Buffer> {
+    const audio = await this.synthesize(text, options);
+    yield audio;
+  }
+}
+```

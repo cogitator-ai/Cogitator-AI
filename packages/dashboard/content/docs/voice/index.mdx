@@ -1,0 +1,112 @@
+---
+title: Voice
+description: Add voice and realtime audio capabilities to Cogitator agents with @cogitator-ai/voice — speech-to-text, text-to-speech, voice activity detection, and native speech-to-speech via OpenAI Realtime and Gemini Live APIs.
+---
+
+## What is @cogitator-ai/voice?
+
+`@cogitator-ai/voice` brings voice capabilities to any Cogitator agent. It supports two fundamentally different approaches to voice interaction:
+
+**Pipeline mode** routes audio through a classic STT -> Agent -> TTS loop. Your agent receives text, responds with text, and the voice package handles all audio conversion. This works with any LLM backend — OpenAI, Anthropic, Google, Ollama, or anything else Cogitator supports.
+
+**Realtime mode** uses native speech-to-speech APIs (OpenAI Realtime or Gemini Live) where the model directly processes and generates audio. Lower latency, more natural prosody, but limited to providers that offer realtime APIs.
+
+```
+Pipeline Mode:
+┌──────┐    ┌─────┐    ┌───────┐    ┌─────┐    ┌──────┐
+│ Mic  │───>│ STT │───>│ Agent │───>│ TTS │───>│ Spkr │
+└──────┘    └─────┘    └───────┘    └─────┘    └──────┘
+
+Realtime Mode:
+┌──────┐    ┌───────────────────┐    ┌──────┐
+│ Mic  │───>│ Realtime LLM API  │───>│ Spkr │
+└──────┘    └───────────────────┘    └──────┘
+```
+
+## Installation
+
+```bash
+pnpm add @cogitator-ai/voice
+```
+
+Peer dependencies based on your provider choices:
+
+```bash
+pnpm add openai             # OpenAI STT/TTS
+pnpm add onnxruntime-node   # Silero VAD (neural network)
+```
+
+## Quick Start — Pipeline
+
+```typescript
+import { VoiceAgent, OpenAISTT, OpenAITTS } from '@cogitator-ai/voice';
+import { Agent } from '@cogitator-ai/core';
+
+const agent = new Agent({ instructions: 'You are a helpful assistant' });
+
+const voiceAgent = new VoiceAgent({
+  agent,
+  mode: 'pipeline',
+  stt: new OpenAISTT({ apiKey: process.env.OPENAI_API_KEY! }),
+  tts: new OpenAITTS({ apiKey: process.env.OPENAI_API_KEY! }),
+});
+
+await voiceAgent.listen(8080);
+```
+
+Connect from any WebSocket client at `ws://localhost:8080/voice` — send binary PCM16 audio frames, receive audio and JSON control messages back.
+
+## Quick Start — Realtime
+
+```typescript
+import { VoiceAgent } from '@cogitator-ai/voice';
+import { Agent } from '@cogitator-ai/core';
+
+const agent = new Agent({ instructions: 'You are a helpful assistant' });
+
+const voiceAgent = new VoiceAgent({
+  agent,
+  mode: 'realtime',
+  realtimeProvider: 'openai',
+  realtimeApiKey: process.env.OPENAI_API_KEY!,
+  realtimeModel: 'gpt-4o-mini-realtime-preview',
+  voice: 'coral',
+});
+
+await voiceAgent.listen(8080);
+```
+
+## Components
+
+| Component | Description |
+| --- | --- |
+| [STT Providers](/docs/voice/stt-providers) | OpenAI and Deepgram speech-to-text |
+| [TTS Providers](/docs/voice/tts-providers) | OpenAI and ElevenLabs text-to-speech |
+| [VAD](/docs/voice/vad) | Energy-based and Silero neural voice activity detection |
+| [Pipeline](/docs/voice/pipeline) | Batch and streaming STT -> Agent -> TTS processing |
+| [Realtime](/docs/voice/realtime) | Native speech-to-speech with OpenAI and Gemini |
+
+## Audio Format
+
+All audio in the voice package uses **PCM16** format by default: 16-bit signed integers, little-endian, mono, 16kHz sample rate. This is the standard format for WebSocket audio transport and matches what the realtime APIs expect.
+
+The package includes audio conversion utilities:
+
+```typescript
+import {
+  float32ToPcm16,
+  pcm16ToFloat32,
+  pcmToWav,
+  wavToPcm,
+  resample,
+  calculateRMS,
+} from '@cogitator-ai/voice';
+```
+
+## Next Steps
+
+- [STT Providers](/docs/voice/stt-providers) — configure speech recognition
+- [TTS Providers](/docs/voice/tts-providers) — configure speech synthesis
+- [VAD](/docs/voice/vad) — detect when users start and stop speaking
+- [Pipeline Mode](/docs/voice/pipeline) — batch and streaming voice processing
+- [Realtime Mode](/docs/voice/realtime) — native speech-to-speech APIs

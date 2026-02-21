@@ -1,0 +1,194 @@
+---
+title: STT Providers
+description: Speech-to-text providers for @cogitator-ai/voice — OpenAI (gpt-4o-mini-transcribe) for batch transcription and Deepgram (nova-3) for real-time streaming with interim results.
+---
+
+## Overview
+
+STT providers convert audio to text. Every provider implements the `STTProvider` interface:
+
+```typescript
+interface STTProvider {
+  readonly name: string;
+  transcribe(audio: Buffer, options?: STTOptions): Promise<TranscribeResult>;
+  createStream(options?: STTStreamOptions): STTStream;
+}
+```
+
+Both providers support batch transcription via `transcribe()` and streaming via `createStream()`. The key difference is that Deepgram provides true real-time streaming over WebSocket, while OpenAI buffers audio and transcribes on `close()`.
+
+## Provider Comparison
+
+| Feature | OpenAI STT | Deepgram STT |
+| --- | --- | --- |
+| Default model | `gpt-4o-mini-transcribe` | `nova-3` |
+| Streaming | Buffered (transcribes on close) | Real-time WebSocket |
+| Interim results | No | Yes |
+| Word timestamps | Yes | Yes |
+| Endpointing | No | Configurable |
+| Auto-punctuation | Yes | Yes |
+| Other models | `gpt-4o-transcribe`, `whisper-1` | `nova-2`, `enhanced`, `base` |
+
+## OpenAI STT
+
+Uses the OpenAI Audio Transcriptions API. Default model is `gpt-4o-mini-transcribe`.
+
+```typescript
+import { OpenAISTT } from '@cogitator-ai/voice';
+
+const stt = new OpenAISTT({
+  apiKey: process.env.OPENAI_API_KEY!,
+  model: 'gpt-4o-mini-transcribe',
+});
+```
+
+### Batch Transcription
+
+```typescript
+const result = await stt.transcribe(audioBuffer, { language: 'en' });
+
+console.log(result.text);
+console.log(result.duration);
+console.log(result.words);
+// [{ word: 'Hello', start: 0.0, end: 0.32, confidence: 1 }, ...]
+```
+
+### Streaming
+
+OpenAI STT streaming collects audio chunks and transcribes the complete buffer when `close()` is called.
+
+```typescript
+const stream = stt.createStream({ language: 'en' });
+
+stream.on('final', (result) => {
+  console.log('Transcription:', result.text);
+});
+
+stream.write(audioChunk1);
+stream.write(audioChunk2);
+const result = await stream.close();
+```
+
+### Configuration
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `apiKey` | `string` | required | OpenAI API key |
+| `model` | `string` | `gpt-4o-mini-transcribe` | Model ID |
+| `baseURL` | `string` | — | Custom API base URL |
+
+## Deepgram STT
+
+Uses the Deepgram API with real-time WebSocket streaming. Default model is `nova-3`.
+
+```typescript
+import { DeepgramSTT } from '@cogitator-ai/voice';
+
+const stt = new DeepgramSTT({
+  apiKey: process.env.DEEPGRAM_API_KEY!,
+  model: 'nova-3',
+  language: 'en',
+});
+```
+
+### Batch Transcription
+
+```typescript
+const result = await stt.transcribe(audioBuffer);
+
+console.log(result.text);
+console.log(result.duration);
+console.log(result.words);
+// [{ word: 'Hello', start: 0.0, end: 0.32, confidence: 0.99 }, ...]
+```
+
+### Streaming
+
+Deepgram streaming opens a WebSocket connection and provides real-time results as audio arrives. Interim results update continuously, final results are emitted when Deepgram detects an endpoint.
+
+```typescript
+const stream = stt.createStream({
+  interimResults: true,
+  endpointing: 500,
+  language: 'en',
+});
+
+stream.on('partial', (text) => {
+  console.log('Interim:', text);
+});
+
+stream.on('final', (result) => {
+  console.log('Final:', result.text);
+});
+
+stream.on('error', (err) => {
+  console.error('Stream error:', err);
+});
+
+stream.write(audioChunk1);
+stream.write(audioChunk2);
+await stream.close();
+```
+
+### Configuration
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `apiKey` | `string` | required | Deepgram API key |
+| `model` | `string` | `nova-3` | Model ID |
+| `language` | `string` | — | Default language code |
+
+## STT Options
+
+Options shared by both providers when calling `transcribe()`:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `language` | `string` | Language code (e.g. `"en"`, `"es"`, `"ja"`) |
+| `prompt` | `string` | Context hint to improve transcription accuracy |
+
+Additional options for `createStream()`:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `interimResults` | `boolean` | Enable partial/interim transcription results |
+| `endpointing` | `number` | Silence duration (ms) for Deepgram endpointing |
+
+## TranscribeResult
+
+Both providers return the same result shape:
+
+```typescript
+interface TranscribeResult {
+  text: string;
+  language?: string;
+  duration?: number;
+  words?: Array<{
+    word: string;
+    start: number;
+    end: number;
+    confidence: number;
+  }>;
+}
+```
+
+## Custom STT Provider
+
+Implement `STTProvider` to integrate any speech recognition service:
+
+```typescript
+import type { STTProvider, STTOptions, STTStream, TranscribeResult } from '@cogitator-ai/voice';
+
+class WhisperLocalSTT implements STTProvider {
+  readonly name = 'whisper-local';
+
+  async transcribe(audio: Buffer, options?: STTOptions): Promise<TranscribeResult> {
+    // call your local Whisper instance
+    return { text: 'transcribed text' };
+  }
+
+  createStream(options?: STTStreamOptions): STTStream {
+    // return an STTStream implementation
+  }
+}
+```
