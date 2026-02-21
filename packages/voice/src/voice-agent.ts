@@ -100,7 +100,7 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
     });
   }
 
-  private setupPipelineSession(sessionId: string, entry: SessionEntry): void {
+  private setupPipelineSession(_sessionId: string, entry: SessionEntry): void {
     const session = this.pipeline!.createSession();
     entry.pipelineSession = session;
 

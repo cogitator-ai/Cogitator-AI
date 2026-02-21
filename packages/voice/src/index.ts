@@ -1,5 +1,22 @@
 export const VERSION = '0.1.0';
 
+export type {
+  STTOptions,
+  STTStreamOptions,
+  STTProvider,
+  STTStream,
+  TTSOptions,
+  TTSProvider,
+  VADEvent,
+  VADProvider,
+  VoicePipelineConfig,
+  RealtimeSessionConfig,
+  WebSocketTransportConfig,
+  VoiceAgentConfig,
+  TranscribeResult,
+  VoiceAudioFormat,
+} from './types.js';
+
 export {
   float32ToPcm16,
   pcm16ToFloat32,
@@ -9,13 +26,14 @@ export {
   calculateRMS,
 } from './audio.js';
 
-export { EnergyVAD, type EnergyVADConfig } from './vad/index.js';
-
 export { OpenAISTT, type OpenAISTTConfig } from './stt/index.js';
 export { DeepgramSTT, type DeepgramSTTConfig } from './stt/index.js';
 
 export { OpenAITTS, type OpenAITTSConfig } from './tts/index.js';
 export { ElevenLabsTTS, type ElevenLabsTTSConfig } from './tts/index.js';
+
+export { EnergyVAD, type EnergyVADConfig } from './vad/index.js';
+export { SileroVAD, type SileroVADConfig } from './vad/index.js';
 
 export { VoicePipeline, PipelineSession } from './pipeline/index.js';
 

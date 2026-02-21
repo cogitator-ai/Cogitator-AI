@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import type { SpeechCreateParams } from 'openai/resources/audio/speech';
 import type { TTSProvider, TTSOptions, VoiceAudioFormat } from '../types.js';
 
 export interface OpenAITTSConfig {
@@ -46,25 +47,16 @@ export class OpenAITTS implements TTSProvider {
     }
   }
 
-  private buildParams(text: string, options?: TTSOptions): Record<string, unknown> {
-    const params: Record<string, unknown> = {
+  private buildParams(text: string, options?: TTSOptions): SpeechCreateParams {
+    return {
       model: this.model,
       voice: options?.voice ?? this.voice,
       input: text,
+      ...(options?.speed !== undefined && { speed: options.speed }),
+      ...(options?.format && {
+        response_format: mapFormat(options.format) as SpeechCreateParams['response_format'],
+      }),
+      ...(options?.instructions && { instructions: options.instructions }),
     };
-
-    if (options?.speed !== undefined) {
-      params.speed = options.speed;
-    }
-
-    if (options?.format) {
-      params.response_format = mapFormat(options.format);
-    }
-
-    if (options?.instructions) {
-      params.instructions = options.instructions;
-    }
-
-    return params;
   }
 }

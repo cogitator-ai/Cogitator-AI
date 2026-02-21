@@ -81,7 +81,7 @@ describe('DeepgramSTT', () => {
         'Content-Type': 'audio/wav',
       })
     );
-    expect(init.body).toBe(audio);
+    expect(Buffer.from(init.body as ArrayBuffer)).toEqual(audio);
   });
 
   it('uses nova-3 model by default', async () => {

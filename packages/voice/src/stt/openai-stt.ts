@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import OpenAI from 'openai';
+import type { TranscriptionVerbose } from 'openai/resources/audio/transcriptions';
 import type {
   STTProvider,
   STTOptions,
@@ -31,7 +32,7 @@ export class OpenAISTT implements STTProvider {
   }
 
   async transcribe(audio: Buffer, options?: STTOptions): Promise<TranscribeResult> {
-    const file = new File([audio], 'audio.wav', { type: 'audio/wav' });
+    const file = new File([new Uint8Array(audio)], 'audio.wav', { type: 'audio/wav' });
 
     const response = await this.client.audio.transcriptions.create({
       file,
@@ -53,28 +54,26 @@ export class OpenAISTT implements STTProvider {
     return this.transcribe(audio, options);
   }
 
-  private mapResponse(response: Record<string, unknown>): TranscribeResult {
+  private mapResponse(response: TranscriptionVerbose): TranscribeResult {
     const result: TranscribeResult = {
-      text: response.text as string,
+      text: response.text,
     };
 
     if (response.language) {
-      result.language = response.language as string;
+      result.language = response.language;
     }
 
     if (response.duration !== undefined) {
-      result.duration = response.duration as number;
+      result.duration = response.duration;
     }
 
-    if (Array.isArray(response.words) && response.words.length > 0) {
-      result.words = response.words.map(
-        (w: { word: string; start: number; end: number; confidence?: number }) => ({
-          word: w.word,
-          start: w.start,
-          end: w.end,
-          confidence: w.confidence ?? 1,
-        })
-      );
+    if (response.words && response.words.length > 0) {
+      result.words = response.words.map((w) => ({
+        word: w.word,
+        start: w.start,
+        end: w.end,
+        confidence: 1,
+      }));
     }
 
     return result;
@@ -108,20 +107,5 @@ class OpenAISTTStream extends EventEmitter implements STTStream {
       this.emit('error', error);
       throw error;
     }
-  }
-
-  on(event: 'partial', cb: (text: string) => void): this;
-  on(event: 'final', cb: (result: TranscribeResult) => void): this;
-  on(event: 'error', cb: (error: Error) => void): this;
-  on(event: string, cb: (...args: unknown[]) => void): this {
-    return super.on(event, cb);
-  }
-
-  off(event: string, cb: (...args: unknown[]) => void): this {
-    return super.off(event, cb);
-  }
-
-  removeAllListeners(): this {
-    return super.removeAllListeners();
   }
 }

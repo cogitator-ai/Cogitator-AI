@@ -9,8 +9,6 @@ export class PipelineSession extends EventEmitter {
   private readonly tts: VoicePipelineConfig['tts'];
   private readonly vad: VoicePipelineConfig['vad'];
   private readonly agent: VoicePipelineConfig['agent'];
-  private readonly sampleRate: number;
-
   private state: SessionState = 'idle';
   private stream: STTStream | null = null;
   private interrupted = false;
@@ -22,7 +20,6 @@ export class PipelineSession extends EventEmitter {
     this.tts = config.tts;
     this.vad = config.vad;
     this.agent = config.agent;
-    this.sampleRate = config.sampleRate ?? 16000;
   }
 
   pushAudio(chunk: Buffer): void {

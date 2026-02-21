@@ -74,7 +74,7 @@ export class DeepgramSTT implements STTProvider {
         Authorization: `Token ${this.apiKey}`,
         'Content-Type': 'audio/wav',
       },
-      body: audio,
+      body: new Uint8Array(audio).buffer as ArrayBuffer,
     });
 
     if (!response.ok) {
@@ -153,7 +153,7 @@ class DeepgramSTTStream extends EventEmitter implements STTStream {
     this.ws.on('message', (raw: Buffer | string) => {
       const msg = JSON.parse(String(raw)) as DeepgramStreamMessage;
       const alt = msg.channel?.alternatives[0];
-      if (!alt || !alt.transcript) return;
+      if (!alt?.transcript) return;
 
       if (msg.is_final) {
         const result = this.mapStreamResult(msg);
@@ -182,21 +182,6 @@ class DeepgramSTTStream extends EventEmitter implements STTStream {
       this.ws.send(JSON.stringify({ type: 'CloseStream' }));
     }
     return this.lastResult;
-  }
-
-  on(event: 'partial', cb: (text: string) => void): this;
-  on(event: 'final', cb: (result: TranscribeResult) => void): this;
-  on(event: 'error', cb: (error: Error) => void): this;
-  on(event: string, cb: (...args: unknown[]) => void): this {
-    return super.on(event, cb);
-  }
-
-  off(event: string, cb: (...args: unknown[]) => void): this {
-    return super.off(event, cb);
-  }
-
-  removeAllListeners(): this {
-    return super.removeAllListeners();
   }
 
   private mapStreamResult(msg: DeepgramStreamMessage): TranscribeResult {
