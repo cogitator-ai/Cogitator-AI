@@ -54,10 +54,10 @@ Connect from any WebSocket client at `ws://localhost:8080/voice` — send binary
 
 ## STT Providers
 
-| Provider | Default Model | Streaming | Word Timestamps | Notes |
-|----------|---------------|-----------|-----------------|-------|
-| `OpenAISTT` | `gpt-4o-mini-transcribe` | Buffered | Yes | Also supports `gpt-4o-transcribe`, `whisper-1` |
-| `DeepgramSTT` | `nova-3` | Real-time WebSocket | Yes | Interim results, endpointing, auto-punctuation |
+| Provider      | Default Model            | Streaming           | Word Timestamps | Notes                                          |
+| ------------- | ------------------------ | ------------------- | --------------- | ---------------------------------------------- |
+| `OpenAISTT`   | `gpt-4o-mini-transcribe` | Buffered            | Yes             | Also supports `gpt-4o-transcribe`, `whisper-1` |
+| `DeepgramSTT` | `nova-3`                 | Real-time WebSocket | Yes             | Interim results, endpointing, auto-punctuation |
 
 ### OpenAI STT
 
@@ -107,10 +107,10 @@ await stream.close();
 
 ## TTS Providers
 
-| Provider | Default Model | Streaming | Voices | Notes |
-|----------|---------------|-----------|--------|-------|
-| `OpenAITTS` | `gpt-4o-mini-tts` | Yes | alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer, verse, marin, cedar | Also supports `tts-1`, `tts-1-hd`. Supports `instructions` for voice style control |
-| `ElevenLabsTTS` | `eleven_flash_v2_5` | Yes | By voice ID | ~75ms latency. Also supports `eleven_turbo_v2_5`, `eleven_multilingual_v2`, `eleven_v3` |
+| Provider        | Default Model       | Streaming | Voices                                                                                 | Notes                                                                                   |
+| --------------- | ------------------- | --------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `OpenAITTS`     | `gpt-4o-mini-tts`   | Yes       | alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer, verse, marin, cedar | Also supports `tts-1`, `tts-1-hd`. Supports `instructions` for voice style control      |
+| `ElevenLabsTTS` | `eleven_flash_v2_5` | Yes       | By voice ID                                                                            | ~75ms latency. Also supports `eleven_turbo_v2_5`, `eleven_multilingual_v2`, `eleven_v3` |
 
 ### OpenAI TTS
 
@@ -156,10 +156,10 @@ for await (const chunk of tts.streamSynthesize('Streaming...')) {
 
 ## VAD Providers
 
-| Provider | Accuracy | Dependencies | Speed | Notes |
-|----------|----------|-------------|-------|-------|
-| `EnergyVAD` | Basic | None | Fast | RMS energy threshold, good for quiet environments |
-| `SileroVAD` | High | `onnxruntime-node` | ~3ms/frame | Neural network, works in noisy environments |
+| Provider    | Accuracy | Dependencies       | Speed      | Notes                                             |
+| ----------- | -------- | ------------------ | ---------- | ------------------------------------------------- |
+| `EnergyVAD` | Basic    | None               | Fast       | RMS energy threshold, good for quiet environments |
+| `SileroVAD` | High     | `onnxruntime-node` | ~3ms/frame | Neural network, works in noisy environments       |
 
 ### Energy VAD
 
@@ -238,12 +238,7 @@ console.log(result.response);
 For continuous conversations with VAD-driven turn detection:
 
 ```typescript
-import {
-  VoicePipeline,
-  OpenAISTT,
-  OpenAITTS,
-  EnergyVAD,
-} from '@cogitator-ai/voice';
+import { VoicePipeline, OpenAISTT, OpenAITTS, EnergyVAD } from '@cogitator-ai/voice';
 
 const pipeline = new VoicePipeline({
   stt: new OpenAISTT({ apiKey: process.env.OPENAI_API_KEY! }),
@@ -382,11 +377,11 @@ await transport.close();
 
 ### WebSocket Protocol
 
-| Direction | Format | Content |
-|-----------|--------|---------|
-| Client -> Server | Binary | PCM16 audio frames (16kHz, mono, 16-bit LE) |
-| Client -> Server | Text (JSON) | Control messages |
-| Server -> Client | Binary | PCM16 or encoded audio response |
+| Direction        | Format      | Content                                                                             |
+| ---------------- | ----------- | ----------------------------------------------------------------------------------- |
+| Client -> Server | Binary      | PCM16 audio frames (16kHz, mono, 16-bit LE)                                         |
+| Client -> Server | Text (JSON) | Control messages                                                                    |
+| Server -> Client | Binary      | PCM16 or encoded audio response                                                     |
 | Server -> Client | Text (JSON) | `{ type: 'transcript' \| 'agent_response' \| 'speech_start' \| 'speech_end', ... }` |
 
 ---
@@ -509,75 +504,75 @@ const rms = calculateRMS(float32Samples);
 
 ### `VoiceAgentConfig`
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `agent` | `{ run(input) => Promise<{ content }> }` | Yes | Cogitator agent or compatible object |
-| `mode` | `'pipeline' \| 'realtime'` | Yes | Processing mode |
-| `stt` | `STTProvider` | Pipeline only | Speech-to-text provider |
-| `tts` | `TTSProvider` | Pipeline only | Text-to-speech provider |
-| `vad` | `VADProvider` | No | Voice activity detection |
-| `realtimeProvider` | `'openai' \| 'gemini'` | Realtime only | Realtime API provider |
-| `realtimeApiKey` | `string` | Realtime only | API key for realtime provider |
-| `realtimeModel` | `string` | No | Model override |
-| `voice` | `string` | No | Voice for TTS or realtime |
-| `transport` | `WebSocketTransportConfig` | No | Transport options |
+| Field              | Type                                     | Required      | Description                          |
+| ------------------ | ---------------------------------------- | ------------- | ------------------------------------ |
+| `agent`            | `{ run(input) => Promise<{ content }> }` | Yes           | Cogitator agent or compatible object |
+| `mode`             | `'pipeline' \| 'realtime'`               | Yes           | Processing mode                      |
+| `stt`              | `STTProvider`                            | Pipeline only | Speech-to-text provider              |
+| `tts`              | `TTSProvider`                            | Pipeline only | Text-to-speech provider              |
+| `vad`              | `VADProvider`                            | No            | Voice activity detection             |
+| `realtimeProvider` | `'openai' \| 'gemini'`                   | Realtime only | Realtime API provider                |
+| `realtimeApiKey`   | `string`                                 | Realtime only | API key for realtime provider        |
+| `realtimeModel`    | `string`                                 | No            | Model override                       |
+| `voice`            | `string`                                 | No            | Voice for TTS or realtime            |
+| `transport`        | `WebSocketTransportConfig`               | No            | Transport options                    |
 
 ### `OpenAISTTConfig`
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `apiKey` | `string` | — | OpenAI API key |
-| `model` | `string` | `gpt-4o-mini-transcribe` | Model ID |
-| `baseURL` | `string` | — | Custom API base URL |
+| Field     | Type     | Default                  | Description         |
+| --------- | -------- | ------------------------ | ------------------- |
+| `apiKey`  | `string` | —                        | OpenAI API key      |
+| `model`   | `string` | `gpt-4o-mini-transcribe` | Model ID            |
+| `baseURL` | `string` | —                        | Custom API base URL |
 
 ### `DeepgramSTTConfig`
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `apiKey` | `string` | — | Deepgram API key |
-| `model` | `string` | `nova-3` | Model ID |
-| `language` | `string` | — | Default language code |
+| Field      | Type     | Default  | Description           |
+| ---------- | -------- | -------- | --------------------- |
+| `apiKey`   | `string` | —        | Deepgram API key      |
+| `model`    | `string` | `nova-3` | Model ID              |
+| `language` | `string` | —        | Default language code |
 
 ### `OpenAITTSConfig`
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `apiKey` | `string` | — | OpenAI API key |
-| `model` | `string` | `gpt-4o-mini-tts` | Model ID |
-| `voice` | `string` | `alloy` | Default voice |
-| `baseURL` | `string` | — | Custom API base URL |
+| Field     | Type     | Default           | Description         |
+| --------- | -------- | ----------------- | ------------------- |
+| `apiKey`  | `string` | —                 | OpenAI API key      |
+| `model`   | `string` | `gpt-4o-mini-tts` | Model ID            |
+| `voice`   | `string` | `alloy`           | Default voice       |
+| `baseURL` | `string` | —                 | Custom API base URL |
 
 ### `ElevenLabsTTSConfig`
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `apiKey` | `string` | — | ElevenLabs API key |
-| `voiceId` | `string` | `21m00Tcm4TlvDq8ikWAM` | Default voice ID |
-| `model` | `string` | `eleven_flash_v2_5` | Model ID |
+| Field     | Type     | Default                | Description        |
+| --------- | -------- | ---------------------- | ------------------ |
+| `apiKey`  | `string` | —                      | ElevenLabs API key |
+| `voiceId` | `string` | `21m00Tcm4TlvDq8ikWAM` | Default voice ID   |
+| `model`   | `string` | `eleven_flash_v2_5`    | Model ID           |
 
 ### `EnergyVADConfig`
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `threshold` | `number` | `0.01` | RMS energy threshold for speech detection |
-| `silenceDuration` | `number` | `500` | Silence duration (ms) before `speech_end` |
-| `sampleRate` | `number` | `16000` | Audio sample rate in Hz |
+| Field             | Type     | Default | Description                               |
+| ----------------- | -------- | ------- | ----------------------------------------- |
+| `threshold`       | `number` | `0.01`  | RMS energy threshold for speech detection |
+| `silenceDuration` | `number` | `500`   | Silence duration (ms) before `speech_end` |
+| `sampleRate`      | `number` | `16000` | Audio sample rate in Hz                   |
 
 ### `SileroVADConfig`
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `modelPath` | `string` | — | Path to `silero_vad.onnx` model file |
-| `threshold` | `number` | `0.5` | Speech probability threshold (0-1) |
-| `silenceDuration` | `number` | `500` | Silence duration (ms) before `speech_end` |
-| `sampleRate` | `number` | `16000` | Audio sample rate in Hz |
+| Field             | Type     | Default | Description                               |
+| ----------------- | -------- | ------- | ----------------------------------------- |
+| `modelPath`       | `string` | —       | Path to `silero_vad.onnx` model file      |
+| `threshold`       | `number` | `0.5`   | Speech probability threshold (0-1)        |
+| `silenceDuration` | `number` | `500`   | Silence duration (ms) before `speech_end` |
+| `sampleRate`      | `number` | `16000` | Audio sample rate in Hz                   |
 
 ### `WebSocketTransportConfig`
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `path` | `string` | `/voice` | WebSocket endpoint path |
-| `maxConnections` | `number` | `100` | Maximum concurrent connections |
+| Field            | Type     | Default  | Description                    |
+| ---------------- | -------- | -------- | ------------------------------ |
+| `path`           | `string` | `/voice` | WebSocket endpoint path        |
+| `maxConnections` | `number` | `100`    | Maximum concurrent connections |
 
 ---
 
