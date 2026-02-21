@@ -21,3 +21,4 @@ export { VoicePipeline, PipelineSession } from './pipeline/index.js';
 
 export { OpenAIRealtimeAdapter } from './realtime/index.js';
 export { GeminiRealtimeAdapter } from './realtime/index.js';
+export { RealtimeSession } from './realtime/index.js';
