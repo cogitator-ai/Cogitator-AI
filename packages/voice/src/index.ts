@@ -8,3 +8,5 @@ export {
   resample,
   calculateRMS,
 } from './audio.js';
+
+export { EnergyVAD, type EnergyVADConfig } from './vad/index.js';
