@@ -16,3 +16,5 @@ export { DeepgramSTT, type DeepgramSTTConfig } from './stt/index.js';
 
 export { OpenAITTS, type OpenAITTSConfig } from './tts/index.js';
 export { ElevenLabsTTS, type ElevenLabsTTSConfig } from './tts/index.js';
+
+export { VoicePipeline, PipelineSession } from './pipeline/index.js';
