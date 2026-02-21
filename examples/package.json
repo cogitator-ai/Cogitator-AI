@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@ai-sdk/provider": "^1.0.0",
+    "@ai-sdk/provider": "^3.0.8",
     "@cogitator-ai/a2a": "workspace:*",
     "@cogitator-ai/ai-sdk": "workspace:*",
     "@cogitator-ai/core": "workspace:*",
