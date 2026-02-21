@@ -10,3 +10,5 @@ export {
 } from './audio.js';
 
 export { EnergyVAD, type EnergyVADConfig } from './vad/index.js';
+
+export { OpenAISTT, type OpenAISTTConfig } from './stt/index.js';

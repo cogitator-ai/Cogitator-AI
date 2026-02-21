@@ -29,10 +29,14 @@
     "zod": "^4.3.6"
   },
   "peerDependencies": {
-    "@cogitator-ai/core": "workspace:*"
+    "@cogitator-ai/core": "workspace:*",
+    "openai": "^6.0.0"
   },
   "peerDependenciesMeta": {
     "@cogitator-ai/core": {
+      "optional": true
+    },
+    "openai": {
       "optional": true
     }
   },
