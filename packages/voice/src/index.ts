@@ -24,3 +24,5 @@ export { GeminiRealtimeAdapter } from './realtime/index.js';
 export { RealtimeSession } from './realtime/index.js';
 
 export { WebSocketTransport, VoiceClient } from './transport/index.js';
+
+export { VoiceAgent } from './voice-agent.js';
