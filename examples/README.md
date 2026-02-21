@@ -67,6 +67,18 @@ Express, Fastify, Hono, Koa, Next.js, OpenAI compatibility, Vercel AI SDK.
 Redis memory, PostgreSQL with pgvector, BullMQ workers, Docker deployment.
 Requires `docker-compose up -d`.
 
+### [`rag/`](./rag/) — RAG Pipeline
+
+Document loading, chunking strategies, retrieval-augmented generation with agents.
+
+### [`evals/`](./evals/) — Evaluation Framework
+
+Basic evals, LLM-as-judge scoring, A/B comparison testing.
+
+### [`voice/`](./voice/) — Voice & Realtime Agents
+
+STT/TTS pipeline, realtime speech-to-speech, WebSocket voice agent server.
+
 ### [`advanced/`](./advanced/) — Advanced Features
 
 Self-modifying agents, neuro-symbolic reasoning, WASM-sandboxed tools.
