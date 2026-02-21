@@ -921,7 +921,7 @@ importers:
         version: 8.18.0
       z3-solver:
         specifier: ^4.13.0
-        version: 4.15.8
+        version: 4.16.0
     devDependencies:
       '@types/pg':
         specifier: ^8.16.0
@@ -1059,8 +1059,8 @@ importers:
         specifier: workspace:*
         version: link:../types
       '@types/dockerode':
-        specifier: ^3.3.31
-        version: 3.3.47
+        specifier: ^4.0.1
+        version: 4.0.1
       '@types/node':
         specifier: ^25.0.10
         version: 25.0.10
@@ -5517,8 +5517,8 @@ packages:
       '@types/ssh2': 1.15.5
     dev: false
 
-  /@types/dockerode@3.3.47:
-    resolution: {integrity: sha512-ShM1mz7rCjdssXt7Xz0u1/R2BJC7piWa3SJpUBiVjCf2A3XNn4cP6pUVaD8bLanpPVVn4IKzJuw3dOvkJ8IbYw==}
+  /@types/dockerode@4.0.1:
+    resolution: {integrity: sha512-cmUpB+dPN955PxBEuXE3f6lKO1hHiIGYJA46IVF3BJpNsZGvtBDcRnlrHYHtOH/B6vtDOyl2kZ2ShAu3mgc27Q==}
     dependencies:
       '@types/docker-modem': 3.0.6
       '@types/node': 22.19.7
@@ -5962,7 +5962,7 @@ packages:
       '@vitest/spy': 4.0.18
       estree-walker: 3.0.3
       magic-string: 0.30.21
-      vite: 7.3.1(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
+      vite: 7.3.1(@types/node@22.19.7)(tsx@4.21.0)
     dev: true
 
   /@vitest/pretty-format@4.0.18:
@@ -12462,8 +12462,8 @@ packages:
     engines: {node: '>=18'}
     dev: false
 
-  /z3-solver@4.15.8:
-    resolution: {integrity: sha512-H15njxfgn3k6PQFROG74/2my5KKGHlTcHfyVYI8CJGZ7zJyGiH38VTYvx3n4Kkn0eT+PUvm6MuOv8/efiw5GAw==}
+  /z3-solver@4.16.0:
+    resolution: {integrity: sha512-vWT+I5Yz0dXtseLVZsnkwAIrRmbxw0rCX5a6Xglc6n1CyPESNMnHB3iAWh7XTQQHZRlpWYnKJXTJ0ahTTNHZEg==}
     engines: {node: '>=16'}
     requiresBuild: true
     dependencies:

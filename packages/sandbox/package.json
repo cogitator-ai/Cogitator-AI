@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
-    "@types/dockerode": "^3.3.31",
+    "@types/dockerode": "^4.0.1",
     "@types/node": "^25.0.10",
     "nanoid": "^5.0.4"
   },
