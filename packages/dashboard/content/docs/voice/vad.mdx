@@ -1,0 +1,148 @@
+---
+title: Voice Activity Detection
+description: Detect when users start and stop speaking with @cogitator-ai/voice VAD providers — zero-dependency EnergyVAD for simple environments and neural Silero VAD for noisy conditions.
+---
+
+## Overview
+
+Voice Activity Detection (VAD) determines when a user is speaking. The voice package uses VAD to automatically detect speech boundaries — when to start recording, when to stop, and when to trigger the agent. Every VAD provider implements the `VADProvider` interface:
+
+```typescript
+interface VADProvider {
+  readonly name: string;
+  process(samples: Float32Array): VADEvent;
+  reset(): void;
+}
+
+type VADEvent =
+  | { type: 'speech_start' }
+  | { type: 'speech_end'; duration: number }
+  | { type: 'speech', probability: number }
+  | { type: 'silence' };
+```
+
+Feed audio frames (as Float32Array samples) into `process()` and it returns an event describing what it detected. The VAD is stateful — it tracks whether speech is in progress and emits `speech_start` / `speech_end` transitions based on configurable silence duration.
+
+## Provider Comparison
+
+| Feature | EnergyVAD | SileroVAD |
+| --- | --- | --- |
+| Accuracy | Basic | High |
+| Dependencies | None | `onnxruntime-node` |
+| Speed | Instant | ~3ms per frame |
+| Noisy environments | Poor | Good |
+| Method | RMS energy threshold | Neural network (ONNX) |
+| Initialization | Sync constructor | Async `init()` required |
+
+## EnergyVAD
+
+Zero-dependency voice activity detection based on RMS audio energy levels. Compares the root-mean-square energy of each audio frame against a threshold. Simple and fast, works well in quiet environments.
+
+```typescript
+import { EnergyVAD } from '@cogitator-ai/voice';
+
+const vad = new EnergyVAD({
+  threshold: 0.01,
+  silenceDuration: 500,
+  sampleRate: 16000,
+});
+```
+
+### Usage
+
+```typescript
+import { pcm16ToFloat32 } from '@cogitator-ai/voice';
+
+const samples = pcm16ToFloat32(pcm16AudioChunk);
+const event = vad.process(samples);
+
+switch (event.type) {
+  case 'speech_start':
+    console.log('User started speaking');
+    break;
+  case 'speech_end':
+    console.log(`Speech ended after ${event.duration}ms`);
+    break;
+  case 'speech':
+    // ongoing speech, event.probability is normalized RMS
+    break;
+  case 'silence':
+    // no speech detected
+    break;
+}
+```
+
+### Configuration
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `threshold` | `number` | `0.01` | RMS energy threshold for speech detection |
+| `silenceDuration` | `number` | `500` | Silence duration (ms) before emitting `speech_end` |
+| `sampleRate` | `number` | `16000` | Audio sample rate in Hz |
+
+## SileroVAD
+
+Neural network-based VAD using the [Silero VAD](https://github.com/snakers4/silero-vad) ONNX model. Significantly more accurate than energy-based detection, especially in noisy environments. Requires `onnxruntime-node` as a peer dependency.
+
+```bash
+pnpm add onnxruntime-node
+```
+
+You also need the Silero VAD ONNX model file. Download it from the [Silero VAD repository](https://github.com/snakers4/silero-vad/blob/master/src/silero_vad/data/silero_vad.onnx).
+
+```typescript
+import { SileroVAD } from '@cogitator-ai/voice';
+
+const vad = new SileroVAD({
+  modelPath: './silero_vad.onnx',
+  threshold: 0.5,
+  silenceDuration: 500,
+  sampleRate: 16000,
+});
+
+await vad.init();
+```
+
+### Usage
+
+```typescript
+const event = vad.process(float32Samples);
+// same event types as EnergyVAD
+```
+
+### Configuration
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `modelPath` | `string` | required | Path to `silero_vad.onnx` model file |
+| `threshold` | `number` | `0.5` | Speech probability threshold (0-1) |
+| `silenceDuration` | `number` | `500` | Silence duration (ms) before `speech_end` |
+| `sampleRate` | `number` | `16000` | Audio sample rate in Hz |
+
+## Using VAD with Pipeline
+
+VAD is optional in the voice pipeline. When provided, the pipeline session automatically detects speech boundaries and only transcribes when the user stops speaking:
+
+```typescript
+import { VoicePipeline, OpenAISTT, OpenAITTS, EnergyVAD } from '@cogitator-ai/voice';
+
+const pipeline = new VoicePipeline({
+  stt: new OpenAISTT({ apiKey: process.env.OPENAI_API_KEY! }),
+  tts: new OpenAITTS({ apiKey: process.env.OPENAI_API_KEY! }),
+  vad: new EnergyVAD({ threshold: 0.01, silenceDuration: 500 }),
+  agent: myAgent,
+});
+
+const session = pipeline.createSession();
+
+session.on('speech_start', () => console.log('Listening...'));
+session.on('speech_end', () => console.log('Processing...'));
+session.on('transcript', (text, isFinal) => {
+  if (isFinal) console.log('User said:', text);
+});
+
+// push PCM16 audio frames continuously
+session.pushAudio(pcm16Chunk);
+```
+
+Without VAD, the session starts streaming audio to STT immediately and relies on STT-level endpointing or manual `close()` to trigger transcription.

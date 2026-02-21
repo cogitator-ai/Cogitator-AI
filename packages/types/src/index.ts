@@ -31,3 +31,4 @@ export * from './security';
 export * from './context';
 export * from './deploy';
 export * from './rag';
+export * from './voice';

@@ -1,0 +1,186 @@
+---
+title: Pipeline Mode
+description: Process voice through STT -> Agent -> TTS with VoicePipeline for batch processing and PipelineSession for continuous streaming conversations with VAD-driven turn detection.
+---
+
+## Overview
+
+Pipeline mode routes audio through a three-stage loop: Speech-to-Text, Agent processing, Text-to-Speech. This works with any Cogitator agent regardless of the underlying LLM backend.
+
+Two classes handle different use cases:
+
+- **VoicePipeline** — batch processing: send a complete audio buffer, get back transcript + response + audio
+- **PipelineSession** — streaming: push audio chunks continuously, get events as things happen
+
+## VoicePipeline
+
+One-shot processing for complete audio buffers.
+
+```typescript
+import { VoicePipeline, OpenAISTT, OpenAITTS } from '@cogitator-ai/voice';
+
+const pipeline = new VoicePipeline({
+  stt: new OpenAISTT({ apiKey: process.env.OPENAI_API_KEY! }),
+  tts: new OpenAITTS({ apiKey: process.env.OPENAI_API_KEY! }),
+  agent: myAgent,
+});
+```
+
+### `process(audio)`
+
+Transcribes the audio, runs the agent, synthesizes the response.
+
+```typescript
+const result = await pipeline.process(audioBuffer);
+
+console.log(result.transcript);  // what the user said
+console.log(result.response);    // what the agent replied
+// result.audio — synthesized response as Buffer
+```
+
+### `createSession()`
+
+Creates a `PipelineSession` for streaming use. See below.
+
+## PipelineSession
+
+Streaming mode for continuous conversations. Push audio chunks as they arrive, receive events for each stage of processing.
+
+```typescript
+const session = pipeline.createSession();
+```
+
+### Pushing Audio
+
+```typescript
+// push PCM16 audio chunks as they arrive from the microphone
+session.pushAudio(pcm16Chunk);
+```
+
+If the pipeline has a VAD provider, the session automatically detects when speech starts and ends. Without VAD, it starts streaming to STT immediately.
+
+### Events
+
+```typescript
+session.on('speech_start', () => {
+  console.log('User started speaking');
+});
+
+session.on('speech_end', () => {
+  console.log('User stopped speaking, transcribing...');
+});
+
+session.on('transcript', (text: string, isFinal: boolean) => {
+  if (isFinal) {
+    console.log('Final transcript:', text);
+  } else {
+    console.log('Interim:', text);
+  }
+});
+
+session.on('agent_response', (text: string) => {
+  console.log('Agent:', text);
+});
+
+session.on('audio', (chunk: Buffer) => {
+  // streamed TTS audio — play it back to the user
+  playAudio(chunk);
+});
+
+session.on('error', (error: Error) => {
+  console.error('Session error:', error);
+});
+```
+
+| Event | Payload | Description |
+| --- | --- | --- |
+| `speech_start` | — | VAD detected speech beginning |
+| `speech_end` | — | VAD detected speech ending |
+| `transcript` | `(text, isFinal)` | STT result (interim or final) |
+| `agent_response` | `(text)` | Agent's text response |
+| `audio` | `(chunk: Buffer)` | Streamed TTS audio chunk |
+| `error` | `(error: Error)` | Processing error |
+
+### Interruption
+
+Interrupt the current processing at any stage — stops STT, cancels agent, halts TTS streaming:
+
+```typescript
+session.interrupt();
+```
+
+After interruption, the session returns to idle and is ready for new audio input.
+
+### Closing
+
+```typescript
+await session.close();
+```
+
+Cleans up all resources, stops any in-progress processing, and removes event listeners.
+
+## Pipeline with VAD
+
+When a VAD provider is set, the session handles turn detection automatically:
+
+```typescript
+import { VoicePipeline, OpenAISTT, OpenAITTS, EnergyVAD } from '@cogitator-ai/voice';
+
+const pipeline = new VoicePipeline({
+  stt: new OpenAISTT({ apiKey: process.env.OPENAI_API_KEY! }),
+  tts: new OpenAITTS({ apiKey: process.env.OPENAI_API_KEY! }),
+  vad: new EnergyVAD({ threshold: 0.01, silenceDuration: 500 }),
+  agent: myAgent,
+});
+
+const session = pipeline.createSession();
+
+session.on('speech_start', () => {
+  // VAD detected speech — session opens an STT stream
+});
+
+session.on('speech_end', () => {
+  // VAD detected silence — session closes STT, runs agent, streams TTS
+});
+
+// just keep pushing audio, VAD handles the rest
+microphoneStream.on('data', (chunk) => {
+  session.pushAudio(chunk);
+});
+```
+
+## VoiceAgent
+
+`VoiceAgent` is the high-level class that combines pipeline/realtime processing with WebSocket transport and session management. For pipeline mode, it creates a `VoicePipeline` internally and manages per-client sessions.
+
+```typescript
+import { VoiceAgent, OpenAISTT, OpenAITTS, EnergyVAD } from '@cogitator-ai/voice';
+
+const voiceAgent = new VoiceAgent({
+  agent: myAgent,
+  mode: 'pipeline',
+  stt: new OpenAISTT({ apiKey: process.env.OPENAI_API_KEY! }),
+  tts: new OpenAITTS({ apiKey: process.env.OPENAI_API_KEY! }),
+  vad: new EnergyVAD(),
+  transport: { path: '/voice', maxConnections: 50 },
+});
+
+voiceAgent.on('session_start', (id) => console.log(`Session: ${id}`));
+voiceAgent.on('session_end', (id) => console.log(`Ended: ${id}`));
+voiceAgent.on('error', (err) => console.error(err));
+
+await voiceAgent.listen(8080);
+
+console.log(`Active sessions: ${voiceAgent.activeSessions}`);
+await voiceAgent.close();
+```
+
+### VoicePipelineConfig
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stt` | `STTProvider` | Yes | Speech-to-text provider |
+| `tts` | `TTSProvider` | Yes | Text-to-speech provider |
+| `vad` | `VADProvider` | No | Voice activity detection |
+| `agent` | `{ run(input) => Promise<{ content }> }` | Yes | Agent or compatible object |
+| `sampleRate` | `number` | No | Audio sample rate (default 16000) |

@@ -1,0 +1,58 @@
+{
+  "name": "@cogitator-ai/voice",
+  "version": "0.1.0",
+  "description": "Voice/Realtime agent capabilities for Cogitator",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@cogitator-ai/types": "workspace:*",
+    "nanoid": "^5.0.4",
+    "ws": "^8.18.0",
+    "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "@cogitator-ai/core": "workspace:*",
+    "openai": "^6.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@cogitator-ai/core": {
+      "optional": true
+    },
+    "openai": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.7.2",
+    "vitest": "^4.0.18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cogitator-ai/Cogitator-AI.git",
+    "directory": "packages/voice"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
+  },
+  "license": "MIT"
+}

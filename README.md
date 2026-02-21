@@ -116,6 +116,7 @@ Install only what you need. Everything is a separate npm package.
 | [`@cogitator-ai/neuro-symbolic`](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) | Prolog-style logic, constraint solving, knowledge graphs for agents                 | [neuro-symbolic example](./examples/advanced/02-neuro-symbolic.ts) |
 | [`@cogitator-ai/rag`](https://www.npmjs.com/package/@cogitator-ai/rag)                       | RAG pipeline - document loaders, chunking, retrieval, reranking                     | [3 rag examples](./examples/rag/)                                  |
 | [`@cogitator-ai/evals`](https://www.npmjs.com/package/@cogitator-ai/evals)                   | Evaluation framework - metrics, LLM judges, A/B testing, assertions                 | [3 eval examples](./examples/evals/)                               |
+| [`@cogitator-ai/voice`](https://www.npmjs.com/package/@cogitator-ai/voice)                   | Voice/Realtime agent capabilities - STT, TTS, VAD, realtime sessions                | [3 voice examples](./examples/voice/)                              |
 | [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy)                 | Deploy your agents to Docker or Fly.io                                              | [deploy example](./examples/infrastructure/04-deploy-docker.ts)    |
 | [`@cogitator-ai/cli`](https://www.npmjs.com/package/@cogitator-ai/cli)                       | `cogitator init` / `up` / `run` / `deploy` from your terminal                       | -                                                                  |
 
@@ -213,7 +214,7 @@ All with Swagger docs, SSE streaming, and WebSocket support. See [integration ex
 
 ---
 
-## 44 Runnable Examples
+## 47 Runnable Examples
 
 Every major feature has a working example you can run right now.
 
@@ -231,6 +232,7 @@ npx tsx examples/core/01-basic-agent.ts
 | [`mcp/`](./examples/mcp/)                       | 1     | MCP server integration                                                                                                                                         |
 | [`rag/`](./examples/rag/)                       | 3     | Basic retrieval, chunking strategies, agent with RAG                                                                                                           |
 | [`evals/`](./examples/evals/)                   | 3     | Basic evaluation, LLM judge, A/B comparison                                                                                                                    |
+| [`voice/`](./examples/voice/)                   | 3     | Voice pipeline, realtime sessions, voice agents                                                                                                                |
 | [`integrations/`](./examples/integrations/)     | 7     | Express, Fastify, Hono, Koa, Next.js, OpenAI compat, AI SDK                                                                                                    |
 | [`infrastructure/`](./examples/infrastructure/) | 4     | Redis, PostgreSQL, job queues, Docker deploy                                                                                                                   |
 | [`advanced/`](./examples/advanced/)             | 3     | Self-modifying agents, neuro-symbolic reasoning, WASM tools                                                                                                    |
@@ -276,6 +278,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 | [@cogitator-ai/neuro-symbolic](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) | Neuro-symbolic reasoning with SAT/SMT                        | [![npm](https://img.shields.io/npm/v/@cogitator-ai/neuro-symbolic.svg)](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) |
 | [@cogitator-ai/rag](https://www.npmjs.com/package/@cogitator-ai/rag)                       | RAG pipeline with loaders, chunking, retrieval, reranking    | [![npm](https://img.shields.io/npm/v/@cogitator-ai/rag.svg)](https://www.npmjs.com/package/@cogitator-ai/rag)                       |
 | [@cogitator-ai/evals](https://www.npmjs.com/package/@cogitator-ai/evals)                   | Evaluation framework with metrics, A/B testing, assertions   | [![npm](https://img.shields.io/npm/v/@cogitator-ai/evals.svg)](https://www.npmjs.com/package/@cogitator-ai/evals)                   |
+| [@cogitator-ai/voice](https://www.npmjs.com/package/@cogitator-ai/voice)                   | Voice/Realtime agents (STT, TTS, VAD, realtime sessions)     | [![npm](https://img.shields.io/npm/v/@cogitator-ai/voice.svg)](https://www.npmjs.com/package/@cogitator-ai/voice)                   |
 | [@cogitator-ai/dashboard](https://www.npmjs.com/package/@cogitator-ai/dashboard)           | Real-time observability dashboard                            | [![npm](https://img.shields.io/npm/v/@cogitator-ai/dashboard.svg)](https://www.npmjs.com/package/@cogitator-ai/dashboard)           |
 | [@cogitator-ai/next](https://www.npmjs.com/package/@cogitator-ai/next)                     | Next.js App Router integration                               | [![npm](https://img.shields.io/npm/v/@cogitator-ai/next.svg)](https://www.npmjs.com/package/@cogitator-ai/next)                     |
 | [@cogitator-ai/ai-sdk](https://www.npmjs.com/package/@cogitator-ai/ai-sdk)                 | Vercel AI SDK adapter (bidirectional)                        | [![npm](https://img.shields.io/npm/v/@cogitator-ai/ai-sdk.svg)](https://www.npmjs.com/package/@cogitator-ai/ai-sdk)                 |

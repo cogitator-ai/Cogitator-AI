@@ -35,6 +35,7 @@
     "@cogitator-ai/server-shared": "workspace:*",
     "@cogitator-ai/swarms": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
+    "@cogitator-ai/voice": "workspace:*",
     "@cogitator-ai/wasm-tools": "workspace:*",
     "@cogitator-ai/worker": "workspace:*",
     "@cogitator-ai/workflows": "workspace:*",
