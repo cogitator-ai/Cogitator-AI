@@ -10,7 +10,7 @@ importers:
     dependencies:
       openai:
         specifier: ^6.22.0
-        version: 6.22.0(zod@4.3.6)
+        version: 6.22.0(ws@8.19.0)(zod@4.3.6)
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -56,7 +56,7 @@ importers:
         version: 8.53.1(eslint@9.39.2)(typescript@5.9.3)
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   examples:
     dependencies:
@@ -155,7 +155,7 @@ importers:
         version: 2.16.3
       openai:
         specifier: ^6.22.0
-        version: 6.22.0(zod@4.3.6)
+        version: 6.22.0(ws@8.19.0)(zod@4.3.6)
       zod:
         specifier: ^4.3.6
         version: 4.3.6
@@ -267,7 +267,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/config:
     dependencies:
@@ -319,7 +319,7 @@ importers:
         version: 5.1.6
       openai:
         specifier: ^6.22.0
-        version: 6.22.0(zod@4.3.6)
+        version: 6.22.0(ws@8.19.0)(zod@4.3.6)
       zod:
         specifier: ^4.3.6
         version: 4.3.6
@@ -336,7 +336,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/create-cogitator-app:
     dependencies:
@@ -582,6 +582,9 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
+      '@cogitator-ai/voice':
+        specifier: workspace:*
+        version: link:../voice
       '@cogitator-ai/wasm-tools':
         specifier: workspace:*
         version: link:../wasm-tools
@@ -659,7 +662,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/express:
     dependencies:
@@ -833,7 +836,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/memory:
     dependencies:
@@ -861,7 +864,7 @@ importers:
         version: 5.9.3
       openai:
         specifier: ^6.22.0
-        version: 6.22.0(zod@4.3.6)
+        version: 6.22.0(ws@8.19.0)(zod@4.3.6)
       pg:
         specifier: ^8.18.0
         version: 8.18.0
@@ -871,7 +874,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/models:
     dependencies:
@@ -890,7 +893,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/neuro-symbolic:
     dependencies:
@@ -928,7 +931,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/next:
     dependencies:
@@ -987,7 +990,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/rag:
     dependencies:
@@ -1028,7 +1031,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/redis:
     dependencies:
@@ -1048,7 +1051,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/sandbox:
     dependencies:
@@ -1077,7 +1080,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/self-modifying:
     dependencies:
@@ -1105,7 +1108,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/server-shared:
     devDependencies:
@@ -1142,7 +1145,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/test-utils:
     dependencies:
@@ -1158,7 +1161,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/types:
     dependencies:
@@ -1181,6 +1184,9 @@ importers:
       nanoid:
         specifier: ^5.0.4
         version: 5.1.6
+      openai:
+        specifier: ^6.0.0
+        version: 6.22.0(ws@8.19.0)(zod@4.3.6)
       ws:
         specifier: ^8.18.0
         version: 8.19.0
@@ -1196,7 +1202,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/wasm-tools:
     dependencies:
@@ -1224,7 +1230,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/worker:
     dependencies:
@@ -1261,7 +1267,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/workflows:
     dependencies:
@@ -1286,7 +1292,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
-        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)
+        version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
 packages:
 
@@ -5956,7 +5962,7 @@ packages:
       '@vitest/spy': 4.0.18
       estree-walker: 3.0.3
       magic-string: 0.30.21
-      vite: 7.3.1(@types/node@25.0.10)(tsx@4.21.0)
+      vite: 7.3.1(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
     dev: true
 
   /@vitest/pretty-format@4.0.18:
@@ -10024,7 +10030,7 @@ packages:
   /only@0.0.2:
     resolution: {integrity: sha512-Fvw+Jemq5fjjyWz6CpKx6w9s7xxqo3+JCyM0WXWeCSOboZ8ABkyvP8ID4CZuChA/wxSx+XSJmdOm8rGVyJ1hdQ==}
 
-  /openai@6.22.0(zod@4.3.6):
+  /openai@6.22.0(ws@8.19.0)(zod@4.3.6):
     resolution: {integrity: sha512-7Yvy17F33Bi9RutWbsaYt5hJEEJ/krRPOrwan+f9aCPuMat1WVsb2VNSII5W1EksKT6fF69TG/xj4XzodK3JZw==}
     hasBin: true
     peerDependencies:
@@ -10036,6 +10042,7 @@ packages:
       zod:
         optional: true
     dependencies:
+      ws: 8.19.0
       zod: 4.3.6
     dev: false
 
@@ -12070,58 +12077,6 @@ packages:
       fsevents: 2.3.3
     dev: true
 
-  /vite@7.3.1(@types/node@25.0.10)(tsx@4.21.0):
-    resolution: {integrity: sha512-w+N7Hifpc3gRjZ63vYBXA56dvvRlNWRczTdmCBBa+CotUzAPf5b7YMdMR/8CQoeYE5LX3W4wj6RYTgonm1b9DA==}
-    engines: {node: ^20.19.0 || >=22.12.0}
-    hasBin: true
-    peerDependencies:
-      '@types/node': ^20.19.0 || >=22.12.0
-      jiti: '>=1.21.0'
-      less: ^4.0.0
-      lightningcss: ^1.21.0
-      sass: ^1.70.0
-      sass-embedded: ^1.70.0
-      stylus: '>=0.54.8'
-      sugarss: ^5.0.0
-      terser: ^5.16.0
-      tsx: ^4.8.1
-      yaml: ^2.4.2
-    peerDependenciesMeta:
-      '@types/node':
-        optional: true
-      jiti:
-        optional: true
-      less:
-        optional: true
-      lightningcss:
-        optional: true
-      sass:
-        optional: true
-      sass-embedded:
-        optional: true
-      stylus:
-        optional: true
-      sugarss:
-        optional: true
-      terser:
-        optional: true
-      tsx:
-        optional: true
-      yaml:
-        optional: true
-    dependencies:
-      '@types/node': 25.0.10
-      esbuild: 0.27.3
-      fdir: 6.5.0(picomatch@4.0.3)
-      picomatch: 4.0.3
-      postcss: 8.5.6
-      rollup: 4.56.0
-      tinyglobby: 0.2.15
-      tsx: 4.21.0
-    optionalDependencies:
-      fsevents: 2.3.3
-    dev: true
-
   /vite@7.3.1(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2):
     resolution: {integrity: sha512-w+N7Hifpc3gRjZ63vYBXA56dvvRlNWRczTdmCBBa+CotUzAPf5b7YMdMR/8CQoeYE5LX3W4wj6RYTgonm1b9DA==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -12297,7 +12252,7 @@ packages:
       tinyexec: 1.0.2
       tinyglobby: 0.2.15
       tinyrainbow: 3.0.3
-      vite: 7.3.1(@types/node@25.0.10)(tsx@4.21.0)
+      vite: 7.3.1(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
       why-is-node-running: 2.3.0
     transitivePeerDependencies:
       - jiti
