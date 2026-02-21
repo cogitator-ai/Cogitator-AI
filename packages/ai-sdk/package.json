@@ -29,7 +29,7 @@
     "ai": ">=4.0.0"
   },
   "devDependencies": {
-    "@ai-sdk/openai": "^1.0.0",
+    "@ai-sdk/openai": "^3.0.30",
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "ai": "^4.0.0",

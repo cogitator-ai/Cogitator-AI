@@ -217,8 +217,8 @@ importers:
         version: 2.2.8(zod@3.25.76)
     devDependencies:
       '@ai-sdk/openai':
-        specifier: ^1.0.0
-        version: 1.3.24(zod@3.25.76)
+        specifier: ^3.0.30
+        version: 3.0.30(zod@3.25.76)
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
@@ -921,7 +921,7 @@ importers:
         version: 8.18.0
       z3-solver:
         specifier: ^4.13.0
-        version: 4.15.8
+        version: 4.16.0
     devDependencies:
       '@types/pg':
         specifier: ^8.16.0
@@ -1296,14 +1296,14 @@ importers:
 
 packages:
 
-  /@ai-sdk/openai@1.3.24(zod@3.25.76):
-    resolution: {integrity: sha512-GYXnGJTHRTZc4gJMSmFRgEQudjqd4PUN0ZjQhPwOAYH1yOAvQoG/Ikqs+HyISRbLPCrhbZnPKCNHuRU4OfpW0Q==}
+  /@ai-sdk/openai@3.0.30(zod@3.25.76):
+    resolution: {integrity: sha512-YDht3t7TDyWKP+JYZp20VuYqSjyF2brHYh47GGFDUPf2wZiqNQ263ecL+quar2bP3GZ3BeQA8f0m2B7UwLPR+g==}
     engines: {node: '>=18'}
     peerDependencies:
-      zod: ^3.0.0
+      zod: ^3.25.76 || ^4.1.8
     dependencies:
-      '@ai-sdk/provider': 1.1.3
-      '@ai-sdk/provider-utils': 2.2.8(zod@3.25.76)
+      '@ai-sdk/provider': 3.0.8
+      '@ai-sdk/provider-utils': 4.0.15(zod@3.25.76)
       zod: 3.25.76
     dev: true
 
@@ -1330,11 +1330,30 @@ packages:
       zod: 4.3.6
     dev: false
 
+  /@ai-sdk/provider-utils@4.0.15(zod@3.25.76):
+    resolution: {integrity: sha512-8XiKWbemmCbvNN0CLR9u3PQiet4gtEVIrX4zzLxnCj06AwsEDJwJVBbKrEI4t6qE8XRSIvU2irka0dcpziKW6w==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+    dependencies:
+      '@ai-sdk/provider': 3.0.8
+      '@standard-schema/spec': 1.1.0
+      eventsource-parser: 3.0.6
+      zod: 3.25.76
+    dev: true
+
   /@ai-sdk/provider@1.1.3:
     resolution: {integrity: sha512-qZMxYJ0qqX/RfnuIaab+zp8UAeJn/ygXXAffR5I4N0n1IrvA6qBsjc8hXLmBiMV2zoXlifkacF7sEFnYnjBcqg==}
     engines: {node: '>=18'}
     dependencies:
       json-schema: 0.4.0
+
+  /@ai-sdk/provider@3.0.8:
+    resolution: {integrity: sha512-oGMAgGoQdBXbZqNG0Ze56CHjDZ1IDYOwGYxYjO5KLSlz5HiNQ9udIXsPZ61VWaHGZ5XW/jyjmr6t2xz2jGVwbQ==}
+    engines: {node: '>=18'}
+    dependencies:
+      json-schema: 0.4.0
+    dev: true
 
   /@ai-sdk/react@1.2.12(react@19.2.4)(zod@3.25.76):
     resolution: {integrity: sha512-jK1IZZ22evPZoQW3vlkZ7wvjYGYF+tRBKXtrcolduIkQ/m/sOAVcVeVDUDvh1T91xCnWCdUGCPZg2avZ90mv3g==}
@@ -5962,7 +5981,7 @@ packages:
       '@vitest/spy': 4.0.18
       estree-walker: 3.0.3
       magic-string: 0.30.21
-      vite: 7.3.1(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
+      vite: 7.3.1(@types/node@22.19.7)(tsx@4.21.0)
     dev: true
 
   /@vitest/pretty-format@4.0.18:
@@ -7421,7 +7440,6 @@ packages:
   /eventsource-parser@3.0.6:
     resolution: {integrity: sha512-Vo1ab+QXPzZ4tCa8SwIHJFaSzy4R6SHf7BY79rFBDf0idraZWAkYrDjDj8uWaSm3S2TK+hJ7/t1CEmZ7jXw+pg==}
     engines: {node: '>=18.0.0'}
-    dev: false
 
   /eventsource@3.0.7:
     resolution: {integrity: sha512-CRT1WTyuQoD771GW56XEZFQ/ZoSfWid1alKGDYMmkt2yl8UXrVR4pspqWNEcqKvVIzg6PAltWjxcSSPrboA4iA==}
@@ -12462,8 +12480,8 @@ packages:
     engines: {node: '>=18'}
     dev: false
 
-  /z3-solver@4.15.8:
-    resolution: {integrity: sha512-H15njxfgn3k6PQFROG74/2my5KKGHlTcHfyVYI8CJGZ7zJyGiH38VTYvx3n4Kkn0eT+PUvm6MuOv8/efiw5GAw==}
+  /z3-solver@4.16.0:
+    resolution: {integrity: sha512-vWT+I5Yz0dXtseLVZsnkwAIrRmbxw0rCX5a6Xglc6n1CyPESNMnHB3iAWh7XTQQHZRlpWYnKJXTJ0ahTTNHZEg==}
     engines: {node: '>=16'}
     requiresBuild: true
     dependencies:
