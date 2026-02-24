@@ -6,69 +6,12 @@ import type {
   ToolResult,
   ContentPart,
   ImageInput,
-  AudioInput,
 } from '@cogitator-ai/types';
 import { ContextBuilder, countMessageTokens } from '@cogitator-ai/memory';
 import { getLogger } from '../logger';
 import type { Agent } from '../agent';
 import type { ReflectionEngine } from '../reflection/index';
 import type { AgentContext } from '@cogitator-ai/types';
-import { audioInputToBuffer } from '../utils/audio-fetch';
-
-export interface AudioTranscriptionResult {
-  text: string;
-  language?: string;
-  duration?: number;
-}
-
-export async function transcribeAudioInputs(
-  audioInputs: AudioInput[],
-  apiKey: string
-): Promise<AudioTranscriptionResult[]> {
-  const results: AudioTranscriptionResult[] = [];
-
-  for (const audio of audioInputs) {
-    const { buffer, filename } = await audioInputToBuffer(audio);
-
-    const formData = new FormData();
-    formData.append('file', new Blob([new Uint8Array(buffer)]), filename);
-    formData.append('model', 'whisper-1');
-
-    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}` },
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(
-        `Audio transcription failed: ${errorData.error?.message || response.statusText}`
-      );
-    }
-
-    const result = await response.json();
-    results.push({
-      text: result.text,
-      language: result.language,
-      duration: result.duration,
-    });
-  }
-
-  return results;
-}
-
-export function formatTranscriptionsForInput(transcriptions: AudioTranscriptionResult[]): string {
-  if (transcriptions.length === 0) return '';
-
-  if (transcriptions.length === 1) {
-    return `[Audio transcription]: ${transcriptions[0].text}\n\n`;
-  }
-
-  return (
-    transcriptions.map((t, i) => `[Audio ${i + 1} transcription]: ${t.text}`).join('\n') + '\n\n'
-  );
-}
 
 function buildUserContent(input: string, images?: ImageInput[]): string | ContentPart[] {
   if (!images || images.length === 0) {
@@ -181,7 +124,9 @@ export async function enrichMessagesWithInsights(
 ): Promise<void> {
   const insights = await reflectionEngine.getRelevantInsights(agentContext);
   if (insights.length > 0 && messages.length > 0 && messages[0].role === 'system') {
-    messages[0].content += `\n\nPast learnings that may help:\n${insights.map((i) => `- ${i.content}`).join('\n')}`;
+    const suffix = `\n\nPast learnings that may help:\n${insights.map((i) => `- ${i.content}`).join('\n')}`;
+    const content = messages[0].content;
+    messages[0].content = typeof content === 'string' ? content + suffix : suffix;
   }
 }
 
@@ -190,6 +135,8 @@ export function addContextToMessages(messages: Message[], context: Record<string
     const contextStr = Object.entries(context)
       .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
       .join('\n');
-    messages[0].content += `\n\nContext:\n${contextStr}`;
+    const suffix = `\n\nContext:\n${contextStr}`;
+    const content = messages[0].content;
+    messages[0].content = typeof content === 'string' ? content + suffix : suffix;
   }
 }

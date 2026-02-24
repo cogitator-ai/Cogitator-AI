@@ -149,6 +149,7 @@ function parsePower(tokens: Token[], pos: number): ParseResult {
 }
 
 function parseUnary(tokens: Token[], pos: number): ParseResult {
+  if (!tokens[pos]) throw new Error('Unexpected end of expression');
   if (
     tokens[pos].type === 'operator' &&
     (tokens[pos] as { type: 'operator'; value: string }).value === '-'
@@ -162,6 +163,7 @@ function parseUnary(tokens: Token[], pos: number): ParseResult {
 
 function parsePrimary(tokens: Token[], pos: number): ParseResult {
   const token = tokens[pos];
+  if (!token) throw new Error('Unexpected end of expression');
 
   if (token.type === 'number') {
     return { value: token.value, pos: pos + 1 };

@@ -133,9 +133,9 @@ export class GoogleBackend extends BaseLLMBackend {
 
     let response: Response;
     try {
-      response = await fetch(`${endpoint}?key=${this.apiKey}`, {
+      response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.apiKey },
         body: JSON.stringify(geminiRequest),
       });
     } catch (e) {
@@ -166,9 +166,9 @@ export class GoogleBackend extends BaseLLMBackend {
 
     let response: Response;
     try {
-      response = await fetch(`${endpoint}?key=${this.apiKey}&alt=sse`, {
+      response = await fetch(`${endpoint}?alt=sse`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.apiKey },
         body: JSON.stringify(geminiRequest),
       });
     } catch (e) {
@@ -349,8 +349,6 @@ export class GoogleBackend extends BaseLLMBackend {
     let systemInstruction: string | null = null;
     const contents: GeminiContent[] = [];
 
-    const pendingToolResults = new Map<string, Message>();
-
     for (const msg of messages) {
       switch (msg.role) {
         case 'system':
@@ -366,13 +364,10 @@ export class GoogleBackend extends BaseLLMBackend {
 
         case 'assistant': {
           const parts = this.convertContentToParts(msg.content);
-
-          if (parts.length > 0 || pendingToolResults.size === 0) {
-            contents.push({
-              role: 'model',
-              parts: parts.length > 0 ? parts : [{ text: '' }],
-            });
-          }
+          contents.push({
+            role: 'model',
+            parts: parts.length > 0 ? parts : [{ text: '' }],
+          });
           break;
         }
 
@@ -410,13 +405,16 @@ export class GoogleBackend extends BaseLLMBackend {
     switch (part.type) {
       case 'text':
         return { text: part.text };
-      case 'image_url':
-        return {
-          fileData: {
-            mimeType: 'image/jpeg',
-            fileUri: part.image_url.url,
-          },
-        };
+      case 'image_url': {
+        const url = part.image_url.url;
+        if (url.startsWith('data:')) {
+          const match = /^data:([^;]+);base64,(.+)$/.exec(url);
+          if (match) {
+            return { inlineData: { mimeType: match[1], data: match[2] } };
+          }
+        }
+        return { fileData: { mimeType: 'image/jpeg', fileUri: url } };
+      }
       case 'image_base64':
         return {
           inlineData: {

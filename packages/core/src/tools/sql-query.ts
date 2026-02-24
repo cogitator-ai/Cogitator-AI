@@ -38,7 +38,31 @@ export interface QueryResult {
 function isReadOnlyQuery(query: string): boolean {
   const normalized = query.trim().toUpperCase();
   const allowedPrefixes = ['SELECT', 'WITH', 'SHOW', 'DESCRIBE', 'EXPLAIN'];
-  return allowedPrefixes.some((prefix) => normalized.startsWith(prefix));
+  if (!allowedPrefixes.some((prefix) => normalized.startsWith(prefix))) {
+    return false;
+  }
+  const dangerousKeywords = [
+    'INSERT',
+    'UPDATE',
+    'DELETE',
+    'DROP',
+    'ALTER',
+    'CREATE',
+    'TRUNCATE',
+    'GRANT',
+    'REVOKE',
+    'EXEC',
+    'EXECUTE',
+    'CALL',
+  ];
+  const withoutStrings = normalized.replace(/'[^']*'/g, '');
+  const statements = withoutStrings.split(';').filter((s) => s.trim().length > 0);
+  if (statements.length > 1) return false;
+  for (const keyword of dangerousKeywords) {
+    const regex = new RegExp(`\\b${keyword}\\b`);
+    if (regex.test(withoutStrings)) return false;
+  }
+  return true;
 }
 
 async function queryPostgres(
@@ -86,7 +110,8 @@ async function querySqlite(
   filePath: string,
   query: string,
   params: unknown[],
-  maxRows: number
+  maxRows: number,
+  readOnly = true
 ): Promise<QueryResult> {
   let Database: typeof import('better-sqlite3').default;
 
@@ -97,7 +122,7 @@ async function querySqlite(
     throw new Error('better-sqlite3 package not installed. Run: pnpm add better-sqlite3');
   }
 
-  const db = new Database(filePath, { readonly: true });
+  const db = new Database(filePath, { readonly: readOnly });
   const start = Date.now();
 
   try {
@@ -133,7 +158,6 @@ function detectDatabase(connectionString: string): 'postgres' | 'sqlite' {
     connectionString.endsWith('.db') ||
     connectionString.endsWith('.sqlite') ||
     connectionString.endsWith('.sqlite3') ||
-    connectionString.includes('.db') ||
     connectionString === ':memory:'
   ) {
     return 'sqlite';
@@ -180,7 +204,7 @@ export const sqlQuery = tool({
         case 'postgres':
           return await queryPostgres(connStr, query, params, maxRows);
         case 'sqlite':
-          return await querySqlite(connStr, query, params, maxRows);
+          return await querySqlite(connStr, query, params, maxRows, readOnly);
         default:
           return { error: `Unsupported database type: ${db as string}` };
       }

@@ -292,7 +292,7 @@ export class CausalReasoner {
 
     const graph = await this.getOrCreateGraph(agentId);
 
-    for (const [variable, _] of Object.entries(intervention)) {
+    for (const variable of Object.keys(intervention)) {
       for (const [outcome, afterValue] of Object.entries(observedAfter)) {
         const beforeValue = observedBefore[outcome];
         if (beforeValue !== afterValue) {
@@ -332,7 +332,8 @@ export class CausalReasoner {
 
   async validateHypothesis(
     hypothesis: CausalHypothesis,
-    context: ValidationContext
+    context: ValidationContext,
+    agentId?: string
   ): Promise<{
     validated: boolean;
     adjustedStrength: number;
@@ -344,7 +345,8 @@ export class CausalReasoner {
       this.stats.hypothesesValidated++;
       this.stats.hypothesesPending--;
 
-      const graph = await this.getOrCreateGraph(hypothesis.id.split('-')[0]);
+      const resolvedAgentId = agentId ?? context.originalTrace.agentId;
+      const graph = await this.getOrCreateGraph(resolvedAgentId);
       if (!graph.hasNode(hypothesis.cause)) {
         graph.addNode({
           id: hypothesis.cause,

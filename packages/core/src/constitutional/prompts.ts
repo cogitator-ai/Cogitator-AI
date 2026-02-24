@@ -56,7 +56,10 @@ export function buildOutputEvaluationPrompt(
 
   const contextStr = context
     .slice(-4)
-    .map((m) => `[${m.role}]: ${m.content.slice(0, 200)}${m.content.length > 200 ? '...' : ''}`)
+    .map((m) => {
+      const text = typeof m.content === 'string' ? m.content : '[complex content]';
+      return `[${m.role}]: ${text.slice(0, 200)}${text.length > 200 ? '...' : ''}`;
+    })
     .join('\n');
 
   return `You are a content safety evaluator. Analyze the following AI response for policy violations.

@@ -66,6 +66,7 @@ export class LangfuseExporter {
   private config: LangfuseConfig;
   private activeTraces = new Map<string, LangfuseTrace>();
   private activeSpans = new Map<string, LangfuseSpan>();
+  private activeGenerations = new Map<string, LangfuseGeneration>();
 
   constructor(config: LangfuseConfig) {
     this.config = config;
@@ -188,27 +189,44 @@ export class LangfuseExporter {
       },
     });
 
+    this.activeGenerations.set(generation.id, generation);
     return generation.id;
   }
 
-  onLLMResponse(_options: {
+  onLLMResponse(options: {
     generationId: string;
     output: string;
     inputTokens?: number;
     outputTokens?: number;
   }): void {
     if (!this.client) return;
+
+    const generation = this.activeGenerations.get(options.generationId);
+    if (!generation) return;
+
+    generation.end({
+      output: options.output,
+      usage: {
+        input: options.inputTokens,
+        output: options.outputTokens,
+        total: (options.inputTokens ?? 0) + (options.outputTokens ?? 0),
+      },
+    });
+
+    this.activeGenerations.delete(options.generationId);
   }
 
   onToolCall(runId: string, call: ToolCall): void {
     const trace = this.activeTraces.get(runId);
     if (!trace) return;
 
-    trace.span({
+    const span = trace.span({
       name: `tool:${call.name}`,
       input: call.arguments,
       metadata: { toolCallId: call.id },
     });
+
+    this.activeSpans.set(`tool:${call.id}`, span);
   }
 
   onToolResult(_runId: string, result: ToolResult): void {

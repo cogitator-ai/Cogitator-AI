@@ -233,9 +233,9 @@ export class BedrockBackend extends BaseLLMBackend {
     }
 
     const inferenceConfig: InferenceConfiguration = {};
-    if (request.maxTokens) inferenceConfig.maxTokens = request.maxTokens;
-    if (request.temperature) inferenceConfig.temperature = request.temperature;
-    if (request.topP) inferenceConfig.topP = request.topP;
+    if (request.maxTokens !== undefined) inferenceConfig.maxTokens = request.maxTokens;
+    if (request.temperature !== undefined) inferenceConfig.temperature = request.temperature;
+    if (request.topP !== undefined) inferenceConfig.topP = request.topP;
     if (request.stop) inferenceConfig.stopSequences = request.stop;
 
     if (Object.keys(inferenceConfig).length > 0) {
@@ -285,9 +285,9 @@ export class BedrockBackend extends BaseLLMBackend {
     }
 
     const inferenceConfig: InferenceConfiguration = {};
-    if (request.maxTokens) inferenceConfig.maxTokens = request.maxTokens;
-    if (request.temperature) inferenceConfig.temperature = request.temperature;
-    if (request.topP) inferenceConfig.topP = request.topP;
+    if (request.maxTokens !== undefined) inferenceConfig.maxTokens = request.maxTokens;
+    if (request.temperature !== undefined) inferenceConfig.temperature = request.temperature;
+    if (request.topP !== undefined) inferenceConfig.topP = request.topP;
     if (request.stop) inferenceConfig.stopSequences = request.stop;
 
     if (Object.keys(inferenceConfig).length > 0) {

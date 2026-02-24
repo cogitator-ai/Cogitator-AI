@@ -54,7 +54,14 @@ export async function executeTool(
   }
 
   if (tool.sandbox?.type === 'docker' || tool.sandbox?.type === 'wasm') {
-    return executeInSandbox(tool, toolCall, runId, agentId, sandboxManager, initializeSandbox);
+    return executeInSandbox(
+      tool,
+      { ...toolCall, arguments: parseResult.data as Record<string, unknown> },
+      runId,
+      agentId,
+      sandboxManager,
+      initializeSandbox
+    );
   }
 
   const context: ToolContext = {
@@ -98,7 +105,10 @@ async function executeInSandbox(
       signal: new AbortController().signal,
     };
     try {
-      const result = await tool.execute(toolCall.arguments, context);
+      const result = await tool.execute(
+        toolCall.arguments as Parameters<typeof tool.execute>[0],
+        context
+      );
       return { callId: toolCall.id, name: toolCall.name, result };
     } catch (error) {
       return {

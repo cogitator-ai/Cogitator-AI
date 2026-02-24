@@ -244,45 +244,36 @@ export function detectEncodingThreats(input: string): InjectionThreat[] {
   const threats: InjectionThreat[] = [];
 
   const base64Regex = /[A-Za-z0-9+/]{20,}={0,2}/g;
-  const matches = input.match(base64Regex);
+  for (const m of input.matchAll(base64Regex)) {
+    try {
+      const decoded = atob(m[0]).toLowerCase();
+      const hasSuspiciousContent = SUSPICIOUS_BASE64_KEYWORDS.some((keyword) =>
+        decoded.includes(keyword)
+      );
 
-  if (matches) {
-    for (const match of matches) {
-      try {
-        const decoded = atob(match).toLowerCase();
-        const hasSuspiciousContent = SUSPICIOUS_BASE64_KEYWORDS.some((keyword) =>
-          decoded.includes(keyword)
-        );
-
-        if (hasSuspiciousContent) {
-          const start = input.indexOf(match);
-          threats.push({
-            type: 'encoding',
-            confidence: 0.85,
-            pattern: 'base64_suspicious_content',
-            snippet: match.slice(0, 50) + (match.length > 50 ? '...' : ''),
-            position: { start, end: start + match.length },
-          });
-        }
-      } catch {
-        continue;
+      if (hasSuspiciousContent) {
+        threats.push({
+          type: 'encoding',
+          confidence: 0.85,
+          pattern: 'base64_suspicious_content',
+          snippet: m[0].slice(0, 50) + (m[0].length > 50 ? '...' : ''),
+          position: { start: m.index, end: m.index + m[0].length },
+        });
       }
+    } catch {
+      continue;
     }
   }
 
   const hexRegex = /\\x[0-9a-fA-F]{2}(\\x[0-9a-fA-F]{2}){5,}/g;
-  const hexMatches = input.match(hexRegex);
-  if (hexMatches) {
-    for (const match of hexMatches) {
-      const start = input.indexOf(match);
-      threats.push({
-        type: 'encoding',
-        confidence: 0.75,
-        pattern: 'hex_escape_sequence',
-        snippet: match.slice(0, 30) + (match.length > 30 ? '...' : ''),
-        position: { start, end: start + match.length },
-      });
-    }
+  for (const m of input.matchAll(hexRegex)) {
+    threats.push({
+      type: 'encoding',
+      confidence: 0.75,
+      pattern: 'hex_escape_sequence',
+      snippet: m[0].slice(0, 30) + (m[0].length > 30 ? '...' : ''),
+      position: { start: m.index, end: m.index + m[0].length },
+    });
   }
 
   return threats;
@@ -316,10 +307,8 @@ export function detectUnicodeThreats(input: string): InjectionThreat[] {
 
   let homoglyphCount = 0;
   for (const { char } of homoglyphPatterns) {
-    const matches = input.match(char);
-    if (matches) {
-      homoglyphCount += matches.length;
-    }
+    const charMatches = [...input.matchAll(char)];
+    homoglyphCount += charMatches.length;
   }
 
   if (homoglyphCount > 3) {

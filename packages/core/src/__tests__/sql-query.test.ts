@@ -411,6 +411,75 @@ describe('sql-query tool', () => {
     });
   });
 
+  describe('SQL injection prevention', () => {
+    beforeEach(() => {
+      process.env.DATABASE_URL = 'postgres://localhost/db';
+    });
+
+    it('blocks multi-statement injection via semicolon', async () => {
+      const result = await sqlQuery.execute({
+        query: 'SELECT 1; DROP TABLE users',
+      });
+
+      expect(result).toHaveProperty('error');
+      expect((result as { error: string }).error).toContain('Only SELECT queries');
+    });
+
+    it('blocks SELECT with embedded DROP', async () => {
+      const result = await sqlQuery.execute({
+        query: "SELECT * FROM users WHERE name = 'x' UNION SELECT 1; DROP TABLE users--",
+      });
+
+      expect(result).toHaveProperty('error');
+    });
+
+    it('blocks SELECT with INSERT keyword', async () => {
+      const result = await sqlQuery.execute({
+        query: "SELECT * FROM users WHERE id = 1 UNION INSERT INTO admin VALUES ('hacked')",
+      });
+
+      expect(result).toHaveProperty('error');
+    });
+
+    it('blocks SELECT with TRUNCATE', async () => {
+      const result = await sqlQuery.execute({
+        query: 'SELECT 1; TRUNCATE TABLE users',
+      });
+
+      expect(result).toHaveProperty('error');
+    });
+
+    it('allows SELECT with string containing dangerous keywords', async () => {
+      const { Client } = await import('pg');
+      const mockInstance = new Client();
+      (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({
+        rows: [{ name: "Drop it like it's hot" }],
+      });
+
+      const result = await sqlQuery.execute({
+        query: "SELECT * FROM songs WHERE title = 'DROP TABLE beats'",
+      });
+
+      expect(result).not.toHaveProperty('error');
+    });
+
+    it('blocks GRANT statement', async () => {
+      const result = await sqlQuery.execute({
+        query: 'GRANT ALL ON users TO attacker',
+      });
+
+      expect(result).toHaveProperty('error');
+    });
+
+    it('blocks ALTER TABLE', async () => {
+      const result = await sqlQuery.execute({
+        query: 'ALTER TABLE users ADD COLUMN backdoor TEXT',
+      });
+
+      expect(result).toHaveProperty('error');
+    });
+  });
+
   describe('database detection', () => {
     it('detects postgres from postgres:// URL', async () => {
       const { Client } = await import('pg');

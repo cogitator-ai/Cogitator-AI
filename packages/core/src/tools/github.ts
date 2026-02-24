@@ -150,7 +150,7 @@ async function executeAction(
   } = params;
 
   const queryParams = new URLSearchParams();
-  if (state && state !== 'all') queryParams.set('state', state);
+  if (state) queryParams.set('state', state);
   if (perPage) queryParams.set('per_page', perPage.toString());
   if (page) queryParams.set('page', page.toString());
 
@@ -336,9 +336,11 @@ async function executeAction(
     }
 
     case 'list_commits': {
-      const refParam = ref ? `&sha=${ref}` : '';
+      if (ref) queryParams.set('sha', ref);
+      const commitQs = queryParams.toString();
+      const commitQueryString = commitQs ? `?${commitQs}` : '';
       const data = (await githubFetch(
-        `/repos/${owner}/${repo}/commits${queryString}${refParam}`,
+        `/repos/${owner}/${repo}/commits${commitQueryString}`,
         token
       )) as CommitInfo[];
       return data.map((c) => ({

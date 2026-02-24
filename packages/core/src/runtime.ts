@@ -371,7 +371,11 @@ export class Cogitator {
           );
         }
 
-        if (response.finishReason === 'tool_calls' && response.toolCalls) {
+        if (
+          response.finishReason === 'tool_calls' &&
+          response.toolCalls &&
+          response.toolCalls.length > 0
+        ) {
           const toolCalls = response.toolCalls;
 
           for (const toolCall of toolCalls) {
@@ -781,6 +785,14 @@ export class Cogitator {
    */
   get memory(): MemoryAdapter | undefined {
     return this.state.memoryAdapter;
+  }
+
+  getLLMBackend(modelString: string, explicitProvider?: string): LLMBackend {
+    return this.getBackend(modelString, explicitProvider);
+  }
+
+  get reflectionEngine() {
+    return this.state.reflectionEngine;
   }
 
   /**

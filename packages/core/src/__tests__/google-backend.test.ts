@@ -69,8 +69,9 @@ describe('GoogleBackend', () => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const [url, options] = mockFetch.mock.calls[0] as [string, RequestInit];
       expect(url).toContain('gemini-2.5-flash:generateContent');
-      expect(url).toContain('key=test-api-key');
+      expect(url).not.toContain('key=');
       expect(options.method).toBe('POST');
+      expect((options.headers as Record<string, string>)['x-goog-api-key']).toBe('test-api-key');
 
       const body = JSON.parse(options.body as string);
       expect(body.systemInstruction).toBeDefined();

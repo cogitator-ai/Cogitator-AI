@@ -258,6 +258,55 @@ describe('MetricEvaluator', () => {
       expect(exactMatch(noMatchTrace, 'Paris').passed).toBe(false);
     });
 
+    it('should evaluate exact match with fieldPath on JSON output', () => {
+      const metric = createExactMatchMetric('result.answer');
+      const trace = createMockTrace({
+        output: JSON.stringify({ result: { answer: 'Paris' } }),
+      });
+
+      const result = metric(trace, 'Paris');
+      expect(result.value).toBe(1);
+      expect(result.passed).toBe(true);
+    });
+
+    it('should evaluate exact match with fieldPath — mismatch', () => {
+      const metric = createExactMatchMetric('result.answer');
+      const trace = createMockTrace({
+        output: JSON.stringify({ result: { answer: 'London' } }),
+      });
+
+      const result = metric(trace, 'Paris');
+      expect(result.value).toBe(0);
+      expect(result.passed).toBe(false);
+    });
+
+    it('should handle missing fieldPath gracefully', () => {
+      const metric = createExactMatchMetric('nonexistent.path');
+      const trace = createMockTrace({
+        output: JSON.stringify({ data: 'hello' }),
+      });
+
+      const result = metric(trace, 'hello');
+      expect(result.value).toBe(0);
+    });
+
+    it('should handle non-JSON output with fieldPath', () => {
+      const metric = createExactMatchMetric('field');
+      const trace = createMockTrace({ output: 'plain text' });
+
+      const result = metric(trace, 'plain text');
+      expect(result.value).toBe(1);
+    });
+
+    it('should return value=1 when no expected value provided', () => {
+      const metric = createExactMatchMetric('field');
+      const trace = createMockTrace({ output: 'anything' });
+
+      const result = metric(trace);
+      expect(result.value).toBe(1);
+      expect(result.passed).toBe(true);
+    });
+
     it('should evaluate contains metric', () => {
       const containsMetric = createContainsMetric(['Paris', 'France']);
 

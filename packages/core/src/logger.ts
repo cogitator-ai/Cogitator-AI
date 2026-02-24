@@ -66,7 +66,8 @@ export class Logger {
   private context: LogContext;
 
   constructor(options: LoggerOptions = {}, context: LogContext = {}) {
-    this.level = LOG_LEVELS[options.level ?? 'info'];
+    const level = options.level ?? 'info';
+    this.level = LOG_LEVELS[level] ?? LOG_LEVELS.info;
     this.format = options.format ?? 'pretty';
     this.output = options.output;
     this.context = context;
@@ -137,9 +138,14 @@ let defaultLogger: Logger | null = null;
 /**
  * Get or create the default logger
  */
+const VALID_LOG_LEVELS = new Set<string>(['debug', 'info', 'warn', 'error']);
+
 export function getLogger(): Logger {
+  const envLevel = process.env.LOG_LEVEL;
+  const level: LogLevel =
+    envLevel && VALID_LOG_LEVELS.has(envLevel) ? (envLevel as LogLevel) : 'info';
   defaultLogger ??= new Logger({
-    level: (process.env.LOG_LEVEL as LogLevel | undefined) ?? 'info',
+    level,
     format: process.env.NODE_ENV === 'production' ? 'json' : 'pretty',
   });
   return defaultLogger;

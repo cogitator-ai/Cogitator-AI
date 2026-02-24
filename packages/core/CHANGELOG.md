@@ -1,5 +1,37 @@
 # @cogitator-ai/core
 
+## 0.18.1
+
+### Patch Changes
+
+- fix(core): audit — 37 bugs & security fixes, +78 tests
+  - Fix runtime infinite loop on empty toolCalls
+  - Fix multimodal content corruption in message builder
+  - Fix empty choices crash in OpenAI/Azure backends
+  - Fix temperature=0 / maxTokens=0 ignored in Bedrock
+  - Fix streaming JSON parse in Ollama
+  - Move Google API key from URL to header
+  - Fix LOG_LEVEL validation, tool executor using raw args
+  - Fix web-search, github, calculator edge cases
+  - Fix fallback crash on empty providers
+  - Fix SQLite readonly mode, detection
+  - Fix constitutional prompts content handling
+  - Fix unsafe casts in rollback manager, thought tree
+  - Fix metrics fieldPath drilling (nested paths broken)
+  - Fix auto-optimizer using stale test reference
+  - Fix causal reasoner wrong agentId extraction
+  - Fix langfuse integration (generations/spans non-functional)
+  - Fix Google image_url data URI mapping
+  - Remove dead code (pendingToolResults, audio transcription)
+  - Fix patterns.ts duplicate match indexing
+  - Security: SQL injection prevention in sql-query + postgres-trace-store
+  - Security: ReDoS protection in regex tools
+  - Security: prompt injection fail-closed, allowlist exact-match
+  - Security: second-order injection escape in LLM classifier
+  - Add public getLLMBackend() and reflectionEngine to Cogitator
+  - Add getTest(id) to ABTestingFramework
+  - Add 78 new unit tests (rollback, ab-testing, langfuse, metrics, security)
+
 ## 0.18.0
 
 ### Minor Changes

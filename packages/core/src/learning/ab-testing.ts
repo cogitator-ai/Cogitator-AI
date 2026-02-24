@@ -136,6 +136,10 @@ export class ABTestingFramework {
     return test;
   }
 
+  async getTest(testId: string): Promise<ABTest | null> {
+    return this.store.get(testId);
+  }
+
   selectVariant(test: ABTest): ABTestVariant {
     return Math.random() < test.treatmentAllocation ? 'treatment' : 'control';
   }

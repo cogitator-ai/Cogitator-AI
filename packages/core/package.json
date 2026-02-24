@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/core",
-  "version": "0.18.0",
+  "version": "0.18.1",
   "description": "Core runtime for Cogitator AI agents",
   "type": "module",
   "main": "./dist/index.js",
@@ -44,6 +44,8 @@
   "peerDependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.0.0",
     "@cogitator-ai/sandbox": "workspace:*",
+    "better-sqlite3": "^11.0.0",
+    "langfuse": "^3.0.0",
     "pg": "^8.0.0"
   },
   "peerDependenciesMeta": {
@@ -51,6 +53,12 @@
       "optional": true
     },
     "@cogitator-ai/sandbox": {
+      "optional": true
+    },
+    "better-sqlite3": {
+      "optional": true
+    },
+    "langfuse": {
       "optional": true
     },
     "pg": {

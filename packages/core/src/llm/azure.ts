@@ -19,7 +19,7 @@ import type {
 } from '@cogitator-ai/types';
 import { ErrorCode, CogitatorError } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
-import { LLMError, type LLMErrorContext } from './errors';
+import { LLMError, llmInvalidResponse, type LLMErrorContext } from './errors';
 
 interface AzureOpenAIConfig {
   endpoint: string;
@@ -79,6 +79,9 @@ export class AzureOpenAIBackend extends BaseLLMBackend {
     }
 
     const choice = response.choices[0];
+    if (!choice) {
+      throw llmInvalidResponse(ctx, 'No choices in Azure OpenAI response');
+    }
     const message = choice.message;
 
     const toolCalls: ToolCall[] | undefined = message.tool_calls

@@ -429,9 +429,7 @@ export class ThoughtTreeExecutor {
   }
 
   private async getLLMBackend(agent: Agent): Promise<LLMBackend> {
-    return (this.cogitator as unknown as { getBackend(model: string): LLMBackend }).getBackend(
-      agent.model
-    );
+    return this.cogitator.getLLMBackend(agent.model);
   }
 
   private cachedLLM?: LLMBackend;
@@ -440,7 +438,7 @@ export class ThoughtTreeExecutor {
   }
 
   private getReflectionEngine(): ReflectionEngine | undefined {
-    return (this.cogitator as unknown as { reflectionEngine?: ReflectionEngine }).reflectionEngine;
+    return this.cogitator.reflectionEngine;
   }
 
   private createInitialStats(): ToTStats {

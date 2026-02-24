@@ -350,7 +350,24 @@ export function createExactMatchMetric(fieldPath?: string): MetricFn {
       return { name: 'exact_match', value: 1, passed: true, reasoning: 'No expected value' };
     }
 
-    const outputValue = fieldPath ? trace.output : trace.output;
+    let outputValue: unknown = trace.output;
+    if (fieldPath) {
+      try {
+        let current: unknown =
+          typeof outputValue === 'string' ? JSON.parse(outputValue) : outputValue;
+        for (const key of fieldPath.split('.')) {
+          if (current != null && typeof current === 'object') {
+            current = (current as Record<string, unknown>)[key];
+          } else {
+            current = undefined;
+            break;
+          }
+        }
+        outputValue = current;
+      } catch {
+        outputValue = trace.output;
+      }
+    }
 
     const matches =
       String(outputValue).toLowerCase().trim() === String(expected).toLowerCase().trim();

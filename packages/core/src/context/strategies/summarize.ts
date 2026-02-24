@@ -2,6 +2,7 @@ import type {
   CompressionContext,
   CompressionResult,
   CompressionStrategyHandler,
+  LLMBackend,
   Message,
 } from '@cogitator-ai/types';
 import { countMessagesTokens, countTokens } from './token-utils';
@@ -111,7 +112,7 @@ export class SummarizeStrategy implements CompressionStrategyHandler {
 
   private async generateLLMSummary(
     messages: Message[],
-    backend: any,
+    backend: LLMBackend,
     model: string,
     maxTokens: number
   ): Promise<string> {

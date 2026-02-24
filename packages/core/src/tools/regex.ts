@@ -5,6 +5,36 @@
 import { z } from 'zod';
 import { tool } from '../tool';
 
+const MAX_TEXT_LENGTH = 1_000_000;
+const REGEX_TIMEOUT_MS = 5_000;
+
+function execRegexWithTimeout(
+  regex: RegExp,
+  text: string,
+  timeoutMs: number
+): { match: string; index: number; groups?: Record<string, string> }[] {
+  const matches: { match: string; index: number; groups?: Record<string, string> }[] = [];
+  const start = Date.now();
+  const isGlobal = regex.global;
+
+  if (isGlobal) {
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      matches.push({ match: match[0], index: match.index, groups: match.groups });
+      if (Date.now() - start > timeoutMs) {
+        throw new Error(`Regex execution timed out after ${timeoutMs}ms`);
+      }
+    }
+  } else {
+    const match = regex.exec(text);
+    if (match) {
+      matches.push({ match: match[0], index: match.index, groups: match.groups });
+    }
+  }
+
+  return matches;
+}
+
 const regexMatchParams = z.object({
   text: z.string().describe('The text to search in'),
   pattern: z.string().describe('Regular expression pattern'),
@@ -20,30 +50,13 @@ export const regexMatch = tool({
     'Find all matches of a regular expression in text. Returns an array of matches with their positions.',
   parameters: regexMatchParams,
   execute: async ({ text, pattern, flags = 'g' }) => {
+    if (text.length > MAX_TEXT_LENGTH) {
+      return { error: `Text too large (${text.length} chars). Maximum: ${MAX_TEXT_LENGTH}` };
+    }
+
     try {
       const regex = new RegExp(pattern, flags);
-      const matches: { match: string; index: number; groups?: Record<string, string> }[] = [];
-
-      if (flags.includes('g')) {
-        let match: RegExpExecArray | null;
-        while ((match = regex.exec(text)) !== null) {
-          matches.push({
-            match: match[0],
-            index: match.index,
-            groups: match.groups,
-          });
-        }
-      } else {
-        const match = regex.exec(text);
-        if (match) {
-          matches.push({
-            match: match[0],
-            index: match.index,
-            groups: match.groups,
-          });
-        }
-      }
-
+      const matches = execRegexWithTimeout(regex, text, REGEX_TIMEOUT_MS);
       return { matches, count: matches.length, pattern, flags };
     } catch (err) {
       return { error: (err as Error).message, pattern };
@@ -64,11 +77,16 @@ export const regexReplace = tool({
     'Replace matches of a regular expression in text. Use $1, $2, etc. to reference capture groups in the replacement.',
   parameters: regexReplaceParams,
   execute: async ({ text, pattern, replacement, flags = 'g' }) => {
+    if (text.length > MAX_TEXT_LENGTH) {
+      return { error: `Text too large (${text.length} chars). Maximum: ${MAX_TEXT_LENGTH}` };
+    }
+
     try {
       const regex = new RegExp(pattern, flags);
+      const countMatches = execRegexWithTimeout(regex, text, REGEX_TIMEOUT_MS);
+      regex.lastIndex = 0;
       const result = text.replace(regex, replacement);
-      const replacements = (text.match(regex) || []).length;
-      return { result, replacements, pattern, flags };
+      return { result, replacements: countMatches.length, pattern, flags };
     } catch (err) {
       return { error: (err as Error).message, pattern };
     }

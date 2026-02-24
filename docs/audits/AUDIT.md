@@ -6,11 +6,11 @@
 | ai-sdk               | —          | —            | —      |
 | cli                  | —          | —            | —      |
 | config               | 2026-02-24 | 8 fixed      | ✅     |
-| core                 | —          | —            | —      |
+| core                 | 2026-02-25 | 37 fixed     | ✅     |
 | create-cogitator-app | —          | —            | —      |
-| dashboard            | —          | —            | —      |
+| dashboard            | —          | —            | n/a    |
 | deploy               | —          | —            | —      |
-| e2e                  | —          | —            | —      |
+| e2e                  | —          | —            | n/a    |
 | evals                | —          | —            | —      |
 | express              | —          | —            | —      |
 | fastify              | —          | —            | —      |
@@ -26,11 +26,13 @@
 | redis                | —          | —            | —      |
 | sandbox              | —          | —            | —      |
 | self-modifying       | —          | —            | —      |
-| server-shared        | —          | —            | —      |
+| server-shared        | —          | —            | n/a    |
 | swarms               | —          | —            | —      |
-| test-utils           | —          | —            | —      |
+| test-utils           | —          | —            | n/a    |
 | types                | —          | —            | —      |
 | voice                | —          | —            | —      |
 | wasm-tools           | —          | —            | —      |
 | worker               | —          | —            | —      |
 | workflows            | —          | —            | —      |
+
+**Status:** ✅ = clean, ⚠️ = has issues needing attention, — = not audited, n/a = internal package (no audit needed)

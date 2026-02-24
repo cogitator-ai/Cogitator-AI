@@ -67,6 +67,36 @@ describe('regexMatch tool', () => {
   });
 });
 
+describe('regexMatch - security', () => {
+  it('rejects text exceeding max length', async () => {
+    const hugeText = 'a'.repeat(1_000_001);
+    const result = await regexMatch.execute({ text: hugeText, pattern: 'a' }, mockContext);
+    expect(result).toHaveProperty('error');
+    expect((result as { error: string }).error).toContain('too large');
+  });
+
+  it('accepts text at max length boundary', async () => {
+    const maxText = 'a'.repeat(1_000_000);
+    const result = await regexMatch.execute(
+      { text: maxText, pattern: 'a', flags: '' },
+      mockContext
+    );
+    expect(result).not.toHaveProperty('error');
+  });
+});
+
+describe('regexReplace - security', () => {
+  it('rejects text exceeding max length', async () => {
+    const hugeText = 'a'.repeat(1_000_001);
+    const result = await regexReplace.execute(
+      { text: hugeText, pattern: 'a', replacement: 'b' },
+      mockContext
+    );
+    expect(result).toHaveProperty('error');
+    expect((result as { error: string }).error).toContain('too large');
+  });
+});
+
 describe('regexReplace tool', () => {
   it('replaces all matches by default', async () => {
     const result = await regexReplace.execute(

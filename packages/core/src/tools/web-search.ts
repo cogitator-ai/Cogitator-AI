@@ -149,7 +149,7 @@ async function searchSerper(
   return {
     query,
     provider: 'serper',
-    results: data.organic.map((r) => ({
+    results: (data.organic ?? []).map((r) => ({
       title: r.title,
       url: r.link,
       snippet: r.snippet,

@@ -2,6 +2,7 @@ import type {
   CompressionContext,
   CompressionResult,
   CompressionStrategyHandler,
+  LLMBackend,
   Message,
 } from '@cogitator-ai/types';
 import { countMessagesTokens, countTokens } from './token-utils';
@@ -98,7 +99,11 @@ export class SlidingWindowStrategy implements CompressionStrategyHandler {
     };
   }
 
-  private async generateSummary(messages: Message[], backend: any, model: string): Promise<string> {
+  private async generateSummary(
+    messages: Message[],
+    backend: LLMBackend,
+    model: string
+  ): Promise<string> {
     const conversationText = messages
       .map((m) => {
         const content = typeof m.content === 'string' ? m.content : '[complex content]';

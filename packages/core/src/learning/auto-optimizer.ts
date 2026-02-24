@@ -302,7 +302,7 @@ export class AutoOptimizer {
     if (outcome.winner === 'treatment') {
       activeRun.status = 'deploying';
 
-      const test = await this.abTesting.getActiveTest(agentId);
+      const test = await this.abTesting.getTest(testId);
       if (test) {
         const newVersion = await this.rollbackManager.deployVersion(
           agentId,

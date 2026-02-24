@@ -33,7 +33,13 @@ export class PostgresTraceStore implements CombinedPersistentStore {
 
   constructor(config: PostgresTraceStoreConfig) {
     this.config = config;
-    this.schema = config.schema ?? 'cogitator';
+    const schema = config.schema ?? 'cogitator';
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(schema)) {
+      throw new Error(
+        `Invalid schema name: "${schema}". Must be a valid SQL identifier (alphanumeric and underscores only).`
+      );
+    }
+    this.schema = schema;
   }
 
   async connect(): Promise<void> {

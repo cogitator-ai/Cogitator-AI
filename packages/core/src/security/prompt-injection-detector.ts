@@ -98,13 +98,8 @@ export class PromptInjectionDetector {
   }
 
   private isAllowlisted(input: string): boolean {
-    const lowered = input.toLowerCase();
-    for (const phrase of this.allowlistSet) {
-      if (lowered.includes(phrase)) {
-        return true;
-      }
-    }
-    return false;
+    const lowered = input.toLowerCase().trim();
+    return this.allowlistSet.has(lowered);
   }
 
   addPattern(pattern: RegExp): void {

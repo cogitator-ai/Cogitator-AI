@@ -178,7 +178,12 @@ export class OllamaBackend extends BaseLLMBackend {
 
       for (const line of lines) {
         if (!line.trim()) continue;
-        const data = JSON.parse(line) as OllamaChatResponse;
+        let data: OllamaChatResponse;
+        try {
+          data = JSON.parse(line) as OllamaChatResponse;
+        } catch {
+          continue;
+        }
 
         const chunk: ChatStreamChunk = {
           id,

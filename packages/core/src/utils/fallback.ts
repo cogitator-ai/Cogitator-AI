@@ -107,6 +107,9 @@ export function createLLMFallbackExecutor(
     request: (provider: string, model: string) => Promise<T>,
     onFallback?: (from: string, to: string, error: Error) => void
   ): Promise<T> {
+    if (config.providers.length === 0) {
+      throw new Error('At least one provider is required for fallback executor');
+    }
     const [primary, ...fallbacks] = config.providers;
 
     return withFallback({

@@ -11,8 +11,8 @@ export interface RollbackManagerConfig {
 
 export interface RollbackResult {
   success: boolean;
-  previousVersion: InstructionVersion;
-  newVersion: InstructionVersion;
+  previousVersion: InstructionVersion | null;
+  newVersion: InstructionVersion | null;
   message: string;
 }
 
@@ -80,8 +80,8 @@ export class RollbackManager {
     if (!current) {
       return {
         success: false,
-        previousVersion: null as unknown as InstructionVersion,
-        newVersion: null as unknown as InstructionVersion,
+        previousVersion: null,
+        newVersion: null,
         message: 'No current version found',
       };
     }
@@ -90,7 +90,7 @@ export class RollbackManager {
       return {
         success: false,
         previousVersion: current,
-        newVersion: null as unknown as InstructionVersion,
+        newVersion: null,
         message: `Target version ${targetVersionId} not found`,
       };
     }
@@ -99,7 +99,7 @@ export class RollbackManager {
       return {
         success: false,
         previousVersion: current,
-        newVersion: null as unknown as InstructionVersion,
+        newVersion: null,
         message: 'Target version belongs to a different agent',
       };
     }
@@ -125,8 +125,8 @@ export class RollbackManager {
     if (history.length < 2) {
       return {
         success: false,
-        previousVersion: history[0] || (null as unknown as InstructionVersion),
-        newVersion: null as unknown as InstructionVersion,
+        previousVersion: history[0] ?? null,
+        newVersion: null,
         message: 'No previous version available for rollback',
       };
     }

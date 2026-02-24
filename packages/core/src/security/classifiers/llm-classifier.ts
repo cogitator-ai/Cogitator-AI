@@ -55,7 +55,8 @@ export class LLMInjectionClassifier implements InjectionClassifier {
   }
 
   async analyze(input: string, config: PromptInjectionConfig): Promise<InjectionThreat[]> {
-    const prompt = ANALYSIS_PROMPT.replace('{INPUT}', input);
+    const sanitized = input.replace(/"""/g, '\\"\\"\\"');
+    const prompt = ANALYSIS_PROMPT.replace('{INPUT}', sanitized);
     const model = config.llmModel ?? 'gpt-4o-mini';
 
     try {
@@ -69,7 +70,14 @@ export class LLMInjectionClassifier implements InjectionClassifier {
       const parsed = this.parseResponse(response.content);
       return this.filterByConfig(parsed, config);
     } catch {
-      return [];
+      return [
+        {
+          type: 'custom' as InjectionThreatType,
+          confidence: 1.0,
+          pattern: 'llm_analysis_failed',
+          snippet: 'Security analysis unavailable — treating as potential threat',
+        },
+      ];
     }
   }
 
