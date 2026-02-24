@@ -111,9 +111,19 @@ export class DockerProvider implements DeployProvider {
     };
   }
 
-  async status(_config: DeployConfig, _projectDir: string): Promise<DeployStatus> {
-    return { running: false };
+  async status(_config: DeployConfig, projectDir: string): Promise<DeployStatus> {
+    const composePath = join(projectDir, '.cogitator', 'docker-compose.prod.yml');
+    if (!existsSync(composePath)) return { running: false };
+    const result = exec(`docker-compose -f ${composePath} ps --services --filter status=running`, {
+      cwd: projectDir,
+    });
+    return { running: result.success && result.output.trim().length > 0 };
   }
 
-  async destroy(_config: DeployConfig, _projectDir: string): Promise<void> {}
+  async destroy(_config: DeployConfig, projectDir: string): Promise<void> {
+    const composePath = join(projectDir, '.cogitator', 'docker-compose.prod.yml');
+    if (existsSync(composePath)) {
+      exec(`docker-compose -f ${composePath} down -v`, { cwd: projectDir });
+    }
+  }
 }

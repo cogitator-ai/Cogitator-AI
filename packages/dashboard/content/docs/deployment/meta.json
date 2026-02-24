@@ -1,4 +1,4 @@
 {
   "title": "Deployment",
-  "pages": ["docker", "worker-queues", "sandbox", "observability"]
+  "pages": ["deploy-package", "docker", "worker-queues", "sandbox", "observability"]
 }

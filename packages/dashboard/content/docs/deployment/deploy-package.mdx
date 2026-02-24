@@ -1,0 +1,145 @@
+---
+title: Deploy Package
+description: One-command deployment for Cogitator agents — Docker and Fly.io targets with auto-detection.
+---
+
+## Overview
+
+The `@cogitator-ai/deploy` package builds, packages, and deploys your agent application. It auto-detects your server adapter, required services, and LLM secrets from your project config.
+
+```bash
+pnpm add @cogitator-ai/deploy
+```
+
+## CLI
+
+```bash
+# Deploy to Docker (default)
+cogitator deploy
+
+# Deploy to Fly.io
+cogitator deploy --target fly
+
+# Dry run — preview without executing
+cogitator deploy --dry-run
+
+# Check status
+cogitator deploy status
+
+# Tear down
+cogitator deploy destroy
+```
+
+## Programmatic API
+
+```typescript
+import { Deployer } from '@cogitator-ai/deploy';
+
+const deployer = new Deployer();
+
+// Preview — run preflight checks only
+const plan = await deployer.plan({
+  projectDir: process.cwd(),
+  target: 'docker',
+  noPush: true,
+});
+
+console.log(plan.preflight.checks);
+
+// Deploy
+const result = await deployer.deploy({
+  projectDir: process.cwd(),
+  target: 'fly',
+});
+
+console.log(result.url); // https://my-app.fly.dev
+```
+
+## Configuration
+
+Add a `deploy` section to `cogitator.yml`:
+
+```yaml
+deploy:
+  target: fly
+  port: 3000
+  region: iad
+  image: my-agent
+  registry: ghcr.io/myorg/myapp
+  services:
+    redis: true
+    postgres: true
+  secrets:
+    - OPENAI_API_KEY
+    - DATABASE_URL
+  resources:
+    memory: 512mb
+    cpu: 1
+```
+
+## Auto-Detection
+
+The deploy engine reads your project to determine what it needs:
+
+| What             | Source                        | Example                            |
+| ---------------- | ----------------------------- | ---------------------------------- |
+| Server adapter   | `package.json` dependencies   | `@cogitator-ai/express` → Express  |
+| Services         | `cogitator.yml` memory config | `adapter: redis` → Redis service   |
+| Required secrets | LLM provider in config        | `openai` → `OPENAI_API_KEY`        |
+| Ollama Cloud     | Model suffix                  | `:cloud` → `OLLAMA_API_KEY`        |
+
+## Deploy Targets
+
+### Docker
+
+Generates a `Dockerfile` and `docker-compose.prod.yml` in `.cogitator/`:
+
+```bash
+cogitator deploy --target docker          # Build image only
+cogitator deploy --target docker --push   # Build + push to registry
+```
+
+TypeScript projects get a multi-stage build (builder → runtime). JavaScript projects get a single-stage build.
+
+### Fly.io
+
+Generates `fly.toml` and deploys via `flyctl`:
+
+```bash
+cogitator deploy --target fly --region lhr
+```
+
+Requires `flyctl` installed and authenticated (`flyctl auth login`).
+
+## Architecture
+
+```
+ProjectAnalyzer  →  ArtifactGenerator  →  DeployProvider  →  Result
+(detect config)     (Dockerfile, etc.)     (docker/fly)       (url, status)
+```
+
+- **ProjectAnalyzer** — reads `package.json` and `cogitator.yml` to detect server, services, secrets
+- **ArtifactGenerator** — generates Dockerfile, docker-compose, fly.toml from templates
+- **DeployProvider** — executes preflight checks, builds, deploys (Docker or Fly.io)
+- **Deployer** — orchestrator tying it all together
+
+## Custom Providers
+
+Register additional deploy targets by implementing `DeployProvider`:
+
+```typescript
+import type { DeployProvider } from '@cogitator-ai/deploy';
+
+class KubernetesProvider implements DeployProvider {
+  readonly name = 'kubernetes';
+
+  async preflight(config, projectDir) { /* ... */ }
+  async generate(config, projectDir) { /* ... */ }
+  async deploy(config, artifacts, projectDir) { /* ... */ }
+  async status(config, projectDir) { /* ... */ }
+  async destroy(config, projectDir) { /* ... */ }
+}
+
+const deployer = new Deployer();
+deployer.registerProvider(new KubernetesProvider());
+```

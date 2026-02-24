@@ -36,11 +36,10 @@ import { Deployer } from '@cogitator-ai/deploy';
 
 const deployer = new Deployer();
 
-// Plan deployment
+// Plan deployment (preflight checks, no execution)
 const plan = await deployer.plan({
   projectDir: process.cwd(),
   target: 'docker',
-  dryRun: false,
   noPush: true,
 });
 

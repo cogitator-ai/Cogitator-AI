@@ -87,7 +87,7 @@ const cog = new Cogitator({
 // 2. Create an agent
 const assistant = new Agent({
   name: 'assistant',
-  model: 'llama3.1:8b', // or 'gpt-4o', 'claude-sonnet-4-5'
+  model: 'llama3.1:8b', // or 'openai/gpt-4.1', 'anthropic/claude-sonnet-4-5'
   instructions: `You are a helpful assistant. Be concise and friendly.`,
 });
 
@@ -208,7 +208,7 @@ import {
 
 const agent = new Agent({
   name: 'power-user',
-  model: 'gpt-4.1',
+  model: 'openai/gpt-4.1',
   instructions: 'You are a powerful assistant with many tools.',
   tools: [calculator, datetime, fileRead, httpRequest],
 });
@@ -216,7 +216,7 @@ const agent = new Agent({
 // Or use all built-in tools
 const superAgent = new Agent({
   name: 'super-agent',
-  model: 'gpt-4.1',
+  model: 'openai/gpt-4.1',
   instructions: 'You have access to all tools.',
   tools: builtinTools,
 });
@@ -268,11 +268,14 @@ await cog.close();
 
 ### Memory Adapters
 
-| Adapter    | Use Case              | Persistence     |
-| ---------- | --------------------- | --------------- |
-| `memory`   | Development, testing  | None (RAM only) |
-| `redis`    | Production short-term | Session-based   |
-| `postgres` | Production long-term  | Permanent       |
+| Adapter    | Use Case                        | Persistence          |
+| ---------- | ------------------------------- | -------------------- |
+| `memory`   | Development, testing            | None (RAM only)      |
+| `redis`    | Production short-term           | Session-based        |
+| `postgres` | Production long-term + pgvector | Permanent            |
+| `sqlite`   | Embedded / single-file storage  | Permanent            |
+| `mongodb`  | Document-oriented workloads     | Permanent            |
+| `qdrant`   | Native vector search            | Permanent (external) |
 
 For production with semantic search, use Postgres with pgvector:
 
@@ -447,7 +450,7 @@ Load it automatically:
 import { Cogitator } from '@cogitator-ai/core';
 import { loadConfig } from '@cogitator-ai/config';
 
-const config = await loadConfig(); // Loads cogitator.yml
+const config = loadConfig(); // Loads cogitator.yml (synchronous)
 const cog = new Cogitator(config);
 ```
 
@@ -474,7 +477,7 @@ This starts:
 Pull an Ollama model:
 
 ```bash
-ollama pull llama3.1:8b
+ollama pull llama3.2:3b
 ```
 
 ---
@@ -483,18 +486,22 @@ ollama pull llama3.1:8b
 
 Check out the `examples/` directory for more:
 
-| Example                   | Description                    |
-| ------------------------- | ------------------------------ |
-| `basic-agent.ts`          | Simple agent with tools        |
-| `research-agent.ts`       | Web search and summarization   |
-| `code-assistant.ts`       | Code generation and execution  |
-| `dev-team-swarm.ts`       | Multi-agent development team   |
-| `workflow-code-review.ts` | DAG-based code review workflow |
+| Example                                    | Description                             |
+| ------------------------------------------ | --------------------------------------- |
+| `examples/core/01-basic-agent.ts`          | Custom tools, streaming, usage tracking |
+| `examples/core/02-built-in-tools.ts`       | All 26 built-in tools in action         |
+| `examples/core/04-context-manager.ts`      | Long conversation context management    |
+| `examples/core/06-reflection.ts`           | Self-improving agent with reflection    |
+| `examples/core/09-cost-routing.ts`         | Cost-aware model routing                |
+| `examples/swarms/01-debate-swarm.ts`       | Multi-agent debate swarm                |
+| `examples/swarms/03-hierarchical-swarm.ts` | Hierarchical multi-agent team           |
+| `examples/workflows/01-basic-workflow.ts`  | DAG-based workflow orchestration        |
+| `examples/workflows/02-human-in-loop.ts`   | Workflow with human approval steps      |
 
 Run an example:
 
 ```bash
-npx tsx examples/basic-agent.ts
+npx tsx examples/core/01-basic-agent.ts
 ```
 
 ---
@@ -531,13 +538,13 @@ ollama serve
 ### Model Not Found
 
 ```
-Error: model 'llama3.1:8b' not found
+Error: model 'llama3.2:3b' not found
 ```
 
 Pull the model first:
 
 ```bash
-ollama pull llama3.1:8b
+ollama pull llama3.2:3b
 ```
 
 ### Docker Services Not Starting

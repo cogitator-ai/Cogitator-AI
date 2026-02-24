@@ -1,5 +1,11 @@
 # @cogitator-ai/deploy
 
+## 0.1.2
+
+### Patch Changes
+
+- Fix 3 bugs: fly.toml memory parsing ("1gb" -> 1mb), docker status/destroy stubs, fly secrets shell injection
+
 ## 0.1.1
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/e2e",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "End-to-end tests for Cogitator AI",
   "type": "module",
@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@cogitator-ai/a2a": "workspace:*",
+    "@cogitator-ai/deploy": "workspace:*",
     "@cogitator-ai/ai-sdk": "workspace:*",
     "@cogitator-ai/cli": "workspace:*",
     "@cogitator-ai/config": "workspace:*",

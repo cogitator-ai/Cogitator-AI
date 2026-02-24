@@ -393,3 +393,65 @@ All actual table names have the `cogitator_` prefix (defined in `docker/postgres
 | No `/health/db` or `/health/redis` endpoints                             | All packages                                           | ✅ Confirmed absent                              |
 | BullMQ retry on job failure                                              | `packages/worker/src/queue.ts` (default `attempts: 3`) | ✅ Correct                                       |
 | Extism package: `@extism/extism`                                         | `packages/sandbox/package.json`                        | ✅ Correct package name                          |
+
+---
+
+## docs/GETTING_STARTED.md
+
+**Status:** Complete
+**Date:** 2026-02-25
+**Severity:** Low-Medium — 6 correctness issues, mostly model names and API surface gaps
+
+### Issues Found (6 total)
+
+#### Critical (1) — Wrong async/sync usage
+
+| #   | Location                        | Issue                                                                                                  | Fix                                                      |
+| --- | ------------------------------- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------- |
+| 1   | Configuration File / loadConfig | `const config = await loadConfig()` — `loadConfig` is synchronous, `await` is incorrect and misleading | Changed to `const config = loadConfig(); // synchronous` |
+
+#### Medium (3) — Incorrect model format / missing provider prefix
+
+| #   | Location                        | Issue                                                                                                                                      | Fix                                                                |
+| --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| 2   | Built-in Tools / agent examples | `model: 'gpt-4.1'` with `new Cogitator()` (no config) — default provider is `'ollama'`, so bare `gpt-4.1` would be sent to Ollama and fail | Changed to `'openai/gpt-4.1'` in both Agent examples               |
+| 3   | Create Your First Agent         | Comment `// or 'gpt-4o', 'claude-sonnet-4-5'` — without provider prefix these would be sent to the default `ollama` provider               | Changed to `// or 'openai/gpt-4.1', 'anthropic/claude-sonnet-4-5'` |
+| 4   | Docker Services / Pull model    | `ollama pull llama3.1:8b` — docker-compose default model is `llama3.2:3b` per docker-compose.yml                                           | Changed to `llama3.2:3b`; troubleshooting example updated to match |
+
+#### Minor (2) — Missing content / outdated examples table
+
+| #   | Location              | Issue                                                                                                                                                                                                                                                         | Fix                                                                                                                                      |
+| --- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| 5   | Memory Adapters table | Only listed 3 adapters (memory, redis, postgres) — schema supports 6: memory, redis, postgres, sqlite, mongodb, qdrant                                                                                                                                        | Added sqlite, mongodb, qdrant rows to table                                                                                              |
+| 6   | Examples table        | Listed `basic-agent.ts`, `research-agent.ts`, `code-assistant.ts`, `dev-team-swarm.ts`, `workflow-code-review.ts` — none of these exist at the paths shown; actual examples are in `examples/core/`, `examples/swarms/`, `examples/workflows/` subdirectories | Rewrote table with correct paths and descriptions; fixed run command from `examples/basic-agent.ts` to `examples/core/01-basic-agent.ts` |
+
+### Source of Truth Verified
+
+| Claim                                                 | Verified Against                                      | Result                                         |
+| ----------------------------------------------------- | ----------------------------------------------------- | ---------------------------------------------- |
+| `Cogitator`, `Agent`, `tool()` exports                | `packages/core/src/index.ts`                          | ✅ All exported                                |
+| `loadConfig` from `@cogitator-ai/config`              | `packages/config/src/index.ts`                        | ✅ Exported; synchronous (no Promise return)   |
+| `result.usage.totalTokens` field                      | `packages/types/src/runtime.ts` RunResult interface   | ✅ Exists                                      |
+| `result.toolCalls` field                              | `packages/types/src/runtime.ts` RunResult interface   | ✅ Exists as `readonly ToolCall[]`             |
+| `cog.close()` method                                  | `packages/core/src/runtime.ts` line 815               | ✅ Exists as `async close(): Promise<void>`    |
+| Built-in tools count (26)                             | `packages/core/src/tools/index.ts` builtinTools array | ✅ 26 items                                    |
+| All 26 tool names in import block                     | `packages/core/src/tools/index.ts` + index.ts         | ✅ All exported                                |
+| `stream: true` + `onToken` in RunOptions              | `packages/types/src/runtime.ts` RunOptions interface  | ✅ Both exist                                  |
+| `threadId` in RunOptions                              | `packages/types/src/runtime.ts` RunOptions interface  | ✅ Exists                                      |
+| `memory.adapter: 'memory'`                            | `packages/config/src/schema.ts` MemoryProviderSchema  | ✅ 'memory' is a valid enum value              |
+| `memory.adapter: 'redis'` / `'postgres'`              | `packages/config/src/schema.ts` MemoryProviderSchema  | ✅ Both valid                                  |
+| `memory.adapter: 'sqlite'` / `'mongodb'` / `'qdrant'` | `packages/config/src/schema.ts` MemoryProviderSchema  | ✅ All valid (were missing from doc)           |
+| `memory.postgres.connectionString`                    | `packages/config/src/schema.ts` MemoryConfigSchema    | ✅ Field exists                                |
+| `memory.embedding.provider: 'ollama'`                 | `packages/config/src/schema.ts` EmbeddingConfigSchema | ✅ Valid discriminated union value             |
+| `logging.level` / `logging.format: 'pretty'`          | `packages/config/src/schema.ts` LoggingConfigSchema   | ✅ Both valid                                  |
+| `defaultProvider`, `defaultModel` in LLMConfig        | `packages/config/src/schema.ts` LLMConfigSchema       | ✅ Both fields exist                           |
+| `cogitator init <name>` CLI command                   | `packages/cli/src/commands/init.ts`                   | ✅ Command exists                              |
+| `cogitator up` CLI command                            | `packages/cli/src/index.ts`                           | ✅ upCommand registered                        |
+| `claude-sonnet-4-5-20250929` model                    | `packages/models/src/providers/anthropic.ts`          | ✅ Exists with alias `claude-sonnet-4-5`       |
+| `gpt-4o` model                                        | `packages/models/src/providers/openai.ts`             | ✅ Exists                                      |
+| `gpt-4.1` model                                       | `packages/models/src/providers/openai.ts`             | ✅ Exists as alias for `gpt-4.1-2025-04-14`    |
+| `o3` model                                            | `packages/models/src/providers/openai.ts`             | ✅ Exists as alias for `o3-2025-04-16`         |
+| Default provider fallback = `'ollama'`                | `packages/core/src/runtime.ts` getBackend()           | ✅ Fallback is `'ollama'` when none configured |
+| `examples/core/01-basic-agent.ts` exists              | Filesystem                                            | ✅ Correct path                                |
+| `examples/swarms/01-debate-swarm.ts` exists           | Filesystem                                            | ✅ Correct path                                |
+| `examples/workflows/01-basic-workflow.ts` exists      | Filesystem                                            | ✅ Correct path                                |

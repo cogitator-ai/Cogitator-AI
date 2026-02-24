@@ -100,11 +100,12 @@ export class FlyProvider implements DeployProvider {
       }
     }
 
-    for (const secret of config.secrets ?? []) {
-      const value = process.env[secret];
-      if (value) {
-        exec(`flyctl secrets set ${secret}="${value}" --app ${app}`, { cwd: projectDir });
-      }
+    const secretPairs = (config.secrets ?? [])
+      .filter((secret) => !!process.env[secret])
+      .map((secret) => `${secret}=${process.env[secret]}`)
+      .join('\n');
+    if (secretPairs) {
+      exec(`flyctl secrets import --app ${app}`, { cwd: projectDir, input: secretPairs });
     }
 
     const deployResult = exec(

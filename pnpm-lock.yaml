@@ -537,6 +537,9 @@ importers:
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@cogitator-ai/deploy':
+        specifier: workspace:*
+        version: link:../deploy
       '@cogitator-ai/evals':
         specifier: workspace:*
         version: link:../evals

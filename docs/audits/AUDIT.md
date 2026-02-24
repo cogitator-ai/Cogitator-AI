@@ -9,7 +9,7 @@
 | core                 | 2026-02-25 | 37 fixed     | ✅     |
 | create-cogitator-app | 2026-02-25 | 10+ fixed    | ✅     |
 | dashboard            | —          | —            | n/a    |
-| deploy               | —          | —            | —      |
+| deploy               | 2026-02-25 | 3 fixed      | ✅     |
 | e2e                  | —          | —            | n/a    |
 | evals                | —          | —            | —      |
 | express              | —          | —            | —      |
