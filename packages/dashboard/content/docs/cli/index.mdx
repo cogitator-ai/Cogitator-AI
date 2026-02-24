@@ -1,0 +1,140 @@
+---
+title: CLI
+description: Command-line interface for Cogitator — scaffold projects, manage Docker services, and run agents from the terminal.
+---
+
+## Installation
+
+```bash
+pnpm add -g @cogitator-ai/cli
+
+# or use with npx
+npx @cogitator-ai/cli <command>
+```
+
+## Commands
+
+### cogitator init
+
+Scaffold a new Cogitator project with all necessary files.
+
+```bash
+cogitator init <name> [--no-install]
+```
+
+Creates:
+- `package.json` with Cogitator dependencies
+- `tsconfig.json` with TypeScript configuration
+- `cogitator.yml` with default config
+- `docker-compose.yml` with Redis, PostgreSQL, and Ollama
+- `src/agent.ts` with an example agent
+
+### cogitator up / down
+
+Start or stop Docker services (Redis, PostgreSQL, Ollama).
+
+```bash
+cogitator up          # start in background (default)
+cogitator up --pull   # pull latest images first
+cogitator up --no-detach  # run in foreground
+
+cogitator down           # stop services
+cogitator down --volumes # stop and delete all data
+```
+
+### cogitator run
+
+Run an agent with a message or start an interactive REPL.
+
+```bash
+cogitator run "What is the capital of France?"
+cogitator run -m ollama/gemma3:4b "Write a haiku"
+cogitator run -m openai/gpt-4o "Analyze this..."
+cogitator run --no-stream "Hello"
+cogitator run         # interactive mode (no message)
+cogitator run -i      # force interactive mode
+```
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-c, --config <path>` | `cogitator.yml` | Config file path |
+| `-m, --model <model>` | auto-detect | Model to use |
+| `-i, --interactive` | `false` | Force interactive mode |
+| `-s, --stream` | `true` | Stream response tokens |
+
+**Model auto-detection:** checks `COGITATOR_MODEL` env var, then queries Ollama for installed models.
+
+### cogitator status
+
+Show status of all services.
+
+```bash
+cogitator status
+cogitator ps    # alias
+```
+
+### cogitator logs
+
+View logs from Docker services.
+
+```bash
+cogitator logs            # all services, last 100 lines
+cogitator logs ollama     # specific service
+cogitator logs -f         # follow in real-time
+cogitator logs -n 50 -t   # 50 lines with timestamps
+```
+
+### cogitator models
+
+List and pull Ollama models.
+
+```bash
+cogitator models                      # list installed models
+cogitator models --pull llama3.1:8b   # pull a model
+```
+
+### cogitator deploy
+
+Deploy your project to various targets.
+
+```bash
+cogitator deploy                    # deploy (shows plan first)
+cogitator deploy --dry-run          # preview plan only
+cogitator deploy --target fly       # deploy to Fly.io
+cogitator deploy status             # check deployment status
+cogitator deploy destroy            # tear down deployment
+```
+
+**Targets:** `docker`, `fly`, `railway`, `k8s`, `ssh`
+
+## Configuration
+
+The CLI reads `cogitator.yml` from your project root. You can override with:
+
+- `COGITATOR_CONFIG` env var — path to config file
+- `-c` option — explicit config path for `cogitator run`
+
+```yaml
+# cogitator.yml
+llm:
+  defaultProvider: ollama
+  providers:
+    ollama:
+      baseUrl: http://localhost:11434
+    openai:
+      apiKey: ${OPENAI_API_KEY}
+
+memory:
+  adapter: memory
+```
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `COGITATOR_CONFIG` | Path to config file |
+| `COGITATOR_MODEL` | Default model for `cogitator run` |
+| `OPENAI_API_KEY` | OpenAI API key |
+| `ANTHROPIC_API_KEY` | Anthropic API key |

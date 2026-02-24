@@ -1,5 +1,23 @@
 # @cogitator-ai/cli
 
+## 0.3.3
+
+### Patch Changes
+
+- fix(cli): exclude test files from compiled dist
+
+## 0.3.2
+
+### Patch Changes
+
+- fix(cli): audit — 5 bugs & improvements
+  - Fix: `loadConfig()` in `run.ts` now passes `configPath` for YAML config files (was ignoring user config)
+  - Fix: `printBanner()` reads version from package.json dynamically (was hardcoded as v0.1.0)
+  - Refactor: extract shared `findDockerCompose()` and `checkDocker()` to `utils/docker.ts`
+  - Fix: parent dir traversal in `findDockerCompose()` now checks both `.yml` and `.yaml`
+  - Add `vitest.config.ts` to restrict test discovery to `src/` only
+  - Add 22 new unit tests covering `docker.ts`, `models.ts`, and `run.ts` utilities
+
 ## 0.3.1
 
 ### Patch Changes

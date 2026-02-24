@@ -44,7 +44,7 @@ async function detectModel(): Promise<string | null> {
   return `ollama/${models[0]}`;
 }
 
-function findConfig(configPath: string): string | null {
+export function findConfig(configPath: string): string | null {
   const envConfig = process.env.COGITATOR_CONFIG;
   if (envConfig && existsSync(envConfig)) {
     return resolve(envConfig);

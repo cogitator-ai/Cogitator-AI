@@ -3,6 +3,7 @@
   "pages": [
     "---Getting Started---",
     "getting-started",
+    "cli",
     "---Core---",
     "core",
     "---Tools---",

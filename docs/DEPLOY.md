@@ -192,6 +192,8 @@ services:
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 10s
+      timeout: 3s
+      retries: 3
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -204,6 +206,8 @@ services:
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U cogitator']
       interval: 10s
+      timeout: 3s
+      retries: 3
 
 volumes:
   redis-data:
@@ -243,6 +247,8 @@ This generates `fly.toml` and deploys:
 ```toml
 app = "my-agent-service"
 primary_region = "iad"
+
+[build]
 
 [http_service]
   internal_port = 3000

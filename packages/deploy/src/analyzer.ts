@@ -4,7 +4,7 @@ import type {
   DeployServicesConfig,
   DeployTarget,
 } from '@cogitator-ai/types';
-import type { CogitatorConfigInput } from '@cogitator-ai/config';
+import { loadConfig } from '@cogitator-ai/config';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -47,7 +47,7 @@ export class ProjectAnalyzer {
     return undefined;
   }
 
-  detectServices(config: CogitatorConfigInput): DeployServicesConfig {
+  detectServices(config: { memory?: { adapter?: string | null } }): DeployServicesConfig {
     const adapter = config.memory?.adapter;
     return {
       redis: adapter === 'redis',
@@ -96,12 +96,28 @@ export class ProjectAnalyzer {
 
     const server = configOverrides?.server ?? this.detectServer(pkg);
     const hasTypeScript = existsSync(join(projectDir, 'tsconfig.json'));
+    const target = configOverrides?.target ?? 'docker';
+
+    let fullConfig: ReturnType<typeof loadConfig> | undefined;
+    try {
+      fullConfig = loadConfig({
+        configPath: join(projectDir, 'cogitator.yml'),
+        skipEnv: true,
+      });
+    } catch {}
+
+    const model = fullConfig?.llm?.defaultModel ?? '';
+    const services =
+      configOverrides?.services ??
+      (fullConfig ? this.detectServices(fullConfig) : { redis: false, postgres: false });
+    const secrets = configOverrides?.secrets ?? (model ? this.detectSecrets(model) : []);
+    const warnings = model ? this.getDeployWarnings(model, target) : [];
 
     return {
       server,
-      services: configOverrides?.services ?? { redis: false, postgres: false },
-      secrets: configOverrides?.secrets ?? [],
-      warnings: [],
+      services,
+      secrets,
+      warnings,
       hasTypeScript,
       deployConfig: {
         ...configOverrides,

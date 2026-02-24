@@ -18,14 +18,14 @@ interface OllamaResponse {
   models: OllamaModel[];
 }
 
-function formatSize(bytes: number): string {
+export function formatSize(bytes: number): string {
   const gb = bytes / (1024 * 1024 * 1024);
   if (gb >= 1) return `${gb.toFixed(1)} GB`;
   const mb = bytes / (1024 * 1024);
   return `${mb.toFixed(0)} MB`;
 }
 
-function formatDate(isoDate: string): string {
+export function formatDate(isoDate: string): string {
   const date = new Date(isoDate);
   const now = new Date();
   const diff = now.getTime() - date.getTime();

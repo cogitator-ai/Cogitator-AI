@@ -173,7 +173,7 @@ If no model is specified, the CLI will:
 
 1. Check `COGITATOR_MODEL` environment variable
 2. Query Ollama for available models
-3. Select from preferred models: llama3.1:8b, llama3.1:8b, gemma3:4b, gemma2:9b, mistral:7b
+3. Select from preferred models: llama3.1:8b, llama3:8b, gemma3:4b, gemma2:9b, mistral:7b
 4. Fall back to first available model
 
 **Examples:**
@@ -354,6 +354,51 @@ cogitator models
 cogitator models --pull llama3.1:8b
 cogitator models --pull gemma3:4b
 cogitator models --pull mistral:7b
+```
+
+---
+
+### cogitator deploy
+
+Deploy your Cogitator project to various targets.
+
+```bash
+cogitator deploy [action] [options]
+```
+
+**Actions:**
+
+| Action    | Description                         |
+| --------- | ----------------------------------- |
+| _(none)_  | Deploy to target (shows plan first) |
+| `status`  | Check deployment status             |
+| `destroy` | Tear down deployment                |
+
+**Options:**
+
+| Option                  | Description                                             |
+| ----------------------- | ------------------------------------------------------- |
+| `-t, --target <target>` | Deploy target: `docker`, `fly`, `railway`, `k8s`, `ssh` |
+| `-c, --config <path>`   | Config file path                                        |
+| `--registry <url>`      | Container registry URL                                  |
+| `--no-push`             | Skip pushing image to registry                          |
+| `--dry-run`             | Show deploy plan without executing                      |
+| `--region <region>`     | Deploy region                                           |
+
+**Examples:**
+
+```bash
+# Deploy with dry-run preview
+cogitator deploy --dry-run
+
+# Deploy to Fly.io
+cogitator deploy --target fly --region ord
+
+# Check deployment status
+cogitator deploy status
+
+# Tear down deployment
+cogitator deploy destroy
 ```
 
 ---

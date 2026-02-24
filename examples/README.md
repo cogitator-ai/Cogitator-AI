@@ -34,6 +34,10 @@ To switch providers, edit `_shared/setup.ts` or set env variables:
 
 ## Examples by Category
 
+### [`cli/`](./cli/) — CLI Tool
+
+Scaffold projects, manage Docker services, run agents from the terminal.
+
 ### [`core/`](./core/) — Core Runtime Features
 
 Agent creation, tools, streaming, caching, reasoning, reflection, optimization, security, and more.

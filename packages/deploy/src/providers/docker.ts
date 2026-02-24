@@ -47,6 +47,16 @@ export class DockerProvider implements DeployProvider {
       });
     }
 
+    for (const secret of config.secrets ?? []) {
+      const isSet = !!process.env[secret];
+      checks.push({
+        name: `Secret: ${secret}`,
+        passed: isSet,
+        message: isSet ? `${secret} is set` : `${secret} is not set`,
+        fix: isSet ? undefined : `Set environment variable: export ${secret}=<value>`,
+      });
+    }
+
     return {
       checks,
       passed: checks.every((c) => c.passed),
