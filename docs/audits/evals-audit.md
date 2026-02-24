@@ -4,8 +4,8 @@ Started: 2026-02-25
 
 ## Status
 
-Current step: 1/15 - Build
-Last updated: 2026-02-25 00:00
+Complete
+Last updated: 2026-02-25
 
 ## Completed Steps
 
@@ -51,3 +51,9 @@ Last updated: 2026-02-25 00:00
 15. CLAUDE.md
 
 ## Insights & Notes
+
+- Package was in good shape overall: comprehensive test coverage (278 tests), 3 E2E tests, good docs
+- Bugs were mostly in assertion correctness (regression.ts isLowerBetter inconsistency) and async hygiene (readFileSync in async function)
+- Duplicate `isLLMMetric` between eval-builder.ts and eval-suite.ts — classic copy-paste drift
+- Two unused deps (nanoid, @cogitator-ai/types) had probably never been used and slipped through initial implementation
+- noRegression "passes when all metrics missing" was a silent correctness bug that could hide regressions entirely

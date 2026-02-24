@@ -11,7 +11,7 @@
 | dashboard            | —          | —            | n/a    |
 | deploy               | 2026-02-25 | 3 fixed      | ✅     |
 | e2e                  | —          | —            | n/a    |
-| evals                | —          | —            | —      |
+| evals                | 2026-02-25 | 7 fixed      | ✅     |
 | express              | —          | —            | —      |
 | fastify              | —          | —            | —      |
 | hono                 | —          | —            | —      |
