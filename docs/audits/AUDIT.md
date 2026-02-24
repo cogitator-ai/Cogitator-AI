@@ -3,7 +3,7 @@
 | Package              | Last Audit | Issues Found | Status |
 | -------------------- | ---------- | ------------ | ------ |
 | a2a                  | 2026-02-25 | 37+ fixed    | ✅     |
-| ai-sdk               | —          | —            | —      |
+| ai-sdk               | 2026-02-25 | 8 fixed      | ✅     |
 | cli                  | —          | —            | —      |
 | config               | 2026-02-24 | 8 fixed      | ✅     |
 | core                 | 2026-02-25 | 37 fixed     | ✅     |
@@ -36,3 +36,12 @@
 | workflows            | —          | —            | —      |
 
 **Status:** ✅ = clean, ⚠️ = has issues needing attention, — = not audited, n/a = internal package (no audit needed)
+
+## Docs Audit
+
+| Doc File  | Last Audit | Issues Found | Status |
+| --------- | ---------- | ------------ | ------ |
+| AGENTS.md | 2026-02-25 | 22 fixed     | ✅     |
+| API.md    | 2026-02-25 | 60+ fixed    | ✅     |
+
+Full report: [docs-audit.md](./docs-audit.md)

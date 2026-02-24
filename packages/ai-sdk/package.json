@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/ai-sdk",
-  "version": "0.2.2",
+  "version": "0.2.5",
   "description": "Vercel AI SDK adapter for Cogitator - bidirectional compatibility",
   "type": "module",
   "exports": {
@@ -15,13 +15,13 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@ai-sdk/provider": "^1.0.0",
-    "@ai-sdk/provider-utils": "^2.0.0"
+    "@ai-sdk/provider": "^1.0.0"
   },
   "peerDependencies": {
     "@cogitator-ai/core": "workspace:*",

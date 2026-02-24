@@ -4,6 +4,7 @@ export { fromAISDKTool, toAISDKTool, convertToolsFromAISDK, convertToolsToAISDK 
 
 export type {
   CogitatorProviderOptions,
+  CogitatorProviderConfig,
   CogitatorProvider,
   AISDKModelWrapperOptions,
   CogitatorTool,

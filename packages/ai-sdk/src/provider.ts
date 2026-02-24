@@ -8,7 +8,11 @@ import type {
 } from '@ai-sdk/provider';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 import type { ToolCall } from '@cogitator-ai/types';
-import type { CogitatorProviderOptions, CogitatorProvider } from './types.js';
+import type {
+  CogitatorProviderOptions,
+  CogitatorProviderConfig,
+  CogitatorProvider,
+} from './types.js';
 
 function convertMessagesToPrompt(options: LanguageModelV1CallOptions): {
   systemPrompt: string | undefined;
@@ -40,7 +44,9 @@ function convertMessagesToPrompt(options: LanguageModelV1CallOptions): {
   return { systemPrompt, userMessage };
 }
 
-function convertToolCallsToAISDK(toolCalls: ToolCall[]): LanguageModelV1FunctionToolCall[] {
+function convertToolCallsToAISDK(
+  toolCalls: readonly ToolCall[]
+): LanguageModelV1FunctionToolCall[] {
   return toolCalls.map((tc) => ({
     toolCallType: 'function' as const,
     toolCallId: tc.id,
@@ -101,7 +107,7 @@ class CogitatorLanguageModel implements LanguageModelV1 {
 
     return {
       text: result.output,
-      toolCalls: hasToolCalls ? convertToolCallsToAISDK([...result.toolCalls!]) : undefined,
+      toolCalls: hasToolCalls ? convertToolCallsToAISDK(result.toolCalls!) : undefined,
       finishReason: hasToolCalls ? 'tool-calls' : 'stop',
       usage: {
         promptTokens: result.usage.inputTokens,
@@ -200,25 +206,33 @@ class CogitatorLanguageModel implements LanguageModelV1 {
   }
 }
 
-export function createCogitatorProvider(cogitator: Cogitator): CogitatorProvider {
-  const agentCache = new Map<string, Agent>();
+function buildAgentMap(
+  agents: Agent[] | Map<string, Agent> | Record<string, Agent>
+): Map<string, Agent> {
+  if (agents instanceof Map) return agents;
+  if (Array.isArray(agents)) {
+    const map = new Map<string, Agent>();
+    for (const agent of agents) {
+      map.set(agent.name, agent);
+    }
+    return map;
+  }
+  return new Map(Object.entries(agents));
+}
+
+export function createCogitatorProvider(
+  cogitator: Cogitator,
+  config: CogitatorProviderConfig
+): CogitatorProvider {
+  const agentMap = buildAgentMap(config.agents);
 
   function getAgent(name: string): Agent {
-    const cached = agentCache.get(name);
-    if (cached) return cached;
-
-    const config = (cogitator as unknown as { config: { agents?: Agent[] } }).config;
-    const agents = config?.agents ?? [];
-
-    const agent = agents.find((a: Agent) => a.name === name);
+    const agent = agentMap.get(name);
     if (!agent) {
       throw new Error(
-        `Agent "${name}" not found in Cogitator. ` +
-          `Make sure to register the agent before using it as a provider.`
+        `Agent "${name}" not found. Available agents: ${[...agentMap.keys()].join(', ')}`
       );
     }
-
-    agentCache.set(name, agent);
     return agent;
   }
 

@@ -51,13 +51,15 @@ The model supports both `doGenerate` (full response) and `doStream` (streaming),
 
 ### createCogitatorProvider
 
-When you have multiple agents registered with Cogitator, use `createCogitatorProvider` to create a provider function that resolves agents by name:
+When you have multiple agents, use `createCogitatorProvider` to create a provider function that resolves agents by name:
 
 ```typescript
 import { generateText } from 'ai';
 import { createCogitatorProvider } from '@cogitator-ai/ai-sdk';
 
-const provider = createCogitatorProvider(cog);
+const provider = createCogitatorProvider(cog, {
+  agents: [researcher, summarizer],
+});
 
 const { text } = await generateText({
   model: provider('researcher', { temperature: 0.5 }),

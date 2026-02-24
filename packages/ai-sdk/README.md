@@ -147,12 +147,25 @@ interface CogitatorProviderOptions {
 }
 ```
 
-### `createCogitatorProvider(cogitator)`
+### `createCogitatorProvider(cogitator, config)`
 
-Creates a provider factory for multiple agents (when using agent registry).
+Creates a provider factory for named agent lookup.
 
 ```typescript
-const provider = createCogitatorProvider(cogitator);
+function createCogitatorProvider(
+  cogitator: Cogitator,
+  config: CogitatorProviderConfig
+): CogitatorProvider;
+
+interface CogitatorProviderConfig {
+  agents: Agent[] | Map<string, Agent> | Record<string, Agent>;
+}
+```
+
+```typescript
+const provider = createCogitatorProvider(cogitator, {
+  agents: [researcher, writer],
+});
 const model = provider('researcher');
 ```
 

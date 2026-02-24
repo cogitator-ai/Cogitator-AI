@@ -1,5 +1,18 @@
 # @cogitator-ai/ai-sdk
 
+## 0.2.3
+
+### Patch Changes
+
+- fix(ai-sdk): audit — 8 bugs & type fixes, +45 tests
+  - Fix createCogitatorProvider: now accepts explicit agents config instead of broken unsafe cast
+  - Fix fromAISDKTool: throw on missing execute instead of returning undefined
+  - Fix AISDKBackend: derive provider from model instead of hardcoding 'openai'
+  - Fix type: Partial<ToolCall> -> ToolCall where all fields always present
+  - Remove unused @ai-sdk/provider-utils dependency
+  - Add 45 unit tests (tools, provider, model-wrapper)
+  - Exclude tests from tsc build output
+
 ## 0.2.2
 
 ### Patch Changes

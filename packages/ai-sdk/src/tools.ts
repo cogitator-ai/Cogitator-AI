@@ -18,14 +18,14 @@ export function fromAISDKTool<TParams = unknown, TResult = unknown>(
   }
 
   const execute = async (params: TParams, context: ToolContext): Promise<TResult> => {
-    if (aiTool.execute) {
-      return aiTool.execute(params, {
-        toolCallId: context.runId,
-        messages: [],
-        abortSignal: context.signal,
-      }) as Promise<TResult>;
+    if (!aiTool.execute) {
+      throw new Error(`Tool "${name}" has no execute function`);
     }
-    return undefined as TResult;
+    return aiTool.execute(params, {
+      toolCallId: context.runId,
+      messages: [],
+      abortSignal: context.signal,
+    }) as Promise<TResult>;
   };
 
   const name = toolName ?? aiTool.name ?? 'unnamed_tool';

@@ -18,43 +18,65 @@ const cog = new Cogitator(config?: CogitatorConfig);
 
 ```typescript
 interface CogitatorConfig {
-  // LLM configuration
   llm?: {
-    defaultProvider?: 'ollama' | 'openai' | 'anthropic' | 'google' | 'vllm';
+    defaultProvider?:
+      | 'ollama'
+      | 'openai'
+      | 'anthropic'
+      | 'google'
+      | 'azure'
+      | 'bedrock'
+      | 'vllm'
+      | 'mistral'
+      | 'groq'
+      | 'together'
+      | 'deepseek';
     defaultModel?: string;
     providers?: {
-      ollama?: { baseUrl: string };
+      ollama?: { baseUrl: string; apiKey?: string };
       openai?: { apiKey: string; baseUrl?: string };
       anthropic?: { apiKey: string };
       google?: { apiKey: string };
+      azure?: { endpoint: string; apiKey: string; apiVersion?: string; deployment?: string };
+      bedrock?: { region?: string; accessKeyId?: string; secretAccessKey?: string };
       vllm?: { baseUrl: string };
+      mistral?: { apiKey: string };
+      groq?: { apiKey: string };
+      together?: { apiKey: string };
+      deepseek?: { apiKey: string };
     };
   };
 
   // Memory configuration
   memory?: {
-    redis?: { url: string; prefix?: string };
-    postgres?: { connectionString: string; poolSize?: number };
-    embeddings?: {
-      provider: 'openai' | 'local';
-      model?: string;
-      dimensions?: number;
+    adapter?: 'memory' | 'redis' | 'postgres' | 'sqlite' | 'mongodb' | 'qdrant';
+    redis?: {
+      url?: string;
+      host?: string;
+      port?: number;
+      keyPrefix?: string;
+      ttl?: number;
+      password?: string;
+    };
+    postgres?: { connectionString: string; schema?: string; poolSize?: number };
+    sqlite?: { path: string; walMode?: boolean };
+    mongodb?: { uri: string; database?: string; collectionPrefix?: string };
+    qdrant?: { url?: string; apiKey?: string; collection?: string; dimensions: number };
+    embedding?:
+      | { provider: 'openai'; apiKey: string; model?: string; baseUrl?: string }
+      | { provider: 'ollama'; model?: string; baseUrl?: string }
+      | { provider: 'google'; apiKey: string; model?: string; dimensions?: number };
+    contextBuilder?: {
+      maxTokens: number;
+      strategy: 'recent' | 'relevant' | 'hybrid';
+      reserveTokens?: number;
+      includeFacts?: boolean;
+      includeSemanticContext?: boolean;
     };
   };
 
-  // Sandbox configuration
-  sandbox?: {
-    type: 'docker' | 'wasm' | 'none';
-    docker?: { socketPath?: string };
-    wasm?: { runtime?: 'extism' };
-  };
-
-  // Observability
-  telemetry?: {
-    enabled?: boolean;
-    exporter?: 'console' | 'otlp' | 'jaeger';
-    endpoint?: string;
-  };
+  // Sandbox configuration (from @cogitator-ai/sandbox)
+  sandbox?: SandboxManagerConfig;
 
   // Resource limits
   limits?: {
@@ -62,6 +84,24 @@ interface CogitatorConfig {
     defaultTimeout?: number;
     maxTokensPerRun?: number;
   };
+
+  // Reflection — self-analyzing agents
+  reflection?: ReflectionConfig;
+
+  // Constitutional AI guardrails
+  guardrails?: GuardrailConfig;
+
+  // Cost-aware model routing
+  costRouting?: CostRoutingConfig;
+
+  // Prompt injection detection
+  security?: { promptInjection?: PromptInjectionConfig };
+
+  // Context management for long conversations
+  context?: ContextManagerConfig;
+
+  // Logging
+  logging?: LoggingConfig;
 }
 ```
 
@@ -72,26 +112,40 @@ class Cogitator {
   // Run an agent
   run(agent: Agent, options: RunOptions): Promise<RunResult>;
 
-  // Run a workflow
-  workflow(workflow: Workflow): WorkflowRunner;
-
-  // Run a swarm
-  swarm(swarm: Swarm): SwarmRunner;
-
-  // Tool registry
+  // Global tool registry shared across all runs
   tools: ToolRegistry;
 
-  // Memory manager
-  memory: MemoryManager;
+  // Memory adapter (undefined if memory not configured)
+  memory: MemoryAdapter | undefined;
 
-  // Event emitter
-  on(event: string, handler: Function): void;
-  off(event: string, handler: Function): void;
+  // Estimate cost before executing
+  estimateCost(params: {
+    agent: Agent;
+    input: string;
+    options?: EstimateOptions;
+  }): Promise<CostEstimate>;
+
+  // Reflection insights for an agent
+  getInsights(agentId: string): Promise<Insight[]>;
+  getReflectionSummary(agentId: string): Promise<ReflectionSummary | null>;
+
+  // Constitutional AI guardrails
+  getGuardrails(): ConstitutionalAI | undefined;
+  setConstitution(constitution: Constitution): void;
+
+  // Cost tracking
+  getCostSummary(): CostSummary | undefined;
+  getCostRouter(): CostAwareRouter | undefined;
+
+  // Access a specific LLM backend
+  getLLMBackend(modelString: string, explicitProvider?: string): LLMBackend;
 
   // Shutdown
   close(): Promise<void>;
 }
 ```
+
+Note: Cogitator has no event emitter. For observability, use `RunOptions` callbacks (`onToken`, `onToolCall`, `onToolResult`, `onSpan`, `onRunStart`, `onRunComplete`, `onRunError`).
 
 #### RunOptions
 
@@ -100,10 +154,25 @@ interface RunOptions {
   // Input to the agent
   input: string;
 
-  // Additional context
-  context?: Record<string, any>;
+  // Images to include (URLs or base64 data)
+  images?: (
+    | string
+    | { data: string; mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' }
+  )[];
 
-  // Thread/conversation ID (for memory)
+  // Audio to transcribe and include
+  audio?: (
+    | string
+    | {
+        data: string;
+        format: 'mp3' | 'mp4' | 'mpeg' | 'mpga' | 'm4a' | 'wav' | 'webm' | 'ogg' | 'flac';
+      }
+  )[];
+
+  // Additional context injected into system prompt
+  context?: Record<string, unknown>;
+
+  // Thread ID for memory persistence
   threadId?: string;
 
   // Override agent timeout
@@ -112,10 +181,23 @@ interface RunOptions {
   // Stream responses
   stream?: boolean;
 
+  // Memory control
+  useMemory?: boolean; // default: true if adapter configured
+  loadHistory?: boolean; // default: true
+  saveHistory?: boolean; // default: true
+
+  // Execute tool calls in parallel (default: false)
+  parallelToolCalls?: boolean;
+
   // Callbacks
   onToken?: (token: string) => void;
   onToolCall?: (call: ToolCall) => void;
   onToolResult?: (result: ToolResult) => void;
+  onRunStart?: (data: { runId: string; agentId: string; input: string; threadId: string }) => void;
+  onRunComplete?: (result: RunResult) => void;
+  onRunError?: (error: Error, runId: string) => void;
+  onSpan?: (span: Span) => void;
+  onMemoryError?: (error: Error, operation: 'save' | 'load') => void;
 }
 ```
 
@@ -123,37 +205,35 @@ interface RunOptions {
 
 ```typescript
 interface RunResult {
-  // Final output
-  output: string;
+  readonly output: string;
+  readonly structured?: unknown;
 
-  // Structured output (if responseFormat specified)
-  structured?: any;
+  readonly runId: string;
+  readonly agentId: string;
+  readonly threadId: string;
 
-  // Run metadata
-  runId: string;
-  agentId: string;
-  threadId: string;
+  // Actual model used (set when cost routing is enabled)
+  readonly modelUsed?: string;
 
-  // Usage statistics
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-    cost: number;
-    duration: number;
+  readonly usage: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+    readonly cost: number;
+    readonly duration: number;
   };
 
-  // Execution trace
-  trace: {
-    traceId: string;
-    spans: Span[];
+  readonly trace: {
+    readonly traceId: string;
+    readonly spans: readonly Span[];
   };
 
-  // Tool calls made
-  toolCalls: ToolCall[];
+  readonly toolCalls: readonly ToolCall[];
+  readonly messages: readonly Message[];
 
-  // Messages in conversation
-  messages: Message[];
+  // Reflection data (if reflection is enabled)
+  readonly reflections?: readonly Reflection[];
+  readonly reflectionSummary?: ReflectionSummary;
 }
 ```
 
@@ -173,13 +253,20 @@ const agent = new Agent(config: AgentConfig);
 
 ```typescript
 interface AgentConfig {
+  // Optional stable ID (auto-generated if omitted)
+  id?: string;
+
   // Identity
   name: string;
   description?: string;
 
-  // Model
-  model: string; // e.g., 'ollama/llama3.3:70b', 'openai/gpt-4o'
-  temperature?: number;
+  // Model: use 'provider/model' format
+  model: string; // e.g., 'ollama/llama3.3:70b', 'openai/gpt-4o', 'anthropic/claude-sonnet-4-5'
+
+  // Explicit provider override (useful for OpenRouter and similar proxies)
+  provider?: string;
+
+  temperature?: number; // default: 0.7
   topP?: number;
   maxTokens?: number;
   stopSequences?: string[];
@@ -189,18 +276,9 @@ interface AgentConfig {
   tools?: Tool[];
   responseFormat?: ResponseFormat;
 
-  // Memory
-  memory?: MemoryConfig | boolean;
-
-  // Execution
-  maxIterations?: number;
-  timeout?: number;
-
-  // Sandbox
-  sandbox?: SandboxConfig;
-
-  // Hooks
-  hooks?: AgentHooks;
+  // Execution limits
+  maxIterations?: number; // default: 10
+  timeout?: number; // default: 120000 (ms)
 }
 ```
 
@@ -210,41 +288,41 @@ interface AgentConfig {
 type ResponseFormat =
   | { type: 'text' }
   | { type: 'json' }
-  | { type: 'json_schema'; schema: ZodSchema | JSONSchema };
+  | { type: 'json_schema'; schema: ZodType };
 ```
 
-#### AgentHooks
-
-```typescript
-interface AgentHooks {
-  onStart?: (context: HookContext) => Promise<void>;
-  beforeLLM?: (messages: Message[]) => Promise<Message[]>;
-  afterLLM?: (response: LLMResponse) => Promise<LLMResponse>;
-  beforeTool?: (call: ToolCall) => Promise<ToolCall>;
-  afterTool?: (result: ToolResult) => Promise<ToolResult>;
-  onComplete?: (result: RunResult) => Promise<void>;
-  onError?: (error: Error) => Promise<void>;
-}
-```
+Note: `json_schema` only accepts Zod schemas, not raw JSON Schema objects.
 
 #### Methods
 
 ```typescript
 class Agent {
-  // Get agent ID
   readonly id: string;
-
-  // Get configuration
+  readonly name: string;
   readonly config: AgentConfig;
+  readonly model: string;
+  readonly instructions: string;
+  readonly tools: Tool[];
 
-  // Clone with modifications
+  // Clone with config overrides
   clone(overrides: Partial<AgentConfig>): Agent;
 
-  // Serialize to YAML
-  toYAML(): string;
+  // Serialize to a JSON-compatible snapshot
+  serialize(): AgentSnapshot;
 
-  // Load from YAML
-  static fromYAML(yaml: string): Agent;
+  // Restore from a snapshot
+  static deserialize(snapshot: AgentSnapshot, options?: DeserializeOptions): Agent;
+
+  // Validate a snapshot object
+  static validateSnapshot(snapshot: unknown): snapshot is AgentSnapshot;
+}
+```
+
+```typescript
+interface DeserializeOptions {
+  toolRegistry?: { get(name: string): Tool | undefined };
+  tools?: Tool[];
+  overrides?: Partial<AgentConfig>;
 }
 ```
 
@@ -264,26 +342,38 @@ const myTool = tool(config: ToolConfig);
 #### ToolConfig
 
 ```typescript
-interface ToolConfig<TParams = any, TResult = any> {
+interface ToolConfig<TParams = unknown, TResult = unknown> {
   // Identity
   name: string;
   description: string;
 
+  // Optional categorization
+  category?:
+    | 'math'
+    | 'text'
+    | 'file'
+    | 'network'
+    | 'system'
+    | 'utility'
+    | 'web'
+    | 'database'
+    | 'communication'
+    | 'development';
+  tags?: string[];
+
   // Parameters (Zod schema)
-  parameters: ZodSchema<TParams>;
+  parameters: ZodType<TParams>;
 
   // Execution
   execute: (params: TParams, context: ToolContext) => Promise<TResult>;
 
   // Optional metadata
-  sideEffects?: ('filesystem' | 'network' | 'database' | 'process')[];
+  sideEffects?: ('filesystem' | 'network' | 'database' | 'process' | 'external')[];
   requiresApproval?: boolean | ((params: TParams) => boolean);
 
-  // Error handling
-  retry?: RetryConfig;
   timeout?: number;
 
-  // Sandbox
+  // Sandbox configuration (from @cogitator-ai/sandbox)
   sandbox?: SandboxConfig;
 }
 ```
@@ -292,30 +382,15 @@ interface ToolConfig<TParams = any, TResult = any> {
 
 ```typescript
 interface ToolContext {
-  // Agent that called this tool
   agentId: string;
   runId: string;
-
-  // Access to other tools
-  tools: ToolRegistry;
-
-  // Access to memory
-  memory: MemoryManager;
-
-  // Swarm context (if in a swarm)
-  swarm?: SwarmContext;
-
-  // Report progress
-  progress: {
-    report(update: ProgressUpdate): void;
-  };
-
-  // Abort signal
   signal: AbortSignal;
 }
 ```
 
 #### Built-in Tools
+
+All built-in tools are exported from `@cogitator-ai/core`:
 
 ```typescript
 import {
@@ -324,171 +399,192 @@ import {
   fileWrite,
   fileDelete,
   fileList,
-  fileSearch,
+  fileExists,
 
-  // Web
-  webFetch,
+  // HTTP
+  httpRequest,
   webSearch,
-  webScreenshot,
+  webScrape,
 
   // Code execution
-  codeInterpreter,
+  exec,
 
   // Database
   sqlQuery,
-  sqlExecute,
+  vectorSearch,
 
-  // Utilities
+  // Math & utilities
   calculator,
   datetime,
-} from '@cogitator-ai/tools';
+  uuid,
+  randomNumber,
+  randomString,
+  hash,
+  base64Encode,
+  base64Decode,
+  sleep,
+  jsonParse,
+  jsonStringify,
+  regexMatch,
+  regexReplace,
+
+  // External services
+  sendEmail,
+  githubApi,
+
+  // All built-ins as an array
+  builtinTools,
+} from '@cogitator-ai/core';
 ```
 
 ---
 
 ### Workflow
 
-Define multi-step agent orchestration.
+Workflows are DAG-based pipelines built with `WorkflowBuilder` from `@cogitator-ai/workflows`.
 
 ```typescript
-import { Workflow, step } from '@cogitator-ai/workflows';
+import {
+  WorkflowBuilder,
+  WorkflowExecutor,
+  agentNode,
+  functionNode,
+} from '@cogitator-ai/workflows';
 
-const workflow = new Workflow(config: WorkflowConfig);
+const workflow = new WorkflowBuilder('my-workflow')
+  .initialState({ result: '' })
+  .addNode(
+    'fetch',
+    functionNode(async (ctx) => {
+      const data = await fetch('...');
+      return { state: { result: await data.text() } };
+    })
+  )
+  .addNode('process', agentNode({ agent, input: (ctx) => ctx.state.result }), {
+    after: ['fetch'],
+  })
+  .build();
+
+const executor = new WorkflowExecutor(cog);
+const result = await executor.execute(
+  workflow,
+  {},
+  {
+    onNodeStart: (node) => console.log('Starting:', node),
+    onNodeComplete: (node, output, duration) => console.log('Done:', node),
+  }
+);
 ```
 
-#### WorkflowConfig
+#### WorkflowBuilder
 
 ```typescript
-interface WorkflowConfig {
-  name: string;
-  description?: string;
+class WorkflowBuilder<S extends WorkflowState> {
+  constructor(name: string);
 
-  // Steps
-  steps: Step[];
+  // Set initial state
+  initialState(state: S): this;
 
-  // Triggers
-  triggers?: Trigger[];
+  // Set explicit entry point
+  entryPoint(nodeName: string): this;
 
-  // Persistence
-  persistence?: {
-    store: 'memory' | 'redis' | 'postgres';
-    checkpointInterval?: 'after-each-step' | 'on-completion';
-  };
+  // Add a computation node
+  addNode(name: string, fn: NodeFn<S>, options?: { after?: string[]; config?: NodeConfig }): this;
 
-  // Error handling
-  onError?: 'abort' | 'compensate' | ErrorHandler;
+  // Add a conditional routing node (returns next node name(s))
+  addConditional(
+    name: string,
+    condition: (state: S) => string | string[],
+    options?: { after?: string[] }
+  ): this;
 
-  // Observability
-  dashboard?: {
-    enabled: boolean;
-    tags?: string[];
-  };
+  // Add a loop
+  addLoop(
+    name: string,
+    options: {
+      condition: (state: S) => boolean;
+      back: string;
+      exit: string;
+      after?: string[];
+    }
+  ): this;
+
+  // Add a parallel fan-out
+  addParallel(name: string, targets: string[], options?: { after?: string[] }): this;
+
+  // Build and validate the workflow
+  build(): Workflow<S>;
 }
 ```
 
-#### Step
+#### Node helpers
 
 ```typescript
-function step(name: string, config: StepConfig): Step;
+import { agentNode, toolNode, functionNode } from '@cogitator-ai/workflows';
 
-interface StepConfig {
-  // Step type
-  type?: 'agent' | 'tool' | 'function' | 'human' | 'delay' | 'subworkflow' | 'map' | 'goto';
+// Run an agent as a node
+agentNode(options: { agent: Agent; input?: (ctx: NodeContext) => string }): NodeFn
 
-  // For agent steps
-  agent?: Agent;
-  input?: (ctx: WorkflowContext) => any;
+// Run a tool as a node
+toolNode(options: { tool: Tool; params?: (ctx: NodeContext) => unknown }): NodeFn
 
-  // For tool steps
-  tool?: Tool;
+// Run a plain function as a node
+functionNode(fn: (ctx: NodeContext) => Promise<NodeResult>): NodeFn
+```
 
-  // For function steps
-  execute?: (ctx: WorkflowContext) => Promise<any>;
+#### WorkflowExecutor
 
-  // For human steps
-  prompt?: (ctx: WorkflowContext) => string;
-  options?: string[];
-  assignee?: (ctx: WorkflowContext) => string;
+```typescript
+class WorkflowExecutor {
+  constructor(cogitator: Cogitator, checkpointStore?: CheckpointStore);
 
-  // For delay steps
-  duration?: number;
+  execute<S extends WorkflowState>(
+    workflow: Workflow<S>,
+    input?: Partial<S>,
+    options?: WorkflowExecuteOptions
+  ): Promise<WorkflowResult<S>>;
+}
+```
 
-  // For subworkflow steps
-  workflow?: Workflow;
+#### WorkflowExecuteOptions
 
-  // For map steps
-  items?: (ctx: WorkflowContext) => any[];
+```typescript
+interface WorkflowExecuteOptions {
   maxConcurrency?: number;
-
-  // For goto steps
-  target?: string;
-
-  // Dependencies
-  dependsOn?: string[];
-  dependencyMode?: 'all' | 'any' | 'completed';
-
-  // Conditions
-  condition?: (ctx: WorkflowContext) => boolean;
-
-  // Error handling
-  retry?: RetryConfig;
-  fallback?: { step: string; condition?: (error: Error) => boolean };
-  compensate?: (ctx: WorkflowContext) => Promise<void>;
-
-  // Timeouts
-  timeout?: number;
-
-  // Hooks
-  onStart?: (ctx: WorkflowContext) => void;
-  onComplete?: (result: any, ctx: WorkflowContext) => void;
-  onError?: (error: Error, ctx: WorkflowContext) => void;
+  maxIterations?: number;
+  checkpoint?: boolean;
+  checkpointStrategy?: 'per-iteration' | 'per-node';
+  onNodeStart?: (node: string) => void;
+  onNodeComplete?: (node: string, result: unknown, duration: number) => void;
+  onNodeError?: (node: string, error: Error) => void;
+  onNodeProgress?: (node: string, progress: number) => void;
 }
 ```
 
-#### WorkflowContext
+#### NodeContext
 
 ```typescript
-interface WorkflowContext<TInput = any> {
-  // Original input
-  input: TInput;
-
-  // Step results
-  steps: Record<string, StepResult>;
-
-  // Shared mutable state
-  state: Record<string, any>;
-
-  // Metadata
-  meta: {
-    workflowId: string;
-    runId: string;
-    startedAt: Date;
-    currentStep: string;
-  };
+interface NodeContext<S = WorkflowState> {
+  state: S;
+  input?: unknown;
+  nodeId: string;
+  workflowId: string;
+  step: number;
+  reportProgress?: (progress: number) => void;
 }
 ```
 
-#### WorkflowRunner
+#### WorkflowResult
 
 ```typescript
-interface WorkflowRunner {
-  // Execute workflow
-  run(input: any): Promise<WorkflowResult>;
-
-  // Schedule for later
-  schedule(options: ScheduleOptions): Promise<ScheduledRun>;
-
-  // Resume paused workflow
-  resume(runId: string): Promise<WorkflowResult>;
-
-  // Cancel running workflow
-  cancel(runId: string): Promise<void>;
-
-  // Get status
-  getStatus(runId: string): Promise<RunStatus>;
-
-  // Events
-  on(event: string, handler: Function): void;
+interface WorkflowResult<S = WorkflowState> {
+  workflowId: string;
+  workflowName: string;
+  state: S;
+  nodeResults: Map<string, { output: unknown; duration: number }>;
+  duration: number;
+  checkpointId?: string;
+  error?: Error;
 }
 ```
 
@@ -499,10 +595,20 @@ interface WorkflowRunner {
 Multi-agent coordination.
 
 ```typescript
-import { Swarm } from '@cogitator-ai/swarms';
+import { Swarm, swarm } from '@cogitator-ai/swarms';
 
-const swarm = new Swarm(config: SwarmConfig);
+// Using SwarmBuilder (recommended)
+const s = swarm('my-swarm')
+  .strategy('hierarchical')
+  .supervisor(supervisorAgent)
+  .workers([worker1, worker2])
+  .build(cog);
+
+// Or directly
+const s = new Swarm(cog, config: SwarmConfig);
 ```
+
+Note: `Swarm` constructor takes `Cogitator` as first argument.
 
 #### SwarmConfig
 
@@ -518,37 +624,53 @@ interface SwarmConfig {
     | 'auction'
     | 'pipeline'
     | 'debate'
-    | 'collaborative';
+    | 'negotiation';
 
   // Agents (varies by strategy)
-  supervisor?: Agent;
-  workers?: Agent[];
-  agents?: Agent[];
-  stages?: { name: string; agent: Agent }[];
-  router?: Agent;
-  moderator?: Agent;
-  specialists?: Record<string, Agent>;
+  supervisor?: Agent; // hierarchical
+  workers?: Agent[]; // hierarchical
+  agents?: Agent[]; // round-robin, consensus, auction, debate
+  moderator?: Agent; // debate
+  router?: Agent; // custom routing
 
-  // Strategy config
+  // Strategy-specific config
+  hierarchical?: {
+    maxDelegationDepth?: number;
+    workerCommunication?: boolean;
+    routeThrough?: 'supervisor' | 'direct';
+  };
+
+  roundRobin?: {
+    sticky?: boolean;
+    rotation?: 'sequential' | 'random';
+  };
+
   consensus?: {
     threshold: number;
     maxRounds: number;
     resolution: 'majority' | 'unanimous' | 'weighted';
     onNoConsensus: 'escalate' | 'supervisor-decides' | 'fail';
+    weights?: Record<string, number>;
   };
 
   auction?: {
     bidding: 'capability-match' | 'custom';
-    bidFunction?: (agent: Agent, task: any) => Promise<number>;
+    bidFunction?: (agent: SwarmAgent, task: string) => Promise<number> | number;
     selection: 'highest-bid' | 'weighted-random';
+    minBid?: number;
+  };
+
+  pipeline?: {
+    stages: { name: string; agent: Agent; gate?: boolean }[];
   };
 
   debate?: {
     rounds: number;
-    turnDuration: number;
+    turnDuration?: number;
+    format?: 'structured' | 'freeform';
   };
 
-  // Communication
+  // Agent communication
   messaging?: {
     enabled: boolean;
     protocol: 'direct' | 'broadcast' | 'pub-sub';
@@ -558,21 +680,28 @@ interface SwarmConfig {
 
   blackboard?: {
     enabled: boolean;
-    sections: Record<string, any>;
+    sections: Record<string, unknown>;
+    locking?: boolean;
+    trackHistory?: boolean;
   };
 
   // Resources
   resources?: {
-    maxConcurrency: number;
-    tokenBudget: number;
-    costLimit: number;
-    timeout: number;
+    maxConcurrency?: number;
+    tokenBudget?: number;
+    costLimit?: number;
+    timeout?: number;
   };
 
   // Error handling
   errorHandling?: {
     onAgentFailure: 'retry' | 'skip' | 'failover' | 'abort';
-    retry?: RetryConfig;
+    retry?: {
+      maxRetries: number;
+      backoff: 'constant' | 'linear' | 'exponential';
+      initialDelay?: number;
+      maxDelay?: number;
+    };
     failover?: Record<string, string>;
     circuitBreaker?: {
       enabled: boolean;
@@ -583,10 +712,35 @@ interface SwarmConfig {
 
   // Observability
   observability?: {
-    tracing: boolean;
-    messageLogging: boolean;
-    metrics?: { exporter: string };
+    tracing?: boolean;
+    messageLogging?: boolean;
+    blackboardLogging?: boolean;
   };
+}
+```
+
+#### Swarm methods
+
+```typescript
+class Swarm {
+  run(options: SwarmRunOptions): Promise<StrategyResult>;
+  on(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void;
+  once(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void;
+  getAgents(): SwarmAgent[];
+  getAgent(name: string): SwarmAgent | undefined;
+  getResourceUsage(): SwarmResourceUsage;
+  pause(): void;
+  resume(): void;
+  abort(): void;
+  reset(): void;
+  close(): Promise<void>;
+
+  // Accessors
+  readonly name: string;
+  readonly id: string;
+  readonly messageBus: MessageBus;
+  readonly blackboard: Blackboard;
+  readonly events: SwarmEventEmitter;
 }
 ```
 
@@ -594,59 +748,61 @@ interface SwarmConfig {
 
 ## Memory API
 
-### MemoryManager
+### MemoryAdapter
+
+The core memory interface implemented by all adapters.
 
 ```typescript
-interface MemoryManager {
-  // Store a memory
-  store(memory: Memory): Promise<void>;
+interface MemoryAdapter {
+  readonly provider: 'memory' | 'redis' | 'postgres' | 'sqlite' | 'mongodb' | 'qdrant';
 
-  // Retrieve memories
-  retrieve(query: RetrievalQuery): Promise<Memory[]>;
+  // Thread management
+  createThread(
+    agentId: string,
+    metadata?: Record<string, unknown>,
+    threadId?: string
+  ): Promise<MemoryResult<Thread>>;
+  getThread(threadId: string): Promise<MemoryResult<Thread | null>>;
+  updateThread(threadId: string, metadata: Record<string, unknown>): Promise<MemoryResult<Thread>>;
+  deleteThread(threadId: string): Promise<MemoryResult<void>>;
 
-  // Build context for LLM
-  buildContext(agentId: string, maxTokens: number): Promise<Context>;
+  // Entry management
+  addEntry(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): Promise<MemoryResult<MemoryEntry>>;
+  getEntries(options: MemoryQueryOptions): Promise<MemoryResult<MemoryEntry[]>>;
+  getEntry(entryId: string): Promise<MemoryResult<MemoryEntry | null>>;
+  deleteEntry(entryId: string): Promise<MemoryResult<void>>;
+  clearThread(threadId: string): Promise<MemoryResult<void>>;
 
-  // Summarize old memories
-  summarize(agentId: string): Promise<void>;
-
-  // Clear memories
-  clear(agentId: string, options?: ClearOptions): Promise<void>;
+  // Lifecycle
+  connect(): Promise<MemoryResult<void>>;
+  disconnect(): Promise<MemoryResult<void>>;
 }
 ```
 
-### Memory
+### MemoryEntry
 
 ```typescript
-interface Memory {
+interface MemoryEntry {
   id: string;
-  agentId: string;
-  threadId?: string;
-  type: 'message' | 'tool_result' | 'fact' | 'summary';
-  content: string;
-  embedding?: number[];
-  metadata: {
-    timestamp: Date;
-    importance: number;
-    source: string;
-    tags: string[];
-  };
+  threadId: string;
+  message: Message;
+  toolCalls?: ToolCall[];
+  toolResults?: ToolResult[];
+  tokenCount: number;
+  createdAt: Date;
+  metadata?: Record<string, unknown>;
 }
 ```
 
-### RetrievalQuery
+### MemoryQueryOptions
 
 ```typescript
-interface RetrievalQuery {
-  agentId: string;
-  query?: string;
-  limit: number;
-  strategies: ('recency' | 'semantic' | 'importance' | 'hybrid')[];
-  filters?: {
-    types?: Memory['type'][];
-    timeRange?: { start: Date; end: Date };
-    tags?: string[];
-  };
+interface MemoryQueryOptions {
+  threadId: string;
+  limit?: number;
+  before?: Date;
+  after?: Date;
+  includeToolCalls?: boolean;
 }
 ```
 
@@ -680,7 +836,7 @@ Content-Type: application/json
 
 {
   "name": "my-agent",
-  "model": "llama3.3:latest",
+  "model": "ollama/llama3.3:latest",
   "instructions": "You are a helpful assistant."
 }
 
@@ -765,7 +921,7 @@ POST /v1/chat/completions
 Content-Type: application/json
 
 {
-  "model": "llama3.3:latest",
+  "model": "ollama/llama3.3:latest",
   "messages": [
     {"role": "user", "content": "Hello!"}
   ]
@@ -783,76 +939,162 @@ POST /v1/threads/:id/runs
 
 ## Events
 
-### Cogitator Events
+### Run Observability
+
+Cogitator has no event emitter. Subscribe via `RunOptions` callbacks:
 
 ```typescript
-cog.on('run:start', (event: RunStartEvent) => {});
-cog.on('run:complete', (event: RunCompleteEvent) => {});
-cog.on('run:error', (event: RunErrorEvent) => {});
-
-cog.on('tool:start', (event: ToolStartEvent) => {});
-cog.on('tool:complete', (event: ToolCompleteEvent) => {});
-cog.on('tool:error', (event: ToolErrorEvent) => {});
-
-cog.on('memory:store', (event: MemoryStoreEvent) => {});
-cog.on('memory:retrieve', (event: MemoryRetrieveEvent) => {});
+const result = await cog.run(agent, {
+  input: 'hello',
+  onRunStart: ({ runId, agentId, input, threadId }) => {},
+  onToken: (token) => process.stdout.write(token),
+  onToolCall: (call: ToolCall) => console.log('Tool:', call.name),
+  onToolResult: (result: ToolResult) => {},
+  onSpan: (span: Span) => {},
+  onRunComplete: (result: RunResult) => {},
+  onRunError: (error: Error, runId: string) => {},
+  onMemoryError: (error: Error, operation: 'save' | 'load') => {},
+});
 ```
 
 ### Workflow Events
 
-```typescript
-workflow.on('step:start', (event: StepStartEvent) => {});
-workflow.on('step:complete', (event: StepCompleteEvent) => {});
-workflow.on('step:error', (event: StepErrorEvent) => {});
-workflow.on('step:retry', (event: StepRetryEvent) => {});
+Subscribe via `WorkflowExecuteOptions`:
 
-workflow.on('workflow:start', (event: WorkflowStartEvent) => {});
-workflow.on('workflow:complete', (event: WorkflowCompleteEvent) => {});
-workflow.on('workflow:error', (event: WorkflowErrorEvent) => {});
+```typescript
+const result = await executor.execute(
+  workflow,
+  {},
+  {
+    onNodeStart: (node: string) => {},
+    onNodeComplete: (node: string, result: unknown, duration: number) => {},
+    onNodeError: (node: string, error: Error) => {},
+    onNodeProgress: (node: string, progress: number) => {},
+  }
+);
 ```
 
 ### Swarm Events
 
 ```typescript
-swarm.on('agent:start', (event: AgentStartEvent) => {});
-swarm.on('agent:complete', (event: AgentCompleteEvent) => {});
-swarm.on('agent:error', (event: AgentErrorEvent) => {});
+const unsubscribe = swarm.on('agent:start', (event: SwarmEvent) => {});
+swarm.on('agent:complete', (event: SwarmEvent) => {});
+swarm.on('agent:error', (event: SwarmEvent) => {});
 
-swarm.on('message:sent', (event: MessageSentEvent) => {});
-swarm.on('message:received', (event: MessageReceivedEvent) => {});
+swarm.on('message:sent', (event: SwarmEvent) => {});
+swarm.on('message:received', (event: SwarmEvent) => {});
 
-swarm.on('swarm:start', (event: SwarmStartEvent) => {});
-swarm.on('swarm:complete', (event: SwarmCompleteEvent) => {});
+swarm.on('swarm:start', (event: SwarmEvent) => {});
+swarm.on('swarm:complete', (event: SwarmEvent) => {});
+swarm.on('swarm:error', (event: SwarmEvent) => {});
+swarm.on('swarm:paused', (event: SwarmEvent) => {});
+swarm.on('swarm:aborted', (event: SwarmEvent) => {});
+
+// Subscribe to all events
+swarm.on('*', (event: SwarmEvent) => {});
+
+// Returns an unsubscribe function
+unsubscribe();
 ```
 
 ---
 
 ## Error Types
 
-```typescript
-import {
-  CogitatorError, // Base error class
-  AgentError, // Agent execution errors
-  ToolError, // Tool execution errors
-  MemoryError, // Memory operations errors
-  LLMError, // LLM provider errors
-  TimeoutError, // Timeout errors
-  ValidationError, // Input validation errors
-  RateLimitError, // Rate limiting errors
-  AuthenticationError, // Auth errors
-} from '@cogitator-ai/core';
+Cogitator uses a single `CogitatorError` class with typed error codes:
 
-// Error handling
+```typescript
+import { CogitatorError, ErrorCode } from '@cogitator-ai/core';
+
 try {
   await cog.run(agent, { input: '...' });
 } catch (error) {
-  if (error instanceof ToolError) {
-    console.log('Tool failed:', error.toolName, error.message);
-  } else if (error instanceof LLMError) {
-    console.log('LLM failed:', error.provider, error.message);
-  } else if (error instanceof TimeoutError) {
-    console.log('Timed out after:', error.timeout, 'ms');
+  if (error instanceof CogitatorError) {
+    switch (error.code) {
+      case ErrorCode.TOOL_EXECUTION_FAILED:
+        console.log('Tool failed:', error.message, error.details);
+        break;
+      case ErrorCode.LLM_UNAVAILABLE:
+        console.log('LLM unavailable:', error.message);
+        if (error.retryable) console.log('Retry after:', error.retryAfter, 'ms');
+        break;
+      case ErrorCode.LLM_RATE_LIMITED:
+        console.log('Rate limited');
+        break;
+      case ErrorCode.LLM_TIMEOUT:
+        console.log('LLM timed out');
+        break;
+      case ErrorCode.MEMORY_UNAVAILABLE:
+        console.log('Memory error:', error.message);
+        break;
+    }
   }
+}
+```
+
+#### ErrorCode
+
+```typescript
+enum ErrorCode {
+  // LLM errors
+  LLM_UNAVAILABLE,
+  LLM_RATE_LIMITED,
+  LLM_TIMEOUT,
+  LLM_INVALID_RESPONSE,
+  LLM_CONTEXT_LENGTH_EXCEEDED,
+  LLM_CONTENT_FILTERED,
+
+  // Tool errors
+  TOOL_NOT_FOUND,
+  TOOL_INVALID_ARGS,
+  TOOL_EXECUTION_FAILED,
+  TOOL_TIMEOUT,
+
+  // Memory errors
+  MEMORY_UNAVAILABLE,
+  MEMORY_WRITE_FAILED,
+  MEMORY_READ_FAILED,
+
+  // Agent errors
+  AGENT_NOT_FOUND,
+  AGENT_ALREADY_RUNNING,
+  AGENT_MAX_ITERATIONS,
+
+  // Workflow errors
+  WORKFLOW_NOT_FOUND,
+  WORKFLOW_STEP_FAILED,
+  WORKFLOW_CYCLE_DETECTED,
+
+  // Swarm errors
+  SWARM_NO_WORKERS,
+  SWARM_CONSENSUS_FAILED,
+
+  // Security
+  PROMPT_INJECTION_DETECTED,
+
+  // General
+  VALIDATION_ERROR,
+  CONFIGURATION_ERROR,
+  INTERNAL_ERROR,
+  NOT_IMPLEMENTED,
+  CIRCUIT_OPEN,
+}
+```
+
+#### CogitatorError
+
+```typescript
+class CogitatorError extends Error {
+  readonly code: ErrorCode;
+  readonly statusCode: number; // HTTP status code
+  readonly details?: Record<string, unknown>;
+  readonly retryable: boolean;
+  readonly retryAfter?: number; // ms to wait before retrying
+  readonly cause?: Error;
+
+  toJSON(): Record<string, unknown>;
+  static isCogitatorError(error: unknown): error is CogitatorError;
+  static wrap(error: unknown, code?: ErrorCode): CogitatorError;
 }
 ```
 
@@ -860,32 +1102,50 @@ try {
 
 ## TypeScript Types
 
+Key types re-exported from `@cogitator-ai/types`:
+
 ```typescript
 // Re-exported from @cogitator-ai/types
 
 export type {
   // Core
-  Agent,
   AgentConfig,
+  ResponseFormat,
   Tool,
   ToolConfig,
-  Workflow,
-  WorkflowConfig,
-  Swarm,
-  SwarmConfig,
+  ToolContext,
+  ToolSchema,
 
   // Execution
   RunOptions,
   RunResult,
-  StepResult,
+  Span,
+
+  // Workflow
+  Workflow,
+  WorkflowState,
+  WorkflowNode,
   WorkflowResult,
+  WorkflowExecuteOptions,
+  NodeContext,
+  NodeResult,
+  NodeFn,
+  Edge,
+  RetryConfig,
+
+  // Swarm
+  SwarmConfig,
+  SwarmRunOptions,
   SwarmResult,
+  SwarmStrategy,
+  SwarmEvent,
+  SwarmEventType,
 
   // Memory
-  Memory,
   MemoryConfig,
-  RetrievalQuery,
-  Context,
+  MemoryEntry,
+  MemoryQueryOptions,
+  Thread,
 
   // Messages
   Message,
@@ -897,16 +1157,9 @@ export type {
   LLMBackend,
   ChatRequest,
   ChatResponse,
+  ChatStreamChunk,
 
-  // Observability
-  Trace,
-  Span,
-  Metrics,
-
-  // Events
-  CogitatorEvent,
-  RunStartEvent,
-  RunCompleteEvent,
-  // ... etc
+  // Config
+  CogitatorConfig,
 };
 ```

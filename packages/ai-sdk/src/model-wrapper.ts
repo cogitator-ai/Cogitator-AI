@@ -67,12 +67,13 @@ function mapFinishReason(reason: string): 'stop' | 'tool_calls' | 'length' | 'er
 }
 
 export class AISDKBackend implements LLMBackend {
-  readonly provider: LLMProvider = 'openai';
+  readonly provider: LLMProvider;
 
   private model: LanguageModelV1;
 
   constructor(model: LanguageModelV1) {
     this.model = model;
+    this.provider = (model.provider ?? 'ai-sdk') as LLMProvider;
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
@@ -182,7 +183,7 @@ export class AISDKBackend implements LLMBackend {
     const chunkId = `aisdk-stream-${Date.now()}`;
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
-    const pendingToolCalls: Partial<ToolCall>[] = [];
+    const pendingToolCalls: ToolCall[] = [];
 
     try {
       while (true) {
@@ -195,7 +196,7 @@ export class AISDKBackend implements LLMBackend {
             delta: { content: value.textDelta },
           };
         } else if (value.type === 'tool-call') {
-          const toolCall: Partial<ToolCall> = {
+          const toolCall: ToolCall = {
             id: value.toolCallId,
             name: value.toolName,
             arguments: JSON.parse(value.args) as Record<string, unknown>,

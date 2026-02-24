@@ -185,16 +185,17 @@ describe('AI SDK: Tool Adapter', () => {
     );
   });
 
-  it('converted AI SDK tool without execute returns undefined', async () => {
+  it('converted AI SDK tool without execute throws on call', async () => {
     const aiTool = {
       description: 'Declaration only',
       parameters: z.object({ x: z.number() }),
     };
 
     const converted = fromAISDKTool(aiTool, 'declarative');
-    const result = await converted.execute({ x: 1 } as never, ctx);
 
-    expect(result).toBeUndefined();
+    await expect(converted.execute({ x: 1 } as never, ctx)).rejects.toThrow(
+      'has no execute function'
+    );
   });
 
   it('toJSON works on fromAISDKTool result', () => {

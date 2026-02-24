@@ -1,10 +1,15 @@
-import type { Tool } from '@cogitator-ai/core';
+import type { Tool } from '@cogitator-ai/types';
 import type { LanguageModelV1 } from '@ai-sdk/provider';
+import type { Agent } from '@cogitator-ai/core';
 
 export interface CogitatorProviderOptions {
   temperature?: number;
   maxTokens?: number;
   topP?: number;
+}
+
+export interface CogitatorProviderConfig {
+  agents: Agent[] | Map<string, Agent> | Record<string, Agent>;
 }
 
 export interface CogitatorProvider {
