@@ -39,9 +39,10 @@
 
 ## Docs Audit
 
-| Doc File  | Last Audit | Issues Found | Status |
-| --------- | ---------- | ------------ | ------ |
-| AGENTS.md | 2026-02-25 | 22 fixed     | ✅     |
-| API.md    | 2026-02-25 | 60+ fixed    | ✅     |
+| Doc File        | Last Audit | Issues Found | Status |
+| --------------- | ---------- | ------------ | ------ |
+| AGENTS.md       | 2026-02-25 | 22 fixed     | ✅     |
+| API.md          | 2026-02-25 | 60+ fixed    | ✅     |
+| ARCHITECTURE.md | 2026-02-25 | 25 fixed     | ✅     |
 
 Full report: [docs-audit.md](./docs-audit.md)

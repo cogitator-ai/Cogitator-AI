@@ -1,8 +1,9 @@
-/**
- * CLI Logger with colored output
- */
-
 import chalk from 'chalk';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export const log = {
   info: (msg: string) => console.log(chalk.blue('ℹ'), msg),
@@ -24,5 +25,8 @@ export function printBanner() {
             |___/
 `)
   );
-  console.log(chalk.dim('  AI Agent Runtime v0.1.0\n'));
+  const pkg = JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf-8')) as {
+    version: string;
+  };
+  console.log(chalk.dim(`  AI Agent Runtime v${pkg.version}\n`));
 }

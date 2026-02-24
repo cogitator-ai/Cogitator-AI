@@ -211,7 +211,7 @@ export const runCommand = new Command('run')
         if (configPath.endsWith('.json')) {
           config = JSON.parse(raw);
         } else {
-          config = loadConfig();
+          config = loadConfig({ configPath });
         }
       } catch (err) {
         log.warn(`Failed to load config: ${err instanceof Error ? err.message : String(err)}`);

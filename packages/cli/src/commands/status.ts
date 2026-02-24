@@ -3,42 +3,17 @@
  */
 
 import { Command } from 'commander';
-import { existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
-import { resolve, dirname } from 'node:path';
+import { dirname } from 'node:path';
 import chalk from 'chalk';
 import { log } from '../utils/logger.js';
+import { findDockerCompose, checkDocker } from '../utils/docker.js';
 
 interface ServiceStatus {
   Name: string;
   State: string;
   Status: string;
   Health?: string;
-}
-
-function findDockerCompose(): string | null {
-  if (existsSync('docker-compose.yml')) return resolve('docker-compose.yml');
-  if (existsSync('docker-compose.yaml')) return resolve('docker-compose.yaml');
-
-  let dir = process.cwd();
-  for (let i = 0; i < 5; i++) {
-    const parent = resolve(dir, '..');
-    if (parent === dir) break;
-    dir = parent;
-    if (existsSync(resolve(dir, 'docker-compose.yml'))) {
-      return resolve(dir, 'docker-compose.yml');
-    }
-  }
-  return null;
-}
-
-function checkDocker(): boolean {
-  try {
-    execSync('docker info', { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function checkOllama(): Promise<boolean> {
