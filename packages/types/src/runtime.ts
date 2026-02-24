@@ -14,6 +14,7 @@ import type { KnowledgeGraphConfig } from './knowledge-graph';
 import type { PromptInjectionConfig } from './security';
 import type { DeployConfig } from './deploy';
 import type { ContextManagerConfig } from './context';
+import type { LoggingConfig } from './logging';
 
 export interface CogitatorConfig {
   llm?: {
@@ -45,6 +46,7 @@ export interface CogitatorConfig {
   };
   /** Context management for long conversations (128k+ tokens) */
   context?: ContextManagerConfig;
+  logging?: LoggingConfig;
   deploy?: DeployConfig;
 }
 

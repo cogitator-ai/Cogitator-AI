@@ -40,7 +40,7 @@ logging:
 import { loadConfig, defineConfig } from '@cogitator-ai/config';
 
 // Load from file with env vars and overrides
-const config = await loadConfig({
+const config = loadConfig({
   configPath: './cogitator.yml',
   overrides: {
     logging: { level: 'debug' },
@@ -285,27 +285,42 @@ logging:
 
 All configuration can be set via environment variables with `COGITATOR_` prefix:
 
-| Variable                         | Description          |
-| -------------------------------- | -------------------- |
-| `COGITATOR_LLM_DEFAULT_PROVIDER` | Default LLM provider |
-| `COGITATOR_LLM_DEFAULT_MODEL`    | Default model        |
-| `COGITATOR_MEMORY_ADAPTER`       | Memory adapter type  |
-| `COGITATOR_LOGGING_LEVEL`        | Log level            |
-| `COGITATOR_LOGGING_FORMAT`       | Log format           |
+| Variable                               | Description           |
+| -------------------------------------- | --------------------- |
+| `COGITATOR_LLM_DEFAULT_PROVIDER`       | Default LLM provider  |
+| `COGITATOR_LLM_DEFAULT_MODEL`          | Default model         |
+| `COGITATOR_OLLAMA_BASE_URL`            | Ollama base URL       |
+| `COGITATOR_OLLAMA_API_KEY`             | Ollama API key        |
+| `COGITATOR_OPENAI_API_KEY`             | OpenAI API key        |
+| `COGITATOR_OPENAI_BASE_URL`            | OpenAI base URL       |
+| `COGITATOR_ANTHROPIC_API_KEY`          | Anthropic API key     |
+| `COGITATOR_GOOGLE_API_KEY`             | Google API key        |
+| `COGITATOR_VLLM_BASE_URL`              | vLLM base URL         |
+| `COGITATOR_AZURE_API_KEY`              | Azure OpenAI API key  |
+| `COGITATOR_AZURE_ENDPOINT`             | Azure OpenAI endpoint |
+| `COGITATOR_AZURE_API_VERSION`          | Azure API version     |
+| `COGITATOR_BEDROCK_REGION`             | AWS Bedrock region    |
+| `COGITATOR_BEDROCK_ACCESS_KEY_ID`      | AWS access key ID     |
+| `COGITATOR_BEDROCK_SECRET_ACCESS_KEY`  | AWS secret access key |
+| `COGITATOR_LIMITS_MAX_CONCURRENT_RUNS` | Max concurrent runs   |
+| `COGITATOR_LIMITS_DEFAULT_TIMEOUT`     | Default timeout (ms)  |
+| `COGITATOR_LIMITS_MAX_TOKENS_PER_RUN`  | Max tokens per run    |
+| `COGITATOR_DEPLOY_TARGET`              | Deploy target         |
+| `COGITATOR_DEPLOY_PORT`                | Deploy port           |
+| `COGITATOR_DEPLOY_REGISTRY`            | Container registry    |
 
-Nested values use underscores:
-
-```bash
-COGITATOR_LLM_PROVIDERS_OPENAI_API_KEY=sk-xxx
-COGITATOR_MEMORY_REDIS_URL=redis://localhost:6379
-```
-
-Provider API keys can also use standard env vars:
+Standard provider env vars are also supported:
 
 ```bash
 OPENAI_API_KEY=sk-xxx
 ANTHROPIC_API_KEY=sk-ant-xxx
 GOOGLE_API_KEY=xxx
+OLLAMA_HOST=http://localhost:11434
+AZURE_OPENAI_API_KEY=xxx
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=xxx
+AWS_SECRET_ACCESS_KEY=xxx
 ```
 
 ---
@@ -345,16 +360,23 @@ import type { CogitatorConfigInput, CogitatorConfigOutput } from '@cogitator-ai/
 
 ### Available Schemas
 
-| Schema                    | Description                  |
-| ------------------------- | ---------------------------- |
-| `CogitatorConfigSchema`   | Full configuration           |
-| `LLMConfigSchema`         | LLM providers and defaults   |
-| `MemoryConfigSchema`      | Memory adapters and settings |
-| `SandboxConfigSchema`     | Sandbox execution settings   |
-| `ReflectionConfigSchema`  | Self-reflection settings     |
-| `GuardrailConfigSchema`   | Safety guardrails            |
-| `CostRoutingConfigSchema` | Cost-aware model selection   |
-| `LoggingConfigSchema`     | Logging settings             |
+| Schema                           | Description                  |
+| -------------------------------- | ---------------------------- |
+| `CogitatorConfigSchema`          | Full configuration           |
+| `LLMConfigSchema`                | LLM providers and defaults   |
+| `MemoryConfigSchema`             | Memory adapters and settings |
+| `SandboxConfigSchema`            | Sandbox execution settings   |
+| `ReflectionConfigSchema`         | Self-reflection settings     |
+| `GuardrailConfigSchema`          | Safety guardrails            |
+| `CostRoutingConfigSchema`        | Cost-aware model selection   |
+| `KnowledgeGraphConfigSchema`     | Knowledge graph settings     |
+| `PromptOptimizationConfigSchema` | Prompt optimization          |
+| `SecurityConfigSchema`           | Security / injection config  |
+| `ContextManagerConfigSchema`     | Context compression          |
+| `LoggingConfigSchema`            | Logging settings             |
+| `DeployConfigSchema`             | Deployment settings          |
+| `DeployTargetSchema`             | Deploy target enum           |
+| `DeployServerSchema`             | Server framework enum        |
 
 ---
 
@@ -450,11 +472,12 @@ Load configuration from file, environment, and overrides.
 ```typescript
 interface LoadConfigOptions {
   configPath?: string; // Path to YAML file
-  envPrefix?: string; // Env var prefix (default: 'COGITATOR')
+  skipEnv?: boolean; // Skip loading from environment variables
+  skipYaml?: boolean; // Skip loading from YAML file
   overrides?: CogitatorConfigInput; // Programmatic overrides
 }
 
-const config = await loadConfig({
+const config = loadConfig({
   configPath: './cogitator.yml',
   overrides: { logging: { level: 'debug' } },
 });
@@ -475,24 +498,24 @@ const config = defineConfig({
 });
 ```
 
-### loadYamlConfig(path)
+### loadYamlConfig(path?)
 
-Load and parse YAML config file.
+Load and parse YAML config file. Returns `null` if no config file found.
 
 ```typescript
 import { loadYamlConfig } from '@cogitator-ai/config';
 
-const config = await loadYamlConfig('./cogitator.yml');
+const config = loadYamlConfig('./cogitator.yml');
 ```
 
-### loadEnvConfig(prefix)
+### loadEnvConfig()
 
 Load config from environment variables.
 
 ```typescript
 import { loadEnvConfig } from '@cogitator-ai/config';
 
-const config = loadEnvConfig('COGITATOR');
+const config = loadEnvConfig();
 ```
 
 ---

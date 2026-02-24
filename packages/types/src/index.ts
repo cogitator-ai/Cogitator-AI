@@ -30,5 +30,6 @@ export * from './tool-cache';
 export * from './security';
 export * from './context';
 export * from './deploy';
+export * from './logging';
 export * from './rag';
 export * from './voice';

@@ -2,7 +2,7 @@
  * Environment variable configuration loader
  */
 
-import type { CogitatorConfigInput } from '../schema';
+import { DeployTargetSchema, type CogitatorConfigInput } from '../schema';
 
 const ENV_PREFIX = 'COGITATOR_';
 
@@ -18,6 +18,12 @@ const ENV_PREFIX = 'COGITATOR_';
  * - COGITATOR_ANTHROPIC_API_KEY -> llm.providers.anthropic.apiKey
  * - COGITATOR_GOOGLE_API_KEY -> llm.providers.google.apiKey
  * - COGITATOR_VLLM_BASE_URL -> llm.providers.vllm.baseUrl
+ * - COGITATOR_AZURE_API_KEY -> llm.providers.azure.apiKey
+ * - COGITATOR_AZURE_ENDPOINT -> llm.providers.azure.endpoint
+ * - COGITATOR_AZURE_API_VERSION -> llm.providers.azure.apiVersion
+ * - COGITATOR_BEDROCK_REGION -> llm.providers.bedrock.region
+ * - COGITATOR_BEDROCK_ACCESS_KEY_ID -> llm.providers.bedrock.accessKeyId
+ * - COGITATOR_BEDROCK_SECRET_ACCESS_KEY -> llm.providers.bedrock.secretAccessKey
  * - COGITATOR_LIMITS_MAX_CONCURRENT_RUNS -> limits.maxConcurrentRuns
  * - COGITATOR_LIMITS_DEFAULT_TIMEOUT -> limits.defaultTimeout
  * - COGITATOR_LIMITS_MAX_TOKENS_PER_RUN -> limits.maxTokensPerRun
@@ -26,8 +32,21 @@ const ENV_PREFIX = 'COGITATOR_';
  * - OPENAI_API_KEY -> llm.providers.openai.apiKey
  * - ANTHROPIC_API_KEY -> llm.providers.anthropic.apiKey
  * - OLLAMA_HOST -> llm.providers.ollama.baseUrl
+ * - AZURE_OPENAI_API_KEY -> llm.providers.azure.apiKey
+ * - AZURE_OPENAI_ENDPOINT -> llm.providers.azure.endpoint
+ * - AWS_REGION -> llm.providers.bedrock.region
+ * - AWS_ACCESS_KEY_ID -> llm.providers.bedrock.accessKeyId
+ * - AWS_SECRET_ACCESS_KEY -> llm.providers.bedrock.secretAccessKey
  */
-const VALID_PROVIDERS = ['ollama', 'openai', 'anthropic', 'google', 'vllm'] as const;
+const VALID_PROVIDERS = [
+  'ollama',
+  'openai',
+  'anthropic',
+  'google',
+  'azure',
+  'bedrock',
+  'vllm',
+] as const;
 type LLMProvider = (typeof VALID_PROVIDERS)[number];
 
 function isValidProvider(value: string): value is LLMProvider {
@@ -63,8 +82,9 @@ export function loadEnvConfig(): CogitatorConfigInput {
   const deployPort = getEnvNumber('DEPLOY_PORT');
   const deployRegistry = getEnv('DEPLOY_REGISTRY');
   if (deployTarget || deployPort || deployRegistry) {
-    (config as Record<string, unknown>).deploy = {
-      ...(deployTarget ? { target: deployTarget } : {}),
+    const parsedTarget = DeployTargetSchema.safeParse(deployTarget);
+    config.deploy = {
+      ...(parsedTarget.success ? { target: parsedTarget.data } : {}),
       ...(deployPort ? { port: deployPort } : {}),
       ...(deployRegistry ? { registry: deployRegistry } : {}),
     };
@@ -107,6 +127,29 @@ function loadProviderConfigs(): ProvidersConfig {
   const vllmBaseUrl = getEnv('VLLM_BASE_URL');
   if (vllmBaseUrl) {
     providers.vllm = { baseUrl: vllmBaseUrl };
+  }
+
+  const azureApiKey = getEnv('AZURE_API_KEY') ?? process.env.AZURE_OPENAI_API_KEY;
+  const azureEndpoint = getEnv('AZURE_ENDPOINT') ?? process.env.AZURE_OPENAI_ENDPOINT;
+  if (azureApiKey && azureEndpoint) {
+    const azureApiVersion = getEnv('AZURE_API_VERSION');
+    providers.azure = {
+      apiKey: azureApiKey,
+      endpoint: azureEndpoint,
+      ...(azureApiVersion ? { apiVersion: azureApiVersion } : {}),
+    };
+  }
+
+  const bedrockRegion = getEnv('BEDROCK_REGION') ?? process.env.AWS_REGION;
+  if (bedrockRegion) {
+    const bedrockAccessKeyId = getEnv('BEDROCK_ACCESS_KEY_ID') ?? process.env.AWS_ACCESS_KEY_ID;
+    const bedrockSecretAccessKey =
+      getEnv('BEDROCK_SECRET_ACCESS_KEY') ?? process.env.AWS_SECRET_ACCESS_KEY;
+    providers.bedrock = {
+      region: bedrockRegion,
+      ...(bedrockAccessKeyId ? { accessKeyId: bedrockAccessKeyId } : {}),
+      ...(bedrockSecretAccessKey ? { secretAccessKey: bedrockSecretAccessKey } : {}),
+    };
   }
 
   return providers;

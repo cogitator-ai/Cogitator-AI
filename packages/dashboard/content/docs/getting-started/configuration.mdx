@@ -10,19 +10,17 @@ Create a `cogitator.yml` in your project root:
 ```yaml
 llm:
   defaultProvider: ollama
+  defaultModel: llama3.2
   providers:
     ollama:
-      type: ollama
-      host: http://localhost:11434
-      model: llama3.2
+      baseUrl: http://localhost:11434
     openai:
-      type: openai
-      apiKey: ${OPENAI_API_KEY}
-      model: gpt-4o
+      apiKey: sk-xxx
+      baseUrl: https://api.openai.com/v1
     anthropic:
-      type: anthropic
-      apiKey: ${ANTHROPIC_API_KEY}
-      model: claude-sonnet-4-5-20250929
+      apiKey: sk-ant-xxx
+    google:
+      apiKey: xxx
 
 memory:
   adapter: redis
@@ -43,36 +41,37 @@ Load it with `@cogitator-ai/config`:
 import { Cogitator } from '@cogitator-ai/core';
 import { loadConfig } from '@cogitator-ai/config';
 
-const config = await loadConfig();
+const config = loadConfig();
 const cogitator = new Cogitator(config);
 ```
 
 `loadConfig()` automatically:
 
-- Reads `cogitator.yml` from the current working directory
-- Expands `${ENV_VAR}` references from environment variables
-- Validates the config against the expected schema
-- Merges with sensible defaults
+- Reads `cogitator.yml` (or `.cogitator.yml`) from the current directory
+- Merges with environment variables (see below)
+- Validates the config against Zod schemas
+- Applies programmatic overrides
 
 ## Environment Variables
 
-Store secrets in `.env`:
+Cogitator reads environment variables with the `COGITATOR_` prefix:
 
 ```bash
-# LLM Providers
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-GOOGLE_API_KEY=AIza...
-AZURE_OPENAI_API_KEY=...
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
+COGITATOR_LLM_DEFAULT_PROVIDER=openai
+COGITATOR_LLM_DEFAULT_MODEL=gpt-4o
+COGITATOR_OLLAMA_BASE_URL=http://localhost:11434
+COGITATOR_OPENAI_API_KEY=sk-xxx
+COGITATOR_ANTHROPIC_API_KEY=sk-ant-xxx
+COGITATOR_GOOGLE_API_KEY=xxx
+```
 
-# Infrastructure
-REDIS_URL=redis://localhost:6379
-DATABASE_URL=postgresql://user:pass@localhost:5432/cogitator
+Standard provider env vars are also supported:
 
-# Observability
-LANGFUSE_PUBLIC_KEY=pk-...
-LANGFUSE_SECRET_KEY=sk-...
+```bash
+OPENAI_API_KEY=sk-xxx
+ANTHROPIC_API_KEY=sk-ant-xxx
+GOOGLE_API_KEY=xxx
+OLLAMA_HOST=http://localhost:11434
 ```
 
 ## Programmatic Configuration
@@ -80,24 +79,41 @@ LANGFUSE_SECRET_KEY=sk-...
 You can skip the YAML file and configure directly:
 
 ```typescript
-const cogitator = new Cogitator({
+import { defineConfig } from '@cogitator-ai/config';
+
+const config = defineConfig({
   llm: {
     defaultProvider: 'openai',
+    defaultModel: 'gpt-4o',
     providers: {
       openai: {
-        type: 'openai',
         apiKey: process.env.OPENAI_API_KEY!,
-        model: 'gpt-4o',
       },
     },
   },
   memory: {
     adapter: 'postgres',
-    connectionString: process.env.DATABASE_URL!,
+    postgres: {
+      connectionString: process.env.DATABASE_URL!,
+    },
     embedding: {
       provider: 'openai',
+      apiKey: process.env.OPENAI_API_KEY!,
       model: 'text-embedding-3-small',
     },
+  },
+});
+
+const cogitator = new Cogitator(config);
+```
+
+Or use `loadConfig` with overrides:
+
+```typescript
+const config = loadConfig({
+  configPath: './cogitator.yml',
+  overrides: {
+    logging: { level: 'debug' },
   },
 });
 ```
@@ -109,9 +125,7 @@ const cogitator = new Cogitator({
 ```yaml
 providers:
   ollama:
-    type: ollama
-    host: http://localhost:11434
-    model: llama3.2
+    baseUrl: http://localhost:11434
 ```
 
 ### OpenAI
@@ -119,10 +133,8 @@ providers:
 ```yaml
 providers:
   openai:
-    type: openai
-    apiKey: ${OPENAI_API_KEY}
-    model: gpt-4o
-    organization: org-... # optional
+    apiKey: sk-xxx
+    baseUrl: https://api.openai.com/v1  # optional, for proxies
 ```
 
 ### Anthropic
@@ -130,9 +142,7 @@ providers:
 ```yaml
 providers:
   anthropic:
-    type: anthropic
-    apiKey: ${ANTHROPIC_API_KEY}
-    model: claude-sonnet-4-5-20250929
+    apiKey: sk-ant-xxx
 ```
 
 ### Google Gemini
@@ -140,9 +150,7 @@ providers:
 ```yaml
 providers:
   google:
-    type: google
-    apiKey: ${GOOGLE_API_KEY}
-    model: gemini-2.0-flash
+    apiKey: xxx
 ```
 
 ### Azure OpenAI
@@ -150,11 +158,9 @@ providers:
 ```yaml
 providers:
   azure:
-    type: azure
-    apiKey: ${AZURE_OPENAI_API_KEY}
-    endpoint: ${AZURE_OPENAI_ENDPOINT}
-    deployment: gpt-4o
-    apiVersion: '2024-02-15-preview'
+    apiKey: xxx
+    endpoint: https://your-resource.openai.azure.com
+    apiVersion: '2024-02-15-preview'  # optional
 ```
 
 ### AWS Bedrock
@@ -162,17 +168,16 @@ providers:
 ```yaml
 providers:
   bedrock:
-    type: bedrock
     region: us-east-1
-    model: anthropic.claude-3-sonnet-20240229-v1:0
-    # Uses AWS SDK default credential chain
+    accessKeyId: xxx  # optional, uses AWS credentials chain
+    secretAccessKey: xxx  # optional
 ```
 
 ## Config Merging
 
 Configs are merged with this priority (highest wins):
 
-1. Programmatic options passed to `new Cogitator({...})`
-2. Environment variables (`${ENV_VAR}` expansions in YAML)
-3. `cogitator.yml` file values
+1. Programmatic overrides passed to `loadConfig({ overrides })`
+2. Environment variables (`COGITATOR_*` and standard provider vars)
+3. YAML config file values
 4. Built-in defaults

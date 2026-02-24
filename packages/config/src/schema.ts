@@ -262,6 +262,103 @@ export const LoggingConfigSchema = z.object({
   filePath: z.string().optional(),
 });
 
+export const KnowledgeGraphExtractionConfigSchema = z.object({
+  enabled: z.boolean(),
+  extractOnMessage: z.boolean().optional(),
+  extractOnFact: z.boolean().optional(),
+  minConfidence: z.number().min(0).max(1).optional(),
+  batchSize: z.number().positive().optional(),
+});
+
+export const KnowledgeGraphInferenceConfigSchema = z.object({
+  enabled: z.boolean(),
+  autoMaterialize: z.boolean().optional(),
+  defaultRules: z.boolean().optional(),
+});
+
+export const KnowledgeGraphContextConfigSchema = z.object({
+  maxNodes: z.number().positive().optional(),
+  maxEdges: z.number().positive().optional(),
+  maxDepth: z.number().positive().optional(),
+  includeInferred: z.boolean().optional(),
+});
+
+export const KnowledgeGraphConfigSchema = z.object({
+  extraction: KnowledgeGraphExtractionConfigSchema.optional(),
+  inference: KnowledgeGraphInferenceConfigSchema.optional(),
+  context: KnowledgeGraphContextConfigSchema.optional(),
+});
+
+export const ABTestingConfigSchema = z.object({
+  defaultConfidenceLevel: z.number().min(0).max(1).optional(),
+  defaultMinSampleSize: z.number().positive().optional(),
+  defaultMaxDuration: z.number().positive().optional(),
+  autoDeployWinner: z.boolean().optional(),
+});
+
+export const MonitoringConfigSchema = z.object({
+  windowSize: z.number().positive().optional(),
+  scoreDropThreshold: z.number().min(0).max(1).optional(),
+  latencySpikeThreshold: z.number().positive().optional(),
+  errorRateThreshold: z.number().min(0).max(1).optional(),
+  enableAutoRollback: z.boolean().optional(),
+  rollbackCooldown: z.number().positive().optional(),
+});
+
+export const AutoOptimizationConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  triggerAfterRuns: z.number().positive().optional(),
+  minRunsForOptimization: z.number().positive().optional(),
+  requireABTest: z.boolean().optional(),
+  maxOptimizationsPerDay: z.number().positive().optional(),
+});
+
+export const PromptOptimizationConfigSchema = z.object({
+  enabled: z.boolean(),
+  capturePrompts: z.boolean().optional(),
+  promptRetentionDays: z.number().positive().optional(),
+  abTesting: ABTestingConfigSchema.optional(),
+  monitoring: MonitoringConfigSchema.optional(),
+  autoOptimization: AutoOptimizationConfigSchema.optional(),
+});
+
+export const InjectionActionSchema = z.enum(['block', 'warn', 'log']);
+export const InjectionClassifierSchema = z.enum(['local', 'llm']);
+
+export const PromptInjectionConfigSchema = z.object({
+  detectInjection: z.boolean(),
+  detectJailbreak: z.boolean(),
+  detectRoleplay: z.boolean(),
+  detectEncoding: z.boolean(),
+  detectContextManipulation: z.boolean(),
+  classifier: InjectionClassifierSchema,
+  llmModel: z.string().optional(),
+  action: InjectionActionSchema,
+  threshold: z.number().min(0).max(1),
+  allowlist: z.array(z.string()).optional(),
+});
+
+export const SecurityConfigSchema = z.object({
+  promptInjection: PromptInjectionConfigSchema.optional(),
+});
+
+export const CompressionStrategySchema = z.enum([
+  'truncate',
+  'sliding-window',
+  'summarize',
+  'hybrid',
+]);
+
+export const ContextManagerConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  strategy: CompressionStrategySchema.optional(),
+  compressionThreshold: z.number().positive().optional(),
+  outputReserve: z.number().positive().optional(),
+  summaryModel: z.string().optional(),
+  windowSize: z.number().positive().optional(),
+  windowOverlap: z.number().positive().optional(),
+});
+
 export const DeployTargetSchema = z.enum(['docker', 'fly', 'railway', 'k8s', 'ssh']);
 export const DeployServerSchema = z.enum(['express', 'fastify', 'hono', 'koa']);
 
@@ -304,6 +401,10 @@ export const CogitatorConfigSchema = z.object({
   reflection: ReflectionConfigSchema.optional(),
   guardrails: GuardrailConfigSchema.optional(),
   costRouting: CostRoutingConfigSchema.optional(),
+  knowledgeGraph: KnowledgeGraphConfigSchema.optional(),
+  promptOptimization: PromptOptimizationConfigSchema.optional(),
+  security: SecurityConfigSchema.optional(),
+  context: ContextManagerConfigSchema.optional(),
   logging: LoggingConfigSchema.optional(),
   deploy: DeployConfigSchema.optional(),
 });
