@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { EvalCaseSchema } from '../schema';
 import type { EvalCase } from '../schema';
 
@@ -12,7 +12,7 @@ export async function loadCsv(path: string): Promise<EvalCase[]> {
     );
   }
 
-  const content = readFileSync(path, 'utf-8');
+  const content = await readFile(path, 'utf-8');
   const { data, meta } = Papa.parse<Record<string, string>>(content, {
     header: true,
     skipEmptyLines: true,

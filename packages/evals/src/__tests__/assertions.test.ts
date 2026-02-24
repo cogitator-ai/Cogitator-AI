@@ -196,6 +196,35 @@ describe('noRegression', () => {
 
     expect(result.passed).toBe(true);
   });
+
+  it('fails when no baseline metrics exist in current results', () => {
+    const baselinePath = writeBaseline({ accuracy: 0.9, relevance: 0.8 });
+    const agg = { latency: makeMetric({ name: 'latency', mean: 100 }) };
+    const result = noRegression(baselinePath)(agg, defaultStats);
+
+    expect(result.passed).toBe(false);
+    expect(result.message).toContain('No baseline metrics');
+  });
+
+  it('uses lower-is-better for metrics ending with Duration', () => {
+    const baselinePath = writeBaseline({ responseDuration: 200 });
+
+    const passAgg = { responseDuration: makeMetric({ name: 'responseDuration', mean: 205 }) };
+    expect(noRegression(baselinePath)(passAgg, defaultStats).passed).toBe(true);
+
+    const failAgg = { responseDuration: makeMetric({ name: 'responseDuration', mean: 260 }) };
+    expect(noRegression(baselinePath)(failAgg, defaultStats).passed).toBe(false);
+  });
+
+  it('uses lower-is-better for metrics ending with Latency', () => {
+    const baselinePath = writeBaseline({ apiLatency: 100 });
+
+    const passAgg = { apiLatency: makeMetric({ name: 'apiLatency', mean: 102 }) };
+    expect(noRegression(baselinePath)(passAgg, defaultStats).passed).toBe(true);
+
+    const failAgg = { apiLatency: makeMetric({ name: 'apiLatency', mean: 120 }) };
+    expect(noRegression(baselinePath)(failAgg, defaultStats).passed).toBe(false);
+  });
 });
 
 describe('assertion (custom)', () => {
@@ -240,6 +269,20 @@ describe('assertion (custom)', () => {
 
     expect(result.message).toContain('no-msg');
     expect(result.message).toContain('failed');
+  });
+
+  it('returns passed: false and error message when check throws', () => {
+    const fn = assertion({
+      name: 'throws-check',
+      check: () => {
+        throw new Error('check blew up');
+      },
+    });
+    const result = fn({}, defaultStats);
+
+    expect(result.passed).toBe(false);
+    expect(result.name).toBe('throws-check');
+    expect(result.message).toContain('check blew up');
   });
 
   it('receives aggregated and stats', () => {

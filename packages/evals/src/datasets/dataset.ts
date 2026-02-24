@@ -46,7 +46,7 @@ export class Dataset {
   }
 
   filter(fn: (c: EvalCase) => boolean): Dataset {
-    return new Dataset(this._cases.filter(fn) as EvalCase[]);
+    return new Dataset(this._cases.filter(fn));
   }
 
   sample(n: number): Dataset {
@@ -59,7 +59,7 @@ export class Dataset {
       const j = Math.floor(Math.random() * (i + 1));
       [indices[i], indices[j]] = [indices[j], indices[i]];
     }
-    return new Dataset(indices.slice(0, count).map((i) => this._cases[i]) as EvalCase[]);
+    return new Dataset(indices.slice(0, count).map((i) => this._cases[i]));
   }
 
   shuffle(): Dataset {

@@ -80,10 +80,8 @@ export function tokenUsage(): StatisticalMetricFn {
 
     let totalInput = 0;
     let totalOutput = 0;
-    for (let i = 0; i < withUsage.length; i++) {
-      totalInput += inputTokens[i];
-      totalOutput += outputTokens[i];
-    }
+    for (const t of inputTokens) totalInput += t;
+    for (const t of outputTokens) totalOutput += t;
 
     return {
       name: 'tokenUsage',

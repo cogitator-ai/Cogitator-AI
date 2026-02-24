@@ -1,314 +1,281 @@
 # Memory System
 
-> Hybrid memory architecture for persistent, intelligent context management
+> Pluggable memory adapters with semantic search, facts, and knowledge graph support
 
 ## Overview
 
-Cogitator's memory system is designed to solve the fundamental challenge of LLM context limitations while maintaining fast retrieval and intelligent relevance ranking.
+The `@cogitator-ai/memory` package provides conversation persistence for agents. It separates storage backends (adapters) from context assembly (`ContextBuilder`) so you can swap adapters without changing agent code.
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              Memory Manager                                      │
-│                                                                                 │
-│   ┌─────────────────────────────────────────────────────────────────────────┐   │
-│   │                         Memory Router                                   │   │
-│   │                                                                         │   │
-│   │  Input ──► Classify ──► Route ──► Store/Retrieve ──► Output            │   │
-│   │                                                                         │   │
-│   └─────────────────────────────────────────────────────────────────────────┘   │
-│                                      │                                          │
-│              ┌───────────────────────┼───────────────────────┐                  │
-│              ▼                       ▼                       ▼                  │
-│   ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐          │
-│   │  Working Memory │     │  Episodic Memory│     │  Semantic Memory│          │
-│   │     (L1)        │     │     (L2/L3)     │     │     (L4)        │          │
-│   │                 │     │                 │     │                 │          │
-│   │  • In-process   │     │  • Redis (L2)   │     │  • pgvector     │          │
-│   │  • Current ctx  │     │  • Postgres (L3)│     │  • Embeddings   │          │
-│   │  • Fast access  │     │  • Conversations│     │  • RAG          │          │
-│   └─────────────────┘     └─────────────────┘     └─────────────────┘          │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
-## Memory Types
-
-### 1. Working Memory (L1)
-
-In-process cache for current execution context.
-
-```typescript
-interface WorkingMemory {
-  // Current conversation messages
-  messages: Message[];
-
-  // Active tool call results
-  toolResults: Map<string, ToolResult>;
-
-  // Scratchpad for agent reasoning
-  scratchpad: string;
-
-  // Token count
-  tokenCount: number;
-}
-
-class WorkingMemoryManager {
-  private cache: LRUCache<string, WorkingMemory>;
-
-  constructor() {
-    this.cache = new LRUCache({
-      max: 1000, // Max 1000 agents in memory
-      maxSize: 500_000_000, // 500MB total
-      sizeCalculation: (memory) => this.estimateSize(memory),
-      ttl: 1000 * 60 * 30, // 30 minutes TTL
-    });
-  }
-
-  get(agentId: string): WorkingMemory {
-    let memory = this.cache.get(agentId);
-    if (!memory) {
-      memory = this.createEmpty();
-      this.cache.set(agentId, memory);
-    }
-    return memory;
-  }
-
-  append(agentId: string, message: Message): void {
-    const memory = this.get(agentId);
-    memory.messages.push(message);
-    memory.tokenCount += this.countTokens(message);
-
-    // Auto-flush to L2 if too large
-    if (memory.tokenCount > 32_000) {
-      this.flushToEpisodic(agentId);
-    }
-  }
-}
-```
-
-### 2. Episodic Memory (L2/L3)
-
-Conversation history with temporal awareness.
-
-```typescript
-interface EpisodicMemory {
-  id: string;
-  agentId: string;
-  threadId: string;
-  type: 'user' | 'assistant' | 'tool' | 'system';
-  content: string;
-  timestamp: Date;
-  metadata: {
-    importance: number; // 0-1, affects retrieval priority
-    tokens: number;
-    toolCalls?: ToolCall[];
-    model?: string;
-  };
-}
-
-// Redis schema (L2 - short term)
-// Key: episodic:{agentId}:{threadId}
-// Type: Sorted Set (score = timestamp)
-
-// Postgres schema (L3 - long term)
-const episodicMemorySchema = `
-  CREATE TABLE episodic_memories (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    agent_id UUID NOT NULL REFERENCES agents(id),
-    thread_id UUID NOT NULL,
-    type VARCHAR(20) NOT NULL,
-    content TEXT NOT NULL,
-    importance FLOAT DEFAULT 0.5,
-    tokens INTEGER NOT NULL,
-    metadata JSONB DEFAULT '{}',
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-
-    -- Indexes for fast retrieval
-    INDEX idx_agent_thread (agent_id, thread_id),
-    INDEX idx_agent_time (agent_id, created_at DESC),
-    INDEX idx_importance (agent_id, importance DESC)
-  );
-`;
-```
-
-### 3. Semantic Memory (L4)
-
-Vector embeddings for similarity-based retrieval.
-
-```typescript
-interface SemanticMemory {
-  id: string;
-  agentId: string;
-  content: string;
-  embedding: number[]; // 1536 dimensions (OpenAI) or 384 (local)
-  type: 'fact' | 'preference' | 'skill' | 'document';
-  source: string; // Where this knowledge came from
-  confidence: number; // How confident we are in this info
-  lastAccessed: Date; // For LRU-style eviction
-  metadata: Record<string, any>;
-}
-
-// pgvector schema
-const semanticMemorySchema = `
-  CREATE TABLE semantic_memories (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    agent_id UUID NOT NULL REFERENCES agents(id),
-    content TEXT NOT NULL,
-    embedding vector(1536),  -- or vector(384) for local models
-    type VARCHAR(20) NOT NULL,
-    source TEXT,
-    confidence FLOAT DEFAULT 1.0,
-    last_accessed TIMESTAMPTZ DEFAULT NOW(),
-    metadata JSONB DEFAULT '{}',
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-
-    -- HNSW index for fast similarity search
-    INDEX idx_embedding USING hnsw (embedding vector_cosine_ops)
-      WITH (m = 16, ef_construction = 64)
-  );
-`;
+┌──────────────────────────────────────────────────────────────┐
+│                        ContextBuilder                        │
+│                                                              │
+│  systemPrompt ──► facts ──► semantic context ──► history    │
+│                                        ▲                     │
+│                                  token budget               │
+└───────────────────────────────────────┬──────────────────────┘
+                                        │
+              ┌───────────────┬─────────┴──────────┬──────────────┐
+              ▼               ▼                    ▼              ▼
+        MemoryAdapter    FactAdapter       EmbeddingAdapter  GraphAdapter
+              │               │                    │              │
+     ┌────────┼────────┐      │                    │              │
+     ▼        ▼        ▼      │                    │              │
+  InMemory  Redis  Postgres───┴────────────────────┘       PostgresGraph
+              SQLite
+              MongoDB
+              Qdrant
 ```
 
 ---
 
-## Retrieval Strategies
+## Adapters
 
-### Strategy 1: Recency
+### InMemoryAdapter (default)
 
-Retrieve most recent memories first.
+In-process Map storage. Zero dependencies. Resets on process restart.
 
 ```typescript
-async function retrieveByRecency(agentId: string, limit: number): Promise<EpisodicMemory[]> {
-  // First check Redis (L2)
-  const recentKeys = await redis.zrevrange(`episodic:${agentId}:*`, 0, limit - 1);
+import { InMemoryAdapter } from '@cogitator-ai/memory';
 
-  if (recentKeys.length >= limit) {
-    return Promise.all(recentKeys.map((k) => redis.hgetall(k)));
-  }
+const adapter = new InMemoryAdapter({ provider: 'memory', maxEntries: 10000 });
+await adapter.connect();
+```
 
-  // Fall back to Postgres (L3)
-  const remaining = limit - recentKeys.length;
-  const dbResults = await db.query(
-    `
-    SELECT * FROM episodic_memories
-    WHERE agent_id = $1
-    ORDER BY created_at DESC
-    LIMIT $2
-  `,
-    [agentId, remaining]
-  );
+### RedisAdapter
 
-  return [...recentKeys, ...dbResults.rows];
+Redis-backed storage with TTL. Supports standalone and cluster mode via `@cogitator-ai/redis`.
+
+```typescript
+import { RedisAdapter } from '@cogitator-ai/memory';
+
+// Standalone
+const adapter = new RedisAdapter({
+  provider: 'redis',
+  url: 'redis://localhost:6379',
+  ttl: 86400, // 24 hours
+  keyPrefix: 'cogitator:',
+});
+
+// Cluster
+const adapter = new RedisAdapter({
+  provider: 'redis',
+  cluster: {
+    nodes: [
+      { host: 'redis-1', port: 6379 },
+      { host: 'redis-2', port: 6379 },
+    ],
+  },
+});
+
+await adapter.connect();
+```
+
+### PostgresAdapter
+
+Postgres with full feature set: threads, entries, facts, vector embeddings (pgvector).
+
+Implements `MemoryAdapter + FactAdapter + EmbeddingAdapter + KeywordSearchAdapter`.
+
+```typescript
+import { PostgresAdapter } from '@cogitator-ai/memory';
+
+const adapter = new PostgresAdapter({
+  provider: 'postgres',
+  connectionString: 'postgres://localhost/cogitator',
+  schema: 'cogitator', // default
+  poolSize: 10,
+});
+
+await adapter.connect(); // creates tables automatically
+```
+
+**Tables created (schema `cogitator`):**
+
+| Table                  | Purpose                                  |
+| ---------------------- | ---------------------------------------- |
+| `cogitator.threads`    | Conversation sessions                    |
+| `cogitator.entries`    | Memory entries (messages + token counts) |
+| `cogitator.facts`      | Long-term agent knowledge                |
+| `cogitator.embeddings` | Vector embeddings (ivfflat + GIN index)  |
+
+Vector dimensions default to 768 (nomic-embed-text). Override with `adapter.setVectorDimensions(1536)` before connecting.
+
+### SQLiteAdapter
+
+File-based storage. Ideal for local development and single-server deployments.
+
+```typescript
+import { SQLiteAdapter } from '@cogitator-ai/memory';
+
+const adapter = new SQLiteAdapter({
+  provider: 'sqlite',
+  path: './data/memory.db',
+  walMode: true, // default, better concurrency
+});
+
+await adapter.connect();
+```
+
+### MongoDBAdapter
+
+```typescript
+import { MongoDBAdapter } from '@cogitator-ai/memory';
+
+const adapter = new MongoDBAdapter({
+  provider: 'mongodb',
+  uri: 'mongodb://localhost:27017',
+  database: 'cogitator', // default
+  collectionPrefix: 'memory_', // default
+});
+
+await adapter.connect();
+```
+
+### QdrantAdapter
+
+Optimized for vector search workloads.
+
+```typescript
+import { QdrantAdapter } from '@cogitator-ai/memory';
+
+const adapter = new QdrantAdapter({
+  provider: 'qdrant',
+  url: 'http://localhost:6333',
+  apiKey: process.env.QDRANT_API_KEY,
+  collection: 'cogitator', // default
+  dimensions: 1536, // required
+});
+
+await adapter.connect();
+```
+
+---
+
+## Core Interfaces
+
+### MemoryAdapter
+
+All adapters implement this interface:
+
+```typescript
+interface MemoryAdapter {
+  readonly provider: MemoryProvider;
+
+  // Thread management
+  createThread(
+    agentId: string,
+    metadata?: Record<string, unknown>,
+    threadId?: string
+  ): Promise<MemoryResult<Thread>>;
+  getThread(threadId: string): Promise<MemoryResult<Thread | null>>;
+  updateThread(threadId: string, metadata: Record<string, unknown>): Promise<MemoryResult<Thread>>;
+  deleteThread(threadId: string): Promise<MemoryResult<void>>;
+
+  // Entry management
+  addEntry(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): Promise<MemoryResult<MemoryEntry>>;
+  getEntries(options: MemoryQueryOptions): Promise<MemoryResult<MemoryEntry[]>>;
+  getEntry(entryId: string): Promise<MemoryResult<MemoryEntry | null>>;
+  deleteEntry(entryId: string): Promise<MemoryResult<void>>;
+  clearThread(threadId: string): Promise<MemoryResult<void>>;
+
+  connect(): Promise<MemoryResult<void>>;
+  disconnect(): Promise<MemoryResult<void>>;
 }
 ```
 
-### Strategy 2: Semantic Similarity
-
-Retrieve memories most similar to a query.
+### Key Types
 
 ```typescript
-async function retrieveBySimilarity(
-  agentId: string,
-  query: string,
-  limit: number
-): Promise<SemanticMemory[]> {
-  // 1. Generate embedding for query
-  const embedding = await embedder.embed(query);
+interface Thread {
+  id: string;
+  agentId: string;
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
 
-  // 2. Search pgvector
-  const results = await db.query(
-    `
-    SELECT *,
-           1 - (embedding <=> $1) as similarity
-    FROM semantic_memories
-    WHERE agent_id = $2
-    ORDER BY embedding <=> $1
-    LIMIT $3
-  `,
-    [pgvector.toSql(embedding), agentId, limit]
-  );
+interface MemoryEntry {
+  id: string;
+  threadId: string;
+  message: Message;
+  toolCalls?: ToolCall[];
+  toolResults?: ToolResult[];
+  tokenCount: number;
+  createdAt: Date;
+  metadata?: Record<string, unknown>;
+}
 
-  return results.rows;
+interface MemoryQueryOptions {
+  threadId: string;
+  limit?: number;
+  before?: Date;
+  after?: Date;
+  includeToolCalls?: boolean;
+}
+
+type MemoryResult<T> = { success: true; data: T } | { success: false; error: string };
+```
+
+### FactAdapter (Postgres only)
+
+Long-term knowledge storage — user preferences, learned facts, domain knowledge.
+
+```typescript
+interface FactAdapter {
+  addFact(fact: Omit<Fact, 'id' | 'createdAt' | 'updatedAt'>): Promise<MemoryResult<Fact>>;
+  getFacts(agentId: string, category?: string): Promise<MemoryResult<Fact[]>>;
+  updateFact(factId: string, updates: Partial<...>): Promise<MemoryResult<Fact>>;
+  deleteFact(factId: string): Promise<MemoryResult<void>>;
+  searchFacts(agentId: string, query: string): Promise<MemoryResult<Fact[]>>;
+}
+
+interface Fact {
+  id: string;
+  agentId: string;
+  content: string;
+  category: string;
+  confidence: number;
+  source: 'user' | 'inferred' | 'system';
+  createdAt: Date;
+  updatedAt: Date;
+  expiresAt?: Date;
+  metadata?: Record<string, unknown>;
 }
 ```
 
-### Strategy 3: Importance-Weighted
+### EmbeddingAdapter (Postgres only)
 
-Prioritize memories marked as important.
-
-```typescript
-async function retrieveByImportance(agentId: string, limit: number): Promise<EpisodicMemory[]> {
-  return db.query(
-    `
-    SELECT * FROM episodic_memories
-    WHERE agent_id = $1
-    ORDER BY importance DESC, created_at DESC
-    LIMIT $2
-  `,
-    [agentId, limit]
-  );
-}
-```
-
-### Strategy 4: Hybrid (Recommended)
-
-Combine multiple strategies with weighted scoring.
+pgvector-backed semantic search.
 
 ```typescript
-interface HybridRetrievalConfig {
-  recencyWeight: number; // 0-1
-  similarityWeight: number; // 0-1
-  importanceWeight: number; // 0-1
+interface EmbeddingAdapter {
+  addEmbedding(embedding: Omit<Embedding, 'id' | 'createdAt'>): Promise<MemoryResult<Embedding>>;
+  search(options: SemanticSearchOptions): Promise<MemoryResult<(Embedding & { score: number })[]>>;
+  deleteEmbedding(embeddingId: string): Promise<MemoryResult<void>>;
+  deleteBySource(sourceId: string): Promise<MemoryResult<void>>;
 }
 
-async function retrieveHybrid(
-  agentId: string,
-  query: string,
-  limit: number,
-  config: HybridRetrievalConfig = {
-    recencyWeight: 0.3,
-    similarityWeight: 0.5,
-    importanceWeight: 0.2,
-  }
-): Promise<Memory[]> {
-  // 1. Get candidates from all strategies (3x limit for reranking)
-  const candidateLimit = limit * 3;
+interface Embedding {
+  id: string;
+  sourceId: string;
+  sourceType: 'message' | 'fact' | 'document';
+  vector: number[];
+  content: string;
+  createdAt: Date;
+  metadata?: Record<string, unknown>;
+}
 
-  const [recentMemories, similarMemories, importantMemories] = await Promise.all([
-    retrieveByRecency(agentId, candidateLimit),
-    retrieveBySimilarity(agentId, query, candidateLimit),
-    retrieveByImportance(agentId, candidateLimit),
-  ]);
-
-  // 2. Merge and score
-  const memoryScores = new Map<string, { memory: Memory; score: number }>();
-
-  const addWithScore = (memories: Memory[], getScore: (m: Memory, idx: number) => number) => {
-    memories.forEach((m, idx) => {
-      const existing = memoryScores.get(m.id);
-      const score = getScore(m, idx);
-      if (existing) {
-        existing.score += score;
-      } else {
-        memoryScores.set(m.id, { memory: m, score });
-      }
-    });
+interface SemanticSearchOptions {
+  query?: string;
+  vector?: number[];
+  limit?: number;
+  threshold?: number;
+  filter?: {
+    sourceType?: Embedding['sourceType'];
+    threadId?: string;
+    agentId?: string;
   };
-
-  // Score by recency (higher rank = higher score)
-  addWithScore(recentMemories, (_, idx) => config.recencyWeight * (1 - idx / candidateLimit));
-
-  // Score by similarity
-  addWithScore(similarMemories, (m) => config.similarityWeight * (m as any).similarity);
-
-  // Score by importance
-  addWithScore(importantMemories, (m) => config.importanceWeight * m.metadata.importance);
-
-  // 3. Sort by score and return top N
-  return Array.from(memoryScores.values())
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map((x) => x.memory);
 }
 ```
 
@@ -316,483 +283,266 @@ async function retrieveHybrid(
 
 ## Context Building
 
-### Token Budget Management
+`ContextBuilder` assembles messages for the LLM from stored history while respecting token limits.
 
 ```typescript
-interface ContextBudget {
-  total: number; // Total tokens available
-  system: number; // Reserved for system prompt
-  tools: number; // Reserved for tool schemas
-  memory: number; // Available for memory
-  output: number; // Reserved for output
-}
+import { ContextBuilder } from '@cogitator-ai/memory';
 
-class ContextBuilder {
-  async buildContext(
-    agent: Agent,
-    currentInput: string
-  ): Promise<{ messages: Message[]; tokenCount: number }> {
-    const budget = this.calculateBudget(agent);
-
-    // 1. Always include system prompt
-    const messages: Message[] = [
-      {
-        role: 'system',
-        content: agent.instructions,
-      },
-    ];
-
-    let usedTokens = this.countTokens(agent.instructions);
-
-    // 2. Reserve space for current input + expected output
-    const inputTokens = this.countTokens(currentInput);
-    const reservedForOutput = budget.output;
-    const availableForMemory = budget.total - usedTokens - inputTokens - reservedForOutput;
-
-    // 3. Retrieve relevant memories
-    const memories = await this.memoryManager.retrieveHybrid(
-      agent.id,
-      currentInput,
-      100 // Get many candidates
-    );
-
-    // 4. Fit memories into budget
-    for (const memory of memories) {
-      const memoryTokens = this.countTokens(memory.content);
-
-      if (usedTokens + memoryTokens > availableForMemory) {
-        // Try to summarize remaining memories
-        const remainingMemories = memories.slice(memories.indexOf(memory));
-        if (remainingMemories.length > 0) {
-          const summary = await this.summarize(remainingMemories);
-          const summaryTokens = this.countTokens(summary);
-
-          if (usedTokens + summaryTokens <= availableForMemory) {
-            messages.push({
-              role: 'system',
-              content: `[Previous context summary]: ${summary}`,
-            });
-            usedTokens += summaryTokens;
-          }
-        }
-        break;
-      }
-
-      messages.push(this.memoryToMessage(memory));
-      usedTokens += memoryTokens;
-    }
-
-    // 5. Add current input
-    messages.push({ role: 'user', content: currentInput });
-
-    return { messages, tokenCount: usedTokens + inputTokens };
+const builder = new ContextBuilder(
+  {
+    maxTokens: 128_000,
+    reserveTokens: 4000, // headroom for output
+    strategy: 'hybrid', // 'recent' | 'hybrid' (| 'relevant' — not yet implemented)
+    includeSystemPrompt: true,
+    includeFacts: true, // requires FactAdapter
+    includeSemanticContext: true, // requires EmbeddingAdapter + EmbeddingService
+  },
+  {
+    memoryAdapter: adapter,
+    factAdapter: postgresAdapter, // optional
+    embeddingAdapter: postgresAdapter, // optional
+    embeddingService: embeddingService, // optional
   }
+);
 
-  private calculateBudget(agent: Agent): ContextBudget {
-    const total = agent.contextWindow || 128_000;
-
-    return {
-      total,
-      system: Math.min(4000, total * 0.05),
-      tools: agent.tools.length * 500,
-      output: Math.min(4000, total * 0.1),
-      memory: total * 0.7,
-    };
-  }
-}
-```
-
----
-
-## Automatic Summarization
-
-When memory exceeds limits, automatic summarization compresses old context.
-
-### Summarization Strategies
-
-```typescript
-type SummarizationStrategy =
-  | 'simple' // Single LLM call to summarize
-  | 'hierarchical' // Summarize in chunks, then summarize summaries
-  | 'extractive' // Extract key points without generation
-  | 'map-reduce'; // Summarize chunks in parallel, then combine
-
-class Summarizer {
-  async summarize(
-    memories: Memory[],
-    strategy: SummarizationStrategy = 'hierarchical',
-    targetTokens: number = 2000
-  ): Promise<string> {
-    switch (strategy) {
-      case 'simple':
-        return this.simpleSummarize(memories, targetTokens);
-
-      case 'hierarchical':
-        return this.hierarchicalSummarize(memories, targetTokens);
-
-      case 'extractive':
-        return this.extractiveSummarize(memories, targetTokens);
-
-      case 'map-reduce':
-        return this.mapReduceSummarize(memories, targetTokens);
-    }
-  }
-
-  private async hierarchicalSummarize(memories: Memory[], targetTokens: number): Promise<string> {
-    const chunkSize = 10;
-    const chunks = this.chunkArray(memories, chunkSize);
-
-    // Level 1: Summarize each chunk
-    const chunkSummaries = await Promise.all(chunks.map((chunk) => this.summarizeChunk(chunk)));
-
-    // If still too large, summarize the summaries
-    const totalTokens = this.countTokens(chunkSummaries.join('\n'));
-
-    if (totalTokens > targetTokens && chunkSummaries.length > 1) {
-      return this.hierarchicalSummarize(
-        chunkSummaries.map((s) => ({ content: s }) as Memory),
-        targetTokens
-      );
-    }
-
-    return chunkSummaries.join('\n\n');
-  }
-
-  private async summarizeChunk(memories: Memory[]): Promise<string> {
-    const content = memories.map((m) => m.content).join('\n---\n');
-
-    const response = await this.llm.chat({
-      model: 'gpt-4o-mini', // Use fast, cheap model for summarization
-      messages: [
-        {
-          role: 'system',
-          content: `Summarize the following conversation/context concisely.
-                    Focus on: key decisions, facts learned, user preferences.
-                    Be brief but preserve important details.`,
-        },
-        { role: 'user', content },
-      ],
-      maxTokens: 500,
-    });
-
-    return response.content;
-  }
-}
-```
-
-### Importance Scoring
-
-Automatically score memory importance for better retrieval.
-
-```typescript
-class ImportanceScorer {
-  async scoreMemory(memory: Memory): Promise<number> {
-    let score = 0.5; // Base score
-
-    // 1. Content-based signals
-    const content = memory.content.toLowerCase();
-
-    // User preferences and facts
-    if (
-      content.includes('my name is') ||
-      content.includes('i prefer') ||
-      content.includes('remember that')
-    ) {
-      score += 0.3;
-    }
-
-    // Decisions and commitments
-    if (content.includes('i will') || content.includes("let's do") || content.includes('decided')) {
-      score += 0.2;
-    }
-
-    // Tool results (usually important)
-    if (memory.type === 'tool_result') {
-      score += 0.1;
-    }
-
-    // 2. Recency decay
-    const hoursAgo = (Date.now() - memory.timestamp.getTime()) / (1000 * 60 * 60);
-    const recencyBonus = Math.max(0, 0.2 - (hoursAgo / 24) * 0.1);
-    score += recencyBonus;
-
-    // 3. Access frequency (memories accessed more often are likely important)
-    const accessBonus = Math.min(0.1, memory.accessCount * 0.02);
-    score += accessBonus;
-
-    return Math.min(1, Math.max(0, score));
-  }
-}
-```
-
----
-
-## Memory Persistence
-
-### Backup and Restore
-
-```typescript
-class MemoryBackup {
-  async backup(agentId: string): Promise<BackupFile> {
-    const [episodic, semantic] = await Promise.all([
-      this.exportEpisodicMemories(agentId),
-      this.exportSemanticMemories(agentId),
-    ]);
-
-    return {
-      version: '1.0',
-      agentId,
-      exportedAt: new Date(),
-      episodic,
-      semantic,
-    };
-  }
-
-  async restore(backup: BackupFile, targetAgentId?: string): Promise<void> {
-    const agentId = targetAgentId || backup.agentId;
-
-    // Clear existing memories
-    await this.clearMemories(agentId);
-
-    // Restore episodic
-    await this.importEpisodicMemories(agentId, backup.episodic);
-
-    // Restore semantic (re-generate embeddings if model changed)
-    await this.importSemanticMemories(agentId, backup.semantic);
-  }
-}
-```
-
-### Memory Sharing Between Agents
-
-```typescript
-interface SharedMemoryPool {
-  // Create a shared knowledge base
-  createPool(name: string, agentIds: string[]): Promise<string>;
-
-  // Add memory to shared pool
-  contribute(poolId: string, memory: Memory): Promise<void>;
-
-  // Query shared pool
-  query(poolId: string, query: string): Promise<Memory[]>;
-
-  // Sync pool to agent's semantic memory
-  syncToAgent(poolId: string, agentId: string): Promise<void>;
-}
-
-// Use case: Multiple agents share domain knowledge
-const technicalKnowledge = await memoryPool.createPool('technical-docs', [
-  'researcher-agent',
-  'coder-agent',
-  'reviewer-agent',
-]);
-
-// Researcher finds and stores knowledge
-await memoryPool.contribute(technicalKnowledge, {
-  content: 'WebGPU requires WGSL shaders, not GLSL',
-  type: 'fact',
-  source: 'MDN documentation',
+const context = await builder.build({
+  threadId: 'thread_abc123',
+  agentId: 'agent_xyz',
+  systemPrompt: 'You are a helpful assistant.',
+  currentInput: 'What did we discuss yesterday?', // used for semantic retrieval
 });
 
-// Coder can now access this knowledge
-const relevantFacts = await memoryPool.query(technicalKnowledge, 'how do shaders work in WebGPU?');
+// context.messages — ready to send to LLM
+// context.tokenCount — tokens used
+// context.truncated — whether history was cut
+// context.facts — facts included in system prompt
+// context.semanticResults — embeddings included
+```
+
+### Strategies
+
+| Strategy   | Behavior                                                                      |
+| ---------- | ----------------------------------------------------------------------------- |
+| `recent`   | Most recent entries first, fills token budget                                 |
+| `hybrid`   | Semantically relevant older entries + recent entries (30/70 split by default) |
+| `relevant` | Not yet implemented — throws on use                                           |
+
+### ContextBuilderConfig
+
+```typescript
+interface ContextBuilderConfig {
+  maxTokens: number;
+  reserveTokens?: number; // default: 10% of maxTokens
+  strategy: ContextStrategy;
+  includeSystemPrompt?: boolean; // default: true
+  includeFacts?: boolean; // default: false
+  includeSemanticContext?: boolean; // default: false
+  includeGraphContext?: boolean; // default: false
+  graphContextOptions?: { maxNodes?: number; maxDepth?: number };
+}
 ```
 
 ---
 
-## Configuration
+## Embedding Services
+
+```typescript
+import {
+  OpenAIEmbeddingService,
+  OllamaEmbeddingService,
+  GoogleEmbeddingService,
+  createEmbeddingService,
+} from '@cogitator-ai/memory';
+
+// Factory
+const service = createEmbeddingService({
+  provider: 'openai',
+  apiKey: process.env.OPENAI_API_KEY!,
+  model: 'text-embedding-3-small', // optional
+});
+
+// Or Ollama
+const service = createEmbeddingService({
+  provider: 'ollama',
+  model: 'nomic-embed-text',
+  baseUrl: 'http://localhost:11434', // optional
+});
+
+// Or Google
+const service = createEmbeddingService({
+  provider: 'google',
+  apiKey: process.env.GOOGLE_API_KEY!,
+  model: 'text-embedding-004', // optional
+});
+
+const vector = await service.embed('hello world');
+const vectors = await service.embedBatch(['text1', 'text2']);
+console.log(service.dimensions); // 1536 for OpenAI, 768 for nomic, etc.
+```
+
+---
+
+## Hybrid Search
+
+BM25 keyword search + vector search fused with Reciprocal Rank Fusion.
+
+```typescript
+import { HybridSearch, type HybridSearchConfig } from '@cogitator-ai/memory';
+
+const search = new HybridSearch({
+  embeddingAdapter: postgresAdapter,
+  embeddingService: embeddingService,
+  keywordAdapter: postgresAdapter, // PostgresAdapter implements KeywordSearchAdapter
+  defaultWeights: { bm25: 0.3, vector: 0.7 },
+});
+
+const results = await search.search({
+  query: 'user preferences about dark mode',
+  strategy: 'hybrid', // 'vector' | 'keyword' | 'hybrid'
+  limit: 10,
+  threshold: 0.5,
+});
+// results: SearchResult[] with score, vectorScore, keywordScore
+```
+
+---
+
+## Configuration (via CogitatorConfig)
 
 ```typescript
 interface MemoryConfig {
-  // Storage backends
-  redis: {
-    url: string;
-    prefix: string;
-    ttl: number; // Default TTL for L2 memories
+  adapter?: 'memory' | 'redis' | 'postgres' | 'sqlite' | 'mongodb' | 'qdrant';
+
+  inMemory?: {
+    maxEntries?: number;
   };
 
-  postgres: {
+  redis?: {
+    url?: string;
+    host?: string;
+    port?: number;
+    cluster?: { nodes: { host: string; port: number }[]; scaleReads?: 'master' | 'slave' | 'all' };
+    keyPrefix?: string;
+    ttl?: number; // default: 86400 (24h)
+    password?: string;
+  };
+
+  postgres?: {
     connectionString: string;
-    poolSize: number;
+    schema?: string; // default: 'cogitator'
+    poolSize?: number; // default: 10
   };
 
-  // Embedding model
-  embeddings: {
-    provider: 'openai' | 'local' | 'cohere';
-    model: string; // 'text-embedding-3-small' or local model name
-    dimensions: number; // 1536 for OpenAI, 384 for local
-    batchSize: number; // Batch embedding requests
+  sqlite?: {
+    path: string; // use ':memory:' for in-memory
+    walMode?: boolean; // default: true
   };
 
-  // Retrieval settings
-  retrieval: {
-    defaultLimit: number;
-    maxLimit: number;
-    strategy: 'recency' | 'semantic' | 'importance' | 'hybrid';
-    hybridWeights: {
-      recency: number;
-      similarity: number;
-      importance: number;
-    };
+  mongodb?: {
+    uri: string;
+    database?: string; // default: 'cogitator'
+    collectionPrefix?: string; // default: 'memory_'
   };
 
-  // Summarization
-  summarization: {
-    enabled: boolean;
-    threshold: number; // Token count to trigger
-    strategy: SummarizationStrategy;
-    model: string; // Model to use for summarization
+  qdrant?: {
+    url?: string; // default: 'http://localhost:6333'
+    apiKey?: string;
+    collection?: string; // default: 'cogitator'
+    dimensions: number; // required — must match embedding model
   };
 
-  // Maintenance
-  maintenance: {
-    cleanupInterval: string; // Cron expression
-    retentionDays: number; // How long to keep old memories
-    compactionEnabled: boolean;
+  embedding?: {
+    provider: 'openai' | 'ollama' | 'google';
+    apiKey?: string;
+    model?: string;
+    baseUrl?: string;
+  };
+
+  contextBuilder?: {
+    maxTokens?: number;
+    reserveTokens?: number;
+    strategy?: 'recent' | 'hybrid';
+    includeFacts?: boolean;
+    includeSemanticContext?: boolean;
   };
 }
-
-// Default configuration
-const defaultConfig: MemoryConfig = {
-  redis: {
-    url: 'redis://localhost:6379',
-    prefix: 'cogitator',
-    ttl: 86400, // 24 hours
-  },
-  postgres: {
-    connectionString: 'postgres://localhost/cogitator',
-    poolSize: 10,
-  },
-  embeddings: {
-    provider: 'openai',
-    model: 'text-embedding-3-small',
-    dimensions: 1536,
-    batchSize: 100,
-  },
-  retrieval: {
-    defaultLimit: 20,
-    maxLimit: 100,
-    strategy: 'hybrid',
-    hybridWeights: {
-      recency: 0.3,
-      similarity: 0.5,
-      importance: 0.2,
-    },
-  },
-  summarization: {
-    enabled: true,
-    threshold: 50_000,
-    strategy: 'hierarchical',
-    model: 'gpt-4o-mini',
-  },
-  maintenance: {
-    cleanupInterval: '0 3 * * *', // 3 AM daily
-    retentionDays: 90,
-    compactionEnabled: true,
-  },
-};
 ```
 
 ---
 
-## Performance Optimizations
+## Knowledge Graph (Advanced)
 
-### 1. Embedding Cache
-
-```typescript
-class EmbeddingCache {
-  private cache: LRUCache<string, number[]>;
-
-  constructor() {
-    this.cache = new LRUCache({
-      max: 10_000,
-      ttl: 1000 * 60 * 60 * 24, // 24 hours
-    });
-  }
-
-  async getOrCompute(text: string): Promise<number[]> {
-    const hash = this.hashText(text);
-    let embedding = this.cache.get(hash);
-
-    if (!embedding) {
-      embedding = await this.embedder.embed(text);
-      this.cache.set(hash, embedding);
-    }
-
-    return embedding;
-  }
-}
-```
-
-### 2. Batch Operations
+Postgres-backed entity–relationship graph with LLM-assisted extraction and inference rules.
 
 ```typescript
-class BatchMemoryWriter {
-  private buffer: Memory[] = [];
-  private flushInterval: NodeJS.Timer;
+import {
+  PostgresGraphAdapter,
+  LLMEntityExtractor,
+  GraphInferenceEngine,
+  GraphContextBuilder,
+} from '@cogitator-ai/memory';
 
-  constructor(
-    private batchSize = 100,
-    private flushMs = 1000
-  ) {
-    this.flushInterval = setInterval(() => this.flush(), flushMs);
-  }
+// Store and query entities and relationships
+const graph = new PostgresGraphAdapter({
+  connectionString: 'postgres://localhost/cogitator',
+});
+await graph.connect();
 
-  add(memory: Memory): void {
-    this.buffer.push(memory);
-    if (this.buffer.length >= this.batchSize) {
-      this.flush();
-    }
-  }
+// Add nodes and edges
+const node = await graph.addNode({
+  type: 'person',
+  label: 'Alice',
+  source: 'user',
+  properties: { role: 'engineer' },
+});
 
-  private async flush(): Promise<void> {
-    if (this.buffer.length === 0) return;
+await graph.addEdge({
+  fromId: alice.id,
+  toId: project.id,
+  type: 'works_on',
+  properties: {},
+});
 
-    const batch = this.buffer.splice(0, this.batchSize);
-    await this.db.batchInsert('episodic_memories', batch);
-  }
-}
-```
+// Semantic graph search
+const results = await graph.semanticSearch({
+  query: 'engineers working on ML projects',
+  vector: await embeddingService.embed('engineers ML projects'),
+  limit: 10,
+});
 
-### 3. Index Optimization
-
-```sql
--- Partial indexes for common queries
-CREATE INDEX idx_recent_important ON episodic_memories (agent_id, created_at DESC)
-  WHERE importance > 0.7;
-
--- Covering index to avoid table lookups
-CREATE INDEX idx_episodic_cover ON episodic_memories (agent_id, created_at DESC)
-  INCLUDE (content, type, importance);
-
--- BRIN index for time-series data (efficient for large tables)
-CREATE INDEX idx_created_brin ON episodic_memories USING brin (created_at);
+// Build graph-enriched context
+const gctx = new GraphContextBuilder(graph, { maxNodes: 20, maxDepth: 2 });
+const graphContext = await gctx.buildContext({
+  agentId: 'agent_123',
+  query: 'who works on what projects?',
+  embeddingService,
+});
 ```
 
 ---
 
-## Monitoring
-
-### Key Metrics
+## Usage with Cogitator
 
 ```typescript
-const memoryMetrics = {
-  // Storage
-  'memory.episodic.count': Gauge,
-  'memory.semantic.count': Gauge,
-  'memory.storage.bytes': Gauge,
+import { Cogitator, Agent } from '@cogitator-ai/core';
 
-  // Operations
-  'memory.store.duration': Histogram,
-  'memory.retrieve.duration': Histogram,
-  'memory.retrieve.hit_rate': Gauge,
+const cog = new Cogitator({
+  llm: { defaultModel: 'openai/gpt-4o' },
+  memory: {
+    adapter: 'postgres',
+    postgres: { connectionString: process.env.DATABASE_URL! },
+    embedding: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY! },
+    contextBuilder: { strategy: 'hybrid', includeSemanticContext: true },
+  },
+});
 
-  // Summarization
-  'memory.summarization.runs': Counter,
-  'memory.summarization.tokens_saved': Counter,
+const agent = new Agent({ name: 'assistant', instructions: 'You are helpful.' });
 
-  // Health
-  'memory.redis.connected': Gauge,
-  'memory.postgres.pool.active': Gauge,
-};
+// Pass threadId to persist conversation
+const result = await cog.run(agent, {
+  input: 'Hello!',
+  threadId: 'thread_user_123',
+  useMemory: true,
+  saveHistory: true,
+});
 ```

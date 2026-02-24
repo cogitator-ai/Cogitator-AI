@@ -1,14 +1,9 @@
-import { EvalSuite } from './eval-suite';
+import { EvalSuite, isLLMMetric } from './eval-suite';
 import type { EvalTarget, EvalSuiteOptions } from './eval-suite';
 import { Dataset } from './datasets';
 import type { MetricFn, StatisticalMetricFn } from './metrics/types';
 import type { JudgeConfig } from './schema';
 import type { AssertionFn } from './assertions';
-import type { LLMMetricFn } from './metrics/llm-judge';
-
-function isLLMMetric(m: MetricFn): m is LLMMetricFn {
-  return 'requiresJudge' in m && (m as LLMMetricFn).requiresJudge === true;
-}
 
 export class EvalBuilder {
   private _dataset?: Dataset;

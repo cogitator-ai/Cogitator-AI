@@ -9,7 +9,16 @@ export function assertion(opts: {
   message?: string;
 }): AssertionFn {
   return (aggregated, stats) => {
-    const passed = opts.check(aggregated, stats);
+    let passed: boolean;
+    try {
+      passed = opts.check(aggregated, stats);
+    } catch (err) {
+      return {
+        name: opts.name,
+        passed: false,
+        message: `Custom assertion '${opts.name}' threw: ${(err as Error).message}`,
+      };
+    }
 
     return {
       name: opts.name,

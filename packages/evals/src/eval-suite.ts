@@ -45,7 +45,7 @@ export interface EvalSuiteResult {
   saveBaseline: (path: string) => void;
 }
 
-function isLLMMetric(m: MetricFn): m is LLMMetricFn {
+export function isLLMMetric(m: MetricFn): m is LLMMetricFn {
   return 'requiresJudge' in m && (m as LLMMetricFn).requiresJudge === true;
 }
 
@@ -213,6 +213,7 @@ export class EvalSuite {
   }
 
   private async executeCase(evalCase: EvalCase): Promise<EvalCaseResult> {
+    const start = Date.now();
     for (let attempt = 0; attempt <= this.retries; attempt++) {
       try {
         return await this.executeCaseAttempt(evalCase);
@@ -224,7 +225,7 @@ export class EvalSuite {
     return {
       case: evalCase,
       output: '',
-      duration: 0,
+      duration: Date.now() - start,
     };
   }
 

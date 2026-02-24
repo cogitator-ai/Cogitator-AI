@@ -350,6 +350,24 @@ describe('EvalSuite', () => {
 
       expect(result.results[0].output).toBe('');
     });
+
+    it('returns non-zero duration when all retries fail', async () => {
+      const fn = async () => {
+        await new Promise((r) => setTimeout(r, 20));
+        throw new Error('always fails');
+      };
+
+      const suite = new EvalSuite({
+        dataset: Dataset.from([{ input: 'fail' }]),
+        target: { fn },
+        retries: 1,
+      });
+
+      const result = await suite.run();
+
+      expect(result.results[0].output).toBe('');
+      expect(result.results[0].duration).toBeGreaterThan(0);
+    });
   });
 
   describe('progress', () => {

@@ -1,6 +1,6 @@
 export const VERSION = '0.1.0';
 
-export { EvalSuite } from './eval-suite';
+export { EvalSuite, isLLMMetric } from './eval-suite';
 export type { EvalTarget, EvalProgress, EvalSuiteOptions, EvalSuiteResult } from './eval-suite';
 export { EvalComparison } from './eval-comparison';
 export type { EvalComparisonOptions, MetricComparison, ComparisonResult } from './eval-comparison';

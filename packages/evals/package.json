@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/evals",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Evaluation framework for Cogitator AI agents",
   "type": "module",
   "main": "./dist/index.js",
@@ -23,8 +23,6 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@cogitator-ai/types": "workspace:*",
-    "nanoid": "^5.0.4",
     "zod": "^4.3.6"
   },
   "peerDependencies": {

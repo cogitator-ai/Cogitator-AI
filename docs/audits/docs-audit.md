@@ -396,6 +396,69 @@ All actual table names have the `cogitator_` prefix (defined in `docker/postgres
 
 ---
 
+## docs/MEMORY.md
+
+**Status:** Complete
+**Date:** 2026-02-25
+**Severity:** Critical — document described entirely aspirational architecture, every class/interface/schema was wrong
+
+### Issues Found (20+ total)
+
+#### Critical — Non-existent classes / wrong interfaces
+
+| #   | Section                                                                                     | Issue                                                                                        | Fix                                                                                                                       |
+| --- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Architecture diagram                                                                        | L1/L2/L3/L4 hierarchy (Working Memory, Episodic, Semantic) — aspirational, never implemented | Replaced with actual adapter diagram + ContextBuilder                                                                     |
+| 2   | WorkingMemory interface                                                                     | Doesn't exist (fields: messages, toolResults, scratchpad, tokenCount)                        | Actual type is `MemoryEntry`                                                                                              |
+| 3   | WorkingMemoryManager class                                                                  | Doesn't exist (LRU cache, flushToEpisodic)                                                   | Actual is `InMemoryAdapter` (Map-based, no LRU)                                                                           |
+| 4   | EpisodicMemory interface                                                                    | Doesn't exist                                                                                | Actual type is `MemoryEntry`                                                                                              |
+| 5   | PostgreSQL `episodic_memories` table                                                        | Doesn't exist; wrong columns (no importance, no tokens, no agent_id FK to `agents`)          | Actual tables: `cogitator.threads`, `cogitator.entries`, `cogitator.facts`, `cogitator.embeddings`                        |
+| 6   | SemanticMemory interface                                                                    | Doesn't exist (confidence, lastAccessed, source fields missing from real Embedding)          | Actual type is `Embedding` with different fields                                                                          |
+| 7   | `semantic_memories` table with HNSW index                                                   | Wrong table, wrong index type                                                                | Actual: `cogitator.embeddings` with IVFFlat index (not HNSW); no `last_accessed`, no `confidence` columns                 |
+| 8   | retrieveByRecency / retrieveBySimilarity / retrieveByImportance / retrieveHybrid            | Don't exist as functions                                                                     | Actual: `ContextBuilder.build()` with `strategy: 'recent' \| 'hybrid'`                                                    |
+| 9   | ContextBuilder.buildContext(agent, currentInput)                                            | Wrong signature                                                                              | Actual: `build(options: BuildContextOptions)` with `{ threadId, agentId, systemPrompt?, currentInput? }`                  |
+| 10  | Summarizer class (4 strategies)                                                             | Doesn't exist                                                                                | ContextBuilder has no summarization; `relevant` strategy not yet implemented                                              |
+| 11  | ImportanceScorer class                                                                      | Doesn't exist                                                                                | No equivalent in codebase                                                                                                 |
+| 12  | MemoryBackup class                                                                          | Doesn't exist                                                                                | No equivalent in codebase                                                                                                 |
+| 13  | SharedMemoryPool interface                                                                  | Doesn't exist                                                                                | No equivalent in codebase                                                                                                 |
+| 14  | EmbeddingCache class with LRU                                                               | Doesn't exist                                                                                | No equivalent in codebase                                                                                                 |
+| 15  | BatchMemoryWriter class                                                                     | Doesn't exist                                                                                | No equivalent in codebase                                                                                                 |
+| 16  | MemoryConfig structure (redis, postgres, embeddings, retrieval, summarization, maintenance) | Completely wrong structure                                                                   | Actual: `adapter?`, `inMemory?`, `redis?`, `postgres?`, `sqlite?`, `mongodb?`, `qdrant?`, `embedding?`, `contextBuilder?` |
+| 17  | Embedding providers `'openai' \| 'local' \| 'cohere'`                                       | Wrong values                                                                                 | Actual: `'openai' \| 'ollama' \| 'google'`                                                                                |
+| 18  | Monitoring metrics (Counter/Histogram/Gauge types)                                          | Aspirational, not exported                                                                   | Removed                                                                                                                   |
+
+#### Missing coverage (not mentioned at all)
+
+| #   | Issue                                                                                      | Fix                     |
+| --- | ------------------------------------------------------------------------------------------ | ----------------------- |
+| 19  | SQLiteAdapter — not mentioned                                                              | Added                   |
+| 20  | MongoDBAdapter — not mentioned                                                             | Added                   |
+| 21  | QdrantAdapter — not mentioned                                                              | Added                   |
+| 22  | HybridSearch (BM25 + vector + RRF) — not mentioned                                         | Added dedicated section |
+| 23  | FactAdapter interface — not mentioned                                                      | Added                   |
+| 24  | EmbeddingAdapter interface — not mentioned                                                 | Added                   |
+| 25  | Thread interface — not mentioned                                                           | Added                   |
+| 26  | MemoryEntry interface (actual shape) — not mentioned                                       | Added                   |
+| 27  | Knowledge Graph subsystem (PostgresGraphAdapter, LLMEntityExtractor, etc.) — not mentioned | Added section           |
+| 28  | EmbeddingService factory (createEmbeddingService) — not mentioned                          | Added                   |
+
+### Result
+
+Complete rewrite. All sections now reflect actual `packages/memory/src/` source:
+
+- Architecture diagram shows real layers (adapters → ContextBuilder)
+- All 6 adapters documented with correct config
+- `MemoryAdapter` interface correct (Thread CRUD + Entry CRUD + connect/disconnect)
+- `MemoryEntry`, `Thread`, `Fact`, `Embedding` types documented correctly
+- `ContextBuilder.build()` with correct signature and all 3 strategies (with note that `relevant` is not implemented)
+- `ContextBuilderConfig` all fields correct
+- Embedding services: openai/ollama/google with `createEmbeddingService()` factory
+- `HybridSearch` with BM25 + vector + RRF
+- `MemoryConfig` correct structure (all 7 adapter keys + embedding + contextBuilder)
+- Knowledge Graph section: PostgresGraphAdapter, LLMEntityExtractor, GraphContextBuilder
+
+---
+
 ## docs/GETTING_STARTED.md
 
 **Status:** Complete

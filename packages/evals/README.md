@@ -397,6 +397,7 @@ result.report('ci');
 | `Dataset`        | Immutable dataset with from/fromJsonl/fromCsv/filter/sample/shuffle |
 | `loadJsonl`      | Low-level JSONL file loader                                         |
 | `loadCsv`        | Low-level CSV file loader                                           |
+| `isLLMMetric`    | Type guard: checks if a `MetricFn` is an `LLMMetricFn`              |
 
 ### Metrics
 
