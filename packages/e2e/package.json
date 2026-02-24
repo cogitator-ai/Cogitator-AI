@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/e2e",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "description": "End-to-end tests for Cogitator AI",
   "type": "module",

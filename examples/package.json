@@ -6,6 +6,7 @@
   "dependencies": {
     "@ai-sdk/provider": "^1.0.0",
     "@cogitator-ai/a2a": "workspace:*",
+    "create-cogitator-app": "workspace:*",
     "@cogitator-ai/ai-sdk": "workspace:*",
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/deploy": "workspace:*",

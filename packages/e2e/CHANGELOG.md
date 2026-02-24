@@ -1,5 +1,12 @@
 # @cogitator-ai/e2e
 
+## 0.1.7
+
+### Patch Changes
+
+- Updated dependencies
+  - create-cogitator-app@0.1.1
+
 ## 0.1.6
 
 ### Patch Changes

@@ -34,6 +34,10 @@ To switch providers, edit `_shared/setup.ts` or set env variables:
 
 ## Examples by Category
 
+### [`create-cogitator-app/`](./create-cogitator-app/) — Project Scaffolding
+
+Programmatically scaffold new Cogitator projects using the `create-cogitator-app` API.
+
 ### [`cli/`](./cli/) — CLI Tool
 
 Scaffold projects, manage Docker services, run agents from the terminal.

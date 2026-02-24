@@ -7,7 +7,7 @@
 | cli                  | 2026-02-25 | 7 fixed      | ✅     |
 | config               | 2026-02-24 | 8 fixed      | ✅     |
 | core                 | 2026-02-25 | 37 fixed     | ✅     |
-| create-cogitator-app | —          | —            | —      |
+| create-cogitator-app | 2026-02-25 | 10+ fixed    | ✅     |
 | dashboard            | —          | —            | n/a    |
 | deploy               | —          | —            | —      |
 | e2e                  | —          | —            | n/a    |

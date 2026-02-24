@@ -1,0 +1,93 @@
+---
+title: Project Scaffolding
+description: Create new Cogitator projects in seconds with create-cogitator-app.
+---
+
+`create-cogitator-app` is an interactive CLI that scaffolds production-ready Cogitator projects with your chosen template, LLM provider, and tooling.
+
+## Quick Start
+
+```bash
+npx create-cogitator-app
+```
+
+This launches an interactive prompt that guides you through:
+1. Project name and location
+2. Template selection
+3. LLM provider
+4. Package manager
+5. Docker Compose and git options
+
+## Templates
+
+| Template | Best For |
+|----------|----------|
+| `basic` | Getting started, single agent with tools |
+| `memory` | Agents that need cross-session memory (Redis) |
+| `swarm` | Multi-agent hierarchical task delegation |
+| `workflow` | DAG pipelines with sequential agent nodes |
+| `api-server` | REST API backends with Express |
+| `nextjs` | Full-stack chat apps with streaming UI |
+
+## CLI Flags
+
+Skip the prompts by passing flags directly:
+
+```bash
+npx create-cogitator-app my-project \
+  --template swarm \
+  --provider openai \
+  --pm pnpm \
+  --docker \
+  --no-git
+```
+
+| Flag | Shorthand | Values |
+|------|-----------|--------|
+| `--template` | `-t` | `basic`, `memory`, `swarm`, `workflow`, `api-server`, `nextjs` |
+| `--provider` | `-p` | `ollama`, `openai`, `anthropic`, `google` |
+| `--pm` | | `pnpm`, `npm`, `yarn`, `bun` |
+| `--docker` / `--no-docker` | | Include Docker Compose (Redis, Postgres) |
+| `--git` / `--no-git` | | Initialize git repository |
+
+## Providers
+
+| Provider | Default Model | Env Var |
+|----------|---------------|---------|
+| `ollama` | `qwen2.5:7b` | `OLLAMA_BASE_URL` (optional) |
+| `openai` | `gpt-4o` | `OPENAI_API_KEY` |
+| `anthropic` | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY` |
+| `google` | `gemini-2.5-flash` | `GOOGLE_API_KEY` |
+
+## Generated Structure
+
+```
+my-project/
+├── src/
+│   ├── index.ts        # Entry point
+│   └── tools.ts        # Tool definitions
+├── package.json
+├── tsconfig.json
+├── cogitator.yml       # Provider config
+├── .env.example
+├── .gitignore
+└── README.md
+```
+
+Docker Compose (when `--docker`) adds `docker-compose.yml` with Redis and Postgres services.
+
+## Programmatic API
+
+```ts
+import { scaffold } from 'create-cogitator-app';
+
+await scaffold({
+  name: 'my-agent',
+  path: '/projects/my-agent',
+  template: 'basic',
+  provider: 'ollama',
+  packageManager: 'pnpm',
+  docker: false,
+  git: true,
+});
+```

@@ -1,6 +1,6 @@
 {
   "name": "create-cogitator-app",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Create a new Cogitator AI agent project",
   "type": "module",
   "bin": {
