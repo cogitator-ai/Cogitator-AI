@@ -4,7 +4,7 @@ export const defaultModels: Record<LLMProvider, string> = {
   ollama: 'qwen2.5:7b',
   openai: 'gpt-4o',
   anthropic: 'claude-sonnet-4-20250514',
-  google: 'gemini-2.0-flash',
+  google: 'gemini-2.5-flash',
 };
 
 export function providerEnvKey(provider: LLMProvider): string {

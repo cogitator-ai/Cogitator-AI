@@ -25,14 +25,20 @@ export function parseArgs(args: string[]): ParsedArgs {
     const arg = args[i];
 
     if (arg === '--template' || arg === '-t') {
-      const val = args[++i] as Template;
-      if (validTemplates.includes(val)) parsed.template = val;
+      if (i + 1 < args.length) {
+        const val = args[++i] as Template;
+        if (validTemplates.includes(val)) parsed.template = val;
+      }
     } else if (arg === '--provider' || arg === '-p') {
-      const val = args[++i] as LLMProvider;
-      if (validProviders.includes(val)) parsed.provider = val;
+      if (i + 1 < args.length) {
+        const val = args[++i] as LLMProvider;
+        if (validProviders.includes(val)) parsed.provider = val;
+      }
     } else if (arg === '--pm') {
-      const val = args[++i] as PackageManager;
-      if (validPMs.includes(val)) parsed.packageManager = val;
+      if (i + 1 < args.length) {
+        const val = args[++i] as PackageManager;
+        if (validPMs.includes(val)) parsed.packageManager = val;
+      }
     } else if (arg === '--docker') {
       parsed.docker = true;
     } else if (arg === '--no-docker') {
@@ -52,7 +58,7 @@ export function parseArgs(args: string[]): ParsedArgs {
 }
 
 export async function collectOptions(args: ParsedArgs): Promise<ProjectOptions> {
-  const name =
+  const rawName =
     args.name ||
     ((await p.text({
       message: 'Where should we create your project?',
@@ -64,12 +70,13 @@ export async function collectOptions(args: ParsedArgs): Promise<ProjectOptions> 
       },
     })) as string);
 
-  if (p.isCancel(name)) {
+  if (p.isCancel(rawName)) {
     p.cancel('Operation cancelled.');
     process.exit(0);
   }
 
-  const projectName = path.basename(name.replace(/^\.\//, ''));
+  const name = rawName.trim();
+  const projectName = path.basename(path.normalize(name).replace(/^\.\//, '').replace(/^\.\\/, ''));
   const projectPath = path.resolve(process.cwd(), name);
 
   const template =
@@ -96,7 +103,7 @@ export async function collectOptions(args: ParsedArgs): Promise<ProjectOptions> 
         },
         { value: 'openai' as const, label: 'OpenAI', hint: 'GPT-4o' },
         { value: 'anthropic' as const, label: 'Anthropic', hint: 'Claude Sonnet' },
-        { value: 'google' as const, label: 'Google Gemini', hint: 'Gemini 2.0 Flash' },
+        { value: 'google' as const, label: 'Google Gemini', hint: 'Gemini 2.5 Flash' },
       ],
     })) as LLMProvider);
 

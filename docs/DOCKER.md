@@ -29,7 +29,7 @@ docker-compose up -d
 
 # Wait for services to be ready, then pull models
 docker-compose exec ollama ollama pull nomic-embed-text-v2-moe
-docker-compose exec ollama ollama pull llama3.1:8b
+docker-compose exec ollama ollama pull llama3.2:3b
 
 # Install dependencies and build
 pnpm install
@@ -46,6 +46,8 @@ If you don't have an NVIDIA GPU:
 ```bash
 docker-compose -f docker-compose.cpu.yml up -d
 ```
+
+> The CPU variant pulls `nomic-embed-text` instead of `nomic-embed-text-v2-moe` as the embedding model.
 
 ## Services
 
@@ -64,7 +66,7 @@ The setup includes:
 | Model                     | Purpose               | Size   |
 | ------------------------- | --------------------- | ------ |
 | `nomic-embed-text-v2-moe` | Embeddings for memory | ~274MB |
-| `llama3.1:8b`             | Default chat model    | ~2GB   |
+| `llama3.2:3b`             | Default chat model    | ~2GB   |
 
 ## Commands Reference
 
@@ -75,6 +77,7 @@ make down            # Stop services
 make ps              # Show running services
 make logs            # View all logs
 make logs-ollama     # View Ollama logs
+make logs-pg         # View PostgreSQL logs
 
 # Models
 make pull-models     # Pull default models
@@ -121,6 +124,14 @@ GOOGLE_API_KEY=AIza...
 # Embeddings
 EMBEDDING_PROVIDER=ollama
 EMBEDDING_MODEL=nomic-embed-text-v2-moe
+
+# Sandbox (code execution isolation)
+SANDBOX_DEFAULT_TYPE=native
+SANDBOX_DEFAULT_TIMEOUT=30000
+SANDBOX_MAX_CONTAINERS=5
+
+# Dashboard
+NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
 ## Architecture
@@ -144,7 +155,7 @@ EMBEDDING_MODEL=nomic-embed-text-v2-moe
     │                      │
     │  Models:             │
     │  • nomic-embed-text  │
-    │  • llama3.1:8b       │
+    │  • llama3.2:3b       │
     └──────────────────────┘
 ```
 
@@ -194,7 +205,7 @@ docker-compose up -d postgres redis
 
 # Pull models
 ollama pull nomic-embed-text-v2-moe
-ollama pull llama3.1:8b
+ollama pull llama3.2:3b
 ```
 
 ## Troubleshooting
@@ -219,17 +230,16 @@ docker-compose restart postgres
 docker-compose logs ollama
 
 # Try pulling manually
-docker-compose exec ollama ollama pull llama3.1:8b
+docker-compose exec ollama ollama pull llama3.2:3b
 ```
 
 ### Out of memory
 
-For systems with limited RAM, use smaller models:
+For systems with limited RAM, use a smaller model instead of the default `llama3.2:3b`:
 
 ```bash
-# Instead of llama3.1:8b
-docker-compose exec ollama ollama pull llama3.1:8b  # ~1GB
-docker-compose exec ollama ollama pull phi3:mini    # ~2GB
+docker-compose exec ollama ollama pull llama3.2:1b   # ~1.3GB
+docker-compose exec ollama ollama pull phi3:mini      # ~2.3GB
 ```
 
 ### Reset everything

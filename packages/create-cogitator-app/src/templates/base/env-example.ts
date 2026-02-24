@@ -1,6 +1,6 @@
-import type { LLMProvider, TemplateFile } from '../../types.js';
+import type { LLMProvider, Template, TemplateFile } from '../../types.js';
 
-export function generateEnvExample(provider: LLMProvider): TemplateFile {
+export function generateEnvExample(provider: LLMProvider, template?: Template): TemplateFile {
   const lines: string[] = ['# Cogitator Environment Variables', ''];
 
   switch (provider) {
@@ -20,6 +20,12 @@ export function generateEnvExample(provider: LLMProvider): TemplateFile {
       lines.push('# Google AI');
       lines.push('GOOGLE_API_KEY=...');
       break;
+  }
+
+  if (template === 'memory') {
+    lines.push('');
+    lines.push('# Redis');
+    lines.push('REDIS_URL=redis://localhost:6379');
   }
 
   lines.push('');

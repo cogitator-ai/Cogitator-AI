@@ -12,8 +12,8 @@ export function isGitInstalled(): boolean {
 export function initGitRepo(cwd: string) {
   execSync('git init', { cwd, stdio: 'ignore' });
   execSync('git add -A', { cwd, stdio: 'ignore' });
-  execSync('git commit -m "initial commit from create-cogitator-app"', {
-    cwd,
-    stdio: 'ignore',
-  });
+  execSync(
+    'git -c user.name="Cogitator" -c user.email="init@cogitator.dev" commit -m "feat: initial project scaffold"',
+    { cwd, stdio: 'ignore' }
+  );
 }

@@ -31,9 +31,9 @@ export function generateDockerCompose(provider: LLMProvider): TemplateFile {
       '    ports:',
       '      - "5432:5432"',
       '    environment:',
-      '      POSTGRES_USER: cogitator',
-      '      POSTGRES_PASSWORD: cogitator',
-      '      POSTGRES_DB: cogitator',
+      '      POSTGRES_USER: ${POSTGRES_USER:-cogitator}',
+      '      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cogitator}',
+      '      POSTGRES_DB: ${POSTGRES_DB:-cogitator}',
       '    volumes:',
       '      - postgres_data:/var/lib/postgresql/data',
     ]

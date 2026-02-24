@@ -1,5 +1,53 @@
 # Docs Audit Report
 
+## docs/DOCKER.md
+
+**Status:** Complete
+**Date:** 2026-02-25
+**Severity:** Medium — model names were stale throughout, one section garbled, missing commands and env vars
+
+### Issues Found (7 total)
+
+#### Critical (4) — Wrong model name throughout
+
+| #   | Location                        | Issue                                                                                    | Fix                           |
+| --- | ------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------- |
+| 1   | Quick Start Option 2            | `llama3.1:8b` in manual pull command — actual default in docker-compose is `llama3.2:3b` | Changed to `llama3.2:3b`      |
+| 2   | Pre-installed Models table      | `llama3.1:8b` with `~2GB` — wrong model                                                  | Changed to `llama3.2:3b`      |
+| 3   | Architecture ASCII diagram      | `• llama3.1:8b` inside Ollama box                                                        | Changed to `• llama3.2:3b`    |
+| 4   | Apple Silicon / Troubleshooting | `ollama pull llama3.1:8b` in two places                                                  | Changed both to `llama3.2:3b` |
+
+#### Medium (3) — Missing or garbled content
+
+| #   | Location                | Issue                                                                                                                           | Fix                                                                     |
+| --- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| 5   | "Out of memory" section | Garbled: said "Instead of llama3.1:8b" then showed llama3.1:8b; wrong sizes                                                     | Rewrote: default is llama3.2:3b, alternatives are llama3.2:1b/phi3:mini |
+| 6   | Commands Reference      | Missing `logs-pg` command (Makefile has it)                                                                                     | Added `make logs-pg` line                                               |
+| 7   | Environment Variables   | Missing `SANDBOX_DEFAULT_TYPE`, `SANDBOX_DEFAULT_TIMEOUT`, `SANDBOX_MAX_CONTAINERS`, `NEXT_PUBLIC_APP_URL` (all in env.example) | Added all four to the key variables block                               |
+
+#### Bonus (1) — Added missing context
+
+| #   | Location        | Issue                                                      | Fix                                                                   |
+| --- | --------------- | ---------------------------------------------------------- | --------------------------------------------------------------------- |
+| 8   | CPU Only option | No mention that CPU variant uses different embedding model | Added note: CPU uses `nomic-embed-text` not `nomic-embed-text-v2-moe` |
+
+### Source of Truth Verified
+
+| Claim                                   | Verified Against         | Result                            |
+| --------------------------------------- | ------------------------ | --------------------------------- |
+| PostgreSQL port 5432                    | docker-compose.yml       | ✅ Correct                        |
+| Redis port 6379                         | docker-compose.yml       | ✅ Correct                        |
+| Ollama port 11434                       | docker-compose.yml       | ✅ Correct                        |
+| pgvector 768-dimension vectors          | docker/postgres/init.sql | ✅ Correct                        |
+| IVFFlat index                           | docker/postgres/init.sql | ✅ Correct                        |
+| `search_memory_by_embedding()` function | docker/postgres/init.sql | ✅ Correct (signature matches)    |
+| `docker/env.example` path               | Filesystem               | ✅ Correct                        |
+| `docker-compose.cpu.yml` exists         | Filesystem               | ✅ Correct                        |
+| All `make` commands listed              | Makefile                 | ✅ Correct (after adding logs-pg) |
+| DATABASE_URL format                     | docker/env.example       | ✅ Correct                        |
+
+---
+
 ## docs/AGENTS.md
 
 **Status:** Complete

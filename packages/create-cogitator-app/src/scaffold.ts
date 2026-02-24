@@ -42,7 +42,7 @@ function collectFiles(options: ProjectOptions): TemplateFile[] {
   files.push({ path: 'package.json', content: buildPackageJson(options) });
   files.push(...template.files(options));
   files.push(generateGitignore());
-  files.push(generateEnvExample(options.provider));
+  files.push(generateEnvExample(options.provider, options.template));
   files.push(generateCogitatorYml(options.provider));
   files.push(generateReadme(options));
 
