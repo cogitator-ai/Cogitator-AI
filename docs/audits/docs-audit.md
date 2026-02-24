@@ -325,3 +325,71 @@ Complete rewrite of ARCHITECTURE.md:
 - fly.toml template (matches actual `fly-toml.ts` output after `[build]` fix) ✅
 - Model-to-Secret mapping table ✅
 - Future targets table (Railway/K8s/SSH in DeployTarget type but no provider registered) ✅
+
+---
+
+## docs/DISASTER_RECOVERY.md
+
+**Status:** Complete
+**Date:** 2026-02-25
+**Severity:** Medium — 9 issues, mostly wrong table names and phantom infrastructure references
+
+### Issues Found (9 total)
+
+#### Critical (3) — Wrong PostgreSQL table names throughout
+
+All actual table names have the `cogitator_` prefix (defined in `docker/postgres/init.sql`). The doc used bare names from an imaginary schema.
+
+| #   | Location                           | Issue                                                                                                                                                                     | Fix                                                      |
+| --- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| 1   | Scenario 3 / Verify data integrity | `SELECT COUNT(*) FROM agents` — table is `cogitator_agents`                                                                                                               | Changed to `cogitator_agents`                            |
+| 2   | Scenario 3 / Verify data integrity | `FROM runs WHERE status = 'running' AND updated_at < ...` — table is `cogitator_runs`, column is `started_at` (no `updated_at`)                                           | Changed to `cogitator_runs` + `started_at`               |
+| 3   | Scenario 5 / Data Corruption       | `SELECT id FROM runs WHERE NOT (result IS NULL OR result::text <> '')` — wrong table, wrong column (`output` not `result`), wrong query logic (condition is always false) | Rewrote as null/empty `output` check on `cogitator_runs` |
+
+#### High (3) — Wrong table/index names in data corruption section
+
+| #   | Location                           | Issue                                                                                                                                                                                    | Fix                                                                                 |
+| --- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| 4   | Scenario 5 / Identify corruption   | `FROM memory_vectors WHERE array_length(embedding, 1) != 1536` — wrong table (`cogitator_memory_entries`), wrong dimension (768 not 1536 per init.sql)                                   | Changed table to `cogitator_memory_entries`, dimension to 768, used `vector_dims()` |
+| 5   | Scenario 5 / Isolate affected data | `UPDATE runs SET status = 'corrupted'` / `UPDATE agents SET enabled = false` — wrong table names, `cogitator_runs` has no `corrupted` status, `cogitator_agents` has no `enabled` column | Rewrote to use correct tables and existing columns                                  |
+| 6   | Scenario 5 / Restore / Reindex     | `pg_restore --table=runs --table=memory_vectors` and `REINDEX INDEX memory_vectors_embedding_idx` — wrong table/index names                                                              | Changed to `cogitator_runs`, `cogitator_memory_entries`, `idx_memory_embedding`     |
+
+#### Medium (3) — Phantom infrastructure / wrong identifiers
+
+| #   | Location                        | Issue                                                                                                                                                                                    | Fix                                                                                     |
+| --- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| 7   | Sandbox Recovery / Docker       | `docker ps --filter "label=cogitator.sandbox=true"` and `curl -X POST .../admin/sandbox/reset` — `ContainerPool` never sets Docker labels; `/admin/sandbox/reset` endpoint doesn't exist | Replaced with `--filter "ancestor=alpine:3.19"` (actual default image) + worker restart |
+| 8   | Sandbox Recovery / Docker image | `docker rmi cogitator/sandbox:latest` — actual default image in `DockerSandboxExecutor` is `alpine:3.19`, not `cogitator/sandbox:latest`                                                 | Changed to `alpine:3.19` with a note for custom images                                  |
+| 9   | Sandbox Recovery / Extism       | `require('@extism/extism').version` — Extism ESM package exports no `.version` property                                                                                                  | Replaced with ESM-correct import check                                                  |
+
+#### Medium (2) — Wrong Prometheus metric names
+
+| #   | Location                 | Issue                                                                                              | Fix                                       |
+| --- | ------------------------ | -------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| 10  | Monitoring / Alerts YAML | `cogitator_workers_active` — actual metric exported from `metrics.ts` is `cogitator_workers_total` | Changed to `cogitator_workers_total`      |
+| 11  | Monitoring / Alerts YAML | `cogitator_runs_failed_total` — actual metric is `cogitator_queue_failed_total`                    | Changed to `cogitator_queue_failed_total` |
+
+#### Medium (1) — Wrong health endpoint paths
+
+| #   | Location                        | Issue                                                                                                                                                                                                                                                        | Fix                                                                                     |
+| --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| 12  | Monitoring / Health Check table | Listed `/health/ready`, `/health/live`, `/health/db`, `/health/redis`. Express adapter only exposes `/health` and `/ready`. Dashboard exposes `/api/health`, `/api/health/ready`, `/api/health/live`. `/health/db` and `/health/redis` don't exist anywhere. | Split into two tables by adapter, removed non-existent `/health/db` and `/health/redis` |
+
+### Source of Truth Verified
+
+| Claim                                                                    | Verified Against                                       | Result                                           |
+| ------------------------------------------------------------------------ | ------------------------------------------------------ | ------------------------------------------------ |
+| Table names with `cogitator_` prefix                                     | `docker/postgres/init.sql`                             | ✅ All tables have prefix                        |
+| `cogitator_runs.started_at` column                                       | `docker/postgres/init.sql`                             | ✅ Column exists (no `updated_at`)               |
+| Vector embeddings are 768-dim                                            | `docker/postgres/init.sql` line 119                    | ✅ `vector(768)` nomic-embed-text-v2-moe         |
+| Vector index name `idx_memory_embedding`                                 | `docker/postgres/init.sql`                             | ✅ Correct                                       |
+| Default Docker sandbox image                                             | `packages/sandbox/src/executors/docker.ts` line 25     | ✅ `alpine:3.19`, not `cogitator/sandbox:latest` |
+| No Docker labels on containers                                           | `packages/sandbox/src/pool/container-pool.ts`          | ✅ No `Labels` in `createContainer` call         |
+| No `/admin/sandbox/reset` endpoint                                       | All server packages                                    | ✅ Endpoint doesn't exist                        |
+| Prometheus metric `cogitator_workers_total`                              | `packages/worker/src/metrics.ts` line 53               | ✅ Correct name                                  |
+| Prometheus metric `cogitator_queue_failed_total`                         | `packages/worker/src/metrics.ts` line 46               | ✅ Correct name                                  |
+| Express health: `/health` and `/ready`                                   | `packages/express/src/routes/health.ts`                | ✅ Correct                                       |
+| Dashboard health: `/api/health`, `/api/health/ready`, `/api/health/live` | `packages/dashboard/src/app/api/health/`               | ✅ All three exist                               |
+| No `/health/db` or `/health/redis` endpoints                             | All packages                                           | ✅ Confirmed absent                              |
+| BullMQ retry on job failure                                              | `packages/worker/src/queue.ts` (default `attempts: 3`) | ✅ Correct                                       |
+| Extism package: `@extism/extism`                                         | `packages/sandbox/package.json`                        | ✅ Correct package name                          |

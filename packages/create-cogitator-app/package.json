@@ -6,13 +6,18 @@
   "bin": {
     "create-cogitator-app": "./dist/index.js"
   },
+  "exports": {
+    ".": "./dist/lib.js"
+  },
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@clack/prompts": "^0.10.0",
@@ -21,7 +26,8 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "tsup": "^8.4.0",
-    "typescript": "^5.8.0"
+    "typescript": "^5.8.0",
+    "vitest": "^4.0.18"
   },
   "publishConfig": {
     "access": "public"

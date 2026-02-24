@@ -58,6 +58,10 @@ function collectFiles(options: ProjectOptions): TemplateFile[] {
 }
 
 export async function scaffold(options: ProjectOptions) {
+  if (fs.existsSync(options.path) && fs.readdirSync(options.path).length > 0) {
+    throw new Error(`Directory "${options.path}" already exists and is not empty`);
+  }
+
   const s = p.spinner();
 
   s.start('Generating project files');

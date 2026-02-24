@@ -279,10 +279,10 @@ aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
    psql -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';"
 
    # Verify agent count
-   psql -c "SELECT COUNT(*) FROM agents;"
+   psql -c "SELECT COUNT(*) FROM cogitator_agents;"
 
    # Check for orphaned records
-   psql -c "SELECT COUNT(*) FROM runs WHERE status = 'running' AND updated_at < NOW() - INTERVAL '1 hour';"
+   psql -c "SELECT COUNT(*) FROM cogitator_runs WHERE status = 'running' AND started_at < NOW() - INTERVAL '1 hour';"
    ```
 
 ### Scenario 4: Complete Cluster Failure
@@ -365,21 +365,21 @@ aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
 1. **Identify corruption scope**
 
    ```bash
-   # Check for invalid JSON in runs
-   psql -c "SELECT id FROM runs WHERE NOT (result IS NULL OR result::text <> '');"
+   # Check for null/empty output in completed runs
+   psql -c "SELECT id FROM cogitator_runs WHERE status = 'completed' AND (output IS NULL OR output = '');"
 
-   # Check vector dimensions
-   psql -c "SELECT id FROM memory_vectors WHERE array_length(embedding, 1) != 1536;"
+   # Check vector dimensions (768-dim, nomic-embed-text-v2-moe)
+   psql -c "SELECT id FROM cogitator_memory_entries WHERE embedding IS NOT NULL AND vector_dims(embedding) != 768;"
    ```
 
 2. **Isolate affected data**
 
    ```bash
    # Mark corrupted runs
-   psql -c "UPDATE runs SET status = 'corrupted' WHERE id IN (SELECT id FROM corrupted_runs_view);"
+   psql -c "UPDATE cogitator_runs SET status = 'failed', error = 'data corruption' WHERE id IN (SELECT id FROM corrupted_runs_view);"
 
-   # Disable affected agents
-   psql -c "UPDATE agents SET enabled = false WHERE id IN (SELECT DISTINCT agent_id FROM corrupted_runs_view);"
+   # Identify affected agents
+   psql -c "SELECT DISTINCT agent_id FROM cogitator_runs WHERE status = 'failed' AND error = 'data corruption';"
    ```
 
 3. **Restore from known good backup**
@@ -390,14 +390,14 @@ aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
 
    # Restore specific tables
    pg_restore -h localhost -U cogitator -d cogitator \
-     --table=runs --table=memory_vectors \
+     --table=cogitator_runs --table=cogitator_memory_entries \
      /var/backups/cogitator/postgres/cogitator_20241214.dump
    ```
 
 4. **Reindex vectors**
    ```bash
    # Rebuild vector index
-   psql -c "REINDEX INDEX memory_vectors_embedding_idx;"
+   psql -c "REINDEX INDEX idx_memory_embedding;"
    ```
 
 ---
@@ -409,22 +409,26 @@ aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
 **Container stuck or unresponsive:**
 
 ```bash
-# List stuck containers
-docker ps --filter "label=cogitator.sandbox=true" --filter "status=running"
+# List containers running the sandbox base image
+docker ps --filter "ancestor=alpine:3.19" --filter "status=running"
 
-# Force cleanup
-docker rm -f $(docker ps -q --filter "label=cogitator.sandbox=true")
+# Force cleanup of all sandbox containers (uses 'sleep infinity' as the entrypoint)
+docker rm -f $(docker ps -q --filter "ancestor=alpine:3.19")
 
-# Clear container pool
-curl -X POST http://localhost:3000/admin/sandbox/reset
+# Restart workers to reinitialize the container pool
+kubectl rollout restart deployment/cogitator-worker
 ```
 
 **Image corruption:**
 
 ```bash
-# Remove and repull sandbox image
-docker rmi cogitator/sandbox:latest
-docker pull cogitator/sandbox:latest
+# Remove and repull the default sandbox image
+docker rmi alpine:3.19
+docker pull alpine:3.19
+
+# If using a custom image (configured via SandboxDockerConfig.image):
+docker rmi <your-custom-image>
+docker pull <your-custom-image>
 ```
 
 ### WASM Sandbox Failures
@@ -442,8 +446,8 @@ kubectl rollout restart deployment/cogitator-worker
 **Extism runtime issues:**
 
 ```bash
-# Check Extism version
-node -e "console.log(require('@extism/extism').version)"
+# Check Extism package is installed
+node -e "import('@extism/extism').then(m => console.log('extism ok:', Object.keys(m)))"
 
 # Reinstall if needed
 pnpm install @extism/extism@latest
@@ -477,13 +481,13 @@ groups:
           severity: critical
 
       - alert: AllWorkersDown
-        expr: sum(cogitator_workers_active) == 0
+        expr: sum(cogitator_workers_total) == 0
         for: 2m
         labels:
           severity: critical
 
       - alert: HighErrorRate
-        expr: rate(cogitator_runs_failed_total[5m]) > 0.1
+        expr: rate(cogitator_queue_failed_total[5m]) > 0.1
         for: 5m
         labels:
           severity: warning
@@ -491,13 +495,22 @@ groups:
 
 ### Health Check Endpoints
 
-| Endpoint        | Purpose                 | Expected Response |
-| --------------- | ----------------------- | ----------------- |
-| `/health`       | Overall health          | `200 OK`          |
-| `/health/ready` | Ready to accept traffic | `200 OK`          |
-| `/health/live`  | Process is alive        | `200 OK`          |
-| `/health/db`    | Database connectivity   | `200 OK`          |
-| `/health/redis` | Redis connectivity      | `200 OK`          |
+The available endpoints depend on which server adapter you use.
+
+**Dashboard (`@cogitator-ai/dashboard` — Next.js):**
+
+| Endpoint            | Purpose                             | Expected Response |
+| ------------------- | ----------------------------------- | ----------------- |
+| `/api/health`       | Overall health (DB, Redis, Ollama)  | `200 OK`          |
+| `/api/health/ready` | Ready to accept traffic (checks DB) | `200 OK`          |
+| `/api/health/live`  | Process is alive                    | `200 OK`          |
+
+**Express adapter (`@cogitator-ai/express`):**
+
+| Endpoint  | Purpose                 | Expected Response |
+| --------- | ----------------------- | ----------------- |
+| `/health` | Overall health + uptime | `200 OK`          |
+| `/ready`  | Ready to accept traffic | `200 OK`          |
 
 ---
 
