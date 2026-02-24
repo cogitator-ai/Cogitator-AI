@@ -50,7 +50,14 @@ export class A2AClient {
 
     const response = await this.httpGet(this.agentCardPath);
     const data = await response.json();
-    this.cachedCard = Array.isArray(data) ? data[0] : data;
+    if (Array.isArray(data)) {
+      if (data.length === 0) {
+        throw new A2AError(errors.internalError('Agent card response is empty array'));
+      }
+      this.cachedCard = data[0];
+    } else {
+      this.cachedCard = data;
+    }
     return this.cachedCard!;
   }
 
@@ -297,12 +304,15 @@ export class A2AClient {
           if (!frame.trim()) continue;
 
           const lines = frame.split('\n');
-          let data = '';
+          const dataLines: string[] = [];
           for (const line of lines) {
             if (line.startsWith('data: ')) {
-              data += line.slice(6);
+              dataLines.push(line.slice(6));
+            } else if (line.startsWith('data:')) {
+              dataLines.push(line.slice(5));
             }
           }
+          const data = dataLines.join('\n');
 
           if (!data || data === '[DONE]') continue;
 
@@ -322,17 +332,21 @@ export class A2AClient {
   }
 
   private extractOutputFromTask(task: A2ATask): string {
-    for (const artifact of task.artifacts) {
-      for (const part of artifact.parts) {
-        if (part.type === 'text') return part.text;
+    if (task.artifacts) {
+      for (const artifact of task.artifacts) {
+        for (const part of artifact.parts) {
+          if (part.type === 'text') return part.text;
+        }
       }
     }
 
-    for (let i = task.history.length - 1; i >= 0; i--) {
-      const msg = task.history[i];
-      if (msg.role === 'agent') {
-        for (const part of msg.parts) {
-          if (part.type === 'text') return part.text;
+    if (task.history) {
+      for (let i = task.history.length - 1; i >= 0; i--) {
+        const msg = task.history[i];
+        if (msg.role === 'agent') {
+          for (const part of msg.parts) {
+            if (part.type === 'text') return part.text;
+          }
         }
       }
     }

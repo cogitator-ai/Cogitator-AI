@@ -1,5 +1,33 @@
 # @cogitator-ai/a2a
 
+## 0.3.2
+
+### Patch Changes
+
+- fix(a2a): audit — 37 bugs & security fixes, +78 tests
+
+  Security:
+  - Timing-safe HMAC comparison (timingSafeEqual)
+  - SSRF protection for webhook URLs (validateWebhookUrl)
+  - Canonical JSON serialization for card signing
+  - Content-Type validation in all adapters
+  - Buffer.from for Unicode-safe Basic auth
+
+  Bugs:
+  - structuredClone in InMemoryTaskStore.update()
+  - Redis SCAN-based key enumeration (was blocking KEYS)
+  - Redis mget batch fetch for list operations
+  - TTL validation at RedisTaskStore construction
+  - SSE multi-line data parsing per spec
+  - Race condition fix in streaming (listener before task)
+  - Streaming message validation
+  - Client agentCard() throws on empty response
+  - extractOutputFromTask guards for undefined fields
+
+  Features:
+  - allowPrivateUrls config option for local dev/testing
+  - InMemoryPushNotificationStore.cleanup() method
+
 ## 0.3.1
 
 ### Patch Changes

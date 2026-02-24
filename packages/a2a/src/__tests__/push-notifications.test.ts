@@ -1,10 +1,19 @@
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
-import { InMemoryPushNotificationStore, PushNotificationSender } from '../push-notifications';
+import {
+  InMemoryPushNotificationStore,
+  PushNotificationSender,
+  validateWebhookUrl,
+} from '../push-notifications';
 import { A2AServer } from '../server';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
-import type { A2AMessage, A2AStreamEvent, PushNotificationConfig } from '../types';
-import type { CogitatorLike, AgentRunResult } from '../task-manager';
+import type {
+  A2AMessage,
+  A2AStreamEvent,
+  PushNotificationConfig,
+  CogitatorLike,
+  AgentRunResult,
+} from '../types';
 
 function createMockAgent(name: string): Agent {
   const config: AgentConfig = {
@@ -373,6 +382,77 @@ describe('A2AServer push notification methods', () => {
   it('should set pushNotifications capability to true when store provided', () => {
     const card = server.getAgentCard();
     expect(card.capabilities.pushNotifications).toBe(true);
+  });
+});
+
+describe('validateWebhookUrl', () => {
+  it('should reject localhost', () => {
+    expect(() => validateWebhookUrl('http://localhost:3000')).toThrow('private/internal');
+  });
+
+  it('should reject 127.0.0.1', () => {
+    expect(() => validateWebhookUrl('http://127.0.0.1/hook')).toThrow('private/internal');
+  });
+
+  it('should reject IPv6 loopback ::1', () => {
+    expect(() => validateWebhookUrl('http://[::1]:8080')).toThrow('private/internal');
+  });
+
+  it('should reject 10.x.x.x private range', () => {
+    expect(() => validateWebhookUrl('http://10.0.0.1/hook')).toThrow('private/internal');
+  });
+
+  it('should reject 192.168.x.x private range', () => {
+    expect(() => validateWebhookUrl('http://192.168.1.1/hook')).toThrow('private/internal');
+  });
+
+  it('should reject 172.16-31.x.x private range', () => {
+    expect(() => validateWebhookUrl('http://172.16.0.1/hook')).toThrow('private/internal');
+    expect(() => validateWebhookUrl('http://172.31.255.255/hook')).toThrow('private/internal');
+  });
+
+  it('should reject 169.254.x.x link-local', () => {
+    expect(() => validateWebhookUrl('http://169.254.1.1/hook')).toThrow('private/internal');
+  });
+
+  it('should reject .local suffix', () => {
+    expect(() => validateWebhookUrl('http://myhost.local/hook')).toThrow('private/internal');
+  });
+
+  it('should reject .internal suffix', () => {
+    expect(() => validateWebhookUrl('http://service.internal/hook')).toThrow('private/internal');
+  });
+
+  it('should reject invalid URLs', () => {
+    expect(() => validateWebhookUrl('not-a-url')).toThrow('private/internal');
+  });
+
+  it('should reject non-http protocols', () => {
+    expect(() => validateWebhookUrl('ftp://example.com/hook')).toThrow('private/internal');
+  });
+
+  it('should accept valid public URLs', () => {
+    expect(() => validateWebhookUrl('https://example.com/webhook')).not.toThrow();
+    expect(() => validateWebhookUrl('https://hooks.slack.com/services/abc')).not.toThrow();
+  });
+});
+
+describe('InMemoryPushNotificationStore.cleanup', () => {
+  it('should remove all configs for a task', async () => {
+    const store = new InMemoryPushNotificationStore();
+    await store.create('task_1', { webhookUrl: 'https://example.com/a' });
+    await store.create('task_1', { webhookUrl: 'https://example.com/b' });
+    await store.create('task_2', { webhookUrl: 'https://example.com/c' });
+
+    store.cleanup('task_1');
+
+    expect(await store.list('task_1')).toEqual([]);
+    expect(await store.list('task_2')).toHaveLength(1);
+  });
+
+  it('should handle cleanup of non-existent task', () => {
+    const store = new InMemoryPushNotificationStore();
+    expect(() => store.cleanup('nonexistent')).not.toThrow();
   });
 });
 

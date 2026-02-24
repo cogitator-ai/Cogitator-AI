@@ -26,7 +26,11 @@ import type { AgentCardSigningOptions } from './agent-card.js';
 import { A2AError } from './errors.js';
 import * as errors from './errors.js';
 import { InMemoryTaskStore } from './task-store.js';
-import { InMemoryPushNotificationStore, PushNotificationSender } from './push-notifications.js';
+import {
+  InMemoryPushNotificationStore,
+  PushNotificationSender,
+  validateWebhookUrl,
+} from './push-notifications.js';
 import { isTerminalState } from './types.js';
 
 export class A2AServer {
@@ -40,6 +44,7 @@ export class A2AServer {
   private pushSender: PushNotificationSender;
   private cardSigning?: AgentCardSigningOptions;
   private extendedCardGenerator?: (agentName: string) => ExtendedAgentCard;
+  private allowPrivateUrls: boolean;
 
   constructor(config: A2AServerConfig) {
     const agentNames = Object.keys(config.agents);
@@ -53,6 +58,7 @@ export class A2AServer {
     this.cardUrl = config.cardUrl ?? '';
     this.cardSigning = config.cardSigning;
     this.extendedCardGenerator = config.extendedCardGenerator;
+    this.allowPrivateUrls = config.allowPrivateUrls ?? false;
 
     this.pushNotificationStore =
       config.pushNotificationStore ?? new InMemoryPushNotificationStore();
@@ -78,7 +84,7 @@ export class A2AServer {
         capabilities: {
           streaming: true,
           pushNotifications: hasPushNotifications,
-          extendedAgentCard: hasExtendedCard || undefined,
+          extendedAgentCard: hasExtendedCard,
         },
       });
       this.agentCards.set(name, card);
@@ -186,14 +192,14 @@ export class A2AServer {
     const params = request.params as
       | { message: A2AMessage; configuration?: SendMessageConfiguration; agentName?: string }
       | undefined;
-    if (!params?.message) {
+    if (!params?.message?.parts || !params.message.role) {
       yield {
         type: 'status-update',
         taskId: '',
         status: {
           state: 'failed',
           timestamp: new Date().toISOString(),
-          message: 'Missing required parameter: message',
+          message: 'Missing required parameter: message with role and parts',
         },
         timestamp: new Date().toISOString(),
       };
@@ -216,18 +222,12 @@ export class A2AServer {
       return;
     }
 
-    let task: A2ATask;
-    if (params.message.taskId) {
-      task = await this.taskManager.continueTask(params.message.taskId, params.message);
-    } else {
-      task = await this.taskManager.createTask(params.message, params.message.contextId);
-    }
-
     const eventQueue: A2AStreamEvent[] = [];
     let resolve: (() => void) | null = null;
+    let taskId: string | null = null;
 
     const onEvent = (event: A2AStreamEvent) => {
-      if (event.taskId === task.id) {
+      if (taskId && event.taskId === taskId) {
         eventQueue.push(event);
         if (resolve) {
           resolve();
@@ -237,6 +237,15 @@ export class A2AServer {
     };
 
     this.taskManager.on('event', onEvent);
+
+    let task: A2ATask;
+    if (params.message.taskId) {
+      taskId = params.message.taskId;
+      task = await this.taskManager.continueTask(params.message.taskId, params.message);
+    } else {
+      task = await this.taskManager.createTask(params.message, params.message.contextId);
+      taskId = task.id;
+    }
 
     const onToken = (token: string) => {
       const event: TokenStreamEvent = {
@@ -370,6 +379,13 @@ export class A2AServer {
     if (!taskId) throw new A2AError(errors.invalidParams('taskId is required'));
     if (!config?.webhookUrl)
       throw new A2AError(errors.invalidParams('config.webhookUrl is required'));
+    if (!this.allowPrivateUrls) {
+      try {
+        validateWebhookUrl(config.webhookUrl);
+      } catch (e) {
+        throw new A2AError(errors.invalidParams(e instanceof Error ? e.message : String(e)));
+      }
+    }
     return this.pushNotificationStore.create(taskId, config);
   }
 

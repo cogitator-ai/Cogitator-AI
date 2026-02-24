@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { TaskManager, type CogitatorLike, type AgentRunResult } from '../task-manager';
+import { TaskManager } from '../task-manager';
+import type { CogitatorLike, AgentRunResult } from '../types';
 import { A2AServer } from '../server';
 import { InMemoryTaskStore } from '../task-store';
 import type { A2AMessage, A2ATask } from '../types';

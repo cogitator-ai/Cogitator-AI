@@ -56,6 +56,7 @@ describe('A2A: Push Notifications', () => {
       agents: { 'test-agent': createMockAgent('test-agent') },
       cogitator: createMockCogitator(),
       pushNotificationStore: pushStore,
+      allowPrivateUrls: true,
     });
     client = new A2AClient(testServer.url);
   });

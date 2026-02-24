@@ -1,5 +1,7 @@
 import type { Middleware, Context } from 'koa';
 import type { A2AServer } from '../server.js';
+import { createErrorResponse } from '../json-rpc.js';
+import * as errors from '../errors.js';
 
 export function a2aKoa(server: A2AServer): Middleware {
   return async (ctx: Context, next: () => Promise<void>) => {
@@ -10,9 +12,22 @@ export function a2aKoa(server: A2AServer): Middleware {
     }
 
     if (ctx.path === '/a2a' && ctx.method === 'POST') {
-      const body = (ctx.request as unknown as { body: Record<string, unknown> }).body;
+      const contentType = ctx.headers['content-type'];
+      if (contentType && !contentType.includes('application/json')) {
+        ctx.body = createErrorResponse(null, errors.contentTypeNotSupported(contentType));
+        return;
+      }
+
+      const body = (ctx.request as unknown as { body?: Record<string, unknown> }).body;
+      if (!body) {
+        ctx.body = createErrorResponse(
+          null,
+          errors.parseError('Request body not parsed. Ensure body-parsing middleware is applied.')
+        );
+        return;
+      }
       const isStreaming =
-        ctx.headers.accept === 'text/event-stream' || body?.method === 'message/stream';
+        ctx.headers.accept?.includes('text/event-stream') || body.method === 'message/stream';
 
       if (isStreaming) {
         ctx.respond = false;
@@ -25,18 +40,25 @@ export function a2aKoa(server: A2AServer): Middleware {
 
         try {
           for await (const event of server.handleJsonRpcStream(body)) {
+            if (res.writableEnded) break;
             res.write(`data: ${JSON.stringify(event)}\n\n`);
           }
-          res.write('data: [DONE]\n\n');
+          if (!res.writableEnded) res.write('data: [DONE]\n\n');
         } catch (error) {
-          res.write(`data: ${JSON.stringify({ error: String(error) })}\n\n`);
+          if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ error: String(error) })}\n\n`);
+          }
         }
-        res.end();
+        if (!res.writableEnded) res.end();
         return;
       }
 
-      const response = await server.handleJsonRpc(body);
-      ctx.body = response;
+      try {
+        const response = await server.handleJsonRpc(body);
+        ctx.body = response;
+      } catch (error) {
+        ctx.body = createErrorResponse(null, errors.internalError(String(error)));
+      }
       return;
     }
 

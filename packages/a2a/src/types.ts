@@ -8,12 +8,7 @@ export type TaskState =
   | 'canceled'
   | 'rejected';
 
-export const TERMINAL_STATES: readonly TaskState[] = [
-  'completed',
-  'failed',
-  'canceled',
-  'rejected',
-] as const;
+export const TERMINAL_STATES = ['completed', 'failed', 'canceled', 'rejected'] as const;
 
 export function isTerminalState(state: TaskState): boolean {
   return (TERMINAL_STATES as readonly string[]).includes(state);
@@ -205,6 +200,7 @@ export interface A2AServerConfig {
   pushNotificationStore?: PushNotificationStore;
   cardSigning?: { algorithm?: 'hmac-sha256'; secret: string };
   extendedCardGenerator?: (agentName: string) => ExtendedAgentCard;
+  allowPrivateUrls?: boolean;
 }
 
 export interface PushNotificationConfig {

@@ -2,7 +2,7 @@
 
 | Package              | Last Audit | Issues Found | Status |
 | -------------------- | ---------- | ------------ | ------ |
-| a2a                  | —          | —            | —      |
+| a2a                  | 2026-02-25 | 37+ fixed    | ✅     |
 | ai-sdk               | —          | —            | —      |
 | cli                  | —          | —            | —      |
 | config               | 2026-02-24 | 8 fixed      | ✅     |

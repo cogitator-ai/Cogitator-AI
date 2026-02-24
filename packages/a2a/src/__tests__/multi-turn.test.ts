@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { TaskManager, type CogitatorLike, type AgentRunResult } from '../task-manager';
+import { TaskManager } from '../task-manager';
+import type { CogitatorLike, AgentRunResult } from '../types';
 import { A2AServer } from '../server';
 import { A2AError } from '../errors';
 import type { A2AMessage, A2AStreamEvent } from '../types';
@@ -147,7 +148,7 @@ describe('Multi-turn conversations', () => {
       await manager.createTask(createUserMessage('First'), contextId);
       await manager.createTask(createUserMessage('Second'), contextId);
 
-      const tasks = await manager.getTasksByContext(contextId);
+      const tasks = await manager.listTasks({ contextId });
       expect(tasks).toHaveLength(2);
       expect(tasks.every((t) => t.contextId === contextId)).toBe(true);
     });

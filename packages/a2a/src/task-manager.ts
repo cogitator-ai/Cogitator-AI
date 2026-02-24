@@ -16,8 +16,6 @@ import { isTerminalState } from './types.js';
 import { A2AError } from './errors.js';
 import * as errors from './errors.js';
 
-export type { CogitatorLike, AgentRunResult };
-
 export interface TaskManagerConfig {
   taskStore?: TaskStore;
 }
@@ -88,7 +86,11 @@ export class TaskManager extends EventEmitter {
       taskId,
     };
 
-    if (result.structured) {
+    if (
+      result.structured &&
+      typeof result.structured === 'object' &&
+      !Array.isArray(result.structured)
+    ) {
       agentMessage.parts.push({
         type: 'data',
         mimeType: 'application/json',
@@ -179,10 +181,6 @@ export class TaskManager extends EventEmitter {
     return this.store.list(filter);
   }
 
-  async getTasksByContext(contextId: string): Promise<A2ATask[]> {
-    return this.store.list({ contextId });
-  }
-
   async getTask(taskId: string): Promise<A2ATask> {
     const task = await this.store.get(taskId);
     if (!task) throw new A2AError(errors.taskNotFound(taskId));
@@ -207,7 +205,11 @@ export class TaskManager extends EventEmitter {
       });
     }
 
-    if (result.structured) {
+    if (
+      result.structured &&
+      typeof result.structured === 'object' &&
+      !Array.isArray(result.structured)
+    ) {
       artifacts.push({
         id: `art_${randomUUID()}`,
         parts: [

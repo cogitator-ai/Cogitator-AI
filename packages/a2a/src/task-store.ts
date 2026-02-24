@@ -15,7 +15,7 @@ export class InMemoryTaskStore implements TaskStore {
   async update(taskId: string, update: Partial<A2ATask>): Promise<void> {
     const existing = this.tasks.get(taskId);
     if (!existing) return;
-    this.tasks.set(taskId, { ...existing, ...update });
+    this.tasks.set(taskId, structuredClone({ ...existing, ...update }));
   }
 
   async list(filter?: TaskFilter): Promise<A2ATask[]> {

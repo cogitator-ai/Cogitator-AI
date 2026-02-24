@@ -1,8 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { A2AServer } from '../server';
-import type { ExtendedAgentCard } from '../types';
+import type { ExtendedAgentCard, CogitatorLike, AgentRunResult } from '../types';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
-import type { CogitatorLike, AgentRunResult } from '../task-manager';
 
 function createMockAgent(name: string): Agent {
   const config: AgentConfig = {
@@ -215,7 +214,7 @@ describe('Extended Agent Card', () => {
       });
 
       const card = server.getAgentCard();
-      expect(card.capabilities.extendedAgentCard).toBeUndefined();
+      expect(card.capabilities.extendedAgentCard).toBe(false);
     });
   });
 });

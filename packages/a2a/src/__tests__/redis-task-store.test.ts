@@ -141,6 +141,56 @@ describe('RedisTaskStore', () => {
     await expect(store.delete('nonexistent')).resolves.not.toThrow();
   });
 
+  describe('scan-based key enumeration', () => {
+    it('should use scan when available', async () => {
+      const scanRedis = createMockRedis();
+      const internalStore = new Map<string, string>();
+      scanRedis.set = vi.fn(async (key: string, value: string) => {
+        internalStore.set(key, value);
+      });
+      scanRedis.get = vi.fn(async (key: string) => internalStore.get(key) ?? null);
+      (scanRedis as RedisClientLike).scan = vi.fn(async (_cursor: number) => {
+        const allKeys = Array.from(internalStore.keys()).filter((k) => k.startsWith('a2a:task:'));
+        return [0, allKeys] as [number, string[]];
+      });
+      scanRedis.keys = vi.fn();
+
+      const scanStore = new RedisTaskStore({ client: scanRedis });
+      await scanStore.create(createTask('task_1'));
+      await scanStore.create(createTask('task_2'));
+
+      await scanStore.list();
+      expect(scanRedis.scan).toHaveBeenCalled();
+      expect(scanRedis.keys).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('mget batch fetch', () => {
+    it('should use mget when available', async () => {
+      const mgetRedis = createMockRedis();
+      const internalStore = new Map<string, string>();
+      mgetRedis.set = vi.fn(async (key: string, value: string) => {
+        internalStore.set(key, value);
+      });
+      mgetRedis.get = vi.fn(async (key: string) => internalStore.get(key) ?? null);
+      mgetRedis.keys = vi.fn(async (pattern: string) => {
+        const prefix = pattern.replace('*', '');
+        return Array.from(internalStore.keys()).filter((k) => k.startsWith(prefix));
+      });
+      (mgetRedis as RedisClientLike).mget = vi.fn(async (...keys: string[]) =>
+        keys.map((k) => internalStore.get(k) ?? null)
+      );
+
+      const mgetStore = new RedisTaskStore({ client: mgetRedis });
+      await mgetStore.create(createTask('task_1'));
+      await mgetStore.create(createTask('task_2'));
+
+      const tasks = await mgetStore.list();
+      expect(mgetRedis.mget).toHaveBeenCalled();
+      expect(tasks).toHaveLength(2);
+    });
+  });
+
   describe('key prefix', () => {
     it('should use default prefix a2a:task:', async () => {
       const task = createTask('task_1');
@@ -177,13 +227,12 @@ describe('RedisTaskStore', () => {
       expect(redis.setex).toHaveBeenCalledWith('a2a:task:task_1', 1800, expect.any(String));
     });
 
-    it('should fall back to set if setex is not available', async () => {
+    it('should throw if setex is not available but ttl is set', () => {
       const noSetexRedis = createMockRedis();
       delete noSetexRedis.setex;
-      const ttlStore = new RedisTaskStore({ client: noSetexRedis, ttl: 3600 });
-      const task = createTask('task_1');
-      await ttlStore.create(task);
-      expect(noSetexRedis.set).toHaveBeenCalledWith('a2a:task:task_1', expect.any(String));
+      expect(() => new RedisTaskStore({ client: noSetexRedis, ttl: 3600 })).toThrow(
+        'ttl requires client.setex support'
+      );
     });
 
     it('should not use setex when TTL is not configured', async () => {

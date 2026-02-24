@@ -1,8 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import { A2AServer } from '../server';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
-import type { A2AMessage, A2AStreamEvent, TokenStreamEvent } from '../types';
-import type { CogitatorLike, AgentRunResult } from '../task-manager';
+import type {
+  A2AMessage,
+  A2AStreamEvent,
+  TokenStreamEvent,
+  CogitatorLike,
+  AgentRunResult,
+} from '../types';
 
 function createMockAgent(name: string): Agent {
   const config: AgentConfig = {

@@ -1,7 +1,7 @@
 export { A2AServer } from './server.js';
 
 export { A2AClient } from './client.js';
-export type { A2AToolOptions } from './client.js';
+export type { A2AToolOptions, A2AToolResult } from './client.js';
 
 export { generateAgentCard, signAgentCard, verifyAgentCardSignature } from './agent-card.js';
 export type { AgentCardOptions, AgentCardSigningOptions } from './agent-card.js';
@@ -14,7 +14,11 @@ export type { RedisClientLike, RedisTaskStoreConfig } from './redis-task-store.j
 export { TaskManager } from './task-manager.js';
 export type { TaskManagerConfig } from './task-manager.js';
 
-export { InMemoryPushNotificationStore, PushNotificationSender } from './push-notifications.js';
+export {
+  InMemoryPushNotificationStore,
+  PushNotificationSender,
+  validateWebhookUrl,
+} from './push-notifications.js';
 
 export {
   parseJsonRpcRequest,

@@ -298,6 +298,64 @@ describe('A2AClient', () => {
     });
   });
 
+  describe('extractOutputFromTask edge cases', () => {
+    it('should handle task with no artifacts and no history', async () => {
+      mockSendResult = {
+        id: 'task_empty',
+        contextId: 'ctx_1',
+        status: { state: 'completed', timestamp: new Date().toISOString() },
+        history: [],
+        artifacts: [],
+      };
+      const client = new A2AClient(baseUrl);
+      const tool = client.asTool();
+      const result = await tool.execute(
+        { task: 'Empty result' },
+        { agentId: 'test', runId: 'run_1', signal: new AbortController().signal }
+      );
+      expect(result.success).toBe(true);
+      expect(result.output).toBe('');
+    });
+
+    it('should handle task with undefined artifacts', async () => {
+      mockSendResult = {
+        id: 'task_noart',
+        contextId: 'ctx_1',
+        status: { state: 'completed', timestamp: new Date().toISOString() },
+        history: [{ role: 'agent', parts: [{ type: 'text', text: 'from history' }] }],
+      } as A2ATask;
+      const client = new A2AClient(baseUrl);
+      const tool = client.asTool();
+      const result = await tool.execute(
+        { task: 'No artifacts' },
+        { agentId: 'test', runId: 'run_1', signal: new AbortController().signal }
+      );
+      expect(result.success).toBe(true);
+      expect(result.output).toBe('from history');
+    });
+  });
+
+  describe('agentCard error handling', () => {
+    it('should throw on empty array response', async () => {
+      const emptyServer = http.createServer((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('[]');
+      });
+      const emptyUrl = await new Promise<string>((resolve) => {
+        emptyServer.listen(0, () => {
+          const addr = emptyServer.address() as { port: number };
+          resolve(`http://localhost:${addr.port}`);
+        });
+      });
+      try {
+        const client = new A2AClient(emptyUrl);
+        await expect(client.agentCard()).rejects.toThrow('empty array');
+      } finally {
+        emptyServer.close();
+      }
+    });
+  });
+
   describe('custom config', () => {
     it('should use custom headers', async () => {
       const client = new A2AClient(baseUrl, {

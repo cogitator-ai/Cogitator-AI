@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { A2AServer } from '../server';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
-import type { A2AMessage, A2AStreamEvent } from '../types';
-import type { CogitatorLike, AgentRunResult } from '../task-manager';
+import type { A2AMessage, A2AStreamEvent, CogitatorLike, AgentRunResult } from '../types';
 
 function createMockAgent(name: string): Agent {
   const config: AgentConfig = {
@@ -291,6 +290,40 @@ describe('A2AServer', () => {
       }
     });
 
+    it('should yield failed event for message without role', async () => {
+      const events: A2AStreamEvent[] = [];
+      for await (const event of server.handleJsonRpcStream({
+        jsonrpc: '2.0',
+        method: 'message/stream',
+        params: { message: { parts: [{ type: 'text', text: 'no role' }] } },
+        id: 1,
+      })) {
+        events.push(event);
+      }
+      expect(events).toHaveLength(1);
+      if (events[0].type === 'status-update') {
+        expect(events[0].status.state).toBe('failed');
+        expect(events[0].status.message).toContain('message');
+      }
+    });
+
+    it('should yield failed event for unknown agent name', async () => {
+      const events: A2AStreamEvent[] = [];
+      for await (const event of server.handleJsonRpcStream({
+        jsonrpc: '2.0',
+        method: 'message/stream',
+        params: { message: userMessage('Hello'), agentName: 'nonexistent' },
+        id: 1,
+      })) {
+        events.push(event);
+      }
+      expect(events).toHaveLength(1);
+      if (events[0].type === 'status-update') {
+        expect(events[0].status.state).toBe('failed');
+        expect(events[0].status.message).toContain('Agent not found');
+      }
+    });
+
     it('should yield failed event for missing message params', async () => {
       const events: A2AStreamEvent[] = [];
       for await (const event of server.handleJsonRpcStream({
@@ -323,6 +356,35 @@ describe('A2AServer', () => {
         expect(events[0].status.state).toBe('failed');
         expect(events[0].status.message).toContain('Batch');
       }
+    });
+  });
+
+  describe('SSRF protection', () => {
+    it('should reject private webhook URLs by default', async () => {
+      const response = await server.handleJsonRpc({
+        jsonrpc: '2.0',
+        method: 'tasks/pushNotification/create',
+        params: { taskId: 'task_1', config: { webhookUrl: 'http://localhost:8080/hook' } },
+        id: 1,
+      });
+      expect(response.error).toBeDefined();
+      expect(response.error!.code).toBe(-32602);
+      expect(response.error!.message).toContain('private/internal');
+    });
+
+    it('should allow private webhook URLs when allowPrivateUrls is true', async () => {
+      const permissiveServer = new A2AServer({
+        agents: { researcher: createMockAgent('researcher') },
+        cogitator,
+        allowPrivateUrls: true,
+      });
+      const response = await permissiveServer.handleJsonRpc({
+        jsonrpc: '2.0',
+        method: 'tasks/pushNotification/create',
+        params: { taskId: 'task_1', config: { webhookUrl: 'http://localhost:8080/hook' } },
+        id: 1,
+      });
+      expect(response.error).toBeUndefined();
     });
   });
 

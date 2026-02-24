@@ -1,9 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { signAgentCard, verifyAgentCardSignature } from '../agent-card';
 import { A2AServer } from '../server';
-import type { AgentCard } from '../types';
+import type { AgentCard, CogitatorLike, AgentRunResult } from '../types';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
-import type { CogitatorLike, AgentRunResult } from '../task-manager';
 
 function createTestCard(): AgentCard {
   return {
@@ -88,6 +87,33 @@ describe('Agent Card Signing', () => {
       const signed1 = signAgentCard(card, { secret: 'secret-a' });
       const signed2 = signAgentCard(card, { secret: 'secret-b' });
       expect(signed1.signature).not.toBe(signed2.signature);
+    });
+
+    it('should produce same signature regardless of key order', () => {
+      const base = createTestCard();
+      const card1 = {
+        name: base.name,
+        url: base.url,
+        version: base.version,
+        description: base.description,
+        capabilities: base.capabilities,
+        skills: base.skills,
+        defaultInputModes: base.defaultInputModes,
+        defaultOutputModes: base.defaultOutputModes,
+      } as AgentCard;
+      const card2 = {
+        defaultOutputModes: base.defaultOutputModes,
+        defaultInputModes: base.defaultInputModes,
+        skills: base.skills,
+        capabilities: base.capabilities,
+        description: base.description,
+        version: base.version,
+        url: base.url,
+        name: base.name,
+      } as AgentCard;
+      const signed1 = signAgentCard(card1, { secret });
+      const signed2 = signAgentCard(card2, { secret });
+      expect(signed1.signature).toBe(signed2.signature);
     });
 
     it('should produce different signatures for different cards', () => {

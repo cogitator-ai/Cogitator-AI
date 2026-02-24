@@ -1,9 +1,6 @@
 import type { A2AServer } from '../server.js';
-
-interface NextRequest {
-  json(): Promise<unknown>;
-  headers: Headers;
-}
+import { createErrorResponse } from '../json-rpc.js';
+import * as errors from '../errors.js';
 
 export function a2aNext(server: A2AServer) {
   return {
@@ -12,10 +9,24 @@ export function a2aNext(server: A2AServer) {
       return Response.json(cards.length === 1 ? cards[0] : cards);
     },
 
-    async POST(request: NextRequest): Promise<Response> {
-      const body = (await request.json()) as Record<string, unknown> | undefined;
+    async POST(request: Request): Promise<Response> {
+      const contentType = request.headers.get('content-type');
+      if (contentType && !contentType.includes('application/json')) {
+        return Response.json(
+          createErrorResponse(null, errors.contentTypeNotSupported(contentType))
+        );
+      }
+
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return Response.json(createErrorResponse(null, errors.parseError('Invalid JSON body')));
+      }
+
       const isStreaming =
-        request.headers.get('accept') === 'text/event-stream' || body?.method === 'message/stream';
+        request.headers.get('accept')?.includes('text/event-stream') ||
+        (body as Record<string, unknown>)?.method === 'message/stream';
 
       if (isStreaming) {
         const encoder = new TextEncoder();
@@ -44,8 +55,12 @@ export function a2aNext(server: A2AServer) {
         });
       }
 
-      const response = await server.handleJsonRpc(body);
-      return Response.json(response);
+      try {
+        const response = await server.handleJsonRpc(body);
+        return Response.json(response);
+      } catch (error) {
+        return Response.json(createErrorResponse(null, errors.internalError(String(error))));
+      }
     },
   };
 }

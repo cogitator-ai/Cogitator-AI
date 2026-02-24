@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Agent as IAgent, Tool } from '@cogitator-ai/types';
 import type { AgentCard, AgentSkill, AgentProvider, A2ACapabilities } from './types.js';
 
@@ -53,7 +53,7 @@ export function signAgentCard(
   options: AgentCardSigningOptions
 ): AgentCard & { signature: string } {
   const algorithm = options.algorithm ?? 'hmac-sha256';
-  const payload = JSON.stringify(card);
+  const payload = JSON.stringify(card, Object.keys(card).sort());
   const signature = createHmac('sha256', options.secret).update(payload).digest('hex');
   return { ...card, signature: `${algorithm}:${signature}` };
 }
@@ -63,10 +63,16 @@ export function verifyAgentCardSignature(
   secret: string
 ): boolean {
   if (!card.signature) return false;
-  const [algorithm, sig] = card.signature.split(':');
-  if (algorithm !== 'hmac-sha256') return false;
+  const colonIdx = card.signature.indexOf(':');
+  if (colonIdx === -1) return false;
+  const algorithm = card.signature.slice(0, colonIdx);
+  const sig = card.signature.slice(colonIdx + 1);
+  if (algorithm !== 'hmac-sha256' || !sig) return false;
   const { signature: _, ...cardWithoutSig } = card;
-  const payload = JSON.stringify(cardWithoutSig);
+  const payload = JSON.stringify(cardWithoutSig, Object.keys(cardWithoutSig).sort());
   const expected = createHmac('sha256', secret).update(payload).digest('hex');
-  return sig === expected;
+  const sigBuf = Buffer.from(sig, 'hex');
+  const expectedBuf = Buffer.from(expected, 'hex');
+  if (sigBuf.length !== expectedBuf.length) return false;
+  return timingSafeEqual(sigBuf, expectedBuf);
 }

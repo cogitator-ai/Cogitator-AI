@@ -82,9 +82,15 @@ describe('InMemoryTaskStore', () => {
   });
 
   it('should apply offset', async () => {
-    await store.create(createTask('task_1'));
-    await store.create(createTask('task_2'));
-    await store.create(createTask('task_3'));
+    await store.create(
+      createTask('task_1', { status: { state: 'working', timestamp: '2026-01-03T00:00:00Z' } })
+    );
+    await store.create(
+      createTask('task_2', { status: { state: 'working', timestamp: '2026-01-02T00:00:00Z' } })
+    );
+    await store.create(
+      createTask('task_3', { status: { state: 'working', timestamp: '2026-01-01T00:00:00Z' } })
+    );
     const offset = await store.list({ offset: 1, limit: 2 });
     expect(offset).toHaveLength(2);
     expect(offset[0].id).toBe('task_2');

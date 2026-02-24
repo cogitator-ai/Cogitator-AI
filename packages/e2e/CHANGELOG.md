@@ -1,5 +1,12 @@
 # @cogitator-ai/e2e
 
+## 0.1.3
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/a2a@0.3.2
+
 ## 0.1.2
 
 ### Patch Changes
