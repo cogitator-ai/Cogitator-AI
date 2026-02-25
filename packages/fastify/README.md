@@ -119,7 +119,6 @@ await fastify.register(cogitatorPlugin, {
   // WebSocket options
   websocket: {
     path: '/ws',
-    pingInterval: 30000,
   },
 });
 ```
@@ -295,7 +294,6 @@ interface CogitatorPluginOptions {
   enableWebSocket?: boolean; // Default: false
   swagger?: SwaggerConfig;
   websocket?: WebSocketConfig;
-  requestTimeout?: number;
 }
 ```
 

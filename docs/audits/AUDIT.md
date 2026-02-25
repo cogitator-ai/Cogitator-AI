@@ -13,7 +13,7 @@
 | e2e                  | —          | —            | n/a    |
 | evals                | 2026-02-25 | 7 fixed      | ✅     |
 | express              | 2026-02-25 | 8 fixed      | ✅     |
-| fastify              | —          | —            | —      |
+| fastify              | 2026-02-25 | 22 fixed     | ✅     |
 | hono                 | —          | —            | —      |
 | koa                  | —          | —            | —      |
 | mcp                  | —          | —            | —      |

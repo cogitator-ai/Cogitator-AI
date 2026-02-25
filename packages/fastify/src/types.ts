@@ -71,9 +71,6 @@ export interface SwaggerConfig {
 
 export interface WebSocketConfig {
   path?: string;
-  pingInterval?: number;
-  pingTimeout?: number;
-  maxPayloadSize?: number;
 }
 
 export interface CogitatorPluginOptions {

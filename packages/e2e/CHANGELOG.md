@@ -1,5 +1,12 @@
 # @cogitator-ai/e2e
 
+## 0.1.11
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/fastify@0.1.4
+
 ## 0.1.10
 
 ### Patch Changes
