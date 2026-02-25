@@ -8,6 +8,9 @@ export type {
   ChatHandlerOptions,
   AgentHandlerOptions,
   AgentResponse,
+  ToolCall,
+  ToolResult,
+  RunResult,
 } from './types.js';
 
 export { StreamWriter } from './streaming/stream-writer.js';

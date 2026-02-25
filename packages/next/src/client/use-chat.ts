@@ -10,7 +10,7 @@ import type {
 } from '../types.js';
 import type { StreamEvent } from '../streaming/protocol.js';
 import { parseSSEStream } from './sse-parser.js';
-import { chatReducer, createInitialState } from './use-chat-state.js';
+import { chatReducer, createInitialState, type ChatState } from './use-chat-state.js';
 import { withRetry } from './retry.js';
 
 let idCounter = 0;
@@ -26,6 +26,9 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     chatReducer,
     createInitialState(initialMessages, options.threadId)
   );
+
+  const stateRef = useRef<ChatState>(state);
+  stateRef.current = state;
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -111,45 +114,29 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
       dispatch({ type: 'FINISH_ASSISTANT_MESSAGE' });
       dispatch({ type: 'STOP_LOADING' });
 
-      if (onFinish && state.currentMessageId) {
+      const current = stateRef.current;
+      if (onFinish && current.currentMessageId) {
         onFinish({
-          id: state.currentMessageId,
+          id: current.currentMessageId,
           role: 'assistant',
-          content: state.currentContent,
-          toolCalls: state.currentToolCalls.length > 0 ? state.currentToolCalls : undefined,
+          content: current.currentContent,
+          toolCalls: current.currentToolCalls.length > 0 ? current.currentToolCalls : undefined,
         });
       }
     },
-    [
-      handleStreamEvent,
-      onFinish,
-      state.currentContent,
-      state.currentMessageId,
-      state.currentToolCalls,
-    ]
+    [handleStreamEvent, onFinish]
   );
 
-  const send = useCallback(
-    async (inputOverride?: string, metadata?: Record<string, unknown>) => {
-      const messageContent = inputOverride ?? state.input;
-      if (!messageContent.trim()) return;
-
+  const sendWithMessages = useCallback(
+    async (
+      messages: ChatMessage[],
+      threadId: string | undefined,
+      metadata?: Record<string, unknown>
+    ) => {
       abortControllerRef.current?.abort();
       abortControllerRef.current = new AbortController();
 
-      const userMessage: ChatMessage = {
-        id: generateClientId(),
-        role: 'user',
-        content: messageContent,
-        metadata,
-        createdAt: new Date(),
-      };
-
-      dispatch({ type: 'ADD_USER_MESSAGE', payload: userMessage });
-      dispatch({ type: 'SET_INPUT', payload: '' });
       dispatch({ type: 'START_LOADING' });
-
-      const allMessages = [...state.messages, userMessage];
 
       const doFetch = async () => {
         const response = await fetch(api, {
@@ -159,13 +146,13 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
             ...headers,
           },
           body: JSON.stringify({
-            messages: allMessages.map((m) => ({
+            messages: messages.map((m) => ({
               id: m.id,
               role: m.role,
               content: m.content,
               metadata: m.metadata,
             })),
-            threadId: state.threadId,
+            threadId,
             metadata,
           }),
           signal: abortControllerRef.current!.signal,
@@ -193,7 +180,30 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
         onError?.(error);
       }
     },
-    [api, headers, onError, processStream, retry, state.input, state.messages, state.threadId]
+    [api, headers, onError, processStream, retry]
+  );
+
+  const send = useCallback(
+    async (inputOverride?: string, metadata?: Record<string, unknown>) => {
+      const current = stateRef.current;
+      const messageContent = inputOverride ?? current.input;
+      if (!messageContent.trim()) return;
+
+      const userMessage: ChatMessage = {
+        id: generateClientId(),
+        role: 'user',
+        content: messageContent,
+        metadata,
+        createdAt: new Date(),
+      };
+
+      dispatch({ type: 'ADD_USER_MESSAGE', payload: userMessage });
+      dispatch({ type: 'SET_INPUT', payload: '' });
+
+      const allMessages = [...current.messages, userMessage];
+      await sendWithMessages(allMessages, current.threadId, metadata);
+    },
+    [sendWithMessages]
   );
 
   const stop = useCallback(() => {
@@ -202,23 +212,26 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
   }, []);
 
   const reload = useCallback(async () => {
-    if (state.messages.length === 0) return;
+    const current = stateRef.current;
+    if (current.messages.length === 0) return;
 
     let lastUserIndex = -1;
-    for (let i = state.messages.length - 1; i >= 0; i--) {
-      if (state.messages[i].role === 'user') {
+    for (let i = current.messages.length - 1; i >= 0; i--) {
+      if (current.messages[i].role === 'user') {
         lastUserIndex = i;
         break;
       }
     }
     if (lastUserIndex === -1) return;
 
-    const lastUserMessage = state.messages[lastUserIndex];
-    const messagesBeforeReload = state.messages.slice(0, lastUserIndex);
+    const lastUserMessage = current.messages[lastUserIndex];
+    const messagesBeforeReload = current.messages.slice(0, lastUserIndex);
 
     dispatch({ type: 'SET_MESSAGES', payload: messagesBeforeReload });
-    await send(lastUserMessage.content, lastUserMessage.metadata);
-  }, [send, state.messages]);
+
+    const allMessages = [...messagesBeforeReload, lastUserMessage];
+    await sendWithMessages(allMessages, current.threadId, lastUserMessage.metadata);
+  }, [sendWithMessages]);
 
   const setInput = useCallback((value: string) => {
     dispatch({ type: 'SET_INPUT', payload: value });

@@ -57,6 +57,6 @@ INTEGRATIONS.md
 A2A-PROGRESS.md
 .npmrc
 
-# Internal planning docs (used by Claude, not for public repo)
+# Internal planning docs and audit reports (local only)
 docs/plans/
-docs/audits/.tmp/
+docs/audits/

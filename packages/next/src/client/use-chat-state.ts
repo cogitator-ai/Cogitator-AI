@@ -23,7 +23,6 @@ export type ChatAction =
   | { type: 'APPEND_CONTENT'; payload: string }
   | { type: 'ADD_TOOL_CALL'; payload: ToolCall }
   | { type: 'FINISH_ASSISTANT_MESSAGE' }
-  | { type: 'REMOVE_LAST_MESSAGE' }
   | { type: 'SET_MESSAGES'; payload: ChatMessage[] }
   | { type: 'CLEAR_MESSAGES' };
 
@@ -83,9 +82,6 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         currentToolCalls: [],
       };
     }
-
-    case 'REMOVE_LAST_MESSAGE':
-      return { ...state, messages: state.messages.slice(0, -1) };
 
     case 'SET_MESSAGES':
       return { ...state, messages: action.payload };

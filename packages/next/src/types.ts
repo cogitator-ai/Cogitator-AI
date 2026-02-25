@@ -27,14 +27,12 @@ export interface ChatHandlerOptions {
   parseInput?: (req: Request) => Promise<ChatInput>;
   beforeRun?: (req: Request, input: ChatInput) => Promise<Record<string, unknown> | void>;
   afterRun?: (result: RunResult) => Promise<void>;
-  maxDuration?: number;
 }
 
 export interface AgentHandlerOptions {
   parseInput?: (req: Request) => Promise<AgentInput>;
   beforeRun?: (req: Request, input: AgentInput) => Promise<Record<string, unknown> | void>;
   afterRun?: (result: RunResult) => Promise<void>;
-  maxDuration?: number;
 }
 
 export interface AgentResponse {

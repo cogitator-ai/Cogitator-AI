@@ -109,9 +109,6 @@ export const POST = createChatHandler(cogitator, agent, {
   afterRun: async (result) => {
     console.log('Chat completed:', result.output);
   },
-
-  // Request timeout
-  maxDuration: 30000,
 });
 ```
 
@@ -272,17 +269,27 @@ console.log(result?.toolCalls);
 The package implements Vercel AI SDK v5 streaming protocol:
 
 ```
-0:{"type":"start","messageId":"msg-1"}
-1:{"type":"text-start","id":"text-1"}
-2:{"type":"text-delta","id":"text-1","delta":"Hello"}
-2:{"type":"text-delta","id":"text-1","delta":" world"}
-3:{"type":"text-end","id":"text-1"}
-4:{"type":"tool-call-start","id":"tool-1","toolName":"get_weather"}
-5:{"type":"tool-call-delta","id":"tool-1","argsText":"{\"location\":"}
-5:{"type":"tool-call-delta","id":"tool-1","argsText":"\"NYC\"}"}
-6:{"type":"tool-call-end","id":"tool-1"}
-7:{"type":"tool-result","id":"tool-1","toolCallId":"tool-1","result":"72°F"}
-8:{"type":"finish","messageId":"msg-1","usage":{...}}
+data: {"type":"start","messageId":"msg-1"}
+
+data: {"type":"text-start","id":"text-1"}
+
+data: {"type":"text-delta","id":"text-1","delta":"Hello"}
+
+data: {"type":"text-delta","id":"text-1","delta":" world"}
+
+data: {"type":"text-end","id":"text-1"}
+
+data: {"type":"tool-call-start","id":"tool-1","toolName":"get_weather"}
+
+data: {"type":"tool-call-delta","id":"tool-1","argsTextDelta":"{\"location\":\"NYC\"}"}
+
+data: {"type":"tool-call-end","id":"tool-1"}
+
+data: {"type":"tool-result","id":"tr-1","toolCallId":"tool-1","result":"72°F"}
+
+data: {"type":"finish","messageId":"msg-1","usage":{...}}
+
+data: [DONE]
 ```
 
 ## Types

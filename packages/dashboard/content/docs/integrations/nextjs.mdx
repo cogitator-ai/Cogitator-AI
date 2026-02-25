@@ -61,7 +61,6 @@ const handler = createChatHandler(cog, agent, {
 | `parseInput`  | `(req: Request) => Promise<ChatInput>`                        | Custom request body parser                   |
 | `beforeRun`   | `(req: Request, input: ChatInput) => Promise<object \| void>` | Auth/context hook, runs before the agent     |
 | `afterRun`    | `(result: RunResult) => Promise<void>`                        | Post-processing hook (save to DB, log, etc.) |
-| `maxDuration` | `number`                                                      | Maximum execution time in ms                 |
 
 ## Server: Agent Handler
 
@@ -163,6 +162,7 @@ export function Chat() {
 | `reload`        | `() => Promise<void>`           | Re-send the last user message         |
 | `threadId`      | `string \| undefined`           | Current thread ID                     |
 | `setThreadId`   | `(id: string) => void`          | Switch conversation thread            |
+| `appendMessage` | `(msg: ChatMessage) => void`    | Add a message to the list             |
 | `clearMessages` | `() => void`                    | Reset conversation                    |
 | `setMessages`   | `(msgs: ChatMessage[]) => void` | Replace message list                  |
 
