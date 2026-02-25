@@ -29,7 +29,7 @@ export class FastifyStreamWriter {
     this.reply.raw.write(encodeSSE(data));
   }
 
-  setupHeaders(): void {
+  private setupHeaders(): void {
     this.reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -61,6 +61,7 @@ export class FastifyStreamWriter {
   }
 
   toolCallDelta(id: string, argsTextDelta: string): void {
+    if (!argsTextDelta) return;
     this.write(createToolCallDeltaEvent(id, argsTextDelta));
   }
 
@@ -85,6 +86,7 @@ export class FastifyStreamWriter {
   }
 
   finish(messageId: string, usage?: Usage): void {
+    if (this.closed) return;
     this.write(createFinishEvent(messageId, usage));
     this.reply.raw.write(encodeDone());
   }

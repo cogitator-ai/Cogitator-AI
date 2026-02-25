@@ -18,7 +18,7 @@ Tools give agents the ability to interact with the outside world. In Cogitator, 
 │  ┌───────────────────────────────────────────────────────────────────────────┐  │
 │  │                          Tool Registry                                    │  │
 │  │                                                                           │  │
-│  │   Built-in Tools  │  Custom Tools  │  MCP Servers  │  Plugin Tools       │  │
+│  │   Built-in Tools  │  Custom Tools  │  MCP Servers  │  WASM Tools         │  │
 │  │                                                                           │  │
 │  └───────────────────────────────────────────────────────────────────────────┘  │
 │                                      │                                          │
@@ -54,7 +54,6 @@ const calculator = tool({
     expression: z.string().describe('Mathematical expression to evaluate, e.g., "2 + 2 * 3"'),
   }),
   execute: async ({ expression }) => {
-    // Use mathjs for safe evaluation
     const result = math.evaluate(expression);
     return { result, expression };
   },
@@ -105,10 +104,8 @@ const shellExecute = tool({
     timeout: z.number().default(30000).describe('Timeout in milliseconds'),
   }),
 
-  // Declare side effects for auditing
   sideEffects: ['filesystem', 'network', 'process'],
 
-  // Require human approval for dangerous commands
   requiresApproval: (params) => {
     const dangerous = ['rm', 'sudo', 'chmod', 'kill', 'reboot'];
     return dangerous.some((cmd) => params.command.includes(cmd));
@@ -121,7 +118,7 @@ const shellExecute = tool({
     });
 
     return {
-      stdout: stdout.slice(0, 10000), // Limit output size
+      stdout: stdout.slice(0, 10000),
       stderr: stderr.slice(0, 10000),
       exitCode,
     };
@@ -133,112 +130,49 @@ const shellExecute = tool({
 
 ## Built-in Tools
 
+All built-in tools are exported directly from `@cogitator-ai/core`.
+
 ### File Operations
 
 ```typescript
-import {
-  fileRead,
-  fileWrite,
-  fileDelete,
-  fileList,
-  fileSearch,
-  fileMove,
-} from '@cogitator-ai/tools/filesystem';
+import { fileRead, fileWrite, fileDelete, fileList, fileExists } from '@cogitator-ai/core';
 
-// Read file
-const content = await fileRead.execute({ path: './src/index.ts' });
-
-// Write file
-await fileWrite.execute({
-  path: './output.json',
-  content: JSON.stringify(data, null, 2),
-});
-
-// List directory
-const files = await fileList.execute({
-  path: './src',
-  recursive: true,
-  pattern: '*.ts',
-});
-
-// Search in files
-const matches = await fileSearch.execute({
-  path: './src',
-  query: 'function.*async',
-  regex: true,
+const agent = new Agent({
+  tools: [fileRead, fileWrite, fileList, fileExists, fileDelete],
 });
 ```
+
+Available file tools: `fileRead`, `fileWrite`, `fileList`, `fileExists`, `fileDelete`.
 
 ### Web Operations
 
 ```typescript
-import { webFetch, webSearch, webScreenshot } from '@cogitator-ai/tools/web';
+import { webSearch, webScrape } from '@cogitator-ai/core';
 
-// Fetch URL
-const page = await webFetch.execute({
-  url: 'https://example.com',
-  format: 'markdown', // or 'html', 'text'
-});
-
-// Search the web
-const results = await webSearch.execute({
-  query: 'TypeScript best practices 2024',
-  limit: 10,
-});
-
-// Take screenshot
-const screenshot = await webScreenshot.execute({
-  url: 'https://example.com',
-  format: 'png',
-  fullPage: true,
+const agent = new Agent({
+  tools: [webSearch, webScrape],
 });
 ```
 
-### Code Execution
+### HTTP & System
 
 ```typescript
-import { codeInterpreter } from '@cogitator-ai/tools/code';
+import { httpRequest, exec, sqlQuery } from '@cogitator-ai/core';
 
-// Execute Python code
-const result = await codeInterpreter.execute({
-  language: 'python',
-  code: `
-    import pandas as pd
-    df = pd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]})
-    print(df.describe())
-  `,
-});
-
-// Execute JavaScript
-const jsResult = await codeInterpreter.execute({
-  language: 'javascript',
-  code: `
-    const data = [1, 2, 3, 4, 5];
-    const sum = data.reduce((a, b) => a + b, 0);
-    console.log('Sum:', sum);
-  `,
+const agent = new Agent({
+  tools: [httpRequest, exec, sqlQuery],
 });
 ```
 
-### Database Operations
+### All Built-in Tools
 
 ```typescript
-import { sqlQuery, sqlExecute } from '@cogitator-ai/tools/database';
+import { builtinTools } from '@cogitator-ai/core';
 
-// Query database
-const users = await sqlQuery.execute({
-  connection: 'postgres://localhost/app',
-  query: 'SELECT * FROM users WHERE active = $1',
-  params: [true],
-});
-
-// Execute mutation
-await sqlExecute.execute({
-  connection: 'postgres://localhost/app',
-  query: 'UPDATE users SET last_login = NOW() WHERE id = $1',
-  params: [userId],
-});
+const agent = new Agent({ tools: [...builtinTools] });
 ```
+
+`builtinTools` includes: `calculator`, `datetime`, `uuid`, `randomNumber`, `randomString`, `hash`, `base64Encode`, `base64Decode`, `sleep`, `jsonParse`, `jsonStringify`, `regexMatch`, `regexReplace`, `fileRead`, `fileWrite`, `fileList`, `fileExists`, `fileDelete`, `httpRequest`, `exec`, `webSearch`, `webScrape`, `sqlQuery`, `vectorSearch`, `sendEmail`, `githubApi`.
 
 ---
 
@@ -247,59 +181,98 @@ await sqlExecute.execute({
 ### Connecting to MCP Servers
 
 ```typescript
-import { mcpServer } from '@cogitator-ai/tools/mcp';
+import { MCPClient, connectMCPServer } from '@cogitator-ai/mcp';
+
+// Connect and get tools in one step
+const { tools, cleanup } = await connectMCPServer({
+  transport: 'stdio',
+  command: 'npx',
+  args: ['-y', '@anthropic/mcp-server-filesystem', '/workspace'],
+});
+
+const agent = new Agent({ tools });
+
+// When done
+await cleanup();
+```
+
+### Manual Client Usage
+
+```typescript
+import { MCPClient } from '@cogitator-ai/mcp';
 
 // Connect to filesystem server
-const fsTools = await mcpServer({
+const client = await MCPClient.connect({
+  transport: 'stdio',
   command: 'npx',
-  args: ['-y', '@anthropic/mcp-server-filesystem'],
-  env: {
-    ALLOWED_DIRECTORIES: '/workspace,/tmp',
-  },
+  args: ['-y', '@anthropic/mcp-server-filesystem', '/workspace'],
 });
 
-// Connect to database server
-const dbTools = await mcpServer({
+// Get available tools as Cogitator tools
+const fsTools = await client.getTools();
+
+// Connect to another server
+const dbClient = await MCPClient.connect({
+  transport: 'stdio',
   command: 'npx',
   args: ['-y', '@anthropic/mcp-server-postgres'],
-  env: {
-    DATABASE_URL: process.env.DATABASE_URL,
-  },
+  env: { DATABASE_URL: process.env.DATABASE_URL },
 });
+
+const dbTools = await dbClient.getTools();
 
 // Use in agent
 const agent = new Agent({
   tools: [...fsTools, ...dbTools],
 });
+
+// Clean up
+await client.close();
+await dbClient.close();
 ```
 
 ### Creating MCP-Compatible Servers
 
 ```typescript
-import { MCPServer, MCPTool } from '@cogitator-ai/tools/mcp';
+import { MCPServer } from '@cogitator-ai/mcp';
+import { tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const myCustomTool = tool({
+  name: 'my_custom_tool',
+  description: 'Does something useful',
+  parameters: z.object({
+    input: z.string(),
+  }),
+  execute: async ({ input }) => {
+    return { result: `Processed: ${input}` };
+  },
+});
 
 const server = new MCPServer({
   name: 'my-tools',
   version: '1.0.0',
+  transport: 'stdio',
 });
 
-server.addTool({
-  name: 'my_custom_tool',
-  description: 'Does something useful',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      input: { type: 'string' },
-    },
-    required: ['input'],
-  },
-  handler: async (params) => {
-    return { result: `Processed: ${params.input}` };
-  },
-});
+server.registerTool(myCustomTool);
 
 // Start server
-server.listen();
+await server.start();
+```
+
+### Expose Multiple Tools as MCP Server
+
+```typescript
+import { MCPServer, serveMCPTools } from '@cogitator-ai/mcp';
+import { calculator, webSearch } from '@cogitator-ai/core';
+
+// Shorthand helper
+await serveMCPTools([calculator, webSearch], {
+  name: 'cogitator-tools',
+  version: '1.0.0',
+  transport: 'stdio',
+});
 ```
 
 ---
@@ -318,13 +291,8 @@ registry.register(calculator);
 registry.register(fileRead);
 registry.register(webSearch);
 
-// Register tool groups
-registry.registerGroup('filesystem', [fileRead, fileWrite, fileList]);
-registry.registerGroup('web', [webFetch, webSearch, webScreenshot]);
-
-// Register from MCP server
-const mcpTools = await mcpServer('...');
-registry.registerGroup('mcp-fs', mcpTools);
+// Register multiple at once
+registry.registerMany([fileRead, fileWrite, fileList]);
 ```
 
 ### Tool Discovery
@@ -336,44 +304,15 @@ const allTools = registry.getAll();
 // Get by name
 const calc = registry.get('calculator');
 
-// Get by group
-const webTools = registry.getGroup('web');
+// Check existence
+const exists = registry.has('calculator');
 
-// Search tools
-const searchResults = registry.search('file');
-// Returns: [fileRead, fileWrite, fileList, fileSearch, ...]
+// Get all names
+const names = registry.getNames();
 
-// Get tool schema (for LLM)
-const schema = registry.getSchema('calculator');
-// { name: 'calculator', description: '...', parameters: {...} }
-```
-
-### Tool Permissions
-
-```typescript
-const registry = new ToolRegistry({
-  permissions: {
-    // Default permissions for all tools
-    default: {
-      maxExecutionsPerMinute: 100,
-      requiresApproval: false,
-    },
-
-    // Per-tool overrides
-    tools: {
-      shell_execute: {
-        maxExecutionsPerMinute: 10,
-        requiresApproval: true,
-        allowedPatterns: ['^ls', '^cat', '^git'],
-        deniedPatterns: ['^rm', '^sudo'],
-      },
-      file_delete: {
-        requiresApproval: true,
-        allowedPaths: ['/workspace', '/tmp'],
-      },
-    },
-  },
-});
+// Get JSON schemas (for LLM function calling)
+const schemas = registry.getSchemas();
+// [{ name: 'calculator', description: '...', parameters: {...} }, ...]
 ```
 
 ---
@@ -383,13 +322,12 @@ const registry = new ToolRegistry({
 ### Docker Sandbox
 
 ```typescript
-const tool = tool({
+const runPython = tool({
   name: 'run_python',
   parameters: z.object({
     code: z.string(),
   }),
 
-  // Execute in Docker container
   sandbox: {
     type: 'docker',
     image: 'cogitator/sandbox:python3.11',
@@ -399,14 +337,13 @@ const tool = tool({
       pidsLimit: 100,
     },
     network: {
-      mode: 'none', // No network access
+      mode: 'none',
     },
     mounts: [{ source: '/workspace', target: '/workspace', readOnly: true }],
     timeout: 30_000,
   },
 
   execute: async ({ code }) => {
-    // This runs inside the container
     return await execPython(code);
   },
 });
@@ -414,31 +351,51 @@ const tool = tool({
 
 ### WASM Sandbox
 
+Use `@cogitator-ai/wasm-tools` for WASM-based execution:
+
 ```typescript
-import { wasmSandbox } from '@cogitator-ai/sandbox';
+import { defineWasmTool } from '@cogitator-ai/wasm-tools';
+import { z } from 'zod';
 
-const tool = tool({
-  name: 'run_wasm',
+const myWasmTool = defineWasmTool({
+  name: 'image_processor',
+  description: 'Process images in WASM sandbox',
+  wasmModule: './my-image-proc.wasm',
+  wasmFunction: 'process',
   parameters: z.object({
-    module: z.string(), // WASM module path
-    function: z.string(),
-    args: z.array(z.any()),
+    imageData: z.string(),
+    operation: z.enum(['resize', 'crop', 'rotate']),
   }),
-
-  sandbox: {
-    type: 'wasm',
-    runtime: 'extism',
-    memoryLimit: 64 * 1024 * 1024, // 64MB
-    timeout: 5_000,
-    allowedHosts: [], // No network
-  },
-
-  execute: async ({ module, func, args }) => {
-    const instance = await wasmSandbox.instantiate(module);
-    return instance.call(func, ...args);
-  },
+  timeout: 5_000,
 });
 ```
+
+### Pre-built WASM Tools
+
+```typescript
+import {
+  createCalcTool,
+  createHashTool,
+  createBase64Tool,
+  createJsonTool,
+  createSlugTool,
+  createValidationTool,
+  createDiffTool,
+  createRegexTool,
+  createCsvTool,
+  createMarkdownTool,
+  createXmlTool,
+  createDatetimeTool,
+  createCompressionTool,
+  createSigningTool,
+} from '@cogitator-ai/wasm-tools';
+
+const agent = new Agent({
+  tools: [createCalcTool(), createHashTool(), createBase64Tool(), createCsvTool()],
+});
+```
+
+14 pre-built WASM tools: `calc`, `hash`, `base64`, `json`, `slug`, `validation`, `diff`, `regex`, `csv`, `markdown`, `xml`, `datetime`, `compression`, `signing`.
 
 ### Sandbox Images
 
@@ -456,7 +413,6 @@ RUN useradd -m sandbox
 USER sandbox
 WORKDIR /workspace
 
-# Default command
 CMD ["python", "-c", "print('Sandbox ready')"]
 ```
 
@@ -490,21 +446,12 @@ const researchAndSummarize = tool({
     topic: z.string(),
     depth: z.enum(['quick', 'thorough']).default('quick'),
   }),
-  execute: async ({ topic, depth }, { tools }) => {
-    // Use other tools
-    const searchResults = await tools.webSearch.execute({
-      query: topic,
-      limit: depth === 'thorough' ? 10 : 3,
-    });
+  execute: async ({ topic, depth }, context) => {
+    const searchResults = await webSearch.execute({ query: topic }, context);
 
-    const contents = await Promise.all(
-      searchResults.map((r) => tools.webFetch.execute({ url: r.url }))
-    );
-
-    // Return combined result
     return {
-      sources: searchResults.map((r) => r.url),
-      content: contents.map((c) => c.content).join('\n\n'),
+      topic,
+      results: searchResults,
     };
   },
 });
@@ -569,46 +516,15 @@ class BrowserSession {
 }
 ```
 
-### Async Tools with Progress
-
-```typescript
-const longRunningTask = tool({
-  name: 'long_running_task',
-  description: 'A task that takes time to complete',
-  parameters: z.object({
-    data: z.string(),
-  }),
-
-  // Enable progress reporting
-  supportsProgress: true,
-
-  execute: async ({ data }, { progress }) => {
-    const steps = ['Parsing', 'Processing', 'Validating', 'Saving'];
-
-    for (let i = 0; i < steps.length; i++) {
-      progress.report({
-        current: i + 1,
-        total: steps.length,
-        message: steps[i],
-      });
-
-      await doStep(steps[i], data);
-    }
-
-    return { success: true };
-  },
-});
-```
-
 ---
 
 ## Error Handling
 
 ### Tool Errors
 
-```typescript
-import { ToolError, ToolValidationError, ToolTimeoutError } from '@cogitator-ai/core';
+Tools should return error objects rather than throwing when the agent can recover:
 
+```typescript
 const safeTool = tool({
   name: 'safe_tool',
   parameters: z.object({ input: z.string() }),
@@ -617,7 +533,6 @@ const safeTool = tool({
     try {
       return await riskyOperation(input);
     } catch (error) {
-      // Return error as result (agent can handle)
       if (error instanceof ValidationError) {
         return {
           error: true,
@@ -627,37 +542,8 @@ const safeTool = tool({
         };
       }
 
-      // Re-throw for fatal errors
-      throw new ToolError('Operation failed', { cause: error });
+      throw error;
     }
-  },
-});
-```
-
-### Retry Logic
-
-```typescript
-const resilientTool = tool({
-  name: 'api_call',
-  parameters: z.object({ endpoint: z.string() }),
-
-  // Built-in retry
-  retry: {
-    maxRetries: 3,
-    backoff: 'exponential',
-    initialDelay: 1000,
-    retryOn: (error) => {
-      // Only retry on transient errors
-      return error.status === 429 || error.status >= 500;
-    },
-  },
-
-  execute: async ({ endpoint }) => {
-    const response = await fetch(endpoint);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    return response.json();
   },
 });
 ```
@@ -675,76 +561,39 @@ const result = await agent.run('Search for TypeScript tutorials');
 console.log(result.trace.spans);
 // [
 //   { name: 'tool.web_search', duration: 1200, attributes: { query: 'TypeScript tutorials' } },
-//   { name: 'tool.web_fetch', duration: 800, attributes: { url: 'https://...' } },
+//   { name: 'tool.web_scrape', duration: 800, attributes: { url: 'https://...' } },
 // ]
-```
-
-### Custom Metrics
-
-```typescript
-import { metrics } from '@cogitator-ai/observability';
-
-const apiTool = tool({
-  name: 'external_api',
-  execute: async (params) => {
-    const timer = metrics.timer('tool.external_api.duration');
-    timer.start();
-
-    try {
-      const result = await callExternalAPI(params);
-      metrics.increment('tool.external_api.success');
-      return result;
-    } catch (error) {
-      metrics.increment('tool.external_api.failure');
-      throw error;
-    } finally {
-      timer.stop();
-    }
-  },
-});
 ```
 
 ---
 
 ## Tool Testing
 
+Use `@cogitator-ai/test-utils` for mocking LLM backends in agent tests:
+
 ```typescript
-import { mockTool, ToolTestHarness } from '@cogitator-ai/testing';
+import { MockLLMBackend } from '@cogitator-ai/test-utils';
+import { Cogitator, Agent } from '@cogitator-ai/core';
 
-describe('Calculator Tool', () => {
-  it('should evaluate expressions', async () => {
-    const harness = new ToolTestHarness(calculator);
+describe('Agent with Tools', () => {
+  it('should call tools', async () => {
+    const mockBackend = new MockLLMBackend();
+    mockBackend.addResponse({
+      role: 'assistant',
+      content: 'The answer is 42',
+    });
 
-    const result = await harness.execute({ expression: '2 + 2 * 3' });
-
-    expect(result.result).toBe(8);
-  });
-
-  it('should handle errors gracefully', async () => {
-    const harness = new ToolTestHarness(calculator);
-
-    const result = await harness.execute({ expression: 'invalid' });
-
-    expect(result.error).toBeDefined();
-  });
-});
-
-describe('Agent with Mocked Tools', () => {
-  it('should use tools correctly', async () => {
-    const mockSearch = mockTool('web_search')
-      .whenCalledWith({ query: expect.stringContaining('TypeScript') })
-      .returns([{ title: 'TS Guide', url: 'https://...' }]);
+    const cog = new Cogitator({
+      llm: { defaultModel: 'mock/test' },
+    });
 
     const agent = new Agent({
-      model: 'gpt-4o',
-      tools: [mockSearch],
+      name: 'test-agent',
+      tools: [calculator],
     });
 
-    await agent.run('Find TypeScript resources');
-
-    expect(mockSearch).toHaveBeenCalledWith({
-      query: expect.stringContaining('TypeScript'),
-    });
+    const result = await cog.run(agent, { input: 'Calculate 6 * 7' });
+    expect(result.output).toBeDefined();
   });
 });
 ```
@@ -806,10 +655,14 @@ tool({
   parameters: z.object({
     data: z.string().max(1_000_000), // 1MB limit
   }),
-  timeout: 30_000, // 30 second timeout
+  timeout: 30_000,
   sandbox: {
-    memory: '256MB',
-    cpu: 0.5,
+    type: 'docker',
+    image: 'alpine:latest',
+    resources: {
+      memory: '256MB',
+      cpus: 0.5,
+    },
   },
   // ...
 });
@@ -825,7 +678,6 @@ tool({
   execute: async ({ path }) => {
     await fs.mkdir(path, { recursive: true });
     return { exists: true, path };
-    // Safe to call multiple times
   },
 });
 ```

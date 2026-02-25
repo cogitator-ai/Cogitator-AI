@@ -14,7 +14,9 @@ export function createAuthHook(authFn?: AuthFunction): onRequestHookHandler {
     try {
       const auth = await authFn(request);
       request.cogitatorAuth = auth;
-    } catch {
+    } catch (err) {
+      request.log.warn({ err }, 'auth rejected request');
+      if (reply.sent) return;
       return reply.status(401).send({
         error: {
           message: 'Unauthorized',

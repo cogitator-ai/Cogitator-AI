@@ -1,5 +1,82 @@
 # Docs Audit Report
 
+## docs/WORKFLOWS.md
+
+**Status:** Complete
+**Date:** 2026-02-25
+**Severity:** Critical — entire document described a completely fictional API; every code example was broken
+
+### Issues Found (18 total)
+
+#### Critical (18) — All code was non-functional
+
+| #   | Location                           | Issue                                                                                                                     | Fix                                                                                                        |
+| --- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| 1   | All code examples (×30+)           | `import { Workflow, step } from '@cogitator-ai/workflows'` — neither `Workflow` class nor `step()` function exists        | Replaced with `WorkflowBuilder`, `WorkflowExecutor`, `agentNode`, `toolNode`, `functionNode`, `customNode` |
+| 2   | Creating Workflows                 | `new Workflow({ name, steps: [...] })` — no such constructor; `Workflow` is a plain interface built via `WorkflowBuilder` | Rewrote all examples using `new WorkflowBuilder<S>(name).addNode(...).build()`                             |
+| 3   | All step() calls                   | `step('name', { agent, input: (ctx) => ..., dependsOn: [...] })` — function doesn't exist; no `dependsOn` parameter       | Replaced with `.addNode('name', agentNode(agent, { inputMapper, stateMapper }), { after: [...] })`         |
+| 4   | Execution — `cog.workflow()`       | `await cog.workflow(myWorkflow).run({ topic: '...' })` — `Cogitator` has no `.workflow()` method                          | Replaced with `new WorkflowExecutor(cog).execute(workflow, input, options)`                                |
+| 5   | Result access — `result.output`    | `result.output` — `WorkflowResult` has no `.output` property                                                              | Changed to `result.state.fieldName` or `result.nodeResults.get('name')?.output`                            |
+| 6   | WorkflowContext interface          | Described fictional `ctx.input.topic`, `ctx.steps['name'].output`, `ctx.meta.workflowId` etc.                             | Corrected to actual `NodeContext<S>`: `ctx.state`, `ctx.input`, `ctx.nodeId`, `ctx.workflowId`, `ctx.step` |
+| 7   | Step types — `type: 'passthrough'` | No such type; step types don't exist at all                                                                               | Removed; replaced with `customNode()`                                                                      |
+| 8   | Step types — `type: 'goto'`        | No such type; goto/loops are done via `addLoop()`                                                                         | Replaced iterative refinement example with `addLoop()`                                                     |
+| 9   | Step `condition:` property         | Steps have no `condition` property; conditional routing uses `addConditional()`                                           | Replaced conditional examples with `addConditional(name, (state) => '...', { after: [...] })`              |
+| 10  | Step `dependencyMode:` property    | Doesn't exist                                                                                                             | Removed; described actual fan-in via `after: ['a', 'b']`                                                   |
+| 11  | Step `compensate:` inline          | Steps have no `compensate` property; saga compensation uses `CompensationManager` separately                              | Replaced saga example with `CompensationManager` usage                                                     |
+| 12  | Step `fallback:` / `disabled:`     | Neither property exists on nodes                                                                                          | Removed; described retry via `executeWithRetry()`                                                          |
+| 13  | Step `onStart/onComplete:`         | Steps have no lifecycle hooks; use `WorkflowExecuteOptions.onNodeStart/onNodeComplete` instead                            | Replaced with executor options                                                                             |
+| 14  | Persisted state — `persistence:`   | `new Workflow({ persistence: { store: 'postgres' } })` — no such config field                                             | Replaced with `WorkflowExecutor(cog, checkpointStore)` + `execute(wf, input, { checkpoint: true })`        |
+| 15  | Resume — `cog.workflow().resume`   | `cog.workflow(workflow).resume(runId)` — doesn't exist                                                                    | Replaced with `executor.resume(workflow, checkpointId)`                                                    |
+| 16  | Triggers inside Workflow           | `new Workflow({ triggers: [{ type: 'cron', ... }] })` — `Workflow` has no `triggers` config                               | Replaced with `createTriggerManager()` + `triggerManager.register()`                                       |
+| 17  | Events — `cog.workflow().on()`     | No `.on()` event emitter API; `result.trace` doesn't exist                                                                | Replaced with `executor.stream()` for events and `WorkflowExecuteOptions` callbacks for sync               |
+| 18  | Dashboard config in Workflow       | `new Workflow({ dashboard: { enabled: true, ... } })` — doesn't exist                                                     | Removed; documented `WorkflowMetricsCollector` instead                                                     |
+
+### Action
+
+Full rewrite of WORKFLOWS.md — the document had zero accurate API examples. Every section was replaced with code that matches the actual implementation.
+
+---
+
+## docs/SWARMS.md
+
+**Status:** Complete
+**Date:** 2026-02-25
+**Severity:** Critical — constructor API completely wrong throughout, 3 fake strategies, missing 7th strategy, multiple wrong method signatures
+
+### Issues Found (15 total)
+
+#### Critical (5) — Breaks code at runtime
+
+| #   | Location                   | Issue                                                                                                    | Fix                                                                                                                  |
+| --- | -------------------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| 1   | All strategy examples (×6) | `new Swarm({...})` — actual constructor is `new Swarm(cogitator, {...})`                                 | Added `cog` as first arg everywhere                                                                                  |
+| 2   | Hierarchical example       | `cog.run(devTeam, { input: '...' })` — `Cogitator.run()` doesn't accept Swarm; should be `devTeam.run()` | Changed to `devTeam.run({ input: '...' })`                                                                           |
+| 3   | Swarm Patterns section     | `strategy: 'collaborative'`, `'specialist'`, `'adaptive'` — these don't exist in code; throw at runtime  | Replaced patterns: Peer-to-Peer → Expert Routing (auction), Self-Improving → Negotiation, removed specialist pattern |
+| 4   | Pipeline examples          | `stages: [...]` at config root — `createStrategy` requires `pipeline: { stages: [...] }`                 | Moved all pipeline stages into `pipeline: { stages: [...] }`                                                         |
+| 5   | Round-Robin example        | `routing: { sticky: true, stickyKey: ... }` — actual config key is `roundRobin:`                         | Changed to `roundRobin: { sticky: true, stickyKey: ... }`                                                            |
+
+#### Wrong API (8)
+
+| #   | Location                      | Issue                                                                                                        | Fix                                                                            |
+| --- | ----------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| 6   | API Reference — `run()`       | `run(input: any): Promise<SwarmResult>` — actual is `run(options: SwarmRunOptions): Promise<StrategyResult>` | Corrected signature; added SwarmRunOptions interface                           |
+| 7   | API Reference — `getAgent()`  | Returns `Agent` — actual is `SwarmAgent \| undefined`                                                        | Corrected return type                                                          |
+| 8   | API Reference — `sendMessage` | `sendMessage(agentName, message)` — method doesn't exist on Swarm                                            | Removed; documented `swarm.messageBus.send()` instead                          |
+| 9   | API Reference — `emit()`      | `emit(event, data): void` — doesn't exist on Swarm                                                           | Removed; documented `swarm.events.emit()` instead                              |
+| 10  | API Reference — `on()`        | `on(event: string, handler: Function): void` — returns `() => void` unsubscribe                              | Fixed signature; uses `SwarmEventType` not `string`                            |
+| 11  | Observability config          | `metrics: { exporter: 'prometheus', labels: [...] }` and `dashboard: {...}` fields don't exist in types      | Removed; actual fields are `tracing`, `messageLogging`, `blackboardLogging`    |
+| 12  | Blackboard `write()` example  | `swarm.blackboard.write(section, content)` — missing required 3rd arg `agentName`                            | Added `agentName` arg                                                          |
+| 13  | SwarmConfig interface         | `strategy` showed `'collaborative' \| 'specialist' \| 'adaptive'` instead of `'negotiation'`                 | Replaced with `'negotiation'`; added coordination sub-configs that don't exist |
+
+#### Missing (2)
+
+| #   | Location       | Issue                                                                                          | Fix                                      |
+| --- | -------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| 14  | Strategies     | 7th strategy `negotiation` not mentioned anywhere                                              | Added full section with example          |
+| 15  | API / Overview | `SwarmBuilder` / `swarm()` factory not documented; `AssessorConfig` / `dryRun()` not mentioned | Added SwarmBuilder and Assessor sections |
+
+---
+
 ## docs/DOCKER.md
 
 **Status:** Complete
@@ -675,3 +752,77 @@ Complete rewrite. All sections now reflect actual `packages/memory/src/` source:
 - Incident response procedures (operational guidance, no code) ✅
 - Vendor management tables ✅
 - Control matrix TSC mapping ✅
+
+---
+
+## docs/TOOLS.md
+
+**Status:** Complete
+**Date:** 2026-02-25
+**Severity:** Critical — nearly every import path was wrong, multiple fake APIs and non-existent tools throughout, ToolRegistry and MCP APIs completely incorrect
+
+### Issues Found (28 total)
+
+#### Critical (15) — Wrong package paths / non-existent APIs
+
+| #   | Location                          | Issue                                                                                                                                      | Fix                                                                                         |
+| --- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| 1   | Built-in Tools — File section     | `import { fileRead, fileWrite, fileDelete, fileList, fileSearch, fileMove } from '@cogitator-ai/tools/filesystem'` — package doesn't exist | Changed to `from '@cogitator-ai/core'`; removed `fileSearch`, `fileMove` (don't exist)      |
+| 2   | Built-in Tools — File section     | `fileSearch` and `fileMove` shown as exports — don't exist                                                                                 | Removed; actual exports are `fileRead`, `fileWrite`, `fileList`, `fileExists`, `fileDelete` |
+| 3   | Built-in Tools — Web section      | `import { webFetch, webSearch, webScreenshot } from '@cogitator-ai/tools/web'` — package doesn't exist                                     | Changed to `from '@cogitator-ai/core'`; removed `webFetch`, `webScreenshot` (don't exist)   |
+| 4   | Built-in Tools — Web section      | `webFetch` and `webScreenshot` tools don't exist                                                                                           | Removed; actual tools are `webSearch` and `webScrape`                                       |
+| 5   | Built-in Tools — Code section     | `import { codeInterpreter } from '@cogitator-ai/tools/code'` — neither package nor tool exist                                              | Removed entire section; no code interpreter built-in                                        |
+| 6   | Built-in Tools — Database section | `import { sqlQuery, sqlExecute } from '@cogitator-ai/tools/database'` — package doesn't exist                                              | Changed to `from '@cogitator-ai/core'`; removed `sqlExecute` (doesn't exist)                |
+| 7   | MCP Integration section           | `import { mcpServer } from '@cogitator-ai/tools/mcp'` — wrong package, wrong function                                                      | Changed to `import { MCPClient, connectMCPServer } from '@cogitator-ai/mcp'`                |
+| 8   | MCP Integration — `mcpServer()`   | `mcpServer({ command, args, env })` helper function doesn't exist                                                                          | Replaced with `connectMCPServer()` and `MCPClient.connect()` which are the real APIs        |
+| 9   | MCP Server creation               | `import { MCPServer, MCPTool } from '@cogitator-ai/tools/mcp'` — wrong package, `MCPTool` doesn't exist                                    | Changed to `from '@cogitator-ai/mcp'`; removed `MCPTool`                                    |
+| 10  | MCP Server — `addTool()`          | `server.addTool({ name, description, inputSchema, handler })` — method doesn't exist                                                       | Changed to `server.registerTool(tool)` accepting a Cogitator Tool instance                  |
+| 11  | MCP Server — `listen()`           | `server.listen()` — method doesn't exist                                                                                                   | Changed to `await server.start()`                                                           |
+| 12  | ToolRegistry — `registerGroup()`  | `registry.registerGroup('filesystem', [...])` — method doesn't exist                                                                       | Changed to `registry.registerMany([...])`                                                   |
+| 13  | ToolRegistry — `getGroup()`       | `registry.getGroup('web')` — method doesn't exist                                                                                          | Removed; ToolRegistry has no group concept                                                  |
+| 14  | ToolRegistry — `search()`         | `registry.search('file')` — method doesn't exist                                                                                           | Removed                                                                                     |
+| 15  | ToolRegistry — `getSchema()`      | `registry.getSchema('calculator')` — method doesn't exist (it's `getSchemas()` plural, returns all)                                        | Fixed to `registry.getSchemas()`                                                            |
+
+#### Wrong API (8)
+
+| #   | Location                         | Issue                                                                                                         | Fix                                                                                   |
+| --- | -------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| 16  | ToolRegistry constructor         | `new ToolRegistry({ permissions: { default: {...}, tools: {...} } })` — constructor takes no arguments        | Removed permissions config block; constructor is `new ToolRegistry()`                 |
+| 17  | Error types                      | `import { ToolError, ToolValidationError, ToolTimeoutError } from '@cogitator-ai/core'` — don't exist         | Removed; no error classes exported from core; tools throw plain `Error`               |
+| 18  | Observability section            | `import { metrics } from '@cogitator-ai/observability'` — package doesn't exist                               | Removed metrics example; tracing is automatic via OpenTelemetry                       |
+| 19  | Testing section                  | `import { mockTool, ToolTestHarness } from '@cogitator-ai/testing'` — wrong package, neither export exists    | Changed to use `MockLLMBackend` from `@cogitator-ai/test-utils`                       |
+| 20  | WASM sandbox example             | `import { wasmSandbox } from '@cogitator-ai/sandbox'` — `wasmSandbox` not exported from sandbox package       | Replaced with `defineWasmTool()` from `@cogitator-ai/wasm-tools`                      |
+| 21  | WASM sandbox — `instance.call()` | `wasmSandbox.instantiate(module)` / `instance.call(func, ...args)` — nonexistent API                          | Replaced with correct `defineWasmTool()` API                                          |
+| 22  | Tool config — `supportsProgress` | `supportsProgress: true` and `execute: async (params, { progress }) => {...}` — not in `ToolConfig` interface | Removed; `progress` is not in `ToolContext`; context has `agentId`, `runId`, `signal` |
+| 23  | Tool config — `retry`            | `retry: { maxRetries, backoff, initialDelay, retryOn }` in tool config — not in `ToolConfig` interface        | Removed retry config block                                                            |
+
+#### Incorrect field names (4)
+
+| #   | Location                       | Issue                                                                                  | Fix                                                                            |
+| --- | ------------------------------ | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| 24  | Sandbox best practices example | `sandbox: { memory: '256MB', cpu: 0.5 }` at config root                                | Changed to `resources: { memory: '256MB', cpus: 0.5 }` nested inside `sandbox` |
+| 25  | Compound tools `execute` arg   | `execute: async ({ topic }, { tools })` — second arg is `ToolContext`, not `{ tools }` | Changed to `execute: async ({ topic }, context)`                               |
+| 26  | MCP server example             | `MCPServer` constructor missing required `transport` field                             | Added `transport: 'stdio'` to config                                           |
+| 27  | Tool testing                   | `new Agent({ model: 'gpt-4o', tools: [...] })` — `model` not an Agent config field     | Fixed to proper `Cogitator` + `Agent` pattern                                  |
+
+#### Missing coverage (1)
+
+| #   | Location | Issue                                                                    | Fix                                                       |
+| --- | -------- | ------------------------------------------------------------------------ | --------------------------------------------------------- |
+| 28  | Overview | No mention of `builtinTools` array or `@cogitator-ai/wasm-tools` package | Added complete built-in tools list and wasm-tools section |
+
+### Source of Truth Verified
+
+| Claim                                                                                                     | Verified Against             | Result                                                                                                                     |
+| --------------------------------------------------------------------------------------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `tool()` from `@cogitator-ai/core`                                                                        | core/src/tool.ts             | ✅ Correct                                                                                                                 |
+| `ToolRegistry` from `@cogitator-ai/core`                                                                  | core/src/registry.ts         | ✅ Correct                                                                                                                 |
+| `ToolRegistry` methods: register, registerMany, get, has, getAll, getSchemas, getNames, clear             | core/src/registry.ts         | ✅ All verified                                                                                                            |
+| `tool()` options: name, description, parameters, execute, sideEffects, requiresApproval, timeout, sandbox | types/src/tool.ts            | ✅ All in ToolConfig                                                                                                       |
+| `SandboxConfig.resources.memory`, `.cpus`                                                                 | types/src/sandbox.ts         | ✅ Correct (field is `resources.memory`)                                                                                   |
+| `MCPClient.connect()`, `connectMCPServer()`                                                               | mcp/src/client/mcp-client.ts | ✅ Correct                                                                                                                 |
+| `MCPServer.registerTool()`, `.registerTools()`, `.start()`, `.stop()`                                     | mcp/src/server/mcp-server.ts | ✅ All verified                                                                                                            |
+| `serveMCPTools()` helper                                                                                  | mcp/src/server/mcp-server.ts | ✅ Exists                                                                                                                  |
+| 14 WASM tools in `@cogitator-ai/wasm-tools`                                                               | wasm-tools/src/index.ts      | ✅ Exactly 14: calc, hash, base64, json, slug, validation, diff, regex, csv, markdown, xml, datetime, compression, signing |
+| `defineWasmTool()` API                                                                                    | wasm-tools/src/index.ts      | ✅ Correct signature                                                                                                       |
+| `builtinTools` array                                                                                      | core/src/tools/index.ts      | ✅ Exists, 26 tools                                                                                                        |

@@ -62,7 +62,7 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
 
         return response;
       } catch (error) {
-        if (error instanceof Error && error.message.includes('Cannot find module')) {
+        if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
           return reply.status(501).send({
             error: { message: 'Workflows package not installed', code: 'UNIMPLEMENTED' },
           });
@@ -111,8 +111,11 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
 
         writer.start(messageId);
 
+        const userOptions = request.body?.options ?? {};
         const result = await executor.execute(workflow, request.body?.input, {
-          ...request.body?.options,
+          maxConcurrency: userOptions.maxConcurrency,
+          maxIterations: userOptions.maxIterations,
+          checkpoint: userOptions.checkpoint,
           onNodeStart: (node: string) => {
             writer.workflowEvent('node_started', { nodeName: node, timestamp: Date.now() });
           },
@@ -134,7 +137,7 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
 
         writer.finish(messageId);
       } catch (error) {
-        if (error instanceof Error && error.message.includes('Cannot find module')) {
+        if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
           writer.error('Workflows package not installed', 'UNIMPLEMENTED');
         } else {
           const message = error instanceof Error ? error.message : 'Unknown error';

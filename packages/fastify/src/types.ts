@@ -88,7 +88,6 @@ export interface CogitatorPluginOptions {
   enableWebSocket?: boolean;
   swagger?: SwaggerConfig;
   websocket?: WebSocketConfig;
-  requestTimeout?: number;
 }
 
 export interface CogitatorContext {

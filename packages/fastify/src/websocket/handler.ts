@@ -4,14 +4,9 @@ import type { WebSocketMessage, WebSocketResponse } from '../types.js';
 import { generateId } from '../streaming/helpers.js';
 import type { ToolCall } from '@cogitator-ai/types';
 
-interface Subscription {
-  channel: string;
-  callback: (data: unknown) => void;
-}
-
 interface ClientState {
   id: string;
-  subscriptions: Map<string, Subscription>;
+  subscriptions: Set<string>;
   abortController?: AbortController;
 }
 
@@ -28,7 +23,7 @@ export const websocketRoutes: FastifyPluginAsync<WebSocketRoutesOptions> = async
   fastify.get(path, { websocket: true }, (socket: WebSocket, _request: FastifyRequest) => {
     const clientState: ClientState = {
       id: generateId('ws'),
-      subscriptions: new Map(),
+      subscriptions: new Set(),
     };
 
     socket.on('message', async (data: Buffer) => {
@@ -66,12 +61,9 @@ async function handleMessage(
 
     case 'subscribe':
       if (message.channel) {
-        state.subscriptions.set(message.channel, {
-          channel: message.channel,
-          callback: (data) => {
-            sendResponse(socket, { type: 'event', channel: message.channel, payload: data });
-          },
-        });
+        if (state.subscriptions.size < 64) {
+          state.subscriptions.add(message.channel);
+        }
         sendResponse(socket, { type: 'subscribed', channel: message.channel });
       }
       break;
@@ -100,35 +92,52 @@ async function handleRun(
   fastify: Parameters<FastifyPluginAsync>[0],
   state: ClientState
 ): Promise<void> {
-  const payload = message.payload as {
-    type: 'agent' | 'workflow' | 'swarm';
+  const payload = message.payload;
+  if (
+    typeof payload !== 'object' ||
+    payload === null ||
+    typeof (payload as Record<string, unknown>).type !== 'string' ||
+    typeof (payload as Record<string, unknown>).name !== 'string' ||
+    typeof (payload as Record<string, unknown>).input !== 'string'
+  ) {
+    sendResponse(socket, { type: 'error', id: message.id, error: 'Invalid run payload' });
+    return;
+  }
+
+  const { type, name, input, context } = payload as {
+    type: string;
     name: string;
     input: string;
     context?: Record<string, unknown>;
   };
 
-  if (!payload?.type || !payload?.name || !payload?.input) {
-    sendResponse(socket, { type: 'error', id: message.id, error: 'Invalid run payload' });
+  if (state.abortController) {
+    sendResponse(socket, { type: 'error', id: message.id, error: 'A run is already in progress' });
+    return;
+  }
+
+  if (type !== 'agent' && type !== 'workflow' && type !== 'swarm') {
+    sendResponse(socket, { type: 'error', id: message.id, error: `Unknown run type: ${type}` });
     return;
   }
 
   state.abortController = new AbortController();
 
   try {
-    if (payload.type === 'agent') {
-      const agent = fastify.cogitator.agents[payload.name];
+    if (type === 'agent') {
+      const agent = fastify.cogitator.agents[name];
       if (!agent) {
         sendResponse(socket, {
           type: 'error',
           id: message.id,
-          error: `Agent '${payload.name}' not found`,
+          error: 'Agent not found',
         });
         return;
       }
 
       const result = await fastify.cogitator.runtime.run(agent, {
-        input: payload.input,
-        context: payload.context,
+        input,
+        context,
         stream: true,
         onToken: (token: string) => {
           sendResponse(socket, {
@@ -158,6 +167,12 @@ async function handleRun(
         id: message.id,
         payload: { type: 'complete', result },
       });
+    } else {
+      sendResponse(socket, {
+        type: 'error',
+        id: message.id,
+        error: `Run type '${type}' is not supported over WebSocket`,
+      });
     }
   } catch (error) {
     if (state.abortController?.signal.aborted) {
@@ -169,6 +184,8 @@ async function handleRun(
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }
+  } finally {
+    state.abortController = undefined;
   }
 }
 

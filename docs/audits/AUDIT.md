@@ -51,5 +51,8 @@
 | MEMORY.md            | 2026-02-25 | 20+ fixed    | ✅     |
 | SECURITY.md          | 2026-02-25 | 5 fixed      | ✅     |
 | SOC2-COMPLIANCE.md   | 2026-02-25 | 13 fixed     | ✅     |
+| SWARMS.md            | 2026-02-25 | 15 fixed     | ✅     |
+| TOOLS.md             | 2026-02-25 | 28 fixed     | ✅     |
+| WORKFLOWS.md         | 2026-02-25 | 18 fixed     | ✅     |
 
 Full report: [docs-audit.md](./docs-audit.md)

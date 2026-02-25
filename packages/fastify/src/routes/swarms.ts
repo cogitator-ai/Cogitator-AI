@@ -55,12 +55,6 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      if (!request.body?.input) {
-        return reply.status(400).send({
-          error: { message: 'Missing required field: input', code: 'INVALID_INPUT' },
-        });
-      }
-
       try {
         const { Swarm } = await import('@cogitator-ai/swarms');
         const swarm = new Swarm(fastify.cogitator.runtime, swarmConfig);
@@ -96,7 +90,7 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
 
         return response;
       } catch (error) {
-        if (error instanceof Error && error.message.includes('Cannot find module')) {
+        if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
           return reply.status(501).send({
             error: { message: 'Swarms package not installed', code: 'UNIMPLEMENTED' },
           });
@@ -129,12 +123,6 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
       if (!swarmConfig) {
         return reply.status(404).send({
           error: { message: `Swarm '${name}' not found`, code: 'NOT_FOUND' },
-        });
-      }
-
-      if (!request.body?.input) {
-        return reply.status(400).send({
-          error: { message: 'Missing required field: input', code: 'INVALID_INPUT' },
         });
       }
 
@@ -186,7 +174,7 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
 
         writer.finish(messageId);
       } catch (error) {
-        if (error instanceof Error && error.message.includes('Cannot find module')) {
+        if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
           writer.error('Swarms package not installed', 'UNIMPLEMENTED');
         } else {
           const message = error instanceof Error ? error.message : 'Unknown error';

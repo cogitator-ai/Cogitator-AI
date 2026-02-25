@@ -4,7 +4,7 @@
 
 ## Overview
 
-Swarms enable multiple agents to work together on complex tasks. Cogitator supports several coordination strategies:
+Swarms enable multiple agents to work together on complex tasks. Cogitator supports 7 coordination strategies:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
@@ -13,8 +13,8 @@ Swarms enable multiple agents to work together on complex tasks. Cogitator suppo
 │   ┌─────────────────────────────────────────────────────────────────────────┐   │
 │   │                         Strategy Engine                                 │   │
 │   │                                                                         │   │
-│   │   Hierarchical  │  Round-Robin  │  Consensus  │  Auction  │  Pipeline  │   │
-│   │                                                                         │   │
+│   │  Hierarchical │ Round-Robin │ Consensus │ Auction │ Pipeline │ Debate   │   │
+│   │                         Negotiation                                     │   │
 │   └─────────────────────────────────────────────────────────────────────────┘   │
 │                                      │                                          │
 │                    ┌─────────────────┼─────────────────┐                        │
@@ -45,8 +45,11 @@ A supervisor agent delegates tasks to worker agents:
 
 ```typescript
 import { Swarm } from '@cogitator-ai/swarms';
+import { Cogitator, Agent } from '@cogitator-ai/core';
 
-const devTeam = new Swarm({
+const cog = new Cogitator({ llm: { defaultModel: 'gpt-4o' } });
+
+const devTeam = new Swarm(cog, {
   name: 'dev-team',
   strategy: 'hierarchical',
 
@@ -80,9 +83,16 @@ const devTeam = new Swarm({
       tools: [fileWrite, testRunner],
     }),
   ],
+
+  hierarchical: {
+    maxDelegationDepth: 3,
+    workerCommunication: false,
+    routeThrough: 'supervisor',
+    visibility: 'full',
+  },
 });
 
-const result = await cog.run(devTeam, {
+const result = await devTeam.run({
   input: 'Build a user authentication system with login, register, and password reset',
 });
 ```
@@ -92,7 +102,7 @@ const result = await cog.run(devTeam, {
 Tasks rotate between agents for balanced workload:
 
 ```typescript
-const supportTeam = new Swarm({
+const supportTeam = new Swarm(cog, {
   name: 'support-team',
   strategy: 'round-robin',
 
@@ -103,9 +113,9 @@ const supportTeam = new Swarm({
   ],
 
   // Optional: sticky sessions (same agent handles follow-ups)
-  routing: {
+  roundRobin: {
     sticky: true,
-    stickyKey: (input) => input.ticketId,
+    stickyKey: (input) => (input as { ticketId: string }).ticketId,
   },
 });
 ```
@@ -115,7 +125,7 @@ const supportTeam = new Swarm({
 All agents must agree on a decision:
 
 ```typescript
-const reviewBoard = new Swarm({
+const reviewBoard = new Swarm(cog, {
   name: 'code-review-board',
   strategy: 'consensus',
 
@@ -138,7 +148,7 @@ const reviewBoard = new Swarm({
   },
 });
 
-const result = await cog.run(reviewBoard, {
+const result = await reviewBoard.run({
   input: 'Should we merge this pull request?',
   context: { prDiff: '...' },
 });
@@ -152,7 +162,7 @@ console.log(result.output);
 Agents bid on tasks based on capability:
 
 ```typescript
-const expertPool = new Swarm({
+const expertPool = new Swarm(cog, {
   name: 'expert-pool',
   strategy: 'auction',
 
@@ -160,17 +170,14 @@ const expertPool = new Swarm({
     new Agent({
       name: 'python-expert',
       instructions: 'Python and data science specialist.',
-      metadata: { expertise: ['python', 'pandas', 'ml'] },
     }),
     new Agent({
       name: 'typescript-expert',
       instructions: 'TypeScript and Node.js specialist.',
-      metadata: { expertise: ['typescript', 'node', 'react'] },
     }),
     new Agent({
       name: 'devops-expert',
       instructions: 'DevOps and infrastructure specialist.',
-      metadata: { expertise: ['docker', 'kubernetes', 'aws'] },
     }),
   ],
 
@@ -181,8 +188,8 @@ const expertPool = new Swarm({
     // Custom bidding function
     bidFunction: async (agent, task) => {
       const taskKeywords = extractKeywords(task);
-      const matchScore = calculateMatch(agent.metadata.expertise, taskKeywords);
-      return matchScore;
+      const expertise = agent.metadata.expertise ?? [];
+      return calculateMatch(expertise, taskKeywords);
     },
 
     // Winner selection
@@ -191,7 +198,7 @@ const expertPool = new Swarm({
 });
 
 // Task automatically routed to most capable agent
-const result = await cog.run(expertPool, {
+const result = await expertPool.run({
   input: 'Write a Kubernetes deployment for our Node.js service',
 });
 // Routed to devops-expert
@@ -202,61 +209,63 @@ const result = await cog.run(expertPool, {
 Sequential processing through specialized agents:
 
 ```typescript
-const contentPipeline = new Swarm({
+const contentPipeline = new Swarm(cog, {
   name: 'content-pipeline',
   strategy: 'pipeline',
 
-  stages: [
-    {
-      name: 'research',
-      agent: new Agent({
-        name: 'researcher',
-        instructions: 'Research topics thoroughly.',
-        tools: [webSearch, webFetch],
-      }),
-    },
-    {
-      name: 'outline',
-      agent: new Agent({
-        name: 'outliner',
-        instructions: 'Create detailed outlines from research.',
-      }),
-    },
-    {
-      name: 'draft',
-      agent: new Agent({
-        name: 'writer',
-        instructions: 'Write engaging content from outlines.',
-      }),
-    },
-    {
-      name: 'edit',
-      agent: new Agent({
-        name: 'editor',
-        instructions: 'Polish and improve drafts.',
-      }),
-    },
-    {
-      name: 'fact-check',
-      agent: new Agent({
-        name: 'fact-checker',
-        instructions: 'Verify all claims and citations.',
-        tools: [webSearch],
-      }),
-    },
-  ],
+  pipeline: {
+    stages: [
+      {
+        name: 'research',
+        agent: new Agent({
+          name: 'researcher',
+          instructions: 'Research topics thoroughly.',
+          tools: [webSearch, webFetch],
+        }),
+      },
+      {
+        name: 'outline',
+        agent: new Agent({
+          name: 'outliner',
+          instructions: 'Create detailed outlines from research.',
+        }),
+      },
+      {
+        name: 'draft',
+        agent: new Agent({
+          name: 'writer',
+          instructions: 'Write engaging content from outlines.',
+        }),
+      },
+      {
+        name: 'edit',
+        agent: new Agent({
+          name: 'editor',
+          instructions: 'Polish and improve drafts.',
+        }),
+      },
+      {
+        name: 'fact-check',
+        agent: new Agent({
+          name: 'fact-checker',
+          instructions: 'Verify all claims and citations.',
+          tools: [webSearch],
+        }),
+      },
+    ],
 
-  // Data flows from one stage to the next
-  stageInput: (prevOutput, stage, ctx) => {
-    return {
-      previous: prevOutput,
-      originalRequest: ctx.input,
-      stageInstructions: `You are in the ${stage.name} stage.`,
-    };
+    // Data flows from one stage to the next
+    stageInput: (prevOutput, stage, ctx) => {
+      return {
+        previous: prevOutput,
+        originalRequest: ctx.input,
+        stageInstructions: `You are in the ${stage.name} stage.`,
+      };
+    },
   },
 });
 
-const article = await cog.run(contentPipeline, {
+const article = await contentPipeline.run({
   input: 'Write an article about the future of AI agents',
 });
 ```
@@ -266,7 +275,7 @@ const article = await cog.run(contentPipeline, {
 Agents argue opposing positions:
 
 ```typescript
-const debateSwarm = new Swarm({
+const debateSwarm = new Swarm(cog, {
   name: 'decision-debate',
   strategy: 'debate',
 
@@ -293,10 +302,46 @@ const debateSwarm = new Swarm({
   },
 });
 
-const decision = await cog.run(debateSwarm, {
+const decision = await debateSwarm.run({
   input: 'Should we rewrite our backend in Rust?',
   context: { currentStack: 'Node.js', teamSize: 5 },
 });
+```
+
+### 7. Negotiation
+
+Agents negotiate structured agreements through multi-round proposals and counter-offers:
+
+```typescript
+const negotiationSwarm = new Swarm(cog, {
+  name: 'contract-negotiation',
+  strategy: 'negotiation',
+
+  agents: [
+    new Agent({
+      name: 'buyer',
+      instructions: 'You represent the buyer. Negotiate favorable pricing and delivery terms.',
+    }),
+    new Agent({
+      name: 'seller',
+      instructions: 'You represent the seller. Negotiate sustainable pricing and timeline.',
+    }),
+  ],
+
+  negotiation: {
+    maxRounds: 5,
+    turnOrder: 'round-robin', // 'round-robin' | 'dynamic'
+    onDeadlock: 'supervisor-decides', // 'escalate' | 'supervisor-decides' | 'majority-rules' | 'arbitrate' | 'fail'
+  },
+});
+
+const result = await negotiationSwarm.run({
+  input: 'Negotiate a software development contract: 6-month project, estimated 500 hours',
+});
+
+// Access negotiation-specific result
+console.log(result.negotiationResult?.outcome); // 'agreement' | 'deadlock' | 'escalated' | 'arbitrated'
+console.log(result.negotiationResult?.agreement?.terms);
 ```
 
 ---
@@ -305,11 +350,15 @@ const decision = await cog.run(debateSwarm, {
 
 ### Message Passing
 
-Agents can communicate directly:
+Agents can communicate via the message bus:
 
 ```typescript
-const collaborativeSwarm = new Swarm({
+import { tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const collaborativeSwarm = new Swarm(cog, {
   name: 'collaborative-team',
+  strategy: 'round-robin',
 
   agents: [agentA, agentB, agentC],
 
@@ -330,10 +379,15 @@ const sendMessage = tool({
   parameters: z.object({
     to: z.string().describe('Target agent name'),
     message: z.string().describe('Message content'),
-    waitForReply: z.boolean().default(false),
   }),
-  execute: async ({ to, message, waitForReply }, { swarm }) => {
-    const response = await swarm.sendMessage(to, message, { waitForReply });
+  execute: async ({ to, message }) => {
+    const response = await collaborativeSwarm.messageBus.send({
+      swarmId: collaborativeSwarm.id,
+      from: 'current-agent',
+      to,
+      type: 'request',
+      content: message,
+    });
     return response;
   },
 });
@@ -344,14 +398,26 @@ const sendMessage = tool({
 Agents share a common knowledge space:
 
 ```typescript
-const researchSwarm = new Swarm({
+const researchSwarm = new Swarm(cog, {
   name: 'research-team',
+  strategy: 'pipeline',
 
-  agents: [
-    new Agent({ name: 'searcher', instructions: 'Find relevant sources.' }),
-    new Agent({ name: 'reader', instructions: 'Extract key information.' }),
-    new Agent({ name: 'synthesizer', instructions: 'Combine findings.' }),
-  ],
+  pipeline: {
+    stages: [
+      {
+        name: 'search',
+        agent: new Agent({ name: 'searcher', instructions: 'Find relevant sources.' }),
+      },
+      {
+        name: 'read',
+        agent: new Agent({ name: 'reader', instructions: 'Extract key information.' }),
+      },
+      {
+        name: 'synthesize',
+        agent: new Agent({ name: 'synthesizer', instructions: 'Combine findings.' }),
+      },
+    ],
+  },
 
   // Shared blackboard
   blackboard: {
@@ -369,8 +435,8 @@ const researchSwarm = new Swarm({
 const readBlackboard = tool({
   name: 'read_blackboard',
   parameters: z.object({ section: z.string() }),
-  execute: async ({ section }, { swarm }) => {
-    return swarm.blackboard.read(section);
+  execute: async ({ section }) => {
+    return researchSwarm.blackboard.read(section);
   },
 });
 
@@ -380,8 +446,8 @@ const writeBlackboard = tool({
     section: z.string(),
     content: z.any(),
   }),
-  execute: async ({ section, content }, { swarm }) => {
-    await swarm.blackboard.write(section, content);
+  execute: async ({ section, content }) => {
+    researchSwarm.blackboard.write(section, content, 'agent');
     return { success: true };
   },
 });
@@ -389,42 +455,25 @@ const writeBlackboard = tool({
 
 ### Event-Driven Coordination
 
-Agents react to events:
+Subscribe to swarm events:
 
 ```typescript
-const eventDrivenSwarm = new Swarm({
-  name: 'event-driven-team',
-
+const monitoringSwarm = new Swarm(cog, {
+  name: 'monitoring-team',
+  strategy: 'round-robin',
   agents: [monitorAgent, responderAgent, escalatorAgent],
-
-  events: {
-    error_detected: {
-      handler: responderAgent,
-      priority: 'high',
-    },
-    threshold_exceeded: {
-      handler: escalatorAgent,
-      priority: 'critical',
-    },
-    task_completed: {
-      handler: monitorAgent,
-      priority: 'low',
-    },
-  },
 });
 
-// Emit events from agents
-const emitEvent = tool({
-  name: 'emit_event',
-  parameters: z.object({
-    event: z.string(),
-    data: z.any(),
-  }),
-  execute: async ({ event, data }, { swarm }) => {
-    await swarm.emit(event, data);
-    return { emitted: true };
-  },
+// Subscribe to events (returns unsubscribe function)
+const unsub = monitoringSwarm.on('agent:complete', (event) => {
+  console.log(`Agent ${event.agentName} completed`);
 });
+
+// Emit custom events via the event emitter
+monitoringSwarm.events.emit('swarm:start', { swarmId: monitoringSwarm.id });
+
+// Clean up listener
+unsub();
 ```
 
 ---
@@ -436,7 +485,8 @@ const emitEvent = tool({
 Classic delegation pattern:
 
 ```typescript
-const supervisorWorker = new Swarm({
+const supervisorWorker = new Swarm(cog, {
+  name: 'project-team',
   strategy: 'hierarchical',
 
   supervisor: new Agent({
@@ -458,7 +508,7 @@ const supervisorWorker = new Swarm({
 
   workers: [designerAgent, developerAgent, testerAgent],
 
-  coordination: {
+  hierarchical: {
     // Supervisor can see worker outputs
     visibility: 'full',
 
@@ -471,138 +521,91 @@ const supervisorWorker = new Swarm({
 });
 ```
 
-### 2. Peer-to-Peer
+### 2. Quality Gate
 
-Equal agents collaborating:
-
-```typescript
-const peerToPeer = new Swarm({
-  strategy: 'collaborative',
-
-  agents: [
-    new Agent({ name: 'alice', instructions: 'Collaborate with peers on problem-solving.' }),
-    new Agent({ name: 'bob', instructions: 'Collaborate with peers on problem-solving.' }),
-    new Agent({ name: 'charlie', instructions: 'Collaborate with peers on problem-solving.' }),
-  ],
-
-  collaboration: {
-    // Everyone can message everyone
-    topology: 'full-mesh',
-
-    // Take turns speaking
-    turnTaking: 'round-robin',
-
-    // End when consensus reached or max turns
-    termination: {
-      consensus: true,
-      maxTurns: 20,
-    },
-  },
-});
-```
-
-### 3. Specialist Team
-
-Route to specialists based on need:
+Multi-stage validation pipeline:
 
 ```typescript
-const specialistTeam = new Swarm({
-  strategy: 'specialist',
-
-  router: new Agent({
-    name: 'router',
-    model: 'gpt-4o-mini', // Fast model for routing
-    instructions: `
-      Analyze incoming requests and route to the appropriate specialist:
-      - database: Database queries, schema design, SQL optimization
-      - api: REST APIs, GraphQL, authentication
-      - frontend: React, Vue, CSS, user interfaces
-      - devops: Docker, Kubernetes, CI/CD, monitoring
-
-      Return the specialist name and reformulated task.
-    `,
-    responseFormat: {
-      type: 'json_schema',
-      schema: z.object({
-        specialist: z.enum(['database', 'api', 'frontend', 'devops']),
-        task: z.string(),
-      }),
-    },
-  }),
-
-  specialists: {
-    database: databaseAgent,
-    api: apiAgent,
-    frontend: frontendAgent,
-    devops: devopsAgent,
-  },
-});
-```
-
-### 4. Quality Gate
-
-Multi-stage validation:
-
-```typescript
-const qualityGate = new Swarm({
+const qualityGate = new Swarm(cog, {
+  name: 'quality-pipeline',
   strategy: 'pipeline',
 
-  stages: [
-    { name: 'generate', agent: generatorAgent },
-    { name: 'validate', agent: validatorAgent, gate: true },
-    { name: 'refine', agent: refinerAgent },
-    { name: 'final-review', agent: reviewerAgent, gate: true },
-  ],
+  pipeline: {
+    stages: [
+      { name: 'generate', agent: generatorAgent },
+      { name: 'validate', agent: validatorAgent, gate: true },
+      { name: 'refine', agent: refinerAgent },
+      { name: 'final-review', agent: reviewerAgent, gate: true },
+    ],
 
-  gates: {
-    validate: {
-      // Must pass to continue
-      condition: (output) => output.valid === true,
-      onFail: 'retry-previous', // or 'abort', 'skip', 'human-review'
-      maxRetries: 3,
-    },
-    'final-review': {
-      condition: (output) => output.approved === true,
-      onFail: 'goto:refine', // Go back to refine stage
-      maxRetries: 2,
+    gates: {
+      validate: {
+        // Must pass to continue
+        condition: (output) => (output as { valid: boolean }).valid === true,
+        onFail: 'retry-previous', // or 'abort', 'skip', 'goto:<stage>'
+        maxRetries: 3,
+      },
+      'final-review': {
+        condition: (output) => (output as { approved: boolean }).approved === true,
+        onFail: 'goto:refine', // Go back to refine stage
+        maxRetries: 2,
+      },
     },
   },
 });
 ```
 
-### 5. Self-Improving Team
+### 3. Expert Routing
 
-Agents learn from feedback:
+Route tasks to the most capable specialist:
 
 ```typescript
-const selfImproving = new Swarm({
-  strategy: 'adaptive',
+const expertPool = new Swarm(cog, {
+  name: 'expert-pool',
+  strategy: 'auction',
 
-  agents: [coderAgent, reviewerAgent],
+  agents: [
+    new Agent({
+      name: 'database-expert',
+      instructions: 'Database queries, schema design, SQL optimization.',
+    }),
+    new Agent({ name: 'api-expert', instructions: 'REST APIs, GraphQL, authentication.' }),
+    new Agent({ name: 'frontend-expert', instructions: 'React, Vue, CSS, user interfaces.' }),
+    new Agent({ name: 'devops-expert', instructions: 'Docker, Kubernetes, CI/CD, monitoring.' }),
+  ],
 
-  learning: {
-    enabled: true,
-
-    // Track success metrics
-    metrics: ['code_quality', 'review_accuracy', 'iteration_count'],
-
-    // Adjust agent prompts based on performance
-    adaptation: {
-      trigger: 'after-each-run',
-      strategy: 'prompt-refinement',
-    },
-
-    // Store learnings
-    memory: {
-      store: 'postgres',
-      retention: '30d',
-    },
+  auction: {
+    bidding: 'capability-match',
+    selection: 'highest-bid',
   },
+});
+```
 
-  feedback: {
-    // Human feedback integration
-    requestFeedback: true,
-    feedbackPrompt: 'Rate the quality of this solution (1-5):',
+### 4. Multi-Party Negotiation
+
+Structured agreement-reaching:
+
+```typescript
+const negotiation = new Swarm(cog, {
+  name: 'resource-allocation',
+  strategy: 'negotiation',
+
+  agents: [
+    new Agent({ name: 'team-a', instructions: 'Advocate for Team A resource needs.' }),
+    new Agent({ name: 'team-b', instructions: 'Advocate for Team B resource needs.' }),
+    new Agent({ name: 'team-c', instructions: 'Advocate for Team C resource needs.' }),
+  ],
+
+  // Optional: supervisor to break deadlocks
+  supervisor: new Agent({
+    name: 'cto',
+    instructions: 'Make final resource allocation decisions when teams cannot agree.',
+  }),
+
+  negotiation: {
+    maxRounds: 5,
+    turnOrder: 'round-robin',
+    onDeadlock: 'supervisor-decides',
   },
 });
 ```
@@ -614,7 +617,9 @@ const selfImproving = new Swarm({
 ### Resource Management
 
 ```typescript
-const swarm = new Swarm({
+const swarm = new Swarm(cog, {
+  name: 'managed-swarm',
+  strategy: 'round-robin',
   agents: [...],
 
   resources: {
@@ -642,7 +647,9 @@ const swarm = new Swarm({
 ### Error Handling
 
 ```typescript
-const swarm = new Swarm({
+const swarm = new Swarm(cog, {
+  name: 'resilient-swarm',
+  strategy: 'round-robin',
   agents: [...],
 
   errorHandling: {
@@ -653,6 +660,7 @@ const swarm = new Swarm({
     retry: {
       maxRetries: 3,
       backoff: 'exponential',
+      initialDelay: 1000,
     },
 
     // Failover to backup agent
@@ -673,8 +681,10 @@ const swarm = new Swarm({
 ### Observability
 
 ```typescript
-const swarm = new Swarm({
-  agents: [...],
+const swarm = new Swarm(cog, {
+  name: 'observable-swarm',
+  strategy: 'pipeline',
+  pipeline: { stages: [...] },
 
   observability: {
     // Trace all agent interactions
@@ -683,20 +693,70 @@ const swarm = new Swarm({
     // Log message passing
     messageLogging: true,
 
-    // Export metrics
-    metrics: {
-      exporter: 'prometheus',
-      labels: ['swarm_name', 'agent_name', 'strategy'],
-    },
-
-    // Visualize in dashboard
-    dashboard: {
-      enabled: true,
-      showAgentState: true,
-      showMessageFlow: true,
-    },
+    // Log blackboard changes
+    blackboardLogging: true,
   },
 });
+
+// Subscribe to all events for custom observability
+swarm.on('*', (event) => {
+  console.log(`[${event.type}]`, event.data);
+});
+```
+
+---
+
+## SwarmBuilder API
+
+Fluent builder for constructing swarms:
+
+```typescript
+import { swarm } from '@cogitator-ai/swarms';
+
+const mySwarm = swarm('content-team')
+  .strategy('pipeline')
+  .pipeline({
+    stages: [
+      { name: 'research', agent: researchAgent },
+      { name: 'write', agent: writerAgent },
+      { name: 'edit', agent: editorAgent },
+    ],
+  })
+  .resources({ maxConcurrency: 3, costLimit: 0.5 })
+  .build(cog);
+
+const result = await mySwarm.run({ input: 'Write about quantum computing' });
+```
+
+---
+
+## Assessor — Automatic Model Assignment
+
+The assessor analyzes your task and automatically assigns the best LLM to each agent:
+
+```typescript
+import { swarm } from '@cogitator-ai/swarms';
+
+const mySwarm = swarm('dev-team')
+  .strategy('hierarchical')
+  .supervisor(supervisorAgent)
+  .workers([frontendAgent, backendAgent])
+  .withAssessor({
+    mode: 'hybrid', // 'rules' | 'ai' | 'hybrid'
+    preferLocal: true, // prefer Ollama models when capable
+    maxCostPerRun: 0.1,
+  })
+  .build(cog);
+
+// Dry run: see model assignments without executing
+const assessment = await mySwarm.dryRun({ input: 'Build a REST API' });
+for (const assignment of assessment.assignments) {
+  console.log(`${assignment.agentName}: ${assignment.assignedModel} (score: ${assignment.score})`);
+}
+
+// Run with auto-assigned models
+const result = await mySwarm.run({ input: 'Build a REST API' });
+console.log(mySwarm.getLastAssessment()?.totalEstimatedCost);
 ```
 
 ---
@@ -707,28 +767,48 @@ const swarm = new Swarm({
 
 ```typescript
 class Swarm {
-  constructor(config: SwarmConfig);
+  constructor(cogitator: Cogitator, config: SwarmConfig, assessorConfig?: AssessorConfig);
+
+  // Identifiers
+  get name(): string;
+  get id(): string;
+  get strategyType(): string;
 
   // Run the swarm
-  run(input: any): Promise<SwarmResult>;
+  run(options: SwarmRunOptions): Promise<StrategyResult>;
+
+  // Dry run — analyze model assignments without executing (requires assessor)
+  dryRun(options: { input: string }): Promise<AssessmentResult>;
+
+  // Get last assessor result
+  getLastAssessment(): AssessmentResult | undefined;
 
   // Access individual agents
-  getAgent(name: string): Agent;
+  getAgent(name: string): SwarmAgent | undefined;
+  getAgents(): SwarmAgent[];
 
-  // Send message to agent
-  sendMessage(agentName: string, message: string): Promise<any>;
+  // Communication interfaces
+  get messageBus(): MessageBus;
+  get blackboard(): Blackboard;
+  get events(): SwarmEventEmitter;
 
-  // Access blackboard
-  blackboard: Blackboard;
+  // Event subscription (returns unsubscribe fn)
+  on(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void;
+  once(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void;
 
-  // Event handling
-  on(event: string, handler: Function): void;
-  emit(event: string, data: any): void;
+  // Resource usage
+  getResourceUsage(): SwarmResourceUsage;
 
   // Control
   pause(): void;
   resume(): void;
   abort(): void;
+  isPaused(): boolean;
+  isAborted(): boolean;
+  reset(): void;
+
+  // Close distributed connections
+  close(): Promise<void>;
 }
 ```
 
@@ -746,34 +826,78 @@ interface SwarmConfig {
     | 'auction'
     | 'pipeline'
     | 'debate'
-    | 'collaborative'
-    | 'specialist'
-    | 'adaptive';
+    | 'negotiation';
 
   // Agents
   supervisor?: Agent;
   workers?: Agent[];
   agents?: Agent[];
-  stages?: StageConfig[];
-  specialists?: Record<string, Agent>;
-  router?: Agent;
+  stages?: PipelineStage[]; // legacy alias for pipeline.stages
   moderator?: Agent;
+  router?: Agent;
 
-  // Strategy-specific config
+  // Strategy-specific config (use the matching key for your strategy)
+  hierarchical?: HierarchicalConfig;
+  roundRobin?: RoundRobinConfig;
   consensus?: ConsensusConfig;
   auction?: AuctionConfig;
+  pipeline?: PipelineConfig;
   debate?: DebateConfig;
-  collaboration?: CollaborationConfig;
+  negotiation?: NegotiationConfig;
 
   // Communication
-  messaging?: MessagingConfig;
+  messaging?: MessageBusConfig;
   blackboard?: BlackboardConfig;
-  events?: EventConfig;
 
   // Resources & limits
-  resources?: ResourceConfig;
-  errorHandling?: ErrorConfig;
-  observability?: ObservabilityConfig;
+  resources?: SwarmResourceConfig;
+  errorHandling?: SwarmErrorConfig;
+
+  // Observability
+  observability?: {
+    tracing?: boolean;
+    messageLogging?: boolean;
+    blackboardLogging?: boolean;
+  };
+
+  // Distributed execution (Redis-backed)
+  distributed?: DistributedSwarmConfig;
+}
+```
+
+### SwarmRunOptions
+
+```typescript
+interface SwarmRunOptions {
+  input: string;
+  context?: Record<string, unknown>;
+  threadId?: string;
+  timeout?: number;
+  saveHistory?: boolean;
+
+  onAgentStart?: (agentName: string) => void;
+  onAgentComplete?: (agentName: string, result: RunResult) => void;
+  onAgentError?: (agentName: string, error: Error) => void;
+  onMessage?: (message: SwarmMessage) => void;
+  onEvent?: (event: SwarmEvent) => void;
+}
+```
+
+### StrategyResult
+
+```typescript
+interface StrategyResult {
+  output: unknown;
+  structured?: unknown;
+  agentResults: Map<string, RunResult>;
+
+  // Strategy-specific fields
+  votes?: Map<string, unknown>; // consensus
+  bids?: Map<string, number>; // auction
+  auctionWinner?: string; // auction
+  debateTranscript?: SwarmMessage[]; // debate
+  pipelineOutputs?: Map<string, unknown>; // pipeline
+  negotiationResult?: NegotiationResult; // negotiation
 }
 ```
 
@@ -785,16 +909,31 @@ interface SwarmConfig {
 
 ```typescript
 // Good: Specific, non-overlapping roles
-const team = new Swarm({
-  agents: [
-    new Agent({ name: 'researcher', instructions: 'Find and verify information.' }),
-    new Agent({ name: 'writer', instructions: 'Write clear, engaging content.' }),
-    new Agent({ name: 'editor', instructions: 'Polish grammar and style.' }),
-  ],
+const team = new Swarm(cog, {
+  name: 'content-team',
+  strategy: 'pipeline',
+  pipeline: {
+    stages: [
+      {
+        name: 'research',
+        agent: new Agent({ name: 'researcher', instructions: 'Find and verify information.' }),
+      },
+      {
+        name: 'write',
+        agent: new Agent({ name: 'writer', instructions: 'Write clear, engaging content.' }),
+      },
+      {
+        name: 'edit',
+        agent: new Agent({ name: 'editor', instructions: 'Polish grammar and style.' }),
+      },
+    ],
+  },
 });
 
 // Bad: Vague, overlapping roles
-const badTeam = new Swarm({
+const badTeam = new Swarm(cog, {
+  name: 'bad-team',
+  strategy: 'round-robin',
   agents: [
     new Agent({ name: 'helper1', instructions: 'Help with tasks.' }),
     new Agent({ name: 'helper2', instructions: 'Assist with work.' }),
@@ -812,12 +951,18 @@ const badTeam = new Swarm({
 | Expert matching    | Auction              |
 | Content creation   | Pipeline             |
 | Risk assessment    | Debate               |
+| Contract/resource  | Negotiation          |
 
 ### 3. Communication Limits
 
 ```typescript
-const swarm = new Swarm({
+const swarm = new Swarm(cog, {
+  name: 'bounded-swarm',
+  strategy: 'round-robin',
+  agents: [...],
   messaging: {
+    enabled: true,
+    protocol: 'direct',
     // Limit message length
     maxMessageLength: 2000,
 
@@ -833,8 +978,12 @@ const swarm = new Swarm({
 ### 4. Graceful Degradation
 
 ```typescript
-const swarm = new Swarm({
+const swarm = new Swarm(cog, {
+  name: 'resilient-swarm',
+  strategy: 'auction',
+  agents: [...],
   errorHandling: {
+    onAgentFailure: 'failover',
     // If specialist unavailable, use generalist
     failover: {
       'python-expert': 'general-coder',

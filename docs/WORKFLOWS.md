@@ -6,11 +6,13 @@
 
 Workflows allow you to orchestrate complex, multi-step tasks with:
 
-- **Directed Acyclic Graphs (DAGs)** — Define dependencies between steps
-- **State Management** — Pass data between steps
-- **Error Handling** — Retry, compensation, and fallback strategies
-- **Human-in-the-Loop** — Pause for human approval or input
-- **Observability** — Full tracing of workflow execution
+- **Directed Acyclic Graphs (DAGs)** — Define dependencies between nodes
+- **State Management** — Pass typed state between nodes
+- **Parallel Execution** — Run independent nodes concurrently
+- **Conditional Routing** — Branch based on state
+- **Loops** — Iterate until a condition is met
+- **Checkpointing** — Survive restarts by saving progress
+- **Human-in-the-Loop** — Pause for approvals or input
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
@@ -20,18 +22,18 @@ Workflows allow you to orchestrate complex, multi-step tasks with:
 │   │                         Workflow Definition                             │   │
 │   │                                                                         │   │
 │   │   ┌─────┐      ┌─────┐      ┌─────┐      ┌─────┐                       │   │
-│   │   │Step1│─────►│Step2│─────►│Step3│─────►│Step4│                       │   │
+│   │   │Node1│─────►│Node2│─────►│Node3│─────►│Node4│                       │   │
 │   │   └─────┘      └──┬──┘      └─────┘      └─────┘                       │   │
 │   │                   │                                                     │   │
 │   │                   └────────►┌─────┐                                    │   │
-│   │                             │Step5│ (parallel branch)                  │   │
+│   │                             │Node5│ (parallel branch)                  │   │
 │   │                             └─────┘                                    │   │
 │   └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                 │
 │   ┌─────────────────────────────────────────────────────────────────────────┐   │
 │   │                         Execution Engine                                │   │
 │   │                                                                         │   │
-│   │   Scheduler  │  State Store  │  Event Bus  │  Retry Handler            │   │
+│   │   WorkflowBuilder  │  WorkflowExecutor  │  WorkflowManager             │   │
 │   │                                                                         │   │
 │   └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                 │
@@ -42,764 +44,932 @@ Workflows allow you to orchestrate complex, multi-step tasks with:
 
 ## Creating Workflows
 
+Workflows are built with `WorkflowBuilder` and executed with `WorkflowExecutor`.
+
 ### Basic Workflow
 
 ```typescript
-import { Workflow, step } from '@cogitator-ai/workflows';
+import { WorkflowBuilder, WorkflowExecutor, agentNode } from '@cogitator-ai/workflows';
+import { Cogitator } from '@cogitator-ai/core';
 
-const researchWorkflow = new Workflow({
-  name: 'research-topic',
-  description: 'Research a topic and produce a summary',
+interface ResearchState {
+  topic: string;
+  searchResults?: string;
+  analysis?: string;
+  summary?: string;
+}
 
-  steps: [
-    step('search', {
-      agent: researcherAgent,
-      input: (ctx) => `Search for information about: ${ctx.input.topic}`,
+const cog = new Cogitator({ llm: { defaultModel: 'openai/gpt-4o' } });
+
+const researchWorkflow = new WorkflowBuilder<ResearchState>('research-topic')
+  .initialState({ topic: '' })
+  .addNode(
+    'search',
+    agentNode(researcherAgent, {
+      inputMapper: (state) => `Search for information about: ${state.topic}`,
+      stateMapper: (result) => ({ searchResults: result.output }),
+    })
+  )
+  .addNode(
+    'analyze',
+    agentNode(analyzerAgent, {
+      inputMapper: (state) => `Analyze these search results: ${state.searchResults}`,
+      stateMapper: (result) => ({ analysis: result.output }),
     }),
-
-    step('analyze', {
-      agent: analyzerAgent,
-      input: (ctx) => `Analyze these search results: ${ctx.steps.search.output}`,
-      dependsOn: ['search'],
+    { after: ['search'] }
+  )
+  .addNode(
+    'summarize',
+    agentNode(writerAgent, {
+      inputMapper: (state) => `Write a summary based on: ${state.analysis}`,
+      stateMapper: (result) => ({ summary: result.output }),
     }),
+    { after: ['analyze'] }
+  )
+  .build();
 
-    step('summarize', {
-      agent: writerAgent,
-      input: (ctx) => `Write a summary based on: ${ctx.steps.analyze.output}`,
-      dependsOn: ['analyze'],
-    }),
-  ],
-});
+const executor = new WorkflowExecutor(cog);
+const result = await executor.execute(researchWorkflow, { topic: 'WebGPU graphics API' });
 
-// Execute
-const result = await cog.workflow(researchWorkflow).run({
-  topic: 'WebGPU graphics API',
-});
-
-console.log(result.output); // Final summary
+console.log(result.state.summary);
 ```
 
 ### Parallel Execution
 
+Nodes without dependencies (or with the same dependencies) run in parallel automatically. Use `addParallel` for explicit fan-out:
+
 ```typescript
-const parallelWorkflow = new Workflow({
-  name: 'multi-source-research',
-
-  steps: [
-    // These run in parallel (no dependencies)
-    step('search-web', {
-      agent: webSearchAgent,
-      input: (ctx) => `Search web for: ${ctx.input.query}`,
+const parallelWorkflow = new WorkflowBuilder<MultiSearchState>('multi-source-research')
+  .initialState({ query: '' })
+  // fan-out: execute a, b, c in parallel
+  .addParallel('fan-out', ['search-web', 'search-papers', 'search-code'])
+  .addNode(
+    'search-web',
+    agentNode(webSearchAgent, {
+      inputMapper: (state) => `Search web for: ${state.query}`,
+      stateMapper: (result) => ({ webResults: result.output }),
+    })
+  )
+  .addNode(
+    'search-papers',
+    agentNode(academicSearchAgent, {
+      inputMapper: (state) => `Search academic papers for: ${state.query}`,
+      stateMapper: (result) => ({ papers: result.output }),
+    })
+  )
+  .addNode(
+    'search-code',
+    agentNode(codeSearchAgent, {
+      inputMapper: (state) => `Search GitHub for: ${state.query}`,
+      stateMapper: (result) => ({ codeExamples: result.output }),
+    })
+  )
+  // fan-in: wait for all three before combining
+  .addNode(
+    'combine',
+    agentNode(synthesizerAgent, {
+      inputMapper: (state) => `
+      Combine these sources:
+      Web: ${state.webResults}
+      Papers: ${state.papers}
+      Code: ${state.codeExamples}
+    `,
+      stateMapper: (result) => ({ combined: result.output }),
     }),
-
-    step('search-papers', {
-      agent: academicSearchAgent,
-      input: (ctx) => `Search academic papers for: ${ctx.input.query}`,
-    }),
-
-    step('search-code', {
-      agent: codeSearchAgent,
-      input: (ctx) => `Search GitHub for: ${ctx.input.query}`,
-    }),
-
-    // This waits for all searches to complete
-    step('combine', {
-      agent: synthesizerAgent,
-      input: (ctx) => `
-        Combine these sources:
-        Web: ${ctx.steps['search-web'].output}
-        Papers: ${ctx.steps['search-papers'].output}
-        Code: ${ctx.steps['search-code'].output}
-      `,
-      dependsOn: ['search-web', 'search-papers', 'search-code'],
-    }),
-  ],
-});
+    { after: ['search-web', 'search-papers', 'search-code'] }
+  )
+  .build();
 ```
 
 ### Conditional Branching
 
-```typescript
-const conditionalWorkflow = new Workflow({
-  name: 'code-review',
-
-  steps: [
-    step('analyze', {
-      agent: codeAnalyzerAgent,
-      input: (ctx) => ctx.input.code,
-    }),
-
-    // Only runs if analysis found issues
-    step('fix-issues', {
-      agent: coderAgent,
-      input: (ctx) => `Fix these issues: ${ctx.steps.analyze.output.issues}`,
-      dependsOn: ['analyze'],
-      condition: (ctx) => ctx.steps.analyze.output.hasIssues,
-    }),
-
-    // Only runs if no issues found
-    step('approve', {
-      type: 'passthrough',
-      input: (ctx) => ({ approved: true, code: ctx.input.code }),
-      dependsOn: ['analyze'],
-      condition: (ctx) => !ctx.steps.analyze.output.hasIssues,
-    }),
-
-    // Runs after either fix-issues or approve
-    step('finalize', {
-      agent: reviewerAgent,
-      input: (ctx) => {
-        const code = ctx.steps['fix-issues']?.output || ctx.steps.approve?.output.code;
-        return `Final review of: ${code}`;
-      },
-      dependsOn: ['fix-issues', 'approve'],
-      dependencyMode: 'any', // Run when ANY dependency completes
-    }),
-  ],
-});
-```
-
----
-
-## Step Types
-
-### Agent Step
-
-Execute an agent with input:
+Use `addConditional` to route based on state:
 
 ```typescript
-step('research', {
-  type: 'agent', // default
-  agent: researcherAgent,
-  input: (ctx) => `Research: ${ctx.input.topic}`,
-  timeout: 60_000,
-});
-```
-
-### Tool Step
-
-Execute a tool directly:
-
-```typescript
-step('fetch-data', {
-  type: 'tool',
-  tool: webFetch,
-  input: (ctx) => ({ url: ctx.input.url }),
-});
-```
-
-### Function Step
-
-Execute custom JavaScript:
-
-```typescript
-step('transform', {
-  type: 'function',
-  execute: async (ctx) => {
-    const data = ctx.steps['fetch-data'].output;
-    return data.items.filter((item) => item.score > 0.5);
-  },
-});
-```
-
-### Human-in-the-Loop Step
-
-Pause for human input:
-
-```typescript
-step('approve', {
-  type: 'human',
-  prompt: (ctx) => `
-    Please review the following changes:
-    ${ctx.steps.generate.output}
-
-    Do you approve these changes?
-  `,
-  options: ['approve', 'reject', 'modify'],
-  timeout: 24 * 60 * 60 * 1000, // 24 hours
-  onTimeout: 'reject',
-});
-```
-
-### Delay Step
-
-Wait for a specified duration:
-
-```typescript
-step('wait', {
-  type: 'delay',
-  duration: 5000, // 5 seconds
-});
-```
-
-### Subworkflow Step
-
-Execute another workflow:
-
-```typescript
-step('detailed-analysis', {
-  type: 'subworkflow',
-  workflow: detailedAnalysisWorkflow,
-  input: (ctx) => ({ data: ctx.steps.fetch.output }),
-});
-```
-
----
-
-## State Management
-
-### Workflow Context
-
-```typescript
-interface WorkflowContext<TInput = any> {
-  // Original input to the workflow
-  input: TInput;
-
-  // Results from completed steps
-  steps: Record<string, StepResult>;
-
-  // Shared state (mutable)
-  state: Record<string, any>;
-
-  // Workflow metadata
-  meta: {
-    workflowId: string;
-    runId: string;
-    startedAt: Date;
-    currentStep: string;
-  };
+interface ReviewState {
+  code: string;
+  hasIssues?: boolean;
+  fixedCode?: string;
+  approved?: boolean;
 }
 
-// Accessing context in steps
-step('process', {
-  input: (ctx) => ({
-    originalInput: ctx.input,
-    previousResult: ctx.steps['fetch'].output,
-    counter: ctx.state.counter || 0,
-  }),
-
-  // Update shared state
-  onComplete: (result, ctx) => {
-    ctx.state.counter = (ctx.state.counter || 0) + 1;
-    ctx.state.lastProcessedId = result.id;
-  },
-});
+const codeReviewWorkflow = new WorkflowBuilder<ReviewState>('code-review')
+  .initialState({ code: '' })
+  .addNode(
+    'analyze',
+    agentNode(codeAnalyzerAgent, {
+      inputMapper: (state) => state.code,
+      stateMapper: (result) => ({
+        hasIssues: (result.output as string).includes('issue'),
+      }),
+    })
+  )
+  .addConditional('route', (state) => (state.hasIssues ? 'fix-issues' : 'approve'), {
+    after: ['analyze'],
+  })
+  .addNode(
+    'fix-issues',
+    agentNode(coderAgent, {
+      inputMapper: (state) => `Fix issues in: ${state.code}`,
+      stateMapper: (result) => ({ fixedCode: result.output }),
+    }),
+    { after: ['route'] }
+  )
+  .addNode(
+    'approve',
+    customNode('approve', async (ctx) => ({
+      state: { approved: true },
+      output: { approved: true },
+    })),
+    { after: ['route'] }
+  )
+  .addNode(
+    'finalize',
+    agentNode(reviewerAgent, {
+      inputMapper: (state) => `Final review of: ${state.fixedCode ?? state.code}`,
+    }),
+    { after: ['fix-issues', 'approve'] }
+  )
+  .build();
 ```
 
-### Persisted State
+### Loops
 
-Workflows can survive restarts:
+Use `addLoop` to iterate until a condition is met:
 
 ```typescript
-const workflow = new Workflow({
-  name: 'long-running',
+interface WritingState {
+  topic: string;
+  draft?: string;
+  score?: number;
+  iteration: number;
+}
 
-  // Persist state to database
-  persistence: {
-    store: 'postgres',
-    checkpointInterval: 'after-each-step',
-  },
+const refinementWorkflow = new WorkflowBuilder<WritingState>('iterative-writing')
+  .initialState({ topic: '', iteration: 0 })
+  .addNode(
+    'draft',
+    agentNode(writerAgent, {
+      inputMapper: (state) => `Write about: ${state.topic}`,
+      stateMapper: (result) => ({ draft: result.output }),
+    })
+  )
+  .addNode(
+    'evaluate',
+    agentNode(criticAgent, {
+      inputMapper: (state) => `Score this draft 1-10:\n${state.draft}`,
+      stateMapper: (result) => ({
+        score: parseInt(result.output as string, 10),
+        iteration: state.iteration + 1,
+      }),
+    }),
+    { after: ['draft'] }
+  )
+  .addNode(
+    'refine',
+    agentNode(writerAgent, {
+      inputMapper: (state) => `Improve this draft:\n${state.draft}`,
+      stateMapper: (result) => ({ draft: result.output }),
+    }),
+    { after: ['evaluate'] }
+  )
+  .addLoop('check', {
+    condition: (state: WritingState) => (state.score ?? 0) < 8 && state.iteration < 5,
+    back: 'evaluate',
+    exit: 'finalize',
+    after: ['refine'],
+  })
+  .addNode(
+    'finalize',
+    customNode('finalize', async (ctx) => ({
+      output: ctx.state.draft,
+    }))
+  )
+  .build();
+```
 
-  steps: [
-    // ... steps
-  ],
+---
+
+## Node Types
+
+### Agent Node
+
+Runs a Cogitator agent as a workflow node:
+
+```typescript
+import { agentNode } from '@cogitator-ai/workflows';
+
+const node = agentNode(myAgent, {
+  // map state to agent input string
+  inputMapper: (state, input) => `Process: ${state.data}`,
+
+  // map agent result back to state
+  stateMapper: (result) => ({ processed: result.output }),
+
+  // additional run options
+  runOptions: { temperature: 0.7 },
 });
 
-// Resume a paused workflow
-const run = await cog.workflow(workflow).resume(runId);
+builder.addNode('my-step', node);
+```
+
+### Tool Node
+
+Runs a tool directly, without an agent:
+
+```typescript
+import { toolNode } from '@cogitator-ai/workflows';
+
+const node = toolNode(webFetchTool, {
+  // map state to tool arguments
+  argsMapper: (state) => ({ url: state.sourceUrl }),
+
+  // map tool result to state
+  stateMapper: (result) => ({ content: result }),
+});
+
+builder.addNode('fetch-data', node);
+```
+
+### Function Node
+
+Runs a custom async function:
+
+```typescript
+import { functionNode } from '@cogitator-ai/workflows';
+
+const node = functionNode(
+  'transform',
+  async (state: MyState, input) => {
+    const raw = state.rawData;
+    return normalizeData(raw);
+  },
+  {
+    stateMapper: (output) => ({ normalizedData: output }),
+  }
+);
+
+builder.addNode('transform', node);
+```
+
+### Custom Node
+
+Full control over context and result:
+
+```typescript
+import { customNode } from '@cogitator-ai/workflows';
+
+const node = customNode('my-node', async (ctx) => {
+  // ctx.state — current workflow state
+  // ctx.input — output(s) from dependency nodes
+  // ctx.nodeId, ctx.workflowId, ctx.step
+  // ctx.reportProgress(0-100)
+
+  return {
+    state: { counter: ctx.state.counter + 1 },
+    output: 'done',
+    // next: 'specific-node', // override routing
+  };
+});
+
+builder.addNode('my-node', node);
+```
+
+### Timer / Delay Nodes
+
+```typescript
+import { delayNode, dynamicDelayNode, cronWaitNode } from '@cogitator-ai/workflows';
+
+// fixed delay
+const waitNode = delayNode('wait-5s', 5000);
+
+// dynamic delay based on state
+const dynamicWait = dynamicDelayNode('wait-dynamic', (state) => state.retryDelay);
+
+// wait until next cron occurrence
+const cronWait = cronWaitNode('wait-daily', '0 9 * * *', { timezone: 'America/New_York' });
+
+builder.addNode('wait-5s', waitNode);
+builder.addNode('wait-dynamic', dynamicWait);
+```
+
+### Human-in-the-Loop Nodes
+
+```typescript
+import { approvalNode, choiceNode, inputNode } from '@cogitator-ai/workflows';
+
+// approve/reject
+const approval = approvalNode('manager-approval', {
+  title: 'Approve expense report',
+  description: (state) => `Amount: $${state.amount}`,
+  assignee: (state) => state.managerEmail,
+  timeout: 24 * 60 * 60 * 1000, // 24h
+  timeoutAction: 'reject',
+  priority: 'normal',
+});
+
+// multi-choice
+const choice = choiceNode('select-route', {
+  title: 'Choose processing route',
+  choices: [
+    { id: 'fast', label: 'Fast', value: 'fast' },
+    { id: 'thorough', label: 'Thorough', value: 'thorough' },
+  ],
+  assignee: 'ops@company.com',
+});
+
+// free-form input
+const input = inputNode('get-feedback', {
+  title: 'Provide feedback on the draft',
+  assignee: (state) => state.reviewerEmail,
+});
+
+builder.addNode('manager-approval', approval);
+```
+
+---
+
+## Execution
+
+### WorkflowExecutor
+
+```typescript
+import { WorkflowExecutor, InMemoryCheckpointStore } from '@cogitator-ai/workflows';
+
+const executor = new WorkflowExecutor(cogitator);
+
+// execute
+const result = await executor.execute(
+  workflow,
+  { topic: 'WebGPU' },
+  {
+    maxConcurrency: 4, // parallel nodes limit
+    maxIterations: 100, // loop iteration limit
+    checkpoint: true, // enable checkpointing
+    checkpointStrategy: 'per-node', // 'per-iteration' | 'per-node'
+    onNodeStart: (node) => console.log(`Starting: ${node}`),
+    onNodeComplete: (node, output, duration) => console.log(`Done: ${node} (${duration}ms)`),
+    onNodeError: (node, error) => console.error(`Failed: ${node}`, error),
+    onNodeProgress: (node, progress) => console.log(`${node}: ${progress}%`),
+  }
+);
+
+console.log(result.state); // final workflow state
+console.log(result.nodeResults); // Map<nodeName, { output, duration }>
+console.log(result.workflowId);
+console.log(result.duration);
+console.log(result.error); // defined if workflow failed
+
+// resume from checkpoint
+const resumed = await executor.resume(workflow, result.checkpointId!);
+
+// stream events
+for await (const event of executor.stream(workflow, { topic: 'WebGPU' })) {
+  if (event.type === 'node_started') console.log(`Starting: ${event.nodeName}`);
+  if (event.type === 'node_completed') console.log(`Done: ${event.nodeName}`);
+  if (event.type === 'workflow_completed') console.log('Done!', event.result.state);
+}
+```
+
+### WorkflowResult
+
+```typescript
+interface WorkflowResult<S> {
+  workflowId: string;
+  workflowName: string;
+  state: S; // final state
+  nodeResults: Map<string, { output: unknown; duration: number }>;
+  duration: number; // total ms
+  checkpointId?: string; // if checkpointing enabled
+  error?: Error; // if execution failed
+}
+```
+
+### NodeContext
+
+The context object passed to every node function:
+
+```typescript
+interface NodeContext<S> {
+  state: S; // current workflow state
+  input?: unknown; // output(s) from dependency nodes
+  nodeId: string;
+  workflowId: string;
+  step: number; // iteration count
+  reportProgress?: (progress: number) => void; // 0-100
+}
+```
+
+When a node has multiple dependencies, `ctx.input` is an array of their outputs. For a single dependency, it's the output directly.
+
+---
+
+## Checkpointing
+
+Persist workflow progress to survive restarts:
+
+```typescript
+import {
+  WorkflowExecutor,
+  InMemoryCheckpointStore,
+  FileCheckpointStore,
+} from '@cogitator-ai/workflows';
+
+// in-memory (default, for testing)
+const executor = new WorkflowExecutor(cogitator, new InMemoryCheckpointStore());
+
+// file-based (for development/single-node)
+const executor = new WorkflowExecutor(cogitator, new FileCheckpointStore('./checkpoints'));
+
+// execute with checkpointing enabled
+const result = await executor.execute(workflow, input, {
+  checkpoint: true,
+  checkpointStrategy: 'per-node', // save after each individual node completes
+});
+
+// resume a workflow from its checkpoint
+if (result.checkpointId) {
+  const resumed = await executor.resume(workflow, result.checkpointId);
+}
 ```
 
 ---
 
 ## Error Handling
 
-### Retry Configuration
+Errors in nodes are caught and surfaced in `result.error`. Use `onNodeError` to react during execution:
 
 ```typescript
-step('unreliable-api', {
-  agent: apiAgent,
-  retry: {
+const result = await executor.execute(workflow, input, {
+  onNodeError: (node, error) => {
+    alertService.notify({ node, error: error.message });
+  },
+});
+
+if (result.error) {
+  console.error('Workflow failed:', result.error.message);
+}
+```
+
+### Retry with Circuit Breaker
+
+Use the saga utilities for per-node retry and circuit breaking:
+
+```typescript
+import { executeWithRetry, CircuitBreaker } from '@cogitator-ai/workflows';
+
+const circuitBreaker = new CircuitBreaker({
+  threshold: 5,
+  resetTimeout: 30_000,
+});
+
+const node = customNode('call-api', async (ctx) => {
+  const result = await executeWithRetry(() => callExternalAPI(ctx.state.url), {
     maxRetries: 3,
     backoff: 'exponential',
     initialDelay: 1000,
-    maxDelay: 30000,
-    retryOn: (error) => {
-      // Only retry on transient errors
-      return error.code === 'TIMEOUT' || error.status >= 500;
-    },
-  },
+    maxDelay: 30_000,
+    isRetryable: (error) => error.message.includes('TIMEOUT'),
+  });
+  return { output: result };
 });
 ```
 
-### Fallback Steps
+### Saga / Compensation Pattern
+
+Use `CompensationManager` to register compensations and roll back on failure:
 
 ```typescript
-step('primary-source', {
-  agent: primaryAgent,
-  fallback: {
-    step: 'backup-source',
-    condition: (error) => error.code === 'NOT_FOUND',
-  },
+import { CompensationManager, customNode } from '@cogitator-ai/workflows';
+
+const compensation = new CompensationManager();
+
+const reserveNode = customNode('reserve-inventory', async (ctx) => {
+  const reservation = await inventoryService.reserve(ctx.state.items);
+
+  // register compensation before returning
+  compensation.registerCompensation('reserve-inventory', async (state, originalResult) => {
+    const res = originalResult as { reservationId: string };
+    await inventoryService.release(res.reservationId);
+  });
+
+  compensation.markCompleted('reserve-inventory', reservation);
+  return { state: { reservationId: reservation.id }, output: reservation };
 });
 
-step('backup-source', {
-  agent: backupAgent,
-  disabled: true, // Only runs as fallback
+const chargeNode = customNode('charge-payment', async (ctx) => {
+  const charge = await paymentService.charge(ctx.state.amount);
+
+  compensation.registerCompensation('charge-payment', async (state, originalResult) => {
+    const c = originalResult as { chargeId: string };
+    await paymentService.refund(c.chargeId);
+  });
+
+  compensation.markCompleted('charge-payment', charge);
+  return { state: { chargeId: charge.id }, output: charge };
 });
-```
 
-### Compensation (Saga Pattern)
-
-```typescript
-const orderWorkflow = new Workflow({
-  name: 'process-order',
-
-  steps: [
-    step('reserve-inventory', {
-      agent: inventoryAgent,
-      input: (ctx) => ({ items: ctx.input.items }),
-      // Compensation if later steps fail
-      compensate: async (ctx) => {
-        await inventoryService.release(ctx.steps['reserve-inventory'].output.reservationId);
-      },
-    }),
-
-    step('charge-payment', {
-      agent: paymentAgent,
-      input: (ctx) => ({ amount: ctx.input.total }),
-      dependsOn: ['reserve-inventory'],
-      compensate: async (ctx) => {
-        await paymentService.refund(ctx.steps['charge-payment'].output.chargeId);
-      },
-    }),
-
-    step('ship-order', {
-      agent: shippingAgent,
-      input: (ctx) => ({ address: ctx.input.address }),
-      dependsOn: ['charge-payment'],
-      // If this fails, previous compensations run in reverse order
-    }),
-  ],
-
-  onError: 'compensate', // Run compensations on failure
-});
-```
-
-### Error Handlers
-
-```typescript
-const workflow = new Workflow({
-  name: 'with-error-handling',
-
-  steps: [
-    /* ... */
-  ],
-
-  // Global error handler
-  onError: async (error, ctx) => {
-    await alertService.notify({
-      workflow: ctx.meta.workflowId,
-      step: ctx.meta.currentStep,
-      error: error.message,
-    });
-
-    // Return action
-    return {
-      action: 'abort', // 'abort' | 'retry' | 'skip' | 'compensate'
-      reason: error.message,
-    };
-  },
-});
+// on failure, run compensations in reverse order
+const result = await executor.execute(orderWorkflow, input);
+if (result.error) {
+  await compensation.compensate(result.state, 'ship-order', result.error);
+}
 ```
 
 ---
 
 ## Workflow Patterns
 
-### 1. Map-Reduce
+### Map-Reduce
 
 Process items in parallel, then combine:
 
 ```typescript
-const mapReduceWorkflow = new Workflow({
-  name: 'analyze-documents',
+import { executeMapReduce } from '@cogitator-ai/workflows';
 
-  steps: [
-    // Fan out: process each document in parallel
-    step('map', {
-      type: 'map',
-      items: (ctx) => ctx.input.documents,
-      step: {
-        agent: analyzerAgent,
-        input: (item) => `Analyze: ${item.content}`,
+interface DocState {
+  documents: string[];
+  analyses?: string[];
+  report?: string;
+}
+
+const mapReduceNode = customNode('analyze-documents', async (ctx) => {
+  const mapReduceResult = await executeMapReduce(ctx.state, {
+    name: 'document-analysis',
+    map: {
+      items: (state) => state.documents,
+      mapper: async (doc) => {
+        const result = await analyzerAgent.run({ input: `Analyze: ${doc}` });
+        return result.output;
       },
-      maxConcurrency: 10,
-    }),
-
-    // Reduce: combine all results
-    step('reduce', {
-      agent: summarizerAgent,
-      input: (ctx) => `
-        Combine these analyses into a single report:
-        ${ctx.steps.map.outputs.map((o) => o.output).join('\n---\n')}
-      `,
-      dependsOn: ['map'],
-    }),
-  ],
-});
-```
-
-### 2. Pipeline
-
-Sequential processing with transformations:
-
-```typescript
-const pipelineWorkflow = new Workflow({
-  name: 'data-pipeline',
-
-  steps: [
-    step('extract', {
-      tool: dataScraper,
-      input: (ctx) => ({ url: ctx.input.sourceUrl }),
-    }),
-
-    step('transform', {
-      type: 'function',
-      execute: (ctx) => {
-        const raw = ctx.steps.extract.output;
-        return normalizeData(raw);
-      },
-      dependsOn: ['extract'],
-    }),
-
-    step('validate', {
-      agent: validatorAgent,
-      input: (ctx) => `Validate this data: ${JSON.stringify(ctx.steps.transform.output)}`,
-      dependsOn: ['transform'],
-    }),
-
-    step('load', {
-      tool: databaseInsert,
-      input: (ctx) => ({
-        table: 'processed_data',
-        data: ctx.steps.transform.output,
-      }),
-      dependsOn: ['validate'],
-      condition: (ctx) => ctx.steps.validate.output.isValid,
-    }),
-  ],
-});
-```
-
-### 3. Event-Driven
-
-React to external events:
-
-```typescript
-const eventDrivenWorkflow = new Workflow({
-  name: 'pr-review',
-
-  triggers: [
-    {
-      type: 'webhook',
-      path: '/github/pr',
-      filter: (event) => event.action === 'opened',
+      concurrency: 10,
+      continueOnError: false,
     },
-  ],
+    reduce: {
+      initial: [] as string[],
+      reducer: (acc, item) => [...acc, item.result as string],
+    },
+  });
 
-  steps: [
-    step('fetch-diff', {
-      tool: githubTool,
-      input: (ctx) => ({ action: 'get_diff', pr: ctx.input.pull_request.number }),
-    }),
-
-    step('review', {
-      agent: codeReviewAgent,
-      input: (ctx) => `Review this PR diff:\n${ctx.steps['fetch-diff'].output}`,
-      dependsOn: ['fetch-diff'],
-    }),
-
-    step('post-comment', {
-      tool: githubTool,
-      input: (ctx) => ({
-        action: 'create_comment',
-        pr: ctx.input.pull_request.number,
-        body: ctx.steps.review.output,
-      }),
-      dependsOn: ['review'],
-    }),
-  ],
+  return {
+    state: { analyses: mapReduceResult.reduced as string[] },
+    output: mapReduceResult,
+  };
 });
+
+const builder = new WorkflowBuilder<DocState>('analyze-documents')
+  .initialState({ documents: [] })
+  .addNode('analyze-documents', mapReduceNode)
+  .addNode(
+    'report',
+    agentNode(summarizerAgent, {
+      inputMapper: (state) => `Combine these analyses:\n${state.analyses?.join('\n---\n')}`,
+      stateMapper: (result) => ({ report: result.output }),
+    }),
+    { after: ['analyze-documents'] }
+  );
 ```
 
-### 4. Approval Chain
+### Event-Driven (Webhooks & Cron)
 
-Multi-stage approvals:
+Register triggers separately using `TriggerManager`:
 
 ```typescript
-const approvalWorkflow = new Workflow({
-  name: 'expense-approval',
+import {
+  createTriggerManager,
+  DefaultWorkflowManager,
+  createWorkflowManager,
+} from '@cogitator-ai/workflows';
 
-  steps: [
-    step('validate', {
-      agent: validatorAgent,
-      input: (ctx) => ctx.input.expenseReport,
-    }),
+const manager = createWorkflowManager({ cogitator });
+manager.start();
 
-    step('manager-approval', {
-      type: 'human',
-      assignee: (ctx) => ctx.input.managerEmail,
-      prompt: (ctx) => `
-        Please review expense report:
-        Amount: ${ctx.input.amount}
-        Description: ${ctx.input.description}
-      `,
-      dependsOn: ['validate'],
-    }),
-
-    // High amounts need director approval
-    step('director-approval', {
-      type: 'human',
-      assignee: (ctx) => ctx.input.directorEmail,
-      prompt: (ctx) => `High-value expense requires your approval...`,
-      dependsOn: ['manager-approval'],
-      condition: (ctx) => ctx.input.amount > 5000,
-    }),
-
-    step('process-payment', {
-      agent: paymentAgent,
-      input: (ctx) => ctx.input,
-      dependsOn: ['manager-approval', 'director-approval'],
-      dependencyMode: 'completed', // All applicable dependencies must pass
-    }),
-  ],
+const triggerManager = createTriggerManager({
+  runStore: manager['runStore'],
 });
+
+// register a webhook trigger
+const webhookId = await triggerManager.register({
+  workflowName: 'pr-review',
+  type: 'webhook',
+  config: {
+    path: '/github/pr',
+    method: 'POST',
+  },
+  enabled: true,
+});
+
+// register a cron trigger
+const cronId = await triggerManager.register({
+  workflowName: 'daily-report',
+  type: 'cron',
+  config: {
+    expression: '0 9 * * *',
+    timezone: 'America/New_York',
+    enabled: true,
+  },
+  enabled: true,
+});
+
+// fire a trigger manually
+await triggerManager.fire(webhookId, { payload: { pull_request: { number: 42 } } });
 ```
 
-### 5. Iterative Refinement
+### Approval Chain
 
-Loop until quality threshold:
+Multi-stage human approvals:
 
 ```typescript
-const refinementWorkflow = new Workflow({
-  name: 'iterative-writing',
+import { managementChain, executeHumanNode, InMemoryApprovalStore } from '@cogitator-ai/workflows';
 
-  steps: [
-    step('draft', {
-      agent: writerAgent,
-      input: (ctx) => `Write about: ${ctx.input.topic}`,
-    }),
+const approvalStore = new InMemoryApprovalStore();
 
-    step('evaluate', {
-      agent: criticAgent,
-      input: (ctx) => {
-        const draft = ctx.state.currentDraft || ctx.steps.draft.output;
-        return `Evaluate this draft (score 1-10):\n${draft}`;
-      },
-      dependsOn: ['draft'],
-    }),
+const expenseApprovalNode = customNode('expense-approval', async (ctx) => {
+  const config = managementChain('expense-approval', {
+    title: `Expense Approval: $${ctx.state.amount}`,
+    description: (state) => `Description: ${state.description}`,
+    manager: ctx.state.managerEmail,
+    director: ctx.state.amount > 5000 ? ctx.state.directorEmail : undefined,
+    timeoutPerStep: 24 * 60 * 60 * 1000,
+  });
 
-    step('refine', {
-      agent: writerAgent,
-      input: (ctx) => `
-        Improve this draft based on feedback:
-        Draft: ${ctx.state.currentDraft || ctx.steps.draft.output}
-        Feedback: ${ctx.steps.evaluate.output.feedback}
-      `,
-      dependsOn: ['evaluate'],
-      condition: (ctx) => ctx.steps.evaluate.output.score < 8,
-      onComplete: (result, ctx) => {
-        ctx.state.currentDraft = result;
-        ctx.state.iteration = (ctx.state.iteration || 0) + 1;
-      },
-    }),
+  const humanResult = await executeHumanNode(ctx.state, config, {
+    workflowId: ctx.workflowId,
+    runId: ctx.workflowId,
+    nodeId: ctx.nodeId,
+    approvalStore,
+  });
 
-    // Loop back to evaluate
-    step('loop', {
-      type: 'goto',
-      target: 'evaluate',
-      condition: (ctx) => ctx.state.iteration < 5 && ctx.steps.evaluate.output.score < 8,
-      dependsOn: ['refine'],
-    }),
-
-    step('finalize', {
-      type: 'function',
-      execute: (ctx) => ctx.state.currentDraft || ctx.steps.draft.output,
-      dependsOn: ['evaluate', 'refine'],
-      dependencyMode: 'any',
-      condition: (ctx) => ctx.steps.evaluate.output.score >= 8 || ctx.state.iteration >= 5,
-    }),
-  ],
+  return {
+    state: { approved: humanResult.approved },
+    output: humanResult,
+  };
 });
 ```
 
 ---
 
-## Scheduling
+## Workflow Manager
 
-### Cron Triggers
-
-```typescript
-const scheduledWorkflow = new Workflow({
-  name: 'daily-report',
-
-  triggers: [
-    {
-      type: 'cron',
-      schedule: '0 9 * * *', // 9 AM daily
-      timezone: 'America/New_York',
-    },
-  ],
-
-  steps: [
-    /* ... */
-  ],
-});
-```
-
-### Delayed Execution
+`DefaultWorkflowManager` provides run tracking, scheduling, retry, and more:
 
 ```typescript
-// Run workflow after delay
-const run = await cog.workflow(myWorkflow).schedule({
-  runAt: new Date(Date.now() + 60 * 60 * 1000), // 1 hour from now
-  input: { ... },
+import { createWorkflowManager, InMemoryRunStore, FileRunStore } from '@cogitator-ai/workflows';
+
+const manager = createWorkflowManager({
+  cogitator,
+  runStore: new InMemoryRunStore(),
+  maxConcurrency: 4,
+  onRunStateChange: (run) => console.log(`Run ${run.id}: ${run.status}`),
 });
+
+manager.start();
+
+// execute immediately
+const result = await manager.execute(
+  workflow,
+  { topic: 'WebGPU' },
+  {
+    priority: 10,
+    tags: ['production'],
+  }
+);
+
+// schedule for later
+const runId = await manager.schedule(workflow, {
+  at: Date.now() + 60 * 60 * 1000, // 1 hour from now
+  input: { topic: 'WebGPU' },
+});
+
+// or with cron
+const runId2 = await manager.schedule(workflow, {
+  cron: '0 9 * * *',
+  timezone: 'America/New_York',
+});
+
+// manage runs
+const run = await manager.getStatus(runId);
+const runs = await manager.listRuns({ status: 'running', workflowName: 'research-topic' });
+const stats = await manager.getStats('research-topic');
+
+await manager.cancel(runId, 'User cancelled');
+await manager.pause(runId);
+await manager.resume(runId);
+
+const newRunId = await manager.retry(runId); // retry a failed run
+const replayed = await manager.replay(workflow, runId, 'analyze'); // re-run from node
+
+await manager.cleanup(Date.now() - 7 * 24 * 60 * 60 * 1000); // delete runs older than 7d
+
+// subscribe to state changes
+const unsub = manager.onRunStateChange((run) => {
+  console.log(`${run.workflowName} → ${run.status}`);
+});
+
+manager.stop();
 ```
 
 ---
 
 ## Observability
 
-### Workflow Tracing
+### Streaming Events
 
 ```typescript
-const result = await cog.workflow(myWorkflow).run(input);
-
-console.log(result.trace);
-// {
-//   workflowId: 'research-topic',
-//   runId: 'run_abc123',
-//   duration: 45000,
-//   status: 'completed',
-//   steps: [
-//     { name: 'search', status: 'completed', duration: 12000 },
-//     { name: 'analyze', status: 'completed', duration: 18000 },
-//     { name: 'summarize', status: 'completed', duration: 15000 },
-//   ],
-//   totalTokens: 5600,
-//   totalCost: 0.028,
-// }
+for await (const event of executor.stream(workflow, input)) {
+  switch (event.type) {
+    case 'workflow_started':
+      console.log(`Workflow ${event.workflowName} started`);
+      break;
+    case 'node_started':
+      console.log(`Node ${event.nodeName} started`);
+      break;
+    case 'node_progress':
+      console.log(`Node ${event.nodeName}: ${event.progress}%`);
+      break;
+    case 'node_completed':
+      console.log(`Node ${event.nodeName} completed in ${event.duration}ms`);
+      break;
+    case 'node_error':
+      console.error(`Node ${event.nodeName} failed:`, event.error);
+      break;
+    case 'workflow_completed':
+      console.log(`Workflow completed in ${event.duration}ms`);
+      console.log('Final state:', event.result.state);
+      break;
+  }
+}
 ```
 
-### Events
+### Callbacks
 
 ```typescript
-cog.workflow(myWorkflow).on('step:start', (event) => {
-  console.log(`Starting step: ${event.stepName}`);
-});
-
-cog.workflow(myWorkflow).on('step:complete', (event) => {
-  console.log(`Completed step: ${event.stepName} in ${event.duration}ms`);
-});
-
-cog.workflow(myWorkflow).on('step:error', (event) => {
-  console.error(`Step ${event.stepName} failed:`, event.error);
-});
-
-cog.workflow(myWorkflow).on('workflow:complete', (event) => {
-  console.log(`Workflow completed in ${event.duration}ms`);
-});
-```
-
-### Dashboard Integration
-
-```typescript
-const workflow = new Workflow({
-  name: 'my-workflow',
-
-  // Enable dashboard tracking
-  dashboard: {
-    enabled: true,
-    tags: ['production', 'critical'],
-    alertOn: {
-      duration: { gt: 60000 }, // Alert if > 1 minute
-      failure: true,
-    },
+const result = await executor.execute(workflow, input, {
+  onNodeStart: (node) => metrics.increment('node.started', { node }),
+  onNodeComplete: (node, output, duration) => {
+    metrics.histogram('node.duration', duration, { node });
+  },
+  onNodeError: (node, error) => {
+    alerting.fire({ node, error: error.message });
+  },
+  onNodeProgress: (node, progress) => {
+    dashboard.update({ node, progress });
   },
 });
+```
+
+### OpenTelemetry Tracing
+
+```typescript
+import { createTracer, OTLPSpanExporter, setGlobalTracer } from '@cogitator-ai/workflows';
+
+const tracer = createTracer({
+  serviceName: 'my-workflow-service',
+  exporter: new OTLPSpanExporter({ url: 'http://otel-collector:4318' }),
+});
+
+setGlobalTracer(tracer);
+```
+
+### Metrics
+
+```typescript
+import { createMetricsCollector, setGlobalMetrics } from '@cogitator-ai/workflows';
+
+const metrics = createMetricsCollector({
+  enabled: true,
+  prefix: 'cogitator',
+});
+
+setGlobalMetrics(metrics);
+
+// retrieve metrics
+const workflowMetrics = metrics.getWorkflowMetrics('research-topic');
+console.log(workflowMetrics.latency.p99);
 ```
 
 ---
 
 ## API Reference
 
-### Workflow Class
+### WorkflowBuilder
 
 ```typescript
-class Workflow {
-  constructor(config: WorkflowConfig);
+class WorkflowBuilder<S extends WorkflowState> {
+  constructor(name: string);
 
-  // Execute workflow
-  run(input: any): Promise<WorkflowResult>;
+  initialState(state: S): this;
+  entryPoint(nodeName: string): this;
 
-  // Schedule for later
-  schedule(options: ScheduleOptions): Promise<ScheduledRun>;
+  addNode(name: string, fn: NodeFn<S> | WorkflowNode<S>, options?: AddNodeOptions): this;
+  addConditional(
+    name: string,
+    condition: (state: S) => string | string[],
+    options?: AddConditionalOptions
+  ): this;
+  addLoop(name: string, options: AddLoopOptions): this;
+  addParallel(name: string, targets: string[], options?: AddParallelOptions): this;
 
-  // Resume paused workflow
-  resume(runId: string): Promise<WorkflowResult>;
+  build(): Workflow<S>;
+}
 
-  // Cancel running workflow
-  cancel(runId: string): Promise<void>;
+interface AddNodeOptions {
+  after?: string[]; // node names this node depends on
+  config?: NodeConfig;
+}
 
-  // Get run status
-  getStatus(runId: string): Promise<RunStatus>;
-
-  // List runs
-  listRuns(options?: ListOptions): Promise<Run[]>;
-
-  // Event handlers
-  on(event: string, handler: Function): void;
+interface AddLoopOptions {
+  condition: (state: S) => boolean; // true = continue looping
+  back: string; // node to go back to
+  exit: string; // node to go to when done
+  after?: string[];
 }
 ```
 
-### Step Function
+### WorkflowExecutor
 
 ```typescript
-function step(name: string, config: StepConfig): Step;
+class WorkflowExecutor {
+  constructor(cogitator: Cogitator, checkpointStore?: CheckpointStore);
 
-interface StepConfig {
-  // Step type
-  type?: 'agent' | 'tool' | 'function' | 'human' | 'delay' | 'subworkflow' | 'map' | 'goto';
+  execute<S>(
+    workflow: Workflow<S>,
+    input?: Partial<S>,
+    options?: WorkflowExecuteOptions
+  ): Promise<WorkflowResult<S>>;
 
-  // For agent steps
-  agent?: Agent;
-  input?: (ctx: WorkflowContext) => any;
+  resume<S>(
+    workflow: Workflow<S>,
+    checkpointId: string,
+    options?: WorkflowExecuteOptions
+  ): Promise<WorkflowResult<S>>;
 
-  // For tool steps
-  tool?: Tool;
+  stream<S>(
+    workflow: Workflow<S>,
+    input?: Partial<S>,
+    options?: Omit<WorkflowExecuteOptions, 'onNode*'>
+  ): AsyncIterable<StreamingWorkflowEvent>;
+}
 
-  // For function steps
-  execute?: (ctx: WorkflowContext) => Promise<any>;
+interface WorkflowExecuteOptions {
+  maxConcurrency?: number; // default: 4
+  maxIterations?: number; // default: 100
+  checkpoint?: boolean; // default: false
+  checkpointStrategy?: 'per-iteration' | 'per-node';
+  onNodeStart?: (node: string) => void;
+  onNodeComplete?: (node: string, result: unknown, duration: number) => void;
+  onNodeError?: (node: string, error: Error) => void;
+  onNodeProgress?: (node: string, progress: number) => void;
+}
+```
 
-  // Dependencies
-  dependsOn?: string[];
-  dependencyMode?: 'all' | 'any' | 'completed';
+### Workflow (type)
 
-  // Conditions
-  condition?: (ctx: WorkflowContext) => boolean;
+The `Workflow` type is a plain data object (not a class):
 
-  // Error handling
-  retry?: RetryConfig;
-  fallback?: FallbackConfig;
-  compensate?: (ctx: WorkflowContext) => Promise<void>;
+```typescript
+interface Workflow<S = WorkflowState> {
+  name: string;
+  initialState: S;
+  nodes: Map<string, WorkflowNode<S>>;
+  edges: Edge[];
+  entryPoint: string;
+}
+```
 
-  // Timeouts
-  timeout?: number;
+### WorkflowResult
 
-  // Hooks
-  onStart?: (ctx: WorkflowContext) => void;
-  onComplete?: (result: any, ctx: WorkflowContext) => void;
-  onError?: (error: Error, ctx: WorkflowContext) => void;
+```typescript
+interface WorkflowResult<S> {
+  workflowId: string;
+  workflowName: string;
+  state: S;
+  nodeResults: Map<string, { output: unknown; duration: number }>;
+  duration: number;
+  checkpointId?: string;
+  error?: Error;
+}
+```
+
+### NodeContext
+
+```typescript
+interface NodeContext<S = WorkflowState> {
+  state: S;
+  input?: unknown; // output(s) from dependency nodes (array if multiple deps)
+  nodeId: string;
+  workflowId: string;
+  step: number; // current iteration count
+  reportProgress?: (progress: number) => void;
+}
+```
+
+### NodeResult
+
+```typescript
+interface NodeResult<S = WorkflowState> {
+  state?: Partial<S>; // state updates to merge in
+  output?: unknown; // value accessible via ctx.input in dependent nodes
+  next?: string | string[]; // override routing (optional)
 }
 ```

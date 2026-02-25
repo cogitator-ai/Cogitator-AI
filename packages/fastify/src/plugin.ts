@@ -36,8 +36,12 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
         keyGenerator: opts.rateLimit.keyGenerator,
         errorResponseBuilder: opts.rateLimit.errorResponseBuilder,
       });
-    } catch {
-      fastify.log.warn('@fastify/rate-limit not installed, skipping rate limiting');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
+        fastify.log.warn('@fastify/rate-limit not installed, skipping rate limiting');
+      } else {
+        throw err;
+      }
     }
   }
 
@@ -45,13 +49,6 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
 
   await fastify.register(
     async (instance) => {
-      await instance.register(healthRoutes);
-      await instance.register(agentRoutes);
-      await instance.register(threadRoutes);
-      await instance.register(toolRoutes);
-      await instance.register(workflowRoutes);
-      await instance.register(swarmRoutes);
-
       if (opts.enableSwagger) {
         try {
           const swaggerModule = await import('@fastify/swagger');
@@ -81,10 +78,21 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
           await instance.register(swaggerUiModule.default, {
             routePrefix: '/docs',
           });
-        } catch {
-          fastify.log.warn('@fastify/swagger not installed, skipping Swagger UI');
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
+            fastify.log.warn('@fastify/swagger not installed, skipping Swagger UI');
+          } else {
+            throw err;
+          }
         }
       }
+
+      await instance.register(healthRoutes);
+      await instance.register(agentRoutes);
+      await instance.register(threadRoutes);
+      await instance.register(toolRoutes);
+      await instance.register(workflowRoutes);
+      await instance.register(swarmRoutes);
 
       if (opts.enableWebSocket) {
         try {
@@ -93,8 +101,12 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
 
           const { websocketRoutes } = await import('./websocket/handler.js');
           await instance.register(websocketRoutes, { path: opts.websocket?.path });
-        } catch {
-          fastify.log.warn('@fastify/websocket not installed, skipping WebSocket support');
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
+            fastify.log.warn('@fastify/websocket not installed, skipping WebSocket support');
+          } else {
+            throw err;
+          }
         }
       }
     },

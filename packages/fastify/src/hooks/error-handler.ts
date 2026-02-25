@@ -3,7 +3,7 @@ import { CogitatorError, ERROR_STATUS_CODES, ErrorCode } from '@cogitator-ai/typ
 
 export function errorHandler(
   error: FastifyError,
-  _request: FastifyRequest,
+  request: FastifyRequest,
   reply: FastifyReply
 ): void {
   if (reply.sent) {
@@ -21,7 +21,7 @@ export function errorHandler(
     return;
   }
 
-  console.error('[CogitatorPlugin] Unhandled error:', error);
+  request.log.error({ err: error }, 'unhandled error in cogitator plugin');
 
   reply.status(500).send({
     error: {

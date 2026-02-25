@@ -34,16 +34,18 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
         const result = await memory.getEntries({ threadId: id });
         if (!result.success) {
           return reply.status(500).send({
-            error: { message: result.error, code: 'INTERNAL' },
+            error: { message: result.error ?? 'Unknown error', code: 'INTERNAL' },
           });
         }
 
-        const messages = result.data.map((entry) => entry.message);
+        const entries = result.data;
+        const messages = entries.map((entry) => entry.message);
+        const now = Date.now();
         const response: ThreadResponse = {
           id,
           messages,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
+          createdAt: entries.length > 0 ? entries[0].createdAt.getTime() : now,
+          updatedAt: entries.length > 0 ? entries[entries.length - 1].createdAt.getTime() : now,
         };
         return response;
       } catch (error) {
@@ -78,12 +80,6 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
       const { id } = request.params;
       const body = request.body;
 
-      if (!body?.role || !body?.content) {
-        return reply.status(400).send({
-          error: { message: 'Missing required fields: role, content', code: 'INVALID_INPUT' },
-        });
-      }
-
       try {
         const result = await memory.addEntry({
           threadId: id,
@@ -96,7 +92,7 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
 
         if (!result.success) {
           return reply.status(500).send({
-            error: { message: result.error, code: 'INTERNAL' },
+            error: { message: result.error ?? 'Unknown error', code: 'INTERNAL' },
           });
         }
 
@@ -135,7 +131,7 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
         const result = await memory.clearThread(id);
         if (!result.success) {
           return reply.status(500).send({
-            error: { message: result.error, code: 'INTERNAL' },
+            error: { message: result.error ?? 'Unknown error', code: 'INTERNAL' },
           });
         }
         return reply.status(204).send();

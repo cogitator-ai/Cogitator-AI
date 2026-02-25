@@ -42,12 +42,6 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      if (!request.body?.input) {
-        return reply.status(400).send({
-          error: { message: 'Missing required field: input', code: 'INVALID_INPUT' },
-        });
-      }
-
       try {
         const result = await fastify.cogitator.runtime.run(agent, {
           input: request.body.input,
@@ -98,14 +92,10 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      if (!request.body?.input) {
-        return reply.status(400).send({
-          error: { message: 'Missing required field: input', code: 'INVALID_INPUT' },
-        });
-      }
-
       const writer = new FastifyStreamWriter(reply);
       const messageId = generateId('msg');
+      const textId = generateId('txt');
+      let textStarted = false;
 
       request.raw.on('close', () => {
         writer.close();
@@ -113,8 +103,8 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
 
       try {
         writer.start(messageId);
-        const textId = generateId('txt');
         writer.textStart(textId);
+        textStarted = true;
 
         const result = await fastify.cogitator.runtime.run(agent, {
           input: request.body.input,
@@ -142,6 +132,7 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
           totalTokens: result.usage.totalTokens,
         });
       } catch (error) {
+        if (textStarted) writer.textEnd(textId);
         const message = error instanceof Error ? error.message : 'Unknown error';
         writer.error(message, 'INTERNAL');
       } finally {
