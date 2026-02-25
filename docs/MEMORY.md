@@ -521,6 +521,26 @@ const graphContext = await gctx.buildContext({
 
 ---
 
+## Related: RAG Pipeline
+
+For document ingestion (PDFs, web pages, code, CSV) with chunking and retrieval, see `@cogitator-ai/rag`. It builds on top of `EmbeddingAdapter` from this package.
+
+```typescript
+import { RAGPipelineBuilder, MarkdownLoader, createChunker } from '@cogitator-ai/rag';
+
+const rag = new RAGPipelineBuilder()
+  .withLoader(new MarkdownLoader())
+  .withEmbeddingService(embeddingService)
+  .withEmbeddingAdapter(postgresAdapter) // EmbeddingAdapter from @cogitator-ai/memory
+  .withConfig({ chunking: { strategy: 'recursive', chunkSize: 512, overlap: 64 } })
+  .build();
+
+await rag.ingest('./docs/');
+const results = await rag.query('how does authentication work?');
+```
+
+---
+
 ## Usage with Cogitator
 
 ```typescript
