@@ -7,6 +7,7 @@ import type {
   EntityType,
   RelationType,
 } from '@cogitator-ai/types';
+import { extractJSON } from './utils';
 
 export interface GraphContextForPrompt {
   nodes: GraphNode[];
@@ -224,10 +225,10 @@ export function parseEntityExtractionResponse(response: string): {
   }>;
 } | null {
   try {
-    const jsonMatch = /\{[\s\S]*\}/.exec(response);
-    if (!jsonMatch) return null;
+    const jsonStr = extractJSON(response);
+    if (!jsonStr) return null;
 
-    const parsed = JSON.parse(jsonMatch[0]);
+    const parsed = JSON.parse(jsonStr);
 
     return {
       entities: (parsed.entities || []).map((e: Record<string, unknown>) => ({

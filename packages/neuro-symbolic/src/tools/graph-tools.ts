@@ -93,7 +93,7 @@ export function createGraphTools(_ns: NeuroSymbolic, graphAdapter: GraphAdapter)
         )
         .optional()
         .describe('Filter by node types'),
-      namePattern: z.string().optional().describe('Regex pattern to match node names'),
+      namePattern: z.string().max(200).optional().describe('Regex pattern to match node names'),
       limit: z.number().int().min(1).max(100).optional().describe('Maximum results (default: 20)'),
       includeEdges: z.boolean().optional().describe('Include edges for each node (default: false)'),
     }),
@@ -292,6 +292,7 @@ function formatPath(path: { nodes: GraphNode[]; edges: GraphEdge[] }): string {
   for (let i = 0; i < path.nodes.length - 1; i++) {
     const node = path.nodes[i];
     const edge = path.edges[i];
+    if (!edge) break;
     parts.push(`${node.name} -[${edge.type}${edge.label ? `: ${edge.label}` : ''}]->`);
   }
   parts.push(path.nodes[path.nodes.length - 1].name);

@@ -20,16 +20,11 @@ import {
 import { isBuiltin, executeBuiltin } from './builtins';
 import { parseQuery } from './parser';
 
-function importParser() {
-  return { parseQuery };
-}
-
 interface ResolverState {
   goals: CompoundTerm[];
   substitution: Substitution;
   depth: number;
   proofNode: ProofNode;
-  cut: boolean;
 }
 
 interface ResolverContext {
@@ -116,7 +111,6 @@ function resolve(state: ResolverState, ctx: ResolverContext): { success: boolean
         substitution: state.substitution,
         depth: state.depth + 1,
         proofNode: childNode,
-        cut: false,
       },
       ctx
     );
@@ -143,7 +137,6 @@ function resolve(state: ResolverState, ctx: ResolverContext): { success: boolean
         substitution: state.substitution,
         depth: state.depth + 1,
         proofNode: testNode,
-        cut: false,
       },
       ctx
     );
@@ -159,7 +152,6 @@ function resolve(state: ResolverState, ctx: ResolverContext): { success: boolean
           substitution: state.substitution,
           depth: state.depth + 1,
           proofNode: childNode,
-          cut: false,
         },
         ctx
       );
@@ -179,7 +171,6 @@ function resolve(state: ResolverState, ctx: ResolverContext): { success: boolean
           substitution: state.substitution,
           depth: state.depth,
           proofNode: state.proofNode,
-          cut: false,
         },
         ctx
       );
@@ -199,7 +190,6 @@ function resolve(state: ResolverState, ctx: ResolverContext): { success: boolean
           substitution: state.substitution,
           depth: state.depth + 1,
           proofNode: firstNode,
-          cut: false,
         },
         ctx
       );
@@ -223,7 +213,6 @@ function resolve(state: ResolverState, ctx: ResolverContext): { success: boolean
           substitution: state.substitution,
           depth: state.depth + 1,
           proofNode: secondNode,
-          cut: false,
         },
         ctx
       );
@@ -244,6 +233,13 @@ function resolve(state: ResolverState, ctx: ResolverContext): { success: boolean
       state.proofNode.children.push(condNode);
 
       const savedSolutions = ctx.solutions.length;
+      const savedQueryVars = ctx.queryVariables;
+
+      const condVars = getVariables(condition as CompoundTerm);
+      const thenVars = getVariables(thenBranch as CompoundTerm);
+      const allVars = new Set([...savedQueryVars, ...condVars, ...thenVars]);
+      for (const [k] of state.substitution) allVars.add(k);
+      ctx.queryVariables = allVars;
 
       const condResult = resolve(
         {
@@ -251,10 +247,11 @@ function resolve(state: ResolverState, ctx: ResolverContext): { success: boolean
           substitution: state.substitution,
           depth: state.depth + 1,
           proofNode: condNode,
-          cut: false,
         },
         ctx
       );
+
+      ctx.queryVariables = savedQueryVars;
 
       if (condResult.success && ctx.solutions.length > savedSolutions) {
         const condSolution = ctx.solutions[savedSolutions];
@@ -271,7 +268,6 @@ function resolve(state: ResolverState, ctx: ResolverContext): { success: boolean
             substitution: merged,
             depth: state.depth + 1,
             proofNode: condNode,
-            cut: false,
           },
           ctx
         );
@@ -297,7 +293,6 @@ function resolve(state: ResolverState, ctx: ResolverContext): { success: boolean
             substitution: builtinResult.substitutions[0],
             depth: state.depth + 1,
             proofNode: childNode,
-            cut: false,
           },
           ctx
         );
@@ -327,7 +322,6 @@ function resolve(state: ResolverState, ctx: ResolverContext): { success: boolean
           substitution: newSubst,
           depth: state.depth + 1,
           proofNode: branchNode,
-          cut: false,
         },
         ctx
       );
@@ -382,7 +376,6 @@ function resolve(state: ResolverState, ctx: ResolverContext): { success: boolean
         substitution: unifyResult,
         depth: state.depth + 1,
         proofNode: childNode,
-        cut: false,
       },
       ctx
     );
@@ -452,7 +445,6 @@ export class SLDResolver {
       substitution: new Map(),
       depth: 0,
       proofNode: rootNode,
-      cut: false,
     };
 
     resolve(state, ctx);
@@ -506,8 +498,7 @@ export function queryKnowledgeBase(
   queryString: string,
   config?: Partial<LogicProgrammingConfig>
 ): LogicQueryResult {
-  const { parseQuery: parseQueryFn } = importParser();
-  const result = parseQueryFn(queryString);
+  const result = parseQuery(queryString);
 
   if (!result.success || !result.value) {
     return {

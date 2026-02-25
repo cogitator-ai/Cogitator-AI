@@ -177,6 +177,19 @@ export function createAction(
   };
 }
 
+const MAX_DOMAIN_SIZE = 1000;
+
+function resolveDomain(domainRef: string, state: PlanState): unknown[] {
+  const value = state.variables[domainRef];
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'object' && value !== null && 'min' in value && 'max' in value) {
+    const { min, max } = value as { min: number; max: number };
+    const size = Math.min(max - min + 1, MAX_DOMAIN_SIZE);
+    return Array.from({ length: size }, (_, i) => min + i);
+  }
+  return [];
+}
+
 export function evaluatePrecondition(
   precondition: Precondition,
   state: PlanState,
@@ -215,13 +228,23 @@ export function evaluatePrecondition(
         case 'neq':
           return actual !== expected;
         case 'gt':
-          return (actual as number) > (expected as number);
         case 'gte':
-          return (actual as number) >= (expected as number);
         case 'lt':
-          return (actual as number) < (expected as number);
-        case 'lte':
-          return (actual as number) <= (expected as number);
+        case 'lte': {
+          if (typeof actual !== 'number' || typeof expected !== 'number') return false;
+          switch (precondition.operator) {
+            case 'gt':
+              return actual > expected;
+            case 'gte':
+              return actual >= expected;
+            case 'lt':
+              return actual < expected;
+            case 'lte':
+              return actual <= expected;
+            default:
+              return false;
+          }
+        }
         case 'in':
           return Array.isArray(expected) && expected.includes(actual);
         default:
@@ -238,11 +261,27 @@ export function evaluatePrecondition(
     case 'not':
       return !evaluatePrecondition(precondition.condition, state, parameters);
 
-    case 'exists':
-      return false;
+    case 'exists': {
+      const domain = resolveDomain(precondition.domain, state);
+      return domain.some((val) => {
+        const extendedState: PlanState = {
+          ...state,
+          variables: { ...state.variables, [precondition.variable]: val },
+        };
+        return evaluatePrecondition(precondition.condition, extendedState, parameters);
+      });
+    }
 
-    case 'forall':
-      return true;
+    case 'forall': {
+      const domain = resolveDomain(precondition.domain, state);
+      return domain.every((val) => {
+        const extendedState: PlanState = {
+          ...state,
+          variables: { ...state.variables, [precondition.variable]: val },
+        };
+        return evaluatePrecondition(precondition.condition, extendedState, parameters);
+      });
+    }
 
     default:
       return false;
@@ -283,18 +322,16 @@ export function applyEffect(
     case 'increment': {
       const varName = resolveVariable(effect.variable);
       const current = newVariables[varName];
-      if (typeof current === 'number') {
-        newVariables[varName] = current + effect.amount;
-      }
+      const num = typeof current === 'number' ? current : 0;
+      newVariables[varName] = num + effect.amount;
       break;
     }
 
     case 'decrement': {
       const varName = resolveVariable(effect.variable);
       const current = newVariables[varName];
-      if (typeof current === 'number') {
-        newVariables[varName] = current - effect.amount;
-      }
+      const num = typeof current === 'number' ? current : 0;
+      newVariables[varName] = num - effect.amount;
       break;
     }
 

@@ -13,9 +13,8 @@ import type {
   MessageContent,
   ContentPart,
 } from '@cogitator-ai/types';
-import { ErrorCode, CogitatorError } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
-import { LLMError, type LLMErrorContext } from './errors';
+import { type LLMError, wrapSDKError, type LLMErrorContext } from './errors';
 
 interface AnthropicConfig {
   apiKey: string;
@@ -385,51 +384,7 @@ export class AnthropicBackend extends BaseLLMBackend {
     };
   }
 
-  private wrapAnthropicError(error: unknown, ctx: LLMErrorContext): CogitatorError {
-    if (error instanceof Anthropic.APIError) {
-      const statusCode = error.status ?? 500;
-      ctx.statusCode = statusCode;
-      ctx.responseBody = error.message;
-
-      if (statusCode === 429) {
-        return new LLMError('Rate limit exceeded', ErrorCode.LLM_RATE_LIMITED, ctx, {
-          cause: error,
-          retryable: true,
-          retryAfter: 60000,
-        });
-      }
-      if (statusCode === 401 || statusCode === 403) {
-        return new LLMError(
-          `Authentication failed: ${error.message}`,
-          ErrorCode.LLM_UNAVAILABLE,
-          ctx,
-          {
-            cause: error,
-            retryable: false,
-          }
-        );
-      }
-      if (statusCode >= 500) {
-        return new LLMError(`Server error: ${error.message}`, ErrorCode.LLM_UNAVAILABLE, ctx, {
-          cause: error,
-          retryable: true,
-          retryAfter: 5000,
-        });
-      }
-      return new LLMError(error.message, ErrorCode.LLM_INVALID_RESPONSE, ctx, {
-        cause: error,
-        retryable: false,
-      });
-    }
-
-    if (error instanceof Error) {
-      return new LLMError(`Request failed: ${error.message}`, ErrorCode.LLM_UNAVAILABLE, ctx, {
-        cause: error,
-        retryable: true,
-        retryAfter: 1000,
-      });
-    }
-
-    return new LLMError(`Unknown error: ${String(error)}`, ErrorCode.INTERNAL_ERROR, ctx);
+  private wrapAnthropicError(error: unknown, ctx: LLMErrorContext): LLMError {
+    return wrapSDKError(error, ctx);
   }
 }

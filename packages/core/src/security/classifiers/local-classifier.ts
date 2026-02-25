@@ -53,14 +53,23 @@ export class LocalInjectionClassifier implements InjectionClassifier {
     const threats: InjectionThreat[] = [];
 
     for (const pattern of patterns) {
-      const match = pattern.exec(input);
-      if (match) {
+      try {
+        const match = pattern.exec(input);
+        if (match) {
+          threats.push({
+            type: 'custom',
+            confidence: 0.9,
+            pattern: pattern.source,
+            snippet: match[0].slice(0, 100),
+            position: { start: match.index, end: match.index + match[0].length },
+          });
+        }
+      } catch {
         threats.push({
           type: 'custom',
-          confidence: 0.9,
-          pattern: pattern.source,
-          snippet: match[0].slice(0, 100),
-          position: { start: match.index, end: match.index + match[0].length },
+          confidence: 1.0,
+          pattern: 'invalid_regex',
+          snippet: `Pattern failed: ${pattern.source.slice(0, 80)}`,
         });
       }
     }

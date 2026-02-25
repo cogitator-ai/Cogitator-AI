@@ -6,6 +6,7 @@ vi.mock('fs/promises', () => ({
   readFile: vi.fn(),
   writeFile: vi.fn().mockResolvedValue(undefined),
   mkdir: vi.fn().mockResolvedValue(undefined),
+  unlink: vi.fn().mockResolvedValue(undefined),
 }));
 
 const mockModel: ModelInfo = {
@@ -138,6 +139,26 @@ describe('ModelCache', () => {
 
       expect(mkdir).toHaveBeenCalled();
       expect(writeFile).toHaveBeenCalled();
+    });
+
+    it('clears file cache by deleting the file', async () => {
+      const { unlink } = await import('fs/promises');
+
+      const cache = new ModelCache({ storage: 'file' });
+      await cache.set([mockModel]);
+      await cache.clear();
+
+      expect(unlink).toHaveBeenCalled();
+      const result = await cache.get();
+      expect(result).toBeNull();
+    });
+
+    it('handles clear errors gracefully when file does not exist', async () => {
+      const { unlink } = await import('fs/promises');
+      vi.mocked(unlink).mockRejectedValueOnce(new Error('ENOENT'));
+
+      const cache = new ModelCache({ storage: 'file' });
+      await expect(cache.clear()).resolves.not.toThrow();
     });
 
     it('handles write errors gracefully', async () => {

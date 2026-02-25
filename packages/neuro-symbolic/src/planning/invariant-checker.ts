@@ -102,7 +102,14 @@ export class InvariantChecker {
     const results: InvariantCheckResult[] = [];
     const stateTrace = this.simulatePlan(plan);
 
-    for (const property of this.properties) {
+    const propertiesToCheck = this.properties.filter((p) => {
+      if (p.type === 'invariant' && !this.config.checkInvariants) return false;
+      if (p.type === 'eventually' && !this.config.checkEventually) return false;
+      if (p.type === 'always' && !this.config.checkAlways) return false;
+      return true;
+    });
+
+    for (const property of propertiesToCheck) {
       const result = this.checkProperty(property, stateTrace, plan.actions);
       results.push(result);
     }
@@ -146,10 +153,7 @@ export class InvariantChecker {
         return this.checkNeverProperty(property, stateTrace, actions);
 
       case 'until':
-        return {
-          property,
-          satisfied: true,
-        };
+        return this.checkUntilProperty(property, stateTrace, actions);
 
       default:
         return {
@@ -229,6 +233,51 @@ export class InvariantChecker {
     return {
       property,
       satisfied: true,
+    };
+  }
+
+  private checkUntilProperty(
+    property: SafetyProperty,
+    stateTrace: PlanState[],
+    actions: PlanAction[]
+  ): InvariantCheckResult {
+    const condition = property.condition;
+
+    if (condition.type === 'and' && condition.conditions.length >= 2) {
+      const holdCondition = condition.conditions[0];
+      const untilCondition = condition.conditions[1];
+
+      for (let i = 0; i < stateTrace.length; i++) {
+        if (evaluatePrecondition(untilCondition, stateTrace[i])) {
+          return { property, satisfied: true };
+        }
+        if (!evaluatePrecondition(holdCondition, stateTrace[i])) {
+          return {
+            property,
+            satisfied: false,
+            violatingStates: [stateTrace[i]],
+            counterexample: i > 0 ? actions.slice(0, i) : undefined,
+          };
+        }
+      }
+
+      return {
+        property,
+        satisfied: false,
+        violatingStates: stateTrace,
+      };
+    }
+
+    for (const state of stateTrace) {
+      if (evaluatePrecondition(condition, state)) {
+        return { property, satisfied: true };
+      }
+    }
+
+    return {
+      property,
+      satisfied: false,
+      violatingStates: stateTrace,
     };
   }
 
@@ -323,7 +372,13 @@ export function commonSafetyProperties(): {
       name: 'Bounded',
       description: 'Variable must stay within bounds',
       createCondition: (variable: string, value?: unknown) => {
+        if (!value || typeof value !== 'object') {
+          return { type: 'simple', variable, value: undefined };
+        }
         const bounds = value as { min: number; max: number };
+        if (typeof bounds.min !== 'number' || typeof bounds.max !== 'number') {
+          return { type: 'simple', variable, value: undefined };
+        }
         return {
           type: 'and',
           conditions: [
@@ -358,6 +413,9 @@ export function commonSafetyProperties(): {
       name: 'Mutex',
       description: 'At most one of the variables can be true',
       createCondition: (_variable: string, value?: unknown) => {
+        if (!Array.isArray(value)) {
+          return { type: 'and', conditions: [] };
+        }
         const vars = value as string[];
         const conditions: Precondition[] = [];
 

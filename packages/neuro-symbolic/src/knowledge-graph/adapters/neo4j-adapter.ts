@@ -15,6 +15,7 @@ import type {
   MemoryResult,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
+import { cosineSimilarity } from '../utils';
 
 export interface Neo4jGraphAdapterConfig {
   uri: string;
@@ -29,8 +30,13 @@ type Neo4jDriver = {
   close(): Promise<void>;
 };
 
+type Neo4jTransaction = {
+  run(query: string, params?: Record<string, unknown>): Promise<Neo4jResult>;
+};
+
 type Neo4jSession = {
   run(query: string, params?: Record<string, unknown>): Promise<Neo4jResult>;
+  executeWrite<T>(work: (tx: Neo4jTransaction) => Promise<T>): Promise<T>;
   close(): Promise<void>;
 };
 
@@ -328,7 +334,8 @@ export class Neo4jGraphAdapter implements GraphAdapter {
 
       let cypher = `MATCH (n:GraphNode) WHERE ${whereClauses.join(' AND ')} RETURN n`;
       if (query.limit) {
-        cypher += ` LIMIT ${query.limit}`;
+        cypher += ` LIMIT $queryLimit`;
+        params.queryLimit = query.limit;
       }
 
       const result = await session.run(cypher, params);
@@ -367,7 +374,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
         params.types = options.entityTypes;
       }
 
-      const limit = options.limit ?? 10;
+      params.queryLimit = options.limit ?? 10;
 
       const result = await session.run(
         `MATCH (n:GraphNode)
@@ -376,7 +383,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
          WHERE score >= $threshold
          RETURN n, score
          ORDER BY score DESC
-         LIMIT ${limit}`,
+         LIMIT $queryLimit`,
         params
       );
 
@@ -386,28 +393,36 @@ export class Neo4jGraphAdapter implements GraphAdapter {
       }));
 
       return { success: true, data: nodes };
-    } catch {
-      const nodesResult = await this.queryNodes({
-        agentId: options.agentId,
-        types: options.entityTypes,
-        includeEmbedding: true,
-      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes('gds') ||
+          error.message.includes('Unknown function') ||
+          error.message.includes('similarity.cosine'))
+      ) {
+        const nodesResult = await this.queryNodes({
+          agentId: options.agentId,
+          types: options.entityTypes,
+          includeEmbedding: true,
+        });
 
-      if (!nodesResult.success) {
-        return { success: false, error: nodesResult.error };
+        if (!nodesResult.success) {
+          return { success: false, error: nodesResult.error };
+        }
+
+        const scored = nodesResult.data
+          .filter((n) => n.embedding?.length === options.vector!.length)
+          .map((node) => ({
+            ...node,
+            score: cosineSimilarity(node.embedding!, options.vector!),
+          }))
+          .filter((n) => !options.threshold || n.score >= options.threshold)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, options.limit ?? 10);
+
+        return { success: true, data: scored };
       }
-
-      const scored = nodesResult.data
-        .filter((n) => n.embedding?.length === options.vector!.length)
-        .map((node) => ({
-          ...node,
-          score: cosineSimilarity(node.embedding!, options.vector!),
-        }))
-        .filter((n) => !options.threshold || n.score >= options.threshold)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, options.limit ?? 10);
-
-      return { success: true, data: scored };
+      throw error;
     } finally {
       await session.close();
     }
@@ -663,7 +678,8 @@ export class Neo4jGraphAdapter implements GraphAdapter {
 
       let cypher = `MATCH ${matchClause} WHERE ${whereClauses.join(' AND ')} RETURN r, s.id as sourceId, t.id as targetId`;
       if (query.limit) {
-        cypher += ` LIMIT ${query.limit}`;
+        cypher += ` LIMIT $queryLimit`;
+        params.queryLimit = query.limit;
       }
 
       const result = await session.run(cypher, params);
@@ -704,6 +720,8 @@ export class Neo4jGraphAdapter implements GraphAdapter {
         depth: 0,
       },
     ];
+
+    visitedNodes.set(options.startNodeId, startNodeResult.data);
 
     while (queue.length > 0) {
       const current = queue.shift()!;
@@ -765,11 +783,13 @@ export class Neo4jGraphAdapter implements GraphAdapter {
   ): Promise<MemoryResult<GraphPath | null>> {
     if (!this.driver) return { success: false, error: 'Not connected' };
 
+    const safeDepth = Math.max(1, Math.min(20, Math.floor(Number(maxDepth) || 3)));
+
     const session = this.driver.session({ database: this.database });
     try {
       const result = await session.run(
         `MATCH (start:GraphNode {id: $startNodeId}), (end:GraphNode {id: $endNodeId}),
-               path = shortestPath((start)-[*..${maxDepth}]-(end))
+               path = shortestPath((start)-[*..${safeDepth}]-(end))
          RETURN path`,
         { startNodeId, endNodeId }
       );
@@ -815,8 +835,17 @@ export class Neo4jGraphAdapter implements GraphAdapter {
           length: edges.length,
         },
       };
-    } catch {
-      return this.findShortestPathBFS(startNodeId, endNodeId, maxDepth);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes('gds') ||
+          error.message.includes('apoc') ||
+          error.message.includes('Unknown function') ||
+          error.message.includes('shortestPath'))
+      ) {
+        return this.findShortestPathBFS(startNodeId, endNodeId, maxDepth);
+      }
+      throw error;
     } finally {
       await session.close();
     }
@@ -947,39 +976,43 @@ export class Neo4jGraphAdapter implements GraphAdapter {
     const allAliases = new Set(targetNode.aliases);
     const allProperties = { ...targetNode.properties };
 
+    for (const sourceId of sourceNodeIds) {
+      const sourceNodeResult = await this.getNode(sourceId);
+      if (!sourceNodeResult.success || !sourceNodeResult.data) continue;
+
+      const sourceNode = sourceNodeResult.data;
+      allAliases.add(sourceNode.name);
+      sourceNode.aliases.forEach((a) => allAliases.add(a));
+      Object.assign(allProperties, sourceNode.properties);
+    }
+
     const session = this.driver.session({ database: this.database });
     try {
-      for (const sourceId of sourceNodeIds) {
-        const sourceNodeResult = await this.getNode(sourceId);
-        if (!sourceNodeResult.success || !sourceNodeResult.data) continue;
+      await session.executeWrite(async (tx) => {
+        for (const sourceId of sourceNodeIds) {
+          await tx.run(
+            `MATCH (s:GraphNode {id: $sourceId})-[r:RELATION]->(t:GraphNode)
+             WHERE t.id <> $targetId
+             MATCH (target:GraphNode {id: $targetId})
+             CREATE (target)-[r2:RELATION]->(t)
+             SET r2 = properties(r)
+             DELETE r`,
+            { sourceId, targetId: targetNodeId }
+          );
 
-        const sourceNode = sourceNodeResult.data;
-        allAliases.add(sourceNode.name);
-        sourceNode.aliases.forEach((a) => allAliases.add(a));
-        Object.assign(allProperties, sourceNode.properties);
+          await tx.run(
+            `MATCH (s:GraphNode)-[r:RELATION]->(source:GraphNode {id: $sourceId})
+             WHERE s.id <> $targetId
+             MATCH (target:GraphNode {id: $targetId})
+             CREATE (s)-[r2:RELATION]->(target)
+             SET r2 = properties(r)
+             DELETE r`,
+            { sourceId, targetId: targetNodeId }
+          );
 
-        await session.run(
-          `MATCH (s:GraphNode {id: $sourceId})-[r:RELATION]->(t:GraphNode)
-           WHERE t.id <> $targetId
-           MATCH (target:GraphNode {id: $targetId})
-           CREATE (target)-[r2:RELATION]->(t)
-           SET r2 = properties(r)
-           DELETE r`,
-          { sourceId, targetId: targetNodeId }
-        );
-
-        await session.run(
-          `MATCH (s:GraphNode)-[r:RELATION]->(source:GraphNode {id: $sourceId})
-           WHERE s.id <> $targetId
-           MATCH (target:GraphNode {id: $targetId})
-           CREATE (s)-[r2:RELATION]->(target)
-           SET r2 = properties(r)
-           DELETE r`,
-          { sourceId, targetId: targetNodeId }
-        );
-
-        await this.deleteNode(sourceId);
-      }
+          await tx.run(`MATCH (n:GraphNode {id: $sourceId}) DETACH DELETE n`, { sourceId });
+        }
+      });
 
       return this.updateNode(targetNodeId, {
         aliases: Array.from(allAliases),
@@ -1140,21 +1173,6 @@ function parseNeo4jDate(value: unknown): Date {
     return (value as { toStandardDate(): Date }).toStandardDate();
   }
   return new Date();
-}
-
-function cosineSimilarity(a: number[], b: number[]): number {
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-
-  const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
-  return magnitude === 0 ? 0 : dotProduct / magnitude;
 }
 
 export function createNeo4jGraphAdapter(config: Neo4jGraphAdapterConfig): Neo4jGraphAdapter {

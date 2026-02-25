@@ -1,5 +1,18 @@
 # @cogitator-ai/models
 
+## 17.1.6
+
+### Patch Changes
+
+- fix(models): audit — 7 bugs fixed, +21 tests, v17.1.6
+  - Fix autoRefresh timer not starting when data loaded from cache
+  - Remove redundant sample_spec check in fetcher
+  - Export LiteLLM types and Zod schemas for public API completeness
+  - Remove phantom @cogitator-ai/types peer dependency
+  - Move @types/node to devDependencies
+  - Add 21 new unit tests (51 → 72 total)
+  - Update README with current model listings
+
 ## 17.1.5
 
 ### Patch Changes

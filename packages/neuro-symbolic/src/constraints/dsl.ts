@@ -391,8 +391,11 @@ export class ConstraintBuilder {
 
   clone(): ConstraintBuilder {
     const builder = new ConstraintBuilder(this.problemName);
-    builder.variables = [...this.variables];
-    builder.constraints = [...this.constraints];
+    builder.variables = this.variables.map((v) => ({
+      ...v,
+      domain: v.domain ? { ...v.domain } : undefined,
+    }));
+    builder.constraints = this.constraints.map((c) => ({ ...c }));
     builder.objective = this.objective ? { ...this.objective } : undefined;
     return builder;
   }

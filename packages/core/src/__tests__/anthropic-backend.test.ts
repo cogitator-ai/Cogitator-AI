@@ -293,7 +293,7 @@ describe('AnthropicBackend', () => {
           model: 'claude-sonnet-4-20250514',
           messages: [{ role: 'user', content: 'Test' }],
         })
-      ).rejects.toThrow(/Invalid API key/);
+      ).rejects.toThrow(/Authentication failed/);
     });
 
     it('handles server errors', async () => {

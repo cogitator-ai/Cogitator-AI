@@ -111,7 +111,7 @@ function calculatePathConfidence(path: GraphPath): number {
 
   let confidence = 1.0;
   for (const edge of path.edges) {
-    confidence *= edge.confidence * edge.weight;
+    confidence *= edge.confidence;
   }
 
   return confidence;

@@ -311,7 +311,7 @@ describe('OpenAIBackend', () => {
           model: 'gpt-4o-mini',
           messages: [{ role: 'user', content: 'Test' }],
         })
-      ).rejects.toThrow(/Invalid API key/);
+      ).rejects.toThrow(/Authentication failed/);
     });
 
     it('handles server errors', async () => {

@@ -159,7 +159,7 @@ export function transformLiteLLMData(data: LiteLLMModelData): ModelInfo[] {
   const seenIds = new Set<string>();
 
   for (const [modelId, entry] of Object.entries(data)) {
-    if (modelId.startsWith('sample_spec') || modelId === 'sample_spec') {
+    if (modelId.startsWith('sample_spec')) {
       continue;
     }
 

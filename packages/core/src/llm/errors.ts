@@ -9,6 +9,11 @@ export interface LLMErrorContext {
   responseBody?: string;
 }
 
+interface SDKAPIError extends Error {
+  status?: number;
+  headers?: Headers;
+}
+
 export class LLMError extends CogitatorError {
   readonly provider: string;
   readonly model?: string;
@@ -49,20 +54,24 @@ export class LLMError extends CogitatorError {
 export function createLLMError(
   context: LLMErrorContext,
   statusCode: number,
-  responseBody?: string
+  responseBody?: string,
+  options?: { cause?: Error; retryAfterOverride?: number }
 ): LLMError {
   const ctx = { ...context, statusCode, responseBody };
+  const cause = options?.cause;
 
   if (statusCode === 429) {
-    const retryAfter = parseRetryAfter(responseBody);
+    const retryAfter = options?.retryAfterOverride ?? parseRetryAfter(responseBody) ?? 60000;
     return new LLMError('Rate limit exceeded', ErrorCode.LLM_RATE_LIMITED, ctx, {
+      cause,
       retryable: true,
-      retryAfter: retryAfter ?? 60000,
+      retryAfter,
     });
   }
 
   if (statusCode === 401 || statusCode === 403) {
     return new LLMError(`Authentication failed (${statusCode})`, ErrorCode.LLM_UNAVAILABLE, ctx, {
+      cause,
       retryable: false,
     });
   }
@@ -71,6 +80,7 @@ export function createLLMError(
     const lower = responseBody?.toLowerCase() ?? '';
     if (lower.includes('context') || lower.includes('token') || lower.includes('length')) {
       return new LLMError('Context length exceeded', ErrorCode.LLM_CONTEXT_LENGTH_EXCEEDED, ctx, {
+        cause,
         retryable: false,
       });
     }
@@ -80,6 +90,7 @@ export function createLLMError(
         ErrorCode.LLM_CONTENT_FILTERED,
         ctx,
         {
+          cause,
           retryable: false,
         }
       );
@@ -88,7 +99,7 @@ export function createLLMError(
       `Bad request: ${responseBody?.slice(0, 200) ?? 'unknown'}`,
       ErrorCode.VALIDATION_ERROR,
       ctx,
-      { retryable: false }
+      { cause, retryable: false }
     );
   }
 
@@ -97,7 +108,7 @@ export function createLLMError(
       `Server error (${statusCode}): ${responseBody?.slice(0, 200) ?? 'unknown'}`,
       ErrorCode.LLM_UNAVAILABLE,
       ctx,
-      { retryable: true, retryAfter: 5000 }
+      { cause, retryable: true, retryAfter: 5000 }
     );
   }
 
@@ -106,7 +117,7 @@ export function createLLMError(
       `Model or endpoint not found: ${context.model ?? context.endpoint ?? 'unknown'}`,
       ErrorCode.LLM_UNAVAILABLE,
       ctx,
-      { retryable: false }
+      { cause, retryable: false }
     );
   }
 
@@ -114,7 +125,7 @@ export function createLLMError(
     `HTTP ${statusCode}: ${responseBody?.slice(0, 200) ?? 'unknown'}`,
     ErrorCode.LLM_INVALID_RESPONSE,
     ctx,
-    { retryable: statusCode >= 500 }
+    { cause, retryable: statusCode >= 500 }
   );
 }
 
@@ -152,6 +163,46 @@ export function llmNotImplemented(context: LLMErrorContext, feature: string): LL
   return new LLMError(`${feature} is not implemented`, ErrorCode.NOT_IMPLEMENTED, context, {
     retryable: false,
   });
+}
+
+export function wrapSDKError(error: unknown, ctx: LLMErrorContext): LLMError {
+  if (isSDKAPIError(error)) {
+    const statusCode = error.status ?? 500;
+    ctx.statusCode = statusCode;
+    ctx.responseBody = error.message;
+
+    const retryAfterMs = parseRetryAfterHeader(error.headers) ?? parseRetryAfter(error.message);
+
+    return createLLMError(ctx, statusCode, error.message, {
+      cause: error,
+      retryAfterOverride: retryAfterMs,
+    });
+  }
+
+  if (error instanceof Error) {
+    return new LLMError(`Request failed: ${error.message}`, ErrorCode.LLM_UNAVAILABLE, ctx, {
+      cause: error,
+      retryable: true,
+      retryAfter: 1000,
+    });
+  }
+
+  return new LLMError(`Unknown error: ${String(error)}`, ErrorCode.INTERNAL_ERROR, ctx);
+}
+
+function isSDKAPIError(error: unknown): error is SDKAPIError {
+  return error instanceof Error && typeof (error as SDKAPIError).status === 'number';
+}
+
+function parseRetryAfterHeader(headers?: Headers): number | undefined {
+  if (!headers) return undefined;
+  const value = headers.get('retry-after');
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (!Number.isNaN(seconds) && seconds > 0) {
+    return seconds * 1000;
+  }
+  return undefined;
 }
 
 function parseRetryAfter(responseBody?: string): number | undefined {

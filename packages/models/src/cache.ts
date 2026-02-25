@@ -1,5 +1,5 @@
 import type { ModelInfo, CacheOptions } from './types';
-import { writeFile, readFile, mkdir } from 'fs/promises';
+import { writeFile, readFile, mkdir, unlink } from 'fs/promises';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 
@@ -60,7 +60,7 @@ export class ModelCache {
 
     if (this.options.storage === 'file') {
       try {
-        await writeFile(this.options.filePath, '', 'utf-8');
+        await unlink(this.options.filePath);
       } catch {}
     }
   }

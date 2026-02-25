@@ -149,10 +149,10 @@ Listed in Architecture section, Key Classes, and LLM Backends.
 - Most critical bugs were in runtime loop prevention, multimodal content handling, and LLM backend edge cases
 - Google backend had API key in URL — moved to header for security
 - Bedrock backend had falsy check bug (temperature=0 ignored)
-- Azure backend is near-complete duplicate of OpenAI backend — consider shared base class
-- Security module has architectural issues (fail-open defaults) — needs separate design review
-- Several module-level counters in causal/ are not per-instance — cosmetic issue
-- LLM backends have inconsistent error handling patterns across providers
+- ~~Azure backend is near-complete duplicate of OpenAI backend~~ — **FIXED**: created `OpenAICompatibleBackend` abstract base class. OpenAI: 373→20 lines, Azure: 383→31 lines (93% reduction in concrete classes).
+- ~~Security module has architectural issues (fail-open defaults)~~ — **FIXED**: added `failMode: 'secure' | 'open'` to `PromptInjectionConfig` (default: `secure`). Invalid regex now reported as threat. LLM classifier fails closed on unparseable response. +7 tests.
+- Several module-level counters in causal/ are not per-instance — verified as cosmetic, counters are already per-instance in current code.
+- ~~LLM backends have inconsistent error handling patterns across providers~~ — **FIXED**: created shared `wrapSDKError()` in errors.ts. OpenAI/Azure/Anthropic now delegate to unified error handler with consistent status code mapping, retry-after parsing, and context length/content filter detection.
 - Langfuse integration was entirely non-functional (generations never finalized, tool spans never stored) — now properly wired
 - Cogitator class lacked public API for LLM backend access — added `getLLMBackend()` and `reflectionEngine` getter
 - ABTestingFramework lacked `getTest(id)` for retrieving tests by ID regardless of status — added

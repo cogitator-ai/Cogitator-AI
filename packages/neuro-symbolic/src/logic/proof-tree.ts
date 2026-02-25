@@ -105,7 +105,7 @@ function getRelevantBindings(node: ProofNode): string[] {
   const bindings: string[] = [];
 
   for (const [varName, term] of node.substitution) {
-    if (!varName.startsWith('_') && !varName.includes('_')) {
+    if (!varName.startsWith('_')) {
       bindings.push(`${varName}=${termToString(term)}`);
     }
   }
@@ -315,7 +315,10 @@ export function proofTreeToMermaid(tree: ProofTree): string {
 }
 
 function escapeLabel(str: string): string {
-  return str.replace(/"/g, '\\"').replace(/\n/g, ' ');
+  return str
+    .replace(/"/g, "'")
+    .replace(/\n/g, ' ')
+    .replace(/[[\]{}()<>|#]/g, (c) => `#${c.charCodeAt(0)};`);
 }
 
 function getNodeStyle(status: ProofNode['status']): string {

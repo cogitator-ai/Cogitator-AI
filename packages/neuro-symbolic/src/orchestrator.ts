@@ -254,7 +254,7 @@ export class NeuroSymbolic {
     const result = await solve(problem, this.config.constraints);
 
     return {
-      success: result.status === 'sat',
+      success: true,
       data: result,
       duration: Date.now() - startTime,
     };
@@ -377,7 +377,12 @@ export class NeuroSymbolic {
   }
 
   getConfig(): NeuroSymbolicConfig {
-    return { ...this.config };
+    return {
+      logic: { ...this.config.logic },
+      constraints: { ...this.config.constraints },
+      planning: { ...this.config.planning },
+      knowledgeGraph: { ...this.config.knowledgeGraph },
+    };
   }
 
   updateConfig(config: Partial<NeuroSymbolicConfig>): void {

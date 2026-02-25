@@ -15,6 +15,7 @@ import type {
   MemoryResult,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
+import { cosineSimilarity } from '../utils';
 
 export class MemoryGraphAdapter implements GraphAdapter {
   private nodes = new Map<string, GraphNode>();
@@ -133,8 +134,13 @@ export class MemoryGraphAdapter implements GraphAdapter {
       if (query.types && !query.types.includes(node.type)) continue;
       if (query.minConfidence && node.confidence < query.minConfidence) continue;
       if (query.namePattern) {
-        const pattern = new RegExp(query.namePattern, 'i');
-        if (!pattern.test(node.name) && !node.aliases.some((a) => pattern.test(a))) {
+        if (query.namePattern.length > 200) continue;
+        try {
+          const pattern = new RegExp(query.namePattern, 'i');
+          if (!pattern.test(node.name) && !node.aliases.some((a) => pattern.test(a))) {
+            continue;
+          }
+        } catch {
           continue;
         }
       }
@@ -306,6 +312,8 @@ export class MemoryGraphAdapter implements GraphAdapter {
       },
     ];
 
+    visitedNodes.set(options.startNodeId, startNodeResult.data);
+
     while (queue.length > 0) {
       const current = queue.shift()!;
 
@@ -470,29 +478,29 @@ export class MemoryGraphAdapter implements GraphAdapter {
       sourceNode.aliases.forEach((a) => allAliases.add(a));
       Object.assign(allProperties, sourceNode.properties);
 
-      const sourceEdges = this.edgesBySource.get(sourceId) ?? new Set();
+      const edgesToRepoint: Omit<GraphEdge, 'id' | 'createdAt' | 'updatedAt'>[] = [];
+
+      const sourceEdges = [...(this.edgesBySource.get(sourceId) ?? [])];
       for (const edgeId of sourceEdges) {
         const edge = this.edges.get(edgeId);
         if (edge && edge.targetNodeId !== targetNodeId) {
-          await this.addEdge({
-            ...edge,
-            sourceNodeId: targetNodeId,
-          });
+          edgesToRepoint.push({ ...edge, sourceNodeId: targetNodeId });
         }
       }
 
-      const targetEdges = this.edgesByTarget.get(sourceId) ?? new Set();
-      for (const edgeId of targetEdges) {
+      const incomingEdges = [...(this.edgesByTarget.get(sourceId) ?? [])];
+      for (const edgeId of incomingEdges) {
         const edge = this.edges.get(edgeId);
         if (edge && edge.sourceNodeId !== targetNodeId) {
-          await this.addEdge({
-            ...edge,
-            targetNodeId: targetNodeId,
-          });
+          edgesToRepoint.push({ ...edge, targetNodeId: targetNodeId });
         }
       }
 
       await this.deleteNode(sourceId);
+
+      for (const edge of edgesToRepoint) {
+        await this.addEdge(edge);
+      }
     }
 
     const updatedNode: GraphNode = {
@@ -572,21 +580,6 @@ export class MemoryGraphAdapter implements GraphAdapter {
       },
     };
   }
-}
-
-function cosineSimilarity(a: number[], b: number[]): number {
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-
-  const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
-  return magnitude === 0 ? 0 : dotProduct / magnitude;
 }
 
 export function createMemoryGraphAdapter(): MemoryGraphAdapter {

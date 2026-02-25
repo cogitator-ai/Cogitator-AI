@@ -94,12 +94,16 @@ export function createConstraintTools(ns: NeuroSymbolic) {
 
       if (objective) {
         const objExpr = varExprs.get(objective.variable);
-        if (objExpr) {
-          if (objective.type === 'minimize') {
-            builder.minimize(objExpr);
-          } else {
-            builder.maximize(objExpr);
-          }
+        if (!objExpr) {
+          return {
+            content: `Objective variable '${objective.variable}' not found in declared variables`,
+            isError: true,
+          };
+        }
+        if (objective.type === 'minimize') {
+          builder.minimize(objExpr);
+        } else {
+          builder.maximize(objExpr);
         }
       }
 
@@ -108,55 +112,60 @@ export function createConstraintTools(ns: NeuroSymbolic) {
 
       const z3Available = await isZ3Available();
 
-      if (!result.success || !result.data) {
+      if (!result.data) {
         return {
           status: 'error',
-          error: result.error || 'Solver failed',
+          error: result.error || 'Solver returned no data',
           z3Available,
         };
       }
 
       const solverResult = result.data;
 
-      if (solverResult.status === 'sat') {
-        return {
-          status: 'sat',
-          satisfiable: true,
-          model: solverResult.model.assignments,
-          objectiveValue: solverResult.model.objectiveValue,
-          duration: result.duration,
-          z3Available,
-        };
-      } else if (solverResult.status === 'unsat') {
-        return {
-          status: 'unsat',
-          satisfiable: false,
-          unsatCore: solverResult.unsatCore,
-          duration: result.duration,
-          z3Available,
-        };
-      } else if (solverResult.status === 'timeout') {
-        return {
-          status: 'timeout',
-          satisfiable: null,
-          duration: result.duration,
-          z3Available,
-        };
-      } else if (solverResult.status === 'unknown') {
-        return {
-          status: 'unknown',
-          satisfiable: null,
-          reason: solverResult.reason,
-          duration: result.duration,
-          z3Available,
-        };
-      } else {
-        return {
-          status: 'error',
-          error: solverResult.message,
-          duration: result.duration,
-          z3Available,
-        };
+      switch (solverResult.status) {
+        case 'sat':
+          return {
+            status: 'sat',
+            satisfiable: true,
+            model: solverResult.model.assignments,
+            objectiveValue: solverResult.model.objectiveValue,
+            duration: result.duration,
+            z3Available,
+          };
+
+        case 'unsat':
+          return {
+            status: 'unsat',
+            satisfiable: false,
+            unsatCore: solverResult.unsatCore,
+            duration: result.duration,
+            z3Available,
+          };
+
+        case 'timeout':
+          return {
+            status: 'timeout',
+            satisfiable: null,
+            duration: result.duration,
+            z3Available,
+          };
+
+        case 'unknown':
+          return {
+            status: 'unknown',
+            satisfiable: null,
+            reason: solverResult.reason,
+            duration: result.duration,
+            z3Available,
+          };
+
+        default:
+          return {
+            status: 'error',
+            error: solverResult.message,
+            duration: result.duration,
+            z3Available,
+          };
       }
     },
   });
@@ -165,8 +174,9 @@ export function createConstraintTools(ns: NeuroSymbolic) {
 }
 
 function parseOperand(operand: string, varExprs: Map<string, Expr>): Expr {
-  const num = parseFloat(operand);
-  if (!isNaN(num)) {
+  const trimmed = operand.trim();
+  const num = Number(trimmed);
+  if (trimmed !== '' && !isNaN(num) && isFinite(num)) {
     return constant(num);
   }
 

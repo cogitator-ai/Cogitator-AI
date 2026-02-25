@@ -6,6 +6,15 @@ export type {
   ProviderInfo,
   CacheOptions,
   RegistryOptions,
+  LiteLLMModelEntry,
+  LiteLLMModelData,
+} from './types';
+
+export {
+  ModelInfoSchema,
+  ModelPricingSchema,
+  ModelCapabilitiesSchema,
+  ProviderInfoSchema,
 } from './types';
 
 export {

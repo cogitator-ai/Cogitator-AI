@@ -75,9 +75,15 @@ function matchesCondition(value: unknown, condition: QueryCondition): boolean {
       return typeof value === 'string' && typeof target === 'string' && value.startsWith(target);
     case 'endsWith':
       return typeof value === 'string' && typeof target === 'string' && value.endsWith(target);
-    case 'regex':
-      if (typeof value !== 'string' || typeof target !== 'string') return false;
-      return new RegExp(target).test(value);
+    case 'regex': {
+      if (typeof value !== 'string' || typeof target !== 'string' || target.length > 200)
+        return false;
+      try {
+        return new RegExp(target).test(value);
+      } catch {
+        return false;
+      }
+    }
     case 'in':
       return Array.isArray(target) && target.includes(value);
     case 'notIn':
@@ -612,20 +618,20 @@ export function parseQueryString(queryString: string): GraphQuery {
         query.offset = parseInt(match[1], 10);
       }
     } else if (currentSection === 'where') {
-      const tripleMatch = /\?\s*(\w+)\s+(\w+)\s+(\?\s*\w+|"[^"]+"|[\w]+)/.exec(line);
+      const tripleMatch = /(\?\s*\w+|"[^"]+"|[\w]+)\s+(\w+)\s+(\?\s*\w+|"[^"]+"|[\w]+)/.exec(line);
       if (tripleMatch) {
-        const subject: QueryVariable = { name: tripleMatch[1] };
+        const subjStr = tripleMatch[1];
         const predicate = tripleMatch[2];
         const objStr = tripleMatch[3];
 
-        let object: string | QueryVariable;
-        if (objStr.startsWith('?')) {
-          object = { name: objStr.substring(1).trim() };
-        } else if (objStr.startsWith('"')) {
-          object = objStr.slice(1, -1);
-        } else {
-          object = objStr;
-        }
+        const parseTriplePart = (s: string): string | QueryVariable => {
+          if (s.startsWith('?')) return { name: s.substring(1).trim() };
+          if (s.startsWith('"')) return s.slice(1, -1);
+          return s;
+        };
+
+        const subject = parseTriplePart(subjStr);
+        const object = parseTriplePart(objStr);
 
         query.patterns.push({ subject, predicate, object });
       }

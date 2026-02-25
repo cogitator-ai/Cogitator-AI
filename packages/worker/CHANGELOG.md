@@ -1,5 +1,13 @@
 # @cogitator-ai/worker
 
+## 0.3.11
+
+### Patch Changes
+
+- @cogitator-ai/core@0.18.3
+- @cogitator-ai/swarms@0.4.11
+- @cogitator-ai/workflows@0.5.8
+
 ## 0.3.10
 
 ### Patch Changes

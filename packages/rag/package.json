@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/rag",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Retrieval Augmented Generation for Cogitator AI agents",
   "type": "module",
   "main": "./dist/index.js",

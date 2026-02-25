@@ -18,6 +18,7 @@ type Token =
   | { type: 'variable'; value: string }
   | { type: 'number'; value: number }
   | { type: 'string'; value: string }
+  | { type: 'operator'; value: string }
   | { type: 'lparen' }
   | { type: 'rparen' }
   | { type: 'lbracket' }
@@ -70,8 +71,12 @@ class Lexer {
       if (ch === '/' && this.input[this.pos + 1] === '*') {
         this.advance();
         this.advance();
-        while (this.pos < this.input.length - 1) {
-          if (this.peek() === '*' && this.input[this.pos + 1] === '/') {
+        while (this.pos < this.input.length) {
+          if (
+            this.peek() === '*' &&
+            this.pos + 1 < this.input.length &&
+            this.input[this.pos + 1] === '/'
+          ) {
             this.advance();
             this.advance();
             break;
@@ -87,6 +92,7 @@ class Lexer {
 
   private readString(quote: string): string {
     let value = '';
+    const startLine = this.line;
     this.advance();
 
     while (this.pos < this.input.length && this.peek() !== quote) {
@@ -120,9 +126,11 @@ class Lexer {
       }
     }
 
-    if (this.peek() === quote) {
-      this.advance();
+    if (this.pos >= this.input.length || this.peek() !== quote) {
+      throw new Error(`Unterminated string starting at line ${startLine}`);
     }
+
+    this.advance();
 
     return value;
   }
@@ -205,16 +213,14 @@ class Lexer {
       return { type: 'cut' };
     }
 
-    if (ch === '\\' && this.input[this.pos + 1] === '+') {
-      this.advance();
-      this.advance();
-      return { type: 'atom', value: '\\+' };
-    }
-
     if (ch === ':' && this.input[this.pos + 1] === '-') {
       this.advance();
       this.advance();
       return { type: 'neck' };
+    }
+
+    if (this.isOperatorStart(ch)) {
+      return this.readOperator();
     }
 
     if (ch === '"' || ch === "'") {
@@ -225,7 +231,7 @@ class Lexer {
       return { type: 'string', value };
     }
 
-    if (/\d/.test(ch) || (ch === '-' && /\d/.test(this.input[this.pos + 1] || ''))) {
+    if (/\d/.test(ch)) {
       return { type: 'number', value: this.readNumber() };
     }
 
@@ -240,6 +246,55 @@ class Lexer {
     }
 
     throw new Error(`Unexpected character '${ch}' at line ${this.line}, column ${this.column}`);
+  }
+
+  private static readonly OP_START_CHARS = new Set('=<>\\+-*/@#^');
+
+  private isOperatorStart(ch: string): boolean {
+    return Lexer.OP_START_CHARS.has(ch);
+  }
+
+  private static readonly MULTI_CHAR_OPS = [
+    '=:=',
+    '=\\=',
+    '=..',
+    '\\==',
+    '\\+',
+    '\\=',
+    '==',
+    '>=',
+    '=<',
+    '->',
+    '**',
+    '//',
+    '@<',
+    '@>',
+  ];
+
+  private readOperator(): Token {
+    const start = this.pos;
+
+    let best = '';
+    for (const op of Lexer.MULTI_CHAR_OPS) {
+      if (this.input.startsWith(op, this.pos) && op.length > best.length) {
+        best = op;
+      }
+    }
+
+    if (best) {
+      let remaining = best.length;
+      while (remaining-- > 0) this.advance();
+      return { type: 'operator', value: best };
+    }
+
+    const ch = this.advance();
+    if ('=<>+\\-*/@#^'.includes(ch)) {
+      return { type: 'operator', value: ch };
+    }
+
+    throw new Error(
+      `Unexpected character '${ch}' at line ${this.line}, column ${this.column} (pos ${start})`
+    );
   }
 
   getPosition(): { line: number; column: number; pos: number } {
@@ -270,8 +325,88 @@ class Parser {
     return this.advance();
   }
 
+  private static readonly OPERATOR_PRECEDENCE: Record<string, number> = {
+    ';': 1100,
+    '->': 1050,
+    '=': 700,
+    '\\=': 700,
+    '==': 700,
+    '\\==': 700,
+    is: 700,
+    '=:=': 700,
+    '=\\=': 700,
+    '<': 700,
+    '>': 700,
+    '>=': 700,
+    '=<': 700,
+    '@<': 700,
+    '@>': 700,
+    '=..': 700,
+    '+': 500,
+    '-': 500,
+    '*': 400,
+    '/': 400,
+    '//': 400,
+    mod: 400,
+    rem: 400,
+    '**': 200,
+    '^': 200,
+  };
+
+  private static readonly RIGHT_ASSOC = new Set(['**', '^']);
+
+  private static readonly OPERATOR_ATOMS = new Set(['is', 'mod', 'rem']);
+
+  private getOperator(): { value: string; prec: number } | null {
+    if (this.currentToken.type === 'operator') {
+      const val = this.currentToken.value;
+      const prec = Parser.OPERATOR_PRECEDENCE[val];
+      if (prec !== undefined) return { value: val, prec };
+    }
+    if (this.currentToken.type === 'atom' && Parser.OPERATOR_ATOMS.has(this.currentToken.value)) {
+      const val = this.currentToken.value;
+      const prec = Parser.OPERATOR_PRECEDENCE[val];
+      if (prec !== undefined) return { value: val, prec };
+    }
+    return null;
+  }
+
+  private parseExpression(minPrec: number): Term {
+    let left = this.parsePrimary();
+
+    for (;;) {
+      const op = this.getOperator();
+      if (!op || op.prec < minPrec) break;
+
+      this.advance();
+      const nextMinPrec = Parser.RIGHT_ASSOC.has(op.value) ? op.prec : op.prec + 1;
+      const right = this.parseExpression(nextMinPrec);
+      left = { type: 'compound', functor: op.value, args: [left, right] };
+    }
+
+    return left;
+  }
+
   parseTerm(): Term {
+    return this.parseExpression(0);
+  }
+
+  private parsePrimary(): Term {
     const token = this.currentToken;
+
+    if (token.type === 'operator' && (token.value === '-' || token.value === '+')) {
+      this.advance();
+      const inner = this.parsePrimary();
+      if (token.value === '+') return inner;
+      if (inner.type === 'number') return { type: 'number', value: -inner.value };
+      return { type: 'compound', functor: '-', args: [inner] };
+    }
+
+    if (token.type === 'operator' && token.value === '\\+') {
+      this.advance();
+      const inner = this.parsePrimary();
+      return { type: 'compound', functor: '\\+', args: [inner] };
+    }
 
     if (token.type === 'atom') {
       this.advance();
@@ -310,7 +445,7 @@ class Parser {
 
     if (token.type === 'lparen') {
       this.advance();
-      const term = this.parseTerm();
+      const term = this.parseExpression(0);
       this.expect('rparen');
       return term;
     }
@@ -526,7 +661,9 @@ export function termFromValue(value: unknown): Term {
   }
 
   if (typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>);
+    const entries = Object.entries(value as Record<string, unknown>).filter(
+      ([key]) => key !== '__proto__' && key !== 'constructor' && key !== 'prototype'
+    );
     return {
       type: 'list',
       elements: entries.map(([k, v]) => ({

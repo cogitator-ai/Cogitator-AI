@@ -9,6 +9,7 @@ import type {
   MemoryEntry,
   Fact,
   Embedding,
+  GraphContext,
   ContextBuilderConfig,
   BuiltContext,
   MemoryAdapter,
@@ -16,6 +17,7 @@ import type {
   EmbeddingAdapter,
   EmbeddingService,
 } from '@cogitator-ai/types';
+import type { GraphContextBuilder } from './knowledge-graph/graph-context-builder';
 import { countMessageTokens, countTokens } from './token-counter';
 
 export interface ContextBuilderDeps {
@@ -23,6 +25,7 @@ export interface ContextBuilderDeps {
   factAdapter?: FactAdapter;
   embeddingAdapter?: EmbeddingAdapter;
   embeddingService?: EmbeddingService;
+  graphContextBuilder?: GraphContextBuilder;
 }
 
 export interface BuildContextOptions {
@@ -57,6 +60,7 @@ export class ContextBuilder {
     const messages: Message[] = [];
     const facts: Fact[] = [];
     const semanticResults: (Embedding & { score: number })[] = [];
+    let graphContext: GraphContext | undefined;
 
     if (this.config.includeSystemPrompt && options.systemPrompt) {
       const systemMsg: Message = { role: 'system', content: options.systemPrompt };
@@ -142,6 +146,52 @@ export class ContextBuilder {
       }
     }
 
+    if (this.config.includeGraphContext && this.deps.graphContextBuilder && options.currentInput) {
+      const gc = await this.deps.graphContextBuilder.buildContext(
+        options.agentId,
+        options.currentInput,
+        this.config.graphContextOptions
+      );
+
+      if (gc.nodes.length > 0) {
+        const graphTokenBudget = Math.floor(availableTokens * 0.15);
+        if (gc.tokenCount <= graphTokenBudget) {
+          graphContext = gc;
+        } else {
+          const ratio = graphTokenBudget / gc.tokenCount;
+          const limitedNodes = gc.nodes.slice(0, Math.max(1, Math.floor(gc.nodes.length * ratio)));
+          const limitedNodeIds = new Set(limitedNodes.map((n) => n.id));
+          const limitedEdges = gc.edges.filter(
+            (e) => limitedNodeIds.has(e.sourceNodeId) && limitedNodeIds.has(e.targetNodeId)
+          );
+          graphContext = await this.deps.graphContextBuilder.buildContext(
+            options.agentId,
+            options.currentInput,
+            {
+              ...this.config.graphContextOptions,
+              maxNodes: limitedNodes.length,
+              maxEdges: limitedEdges.length,
+            }
+          );
+        }
+
+        if (graphContext?.formattedContext) {
+          if (messages.length > 0 && messages[0].role === 'system') {
+            messages[0] = {
+              ...messages[0],
+              content: `${messages[0].content}\n\n${graphContext.formattedContext}`,
+            };
+          } else {
+            messages.unshift({
+              role: 'system',
+              content: graphContext.formattedContext,
+            });
+          }
+          usedTokens += graphContext.tokenCount;
+        }
+      }
+    }
+
     const entriesResult = await this.deps.memoryAdapter.getEntries({
       threadId: options.threadId,
       includeToolCalls: true,
@@ -187,6 +237,7 @@ export class ContextBuilder {
       messages,
       facts,
       semanticResults,
+      graphContext,
       tokenCount: usedTokens,
       truncated,
       metadata: {
@@ -195,8 +246,8 @@ export class ContextBuilder {
           messages.length - (this.config.includeSystemPrompt && options.systemPrompt ? 1 : 0),
         factsIncluded: facts.length,
         semanticResultsIncluded: semanticResults.length,
-        graphNodesIncluded: 0,
-        graphEdgesIncluded: 0,
+        graphNodesIncluded: graphContext?.nodes.length ?? 0,
+        graphEdgesIncluded: graphContext?.edges.length ?? 0,
       },
     };
   }

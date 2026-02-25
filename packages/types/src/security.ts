@@ -41,6 +41,8 @@ export interface PromptInjectionConfig {
   action: InjectionAction;
   threshold: number;
 
+  failMode?: 'secure' | 'open';
+
   allowlist?: string[];
 
   onThreat?: (result: InjectionDetectionResult, input: string) => void;

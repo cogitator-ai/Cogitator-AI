@@ -3,6 +3,7 @@
  */
 
 export { BaseLLMBackend } from './base';
+export { OpenAICompatibleBackend } from './openai-compatible-base';
 export { OllamaBackend } from './ollama';
 export { OpenAIBackend } from './openai';
 export { AnthropicBackend } from './anthropic';
@@ -12,6 +13,7 @@ export { BedrockBackend } from './bedrock';
 export {
   LLMError,
   createLLMError,
+  wrapSDKError,
   llmUnavailable,
   llmInvalidResponse,
   llmTimeout,

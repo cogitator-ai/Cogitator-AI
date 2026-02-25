@@ -36,35 +36,37 @@ export function createLogicTools(ns: NeuroSymbolic) {
         ns.updateConfig({ logic: { maxSolutions } });
       }
 
-      const result = ns.queryLogic(query);
+      try {
+        const result = ns.queryLogic(query);
 
-      if (maxSolutions && originalMax !== undefined) {
-        ns.updateConfig({ logic: { maxSolutions: originalMax } });
-      }
-
-      if (!result.success || !result.data) {
-        return {
-          success: false,
-          error: result.error || 'Query failed',
-          solutions: [],
-        };
-      }
-
-      const solutions = result.data.solutions.map((subst) => {
-        const bindings: Record<string, string> = {};
-        for (const [varName, term] of subst.entries()) {
-          bindings[varName] = termToString(term);
+        if (!result.success || !result.data) {
+          return {
+            success: false,
+            error: result.error || 'Query failed',
+            solutions: [],
+          };
         }
-        return bindings;
-      });
 
-      return {
-        success: result.data.success,
-        solutionCount: solutions.length,
-        solutions,
-        formatted: formatSolutions(result.data),
-        duration: result.duration,
-      };
+        const solutions = result.data.solutions.map((subst) => {
+          const bindings: Record<string, string> = {};
+          for (const [varName, term] of subst.entries()) {
+            bindings[varName] = termToString(term);
+          }
+          return bindings;
+        });
+
+        return {
+          success: result.data.success,
+          solutionCount: solutions.length,
+          solutions,
+          formatted: formatSolutions(result.data),
+          duration: result.duration,
+        };
+      } finally {
+        if (maxSolutions) {
+          ns.updateConfig({ logic: { maxSolutions: originalMax ?? 10 } });
+        }
+      }
     },
   });
 

@@ -5,6 +5,7 @@
     "agents",
     "tools",
     "llm-backends",
+    "model-registry",
     "structured-outputs",
     "vision-and-audio"
   ]

@@ -73,6 +73,14 @@ export class PostgresGraphAdapter implements GraphAdapter {
   private async initSchema(): Promise<void> {
     if (!this.pool) return;
 
+    if (!/^[a-z_][a-z0-9_]*$/i.test(this.schema)) {
+      throw new Error(`Invalid schema name: ${this.schema}`);
+    }
+
+    if (!Number.isInteger(this.vectorDimensions) || this.vectorDimensions <= 0) {
+      throw new Error(`Invalid vector dimensions: ${this.vectorDimensions}`);
+    }
+
     await this.pool.query(`CREATE SCHEMA IF NOT EXISTS ${this.schema}`);
 
     try {
@@ -220,7 +228,11 @@ export class PostgresGraphAdapter implements GraphAdapter {
     const result = await this.pool.query(
       `UPDATE ${this.schema}.graph_nodes
        SET last_accessed_at = NOW(), access_count = access_count + 1
-       WHERE agent_id = $1 AND (name = $2 OR $2 = ANY(aliases))
+       WHERE id = (
+         SELECT id FROM ${this.schema}.graph_nodes
+         WHERE agent_id = $1 AND (name = $2 OR $2 = ANY(aliases))
+         LIMIT 1
+       )
        RETURNING *`,
       [agentId, name]
     );
@@ -587,6 +599,8 @@ export class PostgresGraphAdapter implements GraphAdapter {
       },
     ];
 
+    visitedNodes.set(options.startNodeId, startNodeResult.data);
+
     while (queue.length > 0) {
       const current = queue.shift()!;
 
@@ -706,7 +720,20 @@ export class PostgresGraphAdapter implements GraphAdapter {
 
     if (direction === 'outgoing' || direction === 'both') {
       const outResult = await this.pool.query(
-        `SELECT e.*, n.* as node_data
+        `SELECT
+           e.id as e_id, e.agent_id as e_agent_id, e.source_node_id, e.target_node_id,
+           e.type as e_type, e.label as e_label, e.weight as e_weight,
+           e.bidirectional as e_bidirectional, e.properties as e_properties,
+           e.confidence as e_confidence, e.source as e_source,
+           e.created_at as e_created_at, e.updated_at as e_updated_at,
+           e.valid_from as e_valid_from, e.valid_until as e_valid_until,
+           e.metadata as e_metadata,
+           n.id as n_id, n.agent_id as n_agent_id, n.type as n_type, n.name as n_name,
+           n.aliases as n_aliases, n.description as n_description, n.properties as n_properties,
+           n.embedding as n_embedding, n.confidence as n_confidence, n.source as n_source,
+           n.created_at as n_created_at, n.updated_at as n_updated_at,
+           n.last_accessed_at as n_last_accessed_at, n.access_count as n_access_count,
+           n.metadata as n_metadata
          FROM ${this.schema}.graph_edges e
          JOIN ${this.schema}.graph_nodes n ON e.target_node_id = n.id
          WHERE e.source_node_id = $1`,
@@ -714,17 +741,29 @@ export class PostgresGraphAdapter implements GraphAdapter {
       );
 
       for (const row of outResult.rows) {
-        const edge = this.rowToEdge(row);
-        const nodeResult = await this.getNode(edge.targetNodeId);
-        if (nodeResult.success && nodeResult.data) {
-          results.push({ node: nodeResult.data, edge });
-        }
+        results.push({
+          edge: this.joinRowToEdge(row),
+          node: this.joinRowToNode(row),
+        });
       }
     }
 
     if (direction === 'incoming' || direction === 'both') {
       const inResult = await this.pool.query(
-        `SELECT e.*, n.* as node_data
+        `SELECT
+           e.id as e_id, e.agent_id as e_agent_id, e.source_node_id, e.target_node_id,
+           e.type as e_type, e.label as e_label, e.weight as e_weight,
+           e.bidirectional as e_bidirectional, e.properties as e_properties,
+           e.confidence as e_confidence, e.source as e_source,
+           e.created_at as e_created_at, e.updated_at as e_updated_at,
+           e.valid_from as e_valid_from, e.valid_until as e_valid_until,
+           e.metadata as e_metadata,
+           n.id as n_id, n.agent_id as n_agent_id, n.type as n_type, n.name as n_name,
+           n.aliases as n_aliases, n.description as n_description, n.properties as n_properties,
+           n.embedding as n_embedding, n.confidence as n_confidence, n.source as n_source,
+           n.created_at as n_created_at, n.updated_at as n_updated_at,
+           n.last_accessed_at as n_last_accessed_at, n.access_count as n_access_count,
+           n.metadata as n_metadata
          FROM ${this.schema}.graph_edges e
          JOIN ${this.schema}.graph_nodes n ON e.source_node_id = n.id
          WHERE e.target_node_id = $1`,
@@ -732,11 +771,10 @@ export class PostgresGraphAdapter implements GraphAdapter {
       );
 
       for (const row of inResult.rows) {
-        const edge = this.rowToEdge(row);
-        const nodeResult = await this.getNode(edge.sourceNodeId);
-        if (nodeResult.success && nodeResult.data) {
-          results.push({ node: nodeResult.data, edge });
-        }
+        results.push({
+          edge: this.joinRowToEdge(row),
+          node: this.joinRowToNode(row),
+        });
       }
     }
 
@@ -766,22 +804,36 @@ export class PostgresGraphAdapter implements GraphAdapter {
       allAliases.add(sourceNode.name);
       sourceNode.aliases.forEach((a) => allAliases.add(a));
       Object.assign(allProperties, sourceNode.properties);
+    }
 
-      await this.pool.query(
-        `UPDATE ${this.schema}.graph_edges
-         SET source_node_id = $1
-         WHERE source_node_id = $2 AND target_node_id != $1`,
-        [targetNodeId, sourceId]
-      );
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
 
-      await this.pool.query(
-        `UPDATE ${this.schema}.graph_edges
-         SET target_node_id = $1
-         WHERE target_node_id = $2 AND source_node_id != $1`,
-        [targetNodeId, sourceId]
-      );
+      for (const sourceId of sourceNodeIds) {
+        await client.query(
+          `UPDATE ${this.schema}.graph_edges
+           SET source_node_id = $1
+           WHERE source_node_id = $2 AND target_node_id != $1`,
+          [targetNodeId, sourceId]
+        );
 
-      await this.deleteNode(sourceId);
+        await client.query(
+          `UPDATE ${this.schema}.graph_edges
+           SET target_node_id = $1
+           WHERE target_node_id = $2 AND source_node_id != $1`,
+          [targetNodeId, sourceId]
+        );
+
+        await client.query(`DELETE FROM ${this.schema}.graph_nodes WHERE id = $1`, [sourceId]);
+      }
+
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
     }
 
     return this.updateNode(targetNodeId, {
@@ -877,7 +929,11 @@ export class PostgresGraphAdapter implements GraphAdapter {
       aliases: (row.aliases as string[]) ?? [],
       description: row.description as string | undefined,
       properties: (row.properties as Record<string, unknown>) ?? {},
-      embedding: row.embedding as number[] | undefined,
+      embedding: row.embedding
+        ? ((typeof row.embedding === 'string'
+            ? JSON.parse(row.embedding)
+            : row.embedding) as number[])
+        : undefined,
       confidence: row.confidence as number,
       source: row.source as GraphNode['source'],
       createdAt: new Date(row.created_at as string),
@@ -906,6 +962,51 @@ export class PostgresGraphAdapter implements GraphAdapter {
       validFrom: row.valid_from ? new Date(row.valid_from as string) : undefined,
       validUntil: row.valid_until ? new Date(row.valid_until as string) : undefined,
       metadata: row.metadata as Record<string, unknown> | undefined,
+    };
+  }
+
+  private joinRowToNode(row: Record<string, unknown>): GraphNode {
+    return {
+      id: row.n_id as string,
+      agentId: row.n_agent_id as string,
+      type: row.n_type as EntityType,
+      name: row.n_name as string,
+      aliases: (row.n_aliases as string[]) ?? [],
+      description: row.n_description as string | undefined,
+      properties: (row.n_properties as Record<string, unknown>) ?? {},
+      embedding: row.n_embedding
+        ? ((typeof row.n_embedding === 'string'
+            ? JSON.parse(row.n_embedding)
+            : row.n_embedding) as number[])
+        : undefined,
+      confidence: row.n_confidence as number,
+      source: row.n_source as GraphNode['source'],
+      createdAt: new Date(row.n_created_at as string),
+      updatedAt: new Date(row.n_updated_at as string),
+      lastAccessedAt: new Date(row.n_last_accessed_at as string),
+      accessCount: row.n_access_count as number,
+      metadata: row.n_metadata as Record<string, unknown> | undefined,
+    };
+  }
+
+  private joinRowToEdge(row: Record<string, unknown>): GraphEdge {
+    return {
+      id: row.e_id as string,
+      agentId: row.e_agent_id as string,
+      sourceNodeId: row.source_node_id as string,
+      targetNodeId: row.target_node_id as string,
+      type: row.e_type as RelationType,
+      label: row.e_label as string | undefined,
+      weight: row.e_weight as number,
+      bidirectional: row.e_bidirectional as boolean,
+      properties: (row.e_properties as Record<string, unknown>) ?? {},
+      confidence: row.e_confidence as number,
+      source: row.e_source as GraphEdge['source'],
+      createdAt: new Date(row.e_created_at as string),
+      updatedAt: new Date(row.e_updated_at as string),
+      validFrom: row.e_valid_from ? new Date(row.e_valid_from as string) : undefined,
+      validUntil: row.e_valid_until ? new Date(row.e_valid_until as string) : undefined,
+      metadata: row.e_metadata as Record<string, unknown> | undefined,
     };
   }
 }

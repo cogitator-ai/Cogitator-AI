@@ -19,6 +19,19 @@ const DEFAULT_CONFIG: SimpleSATConfig = {
 };
 
 type Assignment = Map<string, boolean | number>;
+type RandomFn = () => number;
+
+function createSeededRandom(seed: number): RandomFn {
+  let s = seed;
+  return () => {
+    s = (s * 1664525 + 1013904223) & 0xffffffff;
+    return (s >>> 0) / 0xffffffff;
+  };
+}
+
+function isBetterObjective(value: number, best: number, type: 'minimize' | 'maximize'): boolean {
+  return type === 'minimize' ? value < best : value > best;
+}
 
 function evaluateExpression(
   expr: ConstraintExpression,
@@ -43,7 +56,7 @@ function evaluateExpression(
 
       switch (expr.operator) {
         case 'not':
-          return !operands[0];
+          return operands[0] === true ? false : operands[0] === false ? true : null;
 
         case 'and':
           return operands.every((op) => op === true);
@@ -85,9 +98,11 @@ function evaluateExpression(
           return operands.reduce((a, b) => (a as number) * (b as number), 1);
 
         case 'div':
+          if ((operands[1] as number) === 0) return null;
           return (operands[0] as number) / (operands[1] as number);
 
         case 'mod':
+          if ((operands[1] as number) === 0) return null;
           return (operands[0] as number) % (operands[1] as number);
 
         case 'pow':
@@ -103,7 +118,7 @@ function evaluateExpression(
           return Math.max(...(operands as number[]));
 
         case 'ite':
-          return operands[0] ? operands[1] : operands[2];
+          return operands[0] === true ? operands[1] : operands[2];
 
         case 'allDifferent': {
           const seen = new Set<number | boolean>();
@@ -288,17 +303,26 @@ function countViolations(constraints: Constraint[], assignment: Assignment): num
   return count;
 }
 
-function solveWithLocalSearch(problem: ConstraintProblem, config: SimpleSATConfig): SolverResult {
+function solveWithLocalSearch(
+  problem: ConstraintProblem,
+  config: SimpleSATConfig,
+  random: RandomFn
+): SolverResult {
   const startTime = Date.now();
   let assignment = generateInitialAssignment(problem.variables);
   let bestAssignment = assignment;
   let bestViolations = countViolations(problem.constraints, assignment);
+
+  let bestSatModel: ConstraintModel | null = null;
 
   let iteration = 0;
   let noImprovementCount = 0;
 
   while (iteration < config.maxIterations) {
     if (Date.now() - startTime > config.timeout) {
+      if (bestSatModel) {
+        return { status: 'sat', model: bestSatModel };
+      }
       return { status: 'timeout' };
     }
 
@@ -313,10 +337,16 @@ function solveWithLocalSearch(problem: ConstraintProblem, config: SimpleSATConfi
         const objValue = evaluateExpression(problem.objective.expression, assignment);
         if (typeof objValue === 'number') {
           model.objectiveValue = objValue;
+          if (
+            !bestSatModel ||
+            isBetterObjective(objValue, bestSatModel.objectiveValue!, problem.objective.type)
+          ) {
+            bestSatModel = model;
+          }
         }
+      } else {
+        return { status: 'sat', model };
       }
-
-      return { status: 'sat', model };
     }
 
     const violations = check.violatedHard.length;
@@ -329,7 +359,7 @@ function solveWithLocalSearch(problem: ConstraintProblem, config: SimpleSATConfi
     }
 
     if (noImprovementCount > 100) {
-      assignment = generateRandomAssignment(problem.variables);
+      assignment = generateRandomAssignment(problem.variables, random);
       noImprovementCount = 0;
     }
 
@@ -352,14 +382,18 @@ function solveWithLocalSearch(problem: ConstraintProblem, config: SimpleSATConfi
     }
 
     if (!improved) {
-      const randomVar = problem.variables[Math.floor(Math.random() * problem.variables.length)];
+      const randomVar = problem.variables[Math.floor(random() * problem.variables.length)];
       const neighbors = flipVariable(assignment, randomVar);
       if (neighbors.length > 0) {
-        assignment = neighbors[Math.floor(Math.random() * neighbors.length)];
+        assignment = neighbors[Math.floor(random() * neighbors.length)];
       }
     }
 
     iteration++;
+  }
+
+  if (bestSatModel) {
+    return { status: 'sat', model: bestSatModel };
   }
 
   const finalCheck = checkAllConstraints(problem.constraints, bestAssignment);
@@ -377,32 +411,35 @@ function solveWithLocalSearch(problem: ConstraintProblem, config: SimpleSATConfi
   };
 }
 
-function generateRandomAssignment(variables: ConstraintVariable[]): Assignment {
+function generateRandomAssignment(
+  variables: ConstraintVariable[],
+  random: RandomFn = Math.random
+): Assignment {
   const assignment = new Map<string, boolean | number>();
 
   for (const v of variables) {
     switch (v.type) {
       case 'bool':
-        assignment.set(v.name, Math.random() < 0.5);
+        assignment.set(v.name, random() < 0.5);
         break;
 
       case 'int': {
         const min = v.domain?.min ?? -100;
         const max = v.domain?.max ?? 100;
-        assignment.set(v.name, Math.floor(Math.random() * (max - min + 1)) + min);
+        assignment.set(v.name, Math.floor(random() * (max - min + 1)) + min);
         break;
       }
 
       case 'real': {
         const min = v.domain?.min ?? -100;
         const max = v.domain?.max ?? 100;
-        assignment.set(v.name, Math.random() * (max - min) + min);
+        assignment.set(v.name, random() * (max - min) + min);
         break;
       }
 
       case 'bitvec': {
         const maxVal = Math.pow(2, v.bitWidth || 8) - 1;
-        assignment.set(v.name, Math.floor(Math.random() * maxVal));
+        assignment.set(v.name, Math.floor(random() * (maxVal + 1)));
         break;
       }
     }
@@ -416,6 +453,10 @@ export function solveSAT(
   config: Partial<SimpleSATConfig> = {}
 ): SolverResult {
   const mergedConfig = { ...DEFAULT_CONFIG, ...config };
+  const random: RandomFn =
+    mergedConfig.randomSeed !== undefined
+      ? createSeededRandom(mergedConfig.randomSeed)
+      : Math.random;
 
   if (problem.variables.length === 0) {
     return {
@@ -435,19 +476,26 @@ export function solveSAT(
   const isBooleanOnly = problem.variables.every((v) => v.type === 'bool');
 
   if (isBooleanOnly && problem.variables.length <= 20) {
-    return solveWithBruteForce(problem, mergedConfig);
+    return solveWithBruteForce(problem, mergedConfig, random);
   }
 
-  return solveWithLocalSearch(problem, mergedConfig);
+  return solveWithLocalSearch(problem, mergedConfig, random);
 }
 
-function solveWithBruteForce(problem: ConstraintProblem, config: SimpleSATConfig): SolverResult {
+function solveWithBruteForce(
+  problem: ConstraintProblem,
+  config: SimpleSATConfig,
+  _random: RandomFn
+): SolverResult {
   const startTime = Date.now();
   const n = problem.variables.length;
   const total = Math.pow(2, n);
 
+  let bestModel: ConstraintModel | null = null;
+
   for (let i = 0; i < total; i++) {
     if (Date.now() - startTime > config.timeout) {
+      if (bestModel) return { status: 'sat', model: bestModel };
       return { status: 'timeout' };
     }
 
@@ -463,10 +511,25 @@ function solveWithBruteForce(problem: ConstraintProblem, config: SimpleSATConfig
       const model: ConstraintModel = {
         assignments: Object.fromEntries(assignment),
       };
-      return { status: 'sat', model };
+
+      if (problem.objective) {
+        const objValue = evaluateExpression(problem.objective.expression, assignment);
+        if (typeof objValue === 'number') {
+          model.objectiveValue = objValue;
+          if (
+            !bestModel ||
+            isBetterObjective(objValue, bestModel.objectiveValue!, problem.objective.type)
+          ) {
+            bestModel = model;
+          }
+        }
+      } else {
+        return { status: 'sat', model };
+      }
     }
   }
 
+  if (bestModel) return { status: 'sat', model: bestModel };
   return { status: 'unsat' };
 }
 

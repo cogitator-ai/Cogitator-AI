@@ -399,6 +399,70 @@ describe('PromptInjectionDetector', () => {
       expect(result.analysisTime).toBeLessThan(100);
     });
   });
+
+  describe('Fail Mode', () => {
+    it('defaults to secure mode and re-throws classifier errors', async () => {
+      const mockLLM: LLMBackend = {
+        chat: vi.fn().mockRejectedValue(new Error('Connection refused')),
+        chatStream: vi.fn(),
+      };
+
+      const detector = new PromptInjectionDetector({
+        classifier: 'llm',
+        llmBackend: mockLLM,
+        action: 'block',
+      });
+
+      const result = await detector.analyze('test input');
+
+      expect(result.safe).toBe(false);
+      expect(result.threats[0].pattern).toBe('llm_analysis_failed');
+    });
+
+    it('secure mode re-throws when classifier itself throws unexpectedly', async () => {
+      const detector = new PromptInjectionDetector({ action: 'block' });
+
+      const detectorAny = detector as unknown as { classifier: unknown };
+      const original = detectorAny.classifier;
+      detectorAny.classifier = {
+        analyze: () => {
+          throw new Error('Unexpected classifier failure');
+        },
+      };
+
+      await expect(detector.analyze('test')).rejects.toThrow('Unexpected classifier failure');
+
+      detectorAny.classifier = original;
+    });
+
+    it('open mode returns empty threats on classifier failure', async () => {
+      const detector = new PromptInjectionDetector({
+        action: 'block',
+        failMode: 'open',
+      });
+
+      const detectorAny = detector as unknown as { classifier: unknown };
+      detectorAny.classifier = {
+        analyze: () => {
+          throw new Error('Classifier crashed');
+        },
+      };
+
+      const result = await detector.analyze('test');
+
+      expect(result.safe).toBe(true);
+      expect(result.threats).toHaveLength(0);
+      expect(result.action).toBe('allowed');
+    });
+
+    it('getConfig reflects failMode setting', () => {
+      const detector = new PromptInjectionDetector({ failMode: 'open' });
+      expect(detector.getConfig().failMode).toBe('open');
+
+      const detectorDefault = new PromptInjectionDetector({});
+      expect(detectorDefault.getConfig().failMode).toBe('secure');
+    });
+  });
 });
 
 describe('LocalInjectionClassifier', () => {
@@ -417,6 +481,31 @@ describe('LocalInjectionClassifier', () => {
     });
 
     expect(threats.length).toBeGreaterThan(0);
+  });
+
+  it('reports invalid_regex threat when pattern exec throws', async () => {
+    const classifier = new LocalInjectionClassifier();
+    const badPattern = /test/;
+    vi.spyOn(badPattern, 'exec').mockImplementation(() => {
+      throw new Error('RegExp engine error');
+    });
+
+    const threats = await classifier.analyze('test input', {
+      detectInjection: false,
+      detectJailbreak: false,
+      detectRoleplay: false,
+      detectEncoding: false,
+      detectContextManipulation: false,
+      classifier: 'local',
+      action: 'block',
+      threshold: 0.5,
+      patterns: [badPattern],
+    });
+
+    const invalidRegexThreat = threats.find((t) => t.pattern === 'invalid_regex');
+    expect(invalidRegexThreat).toBeDefined();
+    expect(invalidRegexThreat!.type).toBe('custom');
+    expect(invalidRegexThreat!.confidence).toBe(1.0);
   });
 
   it('respects threshold setting', async () => {
@@ -499,6 +588,49 @@ describe('LLMInjectionClassifier', () => {
     });
 
     expect(threats).toHaveLength(0);
+  });
+
+  it('fails closed on unparseable LLM response', async () => {
+    const mockLLM = createMockLLM('not json at all');
+
+    const classifier = new LLMInjectionClassifier(mockLLM);
+
+    const threats = await classifier.analyze('Test', {
+      detectInjection: true,
+      detectJailbreak: true,
+      detectRoleplay: true,
+      detectEncoding: true,
+      detectContextManipulation: true,
+      classifier: 'llm',
+      llmBackend: mockLLM,
+      action: 'block',
+      threshold: 0.5,
+    });
+
+    expect(threats).toHaveLength(1);
+    expect(threats[0].pattern).toBe('llm_response_unparseable');
+    expect(threats[0].confidence).toBe(1.0);
+  });
+
+  it('fails closed when LLM returns JSON without threats array', async () => {
+    const mockLLM = createMockLLM(JSON.stringify({ result: 'no threats here' }));
+
+    const classifier = new LLMInjectionClassifier(mockLLM);
+
+    const threats = await classifier.analyze('Test', {
+      detectInjection: true,
+      detectJailbreak: true,
+      detectRoleplay: true,
+      detectEncoding: true,
+      detectContextManipulation: true,
+      classifier: 'llm',
+      llmBackend: mockLLM,
+      action: 'block',
+      threshold: 0.5,
+    });
+
+    expect(threats).toHaveLength(1);
+    expect(threats[0].pattern).toBe('llm_response_unparseable');
   });
 
   it('fails closed on LLM errors', async () => {

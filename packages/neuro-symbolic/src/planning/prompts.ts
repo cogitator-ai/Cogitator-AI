@@ -182,18 +182,38 @@ export interface ParsePlanResult {
   explanation?: string;
 }
 
+function extractJSON(text: string): string | null {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') depth--;
+    if (depth === 0) return text.slice(start, i + 1);
+  }
+  return null;
+}
+
 export function parsePlanResponse(response: string): ParsePlanResult | null {
   try {
-    const jsonMatch = /\{[\s\S]*\}/.exec(response);
-    if (!jsonMatch) return null;
+    const jsonStr = extractJSON(response);
+    if (!jsonStr) return null;
 
-    const parsed = JSON.parse(jsonMatch[0]);
+    const parsed = JSON.parse(jsonStr);
 
     return {
-      plan: (parsed.plan || []).map((item: Record<string, unknown>) => ({
-        action: String(item.action || ''),
-        parameters: (item.parameters as Record<string, unknown>) || {},
-      })),
+      plan: (Array.isArray(parsed.plan) ? parsed.plan : [])
+        .filter(
+          (item: unknown) =>
+            item && typeof item === 'object' && 'action' in (item as Record<string, unknown>)
+        )
+        .map((item: Record<string, unknown>) => ({
+          action: String(item.action || ''),
+          parameters:
+            item.parameters && typeof item.parameters === 'object'
+              ? (item.parameters as Record<string, unknown>)
+              : {},
+        })),
       explanation: parsed.explanation,
     };
   } catch {
@@ -211,10 +231,10 @@ export function parseActionSuggestionResponse(
   response: string
 ): ParseActionSuggestionResult | null {
   try {
-    const jsonMatch = /\{[\s\S]*\}/.exec(response);
-    if (!jsonMatch) return null;
+    const jsonStr = extractJSON(response);
+    if (!jsonStr) return null;
 
-    const parsed = JSON.parse(jsonMatch[0]);
+    const parsed = JSON.parse(jsonStr);
 
     return {
       action: String(parsed.action || ''),

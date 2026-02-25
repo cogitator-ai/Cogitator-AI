@@ -146,5 +146,5 @@ Last updated: 2026-02-25
 - Qdrant adapter had 3 separate bugs that made delete silently fail and corrupt payload metadata
 - Schema validation (schema.ts) was written early and never updated when sqlite/mongodb/qdrant adapters were added
 - Types package was also out of sync — EmbeddingProvider missing 'google', OpenAIEmbeddingConfig missing dimensions
-- Context builder has an unfinished graph context feature (includeGraphContext config stored but never used)
-- Knowledge graph inference engine has fundamental design limitation — colleagues rule can't fire because it doesn't support reverse edge traversal
+- ~~Context builder has an unfinished graph context feature~~ — **FIXED**: implemented `includeGraphContext` in `build()` with `GraphContextBuilder` integration, 15% token budget, system message injection. +8 tests.
+- ~~Knowledge graph inference engine has fundamental design limitation~~ — **FIXED**: `findMatchingPaths()` now queries both forward and reverse edges. Also fixed pre-existing `minPathLength` bug (all rules with `minPathLength: 2` were broken). +11 tests.

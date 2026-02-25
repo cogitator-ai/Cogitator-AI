@@ -34,10 +34,9 @@ export class ModelRegistry {
         this.initialized = true;
 
         this.refreshInBackground();
-        return;
+      } else {
+        await this.refresh();
       }
-
-      await this.refresh();
     } catch (error) {
       if (this.options.fallbackToBuiltin) {
         this.loadModels(BUILTIN_MODELS);

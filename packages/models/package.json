@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/models",
-  "version": "17.1.5",
+  "version": "17.1.6",
   "description": "Dynamic model registry with pricing for Cogitator",
   "type": "module",
   "main": "./dist/index.js",
@@ -22,15 +22,12 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@types/node": "^25.0.10",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/node": "^25.0.10",
     "typescript": "^5.7.2",
     "vitest": "^4.0.18"
-  },
-  "peerDependencies": {
-    "@cogitator-ai/types": "workspace:*"
   },
   "repository": {
     "type": "git",

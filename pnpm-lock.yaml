@@ -99,6 +99,9 @@ importers:
       '@cogitator-ai/memory':
         specifier: workspace:*
         version: link:../packages/memory
+      '@cogitator-ai/models':
+        specifier: workspace:*
+        version: link:../packages/models
       '@cogitator-ai/neuro-symbolic':
         specifier: workspace:*
         version: link:../packages/neuro-symbolic
@@ -923,16 +926,13 @@ importers:
 
   packages/models:
     dependencies:
-      '@cogitator-ai/types':
-        specifier: workspace:*
-        version: link:../types
-      '@types/node':
-        specifier: ^25.0.10
-        version: 25.0.10
       zod:
         specifier: ^4.3.6
         version: 4.3.6
     devDependencies:
+      '@types/node':
+        specifier: ^25.0.10
+        version: 25.0.10
       typescript:
         specifier: ^5.7.2
         version: 5.9.3

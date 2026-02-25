@@ -18,8 +18,8 @@
 | koa                  | 2026-02-25 | 23 fixed     | ✅     |
 | mcp                  | 2026-02-25 | 6 fixed      | ✅     |
 | memory               | 2026-02-25 | 42 fixed     | ✅     |
-| models               | —          | —            | —      |
-| neuro-symbolic       | —          | —            | —      |
+| models               | 2026-02-25 | 7 fixed      | ✅     |
+| neuro-symbolic       | 2026-02-25 | 40+ fixed    | ✅     |
 | next                 | —          | —            | —      |
 | openai-compat        | —          | —            | —      |
 | rag                  | —          | —            | —      |

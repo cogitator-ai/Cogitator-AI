@@ -3,7 +3,7 @@
  */
 
 import type { Message, ToolCall, ToolResult } from './message';
-import type { GraphContext } from './knowledge-graph';
+import type { GraphContext, GraphContextOptions } from './knowledge-graph';
 
 export type MemoryType = 'conversation' | 'fact' | 'embedding';
 
@@ -247,10 +247,7 @@ export interface ContextBuilderConfig {
   includeFacts?: boolean;
   includeSemanticContext?: boolean;
   includeGraphContext?: boolean;
-  graphContextOptions?: {
-    maxNodes?: number;
-    maxDepth?: number;
-  };
+  graphContextOptions?: GraphContextOptions;
 }
 
 export interface BuiltContext {

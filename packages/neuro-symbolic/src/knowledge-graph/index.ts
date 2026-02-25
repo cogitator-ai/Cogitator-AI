@@ -67,3 +67,5 @@ export {
   type ReasoningExplanationContext,
   type GraphSummaryContext,
 } from './prompts';
+
+export { cosineSimilarity, extractJSON } from './utils';

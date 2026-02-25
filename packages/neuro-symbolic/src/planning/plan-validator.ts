@@ -218,10 +218,17 @@ export class PlanValidator {
 
     const dependencies = this.analyzeDependencies(plan);
 
+    const actionPositions = new Map<string, number>();
+    for (let i = 0; i < dependencies.actions.length; i++) {
+      if (!actionPositions.has(dependencies.actions[i])) {
+        actionPositions.set(dependencies.actions[i], i);
+      }
+    }
+
     for (const edge of dependencies.edges) {
       if (edge.type === 'threat') {
-        const fromIdx = dependencies.actions.indexOf(edge.fromAction);
-        const toIdx = dependencies.actions.indexOf(edge.toAction);
+        const fromIdx = actionPositions.get(edge.fromAction) ?? -1;
+        const toIdx = actionPositions.get(edge.toAction) ?? -1;
 
         if (fromIdx > toIdx) {
           warnings.push({
@@ -240,7 +247,7 @@ export class PlanValidator {
     const actions = plan.actions.map((a) => a.id);
     const edges: DependencyEdge[] = [];
 
-    const producedBy = new Map<string, string>();
+    const producedBy = new Map<string, string[]>();
     const consumedBy = new Map<string, string[]>();
 
     for (const action of plan.actions) {
@@ -253,14 +260,24 @@ export class PlanValidator {
           effect.type === 'increment' ||
           effect.type === 'decrement'
         ) {
-          producedBy.set(effect.variable, action.id);
+          if (!producedBy.has(effect.variable)) {
+            producedBy.set(effect.variable, []);
+          }
+          producedBy.get(effect.variable)!.push(action.id);
         }
       }
+    }
+
+    const actionIndex = new Map<string, number>();
+    for (let i = 0; i < plan.actions.length; i++) {
+      actionIndex.set(plan.actions[i].id, i);
     }
 
     for (const action of plan.actions) {
       const schema = this.registry.get(action.schemaName);
       if (!schema) continue;
+
+      const consumerIdx = actionIndex.get(action.id)!;
 
       for (const pre of schema.preconditions) {
         const variables = this.extractVariables(pre);
@@ -270,15 +287,28 @@ export class PlanValidator {
           }
           consumedBy.get(variable)!.push(action.id);
 
-          const producer = producedBy.get(variable);
-          if (producer && producer !== action.id) {
-            edges.push({
-              fromAction: producer,
-              toAction: action.id,
-              type: 'causal',
-              variable,
-              description: `${producer} produces ${variable} for ${action.id}`,
-            });
+          const producers = producedBy.get(variable);
+          if (producers) {
+            let bestProducer: string | undefined;
+            let bestIdx = -1;
+            for (const p of producers) {
+              if (p === action.id) continue;
+              const pIdx = actionIndex.get(p)!;
+              if (pIdx < consumerIdx && pIdx > bestIdx) {
+                bestProducer = p;
+                bestIdx = pIdx;
+              }
+            }
+
+            if (bestProducer) {
+              edges.push({
+                fromAction: bestProducer,
+                toAction: action.id,
+                type: 'causal',
+                variable,
+                description: `${bestProducer} produces ${variable} for ${action.id}`,
+              });
+            }
           }
         }
       }
@@ -400,10 +430,18 @@ export class PlanValidator {
       for (const other of actions) {
         if (assigned.has(other)) continue;
 
-        const hasForward = dependencies.has(`${action}->${other}`);
-        const hasBackward = dependencies.has(`${other}->${action}`);
+        let canAdd = true;
+        for (const groupMember of group) {
+          if (
+            dependencies.has(`${groupMember}->${other}`) ||
+            dependencies.has(`${other}->${groupMember}`)
+          ) {
+            canAdd = false;
+            break;
+          }
+        }
 
-        if (!hasForward && !hasBackward) {
+        if (canAdd) {
           group.push(other);
           assigned.add(other);
         }

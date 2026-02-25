@@ -3,6 +3,7 @@ import type {
   PlanAction,
   PlanState,
   ActionSchema,
+  Effect,
   Precondition,
   PlanValidationResult,
   PlanValidationError,
@@ -185,6 +186,7 @@ export class PlanRepairer {
 
   private suggestReorders(plan: Plan, problemPosition: number): PlanRepairSuggestion[] {
     const suggestions: PlanRepairSuggestion[] = [];
+    const originalErrorCount = this.countErrors(plan);
 
     for (let i = 0; i < plan.actions.length; i++) {
       if (i === problemPosition) continue;
@@ -192,10 +194,7 @@ export class PlanRepairer {
       const swappedPlan = this.swapActions(plan, i, problemPosition);
       const validation = this.validator.validate(swappedPlan);
 
-      const errorCount = validation.errors.length;
-      const originalErrorCount = this.countErrors(plan);
-
-      if (errorCount < originalErrorCount) {
+      if (validation.errors.length < originalErrorCount) {
         suggestions.push({
           type: 'reorder',
           position: problemPosition,
@@ -235,18 +234,26 @@ export class PlanRepairer {
   }
 
   private schemaCouldEstablish(schema: ActionSchema, precondition: Precondition): boolean {
-    for (const effect of schema.effects) {
-      if (effect.type === 'assign') {
-        if (precondition.type === 'simple' && effect.variable === precondition.variable) {
-          return true;
-        }
+    const varName =
+      precondition.type === 'simple' || precondition.type === 'comparison'
+        ? precondition.variable
+        : undefined;
 
-        if (precondition.type === 'comparison' && effect.variable === precondition.variable) {
+    if (!varName) return false;
+
+    return this.effectsTouchVariable(schema.effects, varName);
+  }
+
+  private effectsTouchVariable(effects: Effect[], varName: string): boolean {
+    for (const effect of effects) {
+      if (effect.type === 'conditional') {
+        if (this.effectsTouchVariable(effect.thenEffects, varName)) return true;
+        if (effect.elseEffects && this.effectsTouchVariable(effect.elseEffects, varName))
           return true;
-        }
+      } else if (effect.variable === varName) {
+        return true;
       }
     }
-
     return false;
   }
 
@@ -267,16 +274,23 @@ export class PlanRepairer {
   }
 
   private inferParameterValue(param: { name: string; type: string }, state: PlanState): unknown {
+    if (param.name in state.variables) {
+      return state.variables[param.name];
+    }
+
+    for (const [key, value] of Object.entries(state.variables)) {
+      if (
+        key.toLowerCase().includes(param.name.toLowerCase()) ||
+        param.name.toLowerCase().includes(key.toLowerCase())
+      ) {
+        return value;
+      }
+    }
+
     for (const [, value] of Object.entries(state.variables)) {
-      if (typeof value === 'string' && param.type.includes('string')) {
-        return value;
-      }
-      if (typeof value === 'number' && param.type.includes('number')) {
-        return value;
-      }
-      if (typeof value === 'boolean' && param.type.includes('boolean')) {
-        return value;
-      }
+      if (typeof value === 'string' && param.type.includes('string')) return value;
+      if (typeof value === 'number' && param.type.includes('number')) return value;
+      if (typeof value === 'boolean' && param.type.includes('boolean')) return value;
     }
 
     switch (param.type) {
@@ -297,6 +311,7 @@ export class PlanRepairer {
     suggestions: PlanRepairSuggestion[]
   ): Plan | null {
     let currentPlan = plan;
+    let currentErrorCount = validation.errors.length;
     let insertions = 0;
     let removals = 0;
     let iterations = 0;
@@ -334,8 +349,9 @@ export class PlanRepairer {
           return newPlan;
         }
 
-        if (newValidation.errors.length < validation.errors.length) {
+        if (newValidation.errors.length < currentErrorCount) {
           currentPlan = newPlan;
+          currentErrorCount = newValidation.errors.length;
         }
       }
     }
@@ -377,8 +393,15 @@ export class PlanRepairer {
     };
   }
 
-  private reorderActions(plan: Plan, _suggestion: PlanRepairSuggestion): Plan | null {
-    return plan;
+  private reorderActions(plan: Plan, suggestion: PlanRepairSuggestion): Plan | null {
+    const targetIndex = suggestion.position;
+    if (targetIndex === undefined || targetIndex <= 0) return null;
+    const reordered = [...plan.actions];
+    [reordered[targetIndex - 1], reordered[targetIndex]] = [
+      reordered[targetIndex],
+      reordered[targetIndex - 1],
+    ];
+    return { ...plan, id: nanoid(8), actions: reordered };
   }
 
   private getStateAtPosition(plan: Plan, position: number): PlanState {

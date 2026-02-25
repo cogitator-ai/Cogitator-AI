@@ -91,7 +91,14 @@ export class LLMInjectionClassifier implements InjectionClassifier {
       const data = JSON.parse(cleaned) as LLMAnalysisResponse;
 
       if (!Array.isArray(data.threats)) {
-        return [];
+        return [
+          {
+            type: 'custom' as InjectionThreatType,
+            confidence: 1.0,
+            pattern: 'llm_response_unparseable',
+            snippet: 'LLM returned invalid response format — treating as potential threat',
+          },
+        ];
       }
 
       return data.threats.map((t) => ({
@@ -101,7 +108,14 @@ export class LLMInjectionClassifier implements InjectionClassifier {
         pattern: t.reasoning,
       }));
     } catch {
-      return [];
+      return [
+        {
+          type: 'custom' as InjectionThreatType,
+          confidence: 1.0,
+          pattern: 'llm_response_unparseable',
+          snippet: 'Failed to parse LLM security response — treating as potential threat',
+        },
+      ];
     }
   }
 

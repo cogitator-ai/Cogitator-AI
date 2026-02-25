@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/a2a",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "A2A (Agent-to-Agent) Protocol v0.3 implementation for Cogitator",
   "type": "module",
   "main": "./dist/index.js",

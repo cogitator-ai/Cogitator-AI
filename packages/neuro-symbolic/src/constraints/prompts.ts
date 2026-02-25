@@ -149,17 +149,31 @@ export interface ParseNLConstraintsResult {
   };
 }
 
+function extractJSON(text: string): string | null {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') depth--;
+    if (depth === 0) return text.slice(start, i + 1);
+  }
+  return null;
+}
+
+const VALID_VAR_TYPES = new Set(['bool', 'int', 'real']);
+
 export function parseNLConstraintsResponse(response: string): ParseNLConstraintsResult | null {
   try {
-    const jsonMatch = /\{[\s\S]*\}/.exec(response);
-    if (!jsonMatch) return null;
+    const jsonStr = extractJSON(response);
+    if (!jsonStr) return null;
 
-    const parsed = JSON.parse(jsonMatch[0]);
+    const parsed = JSON.parse(jsonStr);
 
     return {
       variables: (parsed.variables || []).map((v: Record<string, unknown>) => ({
         name: String(v.name || ''),
-        type: (v.type as 'bool' | 'int' | 'real') || 'int',
+        type: VALID_VAR_TYPES.has(String(v.type)) ? (v.type as 'bool' | 'int' | 'real') : 'int',
         domain: v.domain as { min?: number; max?: number } | undefined,
       })),
       constraints: (parsed.constraints || []).map((c: Record<string, unknown>) => ({

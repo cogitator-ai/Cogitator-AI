@@ -20,21 +20,16 @@ const DEFAULT_Z3_CONFIG: Required<Z3SolverConfig> = {
 };
 
 let z3Module: unknown = null;
-let z3LoadError: Error | null = null;
 
 async function loadZ3(): Promise<unknown> {
   if (z3Module) return z3Module;
-  if (z3LoadError) throw z3LoadError;
 
   try {
     const z3 = await import('z3-solver');
     z3Module = z3;
     return z3Module;
   } catch {
-    z3LoadError = new Error(
-      'Z3 solver not available. Install z3-solver package: npm install z3-solver'
-    );
-    throw z3LoadError;
+    throw new Error('Z3 solver not available. Install z3-solver package: npm install z3-solver');
   }
 }
 
@@ -111,6 +106,7 @@ interface Z3Solver {
 interface Z3Optimizer extends Z3Solver {
   minimize: (expr: Z3Expr) => void;
   maximize: (expr: Z3Expr) => void;
+  add_soft: (expr: Z3Expr, weight: number) => void;
 }
 
 interface Z3Model {
@@ -183,7 +179,11 @@ export class Z3WASMSolver {
         if (typeof expr.value === 'boolean') {
           return this.ctx.Bool.val(expr.value);
         }
-        return this.ctx.Int.val(expr.value as number);
+        const numVal = expr.value as number;
+        if (Number.isInteger(numVal)) {
+          return this.ctx.Int.val(numVal);
+        }
+        return this.ctx.Real.val(numVal);
       }
 
       case 'operation': {
@@ -246,6 +246,17 @@ export class Z3WASMSolver {
 
           case 'ite':
             return this.ctx.If(operands[0], operands[1], operands[2]);
+
+          case 'abs': {
+            const zero = this.ctx.Int.val(0);
+            return this.ctx.If(operands[0].ge(zero), operands[0], zero.sub(operands[0]));
+          }
+
+          case 'min':
+            return this.ctx.If(operands[0].le(operands[1]), operands[0], operands[1]);
+
+          case 'max':
+            return this.ctx.If(operands[0].ge(operands[1]), operands[0], operands[1]);
 
           case 'allDifferent':
             return this.ctx.Distinct(...operands);
@@ -339,10 +350,12 @@ export class Z3WASMSolver {
       this.addDomainConstraints(solver, problem.variables);
 
       for (const constraint of problem.constraints) {
-        if (!constraint.isHard) continue;
-
         const z3Expr = this.translateExpression(constraint.expression);
-        solver.add(z3Expr);
+        if (constraint.isHard) {
+          solver.add(z3Expr);
+        } else if (isOptimizing) {
+          (solver as Z3Optimizer).add_soft(z3Expr, constraint.weight || 1);
+        }
       }
 
       if (isOptimizing && problem.objective) {

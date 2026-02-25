@@ -1,6 +1,7 @@
 import type {
   InjectionClassifier,
   InjectionDetectionResult,
+  InjectionThreat,
   PromptInjectionConfig,
 } from '@cogitator-ai/types';
 import { LocalInjectionClassifier } from './classifiers/local-classifier';
@@ -25,6 +26,7 @@ export class PromptInjectionDetector {
       classifier: 'local',
       action: 'block',
       threshold: 0.7,
+      failMode: 'secure',
       ...options,
     };
 
@@ -63,7 +65,17 @@ export class PromptInjectionDetector {
       patterns: [...(this.config.patterns ?? []), ...this.customPatterns],
     };
 
-    const threats = await this.classifier.analyze(input, configWithPatterns);
+    let threats: InjectionThreat[];
+    try {
+      threats = await this.classifier.analyze(input, configWithPatterns);
+    } catch (error) {
+      if (this.config.failMode === 'open') {
+        threats = [];
+      } else {
+        throw error;
+      }
+    }
+
     const safe = threats.length === 0;
 
     let action: 'allowed' | 'blocked' | 'warned' = 'allowed';

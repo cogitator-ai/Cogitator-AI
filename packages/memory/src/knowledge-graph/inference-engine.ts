@@ -211,9 +211,8 @@ export class GraphInferenceEngine implements InferenceEngine {
       );
 
       for (const path of paths) {
-        if (path.length < rule.pattern.minPathLength) continue;
-
         const allEdges = [startEdge, ...path];
+        if (allEdges.length < rule.pattern.minPathLength) continue;
         const sourceNodeId = startEdge.sourceNodeId;
         const targetNodeId = path[path.length - 1].targetNodeId;
 
@@ -278,18 +277,39 @@ export class GraphInferenceEngine implements InferenceEngine {
       }
     }
 
-    const nextEdgesResult = await this.graphAdapter.queryEdges({
+    const forwardResult = await this.graphAdapter.queryEdges({
       agentId,
       sourceNodeId: currentNodeId,
       types: [nextType],
       minConfidence,
     });
 
-    if (!nextEdgesResult.success) return [];
+    const reverseResult = await this.graphAdapter.queryEdges({
+      agentId,
+      targetNodeId: currentNodeId,
+      types: [nextType],
+      minConfidence,
+    });
+
+    const orientedEdges: GraphEdge[] = [];
+
+    if (forwardResult.success) {
+      orientedEdges.push(...forwardResult.data);
+    }
+
+    if (reverseResult.success) {
+      for (const edge of reverseResult.data) {
+        orientedEdges.push({
+          ...edge,
+          sourceNodeId: edge.targetNodeId,
+          targetNodeId: edge.sourceNodeId,
+        });
+      }
+    }
 
     const paths: GraphEdge[][] = [];
 
-    for (const nextEdge of nextEdgesResult.data) {
+    for (const nextEdge of orientedEdges) {
       const subPaths = await this.findMatchingPaths(
         agentId,
         nextEdge,

@@ -9,6 +9,7 @@ import type {
   RelationType,
 } from '@cogitator-ai/types';
 import { executeQuery, GraphQueryBuilder, variable } from './query-language';
+import { extractJSON } from './utils';
 
 export interface NLQueryContext {
   adapter: GraphAdapter;
@@ -61,10 +62,70 @@ export function analyzeNLQuery(question: string): NLQueryAnalysis {
     analysis.entities.push(match[1]);
   }
 
+  const stopWords = new Set([
+    'What',
+    'Who',
+    'Where',
+    'When',
+    'Why',
+    'How',
+    'Which',
+    'Does',
+    'Did',
+    'Can',
+    'Could',
+    'Would',
+    'Should',
+    'The',
+    'This',
+    'That',
+    'These',
+    'Those',
+    'Tell',
+    'Find',
+    'Show',
+    'Get',
+    'List',
+    'Give',
+    'Are',
+    'Is',
+    'Was',
+    'Were',
+    'Has',
+    'Have',
+    'Had',
+    'And',
+    'But',
+    'Or',
+    'Not',
+    'All',
+    'Any',
+    'Some',
+    'Each',
+    'Every',
+    'About',
+    'From',
+    'Into',
+    'With',
+    'Between',
+    'Through',
+    'During',
+    'Before',
+    'After',
+    'Above',
+    'Below',
+    'Do',
+    'Many',
+    'Much',
+    'More',
+    'Most',
+    'Other',
+  ]);
+
   const capitalizedPattern = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b/g;
   while ((match = capitalizedPattern.exec(question)) !== null) {
     const word = match[1];
-    if (!['Who', 'What', 'Where', 'When', 'How', 'Why', 'Is', 'Are', 'Does', 'Do'].includes(word)) {
+    if (!stopWords.has(word)) {
       analysis.entities.push(word);
     }
   }
@@ -181,10 +242,10 @@ Query JSON:`;
 
 export function parseNLQueryResponse(response: string): GraphQuery | null {
   try {
-    const jsonMatch = /\{[\s\S]*\}/.exec(response);
-    if (!jsonMatch) return null;
+    const jsonStr = extractJSON(response);
+    if (!jsonStr) return null;
 
-    const parsed = JSON.parse(jsonMatch[0]);
+    const parsed = JSON.parse(jsonStr);
 
     const query: GraphQuery = {
       type: parsed.type || 'select',
@@ -251,12 +312,12 @@ function formatResultAsNaturalLanguage(
   analysis: NLQueryAnalysis,
   result: GraphQueryResult
 ): string {
-  if (result.count === 0) {
-    return `I couldn't find any information to answer: "${question}"`;
-  }
-
   if (analysis.intent === 'check') {
     return result.count > 0 ? 'Yes.' : 'No.';
+  }
+
+  if (result.count === 0) {
+    return `I couldn't find any information to answer: "${question}"`;
   }
 
   if (analysis.intent === 'count') {

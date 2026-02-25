@@ -1,16 +1,12 @@
-import type {
-  Term,
-  CompoundTerm,
-  Substitution,
-  BuiltinPredicate,
-  ListTerm,
-} from '@cogitator-ai/types';
+import type { Term, CompoundTerm, Substitution, ListTerm } from '@cogitator-ai/types';
 import {
   unify,
   applySubstitution,
+  termsEqual,
   isAtom,
   isVariable,
   isNumber,
+  isString,
   isCompound,
   isList,
   termToString,
@@ -69,13 +65,13 @@ registerBuiltin('\\=', 2, (goal, subst) => {
 registerBuiltin('==', 2, (goal, subst) => {
   const left = applySubstitution(goal.args[0], subst);
   const right = applySubstitution(goal.args[1], subst);
-  return termToString(left) === termToString(right) ? success(subst) : failure();
+  return termsEqual(left, right) ? success(subst) : failure();
 });
 
 registerBuiltin('\\==', 2, (goal, subst) => {
   const left = applySubstitution(goal.args[0], subst);
   const right = applySubstitution(goal.args[1], subst);
-  return termToString(left) !== termToString(right) ? success(subst) : failure();
+  return !termsEqual(left, right) ? success(subst) : failure();
 });
 
 function evaluateArithmetic(term: Term, subst: Substitution): number {
@@ -97,10 +93,13 @@ function evaluateArithmetic(term: Term, subst: Substitution): number {
       case '*':
         return args[0] * args[1];
       case '/':
+        if (args[1] === 0) throw new Error('Division by zero');
         return args[0] / args[1];
       case '//':
+        if (args[1] === 0) throw new Error('Division by zero');
         return Math.floor(args[0] / args[1]);
       case 'mod':
+        if (args[1] === 0) throw new Error('Division by zero');
         return args[0] % args[1];
       case '^':
       case '**':
@@ -364,6 +363,34 @@ registerBuiltin('reverse', 2, (goal, subst) => {
   return failure();
 });
 
+function termOrder(t: Term): number {
+  if (isVariable(t)) return 0;
+  if (isNumber(t)) return 1;
+  if (isAtom(t)) return 2;
+  if (isString(t)) return 3;
+  if (isCompound(t) || isList(t)) return 4;
+  return 5;
+}
+
+function compareTerms(a: Term, b: Term): number {
+  const oa = termOrder(a);
+  const ob = termOrder(b);
+  if (oa !== ob) return oa - ob;
+  if (isNumber(a) && isNumber(b)) return a.value - b.value;
+  if (isAtom(a) && isAtom(b)) return a.value < b.value ? -1 : a.value > b.value ? 1 : 0;
+  if (isString(a) && isString(b)) return a.value < b.value ? -1 : a.value > b.value ? 1 : 0;
+  if (isCompound(a) && isCompound(b)) {
+    if (a.args.length !== b.args.length) return a.args.length - b.args.length;
+    if (a.functor !== b.functor) return a.functor < b.functor ? -1 : 1;
+    for (let i = 0; i < a.args.length; i++) {
+      const cmp = compareTerms(a.args[i], b.args[i]);
+      if (cmp !== 0) return cmp;
+    }
+    return 0;
+  }
+  return termToString(a).localeCompare(termToString(b));
+}
+
 registerBuiltin('sort', 2, (goal, subst) => {
   const list = applySubstitution(goal.args[0], subst);
   const sorted = goal.args[1];
@@ -373,18 +400,10 @@ registerBuiltin('sort', 2, (goal, subst) => {
   const elements = listToArray(list, subst);
   if (!elements) return failure();
 
-  const sortedElements = [...elements].sort((a, b) => {
-    const as = termToString(applySubstitution(a, subst));
-    const bs = termToString(applySubstitution(b, subst));
-    return as.localeCompare(bs);
-  });
+  const resolved = elements.map((e) => applySubstitution(e, subst));
+  const sortedElements = [...resolved].sort(compareTerms);
 
-  const unique = sortedElements.filter(
-    (el, i, arr) =>
-      i === 0 ||
-      termToString(applySubstitution(el, subst)) !==
-        termToString(applySubstitution(arr[i - 1], subst))
-  );
+  const unique = sortedElements.filter((el, i, arr) => i === 0 || !termsEqual(el, arr[i - 1]));
 
   const result = unify(sorted, arrayToList(unique), subst);
   return result ? success(result) : failure();
@@ -399,11 +418,8 @@ registerBuiltin('msort', 2, (goal, subst) => {
   const elements = listToArray(list, subst);
   if (!elements) return failure();
 
-  const sortedElements = [...elements].sort((a, b) => {
-    const as = termToString(applySubstitution(a, subst));
-    const bs = termToString(applySubstitution(b, subst));
-    return as.localeCompare(bs);
-  });
+  const resolved = elements.map((e) => applySubstitution(e, subst));
+  const sortedElements = [...resolved].sort(compareTerms);
 
   const result = unify(sorted, arrayToList(sortedElements), subst);
   return result ? success(result) : failure();
@@ -414,7 +430,7 @@ registerBuiltin('nth0', 3, (goal, subst) => {
   const list = applySubstitution(goal.args[1], subst);
   const elem = goal.args[2];
 
-  if (!isNumber(index) || !isList(list)) return failure();
+  if (!isNumber(index) || !Number.isInteger(index.value) || !isList(list)) return failure();
 
   const elements = listToArray(list, subst);
   if (!elements) return failure();
@@ -431,7 +447,7 @@ registerBuiltin('nth1', 3, (goal, subst) => {
   const list = applySubstitution(goal.args[1], subst);
   const elem = goal.args[2];
 
-  if (!isNumber(index) || !isList(list)) return failure();
+  if (!isNumber(index) || !Number.isInteger(index.value) || !isList(list)) return failure();
 
   const elements = listToArray(list, subst);
   if (!elements) return failure();
@@ -614,34 +630,11 @@ export function executeBuiltin(goal: CompoundTerm, subst: Substitution): Builtin
   return handler(goal, subst);
 }
 
-export function getBuiltinList(): BuiltinPredicate[] {
-  return [
-    'true',
-    'false',
-    'fail',
-    'cut',
-    'is',
-    'unify',
-    'not',
-    'gt',
-    'gte',
-    'lt',
-    'lte',
-    'eq',
-    'neq',
-    'member',
-    'append',
-    'length',
-    'reverse',
-    'sort',
-    'atom',
-    'number',
-    'compound',
-    'var',
-    'nonvar',
-    'is_list',
-    'functor',
-    'arg',
-    'copy_term',
-  ];
+export function getBuiltinList(): string[] {
+  return Array.from(builtins.keys())
+    .map((key) => {
+      const [name] = key.split('/');
+      return name;
+    })
+    .filter((v, i, a) => a.indexOf(v) === i);
 }

@@ -25,6 +25,7 @@ cp .env.example .env  # add GOOGLE_API_KEY at minimum
 | 10  | `10-security.ts`           | Prompt injection detection, input/output sanitization              |
 | 11  | `11-context-management.ts` | Long conversation handling, sliding window, summarization          |
 | 12  | `12-multi-provider.ts`     | Using multiple LLM providers with fallback chains                  |
+| 13  | `13-model-registry.ts`     | Model registry: pricing, filtering, provider discovery             |
 
 ## Running
 

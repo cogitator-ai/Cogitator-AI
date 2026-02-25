@@ -16,6 +16,7 @@
     "@cogitator-ai/koa": "workspace:*",
     "@cogitator-ai/mcp": "workspace:*",
     "@cogitator-ai/memory": "workspace:*",
+    "@cogitator-ai/models": "workspace:*",
     "@cogitator-ai/neuro-symbolic": "workspace:*",
     "@cogitator-ai/next": "workspace:*",
     "@cogitator-ai/openai-compat": "workspace:*",

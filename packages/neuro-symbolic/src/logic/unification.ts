@@ -75,11 +75,13 @@ export function occursIn(variable: VariableTerm, term: Term): boolean {
   return false;
 }
 
-export function applySubstitution(term: Term, subst: Substitution): Term {
+export function applySubstitution(term: Term, subst: Substitution, depth = 0): Term {
+  if (depth > 100) return term;
+
   if (isVariable(term)) {
     const bound = subst.get(term.name);
     if (bound) {
-      return applySubstitution(bound, subst);
+      return applySubstitution(bound, subst, depth + 1);
     }
     return term;
   }
@@ -88,15 +90,15 @@ export function applySubstitution(term: Term, subst: Substitution): Term {
     return {
       type: 'compound',
       functor: term.functor,
-      args: term.args.map((arg) => applySubstitution(arg, subst)),
+      args: term.args.map((arg) => applySubstitution(arg, subst, depth + 1)),
     };
   }
 
   if (isList(term)) {
     return {
       type: 'list',
-      elements: term.elements.map((el) => applySubstitution(el, subst)),
-      tail: term.tail ? applySubstitution(term.tail, subst) : undefined,
+      elements: term.elements.map((el) => applySubstitution(el, subst, depth + 1)),
+      tail: term.tail ? applySubstitution(term.tail, subst, depth + 1) : undefined,
     };
   }
 
