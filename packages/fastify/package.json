@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/fastify",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Fastify server adapter for Cogitator AI runtime",
   "type": "module",
   "exports": {

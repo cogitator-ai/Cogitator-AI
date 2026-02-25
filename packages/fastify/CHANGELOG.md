@@ -1,5 +1,13 @@
 # @cogitator-ai/fastify
 
+## 0.1.5
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.21.1
+  - @cogitator-ai/core@0.18.2
+
 ## 0.1.4
 
 ### Patch Changes

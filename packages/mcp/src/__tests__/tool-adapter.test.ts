@@ -8,6 +8,7 @@ import {
   zodToJsonSchema,
   jsonSchemaToZod,
   cogitatorToMCP,
+  toolSchemaToMCP,
   mcpToCogitator,
   resultToMCPContent,
   mcpContentToResult,
@@ -195,6 +196,142 @@ describe('jsonSchemaToZod', () => {
   });
 });
 
+describe('jsonSchemaToZod edge cases', () => {
+  it('handles boolean type', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: { flag: { type: 'boolean' } },
+      required: ['flag'],
+    });
+
+    expect(schema.safeParse({ flag: true }).success).toBe(true);
+    expect(schema.safeParse({ flag: 'yes' }).success).toBe(false);
+  });
+
+  it('handles null type', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: { value: { type: 'null' } },
+    });
+
+    expect(schema.safeParse({ value: null }).success).toBe(true);
+  });
+
+  it('handles regex pattern', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: { code: { type: 'string', pattern: '^[A-Z]{3}$' } },
+      required: ['code'],
+    });
+
+    expect(schema.safeParse({ code: 'ABC' }).success).toBe(true);
+    expect(schema.safeParse({ code: 'abc' }).success).toBe(false);
+    expect(schema.safeParse({ code: 'ABCD' }).success).toBe(false);
+  });
+
+  it('handles url format', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: { site: { type: 'string', format: 'url' } },
+    });
+
+    expect(schema.safeParse({ site: 'https://example.com' }).success).toBe(true);
+    expect(schema.safeParse({ site: 'not-a-url' }).success).toBe(false);
+  });
+
+  it('handles single-value enum as literal', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: { mode: { enum: ['fixed'] } },
+    });
+
+    expect(schema.safeParse({ mode: 'fixed' }).success).toBe(true);
+    expect(schema.safeParse({ mode: 'other' }).success).toBe(false);
+  });
+
+  it('handles mixed-type enum via union of literals', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: { value: { enum: [1, 'two', true] } },
+    });
+
+    expect(schema.safeParse({ value: 1 }).success).toBe(true);
+    expect(schema.safeParse({ value: 'two' }).success).toBe(true);
+    expect(schema.safeParse({ value: true }).success).toBe(true);
+    expect(schema.safeParse({ value: 'other' }).success).toBe(false);
+  });
+
+  it('handles object without properties as record', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: { meta: { type: 'object' } },
+    });
+
+    expect(schema.safeParse({ meta: { any: 'thing' } }).success).toBe(true);
+  });
+
+  it('handles unknown type as z.unknown', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: { data: {} },
+    });
+
+    expect(schema.safeParse({ data: 42 }).success).toBe(true);
+    expect(schema.safeParse({ data: 'text' }).success).toBe(true);
+  });
+
+  it('returns empty schema for non-object type', () => {
+    const schema = jsonSchemaToZod({ type: 'string' });
+
+    expect(schema.safeParse({}).success).toBe(true);
+  });
+
+  it('handles array without items as z.array(z.unknown)', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: { list: { type: 'array' } },
+    });
+
+    expect(schema.safeParse({ list: [1, 'two', true] }).success).toBe(true);
+  });
+
+  it('handles description on properties', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The name field' },
+      },
+    });
+
+    expect(schema.safeParse({ name: 'test' }).success).toBe(true);
+  });
+});
+
+describe('toolSchemaToMCP', () => {
+  it('converts a ToolSchema to MCP format', () => {
+    const schema = {
+      name: 'fetch_url',
+      description: 'Fetch a URL',
+      parameters: {
+        type: 'object' as const,
+        properties: {
+          url: { type: 'string' },
+          method: { type: 'string' },
+        },
+        required: ['url'],
+      },
+    };
+
+    const mcpDef = toolSchemaToMCP(schema);
+
+    expect(mcpDef.name).toBe('fetch_url');
+    expect(mcpDef.description).toBe('Fetch a URL');
+    expect(mcpDef.inputSchema.type).toBe('object');
+    expect(mcpDef.inputSchema.properties).toHaveProperty('url');
+    expect(mcpDef.inputSchema.required).toEqual(['url']);
+  });
+});
+
 describe('cogitatorToMCP', () => {
   it('should convert Cogitator tool to MCP format', () => {
     const tool: Tool = {
@@ -275,6 +412,28 @@ describe('mcpToCogitator', () => {
     expect(tool.name).toBe('mcp_tool');
   });
 
+  it('should produce correct toJSON output', () => {
+    const mcpTool = {
+      name: 'search',
+      description: 'Search the web',
+      inputSchema: {
+        type: 'object' as const,
+        properties: { query: { type: 'string' } },
+        required: ['query'],
+      },
+    };
+
+    const mockClient = { callTool: vi.fn() } as unknown as MCPClient;
+    const tool = mcpToCogitator(mcpTool, mockClient);
+    const json = tool.toJSON();
+
+    expect(json.name).toBe('search');
+    expect(json.description).toBe('Search the web');
+    expect(json.parameters.type).toBe('object');
+    expect(json.parameters.properties).toHaveProperty('query');
+    expect(json.parameters.required).toEqual(['query']);
+  });
+
   it('should apply description transform when provided', () => {
     const mcpTool = {
       name: 'tool',
@@ -310,6 +469,13 @@ describe('resultToMCPContent', () => {
 
   it('should convert null to empty text', () => {
     const result = resultToMCPContent(null);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual({ type: 'text', text: '' });
+  });
+
+  it('should convert undefined to empty text', () => {
+    const result = resultToMCPContent(undefined);
 
     expect(result).toHaveLength(1);
     expect(result[0]).toEqual({ type: 'text', text: '' });

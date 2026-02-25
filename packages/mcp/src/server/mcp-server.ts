@@ -83,9 +83,14 @@ export class MCPServer {
   }
 
   /**
-   * Unregister a tool by name
+   * Unregister a tool by name.
+   * Only works before server.start() — tools registered on the underlying
+   * MCP transport cannot be removed at runtime.
    */
   unregisterTool(name: string): boolean {
+    if (this.started) {
+      throw new Error('Cannot unregister tools after server has started');
+    }
     return this.tools.delete(name);
   }
 
@@ -118,9 +123,13 @@ export class MCPServer {
   }
 
   /**
-   * Unregister a resource by URI
+   * Unregister a resource by URI.
+   * Only works before server.start().
    */
   unregisterResource(uri: string): boolean {
+    if (this.started) {
+      throw new Error('Cannot unregister resources after server has started');
+    }
     return this.resources.delete(uri);
   }
 
@@ -153,9 +162,13 @@ export class MCPServer {
   }
 
   /**
-   * Unregister a prompt by name
+   * Unregister a prompt by name.
+   * Only works before server.start().
    */
   unregisterPrompt(name: string): boolean {
+    if (this.started) {
+      throw new Error('Cannot unregister prompts after server has started');
+    }
     return this.prompts.delete(name);
   }
 

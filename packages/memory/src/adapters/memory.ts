@@ -48,6 +48,12 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
       createdAt: new Date(),
       updatedAt: new Date(),
     };
+    const existingEntries = this.threadEntries.get(thread.id);
+    if (existingEntries) {
+      for (const entryId of existingEntries) {
+        this.entries.delete(entryId);
+      }
+    }
     this.threads.set(thread.id, thread);
     this.threadEntries.set(thread.id, []);
     return this.success(thread);

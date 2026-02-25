@@ -208,13 +208,15 @@ export interface EmbeddingService {
   readonly model: string;
 }
 
-export type EmbeddingProvider = 'openai' | 'ollama';
+export type EmbeddingProvider = 'openai' | 'ollama' | 'google';
 
 export interface OpenAIEmbeddingConfig {
   provider: 'openai';
   apiKey: string;
   model?: string;
   baseUrl?: string;
+  /** Output dimensions (supported by text-embedding-3-* models) */
+  dimensions?: number;
 }
 
 export interface OllamaEmbeddingConfig {

@@ -1,5 +1,26 @@
 # @cogitator-ai/types
 
+## 0.21.1
+
+### Patch Changes
+
+- fix(memory): audit — 42 bugs fixed, +122 tests, v0.6.14
+  - Fix SQL injection via schema name in Postgres and knowledge graph adapters
+  - Fix Qdrant deleteEmbedding (wrong filter), metadata collision, search reconstruction
+  - Fix Postgres keywordSearch params corruption, getEntries limit subquery, ILIKE injection
+  - Fix Redis zrangebyscore exclusive bounds inconsistency
+  - Fix BM25 duplicate query term scoring
+  - Fix context builder facts/semantic context dropped without system prompt
+  - Fix knowledge graph traversal paths, bidirectional edge support, merge self-references
+  - Fix embedding services: add dimensions config to Google/OpenAI API requests
+  - Add missing Zod schemas (SQLite, MongoDB, Qdrant configs)
+  - Add EmbeddingProvider 'google' to types, OpenAIEmbeddingConfig dimensions field
+  - Add createEmbeddingAdapter factory, export missing adapter config types
+  - Fix dependencies: add missing optional/peer deps, move @types to devDeps
+  - Add SQLite PRAGMA foreign_keys enforcement
+  - Remove dead code (indexedIds, unused schema types)
+  - Add 122 new tests (BM25, RRF, schema validation)
+
 ## 0.20.0
 
 ### Minor Changes

@@ -1,5 +1,15 @@
 # @cogitator-ai/cli
 
+## 0.3.5
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.21.1
+  - @cogitator-ai/core@0.18.2
+  - @cogitator-ai/config@0.5.1
+  - @cogitator-ai/deploy@0.1.3
+
 ## 0.3.4
 
 ### Patch Changes

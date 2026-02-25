@@ -1,4 +1,4 @@
-import type { Context, Next } from 'koa';
+import type { Context } from 'koa';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 import type {
   Message,
@@ -73,13 +73,11 @@ export interface CogitatorState {
 }
 
 export interface RouteContext {
-  cogitator: Cogitator;
+  runtime: Cogitator;
   agents: Record<string, Agent>;
   workflows: Record<string, Workflow<WorkflowState>>;
   swarms: Record<string, SwarmConfig>;
 }
-
-export type KoaMiddleware = (ctx: Context, next: Next) => Promise<void>;
 
 export interface AgentListResponse {
   agents: Array<{
@@ -153,6 +151,14 @@ export interface WorkflowRunResponse {
   nodeResults: Record<string, { output: unknown; duration: number }>;
 }
 
+export interface WorkflowStatusResponse {
+  runId: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  currentNode?: string;
+  progress?: number;
+  error?: string;
+}
+
 export interface SwarmListResponse {
   swarms: Array<{
     name: string;
@@ -208,16 +214,14 @@ export interface ErrorResponse {
 }
 
 export interface WebSocketMessage {
-  type: 'subscribe' | 'unsubscribe' | 'run' | 'stop' | 'ping';
+  type: 'run' | 'stop' | 'ping';
   id?: string;
-  channel?: string;
   payload?: unknown;
 }
 
 export interface WebSocketResponse {
-  type: 'subscribed' | 'unsubscribed' | 'event' | 'error' | 'pong';
+  type: 'event' | 'error' | 'pong';
   id?: string;
-  channel?: string;
   payload?: unknown;
   error?: string;
 }

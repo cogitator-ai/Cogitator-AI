@@ -21,7 +21,6 @@ export class HybridSearch {
   private keywordAdapter?: KeywordSearchAdapter;
   private localBM25: BM25Index;
   private defaultWeights: HybridSearchWeights;
-  private indexedIds = new Set<string>();
 
   constructor(config: HybridSearchConfig) {
     this.embeddingAdapter = config.embeddingAdapter;
@@ -47,17 +46,14 @@ export class HybridSearch {
 
   indexDocument(id: string, content: string): void {
     this.localBM25.addDocument({ id, content });
-    this.indexedIds.add(id);
   }
 
   removeDocument(id: string): void {
     this.localBM25.removeDocument(id);
-    this.indexedIds.delete(id);
   }
 
   clearIndex(): void {
     this.localBM25.clear();
-    this.indexedIds.clear();
   }
 
   get indexSize(): number {

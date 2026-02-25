@@ -161,8 +161,7 @@ describe('QdrantAdapter', () => {
         points: [
           expect.objectContaining({
             payload: expect.objectContaining({
-              category: 'science',
-              language: 'en',
+              metadata: { category: 'science', language: 'en' },
             }),
           }),
         ],
@@ -214,11 +213,12 @@ describe('QdrantAdapter', () => {
           id: 'emb_123',
           score: 0.95,
           payload: {
+            embeddingId: 'emb_123',
             sourceId: 'entry_123',
             sourceType: 'entry',
             content: 'Similar content',
             createdAt: now.toISOString(),
-            category: 'test',
+            metadata: { category: 'test' },
           },
         },
       ]);
@@ -411,9 +411,7 @@ describe('QdrantAdapter', () => {
 
       expect(result.success).toBe(true);
       expect(mockClient.delete).toHaveBeenCalledWith('test_collection', {
-        filter: {
-          must: [{ key: 'id', match: { value: 'emb_123' } }],
-        },
+        points: ['emb_123'],
       });
     });
 

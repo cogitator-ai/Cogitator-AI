@@ -7,11 +7,15 @@ export function createAuthMiddleware(authFn: AuthFunction) {
       const auth = await authFn(ctx);
       (ctx.state as CogitatorState).auth = auth;
       await next();
-    } catch {
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status && status >= 500) {
+        throw err;
+      }
       ctx.status = 401;
       ctx.body = {
         error: {
-          message: 'Unauthorized',
+          message: err instanceof Error ? err.message : 'Unauthorized',
           code: 'UNAUTHORIZED',
         },
       };

@@ -163,8 +163,8 @@ export class RedisAdapter extends BaseMemoryAdapter {
 
     let keys: string[];
     if (options.before || options.after) {
-      const min = options.after?.getTime() ?? '-inf';
-      const max = options.before?.getTime() ?? '+inf';
+      const min = options.after ? `(${options.after.getTime()}` : '-inf';
+      const max = options.before ? `(${options.before.getTime()}` : '+inf';
       keys = await this.client.zrangebyscore(setKey, min, max);
     } else {
       keys = await this.client.zrange(setKey, 0, -1);

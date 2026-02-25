@@ -77,6 +77,7 @@ export class KoaStreamWriter {
   }
 
   finish(messageId: string, usage?: Usage): void {
+    if (this.closed) return;
     this.write(createFinishEvent(messageId, usage));
     this.res.write(encodeDone());
   }

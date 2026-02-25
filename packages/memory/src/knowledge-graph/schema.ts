@@ -183,8 +183,3 @@ export const KnowledgeGraphConfigSchema = z.object({
   inference: KnowledgeGraphInferenceConfigSchema.optional(),
   context: KnowledgeGraphContextConfigSchema.optional(),
 });
-
-export type GraphNodeInput = z.input<typeof GraphNodeSchema>;
-export type GraphEdgeInput = z.input<typeof GraphEdgeSchema>;
-export type ExtractedEntityInput = z.input<typeof ExtractedEntitySchema>;
-export type ExtractedRelationInput = z.input<typeof ExtractedRelationSchema>;

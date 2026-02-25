@@ -25,7 +25,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
   });
 
   router.post('/agents/:name/run', async (ctx) => {
-    const { agents, cogitator } = ctx.state.cogitator;
+    const { agents, runtime } = ctx.state.cogitator;
     const { name } = ctx.params;
     const agent = agents[name];
 
@@ -43,7 +43,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
     }
 
     try {
-      const result = await cogitator.run(agent, {
+      const result = await runtime.run(agent, {
         input: body.input,
         context: body.context,
         threadId: body.threadId,
@@ -69,7 +69,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
   });
 
   router.post('/agents/:name/stream', async (ctx) => {
-    const { agents, cogitator } = ctx.state.cogitator;
+    const { agents, runtime } = ctx.state.cogitator;
     const { name } = ctx.params;
     const agent = agents[name];
 
@@ -94,12 +94,16 @@ export function createAgentRoutes(): Router<CogitatorState> {
       writer.close();
     });
 
+    let textStarted = false;
+    let textId = '';
+
     try {
       writer.start(messageId);
-      const textId = generateId('txt');
+      textId = generateId('txt');
+      textStarted = true;
       writer.textStart(textId);
 
-      const result = await cogitator.run(agent, {
+      const result = await runtime.run(agent, {
         input: body.input,
         context: body.context,
         threadId: body.threadId,
@@ -125,6 +129,9 @@ export function createAgentRoutes(): Router<CogitatorState> {
         totalTokens: result.usage.totalTokens,
       });
     } catch (error) {
+      if (textStarted) {
+        writer.textEnd(textId);
+      }
       const message = error instanceof Error ? error.message : 'Unknown error';
       writer.error(message, 'INTERNAL');
     } finally {

@@ -1,5 +1,24 @@
 # @cogitator-ai/mcp
 
+## 17.0.6
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.21.1
+
+## 17.0.5
+
+### Patch Changes
+
+- fix(mcp): audit — 6 bugs fixed, +28 tests, v17.0.5
+  - Fix missing exports: toolSchemaToMCP, mcpContentToResult, resultToMCPContent, serveMCPTools, StdioTransportConfig, HttpTransportConfig
+  - Fix createHttpTransport ignoring headers config
+  - Fix timeout timer leak on successful connection
+  - Fix unregister methods silently failing after server start (now throws)
+  - Move @types/node to devDependencies
+  - Add 28 new tests (88 total)
+
 ## 17.0.4
 
 ### Patch Changes

@@ -19,6 +19,10 @@ interface QdrantSearchResult {
   payload: Record<string, unknown>;
 }
 
+interface QdrantFilter {
+  must?: Array<{ key: string; match: { value: unknown } }>;
+}
+
 interface QdrantClient {
   getCollections(): Promise<{ collections: Array<{ name: string }> }>;
   createCollection(
@@ -32,13 +36,10 @@ interface QdrantClient {
       vector: number[];
       limit: number;
       score_threshold?: number;
-      filter?: { must?: Array<{ key: string; match: { value: unknown } }> };
+      filter?: QdrantFilter;
     }
   ): Promise<QdrantSearchResult[]>;
-  delete(
-    collection: string,
-    options: { filter: { must: Array<{ key: string; match: { value: unknown } }> } }
-  ): Promise<void>;
+  delete(collection: string, options: { points?: string[]; filter?: QdrantFilter }): Promise<void>;
 }
 
 export class QdrantAdapter implements EmbeddingAdapter {
@@ -112,11 +113,12 @@ export class QdrantAdapter implements EmbeddingAdapter {
             id: full.id,
             vector: full.vector,
             payload: {
+              embeddingId: full.id,
               sourceId: full.sourceId,
               sourceType: full.sourceType,
               content: full.content,
               createdAt: full.createdAt.toISOString(),
-              ...full.metadata,
+              metadata: full.metadata ?? {},
             },
           },
         ],
@@ -159,17 +161,13 @@ export class QdrantAdapter implements EmbeddingAdapter {
       });
 
       const embeddings: (Embedding & { score: number })[] = results.map((r) => ({
-        id: r.id,
+        id: (r.payload.embeddingId as string) ?? r.id,
         sourceId: r.payload.sourceId as string,
         sourceType: r.payload.sourceType as Embedding['sourceType'],
         vector: [],
         content: r.payload.content as string,
         createdAt: new Date(r.payload.createdAt as string),
-        metadata: Object.fromEntries(
-          Object.entries(r.payload).filter(
-            ([k]) => !['sourceId', 'sourceType', 'content', 'createdAt'].includes(k)
-          )
-        ),
+        metadata: (r.payload.metadata as Record<string, unknown>) ?? {},
         score: r.score,
       }));
 
@@ -184,7 +182,7 @@ export class QdrantAdapter implements EmbeddingAdapter {
 
     try {
       await this.client.delete(this.collection, {
-        filter: { must: [{ key: 'id', match: { value: embeddingId } }] },
+        points: [embeddingId],
       });
       return this.success(undefined);
     } catch (err) {

@@ -11,18 +11,12 @@ import type { ToolCall } from '@cogitator-ai/types';
 type WebSocketType = import('ws').WebSocket;
 type WebSocketServerType = import('ws').WebSocketServer;
 
-interface Subscription {
-  channel: string;
-  callback: (data: unknown) => void;
-}
-
 interface ClientState {
   id: string;
-  subscriptions: Map<string, Subscription>;
   abortController?: AbortController;
 }
 
-const clients = new Map<WebSocketType, ClientState>();
+const WS_OPEN = 1;
 
 export async function setupWebSocket(
   server: HttpServer,
@@ -34,18 +28,16 @@ export async function setupWebSocket(
 
     const wss = new WebSocketServer({
       server,
-      path: config.path || '/ws',
-      maxPayload: config.maxPayloadSize || 1024 * 1024,
+      path: config.path ?? '/ws',
+      maxPayload: config.maxPayloadSize ?? 1024 * 1024,
     });
 
-    const pingInterval = config.pingInterval || 30000;
+    const pingInterval = config.pingInterval ?? 30000;
 
     wss.on('connection', (ws: WebSocketType) => {
       const clientState: ClientState = {
         id: generateId('ws'),
-        subscriptions: new Map(),
       };
-      clients.set(ws, clientState);
 
       let alive = true;
       const heartbeat = setInterval(() => {
@@ -77,13 +69,11 @@ export async function setupWebSocket(
       ws.on('close', () => {
         clearInterval(heartbeat);
         clientState.abortController?.abort();
-        clients.delete(ws);
       });
 
       ws.on('error', () => {
         clearInterval(heartbeat);
         clientState.abortController?.abort();
-        clients.delete(ws);
       });
     });
 
@@ -104,25 +94,6 @@ async function handleMessage(
   switch (message.type) {
     case 'ping':
       sendResponse(ws, { type: 'pong' });
-      break;
-
-    case 'subscribe':
-      if (message.channel) {
-        state.subscriptions.set(message.channel, {
-          channel: message.channel,
-          callback: (data) => {
-            sendResponse(ws, { type: 'event', channel: message.channel, payload: data });
-          },
-        });
-        sendResponse(ws, { type: 'subscribed', channel: message.channel });
-      }
-      break;
-
-    case 'unsubscribe':
-      if (message.channel) {
-        state.subscriptions.delete(message.channel);
-        sendResponse(ws, { type: 'unsubscribed', channel: message.channel });
-      }
       break;
 
     case 'run':
@@ -154,6 +125,11 @@ async function handleRun(
     return;
   }
 
+  if (state.abortController) {
+    sendResponse(ws, { type: 'error', id: message.id, error: 'A run is already in progress' });
+    return;
+  }
+
   state.abortController = new AbortController();
 
   try {
@@ -168,7 +144,7 @@ async function handleRun(
         return;
       }
 
-      const result = await ctx.cogitator.run(agent, {
+      const result = await ctx.runtime.run(agent, {
         input: payload.input,
         context: payload.context,
         stream: true,
@@ -195,7 +171,54 @@ async function handleRun(
         },
       });
 
-      sendResponse(ws, { type: 'event', id: message.id, payload: { type: 'complete', result } });
+      sendResponse(ws, {
+        type: 'event',
+        id: message.id,
+        payload: { type: 'complete', result },
+      });
+    } else if (payload.type === 'workflow') {
+      const workflow = ctx.workflows[payload.name];
+      if (!workflow) {
+        sendResponse(ws, {
+          type: 'error',
+          id: message.id,
+          error: `Workflow '${payload.name}' not found`,
+        });
+        return;
+      }
+
+      const { WorkflowExecutor } = await import('@cogitator-ai/workflows');
+      const executor = new WorkflowExecutor(ctx.runtime);
+      const result = await executor.execute(workflow, { input: payload.input });
+
+      sendResponse(ws, {
+        type: 'event',
+        id: message.id,
+        payload: { type: 'complete', result },
+      });
+    } else if (payload.type === 'swarm') {
+      const swarmConfig = ctx.swarms[payload.name];
+      if (!swarmConfig) {
+        sendResponse(ws, {
+          type: 'error',
+          id: message.id,
+          error: `Swarm '${payload.name}' not found`,
+        });
+        return;
+      }
+
+      const { Swarm } = await import('@cogitator-ai/swarms');
+      const swarm = new Swarm(ctx.runtime, swarmConfig);
+      const result = await swarm.run({
+        input: payload.input,
+        context: payload.context,
+      });
+
+      sendResponse(ws, {
+        type: 'event',
+        id: message.id,
+        payload: { type: 'complete', result },
+      });
     }
   } catch (error) {
     if (state.abortController?.signal.aborted) {
@@ -207,12 +230,14 @@ async function handleRun(
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }
+  } finally {
+    state.abortController = undefined;
   }
 }
 
 function sendResponse(ws: WebSocketType, response: WebSocketResponse): void {
   try {
-    if (ws.readyState === 1) {
+    if (ws.readyState === WS_OPEN) {
       ws.send(JSON.stringify(response));
     }
   } catch {}

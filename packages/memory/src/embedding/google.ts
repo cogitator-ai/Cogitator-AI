@@ -10,6 +10,7 @@ const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 export class GoogleEmbeddingService implements EmbeddingService {
   readonly model: string;
   readonly dimensions: number;
+  private customDimensions: boolean;
 
   private apiKey: string;
 
@@ -17,6 +18,7 @@ export class GoogleEmbeddingService implements EmbeddingService {
     this.apiKey = config.apiKey;
     this.model = config.model ?? 'gemini-embedding-001';
     this.dimensions = config.dimensions ?? 3072;
+    this.customDimensions = config.dimensions !== undefined;
   }
 
   async embed(text: string): Promise<number[]> {
@@ -28,6 +30,7 @@ export class GoogleEmbeddingService implements EmbeddingService {
         body: JSON.stringify({
           model: `models/${this.model}`,
           content: { parts: [{ text }] },
+          ...(this.customDimensions ? { outputDimensionality: this.dimensions } : {}),
         }),
       }
     );
@@ -54,6 +57,7 @@ export class GoogleEmbeddingService implements EmbeddingService {
           requests: texts.map((text) => ({
             model: `models/${this.model}`,
             content: { parts: [{ text }] },
+            ...(this.customDimensions ? { outputDimensionality: this.dimensions } : {}),
           })),
         }),
       }

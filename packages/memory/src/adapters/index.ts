@@ -4,11 +4,13 @@
 
 import type {
   MemoryAdapter,
+  EmbeddingAdapter,
   InMemoryAdapterConfig,
   RedisAdapterConfig,
   PostgresAdapterConfig,
   SQLiteAdapterConfig,
   MongoDBAdapterConfig,
+  QdrantAdapterConfig,
 } from '@cogitator-ai/types';
 import { InMemoryAdapter } from './memory';
 
@@ -21,6 +23,8 @@ export type MemoryAdapterConfigUnion =
   | PostgresAdapterConfig
   | SQLiteAdapterConfig
   | MongoDBAdapterConfig;
+
+export type EmbeddingAdapterConfigUnion = QdrantAdapterConfig;
 
 export async function createMemoryAdapter(
   config: MemoryAdapterConfigUnion
@@ -54,6 +58,17 @@ export async function createMemoryAdapter(
       throw new Error(
         `Unknown memory provider: ${(exhaustive as MemoryAdapterConfigUnion).provider}`
       );
+    }
+  }
+}
+
+export async function createEmbeddingAdapter(
+  config: EmbeddingAdapterConfigUnion
+): Promise<EmbeddingAdapter> {
+  switch (config.provider) {
+    case 'qdrant': {
+      const { QdrantAdapter } = await import('./qdrant');
+      return new QdrantAdapter(config);
     }
   }
 }

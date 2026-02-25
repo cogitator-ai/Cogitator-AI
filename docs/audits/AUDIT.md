@@ -15,9 +15,9 @@
 | express              | 2026-02-25 | 8 fixed      | ✅     |
 | fastify              | 2026-02-25 | 22 fixed     | ✅     |
 | hono                 | 2026-02-25 | 26 fixed     | ✅     |
-| koa                  | —          | —            | —      |
-| mcp                  | —          | —            | —      |
-| memory               | —          | —            | —      |
+| koa                  | 2026-02-25 | 23 fixed     | ✅     |
+| mcp                  | 2026-02-25 | 6 fixed      | ✅     |
+| memory               | 2026-02-25 | 42 fixed     | ✅     |
 | models               | —          | —            | —      |
 | neuro-symbolic       | —          | —            | —      |
 | next                 | —          | —            | —      |

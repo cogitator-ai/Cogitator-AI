@@ -148,6 +148,23 @@ describe('MCPServer', () => {
 
       expect(removed).toBe(false);
     });
+
+    it('throws when unregistering after start', async () => {
+      const server = new MCPServer({
+        name: 'test',
+        version: '1.0.0',
+        transport: 'stdio',
+      });
+
+      server.registerTool(mockTool);
+      await server.start();
+
+      expect(() => server.unregisterTool('test_tool')).toThrow(
+        'Cannot unregister tools after server has started'
+      );
+
+      await server.stop();
+    });
   });
 
   describe('start/stop', () => {
@@ -345,6 +362,27 @@ describe('MCPServer Resources', () => {
 
       expect(server.unregisterResource('memory://nonexistent')).toBe(false);
     });
+
+    it('throws when unregistering after start', async () => {
+      const server = new MCPServer({
+        name: 'test',
+        version: '1.0.0',
+        transport: 'stdio',
+      });
+
+      server.registerResource({
+        uri: 'memory://test',
+        name: 'Test',
+        read: async () => ({ text: 'test' }),
+      });
+      await server.start();
+
+      expect(() => server.unregisterResource('memory://test')).toThrow(
+        'Cannot unregister resources after server has started'
+      );
+
+      await server.stop();
+    });
   });
 });
 
@@ -478,6 +516,28 @@ describe('MCPServer Prompts', () => {
       });
 
       expect(server.unregisterPrompt('nonexistent')).toBe(false);
+    });
+
+    it('throws when unregistering after start', async () => {
+      const server = new MCPServer({
+        name: 'test',
+        version: '1.0.0',
+        transport: 'stdio',
+      });
+
+      server.registerPrompt({
+        name: 'test',
+        get: async () => ({
+          messages: [{ role: 'user', content: { type: 'text', text: 'Test' } }],
+        }),
+      });
+      await server.start();
+
+      expect(() => server.unregisterPrompt('test')).toThrow(
+        'Cannot unregister prompts after server has started'
+      );
+
+      await server.stop();
     });
   });
 });

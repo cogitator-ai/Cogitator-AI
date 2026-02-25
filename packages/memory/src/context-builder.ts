@@ -81,12 +81,19 @@ export class ContextBuilder {
           }
         }
 
-        if (facts.length > 0 && messages.length > 0 && messages[0].role === 'system') {
+        if (facts.length > 0) {
           const factsStr = facts.map((f) => `- ${f.content}`).join('\n');
-          messages[0] = {
-            ...messages[0],
-            content: `${messages[0].content}\n\nKnown facts:\n${factsStr}`,
-          };
+          if (messages.length > 0 && messages[0].role === 'system') {
+            messages[0] = {
+              ...messages[0],
+              content: `${messages[0].content}\n\nKnown facts:\n${factsStr}`,
+            };
+          } else {
+            messages.unshift({
+              role: 'system',
+              content: `Known facts:\n${factsStr}`,
+            });
+          }
           usedTokens += factTokens;
         }
       }
@@ -117,12 +124,19 @@ export class ContextBuilder {
           }
         }
 
-        if (semanticResults.length > 0 && messages.length > 0 && messages[0].role === 'system') {
+        if (semanticResults.length > 0) {
           const contextStr = semanticResults.map((r) => `- ${r.content}`).join('\n');
-          messages[0] = {
-            ...messages[0],
-            content: `${messages[0].content}\n\nRelevant context:\n${contextStr}`,
-          };
+          if (messages.length > 0 && messages[0].role === 'system') {
+            messages[0] = {
+              ...messages[0],
+              content: `${messages[0].content}\n\nRelevant context:\n${contextStr}`,
+            };
+          } else {
+            messages.unshift({
+              role: 'system',
+              content: `Relevant context:\n${contextStr}`,
+            });
+          }
           usedTokens += semanticTokens;
         }
       }

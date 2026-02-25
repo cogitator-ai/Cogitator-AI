@@ -45,7 +45,13 @@ export class PostgresAdapter
   constructor(config: PostgresAdapterConfig) {
     super();
     this.config = config;
-    this.schema = config.schema ?? 'cogitator';
+    const schema = config.schema ?? 'cogitator';
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(schema)) {
+      throw new Error(
+        `Invalid schema name "${schema}": must be alphanumeric with underscores, starting with a letter or underscore`
+      );
+    }
+    this.schema = schema;
   }
 
   async connect(): Promise<MemoryResult<void>> {
@@ -281,19 +287,12 @@ export class PostgresAdapter
       params.push(options.after);
     }
 
-    query += ' ORDER BY created_at ASC';
-
     if (options.limit) {
-      query = `
-        SELECT * FROM (
-          SELECT * FROM ${this.schema}.entries WHERE thread_id = $1
-          ${options.before ? `AND created_at < $2` : ''}
-          ${options.after ? `AND created_at > $${options.before ? 3 : 2}` : ''}
-          ORDER BY created_at DESC
-          LIMIT $${paramIndex}
-        ) sub ORDER BY created_at ASC
-      `;
+      query += ` ORDER BY created_at DESC LIMIT $${paramIndex}`;
       params.push(options.limit);
+      query = `SELECT * FROM (${query}) sub ORDER BY created_at ASC`;
+    } else {
+      query += ' ORDER BY created_at ASC';
     }
 
     const result = await this.pool.query(query, params);
@@ -479,7 +478,7 @@ export class PostgresAdapter
        WHERE agent_id = $1 AND content ILIKE $2
        AND (expires_at IS NULL OR expires_at > NOW())
        ORDER BY confidence DESC`,
-      [agentId, `%${query}%`]
+      [agentId, `%${query.replace(/[%_\\]/g, '\\$&')}%`]
     );
 
     return this.success(
@@ -589,14 +588,17 @@ export class PostgresAdapter
     if (!this.pool) return this.failure('Not connected');
 
     const limit = options.limit ?? 10;
-    const params: unknown[] = [options.query, limit];
-    let paramIndex = 3;
+    const params: unknown[] = [options.query];
+    let paramIndex = 2;
 
     let filterClause = '';
     if (options.filter?.sourceType) {
       filterClause += ` AND source_type = $${paramIndex++}`;
-      params.splice(1, 0, options.filter.sourceType);
+      params.push(options.filter.sourceType);
     }
+
+    const limitParam = `$${paramIndex}`;
+    params.push(limit);
 
     const result = await this.pool.query(
       `SELECT id, source_id, source_type, content, metadata, created_at,
@@ -604,7 +606,7 @@ export class PostgresAdapter
        FROM ${this.schema}.embeddings
        WHERE content_tsv @@ plainto_tsquery('english', $1)${filterClause}
        ORDER BY keyword_score DESC
-       LIMIT $2`,
+       LIMIT ${limitParam}`,
       params
     );
 

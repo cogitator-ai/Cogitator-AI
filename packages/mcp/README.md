@@ -302,19 +302,19 @@ const server = new MCPServer(config);
 // Tools
 server.registerTool(tool);
 server.registerTools([tool1, tool2]);
-server.unregisterTool('tool_name');
+server.unregisterTool('tool_name'); // only before start()
 server.getRegisteredTools();
 
 // Resources
 server.registerResource(resourceConfig);
 server.registerResources([resource1, resource2]);
-server.unregisterResource('memory://threads');
+server.unregisterResource('memory://threads'); // only before start()
 server.getRegisteredResources();
 
 // Prompts
 server.registerPrompt(promptConfig);
 server.registerPrompts([prompt1, prompt2]);
-server.unregisterPrompt('summarize');
+server.unregisterPrompt('summarize'); // only before start()
 server.getRegisteredPrompts();
 
 // Lifecycle

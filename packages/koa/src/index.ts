@@ -16,6 +16,7 @@ export type {
   WorkflowListResponse,
   WorkflowRunRequest,
   WorkflowRunResponse,
+  WorkflowStatusResponse,
   SwarmListResponse,
   SwarmRunRequest,
   SwarmRunResponse,
@@ -47,7 +48,23 @@ export { createSwaggerRoutes } from './swagger/index.js';
 
 export { KoaStreamWriter, setupSSEHeaders } from './streaming/koa-stream-writer.js';
 
-export { generateId, encodeSSE, encodeDone } from '@cogitator-ai/server-shared';
+export {
+  generateId,
+  encodeSSE,
+  encodeDone,
+  createStartEvent,
+  createTextStartEvent,
+  createTextDeltaEvent,
+  createTextEndEvent,
+  createToolCallStartEvent,
+  createToolCallDeltaEvent,
+  createToolCallEndEvent,
+  createToolResultEvent,
+  createErrorEvent,
+  createFinishEvent,
+  createWorkflowEvent,
+  createSwarmEvent,
+} from '@cogitator-ai/server-shared';
 
 export type {
   StreamEvent,

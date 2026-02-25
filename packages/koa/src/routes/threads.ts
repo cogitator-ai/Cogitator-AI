@@ -1,11 +1,11 @@
 import Router from '@koa/router';
-import type { CogitatorState, ThreadResponse, AddMessageRequest, Message } from '../types.js';
+import type { CogitatorState, ThreadResponse, AddMessageRequest } from '../types.js';
 
 export function createThreadRoutes(): Router<CogitatorState> {
   const router = new Router<CogitatorState>();
 
   router.get('/threads/:id', async (ctx) => {
-    const memory = ctx.state.cogitator.cogitator.memory;
+    const memory = ctx.state.cogitator.runtime.memory;
     if (!memory) {
       ctx.status = 503;
       ctx.body = { error: { message: 'Memory not configured', code: 'UNAVAILABLE' } };
@@ -22,12 +22,17 @@ export function createThreadRoutes(): Router<CogitatorState> {
         return;
       }
 
-      const messages = result.data.map((entry: { message: Message }) => entry.message);
+      const entries = result.data;
+      const messages = entries.map((entry) => entry.message);
+      const createdAt = entries.length > 0 ? entries[0].createdAt.getTime() : Date.now();
+      const updatedAt =
+        entries.length > 0 ? entries[entries.length - 1].createdAt.getTime() : Date.now();
+
       const response: ThreadResponse = {
         id,
         messages,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        createdAt,
+        updatedAt,
       };
       ctx.body = response;
     } catch (error) {
@@ -38,7 +43,7 @@ export function createThreadRoutes(): Router<CogitatorState> {
   });
 
   router.post('/threads/:id/messages', async (ctx) => {
-    const memory = ctx.state.cogitator.cogitator.memory;
+    const memory = ctx.state.cogitator.runtime.memory;
     if (!memory) {
       ctx.status = 503;
       ctx.body = { error: { message: 'Memory not configured', code: 'UNAVAILABLE' } };
@@ -82,7 +87,7 @@ export function createThreadRoutes(): Router<CogitatorState> {
   });
 
   router.delete('/threads/:id', async (ctx) => {
-    const memory = ctx.state.cogitator.cogitator.memory;
+    const memory = ctx.state.cogitator.runtime.memory;
     if (!memory) {
       ctx.status = 503;
       ctx.body = { error: { message: 'Memory not configured', code: 'UNAVAILABLE' } };

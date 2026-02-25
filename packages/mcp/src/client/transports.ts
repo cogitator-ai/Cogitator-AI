@@ -71,5 +71,7 @@ export function createStdioTransport(config: StdioTransportConfig): Transport {
  * ```
  */
 export function createHttpTransport(config: HttpTransportConfig): Transport {
-  return new StreamableHTTPClientTransport(new URL(config.url));
+  return new StreamableHTTPClientTransport(new URL(config.url), {
+    requestInit: config.headers ? { headers: config.headers } : undefined,
+  });
 }

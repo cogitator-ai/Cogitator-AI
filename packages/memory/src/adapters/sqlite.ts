@@ -50,6 +50,7 @@ export class SQLiteAdapter extends BaseMemoryAdapter {
     try {
       this.db = new Database(this.path);
 
+      this.db.pragma('foreign_keys = ON');
       if (this.walMode && this.path !== ':memory:') {
         this.db.pragma('journal_mode = WAL');
       }

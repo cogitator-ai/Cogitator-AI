@@ -112,21 +112,68 @@ const memory = new PostgresAdapter({
 await memory.connect();
 ```
 
+### SQLite Adapter
+
+```typescript
+import { SQLiteAdapter } from '@cogitator-ai/memory';
+
+const memory = new SQLiteAdapter({
+  provider: 'sqlite',
+  path: './cogitator.db',
+  walMode: true,
+});
+```
+
+### MongoDB Adapter
+
+```typescript
+import { MongoDBAdapter } from '@cogitator-ai/memory';
+
+const memory = new MongoDBAdapter({
+  provider: 'mongodb',
+  uri: 'mongodb://localhost:27017',
+  database: 'cogitator',
+});
+```
+
+### Qdrant Adapter (Embedding)
+
+```typescript
+import { QdrantAdapter } from '@cogitator-ai/memory';
+
+const embeddings = new QdrantAdapter({
+  provider: 'qdrant',
+  url: 'http://localhost:6333',
+  collection: 'cogitator',
+  dimensions: 1536,
+});
+```
+
 ### Factory Function
 
 ```typescript
-import { createMemoryAdapter } from '@cogitator-ai/memory';
+import { createMemoryAdapter, createEmbeddingAdapter } from '@cogitator-ai/memory';
 
-const memory = createMemoryAdapter({ provider: 'memory' });
+const memory = await createMemoryAdapter({ provider: 'memory' });
 
-const redis = createMemoryAdapter({
+const redis = await createMemoryAdapter({
   provider: 'redis',
   url: 'redis://localhost:6379',
 });
 
-const postgres = createMemoryAdapter({
+const postgres = await createMemoryAdapter({
   provider: 'postgres',
   connectionString: 'postgresql://localhost:5432/db',
+});
+
+const sqlite = await createMemoryAdapter({
+  provider: 'sqlite',
+  path: './cogitator.db',
+});
+
+const qdrant = await createEmbeddingAdapter({
+  provider: 'qdrant',
+  dimensions: 1536,
 });
 ```
 
@@ -351,6 +398,25 @@ const embeddings = new OllamaEmbeddingService({
 const embeddings = createEmbeddingService({
   provider: 'ollama',
   model: 'nomic-embed-text',
+});
+
+const vector = await embeddings.embed('Hello, world!');
+```
+
+### Google Embeddings
+
+```typescript
+import { GoogleEmbeddingService, createEmbeddingService } from '@cogitator-ai/memory';
+
+const embeddings = new GoogleEmbeddingService({
+  apiKey: process.env.GOOGLE_API_KEY!,
+  model: 'gemini-embedding-001',
+  dimensions: 768,
+});
+
+const embeddings = createEmbeddingService({
+  provider: 'google',
+  apiKey: process.env.GOOGLE_API_KEY!,
 });
 
 const vector = await embeddings.embed('Hello, world!');

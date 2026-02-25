@@ -128,8 +128,11 @@ export class BM25Index {
 
   private calculateScore(queryTerms: string[], doc: IndexedDocument, N: number): number {
     let score = 0;
+    const seen = new Set<string>();
 
     for (const term of queryTerms) {
+      if (seen.has(term)) continue;
+      seen.add(term);
       const df = this.invertedIndex.get(term)?.size ?? 0;
       if (df === 0) continue;
 

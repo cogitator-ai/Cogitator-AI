@@ -6,6 +6,15 @@ export function createErrorHandler() {
     try {
       await next();
     } catch (err) {
+      if (ctx.headerSent) return;
+
+      const status = (err as { status?: number }).status;
+      if (status === 413) {
+        ctx.status = 413;
+        ctx.body = { error: { message: 'Payload too large', code: 'PAYLOAD_TOO_LARGE' } };
+        return;
+      }
+
       if (CogitatorError.isCogitatorError(err)) {
         ctx.status = ERROR_STATUS_CODES[err.code] || 500;
         ctx.body = {

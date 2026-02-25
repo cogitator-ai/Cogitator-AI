@@ -32,17 +32,35 @@ export class PostgresGraphAdapter implements GraphAdapter {
   private pool: Pool;
   private schema: string;
   private vectorDimensions: number;
-  private initialized = false;
+  private initPromise?: Promise<void>;
 
   constructor(config: PostgresGraphAdapterConfig) {
     this.pool = config.pool;
-    this.schema = config.schema ?? 'cogitator';
-    this.vectorDimensions = config.vectorDimensions ?? 1536;
+    const schema = config.schema ?? 'cogitator';
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(schema)) {
+      throw new Error(
+        `Invalid schema name "${schema}": must be alphanumeric with underscores, starting with a letter or underscore`
+      );
+    }
+    this.schema = schema;
+    const dims = config.vectorDimensions ?? 1536;
+    if (!Number.isInteger(dims) || dims <= 0) {
+      throw new Error(`Invalid vectorDimensions: must be a positive integer`);
+    }
+    this.vectorDimensions = dims;
   }
 
   async initialize(): Promise<void> {
-    if (this.initialized) return;
+    if (!this.initPromise) {
+      this.initPromise = this.doInitialize().catch((err) => {
+        this.initPromise = undefined;
+        throw err;
+      });
+    }
+    return this.initPromise;
+  }
 
+  private async doInitialize(): Promise<void> {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.schema}.graph_nodes (
         id TEXT PRIMARY KEY,
@@ -120,8 +138,6 @@ export class PostgresGraphAdapter implements GraphAdapter {
         USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
       `);
     } catch {}
-
-    this.initialized = true;
   }
 
   private success<T>(data: T): MemoryResult<T> {
@@ -286,7 +302,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
     }
     if (query.namePattern) {
       sql += ` AND name ILIKE $${paramIndex++}`;
-      params.push(`%${query.namePattern}%`);
+      params.push(`%${query.namePattern.replace(/[%_\\]/g, '\\$&')}%`);
     }
     if (query.minConfidence !== undefined) {
       sql += ` AND confidence >= $${paramIndex++}`;
@@ -549,11 +565,16 @@ export class PostgresGraphAdapter implements GraphAdapter {
       allEdges
     );
 
+    let actualMaxDepth = 0;
+    for (const p of paths) {
+      if (p.length > actualMaxDepth) actualMaxDepth = p.length;
+    }
+
     return this.success({
       paths,
       visitedNodes: allNodes,
       visitedEdges: allEdges,
-      depth: options.maxDepth,
+      depth: actualMaxDepth,
     });
   }
 
@@ -586,6 +607,8 @@ export class PostgresGraphAdapter implements GraphAdapter {
     const neighborsResult = await this.getNeighbors(currentNode.id, options.direction);
     if (!neighborsResult.success) return;
 
+    let hasUnvisitedNeighbors = false;
+
     for (const { node, edge } of neighborsResult.data) {
       if (options.edgeTypes && !options.edgeTypes.includes(edge.type)) continue;
       if (options.minEdgeWeight !== undefined && edge.weight < options.minEdgeWeight) continue;
@@ -597,6 +620,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
       }
 
       if (!visited.has(node.id)) {
+        hasUnvisitedNeighbors = true;
         visited.add(node.id);
         allNodes.push(node);
 
@@ -614,6 +638,15 @@ export class PostgresGraphAdapter implements GraphAdapter {
         );
       }
     }
+
+    if (!hasUnvisitedNeighbors && pathNodes.length > 0) {
+      paths.push({
+        nodes: [...pathNodes, currentNode],
+        edges: [...pathEdges],
+        totalWeight: pathEdges.reduce((sum, e) => sum + e.weight, 0),
+        length: pathEdges.length,
+      });
+    }
   }
 
   async findShortestPath(
@@ -629,27 +662,37 @@ export class PostgresGraphAdapter implements GraphAdapter {
       WITH RECURSIVE path_search AS (
         SELECT
           source_node_id as start_node,
-          target_node_id as end_node,
-          ARRAY[source_node_id, target_node_id] as path,
+          CASE
+            WHEN source_node_id = $2 THEN target_node_id
+            ELSE source_node_id
+          END as end_node,
+          ARRAY[$2, CASE WHEN source_node_id = $2 THEN target_node_id ELSE source_node_id END] as path,
           ARRAY[id] as edge_ids,
           weight as total_weight,
           1 as depth
         FROM ${this.schema}.graph_edges
-        WHERE agent_id = $1 AND source_node_id = $2
+        WHERE agent_id = $1
+          AND (source_node_id = $2 OR (target_node_id = $2 AND bidirectional = TRUE))
 
         UNION ALL
 
         SELECT
           ps.start_node,
-          e.target_node_id,
-          ps.path || e.target_node_id,
+          CASE
+            WHEN e.source_node_id = ps.end_node THEN e.target_node_id
+            ELSE e.source_node_id
+          END,
+          ps.path || CASE WHEN e.source_node_id = ps.end_node THEN e.target_node_id ELSE e.source_node_id END,
           ps.edge_ids || e.id,
           ps.total_weight + e.weight,
           ps.depth + 1
         FROM path_search ps
-        JOIN ${this.schema}.graph_edges e ON e.source_node_id = ps.end_node
+        JOIN ${this.schema}.graph_edges e ON (
+          e.source_node_id = ps.end_node
+          OR (e.target_node_id = ps.end_node AND e.bidirectional = TRUE)
+        )
         WHERE e.agent_id = $1
-          AND NOT e.target_node_id = ANY(ps.path)
+          AND NOT (CASE WHEN e.source_node_id = ps.end_node THEN e.target_node_id ELSE e.source_node_id END) = ANY(ps.path)
           AND ps.depth < $4
       )
       SELECT path, edge_ids, total_weight
@@ -701,38 +744,36 @@ export class PostgresGraphAdapter implements GraphAdapter {
     let sql: string;
     const params = [nodeId];
 
+    const selectCols = `
+      n.id, n.agent_id, n.type, n.name, n.aliases, n.description,
+      n.properties, n.confidence, n.source, n.metadata,
+      n.created_at, n.updated_at, n.last_accessed_at, n.access_count,
+      e.id as edge_id, e.agent_id as edge_agent_id, e.type as edge_type,
+      e.source_node_id, e.target_node_id, e.label, e.weight, e.bidirectional,
+      e.properties as edge_properties, e.confidence as edge_confidence,
+      e.source as edge_source, e.valid_from, e.valid_until,
+      e.metadata as edge_metadata, e.created_at as edge_created_at, e.updated_at as edge_updated_at
+    `;
+
     if (direction === 'outgoing') {
       sql = `
-        SELECT e.*, n.*,
-          e.id as edge_id, e.agent_id as edge_agent_id, e.type as edge_type,
-          e.source_node_id, e.target_node_id, e.label, e.weight, e.bidirectional,
-          e.properties as edge_properties, e.confidence as edge_confidence,
-          e.source as edge_source, e.valid_from, e.valid_until,
-          e.metadata as edge_metadata, e.created_at as edge_created_at, e.updated_at as edge_updated_at
+        SELECT ${selectCols}
         FROM ${this.schema}.graph_edges e
         JOIN ${this.schema}.graph_nodes n ON n.id = e.target_node_id
         WHERE e.source_node_id = $1
+           OR (e.target_node_id = $1 AND e.bidirectional = TRUE AND n.id = e.source_node_id)
       `;
     } else if (direction === 'incoming') {
       sql = `
-        SELECT e.*, n.*,
-          e.id as edge_id, e.agent_id as edge_agent_id, e.type as edge_type,
-          e.source_node_id, e.target_node_id, e.label, e.weight, e.bidirectional,
-          e.properties as edge_properties, e.confidence as edge_confidence,
-          e.source as edge_source, e.valid_from, e.valid_until,
-          e.metadata as edge_metadata, e.created_at as edge_created_at, e.updated_at as edge_updated_at
+        SELECT ${selectCols}
         FROM ${this.schema}.graph_edges e
         JOIN ${this.schema}.graph_nodes n ON n.id = e.source_node_id
         WHERE e.target_node_id = $1
+           OR (e.source_node_id = $1 AND e.bidirectional = TRUE AND n.id = e.target_node_id)
       `;
     } else {
       sql = `
-        SELECT e.*, n.*,
-          e.id as edge_id, e.agent_id as edge_agent_id, e.type as edge_type,
-          e.source_node_id, e.target_node_id, e.label, e.weight, e.bidirectional,
-          e.properties as edge_properties, e.confidence as edge_confidence,
-          e.source as edge_source, e.valid_from, e.valid_until,
-          e.metadata as edge_metadata, e.created_at as edge_created_at, e.updated_at as edge_updated_at
+        SELECT ${selectCols}
         FROM ${this.schema}.graph_edges e
         JOIN ${this.schema}.graph_nodes n ON (
           (e.source_node_id = $1 AND n.id = e.target_node_id) OR
@@ -759,6 +800,8 @@ export class PostgresGraphAdapter implements GraphAdapter {
     await this.initialize();
 
     for (const sourceId of sourceNodeIds) {
+      const sourceNode = await this.getNode(sourceId);
+
       await this.pool.query(
         `UPDATE ${this.schema}.graph_edges
          SET source_node_id = $1 WHERE source_node_id = $2`,
@@ -770,7 +813,11 @@ export class PostgresGraphAdapter implements GraphAdapter {
         [targetNodeId, sourceId]
       );
 
-      const sourceNode = await this.getNode(sourceId);
+      await this.pool.query(
+        `DELETE FROM ${this.schema}.graph_edges
+         WHERE source_node_id = target_node_id`
+      );
+
       if (sourceNode.success && sourceNode.data) {
         await this.pool.query(
           `UPDATE ${this.schema}.graph_nodes

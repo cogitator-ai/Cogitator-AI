@@ -8,7 +8,9 @@ export {
   BaseMemoryAdapter,
   InMemoryAdapter,
   createMemoryAdapter,
+  createEmbeddingAdapter,
   type MemoryAdapterConfigUnion,
+  type EmbeddingAdapterConfigUnion,
 } from './adapters/index';
 
 export { RedisAdapter } from './adapters/redis';
@@ -57,6 +59,9 @@ export {
   InMemoryConfigSchema,
   RedisConfigSchema,
   PostgresConfigSchema,
+  SQLiteConfigSchema,
+  MongoDBConfigSchema,
+  QdrantConfigSchema,
   MemoryAdapterConfigSchema,
   ContextStrategySchema,
   ContextBuilderConfigSchema,
@@ -102,6 +107,9 @@ export type {
 } from './knowledge-graph/index';
 
 export type {
+  SQLiteAdapterConfig,
+  MongoDBAdapterConfig,
+  QdrantAdapterConfig,
   MemoryType,
   Thread,
   MemoryEntry,

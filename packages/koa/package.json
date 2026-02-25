@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/koa",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "description": "Koa server adapter for Cogitator AI runtime",
   "type": "module",
   "exports": {
@@ -17,6 +17,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
@@ -37,6 +38,9 @@
   "devDependencies": {
     "@cogitator-ai/workflows": "workspace:*",
     "@cogitator-ai/swarms": "workspace:*",
+    "supertest": "^7.0.0",
+    "@types/supertest": "^6.0.0",
+    "vitest": "^3.0.0",
     "@types/koa": "^2.15.0",
     "@types/koa__router": "^12.0.0",
     "@types/ws": "^8.5.0",

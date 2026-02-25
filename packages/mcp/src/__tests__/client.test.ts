@@ -102,6 +102,24 @@ describe('MCPClient', () => {
         })
       ).rejects.toThrow('URL is required');
     });
+
+    it('connects with sse transport (alias for http)', async () => {
+      const client = await MCPClient.connect({
+        transport: 'sse',
+        url: 'http://localhost:3000',
+      });
+
+      expect(client.isConnected()).toBe(true);
+      await client.close();
+    });
+
+    it('throws for unknown transport type', async () => {
+      await expect(
+        MCPClient.connect({
+          transport: 'unknown' as 'stdio',
+        })
+      ).rejects.toThrow('Unknown transport type');
+    });
   });
 
   describe('capabilities', () => {
@@ -221,6 +239,32 @@ describe('MCPClient', () => {
       expect(messages).toHaveLength(1);
       expect(messages[0].role).toBe('user');
 
+      await client.close();
+    });
+  });
+
+  describe('close', () => {
+    it('close is idempotent', async () => {
+      const client = await MCPClient.connect({
+        transport: 'stdio',
+        command: 'test',
+      });
+
+      await client.close();
+      await client.close();
+
+      expect(client.isConnected()).toBe(false);
+    });
+  });
+
+  describe('reconnecting', () => {
+    it('reports not reconnecting initially', async () => {
+      const client = await MCPClient.connect({
+        transport: 'stdio',
+        command: 'test',
+      });
+
+      expect(client.isReconnecting()).toBe(false);
       await client.close();
     });
   });

@@ -141,16 +141,19 @@ export class MCPClient {
    * Initialize connection and capabilities
    */
   private async initialize(timeout?: number): Promise<void> {
-    const timeoutPromise = timeout
-      ? new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Connection timeout')), timeout)
-        )
-      : null;
-
     const connectPromise = this.client.connect(this.transport);
 
-    if (timeoutPromise) {
-      await Promise.race([connectPromise, timeoutPromise]);
+    if (timeout) {
+      let timer: ReturnType<typeof setTimeout>;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      });
+
+      try {
+        await Promise.race([connectPromise, timeoutPromise]);
+      } finally {
+        clearTimeout(timer!);
+      }
     } else {
       await connectPromise;
     }

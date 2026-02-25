@@ -4,10 +4,10 @@ import { generateId } from '@cogitator-ai/server-shared';
 
 export function createContextMiddleware(opts: CogitatorAppOptions) {
   const routeCtx: RouteContext = {
-    cogitator: opts.cogitator,
-    agents: opts.agents || {},
-    workflows: opts.workflows || {},
-    swarms: opts.swarms || {},
+    runtime: opts.cogitator,
+    agents: opts.agents ?? {},
+    workflows: opts.workflows ?? {},
+    swarms: opts.swarms ?? {},
   };
 
   return async (ctx: Context, next: Next) => {

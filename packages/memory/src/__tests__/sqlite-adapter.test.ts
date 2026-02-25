@@ -85,7 +85,8 @@ describe('SQLiteAdapter', () => {
 
       await newAdapter.connect();
 
-      expect(mockDb.pragma).not.toHaveBeenCalled();
+      expect(mockDb.pragma).toHaveBeenCalledWith('foreign_keys = ON');
+      expect(mockDb.pragma).not.toHaveBeenCalledWith('journal_mode = WAL');
     });
 
     it('can disable WAL mode', async () => {
@@ -98,7 +99,8 @@ describe('SQLiteAdapter', () => {
 
       await newAdapter.connect();
 
-      expect(mockDb.pragma).not.toHaveBeenCalled();
+      expect(mockDb.pragma).toHaveBeenCalledWith('foreign_keys = ON');
+      expect(mockDb.pragma).not.toHaveBeenCalledWith('journal_mode = WAL');
     });
 
     it('disconnects and closes database', async () => {

@@ -34,7 +34,7 @@ export function createSwarmRoutes(): Router<CogitatorState> {
   });
 
   router.post('/swarms/:name/run', async (ctx) => {
-    const { swarms, cogitator } = ctx.state.cogitator;
+    const { swarms, runtime } = ctx.state.cogitator;
     const { name } = ctx.params;
     const swarmConfig = swarms[name];
 
@@ -53,7 +53,7 @@ export function createSwarmRoutes(): Router<CogitatorState> {
 
     try {
       const { Swarm } = await import('@cogitator-ai/swarms');
-      const swarm = new Swarm(cogitator, swarmConfig);
+      const swarm = new Swarm(runtime, swarmConfig);
 
       const result = await swarm.run({
         input: body.input,
@@ -99,7 +99,7 @@ export function createSwarmRoutes(): Router<CogitatorState> {
   });
 
   router.post('/swarms/:name/stream', async (ctx) => {
-    const { swarms, cogitator } = ctx.state.cogitator;
+    const { swarms, runtime } = ctx.state.cogitator;
     const { name } = ctx.params;
     const swarmConfig = swarms[name];
 
@@ -126,7 +126,7 @@ export function createSwarmRoutes(): Router<CogitatorState> {
 
     try {
       const { Swarm } = await import('@cogitator-ai/swarms');
-      const swarm = new Swarm(cogitator, swarmConfig);
+      const swarm = new Swarm(runtime, swarmConfig);
 
       writer.start(messageId);
 

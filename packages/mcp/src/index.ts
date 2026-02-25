@@ -9,15 +9,19 @@
 
 export { MCPClient, connectMCPServer } from './client/mcp-client';
 export { createStdioTransport, createHttpTransport } from './client/transports';
+export type { StdioTransportConfig, HttpTransportConfig } from './client/transports';
 
-export { MCPServer } from './server/mcp-server';
+export { MCPServer, serveMCPTools } from './server/mcp-server';
 
 export {
   cogitatorToMCP,
+  toolSchemaToMCP,
   mcpToCogitator,
   wrapMCPTools,
   zodToJsonSchema,
   jsonSchemaToZod,
+  resultToMCPContent,
+  mcpContentToResult,
 } from './adapter/tool-adapter';
 
 export type {

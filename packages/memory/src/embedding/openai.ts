@@ -4,9 +4,16 @@
 
 import type { EmbeddingService, OpenAIEmbeddingConfig } from '@cogitator-ai/types';
 
+const DEFAULT_DIMENSIONS: Record<string, number> = {
+  'text-embedding-3-small': 1536,
+  'text-embedding-3-large': 3072,
+  'text-embedding-ada-002': 1536,
+};
+
 export class OpenAIEmbeddingService implements EmbeddingService {
   readonly model: string;
   readonly dimensions: number;
+  private customDimensions: boolean;
 
   private apiKey: string;
   private baseUrl: string;
@@ -15,8 +22,8 @@ export class OpenAIEmbeddingService implements EmbeddingService {
     this.apiKey = config.apiKey;
     this.model = config.model ?? 'text-embedding-3-small';
     this.baseUrl = config.baseUrl ?? 'https://api.openai.com/v1';
-
-    this.dimensions = this.model.includes('large') ? 3072 : 1536;
+    this.customDimensions = config.dimensions !== undefined;
+    this.dimensions = config.dimensions ?? DEFAULT_DIMENSIONS[this.model] ?? 1536;
   }
 
   async embed(text: string): Promise<number[]> {
@@ -29,6 +36,7 @@ export class OpenAIEmbeddingService implements EmbeddingService {
       body: JSON.stringify({
         model: this.model,
         input: text,
+        ...(this.customDimensions ? { dimensions: this.dimensions } : {}),
       }),
     });
 
@@ -54,6 +62,7 @@ export class OpenAIEmbeddingService implements EmbeddingService {
       body: JSON.stringify({
         model: this.model,
         input: texts,
+        ...(this.customDimensions ? { dimensions: this.dimensions } : {}),
       }),
     });
 

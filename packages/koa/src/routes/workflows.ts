@@ -24,7 +24,7 @@ export function createWorkflowRoutes(): Router<CogitatorState> {
   });
 
   router.post('/workflows/:name/run', async (ctx) => {
-    const { workflows, cogitator } = ctx.state.cogitator;
+    const { workflows, runtime } = ctx.state.cogitator;
     const { name } = ctx.params;
     const workflow = workflows[name];
 
@@ -38,7 +38,7 @@ export function createWorkflowRoutes(): Router<CogitatorState> {
 
     try {
       const { WorkflowExecutor } = await import('@cogitator-ai/workflows');
-      const executor = new WorkflowExecutor(cogitator);
+      const executor = new WorkflowExecutor(runtime);
 
       const result = await executor.execute(workflow, body?.input, body?.options);
 
@@ -70,7 +70,7 @@ export function createWorkflowRoutes(): Router<CogitatorState> {
   });
 
   router.post('/workflows/:name/stream', async (ctx) => {
-    const { workflows, cogitator } = ctx.state.cogitator;
+    const { workflows, runtime } = ctx.state.cogitator;
     const { name } = ctx.params;
     const workflow = workflows[name];
 
@@ -92,7 +92,7 @@ export function createWorkflowRoutes(): Router<CogitatorState> {
 
     try {
       const { WorkflowExecutor } = await import('@cogitator-ai/workflows');
-      const executor = new WorkflowExecutor(cogitator);
+      const executor = new WorkflowExecutor(runtime);
 
       writer.start(messageId);
 

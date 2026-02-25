@@ -1,5 +1,13 @@
 # @cogitator-ai/openai-compat
 
+## 19.0.7
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.21.1
+  - @cogitator-ai/core@0.18.2
+
 ## 19.0.6
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # @cogitator-ai/wasm-tools
 
+## 0.5.6
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.21.1
+
 ## 0.5.5
 
 ### Patch Changes

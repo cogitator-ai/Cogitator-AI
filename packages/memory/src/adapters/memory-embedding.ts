@@ -7,6 +7,7 @@ import type {
   SearchResult,
   SemanticSearchOptions,
 } from '@cogitator-ai/types';
+import { nanoid } from 'nanoid';
 import { BM25Index } from '../search/bm25';
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -26,12 +27,6 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return magnitude === 0 ? 0 : dotProduct / magnitude;
 }
 
-let idCounter = 0;
-
-function generateId(): string {
-  return `emb_${Date.now()}_${++idCounter}`;
-}
-
 export class InMemoryEmbeddingAdapter implements EmbeddingAdapter, KeywordSearchAdapter {
   private embeddings = new Map<string, Embedding>();
   private bm25Index = new BM25Index();
@@ -39,7 +34,7 @@ export class InMemoryEmbeddingAdapter implements EmbeddingAdapter, KeywordSearch
   async addEmbedding(
     embedding: Omit<Embedding, 'id' | 'createdAt'>
   ): Promise<MemoryResult<Embedding>> {
-    const id = generateId();
+    const id = `emb_${nanoid(12)}`;
     const now = new Date();
     const full: Embedding = { ...embedding, id, createdAt: now };
 

@@ -1,6 +1,6 @@
 import { createCogitator, DEFAULT_MODEL, header } from '../_shared/setup.js';
 import { Agent, tool } from '@cogitator-ai/core';
-import { cogitatorApp } from '@cogitator-ai/koa';
+import { cogitatorApp, setupWebSocket } from '@cogitator-ai/koa';
 import Koa from 'koa';
 import { z } from 'zod';
 
@@ -35,6 +35,7 @@ async function main() {
     cogitator: cog,
     agents: { assistant },
     enableSwagger: false,
+    enableWebSocket: true,
   });
 
   const app = new Koa();
@@ -52,6 +53,17 @@ async function main() {
     console.log(`    -H 'Content-Type: application/json' \\`);
     console.log(`    -d '{"input": "What is 123 * 456?"}'`);
     console.log();
+    console.log('WebSocket:');
+    console.log(`  wscat -c ws://localhost:${PORT}/ws`);
+    console.log(`  > {"type":"run","payload":{"type":"agent","name":"assistant","input":"Hi"}}`);
+    console.log();
+  });
+
+  await setupWebSocket(server, {
+    runtime: cog,
+    agents: { assistant },
+    workflows: {},
+    swarms: {},
   });
 
   process.on('SIGINT', () => {
