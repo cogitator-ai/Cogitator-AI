@@ -1,0 +1,176 @@
+---
+title: Model Registry
+description: Dynamic model registry with pricing, capabilities, and multi-provider support.
+---
+
+## Overview
+
+The `@cogitator-ai/models` package provides a dynamic model registry that tracks pricing, context windows, and capabilities for LLM models across all major providers. It fetches data from [LiteLLM](https://github.com/BerriAI/litellm) and includes built-in fallbacks.
+
+```typescript
+import { initializeModels, getModel, getPrice, listModels } from '@cogitator-ai/models';
+
+await initializeModels();
+
+const model = getModel('gpt-4o');
+console.log(model?.contextWindow); // 128000
+console.log(model?.capabilities?.supportsVision); // true
+
+const price = getPrice('claude-sonnet-4-5-20250929');
+console.log(`$${price?.input}/M input, $${price?.output}/M output`);
+```
+
+## ModelRegistry
+
+The `ModelRegistry` class manages model data with caching and auto-refresh.
+
+```typescript
+import { ModelRegistry } from '@cogitator-ai/models';
+
+const registry = new ModelRegistry({
+  cache: {
+    ttl: 24 * 60 * 60 * 1000,
+    storage: 'file',
+    filePath: './cache/models.json',
+  },
+  autoRefresh: true,
+  refreshInterval: 24 * 60 * 60 * 1000,
+  fallbackToBuiltin: true,
+});
+
+await registry.initialize();
+```
+
+### Options
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `cache.ttl` | 24 hours | Cache time-to-live in milliseconds |
+| `cache.storage` | `'memory'` | `'memory'` or `'file'` |
+| `cache.filePath` | `~/.cogitator/models-cache.json` | File path for file-based cache |
+| `autoRefresh` | `false` | Automatically refresh data in background |
+| `refreshInterval` | 24 hours | Refresh interval in milliseconds |
+| `fallbackToBuiltin` | `true` | Use built-in models when fetch fails |
+
+### Methods
+
+```typescript
+registry.getModel('gpt-4o');
+registry.getPrice('gpt-4o');
+registry.listModels({ provider: 'openai', supportsTools: true });
+registry.listProviders();
+registry.getProvider('anthropic');
+registry.getModelCount();
+registry.isInitialized();
+await registry.refresh();
+registry.shutdown();
+```
+
+## Filtering
+
+Use `ModelFilter` to query models by provider, capabilities, and cost:
+
+```typescript
+import { listModels } from '@cogitator-ai/models';
+
+const visionModels = listModels({ supportsVision: true, excludeDeprecated: true });
+
+const cheapToolModels = listModels({
+  supportsTools: true,
+  maxPricePerMillion: 1.0,
+});
+
+const largeContext = listModels({
+  minContextWindow: 200_000,
+  provider: 'anthropic',
+});
+```
+
+### Filter Options
+
+| Filter | Type | Description |
+| --- | --- | --- |
+| `provider` | `string` | Filter by provider ID |
+| `supportsTools` | `boolean` | Requires tool/function calling support |
+| `supportsVision` | `boolean` | Requires vision/image support |
+| `minContextWindow` | `number` | Minimum context window size |
+| `maxPricePerMillion` | `number` | Max average price per million tokens |
+| `excludeDeprecated` | `boolean` | Exclude deprecated models |
+
+## Built-in Providers
+
+The registry includes built-in data for 15 providers:
+
+OpenAI, Anthropic, Google, Ollama, Azure OpenAI, AWS Bedrock, Mistral AI, Cohere, Groq, Together AI, Fireworks AI, DeepInfra, Perplexity, Replicate, xAI.
+
+Additional providers are automatically discovered when LiteLLM data is fetched.
+
+## Caching
+
+Models data is cached to avoid repeated network requests:
+
+```typescript
+// Memory cache (default)
+new ModelRegistry({ cache: { ttl: 3600000, storage: 'memory' } });
+
+// File cache (persists across restarts)
+new ModelRegistry({
+  cache: { ttl: 86400000, storage: 'file', filePath: './models-cache.json' },
+});
+```
+
+The cache supports stale-while-revalidate: if a refresh fails, the registry falls back to stale cached data before using built-in models.
+
+## LiteLLM Integration
+
+For advanced use cases, you can fetch and transform LiteLLM data directly:
+
+```typescript
+import { fetchLiteLLMData, transformLiteLLMData } from '@cogitator-ai/models';
+
+const rawData = await fetchLiteLLMData();
+const models = transformLiteLLMData(rawData);
+```
+
+## Zod Schemas
+
+All types have corresponding Zod schemas for runtime validation:
+
+```typescript
+import {
+  ModelInfoSchema,
+  ModelPricingSchema,
+  ModelCapabilitiesSchema,
+  ProviderInfoSchema,
+} from '@cogitator-ai/models';
+
+const result = ModelInfoSchema.safeParse(unknownData);
+if (result.success) {
+  console.log(result.data.id);
+}
+```
+
+## Global Functions
+
+Convenience functions use a shared default registry:
+
+```typescript
+import {
+  initializeModels,
+  getModel,
+  getPrice,
+  listModels,
+  getModelRegistry,
+  shutdownModels,
+} from '@cogitator-ai/models';
+
+await initializeModels();
+
+getModel('gpt-4o');
+getPrice('gpt-4o-mini');
+listModels({ provider: 'google' });
+
+shutdownModels();
+```
+
+These functions auto-initialize with built-in data on first use, so `initializeModels()` is optional but recommended for fetching latest data.
