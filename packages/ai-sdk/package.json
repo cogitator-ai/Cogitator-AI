@@ -21,7 +21,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@ai-sdk/provider": "^1.0.0"
+    "@ai-sdk/provider": "^3.0.8"
   },
   "peerDependencies": {
     "@cogitator-ai/core": "workspace:*",
