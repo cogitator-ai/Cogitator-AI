@@ -518,3 +518,160 @@ Complete rewrite. All sections now reflect actual `packages/memory/src/` source:
 | `examples/core/01-basic-agent.ts` exists              | Filesystem                                            | ✅ Correct path                                |
 | `examples/swarms/01-debate-swarm.ts` exists           | Filesystem                                            | ✅ Correct path                                |
 | `examples/workflows/01-basic-workflow.ts` exists      | Filesystem                                            | ✅ Correct path                                |
+
+---
+
+## docs/SECURITY.md
+
+**Status:** Complete
+**Date:** 2026-02-25
+**Severity:** Medium — 5 issues, mostly wrong config field names and overstated built-in security capabilities
+
+### Issues Found (5 total)
+
+#### Critical (1) — Wrong config field names in Docker example
+
+| #   | Location              | Issue                                                                                                                                                                                                                                          | Fix                                                                                                         |
+| --- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| 1   | Docker Sandbox config | `resources.cpuLimit`, `resources.memoryLimit`, `resources.timeout`, `network: { enabled: false }` — none of these match `SandboxConfig`. Actual fields: `resources.cpus`, `resources.memory`, top-level `timeout`, `network: { mode: 'none' }` | Fixed all four field names; changed image from `cogitator/sandbox:latest` to `alpine:3.19` (actual default) |
+
+#### Medium (3) — Overstated/incorrect security claims
+
+| #   | Location                      | Issue                                                                                                                                                                                                           | Fix                                                                                          |
+| --- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| 2   | WASM "Memory Limits" property | Claims memory can be limited via `memoryPages` — field exists in `SandboxWasmConfig` but is never passed to Extism; feature not enforced                                                                        | Added clarification that `memoryPages` is defined but not currently enforced at Extism level |
+| 3   | API Security mitigations      | Lists "API key authentication (X-API-Key)", "JWT authentication", "RBAC" as built-in features — auth middleware is a pure user-provided `AuthFunction` callback; none of these are implemented by the framework | Rewrote to accurately describe pluggable auth + built-in rate limiting and CORS              |
+| 4   | Internal audit: "LRU cache"   | Says "LRU cache with configurable size" — actual implementation is FIFO (array shift/push) not LRU                                                                                                              | Changed to "FIFO cache with configurable size (cacheSize)"                                   |
+
+#### Minor (1) — Misleading security control
+
+| #   | Location                                 | Issue                                                                                                                                | Fix                                                                      |
+| --- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| 5   | Docker security table "Non-root user ✅" | Listed as a verified security control with "User namespace mapping" — only set if `config.user` is provided, not enforced by default | Changed to ⚠️ with note "Set via `config.user`; not enforced by default" |
+
+### Source of Truth Verified
+
+| Claim                                           | Verified Against                                                | Result                                         |
+| ----------------------------------------------- | --------------------------------------------------------------- | ---------------------------------------------- |
+| `SandboxConfig.resources` field names           | `packages/types/src/sandbox.ts`                                 | ✅ `cpus`, `memory`, `cpuShares`, `pidsLimit`  |
+| `SandboxConfig.network.mode` field              | `packages/types/src/sandbox.ts`                                 | ✅ `mode?: 'none' \| 'bridge' \| 'host'`       |
+| `SandboxConfig.timeout` is top-level            | `packages/types/src/sandbox.ts`                                 | ✅ Top-level field                             |
+| Default Docker image = `alpine:3.19`            | `packages/sandbox/src/executors/docker.ts` line 25              | ✅ `DEFAULT_IMAGE = 'alpine:3.19'`             |
+| `CapDrop: ['ALL']` hardcoded                    | `packages/sandbox/src/pool/container-pool.ts` line 119          | ✅ Always set                                  |
+| `SecurityOpt: ['no-new-privileges']`            | `packages/sandbox/src/pool/container-pool.ts` line 118          | ✅ Always set                                  |
+| `NetworkMode` defaults to `'none'`              | `packages/sandbox/src/pool/container-pool.ts`                   | ✅ `options.networkMode ?? 'none'`             |
+| `PidsLimit: 100` default                        | `packages/sandbox/src/pool/container-pool.ts`                   | ✅ `options.pidsLimit ?? 100`                  |
+| `MAX_OUTPUT_SIZE = 50_000` (both executors)     | `packages/sandbox/src/executors/wasm.ts`, `docker.ts`           | ✅ Both set 50,000                             |
+| Timeout via `Promise.race` (WASM)               | `packages/sandbox/src/executors/wasm.ts`                        | ✅ `executeWithTimeout` uses `Promise.race`    |
+| FIFO plugin cache (not LRU)                     | `packages/sandbox/src/executors/wasm.ts` `cacheOrder: string[]` | ✅ Array shift/push = FIFO                     |
+| `memoryPages` not passed to Extism              | `packages/sandbox/src/executors/wasm.ts` `getOrCreatePlugin()`  | ✅ Only `{ useWasi }` passed to `createPlugin` |
+| Auth middleware is user-provided `AuthFunction` | `packages/express/src/middleware/auth.ts`                       | ✅ No built-in JWT/API key/RBAC                |
+| Rate limiting built-in (`RateLimitConfig`)      | `packages/express/src/middleware/rate-limit.ts`                 | ✅ windowMs, max, keyGenerator                 |
+| CORS built-in (`CorsConfig`)                    | `packages/express/src/middleware/cors.ts`                       | ✅ origin allowlist, credentials, methods      |
+| `@extism/extism@^1.0.3` pinned                  | `packages/sandbox/package.json`                                 | ✅ Matches doc recommendation                  |
+| Idle container cleanup default = 60s            | `packages/sandbox/src/pool/container-pool.ts` constructor       | ✅ `idleTimeoutMs ?? 60_000`                   |
+| Container pool max size default = 5             | `packages/sandbox/src/pool/container-pool.ts`                   | ✅ `maxSize ?? 5`                              |
+
+### Verified correct (no changes needed)
+
+- WASM config example (`type`, `wasmModule`, `timeout`, `wasi`) — all match `SandboxConfig` ✅
+- WASM security properties: memory isolation, no filesystem, no network, timeout ✅
+- WASM known limitations (pre-compiled modules, QuickJS overhead) ✅
+- Docker security: CapDrop ALL, no-new-privileges, NetworkMode none ✅
+- Kubernetes security context YAML ✅ (no code to verify against, best-practice guidance)
+- Production checklist YAML ✅ (env var guidance)
+- WASM vs Docker comparison table (cold start times, overhead sizes) ✅
+- Reporting/incident response sections (no code to verify) ✅
+
+---
+
+## docs/SOC2-COMPLIANCE.md
+
+**Status:** Complete
+**Date:** 2026-02-25
+**Severity:** High — 13 issues across wrong API signatures, phantom config fields, incorrect security properties, and broken code examples
+
+### Issues Found (13 total)
+
+#### Critical (5) — Wrong API / phantom fields
+
+| #   | Location                 | Issue                                                                                                                                                        | Fix                                                                                             |
+| --- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| 1   | CC6.1 Auth code example  | `hashApiKey(apiKey)` then `validateApiKey(hashedKey)` — actual `validateApiKey` takes raw key and hashes internally; `logFailedAuthentication` doesn't exist | Rewrote example to show actual `getAuthenticatedUser()` from middleware                         |
+| 2   | P3.1 memory config       | `memory: { enabled: false }` — `enabled` field doesn't exist in MemoryConfig                                                                                 | Changed to omit `memory` config entirely; added `useMemory: false` in RunOptions as alternative |
+| 3   | P6.1 Data Subject Rights | `memoryAdapter.deleteThread(userId, threadId)` — wrong signature; takes only `(threadId: string)`                                                            | Fixed to `deleteThread(threadId)`                                                               |
+| 4   | P6.1 Data Subject Rights | `memoryAdapter.getMessages(userId, threadId)` — method doesn't exist; actual: `getEntries({ threadId })`                                                     | Fixed to `getEntries({ threadId })`                                                             |
+| 5   | P6.1 Data Subject Rights | `memoryAdapter.getThreads(agentId)` — method doesn't exist on MemoryAdapter interface                                                                        | Replaced with `getThread(threadId)` (single thread lookup)                                      |
+
+#### High (4) — Wrong config structure
+
+| #   | Location             | Issue                                                                                                                                                                                    | Fix                                                                                       |
+| --- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| 6   | Audit & Logging      | `new Cogitator({ observability: { provider: 'langfuse', langfuse: {...} } })` — no `observability` field in CogitatorConfig                                                              | Rewrote to use `LangfuseExporter` + `onSpan` callback in RunOptions                       |
+| 7   | P2.1 privacy config  | Same — `observability.enabled/provider` in CogitatorConfig doesn't exist                                                                                                                 | Fixed to `LangfuseExporter` pattern                                                       |
+| 8   | C1.2 memory config   | `memoryConfig.ttl`, `memoryConfig.maxMessages`, `memoryConfig.excludeFields` — all wrong; `ttl` is inside `redis`, `maxMessages` is `inMemory.maxEntries`, `excludeFields` doesn't exist | Rewrote with correct MemoryConfig structure                                               |
+| 9   | A1.2 resource config | `sandbox.memoryLimit`/`sandbox.cpuLimit` — wrong field names; actual `SandboxConfig.resources.memory`/`.cpus` via `sandbox.defaults`                                                     | Fixed to `sandbox.defaults.resources.memory/cpus`; also corrected `cpus` type to `number` |
+
+#### Medium (3) — Wrong security properties / incorrect endpoints
+
+| #   | Location                  | Issue                                                                                            | Fix                                                                                          |
+| --- | ------------------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| 10  | CC6.2 Docker sandbox YAML | `ReadonlyRootfs: true` — actual code sets `ReadonlyRootfs: false` (`container-pool.ts` line 120) | Changed to `false` with note about `/workspace` being writable                               |
+| 11  | CC6.2 Docker sandbox YAML | `User: '1000:1000'` listed as always enforced — only set if `config.user` is provided            | Changed to `User: configurable` with note                                                    |
+| 12  | A1.1 Health Check table   | Listed `/health/live` and `/health/ready` — Express adapter only exposes `/health` and `/ready`  | Split into two tables: server adapters (`/health`, `/ready`) and dashboard (`/api/health/*`) |
+
+#### Medium (1) — Wrong RunOptions callback
+
+| #   | Location   | Issue                                                                                               | Fix                                         |
+| --- | ---------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| 13  | PI1.2 code | `onStep` callback in RunOptions — doesn't exist; actual callbacks are `onToolCall`, `onRunComplete` | Fixed to use `onToolCall` + `onRunComplete` |
+
+#### Minor fixes
+
+| #   | Location           | Issue                                                                                                       | Fix                                                  |
+| --- | ------------------ | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| 14  | CC6.1 Auth table   | "Required `X-API-Key` header" — also accepts `Authorization: Bearer cog_*`                                  | Added both accepted forms to table                   |
+| 15  | CC6.1 Auth table   | `Agent.allowedTools` configuration — field doesn't exist; tool access is via `AgentConfig.tools?: Tool[]`   | Fixed to correct field name                          |
+| 16  | PI1.2 retry config | `retryOn: [429, 500, ...]` — wrong field; actual `RetryOptions.retryIf?: (error, attempt) => boolean`       | Fixed to use `withRetry()` from `@cogitator-ai/core` |
+| 17  | PI1.3 streaming    | `for await (const chunk of stream)` — `cogitator.run()` returns `Promise<RunResult>`, not an async iterable | Rewrote to show `onToken` callback pattern           |
+| 18  | PI1.1 tool example | `const tool = tool({...})` — naming collision                                                               | Renamed variable to `searchTool`                     |
+
+### Source of Truth Verified
+
+| Claim                                          | Verified Against                                       | Result                                    |
+| ---------------------------------------------- | ------------------------------------------------------ | ----------------------------------------- |
+| Auth middleware file exists                    | `packages/dashboard/src/lib/auth/middleware.ts`        | ✅ Exists                                 |
+| Supabase client dir exists                     | `packages/dashboard/src/lib/supabase/`                 | ✅ Exists                                 |
+| API key: Bearer + X-API-Key supported          | `extractApiKeyFromRequest()` in middleware             | ✅ Both forms accepted                    |
+| Roles: admin/user/readonly                     | `User.role` type in middleware                         | ✅ Correct                                |
+| `AgentConfig.tools?: Tool[]`                   | `packages/types/src/agent.ts`                          | ✅ Correct field name; no `allowedTools`  |
+| `ReadonlyRootfs: false`                        | `packages/sandbox/src/pool/container-pool.ts` line 120 | ✅ Confirmed false                        |
+| `SandboxConfig.user` optional                  | `packages/types/src/sandbox.ts`                        | ✅ Optional, not enforced by default      |
+| `SandboxManagerConfig.defaults`                | `packages/types/src/sandbox.ts` line 114-116           | ✅ Correct structure                      |
+| Express health routes: `/health`, `/ready`     | `packages/express/src/routes/health.ts`                | ✅ No `/health/live` or `/health/ready`   |
+| `cogitator.run()` returns `Promise<RunResult>` | `packages/core/src/runtime.ts` line 163                | ✅ Not async iterable                     |
+| `onToken`, `onToolCall`, `onRunComplete`       | `packages/types/src/runtime.ts`                        | ✅ All exist; no `onStep`                 |
+| No `observability` in CogitatorConfig          | `packages/types/src/runtime.ts` CogitatorConfig        | ✅ Confirmed absent                       |
+| `LangfuseExporter` + `onSpan` pattern          | `packages/core/src/observability/langfuse.ts`          | ✅ Correct API                            |
+| `MemoryConfig.redis.ttl`                       | `packages/config/src/schema.ts` MemoryConfigSchema     | ✅ Exists inside `redis` sub-object       |
+| `MemoryConfig.inMemory.maxEntries`             | `packages/config/src/schema.ts` MemoryConfigSchema     | ✅ `inMemory.maxEntries` exists           |
+| No `enabled` field in MemoryConfig             | `packages/config/src/schema.ts` MemoryConfigSchema     | ✅ Confirmed absent                       |
+| `MemoryAdapter.deleteThread(threadId)`         | `packages/memory/src/adapters/base.ts` line 31         | ✅ Single param, no userId                |
+| `MemoryAdapter.getEntries({ threadId })`       | `packages/memory/src/adapters/base.ts` line 37         | ✅ Takes MemoryQueryOptions object        |
+| No `getThreads(agentId)` method                | `packages/memory/src/adapters/base.ts`                 | ✅ Method doesn't exist                   |
+| `withRetry` options: `retryIf`, not `retryOn`  | `packages/core/src/utils/retry.ts`                     | ✅ `retryIf: (error, attempt) => boolean` |
+
+### Verified correct (no changes needed)
+
+- WASM sandbox properties (memory isolation, no FS, no network, timeout, 50KB output limit) ✅
+- Docker: CapDrop ALL, no-new-privileges, NetworkMode none, PidsLimit 100 ✅
+- TLS/encryption table (infrastructure guidance, not code) ✅
+- Secret management pattern (env vars, boolean logging) ✅
+- Dependency security section (`pnpm audit`, Dependabot) ✅
+- Input validation example (Zod, `AgentInputSchema`) ✅
+- Log redaction patterns (email, SSN, API keys) ✅
+- Data retention table ✅
+- `AuditLogEntry` interface (custom schema, not a Cogitator export — used as pattern) ✅
+- Incident response procedures (operational guidance, no code) ✅
+- Vendor management tables ✅
+- Control matrix TSC mapping ✅

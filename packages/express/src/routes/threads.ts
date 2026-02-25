@@ -34,12 +34,16 @@ export function createThreadRoutes(ctx: RouteContext): Router {
         return;
       }
 
-      const messages = result.data.map((entry) => entry.message);
+      const entries = result.data;
+      const messages = entries.map((entry) => entry.message);
+      const createdAt = entries.length > 0 ? entries[0].createdAt.getTime() : Date.now();
+      const updatedAt =
+        entries.length > 0 ? entries[entries.length - 1].createdAt.getTime() : Date.now();
       const response: ThreadResponse = {
         id,
         messages,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        createdAt,
+        updatedAt,
       };
       res.json(response);
     } catch (error) {

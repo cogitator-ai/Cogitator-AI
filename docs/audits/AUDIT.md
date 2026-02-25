@@ -12,7 +12,7 @@
 | deploy               | 2026-02-25 | 3 fixed      | ✅     |
 | e2e                  | —          | —            | n/a    |
 | evals                | 2026-02-25 | 7 fixed      | ✅     |
-| express              | —          | —            | —      |
+| express              | 2026-02-25 | 8 fixed      | ✅     |
 | fastify              | —          | —            | —      |
 | hono                 | —          | —            | —      |
 | koa                  | —          | —            | —      |
@@ -39,10 +39,17 @@
 
 ## Docs Audit
 
-| Doc File        | Last Audit | Issues Found | Status |
-| --------------- | ---------- | ------------ | ------ |
-| AGENTS.md       | 2026-02-25 | 22 fixed     | ✅     |
-| API.md          | 2026-02-25 | 60+ fixed    | ✅     |
-| ARCHITECTURE.md | 2026-02-25 | 25 fixed     | ✅     |
+| Doc File             | Last Audit | Issues Found | Status |
+| -------------------- | ---------- | ------------ | ------ |
+| AGENTS.md            | 2026-02-25 | 22 fixed     | ✅     |
+| API.md               | 2026-02-25 | 60+ fixed    | ✅     |
+| ARCHITECTURE.md      | 2026-02-25 | 25 fixed     | ✅     |
+| DEPLOY.md            | 2026-02-25 | 5 fixed      | ✅     |
+| DISASTER_RECOVERY.md | 2026-02-25 | 9 fixed      | ✅     |
+| DOCKER.md            | 2026-02-25 | 7 fixed      | ✅     |
+| GETTING_STARTED.md   | 2026-02-25 | 6 fixed      | ✅     |
+| MEMORY.md            | 2026-02-25 | 20+ fixed    | ✅     |
+| SECURITY.md          | 2026-02-25 | 5 fixed      | ✅     |
+| SOC2-COMPLIANCE.md   | 2026-02-25 | 13 fixed     | ✅     |
 
 Full report: [docs-audit.md](./docs-audit.md)

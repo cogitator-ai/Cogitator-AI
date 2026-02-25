@@ -119,6 +119,7 @@ config: {
     max: 100,
     message: 'Too many requests',
     keyGenerator: (req) => req.ip ?? 'unknown',
+    trustProxy: false, // set true if behind a trusted reverse proxy to use X-Forwarded-For
   },
 }
 ```

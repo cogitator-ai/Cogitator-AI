@@ -19,12 +19,16 @@ function cleanupExpired(): void {
 
 setInterval(cleanupExpired, 60000);
 
-function defaultKeyGenerator(req: Request): string {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string') {
-    return forwarded.split(',')[0].trim();
-  }
-  return req.ip || req.socket.remoteAddress || 'unknown';
+function buildKeyGenerator(trustProxy: boolean) {
+  return (req: Request): string => {
+    if (trustProxy) {
+      const forwarded = req.headers['x-forwarded-for'];
+      if (typeof forwarded === 'string') {
+        return forwarded.split(',')[0].trim();
+      }
+    }
+    return req.ip || req.socket.remoteAddress || `unknown-${Math.random()}`;
+  };
 }
 
 export function createRateLimitMiddleware(config: RateLimitConfig) {
@@ -32,7 +36,7 @@ export function createRateLimitMiddleware(config: RateLimitConfig) {
     windowMs,
     max,
     message = 'Too many requests, please try again later',
-    keyGenerator = defaultKeyGenerator,
+    keyGenerator = buildKeyGenerator(config.trustProxy ?? false),
     skip,
   } = config;
 

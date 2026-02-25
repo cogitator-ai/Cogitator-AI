@@ -1,5 +1,22 @@
 # @cogitator-ai/express
 
+## 0.2.4
+
+### Patch Changes
+
+- fix(express): audit — 8 bugs fixed, +43 tests, v0.2.4
+  - Fixed redundant CORS condition check (cors.ts)
+  - Fixed X-Forwarded-For spoofing: added `trustProxy` option to RateLimitConfig (default false)
+  - Fixed 'unknown' shared rate-limit bucket for IP-less requests
+  - Fixed thread timestamps using actual MemoryEntry.createdAt instead of Date.now()
+  - Fixed AbortController overwrite without aborting previous in ws-handler
+  - Fixed WebSocket OPEN magic number with named constant
+  - Fixed notFoundHandler using AGENT_NOT_FOUND code for generic 404 → 'NOT_FOUND'
+  - Added missing ExpressMiddleware type export
+  - Added 43 unit tests (middleware, streaming, routes)
+  - Added vitest + supertest to devDependencies
+  - Updated docs with trustProxy option
+
 ## 0.2.3
 
 ### Patch Changes

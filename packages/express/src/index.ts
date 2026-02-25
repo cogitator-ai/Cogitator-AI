@@ -29,6 +29,7 @@ export type {
   WebSocketMessage,
   WebSocketResponse,
   OpenAPISpec,
+  ExpressMiddleware,
 } from './types.js';
 
 export {

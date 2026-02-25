@@ -16,7 +16,7 @@ The WASM sandbox uses [Extism](https://extism.org/) to execute code in a WebAsse
 - **No Filesystem Access**: By default, WASM modules cannot access the host filesystem
 - **No Network Access**: WASM modules cannot make network requests without explicit host functions
 - **CPU Limits**: Execution can be time-bounded via timeout configuration
-- **Memory Limits**: WASM memory can be limited via `memoryPages` configuration (64KB per page)
+- **Memory Limits**: `memoryPages` is defined in `SandboxWasmConfig` (64KB per page) but is not currently enforced at the Extism level; rely on `timeout` and output size limits instead
 
 **Configuration:**
 
@@ -51,14 +51,14 @@ Docker provides container-level isolation for more complex tool execution.
 ```typescript
 const config: SandboxConfig = {
   type: 'docker',
-  image: 'cogitator/sandbox:latest',
+  image: 'alpine:3.19',
+  timeout: 30000, // 30 seconds
   resources: {
-    cpuLimit: 1, // 1 CPU core
-    memoryLimit: '512m', // 512MB RAM
-    timeout: 30000, // 30 seconds
+    cpus: 1, // 1 CPU core
+    memory: '512m', // 512MB RAM
   },
   network: {
-    enabled: false, // No network access
+    mode: 'none', // No network access
   },
   mounts: [], // No host mounts
 };
@@ -124,11 +124,10 @@ Native execution runs tools directly in the Node.js process.
 
 **Mitigations**:
 
-1. API key authentication (`X-API-Key` header)
-2. JWT authentication for user sessions
-3. RBAC for multi-tenant deployments
-4. Rate limiting to prevent abuse
-5. Audit logging for all API requests
+1. Pluggable auth via `AuthFunction` — implement API key (`X-API-Key`), JWT, or any scheme
+2. Rate limiting built-in via `RateLimitConfig` (windowMs, max, keyGenerator)
+3. CORS control via `CorsConfig` (origin allowlist, credentials, methods)
+4. Auth context (`userId`, `roles`, `permissions`) available to all route handlers
 
 ### Memory and State Security
 
@@ -246,8 +245,8 @@ If you discover a security vulnerability:
 | No filesystem access | ✅     | WASM modules cannot access host filesystem    |
 | No network access    | ✅     | No network primitives available in WASM       |
 | Timeout enforcement  | ✅     | Promise.race with configurable timeout        |
-| Output size limits   | ✅     | MAX_OUTPUT_SIZE = 50KB                        |
-| Plugin caching       | ✅     | LRU cache with configurable size              |
+| Output size limits   | ✅     | MAX_OUTPUT_SIZE = 50,000 bytes                |
+| Plugin caching       | ✅     | FIFO cache with configurable size (cacheSize) |
 
 #### WASI Configuration
 
@@ -279,14 +278,14 @@ When `wasi: true` is enabled:
 
 #### Security Controls Verified
 
-| Control              | Status | Implementation               |
-| -------------------- | ------ | ---------------------------- |
-| Network isolation    | ✅     | `NetworkMode: 'none'`        |
-| Capability dropping  | ✅     | `CapDrop: ['ALL']`           |
-| Privilege escalation | ✅     | `no-new-privileges`          |
-| Non-root user        | ✅     | User namespace mapping       |
-| Resource limits      | ✅     | Memory, CPU, PID limits      |
-| Timeout              | ✅     | Container kill after timeout |
+| Control              | Status | Implementation                                 |
+| -------------------- | ------ | ---------------------------------------------- |
+| Network isolation    | ✅     | `NetworkMode: 'none'`                          |
+| Capability dropping  | ✅     | `CapDrop: ['ALL']`                             |
+| Privilege escalation | ✅     | `no-new-privileges`                            |
+| Non-root user        | ⚠️     | Set via `config.user`; not enforced by default |
+| Resource limits      | ✅     | Memory, CPU, PID limits                        |
+| Timeout              | ✅     | Container kill after timeout                   |
 
 #### Container Pool Security
 

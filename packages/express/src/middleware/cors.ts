@@ -32,7 +32,7 @@ export function createCorsMiddleware(config: CorsConfig) {
   return (req: Request, res: Response, next: NextFunction) => {
     const requestOrigin = req.headers.origin;
 
-    if (origin === '*' || (typeof origin === 'string' && origin === '*')) {
+    if (origin === '*') {
       res.setHeader('Access-Control-Allow-Origin', '*');
     } else if (isOriginAllowed(requestOrigin, origin)) {
       res.setHeader('Access-Control-Allow-Origin', requestOrigin!);

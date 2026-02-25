@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/express",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Express.js server adapter for Cogitator AI runtime",
   "type": "module",
   "exports": {
@@ -17,6 +17,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
@@ -37,9 +39,12 @@
     "@cogitator-ai/workflows": "workspace:*",
     "@cogitator-ai/swarms": "workspace:*",
     "@types/express": "^4.17.21",
+    "@types/supertest": "^6.0.0",
     "@types/ws": "^8.5.0",
     "express": "^4.21.0",
+    "supertest": "^7.0.0",
     "typescript": "^5.6.0",
+    "vitest": "^4.0.18",
     "ws": "^8.18.0"
   },
   "repository": {

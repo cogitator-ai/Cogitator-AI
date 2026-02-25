@@ -58,6 +58,7 @@ export interface RateLimitConfig {
   message?: string;
   keyGenerator?: (req: Request) => string;
   skip?: (req: Request) => boolean;
+  trustProxy?: boolean;
 }
 
 export interface CorsConfig {

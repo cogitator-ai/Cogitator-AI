@@ -154,6 +154,7 @@ async function handleRun(
     return;
   }
 
+  state.abortController?.abort();
   state.abortController = new AbortController();
 
   try {
@@ -210,9 +211,11 @@ async function handleRun(
   }
 }
 
+const WS_OPEN = 1;
+
 function sendResponse(ws: WebSocketType, response: WebSocketResponse): void {
   try {
-    if (ws.readyState === 1) {
+    if (ws.readyState === WS_OPEN) {
       ws.send(JSON.stringify(response));
     }
   } catch {}

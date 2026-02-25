@@ -31,7 +31,7 @@ export function notFoundHandler(_req: Request, res: Response): void {
   res.status(404).json({
     error: {
       message: 'Not found',
-      code: ErrorCode.AGENT_NOT_FOUND,
+      code: 'NOT_FOUND',
     },
   });
 }

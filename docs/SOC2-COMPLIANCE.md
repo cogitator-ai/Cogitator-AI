@@ -65,40 +65,51 @@ Cogitator is an open-source AI agent runtime that processes potentially sensitiv
 
 #### Authentication
 
-| Control                | Implementation                                    | Evidence                                        |
-| ---------------------- | ------------------------------------------------- | ----------------------------------------------- |
-| API Key Authentication | Required `X-API-Key` header for all API endpoints | `packages/dashboard/src/lib/auth/middleware.ts` |
-| JWT Token Validation   | Supabase Auth integration with token verification | `packages/dashboard/src/lib/supabase/`          |
-| Session Management     | Secure session handling with configurable TTL     | Dashboard auth flow                             |
+| Control                | Implementation                                                                          | Evidence                                        |
+| ---------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| API Key Authentication | `Authorization: Bearer cog_*` or `X-API-Key` header; timing-safe comparison via SHA-256 | `packages/dashboard/src/lib/auth/middleware.ts` |
+| Supabase Auth          | JWT session validation via Supabase SSR client                                          | `packages/dashboard/src/lib/supabase/`          |
+| Role-Based Access      | Three roles: `admin`, `user`, `readonly`; enforced via `withRole()` middleware          | `packages/dashboard/src/lib/auth/middleware.ts` |
+| Dev Mode Bypass        | Auth disabled by default in development (`COGITATOR_AUTH_ENABLED=true` to enable)       | `isAuthEnabled()` in middleware                 |
 
 #### Authorization
 
-| Control            | Implementation                           | Evidence                           |
-| ------------------ | ---------------------------------------- | ---------------------------------- |
-| Role-Based Access  | Agent-level permissions for tool access  | `Agent.allowedTools` configuration |
-| Tool Allowlists    | Explicit tool whitelisting per agent     | Agent configuration                |
-| Resource Isolation | Thread-based isolation for conversations | ThreadID-based memory partitioning |
+| Control            | Implementation                                                         | Evidence                                              |
+| ------------------ | ---------------------------------------------------------------------- | ----------------------------------------------------- |
+| Role-Based Access  | `withRole(['admin'])` wrapper on route handlers                        | `packages/dashboard/src/lib/auth/middleware.ts`       |
+| Tool Allowlists    | `tools?: Tool[]` array on AgentConfig limits available tools per agent | AgentConfig interface                                 |
+| Resource Isolation | Thread-based isolation for conversations                               | `threadId`-based memory partitioning in MemoryAdapter |
 
 #### Code Example - API Authentication
 
 ```typescript
-// Authentication middleware
-export async function authenticateRequest(request: Request): Promise<AuthResult> {
-  const apiKey = request.headers.get('X-API-Key');
-
-  if (!apiKey) {
-    return { authenticated: false, error: 'API key required' };
+// From packages/dashboard/src/lib/auth/middleware.ts
+// Accepts Authorization: Bearer cog_* header OR X-API-Key header
+// Uses timing-safe comparison to prevent timing attacks
+export async function getAuthenticatedUser(request: NextRequest): Promise<User | null> {
+  if (!isAuthEnabled()) {
+    return getDefaultUser(); // dev mode
   }
 
-  const hashedKey = await hashApiKey(apiKey);
-  const validKey = await validateApiKey(hashedKey);
-
-  if (!validKey) {
-    await logFailedAuthentication(request);
-    return { authenticated: false, error: 'Invalid API key' };
+  const apiKey = extractApiKeyFromRequest(request); // checks both header forms
+  if (apiKey) {
+    const user = validateApiKey(apiKey); // hashes key internally, timing-safe compare
+    if (user) return user;
   }
 
-  return { authenticated: true, user: validKey.userId };
+  // Fall through to Supabase session auth
+  const supabase = await createSupabaseClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  return user
+    ? {
+        id: user.id,
+        email: user.email,
+        role: user.user_metadata?.role ?? 'user',
+        authMethod: 'session',
+      }
+    : null;
 }
 ```
 
@@ -126,15 +137,15 @@ Cogitator provides three levels of code execution isolation:
 
 ```yaml
 Security Controls:
-  NetworkMode: 'none' # No network access
+  NetworkMode: 'none' # No network access (default)
   CapDrop: ['ALL'] # Drop all capabilities
   SecurityOpt: 'no-new-privileges'
-  ReadonlyRootfs: true # Read-only filesystem
-  User: '1000:1000' # Non-root user
+  ReadonlyRootfs: false # Workspace dir is writable (/workspace)
+  User: configurable # Non-root via SandboxConfig.user (not enforced by default)
   Resources:
-    Memory: '512m'
-    CPUs: '1'
-    PidsLimit: 100
+    Memory: '512m' # via SandboxConfig.resources.memory
+    CPUs: '1' # via SandboxConfig.resources.cpus
+    PidsLimit: 100 # default
 ```
 
 ### CC6.3 - Security Event Monitoring
@@ -236,33 +247,52 @@ logger.info('Configuration loaded', {
 
 #### Health Check Endpoints
 
-| Endpoint        | Purpose         | Response                           |
-| --------------- | --------------- | ---------------------------------- |
-| `/health`       | Basic health    | `200 OK`                           |
-| `/health/live`  | Liveness probe  | `200 OK` if process running        |
-| `/health/ready` | Readiness probe | `200 OK` if dependencies connected |
+Express/Fastify/Hono adapters:
+
+| Endpoint  | Purpose         | Response                           |
+| --------- | --------------- | ---------------------------------- |
+| `/health` | Basic health    | `200 OK` with uptime and timestamp |
+| `/ready`  | Readiness probe | `200 OK` if ready to serve         |
+
+Dashboard (`packages/dashboard`):
+
+| Endpoint            | Purpose         | Response                           |
+| ------------------- | --------------- | ---------------------------------- |
+| `/api/health`       | Basic health    | `200 OK`                           |
+| `/api/health/live`  | Liveness probe  | `200 OK` if process running        |
+| `/api/health/ready` | Readiness probe | `200 OK` if dependencies connected |
 
 ### A1.2 - Capacity Planning
 
 #### Resource Limits Configuration
 
 ```typescript
-const resourceConfig = {
-  agent: {
-    maxIterations: 10, // Prevent infinite loops
-    maxTokens: 4096, // Output token limit
-    timeout: 120000, // 2 minute timeout
-  },
+const cogitator = new Cogitator({
   sandbox: {
-    memoryLimit: '512m',
-    cpuLimit: 1,
-    timeout: 30000,
+    defaults: {
+      type: 'docker',
+      resources: {
+        memory: '512m',
+        cpus: 1,
+        pidsLimit: 100,
+      },
+      timeout: 30000,
+    },
   },
   context: {
-    compressionThreshold: 0.8, // Compress at 80% capacity
-    outputReserve: 0.15, // Reserve 15% for output
+    compressionThreshold: 0.8, // compress at 80% capacity
+    outputReserve: 0.15, // reserve 15% for output
   },
-};
+});
+
+const agent = new Agent({
+  name: 'my-agent',
+  model: 'openai/gpt-4o',
+  instructions: '...',
+  maxIterations: 10, // prevent infinite loops
+  maxTokens: 4096, // output token limit
+  timeout: 120000, // 2 minute timeout per run
+});
 ```
 
 #### Auto-Scaling Metrics
@@ -321,7 +351,9 @@ const validated = AgentInputSchema.parse(userInput);
 #### Tool Argument Validation
 
 ```typescript
-const tool = tool({
+import { tool } from '@cogitator-ai/core';
+
+const searchTool = tool({
   name: 'search',
   description: 'Search the web',
   parameters: z.object({
@@ -329,7 +361,7 @@ const tool = tool({
     limit: z.number().int().min(1).max(100).default(10),
   }),
   execute: async ({ query, limit }) => {
-    // Arguments are guaranteed to match schema
+    // arguments are guaranteed to match schema at runtime
   },
 });
 ```
@@ -339,15 +371,17 @@ const tool = tool({
 #### Transaction Handling
 
 ```typescript
-// Agent execution is atomic per iteration
 const result = await cogitator.run(agent, {
   input: userMessage,
   threadId: threadId,
-  onStep: (step) => {
-    // Each step is logged for auditability
-    logger.info('Agent step', {
-      iteration: step.iteration,
-      toolCalls: step.toolCalls?.length || 0,
+  onToolCall: (call) => {
+    // each tool invocation is logged for auditability
+    logger.info('Tool call', { name: call.name, args: call.arguments });
+  },
+  onRunComplete: (result) => {
+    logger.info('Run complete', {
+      tokens: result.usage.totalTokens,
+      iterations: result.iterations,
     });
   },
 });
@@ -356,13 +390,16 @@ const result = await cogitator.run(agent, {
 #### Retry Logic
 
 ```typescript
+import { withRetry } from '@cogitator-ai/core';
+
 // Built-in retry with exponential backoff
-const retryConfig = {
+const result = await withRetry(() => cogitator.run(agent, { input }), {
   maxRetries: 3,
   baseDelay: 1000,
   maxDelay: 30000,
-  retryOn: [429, 500, 502, 503, 504],
-};
+  backoff: 'exponential',
+  retryIf: (error) => isRetryableError(error), // 429, 5xx, rate limits
+});
 ```
 
 ### PI1.3 - Processing Timeliness
@@ -379,16 +416,15 @@ const retryConfig = {
 #### Streaming Support
 
 ```typescript
-// Stream responses for real-time feedback
-const stream = await cogitator.run(agent, {
+// Stream tokens in real-time via onToken callback
+const result = await cogitator.run(agent, {
   input: message,
   stream: true,
+  onToken: (token) => {
+    process.stdout.write(token);
+  },
 });
-
-for await (const chunk of stream) {
-  // Process chunks in real-time
-  process.stdout.write(chunk.content);
-}
+// result is RunResult, onToken fires incrementally during execution
 ```
 
 ---
@@ -412,11 +448,19 @@ for await (const chunk of stream) {
 
 ```typescript
 // Only store necessary conversation data
-const memoryConfig = {
-  ttl: 86400, // 24 hour retention
-  maxMessages: 100, // Limit stored messages
-  excludeFields: ['apiKey'], // Never store secrets
-};
+const cogitator = new Cogitator({
+  memory: {
+    adapter: 'redis',
+    redis: {
+      url: 'redis://localhost:6379',
+      ttl: 86400, // 24 hour retention (Redis adapter only)
+    },
+    inMemory: {
+      maxEntries: 100, // limit stored messages (in-memory adapter)
+    },
+  },
+});
+// Note: secrets are never stored in memory — only conversation messages are persisted
 ```
 
 #### Log Redaction
@@ -465,17 +509,19 @@ User Input → Cogitator → LLM Provider → Response
 Data collection is controlled by the deploying organization through configuration:
 
 ```typescript
-const config = {
+const cogitator = new Cogitator({
   memory: {
-    enabled: true, // Organization controls persistence
-    adapter: 'postgres',
-    retention: 86400, // Organization sets retention
+    adapter: 'postgres', // organization controls persistence
+    postgres: {
+      connectionString: process.env.DATABASE_URL!,
+    },
+    // Redis TTL controls retention: redis.ttl = 86400 (24h)
   },
-  observability: {
-    enabled: true, // Organization controls tracing
-    provider: 'langfuse',
-  },
-};
+});
+
+// Organization controls tracing by wiring up an exporter:
+const exporter = new LangfuseExporter({ publicKey: '...', secretKey: '...' });
+await cogitator.run(agent, { input, onSpan: (span) => exporter.export(span) });
 ```
 
 ### P3.1 - Personal Information Collection
@@ -483,17 +529,21 @@ const config = {
 #### Configurable Data Collection
 
 ```typescript
-// Organizations can disable memory storage entirely
+// Organizations can disable memory storage entirely by omitting the config
 const cogitator = new Cogitator({
-  memory: {
-    enabled: false, // No conversation storage
-  },
+  // no memory config = no conversation storage
 });
 
-// Or use ephemeral memory
+// Or disable per-run
+const result = await cogitator.run(agent, {
+  input: message,
+  useMemory: false, // skip memory for this run
+});
+
+// Or use ephemeral in-memory storage (cleared on restart)
 const cogitator = new Cogitator({
   memory: {
-    adapter: 'memory', // In-memory only, cleared on restart
+    adapter: 'memory',
   },
 });
 ```
@@ -511,14 +561,18 @@ Personal information is only used for:
 Organizations using Cogitator can implement data subject rights through:
 
 ```typescript
-// Delete user data
-await memoryAdapter.deleteThread(userId, threadId);
+// Delete thread and all its entries
+await memoryAdapter.deleteThread(threadId);
 
-// Export user data
-const userData = await memoryAdapter.getMessages(userId, threadId);
+// Export conversation data for a thread
+const result = await memoryAdapter.getEntries({ threadId });
+const entries = result.data; // MemoryEntry[]
 
-// Access logs
-const auditLogs = await getAuditLogs({ userId, dateRange });
+// Get thread metadata
+const thread = await memoryAdapter.getThread(threadId);
+
+// Clear entries without deleting the thread
+await memoryAdapter.clearThread(threadId);
 ```
 
 ---
@@ -595,17 +649,23 @@ interface AuditLogEntry {
 
 ### Langfuse Integration
 
+Langfuse tracing is configured via the `LangfuseExporter` and passed as the `onSpan` callback in `RunOptions`:
+
 ```typescript
-const cogitator = new Cogitator({
-  observability: {
-    provider: 'langfuse',
-    langfuse: {
-      publicKey: process.env.LANGFUSE_PUBLIC_KEY,
-      secretKey: process.env.LANGFUSE_SECRET_KEY,
-      baseUrl: 'https://cloud.langfuse.com',
-    },
-  },
+import { LangfuseExporter } from '@cogitator-ai/core';
+
+const exporter = new LangfuseExporter({
+  publicKey: process.env.LANGFUSE_PUBLIC_KEY!,
+  secretKey: process.env.LANGFUSE_SECRET_KEY!,
+  baseUrl: 'https://cloud.langfuse.com', // optional
 });
+
+const result = await cogitator.run(agent, {
+  input: message,
+  onSpan: (span) => exporter.export(span),
+});
+
+await exporter.flush(); // ensure spans are sent before shutdown
 ```
 
 Langfuse provides:
@@ -723,32 +783,32 @@ npx snyk test
 
 ### SOC2 Trust Service Criteria Mapping
 
-| TSC                      | Control                    | Implementation                 | Status |
-| ------------------------ | -------------------------- | ------------------------------ | ------ |
-| **Security**             |                            |                                |        |
-| CC6.1                    | Logical access controls    | API authentication, RBAC       | ✅     |
-| CC6.2                    | System access restrictions | Sandbox isolation              | ✅     |
-| CC6.3                    | Security event monitoring  | Audit logging, Langfuse        | ✅     |
-| CC6.6                    | Encryption                 | TLS, encryption at rest        | ✅     |
-| CC6.7                    | Vulnerability management   | Dependency scanning, updates   | ✅     |
-| **Availability**         |                            |                                |        |
-| A1.1                     | System availability        | Health checks, HA architecture | ✅     |
-| A1.2                     | Capacity planning          | Resource limits, auto-scaling  | ✅     |
-| A1.3                     | Backup and recovery        | Database backups, DR plan      | ✅     |
-| **Processing Integrity** |                            |                                |        |
-| PI1.1                    | Processing accuracy        | Input validation (Zod)         | ✅     |
-| PI1.2                    | Processing completeness    | Transaction handling           | ✅     |
-| PI1.3                    | Processing timeliness      | Timeouts, streaming            | ✅     |
-| **Confidentiality**      |                            |                                |        |
-| C1.1                     | Information classification | Data classification policy     | ✅     |
-| C1.2                     | Information protection     | Encryption, access controls    | ✅     |
-| C1.3                     | Information disposal       | TTL, secure deletion           | ✅     |
-| **Privacy**              |                            |                                |        |
-| P1.1                     | Privacy notice             | Configurable by deployer       | ✅     |
-| P2.1                     | Consent                    | Deployer responsibility        | ✅     |
-| P3.1                     | Collection                 | Configurable data collection   | ✅     |
-| P4.1                     | Use                        | Limited to service provision   | ✅     |
-| P6.1                     | Data subject rights        | Export/delete APIs             | ✅     |
+| TSC                      | Control                    | Implementation                                                              | Status |
+| ------------------------ | -------------------------- | --------------------------------------------------------------------------- | ------ |
+| **Security**             |                            |                                                                             |        |
+| CC6.1                    | Logical access controls    | Dashboard: API key + Supabase auth, role-based access (admin/user/readonly) | ✅     |
+| CC6.2                    | System access restrictions | Sandbox isolation                                                           | ✅     |
+| CC6.3                    | Security event monitoring  | Audit logging, Langfuse                                                     | ✅     |
+| CC6.6                    | Encryption                 | TLS, encryption at rest                                                     | ✅     |
+| CC6.7                    | Vulnerability management   | Dependency scanning, updates                                                | ✅     |
+| **Availability**         |                            |                                                                             |        |
+| A1.1                     | System availability        | Health checks, HA architecture                                              | ✅     |
+| A1.2                     | Capacity planning          | Resource limits, auto-scaling                                               | ✅     |
+| A1.3                     | Backup and recovery        | Database backups, DR plan                                                   | ✅     |
+| **Processing Integrity** |                            |                                                                             |        |
+| PI1.1                    | Processing accuracy        | Input validation (Zod)                                                      | ✅     |
+| PI1.2                    | Processing completeness    | Transaction handling                                                        | ✅     |
+| PI1.3                    | Processing timeliness      | Timeouts, streaming                                                         | ✅     |
+| **Confidentiality**      |                            |                                                                             |        |
+| C1.1                     | Information classification | Data classification policy                                                  | ✅     |
+| C1.2                     | Information protection     | Encryption, access controls                                                 | ✅     |
+| C1.3                     | Information disposal       | TTL, secure deletion                                                        | ✅     |
+| **Privacy**              |                            |                                                                             |        |
+| P1.1                     | Privacy notice             | Configurable by deployer                                                    | ✅     |
+| P2.1                     | Consent                    | Deployer responsibility                                                     | ✅     |
+| P3.1                     | Collection                 | Configurable data collection                                                | ✅     |
+| P4.1                     | Use                        | Limited to service provision                                                | ✅     |
+| P6.1                     | Data subject rights        | Export/delete APIs                                                          | ✅     |
 
 ---
 

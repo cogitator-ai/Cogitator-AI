@@ -230,6 +230,7 @@ app.use(
     windowMs: 60000,
     max: 100,
     keyGenerator: (req) => req.headers['x-api-key'] as string,
+    trustProxy: false, // set true if behind a trusted reverse proxy
   })
 );
 ```
