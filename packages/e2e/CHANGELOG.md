@@ -1,5 +1,12 @@
 # @cogitator-ai/e2e
 
+## 0.1.12
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/hono@0.1.3
+
 ## 0.1.11
 
 ### Patch Changes

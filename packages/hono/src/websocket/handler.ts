@@ -3,14 +3,8 @@ import { generateId } from '@cogitator-ai/server-shared';
 import type { HonoEnv, WebSocketMessage, WebSocketResponse, CogitatorContext } from '../types.js';
 import type { ToolCall } from '@cogitator-ai/types';
 
-interface Subscription {
-  channel: string;
-  callback: (data: unknown) => void;
-}
-
 interface ClientState {
   id: string;
-  subscriptions: Map<string, Subscription>;
   abortController?: AbortController;
 }
 
@@ -33,13 +27,21 @@ export async function handleWebSocketMessage(
   ctx: CogitatorContext,
   state: ClientState
 ): Promise<void> {
+  let message: WebSocketMessage;
   try {
-    const message = JSON.parse(data) as WebSocketMessage;
+    message = JSON.parse(data) as WebSocketMessage;
+  } catch {
+    sendResponse(socket, { type: 'error', error: 'Invalid JSON message' });
+    return;
+  }
+
+  try {
     await processMessage(socket, message, ctx, state);
   } catch (error) {
     sendResponse(socket, {
       type: 'error',
-      error: error instanceof Error ? error.message : 'Invalid message',
+      id: message.id,
+      error: error instanceof Error ? error.message : 'Unknown error',
     });
   }
 }
@@ -47,7 +49,6 @@ export async function handleWebSocketMessage(
 export function createClientState(): ClientState {
   return {
     id: generateId('ws'),
-    subscriptions: new Map(),
   };
 }
 
@@ -60,25 +61,6 @@ async function processMessage(
   switch (message.type) {
     case 'ping':
       sendResponse(socket, { type: 'pong' });
-      break;
-
-    case 'subscribe':
-      if (message.channel) {
-        state.subscriptions.set(message.channel, {
-          channel: message.channel,
-          callback: (payload) => {
-            sendResponse(socket, { type: 'event', channel: message.channel, payload });
-          },
-        });
-        sendResponse(socket, { type: 'subscribed', channel: message.channel });
-      }
-      break;
-
-    case 'unsubscribe':
-      if (message.channel) {
-        state.subscriptions.delete(message.channel);
-        sendResponse(socket, { type: 'unsubscribed', channel: message.channel });
-      }
       break;
 
     case 'run':
@@ -107,6 +89,11 @@ async function handleRun(
 
   if (!payload?.type || !payload?.name || !payload?.input) {
     sendResponse(socket, { type: 'error', id: message.id, error: 'Invalid run payload' });
+    return;
+  }
+
+  if (state.abortController) {
+    sendResponse(socket, { type: 'error', id: message.id, error: 'A run is already in progress' });
     return;
   }
 
@@ -156,6 +143,49 @@ async function handleRun(
         id: message.id,
         payload: { type: 'complete', result },
       });
+    } else if (payload.type === 'workflow') {
+      const workflow = ctx.workflows[payload.name];
+      if (!workflow) {
+        sendResponse(socket, {
+          type: 'error',
+          id: message.id,
+          error: `Workflow '${payload.name}' not found`,
+        });
+        return;
+      }
+
+      const { WorkflowExecutor } = await import('@cogitator-ai/workflows');
+      const executor = new WorkflowExecutor(ctx.runtime);
+      const result = await executor.execute(workflow, { input: payload.input });
+
+      sendResponse(socket, {
+        type: 'event',
+        id: message.id,
+        payload: { type: 'complete', result },
+      });
+    } else if (payload.type === 'swarm') {
+      const swarmConfig = ctx.swarms[payload.name];
+      if (!swarmConfig) {
+        sendResponse(socket, {
+          type: 'error',
+          id: message.id,
+          error: `Swarm '${payload.name}' not found`,
+        });
+        return;
+      }
+
+      const { Swarm } = await import('@cogitator-ai/swarms');
+      const swarm = new Swarm(ctx.runtime, swarmConfig);
+      const result = await swarm.run({
+        input: payload.input,
+        context: payload.context,
+      });
+
+      sendResponse(socket, {
+        type: 'event',
+        id: message.id,
+        payload: { type: 'complete', result },
+      });
     }
   } catch (error) {
     if (state.abortController?.signal.aborted) {
@@ -167,6 +197,8 @@ async function handleRun(
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }
+  } finally {
+    state.abortController = undefined;
   }
 }
 

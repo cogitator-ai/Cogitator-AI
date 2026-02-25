@@ -59,7 +59,6 @@ interface CogitatorAppOptions {
   swagger?: SwaggerConfig;
   enableWebSocket?: boolean;
   websocket?: WebSocketConfig;
-  requestTimeout?: number;
 }
 ```
 
@@ -99,15 +98,15 @@ export default { fetch: app.fetch };
 
 ## Authentication
 
-The auth function receives a `CogitatorContext` object and returns an `AuthContext`:
+The auth function receives Hono's `Context<HonoEnv>` and returns an `AuthContext`:
 
 ```typescript
 const app = cogitatorApp({
   cogitator,
   agents: { summarizer },
   auth: async (c) => {
-    const token = c.runtime; // access context as needed
-    // your validation logic
+    const token = c.req.header('Authorization')?.replace('Bearer ', '');
+    if (!token) throw new Error('No token');
     return { userId: 'user_123', roles: ['admin'] };
   },
 });
@@ -213,6 +212,9 @@ import {
   createWorkflowRoutes,
   createSwarmRoutes,
   createSwaggerRoutes,
+  createWebSocketRoutes,
+  handleWebSocketMessage,
+  createClientState,
   HonoStreamWriter,
 } from '@cogitator-ai/hono';
 ```

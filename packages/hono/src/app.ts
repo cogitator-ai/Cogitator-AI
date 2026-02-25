@@ -12,6 +12,7 @@ import {
   createSwarmRoutes,
 } from './routes/index.js';
 import { createSwaggerRoutes } from './swagger/index.js';
+import { createWebSocketRoutes } from './websocket/handler.js';
 
 export function cogitatorApp(opts: CogitatorAppOptions): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
@@ -34,9 +35,7 @@ export function cogitatorApp(opts: CogitatorAppOptions): Hono<HonoEnv> {
   }
 
   if (opts.enableWebSocket) {
-    void import('./websocket/handler.js').then(({ createWebSocketRoutes }) => {
-      app.route('/', createWebSocketRoutes(opts.websocket?.path));
-    });
+    app.route('/', createWebSocketRoutes(opts.websocket?.path));
   }
 
   app.onError(errorHandler);

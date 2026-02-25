@@ -45,6 +45,12 @@ export {
 
 export { createSwaggerRoutes } from './swagger/index.js';
 
+export {
+  createWebSocketRoutes,
+  handleWebSocketMessage,
+  createClientState,
+} from './websocket/handler.js';
+
 export type { StreamEvent, Usage } from '@cogitator-ai/server-shared';
 
 export {

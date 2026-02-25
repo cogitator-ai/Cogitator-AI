@@ -53,6 +53,7 @@ export class HonoStreamWriter {
   }
 
   async toolCallDelta(id: string, argsTextDelta: string): Promise<void> {
+    if (!argsTextDelta) return;
     await this.write(createToolCallDeltaEvent(id, argsTextDelta));
   }
 
@@ -77,6 +78,7 @@ export class HonoStreamWriter {
   }
 
   async finish(messageId: string, usage?: Usage): Promise<void> {
+    if (this.closed) return;
     await this.write(createFinishEvent(messageId, usage));
     await this.stream.writeSSE({ data: '[DONE]', event: 'message' });
   }
@@ -84,6 +86,9 @@ export class HonoStreamWriter {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    try {
+      this.stream.abort();
+    } catch {}
   }
 
   get isClosed(): boolean {

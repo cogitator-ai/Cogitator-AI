@@ -29,7 +29,13 @@ export function createAgentRoutes(): Hono<HonoEnv> {
       return c.json({ error: { message: `Agent '${name}' not found`, code: 'NOT_FOUND' } }, 404);
     }
 
-    const body = await c.req.json<AgentRunRequest>();
+    let body: AgentRunRequest;
+    try {
+      body = await c.req.json<AgentRunRequest>();
+    } catch {
+      return c.json({ error: { message: 'Invalid JSON body', code: 'INVALID_INPUT' } }, 400);
+    }
+
     if (!body?.input) {
       return c.json(
         { error: { message: 'Missing required field: input', code: 'INVALID_INPUT' } },
@@ -37,27 +43,32 @@ export function createAgentRoutes(): Hono<HonoEnv> {
       );
     }
 
-    const result = await ctx.runtime.run(agent, {
-      input: body.input,
-      context: body.context,
-      threadId: body.threadId,
-    });
+    try {
+      const result = await ctx.runtime.run(agent, {
+        input: body.input,
+        context: body.context,
+        threadId: body.threadId,
+      });
 
-    const response: AgentRunResponse = {
-      output: result.output,
-      threadId: result.threadId,
-      usage: {
-        inputTokens: result.usage.inputTokens,
-        outputTokens: result.usage.outputTokens,
-        totalTokens: result.usage.totalTokens,
-      },
-      toolCalls: [...result.toolCalls],
-    };
+      const response: AgentRunResponse = {
+        output: result.output,
+        threadId: result.threadId,
+        usage: {
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          totalTokens: result.usage.totalTokens,
+        },
+        toolCalls: [...result.toolCalls],
+      };
 
-    return c.json(response);
+      return c.json(response);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return c.json({ error: { message, code: 'INTERNAL' } }, 500);
+    }
   });
 
-  app.post('/agents/:name/stream', (c) => {
+  app.post('/agents/:name/stream', async (c) => {
     const ctx = c.get('cogitator');
     const name = c.req.param('name');
     const agent = ctx.agents[name];
@@ -66,24 +77,33 @@ export function createAgentRoutes(): Hono<HonoEnv> {
       return c.json({ error: { message: `Agent '${name}' not found`, code: 'NOT_FOUND' } }, 404);
     }
 
-    return streamSSE(c, async (stream) => {
-      const body = await c.req.json<AgentRunRequest>();
-      if (!body?.input) {
-        await stream.writeSSE({
-          data: JSON.stringify({ type: 'error', message: 'Missing required field: input' }),
-          event: 'message',
-        });
-        return;
-      }
+    let body: AgentRunRequest;
+    try {
+      body = await c.req.json<AgentRunRequest>();
+    } catch {
+      return c.json({ error: { message: 'Invalid JSON body', code: 'INVALID_INPUT' } }, 400);
+    }
 
+    if (!body?.input) {
+      return c.json(
+        { error: { message: 'Missing required field: input', code: 'INVALID_INPUT' } },
+        400
+      );
+    }
+
+    return streamSSE(c, async (stream) => {
       const writer = new HonoStreamWriter(stream);
       const messageId = generateId('msg');
 
       stream.onAbort(() => writer.close());
 
+      let textStarted = false;
+      let textId = '';
+
       try {
         await writer.start(messageId);
-        const textId = generateId('txt');
+        textId = generateId('txt');
+        textStarted = true;
         await writer.textStart(textId);
 
         const result = await ctx.runtime.run(agent, {
@@ -112,6 +132,9 @@ export function createAgentRoutes(): Hono<HonoEnv> {
           totalTokens: result.usage.totalTokens,
         });
       } catch (error) {
+        if (textStarted) {
+          await writer.textEnd(textId);
+        }
         const message = error instanceof Error ? error.message : 'Unknown error';
         await writer.error(message, 'INTERNAL');
       } finally {

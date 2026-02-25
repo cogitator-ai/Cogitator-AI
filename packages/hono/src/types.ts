@@ -1,3 +1,4 @@
+import type { Context as HonoContext } from 'hono';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 import type {
   Message,
@@ -39,7 +40,7 @@ export interface AuthContext {
 }
 
 export type AuthFunction = (
-  c: CogitatorContext
+  c: HonoContext<HonoEnv>
 ) => Promise<AuthContext | undefined> | AuthContext | undefined;
 
 export interface WebSocketConfig {
@@ -62,7 +63,6 @@ export interface CogitatorAppOptions {
   swagger?: SwaggerConfig;
   enableWebSocket?: boolean;
   websocket?: WebSocketConfig;
-  requestTimeout?: number;
 }
 
 export interface CogitatorContext {
@@ -216,16 +216,14 @@ export interface ErrorResponse {
 }
 
 export interface WebSocketMessage {
-  type: 'subscribe' | 'unsubscribe' | 'run' | 'stop' | 'ping';
+  type: 'run' | 'stop' | 'ping';
   id?: string;
-  channel?: string;
   payload?: unknown;
 }
 
 export interface WebSocketResponse {
-  type: 'subscribed' | 'unsubscribed' | 'event' | 'error' | 'pong';
+  type: 'event' | 'error' | 'pong';
   id?: string;
-  channel?: string;
   payload?: unknown;
   error?: string;
 }

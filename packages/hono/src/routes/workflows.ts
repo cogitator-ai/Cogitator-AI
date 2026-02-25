@@ -33,7 +33,12 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
       return c.json({ error: { message: `Workflow '${name}' not found`, code: 'NOT_FOUND' } }, 404);
     }
 
-    const body = await c.req.json<WorkflowRunRequest>();
+    let body: WorkflowRunRequest | undefined;
+    try {
+      body = await c.req.json<WorkflowRunRequest>();
+    } catch {
+      return c.json({ error: { message: 'Invalid JSON body', code: 'INVALID_INPUT' } }, 400);
+    }
 
     try {
       const { WorkflowExecutor } = await import('@cogitator-ai/workflows');
@@ -67,7 +72,7 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
     }
   });
 
-  app.post('/workflows/:name/stream', (c) => {
+  app.post('/workflows/:name/stream', async (c) => {
     const ctx = c.get('cogitator');
     const name = c.req.param('name');
     const workflow = ctx.workflows[name];
@@ -76,8 +81,14 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
       return c.json({ error: { message: `Workflow '${name}' not found`, code: 'NOT_FOUND' } }, 404);
     }
 
+    let body: WorkflowRunRequest | undefined;
+    try {
+      body = await c.req.json<WorkflowRunRequest>();
+    } catch {
+      return c.json({ error: { message: 'Invalid JSON body', code: 'INVALID_INPUT' } }, 400);
+    }
+
     return streamSSE(c, async (stream) => {
-      const body = await c.req.json<WorkflowRunRequest>();
       const writer = new HonoStreamWriter(stream);
       const messageId = generateId('wf');
 

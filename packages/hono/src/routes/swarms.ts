@@ -39,7 +39,13 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
       return c.json({ error: { message: `Swarm '${name}' not found`, code: 'NOT_FOUND' } }, 404);
     }
 
-    const body = await c.req.json<SwarmRunRequest>();
+    let body: SwarmRunRequest;
+    try {
+      body = await c.req.json<SwarmRunRequest>();
+    } catch {
+      return c.json({ error: { message: 'Invalid JSON body', code: 'INVALID_INPUT' } }, 400);
+    }
+
     if (!body?.input) {
       return c.json(
         { error: { message: 'Missing required field: input', code: 'INVALID_INPUT' } },
@@ -94,7 +100,7 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
     }
   });
 
-  app.post('/swarms/:name/stream', (c) => {
+  app.post('/swarms/:name/stream', async (c) => {
     const ctx = c.get('cogitator');
     const name = c.req.param('name');
     const swarmConfig = ctx.swarms[name];
@@ -103,16 +109,21 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
       return c.json({ error: { message: `Swarm '${name}' not found`, code: 'NOT_FOUND' } }, 404);
     }
 
-    return streamSSE(c, async (stream) => {
-      const body = await c.req.json<SwarmRunRequest>();
-      if (!body?.input) {
-        await stream.writeSSE({
-          data: JSON.stringify({ type: 'error', message: 'Missing required field: input' }),
-          event: 'message',
-        });
-        return;
-      }
+    let body: SwarmRunRequest;
+    try {
+      body = await c.req.json<SwarmRunRequest>();
+    } catch {
+      return c.json({ error: { message: 'Invalid JSON body', code: 'INVALID_INPUT' } }, 400);
+    }
 
+    if (!body?.input) {
+      return c.json(
+        { error: { message: 'Missing required field: input', code: 'INVALID_INPUT' } },
+        400
+      );
+    }
+
+    return streamSSE(c, async (stream) => {
       const writer = new HonoStreamWriter(stream);
       const messageId = generateId('swarm');
 

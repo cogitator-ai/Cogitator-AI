@@ -40,15 +40,17 @@ Creates a Hono sub-application with all Cogitator endpoints.
 
 **Options:**
 
-| Option            | Type                          | Description                              |
-| ----------------- | ----------------------------- | ---------------------------------------- |
-| `cogitator`       | `Cogitator`                   | **Required.** Cogitator runtime instance |
-| `agents`          | `Record<string, Agent>`       | Named agents to expose                   |
-| `workflows`       | `Record<string, Workflow>`    | Named workflows                          |
-| `swarms`          | `Record<string, SwarmConfig>` | Named swarms                             |
-| `auth`            | `(ctx) => AuthContext`        | Authentication function                  |
-| `enableWebSocket` | `boolean`                     | Enable WebSocket support                 |
-| `websocket`       | `WebSocketConfig`             | WebSocket configuration                  |
+| Option            | Type                          | Description                                     |
+| ----------------- | ----------------------------- | ----------------------------------------------- |
+| `cogitator`       | `Cogitator`                   | **Required.** Cogitator runtime instance        |
+| `agents`          | `Record<string, Agent>`       | Named agents to expose                          |
+| `workflows`       | `Record<string, Workflow>`    | Named workflows                                 |
+| `swarms`          | `Record<string, SwarmConfig>` | Named swarms                                    |
+| `auth`            | `(c: Context) => AuthContext` | Authentication function (receives Hono Context) |
+| `enableSwagger`   | `boolean`                     | Enable Swagger/OpenAPI docs                     |
+| `swagger`         | `SwaggerConfig`               | Swagger configuration                           |
+| `enableWebSocket` | `boolean`                     | Enable WebSocket support                        |
+| `websocket`       | `WebSocketConfig`             | WebSocket configuration                         |
 
 ## Endpoints
 
@@ -99,8 +101,9 @@ Creates a Hono sub-application with all Cogitator endpoints.
 const api = cogitatorApp({
   cogitator,
   agents: { chat: chatAgent },
-  auth: async (ctx) => {
-    // Your auth logic here
+  auth: async (c) => {
+    const token = c.req.header('Authorization')?.replace('Bearer ', '');
+    if (!token) throw new Error('No token');
     return { userId: 'user-123' };
   },
 });

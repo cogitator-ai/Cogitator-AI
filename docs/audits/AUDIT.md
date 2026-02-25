@@ -14,7 +14,7 @@
 | evals                | 2026-02-25 | 7 fixed      | ✅     |
 | express              | 2026-02-25 | 8 fixed      | ✅     |
 | fastify              | 2026-02-25 | 22 fixed     | ✅     |
-| hono                 | —          | —            | —      |
+| hono                 | 2026-02-25 | 26 fixed     | ✅     |
 | koa                  | —          | —            | —      |
 | mcp                  | —          | —            | —      |
 | memory               | —          | —            | —      |
