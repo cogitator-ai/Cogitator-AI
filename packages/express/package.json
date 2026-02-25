@@ -38,10 +38,10 @@
   "devDependencies": {
     "@cogitator-ai/workflows": "workspace:*",
     "@cogitator-ai/swarms": "workspace:*",
-    "@types/express": "^4.17.21",
+    "@types/express": "^5.0.6",
     "@types/supertest": "^6.0.0",
     "@types/ws": "^8.5.0",
-    "express": "^4.21.0",
+    "express": "^5.2.1",
     "supertest": "^7.0.0",
     "typescript": "^5.6.0",
     "vitest": "^4.0.18",
