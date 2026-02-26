@@ -1,27 +1,15 @@
 import type { CapabilityGap, GeneratedTool, ToolValidationResult } from '@cogitator-ai/types';
 import { extractJson } from '../utils';
 
-export const TOOL_GENERATION_SYSTEM_PROMPT = `You are an expert JavaScript developer specializing in creating tools for AI agents.
-Your task is to generate safe, efficient tool implementations.
+export const TOOL_GENERATION_SYSTEM_PROMPT = `You generate JavaScript tools. Respond with ONLY a JSON object, no other text.
 
-CRITICAL CONSTRAINTS:
-1. Generate ONLY plain JavaScript (ES2020+) - NO TypeScript syntax, NO type annotations, NO interfaces
-2. No external dependencies - only built-in globals (Math, JSON, Date, Array, Object, String, Number, Boolean, RegExp, Map, Set, Error)
-3. All generated code must be self-contained
-4. Never generate code that accesses file system, network, or system resources
-5. Always include proper error handling with try-catch
-6. The implementation MUST define an async function called "execute" that takes a params object and returns a result
-7. Do NOT use: eval, Function, import, require, process, global, fetch, setTimeout, setInterval, constructor
+Rules:
+- Plain JavaScript only, no TypeScript
+- No require/import/eval/process/fetch
+- Must have an async function called "execute"
 
-OUTPUT FORMAT:
-Return a JSON object with:
-{
-  "name": "tool_name",
-  "description": "Clear description of what the tool does",
-  "implementation": "async function execute(params) { ... }",
-  "parameters": { "type": "object", "properties": {...}, "required": [...] },
-  "reasoning": "Why this implementation was chosen"
-}`;
+Example response:
+{"name":"add","description":"Add two numbers","implementation":"async function execute(params) { try { return params.a + params.b; } catch(e) { return 0; } }","parameters":{"type":"object","properties":{"a":{"type":"number"},"b":{"type":"number"}},"required":["a","b"]},"reasoning":"Simple addition"}`;
 
 export function buildGapAnalysisPrompt(
   userIntent: string,
@@ -64,66 +52,19 @@ Respond with a JSON object:
 
 export function buildToolGenerationPrompt(
   gap: CapabilityGap,
-  existingTools: Array<{ name: string; description: string }>,
-  constraints?: {
+  _existingTools: Array<{ name: string; description: string }>,
+  _constraints?: {
     maxLines?: number;
     allowedModules?: string[];
     securityLevel?: 'strict' | 'moderate' | 'permissive';
   }
 ): string {
-  const securityRules = {
-    strict: `
-- NO file system access
-- NO network requests
-- NO eval() or Function constructor
-- NO dynamic imports
-- NO process or child_process access
-- ONLY pure computation`,
-    moderate: `
-- File system access ONLY if explicitly requested
-- Network requests ONLY to whitelisted domains
-- NO eval() or Function constructor
-- NO dynamic imports`,
-    permissive: `
-- File system access allowed with path validation
-- Network requests allowed
-- NO eval() or Function constructor`,
-  };
+  return `Create a tool named "${gap.suggestedToolName}".
+Task: ${gap.description}
+Formula/Logic: ${gap.requiredCapability}
 
-  const security = constraints?.securityLevel || 'strict';
-  const maxLines = constraints?.maxLines || 100;
-
-  return `Generate a plain JavaScript tool implementation for the following capability gap.
-
-CAPABILITY GAP:
-- Description: ${gap.description}
-- Required: ${gap.requiredCapability}
-- Suggested name: ${gap.suggestedToolName}
-- Complexity: ${gap.complexity}
-
-EXISTING TOOLS (avoid duplication):
-${existingTools.map((t) => `- ${t.name}: ${t.description}`).join('\n')}
-
-CONSTRAINTS:
-- Maximum ${maxLines} lines of code
-- Security level: ${security}
-- MUST use plain JavaScript (ES2020+), NO TypeScript syntax, NO type annotations, NO interfaces
-- The "implementation" field must define an async function called "execute" that takes a plain object "params"
-${securityRules[security]}
-${constraints?.allowedModules ? `- Allowed modules: ${constraints.allowedModules.join(', ')}` : ''}
-
-Generate a complete, self-contained tool following this exact structure:
-{
-  "name": "${gap.suggestedToolName}",
-  "description": "Clear description",
-  "implementation": "async function execute(params) { ... }",
-  "parameters": {
-    "type": "object",
-    "properties": { ... },
-    "required": [ ... ]
-  },
-  "reasoning": "Implementation rationale"
-}`;
+Respond with ONLY this JSON (no other text):
+{"name":"${gap.suggestedToolName}","description":"${gap.description}","implementation":"async function execute(params) { try { /* YOUR CODE HERE */ } catch(e) { throw e; } }","parameters":{"type":"object","properties":{/* DEFINE PARAMS */},"required":[/* REQUIRED PARAMS */]},"reasoning":"explanation"}`;
 }
 
 export function buildToolValidationPrompt(

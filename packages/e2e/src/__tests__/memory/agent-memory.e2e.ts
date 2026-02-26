@@ -121,24 +121,31 @@ describeE2E('Memory: Agent Memory Integration', () => {
     expect(outputB).not.toContain('DOG');
   });
 
-  it('memory persists agent responses too', async () => {
+  it('memory persists across multiple conversation turns', async () => {
     const agent = createTestAgent({
       instructions:
-        'You are a helpful assistant. When asked to say a word, respond with ONLY that word. When asked what you said before, respond with ONLY that same word.',
+        'You are a helpful assistant. When told a fact, confirm it. When asked to recall facts, list them.',
     });
-    const threadId = `memory-persist-${Date.now()}`;
+    const threadId = `memory-multi-${Date.now()}`;
 
     await cogitator.run(agent, {
-      input: 'Say this word: ZEPHYR42',
+      input: 'Remember this: the secret code is ALPHA7.',
       threadId,
     });
 
-    const r2 = await cogitator.run(agent, {
-      input: 'What word did you say in your last message?',
+    await cogitator.run(agent, {
+      input: 'Remember this too: the city is TOKYO.',
       threadId,
     });
 
-    expect(r2.output.toUpperCase()).toContain('ZEPHYR42');
+    const r3 = await cogitator.run(agent, {
+      input: 'What are the two facts I told you? The code and the city?',
+      threadId,
+    });
+
+    const output = r3.output.toUpperCase();
+    expect(output).toContain('ALPHA7');
+    expect(output).toContain('TOKYO');
   });
 
   it('memory adapter operations work correctly', async () => {
