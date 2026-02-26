@@ -29,16 +29,24 @@ export function getEvasionScripts(): string[] {
 
     `{
       const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-      HTMLCanvasElement.prototype.toDataURL = function(type) {
+      HTMLCanvasElement.prototype.toDataURL = function(...args) {
         const context = this.getContext('2d');
         if (context) {
-          const imageData = context.getImageData(0, 0, this.width, this.height);
-          for (let i = 0; i < imageData.data.length; i += 4) {
-            imageData.data[i] ^= 1;
+          const temp = document.createElement('canvas');
+          temp.width = this.width;
+          temp.height = this.height;
+          const tempCtx = temp.getContext('2d');
+          if (tempCtx) {
+            tempCtx.drawImage(this, 0, 0);
+            const imageData = tempCtx.getImageData(0, 0, temp.width, temp.height);
+            for (let i = 0; i < imageData.data.length; i += 4) {
+              imageData.data[i] ^= 1;
+            }
+            tempCtx.putImageData(imageData, 0, 0);
+            return origToDataURL.apply(temp, args);
           }
-          context.putImageData(imageData, 0, 0);
         }
-        return origToDataURL.apply(this, arguments);
+        return origToDataURL.apply(this, args);
       };
     }`,
 
@@ -49,6 +57,14 @@ export function getEvasionScripts(): string[] {
         if (param === 37446) return 'Intel Iris OpenGL Engine';
         return getParameter.call(this, param);
       };
+      if (typeof WebGL2RenderingContext !== 'undefined') {
+        const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+        WebGL2RenderingContext.prototype.getParameter = function(param) {
+          if (param === 37445) return 'Intel Inc.';
+          if (param === 37446) return 'Intel Iris OpenGL Engine';
+          return getParameter2.call(this, param);
+        };
+      }
     }`,
 
     `if (!window.chrome) {

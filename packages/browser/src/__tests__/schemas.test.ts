@@ -54,7 +54,9 @@ describe('Navigation schemas', () => {
 
     it('accepts all waitUntil values', () => {
       for (const val of ['load', 'domcontentloaded', 'networkidle', 'commit'] as const) {
-        expect(navigateSchema.parse({ url: 'x', waitUntil: val }).waitUntil).toBe(val);
+        expect(navigateSchema.parse({ url: 'https://example.com', waitUntil: val }).waitUntil).toBe(
+          val
+        );
       }
     });
 
@@ -63,7 +65,13 @@ describe('Navigation schemas', () => {
     });
 
     it('rejects invalid waitUntil', () => {
-      expect(() => navigateSchema.parse({ url: 'x', waitUntil: 'nope' })).toThrow();
+      expect(() =>
+        navigateSchema.parse({ url: 'https://example.com', waitUntil: 'nope' })
+      ).toThrow();
+    });
+
+    it('rejects non-URL string', () => {
+      expect(() => navigateSchema.parse({ url: 'not-a-url' })).toThrow();
     });
 
     it('satisfies NavigateInput type', () => {
@@ -224,8 +232,10 @@ describe('Interaction schemas', () => {
       expect(result.index).toBe(0);
     });
 
-    it('parses with only selector', () => {
-      expect(selectOptionSchema.parse({ selector: 'select' }).selector).toBe('select');
+    it('rejects selector without value/label/index', () => {
+      expect(() => selectOptionSchema.parse({ selector: 'select' })).toThrow(
+        'At least one of value, label, or index is required'
+      );
     });
 
     it('rejects missing selector', () => {

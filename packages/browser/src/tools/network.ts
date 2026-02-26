@@ -173,24 +173,13 @@ export function createBlockResourcesTool(session: BrowserSession, state: Network
     execute: async (params: BlockResourcesInput) => {
       const page = session.page;
       const types = new Set<string>(params.types);
-      const RESOURCE_MAP: Record<string, string> = {
-        image: 'image',
-        stylesheet: 'stylesheet',
-        font: 'font',
-        media: 'media',
-        script: 'script',
-      };
 
       const handler = async (route: {
         request: () => { resourceType: () => string };
         abort: () => Promise<void>;
         continue: () => Promise<void>;
       }) => {
-        const resourceType = route.request().resourceType();
-        if (
-          types.has(resourceType) ||
-          Array.from(types).some((t) => RESOURCE_MAP[t] === resourceType)
-        ) {
+        if (types.has(route.request().resourceType())) {
           await route.abort();
         } else {
           await route.continue();
@@ -228,12 +217,12 @@ export function createCaptureHarTool(session: BrowserSession) {
         harCapturing = true;
         responseHandler = async (response: unknown) => {
           if (!harCapturing) return;
+          const startTime = Date.now();
           const resp = response as {
             request: () => {
               url: () => string;
               method: () => string;
               headers: () => Record<string, string>;
-              timing: () => { responseEnd?: number };
             };
             status: () => number;
             headers: () => Record<string, string>;
@@ -250,7 +239,7 @@ export function createCaptureHarTool(session: BrowserSession) {
             url: request.url(),
             method: request.method(),
             status: resp.status(),
-            timing: request.timing()?.responseEnd ?? 0,
+            timing: Date.now() - startTime,
             requestHeaders: request.headers(),
             responseHeaders: resp.headers(),
             responseBody: body,

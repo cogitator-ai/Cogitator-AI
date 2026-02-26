@@ -53,7 +53,7 @@ export async function elementToInfo(handle: ElementHandle): Promise<ElementInfo>
       text: htmlEl.textContent?.trim().slice(0, 200) ?? '',
       attributes: attrs,
       boundingBox:
-        rect.width > 0
+        rect.width > 0 && rect.height > 0
           ? {
               x: rect.x,
               y: rect.y,

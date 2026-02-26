@@ -47,6 +47,10 @@ export function getRandomUserAgent(browser?: 'chromium' | 'firefox' | 'webkit'):
   return agents[Math.floor(Math.random() * agents.length)];
 }
 
-export function getAllUserAgents(): Record<string, string[]> {
-  return USER_AGENTS;
+export function getAllUserAgents(): Record<'chromium' | 'firefox' | 'webkit', string[]> {
+  return {
+    chromium: [...USER_AGENTS.chromium],
+    firefox: [...USER_AGENTS.firefox],
+    webkit: [...USER_AGENTS.webkit],
+  };
 }

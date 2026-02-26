@@ -1,5 +1,9 @@
 import type { Page, Locator } from 'playwright';
 
+function escapeCssString(str: string): string {
+  return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
 export async function smartSelect(page: Page, identifier: string): Promise<Locator | null> {
   const cssLocator = page.locator(identifier);
   if ((await cssLocator.count()) > 0) return cssLocator.first();
@@ -16,16 +20,17 @@ export async function smartSelect(page: Page, identifier: string): Promise<Locat
 }
 
 export async function findFormField(page: Page, label: string): Promise<Locator | null> {
+  const escaped = escapeCssString(label);
   const strategies: Array<() => Locator> = [
-    () => page.locator(`input[name="${label}"]`),
-    () => page.locator(`input[placeholder="${label}"]`),
-    () => page.locator(`input[aria-label="${label}"]`),
-    () => page.locator(`textarea[name="${label}"]`),
-    () => page.locator(`textarea[placeholder="${label}"]`),
-    () => page.locator(`select[name="${label}"]`),
-    () => page.locator(`label:has-text("${label}") input`),
-    () => page.locator(`label:has-text("${label}") textarea`),
-    () => page.locator(`label:has-text("${label}") select`),
+    () => page.locator(`input[name="${escaped}"]`),
+    () => page.locator(`input[placeholder="${escaped}"]`),
+    () => page.locator(`input[aria-label="${escaped}"]`),
+    () => page.locator(`textarea[name="${escaped}"]`),
+    () => page.locator(`textarea[placeholder="${escaped}"]`),
+    () => page.locator(`select[name="${escaped}"]`),
+    () => page.locator(`label:has-text("${escaped}") input`),
+    () => page.locator(`label:has-text("${escaped}") textarea`),
+    () => page.locator(`label:has-text("${escaped}") select`),
     () => page.getByLabel(label),
   ];
 

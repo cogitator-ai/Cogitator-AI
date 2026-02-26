@@ -10,6 +10,7 @@ import {
   type FindByDescriptionInput,
   type ClickByDescriptionInput,
 } from '../utils/schemas';
+import type { AccessibilityNode } from '../utils/page-helpers';
 
 export function createScreenshotTool(session: BrowserSession) {
   return tool({
@@ -23,7 +24,7 @@ export function createScreenshotTool(session: BrowserSession) {
       const page = session.page;
       const options: Record<string, unknown> = { type: 'png' as const };
       if (params.fullPage) options.fullPage = true;
-      if (params.quality) {
+      if (params.quality != null) {
         options.type = 'jpeg';
         options.quality = params.quality;
       }
@@ -66,12 +67,6 @@ export function createScreenshotElementTool(session: BrowserSession) {
   });
 }
 
-interface AccessibilityNode {
-  role?: string;
-  name?: string;
-  children?: AccessibilityNode[];
-}
-
 export function createFindByDescriptionTool(session: BrowserSession) {
   return tool({
     name: 'browser_find_by_description',
@@ -93,12 +88,12 @@ export function createFindByDescriptionTool(session: BrowserSession) {
       function walk(node: AccessibilityNode) {
         const name = (node.name ?? '').toLowerCase();
         const role = (node.role ?? '').toLowerCase();
-        if (
-          name.includes(description) ||
-          description.includes(name) ||
-          role.includes(description)
-        ) {
-          if (name) {
+        if (name.length >= 2) {
+          if (
+            name.includes(description) ||
+            (name.length >= 3 && description.toLowerCase().includes(name.toLowerCase())) ||
+            role.includes(description)
+          ) {
             matches.push({
               role: node.role ?? '',
               name: node.name ?? '',

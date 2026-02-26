@@ -89,13 +89,22 @@ export function createGetLinksTool(session: BrowserSession) {
           const scope = selector ? document.querySelector(selector) : document;
           if (!scope) return [];
           const anchors = scope.querySelectorAll('a');
-          return Array.from(anchors).map((a) => ({
-            text: a.textContent?.trim() ?? '',
-            href: baseUrl
-              ? new URL(a.getAttribute('href') ?? '', baseUrl).href
-              : (a.getAttribute('href') ?? ''),
-            title: a.getAttribute('title') ?? undefined,
-          }));
+          return Array.from(anchors).map((a) => {
+            const rawHref = a.getAttribute('href') ?? '';
+            let href = rawHref;
+            if (baseUrl) {
+              try {
+                href = new URL(rawHref, baseUrl).href;
+              } catch {
+                href = rawHref;
+              }
+            }
+            return {
+              text: a.textContent?.trim() ?? '',
+              href,
+              title: a.getAttribute('title') ?? undefined,
+            };
+          });
         },
         { selector: params.selector, baseUrl: params.baseUrl }
       );

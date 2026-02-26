@@ -59,6 +59,13 @@ export class BrowserSession {
     if (!this._pages.length) {
       throw new Error('BrowserSession not started');
     }
+    if (this._pages[this._activePageIndex].isClosed()) {
+      const openIdx = this._pages.findIndex((p) => !p.isClosed());
+      if (openIdx === -1) {
+        throw new Error('All pages are closed');
+      }
+      this._activePageIndex = openIdx;
+    }
     return this._pages[this._activePageIndex];
   }
 
@@ -75,6 +82,10 @@ export class BrowserSession {
   }
 
   async start(): Promise<void> {
+    if (this._browser) {
+      throw new Error('Session already started. Call close() first.');
+    }
+
     const pw = await import('playwright');
 
     const launchOptions: Record<string, unknown> = {
@@ -186,7 +197,14 @@ export class BrowserSession {
   async loadCookies(filePath: string): Promise<void> {
     const { readFile } = await import('node:fs/promises');
     const data = await readFile(filePath, 'utf-8');
-    const cookies: BrowserCookie[] = JSON.parse(data);
+    const parsed: unknown[] = JSON.parse(data);
+    const cookies = parsed.filter(
+      (c): c is BrowserCookie =>
+        typeof c === 'object' &&
+        c !== null &&
+        typeof (c as Record<string, unknown>).name === 'string' &&
+        typeof (c as Record<string, unknown>).value === 'string'
+    );
     await this.setCookies(cookies);
   }
 

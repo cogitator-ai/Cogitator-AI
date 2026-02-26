@@ -79,7 +79,7 @@ export function createSelectOptionTool(session: BrowserSession) {
     parameters: selectOptionSchema,
     execute: async (params: SelectOptionInput) => {
       const page = session.page;
-      const opts: Record<string, unknown> = {};
+      const opts: { value?: string; label?: string; index?: number } = {};
       if (params.value !== undefined) opts.value = params.value;
       if (params.label !== undefined) opts.label = params.label;
       if (params.index !== undefined) opts.index = params.index;
@@ -193,7 +193,6 @@ export function createFillFormTool(session: BrowserSession) {
 
       for (const [key, value] of Object.entries(params.fields)) {
         const selectors = buildFieldSelectors(key);
-        let found = false;
 
         for (const sel of selectors) {
           const loc = page.locator(sel);
@@ -220,14 +219,14 @@ export function createFillFormTool(session: BrowserSession) {
           }
 
           filled.push(key);
-          found = true;
           break;
         }
-
-        void found;
       }
 
-      return { filled };
+      return {
+        filled,
+        skipped: Object.keys(params.fields).filter((k) => !filled.includes(k)),
+      };
     },
   });
 }

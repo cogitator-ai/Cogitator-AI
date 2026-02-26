@@ -350,7 +350,7 @@ describe('interaction tools', () => {
 
       expect(mockPage.locator).toHaveBeenCalled();
       expect(mockLocatorFirst.fill).toHaveBeenCalledWith('john');
-      expect(result).toEqual({ filled: ['username'] });
+      expect(result).toEqual({ filled: ['username'], skipped: [] });
     });
 
     it('checks boolean true fields', async () => {
@@ -359,7 +359,7 @@ describe('interaction tools', () => {
       const result = await t.execute({ fields: { agree: true } }, dummyContext);
 
       expect(mockLocatorFirst.check).toHaveBeenCalled();
-      expect(result).toEqual({ filled: ['agree'] });
+      expect(result).toEqual({ filled: ['agree'], skipped: [] });
     });
 
     it('unchecks boolean false fields', async () => {
@@ -368,7 +368,7 @@ describe('interaction tools', () => {
       const result = await t.execute({ fields: { newsletter: false } }, dummyContext);
 
       expect(mockLocatorFirst.uncheck).toHaveBeenCalled();
-      expect(result).toEqual({ filled: ['newsletter'] });
+      expect(result).toEqual({ filled: ['newsletter'], skipped: [] });
     });
 
     it('selects option for array fields', async () => {
@@ -377,7 +377,7 @@ describe('interaction tools', () => {
       const result = await t.execute({ fields: { colors: ['red', 'blue'] } }, dummyContext);
 
       expect(mockLocatorFirst.selectOption).toHaveBeenCalledWith(['red', 'blue']);
-      expect(result).toEqual({ filled: ['colors'] });
+      expect(result).toEqual({ filled: ['colors'], skipped: [] });
     });
 
     it('tries multiple selectors to find input', async () => {
@@ -393,7 +393,7 @@ describe('interaction tools', () => {
       const result = await t.execute({ fields: { email: 'test@test.com' } }, dummyContext);
 
       expect(mockPage.locator).toHaveBeenCalledTimes(6);
-      expect(result).toEqual({ filled: ['email'] });
+      expect(result).toEqual({ filled: ['email'], skipped: [] });
     });
 
     it('skips fields where no selector matches', async () => {
@@ -401,7 +401,7 @@ describe('interaction tools', () => {
       const t = createFillFormTool(session);
       const result = await t.execute({ fields: { missing: 'value' } }, dummyContext);
 
-      expect(result).toEqual({ filled: [] });
+      expect(result).toEqual({ filled: [], skipped: ['missing'] });
     });
 
     it('fills multiple fields', async () => {

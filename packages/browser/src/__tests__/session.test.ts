@@ -6,20 +6,26 @@ function createPlaywrightMock() {
   let currentTitle = '';
   const cookieStore: Array<Record<string, unknown>> = [];
 
-  const makePage = () => ({
-    goto: vi.fn().mockImplementation(async (url: string) => {
-      currentUrl = url;
-      currentTitle = 'Test Page';
-      return { status: () => 200 };
-    }),
-    close: vi.fn().mockResolvedValue(undefined),
-    url: vi.fn().mockImplementation(() => currentUrl),
-    title: vi.fn().mockImplementation(async () => currentTitle),
-    setViewportSize: vi.fn().mockResolvedValue(undefined),
-    goBack: vi.fn().mockResolvedValue(null),
-    goForward: vi.fn().mockResolvedValue(null),
-    reload: vi.fn().mockResolvedValue(null),
-  });
+  const makePage = () => {
+    let closed = false;
+    return {
+      goto: vi.fn().mockImplementation(async (url: string) => {
+        currentUrl = url;
+        currentTitle = 'Test Page';
+        return { status: () => 200 };
+      }),
+      close: vi.fn().mockImplementation(async () => {
+        closed = true;
+      }),
+      isClosed: vi.fn().mockImplementation(() => closed),
+      url: vi.fn().mockImplementation(() => currentUrl),
+      title: vi.fn().mockImplementation(async () => currentTitle),
+      setViewportSize: vi.fn().mockResolvedValue(undefined),
+      goBack: vi.fn().mockResolvedValue(null),
+      goForward: vi.fn().mockResolvedValue(null),
+      reload: vi.fn().mockResolvedValue(null),
+    };
+  };
 
   const firstPage = makePage();
 

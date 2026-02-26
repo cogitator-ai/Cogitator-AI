@@ -3,7 +3,7 @@ import { z } from 'zod';
 const waitUntilEnum = z.enum(['load', 'domcontentloaded', 'networkidle', 'commit']);
 
 export const navigateSchema = z.object({
-  url: z.string().describe('URL to navigate to'),
+  url: z.string().url().describe('URL to navigate to'),
   waitUntil: waitUntilEnum.optional().describe('When to consider navigation succeeded'),
 });
 export type NavigateInput = z.infer<typeof navigateSchema>;
@@ -41,7 +41,7 @@ export type WaitForSelectorInput = z.infer<typeof waitForSelectorSchema>;
 export const clickSchema = z.object({
   selector: z.string().describe('CSS selector of element to click'),
   button: z.enum(['left', 'right', 'middle']).optional().describe('Mouse button'),
-  clickCount: z.number().optional().describe('Number of clicks (2 for double-click)'),
+  clickCount: z.number().min(1).optional().describe('Number of clicks (2 for double-click)'),
   position: z
     .object({
       x: z.number(),
@@ -60,12 +60,19 @@ export const typeSchema = z.object({
 });
 export type TypeInput = z.infer<typeof typeSchema>;
 
-export const selectOptionSchema = z.object({
-  selector: z.string().describe('CSS selector of select element'),
-  value: z.string().optional().describe('Option value to select'),
-  label: z.string().optional().describe('Option label to select'),
-  index: z.number().optional().describe('Option index to select'),
-});
+export const selectOptionSchema = z
+  .object({
+    selector: z.string().describe('CSS selector of select element'),
+    value: z.string().optional().describe('Option value to select'),
+    label: z.string().optional().describe('Option label to select'),
+    index: z.number().optional().describe('Option index to select'),
+  })
+  .refine(
+    (data) => data.value !== undefined || data.label !== undefined || data.index !== undefined,
+    {
+      message: 'At least one of value, label, or index is required',
+    }
+  );
 export type SelectOptionInput = z.infer<typeof selectOptionSchema>;
 
 export const hoverSchema = z.object({
@@ -156,7 +163,7 @@ export type ExtractStructuredInput = z.infer<typeof extractStructuredSchema>;
 export const screenshotSchema = z.object({
   fullPage: z.boolean().optional().describe('Capture full scrollable page'),
   selector: z.string().optional().describe('CSS selector to screenshot specific element'),
-  quality: z.number().optional().describe('Image quality 0-100 (JPEG only)'),
+  quality: z.number().min(0).max(100).optional().describe('Image quality 0-100 (JPEG only)'),
 });
 export type ScreenshotInput = z.infer<typeof screenshotSchema>;
 

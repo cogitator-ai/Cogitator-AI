@@ -21,9 +21,12 @@ export async function applyStealthToContext(
 }
 
 export function getStealthLaunchOptions(
-  _config: StealthConfig,
+  config: StealthConfig,
   browser?: 'chromium' | 'firefox' | 'webkit'
 ): Record<string, unknown> {
+  if (config.fingerprintRandomization === false) {
+    return {};
+  }
   return { userAgent: getRandomUserAgent(browser) };
 }
 
