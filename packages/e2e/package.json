@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@cogitator-ai/a2a": "workspace:*",
+    "@cogitator-ai/browser": "workspace:*",
     "@cogitator-ai/deploy": "workspace:*",
     "@cogitator-ai/ai-sdk": "workspace:*",
     "@cogitator-ai/cli": "workspace:*",
