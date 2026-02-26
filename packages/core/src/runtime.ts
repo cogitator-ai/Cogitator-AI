@@ -349,10 +349,13 @@ export class Cogitator {
           }
         }
 
-        const assistantMessage: Message = {
-          role: 'assistant',
-          content: outputContent,
-        };
+        const assistantMessage = response.toolCalls?.length
+          ? ({
+              role: 'assistant',
+              content: outputContent,
+              toolCalls: response.toolCalls,
+            } as Message & { toolCalls: ToolCall[] })
+          : ({ role: 'assistant', content: outputContent } as Message);
         messages.push(assistantMessage);
 
         if (

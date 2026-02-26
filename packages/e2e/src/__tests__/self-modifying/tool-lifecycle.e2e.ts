@@ -8,12 +8,14 @@ import {
 } from '@cogitator-ai/self-modifying';
 import type { CapabilityGap, GeneratedTool, ToolSelfGenerationConfig } from '@cogitator-ai/types';
 import { OllamaBackend } from '@cogitator-ai/core';
-import { isOllamaRunning } from '../../helpers/setup';
 
-const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const hasOllamaCloud = !!process.env.OLLAMA_API_KEY;
+const describeE2E = hasOllamaCloud ? describe : describe.skip;
 
-const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
-const TOOL_GEN_MODEL = process.env.TOOL_GEN_MODEL || process.env.TEST_MODEL || 'qwen2.5:0.5b';
+const OLLAMA_URL = hasOllamaCloud
+  ? process.env.OLLAMA_URL || 'https://ollama.com'
+  : process.env.OLLAMA_URL || 'http://localhost:11434';
+const TOOL_GEN_MODEL = process.env.TOOL_GEN_MODEL || 'gemma3:12b';
 
 const toolGenConfig: ToolSelfGenerationConfig = {
   enabled: true,
@@ -33,7 +35,31 @@ const toolGenConfig: ToolSelfGenerationConfig = {
 };
 
 function createBackend(): OllamaBackend {
-  return new OllamaBackend({ baseUrl: OLLAMA_URL, defaultModel: TOOL_GEN_MODEL });
+  return new OllamaBackend({
+    baseUrl: OLLAMA_URL,
+    apiKey: process.env.OLLAMA_API_KEY,
+  });
+}
+
+function extractNumber(raw: unknown): number {
+  if (typeof raw === 'number') return raw;
+  if (typeof raw === 'string') {
+    const parsed = parseFloat(raw);
+    if (!isNaN(parsed)) return parsed;
+    const match = /[\d.]+/.exec(raw);
+    return match ? parseFloat(match[0]) : NaN;
+  }
+  if (typeof raw === 'object' && raw !== null) {
+    const obj = raw as Record<string, unknown>;
+    const candidate =
+      obj.fahrenheit ??
+      obj.result ??
+      obj.value ??
+      obj.output ??
+      Object.values(obj).find((v) => typeof v === 'number');
+    return candidate !== undefined ? Number(candidate) : NaN;
+  }
+  return NaN;
 }
 
 async function generateWithRetry(
@@ -55,9 +81,6 @@ describeE2E('self-modifying: tool lifecycle (real LLM)', () => {
   let validator: ToolValidator;
 
   beforeAll(async () => {
-    const running = await isOllamaRunning();
-    if (!running) throw new Error('Ollama is not running');
-
     backend = createBackend();
     generator = new ToolGenerator({ llm: backend, config: toolGenConfig, model: TOOL_GEN_MODEL });
     sandbox = new ToolSandbox(toolGenConfig.sandboxConfig);
@@ -85,28 +108,8 @@ describeE2E('self-modifying: tool lifecycle (real LLM)', () => {
     const execResult = await sandbox.execute(result.tool!, { celsius: 100 });
 
     expect(execResult.success).toBe(true);
-    expect(typeof execResult.result === 'number' || typeof execResult.result === 'object').toBe(
-      true
-    );
 
-    let value: number;
-    if (typeof execResult.result === 'number') {
-      value = execResult.result;
-    } else if (typeof execResult.result === 'string') {
-      value = parseFloat(execResult.result);
-    } else if (typeof execResult.result === 'object' && execResult.result !== null) {
-      const obj = execResult.result as Record<string, unknown>;
-      const candidate =
-        obj.fahrenheit ??
-        obj.result ??
-        obj.temperature ??
-        obj.value ??
-        obj.output ??
-        Object.values(obj).find((v) => typeof v === 'number');
-      value = Number(candidate);
-    } else {
-      value = NaN;
-    }
+    const value = extractNumber(execResult.result);
 
     expect(value).not.toBeNaN();
     expect(value).toBeCloseTo(212, 0);

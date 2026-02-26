@@ -32,6 +32,7 @@ interface OllamaMessage {
 }
 
 interface OllamaToolCall {
+  id?: string;
   function: {
     name: string;
     arguments: Record<string, unknown>;
@@ -198,7 +199,7 @@ export class OllamaBackend extends BaseLLMBackend {
           delta: {
             content: data.message.content,
             toolCalls: data.message.tool_calls?.map((tc) => ({
-              id: `call_${nanoid(12)}`,
+              id: tc.id ?? `call_${nanoid(12)}`,
               name: tc.function.name,
               arguments: tc.function.arguments,
             })),
@@ -230,11 +231,23 @@ export class OllamaBackend extends BaseLLMBackend {
     return Promise.all(
       messages.map(async (m) => {
         const { text, images } = await this.extractContentAndImages(m.content);
-        return {
+        const base: OllamaMessage = {
           role: m.role as OllamaMessage['role'],
           content: text,
           images: images.length > 0 ? images : undefined,
         };
+
+        if (m.role === 'assistant' && 'toolCalls' in m && Array.isArray(m.toolCalls)) {
+          base.tool_calls = m.toolCalls.map((tc: ToolCall) => ({
+            id: tc.id,
+            function: {
+              name: tc.name,
+              arguments: tc.arguments as Record<string, unknown>,
+            },
+          }));
+        }
+
+        return base;
       })
     );
   }
@@ -286,7 +299,7 @@ export class OllamaBackend extends BaseLLMBackend {
 
   private convertResponse(data: OllamaChatResponse): ChatResponse {
     const toolCalls: ToolCall[] | undefined = data.message.tool_calls?.map((tc) => ({
-      id: `call_${nanoid(12)}`,
+      id: tc.id ?? `call_${nanoid(12)}`,
       name: tc.function.name,
       arguments: tc.function.arguments,
     }));
