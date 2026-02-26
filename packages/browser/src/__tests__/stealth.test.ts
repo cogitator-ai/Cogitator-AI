@@ -92,6 +92,18 @@ describe('user-agents', () => {
     expect(all.firefox.length).toBeGreaterThanOrEqual(5);
     expect(all.webkit.length).toBeGreaterThanOrEqual(5);
   });
+
+  it('getAllUserAgents returns copies that do not affect internal data', () => {
+    const first = getAllUserAgents();
+    const originalLength = first.chromium.length;
+
+    first.chromium.push('MutatedAgent/1.0');
+    first.chromium.length = 0;
+
+    const second = getAllUserAgents();
+    expect(second.chromium.length).toBe(originalLength);
+    expect(second.chromium).not.toContain('MutatedAgent/1.0');
+  });
 });
 
 describe('humanLikeType', () => {
@@ -318,6 +330,12 @@ describe('getStealthLaunchOptions', () => {
   it('returns webkit UA when specified', () => {
     const opts = getStealthLaunchOptions({}, 'webkit');
     expect(opts.userAgent as string).toContain('Safari');
+  });
+
+  it('returns empty object when fingerprintRandomization is false', () => {
+    const opts = getStealthLaunchOptions({ fingerprintRandomization: false });
+    expect(opts).toEqual({});
+    expect(opts).not.toHaveProperty('userAgent');
   });
 });
 

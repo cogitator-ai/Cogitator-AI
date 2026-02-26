@@ -379,4 +379,19 @@ describe('elementToInfo', () => {
 
     expect(handle.evaluate).toHaveBeenCalledWith(expect.any(Function));
   });
+
+  it('returns no boundingBox when width>0 but height=0', async () => {
+    const handle = createMockHandle({
+      tag: 'hr',
+      text: '',
+      attributes: {},
+      boundingBox: undefined,
+      visible: false,
+    });
+
+    const result = await elementToInfo(handle as never);
+
+    expect(result.boundingBox).toBeUndefined();
+    expect(result.visible).toBe(false);
+  });
 });

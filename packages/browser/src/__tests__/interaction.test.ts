@@ -418,6 +418,21 @@ describe('interaction tools', () => {
       expect(result.filled).toContain('tags');
     });
 
+    it('returns both filled and skipped when some fields match', async () => {
+      mockLocator.count.mockResolvedValue(0);
+      mockLocator.count.mockResolvedValueOnce(1);
+
+      const t = createFillFormTool(session);
+      const result = await t.execute(
+        { fields: { username: 'john', nonexistent: 'value' } },
+        dummyContext
+      );
+
+      expect(result.filled).toContain('username');
+      expect(result.skipped).toContain('nonexistent');
+      expect(result.filled).not.toContain('nonexistent');
+    });
+
     it('uses type instead of fill in stealth mode', async () => {
       const stealthMock = createMockSession(true);
       const stealthLocator = stealthMock.mockPage.locator();

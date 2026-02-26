@@ -413,4 +413,63 @@ describe('BrowserSession', () => {
 
     expect(pw.mockBrowser.close).toHaveBeenCalledTimes(1);
   });
+
+  it('throws when start() is called twice without close()', async () => {
+    const session = await createAndStart();
+
+    await expect(session.start()).rejects.toThrow('Session already started');
+  });
+
+  it('recovers to an open page when active page is closed', async () => {
+    const session = await createAndStart();
+    const secondPage = await session.newTab();
+
+    const firstPage = session.tabs[0];
+    (firstPage.isClosed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+
+    session.switchTab(0);
+    expect(session.page).toBe(secondPage);
+  });
+
+  it('throws when all pages are closed', async () => {
+    const session = await createAndStart();
+    const firstPage = session.tabs[0];
+    (firstPage.isClosed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+
+    expect(() => session.page).toThrow('All pages are closed');
+  });
+
+  describe('loadCookies validation', () => {
+    it('filters out invalid entries from cookie file', async () => {
+      const { join } = await import('node:path');
+      const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+
+      const tmpDir = await mkdtemp(join(tmpdir(), 'cogitator-test-'));
+      const filePath = join(tmpDir, 'cookies.json');
+
+      try {
+        const session = await createAndStart();
+
+        const mixedData = [
+          { name: 'valid', value: 'cookie', domain: '.example.com', path: '/' },
+          { garbage: true },
+          42,
+          null,
+          'string-entry',
+          { name: 'also-valid', value: 'v2', domain: '.test.com', path: '/' },
+        ];
+        await writeFile(filePath, JSON.stringify(mixedData), 'utf-8');
+
+        await session.loadCookies(filePath);
+
+        expect(pw.mockContext.addCookies).toHaveBeenCalledWith([
+          expect.objectContaining({ name: 'valid', value: 'cookie' }),
+          expect.objectContaining({ name: 'also-valid', value: 'v2' }),
+        ]);
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+  });
 });

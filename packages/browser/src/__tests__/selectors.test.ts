@@ -217,4 +217,24 @@ describe('findFormField', () => {
     );
     expect(placeholderCalls).toHaveLength(0);
   });
+
+  it('escapes quotes in label for CSS selectors', async () => {
+    const page = createMockPage();
+    page._setLocatorCount('input[name="field\\"with\\"quotes"]', 1);
+
+    const result = await findFormField(page as never, 'field"with"quotes');
+
+    expect(result).toBeTruthy();
+    expect(page.locator).toHaveBeenCalledWith('input[name="field\\"with\\"quotes"]');
+  });
+
+  it('escapes backslashes in label for CSS selectors', async () => {
+    const page = createMockPage();
+    page._setLocatorCount('input[name="path\\\\to\\\\field"]', 1);
+
+    const result = await findFormField(page as never, 'path\\to\\field');
+
+    expect(result).toBeTruthy();
+    expect(page.locator).toHaveBeenCalledWith('input[name="path\\\\to\\\\field"]');
+  });
 });

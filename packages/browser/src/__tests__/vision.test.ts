@@ -110,6 +110,13 @@ describe('vision tools', () => {
         height: 720,
       });
     });
+
+    it('quality=0 produces jpeg format', async () => {
+      const t = createScreenshotTool(session);
+      await t.execute({ quality: 0 }, dummyContext);
+
+      expect(mockPage.screenshot).toHaveBeenCalledWith({ type: 'jpeg', quality: 0 });
+    });
   });
 
   describe('createScreenshotElementTool', () => {
@@ -188,6 +195,26 @@ describe('vision tools', () => {
       const result = await t.execute({ description: 'anything' }, dummyContext);
 
       expect(result.elements).toEqual([]);
+    });
+
+    it('filters out nodes with name shorter than 2 characters', async () => {
+      mockPage.accessibility.snapshot.mockResolvedValueOnce({
+        role: 'WebArea',
+        name: '',
+        children: [
+          { role: 'button', name: 'X' },
+          { role: 'button', name: 'OK' },
+          { role: 'button', name: 'Submit' },
+        ],
+      });
+
+      const t = createFindByDescriptionTool(session);
+      const result = await t.execute({ description: 'button' }, dummyContext);
+
+      const names = result.elements.map((e: { name: string }) => e.name);
+      expect(names).not.toContain('X');
+      expect(names).toContain('OK');
+      expect(names).toContain('Submit');
     });
   });
 

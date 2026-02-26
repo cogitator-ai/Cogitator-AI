@@ -175,6 +175,10 @@ describe('Interaction schemas', () => {
       expect(() => clickSchema.parse({ selector: 'a', button: 'back' })).toThrow();
     });
 
+    it('rejects clickCount of 0', () => {
+      expect(() => clickSchema.parse({ selector: 'a', clickCount: 0 })).toThrow();
+    });
+
     it('rejects position missing y', () => {
       expect(() => clickSchema.parse({ selector: 'a', position: { x: 10 } })).toThrow();
     });
@@ -507,6 +511,24 @@ describe('Vision schemas', () => {
       expect(result.fullPage).toBe(true);
       expect(result.selector).toBe('#hero');
       expect(result.quality).toBe(80);
+    });
+
+    it('accepts quality=0', () => {
+      const result = screenshotSchema.parse({ quality: 0 });
+      expect(result.quality).toBe(0);
+    });
+
+    it('accepts quality=100', () => {
+      const result = screenshotSchema.parse({ quality: 100 });
+      expect(result.quality).toBe(100);
+    });
+
+    it('rejects quality below 0', () => {
+      expect(() => screenshotSchema.parse({ quality: -1 })).toThrow();
+    });
+
+    it('rejects quality above 100', () => {
+      expect(() => screenshotSchema.parse({ quality: 101 })).toThrow();
     });
   });
 
