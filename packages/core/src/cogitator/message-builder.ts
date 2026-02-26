@@ -126,7 +126,13 @@ export async function enrichMessagesWithInsights(
   if (insights.length > 0 && messages.length > 0 && messages[0].role === 'system') {
     const suffix = `\n\nPast learnings that may help:\n${insights.map((i) => `- ${i.content}`).join('\n')}`;
     const content = messages[0].content;
-    messages[0].content = typeof content === 'string' ? content + suffix : suffix;
+    if (typeof content === 'string') {
+      messages[0].content = content + suffix;
+    } else if (Array.isArray(content)) {
+      messages[0].content = [...content, { type: 'text' as const, text: suffix }];
+    } else {
+      messages[0].content = suffix;
+    }
   }
 }
 
@@ -137,6 +143,12 @@ export function addContextToMessages(messages: Message[], context: Record<string
       .join('\n');
     const suffix = `\n\nContext:\n${contextStr}`;
     const content = messages[0].content;
-    messages[0].content = typeof content === 'string' ? content + suffix : suffix;
+    if (typeof content === 'string') {
+      messages[0].content = content + suffix;
+    } else if (Array.isArray(content)) {
+      messages[0].content = [...content, { type: 'text' as const, text: suffix }];
+    } else {
+      messages[0].content = suffix;
+    }
   }
 }

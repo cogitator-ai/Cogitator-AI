@@ -207,7 +207,7 @@ const vad = new SileroVAD({
 
 await vad.init();
 
-const event = vad.process(float32Samples);
+const event = await vad.process(float32Samples);
 ```
 
 ---

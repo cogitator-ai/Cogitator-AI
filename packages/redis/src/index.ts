@@ -55,5 +55,4 @@ export {
   type RedisClusterConfig,
   type RedisConfig,
   type RedisClient,
-  type QueueMetrics,
 } from './types';

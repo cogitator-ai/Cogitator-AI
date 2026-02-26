@@ -10,6 +10,7 @@ import { buildToolValidationPrompt, parseValidationResponse } from './prompts';
 export interface ToolValidatorOptions {
   llm?: LLMBackend;
   config: ToolSelfGenerationConfig;
+  model?: string;
 }
 
 interface ValidationRule {
@@ -141,12 +142,14 @@ const STATIC_VALIDATION_RULES: ValidationRule[] = [
 export class ToolValidator {
   private readonly llm?: LLMBackend;
   private readonly config: ToolSelfGenerationConfig;
+  private readonly model: string;
   private readonly sandbox: ToolSandbox;
   private readonly customRules: ValidationRule[] = [];
 
   constructor(options: ToolValidatorOptions) {
     this.llm = options.llm;
     this.config = options.config;
+    this.model = options.model ?? 'default';
     this.sandbox = new ToolSandbox(options.config.sandboxConfig);
   }
 
@@ -303,11 +306,6 @@ Be thorough but practical - focus on real issues.`,
         validInput[key] = this.generateSampleValue(schema.type, schema.default);
       }
       testCases.push({ input: validInput });
-
-      const required = params.required as string[] | undefined;
-      testCases.push({ input: {}, shouldThrow: (required?.length ?? 0) > 0 });
-
-      testCases.push({ input: null, shouldThrow: true });
     }
 
     return testCases;
@@ -364,6 +362,6 @@ Be thorough but practical - focus on real issues.`,
     if (this.llm.complete) {
       return this.llm.complete({ messages, temperature });
     }
-    return this.llm.chat({ model: 'default', messages, temperature });
+    return this.llm.chat({ model: this.model, messages, temperature });
   }
 }

@@ -37,6 +37,7 @@ export interface TraceMetrics {
   toolAccuracy: number;
   efficiency: number;
   completeness: number;
+  coherence: number;
   custom?: Record<string, number>;
 }
 

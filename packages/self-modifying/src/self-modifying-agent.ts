@@ -11,6 +11,9 @@ import type {
   ModificationCheckpoint,
   SelfModifyingEvent,
   CapabilityGap,
+  Message,
+  ToolSchema,
+  ToolContext,
 } from '@cogitator-ai/types';
 
 import { SelfModifyingEventEmitter } from './events';
@@ -54,7 +57,7 @@ export class SelfModifyingAgent {
   private readonly toolStore: InMemoryGeneratedToolStore;
   private readonly metaReasoner: MetaReasoner;
   private readonly parameterOptimizer: ParameterOptimizer;
-  private readonly _capabilityAnalyzer: CapabilityAnalyzer;
+  private readonly capabilityAnalyzer: CapabilityAnalyzer;
   private readonly modificationValidator: ModificationValidator;
   private readonly rollbackManager: RollbackManager;
 
@@ -67,18 +70,23 @@ export class SelfModifyingAgent {
     this.config = this.mergeConfig(options.config);
 
     const toolGenConfig = this.config.toolGeneration;
-    this.gapAnalyzer = new GapAnalyzer({ llm: this.llm, config: toolGenConfig });
-    this.toolGenerator = new ToolGenerator({ llm: this.llm, config: toolGenConfig });
+    const agentModel = this.agent.model;
+    this.gapAnalyzer = new GapAnalyzer({ llm: this.llm, config: toolGenConfig, model: agentModel });
+    this.toolGenerator = new ToolGenerator({
+      llm: this.llm,
+      config: toolGenConfig,
+      model: agentModel,
+    });
     this.toolStore = new InMemoryGeneratedToolStore();
 
     this.metaReasoner = new MetaReasoner({
       llm: this.llm,
-      model: 'default',
+      model: agentModel ?? 'default',
       config: this.config.metaReasoning,
     });
 
     const baseArchConfig: ArchitectureConfig = {
-      model: 'default',
+      model: agentModel ?? 'default',
       temperature: 0.7,
       maxTokens: 4096,
       toolStrategy: 'sequential',
@@ -89,11 +97,13 @@ export class SelfModifyingAgent {
       llm: this.llm,
       config: this.config.architectureEvolution,
       baseConfig: baseArchConfig,
+      model: agentModel,
     });
 
-    this._capabilityAnalyzer = new CapabilityAnalyzer({
+    this.capabilityAnalyzer = new CapabilityAnalyzer({
       llm: this.llm,
       enableLLMAnalysis: true,
+      model: agentModel,
     });
 
     this.modificationValidator = new ModificationValidator({
@@ -217,6 +227,7 @@ export class SelfModifyingAgent {
 
       throw error;
     } finally {
+      this.metaReasoner.cleanupRun(runId);
       this.currentContext = null;
     }
   }
@@ -371,11 +382,8 @@ export class SelfModifyingAgent {
           reflective: { mode: 'reflective', temperature: 0.4, depth: 3 },
           exploratory: { mode: 'exploratory', temperature: 0.7, depth: 2 },
         },
-        maxAssessmentsPerRun: 5,
-        maxAdaptationsPerRun: 3,
         maxMetaAssessments: 5,
         maxAdaptations: 3,
-        assessmentCooldown: 10000,
         metaAssessmentCooldown: 10000,
         adaptationCooldown: 15000,
         triggers: ['on_failure', 'on_low_confidence', 'periodic'],
@@ -409,18 +417,37 @@ export class SelfModifyingAgent {
 
     return {
       enabled: partial.enabled ?? defaults.enabled,
-      toolGeneration: { ...defaults.toolGeneration, ...partial.toolGeneration },
-      metaReasoning: { ...defaults.metaReasoning, ...partial.metaReasoning },
+      toolGeneration: {
+        ...defaults.toolGeneration,
+        ...partial.toolGeneration,
+        sandboxConfig: partial.toolGeneration?.sandboxConfig
+          ? { ...defaults.toolGeneration.sandboxConfig, ...partial.toolGeneration.sandboxConfig }
+          : defaults.toolGeneration.sandboxConfig,
+      },
+      metaReasoning: {
+        ...defaults.metaReasoning,
+        ...partial.metaReasoning,
+        modeProfiles: {
+          ...defaults.metaReasoning.modeProfiles,
+          ...partial.metaReasoning?.modeProfiles,
+        },
+      },
       architectureEvolution: {
         ...defaults.architectureEvolution,
         ...partial.architectureEvolution,
+        strategy: partial.architectureEvolution?.strategy
+          ? {
+              ...defaults.architectureEvolution.strategy,
+              ...partial.architectureEvolution.strategy,
+            }
+          : defaults.architectureEvolution.strategy,
       },
       constraints: { ...defaults.constraints, ...partial.constraints },
     };
   }
 
   private getAvailableTools(): Tool[] {
-    return [];
+    return this.agent.tools ?? [];
   }
 
   private async optimizeArchitecture(input: string): Promise<void> {
@@ -452,7 +479,14 @@ export class SelfModifyingAgent {
           });
         }
       }
-    } catch {}
+    } catch (error) {
+      void this.emitter.emit({
+        type: 'architecture_evolved',
+        runId: this.currentContext.runId,
+        timestamp: new Date(),
+        data: { error: error instanceof Error ? error.message : String(error) },
+      });
+    }
   }
 
   private async analyzeAndGenerateTools(input: string): Promise<void> {
@@ -479,7 +513,19 @@ export class SelfModifyingAgent {
           }
         }
       }
-    } catch {}
+    } catch (error) {
+      void this.emitter.emit({
+        type: 'tool_generation_completed',
+        runId: this.currentContext.runId,
+        timestamp: new Date(),
+        data: {
+          toolId: '',
+          name: '',
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
   }
 
   private async executeWithMetaReasoning(input: string, runId: string): Promise<string> {
@@ -562,7 +608,89 @@ export class SelfModifyingAgent {
   }
 
   private async executeAgentStep(input: string): Promise<string> {
-    return `Processed: ${input}`;
+    const tools = this.currentContext?.tools ?? [];
+    const toolSchemas = this.buildToolSchemas(tools);
+    const toolMap = new Map<string, Tool>();
+    for (const t of tools) {
+      toolMap.set(t.name, t);
+    }
+
+    const model = this.currentContext?.currentConfig.model ?? this.agent.model ?? 'default';
+    const messages: Message[] = [
+      ...(this.agent.instructions
+        ? [{ role: 'system' as const, content: this.agent.instructions }]
+        : []),
+      { role: 'user' as const, content: input },
+    ];
+
+    const maxToolRounds = 10;
+    for (let round = 0; round < maxToolRounds; round++) {
+      const response = await this.llm.chat({
+        model,
+        messages,
+        tools: toolSchemas.length > 0 ? toolSchemas : undefined,
+        temperature: this.currentContext?.currentConfig.temperature,
+        maxTokens: this.currentContext?.currentConfig.maxTokens,
+      });
+
+      if (response.finishReason !== 'tool_calls' || !response.toolCalls?.length) {
+        return response.content;
+      }
+
+      messages.push({
+        role: 'assistant',
+        content: response.content,
+        toolCalls: response.toolCalls,
+      } as Message);
+
+      for (const toolCall of response.toolCalls) {
+        const t = toolMap.get(toolCall.name);
+        let result: unknown;
+
+        if (!t) {
+          result = { error: `Tool "${toolCall.name}" not found` };
+        } else {
+          try {
+            const ctx: ToolContext = {
+              agentId: this.agent.name || 'self-modifying',
+              runId: this.currentContext?.runId || 'unknown',
+              signal: AbortSignal.timeout(30_000),
+            };
+            result = await t.execute(toolCall.arguments, ctx);
+          } catch (err) {
+            result = { error: err instanceof Error ? err.message : String(err) };
+          }
+        }
+
+        messages.push({
+          role: 'tool' as const,
+          content: typeof result === 'string' ? result : JSON.stringify(result),
+          toolCallId: toolCall.id,
+          name: toolCall.name,
+        });
+      }
+    }
+
+    const finalResponse = await this.llm.chat({
+      model,
+      messages,
+      temperature: this.currentContext?.currentConfig.temperature,
+      maxTokens: this.currentContext?.currentConfig.maxTokens,
+    });
+    return finalResponse.content;
+  }
+
+  private buildToolSchemas(tools: Tool[]): ToolSchema[] {
+    return tools.map((t) => {
+      if (typeof t.toJSON === 'function') {
+        return t.toJSON() as ToolSchema;
+      }
+      return {
+        name: t.name,
+        description: t.description,
+        parameters: { type: 'object' as const, properties: {} },
+      };
+    });
   }
 
   private estimateConfidence(output: string): number {
@@ -572,7 +700,7 @@ export class SelfModifyingAgent {
     return 0.8;
   }
 
-  private isTaskComplete(output: string): boolean {
-    return output.length > 0;
+  private isTaskComplete(_output: string): boolean {
+    return true;
   }
 }

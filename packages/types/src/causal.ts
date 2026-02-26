@@ -329,7 +329,7 @@ export interface InterventionLog {
   getHistory(agentId: string, limit: number): Promise<InterventionRecord[]>;
   findSimilar(
     agentId: string,
-    intervention: Record<string, unknown>
+    intervention: Record<string, number | string | boolean>
   ): Promise<InterventionRecord[]>;
   getStats(agentId: string): Promise<{
     totalInterventions: number;

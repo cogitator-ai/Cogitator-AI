@@ -4,60 +4,10 @@
  * Recreates an Agent from serialized config and executes it.
  */
 
-import { Cogitator, Agent, tool } from '@cogitator-ai/core';
-import { z } from 'zod';
-import type { Tool, ToolSchema } from '@cogitator-ai/types';
+import { Cogitator, Agent } from '@cogitator-ai/core';
 import type { AgentJobPayload, AgentJobResult } from '../types';
+import { recreateTools } from './shared.js';
 
-/**
- * Convert JSON Schema parameters to a permissive Zod schema
- *
- * Since we only have the JSON Schema and not the original Zod type,
- * we create a schema that accepts any object matching the required structure.
- */
-function jsonSchemaToZod(params: ToolSchema['parameters']): z.ZodType {
-  const properties = params.properties;
-  const required = params.required ?? [];
-
-  if (Object.keys(properties).length === 0) {
-    return z.object({});
-  }
-
-  const shape: Record<string, z.ZodType> = {};
-  for (const [key, _] of Object.entries(properties)) {
-    shape[key] = required.includes(key) ? z.unknown() : z.unknown().optional();
-  }
-
-  return z.object(shape).passthrough();
-}
-
-/**
- * Recreate tools from schemas
- *
- * Note: This creates stub tools that log execution but can't actually run
- * the original code. For full tool support, tools need to be registered
- * separately on the worker or use a remote execution mechanism.
- */
-function recreateTools(schemas: ToolSchema[]): Tool[] {
-  return schemas.map((schema) =>
-    tool({
-      name: schema.name,
-      description: schema.description,
-      parameters: jsonSchemaToZod(schema.parameters),
-      execute: async (input) => {
-        console.warn(`[worker] Tool "${schema.name}" called with input:`, JSON.stringify(input));
-        return {
-          warning: 'Tool executed in worker with stub implementation',
-          input,
-        };
-      },
-    })
-  );
-}
-
-/**
- * Process an agent job
- */
 export async function processAgentJob(payload: AgentJobPayload): Promise<AgentJobResult> {
   const { agentConfig, input, threadId } = payload;
 

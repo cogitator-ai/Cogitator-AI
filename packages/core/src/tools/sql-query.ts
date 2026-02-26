@@ -84,7 +84,7 @@ async function queryPostgres(
   try {
     await client.connect();
 
-    const limitedQuery = query.includes('LIMIT')
+    const limitedQuery = query.toUpperCase().includes('LIMIT')
       ? query
       : `${query.replace(/;?\s*$/, '')} LIMIT ${maxRows + 1}`;
 
@@ -126,7 +126,7 @@ async function querySqlite(
   const start = Date.now();
 
   try {
-    const limitedQuery = query.includes('LIMIT')
+    const limitedQuery = query.toUpperCase().includes('LIMIT')
       ? query
       : `${query.replace(/;?\s*$/, '')} LIMIT ${maxRows + 1}`;
 

@@ -19,6 +19,7 @@ import type {
 import { BaseLLMBackend } from './base';
 import { createLLMError, llmUnavailable, llmConfigError, type LLMErrorContext } from './errors';
 import { fetchImageAsBase64 } from '../utils/image-fetch';
+import { getLogger } from '../logger';
 
 type DocumentType =
   | null
@@ -556,7 +557,11 @@ export class BedrockBackend extends BaseLLMBackend {
   private tryParseJson(str: string): Record<string, unknown> {
     try {
       return JSON.parse(str) as Record<string, unknown>;
-    } catch {
+    } catch (e) {
+      getLogger().warn('Failed to parse tool call JSON in Bedrock stream', {
+        input: str.slice(0, 200),
+        error: e instanceof Error ? e.message : String(e),
+      });
       return {};
     }
   }

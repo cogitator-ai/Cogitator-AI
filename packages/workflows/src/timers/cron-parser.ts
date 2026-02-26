@@ -256,7 +256,7 @@ export function cronMatchesDate(expression: string, date: Date, timezone?: strin
     );
   }
 
-  const parsed = parseCronExpression(normalized, timezone);
+  const parsed = parseCronExpression(normalized);
 
   const minute = checkDate.getMinutes();
   const hour = checkDate.getHours();

@@ -1,5 +1,28 @@
 # @cogitator-ai/hono
 
+## 0.1.9
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/core@0.18.6
+
+## 0.1.8
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.21.3
+  - @cogitator-ai/core@0.18.5
+
+## 0.1.7
+
+## 0.1.6
+
+### Patch Changes
+
+- @cogitator-ai/core@0.18.4
+
 ## 0.1.5
 
 ### Patch Changes

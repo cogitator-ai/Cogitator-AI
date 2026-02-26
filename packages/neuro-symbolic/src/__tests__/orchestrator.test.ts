@@ -188,7 +188,7 @@ describe('NeuroSymbolic', () => {
       expect(result.data).toBeDefined();
       expect(result.data!.status).toBe('sat');
       expect(result.data!.model).toBeDefined();
-      expect(result.data!.model!.assignments['x']).toBe(true);
+      expect(result.data!.model!.assignments.x).toBe(true);
     });
 
     it('returns success: true for unsatisfiable problem (regression)', async () => {
@@ -228,7 +228,7 @@ describe('NeuroSymbolic', () => {
       expect(result.data!.status).toBe('sat');
 
       const assignments = result.data!.model!.assignments;
-      expect(assignments['a'] !== assignments['b']).toBe(true);
+      expect(assignments.a !== assignments.b).toBe(true);
     });
   });
 

@@ -1,5 +1,63 @@
 # @cogitator-ai/swarms
 
+## 0.4.15
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/core@0.18.6
+  - @cogitator-ai/workflows@0.5.11
+
+## 0.4.14
+
+### Patch Changes
+
+- fix(types): audit — 13 bugs/type-safety issues fixed, dead code removed
+  - Added missing `responseFormat` to `SerializedAgentConfig`
+  - Fixed `DurationString` type (removed useless `| string` union)
+  - Added `coherence` field to `TraceMetrics`
+  - Removed duplicate config fields in `MetaReasoningConfig`
+  - Renamed `turnDuration` to `maxTokensPerTurn` in `DebateConfig`
+  - Narrowed `NegotiationTerm.value` to `string | number | boolean`
+  - Typed `CapturedPrompt.tools` as `ToolSchema[]`
+  - Made `GraphStats` Record fields Partial
+  - Removed dead duplicate fields from `MetaAssessment` and `ModificationValidationResult`
+  - Removed unused `ProposedActionType`
+
+- Updated dependencies
+  - @cogitator-ai/types@0.21.3
+  - @cogitator-ai/core@0.18.5
+  - @cogitator-ai/workflows@0.5.10
+
+## 0.4.13
+
+### Patch Changes
+
+- fix(swarms): audit — 30+ bugs fixed, +121 tests, docs updated
+
+  HIGH severity fixes:
+  - swarm.ts: validateConfig missing 'negotiation' strategy + SwarmBuilder missing negotiation() method
+  - coordinator.ts: inverted error handling in runAgentsParallel (abort/retry/failover silently skipped)
+  - pipeline.ts: infinite retry loop (getRetryCount never incremented) + retry-previous wrong input
+  - model-discovery.ts: first-match-wins → longest-match-wins for capability inference
+  - voting.ts: duplicate votes allowed + weighted resolution ignored weights
+  - negotiation.ts: rejectOffer missing authorization check
+  - swarm-node.ts: unsafe cast without runtime check
+
+  MEDIUM severity fixes:
+  - coordinator.ts: pause loop ignores abort, unnecessary concrete type casts
+  - model-discovery.ts: stale cloud model display names
+  - round-robin.ts: currentIndex out of bounds
+  - negotiation + voting + delegation: blackboard.read() throws vs null
+  - assessor.ts: 15+ unnecessary as casts removed
+
+## 0.4.12
+
+### Patch Changes
+
+- @cogitator-ai/core@0.18.4
+- @cogitator-ai/workflows@0.5.9
+
 ## 0.4.11
 
 ### Patch Changes

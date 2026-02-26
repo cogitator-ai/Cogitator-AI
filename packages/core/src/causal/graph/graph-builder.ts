@@ -7,8 +7,7 @@ import type {
   StructuralEquation,
 } from '@cogitator-ai/types';
 import { CausalGraphImpl } from './causal-graph';
-
-let edgeCounter = 0;
+import { nanoid } from 'nanoid';
 
 export class CausalGraphBuilder {
   private graphId: string;
@@ -184,7 +183,7 @@ export class CausalGraphBuilder {
 
     for (const edgeData of this.pendingEdges) {
       const edge: CausalEdge = {
-        id: `edge-${++edgeCounter}`,
+        id: `edge-${nanoid(8)}`,
         ...edgeData,
       };
       graph.addEdge(edge);

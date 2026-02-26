@@ -47,6 +47,7 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
       });
 
       this.ws.on('error', (err: Error) => {
+        this.emit('error', err);
         reject(err);
       });
     });
@@ -105,7 +106,13 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
   }
 
   private handleMessage(raw: string): void {
-    const event = JSON.parse(raw) as Record<string, unknown>;
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      this.emit('error', new Error('Failed to parse WebSocket message'));
+      return;
+    }
     const type = event.type as string;
 
     switch (type) {
@@ -140,7 +147,13 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
   private async handleToolCall(event: Record<string, unknown>): Promise<void> {
     const name = event.name as string;
     const callId = event.call_id as string;
-    const args = JSON.parse(event.arguments as string) as unknown;
+    let args: unknown;
+    try {
+      args = JSON.parse(event.arguments as string);
+    } catch {
+      this.emit('error', new Error(`Failed to parse tool call arguments for ${name}`));
+      return;
+    }
 
     this.emit('tool_call', name, args);
 
@@ -167,8 +180,9 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
   }
 
   private send(data: Record<string, unknown>): void {
-    if (this.ws?.readyState === this.ws?.OPEN) {
-      this.ws!.send(JSON.stringify(data));
+    const ws = this.ws;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(data));
     }
   }
 }

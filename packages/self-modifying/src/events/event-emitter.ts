@@ -30,7 +30,15 @@ export class SelfModifyingEventEmitter {
       ...(wildcardHandlers ? [...wildcardHandlers] : []),
     ];
 
-    await Promise.all(allHandlers.map((h) => Promise.resolve(h(event))));
+    await Promise.allSettled(
+      allHandlers.map((h) => {
+        try {
+          return Promise.resolve(h(event));
+        } catch (e) {
+          return Promise.reject(e instanceof Error ? e : new Error(String(e)));
+        }
+      })
+    );
   }
 
   createEvent(

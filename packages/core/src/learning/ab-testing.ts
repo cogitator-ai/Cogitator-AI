@@ -317,23 +317,26 @@ export class ABTestingFramework {
     const maxIterations = 200;
     const epsilon = 1e-10;
 
+    const logBeta = this.lnGamma(a) + this.lnGamma(b) - this.lnGamma(a + b);
+    const logPrefix = a * Math.log(x) + (b - 1) * Math.log(1 - x) - logBeta;
+
     let sum = 0;
-    let term = 1;
 
     for (let n = 0; n < maxIterations; n++) {
-      const coeff = this.gamma(a + b + n) / (this.gamma(a + 1 + n) * this.gamma(b));
-      term = coeff * Math.pow(x, a + n) * Math.pow(1 - x, b - 1);
+      const logTerm =
+        this.lnGamma(a + b + n) - this.lnGamma(a + 1 + n) - this.lnGamma(b) + n * Math.log(1 - x);
+      const term = Math.exp(logTerm);
 
       if (n > 0 && Math.abs(term) < epsilon) break;
       sum += term;
     }
 
-    return (sum * this.gamma(a + b)) / (this.gamma(a) * this.gamma(b));
+    return sum * Math.exp(logPrefix + logBeta);
   }
 
-  private gamma(z: number): number {
+  private lnGamma(z: number): number {
     if (z < 0.5) {
-      return Math.PI / (Math.sin(Math.PI * z) * this.gamma(1 - z));
+      return Math.log(Math.PI / Math.sin(Math.PI * z)) - this.lnGamma(1 - z);
     }
 
     z -= 1;
@@ -350,7 +353,7 @@ export class ABTestingFramework {
     }
 
     const t = z + g + 0.5;
-    return Math.sqrt(2 * Math.PI) * Math.pow(t, z + 0.5) * Math.exp(-t) * x;
+    return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
   }
 
   private tCriticalValue(confidenceLevel: number, df: number): number {
@@ -358,7 +361,7 @@ export class ABTestingFramework {
     const p = 1 - alpha / 2;
 
     let low = 0;
-    let high = 10;
+    let high = 1000;
 
     while (high - low > 0.0001) {
       const mid = (low + high) / 2;

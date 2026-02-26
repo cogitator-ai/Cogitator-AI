@@ -16,6 +16,7 @@ import type {
 import { BaseSandboxExecutor } from './base';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 
 export interface WasmExecutorOptions {
   wasm?: SandboxWasmConfig;
@@ -167,7 +168,8 @@ export class WasmSandboxExecutor extends BaseSandboxExecutor {
     }
 
     try {
-      const resolved = require.resolve(wasmModule);
+      const req = createRequire(import.meta.url);
+      const resolved = req.resolve(wasmModule);
       return await readFile(resolved);
     } catch {
       throw new Error(`WASM module not found: ${wasmModule}`);
@@ -196,7 +198,9 @@ export class WasmSandboxExecutor extends BaseSandboxExecutor {
     exitCode: number;
     timedOut: boolean;
   }> {
-    const executePromise = (async () => {
+    type ExecResult = { stdout: string; stderr: string; exitCode: number; timedOut: boolean };
+
+    const executePromise = (async (): Promise<ExecResult> => {
       try {
         const result = await plugin.call(functionName, input);
         const output = new TextDecoder().decode(result);
@@ -227,13 +231,10 @@ export class WasmSandboxExecutor extends BaseSandboxExecutor {
       }
     })();
 
-    const timeoutPromise = new Promise<{
-      stdout: string;
-      stderr: string;
-      exitCode: number;
-      timedOut: boolean;
-    }>((resolve) => {
-      setTimeout(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const timeoutPromise = new Promise<ExecResult>((resolve) => {
+      timer = setTimeout(() => {
         resolve({
           stdout: '',
           stderr: 'Execution timed out',
@@ -243,6 +244,10 @@ export class WasmSandboxExecutor extends BaseSandboxExecutor {
       }, timeoutMs);
     });
 
-    return Promise.race([executePromise, timeoutPromise]);
+    try {
+      return await Promise.race([executePromise, timeoutPromise]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 }

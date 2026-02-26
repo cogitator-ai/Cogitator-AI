@@ -50,6 +50,29 @@ describe('LLMReranker', () => {
     const results = await reranker.rerank('query', sampleResults);
     expect(results).toHaveLength(3);
   });
+
+  it('returns empty array for empty results', async () => {
+    const generateFn = vi.fn();
+    const reranker = new LLMReranker({ generateFn });
+    const results = await reranker.rerank('query', []);
+    expect(results).toEqual([]);
+    expect(generateFn).not.toHaveBeenCalled();
+  });
+
+  it('clamps scores to [0, 1] range', async () => {
+    const generateFn = vi.fn().mockResolvedValue(
+      JSON.stringify([
+        { index: 0, score: 15 },
+        { index: 1, score: -3 },
+      ])
+    );
+    const reranker = new LLMReranker({ generateFn });
+    const results = await reranker.rerank('query', sampleResults);
+    for (const r of results) {
+      expect(r.score).toBeGreaterThanOrEqual(0);
+      expect(r.score).toBeLessThanOrEqual(1);
+    }
+  });
 });
 
 describe('CohereReranker', () => {
@@ -85,6 +108,36 @@ describe('CohereReranker', () => {
     expect(results).toHaveLength(2);
     expect(results[0].chunkId).toBe('c3');
     expect(results[0].score).toBe(0.95);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('returns empty array for empty results', async () => {
+    const reranker = new CohereReranker({ apiKey: 'test-key' });
+    const results = await reranker.rerank('query', []);
+    expect(results).toEqual([]);
+  });
+
+  it('filters out-of-bounds indices from API response', async () => {
+    const mockResponse = {
+      results: [
+        { index: 0, relevance_score: 0.9 },
+        { index: 99, relevance_score: 0.8 },
+        { index: -1, relevance_score: 0.7 },
+      ],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(mockResponse),
+      })
+    );
+
+    const reranker = new CohereReranker({ apiKey: 'test-key' });
+    const results = await reranker.rerank('query', sampleResults);
+    expect(results).toHaveLength(1);
+    expect(results[0].chunkId).toBe('c1');
 
     vi.unstubAllGlobals();
   });

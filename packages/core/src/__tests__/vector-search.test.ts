@@ -600,4 +600,89 @@ describe('vector-search tool', () => {
       ).toBe('number');
     });
   });
+
+  describe('SQL injection via collection name', () => {
+    beforeEach(() => {
+      process.env.OPENAI_API_KEY = 'sk-test';
+      process.env.DATABASE_URL = 'postgres://localhost/db';
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            data: [{ embedding: Array(1536).fill(0.1) }],
+          }),
+      });
+    });
+
+    it('rejects collection names with SQL injection', async () => {
+      const result = await vectorSearch.execute({
+        query: 'test',
+        collection: 'users; DROP TABLE--',
+      });
+
+      expect(result).toHaveProperty('error');
+      expect((result as { error: string }).error).toContain('Invalid collection name');
+    });
+
+    it('rejects collection names starting with numbers', async () => {
+      const result = await vectorSearch.execute({
+        query: 'test',
+        collection: '123_table',
+      });
+
+      expect(result).toHaveProperty('error');
+      expect((result as { error: string }).error).toContain('Invalid collection name');
+    });
+
+    it('accepts valid collection names with underscores', async () => {
+      const { Client } = await import('pg');
+      const mockInstance = new Client();
+      (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+
+      const result = await vectorSearch.execute({
+        query: 'test',
+        collection: 'my_collection',
+      });
+
+      expect(result).not.toHaveProperty('error');
+      const queryCall = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(queryCall).toContain('FROM my_collection');
+    });
+
+    it('accepts valid collection names with dots', async () => {
+      const { Client } = await import('pg');
+      const mockInstance = new Client();
+      (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+
+      const result = await vectorSearch.execute({
+        query: 'test',
+        collection: 'embeddings.data',
+      });
+
+      expect(result).not.toHaveProperty('error');
+      const queryCall = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(queryCall).toContain('FROM embeddings.data');
+    });
+
+    it('rejects collection names with spaces', async () => {
+      const result = await vectorSearch.execute({
+        query: 'test',
+        collection: 'my table',
+      });
+
+      expect(result).toHaveProperty('error');
+      expect((result as { error: string }).error).toContain('Invalid collection name');
+    });
+
+    it('rejects collection names with parentheses', async () => {
+      const result = await vectorSearch.execute({
+        query: 'test',
+        collection: 'users()',
+      });
+
+      expect(result).toHaveProperty('error');
+      expect((result as { error: string }).error).toContain('Invalid collection name');
+    });
+  });
 });

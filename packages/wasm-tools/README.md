@@ -148,7 +148,6 @@ interface WasmToolConfig<TParams> {
   tags?: string[];
   timeout?: number; // Execution timeout in ms
   wasi?: boolean; // Enable WASI support
-  memoryPages?: number; // WASM memory limit
 }
 ```
 

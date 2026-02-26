@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { Cogitator } from '@cogitator-ai/core';
 import { OpenAIAdapter } from '../client/openai-adapter';
 import { ThreadManager } from '../client/thread-manager';
 
 const mockCogitator = {
   run: vi.fn(),
-} as any;
+} as unknown as Cogitator;
 
 describe('OpenAIAdapter', () => {
   let adapter: OpenAIAdapter;

@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/openai-compat",
-  "version": "19.0.8",
+  "version": "19.0.12",
   "description": "OpenAI Assistants API compatibility layer for Cogitator",
   "type": "module",
   "main": "./dist/index.js",
@@ -27,13 +27,12 @@
     "@cogitator-ai/types": "workspace:*",
     "@fastify/cors": "^11.0.1",
     "@fastify/multipart": "^9.3.0",
-    "@types/node": "^25.0.10",
     "fastify": "^5.7.4",
-    "nanoid": "^5.1.5",
-    "zod": "^4.3.6"
+    "nanoid": "^5.1.5"
   },
   "devDependencies": {
     "@types/busboy": "^1.5.4",
+    "@types/node": "^25.0.10",
     "typescript": "^5.3.0",
     "vitest": "^4.0.18"
   },

@@ -35,10 +35,11 @@ describe('JobQueue', () => {
   let queue: JobQueue;
 
   const mockAgentConfig: SerializedAgent = {
-    id: 'agent_123',
     name: 'TestAgent',
-    model: 'gpt-4',
     instructions: 'Test instructions',
+    model: 'gpt-4',
+    provider: 'openai',
+    tools: [],
   };
 
   const mockWorkflowConfig: SerializedWorkflow = {
@@ -49,9 +50,7 @@ describe('JobQueue', () => {
   };
 
   const mockSwarmConfig: SerializedSwarm = {
-    id: 'swarm_123',
-    name: 'TestSwarm',
-    strategy: 'parallel',
+    topology: 'collaborative',
     agents: [],
   };
 

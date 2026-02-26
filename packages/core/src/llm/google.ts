@@ -23,6 +23,7 @@ import type {
 import { nanoid } from 'nanoid';
 import { BaseLLMBackend } from './base';
 import { createLLMError, llmUnavailable, llmInvalidResponse, type LLMErrorContext } from './errors';
+import { getLogger } from '../logger';
 
 interface GoogleConfig {
   apiKey: string;
@@ -256,7 +257,12 @@ export class GoogleBackend extends BaseLLMBackend {
                   yield streamChunk;
                 }
               }
-            } catch {}
+            } catch (e) {
+              getLogger().warn('Failed to parse stream chunk in Google backend', {
+                json: jsonStr.slice(0, 200),
+                error: e instanceof Error ? e.message : String(e),
+              });
+            }
           }
         }
       }

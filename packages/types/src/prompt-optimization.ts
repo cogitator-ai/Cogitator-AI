@@ -1,5 +1,6 @@
 import type { Message, ToolCall } from './message';
 import type { ExecutionTrace, TraceQuery, TraceStoreStats } from './learning';
+import type { ToolSchema } from './tool';
 
 export type ABTestVariant = 'control' | 'treatment';
 export type ABTestStatus = 'draft' | 'running' | 'paused' | 'completed' | 'cancelled';
@@ -19,7 +20,7 @@ export interface CapturedPrompt {
 
   systemPrompt: string;
   messages: Message[];
-  tools?: unknown[];
+  tools?: ToolSchema[];
   injectedDemos?: string;
   injectedInsights?: string;
 

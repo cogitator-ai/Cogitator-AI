@@ -23,7 +23,7 @@ const sandbox = new SandboxManager({
   pool: { maxSize: 10, idleTimeoutMs: 60_000 },
   defaults: {
     timeout: 30_000,
-    resources: { memory: '256m', cpus: 0.5, pidsLimit: 100 },
+    resources: { memory: '256MB', cpus: 0.5, pidsLimit: 100 },
     network: { mode: 'none' },
   },
 });
@@ -61,7 +61,7 @@ const result = await executor.execute(
   {
     type: 'docker',
     image: 'node:20-alpine',
-    resources: { memory: '128m', cpus: 0.5, pidsLimit: 50 },
+    resources: { memory: '128MB', cpus: 0.5, pidsLimit: 50 },
     network: { mode: 'none' },
   }
 );

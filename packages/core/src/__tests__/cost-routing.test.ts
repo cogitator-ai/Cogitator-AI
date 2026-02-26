@@ -196,6 +196,27 @@ describe('CostTracker', () => {
     expect(summary.totalCost).toBe(0);
     expect(summary.runCount).toBe(0);
   });
+
+  it('caps records at MAX_RECORDS (10000) and drops oldest', () => {
+    for (let i = 0; i < 10_050; i++) {
+      tracker.record({
+        runId: `run_${i}`,
+        agentId: 'agent1',
+        model: 'gpt-4o',
+        inputTokens: 1,
+        outputTokens: 1,
+        cost: 0.001,
+      });
+    }
+
+    const records = tracker.getRecords();
+    expect(records.length).toBe(10_000);
+
+    expect(tracker.getRunCost('run_0')).toBe(0);
+    expect(tracker.getRunCost('run_49')).toBe(0);
+    expect(tracker.getRunCost('run_50')).toBeGreaterThan(0);
+    expect(tracker.getRunCost('run_10049')).toBeGreaterThan(0);
+  });
 });
 
 describe('BudgetEnforcer', () => {

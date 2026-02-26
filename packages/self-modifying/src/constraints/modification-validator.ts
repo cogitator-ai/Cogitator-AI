@@ -92,23 +92,10 @@ export class ModificationValidator {
       return this.evaluateExpression(rule, request.payload as Record<string, unknown>);
     }
 
-    const payload = request.payload as Record<string, unknown>;
-
-    switch (rule.type) {
-      case 'invariant':
-        return this.evaluateExpression(rule.expression ?? '', payload);
-      case 'precondition':
-        return this.evaluateExpression(rule.expression ?? '', payload);
-      case 'postcondition':
-        return true;
-      case 'temporal':
-        if (rule.pattern?.source === 'never') {
-          return !this.evaluateExpression(rule.expression ?? '', payload);
-        }
-        return true;
-      default:
-        return true;
-    }
+    return this.evaluateExpression(
+      rule.expression ?? '',
+      request.payload as Record<string, unknown>
+    );
   }
 
   private evaluateExpression(expression: string, context: Record<string, unknown>): boolean {
@@ -127,16 +114,18 @@ export class ModificationValidator {
 
     if (conditions.length === 0) return true;
 
-    let result = conditions[0];
+    const orGroups: boolean[][] = [[]];
+    orGroups[0].push(conditions[0]);
+
     for (let i = 0; i < operators.length; i++) {
       if (operators[i] === 'AND') {
-        result = result && conditions[i + 1];
+        orGroups[orGroups.length - 1].push(conditions[i + 1]);
       } else {
-        result = result || conditions[i + 1];
+        orGroups.push([conditions[i + 1]]);
       }
     }
 
-    return result;
+    return orGroups.some((group) => group.every(Boolean));
   }
 
   private evaluateSimpleCondition(condition: string, context: Record<string, unknown>): boolean {
@@ -384,6 +373,11 @@ export class ModificationValidator {
   }
 
   getConstraints(): ModificationConstraints {
-    return { ...this.constraints };
+    return {
+      safety: [...this.constraints.safety],
+      capability: [...this.constraints.capability],
+      resource: [...this.constraints.resource],
+      custom: this.constraints.custom ? [...this.constraints.custom] : [],
+    };
   }
 }

@@ -11,6 +11,15 @@ export class FixedSizeChunker implements Chunker {
   private readonly chunkOverlap: number;
 
   constructor(options: FixedSizeChunkerOptions) {
+    if (options.chunkSize <= 0) {
+      throw new Error('chunkSize must be a positive number');
+    }
+    if (options.chunkOverlap < 0) {
+      throw new Error('chunkOverlap must be non-negative');
+    }
+    if (options.chunkOverlap >= options.chunkSize) {
+      throw new Error('chunkOverlap must be less than chunkSize');
+    }
     this.chunkSize = options.chunkSize;
     this.chunkOverlap = options.chunkOverlap;
   }

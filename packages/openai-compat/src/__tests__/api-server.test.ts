@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
+import type { Cogitator } from '@cogitator-ai/core';
 import { OpenAIAdapter } from '../client/openai-adapter';
 import { registerAssistantRoutes } from '../server/routes/assistants';
 import { registerThreadRoutes } from '../server/routes/threads';
@@ -10,7 +11,7 @@ import { errorHandler, notFoundHandler } from '../server/middleware/error-handle
 const mockCogitator = {
   run: vi.fn(),
   tools: { getSchemas: vi.fn().mockReturnValue([]) },
-} as any;
+} as unknown as Cogitator;
 
 describe('OpenAI API Server', () => {
   let fastify: FastifyInstance;

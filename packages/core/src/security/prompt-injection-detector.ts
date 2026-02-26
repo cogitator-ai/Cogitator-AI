@@ -62,7 +62,7 @@ export class PromptInjectionDetector {
 
     const configWithPatterns: PromptInjectionConfig = {
       ...this.config,
-      patterns: [...(this.config.patterns ?? []), ...this.customPatterns],
+      patterns: [...this.customPatterns],
     };
 
     let threats: InjectionThreat[];
@@ -146,6 +146,17 @@ export class PromptInjectionDetector {
 
   updateConfig(updates: Partial<PromptInjectionConfig>): void {
     this.config = { ...this.config, ...updates };
+
+    if (updates.patterns !== undefined) {
+      this.customPatterns = [...this.config.patterns!];
+    }
+
+    if (updates.allowlist !== undefined) {
+      this.allowlistSet.clear();
+      for (const phrase of this.config.allowlist!) {
+        this.allowlistSet.add(phrase.toLowerCase());
+      }
+    }
 
     if (updates.classifier !== undefined || updates.llmBackend !== undefined) {
       if (this.config.classifier === 'llm' && this.config.llmBackend) {

@@ -13,6 +13,7 @@ import {
   parseCausalExtractionResponse,
   ExtractedRelationship,
 } from './prompts';
+import { nanoid } from 'nanoid';
 
 export interface CausalExtractorOptions {
   llmBackend: LLMBackend;
@@ -21,8 +22,6 @@ export interface CausalExtractorOptions {
   minStrength?: number;
   batchSize?: number;
 }
-
-let edgeIdCounter = 0;
 
 export class CausalExtractor {
   private llm: LLMBackend;
@@ -176,7 +175,7 @@ ${reflection.recommendations.map((r) => `- ${r}`).join('\n')}`;
       const existingEdge = graph.getEdgeBetween(rel.cause.id, rel.effect.id);
       if (!existingEdge) {
         const edge: CausalEdge = {
-          id: `edge-extracted-${++edgeIdCounter}`,
+          id: `edge-extracted-${nanoid(8)}`,
           source: rel.cause.id,
           target: rel.effect.id,
           relationType: this.mapRelationType(rel.relationType),

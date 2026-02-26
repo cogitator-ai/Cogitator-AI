@@ -89,6 +89,8 @@ export interface WorkflowExecuteOptions {
   maxIterations?: number;
   checkpoint?: boolean;
   checkpointStrategy?: CheckpointStrategy;
+  skipNodes?: Set<string>;
+  workflowId?: string;
   onNodeStart?: (node: string) => void;
   onNodeComplete?: (node: string, result: unknown, duration: number) => void;
   onNodeError?: (node: string, error: Error) => void;
@@ -115,7 +117,13 @@ export type StreamingWorkflowEvent =
   | { type: 'workflow_started'; workflowId: string; workflowName: string; timestamp: number }
   | { type: 'node_started'; nodeName: string; timestamp: number }
   | { type: 'node_progress'; nodeName: string; progress: number; timestamp: number }
-  | { type: 'node_completed'; nodeName: string; output: unknown; duration: number }
+  | {
+      type: 'node_completed';
+      nodeName: string;
+      output: unknown;
+      duration: number;
+      timestamp: number;
+    }
   | { type: 'node_error'; nodeName: string; error: Error; timestamp: number }
   | {
       type: 'workflow_completed';

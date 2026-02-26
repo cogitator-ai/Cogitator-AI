@@ -548,6 +548,109 @@ describe('github_api tool', () => {
     });
   });
 
+  describe('URL encoding', () => {
+    it('encodes owner and repo with special characters', async () => {
+      mockFetch.mockResolvedValueOnce(
+        createJsonResponse({
+          name: 'repo',
+          full_name: 'test user/my repo',
+          description: '',
+          html_url: '',
+          default_branch: 'main',
+          stargazers_count: 0,
+          forks_count: 0,
+          open_issues_count: 0,
+          language: null,
+          topics: [],
+        })
+      );
+
+      await githubApi.execute({ action: 'get_repo', owner: 'test user', repo: 'my repo' }, ctx);
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      expect(calledUrl).toContain('test%20user');
+      expect(calledUrl).toContain('my%20repo');
+      expect(calledUrl).not.toContain('test user');
+    });
+
+    it('encodes file path segments with special characters', async () => {
+      mockFetch.mockResolvedValueOnce(
+        createJsonResponse({
+          name: 'file name.ts',
+          path: 'src/file name.ts',
+          sha: 'abc',
+          size: 100,
+          html_url: '',
+          content: Buffer.from('code').toString('base64'),
+          encoding: 'base64',
+        })
+      );
+
+      await githubApi.execute(
+        { action: 'get_file', owner: 'owner', repo: 'repo', path: 'src/file name.ts' },
+        ctx
+      );
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      expect(calledUrl).toContain('file%20name.ts');
+    });
+
+    it('encodes unicode characters in owner/repo', async () => {
+      mockFetch.mockResolvedValueOnce(
+        createJsonResponse({
+          name: 'repo',
+          full_name: 'user/repo',
+          description: '',
+          html_url: '',
+          default_branch: 'main',
+          stargazers_count: 0,
+          forks_count: 0,
+          open_issues_count: 0,
+          language: null,
+          topics: [],
+        })
+      );
+
+      await githubApi.execute({ action: 'get_repo', owner: 'usér', repo: 'répö' }, ctx);
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      expect(calledUrl).toContain(encodeURIComponent('usér'));
+      expect(calledUrl).toContain(encodeURIComponent('répö'));
+    });
+  });
+
+  describe('request timeout', () => {
+    it('uses AbortController with timeout for API requests', async () => {
+      mockFetch.mockImplementation((_url: string, init?: RequestInit) => {
+        expect(init?.signal).toBeDefined();
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+        return Promise.resolve(
+          createJsonResponse({
+            name: 'repo',
+            full_name: 'test/repo',
+            description: '',
+            html_url: '',
+            default_branch: 'main',
+            stargazers_count: 0,
+            forks_count: 0,
+            open_issues_count: 0,
+            language: null,
+            topics: [],
+          })
+        );
+      });
+
+      await githubApi.execute({ action: 'get_repo', owner: 'test', repo: 'repo' }, ctx);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          signal: expect.any(AbortSignal),
+        })
+      );
+    });
+  });
+
   describe('tool metadata', () => {
     it('has correct name and description', () => {
       expect(githubApi.name).toBe('github_api');

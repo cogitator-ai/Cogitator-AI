@@ -124,7 +124,8 @@ function stringifyCsv(
       str.includes(delimiter) || str.includes(quote) || str.includes('\n') || str.includes('\r');
 
     if (needsQuotes) {
-      const escaped = str.replace(new RegExp(quote, 'g'), quote + quote);
+      const escapedQuote = quote.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const escaped = str.replace(new RegExp(escapedQuote, 'g'), quote + quote);
       return quote + escaped + quote;
     }
 

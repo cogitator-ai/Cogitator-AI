@@ -4,54 +4,12 @@
  * Recreates a Swarm from serialized config and executes it.
  */
 
-import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { Cogitator, Agent } from '@cogitator-ai/core';
 import { Swarm } from '@cogitator-ai/swarms';
-import { z } from 'zod';
-import type { Tool, ToolSchema, SwarmStrategy, SwarmConfig } from '@cogitator-ai/types';
+import type { SwarmStrategy, SwarmConfig } from '@cogitator-ai/types';
 import type { SwarmJobPayload, SwarmJobResult, SerializedAgent } from '../types';
+import { recreateTools } from './shared.js';
 
-/**
- * Convert JSON Schema to permissive Zod schema
- */
-function jsonSchemaToZod(params: ToolSchema['parameters']): z.ZodType {
-  const properties = params.properties;
-  const required = params.required ?? [];
-
-  if (Object.keys(properties).length === 0) {
-    return z.object({});
-  }
-
-  const shape: Record<string, z.ZodType> = {};
-  for (const [key, _] of Object.entries(properties)) {
-    shape[key] = required.includes(key) ? z.unknown() : z.unknown().optional();
-  }
-
-  return z.object(shape).passthrough();
-}
-
-/**
- * Recreate tools from schemas
- */
-function recreateTools(schemas: ToolSchema[]): Tool[] {
-  return schemas.map((schema) =>
-    tool({
-      name: schema.name,
-      description: schema.description,
-      parameters: jsonSchemaToZod(schema.parameters),
-      execute: async (input) => {
-        console.warn(`[worker] Tool "${schema.name}" called with input:`, JSON.stringify(input));
-        return {
-          warning: 'Tool executed in worker with stub implementation',
-          input,
-        };
-      },
-    })
-  );
-}
-
-/**
- * Recreate an agent from serialized config
- */
 function recreateAgent(config: SerializedAgent): Agent {
   const tools = recreateTools(config.tools);
   return new Agent({
@@ -64,9 +22,6 @@ function recreateAgent(config: SerializedAgent): Agent {
   });
 }
 
-/**
- * Map topology to strategy type
- */
 function getStrategyType(
   topology: 'sequential' | 'hierarchical' | 'collaborative' | 'debate' | 'voting'
 ): SwarmStrategy {
@@ -86,9 +41,6 @@ function getStrategyType(
   }
 }
 
-/**
- * Process a swarm job
- */
 export async function processSwarmJob(payload: SwarmJobPayload): Promise<SwarmJobResult> {
   const { swarmConfig, input } = payload;
 

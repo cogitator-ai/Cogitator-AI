@@ -1,5 +1,21 @@
 # @cogitator-ai/types
 
+## 0.21.3
+
+### Patch Changes
+
+- fix(types): audit — 13 bugs/type-safety issues fixed, dead code removed
+  - Added missing `responseFormat` to `SerializedAgentConfig`
+  - Fixed `DurationString` type (removed useless `| string` union)
+  - Added `coherence` field to `TraceMetrics`
+  - Removed duplicate config fields in `MetaReasoningConfig`
+  - Renamed `turnDuration` to `maxTokensPerTurn` in `DebateConfig`
+  - Narrowed `NegotiationTerm.value` to `string | number | boolean`
+  - Typed `CapturedPrompt.tools` as `ToolSchema[]`
+  - Made `GraphStats` Record fields Partial
+  - Removed dead duplicate fields from `MetaAssessment` and `ModificationValidationResult`
+  - Removed unused `ProposedActionType`
+
 ## 0.21.1
 
 ### Patch Changes

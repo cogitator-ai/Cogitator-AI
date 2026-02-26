@@ -1,5 +1,56 @@
 # @cogitator-ai/core
 
+## 0.18.6
+
+### Patch Changes
+
+- fix(core): audit — 37 bugs fixed, +71 regression tests, v0.18.6
+
+  Critical fixes:
+  - Streaming tool calls: accumulate/merge by ID instead of overwriting
+  - SQL injection prevention in vector-search collection name validation
+  - Security evaluator fail-closed on parse errors (was fail-open)
+  - Tool guard strict mode logic was inverted
+  - pruneTraces deleted newest instead of oldest
+  - incompleteBeta overflow for large samples
+  - Abort listener memory leak in retry utility
+  - Multiple unbounded growth issues capped (OTLP spans, cost records, reflections)
+  - Tool error messages now include actual error content for LLM
+  - ContentPart[] handling in message builder, forker
+  - Causal polynomial evaluation and sampleGaussian NaN guard
+  - LLM backend silent error swallowing (Anthropic, Google, Bedrock)
+  - Agent clone() no longer duplicates explicit ID
+
+  71 new regression tests covering all fixed bugs.
+  5 new test files: streaming, message-builder, tool-executor, opentelemetry, retry.
+
+## 0.18.5
+
+### Patch Changes
+
+- fix(types): audit — 13 bugs/type-safety issues fixed, dead code removed
+  - Added missing `responseFormat` to `SerializedAgentConfig`
+  - Fixed `DurationString` type (removed useless `| string` union)
+  - Added `coherence` field to `TraceMetrics`
+  - Removed duplicate config fields in `MetaReasoningConfig`
+  - Renamed `turnDuration` to `maxTokensPerTurn` in `DebateConfig`
+  - Narrowed `NegotiationTerm.value` to `string | number | boolean`
+  - Typed `CapturedPrompt.tools` as `ToolSchema[]`
+  - Made `GraphStats` Record fields Partial
+  - Removed dead duplicate fields from `MetaAssessment` and `ModificationValidationResult`
+  - Removed unused `ProposedActionType`
+
+- Updated dependencies
+  - @cogitator-ai/types@0.21.3
+  - @cogitator-ai/memory@0.6.17
+  - @cogitator-ai/sandbox@0.2.25
+
+## 0.18.4
+
+### Patch Changes
+
+- @cogitator-ai/memory@0.6.16
+
 ## 0.18.3
 
 ### Patch Changes

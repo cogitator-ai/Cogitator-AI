@@ -28,7 +28,19 @@ export {
   SwarmEventEmitterImpl,
   InMemoryMessageBus,
   InMemoryBlackboard,
+  RedisMessageBus,
+  RedisBlackboard,
+  RedisSwarmEventEmitter,
+  type RedisMessageBusOptions,
+  type RedisBlackboardOptions,
+  type RedisEventEmitterOptions,
 } from './communication/index';
+
+export {
+  DistributedSwarmCoordinator,
+  type SwarmAgentJobPayload,
+  type SwarmAgentJobResult,
+} from './distributed/index';
 
 export { ResourceTracker } from './resources/tracker';
 export {

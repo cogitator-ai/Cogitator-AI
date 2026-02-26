@@ -14,8 +14,15 @@ function mapFormat(format?: VoiceAudioFormat): string {
   switch (format) {
     case 'pcm16':
       return 'pcm_16000';
-    case 'mp3':
+    case 'opus':
+      return 'opus_48000_32';
+    case 'flac':
+      return 'flac_22050';
+    case 'wav':
+      return 'pcm_44100';
+    case 'aac':
       return 'mp3_44100_128';
+    case 'mp3':
     default:
       return 'mp3_44100_128';
   }
@@ -35,38 +42,34 @@ export class ElevenLabsTTS implements TTSProvider {
   }
 
   async synthesize(text: string, options?: TTSOptions): Promise<Buffer> {
-    const voiceId = options?.voice ?? this.voiceId;
-    const outputFormat = mapFormat(options?.format);
-    const url = `${BASE_URL}/v1/text-to-speech/${voiceId}?output_format=${outputFormat}`;
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'xi-api-key': this.apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        text,
-        model_id: this.model,
-        voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.75,
-        },
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`ElevenLabs API error ${response.status}`);
-    }
-
+    const response = await this.request(text, options);
     const arrayBuffer = await response.arrayBuffer();
     return Buffer.from(arrayBuffer);
   }
 
   async *streamSynthesize(text: string, options?: TTSOptions): AsyncGenerator<Buffer> {
-    const voiceId = options?.voice ?? this.voiceId;
+    const response = await this.request(text, options, '/stream');
+
+    if (!response.body) {
+      throw new Error('ElevenLabs returned empty response body');
+    }
+
+    const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        yield Buffer.from(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  private async request(text: string, options?: TTSOptions, suffix = ''): Promise<Response> {
+    const voiceId = encodeURIComponent(options?.voice ?? this.voiceId);
     const outputFormat = mapFormat(options?.format);
-    const url = `${BASE_URL}/v1/text-to-speech/${voiceId}/stream?output_format=${outputFormat}`;
+    const url = `${BASE_URL}/v1/text-to-speech/${voiceId}${suffix}?output_format=${outputFormat}`;
 
     const response = await fetch(url, {
       method: 'POST',
@@ -85,12 +88,10 @@ export class ElevenLabsTTS implements TTSProvider {
     });
 
     if (!response.ok) {
-      throw new Error(`ElevenLabs API error ${response.status}`);
+      const body = await response.text();
+      throw new Error(`ElevenLabs API error ${response.status}: ${body}`);
     }
 
-    const body = response.body as unknown as AsyncIterable<Uint8Array>;
-    for await (const chunk of body) {
-      yield Buffer.from(chunk);
-    }
+    return response;
   }
 }

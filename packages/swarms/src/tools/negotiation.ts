@@ -31,7 +31,11 @@ function generateId(): string {
 }
 
 function getNegotiationState(blackboard: Blackboard): NegotiationState | null {
-  return blackboard.read<NegotiationState>('negotiation');
+  try {
+    return blackboard.read<NegotiationState>('negotiation');
+  } catch {
+    return null;
+  }
 }
 
 function writeNegotiationState(
@@ -267,6 +271,11 @@ export function createNegotiationTools(
 
       if (offer.status !== 'pending') {
         return { success: false, error: `Cannot reject offer with status: ${offer.status}` };
+      }
+
+      const recipients = Array.isArray(offer.to) ? offer.to : [offer.to];
+      if (!recipients.includes(currentAgent)) {
+        return { success: false, error: 'This offer was not made to you' };
       }
 
       offer.status = 'rejected';

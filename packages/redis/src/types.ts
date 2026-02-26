@@ -105,24 +105,6 @@ export interface RedisClient {
 }
 
 /**
- * Queue metrics for monitoring
- */
-export interface QueueMetrics {
-  /** Jobs waiting to be processed */
-  waiting: number;
-  /** Jobs currently being processed */
-  active: number;
-  /** Jobs completed successfully */
-  completed: number;
-  /** Jobs that failed */
-  failed: number;
-  /** Jobs scheduled for later */
-  delayed: number;
-  /** Total queue depth (waiting + delayed) */
-  depth: number;
-}
-
-/**
  * Check if config is for cluster mode
  */
 export function isClusterConfig(config: RedisConfig): config is RedisClusterConfig {

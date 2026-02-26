@@ -76,9 +76,9 @@ export class SwarmAssessor implements Assessor {
       if (agent.metadata.locked) {
         assignments.push({
           agentName: agent.agent.name,
-          originalModel: (agent.agent as { model?: string }).model ?? 'unknown',
-          assignedModel: (agent.agent as { model?: string }).model ?? 'unknown',
-          provider: this.detectProvider((agent.agent as { model?: string }).model ?? ''),
+          originalModel: agent.agent.model,
+          assignedModel: agent.agent.model,
+          provider: this.detectProvider(agent.agent.model),
           score: 100,
           reasons: ['Model locked by configuration'],
           fallbackModels: [],
@@ -95,7 +95,7 @@ export class SwarmAssessor implements Assessor {
       const validModels = scoredModels.filter((s) => s.score >= minScore);
 
       if (validModels.length === 0) {
-        const originalModel = (agent.agent as { model?: string }).model ?? 'gpt-4o-mini';
+        const originalModel = agent.agent.model;
         warnings.push(
           `No suitable model found for ${agent.agent.name}, keeping original: ${originalModel}`
         );
@@ -122,7 +122,7 @@ export class SwarmAssessor implements Assessor {
 
       assignments.push({
         agentName: agent.agent.name,
-        originalModel: (agent.agent as { model?: string }).model ?? 'unknown',
+        originalModel: agent.agent.model,
         assignedModel: selectedModel.model.id,
         provider: selectedModel.model.provider,
         score: selectedModel.score,
@@ -167,48 +167,36 @@ export class SwarmAssessor implements Assessor {
     for (const assignment of result.assignments) {
       if (assignment.locked) continue;
 
-      const updateAgent = <T extends { name: string; model?: string }>(
-        agent: T | undefined
-      ): T | undefined => {
-        if (!agent || agent.name !== assignment.agentName) return agent;
+      const updateAgent = <T extends { name: string }>(agent: T): T => {
+        if (agent.name !== assignment.agentName) return agent;
         return { ...agent, model: assignment.assignedModel };
       };
 
       if (updatedConfig.supervisor) {
-        updatedConfig.supervisor = updateAgent(
-          updatedConfig.supervisor as { name: string; model?: string }
-        ) as typeof updatedConfig.supervisor;
+        updatedConfig.supervisor = updateAgent(updatedConfig.supervisor);
       }
 
       if (updatedConfig.moderator) {
-        updatedConfig.moderator = updateAgent(
-          updatedConfig.moderator as { name: string; model?: string }
-        ) as typeof updatedConfig.moderator;
+        updatedConfig.moderator = updateAgent(updatedConfig.moderator);
       }
 
       if (updatedConfig.router) {
-        updatedConfig.router = updateAgent(
-          updatedConfig.router as { name: string; model?: string }
-        ) as typeof updatedConfig.router;
+        updatedConfig.router = updateAgent(updatedConfig.router);
       }
 
       if (updatedConfig.workers) {
-        updatedConfig.workers = updatedConfig.workers.map(
-          (w) => updateAgent(w as { name: string; model?: string }) ?? w
-        ) as typeof updatedConfig.workers;
+        updatedConfig.workers = updatedConfig.workers.map((w) => updateAgent(w));
       }
 
       if (updatedConfig.agents) {
-        updatedConfig.agents = updatedConfig.agents.map(
-          (a) => updateAgent(a as { name: string; model?: string }) ?? a
-        ) as typeof updatedConfig.agents;
+        updatedConfig.agents = updatedConfig.agents.map((a) => updateAgent(a));
       }
 
       if (updatedConfig.stages) {
         updatedConfig.stages = updatedConfig.stages.map((stage) => ({
           ...stage,
-          agent: updateAgent(stage.agent as { name: string; model?: string }) ?? stage.agent,
-        })) as typeof updatedConfig.stages;
+          agent: updateAgent(stage.agent),
+        }));
       }
     }
 
@@ -260,11 +248,11 @@ export class SwarmAssessor implements Assessor {
 
   private getAgentNames(config: SwarmConfig): string[] {
     const names: string[] = [];
-    if (config.supervisor) names.push((config.supervisor as { name: string }).name);
-    if (config.workers) names.push(...config.workers.map((w) => (w as { name: string }).name));
-    if (config.agents) names.push(...config.agents.map((a) => (a as { name: string }).name));
-    if (config.moderator) names.push((config.moderator as { name: string }).name);
-    if (config.router) names.push((config.router as { name: string }).name);
+    if (config.supervisor) names.push(config.supervisor.name);
+    if (config.workers) names.push(...config.workers.map((w) => w.name));
+    if (config.agents) names.push(...config.agents.map((a) => a.name));
+    if (config.moderator) names.push(config.moderator.name);
+    if (config.router) names.push(config.router.name);
     return names;
   }
 

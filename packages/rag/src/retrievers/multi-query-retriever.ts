@@ -3,7 +3,6 @@ import type { Retriever, RetrievalConfig, RetrievalResult } from '@cogitator-ai/
 export interface MultiQueryRetrieverConfig {
   baseRetriever: Retriever;
   expandQuery: (query: string) => Promise<string[]>;
-  defaultQueryCount?: number;
 }
 
 const DEFAULT_TOP_K = 10;

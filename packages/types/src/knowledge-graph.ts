@@ -154,8 +154,8 @@ export interface GraphSemanticSearchOptions {
 export interface GraphStats {
   nodeCount: number;
   edgeCount: number;
-  nodesByType: Record<EntityType, number>;
-  edgesByType: Record<RelationType, number>;
+  nodesByType: Partial<Record<EntityType, number>>;
+  edgesByType: Partial<Record<RelationType, number>>;
   averageEdgesPerNode: number;
   maxDepth: number;
 }

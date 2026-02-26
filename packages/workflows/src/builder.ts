@@ -50,10 +50,18 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
   private loops: InternalLoop<S>[] = [];
   private parallels: InternalParallel[] = [];
   private entryPointName: string | null = null;
+  private usedNames = new Set<string>();
 
   constructor(name: string) {
     this.name = name;
     this.state = {} as S;
+  }
+
+  private registerName(name: string): void {
+    if (this.usedNames.has(name)) {
+      throw new Error(`Duplicate node name '${name}'`);
+    }
+    this.usedNames.add(name);
   }
 
   /**
@@ -76,6 +84,7 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
    * Add a node to the workflow
    */
   addNode(name: string, fn: NodeFn<S>, options?: AddNodeOptions): this {
+    this.registerName(name);
     this.nodes.push({
       name,
       fn,
@@ -93,6 +102,7 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
     condition: (state: S) => string | string[],
     options?: AddConditionalOptions
   ): this {
+    this.registerName(name);
     this.conditionals.push({
       name,
       condition,
@@ -105,6 +115,7 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
    * Add a loop construct
    */
   addLoop(name: string, options: AddLoopOptions): this {
+    this.registerName(name);
     this.loops.push({
       name,
       condition: options.condition as (state: S) => boolean,
@@ -116,6 +127,7 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
   }
 
   addParallel(name: string, targets: string[], options?: AddParallelOptions): this {
+    this.registerName(name);
     this.parallels.push({
       name,
       targets,

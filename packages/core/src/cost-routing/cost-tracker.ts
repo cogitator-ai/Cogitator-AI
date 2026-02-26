@@ -2,6 +2,7 @@ import type { CostRecord, CostSummary } from '@cogitator-ai/types';
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
+const MAX_RECORDS = 10_000;
 
 export interface CostFilter {
   agentId?: string;
@@ -17,6 +18,9 @@ export class CostTracker {
   record(record: Omit<CostRecord, 'timestamp'>): void {
     const entry: CostRecord = { ...record, timestamp: new Date() };
     this.records.push(entry);
+    if (this.records.length > MAX_RECORDS) {
+      this.records.splice(0, this.records.length - MAX_RECORDS);
+    }
     this.hourlyWindow.push(entry);
     this.dailyWindow.push(entry);
     this.pruneWindows();

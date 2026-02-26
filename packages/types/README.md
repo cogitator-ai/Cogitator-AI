@@ -555,6 +555,7 @@ const trace: ExecutionTrace = {
     toolAccuracy: 0.95,
     efficiency: 0.8,
     completeness: 1.0,
+    coherence: 0.9,
   },
   score: 0.92,
   isDemo: true,

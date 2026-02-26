@@ -263,7 +263,6 @@ export async function executeMap<S, T>(
   }
 
   const concurrency = config.concurrency ?? Infinity;
-  const results: MapItemResult<T>[] = [];
   let completed = 0;
   let successful = 0;
   let failed = 0;
@@ -301,9 +300,7 @@ export async function executeMap<S, T>(
     return result;
   };
 
-  const allResults = await executeWithConcurrency(items, mapper, concurrency, (result) =>
-    results.push(result)
-  );
+  const allResults = await executeWithConcurrency(items, mapper, concurrency);
 
   return allResults;
 }

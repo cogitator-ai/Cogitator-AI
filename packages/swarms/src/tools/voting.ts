@@ -18,6 +18,14 @@ interface Vote {
 /**
  * Create voting tools for consensus strategies
  */
+function safeReadConsensus<T>(blackboard: Blackboard): T | null {
+  try {
+    return blackboard.read<T>('consensus');
+  } catch {
+    return null;
+  }
+}
+
 export function createVotingTools(
   blackboard: Blackboard,
   events: SwarmEventEmitter,
@@ -36,15 +44,25 @@ export function createVotingTools(
         .describe('Confidence level 0-1 (optional, affects display only)'),
     }),
     execute: async ({ decision, reasoning, confidence }) => {
-      const consensusState = blackboard.read<{
+      const consensusState = safeReadConsensus<{
         currentRound: number;
         votes: Vote[];
-      }>('consensus');
+      }>(blackboard);
 
       if (!consensusState) {
         return {
           success: false,
           error: 'No active consensus session',
+        };
+      }
+
+      const existingIndex = consensusState.votes.findIndex(
+        (v) => v.agentName === currentAgent && v.round === consensusState.currentRound
+      );
+      if (existingIndex >= 0) {
+        return {
+          success: false,
+          error: 'You already voted this round. Use change_vote to modify your vote.',
         };
       }
 
@@ -92,12 +110,12 @@ export function createVotingTools(
       includeReasoning: z.boolean().optional().describe('Include vote reasoning'),
     }),
     execute: async ({ round, includeReasoning = false }) => {
-      const consensusState = blackboard.read<{
+      const consensusState = safeReadConsensus<{
         currentRound: number;
         votes: Vote[];
         threshold: number;
         resolution: string;
-      }>('consensus');
+      }>(blackboard);
 
       if (!consensusState) {
         return {
@@ -154,10 +172,10 @@ export function createVotingTools(
       reasoning: z.string().optional().describe('Reasoning for changing your vote'),
     }),
     execute: async ({ newDecision, reasoning }) => {
-      const consensusState = blackboard.read<{
+      const consensusState = safeReadConsensus<{
         currentRound: number;
         votes: Vote[];
-      }>('consensus');
+      }>(blackboard);
 
       if (!consensusState) {
         return {
@@ -213,14 +231,14 @@ export function createVotingTools(
     description: 'Get the current status of the consensus session',
     parameters: z.object({}),
     execute: async () => {
-      const consensusState = blackboard.read<{
+      const consensusState = safeReadConsensus<{
         topic: string;
         currentRound: number;
         maxRounds: number;
         votes: Vote[];
         threshold: number;
         resolution: string;
-      }>('consensus');
+      }>(blackboard);
 
       if (!consensusState) {
         return {
@@ -233,24 +251,33 @@ export function createVotingTools(
         (v) => v.round === consensusState.currentRound
       );
 
-      const voteCounts = new Map<string, number>();
+      const isWeighted = consensusState.resolution === 'weighted';
+      const voteCounts = new Map<string, { count: number; weighted: number }>();
+      let totalWeight = 0;
+
       for (const vote of currentRoundVotes) {
         const key = vote.decision.toLowerCase().trim();
-        voteCounts.set(key, (voteCounts.get(key) ?? 0) + 1);
+        const existing = voteCounts.get(key) ?? { count: 0, weighted: 0 };
+        existing.count++;
+        existing.weighted += vote.weight;
+        totalWeight += vote.weight;
+        voteCounts.set(key, existing);
       }
 
       const totalVotes = currentRoundVotes.length;
       let leadingDecision = '';
-      let leadingCount = 0;
+      let leadingScore = 0;
 
-      for (const [decision, count] of voteCounts) {
-        if (count > leadingCount) {
-          leadingCount = count;
+      for (const [decision, data] of voteCounts) {
+        const score = isWeighted ? data.weighted : data.count;
+        if (score > leadingScore) {
+          leadingScore = score;
           leadingDecision = decision;
         }
       }
 
-      const consensusRatio = totalVotes > 0 ? leadingCount / totalVotes : 0;
+      const denominator = isWeighted ? totalWeight : totalVotes;
+      const consensusRatio = denominator > 0 ? leadingScore / denominator : 0;
       const wouldReachConsensus = consensusRatio >= consensusState.threshold;
 
       return {
@@ -263,7 +290,7 @@ export function createVotingTools(
         resolution: consensusState.resolution,
         currentVotes: totalVotes,
         leadingDecision,
-        leadingVotes: leadingCount,
+        leadingVotes: leadingScore,
         consensusRatio: Math.round(consensusRatio * 100) / 100,
         wouldReachConsensus,
         hasVoted: currentRoundVotes.some((v) => v.agentName === currentAgent),

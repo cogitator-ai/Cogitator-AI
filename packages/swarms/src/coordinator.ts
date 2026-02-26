@@ -186,7 +186,7 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
       throw new Error('Swarm resource budget exceeded');
     }
 
-    while (this.paused) {
+    while (this.paused && !this.aborted) {
       await new Promise((r) => setTimeout(r, 100));
     }
 
@@ -265,8 +265,8 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
         } else {
           if (this.config.errorHandling?.onAgentFailure === 'skip') {
             continue;
-          } else if (this.config.errorHandling?.onAgentFailure !== 'abort') {
-            continue;
+          } else if (this.config.errorHandling?.onAgentFailure === 'abort') {
+            throw settled.reason;
           } else {
             throw settled.reason;
           }
@@ -398,8 +398,8 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
       agent.tokenCount = 0;
     }
 
-    (this._messageBus as InMemoryMessageBus).clear();
-    (this._blackboard as InMemoryBlackboard).clear();
+    this._messageBus.clear();
+    this._blackboard.clear();
   }
 
   private buildIncomingMessagesContext(agentName: string): string | null {

@@ -15,6 +15,7 @@ let capturedUrl: string;
 vi.mock('ws', async () => {
   const { EventEmitter: EE } = await import('node:events');
   class MockWS extends EE {
+    static OPEN = 1;
     send = vi.fn();
     close = vi.fn();
     readyState = 1;
@@ -384,6 +385,32 @@ describe('GeminiRealtimeAdapter', () => {
     it('is safe to call without connecting', () => {
       adapter = new GeminiRealtimeAdapter(createConfig());
       expect(() => adapter.close()).not.toThrow();
+    });
+  });
+
+  describe('error resilience', () => {
+    it('emits error on malformed JSON messages', async () => {
+      adapter = new GeminiRealtimeAdapter(createConfig());
+      await adapter.connect();
+
+      const errorHandler = vi.fn();
+      adapter.on('error', errorHandler);
+
+      mockWs.emit('message', 'not valid json {{{');
+
+      expect(errorHandler).toHaveBeenCalledOnce();
+      expect(errorHandler.mock.calls[0]![0].message).toBe('Failed to parse WebSocket message');
+    });
+
+    it('does not send when WebSocket is not open', async () => {
+      adapter = new GeminiRealtimeAdapter(createConfig());
+      await adapter.connect();
+      mockWs.send.mockClear();
+
+      mockWs.readyState = 3;
+
+      adapter.sendText('should not send');
+      expect(mockWs.send).not.toHaveBeenCalled();
     });
   });
 });

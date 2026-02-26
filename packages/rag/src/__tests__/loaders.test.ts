@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { TextLoader } from '../loaders/text-loader';
 import { MarkdownLoader } from '../loaders/markdown-loader';
+import { JSONLoader } from '../loaders/json-loader';
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -37,6 +38,29 @@ describe('TextLoader', () => {
   it('has correct supportedTypes', () => {
     const loader = new TextLoader();
     expect(loader.supportedTypes).toContain('txt');
+  });
+});
+
+describe('JSONLoader', () => {
+  it('handles primitive array items gracefully', async () => {
+    const file = join(TEST_DIR, 'primitives.json');
+    writeFileSync(file, JSON.stringify([42, 'hello', true, null]));
+    const loader = new JSONLoader();
+    const docs = await loader.load(file);
+    expect(docs).toHaveLength(4);
+    expect(docs[0].content).toBe('42');
+    expect(docs[1].content).toBe('hello');
+    expect(docs[2].content).toBe('true');
+    expect(docs[3].content).toBe('null');
+  });
+
+  it('handles object items normally', async () => {
+    const file = join(TEST_DIR, 'objects.json');
+    writeFileSync(file, JSON.stringify([{ content: 'test text' }]));
+    const loader = new JSONLoader();
+    const docs = await loader.load(file);
+    expect(docs).toHaveLength(1);
+    expect(docs[0].content).toBe('test text');
   });
 });
 

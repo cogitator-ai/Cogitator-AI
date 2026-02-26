@@ -16,6 +16,8 @@ export class LLMReranker implements Reranker {
     results: RetrievalResult[],
     topN?: number
   ): Promise<RetrievalResult[]> {
+    if (results.length === 0) return [];
+
     try {
       const prompt = this.buildPrompt(query, results);
       const response = await this.generateFn(prompt);
@@ -29,7 +31,7 @@ export class LLMReranker implements Reranker {
       scored.sort((a, b) => b.llmScore - a.llmScore);
       const reranked = scored.map(({ result, llmScore }) => ({
         ...result,
-        score: llmScore / 10,
+        score: Math.max(0, Math.min(1, llmScore / 10)),
       }));
 
       return topN ? reranked.slice(0, topN) : reranked;
@@ -54,7 +56,7 @@ export class LLMReranker implements Reranker {
   }
 
   private parseScores(response: string, count: number): Array<{ index: number; score: number }> {
-    const jsonMatch = /\[[\s\S]*\]/.exec(response);
+    const jsonMatch = /\[[\s\S]*?\]/.exec(response);
     if (!jsonMatch) throw new Error('No JSON array found in response');
 
     const parsed: unknown = JSON.parse(jsonMatch[0]);

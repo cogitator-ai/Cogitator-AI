@@ -165,13 +165,25 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         }));
       }
 
+      if (!finalToolCalls && choice.finish_reason && toolCallsAccum.size > 0) {
+        finalToolCalls = Array.from(toolCallsAccum.entries()).map(([index, partial]) => ({
+          id: partial.id ?? '',
+          name: partial.name ?? '',
+          arguments: this.tryParseJson(toolCallArgsAccum.get(index) ?? '{}', ctx),
+        }));
+      }
+
       yield {
         id: chunk.id,
         delta: {
           content: delta.content ?? undefined,
           toolCalls: finalToolCalls,
         },
-        finishReason: choice.finish_reason ? this.mapFinishReason(choice.finish_reason) : undefined,
+        finishReason: choice.finish_reason
+          ? finalToolCalls
+            ? 'tool_calls'
+            : this.mapFinishReason(choice.finish_reason)
+          : undefined,
       };
     }
   }

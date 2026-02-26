@@ -69,4 +69,16 @@ describe('RecursiveChunker', () => {
     const chunker = new RecursiveChunker({ chunkSize: 100, chunkOverlap: 0 });
     expect(chunker.chunk('', 'doc-1')).toEqual([]);
   });
+
+  it('throws when chunkOverlap >= chunkSize', () => {
+    expect(() => new RecursiveChunker({ chunkSize: 10, chunkOverlap: 10 })).toThrow(
+      'chunkOverlap must be less than chunkSize'
+    );
+  });
+
+  it('throws when chunkSize is zero or negative', () => {
+    expect(() => new RecursiveChunker({ chunkSize: 0, chunkOverlap: 0 })).toThrow(
+      'chunkSize must be a positive number'
+    );
+  });
 });

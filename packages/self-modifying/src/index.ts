@@ -67,6 +67,7 @@ export {
   mergeSafetyConstraints,
   mergeCapabilityConstraints,
   mergeResourceConstraints,
+  mergeCustomConstraints,
   type ModificationValidatorOptions,
   type RollbackManagerOptions,
   type CheckpointStore,
@@ -74,6 +75,8 @@ export {
 } from './constraints';
 
 export { SelfModifyingEventEmitter, type SelfModifyingEventHandler } from './events';
+
+export { llmChat, extractJson } from './utils';
 
 export type {
   SelfModifyingConfig,

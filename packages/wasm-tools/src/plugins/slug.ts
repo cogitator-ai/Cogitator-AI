@@ -162,7 +162,7 @@ function generateSlug(
     .replace(new RegExp(`${escapeRegex(separator)}+`, 'g'), separator)
     .replace(new RegExp(`^${escapeRegex(separator)}|${escapeRegex(separator)}$`, 'g'), '');
 
-  if (maxLength && slug.length > maxLength) {
+  if (maxLength !== undefined && maxLength > 0 && slug.length > maxLength) {
     slug = slug.substring(0, maxLength);
     const lastSep = slug.lastIndexOf(separator);
     if (lastSep > maxLength * 0.5) {

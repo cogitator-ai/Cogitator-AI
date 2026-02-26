@@ -62,7 +62,13 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
 
       this.ws.on('message', (data: Buffer | string) => {
         const raw = typeof data === 'string' ? data : data.toString();
-        const msg = JSON.parse(raw) as GeminiMessage;
+        let msg: GeminiMessage;
+        try {
+          msg = JSON.parse(raw) as GeminiMessage;
+        } catch {
+          this.emit('error', new Error('Failed to parse WebSocket message'));
+          return;
+        }
 
         if (msg.setupComplete) {
           this.emit('connected');
@@ -208,8 +214,9 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   }
 
   private send(data: Record<string, unknown>): void {
-    if (this.ws?.readyState === this.ws?.OPEN) {
-      this.ws!.send(JSON.stringify(data));
+    const ws = this.ws;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(data));
     }
   }
 }

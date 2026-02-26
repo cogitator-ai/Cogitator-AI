@@ -66,6 +66,10 @@ export interface SerializedAgentConfig {
   topP?: number;
   maxTokens?: number;
   stopSequences?: string[];
+  responseFormat?:
+    | { type: 'text' }
+    | { type: 'json' }
+    | { type: 'json_schema'; schemaName: string };
   maxIterations?: number;
   timeout?: number;
 }

@@ -4,6 +4,7 @@ import type {
   Message,
   CreateMessageRequest,
   MessageContent,
+  MessageContentPart,
   AssistantTool,
 } from '../types/openai-types';
 import { type ThreadStorage, type StoredFile, InMemoryThreadStorage } from './storage';
@@ -154,6 +155,21 @@ export class ThreadManager {
       this.cache.threads.set(id, stored);
     }
     return stored ?? undefined;
+  }
+
+  async updateThread(
+    id: string,
+    updates: { metadata?: Record<string, string> }
+  ): Promise<Thread | undefined> {
+    const stored = await this.getStoredThread(id);
+    if (!stored) return undefined;
+
+    if (updates.metadata) {
+      Object.assign(stored.thread.metadata, updates.metadata);
+    }
+
+    await this.storage.saveThread(id, stored);
+    return stored.thread;
   }
 
   async deleteThread(id: string): Promise<boolean> {
@@ -338,7 +354,7 @@ export class ThreadManager {
     return this.storage.listFiles();
   }
 
-  private normalizeContent(content: string | unknown[]): MessageContent[] {
+  private normalizeContent(content: string | MessageContentPart[]): MessageContent[] {
     if (typeof content === 'string') {
       return [
         {
@@ -351,24 +367,33 @@ export class ThreadManager {
       ];
     }
 
-    return (content as { type: string; text?: string }[]).map((part) => {
-      if (part.type === 'text' && typeof part.text === 'string') {
+    return content.map((part): MessageContent => {
+      if (part.type === 'text') {
         return {
-          type: 'text' as const,
+          type: 'text',
           text: {
             value: part.text,
             annotations: [],
           },
         };
       }
-      return part as MessageContent;
+      if (part.type === 'image_url') {
+        return {
+          type: 'image_url',
+          image_url: part.image_url,
+        };
+      }
+      return {
+        type: 'image_file',
+        image_file: part.image_file,
+      };
     });
   }
 
   private extractTextContent(content: MessageContent[]): string {
     return content
-      .filter((c) => c.type === 'text')
-      .map((c) => (c as { type: 'text'; text: { value: string } }).text.value)
+      .filter((c): c is MessageContent & { type: 'text' } => c.type === 'text')
+      .map((c) => c.text.value)
       .join('\n');
   }
 }

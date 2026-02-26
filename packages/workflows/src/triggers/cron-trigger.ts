@@ -252,7 +252,7 @@ export class CronTriggerExecutor {
   /**
    * Check for catch-up runs (missed scheduled runs)
    */
-  async catchUp(triggerId: string, since: number): Promise<CronTriggerResult[]> {
+  async catchUp(triggerId: string, since: number, maxCatchUp = 100): Promise<CronTriggerResult[]> {
     const state = this.triggers.get(triggerId);
     if (!state?.config.catchUp) {
       return [];
@@ -262,7 +262,7 @@ export class CronTriggerExecutor {
     const now = Date.now();
     let currentTime = since;
 
-    while (currentTime < now) {
+    while (currentTime < now && results.length < maxCatchUp) {
       const nextRun = getNextCronOccurrence(state.config.expression, {
         timezone: state.config.timezone,
         currentDate: new Date(currentTime),
@@ -324,14 +324,14 @@ export class CronTriggerExecutor {
 
     const delay = Math.max(0, nextRun - now);
 
-    const timeoutId = setTimeout(async () => {
+    const timeoutId = setTimeout(() => {
       this.timeouts.delete(triggerId);
       if (!this.triggers.has(triggerId)) return;
 
-      await this.fire(triggerId);
+      this.fire(triggerId).catch(() => {});
 
       const checkInterval = this.calculateCheckInterval(state.config);
-      const interval = setInterval(async () => {
+      const interval = setInterval(() => {
         const currentState = this.triggers.get(triggerId);
         if (!currentState?.enabled) {
           clearInterval(interval);
@@ -340,7 +340,7 @@ export class CronTriggerExecutor {
 
         const currentNow = Date.now();
         if (currentState.nextRun && currentNow >= currentState.nextRun) {
-          await this.fire(triggerId);
+          this.fire(triggerId).catch(() => {});
         }
       }, checkInterval);
 

@@ -121,7 +121,7 @@ export interface DebateConfig {
   /** Number of debate rounds */
   rounds: number;
   /** Max tokens per turn */
-  turnDuration?: number;
+  maxTokensPerTurn?: number;
   /** Debate format */
   format?: 'structured' | 'freeform';
 }

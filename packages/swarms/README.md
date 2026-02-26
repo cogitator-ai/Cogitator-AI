@@ -34,7 +34,7 @@ console.log(result.output);
 
 ## Features
 
-- **6 Coordination Strategies** - Hierarchical, round-robin, consensus, pipeline, debate, auction
+- **7 Coordination Strategies** - Hierarchical, round-robin, consensus, pipeline, debate, auction, negotiation
 - **Automatic Model Selection** - SwarmAssessor matches optimal models to agent roles
 - **Agent Communication** - Message bus and shared blackboard
 - **Built-in Tools** - Messaging, delegation, voting, and blackboard tools for agents
@@ -180,6 +180,27 @@ const swarm = new SwarmBuilder('contractor-pool')
     biddingRounds: 2,
     selectionCriteria: 'lowest',
     allowNegotiation: true,
+  })
+  .build(cogitator);
+```
+
+### Negotiation
+
+Multi-party negotiation with offers, counter-offers, and coalitions:
+
+```typescript
+const swarm = new SwarmBuilder('deal-makers')
+  .strategy('negotiation')
+  .agents([
+    new Agent({ name: 'buyer', instructions: 'Negotiate best purchase terms' }),
+    new Agent({ name: 'seller', instructions: 'Maximize sale value' }),
+    new Agent({ name: 'mediator', instructions: 'Facilitate fair agreement' }),
+  ])
+  .negotiation({
+    maxRounds: 10,
+    convergenceThreshold: 0.8,
+    allowCoalitions: true,
+    timeoutPerRound: 30000,
   })
   .build(cogitator);
 ```

@@ -120,6 +120,27 @@ describe('OpenAISTT', () => {
     expect(result.words).toBeUndefined();
   });
 
+  it('omits words when response.words is empty array', async () => {
+    mockCreate.mockResolvedValue({
+      text: 'no words',
+      words: [],
+    });
+
+    const result = await stt.transcribe(Buffer.from('audio'));
+    expect(result.text).toBe('no words');
+    expect(result.words).toBeUndefined();
+  });
+
+  it('includes duration when it is 0', async () => {
+    mockCreate.mockResolvedValue({
+      text: 'zero duration',
+      duration: 0,
+    });
+
+    const result = await stt.transcribe(Buffer.from('audio'));
+    expect(result.duration).toBe(0);
+  });
+
   it('requests verbose_json format for word timestamps', async () => {
     const audio = Buffer.from('fake-audio');
     await stt.transcribe(audio);
@@ -167,6 +188,23 @@ describe('OpenAISTT', () => {
       expect(combined).toEqual(Buffer.concat([Buffer.from('chunk1'), Buffer.from('chunk2')]));
     });
 
+    it('clears chunks after close so stream can be reused', async () => {
+      const stream = stt.createStream();
+      stream.write(Buffer.from('first-batch'));
+      mockCreate.mockResolvedValue({ text: 'first' });
+      await stream.close();
+
+      stream.write(Buffer.from('second-batch'));
+      mockCreate.mockResolvedValue({ text: 'second' });
+      const result = await stream.close();
+
+      expect(result.text).toBe('second');
+      const secondArgs = mockCreate.mock.calls[1][0];
+      const file: File = secondArgs.file;
+      const arrayBuffer = await file.arrayBuffer();
+      expect(Buffer.from(arrayBuffer)).toEqual(Buffer.from('second-batch'));
+    });
+
     it('emits final event on close', async () => {
       const stream = stt.createStream();
       const finalCb = vi.fn();
@@ -191,6 +229,20 @@ describe('OpenAISTT', () => {
       await expect(stream.close()).rejects.toThrow('API error');
       expect(errorCb).toHaveBeenCalledOnce();
       expect(errorCb.mock.calls[0][0]).toBeInstanceOf(Error);
+    });
+
+    it('wraps non-Error rejection into Error', async () => {
+      const stream = stt.createStream();
+      const errorCb = vi.fn();
+      stream.on('error', errorCb);
+
+      stream.write(Buffer.from('audio'));
+      mockCreate.mockRejectedValue('string rejection');
+
+      await expect(stream.close()).rejects.toThrow('string rejection');
+      expect(errorCb).toHaveBeenCalledOnce();
+      expect(errorCb.mock.calls[0][0]).toBeInstanceOf(Error);
+      expect(errorCb.mock.calls[0][0].message).toBe('string rejection');
     });
 
     it('passes stream options to transcribe', async () => {

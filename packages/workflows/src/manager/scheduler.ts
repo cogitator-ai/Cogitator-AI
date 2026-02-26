@@ -233,9 +233,10 @@ export class JobScheduler {
    */
   async scheduleRun<S extends WorkflowState>(
     workflow: Workflow<S>,
-    options: ScheduleOptions = {}
+    options: ScheduleOptions = {},
+    existingRunId?: string
   ): Promise<string> {
-    const runId = nanoid();
+    const runId = existingRunId ?? nanoid();
     const now = Date.now();
 
     let scheduledFor = now;
@@ -270,7 +271,9 @@ export class JobScheduler {
       },
     };
 
-    await this.runStore.save(run);
+    if (!existingRunId) {
+      await this.runStore.save(run);
+    }
 
     this.queue.enqueue({
       runId,
@@ -435,9 +438,12 @@ export class JobScheduler {
 
     const ready = this.queue.getReady(now);
 
-    for (const item of ready) {
+    for (let i = 0; i < ready.length; i++) {
+      const item = ready[i];
       if (this.runningCount >= this.maxConcurrency) {
-        this.queue.enqueue(item);
+        for (let j = i; j < ready.length; j++) {
+          this.queue.enqueue(ready[j]);
+        }
         break;
       }
 

@@ -9,10 +9,11 @@ export interface SemanticChunkerOptions {
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
+  const len = Math.min(a.length, b.length);
   let dot = 0;
   let normA = 0;
   let normB = 0;
-  for (let i = 0; i < a.length; i++) {
+  for (let i = 0; i < len; i++) {
     dot += a[i] * b[i];
     normA += a[i] * a[i];
     normB += b[i] * b[i];

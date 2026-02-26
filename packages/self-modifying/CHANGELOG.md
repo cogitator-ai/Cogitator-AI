@@ -1,5 +1,66 @@
 # @cogitator-ai/self-modifying
 
+## 17.0.13
+
+### Patch Changes
+
+- fix: pass model name through to all internal LLM calls instead of hardcoded 'default'
+
+  All internal callLLM methods in tool-generator, tool-validator, gap-analyzer,
+  parameter-optimizer, and capability-analyzer were hardcoding model: 'default'
+  which broke with OllamaBackend. Now correctly pipes agent.model to all components.
+
+## 17.0.12
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/core@0.18.6
+  - @cogitator-ai/neuro-symbolic@15.1.11
+
+## 17.0.11
+
+### Patch Changes
+
+- fix(types): audit — 13 bugs/type-safety issues fixed, dead code removed
+  - Added missing `responseFormat` to `SerializedAgentConfig`
+  - Fixed `DurationString` type (removed useless `| string` union)
+  - Added `coherence` field to `TraceMetrics`
+  - Removed duplicate config fields in `MetaReasoningConfig`
+  - Renamed `turnDuration` to `maxTokensPerTurn` in `DebateConfig`
+  - Narrowed `NegotiationTerm.value` to `string | number | boolean`
+  - Typed `CapturedPrompt.tools` as `ToolSchema[]`
+  - Made `GraphStats` Record fields Partial
+  - Removed dead duplicate fields from `MetaAssessment` and `ModificationValidationResult`
+  - Removed unused `ProposedActionType`
+
+- Updated dependencies
+  - @cogitator-ai/types@0.21.3
+  - @cogitator-ai/core@0.18.5
+  - @cogitator-ai/neuro-symbolic@15.1.10
+
+## 17.0.10
+
+### Patch Changes
+
+- fix(self-modifying): audit — 25+ bugs fixed, +22 tests, docs updated
+
+  Critical: executeAgentStep stub now delegates to LLM, getAvailableTools returns actual tools,
+  tool compilation routed through sandbox, constructor escape pattern blocked, periodic trigger added.
+
+  High: requiresAdaptation derived from assessment, detached array bug in MetaReasoner fixed,
+  memory leak via cleanupRun, unsandboxed timeout added.
+
+  Medium: balanced-brace JSON extraction replaces greedy regex, AND/OR precedence fixed,
+  deep config merging, custom constraint deduplication, event emitter error isolation.
+
+## 17.0.9
+
+### Patch Changes
+
+- @cogitator-ai/core@0.18.4
+- @cogitator-ai/neuro-symbolic@15.1.9
+
 ## 17.0.8
 
 ### Patch Changes

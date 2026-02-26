@@ -30,7 +30,7 @@ vi.mock('onnxruntime-node', () => {
 import { SileroVAD } from '../../vad/silero-vad';
 
 function mockModelOutput(probability: number) {
-  mockRun.mockReturnValue({
+  mockRun.mockResolvedValue({
     output: { data: new Float32Array([probability]) },
     hn: { data: new Float32Array(128) },
     cn: { data: new Float32Array(128) },
@@ -51,9 +51,9 @@ describe('SileroVAD', () => {
     expect(vad.name).toBe('silero');
   });
 
-  it('throws if process() called before init()', () => {
+  it('throws if process() called before init()', async () => {
     const samples = new Float32Array(512);
-    expect(() => vad.process(samples)).toThrow('must call init()');
+    await expect(vad.process(samples)).rejects.toThrow('must call init()');
   });
 
   it('init() creates inference session with model path', async () => {
@@ -61,9 +61,15 @@ describe('SileroVAD', () => {
     expect(mockCreate).toHaveBeenCalledWith('/fake/silero_vad.onnx');
   });
 
+  it('init() is idempotent', async () => {
+    await vad.init();
+    await vad.init();
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
   it('process() runs model and returns VAD events', async () => {
     await vad.init();
-    const event = vad.process(new Float32Array(512));
+    const event = await vad.process(new Float32Array(512));
     expect(event.type).toBe('silence');
   });
 
@@ -71,7 +77,7 @@ describe('SileroVAD', () => {
     mockModelOutput(0.8);
     await vad.init();
 
-    const event = vad.process(new Float32Array(512));
+    const event = await vad.process(new Float32Array(512));
     expect(event.type).toBe('speech_start');
   });
 
@@ -79,7 +85,7 @@ describe('SileroVAD', () => {
     mockModelOutput(0.1);
     await vad.init();
 
-    const event = vad.process(new Float32Array(512));
+    const event = await vad.process(new Float32Array(512));
     expect(event.type).toBe('silence');
   });
 
@@ -87,11 +93,11 @@ describe('SileroVAD', () => {
     await vad.init();
 
     mockModelOutput(0.9);
-    const start = vad.process(new Float32Array(512));
+    const start = await vad.process(new Float32Array(512));
     expect(start.type).toBe('speech_start');
 
     mockModelOutput(0.8);
-    const mid = vad.process(new Float32Array(512));
+    const mid = await vad.process(new Float32Array(512));
     expect(mid.type).toBe('speech');
     expect((mid as Extract<VADEvent, { type: 'speech' }>).probability).toBeCloseTo(0.8, 5);
 
@@ -101,7 +107,7 @@ describe('SileroVAD', () => {
 
     const events: VADEvent[] = [];
     for (let i = 0; i < chunksNeeded; i++) {
-      events.push(vad.process(new Float32Array(512)));
+      events.push(await vad.process(new Float32Array(512)));
     }
 
     const speechEnd = events.find(
@@ -115,13 +121,13 @@ describe('SileroVAD', () => {
     await vad.init();
 
     mockModelOutput(0.9);
-    vad.process(new Float32Array(512));
-    expect(vad.process(new Float32Array(512)).type).toBe('speech');
+    await vad.process(new Float32Array(512));
+    expect((await vad.process(new Float32Array(512))).type).toBe('speech');
 
     vad.reset();
 
     mockModelOutput(0.9);
-    const event = vad.process(new Float32Array(512));
+    const event = await vad.process(new Float32Array(512));
     expect(event.type).toBe('speech_start');
   });
 
@@ -130,7 +136,7 @@ describe('SileroVAD', () => {
     tensorCtor.mockClear();
 
     mockModelOutput(0.5);
-    vad.process(new Float32Array(512));
+    await vad.process(new Float32Array(512));
 
     const calls = tensorCtor.mock.calls;
 
@@ -153,7 +159,7 @@ describe('SileroVAD', () => {
     await customVad.init();
 
     mockModelOutput(0.7);
-    const event = customVad.process(new Float32Array(512));
+    const event = await customVad.process(new Float32Array(512));
     expect(event.type).toBe('silence');
   });
 
@@ -162,21 +168,21 @@ describe('SileroVAD', () => {
 
     const hnData = new Float32Array(128).fill(0.42);
     const cnData = new Float32Array(128).fill(0.24);
-    mockRun.mockReturnValue({
+    mockRun.mockResolvedValue({
       output: { data: new Float32Array([0.3]) },
       hn: { data: hnData },
       cn: { data: cnData },
     });
 
-    vad.process(new Float32Array(512));
+    await vad.process(new Float32Array(512));
 
-    mockRun.mockReturnValue({
+    mockRun.mockResolvedValue({
       output: { data: new Float32Array([0.3]) },
       hn: { data: new Float32Array(128) },
       cn: { data: new Float32Array(128) },
     });
 
-    vad.process(new Float32Array(512));
+    await vad.process(new Float32Array(512));
 
     expect(mockRun).toHaveBeenCalledTimes(2);
   });

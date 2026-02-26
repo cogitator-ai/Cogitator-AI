@@ -316,10 +316,10 @@ describe('Prompts', () => {
       expect(parsed.isHarmful).toBe(false);
     });
 
-    it('returns safe result on parse error', () => {
+    it('returns harmful result on parse error (fail-closed)', () => {
       const parsed = parseEvaluationResponse('not valid json');
 
-      expect(parsed.isHarmful).toBe(false);
+      expect(parsed.isHarmful).toBe(true);
       expect(parsed.harmScores).toHaveLength(0);
     });
 

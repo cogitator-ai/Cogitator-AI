@@ -21,6 +21,17 @@ import { InMemoryCheckpointStore, createCheckpointId } from './checkpoint';
 const DEFAULT_MAX_CONCURRENCY = 4;
 const DEFAULT_MAX_ITERATIONS = 100;
 
+export class NodeExecutionError extends Error {
+  readonly nodeName: string;
+
+  constructor(nodeName: string, cause: Error) {
+    super(`Node '${nodeName}' failed: ${cause.message}`);
+    this.name = 'NodeExecutionError';
+    this.nodeName = nodeName;
+    this.cause = cause;
+  }
+}
+
 export class WorkflowExecutor {
   private cogitator: Cogitator;
   private checkpointStore: CheckpointStore;
@@ -40,13 +51,14 @@ export class WorkflowExecutor {
     input?: Partial<S>,
     options?: WorkflowExecuteOptions
   ): Promise<WorkflowResult<S>> {
-    const workflowId = `wf_${nanoid(12)}`;
+    const workflowId = options?.workflowId ?? `wf_${nanoid(12)}`;
     const startTime = Date.now();
 
     const maxConcurrency = options?.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
     const maxIterations = options?.maxIterations ?? DEFAULT_MAX_ITERATIONS;
     const shouldCheckpoint = options?.checkpoint ?? false;
     const checkpointStrategy: CheckpointStrategy = options?.checkpointStrategy ?? 'per-iteration';
+    const skipNodes = options?.skipNodes;
 
     let state: S = { ...workflow.initialState, ...input } as S;
     const nodeResults = new Map<string, { output: unknown; duration: number }>();
@@ -77,7 +89,7 @@ export class WorkflowExecutor {
     const createTask = (nodeName: string, currentIteration: number) => async () => {
       const node = workflow.nodes.get(nodeName);
       if (!node) {
-        throw new Error(`Node '${nodeName}' not found`);
+        throw new NodeExecutionError(nodeName, new Error(`Node '${nodeName}' not found`));
       }
 
       options?.onNodeStart?.(nodeName);
@@ -109,12 +121,17 @@ export class WorkflowExecutor {
 
       (ctx as NodeContext<S> & { cogitator: Cogitator }).cogitator = this.cogitator;
 
-      const result = await node.fn(ctx);
-      const duration = Date.now() - nodeStart;
+      try {
+        const result = await node.fn(ctx);
+        const duration = Date.now() - nodeStart;
 
-      options?.onNodeComplete?.(nodeName, result.output, duration);
+        options?.onNodeComplete?.(nodeName, result.output, duration);
 
-      return { nodeName, result, duration };
+        return { nodeName, result, duration };
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        throw new NodeExecutionError(nodeName, err);
+      }
     };
 
     const processNodeResult = (
@@ -147,7 +164,21 @@ export class WorkflowExecutor {
       while (currentNodes.length > 0 && iterations < maxIterations) {
         iterations++;
 
-        const nodesToRun = currentNodes.filter((n) => workflow.nodes.has(n));
+        const nodesToRun = currentNodes.filter((n) => workflow.nodes.has(n) && !skipNodes?.has(n));
+
+        if (skipNodes) {
+          const skipped = currentNodes.filter((n) => skipNodes.has(n));
+          for (const nodeName of skipped) {
+            completedNodes.add(nodeName);
+            const edgeNext = this.scheduler.getNextNodes(workflow, nodeName, state);
+            for (const next of edgeNext) {
+              if (!currentNodes.includes(next) && !completedNodes.has(next)) {
+                nodesToRun.push(next);
+              }
+            }
+          }
+        }
+
         if (nodesToRun.length === 0) break;
 
         const tasks = nodesToRun.map((nodeName) => createTask(nodeName, iterations));
@@ -181,8 +212,13 @@ export class WorkflowExecutor {
         error = new Error(`Workflow exceeded max iterations (${maxIterations.toString()})`);
       }
     } catch (e) {
-      error = e instanceof Error ? e : new Error(String(e));
-      options?.onNodeError?.(currentNodes[0] ?? 'unknown', error);
+      if (e instanceof NodeExecutionError) {
+        error = e.cause instanceof Error ? e.cause : e;
+        options?.onNodeError?.(e.nodeName, error);
+      } else {
+        error = e instanceof Error ? e : new Error(String(e));
+        options?.onNodeError?.(currentNodes[0] ?? 'unknown', error);
+      }
     }
 
     return {
@@ -235,6 +271,8 @@ export class WorkflowExecutor {
 
     return this.execute(workflow, checkpoint.state as Partial<S>, {
       ...options,
+      workflowId: checkpoint.workflowId,
+      skipNodes: completed,
     });
   }
 
@@ -269,6 +307,7 @@ export class WorkflowExecutor {
 
     const resultPromise = this.execute(workflow, input, {
       ...options,
+      workflowId,
       onNodeStart: (node) => {
         pushEvent({ type: 'node_started', nodeName: node, timestamp: Date.now() });
       },
@@ -276,7 +315,13 @@ export class WorkflowExecutor {
         pushEvent({ type: 'node_progress', nodeName: node, progress, timestamp: Date.now() });
       },
       onNodeComplete: (node, output, duration) => {
-        pushEvent({ type: 'node_completed', nodeName: node, output, duration });
+        pushEvent({
+          type: 'node_completed',
+          nodeName: node,
+          output,
+          duration,
+          timestamp: Date.now(),
+        });
       },
       onNodeError: (node, error) => {
         pushEvent({ type: 'node_error', nodeName: node, error, timestamp: Date.now() });

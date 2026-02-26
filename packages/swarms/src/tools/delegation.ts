@@ -9,6 +9,14 @@ import type { SwarmCoordinatorInterface, Blackboard } from '@cogitator-ai/types'
 /**
  * Create delegation tools for supervisor agents
  */
+function safeRead<T>(blackboard: Blackboard, section: string, fallback: T): T {
+  try {
+    return blackboard.read<T>(section) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export function createDelegationTools(
   coordinator: SwarmCoordinatorInterface,
   blackboard: Blackboard,
@@ -41,17 +49,16 @@ export function createDelegationTools(
         };
       }
 
-      const tasks =
-        blackboard.read<
-          {
-            id: string;
-            worker: string;
-            task: string;
-            status: string;
-            delegatedBy: string;
-            timestamp: number;
-          }[]
-        >('tasks') ?? [];
+      const tasks = safeRead<
+        {
+          id: string;
+          worker: string;
+          task: string;
+          status: string;
+          delegatedBy: string;
+          timestamp: number;
+        }[]
+      >(blackboard, 'tasks', []);
 
       const taskId = `task_${Date.now()}_${worker}`;
       tasks.push({
@@ -75,19 +82,23 @@ export function createDelegationTools(
             },
           })
           .then((result) => {
-            const currentTasks = blackboard.read<typeof tasks>('tasks') ?? [];
+            const currentTasks = safeRead<typeof tasks>(blackboard, 'tasks', []);
             const taskIndex = currentTasks.findIndex((t) => t.id === taskId);
             if (taskIndex >= 0) {
               currentTasks[taskIndex].status = 'completed';
             }
             blackboard.write('tasks', currentTasks, worker);
 
-            const workerResults = blackboard.read<Record<string, unknown>>('workerResults') ?? {};
+            const workerResults = safeRead<Record<string, unknown>>(
+              blackboard,
+              'workerResults',
+              {}
+            );
             workerResults[taskId] = result.output;
             blackboard.write('workerResults', workerResults, worker);
           })
           .catch(() => {
-            const currentTasks = blackboard.read<typeof tasks>('tasks') ?? [];
+            const currentTasks = safeRead<typeof tasks>(blackboard, 'tasks', []);
             const taskIndex = currentTasks.findIndex((t) => t.id === taskId);
             if (taskIndex >= 0) {
               currentTasks[taskIndex].status = 'failed';
@@ -114,14 +125,14 @@ export function createDelegationTools(
           },
         });
 
-        const currentTasks = blackboard.read<typeof tasks>('tasks') ?? [];
+        const currentTasks = safeRead<typeof tasks>(blackboard, 'tasks', []);
         const taskIndex = currentTasks.findIndex((t) => t.id === taskId);
         if (taskIndex >= 0) {
           currentTasks[taskIndex].status = 'completed';
         }
         blackboard.write('tasks', currentTasks, worker);
 
-        const workerResults = blackboard.read<Record<string, unknown>>('workerResults') ?? {};
+        const workerResults = safeRead<Record<string, unknown>>(blackboard, 'workerResults', {});
         workerResults[taskId] = result.output;
         blackboard.write('workerResults', workerResults, worker);
 
@@ -137,7 +148,7 @@ export function createDelegationTools(
           },
         };
       } catch (error) {
-        const currentTasks = blackboard.read<typeof tasks>('tasks') ?? [];
+        const currentTasks = safeRead<typeof tasks>(blackboard, 'tasks', []);
         const taskIndex = currentTasks.findIndex((t) => t.id === taskId);
         if (taskIndex >= 0) {
           currentTasks[taskIndex].status = 'failed';
@@ -170,21 +181,20 @@ export function createDelegationTools(
         };
       }
 
-      const tasks =
-        blackboard.read<
-          {
-            id: string;
-            worker: string;
-            task: string;
-            status: string;
-            timestamp: number;
-          }[]
-        >('tasks') ?? [];
+      const tasks = safeRead<
+        {
+          id: string;
+          worker: string;
+          task: string;
+          status: string;
+          timestamp: number;
+        }[]
+      >(blackboard, 'tasks', []);
 
       const workerTasks = tasks.filter((t) => t.worker === worker);
       const lastTask = workerTasks[workerTasks.length - 1];
 
-      const workerResults = blackboard.read<Record<string, unknown>>('workerResults') ?? {};
+      const workerResults = safeRead<Record<string, unknown>>(blackboard, 'workerResults', {});
       const lastResult = lastTask ? workerResults[lastTask.id] : undefined;
 
       return {
@@ -231,15 +241,14 @@ export function createDelegationTools(
         };
       }
 
-      const tasks =
-        blackboard.read<
-          {
-            id: string;
-            worker: string;
-            task: string;
-            status: string;
-          }[]
-        >('tasks') ?? [];
+      const tasks = safeRead<
+        {
+          id: string;
+          worker: string;
+          task: string;
+          status: string;
+        }[]
+      >(blackboard, 'tasks', []);
 
       const workerTasks = tasks.filter((t) => t.worker === worker);
       const targetTask = taskId
@@ -253,7 +262,7 @@ export function createDelegationTools(
         };
       }
 
-      const workerResults = blackboard.read<Record<string, unknown>>('workerResults') ?? {};
+      const workerResults = safeRead<Record<string, unknown>>(blackboard, 'workerResults', {});
       const previousResult = workerResults[targetTask.id];
 
       const revisionInput = `
@@ -285,7 +294,7 @@ Please provide a revised response addressing the feedback.
       workerResults[targetTask.id] = result.output;
       blackboard.write('workerResults', workerResults, worker);
 
-      const updatedTasks = blackboard.read<typeof tasks>('tasks') ?? [];
+      const updatedTasks = safeRead<typeof tasks>(blackboard, 'tasks', []);
       const taskIndex = updatedTasks.findIndex((t) => t.id === targetTask.id);
       if (taskIndex >= 0) {
         updatedTasks[taskIndex].status = 'revised';

@@ -39,27 +39,39 @@ type GitHubAction = z.infer<typeof githubParams>['action'];
 
 const GITHUB_API = 'https://api.github.com';
 
+function encodePath(filePath: string): string {
+  return filePath.split('/').map(encodeURIComponent).join('/');
+}
+
 async function githubFetch(
   endpoint: string,
   token: string,
   options: RequestInit = {}
 ): Promise<unknown> {
-  const response = await fetch(`${GITHUB_API}${endpoint}`, {
-    ...options,
-    headers: {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${token}`,
-      'X-GitHub-Api-Version': '2022-11-28',
-      ...options.headers,
-    },
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30_000);
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`GitHub API error ${response.status}: ${error}`);
+  try {
+    const response = await fetch(`${GITHUB_API}${endpoint}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+        ...options.headers,
+      },
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`GitHub API error ${response.status}: ${error}`);
+    }
+
+    return response.json();
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  return response.json();
 }
 
 interface RepoInfo {
@@ -149,6 +161,11 @@ async function executeAction(
     page = 1,
   } = params;
 
+  const enc = {
+    owner: encodeURIComponent(owner),
+    repo: encodeURIComponent(repo),
+  };
+
   const queryParams = new URLSearchParams();
   if (state) queryParams.set('state', state);
   if (perPage) queryParams.set('per_page', perPage.toString());
@@ -159,7 +176,7 @@ async function executeAction(
 
   switch (action) {
     case 'get_repo': {
-      const data = (await githubFetch(`/repos/${owner}/${repo}`, token)) as RepoInfo;
+      const data = (await githubFetch(`/repos/${enc.owner}/${enc.repo}`, token)) as RepoInfo;
       return {
         name: data.name,
         fullName: data.full_name,
@@ -176,7 +193,7 @@ async function executeAction(
 
     case 'list_issues': {
       const data = (await githubFetch(
-        `/repos/${owner}/${repo}/issues${queryString}`,
+        `/repos/${enc.owner}/${enc.repo}/issues${queryString}`,
         token
       )) as IssueInfo[];
       return data
@@ -195,7 +212,7 @@ async function executeAction(
     case 'get_issue': {
       if (!number) throw new Error('Issue number required');
       const data = (await githubFetch(
-        `/repos/${owner}/${repo}/issues/${number}`,
+        `/repos/${enc.owner}/${enc.repo}/issues/${number}`,
         token
       )) as IssueInfo;
       return {
@@ -218,7 +235,7 @@ async function executeAction(
       if (labels) payload.labels = labels;
       if (assignees) payload.assignees = assignees;
 
-      const data = (await githubFetch(`/repos/${owner}/${repo}/issues`, token, {
+      const data = (await githubFetch(`/repos/${enc.owner}/${enc.repo}/issues`, token, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -241,7 +258,7 @@ async function executeAction(
       if (labels) payload.labels = labels;
       if (assignees) payload.assignees = assignees;
 
-      const data = (await githubFetch(`/repos/${owner}/${repo}/issues/${number}`, token, {
+      const data = (await githubFetch(`/repos/${enc.owner}/${enc.repo}/issues/${number}`, token, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -258,7 +275,7 @@ async function executeAction(
 
     case 'list_prs': {
       const data = (await githubFetch(
-        `/repos/${owner}/${repo}/pulls${queryString}`,
+        `/repos/${enc.owner}/${enc.repo}/pulls${queryString}`,
         token
       )) as PRInfo[];
       return data.map((pr) => ({
@@ -275,7 +292,10 @@ async function executeAction(
 
     case 'get_pr': {
       if (!number) throw new Error('PR number required');
-      const data = (await githubFetch(`/repos/${owner}/${repo}/pulls/${number}`, token)) as PRInfo;
+      const data = (await githubFetch(
+        `/repos/${enc.owner}/${enc.repo}/pulls/${number}`,
+        token
+      )) as PRInfo;
       return {
         number: data.number,
         title: data.title,
@@ -298,7 +318,7 @@ async function executeAction(
       if (!head) throw new Error('Head branch required');
       if (!base) throw new Error('Base branch required');
 
-      const data = (await githubFetch(`/repos/${owner}/${repo}/pulls`, token, {
+      const data = (await githubFetch(`/repos/${enc.owner}/${enc.repo}/pulls`, token, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title, body, head, base }),
@@ -314,9 +334,9 @@ async function executeAction(
 
     case 'get_file': {
       if (!path) throw new Error('File path required');
-      const refParam = ref ? `?ref=${ref}` : '';
+      const refParam = ref ? `?ref=${encodeURIComponent(ref)}` : '';
       const data = (await githubFetch(
-        `/repos/${owner}/${repo}/contents/${path}${refParam}`,
+        `/repos/${enc.owner}/${enc.repo}/contents/${encodePath(path)}${refParam}`,
         token
       )) as FileContent;
 
@@ -340,7 +360,7 @@ async function executeAction(
       const commitQs = queryParams.toString();
       const commitQueryString = commitQs ? `?${commitQs}` : '';
       const data = (await githubFetch(
-        `/repos/${owner}/${repo}/commits${commitQueryString}`,
+        `/repos/${enc.owner}/${enc.repo}/commits${commitQueryString}`,
         token
       )) as CommitInfo[];
       return data.map((c) => ({

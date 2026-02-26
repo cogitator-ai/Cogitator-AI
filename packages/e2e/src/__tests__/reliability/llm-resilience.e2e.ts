@@ -72,11 +72,33 @@ describe('Reliability: LLM Resilience', () => {
     expect(chunks.length).toBeGreaterThanOrEqual(0);
   }, 5000);
 
-  it('malformed JSON in stream throws', async () => {
+  it('malformed JSON lines are skipped but valid chunks still delivered', async () => {
     currentHandler = (_req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
       res.write(ollamaLine('ok', false) + '\n');
       res.write('NOT VALID JSON\n');
+      res.write(ollamaLine('', true) + '\n');
+      res.end();
+    };
+
+    const backend = new OllamaBackend({ baseUrl: `http://localhost:${mockPort}` });
+    const chunks: string[] = [];
+
+    for await (const chunk of backend.chatStream({
+      model: 'mock',
+      messages: [{ role: 'user', content: 'test' }],
+    })) {
+      if (chunk.delta.content) chunks.push(chunk.delta.content);
+    }
+
+    expect(chunks).toContain('ok');
+  });
+
+  it('stream of only malformed JSON throws', async () => {
+    currentHandler = (_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+      res.write('GARBAGE LINE 1\n');
+      res.write('GARBAGE LINE 2\n');
       res.end();
     };
 
@@ -89,7 +111,7 @@ describe('Reliability: LLM Resilience', () => {
       })) {
         void _chunk;
       }
-    }).rejects.toThrow();
+    }).rejects.toThrow(/malformed/i);
   });
 
   it('chat to dead server throws LLM_UNAVAILABLE with retryable', async () => {

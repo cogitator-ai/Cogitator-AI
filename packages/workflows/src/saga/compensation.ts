@@ -84,6 +84,7 @@ export class CompensationManager<S = WorkflowState> {
     this.registerCompensation(nodeId, config.compensate, {
       condition: config.compensateCondition,
       order: config.compensateOrder,
+      timeout: config.compensateTimeout,
     });
   }
 
@@ -92,7 +93,9 @@ export class CompensationManager<S = WorkflowState> {
    */
   markCompleted(nodeId: string, result: unknown): void {
     this.completedNodes.set(nodeId, result);
-    this.executionOrder.push(nodeId);
+    if (!this.executionOrder.includes(nodeId)) {
+      this.executionOrder.push(nodeId);
+    }
   }
 
   /**
@@ -100,10 +103,7 @@ export class CompensationManager<S = WorkflowState> {
    */
   clearCompleted(nodeId: string): void {
     this.completedNodes.delete(nodeId);
-    const idx = this.executionOrder.indexOf(nodeId);
-    if (idx !== -1) {
-      this.executionOrder.splice(idx, 1);
-    }
+    this.executionOrder = this.executionOrder.filter((id) => id !== nodeId);
   }
 
   /**
@@ -134,7 +134,19 @@ export class CompensationManager<S = WorkflowState> {
 
     const sortedNodes = this.sortByCompensationOrder(nodesToCompensate);
 
+    const parallelNodes: string[] = [];
+    const sequentialNodes: string[] = [];
+
     for (const nodeId of sortedNodes) {
+      const step = this.steps.get(nodeId)!;
+      if (step.order === 'parallel') {
+        parallelNodes.push(nodeId);
+      } else {
+        sequentialNodes.push(nodeId);
+      }
+    }
+
+    const executeStep = async (nodeId: string): Promise<void> => {
       const step = this.steps.get(nodeId)!;
       const originalResult = this.completedNodes.get(nodeId);
       const stepStart = Date.now();
@@ -147,7 +159,7 @@ export class CompensationManager<S = WorkflowState> {
           skipped: true,
           skipReason: 'Condition not met',
         });
-        continue;
+        return;
       }
 
       let lastError: Error | undefined;
@@ -178,6 +190,14 @@ export class CompensationManager<S = WorkflowState> {
       if (!success) {
         partialFailures.push(nodeId);
       }
+    };
+
+    if (parallelNodes.length > 0) {
+      await Promise.all(parallelNodes.map(executeStep));
+    }
+
+    for (const nodeId of sequentialNodes) {
+      await executeStep(nodeId);
     }
 
     return {
@@ -234,12 +254,15 @@ export class CompensationManager<S = WorkflowState> {
    * Execute with timeout
    */
   private async withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-    return Promise.race([
-      promise,
-      new Promise<T>((_, reject) =>
-        setTimeout(() => reject(new Error('Compensation timeout')), timeoutMs)
-      ),
-    ]);
+    let timer: ReturnType<typeof setTimeout>;
+    const timeoutPromise = new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Compensation timeout')), timeoutMs);
+    });
+    try {
+      return await Promise.race([promise, timeoutPromise]);
+    } finally {
+      clearTimeout(timer!);
+    }
   }
 
   /**

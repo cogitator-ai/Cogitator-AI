@@ -26,47 +26,64 @@ function safeEval(expression: string): number {
     throw new Error('Invalid characters in expression');
   }
 
-  const tokens = sanitized.match(/(\d+\.?\d*|[+\-*/()%])/g);
-  if (!tokens) {
+  const matched = sanitized.match(/(\d*\.?\d+|[+\-*/()%])/g);
+  if (!matched) {
     throw new Error('No valid tokens in expression');
   }
 
-  let result = 0;
-  let currentNumber = '';
-  let operator = '+';
-  const stack: number[] = [];
+  const tokens: string[] = matched;
+  let pos = 0;
 
-  for (let i = 0; i <= tokens.length; i++) {
-    const token = tokens[i];
-
-    if (token && /\d/.test(token)) {
-      currentNumber = token;
-    } else {
-      const num = parseFloat(currentNumber) || 0;
-
-      if (operator === '+') {
-        stack.push(num);
-      } else if (operator === '-') {
-        stack.push(-num);
-      } else if (operator === '*') {
-        const prev = stack.pop() || 0;
-        stack.push(prev * num);
-      } else if (operator === '/') {
-        const prev = stack.pop() || 0;
-        if (num === 0) throw new Error('Division by zero');
-        stack.push(prev / num);
-      } else if (operator === '%') {
-        const prev = stack.pop() || 0;
-        stack.push(prev % num);
-      }
-
-      operator = token || '+';
-      currentNumber = '';
+  function parseExpr(): number {
+    let left = parseTerm();
+    while (pos < tokens.length && (tokens[pos] === '+' || tokens[pos] === '-')) {
+      const op = tokens[pos++];
+      const right = parseTerm();
+      left = op === '+' ? left + right : left - right;
     }
+    return left;
   }
 
-  result = stack.reduce((a, b) => a + b, 0);
-  return result;
+  function parseTerm(): number {
+    let left = parseFactor();
+    while (
+      pos < tokens.length &&
+      (tokens[pos] === '*' || tokens[pos] === '/' || tokens[pos] === '%')
+    ) {
+      const op = tokens[pos++];
+      const right = parseFactor();
+      if (op === '*') left *= right;
+      else if (op === '/') {
+        if (right === 0) throw new Error('Division by zero');
+        left /= right;
+      } else {
+        left %= right;
+      }
+    }
+    return left;
+  }
+
+  function parseFactor(): number {
+    if (tokens[pos] === '(') {
+      pos++;
+      const val = parseExpr();
+      if (tokens[pos] === ')') pos++;
+      return val;
+    }
+    if (tokens[pos] === '-') {
+      pos++;
+      return -parseFactor();
+    }
+    if (tokens[pos] === '+') {
+      pos++;
+      return parseFactor();
+    }
+    const num = parseFloat(tokens[pos++]);
+    if (isNaN(num)) throw new Error('Invalid expression');
+    return num;
+  }
+
+  return parseExpr();
 }
 
 export function calculate(): number {

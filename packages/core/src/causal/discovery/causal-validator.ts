@@ -57,7 +57,7 @@ export class CausalValidator {
     const forkSummaries = context.forkResults.map((fork) => ({
       intervention: JSON.stringify(fork.intervention),
       outcome: this.summarizeOutcome(fork.trace),
-      diffFromOriginal: this.compareTaces(context.originalTrace, fork.trace),
+      diffFromOriginal: this.compareTraces(context.originalTrace, fork.trace),
     }));
 
     const prompt = buildCausalValidationPrompt(
@@ -281,7 +281,7 @@ export class CausalValidator {
     return `${success ? 'Success' : 'Failure'}: ${result?.substring(0, 100) || 'No result'}`;
   }
 
-  private compareTaces(original: ExecutionTrace, fork: ExecutionTrace): string {
+  private compareTraces(original: ExecutionTrace, fork: ExecutionTrace): string {
     const originalSuccess = original.metrics?.success ?? true;
     const forkSuccess = fork.metrics?.success ?? true;
 

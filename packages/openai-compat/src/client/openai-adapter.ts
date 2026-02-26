@@ -158,6 +158,10 @@ export class OpenAIAdapter {
     return this.threadManager.getThread(id);
   }
 
+  async updateThread(id: string, updates: { metadata?: Record<string, string> }) {
+    return this.threadManager.updateThread(id, updates);
+  }
+
   async deleteThread(id: string) {
     return this.threadManager.deleteThread(id);
   }

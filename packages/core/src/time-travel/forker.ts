@@ -148,10 +148,21 @@ export class ExecutionForker {
     const systemIndex = result.findIndex((m) => m.role === 'system');
 
     if (systemIndex >= 0) {
-      result[systemIndex] = {
-        ...result[systemIndex],
-        content: `${result[systemIndex].content}\n\n---\nAdditional Context:\n${context}`,
-      };
+      const existing = result[systemIndex].content;
+      if (typeof existing === 'string') {
+        result[systemIndex] = {
+          ...result[systemIndex],
+          content: `${existing}\n\n---\nAdditional Context:\n${context}`,
+        };
+      } else {
+        result[systemIndex] = {
+          ...result[systemIndex],
+          content: [
+            ...existing,
+            { type: 'text' as const, text: `\n\n---\nAdditional Context:\n${context}` },
+          ],
+        };
+      }
     } else {
       result.unshift({
         role: 'system',

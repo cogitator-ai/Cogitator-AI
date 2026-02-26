@@ -10,16 +10,19 @@ import { buildGapAnalysisPrompt, parseGapAnalysisResponse } from './prompts';
 export interface GapAnalyzerOptions {
   llm: LLMBackend;
   config: ToolSelfGenerationConfig;
+  model?: string;
 }
 
 export class GapAnalyzer {
   private readonly llm: LLMBackend;
   private readonly config: ToolSelfGenerationConfig;
+  private readonly model: string;
   private readonly analysisCache = new Map<string, GapAnalysisResult>();
 
   constructor(options: GapAnalyzerOptions) {
     this.llm = options.llm;
     this.config = options.config;
+    this.model = options.model ?? 'default';
   }
 
   async analyze(
@@ -233,6 +236,6 @@ Consider tool composition before suggesting new tools.`,
     if (this.llm.complete) {
       return this.llm.complete({ messages, temperature });
     }
-    return this.llm.chat({ model: 'default', messages, temperature });
+    return this.llm.chat({ model: this.model, messages, temperature });
   }
 }

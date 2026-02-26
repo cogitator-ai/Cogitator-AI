@@ -1,5 +1,41 @@
 # @cogitator-ai/openai-compat
 
+## 19.0.12
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/core@0.18.6
+
+## 19.0.11
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.21.3
+  - @cogitator-ai/core@0.18.5
+
+## 19.0.10
+
+### Patch Changes
+
+- @cogitator-ai/core@0.18.4
+
+## 19.0.9
+
+### Patch Changes
+
+- fix(openai-compat): audit — 9 bugs fixed, +44 tests, v19.0.9
+  - Fix SQL injection in PostgresThreadStorage (identifier validation)
+  - Fix thread update route not persisting metadata changes
+  - Fix unsafe type casts in ThreadManager (normalizeContent, extractTextContent)
+  - Fix `as any` in tests → proper typing
+  - Remove unused zod dependency
+  - Move @types/node to devDependencies
+  - Add missing exports (OpenAIServerConfig, AuthConfig, formatOpenAIError, etc.)
+  - Fix 4 incorrect code examples in README
+  - Add 44 new unit tests (storage, thread-manager, middleware)
+
 ## 19.0.8
 
 ### Patch Changes

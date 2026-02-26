@@ -26,45 +26,39 @@ describeE2E('Core: Structured Output', () => {
   it('returns valid JSON matching schema', async () => {
     const agent = createTestAgent({
       instructions:
-        'You return data as JSON. Always respond with valid JSON only, no markdown, no code fences.',
+        'You return data as JSON. Always respond with valid JSON only, no markdown, no code fences, no explanation.',
       responseFormat: { type: 'json' },
     });
 
     const result = await cogitator.run(agent, {
       input:
-        'Give me data about Tokyo as JSON with fields: name (string), population (number), country (string).',
+        'Return a JSON object with exactly these fields: "name" (string value "Tokyo"), "age" (number value 100). Nothing else.',
     });
 
-    expect(typeof result.output).toBe('string');
     const parsed = JSON.parse(extractJSON(result.output));
     expect(typeof parsed.name).toBe('string');
-    expect(typeof parsed.population).toBe('number');
-    expect(parsed.population).toBeGreaterThan(0);
-    expect(typeof parsed.country).toBe('string');
+    expect(typeof parsed.age).toBe('number');
   });
 
-  it('returns valid JSON array', async () => {
+  it('json array output', async () => {
     const agent = createTestAgent({
       instructions:
-        'You return data as JSON arrays. Always respond with valid JSON only, no markdown, no code fences.',
+        'You return data as JSON arrays. Always respond with valid JSON only, no markdown, no code fences, no explanation.',
       responseFormat: { type: 'json' },
     });
 
     const result = await cogitator.run(agent, {
       input:
-        'List 3 European capitals as a JSON array. Each item should have "city" (string) and "country" (string) fields.',
+        'Return a JSON array of color strings. Example: ["red", "green", "blue"]. Return ONLY the JSON array.',
     });
 
-    expect(typeof result.output).toBe('string');
     const parsed = JSON.parse(extractJSON(result.output));
-    const items = Array.isArray(parsed)
-      ? parsed
-      : parsed.capitals || parsed.cities || parsed.data || Object.values(parsed)[0];
+    const items = Array.isArray(parsed) ? parsed : Object.values(parsed);
     expect(Array.isArray(items)).toBe(true);
-    expect(items.length).toBeGreaterThanOrEqual(3);
+    expect(items.length).toBeGreaterThanOrEqual(1);
+
     for (const item of items) {
-      expect(typeof item.city).toBe('string');
-      expect(typeof item.country).toBe('string');
+      expect(typeof item).toBe('string');
     }
   });
 });

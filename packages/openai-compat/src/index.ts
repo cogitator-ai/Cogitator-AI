@@ -7,6 +7,9 @@
  */
 
 export { OpenAIServer, createOpenAIServer } from './server/api-server';
+export type { OpenAIServerConfig } from './server/api-server';
+export { formatOpenAIError } from './server/middleware/error-handler';
+export type { AuthConfig } from './server/middleware/auth';
 
 export { OpenAIAdapter, createOpenAIAdapter } from './client/openai-adapter';
 export type { StreamEventType, StreamEmitterEvents } from './client/openai-adapter';
@@ -64,4 +67,10 @@ export type {
   StreamEvent,
   MessageDelta,
   RunStepDelta,
+  MessageContentDelta,
+  ImageFileContent,
+  ImageUrlContent,
+  JsonSchema,
+  IncompleteDetails,
+  TruncationStrategy,
 } from './types/openai-types';

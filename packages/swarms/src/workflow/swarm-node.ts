@@ -50,6 +50,9 @@ export function swarmNode<S extends WorkflowState = WorkflowState>(
   return {
     name: `swarm:${name}`,
     fn: async (ctx): Promise<NodeResult<S>> => {
+      if (!('cogitator' in ctx)) {
+        throw new Error('SwarmNode requires cogitator in context');
+      }
       const extCtx = ctx as SwarmNodeContext<S>;
 
       const swarm =
@@ -125,11 +128,13 @@ export function parallelSwarmsNode<S extends WorkflowState = WorkflowState>(
   return {
     name: `parallel-swarms:${swarms
       .map((s) => {
-        const swarm = s.swarm instanceof Swarm ? s.swarm : s.swarm;
-        return 'name' in swarm ? swarm.name : 'unnamed';
+        return s.swarm instanceof Swarm ? s.swarm.name : s.swarm.name;
       })
       .join(',')}`,
     fn: async (ctx): Promise<NodeResult<S>> => {
+      if (!('cogitator' in ctx)) {
+        throw new Error('SwarmNode requires cogitator in context');
+      }
       const extCtx = ctx as SwarmNodeContext<S>;
       const results: Record<string, StrategyResult> = {};
 
@@ -153,6 +158,13 @@ export function parallelSwarmsNode<S extends WorkflowState = WorkflowState>(
 
           const result = await swarm.run({
             input,
+            context: {
+              workflowContext: {
+                nodeId: ctx.nodeId,
+                step: ctx.step,
+                workflowState: ctx.state,
+              },
+            },
             ...options?.runOptions,
           });
 

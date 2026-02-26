@@ -401,6 +401,58 @@ describe('web_scrape tool', () => {
     });
   });
 
+  describe('CSS selector with regex metacharacters', () => {
+    it('does not throw regex errors on attribute selectors', async () => {
+      const html = `
+        <html><body>
+          <div class="class" data-x="1">Target</div>
+        </body></html>
+      `;
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const result = await webScrape.execute(
+        { url: 'https://example.com', selector: '.class[data-x]' },
+        ctx
+      );
+
+      expect((result as { error?: string }).error).not.toContain('Invalid regular expression');
+    });
+
+    it('does not throw regex errors on adjacent sibling selectors', async () => {
+      const html = `
+        <html><body>
+          <div class="test">Content</div>
+          <p>Next</p>
+        </body></html>
+      `;
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const result = await webScrape.execute(
+        { url: 'https://example.com', selector: 'div.test+p' },
+        ctx
+      );
+
+      expect((result as { error?: string }).error).not.toContain('Invalid regular expression');
+    });
+
+    it('matches class with special regex chars via escapeRegex', async () => {
+      const html = `
+        <html><body>
+          <div class="my-class$test">Escaped class</div>
+        </body></html>
+      `;
+      mockFetch.mockResolvedValueOnce(createHtmlResponse(html));
+
+      const result = await webScrape.execute(
+        { url: 'https://example.com', selector: '.my-class$test' },
+        ctx
+      );
+
+      const content = (result as { content?: string }).content;
+      expect(content).toContain('Escaped class');
+    });
+  });
+
   describe('tool metadata', () => {
     it('has correct name and description', () => {
       expect(webScrape.name).toBe('web_scrape');

@@ -9,6 +9,7 @@
  */
 
 import type { ApprovalStore, ApprovalRequest, ApprovalResponse } from '@cogitator-ai/types';
+import { nanoid } from 'nanoid';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
@@ -169,6 +170,7 @@ export class FileApprovalStore implements ApprovalStore {
   private callbacks = new Map<string, Set<(response: ApprovalResponse) => void>>();
   private watchInterval?: ReturnType<typeof setInterval>;
   private lastResponseCheck = new Map<string, number>();
+  private firedCallbacks = new Set<string>();
 
   constructor(options: { directory: string; pollInterval?: number }) {
     this.directory = options.directory;
@@ -178,12 +180,16 @@ export class FileApprovalStore implements ApprovalStore {
     }
   }
 
+  private sanitizeId(id: string): string {
+    return path.basename(id).replace(/[/\\]/g, '_');
+  }
+
   private getRequestPath(id: string): string {
-    return path.join(this.directory, 'requests', `${id}.json`);
+    return path.join(this.directory, 'requests', `${this.sanitizeId(id)}.json`);
   }
 
   private getResponsePath(requestId: string): string {
-    return path.join(this.directory, 'responses', `${requestId}.json`);
+    return path.join(this.directory, 'responses', `${this.sanitizeId(requestId)}.json`);
   }
 
   async createRequest(request: ApprovalRequest): Promise<void> {
@@ -196,8 +202,9 @@ export class FileApprovalStore implements ApprovalStore {
     try {
       const content = await fs.readFile(this.getRequestPath(id), 'utf-8');
       return JSON.parse(content) as ApprovalRequest;
-    } catch {
-      return null;
+    } catch (err: unknown) {
+      if (isEnoent(err)) return null;
+      throw err;
     }
   }
 
@@ -205,36 +212,42 @@ export class FileApprovalStore implements ApprovalStore {
     const requestsDir = path.join(this.directory, 'requests');
     const responsesDir = path.join(this.directory, 'responses');
 
-    try {
-      await fs.mkdir(requestsDir, { recursive: true });
-    } catch {}
+    await fs.mkdir(requestsDir, { recursive: true });
 
     const pending: ApprovalRequest[] = [];
 
+    let files: string[];
     try {
-      const files = await fs.readdir(requestsDir);
+      files = await fs.readdir(requestsDir);
+    } catch (err: unknown) {
+      if (isEnoent(err)) return pending;
+      throw err;
+    }
 
-      for (const file of files) {
-        if (!file.endsWith('.json')) continue;
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
 
-        const requestId = file.replace('.json', '');
-        const responsePath = path.join(responsesDir, `${requestId}.json`);
+      const requestId = file.replace('.json', '');
+      const responsePath = path.join(responsesDir, `${requestId}.json`);
 
-        try {
-          await fs.access(responsePath);
-          continue;
-        } catch {}
-
-        try {
-          const content = await fs.readFile(path.join(requestsDir, file), 'utf-8');
-          const request = JSON.parse(content) as ApprovalRequest;
-
-          if (!workflowId || request.workflowId === workflowId) {
-            pending.push(request);
-          }
-        } catch {}
+      try {
+        await fs.access(responsePath);
+        continue;
+      } catch (err: unknown) {
+        if (!isEnoent(err)) throw err;
       }
-    } catch {}
+
+      try {
+        const content = await fs.readFile(path.join(requestsDir, file), 'utf-8');
+        const request = JSON.parse(content) as ApprovalRequest;
+
+        if (!workflowId || request.workflowId === workflowId) {
+          pending.push(request);
+        }
+      } catch (err: unknown) {
+        if (!isEnoent(err)) throw err;
+      }
+    }
 
     return pending;
   }
@@ -267,27 +280,37 @@ export class FileApprovalStore implements ApprovalStore {
     try {
       const content = await fs.readFile(this.getResponsePath(requestId), 'utf-8');
       return JSON.parse(content) as ApprovalResponse;
-    } catch {
-      return null;
+    } catch (err: unknown) {
+      if (isEnoent(err)) return null;
+      throw err;
     }
   }
 
   async deleteRequest(id: string): Promise<void> {
     try {
       await fs.unlink(this.getRequestPath(id));
-    } catch {}
+    } catch (err: unknown) {
+      if (!isEnoent(err)) throw err;
+    }
 
     try {
       await fs.unlink(this.getResponsePath(id));
-    } catch {}
+    } catch (err: unknown) {
+      if (!isEnoent(err)) throw err;
+    }
 
     this.callbacks.delete(id);
+    this.lastResponseCheck.delete(id);
+    this.firedCallbacks.delete(id);
   }
 
   onResponse(requestId: string, callback: (response: ApprovalResponse) => void): () => void {
     void this.getResponse(requestId).then((existingResponse) => {
-      if (existingResponse) {
+      if (existingResponse && !this.firedCallbacks.has(requestId)) {
+        this.firedCallbacks.add(requestId);
         callback(existingResponse);
+        this.callbacks.delete(requestId);
+        return;
       }
     });
 
@@ -312,37 +335,42 @@ export class FileApprovalStore implements ApprovalStore {
   private async checkForResponses(): Promise<void> {
     const responsesDir = path.join(this.directory, 'responses');
 
+    let files: string[];
     try {
-      const files = await fs.readdir(responsesDir);
+      files = await fs.readdir(responsesDir);
+    } catch (err: unknown) {
+      if (isEnoent(err)) return;
+      throw err;
+    }
 
-      for (const file of files) {
-        if (!file.endsWith('.json')) continue;
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
 
-        const requestId = file.replace('.json', '');
-        const callbacks = this.callbacks.get(requestId);
+      const requestId = file.replace('.json', '');
 
-        if (!callbacks || callbacks.size === 0) continue;
+      if (this.firedCallbacks.has(requestId)) continue;
 
-        const filePath = path.join(responsesDir, file);
-        const stats = await fs.stat(filePath);
-        const lastCheck = this.lastResponseCheck.get(requestId) ?? 0;
+      const callbacks = this.callbacks.get(requestId);
+      if (!callbacks || callbacks.size === 0) continue;
 
-        if (stats.mtimeMs > lastCheck) {
-          this.lastResponseCheck.set(requestId, stats.mtimeMs);
+      const filePath = path.join(responsesDir, file);
+      const stats = await fs.stat(filePath);
+      const lastCheck = this.lastResponseCheck.get(requestId) ?? 0;
 
-          const content = await fs.readFile(filePath, 'utf-8');
-          const response = JSON.parse(content) as ApprovalResponse;
+      if (stats.mtimeMs > lastCheck) {
+        this.lastResponseCheck.set(requestId, stats.mtimeMs);
+        this.firedCallbacks.add(requestId);
 
-          for (const callback of callbacks) {
-            try {
-              callback(response);
-            } catch {}
-          }
+        const content = await fs.readFile(filePath, 'utf-8');
+        const response = JSON.parse(content) as ApprovalResponse;
 
-          this.callbacks.delete(requestId);
+        for (const callback of callbacks) {
+          callback(response);
         }
+
+        this.callbacks.delete(requestId);
       }
-    } catch {}
+    }
   }
 
   /**
@@ -364,29 +392,39 @@ export class FileApprovalStore implements ApprovalStore {
 
     const requestsDir = path.join(this.directory, 'requests');
 
+    let files: string[];
     try {
-      const files = await fs.readdir(requestsDir);
+      files = await fs.readdir(requestsDir);
+    } catch (err: unknown) {
+      if (isEnoent(err)) return deleted;
+      throw err;
+    }
 
-      for (const file of files) {
-        if (!file.endsWith('.json')) continue;
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
 
-        const filePath = path.join(requestsDir, file);
+      const filePath = path.join(requestsDir, file);
 
-        try {
-          const content = await fs.readFile(filePath, 'utf-8');
-          const request = JSON.parse(content) as ApprovalRequest;
+      try {
+        const content = await fs.readFile(filePath, 'utf-8');
+        const request = JSON.parse(content) as ApprovalRequest;
 
-          if (now - request.createdAt > maxAge) {
-            const id = file.replace('.json', '');
-            await this.deleteRequest(id);
-            deleted++;
-          }
-        } catch {}
+        if (now - request.createdAt > maxAge) {
+          const id = file.replace('.json', '');
+          await this.deleteRequest(id);
+          deleted++;
+        }
+      } catch (err: unknown) {
+        if (!isEnoent(err)) throw err;
       }
-    } catch {}
+    }
 
     return deleted;
   }
+}
+
+function isEnoent(err: unknown): boolean {
+  return err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
 /**
@@ -399,38 +437,46 @@ export function withDelegation(
     onDelegation?: (request: ApprovalRequest, from: string, to: string) => Promise<void>;
   } = {}
 ): ApprovalStore {
-  return {
-    ...store,
+  const wrapper: ApprovalStore = Object.create(store);
 
-    async submitResponse(response: ApprovalResponse): Promise<void> {
-      if (response.delegatedTo) {
-        const request = await store.getRequest(response.requestId);
+  wrapper.submitResponse = async (response: ApprovalResponse): Promise<void> => {
+    if (response.delegatedTo) {
+      const request = await store.getRequest(response.requestId);
 
-        if (request) {
-          const delegatedRequest: ApprovalRequest = {
-            ...request,
-            assignee: response.delegatedTo,
-            metadata: {
-              ...request.metadata,
-              delegatedFrom: response.respondedBy,
-              delegatedAt: response.respondedAt,
-              delegationReason: response.delegationReason,
-            },
-          };
+      if (request) {
+        const delegatedRequest: ApprovalRequest = {
+          ...request,
+          id: nanoid(),
+          assignee: response.delegatedTo,
+          metadata: {
+            ...request.metadata,
+            originalRequestId: request.id,
+            delegatedFrom: response.respondedBy,
+            delegatedAt: response.respondedAt,
+            delegationReason: response.delegationReason,
+          },
+        };
 
-          await store.createRequest(delegatedRequest);
+        await store.createRequest(delegatedRequest);
 
-          await options.onDelegation?.(
-            delegatedRequest,
-            response.respondedBy,
-            response.delegatedTo
-          );
+        const delegatedResponse: ApprovalResponse = {
+          requestId: request.id,
+          decision: 'delegated',
+          respondedBy: response.respondedBy,
+          respondedAt: response.respondedAt,
+          delegatedTo: response.delegatedTo,
+          delegationReason: response.delegationReason,
+        };
+        await store.submitResponse(delegatedResponse);
 
-          return;
-        }
+        await options.onDelegation?.(delegatedRequest, response.respondedBy, response.delegatedTo);
+
+        return;
       }
+    }
 
-      await store.submitResponse(response);
-    },
+    await store.submitResponse(response);
   };
+
+  return wrapper;
 }

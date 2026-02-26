@@ -71,7 +71,7 @@ export function registerFileRoutes(fastify: FastifyInstance, adapter: OpenAIAdap
 
     const data: FileObject[] = files.map((file) => ({
       id: file.id,
-      object: 'file',
+      object: 'file' as const,
       bytes: file.content.length,
       created_at: file.created_at,
       filename: file.filename,

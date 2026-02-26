@@ -53,6 +53,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
   private workflows = new Map<string, Workflow<WorkflowState>>();
   private activeRuns = new Map<string, { abort: () => void }>();
   private stateChangeCallbacks = new Set<(run: WorkflowRun) => void>();
+  private runLocks = new Map<string, Promise<void>>();
 
   constructor(config: WorkflowManagerConfig) {
     this.cogitator = config.cogitator;
@@ -346,10 +347,14 @@ export class DefaultWorkflowManager implements IWorkflowManager {
 
     await this.runStore.save(newRun);
 
-    await this.scheduler.scheduleRun(workflow, {
-      priority: run.priority,
-      tags: newRun.tags,
-    });
+    await this.scheduler.scheduleRun(
+      workflow,
+      {
+        priority: run.priority,
+        tags: newRun.tags,
+      },
+      newRunId
+    );
 
     return newRunId;
   }
@@ -398,22 +403,50 @@ export class DefaultWorkflowManager implements IWorkflowManager {
     await this.runStore.save(newRun);
     this.notifyStateChange(newRun);
 
-    const result = await this.executor.execute(workflow, run.state as Partial<S>, {
-      checkpoint: !!this.checkpointStore,
-    });
+    const skipNodes = new Set(newRun.completedNodes);
 
-    await this.runStore.update(newRunId, {
-      status: 'completed',
-      state: result.state,
-      output: result.state,
-      completedAt: Date.now(),
-      checkpointId: result.checkpointId,
-    });
+    const abortController = new AbortController();
+    this.activeRuns.set(newRunId, { abort: () => abortController.abort() });
+    this.scheduler.runStarted(newRunId);
 
-    const updatedRun = await this.runStore.get(newRunId);
-    if (updatedRun) this.notifyStateChange(updatedRun);
+    try {
+      const result = await this.executor.execute(workflow, run.state as Partial<S>, {
+        checkpoint: !!this.checkpointStore,
+        skipNodes,
+      });
 
-    return result;
+      await this.runStore.update(newRunId, {
+        status: result.error ? 'failed' : 'completed',
+        state: result.state,
+        output: result.error ? undefined : result.state,
+        completedAt: Date.now(),
+        checkpointId: result.checkpointId,
+        error: result.error
+          ? { name: result.error.name, message: result.error.message, stack: result.error.stack }
+          : undefined,
+      });
+
+      const updatedRun = await this.runStore.get(newRunId);
+      if (updatedRun) this.notifyStateChange(updatedRun);
+
+      return result;
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+
+      await this.runStore.update(newRunId, {
+        status: 'failed',
+        completedAt: Date.now(),
+        error: { name: err.name, message: err.message, stack: err.stack },
+      });
+
+      const updatedRun = await this.runStore.get(newRunId);
+      if (updatedRun) this.notifyStateChange(updatedRun);
+
+      throw error;
+    } finally {
+      this.activeRuns.delete(newRunId);
+      this.scheduler.runCompleted(newRunId);
+    }
   }
 
   /**
@@ -515,26 +548,36 @@ export class DefaultWorkflowManager implements IWorkflowManager {
     nodeId: string,
     action: 'start' | 'complete' | 'error'
   ): Promise<void> {
-    const run = await this.runStore.get(runId);
-    if (!run) return;
+    const prev = this.runLocks.get(runId) ?? Promise.resolve();
 
-    const updates: Partial<WorkflowRun> = {};
+    const next = prev.then(async () => {
+      const run = await this.runStore.get(runId);
+      if (!run) return;
 
-    switch (action) {
-      case 'start':
-        updates.currentNodes = [...run.currentNodes, nodeId];
-        break;
-      case 'complete':
-        updates.currentNodes = run.currentNodes.filter((n) => n !== nodeId);
-        updates.completedNodes = [...run.completedNodes, nodeId];
-        break;
-      case 'error':
-        updates.currentNodes = run.currentNodes.filter((n) => n !== nodeId);
-        updates.failedNodes = [...run.failedNodes, nodeId];
-        break;
-    }
+      const updates: Partial<WorkflowRun> = {};
 
-    await this.runStore.update(runId, updates);
+      switch (action) {
+        case 'start':
+          updates.currentNodes = [...run.currentNodes, nodeId];
+          break;
+        case 'complete':
+          updates.currentNodes = run.currentNodes.filter((n) => n !== nodeId);
+          updates.completedNodes = [...run.completedNodes, nodeId];
+          break;
+        case 'error':
+          updates.currentNodes = run.currentNodes.filter((n) => n !== nodeId);
+          updates.failedNodes = [...run.failedNodes, nodeId];
+          break;
+      }
+
+      await this.runStore.update(runId, updates);
+    });
+
+    this.runLocks.set(
+      runId,
+      next.catch(() => {})
+    );
+    await next;
   }
 
   private notifyStateChange(run: WorkflowRun): void {

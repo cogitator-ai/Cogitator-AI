@@ -402,22 +402,22 @@ export class WebhookTriggerExecutor {
 
     switch (auth.type) {
       case 'bearer': {
-        if (!authHeader?.startsWith('Bearer ')) {
+        if (!authHeader?.startsWith('Bearer ') || !auth.secret) {
           throw new WebhookAuthError('Missing or invalid Bearer token');
         }
         const token = authHeader.slice(7);
-        if (token !== auth.secret) {
+        if (!this.timingSafeCompare(token, auth.secret)) {
           throw new WebhookAuthError('Invalid token');
         }
         break;
       }
 
       case 'basic': {
-        if (!authHeader?.startsWith('Basic ')) {
+        if (!authHeader?.startsWith('Basic ') || !auth.secret) {
           throw new WebhookAuthError('Missing or invalid Basic auth');
         }
         const credentials = Buffer.from(authHeader.slice(6), 'base64').toString('utf-8');
-        if (credentials !== auth.secret) {
+        if (!this.timingSafeCompare(credentials, auth.secret)) {
           throw new WebhookAuthError('Invalid credentials');
         }
         break;
@@ -440,7 +440,7 @@ export class WebhookTriggerExecutor {
 
         const actualSignature = signature.replace(/^sha(256|512)=/, '');
 
-        if (!crypto.timingSafeEqual(Buffer.from(actualSignature), Buffer.from(expectedSignature))) {
+        if (!this.timingSafeCompare(actualSignature, expectedSignature)) {
           throw new WebhookAuthError('Invalid signature');
         }
         break;
@@ -449,7 +449,7 @@ export class WebhookTriggerExecutor {
       case 'api-key': {
         const headerName = auth.headerName ?? 'x-api-key';
         const apiKey = this.getHeader(request.headers, headerName);
-        if (!apiKey || apiKey !== auth.secret) {
+        if (!apiKey || !auth.secret || !this.timingSafeCompare(apiKey, auth.secret)) {
           throw new WebhookAuthError('Invalid API key');
         }
         break;
@@ -484,10 +484,17 @@ export class WebhookTriggerExecutor {
 
   private cleanupDeduplicationCache(): void {
     const now = Date.now();
-    const maxAge = 24 * 60 * 60 * 1000;
+    const defaultMaxAge = 24 * 60 * 60 * 1000;
+
+    let maxWindow = defaultMaxAge;
+    for (const state of this.triggers.values()) {
+      if (state.config.deduplicationWindow) {
+        maxWindow = Math.max(maxWindow, state.config.deduplicationWindow);
+      }
+    }
 
     for (const [key, timestamp] of this.deduplicationCache) {
-      if (now - timestamp > maxAge) {
+      if (now - timestamp > maxWindow) {
         this.deduplicationCache.delete(key);
       }
     }
@@ -501,12 +508,25 @@ export class WebhookTriggerExecutor {
     return request.ip ?? 'unknown';
   }
 
+  private timingSafeCompare(a: string, b: string): boolean {
+    const aBuf = Buffer.from(a);
+    const bBuf = Buffer.from(b);
+    if (aBuf.length !== bBuf.length) return false;
+    return crypto.timingSafeEqual(aBuf, bBuf);
+  }
+
   private getHeader(
     headers: Record<string, string | string[] | undefined>,
     name: string
   ): string | undefined {
-    const value = headers[name] ?? headers[name.toLowerCase()];
-    return Array.isArray(value) ? value[0] : value;
+    const lowerName = name.toLowerCase();
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === lowerName) {
+        const value = headers[key];
+        return Array.isArray(value) ? value[0] : value;
+      }
+    }
+    return undefined;
   }
 
   private normalizeHeaders(

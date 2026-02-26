@@ -64,7 +64,7 @@ for (const r of results) {
 | ---------------- | --------------------- | ------------ | ----------------------------- |
 | `TextLoader`     | `.txt`                | —            | Files and directories         |
 | `MarkdownLoader` | `.md`                 | —            | Strips frontmatter by default |
-| `JSONLoader`     | `.json`               | —            | Configurable JSON path        |
+| `JSONLoader`     | `.json`               | —            | Configurable content field    |
 | `CSVLoader`      | `.csv`                | `papaparse`  | Column selection, row mapping |
 | `HTMLLoader`     | `.html`, `.htm`       | `cheerio`    | CSS selector support          |
 | `PDFLoader`      | `.pdf`                | `pdf-parse`  | Text extraction from PDFs     |
@@ -75,7 +75,7 @@ import { MarkdownLoader, WebLoader, CSVLoader } from '@cogitator-ai/rag';
 
 const md = new MarkdownLoader({ stripFrontmatter: true });
 const web = new WebLoader({ selector: 'article' });
-const csv = new CSVLoader({ columns: ['title', 'body'] });
+const csv = new CSVLoader({ contentColumn: 'body', metadataColumns: ['title'] });
 ```
 
 ---

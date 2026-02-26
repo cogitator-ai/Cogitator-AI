@@ -302,7 +302,7 @@ Built-in processors handle each job type.
 ### Using Processors Directly
 
 ```typescript
-import { processAgentJob, processWorkflowJob, processSwarmJob } from '@cogitator-ai/worker';
+import { processAgentJob, processSwarmJob, processSwarmAgentJob } from '@cogitator-ai/worker';
 
 const agentResult = await processAgentJob({
   type: 'agent',
@@ -312,14 +312,6 @@ const agentResult = await processAgentJob({
   threadId: 'thread-1',
 });
 
-const workflowResult = await processWorkflowJob({
-  type: 'workflow',
-  jobId: 'job-2',
-  workflowConfig: myWorkflowConfig,
-  input: { data: [] },
-  runId: 'run-1',
-});
-
 const swarmResult = await processSwarmJob({
   type: 'swarm',
   jobId: 'job-3',
@@ -327,6 +319,8 @@ const swarmResult = await processSwarmJob({
   input: 'Solve this problem',
 });
 ```
+
+> **Note:** `processWorkflowJob` is not yet implemented — it throws an error. Workflows should be executed directly via `WorkflowExecutor` from `@cogitator-ai/workflows`.
 
 ---
 
@@ -707,12 +701,14 @@ import type {
   AgentJobPayload,
   WorkflowJobPayload,
   SwarmJobPayload,
+  SwarmAgentJobPayload,
 
   // Job results
   JobResult,
   AgentJobResult,
   WorkflowJobResult,
   SwarmJobResult,
+  SwarmAgentJobResult,
 
   // Configuration
   QueueConfig,

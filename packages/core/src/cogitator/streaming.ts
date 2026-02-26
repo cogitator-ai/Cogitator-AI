@@ -47,7 +47,23 @@ export async function streamChat(
       onToken(chunk.delta.content);
     }
     if (chunk.delta.toolCalls) {
-      toolCalls = chunk.delta.toolCalls as ToolCall[];
+      if (!toolCalls) toolCalls = [];
+      for (const partial of chunk.delta.toolCalls) {
+        if (partial.id && partial.name) {
+          const existing = toolCalls.find((tc) => tc.id === partial.id);
+          if (existing) {
+            if (partial.arguments) {
+              existing.arguments = { ...existing.arguments, ...partial.arguments };
+            }
+          } else {
+            toolCalls.push({
+              id: partial.id,
+              name: partial.name,
+              arguments: partial.arguments ?? {},
+            });
+          }
+        }
+      }
     }
     if (chunk.finishReason) {
       finishReason = chunk.finishReason;
@@ -62,6 +78,10 @@ export async function streamChat(
   if (!hasUsageFromStream) {
     inputTokens = countMessagesTokens(messages);
     outputTokens = Math.ceil(content.length / 4);
+  }
+
+  if (toolCalls && toolCalls.length > 0 && finishReason !== 'tool_calls') {
+    finishReason = 'tool_calls';
   }
 
   return {

@@ -5,47 +5,11 @@
  * Reads shared state from Redis and publishes results back.
  */
 
-import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { Cogitator, Agent } from '@cogitator-ai/core';
 import Redis from 'ioredis';
-import { z } from 'zod';
-import type { Tool, ToolSchema } from '@cogitator-ai/types';
+import type { ToolSchema } from '@cogitator-ai/types';
 import type { SwarmAgentJobPayload, SwarmAgentJobResult } from '../types.js';
-
-function jsonSchemaToZod(params: ToolSchema['parameters']): z.ZodType {
-  const properties = params.properties;
-  const required = params.required ?? [];
-
-  if (Object.keys(properties).length === 0) {
-    return z.object({});
-  }
-
-  const shape: Record<string, z.ZodType> = {};
-  for (const [key, _] of Object.entries(properties)) {
-    shape[key] = required.includes(key) ? z.unknown() : z.unknown().optional();
-  }
-
-  return z.object(shape).passthrough();
-}
-
-function recreateTools(schemas: ToolSchema[]): Tool[] {
-  return schemas.map((schema) =>
-    tool({
-      name: schema.name,
-      description: schema.description,
-      parameters: jsonSchemaToZod(schema.parameters),
-      execute: async (input) => {
-        console.warn(
-          `[swarm-agent-worker] Tool "${schema.name}" called with input:`,
-          JSON.stringify(input)
-        );
-        return {
-          warning: 'Tool executed in worker with stub implementation',
-          input,
-        };
-      },
-    })
-  );
-}
+import { recreateTools } from './shared.js';
 
 export async function processSwarmAgentJob(
   payload: SwarmAgentJobPayload

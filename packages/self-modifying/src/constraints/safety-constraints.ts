@@ -2,6 +2,7 @@ import type {
   SafetyConstraint,
   CapabilityConstraint,
   ResourceConstraint,
+  CustomConstraint,
   ModificationConstraints,
 } from '@cogitator-ai/types';
 import { DEFAULT_SAFETY_CONSTRAINTS } from '@cogitator-ai/types';
@@ -84,6 +85,20 @@ export function mergeResourceConstraints(
   return [...result.values()];
 }
 
+export function mergeCustomConstraints(
+  base: CustomConstraint[],
+  additions: CustomConstraint[]
+): CustomConstraint[] {
+  const result = new Map<string, CustomConstraint>();
+  for (const c of base) {
+    result.set(c.id, c);
+  }
+  for (const c of additions) {
+    result.set(c.id, c);
+  }
+  return [...result.values()];
+}
+
 export function mergeConstraints(
   base: ModificationConstraints,
   additions: Partial<ModificationConstraints>
@@ -96,6 +111,6 @@ export function mergeConstraints(
     resource: additions.resource
       ? mergeResourceConstraints(base.resource, additions.resource)
       : base.resource,
-    custom: [...(base.custom ?? []), ...(additions.custom ?? [])],
+    custom: mergeCustomConstraints(base.custom ?? [], additions.custom ?? []),
   };
 }

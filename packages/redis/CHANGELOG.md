@@ -1,5 +1,15 @@
 # @cogitator-ai/redis
 
+## 0.2.24
+
+### Patch Changes
+
+- fix(redis): subscribe memory leak, keyPrefix channel matching, remove dead code
+  - Fix subscribe handler leak: unsubscribe now properly removes message handlers
+  - Fix channel matching with keyPrefix: subscribe callback now fires correctly when keyPrefix is set
+  - Remove unused QueueMetrics (duplicated in worker), unused @cogitator-ai/types dep
+  - Move @types/node to devDependencies
+
 ## 0.2.23
 
 ### Patch Changes

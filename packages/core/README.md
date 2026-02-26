@@ -1235,6 +1235,152 @@ const response = await llmExecutor.chat(request);
 
 ---
 
+## Constitutional AI (Guardrails)
+
+Built-in content safety with input/output filtering, tool guards, and critique-revision loops:
+
+```typescript
+import { ConstitutionalAI, InputFilter, OutputFilter, ToolGuard } from '@cogitator-ai/core';
+
+const constitutional = new ConstitutionalAI({
+  llm: backend,
+  constitution: createConstitution([...DEFAULT_PRINCIPLES, customPrinciple]),
+  config: { enabled: true },
+});
+
+const inputFilter = new InputFilter({ llm: backend });
+const inputResult = await inputFilter.evaluate('user message');
+if (inputResult.isHarmful) {
+  console.log('Blocked:', inputResult.harmCategories);
+}
+
+const outputFilter = new OutputFilter({ llm: backend });
+const outputResult = await outputFilter.evaluate('agent response');
+
+const toolGuard = new ToolGuard({ llm: backend, strictMode: true });
+const guardResult = await toolGuard.evaluate({
+  name: 'delete_file',
+  arguments: { path: '/etc/passwd' },
+});
+
+// Integrated with Cogitator runtime
+const cog = new Cogitator({
+  guardrails: {
+    enabled: true,
+    model: 'openai/gpt-4o-mini',
+  },
+});
+```
+
+---
+
+## Cost-Aware Routing
+
+Automatically route tasks to the optimal model based on complexity, budget, and latency requirements:
+
+```typescript
+import { CostAwareRouter, TaskAnalyzer, CostTracker, BudgetEnforcer } from '@cogitator-ai/core';
+
+const router = new CostAwareRouter({
+  config: {
+    enabled: true,
+    budgets: {
+      daily: 10.0,
+      monthly: 200.0,
+    },
+  },
+});
+
+const recommendation = await router.route({
+  input: 'Simple greeting',
+  complexity: 'low',
+  speedPreference: 'fast',
+});
+console.log('Use model:', recommendation.model);
+console.log('Estimated cost:', recommendation.estimatedCost);
+
+// Integrated with Cogitator
+const cog = new Cogitator({
+  costRouting: {
+    enabled: true,
+    budgets: { daily: 10.0 },
+  },
+});
+```
+
+---
+
+## Context Management
+
+Automatic context window management with compression strategies:
+
+```typescript
+import { ContextManager, TruncateStrategy, SummarizeStrategy } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  context: {
+    enabled: true,
+    maxTokens: 8000,
+    strategy: 'hybrid',
+  },
+});
+```
+
+Available strategies: `TruncateStrategy`, `SlidingWindowStrategy`, `SummarizeStrategy`, `HybridStrategy`.
+
+---
+
+## Observability
+
+Export traces to Langfuse or any OTLP-compatible backend:
+
+```typescript
+import { createLangfuseExporter, createOTLPExporter } from '@cogitator-ai/core';
+
+const langfuse = createLangfuseExporter({
+  publicKey: process.env.LANGFUSE_PUBLIC_KEY!,
+  secretKey: process.env.LANGFUSE_SECRET_KEY!,
+  baseUrl: 'https://cloud.langfuse.com',
+});
+
+const otlp = createOTLPExporter({
+  endpoint: 'http://localhost:4318/v1/traces',
+  headers: { Authorization: 'Bearer ...' },
+});
+```
+
+---
+
+## Agent as Tool
+
+Use one agent as a tool for another — enables hierarchical agent architectures:
+
+```typescript
+import { Cogitator, Agent, agentAsTool } from '@cogitator-ai/core';
+
+const researcher = new Agent({
+  name: 'researcher',
+  instructions: 'Research topics thoroughly',
+  model: 'openai/gpt-4o',
+  tools: [webSearch],
+});
+
+const researchTool = agentAsTool(cog, researcher, {
+  name: 'research',
+  description: 'Delegate research tasks to a specialist agent',
+  includeUsage: true,
+});
+
+const manager = new Agent({
+  name: 'manager',
+  instructions: 'Coordinate tasks and delegate research',
+  model: 'openai/gpt-4o',
+  tools: [researchTool],
+});
+```
+
+---
+
 ## Logging
 
 ```typescript

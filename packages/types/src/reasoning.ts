@@ -31,8 +31,6 @@ export interface ToTConfig {
   onBacktrack?: (from: ThoughtNode, to: ThoughtNode | null) => void;
 }
 
-export type ProposedActionType = 'tool_call' | 'response' | 'sub_goal';
-
 export type ProposedAction =
   | { type: 'tool_call'; toolName: string; arguments: Record<string, unknown> }
   | { type: 'response'; content: string }

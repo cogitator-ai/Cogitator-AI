@@ -508,7 +508,6 @@ import type {
   RedisClusterConfig,
   RedisConfig,
   RedisClient,
-  QueueMetrics,
 } from '@cogitator-ai/redis';
 
 import {

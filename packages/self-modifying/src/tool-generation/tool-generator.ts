@@ -8,6 +8,7 @@ import type {
 } from '@cogitator-ai/types';
 import { z, type ZodType } from 'zod';
 import { ToolValidator } from './tool-validator';
+import { ToolSandbox } from './tool-sandbox';
 import {
   TOOL_GENERATION_SYSTEM_PROMPT,
   buildToolGenerationPrompt,
@@ -18,6 +19,7 @@ import {
 export interface ToolGeneratorOptions {
   llm: LLMBackend;
   config: ToolSelfGenerationConfig;
+  model?: string;
 }
 
 export interface GenerationResult {
@@ -31,15 +33,20 @@ export interface GenerationResult {
 export class ToolGenerator {
   private readonly llm: LLMBackend;
   private readonly config: ToolSelfGenerationConfig;
+  private readonly model: string;
   private readonly validator: ToolValidator;
+  private readonly sandbox: ToolSandbox;
 
   constructor(options: ToolGeneratorOptions) {
     this.llm = options.llm;
     this.config = options.config;
+    this.model = options.model ?? 'default';
     this.validator = new ToolValidator({
       llm: options.llm,
       config: options.config,
+      model: options.model,
     });
+    this.sandbox = new ToolSandbox(options.config.sandboxConfig);
   }
 
   async generate(
@@ -203,7 +210,16 @@ export class ToolGenerator {
   }
 
   createExecutableTool(generated: GeneratedTool): Tool {
-    const execute = this.compileImplementation(generated.implementation);
+    const sandbox = this.sandbox;
+    const tool = generated;
+
+    const execute = async (params: unknown): Promise<unknown> => {
+      const result = await sandbox.execute(tool, params);
+      if (!result.success) {
+        throw new Error(result.error ?? 'Tool execution failed');
+      }
+      return result.result;
+    };
 
     return {
       name: generated.name,
@@ -221,20 +237,6 @@ export class ToolGenerator {
     };
   }
 
-  private compileImplementation(implementation: string): (params: unknown) => Promise<unknown> {
-    return async (params: unknown): Promise<unknown> => {
-      // eslint-disable-next-line @typescript-eslint/no-implied-eval
-      const factory = new Function(`
-        "use strict";
-        ${implementation}
-        return execute;
-      `);
-
-      const execute = factory();
-      return execute(params);
-    };
-  }
-
   private async callLLM(
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
     temperature: number
@@ -242,6 +244,6 @@ export class ToolGenerator {
     if (this.llm.complete) {
       return this.llm.complete({ messages, temperature });
     }
-    return this.llm.chat({ model: 'default', messages, temperature });
+    return this.llm.chat({ model: this.model, messages, temperature });
   }
 }

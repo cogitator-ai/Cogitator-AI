@@ -27,6 +27,8 @@ export interface ReflectionEngineOptions {
   config: ReflectionConfig;
 }
 
+const MAX_REFLECTION_RUNS = 100;
+
 export class ReflectionEngine {
   private llm: LLMBackend;
   private insightStore: InsightStore;
@@ -163,8 +165,13 @@ export class ReflectionEngine {
   }
 
   private async callLLM(prompt: string): Promise<string> {
+    const model = this.config.reflectionModel;
+    if (!model) {
+      throw new Error('ReflectionEngine requires a reflectionModel to be configured');
+    }
+
     const response = await this.llm.chat({
-      model: this.config.reflectionModel ?? '',
+      model,
       messages: [
         {
           role: 'system',
@@ -239,6 +246,11 @@ export class ReflectionEngine {
       this.reflections.set(reflection.runId, runReflections);
     }
     runReflections.push(reflection);
+
+    if (this.reflections.size > MAX_REFLECTION_RUNS) {
+      const oldestKey = this.reflections.keys().next().value!;
+      this.reflections.delete(oldestKey);
+    }
 
     if (this.config.storeInsights !== false) {
       const minConfidence = this.config.minConfidenceToStore ?? 0.3;

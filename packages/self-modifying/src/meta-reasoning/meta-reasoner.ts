@@ -111,6 +111,11 @@ export class MetaReasoner {
       case 'progress_stall':
         return context.stagnationCount >= this.config.triggerOnProgressStall;
 
+      case 'periodic':
+        return (
+          context.iteration > 0 && context.iteration % this.config.triggerAfterIterations === 0
+        );
+
       case 'tool_call_failed':
         return true;
 
@@ -165,12 +170,17 @@ export class MetaReasoner {
 
       recommendation: this.buildRecommendation(parsed, observation),
 
+      requiresAdaptation:
+        parsed?.recommendation?.action !== undefined &&
+        parsed?.recommendation?.action !== 'continue',
+
       assessmentDuration: Date.now() - startTime,
       assessmentCost: (response.usage?.outputTokens ?? 0) * 0.00001,
     };
 
     const runAssessments = this.assessments.get(observation.runId) ?? [];
     runAssessments.push(assessment);
+    this.assessments.set(observation.runId, runAssessments);
     this.lastAssessmentTime.set(observation.runId, Date.now());
 
     return assessment;
@@ -277,6 +287,7 @@ export class MetaReasoner {
 
     const runAdaptations = this.adaptations.get(runId) ?? [];
     runAdaptations.push(adaptation);
+    this.adaptations.set(runId, runAdaptations);
     this.lastAdaptationTime.set(runId, Date.now());
 
     return adaptation;

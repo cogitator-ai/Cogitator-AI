@@ -75,12 +75,17 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       return;
     }
 
-    const timeout = setTimeout(resolve, ms);
-
-    signal?.addEventListener('abort', () => {
+    const onAbort = () => {
       clearTimeout(timeout);
       reject(new Error('Retry aborted'));
-    });
+    };
+
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 

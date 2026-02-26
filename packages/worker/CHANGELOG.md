@@ -1,5 +1,40 @@
 # @cogitator-ai/worker
 
+## 0.3.15
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/core@0.18.6
+  - @cogitator-ai/swarms@0.4.15
+
+## 0.3.14
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.21.3
+  - @cogitator-ai/core@0.18.5
+  - @cogitator-ai/swarms@0.4.14
+  - @cogitator-ai/workflows@0.5.10
+
+## 0.3.13
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/swarms@0.4.13
+
+## 0.3.12
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/redis@0.2.24
+  - @cogitator-ai/core@0.18.4
+  - @cogitator-ai/swarms@0.4.12
+  - @cogitator-ai/workflows@0.5.9
+
 ## 0.3.11
 
 ### Patch Changes

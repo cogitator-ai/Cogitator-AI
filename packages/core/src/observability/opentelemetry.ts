@@ -44,6 +44,8 @@ const STATUS_CODE = {
   ERROR: 2,
 } as const;
 
+const MAX_PENDING_SPANS = 10_000;
+
 export class OTLPExporter {
   private config: OTLPExporterConfig;
   private pendingSpans: OTLPSpan[] = [];
@@ -160,10 +162,23 @@ export class OTLPExporter {
 
       if (!response.ok) {
         console.error(`OTLP export failed: ${response.status} ${response.statusText}`);
-        this.pendingSpans.push(...spans);
+        this.pushBackSpans(spans);
       }
     } catch (err) {
       console.error('OTLP export error:', err);
+      this.pushBackSpans(spans);
+    }
+  }
+
+  private pushBackSpans(spans: OTLPSpan[]): void {
+    const total = this.pendingSpans.length + spans.length;
+    if (total > MAX_PENDING_SPANS) {
+      const toDrop = total - MAX_PENDING_SPANS;
+      if (toDrop >= spans.length) {
+        return;
+      }
+      this.pendingSpans.push(...spans.slice(toDrop));
+    } else {
       this.pendingSpans.push(...spans);
     }
   }

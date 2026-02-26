@@ -246,6 +246,25 @@ describe('RAGPipeline', () => {
     });
   });
 
+  describe('edge cases', () => {
+    it('skips documents that produce zero chunks', async () => {
+      vi.mocked(chunker.chunk).mockReturnValue([]);
+      const pipeline = createPipeline();
+      const result = await pipeline.ingest('/data/source');
+
+      expect(result.documents).toBe(2);
+      expect(result.chunks).toBe(0);
+      expect(embeddingService.embedBatch).not.toHaveBeenCalled();
+    });
+
+    it('throws on vectors/chunks length mismatch', async () => {
+      vi.mocked(embeddingService.embedBatch).mockResolvedValue([[1, 0, 0]]);
+      const pipeline = createPipeline();
+
+      await expect(pipeline.ingest('/data/source')).rejects.toThrow('Embedding count mismatch');
+    });
+  });
+
   describe('error propagation', () => {
     it('propagates loader errors', async () => {
       vi.mocked(loader.load).mockRejectedValue(new Error('file not found'));

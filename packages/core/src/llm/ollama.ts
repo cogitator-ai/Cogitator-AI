@@ -17,6 +17,7 @@ import { nanoid } from 'nanoid';
 import { BaseLLMBackend } from './base';
 import { createLLMError, llmUnavailable, llmInvalidResponse, type LLMErrorContext } from './errors';
 import { fetchImageAsBase64 } from '../utils/image-fetch';
+import { getLogger } from '../logger';
 
 interface OllamaConfig {
   baseUrl: string;
@@ -167,6 +168,8 @@ export class OllamaBackend extends BaseLLMBackend {
     const decoder = new TextDecoder();
     let buffer = '';
     const id = this.generateId();
+    let validChunks = 0;
+    let parseErrors = 0;
 
     for (;;) {
       const { done, value } = await reader.read();
@@ -182,8 +185,13 @@ export class OllamaBackend extends BaseLLMBackend {
         try {
           data = JSON.parse(line) as OllamaChatResponse;
         } catch {
+          parseErrors++;
+          getLogger().warn('Malformed JSON in Ollama stream, skipping line', {
+            line: line.slice(0, 200),
+          });
           continue;
         }
+        validChunks++;
 
         const chunk: ChatStreamChunk = {
           id,
@@ -208,6 +216,13 @@ export class OllamaBackend extends BaseLLMBackend {
 
         yield chunk;
       }
+    }
+
+    if (validChunks === 0 && parseErrors > 0) {
+      throw llmInvalidResponse(
+        ctx,
+        `Ollama stream contained ${parseErrors} malformed JSON line(s) and 0 valid chunks`
+      );
     }
   }
 

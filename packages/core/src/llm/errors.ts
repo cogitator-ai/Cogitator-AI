@@ -125,7 +125,7 @@ export function createLLMError(
     `HTTP ${statusCode}: ${responseBody?.slice(0, 200) ?? 'unknown'}`,
     ErrorCode.LLM_INVALID_RESPONSE,
     ctx,
-    { cause, retryable: statusCode >= 500 }
+    { cause, retryable: false }
   );
 }
 

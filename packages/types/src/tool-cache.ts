@@ -3,7 +3,7 @@ import type { EmbeddingService } from './memory';
 
 export type CacheStrategy = 'exact' | 'semantic';
 
-export type DurationString = `${number}${'ms' | 's' | 'm' | 'h' | 'd' | 'w'}` | string;
+export type DurationString = `${number}${'ms' | 's' | 'm' | 'h' | 'd' | 'w'}`;
 
 export interface ToolCacheConfig {
   strategy: CacheStrategy;

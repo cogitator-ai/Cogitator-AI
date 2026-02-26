@@ -401,6 +401,10 @@ export async function raceSubworkflows<PS extends WorkflowState, CS extends Work
       depth: context.depth + 1,
     });
 
+    if (signal.aborted) {
+      throw new Error('Race cancelled');
+    }
+
     if (result.success && !result.skipped) {
       controller.abort();
       return result;

@@ -48,10 +48,10 @@ function base64Decode(str: string): Uint8Array {
 
   let byteIdx = 0;
   for (let i = 0; i < len; i += 4) {
-    const b1 = lookup[cleanStr[i]] || 0;
-    const b2 = lookup[cleanStr[i + 1]] || 0;
-    const b3 = lookup[cleanStr[i + 2]] || 0;
-    const b4 = lookup[cleanStr[i + 3]] || 0;
+    const b1 = lookup[cleanStr[i]] ?? 0;
+    const b2 = lookup[cleanStr[i + 1]] ?? 0;
+    const b3 = lookup[cleanStr[i + 2]] ?? 0;
+    const b4 = lookup[cleanStr[i + 3]] ?? 0;
 
     bytes[byteIdx++] = (b1 << 2) | (b2 >> 4);
     if (byteIdx < outputLen) bytes[byteIdx++] = ((b2 & 15) << 4) | (b3 >> 2);
@@ -179,9 +179,26 @@ function deflateRaw(data: Uint8Array, level: number = 6): Uint8Array {
     return null;
   };
 
-  const literals: number[] = [];
-  const distances: number[] = [];
-  const lengths: number[] = [];
+  const LITLEN_BASE = [
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
+    163, 195, 227, 258,
+  ];
+  const LITLEN_EXTRA = [
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+  ];
+  const DIST_BASE = [
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049,
+    3073, 4097, 6145, 8193, 12289, 16385, 24577,
+  ];
+  const DIST_EXTRA = [
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
+    13,
+  ];
+
+  type LzToken =
+    | { type: 'literal'; value: number }
+    | { type: 'match'; length: number; distance: number };
+  const tokens: LzToken[] = [];
 
   let pos = 0;
   while (pos < len) {
@@ -198,10 +215,7 @@ function deflateRaw(data: Uint8Array, level: number = 6): Uint8Array {
     }
 
     if (match && match.length >= 3) {
-      literals.push(256 + match.length - 3);
-      distances.push(match.distance);
-      lengths.push(match.length);
-
+      tokens.push({ type: 'match', length: match.length, distance: match.distance });
       for (let i = 1; i < match.length; i++) {
         const h = getHash(pos + i);
         if (!hashTable.has(h)) hashTable.set(h, []);
@@ -209,14 +223,10 @@ function deflateRaw(data: Uint8Array, level: number = 6): Uint8Array {
       }
       pos += match.length;
     } else {
-      literals.push(data[pos]);
-      distances.push(0);
-      lengths.push(0);
+      tokens.push({ type: 'literal', value: data[pos] });
       pos++;
     }
   }
-
-  literals.push(256);
 
   let bitBuf = 0;
   let bitCount = 0;
@@ -231,52 +241,57 @@ function deflateRaw(data: Uint8Array, level: number = 6): Uint8Array {
     }
   };
 
+  const writeFixedLitLen = (code: number) => {
+    if (code <= 143) {
+      writeBits(reverseBits(0x30 + code, 8), 8);
+    } else if (code <= 255) {
+      writeBits(reverseBits(0x190 + code - 144, 9), 9);
+    } else if (code === 256) {
+      writeBits(reverseBits(0, 7), 7);
+    } else if (code <= 279) {
+      writeBits(reverseBits(code - 256, 7), 7);
+    } else {
+      writeBits(reverseBits(0xc0 + code - 280, 8), 8);
+    }
+  };
+
+  const findLengthCode = (length: number): number => {
+    for (let i = LITLEN_BASE.length - 1; i >= 0; i--) {
+      if (length >= LITLEN_BASE[i]) return i;
+    }
+    return 0;
+  };
+
+  const findDistCode = (dist: number): number => {
+    for (let i = DIST_BASE.length - 1; i >= 0; i--) {
+      if (dist >= DIST_BASE[i]) return i;
+    }
+    return 0;
+  };
+
   writeBits(1, 1);
   writeBits(1, 2);
 
-  for (let i = 0; i < literals.length; i++) {
-    const lit = literals[i];
-    const dist = distances[i];
-
-    if (lit < 144) {
-      writeBits(reverseBits(0x30 + lit, 8), 8);
-    } else if (lit < 256) {
-      writeBits(reverseBits(0x190 + lit - 144, 9), 9);
-    } else if (lit === 256) {
-      writeBits(reverseBits(0, 7), 7);
+  for (const token of tokens) {
+    if (token.type === 'literal') {
+      writeFixedLitLen(token.value);
     } else {
-      const lengthCode = lit - 256;
-      if (lengthCode < 8) {
-        writeBits(reverseBits(1 + lengthCode, 7), 7);
-      } else {
-        writeBits(reverseBits(0xc0 + lengthCode - 8, 8), 8);
+      const lenIdx = findLengthCode(token.length);
+      const lenCode = 257 + lenIdx;
+      writeFixedLitLen(lenCode);
+      if (LITLEN_EXTRA[lenIdx] > 0) {
+        writeBits(token.length - LITLEN_BASE[lenIdx], LITLEN_EXTRA[lenIdx]);
       }
 
-      if (dist > 0) {
-        let distCode = 0;
-        let distBits = 0;
-        let distBase = 1;
-
-        if (dist <= 4) {
-          distCode = dist - 1;
-        } else {
-          let d = dist - 1;
-          let extra = 0;
-          while (d >= 2 << extra) {
-            extra++;
-          }
-          distCode = 2 + extra * 2 + (d >= 3 << (extra - 1) ? 1 : 0);
-          distBits = extra > 0 ? extra - 1 : 0;
-          distBase = (1 << (distBits + 1)) + 1;
-        }
-
-        writeBits(reverseBits(distCode, 5), 5);
-        if (distBits > 0) {
-          writeBits(dist - distBase, distBits);
-        }
+      const distIdx = findDistCode(token.distance);
+      writeBits(reverseBits(distIdx, 5), 5);
+      if (DIST_EXTRA[distIdx] > 0) {
+        writeBits(token.distance - DIST_BASE[distIdx], DIST_EXTRA[distIdx]);
       }
     }
   }
+
+  writeFixedLitLen(256);
 
   if (bitCount > 0) {
     output.push(bitBuf & 0xff);
@@ -588,10 +603,11 @@ export function compression(): number {
       result = utf8Decode(resultBytes);
     }
 
+    const denominator = input.operation === 'compress' ? inputBytes.length : resultBytes.length;
     const ratio =
-      input.operation === 'compress'
-        ? resultBytes.length / inputBytes.length
-        : inputBytes.length / resultBytes.length;
+      denominator > 0
+        ? (input.operation === 'compress' ? resultBytes.length : inputBytes.length) / denominator
+        : 0;
 
     const output: CompressionOutput = {
       result,

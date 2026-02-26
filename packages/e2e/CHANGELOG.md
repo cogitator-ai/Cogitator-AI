@@ -1,5 +1,132 @@
 # @cogitator-ai/e2e
 
+## 0.1.24
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/self-modifying@17.0.13
+
+## 0.1.23
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/core@0.18.6
+  - @cogitator-ai/a2a@0.3.7
+  - @cogitator-ai/ai-sdk@0.2.10
+  - @cogitator-ai/cli@0.3.9
+  - @cogitator-ai/evals@0.1.7
+  - @cogitator-ai/express@0.2.10
+  - @cogitator-ai/fastify@0.1.10
+  - @cogitator-ai/hono@0.1.9
+  - @cogitator-ai/koa@0.1.9
+  - @cogitator-ai/neuro-symbolic@15.1.11
+  - @cogitator-ai/next@0.2.7
+  - @cogitator-ai/openai-compat@19.0.12
+  - @cogitator-ai/self-modifying@17.0.12
+  - @cogitator-ai/swarms@0.4.15
+  - @cogitator-ai/voice@0.1.8
+  - @cogitator-ai/worker@0.3.15
+  - @cogitator-ai/workflows@0.5.11
+
+## 0.1.22
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/voice@0.1.7
+
+## 0.1.21
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.21.3
+  - @cogitator-ai/core@0.18.5
+  - @cogitator-ai/swarms@0.4.14
+  - @cogitator-ai/self-modifying@17.0.11
+  - @cogitator-ai/a2a@0.3.6
+  - @cogitator-ai/ai-sdk@0.2.9
+  - @cogitator-ai/cli@0.3.8
+  - @cogitator-ai/config@0.5.2
+  - @cogitator-ai/deploy@0.1.4
+  - @cogitator-ai/express@0.2.9
+  - @cogitator-ai/fastify@0.1.9
+  - @cogitator-ai/hono@0.1.8
+  - @cogitator-ai/koa@0.1.8
+  - @cogitator-ai/mcp@17.0.7
+  - @cogitator-ai/memory@0.6.17
+  - @cogitator-ai/neuro-symbolic@15.1.10
+  - @cogitator-ai/next@0.2.6
+  - @cogitator-ai/openai-compat@19.0.11
+  - @cogitator-ai/rag@0.1.6
+  - @cogitator-ai/sandbox@0.2.25
+  - @cogitator-ai/voice@0.1.6
+  - @cogitator-ai/wasm-tools@0.5.7
+  - @cogitator-ai/worker@0.3.14
+  - @cogitator-ai/workflows@0.5.10
+  - @cogitator-ai/evals@0.1.6
+
+## 0.1.20
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/swarms@0.4.13
+  - @cogitator-ai/express@0.2.8
+  - @cogitator-ai/fastify@0.1.8
+  - @cogitator-ai/hono@0.1.7
+  - @cogitator-ai/koa@0.1.7
+  - @cogitator-ai/worker@0.3.13
+
+## 0.1.19
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/self-modifying@17.0.10
+
+## 0.1.18
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/redis@0.2.24
+  - @cogitator-ai/memory@0.6.16
+  - @cogitator-ai/worker@0.3.12
+  - @cogitator-ai/core@0.18.4
+  - @cogitator-ai/neuro-symbolic@15.1.9
+  - @cogitator-ai/rag@0.1.5
+  - @cogitator-ai/a2a@0.3.5
+  - @cogitator-ai/ai-sdk@0.2.8
+  - @cogitator-ai/cli@0.3.7
+  - @cogitator-ai/evals@0.1.5
+  - @cogitator-ai/express@0.2.7
+  - @cogitator-ai/fastify@0.1.7
+  - @cogitator-ai/hono@0.1.6
+  - @cogitator-ai/koa@0.1.6
+  - @cogitator-ai/next@0.2.5
+  - @cogitator-ai/openai-compat@19.0.10
+  - @cogitator-ai/self-modifying@17.0.9
+  - @cogitator-ai/swarms@0.4.12
+  - @cogitator-ai/voice@0.1.5
+  - @cogitator-ai/workflows@0.5.9
+
+## 0.1.17
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/rag@0.1.4
+
+## 0.1.16
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/openai-compat@19.0.9
+
 ## 0.1.15
 
 ### Patch Changes

@@ -3,12 +3,7 @@ import { z } from 'zod';
 import type { Tool, ToolContext, ToolSchema } from '@cogitator-ai/types';
 import { FileWatcher } from './file-watcher.js';
 import { WasmLoader } from './wasm-loader.js';
-import type {
-  ExtismPlugin,
-  LoadedModule,
-  WasmToolCallbacks,
-  WasmToolManagerOptions,
-} from './types.js';
+import type { LoadedModule, WasmToolCallbacks, WasmToolManagerOptions } from './types.js';
 
 const DEFAULT_DEBOUNCE_MS = 100;
 
@@ -87,6 +82,10 @@ export class WasmToolManager {
   private async handleAdd(wasmPath: string): Promise<void> {
     const name = this.getModuleName(wasmPath);
     try {
+      const existing = this.modules.get(name);
+      if (existing) {
+        await existing.plugin.close?.();
+      }
       await this.loadModule(wasmPath);
       this.callbacks.onLoad?.(name, wasmPath);
     } catch (error) {
@@ -110,18 +109,22 @@ export class WasmToolManager {
 
   private async handleUnlink(wasmPath: string): Promise<void> {
     const name = this.getModuleName(wasmPath);
-    const existing = this.modules.get(name);
-    if (existing) {
-      await existing.plugin.close?.();
-      this.modules.delete(name);
-      this.callbacks.onUnload?.(name, wasmPath);
+    try {
+      const existing = this.modules.get(name);
+      if (existing) {
+        await existing.plugin.close?.();
+        this.modules.delete(name);
+        this.callbacks.onUnload?.(name, wasmPath);
+      }
+    } catch (error) {
+      this.callbacks.onError?.(name, wasmPath, error as Error);
     }
   }
 
   private async loadModule(wasmPath: string): Promise<Tool<unknown, unknown>> {
     const name = this.getModuleName(wasmPath);
     const plugin = await this.loader.load(wasmPath, this.options.useWasi);
-    const tool = this.createProxyTool(name, plugin);
+    const tool = this.createProxyTool(name);
 
     this.modules.set(name, {
       name,
@@ -134,7 +137,7 @@ export class WasmToolManager {
     return tool;
   }
 
-  private createProxyTool(name: string, _plugin: ExtismPlugin): Tool<unknown, unknown> {
+  private createProxyTool(name: string): Tool<unknown, unknown> {
     const parameters = z.record(z.string(), z.unknown());
 
     const tool: Tool<unknown, unknown> = {

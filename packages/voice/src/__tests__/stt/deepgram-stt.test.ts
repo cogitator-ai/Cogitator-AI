@@ -256,6 +256,17 @@ describe('DeepgramSTT', () => {
         })
       );
 
+      (ws.send as Mock).mockImplementation((data: string | Buffer) => {
+        if (typeof data === 'string') {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.type === 'CloseStream') {
+              setTimeout(() => ws.emit('close'), 0);
+            }
+          } catch {}
+        }
+      });
+
       const result = await stream.close();
       expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'CloseStream' }));
       expect(result.text).toBe('final text');
@@ -287,6 +298,47 @@ describe('DeepgramSTT', () => {
       const [url] = wsConstructorCalls[0]!;
       const parsed = new URL(url);
       expect(parsed.searchParams.get('language')).toBe('ja');
+    });
+
+    it('stream.close() before WebSocket ready returns lastResult immediately', async () => {
+      const stream = stt.createStream();
+      const result = await stream.close();
+      expect(result.text).toBe('');
+    });
+
+    it('ignores malformed JSON from WebSocket', () => {
+      const stream = stt.createStream();
+      const ws = wsInstances[0]!;
+      ws.emit('open');
+
+      const errorCb = vi.fn();
+      stream.on('error', errorCb);
+
+      ws.emit('message', 'not valid json {{{');
+
+      expect(errorCb).not.toHaveBeenCalled();
+    });
+
+    it('ignores messages with empty transcript', () => {
+      const stream = stt.createStream();
+      const ws = wsInstances[0]!;
+      ws.emit('open');
+
+      const partialCb = vi.fn();
+      const finalCb = vi.fn();
+      stream.on('partial', partialCb);
+      stream.on('final', finalCb);
+
+      ws.emit(
+        'message',
+        JSON.stringify({
+          is_final: true,
+          channel: { alternatives: [{ transcript: '', confidence: 0 }] },
+        })
+      );
+
+      expect(partialCb).not.toHaveBeenCalled();
+      expect(finalCb).not.toHaveBeenCalled();
     });
   });
 });

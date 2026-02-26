@@ -24,47 +24,68 @@ describeE2E('Core: Agent Simple Chat', () => {
     await cogitator.close();
   });
 
-  it('answers factual questions correctly', async () => {
-    const agent = createTestAgent();
+  it('answers factual questions with correct content', async () => {
+    const agent = createTestAgent({
+      instructions: 'You are a math assistant. Reply with ONLY the number, nothing else.',
+    });
+
     const result = await cogitator.run(agent, {
-      input: 'What is the capital of Japan? Reply in one word.',
+      input: 'What is 2+2? Reply with ONLY the number.',
     });
 
-    expect(typeof result.output).toBe('string');
-    expect(result.output.length).toBeGreaterThan(0);
-    expect(result.usage.totalTokens).toBeGreaterThan(0);
-
-    await expectJudge(result.output, {
-      question: 'What is the capital of Japan?',
-      criteria: 'Answer correctly names Tokyo',
-    });
+    expect(result.output).toMatch(/4/);
   });
 
-  it('follows system instructions', async () => {
+  it('follows system instructions precisely', async () => {
     const agent = createTestAgent({
       instructions:
-        'You are a geography expert. When asked about colors, always explain the science behind it.',
+        'You MUST start every response with the word BANANA. This is mandatory. No exceptions.',
     });
+
     const result = await cogitator.run(agent, {
-      input: 'What color is the sky?',
+      input: 'What is the weather like? Remember: start your response with BANANA.',
     });
 
-    expect(typeof result.output).toBe('string');
-    expect(result.output.length).toBeGreaterThan(0);
-
-    await expectJudge(result.output, {
-      question: 'What color is the sky?',
-      criteria: 'Response mentions the sky being blue or references light/atmosphere/science',
-    });
+    const trimmed = result.output.trim();
+    expect(trimmed.toUpperCase().startsWith('BANANA')).toBe(true);
   });
 
-  it('handles minimal input gracefully', async () => {
+  it('returns structured metadata', async () => {
     const agent = createTestAgent();
+
     const result = await cogitator.run(agent, {
-      input: 'Hi',
+      input: 'Say hello.',
     });
 
-    expect(typeof result.output).toBe('string');
-    expect(result.output.length).toBeGreaterThan(0);
+    expect(result.runId).toBeTruthy();
+    expect(typeof result.runId).toBe('string');
+    expect(result.agentId).toBeTruthy();
+    expect(typeof result.agentId).toBe('string');
+    expect(result.threadId).toBeTruthy();
+
+    expect(result.usage.inputTokens).toBeGreaterThan(0);
+    expect(result.usage.outputTokens).toBeGreaterThan(0);
+    expect(result.usage.totalTokens).toBeGreaterThan(0);
+    expect(result.usage.duration).toBeGreaterThan(0);
+  });
+
+  it('respects maxTokens limit', async () => {
+    const agent = createTestAgent({
+      instructions: 'Write as much as possible.',
+      maxTokens: 50,
+    });
+
+    const result = await cogitator.run(agent, {
+      input:
+        'Write a very long essay about the history of the Roman Empire. Be extremely detailed.',
+    });
+
+    expect(result.output.length).toBeLessThan(1000);
+
+    await expectJudge(result.output, {
+      question: 'Was the output short/truncated due to token limit?',
+      criteria:
+        'The response is relatively short, likely cut off or brief due to token constraints',
+    });
   });
 });

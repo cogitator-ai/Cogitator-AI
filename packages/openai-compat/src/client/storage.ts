@@ -301,10 +301,22 @@ export class PostgresThreadStorage implements ThreadStorage {
   private schema: string;
   private tableName: string;
 
+  private static readonly IDENTIFIER_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+  private static validateIdentifier(value: string, name: string): void {
+    if (!PostgresThreadStorage.IDENTIFIER_REGEX.test(value)) {
+      throw new Error(
+        `Invalid ${name}: "${value}". Must match /^[a-zA-Z_][a-zA-Z0-9_]*$/ to prevent SQL injection.`
+      );
+    }
+  }
+
   constructor(config: PostgresThreadStorageConfig) {
     this.config = config;
     this.schema = config.schema ?? 'public';
     this.tableName = config.tableName ?? 'openai_compat_data';
+    PostgresThreadStorage.validateIdentifier(this.schema, 'schema');
+    PostgresThreadStorage.validateIdentifier(this.tableName, 'tableName');
   }
 
   async connect(): Promise<void> {

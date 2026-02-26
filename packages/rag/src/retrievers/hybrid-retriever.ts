@@ -47,7 +47,8 @@ export class HybridRetriever implements Retriever {
   }
 
   private toRetrievalResult(entry: SearchResult): RetrievalResult {
-    const documentId = (entry.metadata?.documentId as string | undefined) ?? entry.sourceId;
+    const rawDocId = entry.metadata?.documentId;
+    const documentId = typeof rawDocId === 'string' ? rawDocId : entry.sourceId;
 
     return {
       chunkId: entry.sourceId,

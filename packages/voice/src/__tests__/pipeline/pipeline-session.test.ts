@@ -89,14 +89,14 @@ describe('PipelineSession', () => {
       session = new PipelineSession({ stt, tts, agent, vad });
     });
 
-    it('emits speech_start when VAD detects speech', () => {
+    it('emits speech_start when VAD detects speech', async () => {
       const handler = vi.fn();
       session.on('speech_start', handler);
 
       vad._event = { type: 'speech_start' };
       session.pushAudio(Buffer.alloc(320));
 
-      expect(handler).toHaveBeenCalled();
+      await vi.waitFor(() => expect(handler).toHaveBeenCalled());
     });
 
     it('emits speech_end when VAD detects end', async () => {
@@ -112,30 +112,33 @@ describe('PipelineSession', () => {
       await vi.waitFor(() => expect(handler).toHaveBeenCalled());
     });
 
-    it('does not feed audio to STT during silence', () => {
+    it('does not feed audio to STT during silence', async () => {
       vad._event = { type: 'silence' };
       session.pushAudio(Buffer.alloc(320));
 
+      await new Promise((r) => setTimeout(r, 10));
       expect(stt.createStream).not.toHaveBeenCalled();
     });
 
-    it('opens STT stream on speech_start', () => {
+    it('opens STT stream on speech_start', async () => {
       vad._event = { type: 'speech_start' };
       session.pushAudio(Buffer.alloc(320));
 
-      expect(stt.createStream).toHaveBeenCalled();
+      await vi.waitFor(() => expect(stt.createStream).toHaveBeenCalled());
     });
 
-    it('feeds audio to STT stream during speech', () => {
+    it('feeds audio to STT stream during speech', async () => {
       vad._event = { type: 'speech_start' };
       const chunk = Buffer.alloc(320);
       session.pushAudio(chunk);
+
+      await vi.waitFor(() => expect(stt.createStream).toHaveBeenCalled());
 
       vad._event = { type: 'speech', probability: 0.9 };
       const chunk2 = Buffer.alloc(320);
       session.pushAudio(chunk2);
 
-      expect(stream.write).toHaveBeenCalledWith(chunk2);
+      await vi.waitFor(() => expect(stream.write).toHaveBeenCalledWith(chunk2));
     });
   });
 
@@ -308,6 +311,8 @@ describe('PipelineSession', () => {
       vad._event = { type: 'speech_start' };
       session.pushAudio(Buffer.alloc(320));
 
+      await vi.waitFor(() => expect(stt.createStream).toHaveBeenCalled());
+
       await session.close();
 
       expect(stream.removeAllListeners).toHaveBeenCalled();
@@ -369,6 +374,84 @@ describe('PipelineSession', () => {
 
       expect(errors.length).toBe(1);
       expect(errors[0]!.message).toBe('Stream error');
+    });
+  });
+
+  describe('endAudio()', () => {
+    it('triggers finishListening when state is listening (no VAD mode)', async () => {
+      session = new PipelineSession({ stt, tts, agent });
+      const handler = vi.fn();
+      session.on('agent_response', handler);
+
+      session.pushAudio(Buffer.alloc(320));
+      session.endAudio();
+
+      await vi.waitFor(() => expect(handler).toHaveBeenCalledWith('Agent response'));
+      expect(stream.close).toHaveBeenCalled();
+      expect(agent.run).toHaveBeenCalledWith('final transcript');
+    });
+
+    it('is a no-op when state is idle', async () => {
+      session = new PipelineSession({ stt, tts, agent });
+
+      session.endAudio();
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(stt.createStream).not.toHaveBeenCalled();
+      expect(agent.run).not.toHaveBeenCalled();
+    });
+
+    it('is a no-op when state is processing', async () => {
+      session = new PipelineSession({ stt, tts, agent, vad });
+
+      vad._event = { type: 'speech_start' };
+      session.pushAudio(Buffer.alloc(320));
+
+      vad._event = { type: 'speech_end', duration: 500 };
+      session.pushAudio(Buffer.alloc(320));
+
+      const agentCallsBefore = agent.run.mock.calls.length;
+      session.endAudio();
+
+      await vi.waitFor(() => expect(agent.run).toHaveBeenCalled());
+      expect(agent.run).toHaveBeenCalledTimes(agentCallsBefore === 0 ? 1 : agentCallsBefore);
+    });
+  });
+
+  describe('activeProcessing', () => {
+    it('close() waits for active processing to complete', async () => {
+      let resolveAgent!: (value: { content: string }) => void;
+      agent.run.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveAgent = resolve;
+          })
+      );
+
+      session = new PipelineSession({ stt, tts, agent, vad });
+      const handler = vi.fn();
+      session.on('agent_response', handler);
+
+      vad._event = { type: 'speech_start' };
+      session.pushAudio(Buffer.alloc(320));
+
+      vad._event = { type: 'speech_end', duration: 500 };
+      session.pushAudio(Buffer.alloc(320));
+
+      await vi.waitFor(() => expect(agent.run).toHaveBeenCalled());
+
+      let closeDone = false;
+      const closePromise = session.close().then(() => {
+        closeDone = true;
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(closeDone).toBe(false);
+
+      resolveAgent({ content: 'late response' });
+      await closePromise;
+
+      expect(closeDone).toBe(true);
     });
   });
 });

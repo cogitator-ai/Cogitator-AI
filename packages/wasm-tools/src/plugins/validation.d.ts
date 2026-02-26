@@ -1,3 +1,3 @@
 declare module 'main' {
-  export function validation(): I32;
+  export function validate(): I32;
 }

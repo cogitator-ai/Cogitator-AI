@@ -1,4 +1,5 @@
 import type { TaskProfile, ArchitectureConfig, EvolutionCandidate } from '@cogitator-ai/types';
+import { extractJson } from '../utils';
 
 export const ARCHITECTURE_ANALYSIS_SYSTEM_PROMPT = `You are an expert in AI agent architecture optimization.
 Your task is to analyze tasks and recommend optimal configurations.
@@ -140,11 +141,11 @@ Respond with:
 }
 
 export function parseTaskProfileResponse(response: string): TaskProfile | null {
-  const jsonMatch = /\{[\s\S]*\}/.exec(response);
-  if (!jsonMatch) return null;
+  const json = extractJson(response);
+  if (!json) return null;
 
   try {
-    const parsed = JSON.parse(jsonMatch[0]);
+    const parsed = JSON.parse(json);
 
     return {
       complexity: parsed.complexity || 'moderate',
@@ -197,11 +198,11 @@ export function parsePerformanceAnalysisResponse(response: string): {
   shouldAdopt: boolean;
   analysis: string;
 } | null {
-  const jsonMatch = /\{[\s\S]*\}/.exec(response);
-  if (!jsonMatch) return null;
+  const json = extractJson(response);
+  if (!json) return null;
 
   try {
-    const parsed = JSON.parse(jsonMatch[0]);
+    const parsed = JSON.parse(json);
 
     return {
       recommendation: String(parsed.recommendation || ''),

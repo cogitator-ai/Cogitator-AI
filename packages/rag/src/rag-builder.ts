@@ -89,7 +89,7 @@ export class RAGPipelineBuilder {
 
   private resolveConfig(): RAGPipelineConfig {
     if (!this.configInput) {
-      throw new Error('config is required — call withConfig() or provide a chunker');
+      throw new Error('config is required — call withConfig() before build()');
     }
     return RAGPipelineConfigSchema.parse(this.configInput);
   }

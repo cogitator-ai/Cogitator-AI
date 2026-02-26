@@ -53,6 +53,9 @@ swarm('debate-team')
   .agents([advocateAgent, criticAgent])
   .moderator(moderatorAgent);
 
+// negotiation: flat agent list (2+ agents)
+swarm('deal').strategy('negotiation').agents([buyerAgent, sellerAgent]);
+
 // pipeline: configured via strategy-specific options
 swarm('pipeline').strategy('pipeline').pipeline({
   stages: [
@@ -115,6 +118,16 @@ swarm('debate').strategy('debate').debate({
   rounds: 3,
   format: 'structured',
 });
+
+swarm('deal')
+  .strategy('negotiation')
+  .agents([buyerAgent, sellerAgent])
+  .negotiation({
+    maxRounds: 10,
+    turnOrder: 'round-robin',
+    onDeadlock: 'arbitrate',
+    stagnationThreshold: 0.05,
+  });
 ```
 
 ### Communication

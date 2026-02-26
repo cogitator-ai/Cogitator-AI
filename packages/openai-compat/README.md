@@ -379,7 +379,8 @@ pnpm add ioredis
 const storage = new RedisThreadStorage({
   host: 'localhost',
   port: 6379,
-  prefix: 'cogitator:', // optional, default: 'cogitator:'
+  keyPrefix: 'cogitator:openai:', // optional, default: 'cogitator:openai:'
+  ttl: 86400, // optional, default: 86400 (24h)
 });
 await storage.connect();
 
@@ -407,12 +408,9 @@ pnpm add pg
 
 ```typescript
 const storage = new PostgresThreadStorage({
-  host: 'localhost',
-  port: 5432,
-  database: 'cogitator',
-  user: 'postgres',
-  password: 'secret',
-  tableName: 'cogitator_storage', // optional
+  connectionString: 'postgresql://user:pass@localhost:5432/db',
+  schema: 'public', // optional, default: 'public'
+  tableName: 'openai_compat_data', // optional, default: 'openai_compat_data'
 });
 await storage.connect();
 
@@ -422,54 +420,44 @@ const manager = new ThreadManager(storage);
 await storage.disconnect();
 ```
 
-With connection string:
-
-```typescript
-const storage = new PostgresThreadStorage({
-  connectionString: 'postgresql://user:pass@localhost:5432/db',
-});
-```
-
 ### Factory Function
 
 ```typescript
-// In-memory
-const storage = createThreadStorage('memory');
+// In-memory (default)
+const storage = createThreadStorage();
+// or: createThreadStorage({ type: 'memory' })
 
 // Redis
-const storage = createThreadStorage('redis', {
+const storage = createThreadStorage({
+  type: 'redis',
   host: 'localhost',
   port: 6379,
 });
+await storage.connect!();
 
 // PostgreSQL
-const storage = createThreadStorage('postgres', {
+const storage = createThreadStorage({
+  type: 'postgres',
   connectionString: 'postgresql://localhost/db',
 });
+await storage.connect!();
 ```
 
-### Using with OpenAI Server
+### Using with OpenAI Adapter
 
 ```typescript
-import { OpenAIServer, RedisThreadStorage } from '@cogitator-ai/openai-compat';
+import { OpenAIAdapter, ThreadManager, RedisThreadStorage } from '@cogitator-ai/openai-compat';
 import { Cogitator } from '@cogitator-ai/core';
 
 const storage = new RedisThreadStorage({ host: 'localhost' });
 await storage.connect();
 
-const cogitator = new Cogitator({ defaultModel: 'openai/gpt-4o' });
-
-// Create adapter with custom storage
-const adapter = new OpenAIAdapter(cogitator, { tools: [] });
-// Note: To use custom storage, create ThreadManager separately:
+// Create ThreadManager with persistent storage
 const manager = new ThreadManager(storage);
 
-const server = new OpenAIServer(cogitator, {
-  port: 8080,
-  adapter, // pass custom adapter
-});
-
-await server.start();
+// Use the adapter in-process (for custom server integrations)
+const cogitator = new Cogitator({ defaultModel: 'openai/gpt-4o' });
+const adapter = new OpenAIAdapter(cogitator, { tools: [] });
 ```
 
 ### ThreadStorage Interface

@@ -156,7 +156,11 @@ export class CircuitBreaker {
       }
 
       case 'half-open':
-        return breaker.halfOpenAttempts < this.config.halfOpenMax;
+        if (breaker.halfOpenAttempts < this.config.halfOpenMax) {
+          breaker.halfOpenAttempts++;
+          return true;
+        }
+        return false;
 
       default:
         return true;
@@ -177,12 +181,7 @@ export class CircuitBreaker {
       throw new CircuitBreakerOpenError(nodeId, this.getBreaker(nodeId));
     }
 
-    const breaker = this.getBreaker(nodeId);
     const startTime = Date.now();
-
-    if (breaker.state === 'half-open') {
-      breaker.halfOpenAttempts++;
-    }
 
     try {
       const result = await fn();

@@ -49,7 +49,7 @@ export type VADEvent =
 
 export interface VADProvider {
   readonly name: string;
-  process(samples: Float32Array): VADEvent;
+  process(samples: Float32Array): VADEvent | Promise<VADEvent>;
   reset(): void;
 }
 

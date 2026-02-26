@@ -35,6 +35,12 @@ export function agentNode<S extends WorkflowState = WorkflowState>(
     fn: async (ctx): Promise<NodeResult<S>> => {
       const extCtx = ctx as ExtendedNodeContext<S>;
 
+      if (!extCtx.cogitator) {
+        throw new Error(
+          `agentNode "${agent.name}" requires a Cogitator instance in the node context`
+        );
+      }
+
       let input: string;
       if (options?.inputMapper) {
         input = options.inputMapper(ctx.state, ctx.input);

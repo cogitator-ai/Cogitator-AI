@@ -44,6 +44,7 @@ export function createTestAgent(opts?: {
   instructions?: string;
   tools?: ReturnType<typeof tool>[];
   model?: string;
+  maxTokens?: number;
   maxIterations?: number;
   responseFormat?: { type: 'text' } | { type: 'json' };
 }): Agent {
@@ -52,6 +53,7 @@ export function createTestAgent(opts?: {
     instructions: opts?.instructions ?? 'You are a helpful assistant. Keep responses brief.',
     model: opts?.model ?? `ollama/${TEST_MODEL}`,
     tools: opts?.tools,
+    maxTokens: opts?.maxTokens,
     maxIterations: opts?.maxIterations,
     responseFormat: opts?.responseFormat,
   });

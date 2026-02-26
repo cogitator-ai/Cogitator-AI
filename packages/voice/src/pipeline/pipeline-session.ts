@@ -4,7 +4,16 @@ import { pcm16ToFloat32 } from '../audio.js';
 
 type SessionState = 'idle' | 'listening' | 'processing' | 'speaking';
 
-export class PipelineSession extends EventEmitter {
+interface PipelineSessionEvents {
+  speech_start: [];
+  speech_end: [];
+  transcript: [text: string, isFinal: boolean];
+  agent_response: [content: string];
+  audio: [chunk: Buffer];
+  error: [error: Error];
+}
+
+export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
   private readonly stt: VoicePipelineConfig['stt'];
   private readonly tts: VoicePipelineConfig['tts'];
   private readonly vad: VoicePipelineConfig['vad'];
@@ -13,6 +22,7 @@ export class PipelineSession extends EventEmitter {
   private stream: STTStream | null = null;
   private interrupted = false;
   private closed = false;
+  private activeProcessing: Promise<void> | null = null;
 
   constructor(config: VoicePipelineConfig) {
     super();
@@ -26,9 +36,15 @@ export class PipelineSession extends EventEmitter {
     if (this.closed) return;
 
     if (this.vad) {
-      this.handleVAD(chunk);
+      void this.handleVAD(chunk);
     } else {
       this.handleNoVAD(chunk);
+    }
+  }
+
+  endAudio(): void {
+    if (this.state === 'listening') {
+      void this.finishListening();
     }
   }
 
@@ -37,6 +53,7 @@ export class PipelineSession extends EventEmitter {
 
     if (this.stream) {
       this.stream.removeAllListeners();
+      void this.stream.close().catch(() => {});
       this.stream = null;
     }
 
@@ -50,22 +67,27 @@ export class PipelineSession extends EventEmitter {
 
     if (this.stream) {
       this.stream.removeAllListeners();
+      void this.stream.close().catch(() => {});
       this.stream = null;
+    }
+
+    if (this.activeProcessing) {
+      await this.activeProcessing.catch(() => {});
     }
 
     this.removeAllListeners();
   }
 
-  private handleVAD(chunk: Buffer): void {
+  private async handleVAD(chunk: Buffer): Promise<void> {
     const samples = pcm16ToFloat32(chunk);
-    const event = this.vad!.process(samples);
+    const event = await this.vad!.process(samples);
 
     switch (event.type) {
       case 'speech_start':
         if (this.state === 'idle') {
           this.state = 'listening';
           this.openStream();
-          this.stream!.write(chunk);
+          this.stream?.write(chunk);
           this.emit('speech_start');
         }
         break;
@@ -112,46 +134,53 @@ export class PipelineSession extends EventEmitter {
     });
   }
 
-  private async finishListening(): Promise<void> {
-    if (!this.stream) return;
+  private finishListening(): Promise<void> {
+    if (!this.stream) return Promise.resolve();
 
     const currentStream = this.stream;
     this.stream = null;
     this.state = 'processing';
 
-    try {
-      const result = await currentStream.close();
-      currentStream.removeAllListeners();
+    const processing = (async () => {
+      try {
+        const result = await currentStream.close();
+        currentStream.removeAllListeners();
 
-      if (this.interrupted) {
+        if (this.interrupted || this.closed) {
+          this.interrupted = false;
+          this.state = 'idle';
+          return;
+        }
+
+        const { content } = await this.agent.run(result.text);
+        this.emit('agent_response', content);
+
+        if (this.interrupted || this.closed) {
+          this.interrupted = false;
+          this.state = 'idle';
+          return;
+        }
+
+        this.state = 'speaking';
+        const generator = this.tts.streamSynthesize(content);
+
+        for await (const audioChunk of generator) {
+          if (this.interrupted || this.closed) break;
+          this.emit('audio', audioChunk);
+        }
+
         this.interrupted = false;
         this.state = 'idle';
-        return;
-      }
-
-      const { content } = await this.agent.run(result.text);
-      this.emit('agent_response', content);
-
-      if (this.interrupted) {
-        this.interrupted = false;
+      } catch (err) {
         this.state = 'idle';
-        return;
+        this.interrupted = false;
+        this.emit('error', err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        this.activeProcessing = null;
       }
+    })();
 
-      this.state = 'speaking';
-      const generator = this.tts.streamSynthesize(content);
-
-      for await (const audioChunk of generator) {
-        if (this.interrupted) break;
-        this.emit('audio', audioChunk);
-      }
-
-      this.interrupted = false;
-      this.state = 'idle';
-    } catch (err) {
-      this.state = 'idle';
-      this.interrupted = false;
-      this.emit('error', err instanceof Error ? err : new Error(String(err)));
-    }
+    this.activeProcessing = processing;
+    return processing;
   }
 }

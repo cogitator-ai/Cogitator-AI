@@ -28,6 +28,7 @@ import { CausalPlanner } from './capabilities/causal-planner';
 import { InMemoryCausalGraphStore } from './stores/causal-graph-store';
 import { InMemoryCausalPatternStore } from './stores/causal-pattern-store';
 import { InMemoryInterventionLog } from './stores/intervention-log';
+import { nanoid } from 'nanoid';
 
 export interface CausalReasonerOptions {
   llmBackend: LLMBackend;
@@ -37,9 +38,6 @@ export interface CausalReasonerOptions {
   patternStore?: InMemoryCausalPatternStore;
   interventionLog?: InMemoryInterventionLog;
 }
-
-let patternIdCounter = 0;
-let interventionIdCounter = 0;
 
 export class CausalReasoner {
   private config: CausalReasoningConfig;
@@ -275,7 +273,7 @@ export class CausalReasoner {
     traceId?: string
   ): Promise<void> {
     const record: InterventionRecord = {
-      id: `intervention-${++interventionIdCounter}-${Date.now()}`,
+      id: `intervention-${nanoid(8)}`,
       agentId,
       intervention,
       observedBefore,
@@ -449,7 +447,7 @@ export class CausalReasoner {
 
       if (this.isStepSuccessful(current) && this.isStepSuccessful(next)) {
         patterns.push({
-          id: `pattern-${++patternIdCounter}-${Date.now()}`,
+          id: `pattern-${nanoid(8)}`,
           agentId,
           pattern: {
             trigger: this.describeStep(current),

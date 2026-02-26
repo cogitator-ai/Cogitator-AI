@@ -10,6 +10,8 @@ export {
   NativeSandboxExecutor,
   DockerSandboxExecutor,
   type DockerExecutorOptions,
+  WasmSandboxExecutor,
+  type WasmExecutorOptions,
 } from './executors/index';
 export {
   ContainerPool,

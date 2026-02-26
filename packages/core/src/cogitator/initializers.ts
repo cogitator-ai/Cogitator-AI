@@ -113,9 +113,9 @@ export async function initializeMemory(
       memoryAdapter: state.memoryAdapter,
     };
     const contextConfig = {
+      ...config.memory.contextBuilder,
       maxTokens: config.memory.contextBuilder.maxTokens ?? 4000,
       strategy: config.memory.contextBuilder.strategy ?? 'recent',
-      ...config.memory.contextBuilder,
     } as const;
     state.contextBuilder = new ContextBuilder(contextConfig, deps);
   }
@@ -134,7 +134,10 @@ export async function initializeSandbox(
     state.sandboxManager = new SandboxManager(config.sandbox) as SandboxManager;
     await state.sandboxManager.initialize();
     state.sandboxInitialized = true;
-  } catch {
+  } catch (err) {
+    getLogger().warn('Sandbox initialization failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     state.sandboxInitialized = true;
   }
 }
@@ -192,7 +195,7 @@ export function initializeSecurity(
 ): void {
   if (state.securityInitialized || !config.security?.promptInjection) return;
 
-  const injectionConfig = config.security.promptInjection;
+  const injectionConfig = { ...config.security.promptInjection };
 
   if (injectionConfig.classifier === 'llm' && !injectionConfig.llmBackend) {
     const model = injectionConfig.llmModel ?? 'gpt-4o-mini';

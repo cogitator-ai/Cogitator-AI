@@ -59,7 +59,7 @@ export interface TimerManagerConfig {
   /**
    * Handler for timer errors
    */
-  onError?: (error: Error, entry: TimerEntry) => void;
+  onError?: (error: Error, entry?: TimerEntry) => void;
 
   /**
    * Handler for timer fired events
@@ -157,7 +157,7 @@ export class TimerManager {
     this.pollTimer = setInterval(() => {
       this.poll().catch((error: unknown) => {
         const err = error instanceof Error ? error : new Error(String(error));
-        this.config.onError?.(err, {} as TimerEntry);
+        this.config.onError?.(err);
       });
     }, this.config.pollInterval);
 
@@ -165,7 +165,7 @@ export class TimerManager {
       this.cleanupTimer = setInterval(() => {
         this.cleanup().catch((error: unknown) => {
           const err = error instanceof Error ? error : new Error(String(error));
-          this.config.onError?.(err, {} as TimerEntry);
+          this.config.onError?.(err);
         });
       }, this.config.cleanupInterval);
     }
@@ -238,17 +238,20 @@ export class TimerManager {
     try {
       const handler = this.handlers.get(entry.workflowId) ?? this.defaultHandler;
 
-      if (handler) {
-        await handler(entry);
+      if (!handler) {
+        this.config.onTimerMissed?.(entry, Date.now() - entry.firesAt);
+        return;
       }
 
+      await handler(entry);
       await this.store.markFired(entry.id);
 
       this.processedTotal++;
       this.config.onTimerFired?.(entry);
     } catch (error) {
       this.errorTotal++;
-      this.config.onError?.(error as Error, entry);
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.config.onError?.(err, entry);
     }
   }
 
@@ -376,7 +379,9 @@ export class TimerManager {
    * Force cleanup now
    */
   async cleanupNow(): Promise<number> {
-    return this.cleanup().then(() => this.cleanedUpTotal);
+    const before = this.cleanedUpTotal;
+    await this.cleanup();
+    return this.cleanedUpTotal - before;
   }
 
   /**

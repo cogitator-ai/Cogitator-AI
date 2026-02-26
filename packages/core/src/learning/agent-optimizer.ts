@@ -133,7 +133,6 @@ export class AgentOptimizer {
     const demosAdded: Demo[] = [];
     const demosRemoved: Demo[] = [];
     const errors: string[] = [];
-    let tokensUsed = 0;
 
     const existingTraces = await this.traceStore.getAll(agent.id);
     const scoreBefore =
@@ -205,7 +204,7 @@ export class AgentOptimizer {
       tracesEvaluated: existingTraces.length,
       bootstrapRounds: maxRounds,
       duration: Date.now() - startTime,
-      tokensUsed,
+      tokensUsed: 0,
       errors,
     };
   }
@@ -337,6 +336,7 @@ export class AgentOptimizer {
       toolAccuracy,
       efficiency,
       completeness,
+      coherence: 0.5,
     };
   }
 

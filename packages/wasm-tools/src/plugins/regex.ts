@@ -49,13 +49,13 @@ function isDangerousPattern(pattern: string): boolean {
 }
 
 function safeMatch(text: string, regex: RegExp): MatchResult | null {
-  const match = text.match(regex);
+  const match = regex.exec(text);
   if (!match) return null;
 
   return {
     match: match[0],
-    index: match.index ?? 0,
-    groups: match.groups,
+    index: match.index,
+    groups: match.groups as Record<string, string> | undefined,
   };
 }
 

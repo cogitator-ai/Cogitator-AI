@@ -167,6 +167,72 @@ describe('Memory: Adapter Operations', () => {
     }
   });
 
+  it('query with limit returns only N most recent entries', async () => {
+    const threadResult = await adapter.createThread('agent-limit');
+    expect(threadResult.success).toBe(true);
+    if (!threadResult.success) return;
+
+    const threadId = threadResult.data.id;
+
+    for (let i = 0; i < 5; i++) {
+      await adapter.addEntry({
+        threadId,
+        message: { role: 'user', content: `msg-${i}` },
+        tokenCount: 5,
+      });
+    }
+
+    const limited = await adapter.getEntries({ threadId, limit: 3 });
+    expect(limited.success).toBe(true);
+    if (!limited.success) return;
+
+    expect(limited.data).toHaveLength(3);
+    expect(limited.data[0].message.content).toBe('msg-2');
+    expect(limited.data[1].message.content).toBe('msg-3');
+    expect(limited.data[2].message.content).toBe('msg-4');
+  });
+
+  it('thread entries are isolated from each other', async () => {
+    const threadAResult = await adapter.createThread('agent-iso-a');
+    const threadBResult = await adapter.createThread('agent-iso-b');
+    expect(threadAResult.success).toBe(true);
+    expect(threadBResult.success).toBe(true);
+    if (!threadAResult.success || !threadBResult.success) return;
+
+    const threadA = threadAResult.data.id;
+    const threadB = threadBResult.data.id;
+
+    await adapter.addEntry({
+      threadId: threadA,
+      message: { role: 'user', content: 'alpha' },
+      tokenCount: 5,
+    });
+    await adapter.addEntry({
+      threadId: threadA,
+      message: { role: 'user', content: 'beta' },
+      tokenCount: 5,
+    });
+
+    await adapter.addEntry({
+      threadId: threadB,
+      message: { role: 'user', content: 'gamma' },
+      tokenCount: 5,
+    });
+
+    const entriesA = await adapter.getEntries({ threadId: threadA });
+    const entriesB = await adapter.getEntries({ threadId: threadB });
+    expect(entriesA.success).toBe(true);
+    expect(entriesB.success).toBe(true);
+    if (!entriesA.success || !entriesB.success) return;
+
+    expect(entriesA.data).toHaveLength(2);
+    expect(entriesA.data[0].message.content).toBe('alpha');
+    expect(entriesA.data[1].message.content).toBe('beta');
+
+    expect(entriesB.data).toHaveLength(1);
+    expect(entriesB.data[0].message.content).toBe('gamma');
+  });
+
   it('context builder produces messages from history', async () => {
     const threadResult = await adapter.createThread('agent-5');
     expect(threadResult.success).toBe(true);

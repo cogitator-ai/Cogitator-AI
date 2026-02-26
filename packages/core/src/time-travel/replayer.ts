@@ -43,7 +43,10 @@ export class ExecutionReplayer {
     options: ReplayOptions
   ): Promise<ReplayResult> {
     const messages = this.buildMessagesForReplay(checkpoint, options.modifiedMessages);
-    this.mergeToolResults(checkpoint.toolResults, options.modifiedToolResults);
+    const mergedToolResults = this.mergeToolResults(
+      checkpoint.toolResults,
+      options.modifiedToolResults
+    );
 
     const stepsReplayed = checkpoint.stepIndex + 1;
     const stepsExecuted = 0;
@@ -70,7 +73,7 @@ export class ExecutionReplayer {
         duration: Date.now() - startTime,
       },
       toolCalls: checkpoint.pendingToolCalls,
-      messages,
+      messages: this.applyToolResultsToMessages(messages, mergedToolResults),
       trace: {
         traceId,
         spans,
@@ -143,6 +146,20 @@ export class ExecutionReplayer {
     modified?: Record<string, unknown>
   ): Record<string, unknown> {
     return { ...cached, ...modified };
+  }
+
+  private applyToolResultsToMessages(
+    messages: Message[],
+    toolResults: Record<string, unknown>
+  ): Message[] {
+    if (Object.keys(toolResults).length === 0) return messages;
+
+    return messages.map((msg) => {
+      if (msg.role === 'tool' && msg.toolCallId && msg.toolCallId in toolResults) {
+        return { ...msg, content: String(toolResults[msg.toolCallId]) };
+      }
+      return msg;
+    });
   }
 
   private extractUserInput(messages: Message[]): string {

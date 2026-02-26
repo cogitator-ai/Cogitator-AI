@@ -8,7 +8,7 @@ export interface SileroVADConfig {
 }
 
 interface OnnxSession {
-  run(feeds: Record<string, unknown>): unknown;
+  run(feeds: Record<string, unknown>): Promise<unknown>;
 }
 
 interface OnnxRuntime {
@@ -40,7 +40,7 @@ export class SileroVAD implements VADProvider {
 
   private state: 'idle' | 'speaking' = 'idle';
   private speechSamples = 0;
-  private silenceSamples = 0;
+  private silenceMs = 0;
 
   constructor(config: SileroVADConfig) {
     this.modelPath = config.modelPath;
@@ -53,6 +53,8 @@ export class SileroVAD implements VADProvider {
   }
 
   async init(): Promise<void> {
+    if (this.session) return;
+
     const moduleName = 'onnxruntime-node';
     try {
       this.ort = (await import(/* webpackIgnore: true */ moduleName)) as OnnxRuntime;
@@ -64,7 +66,7 @@ export class SileroVAD implements VADProvider {
     this.session = await this.ort.InferenceSession.create(this.modelPath);
   }
 
-  process(samples: Float32Array): VADEvent {
+  async process(samples: Float32Array): Promise<VADEvent> {
     if (!this.session || !this.ort) {
       throw new Error('SileroVAD: must call init() before process()');
     }
@@ -76,7 +78,7 @@ export class SileroVAD implements VADProvider {
     const c = new Tensor('float32', this.cn, [2, 1, 64]);
 
     const feeds = { input, sr, h, c };
-    const result = this.session.run(feeds) as ModelOutput;
+    const result = (await this.session.run(feeds)) as ModelOutput;
 
     const probability = result.output.data[0];
     this.hn = new Float32Array(result.hn.data);
@@ -88,7 +90,7 @@ export class SileroVAD implements VADProvider {
   reset(): void {
     this.state = 'idle';
     this.speechSamples = 0;
-    this.silenceSamples = 0;
+    this.silenceMs = 0;
     this.hn = new Float32Array(2 * 1 * 64);
     this.cn = new Float32Array(2 * 1 * 64);
   }
@@ -101,26 +103,25 @@ export class SileroVAD implements VADProvider {
       if (isSpeech) {
         this.state = 'speaking';
         this.speechSamples = chunkLength;
-        this.silenceSamples = 0;
+        this.silenceMs = 0;
         return { type: 'speech_start' };
       }
       return { type: 'silence' };
     }
 
-    this.speechSamples += chunkLength;
-
     if (isSpeech) {
-      this.silenceSamples = 0;
+      this.speechSamples += chunkLength;
+      this.silenceMs = 0;
       return { type: 'speech', probability };
     }
 
-    this.silenceSamples += chunkDurationMs;
+    this.silenceMs += chunkDurationMs;
 
-    if (this.silenceSamples >= this.silenceDuration) {
+    if (this.silenceMs >= this.silenceDuration) {
       const duration = (this.speechSamples / this.sampleRate) * 1000;
       this.state = 'idle';
       this.speechSamples = 0;
-      this.silenceSamples = 0;
+      this.silenceMs = 0;
       return { type: 'speech_end', duration };
     }
 

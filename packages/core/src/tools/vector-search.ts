@@ -132,6 +132,8 @@ function detectEmbeddingProvider(): 'openai' | 'ollama' | 'google' | null {
   return null;
 }
 
+const VALID_IDENTIFIER = /^[a-zA-Z_][a-zA-Z0-9_.]*$/;
+
 async function searchPgVector(
   connectionString: string,
   embedding: number[],
@@ -140,6 +142,12 @@ async function searchPgVector(
   threshold: number,
   filter?: Record<string, unknown>
 ): Promise<VectorSearchResult[]> {
+  if (!VALID_IDENTIFIER.test(collection)) {
+    throw new Error(
+      `Invalid collection name: "${collection}". Must match /^[a-zA-Z_][a-zA-Z0-9_.]*$/`
+    );
+  }
+
   let pg: typeof import('pg');
   try {
     pg = await import('pg');

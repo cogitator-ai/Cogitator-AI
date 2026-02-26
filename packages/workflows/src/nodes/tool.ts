@@ -34,10 +34,11 @@ export function toolNode<S extends WorkflowState = WorkflowState, TArgs = unknow
     fn: async (ctx): Promise<NodeResult<S>> => {
       const args = options.argsMapper(ctx.state, ctx.input);
 
+      const abortController = new AbortController();
       const toolContext: ToolContext = {
         agentId: 'workflow',
         runId: ctx.workflowId,
-        signal: new AbortController().signal,
+        signal: abortController.signal,
       };
 
       const result = await tool.execute(args, toolContext);

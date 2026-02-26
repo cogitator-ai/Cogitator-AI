@@ -391,4 +391,75 @@ describe('ABTestingFramework', () => {
       expect(outcome).toBeNull();
     });
   });
+
+  describe('numerical stability', () => {
+    it('incompleteBeta does not return NaN/Infinity for large sample sizes', () => {
+      const n = 5000;
+      const controlScores = Array.from({ length: n }, (_, i) => 0.5 + (i % 10) * 0.01);
+      const treatmentScores = Array.from({ length: n }, (_, i) => 0.55 + (i % 10) * 0.01);
+      const mean = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;
+
+      const test = makeTest({
+        controlResults: {
+          sampleSize: n,
+          scores: controlScores,
+          avgScore: mean(controlScores),
+          successRate: 0.8,
+          avgLatency: 100,
+          totalCost: 5,
+        },
+        treatmentResults: {
+          sampleSize: n,
+          scores: treatmentScores,
+          avgScore: mean(treatmentScores),
+          successRate: 0.85,
+          avgLatency: 100,
+          totalCost: 5,
+        },
+      });
+
+      const outcome = framework.analyzeResults(test);
+
+      expect(Number.isFinite(outcome.pValue)).toBe(true);
+      expect(Number.isNaN(outcome.pValue)).toBe(false);
+      expect(Number.isFinite(outcome.effectSize)).toBe(true);
+      expect(Number.isNaN(outcome.effectSize)).toBe(false);
+      expect(Number.isFinite(outcome.confidenceInterval[0])).toBe(true);
+      expect(Number.isFinite(outcome.confidenceInterval[1])).toBe(true);
+    });
+
+    it('tCriticalValue works for large degrees of freedom (999)', () => {
+      const controlScores = Array.from({ length: 500 }, () => 0.5 + Math.random() * 0.1);
+      const treatmentScores = Array.from({ length: 500 }, () => 0.8 + Math.random() * 0.1);
+      const mean = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;
+
+      const test = makeTest({
+        confidenceLevel: 0.95,
+        controlResults: {
+          sampleSize: 500,
+          scores: controlScores,
+          avgScore: mean(controlScores),
+          successRate: 0.8,
+          avgLatency: 100,
+          totalCost: 2.5,
+        },
+        treatmentResults: {
+          sampleSize: 500,
+          scores: treatmentScores,
+          avgScore: mean(treatmentScores),
+          successRate: 0.95,
+          avgLatency: 100,
+          totalCost: 2.5,
+        },
+      });
+
+      const outcome = framework.analyzeResults(test);
+
+      expect(Number.isFinite(outcome.pValue)).toBe(true);
+      expect(Number.isFinite(outcome.confidenceInterval[0])).toBe(true);
+      expect(Number.isFinite(outcome.confidenceInterval[1])).toBe(true);
+      expect(outcome.confidenceInterval[0]).toBeLessThan(outcome.confidenceInterval[1]);
+      expect(outcome.isSignificant).toBe(true);
+    });
+  });
 });

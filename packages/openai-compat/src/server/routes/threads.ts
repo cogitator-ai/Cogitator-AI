@@ -52,9 +52,11 @@ export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAd
   fastify.post<{ Params: { thread_id: string }; Body: { metadata?: Record<string, string> } }>(
     '/v1/threads/:thread_id',
     async (request, reply) => {
-      const thread = await adapter.getThread(request.params.thread_id);
+      const updated = await adapter.updateThread(request.params.thread_id, {
+        metadata: request.body?.metadata,
+      });
 
-      if (!thread) {
+      if (!updated) {
         return reply.status(404).send({
           error: {
             message: `No thread found with id '${request.params.thread_id}'`,
@@ -64,11 +66,7 @@ export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAd
         });
       }
 
-      if (request.body?.metadata) {
-        Object.assign(thread.metadata, request.body.metadata);
-      }
-
-      return reply.send(thread);
+      return reply.send(updated);
     }
   );
 

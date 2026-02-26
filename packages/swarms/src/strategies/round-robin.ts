@@ -109,8 +109,11 @@ export class RoundRobinStrategy extends BaseStrategy {
       return agents[randomIndex];
     }
 
-    const agent = agents[this.currentIndex];
-    return agent;
+    if (this.currentIndex >= agents.length) {
+      this.currentIndex = 0;
+    }
+
+    return agents[this.currentIndex];
   }
 
   /**

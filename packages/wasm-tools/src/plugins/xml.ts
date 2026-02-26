@@ -238,9 +238,13 @@ function queryXml(node: XmlNode, query: string): XmlNode | XmlNode[] | string | 
     if (part.startsWith('@')) {
       const attrName = part.slice(1);
       if (Array.isArray(current)) {
-        return current
-          .filter((n) => n.type === 'element' && n.attributes?.[attrName])
-          .map((n) => n.attributes![attrName]);
+        const attrs: string[] = [];
+        for (const n of current) {
+          if (typeof n !== 'string' && n.type === 'element' && n.attributes?.[attrName]) {
+            attrs.push(n.attributes[attrName]);
+          }
+        }
+        return attrs.length > 0 ? attrs : null;
       }
       if (current.type === 'element' && current.attributes?.[attrName]) {
         return current.attributes[attrName];

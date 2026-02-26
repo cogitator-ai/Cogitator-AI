@@ -71,10 +71,17 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> {
   }
 
   async listen(port: number): Promise<void> {
+    if (this.wss) throw new Error('Transport already listening');
     this.server = http.createServer();
     this.ownsServer = true;
     this.setupWss(this.server);
-    await new Promise<void>((resolve) => this.server!.listen(port, resolve));
+    await new Promise<void>((resolve, reject) => {
+      this.server!.once('error', reject);
+      this.server!.listen(port, () => {
+        this.server!.removeListener('error', reject);
+        resolve();
+      });
+    });
   }
 
   attachToServer(server: http.Server): void {
@@ -112,6 +119,7 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> {
     this.wss = new WebSocketServer({ noServer: true });
 
     server.on('upgrade', (req, socket, head) => {
+      socket.on('error', () => socket.destroy());
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
       if (url.pathname !== this.path) {

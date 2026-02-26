@@ -333,6 +333,7 @@ export class Swarm {
       'auction',
       'pipeline',
       'debate',
+      'negotiation',
     ];
 
     if (!validStrategies.includes(config.strategy)) {
@@ -372,6 +373,15 @@ export class Swarm {
       case 'auction':
         if (!config.auction) {
           throw new Error('Auction strategy requires auction configuration');
+        }
+        break;
+
+      case 'negotiation':
+        if (!config.negotiation) {
+          throw new Error('Negotiation strategy requires negotiation configuration');
+        }
+        if (!config.agents || config.agents.length < 2) {
+          throw new Error('Negotiation strategy requires at least 2 agents');
         }
         break;
     }
@@ -448,6 +458,11 @@ export class SwarmBuilder {
 
   debate(config: SwarmConfig['debate']): this {
     this.config.debate = config;
+    return this;
+  }
+
+  negotiation(config: SwarmConfig['negotiation']): this {
+    this.config.negotiation = config;
     return this;
   }
 

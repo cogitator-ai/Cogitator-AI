@@ -295,8 +295,23 @@ async function handleTimeout(
         await store.createRequest(escalatedRequest);
         await notifier?.notify(escalatedRequest);
 
-        return new Promise((resolve) => {
-          store.onResponse(escalatedRequest.id, resolve);
+        const escalationTimeout = request.timeout ?? 30 * 60 * 1000;
+
+        return new Promise<ApprovalResponse>((resolve) => {
+          let settled = false;
+          const escalationTimer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            unsubscribe?.();
+            void createFailResponse(escalatedRequest, store).then(resolve);
+          }, escalationTimeout);
+
+          const unsubscribe = store.onResponse(escalatedRequest.id, (resp) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(escalationTimer);
+            resolve(resp);
+          });
         });
       }
       return createFailResponse(request, store);

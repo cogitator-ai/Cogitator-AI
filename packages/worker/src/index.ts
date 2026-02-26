@@ -12,7 +12,12 @@ export { JobQueue } from './queue';
 export { WorkerPool, type WorkerPoolEvents } from './worker';
 export { formatPrometheusMetrics, DurationHistogram, MetricsCollector } from './metrics';
 
-export { processAgentJob, processWorkflowJob, processSwarmJob } from './processors/index';
+export {
+  processAgentJob,
+  processWorkflowJob,
+  processSwarmJob,
+  processSwarmAgentJob,
+} from './processors/index';
 
 export type {
   SerializedAgent,
@@ -24,10 +29,12 @@ export type {
   AgentJobPayload,
   WorkflowJobPayload,
   SwarmJobPayload,
+  SwarmAgentJobPayload,
   JobResult,
   AgentJobResult,
   WorkflowJobResult,
   SwarmJobResult,
+  SwarmAgentJobResult,
   QueueConfig,
   WorkerConfig,
   QueueMetrics,

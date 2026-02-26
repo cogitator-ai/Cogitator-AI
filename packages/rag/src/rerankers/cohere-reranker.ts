@@ -29,6 +29,8 @@ export class CohereReranker implements Reranker {
     results: RetrievalResult[],
     topN?: number
   ): Promise<RetrievalResult[]> {
+    if (results.length === 0) return [];
+
     const n = topN ?? results.length;
 
     const response = await fetch(COHERE_RERANK_URL, {
@@ -52,10 +54,12 @@ export class CohereReranker implements Reranker {
 
     const data = (await response.json()) as CohereRerankResponse;
 
-    const mapped = data.results.map(({ index, relevance_score }) => ({
-      ...results[index],
-      score: relevance_score,
-    }));
+    const mapped = data.results
+      .filter(({ index }) => index >= 0 && index < results.length)
+      .map(({ index, relevance_score }) => ({
+        ...results[index],
+        score: relevance_score,
+      }));
 
     return mapped.slice(0, n);
   }

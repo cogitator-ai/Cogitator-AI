@@ -95,7 +95,7 @@ const CLOUD_MODELS: DiscoveredModel[] = [
   {
     id: 'gpt-4.1',
     provider: 'openai',
-    displayName: 'GPT-4 Turbo',
+    displayName: 'GPT-4.1',
     capabilities: {
       supportsVision: true,
       supportsTools: true,
@@ -125,7 +125,7 @@ const CLOUD_MODELS: DiscoveredModel[] = [
   {
     id: 'claude-sonnet-4-5-20250929',
     provider: 'anthropic',
-    displayName: 'Claude 3.5 Sonnet',
+    displayName: 'Claude Sonnet 4.5',
     capabilities: {
       supportsVision: true,
       supportsTools: true,
@@ -148,9 +148,9 @@ const CLOUD_MODELS: DiscoveredModel[] = [
     isAvailable: true,
   },
   {
-    id: 'claude-opus-4-5-20240229',
+    id: 'claude-opus-4-5-20250229',
     provider: 'anthropic',
-    displayName: 'Claude 3 Opus',
+    displayName: 'Claude Opus 4.5',
     capabilities: {
       supportsVision: true,
       supportsTools: true,
@@ -165,7 +165,7 @@ const CLOUD_MODELS: DiscoveredModel[] = [
   {
     id: 'gemini-2.5-pro',
     provider: 'google',
-    displayName: 'Gemini 1.5 Pro',
+    displayName: 'Gemini 2.5 Pro',
     capabilities: {
       supportsVision: true,
       supportsTools: true,
@@ -180,7 +180,7 @@ const CLOUD_MODELS: DiscoveredModel[] = [
   {
     id: 'gemini-2.5-flash',
     provider: 'google',
-    displayName: 'Gemini 1.5 Flash',
+    displayName: 'Gemini 2.5 Flash',
     capabilities: {
       supportsVision: true,
       supportsTools: true,
@@ -283,21 +283,33 @@ export class ModelDiscovery {
   }
 
   private inferOllamaCapabilities(name: string): ModelCapabilitiesInfo {
+    let bestMatch = '';
+    let bestCaps: Partial<ModelCapabilitiesInfo> | undefined;
+
     for (const [pattern, caps] of Object.entries(KNOWN_MODEL_CAPABILITIES)) {
-      if (name.includes(pattern.toLowerCase())) {
-        return { ...caps };
+      const lowerPattern = pattern.toLowerCase();
+      if (name.includes(lowerPattern) && lowerPattern.length > bestMatch.length) {
+        bestMatch = lowerPattern;
+        bestCaps = caps;
       }
     }
-    return { supportsStreaming: true };
+
+    return bestCaps ? { ...bestCaps } : { supportsStreaming: true };
   }
 
   private inferContextWindow(name: string): number {
+    let bestMatch = '';
+    let bestSize = 4096;
+
     for (const [pattern, size] of Object.entries(KNOWN_CONTEXT_WINDOWS)) {
-      if (name.includes(pattern.toLowerCase())) {
-        return size;
+      const lowerPattern = pattern.toLowerCase();
+      if (name.includes(lowerPattern) && lowerPattern.length > bestMatch.length) {
+        bestMatch = lowerPattern;
+        bestSize = size;
       }
     }
-    return 4096;
+
+    return bestSize;
   }
 
   private formatModelName(name: string): string {

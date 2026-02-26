@@ -1,44 +1,17 @@
 /**
  * Workflow job processor
  *
- * Recreates a Workflow from serialized config and executes it.
+ * Workflow execution in a distributed worker requires a serialization protocol
+ * for the workflow graph (nodes, edges, conditions). This is planned but not
+ * yet implemented. The processor throws so BullMQ properly marks the job as failed.
  */
 
 import type { WorkflowJobPayload, WorkflowJobResult } from '../types';
 
-/**
- * Process a workflow job
- *
- * Note: Full workflow execution requires deserializing the workflow graph
- * and recreating node instances. This is a placeholder implementation.
- */
-export async function processWorkflowJob(payload: WorkflowJobPayload): Promise<WorkflowJobResult> {
-  const { workflowConfig, input, runId } = payload;
-  const startTime = Date.now();
-
-  console.warn(
-    `[worker] Workflow "${workflowConfig.name}" (${runId}) execution not fully implemented`
+export async function processWorkflowJob(_payload: WorkflowJobPayload): Promise<WorkflowJobResult> {
+  throw new Error(
+    'Workflow job processing is not yet implemented. ' +
+      'Workflows require a graph deserialization protocol that is currently in development. ' +
+      'Use direct WorkflowExecutor instead.'
   );
-
-  const nodeResults: Record<string, unknown> = {};
-  for (const node of workflowConfig.nodes) {
-    nodeResults[node.id] = {
-      status: 'skipped',
-      reason: 'Worker workflow execution not fully implemented',
-    };
-  }
-
-  const duration = Date.now() - startTime;
-
-  return {
-    type: 'workflow',
-    output: {
-      input,
-      warning: 'Workflow execution in worker is not fully implemented',
-      workflowId: workflowConfig.id,
-      workflowName: workflowConfig.name,
-    },
-    nodeResults,
-    duration,
-  };
 }

@@ -47,11 +47,7 @@ export class OpenAISTT implements STTProvider {
   }
 
   createStream(options?: STTStreamOptions): STTStream {
-    return new OpenAISTTStream(this, options);
-  }
-
-  _transcribeBuffer(audio: Buffer, options?: STTOptions): Promise<TranscribeResult> {
-    return this.transcribe(audio, options);
+    return new OpenAISTTStream((audio, opts) => this.transcribe(audio, opts), options);
   }
 
   private mapResponse(response: TranscriptionVerbose): TranscribeResult {
@@ -80,14 +76,16 @@ export class OpenAISTT implements STTProvider {
   }
 }
 
+type TranscribeFn = (audio: Buffer, options?: STTOptions) => Promise<TranscribeResult>;
+
 class OpenAISTTStream extends EventEmitter implements STTStream {
   private chunks: Buffer[] = [];
-  private readonly provider: OpenAISTT;
+  private readonly transcribeFn: TranscribeFn;
   private readonly options?: STTStreamOptions;
 
-  constructor(provider: OpenAISTT, options?: STTStreamOptions) {
+  constructor(transcribeFn: TranscribeFn, options?: STTStreamOptions) {
     super();
-    this.provider = provider;
+    this.transcribeFn = transcribeFn;
     this.options = options;
   }
 
@@ -97,9 +95,10 @@ class OpenAISTTStream extends EventEmitter implements STTStream {
 
   async close(): Promise<TranscribeResult> {
     const combined = Buffer.concat(this.chunks);
+    this.chunks = [];
 
     try {
-      const result = await this.provider._transcribeBuffer(combined, this.options);
+      const result = await this.transcribeFn(combined, this.options);
       this.emit('final', result);
       return result;
     } catch (err) {

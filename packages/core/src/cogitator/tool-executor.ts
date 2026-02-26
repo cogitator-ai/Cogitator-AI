@@ -180,9 +180,12 @@ async function executeInSandbox(
 }
 
 export function createToolMessage(toolCall: ToolCall, result: ToolResult): Message {
+  const content = result.error
+    ? JSON.stringify({ error: result.error })
+    : JSON.stringify(result.result ?? null);
   return {
     role: 'tool',
-    content: JSON.stringify(result.result ?? null),
+    content,
     toolCallId: toolCall.id,
     name: toolCall.name,
   };

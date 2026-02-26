@@ -11,6 +11,7 @@ import type {
   InstructionVersion,
   InstructionVersionMetrics,
   CombinedPersistentStore,
+  ToolCall,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 
@@ -348,7 +349,7 @@ export class PostgresTraceStore implements CombinedPersistentStore {
        WHERE id IN (
          SELECT id FROM ${this.schema}.traces
          WHERE agent_id = $1 AND is_demo = FALSE
-         ORDER BY created_at ASC
+         ORDER BY created_at DESC
          OFFSET $2
        )`,
       [agentId, maxTraces]
@@ -535,7 +536,7 @@ export class PostgresTraceStore implements CombinedPersistentStore {
     const response = row.response_content
       ? {
           content: row.response_content as string,
-          toolCalls: row.response_tool_calls as CapturedPrompt['response'],
+          toolCalls: row.response_tool_calls as ToolCall[] | undefined,
           completionTokens: row.completion_tokens as number,
           finishReason: row.finish_reason as string,
           latencyMs: row.latency_ms as number,
@@ -649,6 +650,12 @@ export class PostgresTraceStore implements CombinedPersistentStore {
     if (updates.treatmentResults !== undefined) {
       setClauses.push(`treatment_results = $${paramIndex++}`);
       params.push(updates.treatmentResults);
+    }
+
+    if (setClauses.length === 0) {
+      const existing = await this.getABTest(id);
+      if (!existing) throw new Error(`AB test not found: ${id}`);
+      return existing;
     }
 
     params.push(id);

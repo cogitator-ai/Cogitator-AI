@@ -189,11 +189,10 @@ export class CounterfactualReasoner {
         let result = equation.intercept ?? 0;
         if (equation.coefficients) {
           for (const [variable, coefficient] of Object.entries(equation.coefficients)) {
-            const value = this.toNumber(parentValues[variable] ?? 0);
             const [varName, powerStr] = variable.split('^');
             const power = powerStr ? parseInt(powerStr, 10) : 1;
-            const actualValue = this.toNumber(parentValues[varName] ?? value);
-            result += coefficient * Math.pow(actualValue, power);
+            const value = this.toNumber(parentValues[varName] ?? 0);
+            result += coefficient * Math.pow(value, power);
           }
         }
         return result + noise;
@@ -252,7 +251,7 @@ export class CounterfactualReasoner {
   }
 
   private sampleGaussian(mean: number, std: number): number {
-    const u1 = Math.random();
+    const u1 = Math.random() || Number.MIN_VALUE;
     const u2 = Math.random();
     const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
     return mean + std * z;

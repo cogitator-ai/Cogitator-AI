@@ -31,8 +31,18 @@ describe('randomNumber tool', () => {
       const value = (result as { result: number }).result;
       expect(Number.isInteger(value)).toBe(true);
       expect(value).toBeGreaterThanOrEqual(1);
-      expect(value).toBeLessThan(100);
+      expect(value).toBeLessThanOrEqual(100);
     }
+  });
+
+  it('includes max value for integers (inclusive range)', async () => {
+    const results = new Set<number>();
+    for (let i = 0; i < 1000; i++) {
+      const result = await randomNumber.execute({ min: 1, max: 3, integer: true }, mockContext);
+      results.add((result as { result: number }).result);
+    }
+    expect(results.has(3)).toBe(true);
+    expect(results.has(1)).toBe(true);
   });
 
   it('returns error when min >= max', async () => {

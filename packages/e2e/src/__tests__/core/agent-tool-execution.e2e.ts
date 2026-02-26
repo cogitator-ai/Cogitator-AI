@@ -6,7 +6,7 @@ import {
   createTestJudge,
   isOllamaRunning,
 } from '../../helpers/setup';
-import { expectJudge, setJudge } from '../../helpers/assertions';
+import { setJudge } from '../../helpers/assertions';
 import type { Cogitator, RunResult } from '@cogitator-ai/core';
 
 const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
@@ -40,7 +40,7 @@ describeE2E('Core: Agent Tool Execution', () => {
     await cogitator.close();
   });
 
-  it('calls a single tool and uses result', async () => {
+  it('calls a single tool with correct arguments', async () => {
     const agent = createTestAgent({
       instructions:
         'You are a math assistant. You MUST use the multiply tool for any multiplication. Never calculate manually.',
@@ -50,80 +50,102 @@ describeE2E('Core: Agent Tool Execution', () => {
     const result = await runUntilToolCalled(
       cogitator,
       agent,
-      'What is 15 times 7? You MUST call the multiply tool. Do NOT calculate it yourself.'
+      'What is 15 times 7? You MUST call the multiply tool with a=15 and b=7.'
     );
 
-    expect(typeof result.output).toBe('string');
-    expect(result.usage.totalTokens).toBeGreaterThan(0);
     expect(result.toolCalls.length).toBeGreaterThan(0);
-    expect(result.toolCalls.some((tc) => tc.name === 'multiply')).toBe(true);
 
-    if (result.output.length > 0) {
-      await expectJudge(result.output, {
-        question: 'What is 15 times 7?',
-        criteria: 'Answer contains 105 or states the result is one hundred and five',
-      });
-    }
+    const multiplyCall = result.toolCalls.find((tc) => tc.name === 'multiply');
+    expect(multiplyCall).toBeDefined();
+
+    const args = multiplyCall!.arguments as Record<string, number>;
+    expect(typeof args.a).toBe('number');
+    expect(typeof args.b).toBe('number');
+    expect((args.a === 15 && args.b === 7) || (args.a === 7 && args.b === 15)).toBe(true);
   });
 
-  it('calls multiple tools in sequence', async () => {
+  it('tool result is incorporated into final answer', async () => {
     const agent = createTestAgent({
       instructions:
-        'You are a math assistant. Use the multiply tool first, then the add tool. Always use tools for calculations.',
-      tools: [tools.multiply, tools.add],
+        'You are a math assistant. Use the multiply tool, then state the exact numeric result.',
+      tools: [tools.multiply],
     });
 
     const result = await runUntilToolCalled(
       cogitator,
       agent,
-      'Calculate (3 * 4) + 5. First multiply 3 by 4, then add 5 to the result.'
+      'Multiply 15 by 7. Use the multiply tool and tell me the result.'
     );
 
-    expect(typeof result.output).toBe('string');
-    expect(result.toolCalls.length).toBeGreaterThanOrEqual(1);
-
-    const usedBothTools =
-      result.toolCalls.some((tc) => tc.name === 'multiply') &&
-      result.toolCalls.some((tc) => tc.name === 'add');
-
-    if (usedBothTools && result.output.length > 0) {
-      await expectJudge(result.output, {
-        question: 'What is (3 * 4) + 5?',
-        criteria: 'Answer mentions 17 or the calculation result',
-      });
-    }
+    expect(result.toolCalls.some((tc) => tc.name === 'multiply')).toBe(true);
+    expect(result.output).toContain('105');
   });
 
-  it('handles tool that throws error', async () => {
+  it('handles tool errors and reports them', async () => {
     const agent = createTestAgent({
-      instructions: 'You are a math assistant. Use the divide tool for division.',
+      instructions:
+        'You are a math assistant. Use the divide tool for division. If the tool fails, explain what went wrong.',
       tools: [tools.failing],
     });
 
-    const result = await cogitator.run(agent, {
-      input: 'Divide 10 by 0 using the divide tool.',
-    });
+    const result = await runUntilToolCalled(
+      cogitator,
+      agent,
+      'Divide 10 by 0. You MUST use the divide tool with a=10, b=0.'
+    );
 
-    expect(typeof result.output).toBe('string');
-    expect(result.output.length).toBeGreaterThan(0);
+    const output = result.output.toLowerCase();
+    const mentionsError =
+      output.includes('error') ||
+      output.includes('zero') ||
+      output.includes('cannot') ||
+      output.includes('undefined') ||
+      output.includes('impossible') ||
+      output.includes('fail');
 
-    await expectJudge(result.output, {
-      question: 'Divide 10 by 0',
-      criteria: 'Response acknowledges division by zero or an error occurred',
-    });
+    expect(mentionsError).toBe(true);
   });
 
-  it('respects maxIterations limit', async () => {
+  it('respects maxIterations', async () => {
     const agent = createTestAgent({
-      instructions: 'Always use the multiply tool for any question.',
-      tools: [tools.multiply],
+      instructions: 'You MUST use a tool for every response.',
+      tools: [tools.multiply, tools.add, tools.failing],
+      maxIterations: 1,
     });
 
     const result = await cogitator.run(agent, {
-      input: 'What is 2 times 3?',
+      input: 'Use the multiply tool with 2 and 3.',
     });
 
     expect(typeof result.output).toBe('string');
-    expect(result.toolCalls.length).toBeLessThanOrEqual(agent.config.maxIterations ?? 10);
+    expect(result.toolCalls.length).toBeLessThanOrEqual(1);
+  });
+
+  it('calls multiple tools in sequence', async () => {
+    const agent = createTestAgent({
+      instructions: [
+        'You are a calculator. You CANNOT do math yourself. You MUST call a tool for EVERY arithmetic operation.',
+        'IMPORTANT: After getting a tool result, if there is another operation to do, you MUST call another tool.',
+        'NEVER say the answer without calling ALL required tools first.',
+        'Available: multiply(a,b) and add(a,b).',
+      ].join(' '),
+      tools: [tools.multiply, tools.add],
+    });
+
+    let result: RunResult | undefined;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      result = await cogitator.run(agent, {
+        input:
+          'Compute this in two steps: Step 1 - call multiply(3, 4). Step 2 - call add(result_of_step_1, 5). You MUST call BOTH tools.',
+      });
+      const usedBoth =
+        result.toolCalls.some((tc) => tc.name === 'multiply') &&
+        result.toolCalls.some((tc) => tc.name === 'add');
+      if (usedBoth) break;
+    }
+
+    expect(result).toBeDefined();
+    expect(result!.toolCalls.some((tc) => tc.name === 'multiply')).toBe(true);
+    expect(result!.toolCalls.some((tc) => tc.name === 'add')).toBe(true);
   });
 });

@@ -1017,22 +1017,19 @@ importers:
       '@fastify/multipart':
         specifier: ^9.3.0
         version: 9.4.0
-      '@types/node':
-        specifier: ^25.0.10
-        version: 25.0.10
       fastify:
         specifier: ^5.7.4
         version: 5.7.4
       nanoid:
         specifier: ^5.1.5
         version: 5.1.6
-      zod:
-        specifier: ^4.3.6
-        version: 4.3.6
     devDependencies:
       '@types/busboy':
         specifier: ^1.5.4
         version: 1.5.4
+      '@types/node':
+        specifier: ^25.0.10
+        version: 25.0.10
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
@@ -1062,9 +1059,6 @@ importers:
         specifier: ^1.1.1
         version: 1.1.4
     devDependencies:
-      '@cogitator-ai/core':
-        specifier: workspace:*
-        version: link:../core
       '@cogitator-ai/memory':
         specifier: workspace:*
         version: link:../memory
@@ -1082,18 +1076,14 @@ importers:
         version: 4.0.18(@types/node@25.0.10)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/redis:
-    dependencies:
-      '@cogitator-ai/types':
-        specifier: workspace:*
-        version: link:../types
-      '@types/node':
-        specifier: ^25.0.10
-        version: 25.0.10
     optionalDependencies:
       ioredis:
         specifier: ^5.9.3
         version: 5.9.3
     devDependencies:
+      '@types/node':
+        specifier: ^25.0.10
+        version: 25.0.10
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
@@ -1106,15 +1096,6 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
-      '@types/dockerode':
-        specifier: ^3.3.31
-        version: 3.3.47
-      '@types/node':
-        specifier: ^25.0.10
-        version: 25.0.10
-      nanoid:
-        specifier: ^5.0.4
-        version: 5.1.6
     optionalDependencies:
       '@extism/extism':
         specifier: ^1.0.3
@@ -1123,6 +1104,12 @@ importers:
         specifier: ^4.0.2
         version: 4.0.9
     devDependencies:
+      '@types/dockerode':
+        specifier: ^3.3.31
+        version: 3.3.47
+      '@types/node':
+        specifier: ^25.0.10
+        version: 25.0.10
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
@@ -1285,18 +1272,12 @@ importers:
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@cogitator-ai/redis':
-        specifier: workspace:*
-        version: link:../redis
       '@cogitator-ai/swarms':
         specifier: workspace:*
         version: link:../swarms
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
-      '@cogitator-ai/workflows':
-        specifier: workspace:*
-        version: link:../workflows
       bullmq:
         specifier: ^5.69.3
         version: 5.69.3
@@ -5613,7 +5594,7 @@ packages:
     dependencies:
       '@types/node': 22.19.7
       '@types/ssh2': 1.15.5
-    dev: false
+    dev: true
 
   /@types/dockerode@3.3.47:
     resolution: {integrity: sha512-ShM1mz7rCjdssXt7Xz0u1/R2BJC7piWa3SJpUBiVjCf2A3XNn4cP6pUVaD8bLanpPVVn4IKzJuw3dOvkJ8IbYw==}
@@ -5621,7 +5602,7 @@ packages:
       '@types/docker-modem': 3.0.6
       '@types/node': 22.19.7
       '@types/ssh2': 1.15.5
-    dev: false
+    dev: true
 
   /@types/estree-jsx@1.0.5:
     resolution: {integrity: sha512-52CcUVNFyfb1A2ALocQw/Dd1BQFNmSdkuC3BkZ6iqhdMfQz7JWOFRuJFloOzjk+6WijU56m9oKXFAXc7o3Towg==}
@@ -5748,7 +5729,7 @@ packages:
     resolution: {integrity: sha512-GRaXQx6jGfL8sKfaIDD6OupbIHBr9jv7Jnaml9tB7l4v068PAOXqfcujMMo5PhbIs6ggR1XODELqahT2R8v0fg==}
     dependencies:
       undici-types: 5.26.5
-    dev: false
+    dev: true
 
   /@types/node@22.19.7:
     resolution: {integrity: sha512-MciR4AKGHWl7xwxkBa6xUGxQJ4VBOmPTF7sL+iGzuahOFaO0jHCsuEfS80pan1ef4gWId1oWOweIhrDEYLuaOw==}
@@ -5848,7 +5829,7 @@ packages:
     resolution: {integrity: sha512-N1ASjp/nXH3ovBHddRJpli4ozpk6UdDYIX4RJWFa9L1YKnzdhTlVmiGHm4DZnj/jLbqZpes4aeR30EFGQtvhQQ==}
     dependencies:
       '@types/node': 18.19.130
-    dev: false
+    dev: true
 
   /@types/superagent@8.1.9:
     resolution: {integrity: sha512-pTVjI73witn+9ILmoJdajHGW2jkSaOzhiFYF1Rd3EQ94kymLqB9PjD9ISg7WaALC7+dCHT0FGe9T2LktLq/3GQ==}
@@ -12362,7 +12343,7 @@ packages:
 
   /undici-types@5.26.5:
     resolution: {integrity: sha512-JlCMO+ehdEIKqlFxk6IfVoAUVmgz7cU7zD/h9XZ0qzeosSHmUJVOzSQvvYSYWXkFXC+IfLKSIffhv0sVZup6pA==}
-    dev: false
+    dev: true
 
   /undici-types@6.21.0:
     resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}

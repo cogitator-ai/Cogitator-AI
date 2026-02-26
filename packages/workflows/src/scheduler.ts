@@ -137,26 +137,26 @@ export class WorkflowScheduler {
    */
   async runWithConcurrency<T>(tasks: (() => Promise<T>)[], maxConcurrency: number): Promise<T[]> {
     const results: T[] = [];
-    const executing: Promise<void>[] = [];
+    const executing = new Set<Promise<void>>();
 
     for (const task of tasks) {
       const promise = task().then((result) => {
         results.push(result);
       });
 
-      executing.push(promise);
-
-      if (executing.length >= maxConcurrency) {
-        await Promise.race(executing);
-        const newExecuting: Promise<void>[] = [];
-        for (const p of executing) {
-          const pending = await Promise.race([p.then(() => false), Promise.resolve(true)]);
-          if (pending) {
-            newExecuting.push(p);
-          }
+      const tracked = promise.then(
+        () => {
+          executing.delete(tracked);
+        },
+        () => {
+          executing.delete(tracked);
         }
-        executing.length = 0;
-        executing.push(...newExecuting);
+      );
+
+      executing.add(tracked);
+
+      if (executing.size >= maxConcurrency) {
+        await Promise.race(executing);
       }
     }
 

@@ -74,7 +74,7 @@ export class DeepgramSTT implements STTProvider {
         Authorization: `Token ${this.apiKey}`,
         'Content-Type': 'audio/wav',
       },
-      body: new Uint8Array(audio).buffer as ArrayBuffer,
+      body: new Uint8Array(audio),
     });
 
     if (!response.ok) {
@@ -151,7 +151,12 @@ class DeepgramSTTStream extends EventEmitter implements STTStream {
     });
 
     this.ws.on('message', (raw: Buffer | string) => {
-      const msg = JSON.parse(String(raw)) as DeepgramStreamMessage;
+      let msg: DeepgramStreamMessage;
+      try {
+        msg = JSON.parse(String(raw)) as DeepgramStreamMessage;
+      } catch {
+        return;
+      }
       const alt = msg.channel?.alternatives[0];
       if (!alt?.transcript) return;
 
@@ -167,6 +172,10 @@ class DeepgramSTTStream extends EventEmitter implements STTStream {
     this.ws.on('error', (err: Error) => {
       this.emit('error', err);
     });
+
+    this.ws.on('close', () => {
+      this.ready = false;
+    });
   }
 
   write(chunk: Buffer): void {
@@ -178,14 +187,20 @@ class DeepgramSTTStream extends EventEmitter implements STTStream {
   }
 
   async close(): Promise<TranscribeResult> {
-    if (this.ready) {
-      this.ws.send(JSON.stringify({ type: 'CloseStream' }));
+    if (!this.ready) {
+      this.ws.close();
+      return this.lastResult;
     }
-    return this.lastResult;
+
+    return new Promise<TranscribeResult>((resolve) => {
+      this.ws.on('close', () => resolve(this.lastResult));
+      this.ws.send(JSON.stringify({ type: 'CloseStream' }));
+    });
   }
 
   private mapStreamResult(msg: DeepgramStreamMessage): TranscribeResult {
-    const alt = msg.channel.alternatives[0]!;
+    const alt = msg.channel.alternatives[0];
+    if (!alt) return { text: '' };
     const result: TranscribeResult = {
       text: alt.transcript,
     };

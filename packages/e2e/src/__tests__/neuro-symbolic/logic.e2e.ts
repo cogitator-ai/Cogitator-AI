@@ -108,7 +108,7 @@ describe('Neuro-Symbolic: Constraint Solving', () => {
     const problem = builder.build();
     const result = await ns.solve(problem);
 
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
     expect(result.data).toBeDefined();
     expect(result.data!.status).toBe('unsat');
   });

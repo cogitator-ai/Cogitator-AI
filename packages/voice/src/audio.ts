@@ -20,7 +20,7 @@ export function pcm16ToFloat32(buffer: Buffer): Float32Array {
 
 export function pcmToWav(pcm: Buffer, sampleRate = 16000): Buffer {
   const header = Buffer.alloc(44);
-  const view = new DataView(header.buffer);
+  const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
   const channels = 1;
   const bitsPerSample = 16;
   const byteRate = sampleRate * channels * (bitsPerSample / 8);
@@ -44,14 +44,35 @@ export function pcmToWav(pcm: Buffer, sampleRate = 16000): Buffer {
 }
 
 export function wavToPcm(wav: Buffer): { samples: Float32Array; sampleRate: number } {
-  if (wav.toString('ascii', 0, 4) !== 'RIFF' || wav.toString('ascii', 8, 12) !== 'WAVE') {
+  if (
+    wav.length < 44 ||
+    wav.toString('ascii', 0, 4) !== 'RIFF' ||
+    wav.toString('ascii', 8, 12) !== 'WAVE'
+  ) {
     throw new Error('Invalid WAV file');
   }
-  const view = new DataView(wav.buffer, wav.byteOffset);
+  const view = new DataView(wav.buffer, wav.byteOffset, wav.byteLength);
+  const bitsPerSample = view.getUint16(34, true);
+  const numChannels = view.getUint16(22, true);
+  if (bitsPerSample !== 16 || numChannels !== 1) {
+    throw new Error(
+      `Unsupported WAV format: ${numChannels}ch ${bitsPerSample}bit (expected mono 16-bit)`
+    );
+  }
   const sampleRate = view.getUint32(24, true);
-  const dataOffset = 44;
-  const pcmData = wav.subarray(dataOffset);
-  return { samples: pcm16ToFloat32(pcmData), sampleRate };
+
+  let offset = 12;
+  while (offset + 8 <= wav.length) {
+    const chunkId = wav.toString('ascii', offset, offset + 4);
+    const chunkSize = view.getUint32(offset + 4, true);
+    if (chunkId === 'data') {
+      const pcmData = wav.subarray(offset + 8, offset + 8 + chunkSize);
+      return { samples: pcm16ToFloat32(pcmData), sampleRate };
+    }
+    offset += 8 + chunkSize;
+  }
+
+  throw new Error('WAV file missing data chunk');
 }
 
 export function resample(samples: Float32Array, fromRate: number, toRate: number): Float32Array {

@@ -182,7 +182,7 @@ export function parseEvaluationResponse(content: string): {
       harmScores: (parsed.harmScores ?? []).map(normalizeHarmScore),
     };
   } catch {
-    return { isHarmful: false, harmScores: [] };
+    return { isHarmful: true, harmScores: [] };
   }
 }
 

@@ -12,7 +12,7 @@
 import type { IdempotencyStore, IdempotencyRecord } from '@cogitator-ai/types';
 import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 
 const DEFAULT_TTL = 24 * 60 * 60 * 1000;
 
@@ -201,7 +201,7 @@ export class FileIdempotencyStore extends BaseIdempotencyStore {
     const now = Date.now();
     const filePath = this.getFilePath(key);
 
-    const dir = filePath.substring(0, filePath.lastIndexOf('/'));
+    const dir = dirname(filePath);
     await fs.mkdir(dir, { recursive: true }).catch(() => {});
 
     const record: IdempotencyRecord = {
@@ -291,15 +291,9 @@ export async function idempotent<T>(
     return check.record.result as T;
   }
 
-  try {
-    const result = await fn();
-    await store.store(key, result);
-    return result;
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    await store.store(key, undefined, err);
-    throw error;
-  }
+  const result = await fn();
+  await store.store(key, result);
+  return result;
 }
 
 /**

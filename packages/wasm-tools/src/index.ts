@@ -50,7 +50,6 @@ export interface WasmToolConfig<TParams = unknown> {
   tags?: string[];
   timeout?: number;
   wasi?: boolean;
-  memoryPages?: number;
 }
 
 /**
@@ -340,7 +339,7 @@ export const regexToolSchema = z.object({
 });
 
 export const csvToolSchema = z.object({
-  data: z.union([z.string(), z.array(z.array(z.any()))]).describe('CSV string or array data'),
+  data: z.union([z.string(), z.array(z.array(z.unknown()))]).describe('CSV string or array data'),
   operation: z.enum(['parse', 'stringify']).describe('Parse CSV string or stringify array'),
   delimiter: z.string().optional().describe('Field delimiter (default: ",")'),
   quote: z.string().optional().describe("Quote character (default: '\"')"),
@@ -387,7 +386,7 @@ export const compressionToolSchema = z.object({
 
 export const signingToolSchema = z.object({
   operation: z.enum(['generateKeypair', 'sign', 'verify']).describe('Operation'),
-  algorithm: z.enum(['ed25519', 'ecdsa-p256']).describe('Signing algorithm'),
+  algorithm: z.enum(['ed25519']).describe('Signing algorithm'),
   message: z.string().optional().describe('Message to sign/verify'),
   privateKey: z.string().optional().describe('Private key (hex or base64)'),
   publicKey: z.string().optional().describe('Public key (hex or base64)'),

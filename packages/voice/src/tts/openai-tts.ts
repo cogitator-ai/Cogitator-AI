@@ -41,9 +41,21 @@ export class OpenAITTS implements TTSProvider {
 
   async *streamSynthesize(text: string, options?: TTSOptions): AsyncGenerator<Buffer> {
     const response = await this.client.audio.speech.create(this.buildParams(text, options));
-    const body = (response as unknown as { body: AsyncIterable<Uint8Array> }).body;
-    for await (const chunk of body) {
-      yield Buffer.from(chunk);
+    const body = (response as unknown as { body: ReadableStream<Uint8Array> | null }).body;
+
+    if (!body) {
+      throw new Error('OpenAI TTS returned empty response body');
+    }
+
+    const reader = body.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        yield Buffer.from(value);
+      }
+    } finally {
+      reader.releaseLock();
     }
   }
 

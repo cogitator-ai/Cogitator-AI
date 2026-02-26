@@ -30,10 +30,16 @@ export class RealtimeSession extends EventEmitter<RealtimeSessionEvents> {
   constructor(config: RealtimeSessionConfig) {
     super();
     this._provider = config.provider;
-    this.adapter =
-      config.provider === 'openai'
-        ? new OpenAIRealtimeAdapter(config)
-        : new GeminiRealtimeAdapter(config);
+    switch (config.provider) {
+      case 'openai':
+        this.adapter = new OpenAIRealtimeAdapter(config);
+        break;
+      case 'gemini':
+        this.adapter = new GeminiRealtimeAdapter(config);
+        break;
+      default:
+        throw new Error(`Unknown realtime provider: ${config.provider as string}`);
+    }
 
     for (const event of FORWARDED_EVENTS) {
       this.adapter.on(event, (...args: unknown[]) => {

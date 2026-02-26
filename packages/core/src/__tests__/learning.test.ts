@@ -34,6 +34,7 @@ function createMockTrace(overrides: Partial<ExecutionTrace> = {}): ExecutionTrac
       toolAccuracy: 1,
       efficiency: 0.8,
       completeness: 0.9,
+      coherence: 0.7,
     },
     score: 0.85,
     model: 'test-model',
@@ -329,7 +330,13 @@ describe('MetricEvaluator', () => {
     it('should evaluate trace with default metrics', async () => {
       const trace = createMockTrace({
         output: 'Paris',
-        metrics: { success: true, toolAccuracy: 1, efficiency: 0.8, completeness: 0.9 },
+        metrics: {
+          success: true,
+          toolAccuracy: 1,
+          efficiency: 0.8,
+          completeness: 0.9,
+          coherence: 0.7,
+        },
       });
 
       const result = await evaluator.evaluate(trace, 'Paris');

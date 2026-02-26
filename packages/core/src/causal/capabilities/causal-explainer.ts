@@ -203,31 +203,6 @@ export class CausalExplainer {
       });
     }
 
-    for (const ancestor of ancestors) {
-      if (rootNodes.some((r) => r.id === ancestor.id)) continue;
-
-      const directEdge = graph.getEdgeBetween(ancestor.id, effect);
-      if (!directEdge) continue;
-
-      const parents = graph.getParents(ancestor.id);
-      if (parents.length === 0) {
-        rootCauses.push({
-          variable: ancestor.id,
-          contribution: directEdge.strength,
-          mechanism: directEdge.mechanism || `Direct ${directEdge.relationType} relationship`,
-          path: {
-            nodes: [ancestor.id, effect],
-            edges: [directEdge],
-            totalStrength: directEdge.strength,
-            isBlocked: false,
-            blockingNodes: [],
-          },
-          confidence: directEdge.confidence,
-          actionable: ancestor.variableType !== 'latent',
-        });
-      }
-    }
-
     rootCauses.sort((a, b) => b.contribution - a.contribution);
 
     return rootCauses.slice(0, this.maxRootCauses);

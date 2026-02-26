@@ -498,6 +498,48 @@ selfModifying.on('run_completed', (e) => {
 
 ---
 
+## Utilities
+
+### extractJson
+
+Extracts the first valid JSON object from a string using balanced-brace matching. Useful for parsing LLM responses that contain JSON embedded in natural language.
+
+```typescript
+import { extractJson } from '@cogitator-ai/self-modifying';
+
+const raw = 'Here is my analysis: {"onTrack": true, "confidence": 0.9} end.';
+const json = extractJson(raw); // '{"onTrack": true, "confidence": 0.9}'
+```
+
+### llmChat
+
+Adapter that normalizes LLM backend calls — uses `complete()` if available, falls back to `chat()`.
+
+```typescript
+import { llmChat } from '@cogitator-ai/self-modifying';
+
+const response = await llmChat(llm, [{ role: 'user', content: 'Analyze this data' }], {
+  model: 'gpt-4o',
+});
+```
+
+### Constraint Merging
+
+Merge constraint arrays with deduplication by ID:
+
+```typescript
+import {
+  mergeSafetyConstraints,
+  mergeCapabilityConstraints,
+  mergeResourceConstraints,
+  mergeCustomConstraints,
+} from '@cogitator-ai/self-modifying';
+
+const merged = mergeSafetyConstraints(baseConstraints, overrideConstraints);
+```
+
+---
+
 ## Checkpoints & Rollback
 
 Create checkpoints and rollback to safe states.
@@ -563,7 +605,6 @@ import type {
   MetaObservation,
   MetaAssessment,
   MetaAdaptation,
-  MetaRecommendation,
   MetaTrigger,
 } from '@cogitator-ai/types';
 ```

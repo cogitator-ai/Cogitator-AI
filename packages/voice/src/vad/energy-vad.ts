@@ -16,7 +16,7 @@ export class EnergyVAD implements VADProvider {
 
   private state: 'idle' | 'speaking' = 'idle';
   private speechSamples = 0;
-  private silenceSamples = 0;
+  private silenceMs = 0;
 
   constructor(config: EnergyVADConfig = {}) {
     this.threshold = config.threshold ?? 0.01;
@@ -25,6 +25,8 @@ export class EnergyVAD implements VADProvider {
   }
 
   process(samples: Float32Array): VADEvent {
+    if (samples.length === 0) return { type: 'silence' };
+
     const rms = calculateRMS(samples);
     const isSpeech = rms > this.threshold;
     const chunkDurationMs = (samples.length / this.sampleRate) * 1000;
@@ -33,26 +35,25 @@ export class EnergyVAD implements VADProvider {
       if (isSpeech) {
         this.state = 'speaking';
         this.speechSamples = samples.length;
-        this.silenceSamples = 0;
+        this.silenceMs = 0;
         return { type: 'speech_start' };
       }
       return { type: 'silence' };
     }
 
-    this.speechSamples += samples.length;
-
     if (isSpeech) {
-      this.silenceSamples = 0;
-      return { type: 'speech', probability: Math.min(1, rms / 0.5) };
+      this.speechSamples += samples.length;
+      this.silenceMs = 0;
+      return { type: 'speech', probability: Math.min(1, rms) };
     }
 
-    this.silenceSamples += chunkDurationMs;
+    this.silenceMs += chunkDurationMs;
 
-    if (this.silenceSamples >= this.silenceDuration) {
+    if (this.silenceMs >= this.silenceDuration) {
       const duration = (this.speechSamples / this.sampleRate) * 1000;
       this.state = 'idle';
       this.speechSamples = 0;
-      this.silenceSamples = 0;
+      this.silenceMs = 0;
       return { type: 'speech_end', duration };
     }
 
@@ -61,7 +62,7 @@ export class EnergyVAD implements VADProvider {
 
   reset(): void {
     this.state = 'idle';
-    this.silenceSamples = 0;
+    this.silenceMs = 0;
     this.speechSamples = 0;
   }
 }

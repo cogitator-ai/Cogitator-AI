@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   InMemoryCheckpointStore,
   ExecutionReplayer,
@@ -576,5 +576,140 @@ describe('TimeTravel', () => {
       expect(config.autoCheckpoint).toBe(true);
       expect(config.maxCheckpointsPerTrace).toBe(100);
     });
+  });
+});
+
+describe('regression: ExecutionReplayer mergeToolResults', () => {
+  it('should apply merged tool results to messages in deterministic replay', async () => {
+    const checkpointStore = new InMemoryCheckpointStore();
+    const replayer = new ExecutionReplayer({ checkpointStore });
+
+    const checkpoint = createMockCheckpoint({
+      toolResults: { call_123: 'original_result' },
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'What is 1 + 2?' },
+        { role: 'assistant', content: 'Let me calculate.' },
+        { role: 'tool', content: 'original_result', toolCallId: 'call_123', name: 'calculator' },
+        { role: 'assistant', content: 'The answer is 3.' },
+      ],
+    });
+    await checkpointStore.save(checkpoint);
+
+    const mockCogitator = {} as any;
+    const mockAgent = { id: 'test-agent', config: {} } as any;
+
+    const result = await replayer.replay(mockCogitator, mockAgent, {
+      fromCheckpoint: checkpoint.id,
+      mode: 'deterministic',
+      modifiedToolResults: { call_123: 'modified_result' },
+    });
+
+    const toolMsg = result.messages.find(
+      (m: Message) => m.role === 'tool' && m.toolCallId === 'call_123'
+    );
+    expect(toolMsg).toBeDefined();
+    expect(toolMsg!.content).toBe('modified_result');
+  });
+
+  it('should preserve original tool results when no modifications given', async () => {
+    const checkpointStore = new InMemoryCheckpointStore();
+    const replayer = new ExecutionReplayer({ checkpointStore });
+
+    const checkpoint = createMockCheckpoint({
+      toolResults: { call_123: 'cached_result' },
+      messages: [
+        { role: 'system', content: 'You are a helper.' },
+        { role: 'user', content: 'Do something' },
+        { role: 'tool', content: 'cached_result', toolCallId: 'call_123', name: 'tool1' },
+        { role: 'assistant', content: 'Done.' },
+      ],
+    });
+    await checkpointStore.save(checkpoint);
+
+    const result = await replayer.replay({} as any, { id: 'agent', config: {} } as any, {
+      fromCheckpoint: checkpoint.id,
+      mode: 'deterministic',
+    });
+
+    const toolMsg = result.messages.find(
+      (m: Message) => m.role === 'tool' && m.toolCallId === 'call_123'
+    );
+    expect(toolMsg).toBeDefined();
+    expect(toolMsg!.content).toBe('cached_result');
+  });
+});
+
+describe('regression: ExecutionForker ContentPart[] handling', () => {
+  it('should not corrupt ContentPart[] messages when forking', async () => {
+    const checkpointStore = new InMemoryCheckpointStore();
+
+    const contentParts = [
+      { type: 'text' as const, text: 'Hello, this is a multipart message' },
+      { type: 'image_url' as const, image_url: { url: 'https://example.com/img.png' } },
+    ];
+
+    const checkpoint = createMockCheckpoint({
+      messages: [
+        { role: 'system', content: contentParts },
+        { role: 'user', content: 'Test input' },
+        { role: 'assistant', content: 'Response' },
+      ],
+    });
+    await checkpointStore.save(checkpoint);
+
+    const savedCheckpoint = await checkpointStore.load(checkpoint.id);
+    expect(savedCheckpoint).not.toBeNull();
+
+    const systemMsg = savedCheckpoint!.messages.find((m) => m.role === 'system');
+    expect(systemMsg).toBeDefined();
+    expect(Array.isArray(systemMsg!.content)).toBe(true);
+    expect(systemMsg!.content).toHaveLength(2);
+    expect((systemMsg!.content as Array<{ type: string }>)[0].type).toBe('text');
+    expect((systemMsg!.content as Array<{ type: string }>)[1].type).toBe('image_url');
+  });
+
+  it('should preserve ContentPart[] through injectContext', async () => {
+    const checkpointStore = new InMemoryCheckpointStore();
+    const replayer = new ExecutionReplayer({ checkpointStore });
+    const forker = new ExecutionForker({ checkpointStore, replayer });
+
+    const contentParts = [{ type: 'text' as const, text: 'Original system prompt' }];
+
+    const checkpoint = createMockCheckpoint({
+      messages: [
+        { role: 'system', content: contentParts },
+        { role: 'user', content: 'Test' },
+      ],
+    });
+    await checkpointStore.save(checkpoint);
+
+    const mockCogitator = {
+      run: vi.fn().mockResolvedValue(createMockRunResult()),
+    } as any;
+    const mockAgent = {
+      id: 'test-agent',
+      name: 'test',
+      instructions: 'test',
+      config: {},
+      constructor: class {
+        constructor(_opts: any) {}
+      },
+    } as any;
+
+    await forker
+      .fork(mockCogitator, mockAgent, {
+        checkpointId: checkpoint.id,
+        additionalContext: 'Extra context',
+      })
+      .catch(() => {});
+
+    const allCheckpoints = await checkpointStore.getByTrace(checkpoint.traceId);
+    const forkedCp = allCheckpoints.find((cp) => cp.id !== checkpoint.id);
+    if (forkedCp) {
+      const sysMsg = forkedCp.messages.find((m) => m.role === 'system');
+      expect(sysMsg).toBeDefined();
+      expect(Array.isArray(sysMsg!.content)).toBe(true);
+    }
   });
 });

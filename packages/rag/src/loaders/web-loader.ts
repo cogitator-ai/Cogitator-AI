@@ -1,4 +1,3 @@
-import { nanoid } from 'nanoid';
 import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
 import { HTMLLoader } from './html-loader';
 
@@ -29,6 +28,6 @@ export class WebLoader implements DocumentLoader {
     const html = await response.text();
     const doc = await this.htmlLoader.parseHTML(html, source, 'web');
 
-    return [{ ...doc, id: nanoid() }];
+    return [doc];
   }
 }

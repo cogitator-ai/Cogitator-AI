@@ -557,11 +557,11 @@ export class NegotiationStrategy extends BaseStrategy {
     const majorityTerms = [];
     for (const [termId, votes] of termVotes) {
       let maxVotes = 0;
-      let winningValue: unknown;
+      let winningValue: string | number | boolean = '';
       for (const [valueKey, count] of votes) {
         if (count > maxVotes) {
           maxVotes = count;
-          winningValue = JSON.parse(valueKey);
+          winningValue = JSON.parse(valueKey) as string | number | boolean;
         }
       }
 

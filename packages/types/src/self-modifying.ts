@@ -126,7 +126,7 @@ export interface MetaObservation {
   id?: string;
   runId: string;
   iteration: number;
-  timestamp: number | Date;
+  timestamp: number;
   goal?: string;
   currentMode: ReasoningMode;
   currentConfidence: number;
@@ -150,16 +150,6 @@ export interface MetaObservation {
     error?: string;
   }>;
   recentInsights?: unknown[];
-  metrics?: {
-    tokensUsed: number;
-    timeElapsed: number;
-    progressPercentage: number;
-  };
-  insights?: {
-    confidence: number;
-    relevance: number;
-    coherence: number;
-  };
   actionCount?: number;
   failedActions?: number;
 }
@@ -190,13 +180,11 @@ export interface MetaAssessment {
   observationId: string;
   timestamp: number;
   onTrack: boolean;
-  isOnTrack?: boolean;
   confidence: number;
   reasoning: string;
   issues: MetaIssue[];
   opportunities: MetaOpportunity[];
   recommendation: MetaRecommendation;
-  recommendations?: string[];
   requiresAdaptation?: boolean;
   suggestedMode?: ReasoningMode;
   assessmentDuration: number;
@@ -228,11 +216,8 @@ export interface MetaReasoningConfig {
   defaultMode: ReasoningMode;
   allowedModes: ReasoningMode[];
   modeProfiles: Record<ReasoningMode, ReasoningModeConfig>;
-  maxAssessmentsPerRun: number;
-  maxAdaptationsPerRun: number;
   maxMetaAssessments: number;
   maxAdaptations: number;
-  assessmentCooldown: number;
   metaAssessmentCooldown: number;
   adaptationCooldown: number;
   triggers: MetaTrigger[];
@@ -383,13 +368,7 @@ export interface ModificationConstraints {
 }
 
 export interface ModificationValidationResult {
-  isValid?: boolean;
   valid: boolean;
-  violations?: Array<{
-    constraintId: string;
-    message: string;
-    severity: 'warning' | 'error' | 'critical';
-  }>;
   constraintResults?: ConstraintCheckResult[];
   errors?: string[];
   warnings: string[];
@@ -462,11 +441,8 @@ export const DEFAULT_META_REASONING_CONFIG: MetaReasoningConfig = {
   defaultMode: 'analytical',
   allowedModes: ['analytical', 'creative', 'systematic', 'intuitive', 'reflective', 'exploratory'],
   modeProfiles: DEFAULT_MODE_PROFILES,
-  maxAssessmentsPerRun: 5,
-  maxAdaptationsPerRun: 3,
   maxMetaAssessments: 5,
   maxAdaptations: 3,
-  assessmentCooldown: 10000,
   metaAssessmentCooldown: 10000,
   adaptationCooldown: 15000,
   triggers: ['on_failure', 'on_low_confidence', 'periodic'],

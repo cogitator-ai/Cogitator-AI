@@ -6,7 +6,7 @@
 
 export { WorkflowBuilder } from './builder';
 
-export { WorkflowExecutor } from './executor';
+export { WorkflowExecutor, NodeExecutionError } from './executor';
 
 export { WorkflowScheduler } from './scheduler';
 

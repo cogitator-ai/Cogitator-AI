@@ -181,6 +181,10 @@ function extractImages(html: string, baseUrl: string): ExtractedImage[] {
   });
 }
 
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function extractBySelector(html: string, selector: string): string | null {
   const tagSelectors: Record<string, RegExp> = {
     article: /<article[^>]*>([\s\S]*?)<\/article>/i,
@@ -191,19 +195,19 @@ function extractBySelector(html: string, selector: string): string | null {
   };
 
   if (selector.startsWith('.')) {
-    const className = selector.slice(1);
+    const className = escapeRegex(selector.slice(1));
     const classRegex = new RegExp(
       `<[^>]+class=["'][^"']*\\b${className}\\b[^"']*["'][^>]*>([\\s\\S]*?)<\\/[^>]+>`,
       'i'
     );
-    const match = html.match(classRegex);
+    const match = classRegex.exec(html);
     return match ? match[1] : null;
   }
 
   if (selector.startsWith('#')) {
-    const id = selector.slice(1);
+    const id = escapeRegex(selector.slice(1));
     const idRegex = new RegExp(`<[^>]+id=["']${id}["'][^>]*>([\\s\\S]*?)<\\/[^>]+>`, 'i');
-    const match = html.match(idRegex);
+    const match = idRegex.exec(html);
     return match ? match[1] : null;
   }
 

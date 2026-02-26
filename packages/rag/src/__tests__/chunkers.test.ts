@@ -62,4 +62,28 @@ describe('FixedSizeChunker', () => {
     const chunker = new FixedSizeChunker({ chunkSize: 10, chunkOverlap: 0 });
     expect(chunker.chunk('', 'doc-1')).toEqual([]);
   });
+
+  it('throws when chunkOverlap >= chunkSize', () => {
+    expect(() => new FixedSizeChunker({ chunkSize: 10, chunkOverlap: 10 })).toThrow(
+      'chunkOverlap must be less than chunkSize'
+    );
+    expect(() => new FixedSizeChunker({ chunkSize: 5, chunkOverlap: 8 })).toThrow(
+      'chunkOverlap must be less than chunkSize'
+    );
+  });
+
+  it('throws when chunkSize is zero or negative', () => {
+    expect(() => new FixedSizeChunker({ chunkSize: 0, chunkOverlap: 0 })).toThrow(
+      'chunkSize must be a positive number'
+    );
+    expect(() => new FixedSizeChunker({ chunkSize: -1, chunkOverlap: 0 })).toThrow(
+      'chunkSize must be a positive number'
+    );
+  });
+
+  it('throws when chunkOverlap is negative', () => {
+    expect(() => new FixedSizeChunker({ chunkSize: 10, chunkOverlap: -1 })).toThrow(
+      'chunkOverlap must be non-negative'
+    );
+  });
 });

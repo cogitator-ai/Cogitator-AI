@@ -6,6 +6,7 @@ export {
   mergeSafetyConstraints,
   mergeCapabilityConstraints,
   mergeResourceConstraints,
+  mergeCustomConstraints,
   mergeConstraints,
 } from './safety-constraints';
 

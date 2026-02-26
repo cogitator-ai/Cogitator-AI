@@ -147,9 +147,11 @@ export class DefaultTriggerManager implements ITriggerManager {
   private webhookExecutor: WebhookTriggerExecutor;
   private triggerCallbacks = new Set<(trigger: WorkflowTrigger, context: TriggerContext) => void>();
   private eventListeners = new Map<string, () => void>();
+  private config: TriggerManagerConfig;
   private _started = false;
 
   constructor(config: TriggerManagerConfig = {}) {
+    this.config = config;
     this.store = config.store ?? new InMemoryTriggerStore();
     this.eventEmitter = config.eventEmitter ?? new SimpleTriggerEventEmitter();
 
@@ -205,6 +207,7 @@ export class DefaultTriggerManager implements ITriggerManager {
   async register(
     trigger: Omit<WorkflowTrigger, 'id' | 'createdAt' | 'triggerCount' | 'errorCount'>
   ): Promise<string> {
+    if (!this._started) throw new Error('TriggerManager is not started');
     const id = nanoid();
     const now = Date.now();
 
@@ -342,6 +345,7 @@ export class DefaultTriggerManager implements ITriggerManager {
    * Manually fire a trigger
    */
   async fire(id: string, partialContext?: Partial<TriggerContext>): Promise<string> {
+    if (!this._started) throw new Error('TriggerManager is not started');
     const trigger = await this.store.get(id);
     if (!trigger) throw new Error(`Trigger not found: ${id}`);
 
@@ -363,6 +367,10 @@ export class DefaultTriggerManager implements ITriggerManager {
       triggerCount: trigger.triggerCount + 1,
     });
 
+    if (this.config.onTriggerFire) {
+      return this.config.onTriggerFire(trigger, context);
+    }
+
     return nanoid();
   }
 
@@ -380,6 +388,7 @@ export class DefaultTriggerManager implements ITriggerManager {
    * Handle incoming webhook request
    */
   async handleWebhook(request: WebhookRequest) {
+    if (!this._started) throw new Error('TriggerManager is not started');
     return this.webhookExecutor.handle(request);
   }
 

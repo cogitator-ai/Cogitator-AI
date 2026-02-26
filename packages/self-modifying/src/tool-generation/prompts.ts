@@ -1,22 +1,24 @@
 import type { CapabilityGap, GeneratedTool, ToolValidationResult } from '@cogitator-ai/types';
+import { extractJson } from '../utils';
 
-export const TOOL_GENERATION_SYSTEM_PROMPT = `You are an expert TypeScript developer specializing in creating tools for AI agents.
-Your task is to generate safe, efficient, and well-typed tool implementations.
+export const TOOL_GENERATION_SYSTEM_PROMPT = `You are an expert JavaScript developer specializing in creating tools for AI agents.
+Your task is to generate safe, efficient tool implementations.
 
 CRITICAL CONSTRAINTS:
-1. Generate ONLY pure TypeScript functions - no external dependencies beyond built-in modules
-2. All generated code must be self-contained and synchronous where possible
-3. Never generate code that accesses file system, network, or system resources unless explicitly requested
-4. Always include proper error handling
-5. Use Zod for parameter validation when schemas are provided
-6. Follow the exact Tool interface structure
+1. Generate ONLY plain JavaScript (ES2020+) - NO TypeScript syntax, NO type annotations, NO interfaces
+2. No external dependencies - only built-in globals (Math, JSON, Date, Array, Object, String, Number, Boolean, RegExp, Map, Set, Error)
+3. All generated code must be self-contained
+4. Never generate code that accesses file system, network, or system resources
+5. Always include proper error handling with try-catch
+6. The implementation MUST define an async function called "execute" that takes a params object and returns a result
+7. Do NOT use: eval, Function, import, require, process, global, fetch, setTimeout, setInterval, constructor
 
 OUTPUT FORMAT:
 Return a JSON object with:
 {
   "name": "tool_name",
   "description": "Clear description of what the tool does",
-  "implementation": "// TypeScript code as a string",
+  "implementation": "async function execute(params) { ... }",
   "parameters": { "type": "object", "properties": {...}, "required": [...] },
   "reasoning": "Why this implementation was chosen"
 }`;
@@ -91,7 +93,7 @@ export function buildToolGenerationPrompt(
   const security = constraints?.securityLevel || 'strict';
   const maxLines = constraints?.maxLines || 100;
 
-  return `Generate a TypeScript tool implementation for the following capability gap.
+  return `Generate a plain JavaScript tool implementation for the following capability gap.
 
 CAPABILITY GAP:
 - Description: ${gap.description}
@@ -105,6 +107,8 @@ ${existingTools.map((t) => `- ${t.name}: ${t.description}`).join('\n')}
 CONSTRAINTS:
 - Maximum ${maxLines} lines of code
 - Security level: ${security}
+- MUST use plain JavaScript (ES2020+), NO TypeScript syntax, NO type annotations, NO interfaces
+- The "implementation" field must define an async function called "execute" that takes a plain object "params"
 ${securityRules[security]}
 ${constraints?.allowedModules ? `- Allowed modules: ${constraints.allowedModules.join(', ')}` : ''}
 
@@ -112,7 +116,7 @@ Generate a complete, self-contained tool following this exact structure:
 {
   "name": "${gap.suggestedToolName}",
   "description": "Clear description",
-  "implementation": "async function execute(params: Params): Promise<Result> { ... }",
+  "implementation": "async function execute(params) { ... }",
   "parameters": {
     "type": "object",
     "properties": { ... },
@@ -189,11 +193,12 @@ SUGGESTIONS:
 ${validationResult.suggestions.map((s, idx) => `${idx + 1}. ${s}`).join('\n')}
 
 Generate an improved implementation that addresses ALL issues.
+IMPORTANT: Use plain JavaScript only (NO TypeScript, NO type annotations). The execute function signature must be: async function execute(params) { ... }
 Respond with the same JSON format as before:
 {
   "name": "${tool.name}",
   "description": "Updated description if needed",
-  "implementation": "// Improved TypeScript code",
+  "implementation": "async function execute(params) { ... }",
   "parameters": { ... },
   "reasoning": "What was changed and why"
 }`;
@@ -205,13 +210,13 @@ export function parseGapAnalysisResponse(response: string): {
   canProceed: boolean;
   alternativeApproach?: string;
 } {
-  const jsonMatch = /\{[\s\S]*\}/.exec(response);
-  if (!jsonMatch) {
+  const json = extractJson(response);
+  if (!json) {
     return { hasGap: false, gaps: [], canProceed: true };
   }
 
   try {
-    const parsed = JSON.parse(jsonMatch[0]);
+    const parsed = JSON.parse(json);
     return {
       hasGap: Boolean(parsed.hasGap),
       gaps: Array.isArray(parsed.gaps)
@@ -238,13 +243,13 @@ export function parseGapAnalysisResponse(response: string): {
 }
 
 export function parseToolGenerationResponse(response: string): GeneratedTool | null {
-  const jsonMatch = /\{[\s\S]*\}/.exec(response);
-  if (!jsonMatch) {
+  const json = extractJson(response);
+  if (!json) {
     return null;
   }
 
   try {
-    const parsed = JSON.parse(jsonMatch[0]);
+    const parsed = JSON.parse(json);
     if (!parsed.name || !parsed.implementation) {
       return null;
     }
@@ -268,13 +273,13 @@ export function parseToolGenerationResponse(response: string): GeneratedTool | n
 }
 
 export function parseValidationResponse(response: string): ToolValidationResult | null {
-  const jsonMatch = /\{[\s\S]*\}/.exec(response);
-  if (!jsonMatch) {
+  const json = extractJson(response);
+  if (!json) {
     return null;
   }
 
   try {
-    const parsed = JSON.parse(jsonMatch[0]);
+    const parsed = JSON.parse(json);
 
     return {
       isValid: Boolean(parsed.isValid),

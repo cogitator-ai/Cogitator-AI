@@ -150,7 +150,8 @@ export class ToolSandbox {
       /\bexec\s*\(/,
       /\bspawn\s*\(/,
       /__proto__/,
-      /\bconstructor\s*\[/,
+      /\bconstructor\b/,
+      /\bgetPrototypeOf\b/,
     ];
 
     if (this.config.isolationLevel === 'strict') {
@@ -267,7 +268,17 @@ export class ToolSandbox {
         return execute;
       `);
       const execute = factory();
-      const result = await execute(params);
+
+      const result = await Promise.race([
+        execute(params),
+        new Promise((_, reject) =>
+          setTimeout(
+            () =>
+              reject(new Error(`Execution timeout: exceeded ${this.config.maxExecutionTime}ms`)),
+            this.config.maxExecutionTime
+          )
+        ),
+      ]);
 
       return {
         success: true,

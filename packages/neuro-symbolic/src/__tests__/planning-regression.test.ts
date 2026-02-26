@@ -10,7 +10,6 @@ import {
   ActionRegistry,
   createAction,
   evaluatePrecondition,
-  InvariantChecker,
   createInvariantChecker,
   PlanValidator,
 } from '../planning';

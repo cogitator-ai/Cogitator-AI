@@ -75,26 +75,17 @@ export class PDFLoader implements DocumentLoader {
     buffer: Buffer,
     source: string
   ): Promise<RAGDocument[]> {
-    const pageContents: string[] = [];
-
-    const result = await pdfParse(buffer, {
-      pagerender(pageData: { pageIndex: number }) {
-        pageContents[pageData.pageIndex] = '';
-        return '';
-      },
-    });
-
+    const result = await pdfParse(buffer);
     const title = result.info?.Title;
 
-    if (pageContents.length === 0) {
-      const pages = result.text.split(/\f/);
-      return pages.map((text, i) =>
-        this.buildPageDoc(text.trim(), source, i + 1, result.numpages, title)
-      );
+    const pages = result.text.split(/\f/).filter((p) => p.trim().length > 0);
+
+    if (pages.length === 0) {
+      return [this.buildPageDoc(result.text, source, 1, result.numpages, title)];
     }
 
-    return pageContents.map((text, i) =>
-      this.buildPageDoc(text || '', source, i + 1, result.numpages, title)
+    return pages.map((text, i) =>
+      this.buildPageDoc(text.trim(), source, i + 1, result.numpages, title)
     );
   }
 

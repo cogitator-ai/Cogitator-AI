@@ -15,7 +15,7 @@ export interface SimilarityRetrieverConfig {
 }
 
 const DEFAULT_TOP_K = 10;
-const DEFAULT_THRESHOLD = 0.5;
+const DEFAULT_THRESHOLD = 0.0;
 
 export class SimilarityRetriever implements Retriever {
   private readonly adapter: EmbeddingAdapter;
@@ -48,7 +48,8 @@ export class SimilarityRetriever implements Retriever {
   }
 
   private toRetrievalResult(entry: Embedding & { score: number }): RetrievalResult {
-    const documentId = (entry.metadata?.documentId as string | undefined) ?? entry.sourceId;
+    const rawDocId = entry.metadata?.documentId;
+    const documentId = typeof rawDocId === 'string' ? rawDocId : entry.sourceId;
 
     return {
       chunkId: entry.sourceId,

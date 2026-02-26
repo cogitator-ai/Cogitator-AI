@@ -1,5 +1,28 @@
 # @cogitator-ai/express
 
+## 0.2.10
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/core@0.18.6
+
+## 0.2.9
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.21.3
+  - @cogitator-ai/core@0.18.5
+
+## 0.2.8
+
+## 0.2.7
+
+### Patch Changes
+
+- @cogitator-ai/core@0.18.4
+
 ## 0.2.6
 
 ### Patch Changes

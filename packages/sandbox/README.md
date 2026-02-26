@@ -216,9 +216,8 @@ import { WasmSandboxExecutor } from '@cogitator-ai/sandbox';
 
 const wasm = new WasmSandboxExecutor({
   wasm: {
-    cacheDir: '/tmp/wasm-cache',
-    allowNetwork: false,
-    memoryLimit: 64,
+    cacheSize: 10,
+    wasi: true,
   },
 });
 
@@ -231,10 +230,9 @@ const result = await wasm.execute(
   },
   {
     type: 'wasm',
-    wasm: {
-      url: 'https://example.com/plugin.wasm',
-      hash: 'sha256:abc123...',
-    },
+    wasmModule: 'https://example.com/plugin.wasm',
+    wasmFunction: 'run',
+    wasi: true,
     timeout: 5000,
   }
 );

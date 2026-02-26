@@ -1,199 +1,337 @@
 ---
 title: Self-Modifying Agents
-description: Build agents that generate new tools at runtime, reason about their own reasoning, and improve across iterations.
+description: Build agents that generate new tools at runtime, adapt reasoning strategies, and evolve their architecture through multi-armed bandits.
 ---
 
 ## Overview
 
-Self-modifying agents go beyond static configurations. They can create new tools on the fly, reflect on their own reasoning process, optimize their instructions based on past performance, and evolve across runs. Cogitator provides the building blocks for this through the reflection engine, agent optimizer, and dynamic tool generation.
+The `@cogitator-ai/self-modifying` package provides agents that evolve at runtime. They detect capability gaps and generate new tools, monitor their own reasoning to switch strategies, and optimize architecture parameters using bandit algorithms.
 
-## Dynamic Tool Generation
+```bash
+pnpm add @cogitator-ai/self-modifying
+```
 
-Agents can create new tools at runtime based on what they need. This is useful when the required functionality cannot be predicted at design time.
+## Quick Start
 
 ```typescript
-import { Cogitator, Agent, tool } from '@cogitator-ai/core';
-import { z } from 'zod';
+import { Agent, createLLMBackend } from '@cogitator-ai/core';
+import { SelfModifyingAgent } from '@cogitator-ai/self-modifying';
 
-const toolFactory = tool({
-  name: 'create_tool',
-  description: 'Create a new computational tool from a specification',
-  parameters: z.object({
-    name: z.string().describe('Tool name'),
-    description: z.string().describe('What the tool does'),
-    formula: z.string().describe('JavaScript expression to evaluate'),
-    inputSchema: z.record(z.string()).describe('Input parameter names and types'),
-  }),
-  execute: async ({ name, description, formula, inputSchema }) => {
-    const paramSchema: Record<string, z.ZodTypeAny> = {};
-    for (const [key, type] of Object.entries(inputSchema)) {
-      paramSchema[key] = type === 'number' ? z.number() : z.string();
-    }
+const llm = createLLMBackend('openai', {
+  providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
+});
 
-    const newTool = tool({
-      name,
-      description,
-      parameters: z.object(paramSchema),
-      execute: async (params) => {
-        const fn = new Function(...Object.keys(params), `return ${formula}`);
-        return fn(...Object.values(params));
+const agent = new Agent({
+  name: 'adaptive-assistant',
+  model: 'openai/gpt-4o',
+  instructions: 'Solve problems adaptively.',
+});
+
+const selfModifying = new SelfModifyingAgent({
+  agent,
+  llm,
+  config: {
+    toolGeneration: { enabled: true, autoGenerate: true },
+    metaReasoning: { enabled: true },
+    architectureEvolution: { enabled: true },
+    constraints: { enabled: true, autoRollback: true },
+  },
+});
+
+const result = await selfModifying.run('Analyze this CSV and visualize trends');
+
+console.log('Output:', result.output);
+console.log('Tools generated:', result.toolsGenerated.length);
+console.log('Adaptations:', result.adaptationsMade.length);
+```
+
+## Tool Self-Generation
+
+When the agent encounters a task requiring capabilities it doesn't have, it generates new tools at runtime.
+
+### How It Works
+
+1. **Gap Analysis** — LLM compares user intent with available tools, identifies missing capabilities
+2. **Code Synthesis** — Generates safe TypeScript tool implementation
+3. **Validation** — Security scanning + correctness testing in sandbox
+4. **Registration** — Valid tools are added to the agent's toolkit
+
+### Configuration
+
+```typescript
+const selfModifying = new SelfModifyingAgent({
+  agent,
+  llm,
+  config: {
+    toolGeneration: {
+      enabled: true,
+      autoGenerate: true,
+      maxToolsPerSession: 3,
+      minConfidenceForGeneration: 0.7,
+      maxIterationsPerTool: 3,
+      requireLLMValidation: true,
+      sandboxConfig: {
+        enabled: true,
+        maxExecutionTime: 5000,
+        maxMemory: 50 * 1024 * 1024,
+        allowedModules: [],
+        isolationLevel: 'strict',
       },
-    });
-
-    return { created: name, description };
+    },
   },
 });
 ```
 
-A more practical pattern is to wrap this in an agent that maintains a registry of generated tools and can use them in subsequent iterations:
+### Manual Tool Generation
 
 ```typescript
-const selfExtendingAgent = new Agent({
-  name: 'self-extending',
-  model: 'openai/gpt-4o',
-  instructions: `You can create new computational tools when needed. If a user asks
-for a calculation you don't have a tool for, create one first, then
-use it. Always verify the tool works correctly before reporting results.`,
-  tools: [toolFactory, calculator],
-  maxIterations: 20,
+import { GapAnalyzer, ToolGenerator } from '@cogitator-ai/self-modifying';
+
+const gapAnalyzer = new GapAnalyzer({ llm, config: toolGenConfig });
+const toolGenerator = new ToolGenerator({ llm, config: toolGenConfig });
+
+const analysis = await gapAnalyzer.analyze(
+  'Calculate compound interest over 10 years',
+  existingTools
+);
+
+for (const gap of analysis.gaps) {
+  const result = await toolGenerator.generate(gap, existingTools);
+  if (result.success && result.tool) {
+    console.log('Generated:', result.tool.name);
+  }
+}
+```
+
+### Generated Tool Store
+
+```typescript
+import { InMemoryGeneratedToolStore } from '@cogitator-ai/self-modifying';
+
+const store = new InMemoryGeneratedToolStore();
+
+await store.save(generatedTool);
+
+await store.recordUsage({
+  toolId: tool.id,
+  timestamp: new Date(),
+  success: true,
+  executionTime: 150,
 });
+
+const tools = await store.list({ status: 'active' });
+const similar = await store.findSimilar('calculate interest');
 ```
 
 ## Meta-Reasoning
 
-Meta-reasoning is reasoning about your own reasoning process. Cogitator's `ReflectionEngine` gives agents the ability to analyze their tool calls, identify mistakes, and adjust strategy mid-run.
+The meta-reasoning layer monitors the agent's reasoning process and makes strategic adjustments — switching between analytical, creative, systematic, and other modes.
+
+### Reasoning Modes
+
+| Mode          | Temperature | Use Case                    |
+| ------------- | ----------- | --------------------------- |
+| `analytical`  | 0.3         | Logical analysis, debugging |
+| `creative`    | 0.9         | Brainstorming, ideation     |
+| `systematic`  | 0.2         | Step-by-step procedures     |
+| `intuitive`   | 0.6         | Quick decisions, heuristics |
+| `reflective`  | 0.4         | Self-assessment, learning   |
+| `exploratory` | 0.7         | Open-ended exploration      |
+
+### Configuration
 
 ```typescript
-import { Cogitator } from '@cogitator-ai/core';
-
-const cog = new Cogitator({
-  llm: {
-    providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
-  },
-  reflection: {
+config: {
+  metaReasoning: {
     enabled: true,
-    reflectOnToolCalls: true,
-    reflectOnErrors: true,
-    reflectAfterRun: true,
-    reflectionModel: 'openai/gpt-4o-mini',
-    storeInsights: true,
-    maxInsightsPerAgent: 100,
-    minConfidenceToStore: 0.3,
+    defaultMode: 'analytical',
+    allowedModes: ['analytical', 'creative', 'systematic'],
+    maxMetaAssessments: 5,
+    maxAdaptations: 3,
+    triggers: ['on_failure', 'on_low_confidence', 'periodic'],
+    triggerAfterIterations: 3,
+    triggerOnConfidenceDrop: 0.3,
+    enableRollback: true,
   },
-});
-```
-
-After each tool call, the reflection engine asks the LLM to evaluate what happened:
-
-- Was the action successful?
-- What alternatives were considered?
-- What could improve next time?
-
-Insights are extracted and stored for future runs:
-
-```typescript
-const result = await cog.run(agent, { input: 'Analyze the Q4 sales data' });
-
-// insights accumulate across runs
-const summary = await reflectionEngine.getSummary('agent-001');
-
-console.log(summary.successRate); // 0.87
-console.log(summary.commonMistakes); // ["Missing date filter", ...]
-console.log(summary.learnedPatterns); // ["Always validate data shape first", ...]
-console.log(summary.topInsights); // ranked by usage * confidence
-```
-
-Insights are typed as `pattern`, `mistake`, `success`, `tip`, or `warning`, and are pruned to stay within the configured limit.
-
-## Agent Optimization
-
-The `AgentOptimizer` implements a compile-time optimization loop inspired by DSPy. It captures execution traces, evaluates them with configurable metrics, bootstraps few-shot demonstrations, and rewrites agent instructions.
-
-```typescript
-import { AgentOptimizer } from '@cogitator-ai/core';
-
-const optimizer = new AgentOptimizer({
-  llm: backend,
-  model: 'openai/gpt-4o',
-  config: {
-    enabled: true,
-    captureTraces: true,
-    autoOptimize: false,
-    maxDemosPerAgent: 5,
-    minScoreForDemo: 0.8,
-    defaultMetrics: ['success', 'tool_accuracy', 'efficiency'],
-  },
-});
-```
-
-### Capturing Traces
-
-Every run can be captured as an execution trace with scored metrics:
-
-```typescript
-const result = await cog.run(agent, { input: 'Summarize this report' });
-
-const trace = await optimizer.captureTrace(result, 'Summarize this report', {
-  expected: 'A concise summary covering key financials',
-  labels: ['summarization', 'finance'],
-});
-
-console.log(trace.score); // 0.85
-console.log(trace.metrics.success); // true
-console.log(trace.metrics.toolAccuracy); // 1.0
-```
-
-### Compiling Optimized Agents
-
-The `compile` method runs multiple optimization rounds -- analyzing failures, generating instruction candidates, evaluating them against traces, and refining the best candidate:
-
-```typescript
-const optimized = await optimizer.compile(agent, trainset, {
-  maxRounds: 3,
-  maxBootstrappedDemos: 5,
-  optimizeInstructions: true,
-});
-
-console.log(optimized.scoreBefore); // 0.72
-console.log(optimized.scoreAfter); // 0.89
-console.log(optimized.improvement); // 0.17
-console.log(optimized.gapsAddressed); // instruction gaps that were fixed
-console.log(optimized.instructionsAfter); // the new system prompt
-```
-
-The optimizer identifies instruction gaps from failed traces, generates candidate rewrites, evaluates each against historical performance, and iteratively refines weaknesses.
-
-### Few-Shot Demonstrations
-
-High-scoring traces are automatically promoted to demonstrations that get injected into the agent's prompt:
-
-```typescript
-const demos = await optimizer.getDemosForPrompt('agent-001', userInput, 3);
-const demoText = optimizer.formatDemosForPrompt(demos);
-```
-
-## Evolution Across Iterations
-
-Combining reflection, optimization, and dynamic tools creates agents that genuinely improve over time:
-
-```typescript
-const cog = new Cogitator({
-  llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } } },
-  reflection: {
-    enabled: true,
-    reflectAfterRun: true,
-    storeInsights: true,
-    reflectionModel: 'openai/gpt-4o-mini',
-  },
-});
-
-for (const task of taskBatch) {
-  const result = await cog.run(agent, { input: task.input });
-  await optimizer.captureTrace(result, task.input, { expected: task.expected });
 }
-
-const optimized = await optimizer.compile(agent, taskBatch);
-agent.instructions = optimized.instructionsAfter;
 ```
 
-Each cycle of run-capture-compile produces an agent with better instructions, richer demonstrations, and accumulated insights. The agent's performance converges as it internalizes patterns from its own execution history.
+### Direct MetaReasoner Usage
+
+```typescript
+import { MetaReasoner } from '@cogitator-ai/self-modifying';
+
+const metaReasoner = new MetaReasoner({ llm, config: metaReasoningConfig });
+
+const modeConfig = metaReasoner.initializeRun(runId);
+
+const observation = metaReasoner.observe({
+  runId,
+  iteration: 3,
+  goal: 'Analyze data',
+  currentMode: 'analytical',
+  tokensUsed: 1500,
+  timeElapsed: 5000,
+}, insights);
+
+const assessment = await metaReasoner.assess(observation);
+
+if (assessment.requiresAdaptation) {
+  const adaptation = await metaReasoner.adapt(runId, assessment);
+  console.log('Switched to:', adaptation?.after?.mode);
+}
+```
+
+## Architecture Evolution
+
+Optimizes agent parameters (model, temperature, tool strategy) using multi-armed bandit algorithms.
+
+### Strategies
+
+| Strategy         | Description                                    |
+| ---------------- | ---------------------------------------------- |
+| `ucb`            | Upper Confidence Bound — balanced exploration  |
+| `thompson`       | Thompson Sampling — probabilistic selection    |
+| `epsilon_greedy` | Epsilon-Greedy — random exploration with decay |
+
+### Parameter Optimizer
+
+```typescript
+import { ParameterOptimizer } from '@cogitator-ai/self-modifying';
+
+const optimizer = new ParameterOptimizer({
+  llm,
+  config: evolutionConfig,
+  baseConfig: {
+    model: 'gpt-4o',
+    temperature: 0.7,
+    maxTokens: 4096,
+    toolStrategy: 'sequential',
+  },
+});
+
+const result = await optimizer.optimize('Complex reasoning task');
+
+console.log('Should adopt:', result.shouldAdopt);
+console.log('Recommended config:', result.recommendedConfig);
+
+optimizer.recordOutcome(result.candidate!.id, 0.85);
+```
+
+### Capability Analyzer
+
+```typescript
+import { CapabilityAnalyzer } from '@cogitator-ai/self-modifying';
+
+const analyzer = new CapabilityAnalyzer({ llm, enableLLMAnalysis: true });
+
+const profile = await analyzer.analyze('Build a REST API with authentication');
+
+console.log('Complexity:', profile.complexity);
+console.log('Domain:', profile.domain);
+console.log('Tool intensity:', profile.toolIntensity);
+```
+
+## Constraints & Safety
+
+All self-modifications are validated against safety constraints before being applied.
+
+```typescript
+import {
+  ModificationValidator,
+  DEFAULT_SAFETY_CONSTRAINTS,
+  DEFAULT_CAPABILITY_CONSTRAINTS,
+  DEFAULT_RESOURCE_CONSTRAINTS,
+} from '@cogitator-ai/self-modifying';
+
+const validator = new ModificationValidator({
+  constraints: {
+    safety: DEFAULT_SAFETY_CONSTRAINTS,
+    capability: DEFAULT_CAPABILITY_CONSTRAINTS,
+    resource: DEFAULT_RESOURCE_CONSTRAINTS,
+    custom: [{
+      id: 'no-external-apis',
+      name: 'No External APIs',
+      check: (mod) => !mod.changes?.usesExternalApi,
+      errorMessage: 'External API calls not allowed',
+      severity: 'error',
+    }],
+  },
+});
+
+const result = await validator.validate({
+  type: 'tool_addition',
+  target: 'tools',
+  changes: { name: 'new-tool', code: '...' },
+  reason: 'User requested capability',
+});
+```
+
+### Rollback Manager
+
+```typescript
+import { RollbackManager } from '@cogitator-ai/self-modifying';
+
+const rollbackManager = new RollbackManager({ maxCheckpoints: 10 });
+
+const checkpoint = await rollbackManager.createCheckpoint(
+  agentName, agentConfig, currentTools, modifications
+);
+
+const restored = await rollbackManager.rollbackTo(checkpoint.id);
+```
+
+## Events
+
+Subscribe to self-modification events for observability.
+
+```typescript
+selfModifying.on('tool_generation_started', (e) => {
+  console.log('Generating:', e.data.gap.suggestedToolName);
+});
+
+selfModifying.on('strategy_changed', (e) => {
+  console.log(`Mode: ${e.data.previousMode} → ${e.data.newMode}`);
+});
+
+selfModifying.on('run_completed', (e) => {
+  console.log('Success:', e.data.success);
+});
+```
+
+| Event                       | Description                     |
+| --------------------------- | ------------------------------- |
+| `run_started`               | Self-modifying run started      |
+| `run_completed`             | Run completed (success/failure) |
+| `tool_generation_started`   | Started generating a new tool   |
+| `tool_generation_completed` | Tool generation finished        |
+| `meta_assessment`           | Meta-reasoning assessment made  |
+| `strategy_changed`          | Reasoning mode switched         |
+| `architecture_evolved`      | Architecture config changed     |
+| `checkpoint_created`        | Rollback checkpoint created     |
+| `rollback_performed`        | Rolled back to checkpoint       |
+
+## Utilities
+
+### extractJson
+
+Extracts the first valid JSON object from a string using balanced-brace matching.
+
+```typescript
+import { extractJson } from '@cogitator-ai/self-modifying';
+
+const raw = 'Here is my analysis: {"onTrack": true} end.';
+const json = extractJson(raw); // '{"onTrack": true}'
+```
+
+### llmChat
+
+Normalizes LLM backend calls — uses `complete()` if available, falls back to `chat()`.
+
+```typescript
+import { llmChat } from '@cogitator-ai/self-modifying';
+
+const response = await llmChat(llm, [
+  { role: 'user', content: 'Analyze this data' },
+], { model: 'gpt-4o' });
+```

@@ -39,8 +39,16 @@ export class RAGPipeline {
 
     for (const doc of documents) {
       const chunks = await this.chunkDocument(doc);
+      if (chunks.length === 0) continue;
+
       const texts = chunks.map((c) => c.content);
       const vectors = await this.deps.embeddingService.embedBatch(texts);
+
+      if (vectors.length !== chunks.length) {
+        throw new Error(
+          `Embedding count mismatch: got ${vectors.length} vectors for ${chunks.length} chunks`
+        );
+      }
 
       for (let i = 0; i < chunks.length; i++) {
         await this.storeChunk(chunks[i], vectors[i], doc);
@@ -71,8 +79,7 @@ export class RAGPipeline {
   }
 
   private async chunkDocument(doc: RAGDocument): Promise<DocumentChunk[]> {
-    const result = this.deps.chunker.chunk(doc.content, doc.id);
-    return result instanceof Promise ? result : result;
+    return this.deps.chunker.chunk(doc.content, doc.id);
   }
 
   private async storeChunk(chunk: DocumentChunk, vector: number[], doc: RAGDocument) {

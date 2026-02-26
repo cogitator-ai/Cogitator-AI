@@ -136,32 +136,37 @@ describe('ElevenLabsTTS', () => {
   });
 
   it('streamSynthesize() uses /stream endpoint', async () => {
-    const chunk1 = new Uint8Array([10, 20]);
-    const chunk2 = new Uint8Array([30, 40]);
-
-    async function* fakeBody() {
-      yield chunk1;
-      yield chunk2;
-    }
+    const rawChunk1 = new Uint8Array([10, 20]);
+    const rawChunk2 = new Uint8Array([30, 40]);
+    const rawChunks = [rawChunk1, rawChunk2];
+    let idx = 0;
 
     mockFetch.mockResolvedValue({
       ok: true,
       body: {
-        [Symbol.asyncIterator]: () => fakeBody()[Symbol.asyncIterator](),
+        getReader: () => ({
+          read: () => {
+            if (idx < rawChunks.length) {
+              return Promise.resolve({ done: false, value: rawChunks[idx++] });
+            }
+            return Promise.resolve({ done: true, value: undefined });
+          },
+          releaseLock: vi.fn(),
+        }),
       },
     });
 
-    const chunks: Buffer[] = [];
+    const collected: Buffer[] = [];
     for await (const chunk of tts.streamSynthesize('test')) {
-      chunks.push(chunk);
+      collected.push(chunk);
     }
 
     const [url] = mockFetch.mock.calls[0] as [string];
     expect(url).toContain('/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM/stream');
 
-    expect(chunks).toHaveLength(2);
-    expect(chunks[0]).toEqual(Buffer.from([10, 20]));
-    expect(chunks[1]).toEqual(Buffer.from([30, 40]));
+    expect(collected).toHaveLength(2);
+    expect(collected[0]).toEqual(Buffer.from([10, 20]));
+    expect(collected[1]).toEqual(Buffer.from([30, 40]));
   });
 
   it('streamSynthesize() throws on API error', async () => {

@@ -58,7 +58,8 @@ export class FileCheckpointStore implements CheckpointStore {
   }
 
   private getFilePath(id: string): string {
-    return path.join(this.directory, `${id}.json`);
+    const sanitized = path.basename(id);
+    return path.join(this.directory, `${sanitized}.json`);
   }
 
   async save(checkpoint: WorkflowCheckpoint): Promise<void> {

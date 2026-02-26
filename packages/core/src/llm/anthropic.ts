@@ -15,6 +15,7 @@ import type {
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
 import { type LLMError, wrapSDKError, type LLMErrorContext } from './errors';
+import { getLogger } from '../logger';
 
 interface AnthropicConfig {
   apiKey: string;
@@ -182,7 +183,12 @@ export class AnthropicBackend extends BaseLLMBackend {
         if (currentToolCall) {
           try {
             currentToolCall.arguments = JSON.parse(inputJson) as Record<string, unknown>;
-          } catch {
+          } catch (e) {
+            getLogger().warn('Failed to parse tool call arguments in Anthropic stream', {
+              toolName: currentToolName,
+              inputJson: inputJson.slice(0, 200),
+              error: e instanceof Error ? e.message : String(e),
+            });
             currentToolCall.arguments = {};
           }
 
@@ -343,10 +349,10 @@ export class AnthropicBackend extends BaseLLMBackend {
 
     const schema = format.jsonSchema.schema;
     const inputSchema: AnthropicToolInput = {
+      ...schema,
       type: 'object',
       properties: (schema.properties ?? {}) as Record<string, unknown>,
       required: schema.required as string[] | undefined,
-      ...schema,
     };
 
     const jsonSchemaTool = {

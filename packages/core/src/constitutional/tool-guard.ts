@@ -40,15 +40,6 @@ export class ToolGuard {
     }
 
     if (this.config.strictMode && sideEffects.length > 0) {
-      if (!requiresApproval) {
-        return {
-          approved: true,
-          requiresConfirmation: false,
-          sideEffects,
-          riskLevel,
-        };
-      }
-
       const approved = await this.requestApproval(tool, args, sideEffects);
       return {
         approved,

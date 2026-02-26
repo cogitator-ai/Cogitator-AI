@@ -102,23 +102,23 @@ npx tsx examples/core/01-basic-agent.ts
 
 Install only what you need. Everything is a separate npm package.
 
-| Package                                                                                      | What it does                                                                        | Example                                                            |
-| -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| [`@cogitator-ai/core`](https://www.npmjs.com/package/@cogitator-ai/core)                     | Agents, tools, LLM backends, streaming, everything you need to start                | [12 core examples](./examples/core/)                               |
-| [`@cogitator-ai/memory`](https://www.npmjs.com/package/@cogitator-ai/memory)                 | Your agents remember things. Redis, Postgres, SQLite, MongoDB, Qdrant, in-memory    | [4 memory examples](./examples/memory/)                            |
-| [`@cogitator-ai/swarms`](https://www.npmjs.com/package/@cogitator-ai/swarms)                 | Multiple agents working together - debate, pipeline, hierarchy, consensus, auction  | [3 swarm examples](./examples/swarms/)                             |
-| [`@cogitator-ai/workflows`](https://www.npmjs.com/package/@cogitator-ai/workflows)           | DAG workflows with branching, human approval gates, map-reduce                      | [3 workflow examples](./examples/workflows/)                       |
-| [`@cogitator-ai/a2a`](https://www.npmjs.com/package/@cogitator-ai/a2a)                       | Google's Agent-to-Agent protocol - expose agents as services, consume external ones | [2 a2a examples](./examples/a2a/)                                  |
-| [`@cogitator-ai/mcp`](https://www.npmjs.com/package/@cogitator-ai/mcp)                       | Connect to any MCP server and use its tools                                         | [1 mcp example](./examples/mcp/)                                   |
-| [`@cogitator-ai/sandbox`](https://www.npmjs.com/package/@cogitator-ai/sandbox)               | Run untrusted code in Docker or WASM. Never on your host                            | -                                                                  |
-| [`@cogitator-ai/wasm-tools`](https://www.npmjs.com/package/@cogitator-ai/wasm-tools)         | 14 pre-built tools running in WASM sandbox (calc, json, hash, csv, markdown...)     | [wasm example](./examples/advanced/03-wasm-tools.ts)               |
-| [`@cogitator-ai/self-modifying`](https://www.npmjs.com/package/@cogitator-ai/self-modifying) | Agents that generate new tools at runtime and evolve their own architecture         | [self-modifying example](./examples/advanced/01-self-modifying.ts) |
-| [`@cogitator-ai/neuro-symbolic`](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) | Prolog-style logic, constraint solving, knowledge graphs for agents                 | [neuro-symbolic example](./examples/advanced/02-neuro-symbolic.ts) |
-| [`@cogitator-ai/rag`](https://www.npmjs.com/package/@cogitator-ai/rag)                       | RAG pipeline - document loaders, chunking, retrieval, reranking                     | [3 rag examples](./examples/rag/)                                  |
-| [`@cogitator-ai/evals`](https://www.npmjs.com/package/@cogitator-ai/evals)                   | Evaluation framework - metrics, LLM judges, A/B testing, assertions                 | [3 eval examples](./examples/evals/)                               |
-| [`@cogitator-ai/voice`](https://www.npmjs.com/package/@cogitator-ai/voice)                   | Voice/Realtime agent capabilities - STT, TTS, VAD, realtime sessions                | [3 voice examples](./examples/voice/)                              |
-| [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy)                 | Deploy your agents to Docker or Fly.io                                              | [deploy example](./examples/infrastructure/04-deploy-docker.ts)    |
-| [`@cogitator-ai/cli`](https://www.npmjs.com/package/@cogitator-ai/cli)                       | `cogitator init` / `up` / `run` / `deploy` from your terminal                       | -                                                                  |
+| Package                                                                                      | What it does                                                                                   | Example                                                              |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| [`@cogitator-ai/core`](https://www.npmjs.com/package/@cogitator-ai/core)                     | Agents, tools, LLM backends, streaming, everything you need to start                           | [12 core examples](./examples/core/)                                 |
+| [`@cogitator-ai/memory`](https://www.npmjs.com/package/@cogitator-ai/memory)                 | Your agents remember things. Redis, Postgres, SQLite, MongoDB, Qdrant, in-memory               | [4 memory examples](./examples/memory/)                              |
+| [`@cogitator-ai/swarms`](https://www.npmjs.com/package/@cogitator-ai/swarms)                 | 7 swarm strategies — hierarchy, round-robin, consensus, pipeline, debate, auction, negotiation | [4 swarm examples](./examples/swarms/)                               |
+| [`@cogitator-ai/workflows`](https://www.npmjs.com/package/@cogitator-ai/workflows)           | DAG workflows with branching, human approval gates, map-reduce                                 | [3 workflow examples](./examples/workflows/)                         |
+| [`@cogitator-ai/a2a`](https://www.npmjs.com/package/@cogitator-ai/a2a)                       | Google's Agent-to-Agent protocol - expose agents as services, consume external ones            | [2 a2a examples](./examples/a2a/)                                    |
+| [`@cogitator-ai/mcp`](https://www.npmjs.com/package/@cogitator-ai/mcp)                       | Connect to any MCP server and use its tools                                                    | [1 mcp example](./examples/mcp/)                                     |
+| [`@cogitator-ai/sandbox`](https://www.npmjs.com/package/@cogitator-ai/sandbox)               | Run untrusted code in Docker or WASM. Never on your host                                       | [sandbox example](./examples/infrastructure/05-sandbox-execution.ts) |
+| [`@cogitator-ai/wasm-tools`](https://www.npmjs.com/package/@cogitator-ai/wasm-tools)         | 14 pre-built tools running in WASM sandbox (calc, json, hash, csv, markdown...)                | [wasm example](./examples/advanced/03-wasm-tools.ts)                 |
+| [`@cogitator-ai/self-modifying`](https://www.npmjs.com/package/@cogitator-ai/self-modifying) | Agents that generate new tools at runtime and evolve their own architecture                    | [self-modifying example](./examples/advanced/01-self-modifying.ts)   |
+| [`@cogitator-ai/neuro-symbolic`](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) | Prolog-style logic, constraint solving, knowledge graphs for agents                            | [neuro-symbolic example](./examples/advanced/02-neuro-symbolic.ts)   |
+| [`@cogitator-ai/rag`](https://www.npmjs.com/package/@cogitator-ai/rag)                       | RAG pipeline - document loaders, chunking, retrieval, reranking                                | [3 rag examples](./examples/rag/)                                    |
+| [`@cogitator-ai/evals`](https://www.npmjs.com/package/@cogitator-ai/evals)                   | Evaluation framework - metrics, LLM judges, A/B testing, assertions                            | [3 eval examples](./examples/evals/)                                 |
+| [`@cogitator-ai/voice`](https://www.npmjs.com/package/@cogitator-ai/voice)                   | Voice/Realtime agent capabilities - STT, TTS, VAD, realtime sessions                           | [3 voice examples](./examples/voice/)                                |
+| [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy)                 | Deploy your agents to Docker or Fly.io                                                         | [deploy example](./examples/infrastructure/04-deploy-docker.ts)      |
+| [`@cogitator-ai/cli`](https://www.npmjs.com/package/@cogitator-ai/cli)                       | `cogitator init` / `up` / `run` / `deploy` from your terminal                                  | -                                                                    |
 
 **Server adapters** - mount agents as REST APIs with one line:
 
@@ -214,7 +214,7 @@ All with Swagger docs, SSE streaming, and WebSocket support. See [integration ex
 
 ---
 
-## 47 Runnable Examples
+## 48 Runnable Examples
 
 Every major feature has a working example you can run right now.
 
@@ -226,7 +226,7 @@ npx tsx examples/core/01-basic-agent.ts
 | ----------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`core/`](./examples/core/)                     | 12    | Agents, tools, streaming, caching, tree-of-thought, reflection, optimization, time-travel, cost routing, constitutional AI, prompt injection, causal reasoning |
 | [`memory/`](./examples/memory/)                 | 4     | In-memory storage, context building, semantic search, knowledge graphs                                                                                         |
-| [`swarms/`](./examples/swarms/)                 | 3     | Debate, pipeline, hierarchical coordination                                                                                                                    |
+| [`swarms/`](./examples/swarms/)                 | 4     | Debate, pipeline, hierarchical coordination, negotiation                                                                                                       |
 | [`workflows/`](./examples/workflows/)           | 3     | DAG workflows, human-in-the-loop, map-reduce                                                                                                                   |
 | [`a2a/`](./examples/a2a/)                       | 2     | A2A server and client                                                                                                                                          |
 | [`mcp/`](./examples/mcp/)                       | 1     | MCP server integration                                                                                                                                         |

@@ -37,7 +37,7 @@ export type ApprovalTimeoutAction = 'approve' | 'reject' | 'escalate';
 export interface NegotiationTerm {
   termId: string;
   label: string;
-  value: unknown;
+  value: string | number | boolean;
   negotiable: boolean;
   priority: number;
   range?: { min: number; max: number };

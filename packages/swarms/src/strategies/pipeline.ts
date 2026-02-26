@@ -15,6 +15,7 @@ import { BaseStrategy } from './base.js';
 
 export class PipelineStrategy extends BaseStrategy {
   private config: PipelineConfig;
+  private retryCounts = new Map<string, number>();
 
   constructor(coordinator: SwarmCoordinatorInterface, config: PipelineConfig) {
     super(coordinator);
@@ -123,8 +124,11 @@ export class PipelineStrategy extends BaseStrategy {
           this.coordinator.blackboard.write('pipeline', state, 'system');
 
           stageIndex = stageIndex - 1;
+          const prevStageIndex = stageIndex - 1;
           currentInput =
-            stageOutputs.get(this.config.stages[stageIndex - 1]?.name) ?? options.input;
+            prevStageIndex >= 0
+              ? (stageOutputs.get(this.config.stages[prevStageIndex].name) ?? options.input)
+              : options.input;
           continue;
         }
 
@@ -237,10 +241,11 @@ Ensure your output is well-structured and ready for the next stage to consume.
     }
 
     if (onFail === 'retry-previous') {
-      const retryCount = this.getRetryCount(stage.name, _agentResults);
+      const retryCount = this.getRetryCount(stage.name);
       if (retryCount >= gateConfig.maxRetries) {
         return { action: 'abort', reason: `Max retries (${gateConfig.maxRetries}) exceeded` };
       }
+      this.incrementRetryCount(stage.name);
       return { action: 'retry-previous' };
     }
 
@@ -256,13 +261,11 @@ Ensure your output is well-structured and ready for the next stage to consume.
     return { action: 'pass' };
   }
 
-  private getRetryCount(stageName: string, results: Map<string, RunResult>): number {
-    let count = 0;
-    for (const key of results.keys()) {
-      if (key === stageName || key.startsWith(`${stageName}_retry`)) {
-        count++;
-      }
-    }
-    return count - 1;
+  private getRetryCount(stageName: string): number {
+    return this.retryCounts.get(stageName) ?? 0;
+  }
+
+  private incrementRetryCount(stageName: string): void {
+    this.retryCounts.set(stageName, this.getRetryCount(stageName) + 1);
   }
 }

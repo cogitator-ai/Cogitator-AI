@@ -86,6 +86,9 @@ export class CausalGraphImpl implements CausalGraph {
   }
 
   addEdge(edge: CausalEdge): void {
+    if (edge.source === edge.target) {
+      throw new Error(`Self-loop not allowed: ${edge.source}`);
+    }
     if (this.edges.has(edge.id)) {
       throw new Error(`Edge ${edge.id} already exists`);
     }

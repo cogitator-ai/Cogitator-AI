@@ -4,6 +4,7 @@ import { buildTaskProfilePrompt, parseTaskProfileResponse } from './prompts';
 export interface CapabilityAnalyzerOptions {
   llm?: LLMBackend;
   enableLLMAnalysis?: boolean;
+  model?: string;
 }
 
 interface DomainKeywords {
@@ -126,12 +127,14 @@ const COMPLEXITY_INDICATORS = {
 export class CapabilityAnalyzer {
   private readonly llm?: LLMBackend;
   private readonly enableLLMAnalysis: boolean;
+  private readonly model: string;
   private readonly profileCache = new Map<string, { profile: TaskProfile; timestamp: number }>();
   private readonly cacheTTL = 60000;
 
   constructor(options: CapabilityAnalyzerOptions = {}) {
     this.llm = options.llm;
     this.enableLLMAnalysis = options.enableLLMAnalysis ?? false;
+    this.model = options.model ?? 'default';
   }
 
   async analyzeTask(
@@ -151,7 +154,7 @@ export class CapabilityAnalyzer {
     let profile: TaskProfile;
 
     if (this.llm && this.enableLLMAnalysis) {
-      profile = await this.analyzWithLLM(taskDescription, context);
+      profile = await this.analyzeWithLLM(taskDescription, context);
     } else {
       profile = this.analyzeHeuristically(taskDescription, context?.availableTools);
     }
@@ -167,7 +170,7 @@ export class CapabilityAnalyzer {
     return profile;
   }
 
-  private async analyzWithLLM(
+  private async analyzeWithLLM(
     taskDescription: string,
     context?: {
       availableTools?: Tool[];
@@ -199,7 +202,7 @@ export class CapabilityAnalyzer {
             temperature: 0.2,
           })
         : await llm.chat({
-            model: 'default',
+            model: this.model,
             messages: [
               {
                 role: 'system',
@@ -266,9 +269,11 @@ export class CapabilityAnalyzer {
   }
 
   private detectComplexity(task: string, wordCount: number): TaskProfile['complexity'] {
+    const taskWords = new Set(task.split(/\s+/));
+
     for (const [level, indicators] of Object.entries(COMPLEXITY_INDICATORS).reverse()) {
       for (const indicator of indicators) {
-        if (task.includes(indicator)) {
+        if (taskWords.has(indicator)) {
           return level as TaskProfile['complexity'];
         }
       }

@@ -25,10 +25,8 @@ export class InMemoryGeneratedToolStore implements IGeneratedToolStore {
 
   async save(tool: GeneratedTool): Promise<void> {
     const existing = this.tools.get(tool.id);
-    if (existing) {
-      tool.version = existing.version + 1;
-    }
-    this.tools.set(tool.id, { ...tool, updatedAt: new Date() });
+    const version = existing ? existing.version + 1 : tool.version;
+    this.tools.set(tool.id, { ...tool, version, updatedAt: new Date() });
   }
 
   async get(id: string): Promise<GeneratedTool | null> {

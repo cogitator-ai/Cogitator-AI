@@ -406,18 +406,25 @@ export class WorkflowMetricsCollector {
    */
   toPrometheusFormat(): string {
     const lines: string[] = [];
+    const emittedTypes = new Set<string>();
 
     for (const [key, data] of this.counters) {
       const [name] = key.split(':');
       const labelStr = this.formatPrometheusLabels(data.labels);
-      lines.push(`# TYPE ${name} counter`);
+      if (!emittedTypes.has(name)) {
+        lines.push(`# TYPE ${name} counter`);
+        emittedTypes.add(name);
+      }
       lines.push(`${name}${labelStr} ${data.value.toString()}`);
     }
 
     for (const [key, data] of this.gauges) {
       const [name] = key.split(':');
       const labelStr = this.formatPrometheusLabels(data.labels);
-      lines.push(`# TYPE ${name} gauge`);
+      if (!emittedTypes.has(name)) {
+        lines.push(`# TYPE ${name} gauge`);
+        emittedTypes.add(name);
+      }
       lines.push(`${name}${labelStr} ${data.value.toString()}`);
     }
 
@@ -426,7 +433,10 @@ export class WorkflowMetricsCollector {
       const labels = this.parseLabels(labelsPart);
       const baseLabelStr = this.formatPrometheusLabels(labels);
 
-      lines.push(`# TYPE ${name} histogram`);
+      if (!emittedTypes.has(name)) {
+        lines.push(`# TYPE ${name} histogram`);
+        emittedTypes.add(name);
+      }
 
       for (const [bucket, count] of data.buckets) {
         const bucketLabels = { ...labels, le: bucket.toString() };

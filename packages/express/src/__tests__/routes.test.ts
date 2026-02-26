@@ -3,7 +3,7 @@ import express from 'express';
 import type { Server } from 'http';
 import request from 'supertest';
 import { CogitatorServer } from '../server.js';
-import type { RouteContext, CogitatorServerConfig } from '../types.js';
+import type { CogitatorServerConfig } from '../types.js';
 
 function createMockCogitator() {
   return {

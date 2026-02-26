@@ -20,21 +20,19 @@ export type TimerNodeType = 'fixed' | 'dynamic' | 'cron' | 'until';
 /**
  * Base timer node config
  */
-export interface TimerNodeConfig<S> {
+export interface TimerNodeConfig {
   name: string;
   type: TimerNodeType;
   persist?: boolean;
   onScheduled?: (entry: TimerEntry) => void;
   onFired?: (entry: TimerEntry) => void;
   onCancelled?: (entry: TimerEntry) => void;
-  /** Phantom type for state */
-  _state?: S;
 }
 
 /**
  * Fixed delay node config
  */
-export interface FixedDelayConfig<S> extends TimerNodeConfig<S> {
+export interface FixedDelayConfig extends TimerNodeConfig {
   type: 'fixed';
   delay: number;
 }
@@ -42,7 +40,7 @@ export interface FixedDelayConfig<S> extends TimerNodeConfig<S> {
 /**
  * Dynamic delay node config
  */
-export interface DynamicDelayConfig<S> extends TimerNodeConfig<S> {
+export interface DynamicDelayConfig<S> extends TimerNodeConfig {
   type: 'dynamic';
   getDelay: (state: S) => number;
 }
@@ -50,7 +48,7 @@ export interface DynamicDelayConfig<S> extends TimerNodeConfig<S> {
 /**
  * Cron wait node config
  */
-export interface CronWaitConfig<S> extends TimerNodeConfig<S> {
+export interface CronWaitConfig extends TimerNodeConfig {
   type: 'cron';
   expression: string;
   timezone?: string;
@@ -60,7 +58,7 @@ export interface CronWaitConfig<S> extends TimerNodeConfig<S> {
 /**
  * Until date node config
  */
-export interface UntilDateConfig<S> extends TimerNodeConfig<S> {
+export interface UntilDateConfig<S> extends TimerNodeConfig {
   type: 'until';
   getDate: (state: S) => Date | number;
   skipIfPast?: boolean;
@@ -70,9 +68,9 @@ export interface UntilDateConfig<S> extends TimerNodeConfig<S> {
  * Union of all timer node configs
  */
 export type AnyTimerNodeConfig<S> =
-  | FixedDelayConfig<S>
+  | FixedDelayConfig
   | DynamicDelayConfig<S>
-  | CronWaitConfig<S>
+  | CronWaitConfig
   | UntilDateConfig<S>;
 
 /**
@@ -100,11 +98,11 @@ export interface TimerExecutionContext {
 /**
  * Create a fixed delay node
  */
-export function delayNode<S>(
+export function delayNode(
   name: string,
   delay: number,
-  options: Partial<Omit<FixedDelayConfig<S>, 'type' | 'delay'>> = {}
-): FixedDelayConfig<S> {
+  options: Partial<Omit<FixedDelayConfig, 'type' | 'delay'>> = {}
+): FixedDelayConfig {
   return {
     name,
     type: 'fixed',
@@ -132,11 +130,11 @@ export function dynamicDelayNode<S>(
 /**
  * Create a cron wait node
  */
-export function cronWaitNode<S>(
+export function cronWaitNode(
   name: string,
   expression: string,
-  options: Partial<Omit<CronWaitConfig<S>, 'type' | 'expression'>> = {}
-): CronWaitConfig<S> {
+  options: Partial<Omit<CronWaitConfig, 'type' | 'expression'>> = {}
+): CronWaitConfig {
   if (!isValidCronExpression(expression)) {
     throw new Error(`Invalid cron expression: ${expression}`);
   }
@@ -220,7 +218,7 @@ export async function executeTimerNode<S>(
       runId: context.runId,
       nodeId: context.nodeId,
       firesAt,
-      type: config.type === 'cron' ? 'cron' : config.type === 'dynamic' ? 'dynamic' : 'fixed',
+      type: config.type === 'until' ? 'fixed' : config.type,
       metadata: { nodeType: config.type, delay },
     });
 
@@ -296,12 +294,15 @@ function waitWithAbort(delay: number, signal?: AbortSignal): Promise<void> {
       return;
     }
 
-    const timeout = setTimeout(resolve, delay);
-
     const onAbort = () => {
       clearTimeout(timeout);
       reject(new AbortError());
     };
+
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, delay);
 
     signal?.addEventListener('abort', onAbort, { once: true });
   });
@@ -312,10 +313,10 @@ function waitWithAbort(delay: number, signal?: AbortSignal): Promise<void> {
  */
 export function createTimerNodeHelpers(timerStore: TimerStore) {
   return {
-    delayNode: <S>(
+    delayNode: (
       name: string,
       delay: number,
-      options: Partial<Omit<FixedDelayConfig<S>, 'type' | 'delay'>> = {}
+      options: Partial<Omit<FixedDelayConfig, 'type' | 'delay'>> = {}
     ) => delayNode(name, delay, { ...options, persist: true }),
 
     dynamicDelayNode: <S>(
@@ -324,10 +325,10 @@ export function createTimerNodeHelpers(timerStore: TimerStore) {
       options: Partial<Omit<DynamicDelayConfig<S>, 'type' | 'getDelay'>> = {}
     ) => dynamicDelayNode(name, getDelay, { ...options, persist: true }),
 
-    cronWaitNode: <S>(
+    cronWaitNode: (
       name: string,
       expression: string,
-      options: Partial<Omit<CronWaitConfig<S>, 'type' | 'expression'>> = {}
+      options: Partial<Omit<CronWaitConfig, 'type' | 'expression'>> = {}
     ) => cronWaitNode(name, expression, { ...options, persist: true }),
 
     untilNode: <S>(

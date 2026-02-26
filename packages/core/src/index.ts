@@ -87,12 +87,27 @@ export {
   createSuccessMetric,
   createExactMatchMetric,
   createContainsMetric,
+  PostgresTraceStore,
+  PromptLogger,
+  wrapWithPromptLogger,
+  ABTestingFramework,
+  PromptMonitor,
+  RollbackManager,
+  AutoOptimizer,
 } from './learning/index';
 export type {
   AgentOptimizerOptions,
   MetricEvaluatorOptions,
   DemoSelectorOptions,
   InstructionOptimizerOptions,
+  PostgresTraceStoreConfig,
+  PromptLoggerContext,
+  PromptLoggerConfig,
+  ABTestingFrameworkConfig,
+  PromptMonitorConfig,
+  RollbackManagerConfig,
+  RollbackResult,
+  AutoOptimizerConfig,
 } from './learning/index';
 
 export {

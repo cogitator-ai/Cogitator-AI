@@ -6,8 +6,6 @@ import type {
   LLMBackend,
   ThoughtBranch,
 } from '@cogitator-ai/types';
-import { CausalInferenceEngine } from '../inference/inference-engine';
-
 export interface EffectPredictorOptions {
   llmBackend: LLMBackend;
   model?: string;
@@ -36,13 +34,11 @@ export class CausalEffectPredictor {
     graph: CausalGraph,
     context: CausalContext
   ): Promise<PredictedEffect> {
-    const engine = new CausalInferenceEngine(graph);
-
     const relevantNodes = this.findRelevantNodes(action, graph);
 
-    const directEffects = this.predictDirectEffects(action, relevantNodes, graph, engine);
+    const directEffects = this.predictDirectEffects(action, relevantNodes, graph);
 
-    const sideEffects = this.predictSideEffects(action, relevantNodes, graph, engine, context);
+    const sideEffects = this.predictSideEffects(action, relevantNodes, graph, context);
 
     const llmEnhanced = await this.enhanceWithLLM(action, directEffects, sideEffects, context);
 
@@ -192,8 +188,7 @@ export class CausalEffectPredictor {
   private predictDirectEffects(
     _action: string,
     relevantNodes: string[],
-    graph: CausalGraph,
-    _engine: CausalInferenceEngine
+    graph: CausalGraph
   ): Array<{
     variable: string;
     expectedValue: number | string | boolean;
@@ -239,7 +234,6 @@ export class CausalEffectPredictor {
     _action: string,
     relevantNodes: string[],
     graph: CausalGraph,
-    _engine: CausalInferenceEngine,
     _context: CausalContext
   ): Array<{
     variable: string;

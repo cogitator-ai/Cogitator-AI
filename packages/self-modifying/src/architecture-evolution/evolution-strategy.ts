@@ -176,17 +176,18 @@ export class EvolutionStrategy {
   }
 
   private sampleNormal(): number {
-    const u1 = Math.random();
+    const u1 = Math.random() || Number.MIN_VALUE;
     const u2 = Math.random();
     return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
   }
 
   updateCandidate(candidate: EvolutionCandidate, reward: number): void {
+    const clampedReward = Math.max(0, Math.min(1, reward));
     const oldScore = candidate.score;
     const oldCount = candidate.evaluationCount;
 
     candidate.evaluationCount++;
-    candidate.score = (oldScore * oldCount + reward) / candidate.evaluationCount;
+    candidate.score = (oldScore * oldCount + clampedReward) / candidate.evaluationCount;
   }
 
   getExplorationRate(): number {

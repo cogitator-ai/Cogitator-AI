@@ -132,6 +132,8 @@ function buildUrl(host?: string, port?: number): string {
  * Wrap raw Redis client as unified RedisClient interface
  */
 function wrapClient(client: RawRedisClient): RedisClient {
+  const subscriptionHandlers = new Map<string, EventCallback>();
+
   return {
     ping: () => client.ping(),
     quit: () => client.quit(),
@@ -149,16 +151,25 @@ function wrapClient(client: RawRedisClient): RedisClient {
     publish: (channel, message) => client.publish(channel, message),
     subscribe: async (channel, callback) => {
       if (callback) {
-        const handler = (ch: unknown, msg: unknown) => {
-          if (ch === channel && typeof msg === 'string') {
-            callback(String(ch), msg);
+        const handler: EventCallback = (ch: unknown, msg: unknown) => {
+          if (typeof msg === 'string') {
+            const chStr = String(ch);
+            if (chStr === channel || chStr.endsWith(channel)) {
+              callback(channel, msg);
+            }
           }
         };
+        subscriptionHandlers.set(channel, handler);
         client.on('message', handler);
       }
       await client.subscribe(channel);
     },
     unsubscribe: async (channel) => {
+      const handler = subscriptionHandlers.get(channel);
+      if (handler) {
+        client.off('message', handler);
+        subscriptionHandlers.delete(channel);
+      }
       await client.unsubscribe(channel);
     },
     on: (event, callback) => {

@@ -98,8 +98,9 @@ export class Agent implements IAgent {
    * ```
    */
   clone(overrides: Partial<AgentConfig>): Agent {
+    const { id: _id, ...rest } = this.config;
     return new Agent({
-      ...this.config,
+      ...rest,
       ...overrides,
     });
   }

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   CausalGraphImpl,
   CausalGraphBuilder,
@@ -515,5 +515,167 @@ describe('getTripleType', () => {
     const bParents = graph.getParents('B');
     expect(bParents).toHaveLength(2);
     expect(bParents.map((n) => n.id).sort()).toEqual(['A', 'C']);
+  });
+});
+
+describe('regression: self-loop prevention', () => {
+  it('should throw when adding an edge from a node to itself', () => {
+    const graph = new CausalGraphImpl('self-loop-test', 'Self Loop Test');
+    graph.addNode({ id: 'A', name: 'A', variableType: 'observed' });
+
+    expect(() =>
+      graph.addEdge({
+        id: 'e1',
+        source: 'A',
+        target: 'A',
+        relationType: 'causes',
+        strength: 1,
+        confidence: 1,
+      })
+    ).toThrow('Self-loop not allowed: A');
+  });
+
+  it('should allow edges between different nodes', () => {
+    const graph = new CausalGraphImpl('no-self-loop', 'No Self Loop');
+    graph.addNode({ id: 'A', name: 'A', variableType: 'observed' });
+    graph.addNode({ id: 'B', name: 'B', variableType: 'observed' });
+
+    expect(() =>
+      graph.addEdge({
+        id: 'e1',
+        source: 'A',
+        target: 'B',
+        relationType: 'causes',
+        strength: 1,
+        confidence: 1,
+      })
+    ).not.toThrow();
+  });
+});
+
+describe('regression: counterfactual polynomial evaluation', () => {
+  it('should evaluate polynomial terms using extracted variable name', () => {
+    const graph = CausalGraphBuilder.create('poly-test')
+      .variable('X', 'Input', 'treatment')
+      .variable('Y', 'Output', 'outcome')
+      .from('X')
+      .causes('Y')
+      .from('Y')
+      .withEquation({
+        type: 'polynomial',
+        coefficients: { 'X^2': 3, X: 2 },
+        intercept: 1,
+      })
+      .build() as CausalGraphImpl;
+
+    const result = evaluateCounterfactual(graph, {
+      target: 'Y',
+      intervention: { X: 2 },
+      factual: { X: 1, Y: 6 },
+      question: 'What would Y be if X was 2?',
+    });
+
+    expect(result.counterfactualValue).toBe(1 + 3 * 4 + 2 * 2);
+  });
+
+  it('should handle polynomial terms without power suffix', () => {
+    const graph = CausalGraphBuilder.create('poly-no-power')
+      .variable('X', 'Input', 'treatment')
+      .variable('Y', 'Output', 'outcome')
+      .from('X')
+      .causes('Y')
+      .from('Y')
+      .withEquation({
+        type: 'polynomial',
+        coefficients: { X: 5 },
+        intercept: 0,
+      })
+      .build() as CausalGraphImpl;
+
+    const result = evaluateCounterfactual(graph, {
+      target: 'Y',
+      intervention: { X: 3 },
+      factual: { X: 1, Y: 5 },
+      question: 'What would Y be if X was 3?',
+    });
+
+    expect(result.counterfactualValue).toBe(5 * 3);
+  });
+});
+
+describe('regression: sampleGaussian NaN guard', () => {
+  it('should never return NaN from CounterfactualReasoner noise sampling', () => {
+    const reasoner = new CounterfactualReasoner({
+      defaultNoiseMean: 0,
+      defaultNoiseStd: 1,
+    });
+
+    const graph = CausalGraphBuilder.create('nan-test')
+      .variable('X', 'X', 'treatment')
+      .variable('Y', 'Y', 'outcome')
+      .from('X')
+      .causes('Y')
+      .from('Y')
+      .withEquation({
+        type: 'linear',
+        coefficients: { X: 1 },
+        intercept: 0,
+        noiseDistribution: 'gaussian',
+      })
+      .build() as CausalGraphImpl;
+
+    for (let i = 0; i < 500; i++) {
+      const result = reasoner.evaluate(graph, {
+        target: 'Y',
+        intervention: { X: 1 },
+        factual: { X: 0 },
+        question: 'test',
+      });
+
+      expect(Number.isNaN(result.counterfactualValue)).toBe(false);
+    }
+  });
+
+  it('should produce valid gaussian samples when Math.random would return 0', () => {
+    let callCount = 0;
+    vi.spyOn(Math, 'random').mockImplementation(() => {
+      callCount++;
+      if (callCount % 2 === 1) return 0;
+      return 0.5;
+    });
+
+    try {
+      const reasoner = new CounterfactualReasoner({
+        defaultNoiseMean: 0,
+        defaultNoiseStd: 1,
+      });
+
+      const graph = CausalGraphBuilder.create('zero-random-test')
+        .variable('X', 'X', 'treatment')
+        .variable('Y', 'Y', 'outcome')
+        .from('X')
+        .causes('Y')
+        .from('Y')
+        .withEquation({
+          type: 'linear',
+          coefficients: { X: 1 },
+          intercept: 0,
+          noiseDistribution: 'gaussian',
+        })
+        .build() as CausalGraphImpl;
+
+      const result = reasoner.evaluate(graph, {
+        target: 'Y',
+        intervention: { X: 1 },
+        factual: { X: 0 },
+        question: 'test',
+      });
+
+      expect(Number.isNaN(result.counterfactualValue)).toBe(false);
+      expect(typeof result.counterfactualValue).toBe('number');
+      expect(Number.isFinite(result.counterfactualValue)).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });

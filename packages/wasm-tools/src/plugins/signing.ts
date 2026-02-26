@@ -1,6 +1,6 @@
 interface SigningInput {
   operation: 'generateKeypair' | 'sign' | 'verify';
-  algorithm: 'ed25519' | 'ecdsa-p256';
+  algorithm: 'ed25519';
   message?: string;
   privateKey?: string;
   publicKey?: string;
@@ -18,6 +18,12 @@ interface SigningOutput {
 }
 
 function hexToBytes(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0) {
+    throw new Error('Hex string must have even length');
+  }
+  if (!/^[0-9a-fA-F]*$/.test(hex)) {
+    throw new Error('Invalid hex characters');
+  }
   const bytes = new Uint8Array(hex.length / 2);
   for (let i = 0; i < hex.length; i += 2) {
     bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
@@ -43,10 +49,10 @@ function base64ToBytes(b64: string): Uint8Array {
 
   let j = 0;
   for (let i = 0; i < len; i += 4) {
-    const a = lookup[clean[i]] || 0;
-    const b = lookup[clean[i + 1]] || 0;
-    const c = lookup[clean[i + 2]] || 0;
-    const d = lookup[clean[i + 3]] || 0;
+    const a = lookup[clean[i]] ?? 0;
+    const b = lookup[clean[i + 1]] ?? 0;
+    const c = lookup[clean[i + 2]] ?? 0;
+    const d = lookup[clean[i + 3]] ?? 0;
     out[j++] = (a << 2) | (b >> 4);
     if (j < outLen) out[j++] = ((b & 15) << 4) | (c >> 2);
     if (j < outLen) out[j++] = ((c & 3) << 6) | d;
@@ -639,6 +645,15 @@ class TextEncoder {
         bytes.push(c);
       } else if (c < 0x800) {
         bytes.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f));
+      } else if (c >= 0xd800 && c < 0xdc00 && i + 1 < str.length) {
+        const c2 = str.charCodeAt(++i);
+        c = 0x10000 + ((c & 0x3ff) << 10) + (c2 & 0x3ff);
+        bytes.push(
+          0xf0 | (c >> 18),
+          0x80 | ((c >> 12) & 0x3f),
+          0x80 | ((c >> 6) & 0x3f),
+          0x80 | (c & 0x3f)
+        );
       } else {
         bytes.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
       }

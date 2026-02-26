@@ -6,10 +6,25 @@ import {
   createTestJudge,
   isOllamaRunning,
 } from '../../helpers/setup';
-import { expectJudge, setJudge } from '../../helpers/assertions';
-import type { Cogitator } from '@cogitator-ai/core';
+import { setJudge } from '../../helpers/assertions';
+import type { Cogitator, RunResult } from '@cogitator-ai/core';
 
 const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+
+async function runUntilToolCalled(
+  cogitator: Cogitator,
+  agent: ReturnType<typeof createTestAgent>,
+  input: string,
+  threadId: string,
+  maxAttempts = 5
+): Promise<RunResult> {
+  let result: RunResult | undefined;
+  for (let i = 0; i < maxAttempts; i++) {
+    result = await cogitator.run(agent, { input, threadId });
+    if (result.toolCalls.length > 0) return result;
+  }
+  return result!;
+}
 
 describeE2E('Core: Agent Multi-Turn', () => {
   let cogitator: Cogitator;
@@ -25,54 +40,90 @@ describeE2E('Core: Agent Multi-Turn', () => {
     await cogitator.close();
   });
 
-  it('remembers context from previous turns', async () => {
-    const agent = createTestAgent();
-    const threadId = `thread_multitest_${Date.now()}`;
+  it('remembers specific data across turns', async () => {
+    const agent = createTestAgent({
+      instructions:
+        'You have perfect memory. When the user tells you a code, remember it exactly. When asked, repeat it exactly.',
+    });
+    const threadId = `thread_secret_${Date.now()}`;
 
-    const r1 = await cogitator.run(agent, {
-      input: 'My name is Alex. Remember it.',
+    await cogitator.run(agent, {
+      input: 'The secret code is ALPHA-7742. Remember it.',
       threadId,
     });
-    expect(typeof r1.output).toBe('string');
 
     const r2 = await cogitator.run(agent, {
-      input: 'What is my name?',
+      input: 'What is the secret code I told you? Reply with ONLY the code.',
       threadId,
     });
-    expect(typeof r2.output).toBe('string');
 
-    await expectJudge(r2.output, {
-      question: 'User said "My name is Alex" in turn 1, then asked "What is my name?" in turn 2',
-      criteria: "Response mentions Alex or the user's name",
-    });
+    const output = r2.output.toUpperCase();
+    expect(output.includes('ALPHA-7742') || output.includes('7742')).toBe(true);
   });
 
-  it('maintains tool results across turns', async () => {
+  it('uses tool results from previous turns in next computation', async () => {
     const tools = createTestTools();
     const agent = createTestAgent({
       instructions:
-        'You are a math assistant. Use tools for calculations. Always state the numeric result clearly.',
+        'You are a math assistant. You MUST use tools for ALL calculations. Never compute manually. State numeric results clearly.',
       tools: [tools.multiply, tools.add],
     });
-    const threadId = `thread_toolmem_${Date.now()}`;
+    const threadId = `thread_toolchain_${Date.now()}`;
 
-    const r1 = await cogitator.run(agent, {
-      input: 'Multiply 10 by 5.',
-      threadId,
+    const r1 = await runUntilToolCalled(
+      cogitator,
+      agent,
+      'Use the multiply tool to compute 6 * 7. You MUST call the multiply tool.',
+      threadId
+    );
+
+    expect(r1.toolCalls.some((tc) => tc.name === 'multiply')).toBe(true);
+    expect(r1.output).toContain('42');
+
+    const r2 = await runUntilToolCalled(
+      cogitator,
+      agent,
+      'Now use the add tool to add 8 to the previous result (42). You MUST call the add tool.',
+      threadId
+    );
+
+    const addCall = r2.toolCalls.find((tc) => tc.name === 'add');
+    const outputHas50 = r2.output.includes('50');
+
+    expect(addCall || outputHas50).toBeTruthy();
+
+    if (addCall) {
+      const args = addCall.arguments as Record<string, number>;
+      const usedCorrectBase = args.a === 42 || args.b === 42;
+      expect(usedCorrectBase).toBe(true);
+    }
+  });
+
+  it('maintains distinct conversations on different threads', async () => {
+    const agent = createTestAgent({
+      instructions:
+        'You have perfect memory. Remember what the user tells you. When asked, recall exactly what they said.',
     });
-    expect(typeof r1.output).toBe('string');
-    expect(r1.usage.totalTokens).toBeGreaterThan(0);
+    const threadA = `thread_red_${Date.now()}`;
+    const threadB = `thread_blue_${Date.now()}`;
 
-    const r2 = await cogitator.run(agent, {
-      input: 'Now add 25 to that result.',
-      threadId,
+    await cogitator.run(agent, {
+      input: 'My favorite color is RED. Remember this.',
+      threadId: threadA,
     });
-    expect(typeof r2.output).toBe('string');
 
-    const output = r2.output.toLowerCase();
-    const has75 = output.includes('75') || output.includes('seventy-five');
-    const usedAddTool = r2.toolCalls.some((tc) => tc.name === 'add');
+    await cogitator.run(agent, {
+      input: 'My favorite color is BLUE. Remember this.',
+      threadId: threadB,
+    });
 
-    expect(has75 || usedAddTool).toBe(true);
+    const r3 = await cogitator.run(agent, {
+      input: 'What is my favorite color? Reply with ONLY the color name.',
+      threadId: threadA,
+    });
+
+    const output = r3.output.toUpperCase();
+    expect(output).toContain('RED');
+    expect(output).not.toContain('BLUE');
   });
 });

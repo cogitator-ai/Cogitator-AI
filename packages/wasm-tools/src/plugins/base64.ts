@@ -57,7 +57,7 @@ function decodeBase64(input: string, urlSafe: boolean): string {
   let chars = urlSafe ? URL_SAFE_CHARS : STANDARD_CHARS;
   let normalized = input;
 
-  if (!urlSafe && input.includes('-')) {
+  if (!urlSafe && (input.includes('-') || input.includes('_'))) {
     chars = URL_SAFE_CHARS;
     normalized = input;
   }

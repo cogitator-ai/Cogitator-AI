@@ -30,5 +30,10 @@ export function createChunker(
         maxChunkSize: config.chunkSize,
       });
     }
+
+    default: {
+      const _exhaustive: never = config.strategy;
+      throw new Error(`Unknown chunking strategy: ${_exhaustive}`);
+    }
   }
 }

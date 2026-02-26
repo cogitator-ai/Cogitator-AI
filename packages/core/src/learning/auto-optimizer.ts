@@ -205,10 +205,6 @@ export class AutoOptimizer {
   }
 
   async forceRollback(agentId: string, reason: string): Promise<boolean> {
-    if (!this.monitor.canRollback(agentId)) {
-      return false;
-    }
-
     const result = await this.rollbackManager.rollbackToPrevious(agentId);
 
     if (result.success) {

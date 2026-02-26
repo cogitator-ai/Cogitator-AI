@@ -10,6 +10,7 @@ import {
   parseHypothesisResponse,
   GeneratedHypothesis,
 } from './prompts';
+import { nanoid } from 'nanoid';
 
 export interface HypothesisGeneratorOptions {
   llmBackend: LLMBackend;
@@ -17,8 +18,6 @@ export interface HypothesisGeneratorOptions {
   maxHypothesesPerBatch?: number;
   minExpectedStrength?: number;
 }
-
-let hypothesisIdCounter = 0;
 
 export class CausalHypothesisGenerator {
   private llm: LLMBackend;
@@ -258,7 +257,7 @@ Respond in JSON format:
 
   private createHypothesis(generated: GeneratedHypothesis, _agentId: string): CausalHypothesis {
     return {
-      id: `hypothesis-${++hypothesisIdCounter}-${Date.now()}`,
+      id: `hypothesis-${nanoid(8)}`,
       cause: generated.cause,
       effect: generated.effect,
       relationType: this.mapRelationType(generated.relationType),

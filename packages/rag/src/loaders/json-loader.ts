@@ -30,6 +30,14 @@ export class JSONLoader implements DocumentLoader {
   }
 
   private itemToDocument(item: unknown, source: string): RAGDocument {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+      return {
+        id: nanoid(),
+        content: String(item),
+        source,
+        sourceType: 'json',
+      };
+    }
     const obj = item as Record<string, unknown>;
     const content = this.extractContent(obj);
     const metadata = this.extractMetadata(obj);

@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/sandbox",
-  "version": "0.2.24",
+  "version": "0.2.25",
   "description": "Sandbox execution for Cogitator agents (Docker and WASM)",
   "type": "module",
   "main": "./dist/index.js",
@@ -23,16 +23,15 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@cogitator-ai/types": "workspace:*",
-    "@types/dockerode": "^3.3.31",
-    "@types/node": "^25.0.10",
-    "nanoid": "^5.0.4"
+    "@cogitator-ai/types": "workspace:*"
   },
   "optionalDependencies": {
     "@extism/extism": "^1.0.3",
     "dockerode": "^4.0.2"
   },
   "devDependencies": {
+    "@types/dockerode": "^3.3.31",
+    "@types/node": "^25.0.10",
     "typescript": "^5.3.0",
     "vitest": "^4.0.18"
   },

@@ -111,12 +111,52 @@ export interface ParsedAssessment {
 
 export function parseMetaAssessmentResponse(content: string): ParsedAssessment | null {
   try {
-    const jsonMatch = /\{[\s\S]*\}/.exec(content);
-    if (!jsonMatch) return null;
-    return JSON.parse(jsonMatch[0]) as ParsedAssessment;
+    const json = extractJson(content);
+    if (!json) return null;
+    return JSON.parse(json) as ParsedAssessment;
   } catch {
     return null;
   }
+}
+
+function extractJson(text: string): string | null {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (ch === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+
+  return null;
 }
 
 export const META_REASONING_SYSTEM_PROMPT = `You are a meta-reasoning system analyzing an AI agent's reasoning process.

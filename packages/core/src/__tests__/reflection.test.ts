@@ -1,11 +1,18 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { InMemoryInsightStore } from '../reflection/insight-store';
+import { ReflectionEngine } from '../reflection/reflection-engine';
 import {
   parseReflectionResponse,
   buildToolReflectionPrompt,
   buildErrorReflectionPrompt,
 } from '../reflection/prompts';
-import type { Insight, AgentContext, ReflectionAction } from '@cogitator-ai/types';
+import type {
+  Insight,
+  AgentContext,
+  ReflectionAction,
+  LLMBackend,
+  InsightStore,
+} from '@cogitator-ai/types';
 
 describe('InMemoryInsightStore', () => {
   let store: InMemoryInsightStore;
@@ -347,5 +354,106 @@ describe('Reflection Prompts', () => {
       expect(prompt).toContain('file_read');
       expect(prompt).toContain('process_data');
     });
+  });
+});
+
+describe('ReflectionEngine', () => {
+  function createMockLLM(): LLMBackend {
+    return {
+      chat: vi.fn().mockResolvedValue({
+        content: JSON.stringify({
+          wasSuccessful: true,
+          confidence: 0.8,
+          reasoning: 'ok',
+          insights: [{ type: 'tip', content: 'test insight', context: 'testing' }],
+        }),
+      }),
+      listModels: vi.fn().mockResolvedValue([]),
+    } as unknown as LLMBackend;
+  }
+
+  function createMockInsightStore(): InsightStore {
+    return {
+      store: vi.fn().mockResolvedValue(undefined),
+      storeMany: vi.fn().mockResolvedValue(undefined),
+      getById: vi.fn().mockResolvedValue(null),
+      getAll: vi.fn().mockResolvedValue([]),
+      findRelevant: vi.fn().mockResolvedValue([]),
+      markUsed: vi.fn().mockResolvedValue(undefined),
+      prune: vi.fn().mockResolvedValue(0),
+      delete: vi.fn().mockResolvedValue(true),
+      clear: vi.fn().mockResolvedValue(undefined),
+    };
+  }
+
+  it('caps reflections map at MAX_REFLECTION_RUNS (100)', async () => {
+    const llm = createMockLLM();
+    const insightStore = createMockInsightStore();
+
+    const engine = new ReflectionEngine({
+      llm,
+      insightStore,
+      config: {
+        enabled: true,
+        reflectionModel: 'gpt-4o',
+        storeInsights: false,
+      },
+    });
+
+    for (let i = 0; i < 110; i++) {
+      const context: AgentContext = {
+        agentId: 'agent-1',
+        agentName: 'Test',
+        runId: `run-${i}`,
+        threadId: 'thread-1',
+        goal: 'test',
+        iterationIndex: 0,
+        previousActions: [],
+        availableTools: [],
+      };
+
+      await engine.reflectOnToolCall(
+        { type: 'tool_call', toolName: 'test', input: {}, output: 'ok' },
+        context
+      );
+    }
+
+    const reflectionsMap = (engine as unknown as { reflections: Map<string, unknown> }).reflections;
+    expect(reflectionsMap.size).toBeLessThanOrEqual(100);
+
+    expect(engine.getRunReflections('run-0')).toHaveLength(0);
+    expect(engine.getRunReflections('run-109')).toHaveLength(1);
+  });
+
+  it('throws error when reflectionModel is empty string', async () => {
+    const llm = createMockLLM();
+    const insightStore = createMockInsightStore();
+
+    const engine = new ReflectionEngine({
+      llm,
+      insightStore,
+      config: {
+        enabled: true,
+        reflectionModel: '',
+      },
+    });
+
+    const context: AgentContext = {
+      agentId: 'agent-1',
+      agentName: 'Test',
+      runId: 'run-1',
+      threadId: 'thread-1',
+      goal: 'test',
+      iterationIndex: 0,
+      previousActions: [],
+      availableTools: [],
+    };
+
+    await expect(
+      engine.reflectOnToolCall(
+        { type: 'tool_call', toolName: 'test', input: {}, output: 'ok' },
+        context
+      )
+    ).rejects.toThrow('requires a reflectionModel');
   });
 });

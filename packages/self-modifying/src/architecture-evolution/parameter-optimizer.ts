@@ -7,7 +7,7 @@ import type {
   EvolutionMetrics,
 } from '@cogitator-ai/types';
 import { CapabilityAnalyzer } from './capability-analyzer';
-import { EvolutionStrategy, type SelectionResult as _SelectionResult } from './evolution-strategy';
+import { EvolutionStrategy } from './evolution-strategy';
 import {
   buildCandidateGenerationPrompt,
   buildPerformanceAnalysisPrompt,
@@ -19,6 +19,7 @@ export interface ParameterOptimizerOptions {
   llm: LLMBackend;
   config: ArchitectureEvolutionConfig;
   baseConfig: ArchitectureConfig;
+  model?: string;
 }
 
 export interface OptimizationResult {
@@ -41,6 +42,7 @@ interface HistoricalRecord {
 export class ParameterOptimizer {
   private readonly llm: LLMBackend;
   private readonly config: ArchitectureEvolutionConfig;
+  private readonly model: string;
   private readonly baseConfig: ArchitectureConfig;
   private readonly capabilityAnalyzer: CapabilityAnalyzer;
   private readonly evolutionStrategy: EvolutionStrategy;
@@ -48,16 +50,19 @@ export class ParameterOptimizer {
   private candidates: EvolutionCandidate[] = [];
   private history: HistoricalRecord[] = [];
   private currentGeneration = 0;
+  private lastEvolutionTimestamp = 0;
   private readonly maxHistorySize = 100;
 
   constructor(options: ParameterOptimizerOptions) {
     this.llm = options.llm;
     this.config = options.config;
+    this.model = options.model ?? 'default';
     this.baseConfig = options.baseConfig;
 
     this.capabilityAnalyzer = new CapabilityAnalyzer({
       llm: options.llm,
       enableLLMAnalysis: true,
+      model: options.model,
     });
 
     this.evolutionStrategy = new EvolutionStrategy({
@@ -173,6 +178,7 @@ export class ParameterOptimizer {
 
   private async evolve(currentProfile: TaskProfile): Promise<void> {
     this.currentGeneration++;
+    this.lastEvolutionTimestamp = Date.now();
 
     const topCandidates = [...this.candidates]
       .filter((c) => c.evaluationCount > 0)
@@ -325,10 +331,7 @@ export class ParameterOptimizer {
   }
 
   private getLastEvolutionTime(): number {
-    const latestGenCandidate = this.candidates.find(
-      (c) => c.generation === this.currentGeneration && c.evaluationCount === 0
-    );
-    return latestGenCandidate ? Date.now() - 300000 : 0;
+    return this.lastEvolutionTimestamp;
   }
 
   private getRelevantHistory(profile: TaskProfile): HistoricalRecord[] {
@@ -410,7 +413,7 @@ export class ParameterOptimizer {
       fields++;
     }
 
-    if (a.model !== b.model) {
+    if (a.model !== undefined && b.model !== undefined && a.model !== b.model) {
       distance += 1;
       fields++;
     }
@@ -447,8 +450,9 @@ export class ParameterOptimizer {
     if (evaluatedCandidates.length === 0) return null;
 
     const results = evaluatedCandidates.map((c) => {
+      const configKey = JSON.stringify(c.config, Object.keys(c.config).sort());
       const records = this.history.filter(
-        (h) => JSON.stringify(h.config) === JSON.stringify(c.config)
+        (h) => JSON.stringify(h.config, Object.keys(h.config).sort()) === configKey
       );
       const avgMetrics =
         records.length > 0
@@ -488,7 +492,7 @@ export class ParameterOptimizer {
     if (this.llm.complete) {
       return this.llm.complete({ messages, temperature });
     }
-    return this.llm.chat({ model: 'default', messages, temperature });
+    return this.llm.chat({ model: this.model, messages, temperature });
   }
 
   getCandidates(): EvolutionCandidate[] {
@@ -503,6 +507,7 @@ export class ParameterOptimizer {
     this.candidates = [];
     this.history = [];
     this.currentGeneration = 0;
+    this.lastEvolutionTimestamp = 0;
     this.evolutionStrategy.reset();
   }
 }

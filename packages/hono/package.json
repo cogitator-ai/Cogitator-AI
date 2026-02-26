@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/hono",
-  "version": "0.1.5",
+  "version": "0.1.9",
   "description": "Hono server adapter for Cogitator AI runtime — works on Node.js, Bun, Deno, Cloudflare Workers",
   "type": "module",
   "exports": {
