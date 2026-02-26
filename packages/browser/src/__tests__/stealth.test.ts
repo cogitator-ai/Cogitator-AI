@@ -355,6 +355,8 @@ describe('BrowserSession stealth integration', () => {
       addCookies: vi.fn().mockResolvedValue(undefined),
       cookies: vi.fn().mockResolvedValue([]),
       addInitScript: vi.fn().mockResolvedValue(undefined),
+      setDefaultNavigationTimeout: vi.fn(),
+      setDefaultTimeout: vi.fn(),
     };
 
     const mockBrowser = {

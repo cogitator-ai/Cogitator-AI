@@ -8,29 +8,28 @@ import {
   createVisionTools,
 } from '../tools/vision';
 
-function createMockSession() {
+const DEFAULT_ARIA = [
+  '- document:',
+  '  - button "Submit"',
+  '  - link "Home"',
+  '  - heading "Welcome" [level=1]',
+].join('\n');
+
+function createMockSession(ariaSnapshot: string | null = DEFAULT_ARIA) {
+  const defaultLocator = {
+    screenshot: vi.fn().mockResolvedValue(Buffer.from('fake-element-data')),
+    boundingBox: vi.fn().mockResolvedValue({ x: 10, y: 20, width: 100, height: 50 }),
+    count: vi.fn().mockResolvedValue(1),
+    nth: vi.fn().mockReturnValue({
+      click: vi.fn().mockResolvedValue(undefined),
+    }),
+    ariaSnapshot: vi.fn().mockResolvedValue(ariaSnapshot),
+  };
+
   const mockPage = {
     screenshot: vi.fn().mockResolvedValue(Buffer.from('fake-png-data')),
     viewportSize: vi.fn().mockReturnValue({ width: 1280, height: 720 }),
-    locator: vi.fn().mockReturnValue({
-      screenshot: vi.fn().mockResolvedValue(Buffer.from('fake-element-data')),
-      boundingBox: vi.fn().mockResolvedValue({ x: 10, y: 20, width: 100, height: 50 }),
-      count: vi.fn().mockResolvedValue(1),
-      nth: vi.fn().mockReturnValue({
-        click: vi.fn().mockResolvedValue(undefined),
-      }),
-    }),
-    accessibility: {
-      snapshot: vi.fn().mockResolvedValue({
-        role: 'WebArea',
-        name: '',
-        children: [
-          { role: 'button', name: 'Submit' },
-          { role: 'link', name: 'Home' },
-          { role: 'heading', name: 'Welcome' },
-        ],
-      }),
-    },
+    locator: vi.fn().mockReturnValue(defaultLocator),
     getByRole: vi.fn().mockReturnValue({
       count: vi.fn().mockResolvedValue(1),
       nth: vi.fn().mockReturnValue({
@@ -41,7 +40,7 @@ function createMockSession() {
     getByLabel: vi.fn().mockReturnValue({ count: vi.fn().mockResolvedValue(0) }),
     getByPlaceholder: vi.fn().mockReturnValue({ count: vi.fn().mockResolvedValue(0) }),
   };
-  return { session: { page: mockPage } as unknown as BrowserSession, mockPage };
+  return { session: { page: mockPage } as unknown as BrowserSession, mockPage, defaultLocator };
 }
 
 const dummyContext = {
@@ -189,26 +188,21 @@ describe('vision tools', () => {
     });
 
     it('returns empty array when accessibility tree is null', async () => {
-      mockPage.accessibility.snapshot.mockResolvedValueOnce(null);
+      const { session: s } = createMockSession(null);
 
-      const t = createFindByDescriptionTool(session);
+      const t = createFindByDescriptionTool(s);
       const result = await t.execute({ description: 'anything' }, dummyContext);
 
       expect(result.elements).toEqual([]);
     });
 
     it('filters out nodes with name shorter than 2 characters', async () => {
-      mockPage.accessibility.snapshot.mockResolvedValueOnce({
-        role: 'WebArea',
-        name: '',
-        children: [
-          { role: 'button', name: 'X' },
-          { role: 'button', name: 'OK' },
-          { role: 'button', name: 'Submit' },
-        ],
-      });
+      const aria = ['- document:', '  - button "X"', '  - button "OK"', '  - button "Submit"'].join(
+        '\n'
+      );
+      const { session: s } = createMockSession(aria);
 
-      const t = createFindByDescriptionTool(session);
+      const t = createFindByDescriptionTool(s);
       const result = await t.execute({ description: 'button' }, dummyContext);
 
       const names = result.elements.map((e: { name: string }) => e.name);

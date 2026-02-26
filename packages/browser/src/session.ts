@@ -118,6 +118,9 @@ export class BrowserSession {
       await applyStealthToContext(this._context, this.stealthConfig!);
     }
 
+    this._context.setDefaultNavigationTimeout(this._config.timeout);
+    this._context.setDefaultTimeout(this._config.actionTimeout);
+
     const firstPage = await this._context.newPage();
     this._pages = [firstPage];
     this._activePageIndex = 0;

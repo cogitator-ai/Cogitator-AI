@@ -647,6 +647,8 @@ describeIfBrowser('Browser Tools E2E', () => {
 
       await navigate.execute({ url: baseUrl }, ctx);
 
+      await getApiCalls.execute({}, ctx);
+
       await session.page.evaluate((url: string) => {
         void fetch(url + '/api/data');
       }, baseUrl);

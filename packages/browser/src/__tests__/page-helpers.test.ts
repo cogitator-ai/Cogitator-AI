@@ -1,12 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import { getReadableText, getAccessibilityTree, elementToInfo } from '../utils/page-helpers';
 
-function createMockPage(evaluateResult: unknown = '') {
+function createMockPage(evaluateResult: unknown = '', ariaResult: string | null = null) {
   return {
     evaluate: vi.fn().mockResolvedValue(evaluateResult),
-    accessibility: {
-      snapshot: vi.fn().mockResolvedValue(null),
-    },
+    locator: vi.fn().mockReturnValue({
+      ariaSnapshot: vi.fn().mockResolvedValue(ariaResult),
+    }),
   };
 }
 
@@ -180,121 +180,75 @@ describe('getReadableText', () => {
 });
 
 describe('getAccessibilityTree', () => {
-  it('returns null when snapshot is null', async () => {
-    const page = createMockPage();
-    page.accessibility.snapshot.mockResolvedValue(null);
+  it('returns null when ariaSnapshot is null', async () => {
+    const page = createMockPage('', null);
 
     const result = await getAccessibilityTree(page as never);
 
     expect(result).toBeNull();
   });
 
-  it('simplifies flat snapshot', async () => {
-    const page = createMockPage();
-    page.accessibility.snapshot.mockResolvedValue({
-      role: 'WebArea',
-      name: 'Test Page',
-    });
+  it('parses flat document snapshot', async () => {
+    const aria = '- document:\n  - heading "Title" [level=1]';
+    const page = createMockPage('', aria);
 
     const result = await getAccessibilityTree(page as never);
 
-    expect(result).toEqual({
-      role: 'WebArea',
-      name: 'Test Page',
-    });
+    expect(result).not.toBeNull();
+    expect(result!.role).toBe('document');
+    expect(result!.children).toHaveLength(1);
+    expect(result!.children![0]).toEqual({ role: 'heading', name: 'Title' });
   });
 
-  it('simplifies nested snapshot with children', async () => {
-    const page = createMockPage();
-    page.accessibility.snapshot.mockResolvedValue({
-      role: 'WebArea',
-      name: 'Page',
-      children: [
-        {
-          role: 'heading',
-          name: 'Title',
-          level: 1,
-          children: [],
-        },
-        {
-          role: 'button',
-          name: 'Submit',
-          disabled: false,
-        },
-      ],
-    });
+  it('parses nested snapshot with children', async () => {
+    const aria = ['- document:', '  - heading "Title" [level=1]', '  - button "Submit"'].join('\n');
+    const page = createMockPage('', aria);
 
     const result = await getAccessibilityTree(page as never);
 
-    expect(result).toEqual({
-      role: 'WebArea',
-      name: 'Page',
-      children: [
-        { role: 'heading', name: 'Title' },
-        { role: 'button', name: 'Submit' },
-      ],
-    });
+    expect(result!.children).toHaveLength(2);
+    expect(result!.children![0]).toEqual({ role: 'heading', name: 'Title' });
+    expect(result!.children![1]).toEqual({ role: 'button', name: 'Submit' });
   });
 
   it('handles deeply nested tree', async () => {
-    const page = createMockPage();
-    page.accessibility.snapshot.mockResolvedValue({
-      role: 'WebArea',
-      name: '',
-      children: [
-        {
-          role: 'navigation',
-          name: 'Main',
-          children: [
-            {
-              role: 'list',
-              name: '',
-              children: [
-                { role: 'listitem', name: 'Home' },
-                { role: 'listitem', name: 'About' },
-              ],
-            },
-          ],
-        },
-      ],
-    });
+    const aria = [
+      '- document:',
+      '  - navigation "Main":',
+      '    - list:',
+      '      - listitem "Home"',
+      '      - listitem "About"',
+    ].join('\n');
+    const page = createMockPage('', aria);
 
     const result = await getAccessibilityTree(page as never);
 
-    expect(result!.children![0].children![0].children).toHaveLength(2);
-    expect(result!.children![0].children![0].children![0]).toEqual({
-      role: 'listitem',
-      name: 'Home',
-    });
+    const nav = result!.children![0];
+    expect(nav.role).toBe('navigation');
+    expect(nav.children![0].role).toBe('list');
+    expect(nav.children![0].children).toHaveLength(2);
+    expect(nav.children![0].children![0]).toEqual({ role: 'listitem', name: 'Home' });
   });
 
-  it('strips extra properties from snapshot nodes', async () => {
-    const page = createMockPage();
-    page.accessibility.snapshot.mockResolvedValue({
-      role: 'textbox',
-      name: 'Email',
-      value: 'test@test.com',
-      focused: true,
-      description: 'Enter your email',
-    });
+  it('only extracts role and name from snapshot lines', async () => {
+    const aria = '- document:\n  - textbox "Email"';
+    const page = createMockPage('', aria);
 
     const result = await getAccessibilityTree(page as never);
 
-    expect(result).toEqual({
-      role: 'textbox',
-      name: 'Email',
-    });
-    expect(result).not.toHaveProperty('value');
-    expect(result).not.toHaveProperty('focused');
+    const node = result!.children![0];
+    expect(node).toEqual({ role: 'textbox', name: 'Email' });
+    expect(node).not.toHaveProperty('value');
+    expect(node).not.toHaveProperty('focused');
   });
 
-  it('handles missing role and name gracefully', async () => {
-    const page = createMockPage();
-    page.accessibility.snapshot.mockResolvedValue({});
+  it('handles nodes without names', async () => {
+    const aria = '- document:\n  - navigation:';
+    const page = createMockPage('', aria);
 
     const result = await getAccessibilityTree(page as never);
 
-    expect(result).toEqual({ role: '', name: '' });
+    expect(result!.children![0]).toEqual({ role: 'navigation', name: '' });
   });
 });
 

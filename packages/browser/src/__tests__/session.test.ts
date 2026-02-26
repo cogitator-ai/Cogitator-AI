@@ -36,6 +36,8 @@ function createPlaywrightMock() {
     }),
     cookies: vi.fn().mockImplementation(async () => [...cookieStore]),
     close: vi.fn().mockResolvedValue(undefined),
+    setDefaultNavigationTimeout: vi.fn(),
+    setDefaultTimeout: vi.fn(),
   };
 
   mockContext.newPage.mockResolvedValueOnce(firstPage);

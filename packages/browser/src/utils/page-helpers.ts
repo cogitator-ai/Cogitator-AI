@@ -20,24 +20,45 @@ export interface AccessibilityNode {
 }
 
 export async function getAccessibilityTree(page: Page): Promise<AccessibilityNode | null> {
-  const snapshot = await (
-    page as unknown as { accessibility: { snapshot(): Promise<Record<string, unknown> | null> } }
-  ).accessibility.snapshot();
-  if (!snapshot) return null;
+  const raw = await page.locator(':root').ariaSnapshot();
+  if (!raw) return null;
+  return parseAriaSnapshot(raw);
+}
 
-  function simplify(node: Record<string, unknown>): AccessibilityNode {
-    const result: AccessibilityNode = {
-      role: (node.role as string) ?? '',
-      name: (node.name as string) ?? '',
-    };
-    const children = node.children as Record<string, unknown>[] | undefined;
-    if (children?.length) {
-      result.children = children.map(simplify);
+function parseAriaSnapshot(snapshot: string): AccessibilityNode {
+  const lines = snapshot.split('\n');
+  const root: AccessibilityNode = { role: 'WebArea', name: '', children: [] };
+  const stack: Array<{ node: AccessibilityNode; indent: number }> = [{ node: root, indent: -1 }];
+
+  for (const line of lines) {
+    if (!line.trim() || line.trim().startsWith('/')) continue;
+
+    const stripped = line.replace(/^- /, '');
+    const indent = stripped.search(/\S/);
+    const content = stripped.trim().replace(/^- /, '');
+
+    const match = /^(\w[\w\s]*?)(?:\s+"(.*)")?(?:\s+\[.*])?:?$/.exec(content);
+    if (!match) continue;
+
+    const role = match[1].trim();
+    const name = match[2] ?? '';
+
+    const node: AccessibilityNode = { role, name };
+
+    while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {
+      stack.pop();
     }
-    return result;
+
+    const parent = stack[stack.length - 1].node;
+    if (!parent.children) parent.children = [];
+    parent.children.push(node);
+    stack.push({ node, indent });
   }
 
-  return simplify(snapshot as unknown as Record<string, unknown>);
+  if (root.children?.length === 1 && root.children[0].role === 'document') {
+    return root.children[0];
+  }
+  return root;
 }
 
 export async function elementToInfo(handle: ElementHandle): Promise<ElementInfo> {

@@ -10,7 +10,7 @@ import {
   type FindByDescriptionInput,
   type ClickByDescriptionInput,
 } from '../utils/schemas';
-import type { AccessibilityNode } from '../utils/page-helpers';
+import { getAccessibilityTree, type AccessibilityNode } from '../utils/page-helpers';
 
 export function createScreenshotTool(session: BrowserSession) {
   return tool({
@@ -77,9 +77,7 @@ export function createFindByDescriptionTool(session: BrowserSession) {
     parameters: findByDescriptionSchema,
     execute: async (params: FindByDescriptionInput) => {
       const page = session.page;
-      const snapshot = await (
-        page as unknown as { accessibility: { snapshot(): Promise<AccessibilityNode | null> } }
-      ).accessibility.snapshot();
+      const snapshot = await getAccessibilityTree(page);
       if (!snapshot) return { elements: [] };
 
       const description = params.description.toLowerCase();
