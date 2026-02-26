@@ -13,7 +13,7 @@ import { isOllamaRunning } from '../../helpers/setup';
 const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
 
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
-const TOOL_GEN_MODEL = process.env.TOOL_GEN_MODEL || 'qwen2.5:7b';
+const TOOL_GEN_MODEL = process.env.TOOL_GEN_MODEL || process.env.TEST_MODEL || 'qwen2.5:0.5b';
 
 const toolGenConfig: ToolSelfGenerationConfig = {
   enabled: true,

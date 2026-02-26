@@ -4,10 +4,8 @@ import {
   createTestCogitator,
   createTestAgent,
   createTestTools,
-  createTestJudge,
   isOllamaRunning,
 } from '../../helpers/setup';
-import { expectJudge, setJudge } from '../../helpers/assertions';
 import { startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
 import type { Cogitator } from '@cogitator-ai/core';
 
@@ -21,7 +19,6 @@ describeE2E('Cross-Package: Remote Tool Execution', () => {
     const available = await isOllamaRunning();
     if (!available) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
-    setJudge(createTestJudge());
 
     const tools = createTestTools();
     const mathAgent = createTestAgent({
@@ -68,10 +65,7 @@ describeE2E('Cross-Package: Remote Tool Execution', () => {
     expect(result!.toolCalls.length).toBeGreaterThan(0);
 
     if (result!.output.length > 0) {
-      await expectJudge(result!.output, {
-        question: 'What is 15 times 7?',
-        criteria: 'Answer contains 105',
-      });
+      expect(result!.output).toMatch(/105/);
     }
   });
 

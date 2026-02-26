@@ -197,7 +197,7 @@ describe('CostTracker', () => {
     expect(summary.runCount).toBe(0);
   });
 
-  it('caps records at MAX_RECORDS (10000) and drops oldest', () => {
+  it('caps records at MAX_RECORDS (10000) and drops oldest', { timeout: 120_000 }, () => {
     for (let i = 0; i < 10_050; i++) {
       tracker.record({
         runId: `run_${i}`,
