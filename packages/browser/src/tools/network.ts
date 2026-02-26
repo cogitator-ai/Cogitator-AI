@@ -172,7 +172,7 @@ export function createBlockResourcesTool(session: BrowserSession, state: Network
     parameters: blockResourcesSchema,
     execute: async (params: BlockResourcesInput) => {
       const page = session.page;
-      const types = new Set(params.types);
+      const types = new Set<string>(params.types);
       const RESOURCE_MAP: Record<string, string> = {
         image: 'image',
         stylesheet: 'stylesheet',

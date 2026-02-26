@@ -21,7 +21,7 @@ export async function applyStealthToContext(
 }
 
 export function getStealthLaunchOptions(
-  config: StealthConfig,
+  _config: StealthConfig,
   browser?: 'chromium' | 'firefox' | 'webkit'
 ): Record<string, unknown> {
   return { userAgent: getRandomUserAgent(browser) };

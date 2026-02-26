@@ -20,7 +20,9 @@ export interface AccessibilityNode {
 }
 
 export async function getAccessibilityTree(page: Page): Promise<AccessibilityNode | null> {
-  const snapshot = await page.accessibility.snapshot();
+  const snapshot = await (
+    page as unknown as { accessibility: { snapshot(): Promise<Record<string, unknown> | null> } }
+  ).accessibility.snapshot();
   if (!snapshot) return null;
 
   function simplify(node: Record<string, unknown>): AccessibilityNode {
@@ -43,7 +45,7 @@ export async function elementToInfo(handle: ElementHandle): Promise<ElementInfo>
     const htmlEl = el as HTMLElement;
     const rect = el.getBoundingClientRect();
     const attrs: Record<string, string> = {};
-    for (const attr of el.attributes) {
+    for (const attr of Array.from(el.attributes)) {
       attrs[attr.name] = attr.value;
     }
     return {

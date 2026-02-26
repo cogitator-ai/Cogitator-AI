@@ -82,7 +82,9 @@ export function createFindByDescriptionTool(session: BrowserSession) {
     parameters: findByDescriptionSchema,
     execute: async (params: FindByDescriptionInput) => {
       const page = session.page;
-      const snapshot = await page.accessibility.snapshot();
+      const snapshot = await (
+        page as unknown as { accessibility: { snapshot(): Promise<AccessibilityNode | null> } }
+      ).accessibility.snapshot();
       if (!snapshot) return { elements: [] };
 
       const description = params.description.toLowerCase();
