@@ -117,7 +117,7 @@ Install only what you need. Everything is a separate npm package.
 | [`@cogitator-ai/rag`](https://www.npmjs.com/package/@cogitator-ai/rag)                       | RAG pipeline - document loaders, chunking, retrieval, reranking                                | [3 rag examples](./examples/rag/)                                    |
 | [`@cogitator-ai/evals`](https://www.npmjs.com/package/@cogitator-ai/evals)                   | Evaluation framework - metrics, LLM judges, A/B testing, assertions                            | [3 eval examples](./examples/evals/)                                 |
 | [`@cogitator-ai/voice`](https://www.npmjs.com/package/@cogitator-ai/voice)                   | Voice/Realtime agent capabilities - STT, TTS, VAD, realtime sessions                           | [3 voice examples](./examples/voice/)                                |
-| [`@cogitator-ai/browser`](https://www.npmjs.com/package/@cogitator-ai/browser)               | Browser automation - Playwright, stealth, vision, network control                              | [3 browser examples](./examples/browser/)                            |
+| [`@cogitator-ai/browser`](https://www.npmjs.com/package/@cogitator-ai/browser)               | Browser automation - Playwright, stealth, vision, network control                              | [4 browser examples](./examples/browser/)                            |
 | [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy)                 | Deploy your agents to Docker or Fly.io                                                         | [deploy example](./examples/infrastructure/04-deploy-docker.ts)      |
 | [`@cogitator-ai/cli`](https://www.npmjs.com/package/@cogitator-ai/cli)                       | `cogitator init` / `up` / `run` / `deploy` from your terminal                                  | -                                                                    |
 
@@ -215,7 +215,7 @@ All with Swagger docs, SSE streaming, and WebSocket support. See [integration ex
 
 ---
 
-## 51 Runnable Examples
+## 52 Runnable Examples
 
 Every major feature has a working example you can run right now.
 
@@ -234,7 +234,7 @@ npx tsx examples/core/01-basic-agent.ts
 | [`rag/`](./examples/rag/)                       | 3     | Basic retrieval, chunking strategies, agent with RAG                                                                                                           |
 | [`evals/`](./examples/evals/)                   | 3     | Basic evaluation, LLM judge, A/B comparison                                                                                                                    |
 | [`voice/`](./examples/voice/)                   | 3     | Voice pipeline, realtime sessions, voice agents                                                                                                                |
-| [`browser/`](./examples/browser/)               | 3     | Web scraping, form automation, stealth agents                                                                                                                  |
+| [`browser/`](./examples/browser/)               | 4     | Web scraping, form automation, stealth agents, crypto price scraper                                                                                            |
 | [`integrations/`](./examples/integrations/)     | 7     | Express, Fastify, Hono, Koa, Next.js, OpenAI compat, AI SDK                                                                                                    |
 | [`infrastructure/`](./examples/infrastructure/) | 4     | Redis, PostgreSQL, job queues, Docker deploy                                                                                                                   |
 | [`advanced/`](./examples/advanced/)             | 3     | Self-modifying agents, neuro-symbolic reasoning, WASM tools                                                                                                    |
