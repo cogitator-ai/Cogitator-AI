@@ -1,1 +1,1 @@
-export {};
+export { BrowserSession } from './session';
