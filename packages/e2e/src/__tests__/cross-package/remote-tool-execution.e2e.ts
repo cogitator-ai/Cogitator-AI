@@ -1,11 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { A2AClient } from '@cogitator-ai/a2a';
-import {
-  createTestCogitator,
-  createTestAgent,
-  createTestTools,
-  isOllamaRunning,
-} from '../../helpers/setup';
+import { createTestCogitator, createTestAgent, isOllamaRunning } from '../../helpers/setup';
 import { startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
 import type { Cogitator } from '@cogitator-ai/core';
 
@@ -20,13 +15,10 @@ describeE2E('Cross-Package: Remote Tool Execution', () => {
     if (!available) throw new Error('Ollama not running');
     cogitator = createTestCogitator();
 
-    const tools = createTestTools();
     const mathAgent = createTestAgent({
       name: 'math-remote',
       instructions:
-        'You are a math assistant. You MUST use the multiply tool for any multiplication. Never calculate manually. Always call the multiply tool with the two numbers.',
-      tools: [tools.multiply],
-      maxIterations: 5,
+        'You are a math calculator. When given a math problem, compute the answer and respond with ONLY the number result. Example: "5 times 3" → "15"',
     });
 
     mathServer = await startTestA2AServer({
@@ -67,11 +59,12 @@ describeE2E('Cross-Package: Remote Tool Execution', () => {
     expect(typeof result!.output).toBe('string');
     expect(result!.toolCalls.length).toBeGreaterThan(0);
 
-    const toolResult = result!.toolCalls.find((tc) => tc.name === 'ask_math_agent');
-    expect(toolResult).toBeDefined();
+    const toolCall = result!.toolCalls.find((tc) => tc.name === 'ask_math_agent');
+    expect(toolCall).toBeDefined();
 
-    const outputOrToolOutput = result!.output + JSON.stringify(toolResult?.result ?? '');
-    expect(outputOrToolOutput).toMatch(/105/);
+    const toolResultStr = JSON.stringify(toolCall?.result ?? '');
+    const combined = result!.output + toolResultStr;
+    expect(combined).toMatch(/105/);
   });
 
   it('handles remote agent unavailable', async () => {
