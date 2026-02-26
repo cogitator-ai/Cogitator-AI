@@ -23,8 +23,10 @@ describeE2E('Cross-Package: Remote Tool Execution', () => {
     const tools = createTestTools();
     const mathAgent = createTestAgent({
       name: 'math-remote',
-      instructions: 'You are a math assistant. Use the multiply tool for multiplication.',
+      instructions:
+        'You are a math assistant. You MUST use the multiply tool for any multiplication. Never calculate manually. Always call the multiply tool with the two numbers.',
       tools: [tools.multiply],
+      maxIterations: 5,
     });
 
     mathServer = await startTestA2AServer({
@@ -51,6 +53,7 @@ describeE2E('Cross-Package: Remote Tool Execution', () => {
       instructions:
         'You have access to a remote math agent. Use the ask_math_agent tool to solve math problems. Pass the problem as the input.',
       tools: [remoteTool],
+      maxIterations: 5,
     });
 
     let result;
@@ -64,9 +67,11 @@ describeE2E('Cross-Package: Remote Tool Execution', () => {
     expect(typeof result!.output).toBe('string');
     expect(result!.toolCalls.length).toBeGreaterThan(0);
 
-    if (result!.output.length > 0) {
-      expect(result!.output).toMatch(/105/);
-    }
+    const toolResult = result!.toolCalls.find((tc) => tc.name === 'ask_math_agent');
+    expect(toolResult).toBeDefined();
+
+    const outputOrToolOutput = result!.output + JSON.stringify(toolResult?.result ?? '');
+    expect(outputOrToolOutput).toMatch(/105/);
   });
 
   it('handles remote agent unavailable', async () => {

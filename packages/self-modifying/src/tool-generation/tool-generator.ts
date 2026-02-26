@@ -71,13 +71,7 @@ export class ToolGenerator {
         }
 
         if (!currentTool) {
-          return {
-            tool: null,
-            validationResult: null,
-            iterations,
-            success: false,
-            error: 'Failed to generate tool implementation',
-          };
+          continue;
         }
 
         validationResult = await this.validator.validate(currentTool, testCases);

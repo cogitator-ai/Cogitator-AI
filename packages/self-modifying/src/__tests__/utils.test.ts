@@ -55,6 +55,25 @@ describe('extractJson', () => {
     const result = extractJson('{"items": [1, 2, {"nested": true}]}');
     expect(JSON.parse(result!)).toEqual({ items: [1, 2, { nested: true }] });
   });
+
+  it('extracts JSON from markdown code blocks', () => {
+    const input = 'Here is the tool:\n```json\n{"name": "calc", "implementation": "code"}\n```';
+    const result = extractJson(input);
+    expect(JSON.parse(result!)).toEqual({ name: 'calc', implementation: 'code' });
+  });
+
+  it('repairs unclosed JSON by adding missing braces', () => {
+    const input = '{"name": "test", "value": 42';
+    const result = extractJson(input);
+    expect(result).not.toBeNull();
+    expect(JSON.parse(result!)).toEqual({ name: 'test', value: 42 });
+  });
+
+  it('returns null for unrepairable JSON', () => {
+    const input = '{"name": "test", "bad: ';
+    const result = extractJson(input);
+    expect(result).toBeNull();
+  });
 });
 
 describe('llmChat', () => {

@@ -123,22 +123,22 @@ describeE2E('Memory: Agent Memory Integration', () => {
 
   it('memory persists agent responses too', async () => {
     const agent = createTestAgent({
-      instructions: 'You are a helpful assistant. Always respond clearly and precisely.',
+      instructions:
+        'You are a helpful assistant. When asked to say a word, respond with ONLY that word. When asked what you said before, respond with ONLY that same word.',
     });
     const threadId = `memory-persist-${Date.now()}`;
 
     await cogitator.run(agent, {
-      input: 'Say exactly this phrase: "The quick brown fox jumps over the lazy dog"',
+      input: 'Say this word: ZEPHYR42',
       threadId,
     });
 
     const r2 = await cogitator.run(agent, {
-      input: 'Repeat exactly what you said in your previous response.',
+      input: 'What word did you say in your last message?',
       threadId,
     });
 
-    const hasOverlap = r2.output.includes('quick brown fox') || r2.output.includes('lazy dog');
-    expect(hasOverlap).toBe(true);
+    expect(r2.output.toUpperCase()).toContain('ZEPHYR42');
   });
 
   it('memory adapter operations work correctly', async () => {

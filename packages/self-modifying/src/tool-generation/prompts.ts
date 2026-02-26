@@ -244,32 +244,48 @@ export function parseGapAnalysisResponse(response: string): {
 
 export function parseToolGenerationResponse(response: string): GeneratedTool | null {
   const json = extractJson(response);
-  if (!json) {
-    return null;
+  if (json) {
+    try {
+      const parsed = JSON.parse(json);
+      if (parsed.name && parsed.implementation) {
+        return buildToolFromParsed(parsed);
+      }
+    } catch {}
   }
 
-  try {
-    const parsed = JSON.parse(json);
-    if (!parsed.name || !parsed.implementation) {
-      return null;
-    }
-
-    return {
-      id: `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      name: String(parsed.name),
-      description: String(parsed.description || ''),
-      implementation: String(parsed.implementation),
-      parameters: parsed.parameters || { type: 'object', properties: {} },
-      createdAt: new Date(),
-      version: 1,
-      status: 'pending_validation',
-      metadata: {
-        reasoning: parsed.reasoning ? String(parsed.reasoning) : undefined,
-      },
-    };
-  } catch {
-    return null;
+  const fnRegex = /(?:async\s+)?function\s+execute\s*\([^)]*\)\s*\{[\s\S]*?\n\}/;
+  const fnMatch = fnRegex.exec(response);
+  if (fnMatch) {
+    const nameRegex = /["']?name["']?\s*[:=]\s*["']([^"']+)["']/;
+    const nameMatch = nameRegex.exec(response);
+    return buildToolFromParsed({
+      name: nameMatch?.[1] ?? 'generated_tool',
+      description: '',
+      implementation: fnMatch[0],
+      parameters: { type: 'object', properties: {} },
+    });
   }
+
+  return null;
+}
+
+function buildToolFromParsed(parsed: Record<string, unknown>): GeneratedTool {
+  return {
+    id: `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    name: String(parsed.name),
+    description: String(parsed.description || ''),
+    implementation: String(parsed.implementation),
+    parameters: (parsed.parameters as GeneratedTool['parameters']) || {
+      type: 'object',
+      properties: {},
+    },
+    createdAt: new Date(),
+    version: 1,
+    status: 'pending_validation',
+    metadata: {
+      reasoning: parsed.reasoning ? String(parsed.reasoning) : undefined,
+    },
+  };
 }
 
 export function parseValidationResponse(response: string): ToolValidationResult | null {
