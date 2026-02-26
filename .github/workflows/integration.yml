@@ -132,5 +132,4 @@ jobs:
           TEST_DOCKER: 'true'
           GOOGLE_API_KEY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.GOOGLE_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.OLLAMA_API_KEY || '' }}
-          OLLAMA_URL: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.OLLAMA_API_KEY && 'https://ollama.com' || '' }}
           NODE_OPTIONS: '--max-old-space-size=4096'
