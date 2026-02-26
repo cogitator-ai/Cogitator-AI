@@ -177,7 +177,9 @@ export class TaskAnalyzer {
     const wordCount = task.split(/\s+/).length;
     const sentenceCount = task.split(/[.!?]+/).filter((s) => s.trim()).length;
     const hasMultipleSteps = /\b(then|after|next|finally|first|second|third|step)\b/i.test(task);
-    const hasConditions = /\b(if|when|unless|otherwise|either|or)\b/i.test(task);
+    const hasConditions = /\b(if\s+.{1,40}\s+then|unless|otherwise|depending on|in case)\b/i.test(
+      task
+    );
 
     let complexityScore = 0;
     if (wordCount > 100) complexityScore++;

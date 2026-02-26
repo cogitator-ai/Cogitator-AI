@@ -197,18 +197,6 @@ Ensure your output is well-structured and ready for the next stage to consume.
     const gateConfig = this.config.gates?.[stage.name];
 
     if (!gateConfig) {
-      const output = String(result.output).toLowerCase();
-      const hasError =
-        output.includes('error') || output.includes('failed') || output.includes('cannot');
-
-      if (hasError) {
-        this.coordinator.events.emit('pipeline:gate:fail', {
-          stage: stage.name,
-          reason: 'Output contains error indicators',
-        });
-        return { action: 'skip', reason: 'Output contains error indicators' };
-      }
-
       this.coordinator.events.emit('pipeline:gate:pass', { stage: stage.name });
       return { action: 'pass' };
     }
