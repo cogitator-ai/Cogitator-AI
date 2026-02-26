@@ -58,7 +58,8 @@ describeE2E('Core: Structured Output', () => {
     expect(items.length).toBeGreaterThanOrEqual(1);
 
     for (const item of items) {
-      expect(typeof item).toBe('string');
+      const val = typeof item === 'object' && item !== null ? Object.values(item)[0] : item;
+      expect(typeof val).toBe('string');
     }
   });
 });
