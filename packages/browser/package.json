@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/browser",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Browser automation tools for Cogitator AI agents",
   "type": "module",
   "main": "./dist/index.js",

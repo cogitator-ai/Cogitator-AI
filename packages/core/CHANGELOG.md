@@ -1,5 +1,14 @@
 # @cogitator-ai/core
 
+## 0.18.7
+
+### Patch Changes
+
+- Fix Ollama Cloud tool calling compatibility
+  - Preserve tool call IDs returned by Ollama Cloud API instead of generating new ones
+  - Include tool_calls on assistant messages when converting conversation history
+  - Preserve toolCalls on assistant messages in runtime for multi-turn tool calling
+
 ## 0.18.6
 
 ### Patch Changes

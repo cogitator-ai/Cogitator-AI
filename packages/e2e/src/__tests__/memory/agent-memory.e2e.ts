@@ -5,9 +5,14 @@ import {
   createTestTools,
   isOllamaRunning,
 } from '../../helpers/setup';
-import type { Cogitator, RunResult } from '@cogitator-ai/core';
+import { Cogitator } from '@cogitator-ai/core';
+import type { RunResult } from '@cogitator-ai/core';
 
 const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
+const describeHeavy = process.env.OLLAMA_API_KEY ? describe : describe.skip;
+
+const HEAVY_MODEL = 'ministral-3:8b';
+const OLLAMA_CLOUD_URL = process.env.OLLAMA_URL || 'https://ollama.com';
 
 async function runUntilToolCalled(
   cogitator: Cogitator,
@@ -57,33 +62,6 @@ describeE2E('Memory: Agent Memory Integration', () => {
     expect(r2.output.toUpperCase()).toContain('XRAY-9943');
   });
 
-  it('agent uses tool results from previous turns', async () => {
-    const tools = createTestTools();
-    const agent = createTestAgent({
-      instructions:
-        'You are a math assistant. You MUST use the multiply tool for calculations. Never calculate manually. When asked about previous results, state the number.',
-      tools: [tools.multiply],
-    });
-    const threadId = `memory-tool-${Date.now()}`;
-
-    const r1 = await runUntilToolCalled(
-      cogitator,
-      agent,
-      'What is 8 times 9? You MUST use the multiply tool.',
-      threadId
-    );
-
-    const multiplyCalls = r1.toolCalls.filter((tc) => tc.name === 'multiply');
-    expect(multiplyCalls.length).toBeGreaterThanOrEqual(1);
-
-    const r2 = await cogitator.run(agent, {
-      input: 'What was the result of the multiplication?',
-      threadId,
-    });
-
-    expect(r2.output).toContain('72');
-  });
-
   it('different threads are isolated', async () => {
     const agent = createTestAgent({
       instructions:
@@ -119,33 +97,6 @@ describeE2E('Memory: Agent Memory Integration', () => {
     expect(outputA).not.toContain('CAT');
     expect(outputB).toContain('CAT');
     expect(outputB).not.toContain('DOG');
-  });
-
-  it('memory persists across multiple conversation turns', async () => {
-    const agent = createTestAgent({
-      instructions:
-        'You are a helpful assistant. When told a fact, confirm it. When asked to recall facts, list them.',
-    });
-    const threadId = `memory-multi-${Date.now()}`;
-
-    await cogitator.run(agent, {
-      input: 'Remember this: the secret code is ALPHA7.',
-      threadId,
-    });
-
-    await cogitator.run(agent, {
-      input: 'Remember this too: the city is TOKYO.',
-      threadId,
-    });
-
-    const r3 = await cogitator.run(agent, {
-      input: 'What are the two facts I told you? The code and the city?',
-      threadId,
-    });
-
-    const output = r3.output.toUpperCase();
-    expect(output).toContain('ALPHA7');
-    expect(output).toContain('TOKYO');
   });
 
   it('memory adapter operations work correctly', async () => {
@@ -185,5 +136,86 @@ describeE2E('Memory: Agent Memory Integration', () => {
     }
 
     await adapter.disconnect();
+  });
+});
+
+describeHeavy('Memory: Agent Memory Integration (heavy model)', () => {
+  let cogitator: Cogitator;
+
+  beforeAll(async () => {
+    cogitator = new Cogitator({
+      llm: {
+        defaultModel: `ollama/${HEAVY_MODEL}`,
+        providers: {
+          ollama: {
+            baseUrl: OLLAMA_CLOUD_URL,
+            apiKey: process.env.OLLAMA_API_KEY,
+          },
+        },
+      },
+      memory: {
+        adapter: 'memory' as const,
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await cogitator.close();
+  });
+
+  it('agent uses tool results from previous turns', async () => {
+    const tools = createTestTools();
+    const agent = createTestAgent({
+      instructions:
+        'You are a math assistant. You MUST use the multiply tool for calculations. Never calculate manually. When asked about previous results, state the number.',
+      tools: [tools.multiply],
+      model: `ollama/${HEAVY_MODEL}`,
+    });
+    const threadId = `memory-tool-${Date.now()}`;
+
+    const r1 = await runUntilToolCalled(
+      cogitator,
+      agent,
+      'What is 8 times 9? You MUST use the multiply tool.',
+      threadId
+    );
+
+    const multiplyCalls = r1.toolCalls.filter((tc) => tc.name === 'multiply');
+    expect(multiplyCalls.length).toBeGreaterThanOrEqual(1);
+
+    const r2 = await cogitator.run(agent, {
+      input: 'What was the result of the multiplication?',
+      threadId,
+    });
+
+    expect(r2.output).toContain('72');
+  });
+
+  it('memory persists across multiple conversation turns', async () => {
+    const agent = createTestAgent({
+      instructions:
+        'You have perfect memory. When told a fact, confirm it. When asked to recall facts, list them exactly as told.',
+      model: `ollama/${HEAVY_MODEL}`,
+    });
+    const threadId = `memory-multi-${Date.now()}`;
+
+    await cogitator.run(agent, {
+      input: 'Remember this: the secret code is ALPHA7.',
+      threadId,
+    });
+
+    await cogitator.run(agent, {
+      input: 'Remember this too: the city is TOKYO.',
+      threadId,
+    });
+
+    const r3 = await cogitator.run(agent, {
+      input: 'What are the two facts I told you? The code and the city?',
+      threadId,
+    });
+
+    const output = r3.output.toUpperCase();
+    expect(output).toContain('ALPHA7');
+    expect(output).toContain('TOKYO');
   });
 });
