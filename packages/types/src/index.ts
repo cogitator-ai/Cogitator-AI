@@ -7,6 +7,7 @@
 export * from './message';
 export * from './tool';
 export * from './agent';
+export * from './browser';
 export * from './llm';
 export * from './runtime';
 export * from './memory';
