@@ -1,0 +1,147 @@
+---
+title: Redis Client
+description: Unified Redis client with standalone and cluster support — the foundation for memory, worker queues, and pub/sub.
+---
+
+## Overview
+
+The `@cogitator-ai/redis` package provides a unified Redis client that works identically in standalone and cluster modes. It wraps [ioredis](https://github.com/redis/ioredis) with a consistent interface used by `@cogitator-ai/memory`, `@cogitator-ai/worker`, and other packages.
+
+```bash
+pnpm add @cogitator-ai/redis ioredis
+```
+
+## Quick Start
+
+### Standalone
+
+```typescript
+import { createRedisClient } from '@cogitator-ai/redis';
+
+const redis = await createRedisClient({
+  url: 'redis://localhost:6379',
+  keyPrefix: 'myapp:',
+});
+
+await redis.set('key', 'value');
+const value = await redis.get('key');
+await redis.quit();
+```
+
+### Cluster
+
+```typescript
+import { createRedisClient } from '@cogitator-ai/redis';
+
+const redis = await createRedisClient({
+  mode: 'cluster',
+  nodes: [
+    { host: 'redis-1', port: 6379 },
+    { host: 'redis-2', port: 6379 },
+    { host: 'redis-3', port: 6379 },
+  ],
+  keyPrefix: '{myapp}:',
+});
+```
+
+## Environment Configuration
+
+Configure Redis entirely from environment variables:
+
+```typescript
+import { createRedisClient, createConfigFromEnv } from '@cogitator-ai/redis';
+
+const config = createConfigFromEnv();
+const redis = await createRedisClient(config);
+```
+
+| Variable | Description |
+| --- | --- |
+| `REDIS_URL` | Redis connection URL |
+| `REDIS_HOST` | Redis host (default: `localhost`) |
+| `REDIS_PORT` | Redis port (default: `6379`) |
+| `REDIS_PASSWORD` | Authentication password |
+| `REDIS_CLUSTER_NODES` | JSON array of `{host, port}` objects |
+| `REDIS_KEY_PREFIX` | Key prefix (default: `cogitator:` / `{cogitator}:`) |
+
+## Auto-Detection
+
+Detect whether a Redis server runs in standalone or cluster mode:
+
+```typescript
+import { detectRedisMode, createRedisClient } from '@cogitator-ai/redis';
+
+const mode = await detectRedisMode({ host: 'localhost', port: 6379 });
+
+const redis = await createRedisClient(
+  mode === 'cluster'
+    ? { mode: 'cluster', nodes: [{ host: 'localhost', port: 6379 }] }
+    : { host: 'localhost', port: 6379 }
+);
+```
+
+## Client Interface
+
+The `RedisClient` interface provides key-value, sorted set, pub/sub, and utility operations that work identically in both modes.
+
+```typescript
+// Key-value
+await redis.set('key', 'value');
+await redis.get('key');
+await redis.setex('key', 3600, 'value');
+await redis.del('key1', 'key2');
+await redis.mget('key1', 'key2');
+
+// Sorted sets
+await redis.zadd('scores', 100, 'player1');
+await redis.zrange('scores', 0, -1);
+await redis.zrangebyscore('scores', 0, 100);
+
+// Pub/sub
+const sub = redis.duplicate();
+await sub.subscribe('events', (channel, message) => {
+  console.log(channel, message);
+});
+await redis.publish('events', JSON.stringify({ type: 'update' }));
+
+// Utility
+await redis.ping();
+await redis.info('memory');
+await redis.keys('pattern:*');
+```
+
+## Cluster Key Routing
+
+Use hash tags to route related keys to the same slot:
+
+```typescript
+const redis = await createRedisClient({
+  mode: 'cluster',
+  nodes: [...],
+  keyPrefix: '{myapp}:',
+});
+
+// Both keys route to the same slot via {myapp}
+await redis.set('users:123', '...');
+await redis.set('sessions:456', '...');
+```
+
+## TLS and NAT
+
+```typescript
+// TLS
+const redis = await createRedisClient({
+  url: 'rediss://secure.redis.host:6379',
+  tls: true,
+});
+
+// NAT mapping for clusters behind load balancers
+const redis = await createRedisClient({
+  mode: 'cluster',
+  nodes: [{ host: 'external.host', port: 6379 }],
+  natMap: {
+    '10.0.0.1:6379': { host: 'external-1.host', port: 6379 },
+    '10.0.0.2:6379': { host: 'external-2.host', port: 6379 },
+  },
+});
+```
