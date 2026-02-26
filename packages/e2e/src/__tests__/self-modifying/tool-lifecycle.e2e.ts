@@ -89,13 +89,26 @@ describeE2E('self-modifying: tool lifecycle (real LLM)', () => {
       true
     );
 
-    const value =
-      typeof execResult.result === 'object' && execResult.result !== null
-        ? ((execResult.result as Record<string, unknown>).fahrenheit ??
-          (execResult.result as Record<string, unknown>).result ??
-          (execResult.result as Record<string, unknown>).temperature)
-        : execResult.result;
+    let value: number;
+    if (typeof execResult.result === 'number') {
+      value = execResult.result;
+    } else if (typeof execResult.result === 'string') {
+      value = parseFloat(execResult.result);
+    } else if (typeof execResult.result === 'object' && execResult.result !== null) {
+      const obj = execResult.result as Record<string, unknown>;
+      const candidate =
+        obj.fahrenheit ??
+        obj.result ??
+        obj.temperature ??
+        obj.value ??
+        obj.output ??
+        Object.values(obj).find((v) => typeof v === 'number');
+      value = Number(candidate);
+    } else {
+      value = NaN;
+    }
 
+    expect(value).not.toBeNaN();
     expect(value).toBeCloseTo(212, 0);
   }, 180_000);
 
