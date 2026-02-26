@@ -75,6 +75,9 @@ importers:
       '@cogitator-ai/ai-sdk':
         specifier: workspace:*
         version: link:../packages/ai-sdk
+      '@cogitator-ai/browser':
+        specifier: workspace:*
+        version: link:../packages/browser
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../packages/core

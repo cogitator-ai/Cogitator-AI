@@ -8,6 +8,7 @@
     "@cogitator-ai/a2a": "workspace:*",
     "create-cogitator-app": "workspace:*",
     "@cogitator-ai/ai-sdk": "workspace:*",
+    "@cogitator-ai/browser": "workspace:*",
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/deploy": "workspace:*",
     "@cogitator-ai/express": "workspace:*",
