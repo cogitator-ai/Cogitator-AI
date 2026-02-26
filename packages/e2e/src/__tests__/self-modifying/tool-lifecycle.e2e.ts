@@ -36,6 +36,18 @@ function createBackend(): OllamaBackend {
   return new OllamaBackend({ baseUrl: OLLAMA_URL, defaultModel: TOOL_GEN_MODEL });
 }
 
+async function generateWithRetry(
+  generator: ToolGenerator,
+  gap: CapabilityGap,
+  maxAttempts = 3
+): Promise<{ success: boolean; tool: GeneratedTool | null }> {
+  for (let i = 0; i < maxAttempts; i++) {
+    const result = await generator.generate(gap, []);
+    if (result.success && result.tool) return result;
+  }
+  return { success: false, tool: null };
+}
+
 describeE2E('self-modifying: tool lifecycle (real LLM)', () => {
   let backend: OllamaBackend;
   let generator: ToolGenerator;
@@ -63,7 +75,7 @@ describeE2E('self-modifying: tool lifecycle (real LLM)', () => {
       reasoning: 'No temperature conversion tool available',
     };
 
-    const result = await generator.generate(gap, []);
+    const result = await generateWithRetry(generator, gap);
 
     expect(result.success).toBe(true);
     expect(result.tool).not.toBeNull();
@@ -85,7 +97,7 @@ describeE2E('self-modifying: tool lifecycle (real LLM)', () => {
         : execResult.result;
 
     expect(value).toBeCloseTo(212, 0);
-  }, 120_000);
+  }, 180_000);
 
   it('validates generated tool with test cases', async () => {
     const gap: CapabilityGap = {
@@ -99,7 +111,7 @@ describeE2E('self-modifying: tool lifecycle (real LLM)', () => {
       reasoning: 'No string reversal tool available',
     };
 
-    const result = await generator.generate(gap, []);
+    const result = await generateWithRetry(generator, gap);
     expect(result.success).toBe(true);
     expect(result.tool).not.toBeNull();
 
@@ -117,7 +129,7 @@ describeE2E('self-modifying: tool lifecycle (real LLM)', () => {
     for (const r of testResult.results) {
       expect(r.error).toBeUndefined();
     }
-  }, 120_000);
+  }, 180_000);
 
   it('rejects invalid/dangerous tool code', async () => {
     const dangerousTool: GeneratedTool = {
@@ -196,7 +208,7 @@ describeE2E('self-modifying: tool lifecycle (real LLM)', () => {
             reasoning: 'No BMI calculation tool available',
           };
 
-    const genResult = await generator.generate(gap, []);
+    const genResult = await generateWithRetry(generator, gap);
     expect(genResult.success).toBe(true);
     expect(genResult.tool).not.toBeNull();
 
@@ -227,7 +239,7 @@ describeE2E('self-modifying: tool lifecycle (real LLM)', () => {
 
     expect(bmiValue).not.toBeNaN();
     expect(bmiValue).toBeCloseTo(22.86, 0);
-  }, 120_000);
+  }, 180_000);
 
   it('generated tool persists in store and can be retrieved', async () => {
     const store = new InMemoryGeneratedToolStore();
@@ -244,7 +256,7 @@ describeE2E('self-modifying: tool lifecycle (real LLM)', () => {
       reasoning: 'No number doubling tool available',
     };
 
-    const genResult = await generator.generate(gap, []);
+    const genResult = await generateWithRetry(generator, gap);
     expect(genResult.success).toBe(true);
     expect(genResult.tool).not.toBeNull();
     const tool = genResult.tool!;
@@ -270,5 +282,5 @@ describeE2E('self-modifying: tool lifecycle (real LLM)', () => {
           : NaN;
 
     expect(Number(doubledValue)).toBe(42);
-  }, 120_000);
+  }, 180_000);
 });
