@@ -1,0 +1,114 @@
+---
+title: Browser
+description: Playwright-based browser automation for AI agents with 32 tools across navigation, interaction, extraction, vision, and network modules.
+---
+
+## What is @cogitator-ai/browser?
+
+`@cogitator-ai/browser` gives your agents the ability to browse the web. It wraps Playwright in a session-based API and exposes **32 tools** that agents can call to navigate pages, fill forms, extract data, take screenshots, and intercept network traffic.
+
+Everything runs through `BrowserSession` which manages the browser lifecycle, tabs, cookies, and optional stealth mode for anti-detection. Tools are created via `browserTools()` and plug directly into any Cogitator agent.
+
+```
+Agent
+  │
+  ├── browser_navigate("https://example.com")
+  ├── browser_fill_form({ email: "...", password: "..." })
+  ├── browser_click("#submit")
+  ├── browser_screenshot()
+  └── browser_get_text(".result")
+```
+
+## Installation
+
+```bash
+pnpm add @cogitator-ai/browser playwright
+```
+
+Playwright requires browser binaries. Install them after adding the package:
+
+```bash
+npx playwright install chromium
+```
+
+## Quick Start
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { BrowserSession, browserTools } from '@cogitator-ai/browser';
+
+const session = new BrowserSession({ headless: true });
+await session.start();
+
+const agent = new Agent({
+  name: 'web-researcher',
+  model: 'openai/gpt-4o',
+  tools: browserTools(session),
+  instructions: 'You browse the web to find information.',
+});
+
+const cogitator = new Cogitator({
+  llm: {
+    defaultModel: 'openai/gpt-4o',
+    providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
+  },
+});
+
+const result = await cogitator.run(agent, {
+  input: 'Go to https://news.ycombinator.com and get the top 5 stories',
+});
+
+console.log(result.output);
+await session.close();
+```
+
+## Tool Modules
+
+All 32 tools are organized into 5 modules. Use `browserTools(session)` to get all of them, or filter by module.
+
+| Module | Tools | Description |
+| --- | --- | --- |
+| [Navigation](/docs/browser/tools#navigation) | 7 | URL navigation, history, waiting |
+| [Interaction](/docs/browser/tools#interaction) | 9 | Clicking, typing, forms, drag & drop |
+| [Extraction](/docs/browser/tools#extraction) | 7 | Text, HTML, links, tables, structured data |
+| [Vision](/docs/browser/tools#vision) | 4 | Screenshots, accessibility tree, click-by-description |
+| [Network](/docs/browser/tools#network) | 5 | Request interception, HAR capture, API call tracking |
+
+### Module Filtering
+
+Load only the modules you need:
+
+```typescript
+const tools = browserTools(session, {
+  modules: ['navigation', 'extraction'],
+});
+```
+
+### Individual Tool Import
+
+Import specific tool factories when you want fine-grained control:
+
+```typescript
+import { createNavigateTool, createScreenshotTool } from '@cogitator-ai/browser';
+
+const tools = [
+  createNavigateTool(session),
+  createScreenshotTool(session),
+];
+```
+
+## Key Features
+
+- **Session management** with multi-tab support, cookie persistence, proxy configuration
+- **Stealth mode** with anti-detection evasions, fingerprint randomization, human-like behavior
+- **Vision tools** that leverage the accessibility tree for natural language element finding
+- **Network interception** for blocking resources, modifying requests, and capturing HAR logs
+- **Smart form filling** that matches fields by name, placeholder, aria-label, or label text
+
+## Next Steps
+
+- [BrowserSession](/docs/browser/session) — lifecycle, tabs, cookies, configuration
+- [Tools Reference](/docs/browser/tools) — all 32 tools with parameters
+- [Stealth](/docs/browser/stealth) — anti-detection and human-like behavior
+- [Vision](/docs/browser/vision) — screenshots and accessibility-based interaction
+- [Network](/docs/browser/network) — request interception and traffic capture

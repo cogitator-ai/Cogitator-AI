@@ -1,0 +1,339 @@
+---
+title: Tools Reference
+description: Complete reference for all 32 browser tools across navigation, interaction, extraction, vision, and network modules.
+---
+
+## Overview
+
+`browserTools(session)` returns all 32 tools. You can filter by module or import individual tool factories.
+
+```typescript
+import { browserTools } from '@cogitator-ai/browser';
+
+const allTools = browserTools(session);
+
+const subset = browserTools(session, {
+  modules: ['navigation', 'extraction'],
+});
+```
+
+---
+
+## Navigation
+
+7 tools for page navigation and waiting.
+
+### `browser_navigate`
+
+Navigate to a URL. Returns the final URL, page title, and HTTP status.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `url` | `string` | URL to navigate to |
+| `waitUntil` | `enum` | `load` \| `domcontentloaded` \| `networkidle` \| `commit` |
+
+### `browser_go_back`
+
+Go back to the previous page in browser history. No parameters.
+
+### `browser_go_forward`
+
+Go forward to the next page in browser history. No parameters.
+
+### `browser_reload`
+
+Reload the current page.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `waitUntil` | `enum` | `load` \| `domcontentloaded` \| `networkidle` \| `commit` |
+
+### `browser_wait_for_navigation`
+
+Wait for the page to navigate to a URL matching a pattern.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `url` | `string` | URL pattern to wait for |
+| `timeout` | `number` | Timeout in milliseconds |
+
+### `browser_get_current_url`
+
+Get the current page URL and title. No parameters.
+
+### `browser_wait_for_selector`
+
+Wait for a CSS selector to appear on the page.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `selector` | `string` | CSS selector to wait for |
+| `state` | `enum` | `visible` \| `hidden` \| `attached` \| `detached` |
+| `timeout` | `number` | Timeout in milliseconds |
+
+---
+
+## Interaction
+
+9 tools for clicking, typing, and form manipulation.
+
+### `browser_click`
+
+Click an element by CSS selector.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `selector` | `string` | CSS selector of element |
+| `button` | `enum` | `left` \| `right` \| `middle` |
+| `clickCount` | `number` | Number of clicks (2 for double-click) |
+| `position` | `{ x, y }` | Position relative to element |
+
+### `browser_type`
+
+Type text into an input element. Uses `fill()` for instant input or `type()` for keystroke simulation. When stealth is enabled, automatically adds human-like delays between keystrokes.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `selector` | `string` | CSS selector of input |
+| `text` | `string` | Text to type |
+| `delay` | `number` | Delay between keystrokes in ms |
+| `clearFirst` | `boolean` | Clear the field before typing |
+
+### `browser_select_option`
+
+Select an option from a `<select>` element.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `selector` | `string` | CSS selector of select element |
+| `value` | `string` | Option value |
+| `label` | `string` | Option label text |
+| `index` | `number` | Option index |
+
+### `browser_hover`
+
+Hover over an element.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `selector` | `string` | CSS selector |
+| `position` | `{ x, y }` | Position relative to element |
+
+### `browser_scroll`
+
+Scroll the page or a specific element.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `direction` | `enum` | `up` \| `down` \| `left` \| `right` |
+| `amount` | `number` | Scroll amount in pixels (default: 500) |
+| `selector` | `string` | CSS selector of scrollable element |
+
+### `browser_press_key`
+
+Press a keyboard key with optional modifiers.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `key` | `string` | Key to press (e.g. `"Enter"`, `"Tab"`, `"a"`) |
+| `modifiers` | `string[]` | `Shift`, `Control`, `Alt`, `Meta` |
+
+### `browser_drag_and_drop`
+
+Drag an element and drop it onto another.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `source` | `string` | CSS selector of drag source |
+| `target` | `string` | CSS selector of drop target |
+
+### `browser_fill_form`
+
+Smart form filler. Finds inputs by name, placeholder, aria-label, or associated label text.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `fields` | `Record<string, string \| boolean \| string[]>` | Field name/label to value mapping |
+
+String values are typed into inputs, booleans toggle checkboxes, and string arrays select multiple options. When stealth is enabled, typing uses human-like delays.
+
+```typescript
+// the agent calls this tool with:
+{
+  "fields": {
+    "Email": "user@example.com",
+    "Password": "secret",
+    "Remember me": true,
+    "Country": ["US"]
+  }
+}
+```
+
+### `browser_upload_file`
+
+Upload files to a file input element.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `selector` | `string` | CSS selector of file input |
+| `filePaths` | `string[]` | Absolute paths to files |
+
+---
+
+## Extraction
+
+7 tools for reading page content.
+
+### `browser_get_text`
+
+Extract text content from the page or a specific element.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `selector` | `string` | CSS selector (defaults to body) |
+
+### `browser_get_html`
+
+Get HTML content of the page or a specific element.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `selector` | `string` | CSS selector (defaults to full page) |
+| `outer` | `boolean` | Include outer HTML of element |
+
+### `browser_get_attribute`
+
+Get the value of an attribute on a DOM element.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `selector` | `string` | CSS selector |
+| `attribute` | `string` | Attribute name |
+
+### `browser_get_links`
+
+Extract all links from the page or a scoped element. Returns text, href, and title for each link.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `selector` | `string` | CSS selector to scope link search |
+| `baseUrl` | `string` | Base URL for resolving relative links |
+
+### `browser_query_selector_all`
+
+Query all elements matching a CSS selector. Returns tag, text, attributes, and visibility for each.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `selector` | `string` | CSS selector |
+| `attributes` | `string[]` | Attributes to include (default: id, class, href, src, type, name) |
+| `limit` | `number` | Max elements to return |
+
+### `browser_extract_table`
+
+Extract structured data from an HTML table as headers and rows.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `selector` | `string` | CSS selector of table |
+
+### `browser_extract_structured`
+
+Extract clean readable text from the page. Removes scripts, styles, and non-visible elements. Returns the text alongside the extraction instruction for agent processing.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `instruction` | `string` | What data to extract |
+| `selector` | `string` | CSS selector to scope extraction |
+
+---
+
+## Vision
+
+4 tools for visual interaction. See the dedicated [Vision](/docs/browser/vision) page for details.
+
+### `browser_screenshot`
+
+Take a screenshot of the page or element. Returns base64-encoded image data.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `fullPage` | `boolean` | Capture full scrollable page |
+| `selector` | `string` | CSS selector of element to capture |
+| `quality` | `number` | Image quality 0-100 (switches to JPEG) |
+
+### `browser_screenshot_element`
+
+Screenshot a specific element with bounding box coordinates.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `selector` | `string` | CSS selector of element |
+
+### `browser_find_by_description`
+
+Find elements matching a natural language description using the accessibility tree.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `description` | `string` | Natural language description |
+
+### `browser_click_by_description`
+
+Find an element by description and click it. Tries button, link, text, label, and placeholder strategies.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `description` | `string` | Natural language description |
+| `index` | `number` | Index of match if multiple found |
+
+---
+
+## Network
+
+5 tools for request interception and traffic monitoring. See the dedicated [Network](/docs/browser/network) page for details.
+
+### `browser_intercept_request`
+
+Intercept HTTP requests matching a URL pattern.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `urlPattern` | `string` | URL pattern (glob or regex) |
+| `action` | `enum` | `block` \| `modify` \| `continue` |
+| `modify` | `object` | `{ headers?, body?, url? }` for action=modify |
+
+### `browser_wait_for_response`
+
+Wait for an HTTP response matching a URL pattern.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `urlPattern` | `string` | URL pattern to match |
+| `timeout` | `number` | Timeout in milliseconds |
+
+### `browser_block_resources`
+
+Block specific resource types from loading.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `types` | `string[]` | `image`, `stylesheet`, `font`, `media`, `script` |
+
+### `browser_capture_har`
+
+Start or stop capturing HTTP traffic in HAR format.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `action` | `enum` | `start` \| `stop` |
+| `path` | `string` | File path to save HAR on stop |
+
+### `browser_get_api_calls`
+
+Get captured XHR/fetch API calls with optional filtering.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `urlPattern` | `string` | Filter by URL pattern |
+| `method` | `string` | Filter by HTTP method |

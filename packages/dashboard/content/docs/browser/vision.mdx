@@ -1,0 +1,133 @@
+---
+title: Vision Tools
+description: Screenshot capture, accessibility tree traversal, and natural language element interaction.
+---
+
+## Overview
+
+The vision module provides 4 tools for visual interaction with web pages. Two tools capture screenshots as base64-encoded images, and two tools use the accessibility tree and Playwright's built-in selectors to find and click elements by natural language description.
+
+```typescript
+import { browserTools } from '@cogitator-ai/browser';
+
+const tools = browserTools(session, { modules: ['vision'] });
+```
+
+Or import individual tools:
+
+```typescript
+import {
+  createScreenshotTool,
+  createScreenshotElementTool,
+  createFindByDescriptionTool,
+  createClickByDescriptionTool,
+} from '@cogitator-ai/browser';
+```
+
+## Screenshots
+
+### `browser_screenshot`
+
+Captures the current viewport or the full scrollable page. By default produces PNG; setting `quality` switches to JPEG.
+
+```typescript
+// agent calls:
+{ "fullPage": true }
+// returns: { image: "base64...", width: 1280, height: 720 }
+
+{ "selector": "#hero", "quality": 80 }
+// returns JPEG of the #hero element
+```
+
+The returned `image` field is a base64 string. When used with a vision-capable model (GPT-4o, Claude, Gemini), the agent can analyze the screenshot content to understand page layout.
+
+### `browser_screenshot_element`
+
+Captures a specific element and returns its bounding box coordinates alongside the base64 image.
+
+```typescript
+// agent calls:
+{ "selector": ".product-card" }
+// returns: { image: "base64...", boundingBox: { x: 100, y: 200, width: 300, height: 400 } }
+```
+
+## Accessibility-Based Interaction
+
+These tools let agents interact with elements using natural language instead of CSS selectors. This is useful when the page structure is unknown or when CSS selectors would be too brittle.
+
+### `browser_find_by_description`
+
+Walks the page's accessibility tree and matches nodes whose name or role contains the given description. Returns a list of matching elements with their role and name.
+
+```typescript
+// agent calls:
+{ "description": "login" }
+// returns: {
+//   elements: [
+//     { role: "button", name: "Login", description: 'button: "Login"' },
+//     { role: "link", name: "Login here", description: 'link: "Login here"' }
+//   ]
+// }
+```
+
+### `browser_click_by_description`
+
+Finds an element by description and clicks it. Tries multiple Playwright strategies in order:
+
+1. `getByRole('button', { name })` — buttons matching the description
+2. `getByRole('link', { name })` — links matching the description
+3. `getByText(description)` — any element containing the text
+4. `getByLabel(description)` — elements with matching label
+5. `getByPlaceholder(description)` — inputs with matching placeholder
+
+If multiple matches exist, use `index` to pick which one to click.
+
+```typescript
+// agent calls:
+{ "description": "Submit order" }
+// returns: { clicked: true, element: { description: "Submit order", index: 0 } }
+
+{ "description": "Add to cart", "index": 2 }
+// clicks the third "Add to cart" match
+```
+
+## Vision Flow Example
+
+A typical vision-based browsing flow where the agent uses screenshots to understand what it sees:
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { BrowserSession, browserTools } from '@cogitator-ai/browser';
+
+const session = new BrowserSession({ headless: true });
+await session.start();
+
+const agent = new Agent({
+  name: 'visual-browser',
+  model: 'openai/gpt-4o',
+  tools: browserTools(session, {
+    modules: ['navigation', 'vision', 'interaction'],
+  }),
+  instructions: `You browse the web visually. Take screenshots to see what's on the page,
+then use click_by_description to interact with elements you see.`,
+});
+
+const cogitator = new Cogitator({
+  llm: {
+    defaultModel: 'openai/gpt-4o',
+    providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
+  },
+});
+
+const result = await cogitator.run(agent, {
+  input: 'Go to github.com and find the trending repositories page',
+});
+
+console.log(result.output);
+await session.close();
+```
+
+## Next Steps
+
+- [Tools Reference](/docs/browser/tools) — full parameter reference for all 32 tools
+- [Network](/docs/browser/network) — intercept and monitor network traffic

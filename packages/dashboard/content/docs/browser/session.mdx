@@ -1,0 +1,211 @@
+---
+title: BrowserSession
+description: Manage browser lifecycle, tabs, cookies, proxy, and stealth configuration with BrowserSession.
+---
+
+## Overview
+
+`BrowserSession` is the core class that manages a Playwright browser instance. It handles launching the browser, creating contexts with the right configuration, and provides tab and cookie management.
+
+Every browser tool receives a session reference and operates on its active page.
+
+```typescript
+import { BrowserSession } from '@cogitator-ai/browser';
+
+const session = new BrowserSession({
+  headless: true,
+  browser: 'chromium',
+  stealth: true,
+});
+
+await session.start();
+// ... use tools ...
+await session.close();
+```
+
+## Configuration
+
+The full `BrowserSessionConfig` interface:
+
+```typescript
+interface BrowserSessionConfig {
+  headless?: boolean;           // default: true
+  browser?: BrowserType;        // 'chromium' | 'firefox' | 'webkit', default: 'chromium'
+  stealth?: boolean | StealthConfig;
+  proxy?: string | ProxyConfig;
+  viewport?: { width: number; height: number };  // default: 1280x720
+  userAgent?: string;
+  locale?: string;              // e.g. 'en-US'
+  timezone?: string;            // e.g. 'America/New_York'
+  geolocation?: { latitude: number; longitude: number };
+  persistentContext?: string;   // path for persistent browser data
+  cookies?: BrowserCookie[];    // initial cookies
+  timeout?: number;             // navigation timeout, default: 30000ms
+  actionTimeout?: number;       // action timeout, default: 10000ms
+  pool?: { maxPages: number };
+}
+```
+
+### Browser Types
+
+Playwright supports three browser engines:
+
+```typescript
+new BrowserSession({ browser: 'chromium' });  // Chrome, Edge
+new BrowserSession({ browser: 'firefox' });   // Firefox
+new BrowserSession({ browser: 'webkit' });    // Safari
+```
+
+### Proxy
+
+Pass a URL string or a full `ProxyConfig` with authentication:
+
+```typescript
+new BrowserSession({ proxy: 'http://proxy.example.com:8080' });
+
+new BrowserSession({
+  proxy: {
+    server: 'http://proxy.example.com:8080',
+    username: 'user',
+    password: 'pass',
+  },
+});
+```
+
+### Viewport and Locale
+
+```typescript
+new BrowserSession({
+  viewport: { width: 1920, height: 1080 },
+  locale: 'de-DE',
+  timezone: 'Europe/Berlin',
+  geolocation: { latitude: 52.52, longitude: 13.405 },
+});
+```
+
+## Lifecycle
+
+### `start()`
+
+Launches the browser, creates a context with the configured options, opens the first tab, and applies stealth evasions if enabled.
+
+```typescript
+const session = new BrowserSession({ headless: false });
+await session.start();
+```
+
+### `close()`
+
+Closes the browser and cleans up all resources. Safe to call multiple times.
+
+```typescript
+await session.close();
+```
+
+### `page`
+
+Returns the currently active `Page` object. Throws if the session hasn't been started.
+
+```typescript
+const page = session.page;
+console.log(page.url());
+```
+
+## Tab Management
+
+Sessions support multiple tabs. New tabs automatically become the active tab.
+
+### `newTab(url?)`
+
+Opens a new tab, optionally navigating to a URL. Returns the Playwright `Page` object.
+
+```typescript
+const page = await session.newTab('https://example.com');
+```
+
+### `switchTab(index)`
+
+Switches the active tab by index.
+
+```typescript
+session.switchTab(0); // switch to first tab
+```
+
+### `closeTab(index?)`
+
+Closes a tab by index. Defaults to closing the active tab. Cannot close the last remaining tab.
+
+```typescript
+await session.closeTab(1);
+```
+
+### `tabs`
+
+Returns a copy of all open `Page` objects.
+
+```typescript
+for (const tab of session.tabs) {
+  console.log(tab.url());
+}
+```
+
+## Cookie Management
+
+### `getCookies()`
+
+Returns all cookies from the current browser context.
+
+```typescript
+const cookies = await session.getCookies();
+```
+
+### `setCookies(cookies)`
+
+Adds cookies to the browser context.
+
+```typescript
+await session.setCookies([
+  { name: 'session', value: 'abc123', domain: '.example.com' },
+]);
+```
+
+### `saveCookies(filePath)` / `loadCookies(filePath)`
+
+Persist cookies to a JSON file and restore them later. Useful for maintaining login state across sessions.
+
+```typescript
+await session.saveCookies('./cookies.json');
+
+// later...
+const session2 = new BrowserSession();
+await session2.start();
+await session2.loadCookies('./cookies.json');
+```
+
+## Initial Cookies
+
+Pass cookies at construction time to have them applied on `start()`:
+
+```typescript
+const session = new BrowserSession({
+  cookies: [
+    { name: 'token', value: 'xyz', domain: '.example.com', path: '/' },
+  ],
+});
+await session.start();
+```
+
+## Accessing Playwright Objects
+
+For advanced use cases, you can access the underlying Playwright objects directly:
+
+```typescript
+session.browser;   // Browser | null
+session.context;   // BrowserContext | null
+session.page;      // active Page
+```
+
+## Next Steps
+
+- [Tools Reference](/docs/browser/tools) — all 32 tools that operate on the session
+- [Stealth](/docs/browser/stealth) — anti-detection configuration

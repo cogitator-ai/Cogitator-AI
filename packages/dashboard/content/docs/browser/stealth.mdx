@@ -1,0 +1,171 @@
+---
+title: Stealth
+description: Anti-detection evasions, fingerprint randomization, and human-like behavior for browser automation.
+---
+
+## Overview
+
+Many websites detect and block automated browsers. The stealth system counters this with browser fingerprint evasions, user agent rotation, and human-like input simulation.
+
+Enable stealth with `stealth: true` for defaults, or pass a `StealthConfig` for fine-grained control.
+
+```typescript
+import { BrowserSession, browserTools } from '@cogitator-ai/browser';
+
+const session = new BrowserSession({
+  headless: true,
+  stealth: true,
+});
+
+await session.start();
+```
+
+## StealthConfig
+
+```typescript
+interface StealthConfig {
+  humanLikeTyping?: boolean;         // default: true
+  humanLikeMouse?: boolean;          // default: true
+  fingerprintRandomization?: boolean; // default: true
+  blockWebDriver?: boolean;          // default: true
+  evasionScripts?: string[];         // custom init scripts
+}
+```
+
+When `stealth: true` is passed, all boolean options default to `true`. You can disable specific features:
+
+```typescript
+const session = new BrowserSession({
+  stealth: {
+    humanLikeTyping: true,
+    humanLikeMouse: false,
+    fingerprintRandomization: true,
+    blockWebDriver: true,
+  },
+});
+```
+
+## Evasion Scripts
+
+When stealth is enabled, the following evasion scripts run automatically on every new page via `context.addInitScript`:
+
+| Evasion | What it does |
+| --- | --- |
+| WebDriver | Sets `navigator.webdriver` to `false` |
+| Plugins | Fakes `navigator.plugins` with Chrome PDF Plugin, PDF Viewer, Native Client |
+| Languages | Sets `navigator.languages` to `['en-US', 'en']` |
+| Canvas | Adds subtle noise to canvas fingerprinting by XOR-ing pixel data |
+| WebGL | Overrides WebGL vendor/renderer to report Intel Iris OpenGL Engine |
+| Chrome | Adds `window.chrome` object with `runtime`, `loadTimes`, `csi` stubs |
+| Permissions | Overrides `Permissions.query` to return `denied` for notifications |
+
+### Custom Evasion Scripts
+
+Add your own init scripts that run before any page content:
+
+```typescript
+const session = new BrowserSession({
+  stealth: {
+    evasionScripts: [
+      `Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });`,
+      `Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });`,
+    ],
+  },
+});
+```
+
+## Human-Like Behavior
+
+When stealth is enabled, the `browser_type` and `browser_fill_form` tools automatically add random delays between keystrokes (50-150ms) to simulate human typing.
+
+For direct use without tools, the package exports three human-like action helpers:
+
+### `humanLikeType(page, selector, text)`
+
+Clicks the element, then types each character with a random delay between 50-150ms.
+
+```typescript
+import { humanLikeType } from '@cogitator-ai/browser';
+
+await humanLikeType(page, '#search', 'cogitator ai');
+```
+
+### `humanLikeClick(page, selector)`
+
+Moves the mouse to the element along a Bezier curve with random control points, then clicks at the element center with slight random offset.
+
+```typescript
+import { humanLikeClick } from '@cogitator-ai/browser';
+
+await humanLikeClick(page, '#submit-button');
+```
+
+### `humanLikeScroll(page, direction, amount)`
+
+Scrolls in multiple small increments with random pauses and slight variation in scroll distance per step.
+
+```typescript
+import { humanLikeScroll } from '@cogitator-ai/browser';
+
+await humanLikeScroll(page, 'down', 500);
+```
+
+## User Agent Rotation
+
+When stealth is enabled and no custom `userAgent` is set, a random user agent is selected from a curated pool that matches the browser type. The pool includes recent Chrome, Edge, Firefox, and Safari user agents across Windows, macOS, Linux, iOS, and iPad.
+
+```typescript
+import { getRandomUserAgent, getAllUserAgents } from '@cogitator-ai/browser';
+
+const ua = getRandomUserAgent('chromium');
+const all = getAllUserAgents(); // { chromium: [...], firefox: [...], webkit: [...] }
+```
+
+## Full Stealth Example
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { BrowserSession, browserTools } from '@cogitator-ai/browser';
+
+const session = new BrowserSession({
+  headless: true,
+  browser: 'chromium',
+  stealth: {
+    humanLikeTyping: true,
+    humanLikeMouse: true,
+    fingerprintRandomization: true,
+    blockWebDriver: true,
+  },
+  viewport: { width: 1920, height: 1080 },
+  locale: 'en-US',
+  timezone: 'America/New_York',
+});
+
+await session.start();
+
+const agent = new Agent({
+  name: 'stealth-scraper',
+  model: 'openai/gpt-4o',
+  tools: browserTools(session),
+  instructions: 'Browse websites naturally. Extract the requested data.',
+});
+
+const cogitator = new Cogitator({
+  llm: {
+    defaultModel: 'openai/gpt-4o',
+    providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
+  },
+});
+
+const result = await cogitator.run(agent, {
+  input: 'Search for "AI agent frameworks" and summarize the top results',
+});
+
+console.log(result.output);
+await session.close();
+```
+
+## Next Steps
+
+- [BrowserSession](/docs/browser/session) — session configuration reference
+- [Vision](/docs/browser/vision) — screenshot and accessibility-based tools

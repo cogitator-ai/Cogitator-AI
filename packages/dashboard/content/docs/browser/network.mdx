@@ -1,0 +1,210 @@
+---
+title: Network Tools
+description: Intercept HTTP requests, block resources, capture HAR logs, and monitor API calls.
+---
+
+## Overview
+
+The network module provides 5 tools for controlling and monitoring HTTP traffic. These tools share a `NetworkState` instance internally that tracks interceptors and records API calls.
+
+```typescript
+import { browserTools } from '@cogitator-ai/browser';
+
+const tools = browserTools(session, { modules: ['network'] });
+```
+
+Or import individual tools:
+
+```typescript
+import {
+  createInterceptRequestTool,
+  createWaitForResponseTool,
+  createBlockResourcesTool,
+  createCaptureHarTool,
+  createGetApiCallsTool,
+} from '@cogitator-ai/browser';
+```
+
+## Request Interception
+
+### `browser_intercept_request`
+
+Intercept HTTP requests matching a URL pattern. Three actions are available:
+
+- **block** — abort the request entirely
+- **modify** — continue with modified headers, body, or URL
+- **continue** — let the request through (useful for logging)
+
+```typescript
+// block all analytics
+{ "urlPattern": "**/analytics/**", "action": "block" }
+
+// add auth header to API requests
+{
+  "urlPattern": "**/api/**",
+  "action": "modify",
+  "modify": {
+    "headers": { "Authorization": "Bearer token123" }
+  }
+}
+
+// redirect requests
+{
+  "urlPattern": "**/old-api/**",
+  "action": "modify",
+  "modify": { "url": "https://new-api.example.com/v2" }
+}
+```
+
+Returns an `interceptorId` that identifies this interceptor in the internal state.
+
+### `browser_block_resources`
+
+Block specific resource types from loading. This is a convenience wrapper over request interception. Useful for speeding up page loads.
+
+```typescript
+// block images, fonts, and stylesheets for faster scraping
+{ "types": ["image", "font", "stylesheet"] }
+```
+
+Supported types: `image`, `stylesheet`, `font`, `media`, `script`.
+
+## Response Monitoring
+
+### `browser_wait_for_response`
+
+Wait for an HTTP response matching a URL pattern. Returns the response status, headers, and body.
+
+```typescript
+// wait for the search API to respond
+{ "urlPattern": "/api/search", "timeout": 10000 }
+// returns: { url: "...", status: 200, headers: {...}, body: "..." }
+```
+
+### `browser_get_api_calls`
+
+Get captured XHR and fetch API calls. The tool automatically starts listening for API calls on first use. Filter by URL pattern or HTTP method.
+
+```typescript
+// get all captured API calls
+{}
+
+// filter by URL
+{ "urlPattern": "/api/users" }
+
+// filter by method
+{ "method": "POST" }
+
+// both
+{ "urlPattern": "/api/", "method": "GET" }
+```
+
+Returns an array of call records:
+
+```typescript
+{
+  calls: [
+    {
+      url: 'https://example.com/api/users',
+      method: 'GET',
+      status: 200,
+      timing: 0,
+      requestHeaders: { ... },
+      responseHeaders: { ... },
+    }
+  ]
+}
+```
+
+## HAR Capture
+
+### `browser_capture_har`
+
+Start or stop capturing all HTTP traffic in HAR format. On stop, returns all captured entries with full request/response details including bodies.
+
+```typescript
+// start capturing
+{ "action": "start" }
+// returns: { capturing: true, entries: 0 }
+
+// ... navigate, interact with pages ...
+
+// stop and save to file
+{ "action": "stop", "path": "./traffic.har.json" }
+// returns: { capturing: false, entries: 47, har: [...] }
+
+// stop without saving to file
+{ "action": "stop" }
+// returns entries in the response only
+```
+
+Each HAR entry contains:
+
+```typescript
+{
+  url: string;
+  method: string;
+  status: number;
+  timing: number;
+  requestHeaders: Record<string, string>;
+  responseHeaders: Record<string, string>;
+  responseBody: string;
+}
+```
+
+## Network Monitoring Example
+
+An agent that monitors API traffic while browsing:
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { BrowserSession, browserTools } from '@cogitator-ai/browser';
+
+const session = new BrowserSession({ headless: true });
+await session.start();
+
+const agent = new Agent({
+  name: 'api-monitor',
+  model: 'openai/gpt-4o',
+  tools: browserTools(session, {
+    modules: ['navigation', 'interaction', 'network', 'extraction'],
+  }),
+  instructions: `You monitor web application API calls.
+When asked to analyze a site, navigate to it, interact with the page,
+then use browser_get_api_calls to see what API requests were made.`,
+});
+
+const cogitator = new Cogitator({
+  llm: {
+    defaultModel: 'openai/gpt-4o',
+    providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
+  },
+});
+
+const result = await cogitator.run(agent, {
+  input: 'Go to https://example.com, click around, and tell me what API endpoints it calls',
+});
+
+console.log(result.output);
+await session.close();
+```
+
+## Performance Optimization
+
+Block unnecessary resources to speed up page loads during scraping:
+
+```typescript
+const agent = new Agent({
+  name: 'fast-scraper',
+  model: 'openai/gpt-4o',
+  tools: browserTools(session),
+  instructions: `Before scraping, use browser_block_resources to block images, fonts,
+stylesheets, and media. This speeds up page loads significantly.`,
+});
+```
+
+## Next Steps
+
+- [Tools Reference](/docs/browser/tools) — full parameter reference for all 32 tools
+- [Stealth](/docs/browser/stealth) — anti-detection for network-monitored sites
+- [BrowserSession](/docs/browser/session) — proxy configuration for network routing

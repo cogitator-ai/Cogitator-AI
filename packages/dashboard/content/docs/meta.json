@@ -8,6 +8,8 @@
     "core",
     "---Tools---",
     "tools",
+    "---Browser---",
+    "browser",
     "---Memory & RAG---",
     "memory",
     "rag",
