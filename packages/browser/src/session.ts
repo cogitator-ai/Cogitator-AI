@@ -1,10 +1,12 @@
 import type {
   BrowserSessionConfig,
   BrowserCookie,
+  BrowserType,
   StealthConfig,
   ProxyConfig,
 } from '@cogitator-ai/types';
 import type { Browser, BrowserContext, Page } from 'playwright';
+import { applyStealthToContext, getRandomUserAgent } from './stealth';
 
 const DEFAULT_VIEWPORT = { width: 1280, height: 720 };
 const DEFAULT_TIMEOUT = 30_000;
@@ -93,9 +95,17 @@ export class BrowserSession {
     if (this._config.locale) contextOptions.locale = this._config.locale;
     if (this._config.timezone) contextOptions.timezoneId = this._config.timezone;
     if (this._config.geolocation) contextOptions.geolocation = this._config.geolocation;
-    if (this._config.userAgent) contextOptions.userAgent = this._config.userAgent;
+    if (this._config.userAgent) {
+      contextOptions.userAgent = this._config.userAgent;
+    } else if (this.stealthEnabled) {
+      contextOptions.userAgent = getRandomUserAgent(browserType as BrowserType);
+    }
 
     this._context = await this._browser.newContext(contextOptions);
+
+    if (this.stealthEnabled) {
+      await applyStealthToContext(this._context, this.stealthConfig!);
+    }
 
     const firstPage = await this._context.newPage();
     this._pages = [firstPage];
