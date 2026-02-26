@@ -2,9 +2,9 @@
 replicaCount: 1
 
 image:
-  repository: cogitator/dashboard
+  repository: ghcr.io/cogitator-ai/dashboard
   pullPolicy: IfNotPresent
-  tag: ""
+  tag: "latest"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -65,6 +65,9 @@ tolerations: []
 affinity: {}
 
 probes:
+  # Health paths per server adapter:
+  #   Next.js dashboard: /api/health/live, /api/health/ready
+  #   Express/Fastify/Koa/Hono: /health, /ready
   liveness:
     enabled: true
     path: /api/health/live
@@ -135,9 +138,9 @@ worker:
   concurrency: 5
 
   image:
-    repository: cogitator/worker
+    repository: ghcr.io/cogitator-ai/worker
     pullPolicy: IfNotPresent
-    tag: ""
+    tag: "latest"
 
   resources:
     limits:

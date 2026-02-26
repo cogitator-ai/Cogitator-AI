@@ -331,6 +331,106 @@ CREATE TRIGGER trigger_swarms_updated
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- ============================================================================
+-- Learning: Traces & Prompt Optimization
+-- ============================================================================
+CREATE SCHEMA IF NOT EXISTS cogitator;
+
+CREATE TABLE IF NOT EXISTS cogitator.traces (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    input TEXT NOT NULL,
+    output TEXT NOT NULL,
+    context JSONB,
+    steps JSONB NOT NULL,
+    tool_calls JSONB NOT NULL,
+    reflections JSONB,
+    metrics JSONB NOT NULL,
+    score REAL NOT NULL,
+    model TEXT NOT NULL,
+    duration INTEGER NOT NULL,
+    usage JSONB NOT NULL,
+    labels TEXT[],
+    is_demo BOOLEAN DEFAULT FALSE,
+    expected JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_traces_agent_id ON cogitator.traces(agent_id, created_at);
+CREATE INDEX idx_traces_score ON cogitator.traces(agent_id, score);
+CREATE INDEX idx_traces_is_demo ON cogitator.traces(agent_id, is_demo) WHERE is_demo = TRUE;
+
+CREATE TABLE IF NOT EXISTS cogitator.prompts (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    system_prompt TEXT NOT NULL,
+    messages JSONB NOT NULL,
+    tools JSONB,
+    injected_demos TEXT,
+    injected_insights TEXT,
+    temperature REAL,
+    top_p REAL,
+    max_tokens INTEGER,
+    prompt_tokens INTEGER NOT NULL,
+    response_content TEXT,
+    response_tool_calls JSONB,
+    completion_tokens INTEGER,
+    finish_reason TEXT,
+    latency_ms INTEGER,
+    metadata JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_prompts_agent_id ON cogitator.prompts(agent_id, created_at);
+CREATE INDEX idx_prompts_run_id ON cogitator.prompts(run_id);
+
+CREATE TABLE IF NOT EXISTS cogitator.ab_tests (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL,
+    control_instructions TEXT NOT NULL,
+    treatment_instructions TEXT NOT NULL,
+    treatment_allocation REAL NOT NULL,
+    min_sample_size INTEGER NOT NULL,
+    max_duration BIGINT NOT NULL,
+    confidence_level REAL NOT NULL,
+    metric_to_optimize TEXT NOT NULL,
+    control_results JSONB NOT NULL DEFAULT '{"sampleSize":0,"successRate":0,"avgScore":0,"avgLatency":0,"totalCost":0,"scores":[]}',
+    treatment_results JSONB NOT NULL DEFAULT '{"sampleSize":0,"successRate":0,"avgScore":0,"avgLatency":0,"totalCost":0,"scores":[]}',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_ab_tests_agent_id ON cogitator.ab_tests(agent_id, status);
+
+CREATE TABLE IF NOT EXISTS cogitator.instruction_versions (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    instructions TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_id TEXT,
+    deployed_at TIMESTAMPTZ NOT NULL,
+    retired_at TIMESTAMPTZ,
+    run_count INTEGER DEFAULT 0,
+    avg_score REAL DEFAULT 0,
+    success_rate REAL DEFAULT 0,
+    avg_latency REAL DEFAULT 0,
+    total_cost REAL DEFAULT 0,
+    parent_version_id TEXT
+);
+
+CREATE INDEX idx_instruction_versions_agent ON cogitator.instruction_versions(agent_id, version);
+
+-- ============================================================================
 -- Initial Data
 -- ============================================================================
 

@@ -43,7 +43,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
       );
     }
     this.schema = schema;
-    const dims = config.vectorDimensions ?? 1536;
+    const dims = config.vectorDimensions ?? 768;
     if (!Number.isInteger(dims) || dims <= 0) {
       throw new Error(`Invalid vectorDimensions: must be a positive integer`);
     }

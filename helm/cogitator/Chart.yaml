@@ -2,8 +2,8 @@ apiVersion: v2
 name: cogitator
 description: A Helm chart for Cogitator - Self-hosted AI agent runtime
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "latest"
 keywords:
   - ai
   - llm
