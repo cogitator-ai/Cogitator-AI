@@ -54,6 +54,9 @@ export {
   createEmbeddingService,
 } from './embedding/index';
 
+export { CoreFactsStore } from './core-facts';
+export type { CoreFactsStoreConfig, FactHistoryEntry } from './core-facts';
+
 export { SessionManager } from './session-manager';
 export { CompactionService, type SummarizeFn, type CompactionServiceConfig } from './compaction';
 

@@ -191,7 +191,7 @@ export class SQLiteGraphAdapter implements GraphAdapter {
     return `${prefix}_${nanoid(12)}`;
   }
 
-  private rowToNode(row: NodeRow): GraphNode {
+  private rowToNode(row: NodeRow, includeEmbedding = false): GraphNode {
     return {
       id: row.id,
       agentId: row.agent_id,
@@ -200,7 +200,8 @@ export class SQLiteGraphAdapter implements GraphAdapter {
       aliases: JSON.parse(row.aliases) as string[],
       description: row.description ?? undefined,
       properties: JSON.parse(row.properties) as Record<string, unknown>,
-      embedding: row.embedding ? (JSON.parse(row.embedding) as number[]) : undefined,
+      embedding:
+        includeEmbedding && row.embedding ? (JSON.parse(row.embedding) as number[]) : undefined,
       confidence: row.confidence,
       source: row.source as GraphNode['source'],
       createdAt: new Date(row.created_at),
@@ -442,7 +443,7 @@ export class SQLiteGraphAdapter implements GraphAdapter {
     }
 
     const rows = db.prepare(sql).all(...params) as NodeRow[];
-    return this.success(rows.map((row) => this.rowToNode(row)));
+    return this.success(rows.map((row) => this.rowToNode(row, query.includeEmbedding)));
   }
 
   async searchNodesSemantic(
