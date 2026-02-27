@@ -77,6 +77,7 @@ export {
 
 export {
   PostgresGraphAdapter,
+  SQLiteGraphAdapter,
   LLMEntityExtractor,
   GraphInferenceEngine,
   GraphContextBuilder,
@@ -104,6 +105,7 @@ export {
 
 export type {
   PostgresGraphAdapterConfig,
+  SQLiteGraphAdapterConfig,
   LLMEntityExtractorConfig,
   LLMBackendMinimal,
   GraphContextBuilderConfig,

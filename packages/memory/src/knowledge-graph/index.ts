@@ -1,6 +1,9 @@
 export { PostgresGraphAdapter } from './graph-adapter';
 export type { PostgresGraphAdapterConfig } from './graph-adapter';
 
+export { SQLiteGraphAdapter } from './sqlite-graph-adapter';
+export type { SQLiteGraphAdapterConfig } from './sqlite-graph-adapter';
+
 export { LLMEntityExtractor } from './entity-extractor';
 export type { LLMEntityExtractorConfig, LLMBackendMinimal } from './entity-extractor';
 
