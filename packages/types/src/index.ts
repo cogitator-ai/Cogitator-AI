@@ -34,3 +34,6 @@ export * from './deploy';
 export * from './logging';
 export * from './rag';
 export * from './voice';
+export * from './session';
+export * from './channel';
+export * from './skill';
