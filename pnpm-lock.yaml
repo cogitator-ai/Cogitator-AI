@@ -311,6 +311,12 @@ importers:
 
   packages/cli:
     dependencies:
+      '@clack/prompts':
+        specifier: ^0.10.0
+        version: 0.10.1
+      '@cogitator-ai/channels':
+        specifier: workspace:*
+        version: link:../channels
       '@cogitator-ai/config':
         specifier: workspace:*
         version: link:../config
@@ -320,6 +326,9 @@ importers:
       '@cogitator-ai/deploy':
         specifier: workspace:*
         version: link:../deploy
+      '@cogitator-ai/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
