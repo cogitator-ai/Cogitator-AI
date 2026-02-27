@@ -50,6 +50,7 @@ export {
   createMemoryTools,
   createSchedulerTools,
   createCapabilitiesTool,
+  createDeviceTools,
 } from './tools/index';
 export type { MemoryToolsConfig, CoreFactsLike, SchedulerToolsConfig } from './tools/index';
 export type {

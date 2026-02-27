@@ -7,8 +7,20 @@ import {
   createMemoryTools,
   createSchedulerTools,
   createCapabilitiesTool,
+  createDeviceTools,
+  parseModel,
+  tool as createTool,
 } from '@cogitator-ai/core';
-import { SQLiteAdapter, SQLiteGraphAdapter, CoreFactsStore } from '@cogitator-ai/memory';
+import {
+  SQLiteAdapter,
+  SQLiteGraphAdapter,
+  CoreFactsStore,
+  LLMEntityExtractor,
+  createEmbeddingService,
+  InMemoryEmbeddingAdapter,
+} from '@cogitator-ai/memory';
+import type { LLMBackendMinimal } from '@cogitator-ai/memory';
+import type { EmbeddingServiceConfig } from '@cogitator-ai/types';
 import { Gateway } from './gateway';
 import { HeartbeatScheduler } from './heartbeat';
 import { SimpleTimerStore } from './simple-timer-store';
@@ -17,6 +29,8 @@ import { discordChannel } from './channels/discord';
 import { slackChannel } from './channels/slack';
 import { ownerCommands } from './middleware/owner-commands';
 import { rateLimit } from './middleware/rate-limit';
+import { autoExtract } from './middleware/auto-extract';
+import type { EntityExtractor } from './middleware/auto-extract';
 import { generateCapabilitiesDoc } from './capabilities';
 import type { AssistantConfigOutput } from '@cogitator-ai/config';
 
@@ -30,6 +44,11 @@ export interface BuiltRuntime {
   cleanup: () => Promise<void>;
 }
 
+interface CleanupResources {
+  browserSession?: { close(): Promise<void> };
+  mcpClients: Array<{ close(): Promise<void> }>;
+}
+
 export class RuntimeBuilder {
   constructor(
     private config: AssistantConfig,
@@ -38,6 +57,7 @@ export class RuntimeBuilder {
 
   async build(): Promise<BuiltRuntime> {
     const cogitator = this.buildCogitator();
+    const cleanupResources: CleanupResources = { mcpClients: [] };
 
     const memoryPath = this.config.memory.path ?? '~/.cogitator/memory.db';
     const resolvedPath = memoryPath.replace(/^~/, homedir());
@@ -93,6 +113,14 @@ export class RuntimeBuilder {
       );
     }
 
+    if (this.config.capabilities.deviceTools) {
+      tools.push(...createDeviceTools());
+    }
+
+    await this.wireBrowser(tools, cleanupResources);
+    await this.wireRAG(tools);
+    await this.wireMCPServers(tools, cleanupResources);
+
     const coreFactsText = await coreFacts.formatForPrompt();
     const channels = this.buildChannels();
 
@@ -131,6 +159,38 @@ export class RuntimeBuilder {
       middleware.push(rateLimit({ maxPerMinute: this.config.rateLimit.maxPerMinute }));
     }
 
+    if (this.config.memory.autoExtract !== false && graphAdapter) {
+      const extractorBackend = this.createExtractorBackend(cogitator);
+      const llmExtractor = new LLMEntityExtractor(extractorBackend);
+      const extractor: EntityExtractor = {
+        async extract(text: string) {
+          const result = await llmExtractor.extract(text);
+          return {
+            entities: result.entities.map((e) => ({
+              name: e.name,
+              type: e.type,
+              confidence: e.confidence,
+              description: e.description,
+            })),
+            relations: result.relations.map((r) => ({
+              from: r.sourceEntity,
+              to: r.targetEntity,
+              type: r.type,
+              confidence: r.confidence,
+            })),
+          };
+        },
+      };
+      middleware.push(
+        autoExtract({
+          extractor,
+          graphAdapter,
+          agentId: this.config.name,
+          coreFacts,
+        })
+      );
+    }
+
     const streamConfig = this.config.stream
       ? {
           flushInterval: this.config.stream.flushInterval ?? 600,
@@ -167,10 +227,164 @@ export class RuntimeBuilder {
       await coreFacts.close();
       if (graphAdapter) await graphAdapter.close();
       await memoryAdapter.disconnect();
+      if (cleanupResources.browserSession) {
+        await cleanupResources.browserSession.close().catch(() => {});
+      }
+      for (const client of cleanupResources.mcpClients) {
+        await client.close().catch(() => {});
+      }
       await cogitator.close();
     };
 
     return { agent, cogitator, gateway, scheduler, cleanup };
+  }
+
+  private createExtractorBackend(cogitator: Cogitator): LLMBackendMinimal {
+    const llmBackend = cogitator.getLLMBackend(this.config.llm.model);
+    const modelName = parseModel(this.config.llm.model).model;
+    return {
+      async chat(options: {
+        messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+        responseFormat?: { type: 'json_object' };
+      }) {
+        const response = await llmBackend.chat({
+          model: modelName,
+          messages: options.messages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+          responseFormat: options.responseFormat,
+        });
+        return { content: response.content ?? '' };
+      },
+    };
+  }
+
+  private async wireBrowser(tools: Tool[], resources: CleanupResources): Promise<void> {
+    if (!this.config.capabilities.browser) return;
+
+    try {
+      const { BrowserSession, browserTools } = await import('@cogitator-ai/browser');
+      const session = new BrowserSession({ headless: true });
+      await session.start();
+      tools.push(...browserTools(session));
+      resources.browserSession = session;
+    } catch {
+      console.warn('[RuntimeBuilder] Browser capability requires @cogitator-ai/browser package');
+    }
+  }
+
+  private async wireRAG(tools: Tool[]): Promise<void> {
+    if (!this.config.capabilities.rag) return;
+
+    try {
+      const { RAGPipelineBuilder, TextLoader, ragTools } = await import('@cogitator-ai/rag');
+
+      const embeddingConfig = this.resolveEmbeddingConfig();
+      if (!embeddingConfig) {
+        console.warn(
+          '[RuntimeBuilder] RAG requires embedding configuration for the active provider'
+        );
+        return;
+      }
+
+      const embeddingService = createEmbeddingService(embeddingConfig);
+      const embeddingAdapter = new InMemoryEmbeddingAdapter();
+
+      const pipeline = new RAGPipelineBuilder()
+        .withLoader(new TextLoader())
+        .withEmbeddingService(embeddingService)
+        .withEmbeddingAdapter(embeddingAdapter)
+        .withConfig({ chunking: { strategy: 'recursive', chunkSize: 512, chunkOverlap: 50 } })
+        .build();
+
+      for (const path of this.config.capabilities.rag.paths) {
+        await pipeline.ingest(path).catch((err: Error) => {
+          console.warn(`[RuntimeBuilder] Failed to ingest RAG path "${path}":`, err.message);
+        });
+      }
+
+      const [searchTool, ingestTool] = ragTools(pipeline);
+      tools.push(
+        createTool({
+          name: searchTool.name,
+          description: searchTool.description,
+          parameters: searchTool.parameters,
+          execute: searchTool.execute,
+        }),
+        createTool({
+          name: ingestTool.name,
+          description: ingestTool.description,
+          parameters: ingestTool.parameters,
+          execute: ingestTool.execute,
+        })
+      );
+    } catch {
+      console.warn('[RuntimeBuilder] RAG capability requires @cogitator-ai/rag package');
+    }
+  }
+
+  private async wireMCPServers(tools: Tool[], resources: CleanupResources): Promise<void> {
+    if (!this.config.mcpServers) return;
+
+    try {
+      const { MCPClient } = await import('@cogitator-ai/mcp');
+
+      for (const [name, serverConfig] of Object.entries(this.config.mcpServers)) {
+        try {
+          const client = await MCPClient.connect({
+            transport: 'stdio',
+            command: serverConfig.command,
+            args: serverConfig.args,
+            env: serverConfig.env,
+          });
+          const serverTools = await client.getTools();
+          tools.push(...serverTools);
+          resources.mcpClients.push(client);
+        } catch (err) {
+          console.warn(
+            `[RuntimeBuilder] Failed to connect MCP server "${name}":`,
+            err instanceof Error ? err.message : String(err)
+          );
+        }
+      }
+    } catch {
+      console.warn('[RuntimeBuilder] MCP servers require @cogitator-ai/mcp package');
+    }
+  }
+
+  private resolveEmbeddingConfig(): EmbeddingServiceConfig | null {
+    const { provider } = this.config.llm;
+
+    if (provider === 'google') {
+      const apiKey = this.env.GOOGLE_API_KEY ?? this.env.GEMINI_API_KEY;
+      if (!apiKey) return null;
+      return { provider: 'google', apiKey };
+    }
+
+    if (provider === 'openai') {
+      const apiKey = this.env.OPENAI_API_KEY;
+      if (!apiKey) return null;
+      return { provider: 'openai', apiKey };
+    }
+
+    if (provider === 'ollama') {
+      return {
+        provider: 'ollama',
+        baseUrl: this.env.OLLAMA_URL ?? 'http://localhost:11434',
+      };
+    }
+
+    if (provider === 'anthropic') {
+      const apiKey = this.env.OPENAI_API_KEY;
+      if (apiKey) return { provider: 'openai', apiKey };
+      console.warn(
+        '[RuntimeBuilder] Anthropic has no embedding API; set OPENAI_API_KEY for RAG embeddings'
+      );
+      return null;
+    }
+
+    return null;
   }
 
   private buildCogitator(): Cogitator {

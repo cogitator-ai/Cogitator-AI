@@ -277,15 +277,24 @@ importers:
 
   packages/channels:
     dependencies:
+      '@cogitator-ai/browser':
+        specifier: workspace:*
+        version: link:../browser
       '@cogitator-ai/config':
         specifier: workspace:*
         version: link:../config
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@cogitator-ai/mcp':
+        specifier: workspace:*
+        version: link:../mcp
       '@cogitator-ai/memory':
         specifier: workspace:*
         version: link:../memory
+      '@cogitator-ai/rag':
+        specifier: workspace:*
+        version: link:../rag
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types

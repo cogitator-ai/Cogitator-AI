@@ -242,6 +242,67 @@ export const wizardCommand = new Command('wizard')
       }
     }
 
+    const mcpServers: Record<string, { command: string; args: string[] }> = {};
+    const existingMcpNames = Object.keys(existing.mcpServers ?? {});
+
+    const addMcp = prompt(
+      await p.confirm({
+        message: 'Add MCP servers?',
+        initialValue: existingMcpNames.length > 0,
+      })
+    );
+
+    if (addMcp) {
+      let addMore = true;
+      while (addMore) {
+        const name = prompt(
+          await p.text({
+            message: 'Server name',
+            placeholder: 'filesystem',
+            validate: (v) => (!v.trim() ? 'Name is required' : undefined),
+          })
+        ) as string;
+
+        const existingServer = (
+          existing.mcpServers as Record<string, { command: string; args: string[] }>
+        )?.[name];
+
+        const command = prompt(
+          await p.text({
+            message: 'Command',
+            placeholder: 'npx',
+            ...(existingServer ? { initialValue: existingServer.command } : {}),
+            validate: (v) => (!v.trim() ? 'Command is required' : undefined),
+          })
+        ) as string;
+
+        const argsRaw = prompt(
+          await p.text({
+            message: 'Arguments (space-separated)',
+            placeholder: '-y @modelcontextprotocol/server-filesystem /home',
+            ...(existingServer ? { initialValue: existingServer.args.join(' ') } : {}),
+          })
+        ) as string;
+
+        mcpServers[name] = {
+          command,
+          args: argsRaw
+            .trim()
+            .split(/\s+/)
+            .filter((s) => s.length > 0),
+        };
+
+        p.log.success(`Added MCP server: ${chalk.cyan(name)}`);
+
+        addMore = prompt(
+          await p.confirm({
+            message: 'Add another MCP server?',
+            initialValue: false,
+          })
+        );
+      }
+    }
+
     const memoryAdapter = prompt(
       await p.select({
         message: 'Memory',
@@ -276,6 +337,7 @@ export const wizardCommand = new Command('wizard')
       },
       channels: channelsConfig,
       capabilities,
+      ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
       memory: {
         adapter: memoryAdapter,
         path: memoryAdapter === 'sqlite' ? '~/.cogitator/memory.db' : undefined,

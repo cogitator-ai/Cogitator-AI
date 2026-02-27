@@ -44,12 +44,22 @@ vi.mock('@cogitator-ai/memory', () => {
     compact = vi.fn().mockResolvedValue(undefined);
   }
 
+  class MockLLMEntityExtractor {
+    extract = vi
+      .fn()
+      .mockResolvedValue({ entities: [], relations: [], text: '', timestamp: new Date() });
+    constructor(_backend: unknown, _config?: unknown) {}
+  }
+
   return {
     SQLiteAdapter: MockSQLiteAdapter,
     SQLiteGraphAdapter: MockSQLiteGraphAdapter,
     CoreFactsStore: MockCoreFactsStore,
     SessionManager: MockSessionManager,
     CompactionService: MockCompactionService,
+    LLMEntityExtractor: MockLLMEntityExtractor,
+    createEmbeddingService: vi.fn(),
+    InMemoryEmbeddingAdapter: vi.fn(),
   };
 });
 
@@ -87,6 +97,16 @@ vi.mock('@cogitator-ai/core', () => {
     close = vi.fn().mockResolvedValue(undefined);
     run = vi.fn().mockResolvedValue({ output: 'ok' });
     tools = { register: vi.fn() };
+    getLLMBackend = vi.fn().mockReturnValue({
+      chat: vi
+        .fn()
+        .mockResolvedValue({
+          id: '1',
+          content: '{}',
+          finishReason: 'stop',
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+        }),
+    });
     constructor(public config: unknown) {
       cogitatorInstances.push(this);
     }
@@ -124,6 +144,34 @@ vi.mock('@cogitator-ai/core', () => {
     return makeTool('lookup_capabilities', 'Check capabilities');
   }
 
+  function createDeviceTools() {
+    return [
+      makeTool('clipboard_read', 'Read clipboard'),
+      makeTool('clipboard_write', 'Write clipboard'),
+      makeTool('system_info', 'System info'),
+      makeTool('screenshot', 'Take screenshot'),
+    ];
+  }
+
+  function parseModel(modelString: string) {
+    if (modelString.includes('/')) {
+      const [provider, ...rest] = modelString.split('/');
+      return { provider, model: rest.join('/') };
+    }
+    return { provider: null, model: modelString };
+  }
+
+  function toolFactory(config: Record<string, unknown>) {
+    return {
+      ...config,
+      toJSON: () => ({
+        name: config.name,
+        description: config.description,
+        parameters: { type: 'object', properties: {} },
+      }),
+    };
+  }
+
   return {
     Agent,
     Cogitator: MockCogitator,
@@ -131,6 +179,9 @@ vi.mock('@cogitator-ai/core', () => {
     createMemoryTools,
     createSchedulerTools,
     createCapabilitiesTool,
+    createDeviceTools,
+    parseModel,
+    tool: toolFactory,
     _cogitatorInstances: cogitatorInstances,
   };
 });
@@ -352,6 +403,24 @@ describe('RuntimeBuilder', () => {
     const built = await builder.build();
 
     expect(built.scheduler).toBeNull();
+
+    await built.cleanup();
+  });
+
+  it('adds device tools when deviceTools capability enabled', async () => {
+    const config: AssistantConfig = {
+      ...minimalConfig,
+      capabilities: { deviceTools: true },
+    };
+
+    const builder = new RuntimeBuilder(config, { GOOGLE_API_KEY: 'test-key' });
+    const built = await builder.build();
+
+    const toolNames = built.agent.tools.map((t: { name: string }) => t.name);
+    expect(toolNames).toContain('clipboard_read');
+    expect(toolNames).toContain('clipboard_write');
+    expect(toolNames).toContain('system_info');
+    expect(toolNames).toContain('screenshot');
 
     await built.cleanup();
   });

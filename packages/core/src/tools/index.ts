@@ -30,6 +30,8 @@ export { createSchedulerTools, type SchedulerToolsConfig } from './scheduler-too
 
 export { createCapabilitiesTool } from './capabilities-tool';
 
+export { createDeviceTools } from './device-tools';
+
 export {
   createAnalyzeImageTool,
   type AnalyzeImageConfig,

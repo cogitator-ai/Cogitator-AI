@@ -173,6 +173,28 @@ describe('RuntimeBuilder E2E', () => {
     expect(runtime.agent.instructions).toContain('You are a pirate');
   });
 
+  it('includes device tools when deviceTools enabled', async () => {
+    const builder = new RuntimeBuilder(
+      {
+        name: 'device-bot',
+        personality: 'Bot with device access',
+        llm: { provider: 'google', model: 'google/gemini-2.5-flash' },
+        channels: {},
+        capabilities: { deviceTools: true },
+        memory: { adapter: 'sqlite', path: ':memory:' },
+      },
+      { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
+    );
+
+    runtime = await builder.build();
+
+    const toolNames = runtime.agent.tools.map((t: { name: string }) => t.name);
+    expect(toolNames).toContain('clipboard_read');
+    expect(toolNames).toContain('clipboard_write');
+    expect(toolNames).toContain('system_info');
+    expect(toolNames).toContain('screenshot');
+  });
+
   it('cleanup closes all resources without throwing', async () => {
     const builder = new RuntimeBuilder(
       {
