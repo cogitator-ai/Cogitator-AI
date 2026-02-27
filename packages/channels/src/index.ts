@@ -21,6 +21,9 @@ export type { PairingConfig } from './middleware/pairing';
 export { RateLimitMiddleware, rateLimit } from './middleware/rate-limit';
 export type { RateLimitConfig } from './middleware/rate-limit';
 
+export { OwnerCommandsMiddleware, ownerCommands } from './middleware/owner-commands';
+export type { OwnerCommandsConfig } from './middleware/owner-commands';
+
 export { adaptMarkdown, chunkMessage, getPlatformLimit } from './formatters/markdown';
 
 export type {
