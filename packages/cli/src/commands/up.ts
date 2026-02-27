@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { execSync, spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, resolve as resolvePath } from 'node:path';
 import ora from 'ora';
 import chalk from 'chalk';
 import { parse as parseYaml } from 'yaml';
@@ -19,6 +19,8 @@ function loadDotenv(env: Record<string, string | undefined>) {
   }
 }
 
+const RESTART_EXIT_CODE = 78;
+
 async function startFromConfig(configPath: string) {
   const raw = parseYaml(readFileSync(configPath, 'utf-8'));
   const config = AssistantConfigSchema.parse(raw);
@@ -29,7 +31,16 @@ async function startFromConfig(configPath: string) {
   log.info(`Loading ${configPath}...`);
   const spinner = ora('Building runtime...').start();
 
-  const builder = new RuntimeBuilder(config, env);
+  const { stringify } = await import('yaml');
+  const resolvedPath = resolvePath(configPath);
+  const builder = new RuntimeBuilder(config, env, {
+    configPath: resolvedPath,
+    configHelpers: {
+      parseYaml,
+      stringifyYaml: (o: unknown) => stringify(o, { lineWidth: 120 }),
+      validateConfig: (o: unknown) => AssistantConfigSchema.parse(o),
+    },
+  });
   const runtime = await builder.build();
   spinner.succeed('Runtime built');
 
@@ -63,15 +74,49 @@ async function startFromConfig(configPath: string) {
   process.on('SIGTERM', () => void shutdown());
 }
 
+function startWithAutoRestart(configPath: string) {
+  const resolvedConfig = resolvePath(configPath);
+
+  const loop = () => {
+    const child = spawn(process.execPath, [process.argv[1], 'up', '--no-restart-loop'], {
+      stdio: 'inherit',
+      env: { ...process.env, __COGITATOR_CONFIG: resolvedConfig },
+    });
+
+    child.on('exit', (code) => {
+      if (code === RESTART_EXIT_CODE) {
+        log.info('Restarting with updated config...');
+        console.log();
+        loop();
+      } else {
+        process.exit(code ?? 0);
+      }
+    });
+  };
+
+  loop();
+}
+
 export const upCommand = new Command('up')
   .description('Start assistant from cogitator.yml or Docker services')
   .option('-d, --detach', 'Run in background (default)', true)
   .option('--no-detach', 'Run in foreground')
   .option('--pull', 'Pull latest images before starting')
-  .action(async (options: { detach: boolean; pull: boolean }) => {
+  .option('--no-restart-loop', 'Internal flag for auto-restart subprocess')
+  .action(async (options: { detach: boolean; pull: boolean; restartLoop: boolean }) => {
     const configPath = ['cogitator.yml', 'cogitator.yaml'].find((f) => existsSync(f));
     if (configPath) {
-      await startFromConfig(configPath);
+      if (options.restartLoop === false) {
+        await startFromConfig(configPath);
+      } else {
+        const raw = parseYaml(readFileSync(configPath, 'utf-8'));
+        const config = AssistantConfigSchema.parse(raw);
+        if (config.capabilities.selfConfig) {
+          startWithAutoRestart(configPath);
+        } else {
+          await startFromConfig(configPath);
+        }
+      }
       return;
     }
 

@@ -301,6 +301,12 @@ export const wizardCommand = new Command('wizard')
           { value: 'browser', label: 'Browser', hint: 'browse websites via Playwright' },
           { value: 'scheduler', label: 'Scheduler', hint: 'schedule reminders and tasks' },
           { value: 'rag', label: 'RAG', hint: 'index and search local documents' },
+          { value: 'selfConfig', label: 'Self-Config', hint: 'agent can modify its own config' },
+          {
+            value: 'selfTools',
+            label: 'Self-Tools',
+            hint: 'agent can create new tools at runtime',
+          },
         ],
         ...(existingCaps.length > 0 ? { initialValues: existingCaps } : {}),
         required: false,

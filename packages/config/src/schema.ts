@@ -440,6 +440,15 @@ const AssistantCapabilitiesSchema = z.object({
     .optional(),
   scheduler: z.boolean().optional(),
   rag: z.object({ paths: z.array(z.string()) }).optional(),
+  selfConfig: z.boolean().optional(),
+  selfTools: z
+    .union([
+      z.boolean(),
+      z.object({
+        path: z.string().optional(),
+      }),
+    ])
+    .optional(),
 });
 
 const AssistantMemorySchema = z.object({

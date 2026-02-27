@@ -32,6 +32,9 @@ export { createCapabilitiesTool } from './capabilities-tool';
 
 export { createDeviceTools } from './device-tools';
 
+export { createSelfConfigTools } from './self-config';
+export { createSelfTools, loadCustomTools } from './self-tools';
+
 export {
   createAnalyzeImageTool,
   type AnalyzeImageConfig,

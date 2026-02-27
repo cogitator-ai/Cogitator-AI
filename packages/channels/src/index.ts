@@ -41,7 +41,7 @@ export { generateCapabilitiesDoc } from './capabilities';
 export type { CapabilitiesInput } from './capabilities';
 
 export { RuntimeBuilder } from './runtime-builder';
-export type { AssistantConfig, BuiltRuntime } from './runtime-builder';
+export type { AssistantConfig, BuiltRuntime, RuntimeBuilderOpts } from './runtime-builder';
 
 export { SimpleTimerStore } from './simple-timer-store';
 

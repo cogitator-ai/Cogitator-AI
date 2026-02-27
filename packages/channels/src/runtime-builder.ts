@@ -1,4 +1,5 @@
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { Tool, Channel, GatewayMiddleware, LLMProvidersConfig } from '@cogitator-ai/types';
 import {
   Agent,
@@ -8,6 +9,9 @@ import {
   createSchedulerTools,
   createCapabilitiesTool,
   createDeviceTools,
+  createSelfConfigTools,
+  createSelfTools,
+  loadCustomTools,
   parseModel,
   tool as createTool,
 } from '@cogitator-ai/core';
@@ -49,10 +53,20 @@ interface CleanupResources {
   mcpClients: Array<{ close(): Promise<void> }>;
 }
 
+export interface RuntimeBuilderOpts {
+  configPath?: string;
+  configHelpers?: {
+    parseYaml: (s: string) => unknown;
+    stringifyYaml: (o: unknown) => string;
+    validateConfig: (o: unknown) => unknown;
+  };
+}
+
 export class RuntimeBuilder {
   constructor(
     private config: AssistantConfig,
-    private env: Record<string, string | undefined>
+    private env: Record<string, string | undefined>,
+    private opts?: RuntimeBuilderOpts
   ) {}
 
   async build(): Promise<BuiltRuntime> {
@@ -115,6 +129,37 @@ export class RuntimeBuilder {
 
     if (this.config.capabilities.deviceTools) {
       tools.push(...createDeviceTools());
+    }
+
+    if (this.config.capabilities.selfConfig && this.opts?.configPath && this.opts.configHelpers) {
+      tools.push(
+        ...createSelfConfigTools({
+          configPath: this.opts.configPath,
+          ...this.opts.configHelpers,
+          onConfigUpdated: () => {
+            console.log(`[${this.config.name}] Config updated, restarting...`);
+            process.exit(78);
+          },
+        })
+      );
+    }
+
+    const toolsDir = this.resolveToolsDir();
+    if (this.config.capabilities.selfTools) {
+      const customTools = await loadCustomTools(toolsDir);
+      if (customTools.length > 0) {
+        tools.push(...customTools);
+        console.log(`[${this.config.name}] Loaded ${customTools.length} custom tool(s)`);
+      }
+
+      tools.push(
+        ...createSelfTools({
+          toolsDir,
+          onToolsChanged: () => {
+            console.log(`[${this.config.name}] Custom tools changed, restart to activate`);
+          },
+        })
+      );
     }
 
     await this.wireBrowser(tools, cleanupResources);
@@ -501,6 +546,22 @@ export class RuntimeBuilder {
 
     instructions += `\nIf the user asks what you can do, use lookup_capabilities to check your available tools.`;
 
+    if (this.config.capabilities.selfConfig) {
+      instructions += `\nYou can read and modify your own configuration using config_read and config_update. After updating config, you will automatically restart with the new settings.`;
+    }
+
+    if (this.config.capabilities.selfTools) {
+      instructions += `\nYou can create custom tools using create_tool. Write JavaScript ESM code with a default export containing name, description, parameters (JSON Schema), and an async execute function. You have full Node.js access (fetch, fs, child_process, etc.). Use test_tool to verify your tools work before telling the user. If a test fails, read the error, fix the code, and retry until it works. Use list_custom_tools to see existing custom tools and delete_tool to remove them. Custom tools persist across restarts.`;
+    }
+
     return instructions;
+  }
+
+  private resolveToolsDir(): string {
+    const cfg = this.config.capabilities.selfTools;
+    if (typeof cfg === 'object' && cfg.path) {
+      return cfg.path.replace(/^~/, homedir());
+    }
+    return join(homedir(), '.cogitator', 'tools');
   }
 }
