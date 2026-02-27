@@ -3,6 +3,9 @@ export type { GatewayFullConfig } from './gateway';
 
 export { StreamBuffer } from './stream-buffer';
 
+export { HeartbeatScheduler } from './heartbeat';
+export type { HeartbeatConfig } from './heartbeat';
+
 export { WebChatChannel, webchatChannel } from './channels/webchat';
 export type { WebChatConfig } from './channels/webchat';
 
