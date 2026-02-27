@@ -26,6 +26,8 @@ export { githubApi } from './github';
 
 export { createMemoryTools, type MemoryToolsConfig, type CoreFactsLike } from './memory-tools';
 
+export { createSchedulerTools, type SchedulerToolsConfig } from './scheduler-tools';
+
 export {
   createAnalyzeImageTool,
   type AnalyzeImageConfig,
