@@ -9,6 +9,7 @@
     "create-cogitator-app": "workspace:*",
     "@cogitator-ai/ai-sdk": "workspace:*",
     "@cogitator-ai/browser": "workspace:*",
+    "@cogitator-ai/channels": "workspace:*",
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/deploy": "workspace:*",
     "@cogitator-ai/express": "workspace:*",
@@ -39,6 +40,7 @@
     "hono": "^4.12.0",
     "koa": "^2.15.0",
     "openai": "^6.22.0",
+    "grammy": "^1.35.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

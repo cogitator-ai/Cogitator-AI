@@ -78,6 +78,9 @@ importers:
       '@cogitator-ai/browser':
         specifier: workspace:*
         version: link:../packages/browser
+      '@cogitator-ai/channels':
+        specifier: workspace:*
+        version: link:../packages/channels
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../packages/core
@@ -162,6 +165,9 @@ importers:
       fastify:
         specifier: ^5.7.4
         version: 5.7.4
+      grammy:
+        specifier: ^1.35.0
+        version: 1.40.1
       hono:
         specifier: ^4.12.0
         version: 4.12.0

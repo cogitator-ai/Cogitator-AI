@@ -12,9 +12,20 @@ export interface TelegramConfig {
   webhook?: { url: string; port: number };
 }
 
+interface BotInfo {
+  id: number;
+  first_name: string;
+  username: string;
+}
+
 interface TelegramBot {
   on(event: string, handler: (ctx: GrammyContext) => Promise<void>): void;
-  start(): Promise<void>;
+  catch(handler: (err: unknown) => void): void;
+  init(): Promise<void>;
+  start(options?: {
+    drop_pending_updates?: boolean;
+    onStart?: (info: BotInfo) => void;
+  }): Promise<void>;
   stop(): Promise<void>;
   api: {
     sendMessage(
@@ -74,6 +85,10 @@ export class TelegramChannel implements Channel {
     const bot = new grammy.Bot(this.config.token) as TelegramBot;
     this.bot = bot;
 
+    bot.catch((err) => {
+      console.error('[telegram] Bot error:', err);
+    });
+
     bot.on('message:text', async (ctx: GrammyContext) => {
       if (!this.handler) return;
 
@@ -94,7 +109,14 @@ export class TelegramChannel implements Channel {
     if (this.config.webhook) {
       await bot.api.setWebhook(this.config.webhook.url);
     } else {
-      void bot.start();
+      await new Promise<void>((resolve, reject) => {
+        bot
+          .start({
+            drop_pending_updates: true,
+            onStart: () => resolve(),
+          })
+          .catch(reject);
+      });
     }
   }
 
@@ -109,8 +131,10 @@ export class TelegramChannel implements Channel {
     if (!this.bot) return '';
 
     const chatId = Number(channelId);
+    const useMarkdown = options?.format === 'markdown';
 
     const sent = await this.bot.api.sendMessage(chatId, text, {
+      ...(useMarkdown ? { parse_mode: 'Markdown' } : {}),
       ...(options?.replyTo ? { reply_parameters: { message_id: Number(options.replyTo) } } : {}),
       ...(options?.silent ? { disable_notification: true } : {}),
     });
