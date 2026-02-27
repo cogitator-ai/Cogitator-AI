@@ -78,6 +78,7 @@ export class RuntimeBuilder {
 
     const memoryAdapter = new SQLiteAdapter({ provider: 'sqlite', path: resolvedPath });
     await memoryAdapter.connect();
+    cogitator.memory = memoryAdapter;
 
     let graphAdapter: SQLiteGraphAdapter | null = null;
     if (this.config.memory.knowledgeGraph !== false) {
@@ -91,8 +92,12 @@ export class RuntimeBuilder {
     const tools: Tool[] = [];
 
     if (this.config.capabilities.webSearch) {
-      const found = builtinTools.find((t) => t.name === 'web_search');
-      if (found) tools.push(found);
+      const hasSearchKey =
+        this.env.TAVILY_API_KEY || this.env.BRAVE_API_KEY || this.env.SERPER_API_KEY;
+      if (hasSearchKey) {
+        const found = builtinTools.find((t) => t.name === 'web_search');
+        if (found) tools.push(found);
+      }
     }
 
     if (this.config.capabilities.fileSystem) {
@@ -119,10 +124,16 @@ export class RuntimeBuilder {
     let timerStore: SimpleTimerStore | null = null;
     if (this.config.capabilities.scheduler) {
       timerStore = new SimpleTimerStore();
+      const channelEntries = Object.entries(this.config.channels ?? {});
+      const firstChannel = channelEntries[0];
+      const firstOwnerId = firstChannel
+        ? ((firstChannel[1] as Record<string, unknown>)?.ownerIds as string[])?.[0]
+        : undefined;
       tools.push(
         ...createSchedulerTools({
           store: timerStore,
-          defaultChannel: 'system',
+          defaultChannel: firstChannel?.[0] ?? 'system',
+          defaultUserId: firstOwnerId,
         })
       );
     }
@@ -152,14 +163,7 @@ export class RuntimeBuilder {
         console.log(`[${this.config.name}] Loaded ${customTools.length} custom tool(s)`);
       }
 
-      tools.push(
-        ...createSelfTools({
-          toolsDir,
-          onToolsChanged: () => {
-            console.log(`[${this.config.name}] Custom tools changed, restart to activate`);
-          },
-        })
-      );
+      tools.push(...createSelfTools({ toolsDir }));
     }
 
     await this.wireBrowser(tools, cleanupResources);
@@ -179,9 +183,10 @@ export class RuntimeBuilder {
 
     const agent = new Agent({
       name: this.config.name,
-      model: this.config.llm.model,
+      model: this.fullModelId,
       instructions,
       tools,
+      maxIterations: 15,
     });
 
     const middleware: GatewayMiddleware[] = [];
@@ -265,6 +270,7 @@ export class RuntimeBuilder {
     });
 
     const scheduler = this.buildScheduler(timerStore, gateway);
+    if (scheduler) scheduler.start();
 
     const cleanup = async () => {
       if (scheduler) scheduler.stop();
@@ -285,8 +291,8 @@ export class RuntimeBuilder {
   }
 
   private createExtractorBackend(cogitator: Cogitator): LLMBackendMinimal {
-    const llmBackend = cogitator.getLLMBackend(this.config.llm.model);
-    const modelName = parseModel(this.config.llm.model).model;
+    const llmBackend = cogitator.getLLMBackend(this.fullModelId);
+    const modelName = parseModel(this.fullModelId).model;
     return {
       async chat(options: {
         messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
@@ -321,8 +327,46 @@ export class RuntimeBuilder {
         headless,
         ...(stealth ? { stealth: true } : {}),
       });
-      await session.start();
       tools.push(...browserTools(session));
+
+      const { z } = await import('zod');
+      tools.push(
+        createTool({
+          name: 'browser_search',
+          description:
+            'Search the web and return results text. This is the preferred way to search.',
+          parameters: z.object({
+            query: z.string().describe('Search query'),
+          }),
+          execute: async ({ query }) => {
+            await session.ensureStarted();
+            const page = session.page;
+            const encoded = encodeURIComponent(query);
+            await page.goto(`https://html.duckduckgo.com/html/?q=${encoded}`, {
+              waitUntil: 'domcontentloaded',
+            });
+            const text = await page.innerText('body');
+            return { query, results: text.slice(0, 4000) };
+          },
+        }),
+        createTool({
+          name: 'browser_visit',
+          description:
+            'Visit a URL and return the page text content. Use for reading articles, docs, etc.',
+          parameters: z.object({
+            url: z.string().describe('Full URL to visit'),
+          }),
+          execute: async ({ url }) => {
+            await session.ensureStarted();
+            const page = session.page;
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+            const title = await page.title();
+            const text = await page.innerText('body');
+            return { url, title, content: text.slice(0, 6000) };
+          },
+        })
+      );
+
       resources.browserSession = session;
     } catch (err) {
       console.warn(
@@ -370,9 +414,10 @@ export class RuntimeBuilder {
         .withConfig({ chunking: { strategy: 'recursive', chunkSize: 512, chunkOverlap: 50 } })
         .build();
 
-      for (const path of this.config.capabilities.rag.paths) {
-        await pipeline.ingest(path).catch((err: Error) => {
-          console.warn(`[RuntimeBuilder] Failed to ingest RAG path "${path}":`, err.message);
+      for (const rawPath of this.config.capabilities.rag.paths) {
+        const resolved = rawPath.startsWith('~/') ? join(homedir(), rawPath.slice(2)) : rawPath;
+        await pipeline.ingest(resolved).catch((err: Error) => {
+          console.warn(`[RuntimeBuilder] Failed to ingest RAG path "${rawPath}":`, err.message);
         });
       }
 
@@ -459,6 +504,12 @@ export class RuntimeBuilder {
     return null;
   }
 
+  private get fullModelId(): string {
+    const { provider, model } = this.config.llm;
+    if (model.includes('/')) return model;
+    return `${provider}/${model}`;
+  }
+
   private buildCogitator(): Cogitator {
     const { provider } = this.config.llm;
     const providers: LLMProvidersConfig = {};
@@ -475,7 +526,7 @@ export class RuntimeBuilder {
 
     return new Cogitator({
       llm: {
-        defaultModel: this.config.llm.model,
+        defaultModel: this.fullModelId,
         providers,
       },
     });
@@ -540,8 +591,35 @@ export class RuntimeBuilder {
 
     instructions += `\n\nIMPORTANT: Use your tools when relevant. Don't guess answers when tools can provide accurate data.`;
 
+    const fsCfg = this.config.capabilities.fileSystem;
+    if (fsCfg) {
+      const paths =
+        typeof fsCfg === 'object' && 'paths' in fsCfg
+          ? (fsCfg.paths as string[]).map((p) => p.replace(/^~/, homedir()))
+          : [homedir()];
+      instructions += `\nYou have filesystem access. Allowed paths: ${paths.join(', ')}. Use file_read, file_write, file_list tools. Always use absolute paths.`;
+    }
+
+    if (this.config.capabilities.browser) {
+      instructions += `\n\n## Browser
+You control a real browser. Key tools:
+- browser_search(query) — web search, returns page text. Best for finding information.
+- browser_visit(url) — visit any URL and get page content. Best for reading articles, checking sites, monitoring.
+- browser_navigate, browser_click, browser_type, browser_get_text etc. — for complex interactions (filling forms, clicking buttons, multi-step workflows).
+Respond based ONLY on extracted text. NEVER hallucinate content.`;
+    }
+
     if (this.config.capabilities.scheduler) {
-      instructions += `\nYou can schedule tasks for the future using schedule_task. Use it when the user asks you to remind them or do something later.`;
+      const channelNames = Object.keys(this.config.channels ?? {});
+      const firstChannel = channelNames[0] ?? 'system';
+      const firstOwnerId =
+        firstChannel !== 'system'
+          ? (
+              (this.config.channels as Record<string, Record<string, unknown>>)?.[firstChannel]
+                ?.ownerIds as string[]
+            )?.[0]
+          : undefined;
+      instructions += `\nYou can schedule tasks using schedule_task. This works for reminders, recurring actions, and deferred tasks. When the task fires, you will execute it — so describe what to DO, not just what to say. Supports delay ("10m", "2h"), cron ("0 9 * * *"), or exact datetime (ISO). ALWAYS pass channel: "${firstChannel}"${firstOwnerId ? ` and userId: "${firstOwnerId}"` : ''}.`;
     }
 
     instructions += `\nIf the user asks what you can do, use lookup_capabilities to check your available tools.`;
@@ -551,7 +629,12 @@ export class RuntimeBuilder {
     }
 
     if (this.config.capabilities.selfTools) {
-      instructions += `\nYou can create custom tools using create_tool. Write JavaScript ESM code with a default export containing name, description, parameters (JSON Schema), and an async execute function. You have full Node.js access (fetch, fs, child_process, etc.). Use test_tool to verify your tools work before telling the user. If a test fails, read the error, fix the code, and retry until it works. Use list_custom_tools to see existing custom tools and delete_tool to remove them. Custom tools persist across restarts.`;
+      instructions += `\nYou can create custom tools using create_tool. Write JavaScript ESM code with a default export containing name, description, parameters (JSON Schema), and an async execute function. You have full Node.js access (fetch, fs, child_process, etc.). After creating a tool, ALWAYS use test_tool to verify it works. If test fails, use create_tool again with fixed code. Use list_custom_tools to see existing tools and delete_tool to remove them. Custom tools are available after restart.`;
+    }
+
+    if (this.config.mcpServers && Object.keys(this.config.mcpServers).length > 0) {
+      const serverNames = Object.keys(this.config.mcpServers);
+      instructions += `\nYou have MCP (Model Context Protocol) servers connected: ${serverNames.join(', ')}. Their tools are available to you — look for tools with mcp_ prefix.`;
     }
 
     return instructions;

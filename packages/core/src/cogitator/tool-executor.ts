@@ -26,14 +26,20 @@ export async function executeTool(
     };
   }
 
-  const parseResult = tool.parameters.safeParse(toolCall.arguments);
-  if (!parseResult.success) {
-    return {
-      callId: toolCall.id,
-      name: toolCall.name,
-      result: null,
-      error: `Invalid arguments: ${parseResult.error.message}`,
-    };
+  const isZod = typeof tool.parameters.safeParse === 'function';
+  let validatedArgs: unknown = toolCall.arguments;
+
+  if (isZod) {
+    const parseResult = tool.parameters.safeParse(toolCall.arguments);
+    if (!parseResult.success) {
+      return {
+        callId: toolCall.id,
+        name: toolCall.name,
+        result: null,
+        error: `Invalid arguments: ${parseResult.error.message}`,
+      };
+    }
+    validatedArgs = parseResult.data;
   }
 
   if (constitutionalAI && filterToolCalls) {
@@ -56,7 +62,7 @@ export async function executeTool(
   if (tool.sandbox?.type === 'docker' || tool.sandbox?.type === 'wasm') {
     return executeInSandbox(
       tool,
-      { ...toolCall, arguments: parseResult.data as Record<string, unknown> },
+      { ...toolCall, arguments: validatedArgs as Record<string, unknown> },
       runId,
       agentId,
       sandboxManager,
@@ -71,7 +77,7 @@ export async function executeTool(
   };
 
   try {
-    const result = await tool.execute(parseResult.data, context);
+    const result = await tool.execute(validatedArgs, context);
     return {
       callId: toolCall.id,
       name: toolCall.name,

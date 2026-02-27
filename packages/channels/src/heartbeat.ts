@@ -32,12 +32,13 @@ export class HeartbeatScheduler {
     for (const entry of overdue) {
       const meta = (entry.metadata ?? {}) as Record<string, unknown>;
 
+      const description = (meta.description as string) ?? '';
       const msg: ChannelMessage = {
         id: `heartbeat_${entry.id}`,
         channelType: (meta.channel as string) ?? 'system',
         channelId: (meta.channelId as string) ?? (meta.userId as string) ?? 'system',
         userId: (meta.userId as string) ?? 'system',
-        text: (meta.description as string) ?? '',
+        text: `[SCHEDULED TASK] Execute this task that was scheduled earlier: "${description}". If it's a reminder — deliver it in a friendly way. If it's an action (e.g. check something, fetch data, run a tool) — do it and report the result.`,
         raw: { scheduled: true, taskId: entry.id },
       };
 

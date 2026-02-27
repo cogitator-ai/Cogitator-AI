@@ -77,14 +77,32 @@ export function tool<TParams, TResult>(
  * @returns JSON Schema representation of the tool
  */
 export function toolToSchema<TParams, TResult>(t: Tool<TParams, TResult>): ToolSchema {
-  const jsonSchema = z.toJSONSchema(t.parameters as ZodType, {
-    target: 'openapi-3.0',
-    unrepresentable: 'any',
-  });
+  const params = t.parameters as unknown as Record<string, unknown>;
+  const isZodType = params && typeof params === 'object' && '_zod' in params;
 
-  const schema = jsonSchema as Record<string, unknown>;
-  const properties = (schema.properties ?? {}) as Record<string, unknown>;
-  const required = schema.required as string[] | undefined;
+  let properties: Record<string, unknown>;
+  let required: string[] | undefined;
+
+  if (!isZodType && params?.type === 'object') {
+    properties = (params.properties ?? {}) as Record<string, unknown>;
+    required = params.required as string[] | undefined;
+  } else {
+    let jsonSchema: Record<string, unknown>;
+    try {
+      jsonSchema = z.toJSONSchema(t.parameters as ZodType, {
+        target: 'openapi-3.0',
+        unrepresentable: 'any',
+      }) as Record<string, unknown>;
+    } catch (err) {
+      console.warn(
+        `[toolToSchema] Failed to convert schema for "${t.name}":`,
+        (err as Error).message
+      );
+      jsonSchema = { type: 'object', properties: {} };
+    }
+    properties = (jsonSchema.properties ?? {}) as Record<string, unknown>;
+    required = jsonSchema.required as string[] | undefined;
+  }
 
   return {
     name: t.name,

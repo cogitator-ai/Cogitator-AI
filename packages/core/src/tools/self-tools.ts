@@ -7,7 +7,7 @@ import type { Tool } from '@cogitator-ai/types';
 
 async function importFresh(filePath: string): Promise<unknown> {
   const url = pathToFileURL(filePath).href + `?t=${Date.now()}`;
-  return import(url);
+  return import(/* webpackIgnore: true */ url);
 }
 
 function validateToolShape(mod: unknown): { valid: boolean; error?: string } {

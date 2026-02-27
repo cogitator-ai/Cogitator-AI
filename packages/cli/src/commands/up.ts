@@ -64,9 +64,14 @@ async function startFromConfig(configPath: string) {
 
   const shutdown = async () => {
     console.log();
-    const stopSpinner = ora('Shutting down...').start();
-    await runtime.cleanup();
-    stopSpinner.succeed('Stopped');
+    try {
+      const stopSpinner = ora('Shutting down...').start();
+      await runtime.cleanup();
+      stopSpinner.succeed('Stopped');
+    } catch {
+      await runtime.cleanup().catch(() => {});
+      console.log('Stopped');
+    }
     process.exit(0);
   };
 

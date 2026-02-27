@@ -55,6 +55,10 @@ export class BrowserSession {
     return this._config.stealth;
   }
 
+  async ensureStarted(): Promise<void> {
+    if (!this._browser) await this.start();
+  }
+
   get page(): Page {
     if (!this._pages.length) {
       throw new Error('BrowserSession not started');

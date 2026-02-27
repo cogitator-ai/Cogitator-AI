@@ -39,11 +39,15 @@ async function fetchModels(provider: string): Promise<SelectOption[]> {
     const registry = new ModelRegistry({ fallbackToBuiltin: true });
     await registry.initialize();
 
-    const models = registry.listModels({
+    let models = registry.listModels({
       provider,
       supportsTools: true,
       excludeDeprecated: true,
     });
+
+    if (provider === 'google') {
+      models = models.filter((m) => m.id.includes('gemini'));
+    }
 
     if (models.length === 0) return FALLBACK_MODELS[provider] ?? [];
 
@@ -77,6 +81,17 @@ async function fetchOllamaModels(baseUrl: string): Promise<SelectOption[]> {
 function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function extractMcpName(args: string[]): string {
+  const pkg = args.find((a) => a.startsWith('@') || (!a.startsWith('-') && a.includes('/')));
+  if (pkg) {
+    const name = pkg.split('/').pop() ?? pkg;
+    return name.replace(/^server-/, '').replace(/-server$/, '');
+  }
+  const nonFlag = args.find((a) => !a.startsWith('-'));
+  if (nonFlag) return nonFlag.replace(/^server-/, '').replace(/-server$/, '');
+  return 'mcp-server';
 }
 
 const API_KEY_NAMES: Record<string, string> = {
@@ -384,42 +399,32 @@ export const wizardCommand = new Command('wizard')
     if (addMcp) {
       let addMore = true;
       while (addMore) {
-        const name = prompt(
+        const fullCommand = prompt(
           await p.text({
-            message: 'Server name',
-            placeholder: 'filesystem',
-            validate: (v) => (!v.trim() ? 'Name is required' : undefined),
-          })
-        ) as string;
-
-        const existingServer = (
-          existing.mcpServers as Record<string, { command: string; args: string[] }>
-        )?.[name];
-
-        const command = prompt(
-          await p.text({
-            message: 'Command',
-            placeholder: 'npx',
-            ...(existingServer ? { initialValue: existingServer.command } : {}),
+            message: 'Full command to start MCP server',
+            placeholder: 'npx -y @modelcontextprotocol/server-filesystem /home',
             validate: (v) => (!v.trim() ? 'Command is required' : undefined),
           })
         ) as string;
 
-        const argsRaw = prompt(
+        const parts = fullCommand
+          .trim()
+          .split(/\s+/)
+          .filter((s) => s.length > 0);
+        const command = parts[0];
+        const args = parts.slice(1);
+
+        const detectedName = extractMcpName(args);
+
+        const name = prompt(
           await p.text({
-            message: 'Arguments (space-separated)',
-            placeholder: '-y @modelcontextprotocol/server-filesystem /home',
-            ...(existingServer ? { initialValue: existingServer.args.join(' ') } : {}),
+            message: 'Server name',
+            initialValue: detectedName,
+            validate: (v) => (!v.trim() ? 'Name is required' : undefined),
           })
         ) as string;
 
-        mcpServers[name] = {
-          command,
-          args: argsRaw
-            .trim()
-            .split(/\s+/)
-            .filter((s) => s.length > 0),
-        };
+        mcpServers[name] = { command, args };
 
         p.log.success(`Added MCP server: ${chalk.cyan(name)}`);
 

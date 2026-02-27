@@ -1,4 +1,4 @@
-import type { Tool } from '@cogitator-ai/types';
+import type { Tool, ToolContext } from '@cogitator-ai/types';
 import type { BrowserToolsOptions } from '@cogitator-ai/types';
 import type { BrowserSession } from '../session';
 import { createNavigationTools } from './navigation';
@@ -28,7 +28,13 @@ export function browserTools(session: BrowserSession, options?: BrowserToolsOpti
     }
   }
 
-  return tools;
+  return tools.map((t) => ({
+    ...t,
+    execute: async (params: Record<string, unknown>, ctx: ToolContext) => {
+      await session.ensureStarted();
+      return t.execute(params, ctx);
+    },
+  }));
 }
 
 export { createNavigationTools } from './navigation';

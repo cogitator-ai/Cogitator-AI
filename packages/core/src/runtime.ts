@@ -5,6 +5,7 @@ import type {
   RunResult,
   Message,
   ToolCall,
+  ToolResult,
   LLMBackend,
   LLMProvider,
   Span,
@@ -256,6 +257,7 @@ export class Cogitator {
       let totalOutputTokens = 0;
       let iterations = 0;
       const maxIterations = agent.config?.maxIterations ?? 10;
+      let lastToolCallSig = '';
 
       const allReflections: Reflection[] = [];
       const allActions: ReflectionAction[] = [];
@@ -379,7 +381,25 @@ export class Cogitator {
           response.toolCalls &&
           response.toolCalls.length > 0
         ) {
-          const toolCalls = response.toolCalls;
+          let toolCalls = response.toolCalls;
+
+          const currentSig = toolCalls
+            .map((tc) => `${tc.name}:${JSON.stringify(tc.arguments)}`)
+            .join('|');
+          if (currentSig === lastToolCallSig) {
+            for (const tc of toolCalls) {
+              const errorResult: ToolResult = {
+                callId: tc.id,
+                name: tc.name,
+                result: null,
+                error: 'Duplicate tool call detected. Try a different approach.',
+              };
+              messages.push(createToolMessage(tc, errorResult));
+            }
+            lastToolCallSig = '';
+            continue;
+          }
+          lastToolCallSig = currentSig;
 
           for (const toolCall of toolCalls) {
             allToolCalls.push(toolCall);
@@ -788,6 +808,11 @@ export class Cogitator {
    */
   get memory(): MemoryAdapter | undefined {
     return this.state.memoryAdapter;
+  }
+
+  set memory(adapter: MemoryAdapter | undefined) {
+    this.state.memoryAdapter = adapter;
+    this.state.memoryInitialized = !!adapter;
   }
 
   getLLMBackend(modelString: string, explicitProvider?: string): LLMBackend {

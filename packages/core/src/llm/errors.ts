@@ -84,7 +84,11 @@ export function createLLMError(
         retryable: false,
       });
     }
-    if (lower.includes('content') || lower.includes('filter') || lower.includes('safety')) {
+    if (
+      (lower.includes('safety') || lower.includes('blocked')) &&
+      !lower.includes('invalid json') &&
+      !lower.includes('unknown name')
+    ) {
       return new LLMError(
         'Content filtered by safety policy',
         ErrorCode.LLM_CONTENT_FILTERED,

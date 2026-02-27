@@ -88,6 +88,7 @@ interface GeminiRequest {
   systemInstruction?: {
     parts: { text: string }[];
   };
+  safetySettings?: Array<{ category: string; threshold: string }>;
 }
 
 interface GeminiCandidate {
@@ -328,6 +329,13 @@ export class GoogleBackend extends BaseLLMBackend {
       delete geminiRequest.generationConfig;
     }
 
+    geminiRequest.safetySettings = [
+      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+    ];
+
     return { geminiRequest, model };
   }
 
@@ -457,12 +465,54 @@ export class GoogleBackend extends BaseLLMBackend {
     return {
       name: tool.name,
       description: tool.description,
-      parameters: {
+      parameters: this.cleanSchemaForGemini({
         type: 'object',
         properties: tool.parameters.properties,
         required: tool.parameters.required,
-      },
+      }) as GeminiFunctionDeclaration['parameters'],
     };
+  }
+
+  private static readonly GEMINI_ALLOWED_KEYS = new Set([
+    'type',
+    'description',
+    'properties',
+    'required',
+    'items',
+    'enum',
+    'nullable',
+    'format',
+    'minimum',
+    'maximum',
+    'minItems',
+    'maxItems',
+    'anyOf',
+    'oneOf',
+  ]);
+
+  private cleanSchemaForGemini(
+    schema: Record<string, unknown>,
+    isPropertiesMap = false
+  ): Record<string, unknown> {
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(schema)) {
+      if (!isPropertiesMap && !GoogleBackend.GEMINI_ALLOWED_KEYS.has(key)) continue;
+      if (Array.isArray(value)) {
+        cleaned[key] = value.map((item) =>
+          item !== null && typeof item === 'object'
+            ? this.cleanSchemaForGemini(item as Record<string, unknown>)
+            : item
+        );
+      } else if (value !== null && typeof value === 'object') {
+        cleaned[key] = this.cleanSchemaForGemini(
+          value as Record<string, unknown>,
+          key === 'properties'
+        );
+      } else {
+        cleaned[key] = value;
+      }
+    }
+    return cleaned;
   }
 
   private parseResponse(data: GeminiResponse, ctx: LLMErrorContext): ChatResponse {
