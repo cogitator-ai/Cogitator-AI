@@ -55,6 +55,7 @@ export {
 } from './embedding/index';
 
 export { SessionManager } from './session-manager';
+export { CompactionService, type SummarizeFn, type CompactionServiceConfig } from './compaction';
 
 export {
   MemoryProviderSchema,
