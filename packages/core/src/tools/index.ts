@@ -24,6 +24,8 @@ export { vectorSearch } from './vector-search';
 export { sendEmail } from './email';
 export { githubApi } from './github';
 
+export { createMemoryTools, type MemoryToolsConfig, type CoreFactsLike } from './memory-tools';
+
 export {
   createAnalyzeImageTool,
   type AnalyzeImageConfig,

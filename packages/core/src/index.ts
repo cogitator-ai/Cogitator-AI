@@ -47,7 +47,9 @@ export {
   createGenerateImageTool,
   createTranscribeAudioTool,
   createGenerateSpeechTool,
+  createMemoryTools,
 } from './tools/index';
+export type { MemoryToolsConfig, CoreFactsLike } from './tools/index';
 export type {
   AnalyzeImageConfig,
   GenerateImageConfig,
