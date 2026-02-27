@@ -41,7 +41,8 @@
     "grammy": ">=1.20.0",
     "discord.js": ">=14.0.0",
     "@slack/bolt": ">=3.0.0",
-    "ws": ">=8.0.0"
+    "ws": ">=8.0.0",
+    "@whiskeysockets/baileys": ">=6.0.0"
   },
   "peerDependenciesMeta": {
     "grammy": {
@@ -54,6 +55,9 @@
       "optional": true
     },
     "ws": {
+      "optional": true
+    },
+    "@whiskeysockets/baileys": {
       "optional": true
     }
   },

@@ -15,6 +15,9 @@ export type { DiscordConfig } from './channels/discord';
 export { SlackChannel, slackChannel } from './channels/slack';
 export type { SlackConfig } from './channels/slack';
 
+export { WhatsAppChannel, whatsappChannel } from './channels/whatsapp';
+export type { WhatsAppChannelConfig } from './channels/whatsapp';
+
 export { PairingMiddleware, pairing } from './middleware/pairing';
 export type { PairingConfig } from './middleware/pairing';
 
