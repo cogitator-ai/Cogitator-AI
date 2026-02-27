@@ -209,6 +209,7 @@ export type {
   AgentConfig,
   ResponseFormat,
   Tool,
+  ApprovalCheck,
   ToolConfig,
   ToolContext,
   ToolSchema,

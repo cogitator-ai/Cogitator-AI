@@ -1,4 +1,4 @@
-import type { Tool, ToolConfig, ToolSchema } from '@cogitator-ai/types';
+import type { Tool, ToolConfig, ToolSchema, ApprovalCheck } from '@cogitator-ai/types';
 import { z, type ZodType } from 'zod';
 
 /**
@@ -53,7 +53,10 @@ export function tool<TParams, TResult>(
     parameters: config.parameters,
     execute: config.execute,
     sideEffects: config.sideEffects,
-    requiresApproval: config.requiresApproval,
+    requiresApproval:
+      typeof config.requiresApproval === 'function'
+        ? (config.requiresApproval as ApprovalCheck)
+        : config.requiresApproval,
     timeout: config.timeout,
     sandbox: config.sandbox,
     toJSON(): ToolSchema {

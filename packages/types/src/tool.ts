@@ -38,13 +38,15 @@ export interface Tool<TParams = unknown, TResult = unknown> {
   category?: ToolCategory;
   tags?: string[];
   parameters: ZodType<TParams>;
-  execute: (params: TParams, context: ToolContext) => Promise<TResult>;
+  execute(params: TParams, context: ToolContext): Promise<TResult>;
   sideEffects?: SideEffectType[];
-  requiresApproval?: boolean | ((params: TParams) => boolean);
+  requiresApproval?: boolean | ApprovalCheck;
   timeout?: number;
   sandbox?: SandboxConfig;
-  toJSON: () => ToolSchema;
+  toJSON(): ToolSchema;
 }
+
+export type ApprovalCheck = (params: Record<string, unknown>) => boolean;
 
 export interface ToolContext {
   agentId: string;

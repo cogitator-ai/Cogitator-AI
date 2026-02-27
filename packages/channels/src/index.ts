@@ -40,6 +40,9 @@ export type {
 export { generateCapabilitiesDoc } from './capabilities';
 export type { CapabilitiesInput } from './capabilities';
 
+export { RuntimeBuilder } from './runtime-builder';
+export type { AssistantConfig, BuiltRuntime } from './runtime-builder';
+
 export { adaptMarkdown, chunkMessage, getPlatformLimit } from './formatters/markdown';
 
 export type {
