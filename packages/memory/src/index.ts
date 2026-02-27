@@ -54,6 +54,8 @@ export {
   createEmbeddingService,
 } from './embedding/index';
 
+export { SessionManager } from './session-manager';
+
 export {
   MemoryProviderSchema,
   InMemoryConfigSchema,
@@ -175,4 +177,11 @@ export type {
   KeywordSearchOptions,
   KeywordSearchAdapter,
   HybridSearchConfig,
+  Session,
+  SessionManager as ISessionManager,
+  SessionFilter,
+  SessionStatus,
+  SessionConfigOverrides,
+  CompactionConfig,
+  CompactionResult,
 } from '@cogitator-ai/types';
