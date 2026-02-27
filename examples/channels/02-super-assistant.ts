@@ -36,8 +36,6 @@ console.log('  Press Ctrl+C to stop\n');
 
 process.on('SIGINT', async () => {
   console.log('\n  Shutting down...');
-  if (runtime.scheduler) runtime.scheduler.stop();
-  await runtime.gateway.stop();
   await runtime.cleanup();
   process.exit(0);
 });

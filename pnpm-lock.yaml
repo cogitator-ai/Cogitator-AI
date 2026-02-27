@@ -277,6 +277,9 @@ importers:
 
   packages/channels:
     dependencies:
+      '@cogitator-ai/config':
+        specifier: workspace:*
+        version: link:../config
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core

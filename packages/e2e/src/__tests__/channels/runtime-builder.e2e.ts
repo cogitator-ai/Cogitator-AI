@@ -75,7 +75,7 @@ describe('RuntimeBuilder E2E', () => {
     expect(toolNames).not.toContain('forget');
   });
 
-  it('includes scheduler hint in instructions when scheduler enabled', async () => {
+  it('includes scheduler tools and hint when scheduler enabled', async () => {
     const builder = new RuntimeBuilder(
       {
         name: 'scheduler-bot',
@@ -90,7 +90,12 @@ describe('RuntimeBuilder E2E', () => {
 
     runtime = await builder.build();
 
+    const toolNames = runtime.agent.tools.map((t: { name: string }) => t.name);
+    expect(toolNames).toContain('schedule_task');
+    expect(toolNames).toContain('list_tasks');
+    expect(toolNames).toContain('cancel_task');
     expect(runtime.agent.instructions).toContain('schedule_task');
+    expect(runtime.scheduler).not.toBeNull();
   });
 
   it('includes lookup_capabilities tool', async () => {

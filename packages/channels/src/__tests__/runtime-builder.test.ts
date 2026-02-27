@@ -112,6 +112,14 @@ vi.mock('@cogitator-ai/core', () => {
     ];
   }
 
+  function createSchedulerTools(_config: Record<string, unknown>) {
+    return [
+      makeTool('schedule_task', 'Schedule a task'),
+      makeTool('list_tasks', 'List tasks'),
+      makeTool('cancel_task', 'Cancel a task'),
+    ];
+  }
+
   function createCapabilitiesTool(_capDoc: string) {
     return makeTool('lookup_capabilities', 'Check capabilities');
   }
@@ -121,6 +129,7 @@ vi.mock('@cogitator-ai/core', () => {
     Cogitator: MockCogitator,
     builtinTools,
     createMemoryTools,
+    createSchedulerTools,
     createCapabilitiesTool,
     _cogitatorInstances: cogitatorInstances,
   };
@@ -248,7 +257,7 @@ describe('RuntimeBuilder', () => {
     await built.cleanup();
   });
 
-  it('includes scheduler hint in instructions when enabled', async () => {
+  it('includes scheduler tools and hint when enabled', async () => {
     const config: AssistantConfig = {
       ...minimalConfig,
       capabilities: { scheduler: true },
@@ -257,7 +266,12 @@ describe('RuntimeBuilder', () => {
     const builder = new RuntimeBuilder(config, { GOOGLE_API_KEY: 'test-key' });
     const built = await builder.build();
 
+    const toolNames = built.agent.tools.map((t: { name: string }) => t.name);
+    expect(toolNames).toContain('schedule_task');
+    expect(toolNames).toContain('list_tasks');
+    expect(toolNames).toContain('cancel_task');
     expect(built.agent.instructions).toContain('schedule_task');
+    expect(built.scheduler).not.toBeNull();
 
     await built.cleanup();
   });

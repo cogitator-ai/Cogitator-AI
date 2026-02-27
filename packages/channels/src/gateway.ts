@@ -78,6 +78,10 @@ export class Gateway {
     };
   }
 
+  async injectMessage(msg: ChannelMessage): Promise<void> {
+    return this.handleMessage(msg);
+  }
+
   private async handleMessage(msg: ChannelMessage): Promise<void> {
     try {
       const channel = this.channels.find((ch) => ch.type === msg.channelType);

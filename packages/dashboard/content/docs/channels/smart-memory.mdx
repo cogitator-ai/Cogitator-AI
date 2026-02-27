@@ -43,7 +43,7 @@ When `knowledgeGraph` is enabled, three tools are added to the agent:
 **remember** — Save a fact to the knowledge graph
 ```
 User: "My dog's name is Luna"
-Agent calls: remember({ content: "User's dog is named Luna", tags: ["pet", "dog"] })
+Agent calls: remember({ fact: "User's dog is named Luna", category: "pets" })
 ```
 
 **recall** — Search memory by query
@@ -56,7 +56,7 @@ Agent calls: recall({ query: "dog name" })
 **forget** — Delete facts matching a pattern
 ```
 User: "Forget everything about my old address"
-Agent calls: forget({ pattern: "address" })
+Agent calls: forget({ query: "address" })
 ```
 
 ### Auto-extraction

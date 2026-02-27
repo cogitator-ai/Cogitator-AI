@@ -1,53 +1,26 @@
-import type { Tool, Channel, GatewayMiddleware } from '@cogitator-ai/types';
+import { homedir } from 'node:os';
+import type { Tool, Channel, GatewayMiddleware, LLMProvidersConfig } from '@cogitator-ai/types';
 import {
   Agent,
   Cogitator,
   builtinTools,
   createMemoryTools,
+  createSchedulerTools,
   createCapabilitiesTool,
 } from '@cogitator-ai/core';
 import { SQLiteAdapter, SQLiteGraphAdapter, CoreFactsStore } from '@cogitator-ai/memory';
 import { Gateway } from './gateway';
 import { HeartbeatScheduler } from './heartbeat';
+import { SimpleTimerStore } from './simple-timer-store';
 import { telegramChannel } from './channels/telegram';
 import { discordChannel } from './channels/discord';
 import { slackChannel } from './channels/slack';
 import { ownerCommands } from './middleware/owner-commands';
 import { rateLimit } from './middleware/rate-limit';
 import { generateCapabilitiesDoc } from './capabilities';
+import type { AssistantConfigOutput } from '@cogitator-ai/config';
 
-export interface AssistantConfig {
-  name: string;
-  personality: string;
-  llm: {
-    provider: 'google' | 'openai' | 'anthropic' | 'ollama';
-    model: string;
-  };
-  channels: {
-    telegram?: { ownerIds?: string[] };
-    discord?: { ownerIds?: string[] };
-    slack?: { ownerIds?: string[] };
-  };
-  capabilities: {
-    webSearch?: boolean;
-    fileSystem?: { paths: string[] };
-    github?: boolean;
-    deviceTools?: boolean;
-    browser?: boolean;
-    scheduler?: boolean;
-    rag?: { paths: string[] };
-  };
-  mcpServers?: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
-  memory: {
-    adapter: 'sqlite' | 'postgres';
-    path?: string;
-    autoExtract?: boolean;
-    knowledgeGraph?: boolean;
-    compaction?: { threshold: number };
-  };
-  stream?: { flushInterval?: number; minChunkSize?: number };
-  rateLimit?: { maxPerMinute: number };
-}
+export type AssistantConfig = AssistantConfigOutput;
 
 export interface BuiltRuntime {
   agent: Agent;
@@ -67,7 +40,7 @@ export class RuntimeBuilder {
     const cogitator = this.buildCogitator();
 
     const memoryPath = this.config.memory.path ?? '~/.cogitator/memory.db';
-    const resolvedPath = memoryPath.replace(/^~/, process.env.HOME ?? '.');
+    const resolvedPath = memoryPath.replace(/^~/, homedir());
 
     const memoryAdapter = new SQLiteAdapter({ provider: 'sqlite', path: resolvedPath });
     await memoryAdapter.connect();
@@ -105,6 +78,17 @@ export class RuntimeBuilder {
           graphAdapter,
           coreFacts,
           agentId: this.config.name,
+        })
+      );
+    }
+
+    let timerStore: SimpleTimerStore | null = null;
+    if (this.config.capabilities.scheduler) {
+      timerStore = new SimpleTimerStore();
+      tools.push(
+        ...createSchedulerTools({
+          store: timerStore,
+          defaultChannel: 'system',
         })
       );
     }
@@ -175,7 +159,7 @@ export class RuntimeBuilder {
       },
     });
 
-    const scheduler = this.buildScheduler();
+    const scheduler = this.buildScheduler(timerStore, gateway);
 
     const cleanup = async () => {
       if (scheduler) scheduler.stop();
@@ -191,23 +175,22 @@ export class RuntimeBuilder {
 
   private buildCogitator(): Cogitator {
     const { provider } = this.config.llm;
-
-    const providersConfig: Record<string, Record<string, string | undefined>> = {};
+    const providers: LLMProvidersConfig = {};
 
     if (provider === 'google') {
-      providersConfig.google = { apiKey: this.env.GOOGLE_API_KEY ?? this.env.GEMINI_API_KEY };
+      providers.google = { apiKey: this.env.GOOGLE_API_KEY ?? this.env.GEMINI_API_KEY ?? '' };
     } else if (provider === 'openai') {
-      providersConfig.openai = { apiKey: this.env.OPENAI_API_KEY };
+      providers.openai = { apiKey: this.env.OPENAI_API_KEY ?? '' };
     } else if (provider === 'anthropic') {
-      providersConfig.anthropic = { apiKey: this.env.ANTHROPIC_API_KEY };
+      providers.anthropic = { apiKey: this.env.ANTHROPIC_API_KEY ?? '' };
     } else if (provider === 'ollama') {
-      providersConfig.ollama = { baseUrl: this.env.OLLAMA_URL ?? 'http://localhost:11434' };
+      providers.ollama = { baseUrl: this.env.OLLAMA_URL ?? 'http://localhost:11434' };
     }
 
     return new Cogitator({
       llm: {
         defaultModel: this.config.llm.model,
-        providers: providersConfig as never,
+        providers,
       },
     });
   }
@@ -219,6 +202,8 @@ export class RuntimeBuilder {
       const token = this.env.TG_TOKEN ?? this.env.TELEGRAM_TOKEN;
       if (token) {
         channels.push(telegramChannel({ token }));
+      } else {
+        console.warn('[RuntimeBuilder] Telegram configured but TG_TOKEN not found in env');
       }
     }
 
@@ -226,6 +211,8 @@ export class RuntimeBuilder {
       const token = this.env.DISCORD_TOKEN;
       if (token) {
         channels.push(discordChannel({ token }));
+      } else {
+        console.warn('[RuntimeBuilder] Discord configured but DISCORD_TOKEN not found in env');
       }
     }
 
@@ -234,14 +221,28 @@ export class RuntimeBuilder {
       const signingSecret = this.env.SLACK_SIGNING_SECRET;
       if (token && signingSecret) {
         channels.push(slackChannel({ token, signingSecret }));
+      } else {
+        console.warn(
+          '[RuntimeBuilder] Slack configured but SLACK_BOT_TOKEN/SLACK_SIGNING_SECRET not found in env'
+        );
       }
     }
 
     return channels;
   }
 
-  private buildScheduler(): HeartbeatScheduler | null {
-    return null;
+  private buildScheduler(
+    timerStore: SimpleTimerStore | null,
+    gateway: Gateway
+  ): HeartbeatScheduler | null {
+    if (!timerStore) return null;
+
+    return new HeartbeatScheduler(timerStore, {
+      onFire: async (msg) => {
+        await gateway.injectMessage(msg);
+      },
+      pollInterval: 30_000,
+    });
   }
 
   private buildInstructions(coreFactsText: string): string {
