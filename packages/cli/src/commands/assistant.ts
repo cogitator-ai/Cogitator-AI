@@ -58,6 +58,7 @@ export const assistantCommand = new Command('assistant')
 
     if (!options.quiet) {
       startLiveLog(gateway);
+      startHotkeys(gateway, shutdown);
     }
   });
 
@@ -87,10 +88,100 @@ function printDashboard(gateway: GatewayLike, quiet: boolean): void {
   console.log();
 
   if (!quiet) {
-    console.log(chalk.dim('  Press Ctrl+C to stop'));
+    console.log(
+      chalk.dim('  Hotkeys: ') +
+        chalk.dim.bold('s') +
+        chalk.dim(' sessions  ') +
+        chalk.dim.bold('c') +
+        chalk.dim(' channels  ') +
+        chalk.dim.bold('p') +
+        chalk.dim(' pause  ') +
+        chalk.dim.bold('q') +
+        chalk.dim(' quit')
+    );
     console.log(chalk.dim('  ─── Live ─────────────────────────────────────'));
     console.log();
   }
+}
+
+let paused = false;
+
+function startHotkeys(gateway: GatewayLike, shutdown: () => Promise<void>): void {
+  if (!process.stdin.isTTY) return;
+
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.setEncoding('utf8');
+
+  process.stdin.on('data', (key: string) => {
+    if (key === '\u0003') {
+      void shutdown();
+      return;
+    }
+
+    clearLine();
+
+    switch (key) {
+      case 's': {
+        const stats = gateway.stats;
+        console.log();
+        console.log(chalk.bold('  Sessions'));
+        console.log(`  ${chalk.cyan('Active')}   ${stats.activeSessions}`);
+        console.log(`  ${chalk.dim('Total')}    ${stats.totalSessions}`);
+        console.log(`  ${chalk.dim('Messages')} ${stats.messagesToday} today`);
+        console.log();
+        break;
+      }
+
+      case 'c': {
+        const stats = gateway.stats;
+        console.log();
+        console.log(chalk.bold('  Channels'));
+        for (const ch of stats.connectedChannels) {
+          const icon = paused ? chalk.yellow('⏸') : chalk.green('✓');
+          console.log(`  ${icon} ${ch}`);
+        }
+        console.log();
+        break;
+      }
+
+      case 'p': {
+        paused = !paused;
+        if (paused) {
+          console.log();
+          log.warn('Channels paused — incoming messages will be queued');
+          console.log();
+        } else {
+          console.log();
+          log.success('Channels resumed');
+          console.log();
+        }
+        break;
+      }
+
+      case 'q': {
+        void shutdown();
+        break;
+      }
+
+      case 'h':
+      case '?': {
+        console.log();
+        console.log(chalk.bold('  Hotkeys'));
+        console.log(`  ${chalk.bold('s')}  Show sessions`);
+        console.log(`  ${chalk.bold('c')}  Show channels`);
+        console.log(`  ${chalk.bold('p')}  Pause/resume channels`);
+        console.log(`  ${chalk.bold('q')}  Graceful shutdown`);
+        console.log(`  ${chalk.bold('h')}  This help`);
+        console.log();
+        break;
+      }
+    }
+  });
+}
+
+function clearLine(): void {
+  process.stdout.write('\r\x1b[K');
 }
 
 function startLiveLog(gateway: GatewayLike): void {
