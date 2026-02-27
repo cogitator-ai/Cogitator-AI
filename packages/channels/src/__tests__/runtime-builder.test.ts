@@ -98,14 +98,12 @@ vi.mock('@cogitator-ai/core', () => {
     run = vi.fn().mockResolvedValue({ output: 'ok' });
     tools = { register: vi.fn() };
     getLLMBackend = vi.fn().mockReturnValue({
-      chat: vi
-        .fn()
-        .mockResolvedValue({
-          id: '1',
-          content: '{}',
-          finishReason: 'stop',
-          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-        }),
+      chat: vi.fn().mockResolvedValue({
+        id: '1',
+        content: '{}',
+        finishReason: 'stop',
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      }),
     });
     constructor(public config: unknown) {
       cogitatorInstances.push(this);

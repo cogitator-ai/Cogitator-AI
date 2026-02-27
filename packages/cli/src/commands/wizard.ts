@@ -5,31 +5,79 @@ import * as p from '@clack/prompts';
 import chalk from 'chalk';
 import { stringify, parse as parseYaml } from 'yaml';
 import type { AssistantConfigOutput } from '@cogitator-ai/config';
+import { ModelRegistry } from '@cogitator-ai/models';
 import { printBanner } from '../utils/logger.js';
 
 type AssistantConfig = AssistantConfigOutput;
 
-const PROVIDER_MODELS: Record<string, { label: string; value: string }[]> = {
+type SelectOption = { label: string; value: string; hint?: string };
+
+const FALLBACK_MODELS: Record<string, SelectOption[]> = {
   anthropic: [
-    { label: 'Claude Sonnet 4 (recommended)', value: 'anthropic/claude-sonnet-4-20250514' },
+    { label: 'Claude Sonnet 4', value: 'anthropic/claude-sonnet-4-20250514' },
     { label: 'Claude Opus 4', value: 'anthropic/claude-opus-4-20250514' },
     { label: 'Claude Haiku 3.5', value: 'anthropic/claude-3-5-haiku-20241022' },
   ],
   openai: [
-    { label: 'GPT-4o (recommended)', value: 'openai/gpt-4o' },
+    { label: 'GPT-4o', value: 'openai/gpt-4o' },
     { label: 'GPT-4o mini', value: 'openai/gpt-4o-mini' },
     { label: 'o3-mini', value: 'openai/o3-mini' },
   ],
   google: [
-    { label: 'Gemini 2.5 Flash (recommended)', value: 'google/gemini-2.5-flash' },
+    { label: 'Gemini 2.5 Flash', value: 'google/gemini-2.5-flash' },
     { label: 'Gemini 2.5 Pro', value: 'google/gemini-2.5-pro' },
   ],
   ollama: [
-    { label: 'Llama 3.1 8B (recommended)', value: 'ollama/llama3.1:8b' },
+    { label: 'Llama 3.1 8B', value: 'ollama/llama3.1:8b' },
     { label: 'Gemma 3 4B', value: 'ollama/gemma3:4b' },
     { label: 'Mistral 7B', value: 'ollama/mistral:7b' },
   ],
 };
+
+async function fetchModels(provider: string): Promise<SelectOption[]> {
+  try {
+    const registry = new ModelRegistry({ fallbackToBuiltin: true });
+    await registry.initialize();
+
+    const models = registry.listModels({
+      provider,
+      supportsTools: true,
+      excludeDeprecated: true,
+    });
+
+    if (models.length === 0) return FALLBACK_MODELS[provider] ?? [];
+
+    return models.map((m) => ({
+      label: m.displayName,
+      value: m.id,
+    }));
+  } catch {
+    return FALLBACK_MODELS[provider] ?? [];
+  }
+}
+
+async function fetchOllamaModels(baseUrl: string): Promise<SelectOption[]> {
+  try {
+    const res = await fetch(`${baseUrl}/api/tags`);
+    if (!res.ok) return FALLBACK_MODELS.ollama;
+
+    const data = (await res.json()) as { models?: Array<{ name: string; size: number }> };
+    if (!data.models?.length) return FALLBACK_MODELS.ollama;
+
+    return data.models.map((m) => ({
+      label: m.name,
+      value: `ollama/${m.name}`,
+      hint: formatBytes(m.size),
+    }));
+  } catch {
+    return FALLBACK_MODELS.ollama;
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
 
 const API_KEY_NAMES: Record<string, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
@@ -103,25 +151,47 @@ export const wizardCommand = new Command('wizard')
           { value: 'google', label: 'Google (Gemini)', hint: 'recommended' },
           { value: 'anthropic', label: 'Anthropic (Claude)' },
           { value: 'openai', label: 'OpenAI (GPT-4o)' },
-          { value: 'ollama', label: 'Ollama (local, free)', hint: 'no API key needed' },
+          { value: 'ollama', label: 'Ollama', hint: 'local or cloud' },
         ],
       })
     ) as string;
 
-    const existingModelInProvider = PROVIDER_MODELS[provider]?.some(
-      (m) => m.value === existing.llm?.model
-    );
-
-    const model = prompt(
-      await p.select({
-        message: 'Model',
-        ...(existingModelInProvider ? { initialValue: existing.llm!.model } : {}),
-        options: PROVIDER_MODELS[provider],
-      })
-    ) as string;
-
+    let ollamaUrl = 'http://localhost:11434';
     let apiKey = '';
-    if (provider !== 'ollama') {
+
+    if (provider === 'ollama') {
+      const ollamaMode = prompt(
+        await p.select({
+          message: 'Ollama deployment',
+          initialValue: 'local',
+          options: [
+            { value: 'local', label: 'Local', hint: 'running on this machine' },
+            { value: 'cloud', label: 'Cloud / Remote', hint: 'custom URL + optional API key' },
+          ],
+        })
+      ) as string;
+
+      if (ollamaMode === 'cloud') {
+        ollamaUrl = prompt(
+          await p.text({
+            message: 'Ollama URL',
+            placeholder: 'https://ollama.example.com',
+            validate: (v) => (!v.trim() ? 'URL is required' : undefined),
+          })
+        ) as string;
+
+        const ollamaApiKey = prompt(
+          await p.text({
+            message: 'API key (leave blank if not needed)',
+            placeholder: 'optional',
+          })
+        ) as string;
+
+        if (ollamaApiKey.trim()) {
+          apiKey = ollamaApiKey.trim();
+        }
+      }
+    } else {
       apiKey = prompt(
         await p.password({
           message: `${API_KEY_NAMES[provider]}:`,
@@ -129,6 +199,28 @@ export const wizardCommand = new Command('wizard')
         })
       ) as string;
     }
+
+    const modelSpinner = p.spinner();
+    modelSpinner.start('Fetching available models...');
+
+    const modelOptions =
+      provider === 'ollama' ? await fetchOllamaModels(ollamaUrl) : await fetchModels(provider);
+
+    modelSpinner.stop(
+      modelOptions.length > 0
+        ? `Found ${chalk.cyan(modelOptions.length)} models`
+        : 'Using fallback model list'
+    );
+
+    const existingModelInList = modelOptions.some((m) => m.value === existing.llm?.model);
+
+    const model = prompt(
+      await p.select({
+        message: 'Model',
+        ...(existingModelInList ? { initialValue: existing.llm!.model } : {}),
+        options: modelOptions,
+      })
+    ) as string;
 
     const existingChannels = Object.keys(existing.channels ?? {}).filter(
       (k) => (existing.channels as Record<string, unknown>)?.[k] !== undefined
@@ -149,7 +241,14 @@ export const wizardCommand = new Command('wizard')
 
     const envLines: string[] = [];
 
-    if (apiKey && API_KEY_NAMES[provider]) {
+    if (provider === 'ollama') {
+      if (ollamaUrl !== 'http://localhost:11434') {
+        envLines.push(`OLLAMA_URL=${ollamaUrl}`);
+      }
+      if (apiKey) {
+        envLines.push(`OLLAMA_API_KEY=${apiKey}`);
+      }
+    } else if (apiKey && API_KEY_NAMES[provider]) {
       envLines.push(`${API_KEY_NAMES[provider]}=${apiKey}`);
     }
 

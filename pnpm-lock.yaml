@@ -350,6 +350,9 @@ importers:
       '@cogitator-ai/memory':
         specifier: workspace:*
         version: link:../memory
+      '@cogitator-ai/models':
+        specifier: workspace:*
+        version: link:../models
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types

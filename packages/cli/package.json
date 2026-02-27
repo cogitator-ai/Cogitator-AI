@@ -30,6 +30,7 @@
     "@cogitator-ai/channels": "workspace:*",
     "@cogitator-ai/config": "workspace:*",
     "@cogitator-ai/core": "workspace:*",
+    "@cogitator-ai/models": "workspace:*",
     "@cogitator-ai/deploy": "workspace:*",
     "@cogitator-ai/memory": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
