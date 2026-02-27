@@ -3,41 +3,11 @@ import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import * as p from '@clack/prompts';
 import chalk from 'chalk';
-import { stringify } from 'yaml';
+import { stringify, parse as parseYaml } from 'yaml';
+import type { AssistantConfigOutput } from '@cogitator-ai/config';
 import { printBanner } from '../utils/logger.js';
 
-interface AssistantConfig {
-  name: string;
-  personality: string;
-  llm: {
-    provider: 'google' | 'openai' | 'anthropic' | 'ollama';
-    model: string;
-  };
-  channels: {
-    telegram?: { ownerIds?: string[] };
-    discord?: { ownerIds?: string[] };
-    slack?: { ownerIds?: string[] };
-  };
-  capabilities: {
-    webSearch?: boolean;
-    fileSystem?: { paths: string[] };
-    github?: boolean;
-    deviceTools?: boolean;
-    browser?: boolean;
-    scheduler?: boolean;
-    rag?: { paths: string[] };
-  };
-  mcpServers?: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
-  memory: {
-    adapter: 'sqlite' | 'postgres';
-    path?: string;
-    autoExtract?: boolean;
-    knowledgeGraph?: boolean;
-    compaction?: { threshold: number };
-  };
-  stream?: { flushInterval?: number; minChunkSize?: number };
-  rateLimit?: { maxPerMinute: number };
-}
+type AssistantConfig = AssistantConfigOutput;
 
 const PROVIDER_MODELS: Record<string, { label: string; value: string }[]> = {
   anthropic: [
@@ -92,17 +62,26 @@ export const wizardCommand = new Command('wizard')
     const configPath = resolve(process.cwd(), 'cogitator.yml');
     const envPath = resolve(process.cwd(), '.env');
 
+    let existing: Partial<AssistantConfig> = {};
     if (options.edit && existsSync(configPath)) {
       p.intro(chalk.bgCyan(chalk.black(' Cogitator Assistant Setup (editing existing config) ')));
+      try {
+        existing = parseYaml(readFileSync(configPath, 'utf-8')) as Partial<AssistantConfig>;
+      } catch {
+        p.log.warn('Failed to parse existing config, starting fresh');
+      }
       p.note(`Loaded ${chalk.dim(configPath)}`, 'Existing config found');
     } else {
       p.intro(chalk.bgCyan(chalk.black(' Cogitator Personal Assistant Setup ')));
     }
 
+    const existingUserName = existing.personality?.match(/assistant for (\w+)/)?.[1];
+
     const userName = prompt(
       await p.text({
         message: "What's your name?",
         placeholder: 'Alex',
+        ...(existingUserName ? { initialValue: existingUserName } : {}),
         validate: (v) => (!v.trim() ? 'Name is required' : undefined),
       })
     );
@@ -111,7 +90,7 @@ export const wizardCommand = new Command('wizard')
       await p.text({
         message: 'Assistant name',
         placeholder: 'jarvis',
-        initialValue: 'jarvis',
+        initialValue: existing.name ?? 'jarvis',
         validate: (v) => (!v.trim() ? 'Name is required' : undefined),
       })
     );
@@ -119,6 +98,7 @@ export const wizardCommand = new Command('wizard')
     const provider = prompt(
       await p.select({
         message: 'LLM Provider',
+        initialValue: existing.llm?.provider ?? 'google',
         options: [
           { value: 'google', label: 'Google (Gemini)', hint: 'recommended' },
           { value: 'anthropic', label: 'Anthropic (Claude)' },
@@ -128,9 +108,14 @@ export const wizardCommand = new Command('wizard')
       })
     ) as string;
 
+    const existingModelInProvider = PROVIDER_MODELS[provider]?.some(
+      (m) => m.value === existing.llm?.model
+    );
+
     const model = prompt(
       await p.select({
         message: 'Model',
+        ...(existingModelInProvider ? { initialValue: existing.llm!.model } : {}),
         options: PROVIDER_MODELS[provider],
       })
     ) as string;
@@ -145,6 +130,10 @@ export const wizardCommand = new Command('wizard')
       ) as string;
     }
 
+    const existingChannels = Object.keys(existing.channels ?? {}).filter(
+      (k) => (existing.channels as Record<string, unknown>)?.[k] !== undefined
+    );
+
     const selectedChannels = prompt(
       await p.multiselect({
         message: 'Channels (terminal is always available)',
@@ -153,6 +142,7 @@ export const wizardCommand = new Command('wizard')
           { value: 'discord', label: 'Discord' },
           { value: 'slack', label: 'Slack' },
         ],
+        ...(existingChannels.length > 0 ? { initialValues: existingChannels } : {}),
         required: false,
       })
     ) as string[];
@@ -196,6 +186,11 @@ export const wizardCommand = new Command('wizard')
       channelsConfig[ch as keyof typeof channelsConfig] = { ownerIds: [ownerId] };
     }
 
+    const existingCaps = Object.keys(existing.capabilities ?? {}).filter((k) => {
+      const val = (existing.capabilities as Record<string, unknown>)?.[k];
+      return val === true || (typeof val === 'object' && val !== null);
+    });
+
     const selectedCapabilities = prompt(
       await p.multiselect({
         message: 'Capabilities',
@@ -208,6 +203,7 @@ export const wizardCommand = new Command('wizard')
           { value: 'scheduler', label: 'Scheduler', hint: 'schedule reminders and tasks' },
           { value: 'rag', label: 'RAG', hint: 'index and search local documents' },
         ],
+        ...(existingCaps.length > 0 ? { initialValues: existingCaps } : {}),
         required: false,
       })
     ) as string[];
@@ -216,10 +212,12 @@ export const wizardCommand = new Command('wizard')
 
     for (const cap of selectedCapabilities) {
       if (cap === 'fileSystem') {
+        const existingFsPaths = existing.capabilities?.fileSystem?.paths?.join(', ');
         const pathsRaw = prompt(
           await p.text({
             message: 'Paths to allow for file system access',
             placeholder: '~/Documents, ~/Projects',
+            ...(existingFsPaths ? { initialValue: existingFsPaths } : {}),
             validate: (v) => (!v.trim() ? 'At least one path is required' : undefined),
           })
         ) as string;
@@ -227,10 +225,12 @@ export const wizardCommand = new Command('wizard')
           paths: pathsRaw.split(',').map((s) => s.trim()),
         };
       } else if (cap === 'rag') {
+        const existingRagPaths = existing.capabilities?.rag?.paths?.join(', ');
         const pathsRaw = prompt(
           await p.text({
             message: 'Paths to index for RAG',
             placeholder: '~/Documents/notes, ~/wiki',
+            ...(existingRagPaths ? { initialValue: existingRagPaths } : {}),
             validate: (v) => (!v.trim() ? 'At least one path is required' : undefined),
           })
         ) as string;
@@ -245,6 +245,7 @@ export const wizardCommand = new Command('wizard')
     const memoryAdapter = prompt(
       await p.select({
         message: 'Memory',
+        initialValue: existing.memory?.adapter ?? 'sqlite',
         options: [
           { value: 'sqlite', label: 'SQLite (recommended)', hint: 'zero config, file-based' },
           { value: 'postgres', label: 'PostgreSQL', hint: 'production-grade' },
@@ -262,7 +263,7 @@ export const wizardCommand = new Command('wizard')
       await p.text({
         message: 'Assistant personality',
         placeholder: 'Describe how the assistant should behave...',
-        initialValue: defaultPersonality,
+        initialValue: existing.personality ?? defaultPersonality,
       })
     ) as string;
 
