@@ -1,11 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { Gateway, pairing, rateLimit, ownerCommands } from '@cogitator-ai/channels';
-import type {
-  Channel,
-  ChannelMessage,
-  GatewayMiddleware,
-  MiddlewareContext,
-} from '@cogitator-ai/types';
+import { Gateway, rateLimit, ownerCommands } from '@cogitator-ai/channels';
+import type { Channel, ChannelMessage, GatewayMiddleware } from '@cogitator-ai/types';
 
 function createMockChannel(type = 'test'): Channel & { trigger: (msg: ChannelMessage) => void } {
   let handler: ((msg: ChannelMessage) => Promise<void>) | null = null;

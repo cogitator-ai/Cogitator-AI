@@ -1,9 +1,8 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { defineSkill, validateSkill, mergeSkillsIntoAgent } from '../skill';
 import { Agent } from '../agent';
 import { tool } from '../tool';
 import { z } from 'zod';
-import type { Tool } from '@cogitator-ai/types';
 
 const searchTool = tool({
   name: 'web_search',

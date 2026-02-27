@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { PairingMiddleware } from '../middleware/pairing';
 import { RateLimitMiddleware } from '../middleware/rate-limit';
 import type { ChannelMessage, MiddlewareContext, Channel } from '@cogitator-ai/types';
@@ -72,7 +72,7 @@ describe('PairingMiddleware', () => {
     expect(strangerNext).not.toHaveBeenCalled();
 
     const sendTextCall = (ctx.channel.sendText as ReturnType<typeof vi.fn>).mock.calls[0];
-    const codeMatch = (sendTextCall[1] as string).match(/`\/pair (.+?)`/);
+    const codeMatch = /`\/pair (.+?)`/.exec(sendTextCall[1] as string);
     expect(codeMatch).toBeTruthy();
     const code = codeMatch![1];
 
