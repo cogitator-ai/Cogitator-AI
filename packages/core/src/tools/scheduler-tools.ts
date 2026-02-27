@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { tool } from '../tool';
 import { parseDuration } from '../cache/cache-key';
-import type { Tool, TimerStore, TimerEntry } from '@cogitator-ai/types';
+import type { TimerStore, TimerEntry } from '@cogitator-ai/types';
 
 export interface SchedulerToolsConfig {
   store: TimerStore;
@@ -30,7 +30,7 @@ const cancelParams = z.object({
   id: z.string().describe('ID of the task to cancel'),
 });
 
-export function createSchedulerTools(config: SchedulerToolsConfig): Tool[] {
+export function createSchedulerTools(config: SchedulerToolsConfig) {
   const { store, defaultChannel, defaultUserId } = config;
 
   const scheduleTask = tool({

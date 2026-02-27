@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { tool } from '../tool';
 import type {
-  Tool,
   GraphAdapter,
   GraphNode,
   GraphSemanticSearchOptions,
@@ -39,7 +38,7 @@ const forgetParams = z.object({
   query: z.string().describe('Pattern to match facts to delete'),
 });
 
-export function createMemoryTools(config: MemoryToolsConfig): Tool[] {
+export function createMemoryTools(config: MemoryToolsConfig) {
   const { graphAdapter, coreFacts, embeddingFn, agentId } = config;
 
   const remember = tool({
