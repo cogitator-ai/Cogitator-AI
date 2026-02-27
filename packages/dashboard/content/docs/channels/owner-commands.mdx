@@ -1,0 +1,84 @@
+---
+title: Owner Commands
+description: Manage your bot at runtime through slash commands in chat.
+---
+
+## Overview
+
+Owner commands let you monitor and control your AI assistant directly from your messaging app. The `OwnerCommandsMiddleware` intercepts slash commands from the configured owner before they reach the agent.
+
+## Setup
+
+```typescript
+import { ownerCommands } from '@cogitator-ai/channels';
+
+const gateway = new Gateway({
+  // ...
+  middleware: [
+    ownerCommands({
+      ownerIds: {
+        telegram: '123456789',
+        discord: '987654321',
+      },
+      onStatus: () => `Up 2h, 5 sessions, 847 messages`,
+      onSessions: () => `Active: @john (telegram), @jane (discord)`,
+      onModel: (model, forUser) => `Model switched to ${model}`,
+      onCompact: async (target) => `Compacted ${target}`,
+    }),
+  ],
+});
+```
+
+## Available Commands
+
+| Command | Description |
+|---------|-------------|
+| `/status` | Show uptime, sessions, message count |
+| `/sessions` | List active sessions |
+| `/users` | List approved/blocked users |
+| `/model <name> [@user]` | Switch model globally or for a specific user |
+| `/compact [target]` | Trigger conversation compaction |
+| `/restart` | Graceful restart |
+| `/help` | Show available commands |
+
+## Configuration
+
+```typescript
+interface OwnerCommandsConfig {
+  ownerIds: Record<string, string>;
+  onStatus?: () => string;
+  onSessions?: () => string;
+  onUsers?: () => string;
+  onCompact?: (target: string) => Promise<string>;
+  onModel?: (model: string, forUser?: string) => string;
+  onRestart?: () => Promise<void>;
+}
+```
+
+### Callback Handlers
+
+Each command maps to an optional callback. If a callback is not provided, the command returns a default message. Implement callbacks to hook into your gateway's runtime state:
+
+```typescript
+ownerCommands({
+  ownerIds: { telegram: process.env.OWNER_TG_ID! },
+  onStatus: () => {
+    const stats = gateway.stats;
+    return [
+      `Uptime: ${formatDuration(stats.uptime)}`,
+      `Sessions: ${stats.activeSessions} active / ${stats.totalSessions} total`,
+      `Messages: ${stats.messagesToday} today`,
+    ].join('\n');
+  },
+  onModel: (model, forUser) => {
+    // update model configuration
+    return `Switched to ${model}${forUser ? ` for ${forUser}` : ''}`;
+  },
+})
+```
+
+## Security
+
+- Commands are only processed from users matching `ownerIds` for the current channel type
+- Non-owners sending `/status` or other commands see them passed through to the agent as regular messages
+- Unknown slash commands (e.g., `/random`) pass through to the agent

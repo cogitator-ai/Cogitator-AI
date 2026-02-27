@@ -1,0 +1,47 @@
+---
+title: Telegram
+description: Connect your AI agent to Telegram using grammY.
+---
+
+## Setup
+
+Install the Telegram SDK as a peer dependency:
+
+```bash
+pnpm add grammy
+```
+
+## Usage
+
+```typescript
+import { telegramChannel } from '@cogitator-ai/channels';
+
+const telegram = telegramChannel({
+  token: process.env.TG_TOKEN!,
+});
+```
+
+## Configuration
+
+```typescript
+interface TelegramConfig {
+  token: string;
+}
+```
+
+Get your bot token from [@BotFather](https://t.me/BotFather) on Telegram.
+
+## Features
+
+- Long polling for receiving updates
+- Message editing for streaming responses
+- Typing indicators
+- Markdown formatting (Telegram's MarkdownV2 subset)
+- File sending support
+- 4096 character message limit (auto-chunked by formatters)
+
+## How It Works
+
+The channel uses [grammY](https://grammy.dev/) under the hood. When started, it begins long polling for updates. Incoming text messages are converted to `ChannelMessage` and routed to your Gateway.
+
+Streaming responses use Telegram's `editMessageText` API -- the user sees the response appearing progressively, similar to ChatGPT.

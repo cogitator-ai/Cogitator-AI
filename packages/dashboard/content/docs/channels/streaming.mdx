@@ -1,0 +1,88 @@
+---
+title: Streaming
+description: Progressive message delivery with StreamBuffer and message editing.
+---
+
+## Overview
+
+Cogitator uses a **send-then-edit** pattern for streaming responses in chat. Instead of waiting for the full LLM response (2-10 seconds), the user sees the answer appearing progressively.
+
+## How It Works
+
+1. LLM generates tokens via `cogitator.run()` with `stream: true`
+2. Tokens accumulate in a `StreamBuffer`
+3. Every ~500ms, the buffer flushes:
+   - **First flush** → `channel.sendText()` creates a new message
+   - **Subsequent flushes** → `channel.editText()` updates the message
+4. After generation completes → final edit with formatted response
+
+## Configuration
+
+```typescript
+interface StreamConfig {
+  flushInterval: number;  // ms between edits, default: 500
+  minChunkSize: number;   // don't edit for <N chars, default: 20
+}
+```
+
+```typescript
+const gateway = new Gateway({
+  // ...
+  stream: {
+    flushInterval: 500,
+    minChunkSize: 20,
+  },
+});
+```
+
+## Platform Support
+
+| Platform | Edit Support | Rate Limit | Max Length |
+|----------|-------------|------------|-----------|
+| Telegram | Yes (`editMessageText`) | ~30 edits/sec | 4,096 chars |
+| Discord | Yes (`message.edit`) | ~5 edits/sec | 2,000 chars |
+| Slack | Yes (`chat.update`) | ~20 edits/sec | No hard limit |
+| WhatsApp | No | N/A | N/A |
+| WebChat | Yes (WebSocket `edit` event) | No limit | No limit |
+
+For platforms without edit support (WhatsApp), the Gateway falls back to showing a typing indicator and sending the complete response.
+
+## StreamBuffer API
+
+The `StreamBuffer` class is used internally by Gateway, but can be used standalone:
+
+```typescript
+import { StreamBuffer } from '@cogitator-ai/channels';
+
+const buffer = new StreamBuffer({
+  flushInterval: 500,
+  minChunkSize: 20,
+  onFlush: async (text, messageId) => {
+    if (!messageId) {
+      return await channel.sendText(chatId, text);
+    }
+    await channel.editText(chatId, messageId, text);
+    return messageId;
+  },
+});
+
+buffer.start();
+
+// append tokens as they arrive
+buffer.append('Hello');
+buffer.append(' world');
+buffer.append('!');
+
+// when generation is done
+await buffer.finish();
+```
+
+## Markdown Formatting
+
+Each flush passes through platform-specific markdown adaptation before being sent:
+
+- **Telegram**: Converts `# Heading` to `**Heading**`, preserves code blocks
+- **Discord**: Standard markdown passes through
+- **Slack**: Converts `**bold**` to `*bold*`, `~~strike~~` to `~strike~`
+
+Long messages are automatically chunked at paragraph boundaries.

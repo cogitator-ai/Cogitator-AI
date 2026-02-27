@@ -1,0 +1,54 @@
+---
+title: WhatsApp
+description: Connect your AI agent to WhatsApp via Baileys.
+---
+
+## Setup
+
+```bash
+pnpm add @whiskeysockets/baileys
+```
+
+## Usage
+
+```typescript
+import { whatsappChannel } from '@cogitator-ai/channels';
+
+const whatsapp = whatsappChannel({
+  sessionPath: '.cogitator/whatsapp-session',
+  printQr: true,
+});
+```
+
+## Configuration
+
+```typescript
+interface WhatsAppChannelConfig {
+  sessionPath?: string;  // default: '.cogitator/whatsapp-session'
+  qrCallback?: (qr: string) => void;
+  printQr?: boolean;     // default: true
+}
+```
+
+## Pairing
+
+WhatsApp requires linking via QR code on first connection:
+
+1. Start the gateway with `printQr: true`
+2. Scan the QR code from your phone's WhatsApp (Settings → Linked Devices → Link a Device)
+3. Session is persisted in `sessionPath` for future restarts
+
+For custom QR handling (e.g., displaying in a web UI), use the `qrCallback` option.
+
+## Features
+
+- QR code pairing with persistent sessions
+- Auto-reconnect on connection drops
+- Group message support with participant tracking
+- Typing indicators via presence updates
+- File sending support
+- No message editing (WhatsApp API limitation) -- full response sent after generation
+
+## Limitations
+
+WhatsApp does not support editing sent messages. Unlike Telegram and Discord where streaming responses update in-place, WhatsApp will show a typing indicator and send the complete response when ready.

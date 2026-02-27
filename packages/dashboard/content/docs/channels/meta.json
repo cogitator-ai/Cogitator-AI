@@ -1,0 +1,14 @@
+{
+  "title": "Channels",
+  "pages": [
+    "gateway",
+    "telegram",
+    "discord",
+    "slack",
+    "whatsapp",
+    "webchat",
+    "middleware",
+    "streaming",
+    "owner-commands"
+  ]
+}

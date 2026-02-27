@@ -1,0 +1,41 @@
+---
+title: Discord
+description: Connect your AI agent to Discord servers.
+---
+
+## Setup
+
+```bash
+pnpm add discord.js
+```
+
+## Usage
+
+```typescript
+import { discordChannel } from '@cogitator-ai/channels';
+
+const discord = discordChannel({
+  token: process.env.DISCORD_TOKEN!,
+  mentionOnly: true, // only respond when @mentioned in servers
+});
+```
+
+## Configuration
+
+```typescript
+interface DiscordConfig {
+  token: string;
+  mentionOnly?: boolean; // default: false
+}
+```
+
+Create a bot at the [Discord Developer Portal](https://discord.com/developers/applications). Enable the **Message Content** intent.
+
+## Features
+
+- Responds to DMs and server messages
+- `mentionOnly` mode for group channels -- only processes messages that @mention the bot
+- Bot mention is automatically stripped from message text
+- Message editing for streaming responses
+- 2000 character message limit (auto-chunked)
+- Markdown formatting support

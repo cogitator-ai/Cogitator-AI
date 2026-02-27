@@ -1,0 +1,160 @@
+---
+title: Gateway
+description: Route messages from messaging platforms to AI agents with sessions, middleware, and streaming.
+---
+
+## Overview
+
+The `Gateway` is the central class of `@cogitator-ai/channels`. It connects messaging channels (Telegram, Discord, Slack, WhatsApp, WebChat) to your AI agents, handling sessions, middleware, streaming, and message formatting.
+
+```bash
+pnpm add @cogitator-ai/channels
+```
+
+## Quick Start
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { Gateway, telegramChannel } from '@cogitator-ai/channels';
+
+const agent = new Agent({
+  name: 'assistant',
+  model: 'anthropic/claude-sonnet-4-20250514',
+  instructions: 'You are a helpful personal assistant.',
+});
+
+const gateway = new Gateway({
+  agent,
+  cogitator: new Cogitator({
+    llm: {
+      providers: { anthropic: { apiKey: process.env.ANTHROPIC_API_KEY } },
+    },
+  }),
+  channels: [
+    telegramChannel({ token: process.env.TG_TOKEN! }),
+  ],
+});
+
+await gateway.start();
+```
+
+## GatewayConfig
+
+```typescript
+interface GatewayConfig {
+  agent: Agent | ((user: ChannelUser) => Agent | Promise<Agent>);
+  channels: Channel[];
+  cogitator: Cogitator;
+  memory?: MemoryAdapter;
+  middleware?: GatewayMiddleware[];
+  session?: {
+    threadKey?: (msg: ChannelMessage) => string;
+    compaction?: CompactionConfig;
+  };
+  stream?: StreamConfig;
+  onError?: (error: Error, msg: ChannelMessage) => void;
+}
+```
+
+### Per-user Agents
+
+Pass a factory function to create different agents per user:
+
+```typescript
+const gateway = new Gateway({
+  agent: (user) => {
+    if (user.id === 'admin') {
+      return adminAgent;
+    }
+    return defaultAgent;
+  },
+  // ...
+});
+```
+
+## Message Flow
+
+```
+User sends message in Telegram
+  → TelegramChannel converts to ChannelMessage
+  → Gateway.handleMessage(msg)
+    → middleware pipeline (pairing → rate-limit → ...)
+    → Session lookup/create via SessionManager
+    → Compaction check (if threshold exceeded)
+    → channel.sendTyping(channelId)
+    → cogitator.run(agent, { input, threadId, stream })
+    → StreamBuffer flushes progressively via editText
+    → Final formatted response delivered
+```
+
+## Multi-channel Setup
+
+```typescript
+import {
+  Gateway,
+  telegramChannel,
+  discordChannel,
+  slackChannel,
+  webchatChannel,
+} from '@cogitator-ai/channels';
+
+const gateway = new Gateway({
+  agent,
+  cogitator,
+  channels: [
+    telegramChannel({ token: process.env.TG_TOKEN! }),
+    discordChannel({ token: process.env.DISCORD_TOKEN! }),
+    slackChannel({
+      token: process.env.SLACK_TOKEN!,
+      signingSecret: process.env.SLACK_SIGNING_SECRET!,
+      appToken: process.env.SLACK_APP_TOKEN!,
+    }),
+    webchatChannel({ port: 18789 }),
+  ],
+});
+```
+
+## Session Management
+
+Gateway integrates with `@cogitator-ai/memory` for persistent conversations:
+
+```typescript
+import { SqliteMemory } from '@cogitator-ai/memory';
+
+const gateway = new Gateway({
+  // ...
+  memory: new SqliteMemory({ path: './sessions.db' }),
+  session: {
+    threadKey: (msg) => `${msg.channelType}:${msg.userId}`,
+    compaction: {
+      strategy: 'summary',
+      threshold: 100,
+      keepRecent: 20,
+    },
+  },
+});
+```
+
+The `threadKey` function determines how sessions are grouped. By default, each user gets their own session per channel.
+
+## Stats
+
+```typescript
+const stats = gateway.stats;
+// {
+//   uptime: 7200000,
+//   activeSessions: 3,
+//   totalSessions: 12,
+//   messagesToday: 847,
+//   connectedChannels: ['telegram', 'discord'],
+// }
+```
+
+## Graceful Shutdown
+
+```typescript
+process.on('SIGTERM', async () => {
+  await gateway.stop();
+  process.exit(0);
+});
+```

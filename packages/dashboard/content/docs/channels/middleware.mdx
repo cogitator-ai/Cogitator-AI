@@ -1,0 +1,123 @@
+---
+title: Middleware
+description: Intercept and filter messages with pairing, rate limiting, and custom middleware.
+---
+
+## Overview
+
+Gateway middleware intercepts messages before they reach your agent. Use it for security, rate limiting, logging, and custom processing.
+
+```typescript
+interface GatewayMiddleware {
+  name: string;
+  handle(
+    msg: ChannelMessage,
+    ctx: MiddlewareContext,
+    next: () => Promise<void>
+  ): Promise<void>;
+}
+```
+
+Middleware follows an Express-style chain: call `next()` to pass the message forward, or skip it to block the message.
+
+## Built-in Middleware
+
+### Pairing
+
+Prevents unknown users from talking to your bot. New users must be approved by the owner.
+
+```typescript
+import { pairing } from '@cogitator-ai/channels';
+
+const gateway = new Gateway({
+  // ...
+  middleware: [
+    pairing({
+      ownerIds: { telegram: '123456789' },
+      codeLength: 6,
+      expiresIn: 300, // seconds
+    }),
+  ],
+});
+```
+
+**Flow:**
+1. Unknown user sends a message
+2. Bot responds with a pairing code: `"Pair code: A7X92K"`
+3. Owner types `/pair A7X92K` in their chat
+4. User is now approved and can chat normally
+
+### Rate Limiting
+
+Per-user sliding window rate limiter.
+
+```typescript
+import { rateLimit } from '@cogitator-ai/channels';
+
+const gateway = new Gateway({
+  // ...
+  middleware: [
+    rateLimit({
+      maxPerMinute: 10,
+      message: 'Too many messages. Please wait.',
+    }),
+  ],
+});
+```
+
+### Owner Commands
+
+Intercepts slash commands from the bot owner. See the [Owner Commands](/docs/channels/owner-commands) page.
+
+## Custom Middleware
+
+```typescript
+import type { GatewayMiddleware, ChannelMessage, MiddlewareContext } from '@cogitator-ai/channels';
+
+const loggingMiddleware: GatewayMiddleware = {
+  name: 'logging',
+  async handle(msg: ChannelMessage, ctx: MiddlewareContext, next: () => Promise<void>) {
+    console.log(`[${msg.channelType}] ${msg.userId}: ${msg.text}`);
+    await next(); // pass to next middleware or agent
+  },
+};
+```
+
+### Blocking Messages
+
+Skip `next()` to block a message:
+
+```typescript
+const profanityFilter: GatewayMiddleware = {
+  name: 'profanity-filter',
+  async handle(msg, ctx, next) {
+    if (containsProfanity(msg.text)) {
+      await ctx.channel.sendText(msg.channelId, 'Please keep it civil.');
+      return; // message blocked
+    }
+    await next();
+  },
+};
+```
+
+### Middleware Context
+
+```typescript
+interface MiddlewareContext {
+  threadId: string;
+  user: ChannelUser;
+  channel: Channel;
+  set(key: string, value: unknown): void;
+  get<T>(key: string): T | undefined;
+}
+```
+
+Use `set`/`get` to pass data between middleware:
+
+```typescript
+// in auth middleware
+ctx.set('userRole', 'admin');
+
+// in later middleware
+const role = ctx.get<string>('userRole');
+```

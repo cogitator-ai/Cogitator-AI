@@ -1,0 +1,49 @@
+---
+title: Slack
+description: Connect your AI agent to Slack workspaces.
+---
+
+## Setup
+
+```bash
+pnpm add @slack/bolt
+```
+
+## Usage
+
+```typescript
+import { slackChannel } from '@cogitator-ai/channels';
+
+const slack = slackChannel({
+  token: process.env.SLACK_BOT_TOKEN!,
+  signingSecret: process.env.SLACK_SIGNING_SECRET!,
+  appToken: process.env.SLACK_APP_TOKEN!, // for Socket Mode
+});
+```
+
+## Configuration
+
+```typescript
+interface SlackConfig {
+  token: string;
+  signingSecret: string;
+  appToken?: string;
+  socketMode?: boolean; // default: true when appToken provided
+}
+```
+
+## Slack App Setup
+
+1. Create an app at [api.slack.com/apps](https://api.slack.com/apps)
+2. Enable **Socket Mode** (recommended for development)
+3. Add bot scopes: `chat:write`, `app_mentions:read`, `im:history`, `im:read`, `im:write`
+4. Subscribe to events: `message.im`, `app_mention`
+5. Install to workspace
+
+## Features
+
+- Socket Mode (no public endpoint needed)
+- DM and channel message handling
+- Message updates for streaming responses via `chat.update`
+- Slack's mrkdwn formatting
+- No hard message length limit (but long messages are auto-chunked for readability)

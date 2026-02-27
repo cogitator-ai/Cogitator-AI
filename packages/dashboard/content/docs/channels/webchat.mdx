@@ -1,0 +1,83 @@
+---
+title: WebChat
+description: Built-in WebSocket channel for custom web interfaces.
+---
+
+## Setup
+
+No external dependencies required. Uses the `ws` package (already a dev dependency).
+
+```bash
+pnpm add ws
+```
+
+## Usage
+
+```typescript
+import { webchatChannel } from '@cogitator-ai/channels';
+
+const webchat = webchatChannel({
+  port: 18789,
+  path: '/ws',
+  auth: (token) => token === process.env.WEBCHAT_SECRET,
+});
+```
+
+## Configuration
+
+```typescript
+interface WebChatConfig {
+  port: number;
+  path?: string;       // default: '/ws'
+  auth?: (token: string) => boolean;
+}
+```
+
+## Client Protocol
+
+Connect via WebSocket to `ws://localhost:18789/ws?token=YOUR_SECRET`.
+
+### Sending messages
+
+```json
+{
+  "type": "message",
+  "text": "Hello, assistant!"
+}
+```
+
+### Receiving responses
+
+```json
+{
+  "type": "text",
+  "id": "msg_abc123",
+  "text": "Hi! How can I help you?"
+}
+```
+
+### Message updates (streaming)
+
+```json
+{
+  "type": "edit",
+  "id": "msg_abc123",
+  "text": "Hi! How can I help you today?"
+}
+```
+
+### Typing indicators
+
+```json
+{
+  "type": "typing"
+}
+```
+
+## Features
+
+- Zero external dependencies beyond `ws`
+- Token-based authentication
+- Full streaming support via message edits
+- No message length limit
+- JSON-based protocol
