@@ -6,6 +6,7 @@ import type {
   DeserializeOptions,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
+import { mergeSkillsIntoAgent } from './skill';
 
 const SNAPSHOT_VERSION = '1.0.0';
 
@@ -62,11 +63,18 @@ export class Agent implements IAgent {
   constructor(config: AgentConfig) {
     this.id = config.id ?? `agent_${nanoid(12)}`;
     this.name = config.name;
+
+    let finalConfig = { ...config };
+    if (config.skills && config.skills.length > 0) {
+      const merged = mergeSkillsIntoAgent(config.tools ?? [], config.instructions, config.skills);
+      finalConfig = { ...finalConfig, tools: merged.tools, instructions: merged.instructions };
+    }
+
     this.config = {
       temperature: 0.7,
       maxIterations: 10,
       timeout: 120_000,
-      ...config,
+      ...finalConfig,
     };
   }
 

@@ -3,6 +3,7 @@
  */
 
 import type { Tool } from './tool';
+import type { Skill } from './skill';
 import type { ZodType } from 'zod';
 
 export interface AgentConfig {
@@ -14,6 +15,7 @@ export interface AgentConfig {
   model: string;
   instructions: string;
   tools?: Tool[];
+  skills?: Skill[];
   temperature?: number;
   topP?: number;
   maxTokens?: number;

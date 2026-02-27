@@ -7,6 +7,7 @@
 export { Cogitator } from './runtime';
 export { Agent, AgentDeserializationError } from './agent';
 export { tool, toolToSchema } from './tool';
+export { defineSkill, validateSkill, mergeSkillsIntoAgent } from './skill';
 export { agentAsTool } from './agent-tool';
 export type { AgentAsToolOptions, AgentToolResult } from './agent-tool';
 export { ToolRegistry } from './registry';
