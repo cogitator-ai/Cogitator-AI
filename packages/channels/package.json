@@ -1,0 +1,73 @@
+{
+  "name": "@cogitator-ai/channels",
+  "version": "0.1.0",
+  "description": "Messaging channel connectors and Gateway for Cogitator AI agents",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@cogitator-ai/types": "workspace:*",
+    "@cogitator-ai/core": "workspace:*",
+    "@cogitator-ai/memory": "workspace:*",
+    "nanoid": "^5.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.10",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.3.0",
+    "vitest": "^4.0.18",
+    "ws": "^8.18.2"
+  },
+  "peerDependencies": {
+    "@cogitator-ai/types": "workspace:*",
+    "@cogitator-ai/core": "workspace:*",
+    "grammy": ">=1.20.0",
+    "discord.js": ">=14.0.0",
+    "@slack/bolt": ">=3.0.0",
+    "ws": ">=8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "grammy": {
+      "optional": true
+    },
+    "discord.js": {
+      "optional": true
+    },
+    "@slack/bolt": {
+      "optional": true
+    },
+    "ws": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cogitator-ai/Cogitator-AI.git",
+    "directory": "packages/channels"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
+  },
+  "license": "MIT"
+}
