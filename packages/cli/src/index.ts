@@ -15,6 +15,9 @@ import { logsCommand } from './commands/logs.js';
 import { modelsCommand } from './commands/models.js';
 import { deployCommand } from './commands/deploy.js';
 import { assistantCommand } from './commands/assistant.js';
+import { buildCommand } from './commands/build.js';
+import { daemonCommand } from './commands/daemon.js';
+import { skillCommand } from './commands/skill.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf-8')) as {
@@ -35,5 +38,8 @@ program.addCommand(logsCommand);
 program.addCommand(modelsCommand);
 program.addCommand(deployCommand);
 program.addCommand(assistantCommand);
+program.addCommand(buildCommand);
+program.addCommand(daemonCommand);
+program.addCommand(skillCommand);
 
 program.parse();
