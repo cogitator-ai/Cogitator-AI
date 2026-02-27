@@ -1,0 +1,109 @@
+---
+title: Wizard Setup
+description: Interactive assistant setup with cogitator wizard.
+---
+
+## Overview
+
+The `cogitator wizard` command provides an interactive TUI to configure a personal AI assistant. It generates a `cogitator.yml` config and `.env` file with all required secrets.
+
+## Quick Start
+
+```bash
+npx @cogitator-ai/cli wizard
+```
+
+The wizard walks you through:
+
+1. **LLM provider and model** — Google, OpenAI, Anthropic, or Ollama
+2. **Channels** — Telegram, Discord, Slack (with token prompts)
+3. **Capabilities** — web search, file system access, scheduler, RAG
+4. **Memory** — adapter, knowledge graph, auto-extraction
+5. **Personality** — custom system prompt for the assistant
+
+After setup, start the assistant:
+
+```bash
+cogitator up
+```
+
+## Editing an Existing Config
+
+Re-run the wizard with `--edit` to modify an existing `cogitator.yml`:
+
+```bash
+cogitator wizard --edit
+```
+
+This loads the current config and lets you change individual sections.
+
+## Generated Files
+
+### cogitator.yml
+
+```yaml title="cogitator.yml"
+name: jarvis
+personality: |
+  You are Jarvis, a personal AI assistant.
+
+llm:
+  provider: google
+  model: google/gemini-2.5-flash
+
+channels:
+  telegram:
+    ownerIds: ["123456789"]
+
+capabilities:
+  webSearch: true
+  scheduler: true
+
+memory:
+  adapter: sqlite
+  path: ~/.cogitator/memory.db
+  knowledgeGraph: true
+```
+
+### .env
+
+```bash title=".env"
+GOOGLE_API_KEY=your-api-key
+TG_TOKEN=your-telegram-bot-token
+```
+
+## Programmatic Equivalent
+
+Instead of the wizard, you can use `RuntimeBuilder` directly:
+
+```typescript
+import { RuntimeBuilder } from '@cogitator-ai/channels';
+
+const builder = new RuntimeBuilder({
+  name: 'jarvis',
+  personality: 'You are Jarvis, a personal AI assistant.',
+  llm: { provider: 'google', model: 'google/gemini-2.5-flash' },
+  channels: { telegram: { ownerIds: ['123456789'] } },
+  capabilities: { webSearch: true, scheduler: true },
+  memory: { adapter: 'sqlite', path: '~/.cogitator/memory.db', knowledgeGraph: true },
+}, process.env);
+
+const runtime = await builder.build();
+await runtime.gateway.start();
+```
+
+## Config Reference
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | `string` | required | Assistant name |
+| `personality` | `string` | required | System prompt / personality |
+| `llm.provider` | `google \| openai \| anthropic \| ollama` | required | LLM provider |
+| `llm.model` | `string` | required | Model identifier (e.g. `google/gemini-2.5-flash`) |
+| `channels` | `object` | `{}` | Channel configs (telegram, discord, slack) |
+| `capabilities` | `object` | `{}` | Enabled capabilities |
+| `memory.adapter` | `sqlite \| postgres` | `sqlite` | Memory storage backend |
+| `memory.knowledgeGraph` | `boolean` | `true` | Enable knowledge graph |
+| `memory.autoExtract` | `boolean` | `true` | Auto-extract entities from conversations |
+| `stream.flushInterval` | `number` | `600` | Stream flush interval (ms) |
+| `stream.minChunkSize` | `number` | `30` | Minimum chunk size before flushing |
+| `rateLimit.maxPerMinute` | `number` | `30` | Per-user rate limit |

@@ -1,0 +1,131 @@
+---
+title: Smart Memory
+description: Three-level memory system with knowledge graph, core facts, and compaction.
+---
+
+## Overview
+
+The smart memory system provides three levels of persistent memory for your assistant, from fast key-value lookups to a full knowledge graph with semantic search.
+
+## Level 1: Core Facts
+
+Key-value pairs that are always included in the system prompt. Store the most important facts about the user here — name, timezone, preferences.
+
+```typescript
+import { CoreFactsStore } from '@cogitator-ai/memory';
+
+const coreFacts = new CoreFactsStore({ path: './memory.db' });
+await coreFacts.initialize();
+
+await coreFacts.set('user_name', 'Alex');
+await coreFacts.set('timezone', 'Europe/Berlin');
+
+const prompt = await coreFacts.formatForPrompt();
+// "user_name: Alex\ntimezone: Europe/Berlin"
+```
+
+Core facts are injected into the agent instructions automatically by `RuntimeBuilder`.
+
+## Level 2: Knowledge Graph
+
+SQLite-backed knowledge graph with nodes and relationships. The agent uses `remember`, `recall`, and `forget` tools to interact with it.
+
+```yaml title="cogitator.yml"
+memory:
+  knowledgeGraph: true
+  autoExtract: true
+```
+
+### Memory Tools
+
+When `knowledgeGraph` is enabled, three tools are added to the agent:
+
+**remember** — Save a fact to the knowledge graph
+```
+User: "My dog's name is Luna"
+Agent calls: remember({ content: "User's dog is named Luna", tags: ["pet", "dog"] })
+```
+
+**recall** — Search memory by query
+```
+User: "What's my dog's name?"
+Agent calls: recall({ query: "dog name" })
+→ Returns: "User's dog is named Luna"
+```
+
+**forget** — Delete facts matching a pattern
+```
+User: "Forget everything about my old address"
+Agent calls: forget({ pattern: "address" })
+```
+
+### Auto-extraction
+
+When `autoExtract` is enabled, the `AutoExtractMiddleware` runs after each conversation turn and automatically extracts entities and relationships into the knowledge graph — without the agent needing to call `remember` explicitly.
+
+```yaml
+memory:
+  autoExtract: true
+```
+
+## Level 3: Conversation History
+
+Session-based message history stored in the memory adapter (SQLite or Postgres). Each user gets their own session per channel.
+
+### Compaction
+
+When the conversation history grows too long, automatic compaction summarizes older messages to stay within context limits:
+
+```yaml title="cogitator.yml"
+memory:
+  compaction:
+    threshold: 50
+```
+
+When a session exceeds `threshold` messages, the gateway triggers compaction:
+1. Older messages are summarized into a single summary message
+2. The most recent messages are kept intact
+3. The summary replaces the old messages in the session
+
+## Full Configuration
+
+```yaml title="cogitator.yml"
+memory:
+  adapter: sqlite              # sqlite | postgres
+  path: ~/.cogitator/memory.db # path for sqlite
+  knowledgeGraph: true         # enable knowledge graph + memory tools
+  autoExtract: true            # auto-extract entities from conversations
+  compaction:
+    threshold: 50              # messages before compaction triggers
+```
+
+## Programmatic Setup
+
+If you're not using `RuntimeBuilder`, you can set up memory manually:
+
+```typescript
+import { SQLiteAdapter, SQLiteGraphAdapter, CoreFactsStore } from '@cogitator-ai/memory';
+import { createMemoryTools } from '@cogitator-ai/core';
+
+const memory = new SQLiteAdapter({ provider: 'sqlite', path: './memory.db' });
+await memory.connect();
+
+const graph = new SQLiteGraphAdapter({ path: './memory.db' });
+await graph.initialize();
+
+const coreFacts = new CoreFactsStore({ path: './memory.db' });
+await coreFacts.initialize();
+
+const memoryTools = createMemoryTools({
+  graphAdapter: graph,
+  coreFacts,
+  agentId: 'jarvis',
+});
+
+const agent = new Agent({
+  name: 'jarvis',
+  model: 'google/gemini-2.5-flash',
+  tools: [...memoryTools],
+  instructions: 'You are a helpful assistant with persistent memory.',
+});
+```

@@ -1,0 +1,107 @@
+---
+title: Scheduler
+description: Schedule tasks, reminders, and recurring jobs with HeartbeatScheduler.
+---
+
+## Overview
+
+The `HeartbeatScheduler` enables your assistant to schedule tasks, set reminders, and run recurring jobs via cron expressions. It polls a `TimerStore` at regular intervals and fires overdue entries as messages through the gateway.
+
+## Setup via Config
+
+Enable the scheduler in `cogitator.yml`:
+
+```yaml title="cogitator.yml"
+capabilities:
+  scheduler: true
+```
+
+This adds three tools to the agent automatically:
+
+- **schedule_task** — Schedule a one-off or recurring task
+- **list_tasks** — List all pending scheduled tasks
+- **cancel_task** — Cancel a task by ID
+
+## Programmatic Setup
+
+```typescript
+import { HeartbeatScheduler } from '@cogitator-ai/channels';
+
+const scheduler = new HeartbeatScheduler(timerStore, {
+  onFire: async (msg) => {
+    // handle the fired timer — route back through gateway
+    console.log(`Task fired: ${msg.text}`);
+  },
+  pollInterval: 30_000,
+});
+
+scheduler.start();
+```
+
+### HeartbeatConfig
+
+```typescript
+interface HeartbeatConfig {
+  onFire: (msg: ChannelMessage) => Promise<void> | void;
+  pollInterval?: number;      // default: 30000 (30s)
+  getNextCronMs?: (cron: string) => number;
+}
+```
+
+## Tool Usage
+
+Once enabled, the agent can use scheduling tools naturally in conversation:
+
+**User:** "Remind me to check the deployment in 30 minutes"
+
+The agent calls `schedule_task` with:
+```json
+{
+  "description": "Check the deployment",
+  "delay": "30m"
+}
+```
+
+**User:** "Every weekday at 9am, send me a standup reminder"
+
+The agent calls `schedule_task` with:
+```json
+{
+  "description": "Daily standup reminder",
+  "cron": "0 9 * * 1-5"
+}
+```
+
+## Scheduling Formats
+
+The `schedule_task` tool accepts three formats:
+
+| Format | Example | Description |
+|---|---|---|
+| Delay | `"20m"`, `"2h"`, `"1d"` | Relative delay from now |
+| Cron | `"0 12 * * *"` | Standard cron expression (recurring) |
+| ISO datetime | `"2025-03-15T10:00:00Z"` | Absolute time (one-off) |
+
+## Lifecycle
+
+```
+scheduler.start()
+  → polls TimerStore every pollInterval
+  → finds overdue entries
+  → fires each as a ChannelMessage via onFire callback
+  → marks entry as fired
+  → if cron: reschedules next occurrence
+
+scheduler.stop()
+  → clears the polling interval
+```
+
+## Cleanup
+
+The scheduler is automatically stopped during `runtime.cleanup()` when using `RuntimeBuilder`.
+
+```typescript
+process.on('SIGINT', async () => {
+  await runtime.cleanup(); // stops scheduler, gateway, memory
+});
+```
