@@ -429,7 +429,15 @@ const AssistantCapabilitiesSchema = z.object({
   fileSystem: z.object({ paths: z.array(z.string()) }).optional(),
   github: z.boolean().optional(),
   deviceTools: z.boolean().optional(),
-  browser: z.boolean().optional(),
+  browser: z
+    .union([
+      z.boolean(),
+      z.object({
+        headless: z.boolean().default(true),
+        stealth: z.boolean().default(false),
+      }),
+    ])
+    .optional(),
   scheduler: z.boolean().optional(),
   rag: z.object({ paths: z.array(z.string()) }).optional(),
 });

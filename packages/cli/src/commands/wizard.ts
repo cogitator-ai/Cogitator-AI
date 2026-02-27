@@ -323,6 +323,30 @@ export const wizardCommand = new Command('wizard')
         capabilities.fileSystem = {
           paths: pathsRaw.split(',').map((s) => s.trim()),
         };
+      } else if (cap === 'browser') {
+        const browserOpts = prompt(
+          await p.multiselect({
+            message: 'Browser options',
+            options: [
+              { value: 'visible', label: 'Visible window', hint: 'see what the agent does' },
+              {
+                value: 'stealth',
+                label: 'Stealth mode',
+                hint: 'anti-detection, human-like behavior',
+              },
+            ],
+            required: false,
+          })
+        ) as string[];
+
+        if (browserOpts.includes('visible') || browserOpts.includes('stealth')) {
+          capabilities.browser = {
+            headless: !browserOpts.includes('visible'),
+            stealth: browserOpts.includes('stealth'),
+          };
+        } else {
+          capabilities.browser = true;
+        }
       } else if (cap === 'rag') {
         const existingRagPaths = existing.capabilities?.rag?.paths?.join(', ');
         const pathsRaw = prompt(

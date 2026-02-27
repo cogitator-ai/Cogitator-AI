@@ -263,15 +263,42 @@ export class RuntimeBuilder {
   private async wireBrowser(tools: Tool[], resources: CleanupResources): Promise<void> {
     if (!this.config.capabilities.browser) return;
 
+    const browserCfg = this.config.capabilities.browser;
+    const headless = typeof browserCfg === 'object' ? (browserCfg.headless ?? true) : true;
+    const stealth = typeof browserCfg === 'object' ? (browserCfg.stealth ?? false) : false;
+
     try {
       const { BrowserSession, browserTools } = await import('@cogitator-ai/browser');
-      const session = new BrowserSession({ headless: true });
+
+      await this.ensurePlaywright();
+
+      const session = new BrowserSession({
+        headless,
+        ...(stealth ? { stealth: true } : {}),
+      });
       await session.start();
       tools.push(...browserTools(session));
       resources.browserSession = session;
-    } catch {
-      console.warn('[RuntimeBuilder] Browser capability requires @cogitator-ai/browser package');
+    } catch (err) {
+      console.warn(
+        '[RuntimeBuilder] Browser capability failed:',
+        err instanceof Error ? err.message : String(err)
+      );
     }
+  }
+
+  private async ensurePlaywright(): Promise<void> {
+    const { existsSync } = await import('node:fs');
+    const { join } = await import('node:path');
+
+    const cacheDir =
+      process.env.PLAYWRIGHT_BROWSERS_PATH ?? join(homedir(), 'Library', 'Caches', 'ms-playwright');
+
+    if (existsSync(cacheDir)) return;
+
+    console.log('[RuntimeBuilder] Installing Playwright chromium...');
+    const { execSync } = await import('node:child_process');
+    execSync('npx playwright install chromium', { stdio: 'inherit' });
   }
 
   private async wireRAG(tools: Tool[]): Promise<void> {
