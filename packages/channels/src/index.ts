@@ -30,6 +30,16 @@ export type { RateLimitConfig } from './middleware/rate-limit';
 export { OwnerCommandsMiddleware, ownerCommands } from './middleware/owner-commands';
 export type { OwnerCommandsConfig } from './middleware/owner-commands';
 
+export { AutoExtractMiddleware, autoExtract } from './middleware/auto-extract';
+export type {
+  AutoExtractConfig,
+  EntityExtractor,
+  ExtractedEntities,
+} from './middleware/auto-extract';
+
+export { generateCapabilitiesDoc } from './capabilities';
+export type { CapabilitiesInput } from './capabilities';
+
 export { adaptMarkdown, chunkMessage, getPlatformLimit } from './formatters/markdown';
 
 export type {

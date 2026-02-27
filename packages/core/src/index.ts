@@ -49,6 +49,7 @@ export {
   createGenerateSpeechTool,
   createMemoryTools,
   createSchedulerTools,
+  createCapabilitiesTool,
 } from './tools/index';
 export type { MemoryToolsConfig, CoreFactsLike, SchedulerToolsConfig } from './tools/index';
 export type {

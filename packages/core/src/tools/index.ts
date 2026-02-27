@@ -28,6 +28,8 @@ export { createMemoryTools, type MemoryToolsConfig, type CoreFactsLike } from '.
 
 export { createSchedulerTools, type SchedulerToolsConfig } from './scheduler-tools';
 
+export { createCapabilitiesTool } from './capabilities-tool';
+
 export {
   createAnalyzeImageTool,
   type AnalyzeImageConfig,
