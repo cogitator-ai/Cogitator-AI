@@ -38,6 +38,8 @@
     "start": "pnpm build && concurrently \"pnpm services\" \"pnpm dashboard\""
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "ogg-opus-decoder": "^1.7.3",
     "openai": "^6.22.0",
     "typescript": "^5.9.3",
     "zod": "^4.3.6"

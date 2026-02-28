@@ -1,4 +1,5 @@
 import { existsSync, readdirSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -28,6 +29,7 @@ export class LocalWhisper {
   }
 
   async download(): Promise<void> {
+    await this.ensureDeps();
     const transformers = await this.loadTransformers();
     const { env, pipeline } = transformers as {
       env: { cacheDir: string; allowLocalModels: boolean };
@@ -91,25 +93,32 @@ export class LocalWhisper {
     this.loading = null;
   }
 
-  private async loadTransformers(): Promise<unknown> {
+  private async ensureDeps(): Promise<void> {
+    const missing: string[] = [];
     try {
-      return await import('@huggingface/transformers' as string);
+      await import('@huggingface/transformers' as string);
     } catch {
-      throw new Error(
-        '@huggingface/transformers is required for voice messages. Install it: pnpm add @huggingface/transformers'
-      );
+      missing.push('@huggingface/transformers');
     }
+    try {
+      await import('ogg-opus-decoder' as string);
+    } catch {
+      missing.push('ogg-opus-decoder');
+    }
+    if (missing.length === 0) return;
+
+    console.log(`[whisper] Installing dependencies: ${missing.join(', ')}...`);
+    const cmd = `npm install --no-save ${missing.join(' ')}`;
+    execSync(cmd, { stdio: 'pipe', timeout: 120_000 });
+    console.log('[whisper] Dependencies installed');
+  }
+
+  private async loadTransformers(): Promise<unknown> {
+    return import('@huggingface/transformers' as string);
   }
 
   private async decodeOgg(buffer: Buffer): Promise<Float32Array> {
-    let mod: Record<string, unknown>;
-    try {
-      mod = (await import('ogg-opus-decoder' as string)) as Record<string, unknown>;
-    } catch {
-      throw new Error(
-        'ogg-opus-decoder is required for voice messages. Install it: pnpm add ogg-opus-decoder'
-      );
-    }
+    const mod = (await import('ogg-opus-decoder' as string)) as Record<string, unknown>;
 
     const OggOpusDecoder = mod.OggOpusDecoder as new () => {
       ready: Promise<void>;
