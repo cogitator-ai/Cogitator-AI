@@ -45,6 +45,11 @@ export type { AssistantConfig, BuiltRuntime, RuntimeBuilderOpts } from './runtim
 
 export { SimpleTimerStore } from './simple-timer-store';
 
+export { MediaProcessor } from './media/media-processor';
+export type { MediaProcessResult } from './media/media-processor';
+export { LocalWhisper } from './media/whisper-local';
+export { createWhisperDownloadTool } from './media/whisper-tool';
+
 export { adaptMarkdown, chunkMessage, getPlatformLimit } from './formatters/markdown';
 
 export type {

@@ -43,13 +43,36 @@ interface TelegramBot {
     sendDocument(chatId: number, document: string): Promise<unknown>;
     sendChatAction(chatId: number, action: string): Promise<unknown>;
     setWebhook(url: string): Promise<unknown>;
+    getFile(fileId: string): Promise<{ file_path?: string }>;
   };
+}
+
+interface TelegramPhotoSize {
+  file_id: string;
+  file_unique_id: string;
+  width: number;
+  height: number;
+  file_size?: number;
 }
 
 interface GrammyContext {
   message: {
     message_id: number;
-    text: string;
+    text?: string;
+    caption?: string;
+    photo?: TelegramPhotoSize[];
+    voice?: {
+      file_id: string;
+      duration: number;
+      mime_type?: string;
+      file_size?: number;
+    };
+    document?: {
+      file_id: string;
+      file_name?: string;
+      mime_type?: string;
+      file_size?: number;
+    };
   };
   chat: {
     id: number;
@@ -74,6 +97,29 @@ export class TelegramChannel implements Channel {
     this.handler = handler;
   }
 
+  private async downloadFile(fileId: string): Promise<Buffer> {
+    const bot = this.bot!;
+    const file = await bot.api.getFile(fileId);
+    if (!file.file_path) throw new Error('Telegram returned no file_path');
+    const url = `https://api.telegram.org/file/bot${this.config.token}/${file.file_path}`;
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`Failed to download file: ${resp.status}`);
+    return Buffer.from(await resp.arrayBuffer());
+  }
+
+  private buildBaseMessage(
+    ctx: GrammyContext
+  ): Omit<ChannelMessage, 'text' | 'attachments' | 'raw'> {
+    return {
+      id: String(ctx.message.message_id),
+      channelType: 'telegram',
+      channelId: String(ctx.chat.id),
+      userId: String(ctx.from.id),
+      userName: ctx.from.first_name + (ctx.from.last_name ? ` ${ctx.from.last_name}` : ''),
+      groupId: ctx.chat.type !== 'private' ? String(ctx.chat.id) : undefined,
+    };
+  }
+
   async start(): Promise<void> {
     let grammy: { Bot: new (token: string) => unknown };
     try {
@@ -91,19 +137,73 @@ export class TelegramChannel implements Channel {
 
     bot.on('message:text', async (ctx: GrammyContext) => {
       if (!this.handler) return;
-
-      const msg: ChannelMessage = {
-        id: String(ctx.message.message_id),
-        channelType: 'telegram',
-        channelId: String(ctx.chat.id),
-        userId: String(ctx.from.id),
-        userName: ctx.from.first_name + (ctx.from.last_name ? ` ${ctx.from.last_name}` : ''),
-        groupId: ctx.chat.type !== 'private' ? String(ctx.chat.id) : undefined,
-        text: ctx.message.text,
+      await this.handler({
+        ...this.buildBaseMessage(ctx),
+        text: ctx.message.text ?? '',
         raw: ctx,
-      };
+      });
+    });
 
-      await this.handler(msg);
+    bot.on('message:photo', async (ctx: GrammyContext) => {
+      if (!this.handler || !ctx.message.photo?.length) return;
+      try {
+        const largest = ctx.message.photo[ctx.message.photo.length - 1];
+        const buffer = await this.downloadFile(largest.file_id);
+        await this.handler({
+          ...this.buildBaseMessage(ctx),
+          text: ctx.message.caption ?? '',
+          attachments: [{ type: 'image', mimeType: 'image/jpeg', buffer }],
+          raw: ctx,
+        });
+      } catch (err) {
+        console.error('[telegram] Failed to download photo:', (err as Error).message);
+      }
+    });
+
+    bot.on('message:voice', async (ctx: GrammyContext) => {
+      if (!this.handler || !ctx.message.voice) return;
+      try {
+        const buffer = await this.downloadFile(ctx.message.voice.file_id);
+        await this.handler({
+          ...this.buildBaseMessage(ctx),
+          text: ctx.message.caption ?? '',
+          attachments: [
+            {
+              type: 'audio',
+              mimeType: ctx.message.voice.mime_type ?? 'audio/ogg',
+              buffer,
+              filename: 'voice.ogg',
+            },
+          ],
+          raw: ctx,
+        });
+      } catch (err) {
+        console.error('[telegram] Failed to download voice:', (err as Error).message);
+      }
+    });
+
+    bot.on('message:document', async (ctx: GrammyContext) => {
+      if (!this.handler || !ctx.message.document) return;
+      const doc = ctx.message.document;
+      const isImage = doc.mime_type?.startsWith('image/');
+      try {
+        const buffer = await this.downloadFile(doc.file_id);
+        await this.handler({
+          ...this.buildBaseMessage(ctx),
+          text: ctx.message.caption ?? '',
+          attachments: [
+            {
+              type: isImage ? 'image' : 'file',
+              mimeType: doc.mime_type ?? 'application/octet-stream',
+              buffer,
+              filename: doc.file_name,
+            },
+          ],
+          raw: ctx,
+        });
+      } catch (err) {
+        console.error('[telegram] Failed to download document:', (err as Error).message);
+      }
     });
 
     if (this.config.webhook) {

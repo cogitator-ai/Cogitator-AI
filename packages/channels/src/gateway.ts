@@ -7,15 +7,18 @@ import type {
   MiddlewareContext,
   GatewayMiddleware,
   StreamConfig,
+  ImageInput,
 } from '@cogitator-ai/types';
 import type { Agent } from '@cogitator-ai/core';
 import type { Cogitator } from '@cogitator-ai/core';
 import { SessionManager, CompactionService } from '@cogitator-ai/memory';
 import type { SummarizeFn } from '@cogitator-ai/memory';
 import { StreamBuffer } from './stream-buffer';
+import type { MediaProcessor } from './media/media-processor';
 
 export interface GatewayFullConfig extends GatewayConfig {
   cogitator: Cogitator;
+  mediaProcessor?: MediaProcessor;
 }
 
 export class Gateway {
@@ -148,16 +151,45 @@ export class Gateway {
     }
   }
 
+  private async extractMedia(
+    msg: ChannelMessage,
+    agent: Agent
+  ): Promise<{ input: string; images?: ImageInput[] }> {
+    let input = msg.text;
+    let images: ImageInput[] | undefined;
+
+    if (this.config.mediaProcessor && msg.attachments?.length) {
+      const result = await this.config.mediaProcessor.process(msg.attachments, agent.model);
+
+      if (result.images.length > 0) images = result.images;
+      if (result.transcribedText) {
+        input = result.transcribedText + (input ? `\n${input}` : '');
+      }
+      if (result.systemNotes.length > 0) {
+        input = (input || '') + '\n' + result.systemNotes.join('\n');
+      }
+    }
+
+    if (!input && !images?.length) {
+      input = '[empty message]';
+    }
+
+    return { input, images };
+  }
+
   private async runDirect(
     agent: Agent,
     msg: ChannelMessage,
     channel: Channel,
     threadId: string
   ): Promise<void> {
+    const { input, images } = await this.extractMedia(msg, agent);
+
     const result = await this.config.cogitator.run(agent, {
-      input: msg.text,
+      input,
       threadId,
       useMemory: !!this.config.memory,
+      ...(images ? { images } : {}),
     });
 
     await channel.sendText(msg.channelId, result.output, {
@@ -172,16 +204,18 @@ export class Gateway {
     channel: Channel,
     threadId: string
   ): Promise<void> {
+    const { input, images } = await this.extractMedia(msg, agent);
     const stream = new StreamBuffer(channel, msg.channelId, this.streamConfig, msg.id);
     stream.start();
 
     try {
       await this.config.cogitator.run(agent, {
-        input: msg.text,
+        input,
         threadId,
         useMemory: !!this.config.memory,
         stream: true,
         onToken: (token) => stream.append(token),
+        ...(images ? { images } : {}),
       });
 
       await stream.finish();

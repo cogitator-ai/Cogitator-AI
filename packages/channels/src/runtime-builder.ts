@@ -36,6 +36,9 @@ import { rateLimit } from './middleware/rate-limit';
 import { autoExtract } from './middleware/auto-extract';
 import type { EntityExtractor } from './middleware/auto-extract';
 import { generateCapabilitiesDoc } from './capabilities';
+import { MediaProcessor } from './media/media-processor';
+import { LocalWhisper } from './media/whisper-local';
+import { createWhisperDownloadTool } from './media/whisper-tool';
 import type { AssistantConfigOutput } from '@cogitator-ai/config';
 
 export type AssistantConfig = AssistantConfigOutput;
@@ -166,6 +169,12 @@ export class RuntimeBuilder {
       tools.push(...createSelfTools({ toolsDir }));
     }
 
+    const whisper = new LocalWhisper();
+    tools.push(createWhisperDownloadTool(whisper));
+
+    const visionChecker = await this.buildVisionChecker();
+    const mediaProcessor = new MediaProcessor(whisper, visionChecker);
+
     await this.wireBrowser(tools, cleanupResources);
     await this.wireRAG(tools);
     await this.wireMCPServers(tools, cleanupResources);
@@ -254,6 +263,7 @@ export class RuntimeBuilder {
       channels,
       middleware,
       memory: memoryAdapter,
+      mediaProcessor,
       stream: streamConfig,
       session: this.config.memory.compaction
         ? {
@@ -637,7 +647,28 @@ Respond based ONLY on extracted text. NEVER hallucinate content.`;
       instructions += `\nYou have MCP (Model Context Protocol) servers connected: ${serverNames.join(', ')}. Their tools are available to you — look for tools with mcp_ prefix.`;
     }
 
+    instructions += `\n\n## Media
+You can receive images and voice messages from users.
+- Images are automatically analyzed if your model supports vision.
+- Voice messages require a speech recognition model. If it's not downloaded yet, suggest using download_stt_model tool (~75MB, works offline).`;
+
     return instructions;
+  }
+
+  private async buildVisionChecker(): Promise<(modelId: string) => boolean> {
+    try {
+      const models = (await import('@cogitator-ai/models' as string)) as {
+        getModel: (id: string) => { capabilities?: { supportsVision?: boolean } } | null;
+        initializeModels: () => Promise<unknown>;
+      };
+      await models.initializeModels().catch(() => {});
+      return (modelId: string) => {
+        const model = models.getModel(modelId);
+        return model?.capabilities?.supportsVision ?? true;
+      };
+    } catch {
+      return () => true;
+    }
   }
 
   private resolveToolsDir(): string {

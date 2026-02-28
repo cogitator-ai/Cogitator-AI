@@ -46,7 +46,10 @@
     "@whiskeysockets/baileys": ">=6.0.0",
     "@cogitator-ai/browser": "workspace:*",
     "@cogitator-ai/rag": "workspace:*",
-    "@cogitator-ai/mcp": "workspace:*"
+    "@cogitator-ai/mcp": "workspace:*",
+    "@cogitator-ai/models": "workspace:*",
+    "@huggingface/transformers": ">=3.0.0",
+    "ogg-opus-decoder": ">=1.0.0"
   },
   "peerDependenciesMeta": {
     "grammy": {
@@ -71,6 +74,15 @@
       "optional": true
     },
     "@cogitator-ai/mcp": {
+      "optional": true
+    },
+    "@cogitator-ai/models": {
+      "optional": true
+    },
+    "@huggingface/transformers": {
+      "optional": true
+    },
+    "ogg-opus-decoder": {
       "optional": true
     }
   },
