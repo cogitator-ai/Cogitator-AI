@@ -124,4 +124,93 @@ describe('OwnerCommandsMiddleware', () => {
     expect(onCompact).toHaveBeenCalledWith('all');
     expect(ctx.channel.sendText).toHaveBeenCalledWith('ch_1', 'Compacted 50 messages');
   });
+
+  describe('authorization levels', () => {
+    it('authorized user can run authorized-level commands', async () => {
+      const mw = new OwnerCommandsMiddleware({
+        ownerIds: { telegram: 'owner_1' },
+        authorizedUserIds: ['user_2'],
+        onStatus: () => 'status ok',
+      });
+
+      const ctx = createCtx();
+      await mw.handle(createMsg({ userId: 'user_2', text: '/status' }), ctx, vi.fn());
+
+      expect(ctx.channel.sendText).toHaveBeenCalledWith('ch_1', 'status ok');
+    });
+
+    it('authorized user cannot run owner-level commands', async () => {
+      const mw = new OwnerCommandsMiddleware({
+        ownerIds: { telegram: 'owner_1' },
+        authorizedUserIds: ['user_2'],
+      });
+
+      const next = vi.fn();
+      await mw.handle(createMsg({ userId: 'user_2', text: '/restart' }), createCtx(), next);
+
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('public user cannot run authorized-level commands by default', async () => {
+      const mw = new OwnerCommandsMiddleware({
+        ownerIds: { telegram: 'owner_1' },
+      });
+
+      const next = vi.fn();
+      await mw.handle(createMsg({ userId: 'stranger', text: '/status' }), createCtx(), next);
+
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('publicCommands makes a command available to everyone', async () => {
+      const mw = new OwnerCommandsMiddleware({
+        ownerIds: { telegram: 'owner_1' },
+        publicCommands: ['help'],
+      });
+
+      const ctx = createCtx();
+      await mw.handle(createMsg({ userId: 'stranger', text: '/help' }), ctx, vi.fn());
+
+      const response = (ctx.channel.sendText as ReturnType<typeof vi.fn>).mock
+        .calls[0][1] as string;
+      expect(response).toContain('/status');
+    });
+
+    it('owner can run all commands regardless of level', async () => {
+      const mw = new OwnerCommandsMiddleware({
+        ownerIds: { telegram: 'owner_1' },
+        onStatus: () => 'owner status',
+      });
+
+      const ctx = createCtx();
+      await mw.handle(createMsg({ text: '/status' }), ctx, vi.fn());
+
+      expect(ctx.channel.sendText).toHaveBeenCalledWith('ch_1', 'owner status');
+    });
+
+    it('authorizedUserIds supports channelType:userId format', async () => {
+      const mw = new OwnerCommandsMiddleware({
+        ownerIds: { telegram: 'owner_1' },
+        authorizedUserIds: ['telegram:user_3'],
+        onStatus: () => 'status for user3',
+      });
+
+      const ctx = createCtx();
+      await mw.handle(createMsg({ userId: 'user_3', text: '/status' }), ctx, vi.fn());
+
+      expect(ctx.channel.sendText).toHaveBeenCalledWith('ch_1', 'status for user3');
+    });
+
+    it('publicCommands accepts /prefixed format', async () => {
+      const mw = new OwnerCommandsMiddleware({
+        ownerIds: { telegram: 'owner_1' },
+        publicCommands: ['/help'],
+      });
+
+      const ctx = createCtx();
+      await mw.handle(createMsg({ userId: 'anyone', text: '/help' }), ctx, vi.fn());
+
+      expect(ctx.channel.sendText).toHaveBeenCalled();
+    });
+  });
 });

@@ -47,6 +47,13 @@ const AssistantMemorySchema = z.object({
   compaction: z.object({ threshold: z.number() }).optional(),
 });
 
+const CommandAccessSchema = z
+  .object({
+    authorized: z.array(z.string()).optional(),
+    publicCommands: z.array(z.string()).optional(),
+  })
+  .optional();
+
 const SecuritySchema = z
   .object({
     dmPolicy: z.enum(['open', 'allowlist', 'pairing', 'disabled']).default('open'),
@@ -54,6 +61,7 @@ const SecuritySchema = z
     groupPolicy: z.enum(['open', 'allowlist', 'disabled']).default('open'),
     groupAllowlist: z.array(z.string()).optional(),
     storePath: z.string().optional(),
+    commandAccess: CommandAccessSchema,
   })
   .optional();
 

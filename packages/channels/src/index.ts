@@ -39,7 +39,7 @@ export { RateLimitMiddleware, rateLimit } from './middleware/rate-limit';
 export type { RateLimitConfig } from './middleware/rate-limit';
 
 export { OwnerCommandsMiddleware, ownerCommands } from './middleware/owner-commands';
-export type { OwnerCommandsConfig } from './middleware/owner-commands';
+export type { OwnerCommandsConfig, CommandLevel } from './middleware/owner-commands';
 
 export { AutoExtractMiddleware, autoExtract } from './middleware/auto-extract';
 export type {

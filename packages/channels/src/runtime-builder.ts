@@ -234,7 +234,13 @@ export class RuntimeBuilder {
     }
 
     if (Object.keys(ownerIds).length > 0) {
-      middleware.push(ownerCommands({ ownerIds }));
+      middleware.push(
+        ownerCommands({
+          ownerIds,
+          authorizedUserIds: this.config.security?.commandAccess?.authorized,
+          publicCommands: this.config.security?.commandAccess?.publicCommands,
+        })
+      );
     }
 
     if (this.config.rateLimit) {
