@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { StreamBuffer } from '../stream-buffer';
 import type { Channel } from '@cogitator-ai/types';
 
-function createMockChannel(): Channel {
+function createMockChannel(): Channel & { deleteMessage: ReturnType<typeof vi.fn> } {
   return {
     type: 'test',
     start: vi.fn().mockResolvedValue(undefined),
@@ -12,6 +12,7 @@ function createMockChannel(): Channel {
     editText: vi.fn().mockResolvedValue(undefined),
     sendFile: vi.fn().mockResolvedValue(undefined),
     sendTyping: vi.fn().mockResolvedValue(undefined),
+    deleteMessage: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -51,7 +52,7 @@ describe('StreamBuffer', () => {
       format: 'markdown',
     });
 
-    buffer.abort();
+    await buffer.abort();
   });
 
   it('uses editText for subsequent flushes', async () => {
@@ -73,7 +74,7 @@ describe('StreamBuffer', () => {
     expect(channel.sendText).toHaveBeenCalledTimes(1);
     expect(channel.editText).toHaveBeenCalledWith('ch1', 'msg_001', 'Hello world');
 
-    buffer.abort();
+    await buffer.abort();
   });
 
   it('skips flush when buffer is below minChunkSize', async () => {
@@ -90,7 +91,7 @@ describe('StreamBuffer', () => {
 
     expect(channel.sendText).not.toHaveBeenCalled();
 
-    buffer.abort();
+    await buffer.abort();
   });
 
   it('finish() forces final flush regardless of minChunkSize', async () => {
@@ -116,7 +117,7 @@ describe('StreamBuffer', () => {
 
     buffer.start();
     buffer.append('Hello');
-    buffer.abort();
+    await buffer.abort();
 
     await wait(100);
 
@@ -180,7 +181,7 @@ describe('StreamBuffer', () => {
       expect(channel.sendText).not.toHaveBeenCalled();
       expect(channel.editText).not.toHaveBeenCalled();
 
-      buffer.abort();
+      await buffer.abort();
     });
 
     it('sends final message via sendText on finish', async () => {
@@ -225,7 +226,7 @@ describe('StreamBuffer', () => {
       const allSame = ids.every((id: number) => id === ids[0]);
       expect(allSame).toBe(true);
 
-      buffer.abort();
+      await buffer.abort();
     });
 
     it('falls back to edit mode if sendDraft fails', async () => {
@@ -249,7 +250,7 @@ describe('StreamBuffer', () => {
       expect(channel.sendDraft).toHaveBeenCalledTimes(1);
       expect(channel.sendText).toHaveBeenCalledTimes(1);
 
-      buffer.abort();
+      await buffer.abort();
     });
 
     it('does not use draft mode if channel lacks sendDraft', async () => {
@@ -268,7 +269,263 @@ describe('StreamBuffer', () => {
 
       expect(channel.sendText).toHaveBeenCalledTimes(1);
 
-      buffer.abort();
+      await buffer.abort();
+    });
+  });
+
+  describe('minInitialChars', () => {
+    it('suppresses first flush until buffer reaches threshold', async () => {
+      const channel = createMockChannel();
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 50,
+        minChunkSize: 1,
+        minInitialChars: 20,
+      });
+
+      buffer.start();
+      buffer.append('Hi');
+
+      await wait(80);
+
+      expect(channel.sendText).not.toHaveBeenCalled();
+
+      buffer.append(' there, this is a longer message now');
+
+      await wait(80);
+
+      expect(channel.sendText).toHaveBeenCalledTimes(1);
+
+      await buffer.abort();
+    });
+
+    it('finish() bypasses minInitialChars', async () => {
+      const channel = createMockChannel();
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 10000,
+        minChunkSize: 1,
+        minInitialChars: 100,
+      });
+
+      buffer.append('Short');
+      const msgId = await buffer.finish();
+
+      expect(channel.sendText).toHaveBeenCalledTimes(1);
+      expect(msgId).toBe('msg_001');
+    });
+
+    it('does not suppress edits after initial send', async () => {
+      const channel = createMockChannel();
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 50,
+        minChunkSize: 1,
+        minInitialChars: 5,
+      });
+
+      buffer.start();
+      buffer.append('Hello World');
+      await wait(80);
+
+      expect(channel.sendText).toHaveBeenCalledTimes(1);
+
+      buffer.append('!');
+      await wait(80);
+
+      expect(channel.editText).toHaveBeenCalled();
+
+      await buffer.abort();
+    });
+  });
+
+  describe('forceNewMessage', () => {
+    it('creates a new message after forceNewMessage', async () => {
+      const channel = createMockChannel();
+      let msgCounter = 0;
+      (channel.sendText as ReturnType<typeof vi.fn>).mockImplementation(() =>
+        Promise.resolve(`msg_${++msgCounter}`)
+      );
+
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 50,
+        minChunkSize: 1,
+      });
+
+      buffer.start();
+      buffer.append('First message');
+      await wait(80);
+
+      expect(channel.sendText).toHaveBeenCalledTimes(1);
+
+      buffer.forceNewMessage();
+      buffer.append('Second message');
+      await wait(80);
+
+      expect(channel.sendText).toHaveBeenCalledTimes(2);
+      expect(buffer.getMessageIds()).toEqual(['msg_1', 'msg_2']);
+
+      await buffer.abort();
+    });
+
+    it('resets buffer on forceNewMessage so old text is not re-sent', async () => {
+      const channel = createMockChannel();
+      let msgCounter = 0;
+      (channel.sendText as ReturnType<typeof vi.fn>).mockImplementation(() =>
+        Promise.resolve(`msg_${++msgCounter}`)
+      );
+
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 50,
+        minChunkSize: 1,
+      });
+
+      buffer.start();
+      buffer.append('First');
+      await wait(80);
+
+      expect(channel.sendText).toHaveBeenCalledTimes(1);
+      expect((channel.sendText as ReturnType<typeof vi.fn>).mock.calls[0][1]).toBe('First');
+
+      buffer.forceNewMessage();
+      buffer.append('Second');
+      await wait(80);
+
+      expect(channel.sendText).toHaveBeenCalledTimes(2);
+      expect((channel.sendText as ReturnType<typeof vi.fn>).mock.calls[1][1]).toBe('Second');
+
+      await buffer.abort();
+    });
+  });
+
+  describe('maxMessageChars', () => {
+    it('auto-splits by creating new message when buffer exceeds limit', async () => {
+      const channel = createMockChannel();
+      let msgCounter = 0;
+      (channel.sendText as ReturnType<typeof vi.fn>).mockImplementation(() =>
+        Promise.resolve(`msg_${++msgCounter}`)
+      );
+
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 50,
+        minChunkSize: 1,
+        maxMessageChars: 10,
+      });
+
+      buffer.start();
+      buffer.append('Short');
+      await wait(80);
+
+      expect(channel.sendText).toHaveBeenCalledTimes(1);
+
+      buffer.append(' and now exceeding the limit heavily');
+      await wait(80);
+
+      expect(channel.sendText).toHaveBeenCalledTimes(2);
+
+      await buffer.abort();
+    });
+  });
+
+  describe('deleteOnAbort', () => {
+    it('deletes messages on abort when deleteOnAbort is true', async () => {
+      const channel = createMockChannel();
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 50,
+        minChunkSize: 1,
+        deleteOnAbort: true,
+      });
+
+      buffer.start();
+      buffer.append('Hello');
+      await wait(80);
+
+      expect(channel.sendText).toHaveBeenCalledTimes(1);
+
+      await buffer.abort();
+
+      expect(channel.deleteMessage).toHaveBeenCalledWith('ch1', 'msg_001');
+    });
+
+    it('does not delete on abort when deleteOnAbort is false', async () => {
+      const channel = createMockChannel();
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 50,
+        minChunkSize: 1,
+      });
+
+      buffer.start();
+      buffer.append('Hello');
+      await wait(80);
+
+      await buffer.abort();
+
+      expect(channel.deleteMessage).not.toHaveBeenCalled();
+    });
+
+    it('does not delete if no messages were sent', async () => {
+      const channel = createMockChannel();
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 50,
+        minChunkSize: 100,
+        deleteOnAbort: true,
+      });
+
+      buffer.start();
+      buffer.append('Hi');
+
+      await buffer.abort();
+
+      expect(channel.deleteMessage).not.toHaveBeenCalled();
+    });
+
+    it('deletes all messages when multiple were created via forceNewMessage', async () => {
+      const channel = createMockChannel();
+      let msgCounter = 0;
+      (channel.sendText as ReturnType<typeof vi.fn>).mockImplementation(() =>
+        Promise.resolve(`msg_${++msgCounter}`)
+      );
+
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 50,
+        minChunkSize: 1,
+        deleteOnAbort: true,
+      });
+
+      buffer.start();
+      buffer.append('First');
+      await wait(80);
+
+      buffer.forceNewMessage();
+      buffer.append('Second');
+      await wait(80);
+
+      await buffer.abort();
+
+      expect(channel.deleteMessage).toHaveBeenCalledWith('ch1', 'msg_1');
+      expect(channel.deleteMessage).toHaveBeenCalledWith('ch1', 'msg_2');
+    });
+  });
+
+  describe('messageIds tracking', () => {
+    it('tracks all created message IDs', async () => {
+      const channel = createMockChannel();
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 10000,
+        minChunkSize: 1,
+      });
+
+      buffer.append('Hello');
+      await buffer.finish();
+
+      expect(buffer.getMessageIds()).toEqual(['msg_001']);
+    });
+
+    it('returns empty array when no messages sent', () => {
+      const channel = createMockChannel();
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 100,
+        minChunkSize: 1,
+      });
+
+      expect(buffer.getMessageIds()).toEqual([]);
     });
   });
 });

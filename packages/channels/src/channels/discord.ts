@@ -31,6 +31,7 @@ interface DiscordChannelObj {
     fetch(id: string): Promise<{
       edit(content: string): Promise<void>;
       react(emoji: string): Promise<void>;
+      delete(): Promise<void>;
     }>;
   };
   sendTyping(): Promise<void>;
@@ -191,6 +192,18 @@ export class DiscordChannel implements Channel {
     if (!channel?.isTextBased()) return;
 
     await channel.sendTyping();
+  }
+
+  async deleteMessage(channelId: string, messageId: string): Promise<void> {
+    if (!this.client) return;
+
+    const channel = await this.client.channels.fetch(channelId);
+    if (!channel?.isTextBased()) return;
+
+    try {
+      const msg = await channel.messages.fetch(messageId);
+      await msg.delete();
+    } catch {}
   }
 
   async setReaction(channelId: string, messageId: string, emoji: string): Promise<void> {

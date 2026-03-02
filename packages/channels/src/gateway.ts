@@ -311,7 +311,7 @@ export class Gateway {
       if (tokenCount > 0) {
         await stream.finish();
       } else {
-        stream.abort();
+        await stream.abort();
         if (result.output) {
           const output = adaptMarkdown(result.output, msg.channelType);
           await channel.sendText(msg.channelId, output, {
@@ -322,7 +322,7 @@ export class Gateway {
       }
     } catch (error) {
       console.error('[gateway] LLM run error:', (error as Error).message);
-      stream.abort();
+      await stream.abort();
       throw error;
     }
   }

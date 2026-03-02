@@ -47,6 +47,7 @@ interface TelegramBot {
       text: string,
       options?: Record<string, unknown>
     ): Promise<true>;
+    deleteMessage(chatId: number, messageId: number): Promise<unknown>;
     sendChatAction(chatId: number, action: string): Promise<unknown>;
     setWebhook(url: string): Promise<unknown>;
     getFile(fileId: string): Promise<{ file_path?: string }>;
@@ -291,6 +292,13 @@ export class TelegramChannel implements Channel {
     await this.bot.api.sendMessageDraft(chatId, draftId, text, {
       ...(useMarkdown ? { parse_mode: 'Markdown' } : {}),
     });
+  }
+
+  async deleteMessage(channelId: string, messageId: string): Promise<void> {
+    if (!this.bot) return;
+    try {
+      await this.bot.api.deleteMessage(Number(channelId), Number(messageId));
+    } catch {}
   }
 
   async setReaction(channelId: string, messageId: string, emoji: string): Promise<void> {

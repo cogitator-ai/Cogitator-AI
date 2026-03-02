@@ -58,6 +58,8 @@ export interface Channel {
 
   sendTyping(channelId: string): Promise<void>;
 
+  deleteMessage?(channelId: string, messageId: string): Promise<void>;
+
   sendDraft?(
     channelId: string,
     draftId: number,
@@ -70,6 +72,9 @@ export interface Channel {
 export interface StreamConfig {
   flushInterval: number;
   minChunkSize: number;
+  minInitialChars?: number;
+  maxMessageChars?: number;
+  deleteOnAbort?: boolean;
 }
 
 export interface MiddlewareContext {

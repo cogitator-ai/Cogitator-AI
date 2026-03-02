@@ -93,7 +93,7 @@ describe('Channels E2E: Streaming', () => {
 
     expect(channel.sendText).not.toHaveBeenCalled();
 
-    buffer.abort();
+    await buffer.abort();
   });
 
   it('StreamBuffer force-flushes on finish even below minChunkSize', async () => {
