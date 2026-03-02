@@ -90,6 +90,8 @@ export function createSelfConfigTools(opts: {
     'DISCORD_TOKEN',
     'SLACK_BOT_TOKEN',
     'SLACK_SIGNING_SECRET',
+    'DEEPGRAM_API_KEY',
+    'GROQ_API_KEY',
   ];
 
   const envCheck = tool({

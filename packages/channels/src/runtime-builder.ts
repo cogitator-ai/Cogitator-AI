@@ -43,6 +43,7 @@ import type { SttProvider } from './media/media-processor';
 import { LocalWhisper } from './media/whisper-local';
 import { createWhisperDownloadTool } from './media/whisper-tool';
 import { GroqSttProvider, OpenAISttProvider } from './media/whisper-api';
+import { DeepgramSttProvider } from './media/deepgram-stt';
 import type { AssistantConfigOutput } from './assistant-config';
 
 export type AssistantConfig = AssistantConfigOutput;
@@ -723,6 +724,9 @@ You can receive images and voice messages from users.
   }
 
   private buildSttProvider(): SttProvider | null {
+    if (this.env.DEEPGRAM_API_KEY) {
+      return new DeepgramSttProvider({ apiKey: this.env.DEEPGRAM_API_KEY });
+    }
     if (this.env.GROQ_API_KEY) {
       return new GroqSttProvider({ apiKey: this.env.GROQ_API_KEY });
     }

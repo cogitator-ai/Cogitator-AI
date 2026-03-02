@@ -65,6 +65,8 @@ export { LocalWhisper } from './media/whisper-local';
 export { createWhisperDownloadTool } from './media/whisper-tool';
 export { GroqSttProvider, OpenAISttProvider } from './media/whisper-api';
 export type { GroqSttConfig, OpenAISttConfig } from './media/whisper-api';
+export { DeepgramSttProvider } from './media/deepgram-stt';
+export type { DeepgramSttConfig } from './media/deepgram-stt';
 
 export { createSelfConfigTools } from './tools/self-config';
 
