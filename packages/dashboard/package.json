@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/dashboard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Cogitator Dashboard - Real-time monitoring for AI agents",
   "type": "module",
