@@ -53,9 +53,9 @@ describe('formatEnvelope', () => {
     vi.useRealTimers();
   });
 
-  it('includes channel and username', () => {
+  it('includes channel and username by default', () => {
     const result = formatEnvelope(makeMsg(), { includeTimestamp: false, includeElapsed: false });
-    expect(result).toBe('[telegram Alice] Hello world');
+    expect(result).toBe('[telegram | Alice] Hello world');
   });
 
   it('includes timestamp with UTC timezone', () => {
@@ -64,7 +64,7 @@ describe('formatEnvelope', () => {
       includeElapsed: false,
       timezone: 'utc',
     });
-    expect(result).toMatch(/\[telegram Alice Feb 28.*20:15\]/);
+    expect(result).toMatch(/\[Feb 28.*20:15 \| telegram \| Alice\]/);
   });
 
   it('includes elapsed time', () => {
@@ -74,12 +74,12 @@ describe('formatEnvelope', () => {
       { includeTimestamp: false, includeElapsed: true },
       prev
     );
-    expect(result).toBe('[telegram Alice +2m30s] Hello world');
+    expect(result).toBe('[telegram | Alice | +2m30s] Hello world');
   });
 
   it('omits elapsed when no previous timestamp', () => {
     const result = formatEnvelope(makeMsg(), { includeTimestamp: false, includeElapsed: true });
-    expect(result).toBe('[telegram Alice] Hello world');
+    expect(result).toBe('[telegram | Alice] Hello world');
   });
 
   it('sanitizes brackets and newlines in userName', () => {
@@ -87,7 +87,7 @@ describe('formatEnvelope', () => {
       includeTimestamp: false,
       includeElapsed: false,
     });
-    expect(result).toBe('[telegram Al ice  Bob] Hello world');
+    expect(result).toBe('[telegram | Al ice  Bob] Hello world');
   });
 
   it('works with no userName', () => {
@@ -103,7 +103,7 @@ describe('formatEnvelope', () => {
       includeTimestamp: false,
       includeElapsed: false,
     });
-    expect(result).toBe('[custom Alice] Hello world');
+    expect(result).toBe('[custom | Alice] Hello world');
   });
 
   it('includes both elapsed and timestamp', () => {
@@ -113,6 +113,59 @@ describe('formatEnvelope', () => {
       { includeTimestamp: true, includeElapsed: true, timezone: 'utc' },
       prev
     );
-    expect(result).toMatch(/\[telegram Alice \+5s Feb 28.*20:15\] Hello world/);
+    expect(result).toMatch(/\[Feb 28.*20:15 \| telegram \| Alice \| \+5s\] Hello world/);
+  });
+
+  it('includeSender=false omits username', () => {
+    const result = formatEnvelope(makeMsg(), {
+      includeTimestamp: false,
+      includeElapsed: false,
+      includeSender: false,
+    });
+    expect(result).toBe('[telegram] Hello world');
+  });
+
+  it('includeChannel=false omits channel type', () => {
+    const result = formatEnvelope(makeMsg(), {
+      includeTimestamp: false,
+      includeElapsed: false,
+      includeChannel: false,
+    });
+    expect(result).toBe('[Alice] Hello world');
+  });
+
+  it('includeChatType shows DM for direct messages', () => {
+    const result = formatEnvelope(makeMsg(), {
+      includeTimestamp: false,
+      includeElapsed: false,
+      includeChatType: true,
+    });
+    expect(result).toBe('[telegram | Alice | DM] Hello world');
+  });
+
+  it('includeChatType shows group for group messages', () => {
+    const result = formatEnvelope(makeMsg({ groupId: 'grp_1' }), {
+      includeTimestamp: false,
+      includeElapsed: false,
+      includeChatType: true,
+    });
+    expect(result).toBe('[telegram | Alice | group] Hello world');
+  });
+
+  it('full envelope with all fields enabled', () => {
+    const prev = Date.now() - 120_000;
+    const result = formatEnvelope(
+      makeMsg({ groupId: 'grp_1' }),
+      {
+        includeTimestamp: true,
+        includeElapsed: true,
+        includeSender: true,
+        includeChannel: true,
+        includeChatType: true,
+        timezone: 'utc',
+      },
+      prev
+    );
+    expect(result).toMatch(/\[Feb 28.*20:15 \| telegram \| Alice \| group \| \+2m\] Hello world/);
   });
 });

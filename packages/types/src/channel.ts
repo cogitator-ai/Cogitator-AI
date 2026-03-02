@@ -115,6 +115,9 @@ export interface EnvelopeConfig {
   includeTimestamp?: boolean;
   includeElapsed?: boolean;
   timezone?: string;
+  includeSender?: boolean;
+  includeChannel?: boolean;
+  includeChatType?: boolean;
 }
 
 export type HookName =

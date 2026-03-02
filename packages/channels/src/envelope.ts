@@ -49,10 +49,23 @@ export function formatEnvelope(
   config: EnvelopeConfig,
   previousTimestamp?: number
 ): string {
-  const parts: string[] = [msg.channelType];
+  const parts: string[] = [];
 
-  if (msg.userName) {
+  const includeTimestamp = config.includeTimestamp ?? true;
+  if (includeTimestamp) {
+    parts.push(formatTime(Date.now(), config.timezone));
+  }
+
+  if (config.includeChannel !== false) {
+    parts.push(msg.channelType);
+  }
+
+  if (config.includeSender !== false && msg.userName) {
     parts.push(sanitize(msg.userName));
+  }
+
+  if (config.includeChatType) {
+    parts.push(msg.groupId ? 'group' : 'DM');
   }
 
   const includeElapsed = config.includeElapsed ?? true;
@@ -61,11 +74,6 @@ export function formatEnvelope(
     parts.push(formatElapsed(elapsed));
   }
 
-  const includeTimestamp = config.includeTimestamp ?? true;
-  if (includeTimestamp) {
-    parts.push(formatTime(Date.now(), config.timezone));
-  }
-
-  const header = `[${parts.join(' ')}]`;
+  const header = `[${parts.join(' | ')}]`;
   return `${header} ${msg.text}`;
 }
