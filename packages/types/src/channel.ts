@@ -117,6 +117,26 @@ export interface EnvelopeConfig {
   timezone?: string;
 }
 
+export type HookName =
+  | 'message:received'
+  | 'message:sending'
+  | 'message:sent'
+  | 'agent:before_run'
+  | 'agent:after_run'
+  | 'agent:error'
+  | 'session:created'
+  | 'session:compacted'
+  | 'stream:started'
+  | 'stream:finished';
+
+export type HookHandler<T = unknown> = (event: T) => void | Promise<void>;
+
+export interface HookRegistry {
+  on(hook: HookName, handler: HookHandler): void;
+  off(hook: HookName, handler: HookHandler): void;
+  emit(hook: HookName, event: unknown): Promise<void>;
+}
+
 export interface GatewayConfig {
   agent: Agent | ((user: ChannelUser) => Agent | Promise<Agent>);
   channels: Channel[];
@@ -137,6 +157,7 @@ export interface GatewayConfig {
   debounce?: DebounceConfig;
   envelope?: EnvelopeConfig;
   queueMode?: QueueMode;
+  hooks?: HookRegistry;
 
   onError?: (error: Error, msg: ChannelMessage) => void;
 }

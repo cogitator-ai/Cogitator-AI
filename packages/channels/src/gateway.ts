@@ -8,6 +8,7 @@ import type {
   GatewayMiddleware,
   StreamConfig,
   ImageInput,
+  HookRegistry,
 } from '@cogitator-ai/types';
 import type { Agent } from '@cogitator-ai/core';
 import type { Cogitator } from '@cogitator-ai/core';
@@ -35,6 +36,7 @@ export class Gateway {
   private readonly streamConfig: StreamConfig;
   private readonly debouncer: InboundDebouncer | null;
   private readonly messageQueue: MessageQueue | null;
+  private readonly hooks: HookRegistry | null;
   private readonly lastMessageTime = new Map<string, number>();
   private running = false;
   private startedAt: number | null = null;
@@ -58,6 +60,8 @@ export class Gateway {
       this.sessionManager = null;
       this.compactionService = null;
     }
+
+    this.hooks = config.hooks ?? null;
 
     this.debouncer = config.debounce?.enabled
       ? new InboundDebouncer(config.debounce, (merged) => this.processMessage(merged))
@@ -145,6 +149,8 @@ export class Gateway {
       }
 
       if (!middlewarePassed) return;
+
+      await this.hooks?.emit('message:received', { msg, threadId, user });
 
       this.messageCount++;
 
@@ -252,20 +258,45 @@ export class Gateway {
     const { input, images } = await this.extractMedia(msg, agent);
     const replyTo = (msg.raw as Record<string, unknown>)?.scheduled ? undefined : msg.id;
 
-    const result = await this.config.cogitator.run(agent, {
-      input,
-      threadId,
-      useMemory: !!this.config.memory,
-      userId: msg.userId,
-      channelType: msg.channelType,
-      channelId: msg.channelId,
-      ...(images ? { images } : {}),
-    });
+    await this.hooks?.emit('agent:before_run', { msg, threadId, agent: agent.name });
+
+    let result;
+    try {
+      result = await this.config.cogitator.run(agent, {
+        input,
+        threadId,
+        useMemory: !!this.config.memory,
+        userId: msg.userId,
+        channelType: msg.channelType,
+        channelId: msg.channelId,
+        ...(images ? { images } : {}),
+      });
+    } catch (error) {
+      await this.hooks?.emit('agent:error', { msg, threadId, error });
+      throw error;
+    }
+
+    await this.hooks?.emit('agent:after_run', { msg, threadId, output: result.output });
 
     const output = adaptMarkdown(result.output, msg.channelType);
-    await channel.sendText(msg.channelId, output, {
+
+    await this.hooks?.emit('message:sending', {
+      msg,
+      threadId,
+      text: output,
+      channelId: msg.channelId,
+    });
+
+    const sentId = await channel.sendText(msg.channelId, output, {
       ...(replyTo ? { replyTo } : {}),
       format: 'markdown',
+    });
+
+    await this.hooks?.emit('message:sent', {
+      msg,
+      threadId,
+      text: output,
+      messageId: sentId,
     });
   }
 
@@ -283,6 +314,9 @@ export class Gateway {
     const useDraft = !!channel.sendDraft;
     const stream = new StreamBuffer(channel, msg.channelId, this.streamConfig, replyTo, useDraft);
     stream.start();
+
+    await this.hooks?.emit('agent:before_run', { msg, threadId, agent: agent.name });
+    await this.hooks?.emit('stream:started', { msg, threadId });
 
     try {
       let tokenCount = 0;
@@ -320,9 +354,17 @@ export class Gateway {
           });
         }
       }
+
+      await this.hooks?.emit('agent:after_run', { msg, threadId, output: result.output });
+      await this.hooks?.emit('stream:finished', {
+        msg,
+        threadId,
+        messageIds: stream.getMessageIds(),
+      });
     } catch (error) {
       console.error('[gateway] LLM run error:', (error as Error).message);
       await stream.abort();
+      await this.hooks?.emit('agent:error', { msg, threadId, error });
       throw error;
     }
   }
