@@ -8,6 +8,8 @@ export class StreamBuffer {
   private messageId: string | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private flushing = false;
+  private readonly draftId: number | null = null;
+  private draftFailed = false;
 
   constructor(
     private readonly channel: Channel,
@@ -16,8 +18,13 @@ export class StreamBuffer {
       flushInterval: DEFAULT_FLUSH_INTERVAL,
       minChunkSize: DEFAULT_MIN_CHUNK_SIZE,
     },
-    private readonly replyTo?: string
-  ) {}
+    private readonly replyTo?: string,
+    useDraft = false
+  ) {
+    if (useDraft && channel.sendDraft) {
+      this.draftId = Math.floor(Math.random() * 2_147_483_646) + 1;
+    }
+  }
 
   start(): void {
     this.timer = setInterval(() => {
@@ -33,6 +40,16 @@ export class StreamBuffer {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+
+    if (this.draftId && !this.draftFailed) {
+      const text = this.buffer;
+      if (!text) return '';
+      const msgId = await this.channel.sendText(this.channelId, text, {
+        replyTo: this.replyTo,
+        format: 'markdown',
+      });
+      return msgId;
     }
 
     await this.flush(true);
@@ -55,7 +72,9 @@ export class StreamBuffer {
     const text = this.buffer;
 
     try {
-      if (!this.messageId) {
+      if (this.draftId && !this.draftFailed) {
+        await this.channel.sendDraft!(this.channelId, this.draftId, text);
+      } else if (!this.messageId) {
         this.messageId = await this.channel.sendText(this.channelId, text, {
           replyTo: this.replyTo,
           format: 'markdown',
@@ -64,6 +83,9 @@ export class StreamBuffer {
         await this.channel.editText(this.channelId, this.messageId, text);
       }
     } catch {
+      if (this.draftId && !this.draftFailed) {
+        this.draftFailed = true;
+      }
     } finally {
       this.flushing = false;
     }

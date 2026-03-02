@@ -280,7 +280,8 @@ export class Gateway {
       `[gateway] Running LLM, input: "${input.slice(0, 200)}", images: ${images?.length ?? 0}`
     );
     const replyTo = (msg.raw as Record<string, unknown>)?.scheduled ? undefined : msg.id;
-    const stream = new StreamBuffer(channel, msg.channelId, this.streamConfig, replyTo);
+    const useDraft = !!channel.sendDraft;
+    const stream = new StreamBuffer(channel, msg.channelId, this.streamConfig, replyTo, useDraft);
     stream.start();
 
     try {

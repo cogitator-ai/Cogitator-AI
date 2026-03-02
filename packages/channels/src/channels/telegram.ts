@@ -41,6 +41,12 @@ interface TelegramBot {
     ): Promise<unknown>;
     sendPhoto(chatId: number, photo: string): Promise<unknown>;
     sendDocument(chatId: number, document: string): Promise<unknown>;
+    sendMessageDraft(
+      chatId: number,
+      draftId: number,
+      text: string,
+      options?: Record<string, unknown>
+    ): Promise<true>;
     sendChatAction(chatId: number, action: string): Promise<unknown>;
     setWebhook(url: string): Promise<unknown>;
     getFile(fileId: string): Promise<{ file_path?: string }>;
@@ -271,6 +277,20 @@ export class TelegramChannel implements Channel {
   async sendTyping(channelId: string): Promise<void> {
     if (!this.bot) return;
     await this.bot.api.sendChatAction(Number(channelId), 'typing');
+  }
+
+  async sendDraft(
+    channelId: string,
+    draftId: number,
+    text: string,
+    options?: SendOptions
+  ): Promise<void> {
+    if (!this.bot) return;
+    const chatId = Number(channelId);
+    const useMarkdown = options?.format === 'markdown';
+    await this.bot.api.sendMessageDraft(chatId, draftId, text, {
+      ...(useMarkdown ? { parse_mode: 'Markdown' } : {}),
+    });
   }
 
   async setReaction(channelId: string, messageId: string, emoji: string): Promise<void> {

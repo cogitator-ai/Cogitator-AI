@@ -58,6 +58,12 @@ export interface Channel {
 
   sendTyping(channelId: string): Promise<void>;
 
+  sendDraft?(
+    channelId: string,
+    draftId: number,
+    text: string,
+    options?: SendOptions
+  ): Promise<void>;
   setReaction?(channelId: string, messageId: string, emoji: string): Promise<void>;
 }
 
