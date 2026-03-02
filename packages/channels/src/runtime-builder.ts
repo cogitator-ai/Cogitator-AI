@@ -35,6 +35,7 @@ import { terminalChannel } from './channels/terminal';
 import { ownerCommands } from './middleware/owner-commands';
 import { rateLimit } from './middleware/rate-limit';
 import { autoExtract } from './middleware/auto-extract';
+import { dmPolicy } from './middleware/dm-policy';
 import type { EntityExtractor } from './middleware/auto-extract';
 import { generateCapabilitiesDoc } from './capabilities';
 import { MediaProcessor } from './media/media-processor';
@@ -218,6 +219,20 @@ export class RuntimeBuilder {
     if (this.config.channels.slack?.ownerIds?.[0]) {
       ownerIds.slack = this.config.channels.slack.ownerIds[0];
     }
+
+    if (this.config.security) {
+      middleware.push(
+        dmPolicy({
+          mode: this.config.security.dmPolicy,
+          allowlist: this.config.security.allowlist,
+          groupPolicy: this.config.security.groupPolicy,
+          groupAllowlist: this.config.security.groupAllowlist,
+          storePath: this.config.security.storePath,
+          ownerIds,
+        })
+      );
+    }
+
     if (Object.keys(ownerIds).length > 0) {
       middleware.push(ownerCommands({ ownerIds }));
     }

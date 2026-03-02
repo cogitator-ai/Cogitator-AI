@@ -47,6 +47,16 @@ const AssistantMemorySchema = z.object({
   compaction: z.object({ threshold: z.number() }).optional(),
 });
 
+const SecuritySchema = z
+  .object({
+    dmPolicy: z.enum(['open', 'allowlist', 'pairing', 'disabled']).default('open'),
+    allowlist: z.array(z.string()).optional(),
+    groupPolicy: z.enum(['open', 'allowlist', 'disabled']).default('open'),
+    groupAllowlist: z.array(z.string()).optional(),
+    storePath: z.string().optional(),
+  })
+  .optional();
+
 export const AssistantConfigSchema = z.object({
   name: z.string(),
   personality: z.string(),
@@ -62,6 +72,7 @@ export const AssistantConfigSchema = z.object({
     autoExtract: true,
     knowledgeGraph: true,
   }),
+  security: SecuritySchema,
   stream: z
     .object({
       flushInterval: z.number().default(600),

@@ -32,6 +32,9 @@ export type { WhatsAppChannelConfig } from './channels/whatsapp';
 export { PairingMiddleware, pairing } from './middleware/pairing';
 export type { PairingConfig } from './middleware/pairing';
 
+export { DmPolicyMiddleware, dmPolicy } from './middleware/dm-policy';
+export type { DmPolicyConfig, DmPolicyMode } from './middleware/dm-policy';
+
 export { RateLimitMiddleware, rateLimit } from './middleware/rate-limit';
 export type { RateLimitConfig } from './middleware/rate-limit';
 
