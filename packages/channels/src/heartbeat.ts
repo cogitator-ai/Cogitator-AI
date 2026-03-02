@@ -121,7 +121,11 @@ export class HeartbeatScheduler {
 
       if (status === 'error') {
         patch.lastError = errorMsg;
-        patch.consecutiveErrors = (entry.consecutiveErrors ?? 0) + 1;
+        if (meta.bestEffort) {
+          patch.consecutiveErrors = 0;
+        } else {
+          patch.consecutiveErrors = (entry.consecutiveErrors ?? 0) + 1;
+        }
       } else {
         patch.consecutiveErrors = 0;
         patch.lastError = undefined;

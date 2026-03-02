@@ -457,6 +457,72 @@ describe('HeartbeatScheduler', () => {
     scheduler.stop();
   });
 
+  it('bestEffort task does not increment consecutiveErrors on failure', async () => {
+    onFire.mockRejectedValueOnce(new Error('network down'));
+    store.getOverdue
+      .mockResolvedValueOnce([
+        {
+          id: 't_be',
+          firesAt: Date.now() - 100,
+          consecutiveErrors: 0,
+          metadata: { description: 'Best effort ping', bestEffort: true },
+        },
+      ])
+      .mockResolvedValue([]);
+
+    const scheduler = new HeartbeatScheduler(store as unknown as TimerStore, {
+      onFire,
+      pollInterval: 50,
+    });
+    scheduler.start();
+
+    await vi.waitFor(
+      () => {
+        expect(store.update).toHaveBeenCalled();
+      },
+      { timeout: 200 }
+    );
+
+    const patch = store.update.mock.calls[0][1];
+    expect(patch.lastRunStatus).toBe('error');
+    expect(patch.consecutiveErrors).toBe(0);
+    expect(patch.lastError).toBe('network down');
+
+    scheduler.stop();
+  });
+
+  it('non-bestEffort task increments consecutiveErrors on failure', async () => {
+    onFire.mockRejectedValueOnce(new Error('fail'));
+    store.getOverdue
+      .mockResolvedValueOnce([
+        {
+          id: 't_nbe',
+          firesAt: Date.now() - 100,
+          consecutiveErrors: 2,
+          metadata: { description: 'Normal task' },
+        },
+      ])
+      .mockResolvedValue([]);
+
+    const scheduler = new HeartbeatScheduler(store as unknown as TimerStore, {
+      onFire,
+      pollInterval: 50,
+    });
+    scheduler.start();
+
+    await vi.waitFor(
+      () => {
+        expect(store.update).toHaveBeenCalled();
+      },
+      { timeout: 200 }
+    );
+
+    const patch = store.update.mock.calls[0][1];
+    expect(patch.consecutiveErrors).toBe(3);
+
+    scheduler.stop();
+  });
+
   it('listJobs delegates to store.list()', async () => {
     const fakeEntries = [{ id: 'j1' }, { id: 'j2' }];
     store.list.mockResolvedValueOnce(fakeEntries);

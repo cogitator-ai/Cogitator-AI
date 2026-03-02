@@ -22,6 +22,7 @@ const scheduleParams = z.object({
   at: z.string().optional().describe('ISO datetime string for when to fire'),
   channel: z.string().optional().describe('Channel to deliver the task to'),
   userId: z.string().optional().describe('User ID associated with the task'),
+  bestEffort: z.boolean().optional().describe('If true, skip retries on failure (fire-and-forget)'),
 });
 
 const listParams = z.object({});
@@ -38,7 +39,7 @@ export function createSchedulerTools(config: SchedulerToolsConfig) {
     description:
       'Schedule a task to run after a delay, at a specific time, or on a cron schedule. Provide exactly one of: delay, cron, or at.',
     parameters: scheduleParams,
-    execute: async ({ description, delay, cron, at, channel, userId }, context) => {
+    execute: async ({ description, delay, cron, at, channel, userId, bestEffort }, context) => {
       const modes = [delay, cron, at].filter(Boolean);
       if (modes.length !== 1) {
         throw new Error('Provide exactly one of: delay, cron, or at');
@@ -79,6 +80,7 @@ export function createSchedulerTools(config: SchedulerToolsConfig) {
           channel: channel ?? context.channelType ?? defaultChannel,
           channelId: context.channelId,
           userId: userId ?? context.userId ?? defaultUserId,
+          ...(bestEffort ? { bestEffort: true } : {}),
         },
       });
 

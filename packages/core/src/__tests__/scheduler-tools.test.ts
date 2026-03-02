@@ -226,6 +226,32 @@ describe('scheduler tools', () => {
     expect(entry.metadata.channel).toBe('slack');
   });
 
+  it('schedule_task stores bestEffort in metadata', async () => {
+    const tools = createSchedulerTools({ store: mockStore });
+    const scheduleTool = tools.find((t) => t.name === 'schedule_task')!;
+
+    await scheduleTool.execute(
+      { description: 'Fire and forget', delay: '5m', bestEffort: true },
+      {} as never
+    );
+
+    const entry = mockStore.schedule.mock.calls[0][0];
+    expect(entry.metadata.bestEffort).toBe(true);
+  });
+
+  it('schedule_task omits bestEffort from metadata when false', async () => {
+    const tools = createSchedulerTools({ store: mockStore });
+    const scheduleTool = tools.find((t) => t.name === 'schedule_task')!;
+
+    await scheduleTool.execute(
+      { description: 'Normal task', delay: '5m', bestEffort: false },
+      {} as never
+    );
+
+    const entry = mockStore.schedule.mock.calls[0][0];
+    expect(entry.metadata.bestEffort).toBeUndefined();
+  });
+
   it('cancel_task cancels by ID', async () => {
     const tools = createSchedulerTools({ store: mockStore });
     const cancelTool = tools.find((t) => t.name === 'cancel_task')!;
