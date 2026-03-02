@@ -308,7 +308,7 @@ describe('Timer System', () => {
         payload: {},
       });
 
-      const soonTimers = await store.list({ firesBefore: now + 2000 });
+      const soonTimers = await store.query({ firesBefore: now + 2000 });
       expect(soonTimers).toHaveLength(1);
       expect(soonTimers[0].nodeId).toBe('node1');
     });

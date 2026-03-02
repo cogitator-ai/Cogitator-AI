@@ -92,6 +92,10 @@ export interface RunOptions {
 
   /** Execute tool calls in parallel. Default: false (sequential execution) */
   parallelToolCalls?: boolean;
+
+  userId?: string;
+  channelType?: string;
+  channelId?: string;
 }
 
 export interface RunResult {

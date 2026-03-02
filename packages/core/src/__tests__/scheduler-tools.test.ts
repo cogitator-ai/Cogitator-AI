@@ -159,6 +159,73 @@ describe('scheduler tools', () => {
     expect(result.tasks).toEqual([]);
   });
 
+  it('schedule_task uses context.channelType and context.userId as fallbacks', async () => {
+    const tools = createSchedulerTools({ store: mockStore });
+    const scheduleTool = tools.find((t) => t.name === 'schedule_task')!;
+
+    await scheduleTool.execute(
+      { description: 'Context test', delay: '1m' },
+      {
+        agentId: 'a1',
+        runId: 'r1',
+        signal: new AbortController().signal,
+        channelType: 'telegram',
+        channelId: 'chat_123',
+        userId: 'user_99',
+      }
+    );
+
+    const entry = mockStore.schedule.mock.calls[0][0];
+    expect(entry.metadata.channel).toBe('telegram');
+    expect(entry.metadata.channelId).toBe('chat_123');
+    expect(entry.metadata.userId).toBe('user_99');
+  });
+
+  it('schedule_task prefers explicit params over context', async () => {
+    const tools = createSchedulerTools({ store: mockStore });
+    const scheduleTool = tools.find((t) => t.name === 'schedule_task')!;
+
+    await scheduleTool.execute(
+      { description: 'Override test', delay: '1m', channel: 'discord', userId: 'explicit_user' },
+      {
+        agentId: 'a1',
+        runId: 'r1',
+        signal: new AbortController().signal,
+        channelType: 'telegram',
+        channelId: 'chat_123',
+        userId: 'user_99',
+      }
+    );
+
+    const entry = mockStore.schedule.mock.calls[0][0];
+    expect(entry.metadata.channel).toBe('discord');
+    expect(entry.metadata.userId).toBe('explicit_user');
+    expect(entry.metadata.channelId).toBe('chat_123');
+  });
+
+  it('schedule_task stores channelId from context', async () => {
+    const tools = createSchedulerTools({
+      store: mockStore,
+      defaultChannel: 'slack',
+      defaultUserId: 'default',
+    });
+    const scheduleTool = tools.find((t) => t.name === 'schedule_task')!;
+
+    await scheduleTool.execute(
+      { description: 'ChannelId test', delay: '5m' },
+      {
+        agentId: 'a1',
+        runId: 'r1',
+        signal: new AbortController().signal,
+        channelId: 'C12345',
+      }
+    );
+
+    const entry = mockStore.schedule.mock.calls[0][0];
+    expect(entry.metadata.channelId).toBe('C12345');
+    expect(entry.metadata.channel).toBe('slack');
+  });
+
   it('cancel_task cancels by ID', async () => {
     const tools = createSchedulerTools({ store: mockStore });
     const cancelTool = tools.find((t) => t.name === 'cancel_task')!;

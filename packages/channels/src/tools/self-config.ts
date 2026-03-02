@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
-import { tool } from '../tool';
+import { tool } from '@cogitator-ai/core';
 import type { Tool } from '@cogitator-ai/types';
 
 function deepMerge(
@@ -75,5 +76,70 @@ export function createSelfConfigTools(opts: {
     },
   });
 
-  return [configRead, configUpdate];
+  const envPath = join(dirname(configPath), '.env');
+
+  const KNOWN_VARS = [
+    'GOOGLE_API_KEY',
+    'GEMINI_API_KEY',
+    'OPENAI_API_KEY',
+    'ANTHROPIC_API_KEY',
+    'OLLAMA_URL',
+    'OLLAMA_API_KEY',
+    'GITHUB_TOKEN',
+    'TG_TOKEN',
+    'DISCORD_TOKEN',
+    'SLACK_BOT_TOKEN',
+    'SLACK_SIGNING_SECRET',
+  ];
+
+  const envCheck = tool({
+    name: 'env_check',
+    description:
+      'Check which environment variables are set. Returns true/false for each known variable (never exposes values). Use this before switching LLM providers to verify required keys are configured.',
+    parameters: z.object({
+      vars: z
+        .array(z.string())
+        .optional()
+        .describe('Specific vars to check. If omitted, checks all known vars.'),
+    }),
+    execute: async ({ vars }) => {
+      const toCheck = vars?.length ? vars : KNOWN_VARS;
+      const result: Record<string, boolean> = {};
+      for (const v of toCheck) {
+        result[v] = !!process.env[v];
+      }
+      return result;
+    },
+  });
+
+  const envSet = tool({
+    name: 'env_set',
+    description:
+      'Write environment variables to the .env file. Merges with existing vars. The assistant will restart automatically to pick up new values.',
+    parameters: z.object({
+      vars: z.record(z.string(), z.string()).describe('Key-value pairs to write to .env'),
+    }),
+    execute: async ({ vars }) => {
+      const existing = existsSync(envPath) ? readFileSync(envPath, 'utf-8') : '';
+      const map = new Map<string, string>();
+
+      for (const line of existing.split('\n')) {
+        const eq = line.indexOf('=');
+        if (eq > 0) map.set(line.slice(0, eq), line);
+      }
+
+      for (const [key, value] of Object.entries(vars)) {
+        map.set(key, `${key}=${value}`);
+      }
+
+      writeFileSync(envPath, [...map.values()].join('\n') + '\n');
+      onConfigUpdated?.();
+      return {
+        success: true,
+        message: `Set ${Object.keys(vars).join(', ')} in .env. Restarting...`,
+      };
+    },
+  });
+
+  return [configRead, configUpdate, envCheck, envSet];
 }

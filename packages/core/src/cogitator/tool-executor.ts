@@ -13,7 +13,8 @@ export async function executeTool(
   constitutionalAI: ConstitutionalAI | undefined,
   filterToolCalls: boolean,
   initializeSandbox: () => Promise<void>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  extraContext?: { threadId?: string; userId?: string; channelType?: string; channelId?: string }
 ): Promise<ToolResult> {
   const tool = registry.get(toolCall.name);
 
@@ -47,6 +48,7 @@ export async function executeTool(
       agentId,
       runId,
       signal: signal ?? new AbortController().signal,
+      ...extraContext,
     };
     const guardResult = await constitutionalAI.guardTool(tool, toolCall.arguments, context);
     if (!guardResult.approved) {
@@ -74,6 +76,7 @@ export async function executeTool(
     agentId,
     runId,
     signal: signal ?? new AbortController().signal,
+    ...extraContext,
   };
 
   try {

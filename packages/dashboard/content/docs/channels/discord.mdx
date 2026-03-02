@@ -1,13 +1,30 @@
 ---
 title: Discord
-description: Connect your AI agent to Discord servers.
+description: Connect your AI agent to Discord servers and DMs.
 ---
 
 ## Setup
 
+Install the Discord SDK as a peer dependency:
+
 ```bash
 pnpm add discord.js
 ```
+
+## Create Your Bot
+
+1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
+2. Click **New Application**, give it a name
+3. Go to **Bot** tab in the sidebar
+4. Click **Reset Token** -- copy the token and save it:
+   ```bash
+   DISCORD_TOKEN=your-token-here
+   ```
+5. Scroll down to **Privileged Gateway Intents** and enable **Message Content Intent** -- this is required to read message text
+6. Go to **OAuth2** > **URL Generator**
+7. Select scopes: `bot`
+8. Select bot permissions: `Send Messages`, `Read Message History`, `Add Reactions`, `Manage Messages`
+9. Copy the generated URL and open it to invite the bot to your server
 
 ## Usage
 
@@ -16,7 +33,7 @@ import { discordChannel } from '@cogitator-ai/channels';
 
 const discord = discordChannel({
   token: process.env.DISCORD_TOKEN!,
-  mentionOnly: true, // only respond when @mentioned in servers
+  mentionOnly: true,
 });
 ```
 
@@ -25,17 +42,46 @@ const discord = discordChannel({
 ```typescript
 interface DiscordConfig {
   token: string;
-  mentionOnly?: boolean; // default: false
+  intents?: number[];
+  mentionOnly?: boolean;
 }
 ```
 
-Create a bot at the [Discord Developer Portal](https://discord.com/developers/applications). Enable the **Message Content** intent.
+| Option | Default | Description |
+|--------|---------|-------------|
+| `token` | -- | Bot token from the Developer Portal |
+| `intents` | `Guilds, GuildMessages, DirectMessages, MessageContent` | Gateway intents array |
+| `mentionOnly` | `false` | Only respond when @mentioned in servers |
 
 ## Features
 
-- Responds to DMs and server messages
-- `mentionOnly` mode for group channels -- only processes messages that @mention the bot
-- Bot mention is automatically stripped from message text
-- Message editing for streaming responses
-- 2000 character message limit (auto-chunked)
-- Markdown formatting support
+| Feature | Support |
+|---------|---------|
+| Server messages | Supported |
+| Direct messages | Supported |
+| Mention-only mode | Supported (respond only when @mentioned) |
+| Streaming (edit) | Supported |
+| Reactions | Supported |
+| Typing indicator | Supported |
+| Auto-chunking | Supported (2000 char limit, code-block aware) |
+| Markdown | Supported (native Discord markdown) |
+
+## Mention-Only Mode
+
+When `mentionOnly: true`, the bot only responds to messages that @mention it in server channels. DMs always get a response regardless of this setting.
+
+The bot mention (`<@BOT_ID>`) is automatically stripped from the message text before it reaches your agent, so instructions like `@MyBot what is 2+2?` arrive as `what is 2+2?`.
+
+## Message Chunking
+
+Discord enforces a 2000-character limit per message. Long responses are automatically split by the built-in chunker with:
+
+- **Code block integrity** -- fenced blocks are properly closed and reopened across chunks
+- **Line-count splitting** -- ~17 lines max per message to keep things readable
+- **Word-boundary awareness** -- splits at whitespace when possible, never mid-word
+
+## Tips
+
+- You **must** enable **Message Content Intent** in the Developer Portal or the bot receives empty messages
+- For DM-only bots, you don't need to add the bot to any server
+- Discord rate limits message edits to ~5/sec per channel -- streaming responses account for this

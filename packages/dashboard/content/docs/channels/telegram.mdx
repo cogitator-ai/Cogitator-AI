@@ -11,14 +11,47 @@ Install the Telegram SDK as a peer dependency:
 pnpm add grammy
 ```
 
+grammY is loaded at runtime via dynamic `import()` -- if it's not installed, the channel throws a clear error on startup.
+
+## Get Your Bot Token
+
+1. Open Telegram and search for [@BotFather](https://t.me/BotFather)
+2. Send `/newbot`
+3. Choose a display name, e.g. "My AI Assistant"
+4. Choose a username (must end with `bot`), e.g. `my_ai_assistant_bot`
+5. BotFather replies with a token like `7204891735:AAHr...` -- save it
+6. Optionally, send `/setdescription` and `/setabouttext` to customize how your bot appears in search
+7. Set the env var:
+
+```bash
+export TG_TOKEN=7204891735:AAHr...
+```
+
 ## Usage
 
 ```typescript
-import { telegramChannel } from '@cogitator-ai/channels';
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { Gateway, telegramChannel } from '@cogitator-ai/channels';
 
 const telegram = telegramChannel({
   token: process.env.TG_TOKEN!,
 });
+
+const gateway = new Gateway({
+  agent: new Agent({
+    name: 'assistant',
+    model: 'anthropic/claude-sonnet-4-20250514',
+    instructions: 'You are a helpful assistant.',
+  }),
+  cogitator: new Cogitator({
+    llm: {
+      providers: { anthropic: { apiKey: process.env.ANTHROPIC_API_KEY } },
+    },
+  }),
+  channels: [telegram],
+});
+
+await gateway.start();
 ```
 
 ## Configuration
@@ -26,22 +59,54 @@ const telegram = telegramChannel({
 ```typescript
 interface TelegramConfig {
   token: string;
+  allowedUpdates?: string[];
+  webhook?: { url: string; port: number };
 }
 ```
 
-Get your bot token from [@BotFather](https://t.me/BotFather) on Telegram.
-
 ## Features
 
-- Long polling for receiving updates
-- Message editing for streaming responses
-- Typing indicators
-- Markdown formatting (Telegram's MarkdownV2 subset)
-- File sending support
-- 4096 character message limit (auto-chunked by formatters)
+| Feature | Support |
+|---|---|
+| Text messages | Supported |
+| Photos | Supported (passed to LLM as vision) |
+| Voice messages | Supported (transcribed via STT) |
+| Documents | Supported |
+| Streaming (edit) | Supported via `editMessageText` |
+| Reactions | Supported via `setMessageReaction` |
+| Typing indicator | Supported |
+| Max message length | 4096 chars (auto-chunked) |
+| Groups | Supported |
 
-## How It Works
+## Webhook vs Polling
 
-The channel uses [grammY](https://grammy.dev/) under the hood. When started, it begins long polling for updates. Incoming text messages are converted to `ChannelMessage` and routed to your Gateway.
+By default, the channel uses **long polling** -- no public URL needed, works behind NAT, firewalls, localhost. This is the simplest way to get started.
 
-Streaming responses use Telegram's `editMessageText` API -- the user sees the response appearing progressively, similar to ChatGPT.
+For production deployments with a public URL, switch to **webhooks**:
+
+```typescript
+telegramChannel({
+  token: process.env.TG_TOKEN!,
+  webhook: {
+    url: 'https://example.com/telegram',
+    port: 8443,
+  },
+});
+```
+
+Telegram supports webhook ports 443, 80, 88, and 8443.
+
+## Media Support
+
+**Photos** are downloaded automatically and forwarded to the LLM as image attachments. If the model supports vision (Claude, GPT-4o, Gemini), it can see and reason about the image. The largest available resolution is used.
+
+**Voice messages** are downloaded as OGG audio and passed through the configured STT pipeline (Whisper local or API). The transcribed text is sent to the LLM as the user's message. See the [Gateway docs](/docs/channels/gateway) for STT configuration.
+
+**Documents** are downloaded and attached to the message. Image documents (PNG, JPEG, etc.) are treated as image attachments; everything else is passed as a file.
+
+## Tips
+
+- Use `/setcommands` in BotFather to add command hints that appear when users type `/`
+- Disable "Group Privacy" in BotFather settings (via `/setprivacy`) if the bot should see all group messages, not just commands and @mentions
+- Telegram rate limits: ~30 messages/sec to the same chat, ~20 message edits/sec globally
+- Pending updates are dropped on startup (`drop_pending_updates: true`) to avoid replaying old messages after a restart

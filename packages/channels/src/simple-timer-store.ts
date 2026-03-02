@@ -1,3 +1,5 @@
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { TimerEntry, TimerStore } from '@cogitator-ai/types';
 
 let counter = 0;
@@ -5,9 +7,21 @@ function nextId(): string {
   return `timer_${++counter}_${Date.now()}`;
 }
 
+export interface TimerStoreOptions {
+  persistPath?: string;
+}
+
 export class SimpleTimerStore implements TimerStore {
   private timers = new Map<string, TimerEntry>();
   private callbacks: ((entry: TimerEntry) => void)[] = [];
+  private readonly persistPath: string | null;
+
+  constructor(opts?: TimerStoreOptions) {
+    this.persistPath = opts?.persistPath ?? null;
+    if (this.persistPath) {
+      this.loadFromDisk();
+    }
+  }
 
   async schedule(
     entry: Omit<TimerEntry, 'id' | 'cancelled' | 'fired' | 'createdAt'>
@@ -21,12 +35,16 @@ export class SimpleTimerStore implements TimerStore {
       createdAt: Date.now(),
     };
     this.timers.set(id, full);
+    this.saveToDisk();
     return id;
   }
 
   async cancel(id: string): Promise<void> {
     const entry = this.timers.get(id);
-    if (entry) entry.cancelled = true;
+    if (entry) {
+      entry.cancelled = true;
+      this.saveToDisk();
+    }
   }
 
   async get(id: string): Promise<TimerEntry | null> {
@@ -54,6 +72,7 @@ export class SimpleTimerStore implements TimerStore {
     const entry = this.timers.get(id);
     if (entry) {
       entry.fired = true;
+      this.saveToDisk();
       for (const cb of this.callbacks) cb(entry);
     }
   }
@@ -66,7 +85,26 @@ export class SimpleTimerStore implements TimerStore {
         count++;
       }
     }
+    if (count > 0) this.saveToDisk();
     return count;
+  }
+
+  async update(id: string, patch: Partial<TimerEntry>): Promise<void> {
+    const entry = this.timers.get(id);
+    if (!entry) return;
+    Object.assign(entry, patch);
+    this.saveToDisk();
+  }
+
+  async list(filter?: { enabled?: boolean; type?: string }): Promise<TimerEntry[]> {
+    let entries = [...this.timers.values()];
+    if (filter?.enabled !== undefined) {
+      entries = entries.filter((e) => (e.enabled ?? true) === filter.enabled);
+    }
+    if (filter?.type) {
+      entries = entries.filter((e) => e.type === filter.type);
+    }
+    return entries;
   }
 
   onFire(callback: (entry: TimerEntry) => void): () => void {
@@ -75,5 +113,30 @@ export class SimpleTimerStore implements TimerStore {
       const idx = this.callbacks.indexOf(callback);
       if (idx >= 0) this.callbacks.splice(idx, 1);
     };
+  }
+
+  private saveToDisk(): void {
+    if (!this.persistPath) return;
+    try {
+      const dir = dirname(this.persistPath);
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      const data = [...this.timers.values()];
+      const tmpPath = join(dir, `.timer-store-${Date.now()}.tmp`);
+      writeFileSync(tmpPath, JSON.stringify(data));
+      renameSync(tmpPath, this.persistPath);
+    } catch {}
+  }
+
+  private loadFromDisk(): void {
+    if (!this.persistPath || !existsSync(this.persistPath)) return;
+    try {
+      const raw = readFileSync(this.persistPath, 'utf-8');
+      const entries = JSON.parse(raw) as TimerEntry[];
+      for (const entry of entries) {
+        this.timers.set(entry.id, entry);
+        const numPart = /^timer_(\d+)/.exec(entry.id);
+        if (numPart) counter = Math.max(counter, Number(numPart[1]));
+      }
+    } catch {}
   }
 }

@@ -145,7 +145,23 @@ export class InMemoryTimerStore implements TimerStore {
   /**
    * List timers with filtering
    */
-  async list(options: TimerQueryOptions = {}): Promise<TimerEntry[]> {
+  async update(id: string, patch: Partial<TimerEntry>): Promise<void> {
+    const timer = this.timers.get(id);
+    if (timer) Object.assign(timer, patch);
+  }
+
+  async list(filter?: { enabled?: boolean; type?: string }): Promise<TimerEntry[]> {
+    let results = [...this.timers.values()];
+    if (filter?.enabled !== undefined) {
+      results = results.filter((t) => (t.enabled ?? true) === filter.enabled);
+    }
+    if (filter?.type) {
+      results = results.filter((t) => t.type === filter.type);
+    }
+    return results.sort((a, b) => a.firesAt - b.firesAt);
+  }
+
+  async query(options: TimerQueryOptions = {}): Promise<TimerEntry[]> {
     let results: TimerEntry[] = [];
 
     for (const timer of this.timers.values()) {
@@ -176,17 +192,11 @@ export class InMemoryTimerStore implements TimerStore {
     return results;
   }
 
-  /**
-   * Count timers matching options
-   */
   async count(options: TimerQueryOptions = {}): Promise<number> {
-    const list = await this.list(options);
-    return list.length;
+    const q = await this.query(options);
+    return q.length;
   }
 
-  /**
-   * Clear all timers
-   */
   async clear(): Promise<void> {
     this.timers.clear();
   }
@@ -360,7 +370,28 @@ export class FileTimerStore implements TimerStore {
     };
   }
 
-  async list(options: TimerQueryOptions = {}): Promise<TimerEntry[]> {
+  async update(id: string, patch: Partial<TimerEntry>): Promise<void> {
+    await this.ensureInitialized();
+    const timer = this.cache.get(id);
+    if (timer) {
+      Object.assign(timer, patch);
+      await this.persist();
+    }
+  }
+
+  async list(filter?: { enabled?: boolean; type?: string }): Promise<TimerEntry[]> {
+    await this.ensureInitialized();
+    let results = [...this.cache.values()];
+    if (filter?.enabled !== undefined) {
+      results = results.filter((t) => (t.enabled ?? true) === filter.enabled);
+    }
+    if (filter?.type) {
+      results = results.filter((t) => t.type === filter.type);
+    }
+    return results.sort((a, b) => a.firesAt - b.firesAt);
+  }
+
+  async query(options: TimerQueryOptions = {}): Promise<TimerEntry[]> {
     await this.ensureInitialized();
 
     let results: TimerEntry[] = [];
@@ -394,8 +425,8 @@ export class FileTimerStore implements TimerStore {
   }
 
   async count(options: TimerQueryOptions = {}): Promise<number> {
-    const list = await this.list(options);
-    return list.length;
+    const q = await this.query(options);
+    return q.length;
   }
 
   async clear(): Promise<void> {

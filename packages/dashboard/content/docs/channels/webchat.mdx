@@ -1,11 +1,9 @@
 ---
 title: WebChat
-description: Built-in WebSocket channel for custom web interfaces.
+description: Built-in WebSocket channel for custom web interfaces and CLI tools.
 ---
 
 ## Setup
-
-No external dependencies required. Uses the `ws` package (already a dev dependency).
 
 ```bash
 pnpm add ws
@@ -17,7 +15,7 @@ pnpm add ws
 import { webchatChannel } from '@cogitator-ai/channels';
 
 const webchat = webchatChannel({
-  port: 18789,
+  port: 3100,
   path: '/ws',
   auth: (token) => token === process.env.WEBCHAT_SECRET,
 });
@@ -33,51 +31,62 @@ interface WebChatConfig {
 }
 ```
 
-## Client Protocol
+## Connecting
 
-Connect via WebSocket to `ws://localhost:18789/ws?token=YOUR_SECRET`.
+WebSocket URL: `ws://localhost:3100/ws?token=YOUR_SECRET`
 
-### Sending messages
+### With wscat
 
-```json
-{
-  "type": "message",
-  "text": "Hello, assistant!"
-}
+```bash
+npx wscat -c "ws://localhost:3100/ws?token=secret"
+> {"text": "Hello!"}
 ```
 
-### Receiving responses
+### From JavaScript
 
-```json
-{
-  "type": "text",
-  "id": "msg_abc123",
-  "text": "Hi! How can I help you?"
-}
+```javascript
+const ws = new WebSocket('ws://localhost:3100/ws?token=secret');
+ws.onmessage = (e) => {
+  const msg = JSON.parse(e.data);
+  if (msg.type === 'message') console.log('Bot:', msg.text);
+  if (msg.type === 'edit') console.log('Bot (updated):', msg.text);
+};
+ws.onopen = () => ws.send(JSON.stringify({ text: 'Hi!' }));
 ```
 
-### Message updates (streaming)
+## Protocol
+
+### Client → Server
 
 ```json
-{
-  "type": "edit",
-  "id": "msg_abc123",
-  "text": "Hi! How can I help you today?"
-}
+{ "text": "Hello!", "id": "optional-id" }
 ```
 
-### Typing indicators
+### Server → Client
 
-```json
-{
-  "type": "typing"
-}
-```
+| Type | Fields | Description |
+|------|--------|-------------|
+| `connected` | `clientId` | Connection established |
+| `message` | `id`, `text` | New message |
+| `edit` | `id`, `text` | Updated message (streaming) |
+| `typing` | — | Agent is thinking |
+| `file` | `filename`, `mimeType`, `url` | File attachment |
+| `error` | `message` | Error |
 
 ## Features
 
-- Zero external dependencies beyond `ws`
-- Token-based authentication
-- Full streaming support via message edits
-- No message length limit
-- JSON-based protocol
+| Feature | Support |
+|---------|---------|
+| Streaming (edit) | ✅ |
+| Typing indicator | ✅ |
+| Token auth | ✅ |
+| File metadata | ✅ |
+| Message length limit | None |
+| Multiple clients | ✅ (each gets own session) |
+
+## Tips
+
+- Perfect for building custom chat UIs
+- Auth is optional but recommended for production
+- Each WebSocket connection is treated as a separate user
+- Use with reverse proxy (nginx) for TLS in production

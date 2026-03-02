@@ -21,6 +21,16 @@ describe('adaptMarkdown', () => {
     const text = '# Title\n**bold** text';
     expect(adaptMarkdown(text, 'webchat')).toBe(text);
   });
+
+  it('converts bold and strikethrough for whatsapp', () => {
+    const result = adaptMarkdown('**bold** and ~~strike~~', 'whatsapp');
+    expect(result).toBe('*bold* and ~strike~');
+  });
+
+  it('preserves code blocks for whatsapp', () => {
+    const text = '```\n**bold**\n```';
+    expect(adaptMarkdown(text, 'whatsapp')).toBe(text);
+  });
 });
 
 describe('chunkMessage', () => {

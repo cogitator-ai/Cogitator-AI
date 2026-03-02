@@ -9,6 +9,25 @@ description: Connect your AI agent to Slack workspaces.
 pnpm add @slack/bolt
 ```
 
+## Create Your Slack App
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) and click **Create New App**
+2. Choose **From scratch**, give it a name, select your workspace
+3. **Enable Socket Mode** (sidebar → Socket Mode → toggle on):
+   - Generate an app-level token with `connections:write` scope
+   - Save it as `SLACK_APP_TOKEN=xapp-...`
+4. **Add Bot Scopes** (sidebar → OAuth & Permissions → Scopes):
+   - `chat:write` — send messages
+   - `app_mentions:read` — detect @mentions
+   - `im:history` — read DM history
+   - `im:read` — access DMs
+   - `im:write` — send DMs
+5. **Subscribe to Events** (sidebar → Event Subscriptions → toggle on):
+   - Bot events: `message.im`, `app_mention`
+6. **Install to Workspace** (sidebar → Install App → Install):
+   - Copy "Bot User OAuth Token" → save as `SLACK_BOT_TOKEN=xoxb-...`
+7. Copy "Signing Secret" from Basic Information → save as `SLACK_SIGNING_SECRET=...`
+
 ## Usage
 
 ```typescript
@@ -17,7 +36,7 @@ import { slackChannel } from '@cogitator-ai/channels';
 const slack = slackChannel({
   token: process.env.SLACK_BOT_TOKEN!,
   signingSecret: process.env.SLACK_SIGNING_SECRET!,
-  appToken: process.env.SLACK_APP_TOKEN!, // for Socket Mode
+  appToken: process.env.SLACK_APP_TOKEN!,
 });
 ```
 
@@ -28,22 +47,32 @@ interface SlackConfig {
   token: string;
   signingSecret: string;
   appToken?: string;
-  socketMode?: boolean; // default: true when appToken provided
+  socketMode?: boolean;
+  port?: number;
 }
 ```
 
-## Slack App Setup
-
-1. Create an app at [api.slack.com/apps](https://api.slack.com/apps)
-2. Enable **Socket Mode** (recommended for development)
-3. Add bot scopes: `chat:write`, `app_mentions:read`, `im:history`, `im:read`, `im:write`
-4. Subscribe to events: `message.im`, `app_mention`
-5. Install to workspace
-
 ## Features
 
-- Socket Mode (no public endpoint needed)
-- DM and channel message handling
-- Message updates for streaming responses via `chat.update`
-- Slack's mrkdwn formatting
-- No hard message length limit (but long messages are auto-chunked for readability)
+| Feature | Support |
+|---------|---------|
+| DMs | ✅ |
+| Channel messages | ✅ (via @mention) |
+| Socket Mode | ✅ (no public URL needed) |
+| HTTP Mode | ✅ (needs public endpoint) |
+| Streaming (edit) | ✅ via `chat.update` |
+| File uploads | ✅ via `files.uploadV2` |
+| Typing indicator | ⚠️ (no-op, Slack API doesn't support it) |
+| Markdown | ✅ Slack mrkdwn format |
+
+## Socket Mode vs HTTP
+
+- **Socket Mode** (recommended for dev): no public URL needed, uses WebSocket. Requires `appToken`.
+- **HTTP Mode**: set `socketMode: false` and provide a `port`. Needs a publicly accessible URL.
+
+## Tips
+
+- Socket Mode is the simplest way to get started — no ngrok or public server needed
+- You need 3 tokens total: Bot Token (`xoxb-`), Signing Secret, and App Token (`xapp-`)
+- Reinstall the app after changing scopes
+- The bot must be invited to channels to respond there (DMs work automatically)

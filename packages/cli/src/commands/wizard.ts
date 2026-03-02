@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import * as p from '@clack/prompts';
 import chalk from 'chalk';
 import { stringify, parse as parseYaml } from 'yaml';
-import type { AssistantConfigOutput } from '@cogitator-ai/config';
+import type { AssistantConfigOutput } from '@cogitator-ai/channels';
 import { ModelRegistry } from '@cogitator-ai/models';
 import { printBanner } from '../utils/logger.js';
 
@@ -381,6 +381,15 @@ export const wizardCommand = new Command('wizard')
         capabilities.rag = {
           paths: pathsRaw.split(',').map((s) => s.trim()),
         };
+      } else if (cap === 'github') {
+        const ghToken = prompt(
+          await p.password({
+            message: 'GitHub Personal Access Token (for GitHub API):',
+            validate: (v) => (!v.trim() ? 'Token is required for GitHub capability' : undefined),
+          })
+        ) as string;
+        envLines.push(`GITHUB_TOKEN=${ghToken}`);
+        capabilities.github = true;
       } else {
         (capabilities as Record<string, boolean>)[cap] = true;
       }

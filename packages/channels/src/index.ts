@@ -6,6 +6,14 @@ export { StreamBuffer } from './stream-buffer';
 export { HeartbeatScheduler } from './heartbeat';
 export type { HeartbeatConfig } from './heartbeat';
 
+export { StatusReactionTracker } from './status-reactions';
+export { InboundDebouncer } from './inbound-debounce';
+export { MessageQueue } from './message-queue';
+export { formatEnvelope, formatElapsed } from './envelope';
+
+export { TerminalChannel, terminalChannel } from './channels/terminal';
+export type { TerminalConfig } from './channels/terminal';
+
 export { WebChatChannel, webchatChannel } from './channels/webchat';
 export type { WebChatConfig } from './channels/webchat';
 
@@ -46,11 +54,24 @@ export type { AssistantConfig, BuiltRuntime, RuntimeBuilderOpts } from './runtim
 export { SimpleTimerStore } from './simple-timer-store';
 
 export { MediaProcessor } from './media/media-processor';
-export type { MediaProcessResult } from './media/media-processor';
+export type { MediaProcessResult, SttProvider } from './media/media-processor';
 export { LocalWhisper } from './media/whisper-local';
 export { createWhisperDownloadTool } from './media/whisper-tool';
+export { GroqSttProvider, OpenAISttProvider } from './media/whisper-api';
+export type { GroqSttConfig, OpenAISttConfig } from './media/whisper-api';
+
+export { createSelfConfigTools } from './tools/self-config';
+
+export {
+  AssistantConfigSchema,
+  type AssistantConfigInput,
+  type AssistantConfigOutput,
+} from './assistant-config';
 
 export { adaptMarkdown, chunkMessage, getPlatformLimit } from './formatters/markdown';
+export { chunkDiscordText } from './formatters/discord-chunker';
+export type { ChunkDiscordTextOpts } from './formatters/discord-chunker';
+export { markdownToWhatsApp } from './formatters/whatsapp-markdown';
 
 export type {
   Channel,
@@ -64,4 +85,9 @@ export type {
   GatewayStats,
   GatewayMiddleware,
   MiddlewareContext,
+  StatusPhase,
+  StatusReactionConfig,
+  DebounceConfig,
+  EnvelopeConfig,
+  QueueMode,
 } from '@cogitator-ai/types';

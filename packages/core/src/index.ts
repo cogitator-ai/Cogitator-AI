@@ -51,7 +51,6 @@ export {
   createSchedulerTools,
   createCapabilitiesTool,
   createDeviceTools,
-  createSelfConfigTools,
   createSelfTools,
   loadCustomTools,
 } from './tools/index';

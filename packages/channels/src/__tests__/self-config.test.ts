@@ -19,15 +19,20 @@ afterEach(() => {
 });
 
 describe('createSelfConfigTools', () => {
-  it('returns 2 tools', () => {
+  it('returns 4 tools', () => {
     const tools = createSelfConfigTools({
       configPath: testConfig,
       parseYaml,
       stringifyYaml,
       validateConfig,
     });
-    expect(tools).toHaveLength(2);
-    expect(tools.map((t) => t.name)).toEqual(['config_read', 'config_update']);
+    expect(tools).toHaveLength(4);
+    expect(tools.map((t) => t.name)).toEqual([
+      'config_read',
+      'config_update',
+      'env_check',
+      'env_set',
+    ]);
   });
 
   it('config_read returns current config', async () => {

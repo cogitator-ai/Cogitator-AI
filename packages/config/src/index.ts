@@ -51,9 +51,6 @@ export {
   DeployConfigSchema,
   type CogitatorConfigInput,
   type CogitatorConfigOutput,
-  AssistantConfigSchema,
-  type AssistantConfigInput,
-  type AssistantConfigOutput,
 } from './schema';
 export { loadYamlConfig } from './loaders/yaml';
 export { loadEnvConfig } from './loaders/env';

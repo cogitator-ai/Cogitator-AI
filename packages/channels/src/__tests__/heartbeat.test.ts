@@ -14,6 +14,8 @@ function createMockStore(): Record<keyof TimerStore, ReturnType<typeof vi.fn>> {
     getPending: vi.fn().mockResolvedValue([]),
     cleanup: vi.fn().mockResolvedValue(0),
     onFire: vi.fn().mockReturnValue(() => {}),
+    update: vi.fn().mockResolvedValue(undefined),
+    list: vi.fn().mockResolvedValue([]),
   };
 }
 
@@ -49,7 +51,7 @@ describe('HeartbeatScheduler', () => {
     );
 
     const msg = onFire.mock.calls[0][0];
-    expect(msg.text).toBe('Send news');
+    expect(msg.text).toContain('Send news');
     expect(msg.channelType).toBe('telegram');
     expect(msg.userId).toBe('user_1');
     expect(msg.id).toContain('heartbeat_');
@@ -236,5 +238,252 @@ describe('HeartbeatScheduler', () => {
     expect(msg.channelId).toBe('group_42');
 
     scheduler.stop();
+  });
+
+  it('reschedules interval tasks at now + interval', async () => {
+    const now = Date.now();
+    store.getOverdue
+      .mockResolvedValueOnce([
+        {
+          id: 't4',
+          firesAt: now - 100,
+          type: 'recurring',
+          interval: 60_000,
+          metadata: { description: 'Every minute' },
+        },
+      ])
+      .mockResolvedValue([]);
+
+    const scheduler = new HeartbeatScheduler(store as unknown as TimerStore, {
+      onFire,
+      pollInterval: 50,
+    });
+    scheduler.start();
+
+    await vi.waitFor(
+      () => {
+        expect(store.schedule).toHaveBeenCalled();
+      },
+      { timeout: 200 }
+    );
+
+    const entry = store.schedule.mock.calls[0][0];
+    expect(entry.type).toBe('recurring');
+    expect(entry.interval).toBe(60_000);
+    expect(entry.firesAt).toBeGreaterThanOrEqual(now + 59_000);
+
+    scheduler.stop();
+  });
+
+  it('at-job fires once and is not rescheduled', async () => {
+    store.getOverdue
+      .mockResolvedValueOnce([
+        {
+          id: 't5',
+          firesAt: Date.now() - 100,
+          type: 'fixed',
+          metadata: { description: 'One-shot' },
+        },
+      ])
+      .mockResolvedValue([]);
+
+    const scheduler = new HeartbeatScheduler(store as unknown as TimerStore, {
+      onFire,
+      pollInterval: 50,
+    });
+    scheduler.start();
+
+    await vi.waitFor(
+      () => {
+        expect(store.markFired).toHaveBeenCalledWith('t5');
+      },
+      { timeout: 200 }
+    );
+
+    expect(store.schedule).not.toHaveBeenCalled();
+    scheduler.stop();
+  });
+
+  it('tracks error and increments consecutiveErrors', async () => {
+    onFire.mockRejectedValueOnce(new Error('boom'));
+    store.getOverdue
+      .mockResolvedValueOnce([
+        {
+          id: 't6',
+          firesAt: Date.now() - 100,
+          consecutiveErrors: 1,
+          metadata: { description: 'Flaky task' },
+        },
+      ])
+      .mockResolvedValue([]);
+
+    const scheduler = new HeartbeatScheduler(store as unknown as TimerStore, {
+      onFire,
+      pollInterval: 50,
+    });
+    scheduler.start();
+
+    await vi.waitFor(
+      () => {
+        expect(store.update).toHaveBeenCalled();
+      },
+      { timeout: 200 }
+    );
+
+    const patch = store.update.mock.calls[0][1];
+    expect(patch.lastRunStatus).toBe('error');
+    expect(patch.consecutiveErrors).toBe(2);
+    expect(patch.lastError).toBe('boom');
+
+    scheduler.stop();
+  });
+
+  it('skips entries that exceeded maxRetries', async () => {
+    store.getOverdue
+      .mockResolvedValueOnce([
+        {
+          id: 't7',
+          firesAt: Date.now() - 100,
+          consecutiveErrors: 5,
+          metadata: { description: 'Dead task' },
+        },
+      ])
+      .mockResolvedValue([]);
+
+    const scheduler = new HeartbeatScheduler(store as unknown as TimerStore, {
+      onFire,
+      pollInterval: 50,
+      maxRetries: 5,
+    });
+    scheduler.start();
+
+    await vi.waitFor(
+      () => {
+        expect(store.update).toHaveBeenCalledWith('t7', { lastRunStatus: 'skipped' });
+      },
+      { timeout: 200 }
+    );
+
+    expect(onFire).not.toHaveBeenCalled();
+    scheduler.stop();
+  });
+
+  it('skips disabled entries', async () => {
+    store.getOverdue
+      .mockResolvedValueOnce([
+        {
+          id: 't8',
+          firesAt: Date.now() - 100,
+          enabled: false,
+          metadata: { description: 'Disabled' },
+        },
+      ])
+      .mockResolvedValue([]);
+
+    const scheduler = new HeartbeatScheduler(store as unknown as TimerStore, {
+      onFire,
+      pollInterval: 50,
+    });
+    scheduler.start();
+
+    await new Promise((r) => setTimeout(r, 100));
+    expect(onFire).not.toHaveBeenCalled();
+    scheduler.stop();
+  });
+
+  it('calls onRunComplete callback with status and duration', async () => {
+    const onRunComplete = vi.fn();
+    store.getOverdue
+      .mockResolvedValueOnce([
+        {
+          id: 't9',
+          firesAt: Date.now() - 100,
+          metadata: { description: 'Tracked task' },
+        },
+      ])
+      .mockResolvedValue([]);
+
+    const scheduler = new HeartbeatScheduler(store as unknown as TimerStore, {
+      onFire,
+      pollInterval: 50,
+      onRunComplete,
+    });
+    scheduler.start();
+
+    await vi.waitFor(
+      () => {
+        expect(onRunComplete).toHaveBeenCalled();
+      },
+      { timeout: 200 }
+    );
+
+    const [entry, status, _error, duration] = onRunComplete.mock.calls[0];
+    expect(entry.id).toBe('t9');
+    expect(status).toBe('ok');
+    expect(typeof duration).toBe('number');
+
+    scheduler.stop();
+  });
+
+  it('resets consecutiveErrors on successful run', async () => {
+    store.getOverdue
+      .mockResolvedValueOnce([
+        {
+          id: 't10',
+          firesAt: Date.now() - 100,
+          consecutiveErrors: 3,
+          metadata: { description: 'Recovered task' },
+        },
+      ])
+      .mockResolvedValue([]);
+
+    const scheduler = new HeartbeatScheduler(store as unknown as TimerStore, {
+      onFire,
+      pollInterval: 50,
+    });
+    scheduler.start();
+
+    await vi.waitFor(
+      () => {
+        expect(store.update).toHaveBeenCalled();
+      },
+      { timeout: 200 }
+    );
+
+    const patch = store.update.mock.calls[0][1];
+    expect(patch.lastRunStatus).toBe('ok');
+    expect(patch.consecutiveErrors).toBe(0);
+
+    scheduler.stop();
+  });
+
+  it('listJobs delegates to store.list()', async () => {
+    const fakeEntries = [{ id: 'j1' }, { id: 'j2' }];
+    store.list.mockResolvedValueOnce(fakeEntries);
+
+    const scheduler = new HeartbeatScheduler(store as unknown as TimerStore, {
+      onFire,
+      pollInterval: 50,
+    });
+    const jobs = await scheduler.listJobs();
+    expect(jobs).toEqual(fakeEntries);
+  });
+
+  it('enableJob resets consecutiveErrors', async () => {
+    const scheduler = new HeartbeatScheduler(store as unknown as TimerStore, {
+      onFire,
+      pollInterval: 50,
+    });
+    await scheduler.enableJob('j1');
+    expect(store.update).toHaveBeenCalledWith('j1', { enabled: true, consecutiveErrors: 0 });
+  });
+
+  it('disableJob sets enabled=false', async () => {
+    const scheduler = new HeartbeatScheduler(store as unknown as TimerStore, {
+      onFire,
+      pollInterval: 50,
+    });
+    await scheduler.disableJob('j1');
+    expect(store.update).toHaveBeenCalledWith('j1', { enabled: false });
   });
 });

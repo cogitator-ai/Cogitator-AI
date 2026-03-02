@@ -14,7 +14,12 @@ import type { Cogitator } from '@cogitator-ai/core';
 import { SessionManager, CompactionService } from '@cogitator-ai/memory';
 import type { SummarizeFn } from '@cogitator-ai/memory';
 import { StreamBuffer } from './stream-buffer';
+import { adaptMarkdown } from './formatters/markdown';
 import type { MediaProcessor } from './media/media-processor';
+import { StatusReactionTracker } from './status-reactions';
+import { InboundDebouncer } from './inbound-debounce';
+import { formatEnvelope } from './envelope';
+import { MessageQueue } from './message-queue';
 
 export interface GatewayFullConfig extends GatewayConfig {
   cogitator: Cogitator;
@@ -28,6 +33,9 @@ export class Gateway {
   private readonly compactionService: CompactionService | null;
   private readonly middlewares: GatewayMiddleware[];
   private readonly streamConfig: StreamConfig;
+  private readonly debouncer: InboundDebouncer | null;
+  private readonly messageQueue: MessageQueue | null;
+  private readonly lastMessageTime = new Map<string, number>();
   private running = false;
   private startedAt: number | null = null;
   private messageCount = 0;
@@ -51,8 +59,17 @@ export class Gateway {
       this.compactionService = null;
     }
 
+    this.debouncer = config.debounce?.enabled
+      ? new InboundDebouncer(config.debounce, (merged) => this.processMessage(merged))
+      : null;
+
+    this.messageQueue =
+      config.queueMode && config.queueMode !== 'parallel'
+        ? new MessageQueue(config.queueMode, (msg) => this.processMessage(msg))
+        : null;
+
     for (const channel of this.channels) {
-      channel.onMessage((msg) => this.handleMessage(msg));
+      channel.onMessage((msg) => this.handleIncoming(msg));
     }
   }
 
@@ -68,6 +85,9 @@ export class Gateway {
     if (!this.running) return;
     this.running = false;
 
+    if (this.debouncer) await this.debouncer.flushAll();
+    this.messageQueue?.dispose();
+
     await Promise.all(this.channels.map((ch) => ch.stop()));
   }
 
@@ -82,10 +102,21 @@ export class Gateway {
   }
 
   async injectMessage(msg: ChannelMessage): Promise<void> {
-    return this.handleMessage(msg);
+    return this.handleIncoming(msg);
   }
 
-  private async handleMessage(msg: ChannelMessage): Promise<void> {
+  private async handleIncoming(msg: ChannelMessage): Promise<void> {
+    if (this.debouncer) {
+      this.debouncer.enqueue(msg);
+    } else if (this.messageQueue) {
+      const threadId = this.getThreadId(msg);
+      this.messageQueue.push(msg, threadId);
+    } else {
+      await this.processMessage(msg);
+    }
+  }
+
+  private async processMessage(msg: ChannelMessage): Promise<void> {
     try {
       const channel = this.channels.find((ch) => ch.type === msg.channelType);
       if (!channel) return;
@@ -117,6 +148,12 @@ export class Gateway {
 
       this.messageCount++;
 
+      if (this.config.envelope?.enabled) {
+        const prevTime = this.lastMessageTime.get(threadId);
+        msg = { ...msg, text: formatEnvelope(msg, this.config.envelope, prevTime) };
+        this.lastMessageTime.set(threadId, Date.now());
+      }
+
       if (this.sessionManager) {
         const session = await this.sessionManager.getOrCreate({
           userId: msg.userId,
@@ -137,12 +174,35 @@ export class Gateway {
 
       const agent = await this.resolveAgent(user);
 
-      await channel.sendTyping(msg.channelId);
+      const reactionsEnabled = this.config.reactions?.enabled && channel.setReaction;
+      let tracker: StatusReactionTracker | undefined;
 
-      if (this.config.stream) {
-        await this.runStreaming(agent, msg, channel, threadId);
-      } else {
-        await this.runDirect(agent, msg, channel, threadId);
+      if (reactionsEnabled) {
+        tracker = new StatusReactionTracker(channel, msg.channelId, msg.id, this.config.reactions);
+        tracker.setPhase('queued');
+      }
+
+      await channel.sendTyping(msg.channelId);
+      const typingInterval = setInterval(() => {
+        channel.sendTyping(msg.channelId).catch(() => {});
+      }, 4000);
+
+      try {
+        tracker?.setPhase('thinking');
+
+        if (this.config.stream) {
+          await this.runStreaming(agent, msg, channel, threadId);
+        } else {
+          await this.runDirect(agent, msg, channel, threadId);
+        }
+
+        tracker?.setPhase('done');
+      } catch (error) {
+        tracker?.setPhase('error');
+        throw error;
+      } finally {
+        clearInterval(typingInterval);
+        tracker?.dispose();
       }
     } catch (error) {
       if (this.config.onError) {
@@ -159,7 +219,13 @@ export class Gateway {
     let images: ImageInput[] | undefined;
 
     if (this.config.mediaProcessor && msg.attachments?.length) {
+      console.log(
+        `[gateway] Processing ${msg.attachments.length} attachment(s), types: ${msg.attachments.map((a) => a.type).join(', ')}`
+      );
       const result = await this.config.mediaProcessor.process(msg.attachments, agent.model);
+      console.log(
+        `[gateway] Media result: images=${result.images.length}, text=${!!result.transcribedText}, notes=${result.systemNotes.length}`
+      );
 
       if (result.images.length > 0) images = result.images;
       if (result.transcribedText) {
@@ -184,16 +250,21 @@ export class Gateway {
     threadId: string
   ): Promise<void> {
     const { input, images } = await this.extractMedia(msg, agent);
+    const replyTo = (msg.raw as Record<string, unknown>)?.scheduled ? undefined : msg.id;
 
     const result = await this.config.cogitator.run(agent, {
       input,
       threadId,
       useMemory: !!this.config.memory,
+      userId: msg.userId,
+      channelType: msg.channelType,
+      channelId: msg.channelId,
       ...(images ? { images } : {}),
     });
 
-    await channel.sendText(msg.channelId, result.output, {
-      replyTo: msg.id,
+    const output = adaptMarkdown(result.output, msg.channelType);
+    await channel.sendText(msg.channelId, output, {
+      ...(replyTo ? { replyTo } : {}),
       format: 'markdown',
     });
   }
@@ -205,21 +276,51 @@ export class Gateway {
     threadId: string
   ): Promise<void> {
     const { input, images } = await this.extractMedia(msg, agent);
-    const stream = new StreamBuffer(channel, msg.channelId, this.streamConfig, msg.id);
+    console.log(
+      `[gateway] Running LLM, input: "${input.slice(0, 200)}", images: ${images?.length ?? 0}`
+    );
+    const replyTo = (msg.raw as Record<string, unknown>)?.scheduled ? undefined : msg.id;
+    const stream = new StreamBuffer(channel, msg.channelId, this.streamConfig, replyTo);
     stream.start();
 
     try {
-      await this.config.cogitator.run(agent, {
+      let tokenCount = 0;
+
+      const runPromise = this.config.cogitator.run(agent, {
         input,
         threadId,
         useMemory: !!this.config.memory,
+        userId: msg.userId,
+        channelType: msg.channelType,
+        channelId: msg.channelId,
         stream: true,
-        onToken: (token) => stream.append(token),
+        onToken: (token) => {
+          tokenCount++;
+          stream.append(token);
+        },
         ...(images ? { images } : {}),
       });
 
-      await stream.finish();
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('LLM response timeout (90s)')), 90_000)
+      );
+
+      const result = await Promise.race([runPromise, timeout]);
+
+      if (tokenCount > 0) {
+        await stream.finish();
+      } else {
+        stream.abort();
+        if (result.output) {
+          const output = adaptMarkdown(result.output, msg.channelType);
+          await channel.sendText(msg.channelId, output, {
+            ...(replyTo ? { replyTo } : {}),
+            format: 'markdown',
+          });
+        }
+      }
     } catch (error) {
+      console.error('[gateway] LLM run error:', (error as Error).message);
       stream.abort();
       throw error;
     }

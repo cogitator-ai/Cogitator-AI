@@ -44,6 +44,12 @@ interface TelegramBot {
     sendChatAction(chatId: number, action: string): Promise<unknown>;
     setWebhook(url: string): Promise<unknown>;
     getFile(fileId: string): Promise<{ file_path?: string }>;
+    setMessageReaction(
+      chatId: number,
+      messageId: number,
+      reaction: { type: string; emoji: string }[],
+      options?: Record<string, unknown>
+    ): Promise<unknown>;
   };
 }
 
@@ -265,6 +271,13 @@ export class TelegramChannel implements Channel {
   async sendTyping(channelId: string): Promise<void> {
     if (!this.bot) return;
     await this.bot.api.sendChatAction(Number(channelId), 'typing');
+  }
+
+  async setReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
+    if (!this.bot) return;
+    await this.bot.api.setMessageReaction(Number(channelId), Number(messageId), [
+      { type: 'emoji', emoji },
+    ]);
   }
 }
 

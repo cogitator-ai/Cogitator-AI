@@ -5,8 +5,7 @@ import { dirname, resolve as resolvePath } from 'node:path';
 import ora from 'ora';
 import chalk from 'chalk';
 import { parse as parseYaml } from 'yaml';
-import { AssistantConfigSchema } from '@cogitator-ai/config';
-import { RuntimeBuilder } from '@cogitator-ai/channels';
+import { AssistantConfigSchema, RuntimeBuilder } from '@cogitator-ai/channels';
 import { log } from '../utils/logger.js';
 import { findDockerCompose, checkDocker } from '../utils/docker.js';
 

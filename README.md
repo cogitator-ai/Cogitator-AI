@@ -94,6 +94,7 @@ npx tsx examples/core/01-basic-agent.ts
 | **Knowledge graph**          | Extract entities from text, build a graph, traverse relationships      | [`examples/memory/04-knowledge-graph.ts`](./examples/memory/04-knowledge-graph.ts)           |
 | **RAG Q&A system**           | Load docs, chunk, embed, retrieve relevant context, answer questions   | [`examples/rag/01-basic-retrieval.ts`](./examples/rag/01-basic-retrieval.ts)                 |
 | **Agent evaluation**         | Measure accuracy, compare models, run A/B tests with LLM judges        | [`examples/evals/01-basic-eval.ts`](./examples/evals/01-basic-eval.ts)                       |
+| **Telegram/Discord bot**     | Deploy your agent to messaging platforms with streaming and reactions  | [`examples/channels/01-telegram-assistant.ts`](./examples/channels/01-telegram-assistant.ts) |
 | **Cross-framework agents**   | Expose your agent via Google's A2A protocol, consume external agents   | [`examples/a2a/01-a2a-server.ts`](./examples/a2a/01-a2a-server.ts)                           |
 
 ---
@@ -119,6 +120,7 @@ Install only what you need. Everything is a separate npm package.
 | [`@cogitator-ai/voice`](https://www.npmjs.com/package/@cogitator-ai/voice)                   | Voice/Realtime agent capabilities - STT, TTS, VAD, realtime sessions                           | [3 voice examples](./examples/voice/)                                |
 | [`@cogitator-ai/browser`](https://www.npmjs.com/package/@cogitator-ai/browser)               | Browser automation - Playwright, stealth, vision, network control                              | [4 browser examples](./examples/browser/)                            |
 | [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy)                 | Deploy your agents to Docker or Fly.io                                                         | [deploy example](./examples/infrastructure/04-deploy-docker.ts)      |
+| [`@cogitator-ai/channels`](https://www.npmjs.com/package/@cogitator-ai/channels)             | Connect agents to Telegram, Discord, Slack, WhatsApp, WebChat with gateway routing             | [3 channel examples](./examples/channels/)                           |
 | [`@cogitator-ai/cli`](https://www.npmjs.com/package/@cogitator-ai/cli)                       | `cogitator init` / `up` / `run` / `deploy` from your terminal                                  | -                                                                    |
 
 **Server adapters** - mount agents as REST APIs with one line:
@@ -165,6 +167,17 @@ All with Swagger docs, SSE streaming, and WebSocket support. See [integration ex
 | **DAG workflows**      | Build pipelines with branching, retries, compensation, human approval        |
 | **A2A Protocol**       | Google's standard for agents talking to agents across frameworks             |
 | **Agent-as-Tool**      | Use one agent as a tool for another - simple delegation                      |
+
+### Messaging Channels
+
+| Feature              | What it means                                                                     |
+| -------------------- | --------------------------------------------------------------------------------- |
+| **5 platforms**      | Telegram, Discord, Slack, WhatsApp, WebChat — same agent, multiple channels       |
+| **Gateway routing**  | Sessions, streaming, middleware, media processing through one unified entry point |
+| **Status reactions** | Emoji progress indicators (queued → thinking → tool → done) on user messages      |
+| **Debouncing**       | Rapid messages merged into a single LLM call instead of parallel processing       |
+| **Queue modes**      | Sequential, interrupt, collect — control concurrent message handling per user     |
+| **Scheduler**        | Cron, interval, and one-shot jobs with error tracking and auto-backoff            |
 
 ### Safety & Security
 
@@ -215,7 +228,7 @@ All with Swagger docs, SSE streaming, and WebSocket support. See [integration ex
 
 ---
 
-## 52 Runnable Examples
+## 55 Runnable Examples
 
 Every major feature has a working example you can run right now.
 
@@ -237,6 +250,7 @@ npx tsx examples/core/01-basic-agent.ts
 | [`browser/`](./examples/browser/)               | 4     | Web scraping, form automation, stealth agents, crypto price scraper                                                                                            |
 | [`integrations/`](./examples/integrations/)     | 7     | Express, Fastify, Hono, Koa, Next.js, OpenAI compat, AI SDK                                                                                                    |
 | [`infrastructure/`](./examples/infrastructure/) | 4     | Redis, PostgreSQL, job queues, Docker deploy                                                                                                                   |
+| [`channels/`](./examples/channels/)             | 3     | Telegram assistant, multi-channel super-assistant, WebChat bot                                                                                                 |
 | [`advanced/`](./examples/advanced/)             | 3     | Self-modifying agents, neuro-symbolic reasoning, WASM tools                                                                                                    |
 
 Default LLM is **Google Gemini 2.5 Flash** - free tier, no credit card. See [`examples/README.md`](./examples/README.md) for setup.

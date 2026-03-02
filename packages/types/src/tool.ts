@@ -52,6 +52,10 @@ export interface ToolContext {
   agentId: string;
   runId: string;
   signal: AbortSignal;
+  threadId?: string;
+  userId?: string;
+  channelType?: string;
+  channelId?: string;
 }
 
 export interface ToolSchema {

@@ -47,11 +47,18 @@ interface GatewayConfig {
   cogitator: Cogitator;
   memory?: MemoryAdapter;
   middleware?: GatewayMiddleware[];
+
   session?: {
     threadKey?: (msg: ChannelMessage) => string;
     compaction?: CompactionConfig;
   };
+
   stream?: StreamConfig;
+  reactions?: StatusReactionConfig;
+  debounce?: DebounceConfig;
+  envelope?: EnvelopeConfig;
+  queueMode?: 'parallel' | 'sequential' | 'interrupt' | 'collect';
+
   onError?: (error: Error, msg: ChannelMessage) => void;
 }
 ```
@@ -75,17 +82,106 @@ const gateway = new Gateway({
 ## Message Flow
 
 ```
-User sends message in Telegram
-  → TelegramChannel converts to ChannelMessage
-  → Gateway.handleMessage(msg)
-    → middleware pipeline (pairing → rate-limit → ...)
-    → Session lookup/create via SessionManager
-    → Compaction check (if threshold exceeded)
-    → channel.sendTyping(channelId)
-    → cogitator.run(agent, { input, threadId, stream })
-    → StreamBuffer flushes progressively via editText
-    → Final formatted response delivered
+User sends message
+  → Channel converts to ChannelMessage
+  → Debouncer (if enabled): buffer rapid messages, merge into one
+  → MessageQueue (if configured): sequential/interrupt/collect
+  → Middleware pipeline (pairing → rate-limit → ...)
+  → Envelope formatting (if enabled): wrap with [channel user +elapsed timestamp]
+  → Session lookup/create
+  → Status reaction: 👀 → 🤔 (if enabled)
+  → cogitator.run(agent, { input, threadId, stream })
+  → Status reaction: 👍 or 😱
+  → StreamBuffer flushes progressively via editText
+  → Platform-specific markdown adaptation
+  → Response delivered
 ```
+
+## Status Reactions
+
+Show processing progress with emoji reactions on the user's message. Users see immediate feedback instead of waiting 10-30 seconds in silence.
+
+```typescript
+const gateway = new Gateway({
+  // ...
+  reactions: {
+    enabled: true,
+    emojis: {
+      queued: '👀',    // message received
+      thinking: '🤔',  // LLM is generating
+      tool: '🔥',      // tool execution
+      done: '👍',      // response sent
+      error: '😱',     // something failed
+    },
+    debounceMs: 700,    // skip rapid phase changes
+    stallSoftMs: 10000, // show 🥱 after 10s on same phase
+    stallHardMs: 30000, // show 😨 after 30s
+  },
+});
+```
+
+Supported channels: Telegram (`setMessageReaction`), Discord (`react`). Channels without `setReaction` silently skip reactions.
+
+## Inbound Debouncing
+
+When a user sends 3 messages in 1 second, without debouncing you get 3 parallel LLM calls. With debouncing, they merge into one.
+
+```typescript
+const gateway = new Gateway({
+  // ...
+  debounce: {
+    enabled: true,
+    delayMs: 1500,                  // wait 1.5s of silence before processing
+    byChannel: { discord: 2000 },   // per-channel override
+  },
+});
+```
+
+Messages are grouped by `channelType:channelId:userId`. Texts are joined with newlines, attachments are merged.
+
+## Envelope Formatting
+
+Give the LLM context about who is talking, from where, and when — without polluting agent instructions.
+
+```typescript
+const gateway = new Gateway({
+  // ...
+  envelope: {
+    enabled: true,
+    includeTimestamp: true,
+    includeElapsed: true,
+    timezone: 'utc',         // 'utc' | 'local' | IANA timezone string
+  },
+});
+```
+
+The user's message `Hello world` becomes:
+
+```
+[telegram Alice +2m30s Feb 28, 20:15] Hello world
+```
+
+The elapsed time shows how long since the last message in this thread. The LLM naturally picks up on timing and context without explicit instructions.
+
+## Queue Modes
+
+Control how concurrent messages from the same user/thread are handled.
+
+```typescript
+const gateway = new Gateway({
+  // ...
+  queueMode: 'sequential',
+});
+```
+
+| Mode | Behavior |
+|------|----------|
+| `parallel` | Default. All messages processed immediately. |
+| `sequential` | FIFO per thread. Next message waits for current to finish. |
+| `interrupt` | Abort current processing, start new message immediately. |
+| `collect` | Buffer messages during processing, merge all when idle. |
+
+`parallel` is the default and matches the behavior before Phase 4. For personal assistants, `sequential` or `collect` usually give the best UX.
 
 ## Multi-channel Setup
 
@@ -105,7 +201,7 @@ const gateway = new Gateway({
     telegramChannel({ token: process.env.TG_TOKEN! }),
     discordChannel({ token: process.env.DISCORD_TOKEN! }),
     slackChannel({
-      token: process.env.SLACK_TOKEN!,
+      token: process.env.SLACK_BOT_TOKEN!,
       signingSecret: process.env.SLACK_SIGNING_SECRET!,
       appToken: process.env.SLACK_APP_TOKEN!,
     }),
@@ -113,6 +209,19 @@ const gateway = new Gateway({
   ],
 });
 ```
+
+## Platform Comparison
+
+| Feature | Telegram | Discord | Slack | WhatsApp | WebChat |
+|---------|----------|---------|-------|----------|---------|
+| Streaming (edit) | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Reactions | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Typing indicator | ✅ | ✅ | ⚠️ | ✅ | ✅ |
+| Media (vision) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Voice (STT) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Max message length | 4096 | 2000 | ~4000 | ~65536 | unlimited |
+| Public URL needed | webhook only | no | HTTP mode only | no | no |
+| Auth model | Bot token | Bot token | 3 tokens | QR code | custom |
 
 ## Session Management
 
@@ -150,11 +259,34 @@ const stats = gateway.stats;
 // }
 ```
 
+## Environment Variables
+
+A typical `.env` for a multi-channel bot:
+
+```bash
+# LLM
+GOOGLE_API_KEY=...
+
+# Telegram
+TG_TOKEN=7204891735:AAHr...
+
+# Discord
+DISCORD_TOKEN=MTI...
+
+# Slack
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_SIGNING_SECRET=...
+SLACK_APP_TOKEN=xapp-...
+
+# WebChat
+WEBCHAT_SECRET=your-secret-token
+```
+
 ## Graceful Shutdown
 
 ```typescript
 process.on('SIGTERM', async () => {
-  await gateway.stop();
+  await gateway.stop();  // flushes debouncer, disposes queue, stops channels
   process.exit(0);
 });
 ```

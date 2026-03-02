@@ -9,7 +9,6 @@ import {
   createSchedulerTools,
   createCapabilitiesTool,
   createDeviceTools,
-  createSelfConfigTools,
   createSelfTools,
   loadCustomTools,
   parseModel,
@@ -25,21 +24,25 @@ import {
 } from '@cogitator-ai/memory';
 import type { LLMBackendMinimal } from '@cogitator-ai/memory';
 import type { EmbeddingServiceConfig } from '@cogitator-ai/types';
+import { createSelfConfigTools } from './tools/self-config';
 import { Gateway } from './gateway';
 import { HeartbeatScheduler } from './heartbeat';
 import { SimpleTimerStore } from './simple-timer-store';
 import { telegramChannel } from './channels/telegram';
 import { discordChannel } from './channels/discord';
 import { slackChannel } from './channels/slack';
+import { terminalChannel } from './channels/terminal';
 import { ownerCommands } from './middleware/owner-commands';
 import { rateLimit } from './middleware/rate-limit';
 import { autoExtract } from './middleware/auto-extract';
 import type { EntityExtractor } from './middleware/auto-extract';
 import { generateCapabilitiesDoc } from './capabilities';
 import { MediaProcessor } from './media/media-processor';
+import type { SttProvider } from './media/media-processor';
 import { LocalWhisper } from './media/whisper-local';
 import { createWhisperDownloadTool } from './media/whisper-tool';
-import type { AssistantConfigOutput } from '@cogitator-ai/config';
+import { GroqSttProvider, OpenAISttProvider } from './media/whisper-api';
+import type { AssistantConfigOutput } from './assistant-config';
 
 export type AssistantConfig = AssistantConfigOutput;
 
@@ -126,7 +129,9 @@ export class RuntimeBuilder {
 
     let timerStore: SimpleTimerStore | null = null;
     if (this.config.capabilities.scheduler) {
-      timerStore = new SimpleTimerStore();
+      timerStore = new SimpleTimerStore({
+        persistPath: join(homedir(), '.cogitator', 'timers.json'),
+      });
       const channelEntries = Object.entries(this.config.channels ?? {});
       const firstChannel = channelEntries[0];
       const firstOwnerId = firstChannel
@@ -170,10 +175,13 @@ export class RuntimeBuilder {
     }
 
     const whisper = new LocalWhisper();
-    tools.push(createWhisperDownloadTool(whisper));
+    const sttProvider = this.buildSttProvider();
+    if (!sttProvider) {
+      tools.push(createWhisperDownloadTool(whisper));
+    }
 
     const visionChecker = await this.buildVisionChecker();
-    const mediaProcessor = new MediaProcessor(whisper, visionChecker);
+    const mediaProcessor = new MediaProcessor(whisper, visionChecker, sttProvider);
 
     await this.wireBrowser(tools, cleanupResources);
     await this.wireRAG(tools);
@@ -531,7 +539,10 @@ export class RuntimeBuilder {
     } else if (provider === 'anthropic') {
       providers.anthropic = { apiKey: this.env.ANTHROPIC_API_KEY ?? '' };
     } else if (provider === 'ollama') {
-      providers.ollama = { baseUrl: this.env.OLLAMA_URL ?? 'http://localhost:11434' };
+      providers.ollama = {
+        baseUrl: this.env.OLLAMA_URL ?? 'http://localhost:11434',
+        apiKey: this.env.OLLAMA_API_KEY,
+      };
     }
 
     return new Cogitator({
@@ -544,6 +555,9 @@ export class RuntimeBuilder {
 
   private buildChannels(): Channel[] {
     const channels: Channel[] = [];
+
+    const ownerName = /assistant for (\w+)/i.exec(this.config.personality)?.[1] ?? undefined;
+    channels.push(terminalChannel({ userName: ownerName }));
 
     if (this.config.channels.telegram) {
       const token = this.env.TG_TOKEN ?? this.env.TELEGRAM_TOKEN;
@@ -595,6 +609,16 @@ export class RuntimeBuilder {
   private buildInstructions(coreFactsText: string): string {
     let instructions = this.config.personality;
 
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+    const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    instructions += `\n\nCurrent date and time: ${dateStr}, ${timeStr}.`;
+
     if (coreFactsText) {
       instructions += `\n\n## What I know about the user\n${coreFactsText}`;
     }
@@ -620,22 +644,44 @@ Respond based ONLY on extracted text. NEVER hallucinate content.`;
     }
 
     if (this.config.capabilities.scheduler) {
-      const channelNames = Object.keys(this.config.channels ?? {});
-      const firstChannel = channelNames[0] ?? 'system';
-      const firstOwnerId =
-        firstChannel !== 'system'
-          ? (
-              (this.config.channels as Record<string, Record<string, unknown>>)?.[firstChannel]
-                ?.ownerIds as string[]
-            )?.[0]
-          : undefined;
-      instructions += `\nYou can schedule tasks using schedule_task. This works for reminders, recurring actions, and deferred tasks. When the task fires, you will execute it — so describe what to DO, not just what to say. Supports delay ("10m", "2h"), cron ("0 9 * * *"), or exact datetime (ISO). ALWAYS pass channel: "${firstChannel}"${firstOwnerId ? ` and userId: "${firstOwnerId}"` : ''}.`;
+      instructions += `\n\n## Scheduling
+You have a schedule_task tool for reminders, recurring actions, and deferred tasks.
+
+When to use — IMMEDIATELY call schedule_task when the user:
+- Says "remind me", "напомни", "in 10 minutes", "later", "through X time"
+- Asks to schedule, set a timer, or defer something
+- Says "every day at 9am", "each morning", "weekly"
+
+Examples:
+- "Remind me to check Slack in 5 min" → schedule_task({description: "Check Slack", delay: "5m"})
+- "Every morning at 9" → schedule_task({description: "Morning briefing", cron: "0 9 * * *"})
+- "At 3pm today" → schedule_task({description: "...", at: "${new Date().toISOString().split('T')[0]}T15:00:00"})
+
+The channel and userId are filled automatically from the current conversation — do NOT pass them manually.
+When the task fires, you will execute it — describe what to DO, not just what to say.
+IMPORTANT: Do not just say "I'll remind you" — you MUST call schedule_task for it to work.`;
     }
 
     instructions += `\nIf the user asks what you can do, use lookup_capabilities to check your available tools.`;
 
     if (this.config.capabilities.selfConfig) {
-      instructions += `\nYou can read and modify your own configuration using config_read and config_update. After updating config, you will automatically restart with the new settings.`;
+      instructions += `\n\n## Self-Configuration
+You can read and modify your own configuration using config_read and config_update. After updating config, you will automatically restart with the new settings.
+You also have env_check and env_set tools to manage environment variables (.env file).
+
+When the user asks to switch LLM provider or model:
+1. Use env_check to verify required keys are set
+2. If missing, tell the user what's needed and offer to set it via env_set if they provide the key
+3. Then use config_update to change llm.provider and llm.model
+
+Required env vars per provider:
+- google: GOOGLE_API_KEY
+- openai: OPENAI_API_KEY
+- anthropic: ANTHROPIC_API_KEY
+- ollama (local): none
+- ollama (cloud): OLLAMA_URL=https://ollama.com, OLLAMA_API_KEY
+
+Other env vars: GITHUB_TOKEN (for GitHub capability), TG_TOKEN, DISCORD_TOKEN, SLACK_BOT_TOKEN.`;
     }
 
     if (this.config.capabilities.selfTools) {
@@ -653,6 +699,16 @@ You can receive images and voice messages from users.
 - Voice messages require a speech recognition model. If it's not downloaded yet, suggest using download_stt_model tool (~75MB, works offline).`;
 
     return instructions;
+  }
+
+  private buildSttProvider(): SttProvider | null {
+    if (this.env.GROQ_API_KEY) {
+      return new GroqSttProvider({ apiKey: this.env.GROQ_API_KEY });
+    }
+    if (this.env.OPENAI_API_KEY) {
+      return new OpenAISttProvider({ apiKey: this.env.OPENAI_API_KEY });
+    }
+    return null;
   }
 
   private async buildVisionChecker(): Promise<(modelId: string) => boolean> {

@@ -265,7 +265,10 @@ describe('RuntimeBuilder', () => {
       capabilities: { webSearch: true },
     };
 
-    const builder = new RuntimeBuilder(config, { GOOGLE_API_KEY: 'test-key' });
+    const builder = new RuntimeBuilder(config, {
+      GOOGLE_API_KEY: 'test-key',
+      TAVILY_API_KEY: 'test-tavily-key',
+    });
     const built = await builder.build();
 
     const toolNames = built.agent.tools.map((t: { name: string }) => t.name);

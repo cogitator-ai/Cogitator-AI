@@ -1,6 +1,10 @@
 import type { Attachment, ImageInput } from '@cogitator-ai/types';
 import type { LocalWhisper } from './whisper-local';
 
+export interface SttProvider {
+  transcribe(buffer: Buffer, mimeType: string): Promise<string>;
+}
+
 export interface MediaProcessResult {
   images: ImageInput[];
   transcribedText: string | null;
@@ -10,7 +14,8 @@ export interface MediaProcessResult {
 export class MediaProcessor {
   constructor(
     private whisper: LocalWhisper | null,
-    private checkVision: (modelId: string) => boolean
+    private checkVision: (modelId: string) => boolean,
+    private sttProvider?: SttProvider | null
   ) {}
 
   async process(attachments: Attachment[], modelId: string): Promise<MediaProcessResult> {
@@ -44,25 +49,53 @@ export class MediaProcessor {
 
     if (audioAttachments.length > 0) {
       const firstAudio = audioAttachments[0];
-      if (this.whisper && this.whisper.isModelDownloaded() && firstAudio.buffer) {
-        try {
-          transcribedText = await this.whisper.transcribe(firstAudio.buffer, firstAudio.mimeType);
-        } catch (err) {
-          console.error('[media] Whisper transcription failed:', (err as Error).message);
-          systemNotes.push(
-            '[System: the user sent a voice message but transcription failed due to a technical error.]'
-          );
-        }
-      } else {
-        systemNotes.push(
-          '[System: the user sent a voice message but speech recognition is not set up yet. ' +
-            'Suggest downloading it using the download_stt_model tool (~75MB, works offline). ' +
-            'Ask the user for confirmation first.]'
+      if (firstAudio.buffer) {
+        transcribedText = await this.transcribeAudio(
+          firstAudio.buffer,
+          firstAudio.mimeType,
+          systemNotes
         );
       }
     }
 
     return { images, transcribedText, systemNotes };
+  }
+
+  private async transcribeAudio(
+    buffer: Buffer,
+    mimeType: string,
+    systemNotes: string[]
+  ): Promise<string | null> {
+    if (this.sttProvider) {
+      try {
+        return await this.sttProvider.transcribe(buffer, mimeType);
+      } catch (err) {
+        console.error('[media] STT provider failed:', (err as Error).message);
+        systemNotes.push(
+          '[System: the user sent a voice message but transcription failed due to a technical error.]'
+        );
+        return null;
+      }
+    }
+
+    if (this.whisper?.isModelDownloaded()) {
+      try {
+        return await this.whisper.transcribe(buffer, mimeType);
+      } catch (err) {
+        console.error('[media] Whisper transcription failed:', (err as Error).message);
+        systemNotes.push(
+          '[System: the user sent a voice message but transcription failed due to a technical error.]'
+        );
+        return null;
+      }
+    }
+
+    systemNotes.push(
+      '[System: the user sent a voice message but speech recognition is not set up yet. ' +
+        'Suggest downloading it using the download_stt_model tool (~75MB, works offline). ' +
+        'Ask the user for confirmation first.]'
+    );
+    return null;
   }
 
   private normalizeImageMime(

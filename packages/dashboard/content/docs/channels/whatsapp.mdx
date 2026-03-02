@@ -9,6 +9,21 @@ description: Connect your AI agent to WhatsApp via Baileys.
 pnpm add @whiskeysockets/baileys
 ```
 
+## How It Works
+
+WhatsApp doesn't have a bot API like Telegram. Instead, Baileys connects as a "linked device" to your personal WhatsApp account (like WhatsApp Web). This means:
+
+- Your agent responds **as your WhatsApp number**
+- No separate bot account needed
+- Works with personal and business WhatsApp
+
+## First-Time Pairing
+
+1. Start the gateway — a QR code appears in the terminal
+2. On your phone: WhatsApp → Settings → Linked Devices → Link a Device
+3. Scan the QR code
+4. Session is saved to disk — next restart reconnects automatically
+
 ## Usage
 
 ```typescript
@@ -30,25 +45,41 @@ interface WhatsAppChannelConfig {
 }
 ```
 
-## Pairing
-
-WhatsApp requires linking via QR code on first connection:
-
-1. Start the gateway with `printQr: true`
-2. Scan the QR code from your phone's WhatsApp (Settings → Linked Devices → Link a Device)
-3. Session is persisted in `sessionPath` for future restarts
-
-For custom QR handling (e.g., displaying in a web UI), use the `qrCallback` option.
-
 ## Features
 
-- QR code pairing with persistent sessions
-- Auto-reconnect on connection drops
-- Group message support with participant tracking
-- Typing indicators via presence updates
-- File sending support
-- No message editing (WhatsApp API limitation) -- full response sent after generation
+| Feature | Support |
+|---------|---------|
+| 1-on-1 chats | ✅ |
+| Group chats | ✅ |
+| Streaming (edit) | ❌ (WhatsApp doesn't support editing) |
+| Typing indicator | ✅ (presence update) |
+| Reactions | ❌ |
+| Files | ✅ |
+| Markdown | ✅ WhatsApp-native formatting |
+| Auto-reconnect | ✅ |
+| Session persistence | ✅ (filesystem) |
+
+## WhatsApp Markdown
+
+WhatsApp uses its own formatting syntax. Cogitator auto-converts standard markdown before sending:
+
+| Standard | WhatsApp |
+|----------|----------|
+| `**bold**` | `*bold*` |
+| `__bold__` | `*bold*` |
+| `~~strike~~` | `~strike~` |
+| Code blocks | Preserved |
+| Inline code | Preserved |
 
 ## Limitations
 
-WhatsApp does not support editing sent messages. Unlike Telegram and Discord where streaming responses update in-place, WhatsApp will show a typing indicator and send the complete response when ready.
+- No message editing — full response sent after generation (no streaming preview)
+- QR code expires after ~20 seconds, bot retries automatically
+- If you unlink the device from your phone, you need to re-pair
+- WhatsApp may temporarily ban automated accounts with high message volume
+
+## Tips
+
+- Use a dedicated phone number for production bots
+- The `sessionPath` directory must be writable
+- Use `qrCallback` to display the QR in a web UI instead of terminal

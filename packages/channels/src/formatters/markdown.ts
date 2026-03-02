@@ -1,4 +1,5 @@
 import type { ChannelType } from '@cogitator-ai/types';
+import { markdownToWhatsApp } from './whatsapp-markdown';
 
 const PLATFORM_LIMITS: Record<string, number> = {
   telegram: 4096,
@@ -18,6 +19,8 @@ export function adaptMarkdown(text: string, channelType: ChannelType): string {
       return toTelegramMarkdown(text);
     case 'slack':
       return toSlackMarkdown(text);
+    case 'whatsapp':
+      return markdownToWhatsApp(text);
     default:
       return text;
   }

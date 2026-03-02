@@ -5,7 +5,7 @@ description: Schedule tasks, reminders, and recurring jobs with HeartbeatSchedul
 
 ## Overview
 
-The `HeartbeatScheduler` enables your assistant to schedule tasks, set reminders, and run recurring jobs via cron expressions. It polls a `TimerStore` at regular intervals and fires overdue entries as messages through the gateway.
+The `HeartbeatScheduler` enables your assistant to schedule tasks, set reminders, and run recurring jobs. It polls a `TimerStore` at regular intervals and fires overdue entries as messages through the gateway.
 
 ## Setup via Config
 
@@ -25,36 +25,56 @@ This adds three tools to the agent automatically:
 ## Programmatic Setup
 
 ```typescript
-import { HeartbeatScheduler } from '@cogitator-ai/channels';
+import { HeartbeatScheduler, SimpleTimerStore } from '@cogitator-ai/channels';
 
-const scheduler = new HeartbeatScheduler(timerStore, {
-  onFire: async (msg) => {
-    // handle the fired timer — route back through gateway
-    console.log(`Task fired: ${msg.text}`);
-  },
+const store = new SimpleTimerStore({ persistPath: '.cogitator/timers.json' });
+
+const scheduler = new HeartbeatScheduler(store, {
+  onFire: (msg) => gateway.injectMessage(msg),
   pollInterval: 30_000,
+  maxRetries: 5,
+  staggerMs: 5000,
+  onRunComplete: (entry, status, error, durationMs) => {
+    console.log(`[scheduler] ${entry.id}: ${status} (${durationMs}ms)`);
+    if (error) console.error(`  error: ${error}`);
+  },
 });
 
 scheduler.start();
 ```
 
-### HeartbeatConfig
+## HeartbeatConfig
 
 ```typescript
 interface HeartbeatConfig {
   onFire: (msg: ChannelMessage) => Promise<void> | void;
-  pollInterval?: number;      // default: 30000 (30s)
+  pollInterval?: number;        // default: 30000 (30s)
   getNextCronMs?: (cron: string) => number;
+  maxRetries?: number;          // default: 5 — skip after N consecutive errors
+  staggerMs?: number;           // random startup delay (0-N ms) to prevent thundering herd
+  onRunComplete?: (
+    entry: TimerEntry,
+    status: 'ok' | 'error',
+    error?: string,
+    durationMs?: number
+  ) => void;
 }
 ```
 
+## Schedule Types
+
+| Type | Field | Behavior |
+|------|-------|----------|
+| Cron | `cron: "0 12 * * *"` | Recurring via cron expression, reschedules after each fire |
+| Interval | `type: 'recurring', interval: 60000` | Reschedules at `now + interval` after each fire |
+| One-shot | `type: 'fixed'` | Fires once, not rescheduled |
+
 ## Tool Usage
 
-Once enabled, the agent can use scheduling tools naturally in conversation:
+Once enabled, the agent schedules tasks naturally in conversation:
 
 **User:** "Remind me to check the deployment in 30 minutes"
 
-The agent calls `schedule_task` with:
 ```json
 {
   "description": "Check the deployment",
@@ -64,7 +84,6 @@ The agent calls `schedule_task` with:
 
 **User:** "Every weekday at 9am, send me a standup reminder"
 
-The agent calls `schedule_task` with:
 ```json
 {
   "description": "Daily standup reminder",
@@ -77,23 +96,67 @@ The agent calls `schedule_task` with:
 The `schedule_task` tool accepts three formats:
 
 | Format | Example | Description |
-|---|---|---|
+|--------|---------|-------------|
 | Delay | `"20m"`, `"2h"`, `"1d"` | Relative delay from now |
 | Cron | `"0 12 * * *"` | Standard cron expression (recurring) |
 | ISO datetime | `"2025-03-15T10:00:00Z"` | Absolute time (one-off) |
+
+## Job Management
+
+The scheduler exposes methods for runtime job control:
+
+```typescript
+const jobs = await scheduler.listJobs();
+
+await scheduler.disableJob(jobId);   // soft-disable, skipped on poll
+await scheduler.enableJob(jobId);    // re-enable + reset error count
+await scheduler.cancelJob(jobId);    // permanent cancel
+const job = await scheduler.getJob(jobId);
+```
+
+## Error Tracking
+
+Each job tracks its run history:
+
+```typescript
+interface TimerEntry {
+  // ...
+  lastRunAt?: number;
+  lastRunStatus?: 'ok' | 'error' | 'skipped';
+  lastError?: string;
+  consecutiveErrors?: number;
+  enabled?: boolean;
+}
+```
+
+After `maxRetries` consecutive errors (default: 5), the job is automatically skipped with status `'skipped'`. Re-enable it with `scheduler.enableJob(id)` to reset the error count.
+
+## Persistence
+
+`SimpleTimerStore` persists timers to a JSON file with atomic writes (write to temp file, then rename). Timers survive restarts.
+
+```typescript
+const store = new SimpleTimerStore({
+  persistPath: '.cogitator/timers.json',
+});
+```
 
 ## Lifecycle
 
 ```
 scheduler.start()
-  → polls TimerStore every pollInterval
-  → finds overdue entries
-  → fires each as a ChannelMessage via onFire callback
-  → marks entry as fired
-  → if cron: reschedules next occurrence
+  → optional stagger delay (random 0-staggerMs)
+  → poll loop every pollInterval:
+    → get overdue entries from store
+    → skip disabled entries
+    → skip entries with consecutiveErrors >= maxRetries
+    → fire each as ChannelMessage via onFire
+    → update run tracking (lastRunAt, lastRunStatus, consecutiveErrors)
+    → mark fired + call onRunComplete
+    → reschedule cron/interval entries
 
 scheduler.stop()
-  → clears the polling interval
+  → clear the poll interval
 ```
 
 ## Cleanup
@@ -102,6 +165,8 @@ The scheduler is automatically stopped during `runtime.cleanup()` when using `Ru
 
 ```typescript
 process.on('SIGINT', async () => {
-  await runtime.cleanup(); // stops scheduler, gateway, memory
+  scheduler.stop();
+  await gateway.stop();
+  process.exit(0);
 });
 ```

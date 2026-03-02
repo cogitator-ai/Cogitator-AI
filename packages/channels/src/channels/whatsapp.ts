@@ -1,4 +1,5 @@
 import type { Channel, ChannelMessage } from '@cogitator-ai/types';
+import { markdownToWhatsApp } from '../formatters/whatsapp-markdown';
 
 export interface WhatsAppChannelConfig {
   sessionPath?: string;
@@ -123,13 +124,11 @@ export class WhatsAppChannel implements Channel {
           channelType: 'whatsapp',
           channelId: jid,
           userId: userId.split('@')[0],
+          userName: msg.pushName ?? userId.split('@')[0],
           text,
           raw: msg,
+          ...(isGroup ? { groupId: jid } : {}),
         };
-
-        if (isGroup) {
-          (channelMsg as ChannelMessage & { groupId?: string }).groupId = jid;
-        }
 
         if (this.handler) {
           void this.handler(channelMsg);
@@ -151,13 +150,18 @@ export class WhatsAppChannel implements Channel {
 
   async sendText(channelId: string, text: string): Promise<string> {
     if (!this.sock) throw new Error('WhatsApp not connected');
-    const sent = await this.sock.sendMessage(channelId, { text });
+    const waText = markdownToWhatsApp(text);
+    const sent = await this.sock.sendMessage(channelId, { text: waText });
     return sent.key.id ?? '';
   }
 
-  async editText(channelId: string, messageId: string, _text: string): Promise<void> {
-    void channelId;
-    void messageId;
+  async editText(channelId: string, messageId: string, text: string): Promise<void> {
+    if (!this.sock) return;
+    const waText = markdownToWhatsApp(text);
+    await this.sock.sendMessage(channelId, {
+      text: waText,
+      edit: { key: { remoteJid: channelId, id: messageId } },
+    });
   }
 
   async sendFile(

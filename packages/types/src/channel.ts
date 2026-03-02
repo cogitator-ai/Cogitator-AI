@@ -57,6 +57,8 @@ export interface Channel {
   sendFile(channelId: string, file: Attachment): Promise<void>;
 
   sendTyping(channelId: string): Promise<void>;
+
+  setReaction?(channelId: string, messageId: string, emoji: string): Promise<void>;
 }
 
 export interface StreamConfig {
@@ -79,6 +81,31 @@ export interface GatewayMiddleware {
 
 export type OwnerConfig = Record<string, string>;
 
+export type StatusPhase = 'queued' | 'thinking' | 'tool' | 'done' | 'error';
+
+export type QueueMode = 'parallel' | 'sequential' | 'interrupt' | 'collect';
+
+export interface StatusReactionConfig {
+  enabled?: boolean;
+  emojis?: Partial<Record<StatusPhase, string>>;
+  debounceMs?: number;
+  stallSoftMs?: number;
+  stallHardMs?: number;
+}
+
+export interface DebounceConfig {
+  enabled?: boolean;
+  delayMs?: number;
+  byChannel?: Partial<Record<ChannelType, number>>;
+}
+
+export interface EnvelopeConfig {
+  enabled?: boolean;
+  includeTimestamp?: boolean;
+  includeElapsed?: boolean;
+  timezone?: string;
+}
+
 export interface GatewayConfig {
   agent: Agent | ((user: ChannelUser) => Agent | Promise<Agent>);
   channels: Channel[];
@@ -94,6 +121,11 @@ export interface GatewayConfig {
   };
 
   stream?: StreamConfig;
+
+  reactions?: StatusReactionConfig;
+  debounce?: DebounceConfig;
+  envelope?: EnvelopeConfig;
+  queueMode?: QueueMode;
 
   onError?: (error: Error, msg: ChannelMessage) => void;
 }

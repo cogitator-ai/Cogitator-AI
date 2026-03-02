@@ -417,7 +417,13 @@ export class Cogitator {
               this.state.constitutionalAI,
               !!this.config.guardrails?.filterToolCalls,
               () => initializeSandbox(this.config, this.state),
-              abortController.signal
+              abortController.signal,
+              {
+                threadId,
+                userId: options.userId,
+                channelType: options.channelType,
+                channelId: options.channelId,
+              }
             );
             const toolSpanEnd = Date.now();
             return { toolCall, result, toolSpanStart, toolSpanEnd };

@@ -5,6 +5,7 @@ import type {
   Attachment,
   SendOptions,
 } from '@cogitator-ai/types';
+import { chunkDiscordText } from '../formatters/discord-chunker';
 
 export interface DiscordConfig {
   token: string;
@@ -27,7 +28,10 @@ interface DiscordChannelObj {
   isTextBased(): boolean;
   send(options: Record<string, unknown>): Promise<{ id: string }>;
   messages: {
-    fetch(id: string): Promise<{ edit(content: string): Promise<void> }>;
+    fetch(id: string): Promise<{
+      edit(content: string): Promise<void>;
+      react(emoji: string): Promise<void>;
+    }>;
   };
   sendTyping(): Promise<void>;
 }
@@ -136,13 +140,19 @@ export class DiscordChannel implements Channel {
     const channel = await this.client.channels.fetch(channelId);
     if (!channel?.isTextBased()) return '';
 
-    const msgOptions: Record<string, unknown> = { content: text.slice(0, 2000) };
-    if (options?.replyTo) {
-      msgOptions.reply = { messageReference: options.replyTo };
+    const chunks = chunkDiscordText(text);
+    let lastId = '';
+
+    for (let i = 0; i < chunks.length; i++) {
+      const msgOptions: Record<string, unknown> = { content: chunks[i] };
+      if (i === 0 && options?.replyTo) {
+        msgOptions.reply = { messageReference: options.replyTo };
+      }
+      const sent = await channel.send(msgOptions);
+      lastId = sent.id;
     }
 
-    const sent = await channel.send(msgOptions);
-    return sent.id;
+    return lastId;
   }
 
   async editText(channelId: string, messageId: string, text: string): Promise<void> {
@@ -151,10 +161,16 @@ export class DiscordChannel implements Channel {
     const channel = await this.client.channels.fetch(channelId);
     if (!channel?.isTextBased()) return;
 
+    const chunks = chunkDiscordText(text);
+
     try {
       const msg = await channel.messages.fetch(messageId);
-      await msg.edit(text.slice(0, 2000));
+      await msg.edit(chunks[0] ?? text.slice(0, 2000));
     } catch {}
+
+    for (let i = 1; i < chunks.length; i++) {
+      await channel.send({ content: chunks[i] });
+    }
   }
 
   async sendFile(channelId: string, file: Attachment): Promise<void> {
@@ -175,6 +191,18 @@ export class DiscordChannel implements Channel {
     if (!channel?.isTextBased()) return;
 
     await channel.sendTyping();
+  }
+
+  async setReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
+    if (!this.client) return;
+
+    const channel = await this.client.channels.fetch(channelId);
+    if (!channel?.isTextBased()) return;
+
+    try {
+      const msg = await channel.messages.fetch(messageId);
+      await msg.react(emoji);
+    } catch {}
   }
 }
 

@@ -38,7 +38,7 @@ export function createSchedulerTools(config: SchedulerToolsConfig) {
     description:
       'Schedule a task to run after a delay, at a specific time, or on a cron schedule. Provide exactly one of: delay, cron, or at.',
     parameters: scheduleParams,
-    execute: async ({ description, delay, cron, at, channel, userId }) => {
+    execute: async ({ description, delay, cron, at, channel, userId }, context) => {
       const modes = [delay, cron, at].filter(Boolean);
       if (modes.length !== 1) {
         throw new Error('Provide exactly one of: delay, cron, or at');
@@ -76,8 +76,9 @@ export function createSchedulerTools(config: SchedulerToolsConfig) {
         cron: cronExpr,
         metadata: {
           description,
-          channel: channel ?? defaultChannel,
-          userId: userId ?? defaultUserId,
+          channel: channel ?? context.channelType ?? defaultChannel,
+          channelId: context.channelId,
+          userId: userId ?? context.userId ?? defaultUserId,
         },
       });
 

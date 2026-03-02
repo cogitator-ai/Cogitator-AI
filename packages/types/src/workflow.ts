@@ -405,6 +405,13 @@ export interface TimerEntry {
   fired: boolean;
   createdAt: number;
   metadata?: Record<string, unknown>;
+  name?: string;
+  interval?: number;
+  lastRunAt?: number;
+  lastRunStatus?: 'ok' | 'error' | 'skipped';
+  lastError?: string;
+  consecutiveErrors?: number;
+  enabled?: boolean;
 }
 
 export interface TimerStore {
@@ -418,6 +425,8 @@ export interface TimerStore {
   markFired(id: string): Promise<void>;
   cleanup(olderThan: number): Promise<number>;
   onFire(callback: (entry: TimerEntry) => void): () => void;
+  update(id: string, patch: Partial<TimerEntry>): Promise<void>;
+  list(filter?: { enabled?: boolean; type?: string }): Promise<TimerEntry[]>;
 }
 
 export interface CronSchedule {

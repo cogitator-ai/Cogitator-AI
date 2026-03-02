@@ -16,16 +16,19 @@ export class LocalWhisper {
   }
 
   isModelDownloaded(): boolean {
-    const cacheDir = join(this.modelDir, 'models--Xenova--whisper-tiny');
-    if (!existsSync(cacheDir)) return false;
-    try {
-      const snapshots = join(cacheDir, 'snapshots');
-      if (!existsSync(snapshots)) return false;
-      const dirs = readdirSync(snapshots);
-      return dirs.length > 0;
-    } catch {
-      return false;
+    const jsCache = join(this.modelDir, 'Xenova', 'whisper-tiny', 'onnx');
+    if (existsSync(jsCache)) return true;
+
+    const pyCache = join(this.modelDir, 'models--Xenova--whisper-tiny', 'snapshots');
+    if (existsSync(pyCache)) {
+      try {
+        return readdirSync(pyCache).length > 0;
+      } catch {
+        return false;
+      }
     }
+
+    return false;
   }
 
   async download(): Promise<void> {
@@ -61,9 +64,20 @@ export class LocalWhisper {
       pcmFloat32 = await this.decodeOgg(audioBuffer);
     }
 
-    const result = await (this.pipeline as (input: Float32Array) => Promise<{ text: string }>)(
-      pcmFloat32
-    );
+    const pipe = this.pipeline as {
+      model: {
+        config: { decoder_start_token_id: number };
+        generation_config: { no_timestamps_token_id: number };
+      };
+      (input: Float32Array, opts?: Record<string, unknown>): Promise<{ text: string }>;
+    };
+
+    const startToken = pipe.model.config.decoder_start_token_id;
+    const noTsToken = pipe.model.generation_config.no_timestamps_token_id;
+
+    const result = await pipe(pcmFloat32, {
+      decoder_input_ids: [startToken, noTsToken],
+    });
     return result.text.trim();
   }
 
