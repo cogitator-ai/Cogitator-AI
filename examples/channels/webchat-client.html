@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cogitator WebChat</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
+    #header { padding: 12px 16px; background: #16213e; border-bottom: 1px solid #0f3460; display: flex; align-items: center; gap: 12px; }
+    #header h1 { font-size: 16px; font-weight: 600; }
+    #status { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #333; }
+    #status.connected { background: #1b5e20; }
+    #status.error { background: #b71c1c; }
+    #messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+    .msg { max-width: 80%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+    .msg.user { align-self: flex-end; background: #0f3460; }
+    .msg.bot { align-self: flex-start; background: #16213e; border: 1px solid #0f3460; }
+    .msg.system { align-self: center; font-size: 12px; color: #888; }
+    #input-area { padding: 12px 16px; background: #16213e; border-top: 1px solid #0f3460; display: flex; gap: 8px; }
+    #input { flex: 1; padding: 10px 14px; border-radius: 8px; border: 1px solid #0f3460; background: #1a1a2e; color: #e0e0e0; font-size: 14px; outline: none; }
+    #input:focus { border-color: #533483; }
+    #send { padding: 10px 20px; border-radius: 8px; border: none; background: #533483; color: white; font-size: 14px; cursor: pointer; }
+    #send:hover { background: #6a42a0; }
+    #send:disabled { opacity: 0.5; cursor: default; }
+    #connect-form { padding: 16px; background: #16213e; border-bottom: 1px solid #0f3460; display: flex; gap: 8px; align-items: center; font-size: 13px; }
+    #connect-form label { color: #aaa; }
+    #connect-form input { padding: 6px 10px; border-radius: 6px; border: 1px solid #0f3460; background: #1a1a2e; color: #e0e0e0; font-size: 13px; outline: none; }
+    #connect-form button { padding: 6px 14px; border-radius: 6px; border: none; background: #533483; color: white; cursor: pointer; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <h1>Cogitator WebChat</h1>
+    <span id="status">disconnected</span>
+  </div>
+  <div id="connect-form">
+    <label>Host:</label>
+    <input id="host" value="ws://localhost:3100/ws" style="width:220px">
+    <label>Token:</label>
+    <input id="token" value="dev-token" style="width:120px">
+    <button onclick="connect()">Connect</button>
+  </div>
+  <div id="messages"></div>
+  <div id="input-area">
+    <input id="input" placeholder="Type a message..." disabled>
+    <button id="send" onclick="send()" disabled>Send</button>
+  </div>
+
+  <script>
+    let ws = null;
+    const messages = {};
+
+    function setStatus(text, cls) {
+      const el = document.getElementById('status');
+      el.textContent = text;
+      el.className = cls || '';
+    }
+
+    function addMessage(text, type, id) {
+      const container = document.getElementById('messages');
+      const div = document.createElement('div');
+      div.className = `msg ${type}`;
+      div.textContent = text;
+      if (id) {
+        div.id = `msg-${id}`;
+        messages[id] = div;
+      }
+      container.appendChild(div);
+      container.scrollTop = container.scrollHeight;
+      return div;
+    }
+
+    function connect() {
+      const host = document.getElementById('host').value;
+      const token = document.getElementById('token').value;
+      const url = `${host}?token=${encodeURIComponent(token)}`;
+
+      if (ws) ws.close();
+      setStatus('connecting...');
+
+      ws = new WebSocket(url);
+
+      ws.onopen = () => {
+        setStatus('connected', 'connected');
+        document.getElementById('input').disabled = false;
+        document.getElementById('send').disabled = false;
+        document.getElementById('input').focus();
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        switch (data.type) {
+          case 'connected':
+            addMessage(`Connected as ${data.clientId}`, 'system');
+            break;
+          case 'message':
+            addMessage(data.text, 'bot', data.id);
+            break;
+          case 'edit':
+            if (messages[data.id]) {
+              messages[data.id].textContent = data.text;
+            }
+            break;
+          case 'typing':
+            break;
+          case 'error':
+            addMessage(`Error: ${data.message}`, 'system');
+            break;
+        }
+      };
+
+      ws.onclose = () => {
+        setStatus('disconnected');
+        document.getElementById('input').disabled = true;
+        document.getElementById('send').disabled = true;
+      };
+
+      ws.onerror = () => {
+        setStatus('error', 'error');
+      };
+    }
+
+    function send() {
+      const input = document.getElementById('input');
+      const text = input.value.trim();
+      if (!text || !ws) return;
+
+      addMessage(text, 'user');
+      ws.send(JSON.stringify({ text }));
+      input.value = '';
+      input.focus();
+    }
+
+    document.getElementById('input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') send();
+    });
+  </script>
+</body>
+</html>
