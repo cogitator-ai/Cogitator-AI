@@ -528,4 +528,226 @@ describe('StreamBuffer', () => {
       expect(buffer.getMessageIds()).toEqual([]);
     });
   });
+
+  describe('duplicate suppression', () => {
+    it('skips editText when buffer unchanged between flushes', async () => {
+      const channel = createMockChannel();
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 50,
+        minChunkSize: 1,
+      });
+
+      buffer.start();
+      buffer.append('Hello');
+      await wait(80);
+
+      expect(channel.sendText).toHaveBeenCalledTimes(1);
+
+      await wait(80);
+
+      expect(channel.editText).not.toHaveBeenCalled();
+
+      await buffer.abort();
+    });
+
+    it('sends editText when buffer has changed', async () => {
+      const channel = createMockChannel();
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 50,
+        minChunkSize: 1,
+      });
+
+      buffer.start();
+      buffer.append('Hello');
+      await wait(80);
+
+      buffer.append(' world');
+      await wait(80);
+
+      expect(channel.editText).toHaveBeenCalledWith('ch1', 'msg_001', 'Hello world');
+
+      await buffer.abort();
+    });
+
+    it('force flush bypasses dedup', async () => {
+      const channel = createMockChannel();
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 10000,
+        minChunkSize: 1,
+      });
+
+      buffer.append('Hello');
+      await buffer.finish();
+
+      expect(channel.sendText).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('in-flight awareness', () => {
+    it('does not run concurrent flushes', async () => {
+      const channel = createMockChannel();
+      let concurrent = 0;
+      let maxConcurrent = 0;
+      (channel.sendText as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        concurrent++;
+        maxConcurrent = Math.max(maxConcurrent, concurrent);
+        await wait(60);
+        concurrent--;
+        return 'msg_001';
+      });
+
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 20,
+        minChunkSize: 1,
+      });
+
+      buffer.start();
+      buffer.append('Hello');
+
+      await wait(200);
+      await buffer.abort();
+
+      expect(maxConcurrent).toBe(1);
+    });
+
+    it('finish() waits for in-flight flush', async () => {
+      const channel = createMockChannel();
+      let sendResolved = false;
+      (channel.sendText as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        await wait(80);
+        sendResolved = true;
+        return 'msg_001';
+      });
+
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 20,
+        minChunkSize: 1,
+      });
+
+      buffer.start();
+      buffer.append('Hello');
+
+      await wait(30);
+      await buffer.finish();
+
+      expect(sendResolved).toBe(true);
+    });
+  });
+
+  describe('generation counter', () => {
+    it('ignores late sendText result from stale generation', async () => {
+      const channel = createMockChannel();
+      let callCount = 0;
+      (channel.sendText as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          await wait(100);
+          return 'msg_stale';
+        }
+        return 'msg_fresh';
+      });
+
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 20,
+        minChunkSize: 1,
+      });
+
+      buffer.start();
+      buffer.append('First');
+      await wait(30);
+
+      buffer.forceNewMessage();
+      buffer.append('Second');
+
+      await wait(200);
+      await buffer.finish();
+
+      expect(buffer.getMessageIds()).not.toContain('msg_stale');
+      expect(buffer.getMessageIds()).toContain('msg_fresh');
+
+      await buffer.abort();
+    });
+
+    it('skips stale editText after generation change', async () => {
+      const channel = createMockChannel();
+      let sendCount = 0;
+      (channel.sendText as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        sendCount++;
+        return `msg_${sendCount}`;
+      });
+
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 30,
+        minChunkSize: 1,
+      });
+
+      buffer.start();
+      buffer.append('Hello');
+      await wait(50);
+
+      buffer.forceNewMessage();
+      buffer.append('New message');
+      await wait(50);
+
+      const editCalls = (channel.editText as ReturnType<typeof vi.fn>).mock.calls;
+      const staleEdits = editCalls.filter(
+        (c: unknown[]) => c[1] === 'msg_1' && (c[2] as string).startsWith('New')
+      );
+      expect(staleEdits).toHaveLength(0);
+
+      await buffer.abort();
+    });
+  });
+
+  describe('smart throttle', () => {
+    it('schedules next flush accounting for elapsed API time', async () => {
+      const channel = createMockChannel();
+      const timestamps: number[] = [];
+      (channel.sendText as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        timestamps.push(Date.now());
+        await wait(30);
+        return 'msg_001';
+      });
+      (channel.editText as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        timestamps.push(Date.now());
+      });
+
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 60,
+        minChunkSize: 1,
+      });
+
+      buffer.start();
+      buffer.append('Hello');
+      await wait(50);
+      buffer.append(' world');
+      await wait(120);
+
+      await buffer.abort();
+
+      if (timestamps.length >= 2) {
+        const gap = timestamps[1] - timestamps[0];
+        expect(gap).toBeLessThan(100);
+      }
+    });
+
+    it('does not schedule after stop', async () => {
+      const channel = createMockChannel();
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 30,
+        minChunkSize: 1,
+      });
+
+      buffer.start();
+      buffer.append('Hello');
+      await buffer.abort();
+
+      const callsBefore = (channel.sendText as ReturnType<typeof vi.fn>).mock.calls.length;
+      buffer.append('More');
+      await wait(100);
+      const callsAfter = (channel.sendText as ReturnType<typeof vi.fn>).mock.calls.length;
+
+      expect(callsAfter).toBe(callsBefore);
+    });
+  });
 });

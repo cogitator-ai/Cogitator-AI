@@ -245,13 +245,28 @@ export class TelegramChannel implements Channel {
 
     const chatId = Number(channelId);
     const useMarkdown = options?.format === 'markdown';
-
-    const sent = await this.bot.api.sendMessage(chatId, text, {
-      ...(useMarkdown ? { parse_mode: 'Markdown' } : {}),
+    const baseOpts = {
       ...(options?.replyTo ? { reply_parameters: { message_id: Number(options.replyTo) } } : {}),
       ...(options?.silent ? { disable_notification: true } : {}),
-    });
+    };
 
+    if (useMarkdown) {
+      try {
+        const sent = await this.bot.api.sendMessage(chatId, text, {
+          ...baseOpts,
+          parse_mode: 'Markdown',
+        });
+        return String(sent.message_id);
+      } catch (err) {
+        if (isEntityParseError(err)) {
+          const sent = await this.bot.api.sendMessage(chatId, text, baseOpts);
+          return String(sent.message_id);
+        }
+        throw err;
+      }
+    }
+
+    const sent = await this.bot.api.sendMessage(chatId, text, baseOpts);
     return String(sent.message_id);
   }
 
@@ -259,8 +274,17 @@ export class TelegramChannel implements Channel {
     if (!this.bot) return;
 
     try {
-      await this.bot.api.editMessageText(Number(channelId), Number(messageId), text);
-    } catch {}
+      await this.bot.api.editMessageText(Number(channelId), Number(messageId), text, {
+        parse_mode: 'Markdown',
+      });
+    } catch (err) {
+      if (isEntityParseError(err)) {
+        try {
+          await this.bot.api.editMessageText(Number(channelId), Number(messageId), text);
+        } catch {}
+        return;
+      }
+    }
   }
 
   async sendFile(channelId: string, file: Attachment): Promise<void> {
@@ -307,6 +331,12 @@ export class TelegramChannel implements Channel {
       { type: 'emoji', emoji },
     ]);
   }
+}
+
+function isEntityParseError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message;
+  return msg.includes("can't parse entities") || msg.includes("Bad Request: can't parse");
 }
 
 export function telegramChannel(config: TelegramConfig): Channel {

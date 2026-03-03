@@ -7,11 +7,15 @@ export class StreamBuffer {
   private buffer = '';
   private messageId: string | null = null;
   private readonly messageIds: string[] = [];
-  private timer: ReturnType<typeof setInterval> | null = null;
-  private flushing = false;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private flushPromise: Promise<void> | null = null;
   private readonly draftId: number | null = null;
   private draftFailed = false;
   private initialSent = false;
+  private lastSentText = '';
+  private generation = 0;
+  private lastFlushEnd = 0;
+  private stopped = false;
 
   constructor(
     private readonly channel: Channel,
@@ -29,9 +33,8 @@ export class StreamBuffer {
   }
 
   start(): void {
-    this.timer = setInterval(() => {
-      void this.flush();
-    }, this.config.flushInterval);
+    this.stopped = false;
+    this.scheduleNext();
   }
 
   append(token: string): void {
@@ -47,9 +50,11 @@ export class StreamBuffer {
   }
 
   forceNewMessage(): void {
+    this.generation++;
     this.buffer = '';
     this.messageId = null;
     this.initialSent = false;
+    this.lastSentText = '';
   }
 
   getMessageIds(): readonly string[] {
@@ -57,9 +62,14 @@ export class StreamBuffer {
   }
 
   async finish(): Promise<string> {
+    this.stopped = true;
     if (this.timer) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = null;
+    }
+
+    if (this.flushPromise) {
+      await this.flushPromise;
     }
 
     if (this.draftId && !this.draftFailed) {
@@ -78,9 +88,14 @@ export class StreamBuffer {
   }
 
   async abort(): Promise<void> {
+    this.stopped = true;
     if (this.timer) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = null;
+    }
+
+    if (this.flushPromise) {
+      await this.flushPromise;
     }
 
     if (this.config.deleteOnAbort && this.channel.deleteMessage) {
@@ -98,8 +113,18 @@ export class StreamBuffer {
     }
   }
 
+  private scheduleNext(): void {
+    if (this.stopped) return;
+    const elapsed = this.lastFlushEnd ? Date.now() - this.lastFlushEnd : 0;
+    const delay = Math.max(0, this.config.flushInterval - elapsed);
+    this.timer = setTimeout(() => {
+      const p = this.flush();
+      void p.then(() => this.scheduleNext());
+    }, delay);
+  }
+
   private async flush(force = false): Promise<void> {
-    if (this.flushing) return;
+    if (this.flushPromise) return;
     if (this.buffer.length === 0) return;
 
     if (!force && !this.initialSent && this.config.minInitialChars) {
@@ -108,28 +133,47 @@ export class StreamBuffer {
 
     if (!force && this.buffer.length < this.config.minChunkSize) return;
 
-    this.flushing = true;
     const text = this.buffer;
 
+    if (!force && this.messageId && text === this.lastSentText) return;
+
+    const gen = this.generation;
+
+    const promise = this.doFlush(text, gen);
+    this.flushPromise = promise;
+
+    try {
+      await promise;
+    } finally {
+      this.flushPromise = null;
+      this.lastFlushEnd = Date.now();
+    }
+  }
+
+  private async doFlush(text: string, gen: number): Promise<void> {
     try {
       if (this.draftId && !this.draftFailed) {
         await this.channel.sendDraft!(this.channelId, this.draftId, text);
       } else if (!this.messageId) {
-        this.messageId = await this.channel.sendText(this.channelId, text, {
+        const msgId = await this.channel.sendText(this.channelId, text, {
           replyTo: this.replyTo,
           format: 'markdown',
         });
-        this.trackMessageId(this.messageId);
+        if (gen !== this.generation) return;
+        this.messageId = msgId;
+        this.trackMessageId(msgId);
         this.initialSent = true;
+        this.lastSentText = text;
       } else {
+        if (gen !== this.generation) return;
         await this.channel.editText(this.channelId, this.messageId, text);
+        if (gen !== this.generation) return;
+        this.lastSentText = text;
       }
     } catch {
       if (this.draftId && !this.draftFailed) {
         this.draftFailed = true;
       }
-    } finally {
-      this.flushing = false;
     }
   }
 }

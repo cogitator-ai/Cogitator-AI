@@ -15,7 +15,7 @@ import type { Cogitator } from '@cogitator-ai/core';
 import { SessionManager, CompactionService } from '@cogitator-ai/memory';
 import type { SummarizeFn } from '@cogitator-ai/memory';
 import { StreamBuffer } from './stream-buffer';
-import { adaptMarkdown } from './formatters/markdown';
+import { adaptMarkdown, chunkMessage, getPlatformLimit } from './formatters/markdown';
 import type { MediaProcessor } from './media/media-processor';
 import { StatusReactionTracker } from './status-reactions';
 import { InboundDebouncer } from './inbound-debounce';
@@ -287,10 +287,16 @@ export class Gateway {
       channelId: msg.channelId,
     });
 
-    const sentId = await channel.sendText(msg.channelId, output, {
-      ...(replyTo ? { replyTo } : {}),
-      format: 'markdown',
-    });
+    const limit = getPlatformLimit(msg.channelType);
+    const chunks = chunkMessage(output, limit);
+    let sentId = '';
+
+    for (let i = 0; i < chunks.length; i++) {
+      sentId = await channel.sendText(msg.channelId, chunks[i], {
+        ...(i === 0 && replyTo ? { replyTo } : {}),
+        format: 'markdown',
+      });
+    }
 
     await this.hooks?.emit('message:sent', {
       msg,
@@ -312,7 +318,11 @@ export class Gateway {
     );
     const replyTo = (msg.raw as Record<string, unknown>)?.scheduled ? undefined : msg.id;
     const useDraft = !!channel.sendDraft;
-    const stream = new StreamBuffer(channel, msg.channelId, this.streamConfig, replyTo, useDraft);
+    const streamCfg = {
+      ...this.streamConfig,
+      maxMessageChars: this.streamConfig.maxMessageChars ?? getPlatformLimit(msg.channelType),
+    };
+    const stream = new StreamBuffer(channel, msg.channelId, streamCfg, replyTo, useDraft);
     stream.start();
 
     await this.hooks?.emit('agent:before_run', { msg, threadId, agent: agent.name });
@@ -348,10 +358,14 @@ export class Gateway {
         await stream.abort();
         if (result.output) {
           const output = adaptMarkdown(result.output, msg.channelType);
-          await channel.sendText(msg.channelId, output, {
-            ...(replyTo ? { replyTo } : {}),
-            format: 'markdown',
-          });
+          const limit = getPlatformLimit(msg.channelType);
+          const chunks = chunkMessage(output, limit);
+          for (let i = 0; i < chunks.length; i++) {
+            await channel.sendText(msg.channelId, chunks[i], {
+              ...(i === 0 && replyTo ? { replyTo } : {}),
+              format: 'markdown',
+            });
+          }
         }
       }
 
