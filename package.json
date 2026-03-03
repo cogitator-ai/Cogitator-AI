@@ -40,7 +40,7 @@
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
     "ogg-opus-decoder": "^1.7.3",
-    "openai": "^6.22.0",
+    "openai": "^6.25.0",
     "typescript": "^5.9.3",
     "zod": "^4.3.6"
   },
@@ -53,11 +53,11 @@
     "concurrently": "^9.2.1",
     "eslint": "^9.39.2",
     "husky": "^9.1.7",
-    "lint-staged": "^16.2.7",
+    "lint-staged": "^16.3.1",
     "prettier": "^3.8.1",
     "supertest": "^7.0.0",
     "tsx": "^4.21.0",
-    "turbo": "^2.8.9",
+    "turbo": "^2.8.12",
     "typescript-eslint": "^8.53.1",
     "vitest": "^4.0.18",
     "yaml": "^2.8.2"
