@@ -86,10 +86,10 @@ npx tsx examples/core/01-basic-agent.ts
 Build your own AI that runs 24/7 on Telegram, Discord, or Slack. No code required — just a YAML config.
 
 ```bash
-cogitator init
+cogitator wizard
 ```
 
-This generates a `cogitator.yml`:
+The interactive wizard walks you through everything: LLM provider, model, channels, capabilities, memory, MCP servers. It generates a `cogitator.yml`:
 
 ```yaml
 name: Jarvis
@@ -116,13 +116,15 @@ stream:
   minChunkSize: 30
 ```
 
-Then start it:
+The wizard asks your name, picks channels, configures capabilities, and writes everything to `cogitator.yml` + `.env`. Then start it:
 
 ```bash
 cogitator up                    # foreground with live dashboard
 cogitator daemon start          # background with auto-restart
 cogitator daemon install        # register as system service (systemd/launchd)
 ```
+
+> You can also use `cogitator init` to scaffold a full project with `package.json`, TypeScript config, and source files if you prefer the programmatic API over YAML.
 
 **Manage everything from chat** — no web dashboard needed:
 
