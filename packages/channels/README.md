@@ -185,12 +185,22 @@ const gateway = new Gateway({
 
 ## Envelope Formatting
 
-Wrap messages with context: `[telegram Alice +2m30s Feb 28 20:15] Hello world`
+Wrap messages with context so the LLM knows who's talking, on which platform, and when:
+
+`[14:23 MSK | telegram | @alice | DM | +2m30s] Hello world`
 
 ```typescript
 const gateway = new Gateway({
   // ...
-  envelope: { enabled: true, includeTimestamp: true, includeElapsed: true, timezone: 'utc' },
+  envelope: {
+    enabled: true,
+    includeTimestamp: true,
+    includeElapsed: true,
+    includeSender: true,
+    includeChannel: true,
+    includeChatType: true,
+    timezone: 'Europe/Moscow',
+  },
 });
 ```
 
@@ -222,25 +232,65 @@ Platform-specific markdown conversion applied automatically:
 ## Middleware
 
 ```typescript
-import { rateLimit, ownerCommands, pairing, autoExtract } from '@cogitator-ai/channels';
+import { rateLimit, ownerCommands, DmPolicyMiddleware, autoExtract } from '@cogitator-ai/channels';
 
 const gateway = new Gateway({
   // ...
   middleware: [
     rateLimit({ maxPerMinute: 30 }),
-    ownerCommands({ ownerIds: { telegram: '123' } }),
-    pairing({ ownerIds: { telegram: '123' } }),
+    ownerCommands({
+      ownerIds: { telegram: '123' },
+      commandLevels: { status: 'authorized', block: 'owner', help: 'public' },
+    }),
+    new DmPolicyMiddleware({
+      mode: 'pairing',
+      ownerIds: { telegram: '123' },
+      storePath: '~/.cogitator/dm-allowlist.json',
+      groupPolicy: 'open',
+    }),
     autoExtract({ extractor }),
   ],
 });
 ```
 
+### DM Policy Modes
+
+- **open** — anyone can DM the bot
+- **allowlist** — only pre-approved users
+- **pairing** — unknown users get a code, owner approves via `/pair CODE`
+- **disabled** — DMs blocked entirely
+
+### Command Authorization Levels
+
+Commands have 3 access levels: `owner`, `authorized`, `public`. Owner-only commands (like `/block`, `/model`) can't be run by regular users even if they're approved.
+
+## Lifecycle Hooks
+
+Subscribe to events across the message lifecycle:
+
+```typescript
+import { createHookRegistry } from '@cogitator-ai/channels';
+
+const hooks = createHookRegistry();
+hooks.on('message:received', (e) => console.log('New message:', e));
+hooks.on('agent:after_run', (e) => console.log('Response:', e));
+hooks.on('agent:error', (e) => console.error('Agent failed:', e));
+
+const gateway = new Gateway({ /* ... */ hooks });
+```
+
+Available hooks: `message:received`, `message:sending`, `message:sent`, `agent:before_run`, `agent:after_run`, `agent:error`, `session:created`, `session:compacted`, `stream:started`, `stream:finished`.
+
+Errors in one handler don't affect others.
+
 ## Media & STT
 
-Voice messages are transcribed automatically:
+Voice messages are transcribed automatically. STT provider is selected by available env vars (highest priority first):
 
-1. **API-based** (recommended) — set `GROQ_API_KEY` (free) or `OPENAI_API_KEY` in env
-2. **Local Whisper** — downloads ~75MB model on first use, runs offline
+1. **Deepgram** — set `DEEPGRAM_API_KEY` (nova-3 model, fast and accurate)
+2. **Groq** — set `GROQ_API_KEY` (free tier available)
+3. **OpenAI** — set `OPENAI_API_KEY`
+4. **Local Whisper** — downloads ~75MB model on first use, runs offline (no API key needed)
 
 Images are passed to the LLM as vision input if the model supports it.
 
@@ -292,6 +342,8 @@ SLACK_APP_TOKEN=xapp-...
 # WebChat
 WEBCHAT_SECRET=your-secret
 
-# STT (optional, for voice messages)
-GROQ_API_KEY=...             # or OPENAI_API_KEY
+# STT (optional, for voice messages — pick one)
+DEEPGRAM_API_KEY=...         # highest priority
+GROQ_API_KEY=...             # free tier
+OPENAI_API_KEY=...           # fallback
 ```

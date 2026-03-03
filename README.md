@@ -81,21 +81,94 @@ npx tsx examples/core/01-basic-agent.ts
 
 ---
 
+## Personal AI Assistant
+
+Build your own AI that runs 24/7 on Telegram, Discord, or Slack. No code required — just a YAML config.
+
+```bash
+cogitator init
+```
+
+This generates a `cogitator.yml`:
+
+```yaml
+name: Jarvis
+personality: 'You are Jarvis, a sharp personal assistant.'
+llm:
+  provider: google
+  model: gemini-2.5-flash
+channels:
+  telegram:
+    ownerIds: ['YOUR_TG_ID']
+capabilities:
+  webSearch: true
+  fileSystem:
+    paths: [~/Documents, ~/Projects]
+  scheduler: true
+  browser: true
+memory:
+  adapter: sqlite
+  path: ~/.cogitator/memory.db
+  compaction:
+    threshold: 50
+stream:
+  flushInterval: 600
+  minChunkSize: 30
+```
+
+Then start it:
+
+```bash
+cogitator up                    # foreground with live dashboard
+cogitator daemon start          # background with auto-restart
+cogitator daemon install        # register as system service (systemd/launchd)
+```
+
+**Manage everything from chat** — no web dashboard needed:
+
+| Command           | What it does                   |
+| ----------------- | ------------------------------ |
+| `/status`         | Uptime, sessions, cost         |
+| `/model gpt-4o`   | Switch model on the fly        |
+| `/pair ABC123`    | Approve a new user             |
+| `/block @spammer` | Block a user                   |
+| `/compact`        | Compress conversation history  |
+| `/cost`           | Token usage and cost breakdown |
+| `/skills`         | List installed skills          |
+| `/help`           | All available commands         |
+
+**What you get out of the box:**
+
+- Multi-channel — same assistant on Telegram + Discord + Slack + WhatsApp simultaneously
+- Streaming — real-time typing with chunked message editing
+- Voice messages — automatic STT via Deepgram, Groq, OpenAI, or local Whisper
+- Image understanding — photos sent to the bot are analyzed via vision
+- Access control — owner/authorized/public levels, pairing codes for new users
+- Scheduled tasks — "remind me in 2 hours" with cron/interval/one-shot support
+- Memory — persistent conversations with auto-compaction and knowledge graphs
+- Lifecycle hooks — 10 event points for logging, analytics, custom behavior
+- Skills — extend with tool bundles (`cogitator skill add`)
+- MCP servers — connect any Model Context Protocol tool server
+
+See [`@cogitator-ai/channels` README](./packages/channels/README.md) for the full programmatic API and [`@cogitator-ai/cli`](./packages/cli/) for all CLI commands.
+
+---
+
 ## What Can You Build?
 
-| Use Case                     | What happens                                                           | Try it                                                                                       |
-| ---------------------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| **Chatbot with memory**      | Agent remembers your name, preferences, past conversations             | [`examples/memory/01-basic-memory.ts`](./examples/memory/01-basic-memory.ts)                 |
-| **Research assistant**       | Agent uses tools, reasons step by step, returns structured answers     | [`examples/core/01-basic-agent.ts`](./examples/core/01-basic-agent.ts)                       |
-| **Content pipeline**         | Researcher → Writer → Editor, each agent builds on the previous        | [`examples/swarms/02-pipeline-swarm.ts`](./examples/swarms/02-pipeline-swarm.ts)             |
-| **Dev team simulation**      | Manager delegates frontend/backend to specialists, synthesizes results | [`examples/swarms/03-hierarchical-swarm.ts`](./examples/swarms/03-hierarchical-swarm.ts)     |
-| **REST API server**          | Mount agents as HTTP endpoints with Swagger, SSE streaming, WebSocket  | [`examples/integrations/01-express-server.ts`](./examples/integrations/01-express-server.ts) |
-| **Data processing workflow** | Analyze documents in parallel, aggregate with map-reduce               | [`examples/workflows/03-map-reduce.ts`](./examples/workflows/03-map-reduce.ts)               |
-| **Knowledge graph**          | Extract entities from text, build a graph, traverse relationships      | [`examples/memory/04-knowledge-graph.ts`](./examples/memory/04-knowledge-graph.ts)           |
-| **RAG Q&A system**           | Load docs, chunk, embed, retrieve relevant context, answer questions   | [`examples/rag/01-basic-retrieval.ts`](./examples/rag/01-basic-retrieval.ts)                 |
-| **Agent evaluation**         | Measure accuracy, compare models, run A/B tests with LLM judges        | [`examples/evals/01-basic-eval.ts`](./examples/evals/01-basic-eval.ts)                       |
-| **Telegram/Discord bot**     | Deploy your agent to messaging platforms with streaming and reactions  | [`examples/channels/01-telegram-assistant.ts`](./examples/channels/01-telegram-assistant.ts) |
-| **Cross-framework agents**   | Expose your agent via Google's A2A protocol, consume external agents   | [`examples/a2a/01-a2a-server.ts`](./examples/a2a/01-a2a-server.ts)                           |
+| Use Case                     | What happens                                                                    | Try it                                                                                       |
+| ---------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| **Chatbot with memory**      | Agent remembers your name, preferences, past conversations                      | [`examples/memory/01-basic-memory.ts`](./examples/memory/01-basic-memory.ts)                 |
+| **Research assistant**       | Agent uses tools, reasons step by step, returns structured answers              | [`examples/core/01-basic-agent.ts`](./examples/core/01-basic-agent.ts)                       |
+| **Content pipeline**         | Researcher → Writer → Editor, each agent builds on the previous                 | [`examples/swarms/02-pipeline-swarm.ts`](./examples/swarms/02-pipeline-swarm.ts)             |
+| **Dev team simulation**      | Manager delegates frontend/backend to specialists, synthesizes results          | [`examples/swarms/03-hierarchical-swarm.ts`](./examples/swarms/03-hierarchical-swarm.ts)     |
+| **REST API server**          | Mount agents as HTTP endpoints with Swagger, SSE streaming, WebSocket           | [`examples/integrations/01-express-server.ts`](./examples/integrations/01-express-server.ts) |
+| **Data processing workflow** | Analyze documents in parallel, aggregate with map-reduce                        | [`examples/workflows/03-map-reduce.ts`](./examples/workflows/03-map-reduce.ts)               |
+| **Knowledge graph**          | Extract entities from text, build a graph, traverse relationships               | [`examples/memory/04-knowledge-graph.ts`](./examples/memory/04-knowledge-graph.ts)           |
+| **RAG Q&A system**           | Load docs, chunk, embed, retrieve relevant context, answer questions            | [`examples/rag/01-basic-retrieval.ts`](./examples/rag/01-basic-retrieval.ts)                 |
+| **Agent evaluation**         | Measure accuracy, compare models, run A/B tests with LLM judges                 | [`examples/evals/01-basic-eval.ts`](./examples/evals/01-basic-eval.ts)                       |
+| **Personal AI assistant**    | Your own AI running 24/7 on Telegram, Discord, Slack — manage via chat commands | [`cogitator.yml` config](#-personal-ai-assistant)                                            |
+| **Cross-framework agents**   | Expose your agent via Google's A2A protocol, consume external agents            | [`examples/a2a/01-a2a-server.ts`](./examples/a2a/01-a2a-server.ts)                           |
 
 ---
 
@@ -103,25 +176,25 @@ npx tsx examples/core/01-basic-agent.ts
 
 Install only what you need. Everything is a separate npm package.
 
-| Package                                                                                      | What it does                                                                                   | Example                                                              |
-| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| [`@cogitator-ai/core`](https://www.npmjs.com/package/@cogitator-ai/core)                     | Agents, tools, LLM backends, streaming, everything you need to start                           | [12 core examples](./examples/core/)                                 |
-| [`@cogitator-ai/memory`](https://www.npmjs.com/package/@cogitator-ai/memory)                 | Your agents remember things. Redis, Postgres, SQLite, MongoDB, Qdrant, in-memory               | [4 memory examples](./examples/memory/)                              |
-| [`@cogitator-ai/swarms`](https://www.npmjs.com/package/@cogitator-ai/swarms)                 | 7 swarm strategies — hierarchy, round-robin, consensus, pipeline, debate, auction, negotiation | [4 swarm examples](./examples/swarms/)                               |
-| [`@cogitator-ai/workflows`](https://www.npmjs.com/package/@cogitator-ai/workflows)           | DAG workflows with branching, human approval gates, map-reduce                                 | [3 workflow examples](./examples/workflows/)                         |
-| [`@cogitator-ai/a2a`](https://www.npmjs.com/package/@cogitator-ai/a2a)                       | Google's Agent-to-Agent protocol - expose agents as services, consume external ones            | [2 a2a examples](./examples/a2a/)                                    |
-| [`@cogitator-ai/mcp`](https://www.npmjs.com/package/@cogitator-ai/mcp)                       | Connect to any MCP server and use its tools                                                    | [1 mcp example](./examples/mcp/)                                     |
-| [`@cogitator-ai/sandbox`](https://www.npmjs.com/package/@cogitator-ai/sandbox)               | Run untrusted code in Docker or WASM. Never on your host                                       | [sandbox example](./examples/infrastructure/05-sandbox-execution.ts) |
-| [`@cogitator-ai/wasm-tools`](https://www.npmjs.com/package/@cogitator-ai/wasm-tools)         | 14 pre-built tools running in WASM sandbox (calc, json, hash, csv, markdown...)                | [wasm example](./examples/advanced/03-wasm-tools.ts)                 |
-| [`@cogitator-ai/self-modifying`](https://www.npmjs.com/package/@cogitator-ai/self-modifying) | Agents that generate new tools at runtime and evolve their own architecture                    | [self-modifying example](./examples/advanced/01-self-modifying.ts)   |
-| [`@cogitator-ai/neuro-symbolic`](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) | Prolog-style logic, constraint solving, knowledge graphs for agents                            | [neuro-symbolic example](./examples/advanced/02-neuro-symbolic.ts)   |
-| [`@cogitator-ai/rag`](https://www.npmjs.com/package/@cogitator-ai/rag)                       | RAG pipeline - document loaders, chunking, retrieval, reranking                                | [3 rag examples](./examples/rag/)                                    |
-| [`@cogitator-ai/evals`](https://www.npmjs.com/package/@cogitator-ai/evals)                   | Evaluation framework - metrics, LLM judges, A/B testing, assertions                            | [3 eval examples](./examples/evals/)                                 |
-| [`@cogitator-ai/voice`](https://www.npmjs.com/package/@cogitator-ai/voice)                   | Voice/Realtime agent capabilities - STT, TTS, VAD, realtime sessions                           | [3 voice examples](./examples/voice/)                                |
-| [`@cogitator-ai/browser`](https://www.npmjs.com/package/@cogitator-ai/browser)               | Browser automation - Playwright, stealth, vision, network control                              | [4 browser examples](./examples/browser/)                            |
-| [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy)                 | Deploy your agents to Docker or Fly.io                                                         | [deploy example](./examples/infrastructure/04-deploy-docker.ts)      |
-| [`@cogitator-ai/channels`](https://www.npmjs.com/package/@cogitator-ai/channels)             | Connect agents to Telegram, Discord, Slack, WhatsApp, WebChat with gateway routing             | [3 channel examples](./examples/channels/)                           |
-| [`@cogitator-ai/cli`](https://www.npmjs.com/package/@cogitator-ai/cli)                       | `cogitator init` / `up` / `run` / `deploy` from your terminal                                  | -                                                                    |
+| Package                                                                                      | What it does                                                                                    | Example                                                              |
+| -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| [`@cogitator-ai/core`](https://www.npmjs.com/package/@cogitator-ai/core)                     | Agents, tools, LLM backends, streaming, everything you need to start                            | [12 core examples](./examples/core/)                                 |
+| [`@cogitator-ai/memory`](https://www.npmjs.com/package/@cogitator-ai/memory)                 | Your agents remember things. Redis, Postgres, SQLite, MongoDB, Qdrant, in-memory                | [4 memory examples](./examples/memory/)                              |
+| [`@cogitator-ai/swarms`](https://www.npmjs.com/package/@cogitator-ai/swarms)                 | 7 swarm strategies — hierarchy, round-robin, consensus, pipeline, debate, auction, negotiation  | [4 swarm examples](./examples/swarms/)                               |
+| [`@cogitator-ai/workflows`](https://www.npmjs.com/package/@cogitator-ai/workflows)           | DAG workflows with branching, human approval gates, map-reduce                                  | [3 workflow examples](./examples/workflows/)                         |
+| [`@cogitator-ai/a2a`](https://www.npmjs.com/package/@cogitator-ai/a2a)                       | Google's Agent-to-Agent protocol - expose agents as services, consume external ones             | [2 a2a examples](./examples/a2a/)                                    |
+| [`@cogitator-ai/mcp`](https://www.npmjs.com/package/@cogitator-ai/mcp)                       | Connect to any MCP server and use its tools                                                     | [1 mcp example](./examples/mcp/)                                     |
+| [`@cogitator-ai/sandbox`](https://www.npmjs.com/package/@cogitator-ai/sandbox)               | Run untrusted code in Docker or WASM. Never on your host                                        | [sandbox example](./examples/infrastructure/05-sandbox-execution.ts) |
+| [`@cogitator-ai/wasm-tools`](https://www.npmjs.com/package/@cogitator-ai/wasm-tools)         | 14 pre-built tools running in WASM sandbox (calc, json, hash, csv, markdown...)                 | [wasm example](./examples/advanced/03-wasm-tools.ts)                 |
+| [`@cogitator-ai/self-modifying`](https://www.npmjs.com/package/@cogitator-ai/self-modifying) | Agents that generate new tools at runtime and evolve their own architecture                     | [self-modifying example](./examples/advanced/01-self-modifying.ts)   |
+| [`@cogitator-ai/neuro-symbolic`](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) | Prolog-style logic, constraint solving, knowledge graphs for agents                             | [neuro-symbolic example](./examples/advanced/02-neuro-symbolic.ts)   |
+| [`@cogitator-ai/rag`](https://www.npmjs.com/package/@cogitator-ai/rag)                       | RAG pipeline - document loaders, chunking, retrieval, reranking                                 | [3 rag examples](./examples/rag/)                                    |
+| [`@cogitator-ai/evals`](https://www.npmjs.com/package/@cogitator-ai/evals)                   | Evaluation framework - metrics, LLM judges, A/B testing, assertions                             | [3 eval examples](./examples/evals/)                                 |
+| [`@cogitator-ai/voice`](https://www.npmjs.com/package/@cogitator-ai/voice)                   | Voice/Realtime agent capabilities - STT, TTS, VAD, realtime sessions                            | [3 voice examples](./examples/voice/)                                |
+| [`@cogitator-ai/browser`](https://www.npmjs.com/package/@cogitator-ai/browser)               | Browser automation - Playwright, stealth, vision, network control                               | [4 browser examples](./examples/browser/)                            |
+| [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy)                 | Deploy your agents to Docker or Fly.io                                                          | [deploy example](./examples/infrastructure/04-deploy-docker.ts)      |
+| [`@cogitator-ai/channels`](https://www.npmjs.com/package/@cogitator-ai/channels)             | Personal AI assistant on Telegram, Discord, Slack, WhatsApp — streaming, commands, media, hooks | [3 channel examples](./examples/channels/)                           |
+| [`@cogitator-ai/cli`](https://www.npmjs.com/package/@cogitator-ai/cli)                       | `cogitator init` / `up` / `daemon` / `skill` / `deploy` from your terminal                      | -                                                                    |
 
 **Server adapters** - mount agents as REST APIs with one line:
 
@@ -170,14 +243,19 @@ All with Swagger docs, SSE streaming, and WebSocket support. See [integration ex
 
 ### Messaging Channels
 
-| Feature              | What it means                                                                     |
-| -------------------- | --------------------------------------------------------------------------------- |
-| **5 platforms**      | Telegram, Discord, Slack, WhatsApp, WebChat — same agent, multiple channels       |
-| **Gateway routing**  | Sessions, streaming, middleware, media processing through one unified entry point |
-| **Status reactions** | Emoji progress indicators (queued → thinking → tool → done) on user messages      |
-| **Debouncing**       | Rapid messages merged into a single LLM call instead of parallel processing       |
-| **Queue modes**      | Sequential, interrupt, collect — control concurrent message handling per user     |
-| **Scheduler**        | Cron, interval, and one-shot jobs with error tracking and auto-backoff            |
+| Feature               | What it means                                                                      |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| **5 platforms**       | Telegram, Discord, Slack, WhatsApp, WebChat — same agent, multiple channels        |
+| **YAML config + CLI** | `cogitator.yml` + `cogitator up` — personal assistant without writing code         |
+| **Gateway routing**   | Sessions, streaming, middleware, media processing through one unified entry point  |
+| **Owner commands**    | Manage your assistant from chat — `/status`, `/model`, `/block`, `/cost`           |
+| **Access control**    | DM policy with 4 modes (open, allowlist, pairing, disabled) + authorization levels |
+| **Media processing**  | Photos → vision, voice → STT (Deepgram, Groq, OpenAI, local Whisper)               |
+| **Streaming**         | Real-time message editing with smart chunking and platform-aware splitting         |
+| **Status reactions**  | Emoji progress indicators (queued → thinking → tool → done) on user messages       |
+| **Lifecycle hooks**   | 10 event points for logging, analytics, and custom behavior                        |
+| **Scheduler**         | Cron, interval, and one-shot jobs with error tracking and auto-backoff             |
+| **Daemon mode**       | Run as system service with `cogitator daemon install` (systemd/launchd)            |
 
 ### Safety & Security
 
