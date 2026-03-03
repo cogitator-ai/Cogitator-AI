@@ -33,7 +33,7 @@
     "@fastify/multipart": "^9.3.0",
     "@hono/node-server": "^1.0.0",
     "@koa/router": "^15.3.0",
-    "ai": "^4.0.0",
+    "ai": "^6.0.108",
     "dotenv": "^16.4.7",
     "express": "^4.21.0",
     "fastify": "^5.7.4",
