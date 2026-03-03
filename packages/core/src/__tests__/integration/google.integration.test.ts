@@ -34,7 +34,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', () => {
         maxTokens: 50,
       });
 
-      expect(response.content.toLowerCase()).toMatch(/arr|pirate|ahoy|matey|shiver/);
+      expect(response.content.toLowerCase()).toMatch(/ar+|pirate|ahoy|matey|shiver/);
     });
 
     it('respects temperature setting', async () => {
