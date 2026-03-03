@@ -3,7 +3,7 @@ import { dirname } from 'node:path';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { GatewayMiddleware, ChannelMessage, MiddlewareContext } from '@cogitator-ai/types';
-import { nanoid } from 'nanoid';
+import { customAlphabet } from 'nanoid';
 
 export type DmPolicyMode = 'open' | 'allowlist' | 'pairing' | 'disabled';
 
@@ -161,7 +161,8 @@ export class DmPolicyMiddleware implements GatewayMiddleware {
       return;
     }
 
-    const code = nanoid(this.codeLength).toUpperCase();
+    const genCode = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789');
+    const code = genCode(this.codeLength);
     this.pending.set(code, {
       code,
       userId: msg.userId,
