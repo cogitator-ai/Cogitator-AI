@@ -359,7 +359,7 @@ export class RuntimeBuilder {
     const stealth = typeof browserCfg === 'object' ? (browserCfg.stealth ?? false) : false;
 
     try {
-      const { BrowserSession, browserTools } = await import('@cogitator-ai/browser');
+      const { BrowserSession, browserTools } = await import('@cogitator-ai/browser' as string);
 
       await this.ensurePlaywright();
 
@@ -434,7 +434,9 @@ export class RuntimeBuilder {
     if (!this.config.capabilities.rag) return;
 
     try {
-      const { RAGPipelineBuilder, TextLoader, ragTools } = await import('@cogitator-ai/rag');
+      const { RAGPipelineBuilder, TextLoader, ragTools } = await import(
+        '@cogitator-ai/rag' as string
+      );
 
       const embeddingConfig = this.resolveEmbeddingConfig();
       if (!embeddingConfig) {
@@ -485,7 +487,7 @@ export class RuntimeBuilder {
     if (!this.config.mcpServers) return;
 
     try {
-      const { MCPClient } = await import('@cogitator-ai/mcp');
+      const { MCPClient } = await import('@cogitator-ai/mcp' as string);
 
       for (const [name, serverConfig] of Object.entries(this.config.mcpServers)) {
         try {
