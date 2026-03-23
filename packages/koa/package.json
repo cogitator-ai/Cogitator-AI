@@ -33,7 +33,7 @@
   "optionalDependencies": {
     "@cogitator-ai/workflows": "workspace:*",
     "@cogitator-ai/swarms": "workspace:*",
-    "ws": "^8.0.0"
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@cogitator-ai/workflows": "workspace:*",
@@ -47,7 +47,7 @@
     "koa": "^2.15.0",
     "@koa/router": "^13.1.0",
     "typescript": "^5.6.0",
-    "ws": "^8.18.0"
+    "ws": "^8.20.0"
   },
   "repository": {
     "type": "git",
