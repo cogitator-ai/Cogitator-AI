@@ -15,7 +15,11 @@ const calculatorParams = z.object({
  */
 function evaluateExpression(expr: string): number {
   const tokens = tokenize(expr);
-  return parseExpression(tokens, 0).value;
+  const result = parseExpression(tokens, 0);
+  if (result.pos !== tokens.length) {
+    throw new Error(`Unexpected token: ${JSON.stringify(tokens[result.pos])}`);
+  }
+  return result.value;
 }
 
 type Token =
@@ -34,9 +38,16 @@ function tokenize(expr: string): Token[] {
 
     if (/[0-9.]/.test(char)) {
       let num = '';
+      let decimalPoints = 0;
       while (i < str.length && /[0-9.]/.test(str[i])) {
+        if (str[i] === '.') {
+          decimalPoints++;
+        }
         num += str[i];
         i++;
+      }
+      if (num === '.' || decimalPoints > 1) {
+        throw new Error(`Invalid number: ${num}`);
       }
       tokens.push({ type: 'number', value: parseFloat(num) });
       continue;

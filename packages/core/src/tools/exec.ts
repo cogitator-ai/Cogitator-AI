@@ -41,13 +41,21 @@ export const exec = tool({
     },
     timeout: 30_000,
   },
-  execute: async ({ command, cwd, timeout = 30000, env = {} }) => {
+  execute: async ({ command, cwd, timeout = 30000, env = {} }, context) => {
     try {
+      if (context.signal.aborted) {
+        return {
+          error: 'Command aborted',
+          command,
+        };
+      }
+
       const { stdout, stderr } = await execPromise(command, {
         cwd,
         timeout,
         env: { ...process.env, ...env },
         maxBuffer: 10 * 1024 * 1024,
+        signal: context.signal,
       });
 
       const maxSize = 50000;
@@ -64,11 +72,18 @@ export const exec = tool({
       };
     } catch (err) {
       const error = err as Error & {
-        code?: number;
+        code?: number | string;
         killed?: boolean;
         stdout?: string;
         stderr?: string;
       };
+
+      if (context.signal.aborted || error.name === 'AbortError' || error.code === 'ABORT_ERR') {
+        return {
+          error: 'Command aborted',
+          command,
+        };
+      }
 
       if (error.killed) {
         return {
@@ -83,7 +98,7 @@ export const exec = tool({
         return {
           stdout: (error.stdout || '').slice(0, maxSize),
           stderr: (error.stderr || '').slice(0, maxSize),
-          exitCode: error.code || 1,
+          exitCode: typeof error.code === 'number' ? error.code : 1,
           command,
         };
       }

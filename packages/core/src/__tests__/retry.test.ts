@@ -47,6 +47,17 @@ describe('withRetry', () => {
     ).rejects.toThrow('Retry aborted');
   });
 
+  it('should not start an attempt when AbortSignal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const fn = vi.fn().mockResolvedValue('ok');
+
+    await expect(withRetry(fn, { maxRetries: 3, signal: controller.signal })).rejects.toThrow(
+      'Retry aborted'
+    );
+    expect(fn).not.toHaveBeenCalled();
+  });
+
   it('should call onRetry callback before each retry', async () => {
     const onRetry = vi.fn();
     const fn = vi.fn().mockRejectedValueOnce(retryableError('err')).mockResolvedValue('ok');

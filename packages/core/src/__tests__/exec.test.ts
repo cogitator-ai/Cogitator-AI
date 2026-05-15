@@ -44,6 +44,22 @@ describe('exec tool', () => {
     expect((result as { error: string }).error).toContain('timed out');
   });
 
+  it('aborts command when the tool context is cancelled', async () => {
+    const controller = new AbortController();
+    const resultPromise = exec.execute(
+      { command: 'sleep 10', timeout: 300000 },
+      { ...mockContext, signal: controller.signal }
+    );
+
+    controller.abort();
+
+    const result = await resultPromise;
+    expect(result).toEqual({
+      error: 'Command aborted',
+      command: 'sleep 10',
+    });
+  });
+
   it('handles command not found', async () => {
     const result = await exec.execute({ command: 'nonexistent-command-12345' }, mockContext);
     expect((result as { exitCode: number }).exitCode).toBe(127);

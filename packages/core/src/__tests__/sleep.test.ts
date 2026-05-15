@@ -24,6 +24,20 @@ describe('sleep tool', () => {
     expect(result).toHaveProperty('requested', 0);
   });
 
+  it('aborts when the tool context is cancelled', async () => {
+    const controller = new AbortController();
+    const resultPromise = sleep.execute(
+      { ms: 60000 },
+      { ...mockContext, signal: controller.signal }
+    );
+
+    controller.abort();
+
+    const result = await resultPromise;
+    expect(result).toHaveProperty('error', 'Sleep aborted');
+    expect(result).toHaveProperty('requested', 60000);
+  });
+
   it('has correct metadata', () => {
     expect(sleep.name).toBe('sleep');
     expect(sleep.description.toLowerCase()).toContain('pause');

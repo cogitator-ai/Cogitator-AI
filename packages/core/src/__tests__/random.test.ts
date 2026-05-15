@@ -35,6 +35,21 @@ describe('randomNumber tool', () => {
     }
   });
 
+  it('returns integers when bounds are fractional', async () => {
+    for (let i = 0; i < 20; i++) {
+      const result = await randomNumber.execute({ min: 1.2, max: 3.8, integer: true }, mockContext);
+      const value = (result as { result: number }).result;
+      expect(Number.isInteger(value)).toBe(true);
+      expect(value).toBeGreaterThanOrEqual(2);
+      expect(value).toBeLessThanOrEqual(3);
+    }
+  });
+
+  it('returns an error when fractional bounds contain no integers', async () => {
+    const result = await randomNumber.execute({ min: 1.2, max: 1.8, integer: true }, mockContext);
+    expect(result).toEqual({ error: 'range contains no integers', min: 1.2, max: 1.8 });
+  });
+
   it('includes max value for integers (inclusive range)', async () => {
     const results = new Set<number>();
     for (let i = 0; i < 1000; i++) {

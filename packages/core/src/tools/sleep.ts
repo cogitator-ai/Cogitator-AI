@@ -19,10 +19,29 @@ export const sleep = tool({
   description:
     'Pause execution for a specified number of milliseconds. Useful for rate limiting or waiting between operations. Maximum: 60 seconds.',
   parameters: sleepParams,
-  execute: async ({ ms }) => {
+  execute: async ({ ms }, context) => {
     const start = Date.now();
-    await new Promise((resolve) => setTimeout(resolve, ms));
+    const completed = await new Promise<boolean>((resolve) => {
+      if (context.signal.aborted) {
+        resolve(false);
+        return;
+      }
+
+      const onAbort = () => {
+        clearTimeout(timeout);
+        resolve(false);
+      };
+      const timeout = setTimeout(() => {
+        context.signal.removeEventListener('abort', onAbort);
+        resolve(true);
+      }, ms);
+
+      context.signal.addEventListener('abort', onAbort, { once: true });
+    });
     const actual = Date.now() - start;
+    if (!completed) {
+      return { error: 'Sleep aborted', slept: actual, requested: ms };
+    }
     return { slept: actual, requested: ms };
   },
 });

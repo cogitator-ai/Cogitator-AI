@@ -182,6 +182,22 @@ describe('calculator tool', () => {
       };
       expect(result.error).toContain("Expected '(' after function");
     });
+
+    it('returns error for trailing tokens', async () => {
+      const result = (await calculator.execute({ expression: '2)' }, mockContext)) as {
+        error: string;
+        expression: string;
+      };
+      expect(result.error).toContain('Unexpected token');
+    });
+
+    it('returns error for invalid numeric literals', async () => {
+      const result = (await calculator.execute({ expression: '1..2 + 3' }, mockContext)) as {
+        error: string;
+        expression: string;
+      };
+      expect(result.error).toContain('Invalid number');
+    });
   });
 
   describe('tool metadata', () => {

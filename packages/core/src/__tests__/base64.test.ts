@@ -63,6 +63,16 @@ describe('base64Decode tool', () => {
     expect((decoded as { result: string }).result).toBe('>>>???');
   });
 
+  it('decodes unpadded base64 input', async () => {
+    const result = await base64Decode.execute({ data: 'SGVsbG8' }, mockContext);
+    expect((result as { result: string }).result).toBe('Hello');
+  });
+
+  it('returns an error for invalid base64 input', async () => {
+    const result = await base64Decode.execute({ data: 'not base64!!!' }, mockContext);
+    expect(result).toEqual({ error: 'Invalid base64 input' });
+  });
+
   it('round-trips correctly', async () => {
     const original = 'Test data with special chars: 日本語 🚀';
     const encoded = await base64Encode.execute({ data: original }, mockContext);

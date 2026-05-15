@@ -20,9 +20,16 @@ export const randomNumber = tool({
     if (min >= max) {
       return { error: 'min must be less than max', min, max };
     }
-    const result = integer
-      ? Math.floor(Math.random() * (max - min + 1)) + min
-      : Math.random() * (max - min) + min;
+    if (integer) {
+      const minInt = Math.ceil(min);
+      const maxInt = Math.floor(max);
+      if (minInt > maxInt) {
+        return { error: 'range contains no integers', min, max };
+      }
+      const result = Math.floor(Math.random() * (maxInt - minInt + 1)) + minInt;
+      return { result, min, max, integer };
+    }
+    const result = Math.random() * (max - min) + min;
     return { result, min, max, integer };
   },
 });

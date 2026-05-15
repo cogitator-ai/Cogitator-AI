@@ -322,6 +322,24 @@ describe('Tool Cache', () => {
       expect(callCount).toBe(1);
     });
 
+    it('throws immediately when redis storage has no client', () => {
+      const testTool = tool({
+        name: 'test_tool',
+        description: 'A test tool',
+        parameters: z.object({ input: z.string() }),
+        execute: async ({ input }) => ({ result: input }),
+      });
+
+      expect(() =>
+        withCache(testTool, {
+          strategy: 'exact',
+          ttl: '1h',
+          maxSize: 100,
+          storage: 'redis',
+        })
+      ).toThrow('redisClient required for redis storage');
+    });
+
     it('does not cache different params', async () => {
       let callCount = 0;
       const testTool = tool({

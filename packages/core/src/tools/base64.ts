@@ -28,18 +28,31 @@ const base64DecodeParams = z.object({
   urlSafe: z.boolean().optional().describe('Input uses URL-safe base64 encoding (default: false)'),
 });
 
+function normalizeBase64Input(data: string, urlSafe: boolean): string | null {
+  let input = data;
+  if (urlSafe) {
+    if (!/^[A-Za-z0-9_-]*={0,2}$/.test(input)) return null;
+    input = input.replace(/-/g, '+').replace(/_/g, '/');
+  }
+
+  if (input.length % 4 === 1) return null;
+  while (input.length % 4 !== 0) {
+    input += '=';
+  }
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(input)) return null;
+  if (input.includes('=') && !/=+$/.test(input.slice(input.indexOf('=')))) return null;
+  return input;
+}
+
 export const base64Decode = tool({
   name: 'base64_decode',
   description: 'Decode a base64 string back to plain text.',
   parameters: base64DecodeParams,
   execute: async ({ data, urlSafe = false }) => {
     try {
-      let input = data;
-      if (urlSafe) {
-        input = input.replace(/-/g, '+').replace(/_/g, '/');
-        while (input.length % 4 !== 0) {
-          input += '=';
-        }
+      const input = normalizeBase64Input(data, urlSafe);
+      if (input === null) {
+        return { error: 'Invalid base64 input' };
       }
       const result = Buffer.from(input, 'base64').toString('utf-8');
       return { result, urlSafe };

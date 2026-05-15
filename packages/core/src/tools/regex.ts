@@ -21,6 +21,9 @@ function execRegexWithTimeout(
     let match: RegExpExecArray | null;
     while ((match = regex.exec(text)) !== null) {
       matches.push({ match: match[0], index: match.index, groups: match.groups });
+      if (match[0] === '') {
+        regex.lastIndex++;
+      }
       if (Date.now() - start > timeoutMs) {
         throw new Error(`Regex execution timed out after ${timeoutMs}ms`);
       }

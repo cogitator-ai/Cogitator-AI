@@ -19,14 +19,19 @@ export function withCache<TParams, TResult>(
   const similarity = config.similarity ?? 0.95;
   const prefix = config.keyPrefix ?? 'toolcache';
 
-  const storage: ToolCacheStorage =
-    config.storage === 'redis'
-      ? new RedisToolCacheStorage({
-          client: config.redisClient!,
-          keyPrefix: prefix,
-          maxSize: config.maxSize,
-        })
-      : new InMemoryToolCacheStorage(config.maxSize);
+  let storage: ToolCacheStorage;
+  if (config.storage === 'redis') {
+    if (!config.redisClient) {
+      throw new Error('redisClient required for redis storage');
+    }
+    storage = new RedisToolCacheStorage({
+      client: config.redisClient,
+      keyPrefix: prefix,
+      maxSize: config.maxSize,
+    });
+  } else {
+    storage = new InMemoryToolCacheStorage(config.maxSize);
+  }
 
   const cachedExecute = async (params: TParams, context: ToolContext): Promise<TResult> => {
     const cacheKey = generateCacheKey({

@@ -112,6 +112,10 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
   let lastError: Error | undefined;
 
   for (let attempt = 1; attempt <= opts.maxRetries + 1; attempt++) {
+    if (opts.signal?.aborted) {
+      throw new Error('Retry aborted');
+    }
+
     try {
       return await fn();
     } catch (error) {

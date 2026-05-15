@@ -62,6 +62,11 @@ describe('regexMatch tool', () => {
     expect(result).toHaveProperty('count', 1);
   });
 
+  it('advances after zero-length global matches', async () => {
+    const result = await regexMatch.execute({ text: 'abc', pattern: '', flags: 'g' }, mockContext);
+    expect(result).toHaveProperty('count', 4);
+  });
+
   it('has correct metadata', () => {
     expect(regexMatch.name).toBe('regex_match');
   });

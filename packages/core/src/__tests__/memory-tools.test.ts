@@ -116,6 +116,37 @@ describe('createMemoryTools', () => {
       expect(mocks.mockGraph.addNode).toHaveBeenCalled();
     });
 
+    it('rejects core facts without a key before writing memory', async () => {
+      const tools = createMemoryTools(createConfig(mocks));
+      const remember = tools.find((t) => t.name === 'remember')!;
+
+      const result = await remember.execute({ fact: 'John', isCoreFact: true }, stubContext);
+
+      expect(result).toEqual({
+        saved: false,
+        error: 'coreFactKey is required when isCoreFact is true',
+      });
+      expect(mocks.mockGraph.addNode).not.toHaveBeenCalled();
+      expect(mocks.mockCoreFacts.set).not.toHaveBeenCalled();
+    });
+
+    it('returns failure when graph persistence fails', async () => {
+      mocks.mockGraph.addNode.mockResolvedValueOnce({
+        success: false,
+        error: 'graph unavailable',
+      });
+      const tools = createMemoryTools(createConfig(mocks));
+      const remember = tools.find((t) => t.name === 'remember')!;
+
+      const result = await remember.execute(
+        { fact: 'John', isCoreFact: true, coreFactKey: 'user_name' },
+        stubContext
+      );
+
+      expect(result).toEqual({ saved: false, error: 'graph unavailable' });
+      expect(mocks.mockCoreFacts.set).not.toHaveBeenCalled();
+    });
+
     it('does not save core fact when coreFacts store not provided', async () => {
       const tools = createMemoryTools(createConfig(mocks, { coreFacts: undefined }));
       const remember = tools.find((t) => t.name === 'remember')!;
@@ -263,6 +294,30 @@ describe('createMemoryTools', () => {
       expect(result).toEqual({
         deleted: 2,
         items: ['old fact A', 'old fact B'],
+      });
+    });
+
+    it('reports delete failures without counting them as deleted', async () => {
+      mocks.mockGraph.queryNodes.mockResolvedValueOnce({
+        success: true,
+        data: [
+          { id: 'n1', name: 'old fact A' },
+          { id: 'n2', name: 'old fact B' },
+        ],
+      });
+      mocks.mockGraph.deleteNode
+        .mockResolvedValueOnce({ success: true })
+        .mockResolvedValueOnce({ success: false, error: 'delete failed' });
+
+      const tools = createMemoryTools(createConfig(mocks));
+      const forget = tools.find((t) => t.name === 'forget')!;
+
+      const result = await forget.execute({ query: 'old fact' }, stubContext);
+
+      expect(result).toEqual({
+        deleted: 1,
+        items: ['old fact A'],
+        failed: [{ id: 'n2', name: 'old fact B', error: 'delete failed' }],
       });
     });
 

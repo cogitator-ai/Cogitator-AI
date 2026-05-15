@@ -47,6 +47,10 @@ export function createMemoryTools(config: MemoryToolsConfig) {
       'Save a fact or piece of information to long-term memory. Use this when the user shares important information that should be remembered across conversations.',
     parameters: rememberParams,
     execute: async ({ fact, category, isCoreFact, coreFactKey }) => {
+      if (isCoreFact && !coreFactKey) {
+        return { saved: false, error: 'coreFactKey is required when isCoreFact is true' };
+      }
+
       const embedding = embeddingFn ? await embeddingFn(fact) : undefined;
 
       const properties: Record<string, unknown> = {};
@@ -63,12 +67,15 @@ export function createMemoryTools(config: MemoryToolsConfig) {
         source: 'user',
       });
 
+      if (!result.success) {
+        return { saved: false, error: result.error };
+      }
+
       if (isCoreFact && coreFactKey && coreFacts) {
         await coreFacts.set(coreFactKey, fact);
       }
 
-      const nodeId = result.success ? result.data.id : 'unknown';
-      return { saved: true, id: nodeId };
+      return { saved: true, id: result.data.id };
     },
   });
 
@@ -136,13 +143,20 @@ export function createMemoryTools(config: MemoryToolsConfig) {
 
       const nodes: GraphNode[] = found.success ? found.data : [];
       const items: string[] = [];
+      const failed: Array<{ id: string; name: string; error: string }> = [];
 
       for (const node of nodes) {
-        await graphAdapter.deleteNode(node.id);
-        items.push(node.name);
+        const result = await graphAdapter.deleteNode(node.id);
+        if (result.success) {
+          items.push(node.name);
+        } else {
+          failed.push({ id: node.id, name: node.name, error: result.error });
+        }
       }
 
-      return { deleted: items.length, items };
+      return failed.length > 0
+        ? { deleted: items.length, items, failed }
+        : { deleted: items.length, items };
     },
   });
 
