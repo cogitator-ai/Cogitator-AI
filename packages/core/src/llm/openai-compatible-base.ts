@@ -31,7 +31,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
 
     let response: OpenAI.Chat.ChatCompletion;
     try {
-      response = await this.client.chat.completions.create({
+      const params = {
         model,
         messages: this.convertMessages(request.messages),
         tools: request.tools
@@ -50,7 +50,11 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         max_tokens: request.maxTokens,
         stop: request.stop,
         response_format: this.convertResponseFormat(request.responseFormat),
-      });
+      };
+
+      response = request.signal
+        ? await this.client.chat.completions.create(params, { signal: request.signal })
+        : await this.client.chat.completions.create(params);
     } catch (e) {
       throw this.wrapAPIError(e, ctx);
     }
@@ -92,7 +96,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
 
     let stream: AsyncIterable<OpenAI.Chat.ChatCompletionChunk>;
     try {
-      stream = await this.client.chat.completions.create({
+      const params = {
         model,
         messages: this.convertMessages(request.messages),
         tools: request.tools
@@ -110,10 +114,14 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         top_p: request.topP,
         max_tokens: request.maxTokens,
         stop: request.stop,
-        stream: true,
+        stream: true as const,
         stream_options: { include_usage: true },
         response_format: this.convertResponseFormat(request.responseFormat),
-      });
+      };
+
+      stream = request.signal
+        ? await this.client.chat.completions.create(params, { signal: request.signal })
+        : await this.client.chat.completions.create(params);
     } catch (e) {
       throw this.wrapAPIError(e, ctx);
     }

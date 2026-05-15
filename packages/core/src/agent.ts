@@ -220,7 +220,7 @@ export class Agent implements IAgent {
     if (!snapshot || typeof snapshot !== 'object') return false;
     const s = snapshot as Record<string, unknown>;
 
-    if (typeof s.version !== 'string') return false;
+    if (s.version !== SNAPSHOT_VERSION) return false;
     if (typeof s.id !== 'string') return false;
     if (typeof s.name !== 'string') return false;
     if (!s.config || typeof s.config !== 'object') return false;
@@ -229,6 +229,7 @@ export class Agent implements IAgent {
     if (typeof config.model !== 'string') return false;
     if (typeof config.instructions !== 'string') return false;
     if (!Array.isArray(config.tools)) return false;
+    if (!config.tools.every((toolName) => typeof toolName === 'string')) return false;
 
     return true;
   }

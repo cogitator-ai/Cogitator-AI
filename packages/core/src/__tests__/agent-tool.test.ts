@@ -74,6 +74,7 @@ describe('agentAsTool()', () => {
       testAgent,
       expect.objectContaining({
         input: 'Find information about AI',
+        signal: mockContext.signal,
       })
     );
   });

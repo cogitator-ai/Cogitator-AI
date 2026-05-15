@@ -79,6 +79,38 @@ describe('GoogleBackend', () => {
       expect(body.contents[0].role).toBe('user');
     });
 
+    it('should pass abort signal to fetch', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          candidates: [
+            {
+              content: {
+                role: 'model',
+                parts: [{ text: 'Hello!' }],
+              },
+              finishReason: 'STOP',
+            },
+          ],
+          usageMetadata: {
+            promptTokenCount: 10,
+            candidatesTokenCount: 5,
+            totalTokenCount: 15,
+          },
+        }),
+      });
+      const controller = new AbortController();
+
+      await backend.chat({
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'Hello' }],
+        signal: controller.signal,
+      });
+
+      const [, options] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(options.signal).toBe(controller.signal);
+    });
+
     it('should return correct response structure', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,

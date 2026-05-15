@@ -172,6 +172,22 @@ export class Cogitator {
     const timeout = options.timeout ?? agent.config?.timeout;
     const abortController = new AbortController();
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let removeParentAbortListener: (() => void) | undefined;
+
+    if (options.signal) {
+      const abortFromParent = () => {
+        abortController.abort(toAbortError(options.signal?.reason, 'Run aborted'));
+      };
+
+      if (options.signal.aborted) {
+        abortFromParent();
+      } else {
+        options.signal.addEventListener('abort', abortFromParent, { once: true });
+        removeParentAbortListener = () => {
+          options.signal?.removeEventListener('abort', abortFromParent);
+        };
+      }
+    }
 
     if (timeout && timeout > 0) {
       timeoutId = setTimeout(() => {
@@ -182,6 +198,7 @@ export class Cogitator {
     const rootSpanId = `span_${nanoid(12)}`;
 
     try {
+      throwIfAborted(abortController.signal);
       options.onRunStart?.({ runId, agentId: agent.id, input: options.input, threadId });
 
       await this.initializeAll(agent);
@@ -280,9 +297,7 @@ export class Cogitator {
       }
 
       while (iterations < maxIterations) {
-        if (abortController.signal.aborted) {
-          throw abortController.signal.reason ?? new Error('Run aborted');
-        }
+        throwIfAborted(abortController.signal);
 
         if (this.state.contextManager?.shouldCompress(messages, effectiveModel)) {
           const compressionResult = await this.state.contextManager.compress(
@@ -301,17 +316,32 @@ export class Cogitator {
 
         let response;
         if (options.stream && options.onToken) {
-          response = await streamChat(backend, model, messages, registry, agent, options.onToken);
+          response = await waitForAbortable(
+            streamChat(
+              backend,
+              model,
+              messages,
+              registry,
+              agent,
+              options.onToken,
+              abortController.signal
+            ),
+            abortController.signal
+          );
         } else {
-          response = await backend.chat({
-            model,
-            messages,
-            tools: registry.getSchemas(),
-            temperature: agent.config.temperature,
-            topP: agent.config.topP,
-            maxTokens: agent.config.maxTokens,
-            stop: agent.config.stopSequences,
-          });
+          response = await waitForAbortable(
+            backend.chat({
+              model,
+              messages,
+              tools: registry.getSchemas(),
+              temperature: agent.config.temperature,
+              topP: agent.config.topP,
+              maxTokens: agent.config.maxTokens,
+              stop: agent.config.stopSequences,
+              signal: abortController.signal,
+            }),
+            abortController.signal
+          );
         }
 
         const llmSpan = createSpan(
@@ -411,22 +441,25 @@ export class Cogitator {
 
           const executeToolCall = async (toolCall: ToolCall) => {
             const toolSpanStart = Date.now();
-            const result = await executeTool(
-              registry,
-              toolCall,
-              runId,
-              agent.id,
-              this.state.sandboxManager,
-              this.state.constitutionalAI,
-              !!this.config.guardrails?.filterToolCalls,
-              () => initializeSandbox(this.config, this.state),
-              abortController.signal,
-              {
-                threadId,
-                userId: options.userId,
-                channelType: options.channelType,
-                channelId: options.channelId,
-              }
+            const result = await waitForAbortable(
+              executeTool(
+                registry,
+                toolCall,
+                runId,
+                agent.id,
+                this.state.sandboxManager,
+                this.state.constitutionalAI,
+                !!this.config.guardrails?.filterToolCalls,
+                () => initializeSandbox(this.config, this.state),
+                abortController.signal,
+                {
+                  threadId,
+                  userId: options.userId,
+                  channelType: options.channelType,
+                  channelId: options.channelId,
+                }
+              ),
+              abortController.signal
             );
             const toolSpanEnd = Date.now();
             return { toolCall, result, toolSpanStart, toolSpanEnd };
@@ -645,6 +678,7 @@ export class Cogitator {
       if (timeoutId) {
         clearTimeout(timeoutId);
       }
+      removeParentAbortListener?.();
     }
   }
 
@@ -864,4 +898,38 @@ export class Cogitator {
     this.backends.clear();
     this.initPromise = undefined;
   }
+}
+
+function toAbortError(reason: unknown, fallbackMessage: string): Error {
+  if (reason instanceof Error) {
+    return reason;
+  }
+  if (reason === undefined || reason === null) {
+    return new Error(fallbackMessage);
+  }
+  return new Error(String(reason));
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw toAbortError(signal.reason, 'Run aborted');
+  }
+}
+
+function waitForAbortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    return Promise.reject(toAbortError(signal.reason, 'Run aborted'));
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      reject(toAbortError(signal.reason, 'Run aborted'));
+    };
+
+    signal.addEventListener('abort', onAbort, { once: true });
+
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', onAbort);
+    });
+  });
 }

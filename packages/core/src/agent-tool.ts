@@ -44,13 +44,14 @@ export function agentAsTool(
     timeout,
     sideEffects: ['external'],
 
-    execute: async (params: { task: string }, _context: ToolContext): Promise<AgentToolResult> => {
+    execute: async (params: { task: string }, context: ToolContext): Promise<AgentToolResult> => {
       try {
         const effectiveTimeout = timeout ?? agent.config.timeout;
 
         const result = await cogitator.run(agent, {
           input: params.task,
           timeout: effectiveTimeout,
+          signal: context.signal,
         });
 
         return {

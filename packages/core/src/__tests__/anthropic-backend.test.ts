@@ -84,6 +84,26 @@ describe('AnthropicBackend', () => {
       );
     });
 
+    it('passes abort signal to SDK request options', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'msg_123',
+        content: [{ type: 'text', text: 'Hello!' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 10, output_tokens: 5 },
+      });
+      const controller = new AbortController();
+
+      await backend.chat({
+        model: 'claude-sonnet-4-20250514',
+        messages: [{ role: 'user', content: 'Hello' }],
+        signal: controller.signal,
+      });
+
+      expect(mockCreate).toHaveBeenCalledWith(expect.any(Object), {
+        signal: controller.signal,
+      });
+    });
+
     it('returns correct response structure', async () => {
       mockCreate.mockResolvedValueOnce({
         id: 'msg_123',

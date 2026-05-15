@@ -59,7 +59,7 @@ export class AnthropicBackend extends BaseLLMBackend {
 
     let response: Anthropic.Message;
     try {
-      response = await this.client.messages.create({
+      const params = {
         model: request.model,
         system: systemSuffix ? `${system}\n\n${systemSuffix}` : system,
         messages,
@@ -69,7 +69,11 @@ export class AnthropicBackend extends BaseLLMBackend {
         temperature: request.temperature,
         top_p: request.topP,
         stop_sequences: request.stop,
-      });
+      };
+
+      response = request.signal
+        ? await this.client.messages.create(params, { signal: request.signal })
+        : await this.client.messages.create(params);
     } catch (e) {
       throw this.wrapAnthropicError(e, ctx);
     }
@@ -131,7 +135,7 @@ export class AnthropicBackend extends BaseLLMBackend {
 
     let stream: ReturnType<typeof this.client.messages.stream>;
     try {
-      stream = this.client.messages.stream({
+      const params = {
         model: request.model,
         system: systemSuffix ? `${system}\n\n${systemSuffix}` : system,
         messages,
@@ -141,7 +145,11 @@ export class AnthropicBackend extends BaseLLMBackend {
         temperature: request.temperature,
         top_p: request.topP,
         stop_sequences: request.stop,
-      });
+      };
+
+      stream = request.signal
+        ? this.client.messages.stream(params, { signal: request.signal })
+        : this.client.messages.stream(params);
     } catch (e) {
       throw this.wrapAnthropicError(e, ctx);
     }

@@ -120,6 +120,56 @@ describe('Cogitator', () => {
         await cog.close();
       });
 
+      it('rejects pre-aborted runs before calling the backend', async () => {
+        const cog = new Cogitator();
+        const agent = createTestAgent();
+        const controller = new AbortController();
+        controller.abort(new Error('Parent run cancelled'));
+
+        await expect(cog.run(agent, { input: 'Hello', signal: controller.signal })).rejects.toThrow(
+          'Parent run cancelled'
+        );
+        expect(mockBackendHelper.backend.chat).not.toHaveBeenCalled();
+
+        await cog.close();
+      });
+
+      it('passes the run abort signal to backend chat requests', async () => {
+        const cog = new Cogitator();
+        const agent = createTestAgent();
+
+        mockBackendHelper.setResponse({
+          id: 'resp_1',
+          content: 'Signal-aware response',
+          finishReason: 'stop',
+          usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+        });
+
+        await cog.run(agent, { input: 'Hello' });
+
+        expect(mockBackendHelper.backend.chat).toHaveBeenCalledWith(
+          expect.objectContaining({
+            signal: expect.any(AbortSignal),
+          })
+        );
+
+        await cog.close();
+      });
+
+      it('aborts pending backend chat when the run times out', async () => {
+        const cog = new Cogitator();
+        const agent = createTestAgent();
+        vi.mocked(mockBackendHelper.backend.chat).mockImplementation(
+          () => new Promise<ChatResponse>(() => {})
+        );
+
+        await expect(cog.run(agent, { input: 'Hang', timeout: 5 })).rejects.toThrow(
+          'Run timed out after 5ms'
+        );
+
+        await cog.close();
+      });
+
       it('returns correct RunResult structure', async () => {
         const cog = new Cogitator();
         const agent = createTestAgent();

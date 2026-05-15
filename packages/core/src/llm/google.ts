@@ -139,6 +139,7 @@ export class GoogleBackend extends BaseLLMBackend {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.apiKey },
         body: JSON.stringify(geminiRequest),
+        signal: request.signal,
       });
     } catch (e) {
       throw llmUnavailable(
@@ -172,6 +173,7 @@ export class GoogleBackend extends BaseLLMBackend {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.apiKey },
         body: JSON.stringify(geminiRequest),
+        signal: request.signal,
       });
     } catch (e) {
       throw llmUnavailable(

@@ -67,6 +67,8 @@ export interface RunOptions {
   context?: Record<string, unknown>;
   threadId?: string;
   timeout?: number;
+  /** Abort signal for cancelling the run. */
+  signal?: AbortSignal;
   stream?: boolean;
   onToken?: (token: string) => void;
   onToolCall?: (call: ToolCall) => void;

@@ -213,6 +213,17 @@ describe('streamChat', () => {
     expect(onToken).toHaveBeenCalledWith(' world');
   });
 
+  it('rejects immediately when called with an aborted signal', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('Stream cancelled'));
+    const backend = createMockBackend([{ id: 'c1', delta: { content: 'Hello' } }]);
+
+    await expect(
+      streamChat(backend, 'gpt-4', messages, registry, agent, onToken, controller.signal)
+    ).rejects.toThrow('Stream cancelled');
+    expect(onToken).not.toHaveBeenCalled();
+  });
+
   it('merges continuation chunks without id/name into the last tool call', async () => {
     const chunks: ChatStreamChunk[] = [
       {

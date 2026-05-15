@@ -22,8 +22,11 @@ export async function streamChat(
   messages: Message[],
   registry: ToolRegistry,
   agent: Agent,
-  onToken: (token: string) => void
+  onToken: (token: string) => void,
+  signal?: AbortSignal
 ): Promise<StreamChatResult> {
+  throwIfStreamAborted(signal);
+
   let content = '';
   let toolCalls: ToolCall[] | undefined;
   let finishReason: 'stop' | 'tool_calls' | 'length' | 'error' = 'stop';
@@ -39,9 +42,12 @@ export async function streamChat(
     topP: agent.config.topP,
     maxTokens: agent.config.maxTokens,
     stop: agent.config.stopSequences,
+    signal,
   });
 
   for await (const chunk of stream) {
+    throwIfStreamAborted(signal);
+
     if (chunk.delta.content) {
       content += chunk.delta.content;
       onToken(chunk.delta.content);
@@ -98,4 +104,16 @@ export async function streamChat(
       totalTokens: inputTokens + outputTokens,
     },
   };
+}
+
+function throwIfStreamAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) {
+    return;
+  }
+
+  if (signal.reason instanceof Error) {
+    throw signal.reason;
+  }
+
+  throw new Error(signal.reason === undefined ? 'Stream aborted' : String(signal.reason));
 }

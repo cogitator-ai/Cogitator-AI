@@ -104,6 +104,25 @@ describe('BedrockBackend', () => {
       expect(command).toBeInstanceOf(MockConverseCommand);
     });
 
+    it('passes abort signal to AWS request options', async () => {
+      mockSend.mockResolvedValueOnce({
+        output: { message: { content: [{ text: 'OK' }] } },
+        stopReason: 'end_turn',
+        usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+      });
+      const controller = new AbortController();
+
+      await backend.chat({
+        model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+        messages: [{ role: 'user', content: 'Hello' }],
+        signal: controller.signal,
+      });
+
+      expect(mockSend).toHaveBeenCalledWith(expect.any(MockConverseCommand), {
+        abortSignal: controller.signal,
+      });
+    });
+
     it('extracts system message and sends separately', async () => {
       mockSend.mockResolvedValueOnce({
         output: { message: { content: [{ text: 'OK' }] } },

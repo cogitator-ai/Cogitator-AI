@@ -287,6 +287,36 @@ describe('Agent Serialization', () => {
       ).toBe(false);
     });
 
+    it('returns false for unsupported snapshot version', () => {
+      expect(
+        Agent.validateSnapshot({
+          version: '2.0.0',
+          id: 'x',
+          name: 'y',
+          config: {
+            model: 'test',
+            instructions: 'test',
+            tools: [],
+          },
+        })
+      ).toBe(false);
+    });
+
+    it('returns false when serialized tool names are invalid', () => {
+      expect(
+        Agent.validateSnapshot({
+          version: '1.0.0',
+          id: 'x',
+          name: 'y',
+          config: {
+            model: 'test',
+            instructions: 'test',
+            tools: ['search', 42],
+          },
+        })
+      ).toBe(false);
+    });
+
     it('returns true for minimal valid snapshot', () => {
       expect(
         Agent.validateSnapshot({

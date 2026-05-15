@@ -98,6 +98,30 @@ describe('OpenAIBackend', () => {
       );
     });
 
+    it('passes abort signal to SDK request options', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'chatcmpl-123',
+        choices: [
+          {
+            message: { role: 'assistant', content: 'Hello!' },
+            finish_reason: 'stop',
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      });
+      const controller = new AbortController();
+
+      await backend.chat({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'Hello' }],
+        signal: controller.signal,
+      });
+
+      expect(mockCreate).toHaveBeenCalledWith(expect.any(Object), {
+        signal: controller.signal,
+      });
+    });
+
     it('returns correct response structure', async () => {
       mockCreate.mockResolvedValueOnce({
         id: 'chatcmpl-123',

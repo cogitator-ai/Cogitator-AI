@@ -90,7 +90,7 @@ export class OllamaBackend extends BaseLLMBackend {
       endpoint,
     };
 
-    const messages = await this.convertMessages(request.messages);
+    const messages = await this.convertMessages(request.messages, request.signal);
 
     let response: Response;
     try {
@@ -110,6 +110,7 @@ export class OllamaBackend extends BaseLLMBackend {
             stop: request.stop,
           },
         }),
+        signal: request.signal,
       });
     } catch (e) {
       throw llmUnavailable(ctx, 'Failed to connect to Ollama', e instanceof Error ? e : undefined);
@@ -133,7 +134,7 @@ export class OllamaBackend extends BaseLLMBackend {
       endpoint,
     };
 
-    const messages = await this.convertMessages(request.messages);
+    const messages = await this.convertMessages(request.messages, request.signal);
 
     let response: Response;
     try {
@@ -153,6 +154,7 @@ export class OllamaBackend extends BaseLLMBackend {
             stop: request.stop,
           },
         }),
+        signal: request.signal,
       });
     } catch (e) {
       throw llmUnavailable(ctx, 'Failed to connect to Ollama', e instanceof Error ? e : undefined);
@@ -242,10 +244,13 @@ export class OllamaBackend extends BaseLLMBackend {
     }
   }
 
-  private async convertMessages(messages: Message[]): Promise<OllamaMessage[]> {
+  private async convertMessages(
+    messages: Message[],
+    signal?: AbortSignal
+  ): Promise<OllamaMessage[]> {
     return Promise.all(
       messages.map(async (m) => {
-        const { text, images } = await this.extractContentAndImages(m.content);
+        const { text, images } = await this.extractContentAndImages(m.content, signal);
         const base: OllamaMessage = {
           role: m.role as OllamaMessage['role'],
           content: text,
@@ -268,7 +273,8 @@ export class OllamaBackend extends BaseLLMBackend {
   }
 
   private async extractContentAndImages(
-    content: MessageContent
+    content: MessageContent,
+    signal?: AbortSignal
   ): Promise<{ text: string; images: string[] }> {
     if (typeof content === 'string') {
       return { text: content, images: [] };
@@ -290,7 +296,7 @@ export class OllamaBackend extends BaseLLMBackend {
           images.push(part.image_base64.data);
           break;
         case 'image_url': {
-          const fetched = await fetchImageAsBase64(part.image_url.url);
+          const fetched = await fetchImageAsBase64(part.image_url.url, { signal });
           images.push(fetched.data);
           break;
         }

@@ -66,6 +66,30 @@ describe('OllamaBackend', () => {
       expect(body.stream).toBe(false);
     });
 
+    it('passes abort signal to fetch', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          model: 'llama3.2',
+          created_at: '2024-01-01T00:00:00Z',
+          message: { role: 'assistant', content: 'Hello!' },
+          done: true,
+          prompt_eval_count: 10,
+          eval_count: 5,
+        }),
+      });
+      const controller = new AbortController();
+
+      await backend.chat({
+        model: 'llama3.2',
+        messages: [{ role: 'user', content: 'Hello' }],
+        signal: controller.signal,
+      });
+
+      const [, options] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(options.signal).toBe(controller.signal);
+    });
+
     it('returns correct response structure', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,

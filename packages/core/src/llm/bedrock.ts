@@ -30,7 +30,7 @@ type DocumentType =
   | { [key: string]: DocumentType };
 
 interface BedrockRuntimeClientType {
-  send(command: unknown): Promise<unknown>;
+  send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<unknown>;
 }
 
 interface SystemContentBlock {
@@ -247,7 +247,9 @@ export class BedrockBackend extends BaseLLMBackend {
     let response: ConverseCommandOutput;
     try {
       const command = new ConverseCommand(input as ConverseCommandInput);
-      response = (await client.send(command)) as ConverseCommandOutput;
+      response = (await (request.signal
+        ? client.send(command, { abortSignal: request.signal })
+        : client.send(command))) as ConverseCommandOutput;
     } catch (e) {
       throw this.wrapBedrockError(e, ctx);
     }
@@ -299,7 +301,9 @@ export class BedrockBackend extends BaseLLMBackend {
     const command = new ConverseStreamCommand(input as ConverseStreamCommandInput);
     let response: ConverseStreamCommandOutput;
     try {
-      response = (await client.send(command)) as ConverseStreamCommandOutput;
+      response = (await (request.signal
+        ? client.send(command, { abortSignal: request.signal })
+        : client.send(command))) as ConverseStreamCommandOutput;
     } catch (e) {
       throw this.wrapBedrockError(e, ctx);
     }

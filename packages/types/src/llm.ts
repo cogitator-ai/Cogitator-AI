@@ -56,6 +56,8 @@ export interface ChatRequest {
   stop?: string[];
   stream?: boolean;
   responseFormat?: LLMResponseFormat;
+  /** Abort signal for cancelling the provider request. */
+  signal?: AbortSignal;
 }
 
 export interface ChatResponse {
