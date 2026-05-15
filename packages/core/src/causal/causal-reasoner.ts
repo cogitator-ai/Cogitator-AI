@@ -233,15 +233,19 @@ export class CausalReasoner {
 
     const extracted = await this.extractor.extractFromTrace(trace, graph);
 
+    let nodesAdded = 0;
     for (const node of extracted.nodes) {
       if (!graph.hasNode(node.id)) {
         graph.addNode(node);
+        nodesAdded++;
       }
     }
 
+    let edgesAdded = 0;
     for (const edge of extracted.edges) {
       if (!graph.getEdgeBetween(edge.source, edge.target)) {
         graph.addEdge(edge);
+        edgesAdded++;
       }
     }
 
@@ -257,8 +261,8 @@ export class CausalReasoner {
     await this.saveGraph(agentId);
 
     return {
-      nodesAdded: extracted.nodes.length,
-      edgesAdded: extracted.edges.length,
+      nodesAdded,
+      edgesAdded,
       patternsFound: patterns.length,
     };
   }

@@ -193,27 +193,66 @@ export interface CausalExtractionResult {
   reasoning: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+function readUnitNumber(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(0, Math.min(1, value));
+}
+
+function parseExtractedVariable(value: unknown): { id: string; name: string; type: string } | null {
+  if (!isRecord(value)) return null;
+
+  const id = readNonEmptyString(value.id);
+  if (!id) return null;
+
+  return {
+    id,
+    name: readNonEmptyString(value.name) ?? id,
+    type: readNonEmptyString(value.type) ?? 'observed',
+  };
+}
+
 export function parseCausalExtractionResponse(response: string): CausalExtractionResult | null {
   try {
     const jsonMatch = /\{[\s\S]*\}/.exec(response);
     if (!jsonMatch) return null;
 
-    const parsed = JSON.parse(jsonMatch[0]);
+    const parsed = JSON.parse(jsonMatch[0]) as unknown;
 
-    if (!parsed.relationships || !Array.isArray(parsed.relationships)) {
+    if (!isRecord(parsed) || !Array.isArray(parsed.relationships)) {
       return null;
     }
 
+    const relationships: ExtractedRelationship[] = [];
+    for (const item of parsed.relationships) {
+      if (!isRecord(item)) continue;
+
+      const cause = parseExtractedVariable(item.cause);
+      const effect = parseExtractedVariable(item.effect);
+      if (!cause || !effect) continue;
+
+      relationships.push({
+        cause,
+        effect,
+        relationType: readNonEmptyString(item.relationType) ?? 'causes',
+        strength: readUnitNumber(item.strength, 0.5),
+        confidence: readUnitNumber(item.confidence, 0.5),
+        mechanism: readNonEmptyString(item.mechanism) ?? '',
+      });
+    }
+
     return {
-      relationships: parsed.relationships.map((r: Record<string, unknown>) => ({
-        cause: r.cause as { id: string; name: string; type: string },
-        effect: r.effect as { id: string; name: string; type: string },
-        relationType: r.relationType as string,
-        strength: typeof r.strength === 'number' ? r.strength : 0.5,
-        confidence: typeof r.confidence === 'number' ? r.confidence : 0.5,
-        mechanism: (r.mechanism as string) || '',
-      })),
-      reasoning: (parsed.reasoning as string) || '',
+      relationships,
+      reasoning: readNonEmptyString(parsed.reasoning) ?? '',
     };
   } catch {
     return null;

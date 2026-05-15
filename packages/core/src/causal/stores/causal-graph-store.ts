@@ -1,11 +1,42 @@
 import type { CausalGraphData, CausalGraphStore } from '@cogitator-ai/types';
 
+function cloneGraphData(graph: CausalGraphData): CausalGraphData {
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) => ({
+      ...node,
+      domain: node.domain
+        ? {
+            ...node.domain,
+            values: node.domain.values ? [...node.domain.values] : undefined,
+          }
+        : undefined,
+      equation: node.equation
+        ? {
+            ...node.equation,
+            coefficients: node.equation.coefficients
+              ? { ...node.equation.coefficients }
+              : undefined,
+            noiseParams: node.equation.noiseParams ? { ...node.equation.noiseParams } : undefined,
+          }
+        : undefined,
+      metadata: node.metadata ? { ...node.metadata } : undefined,
+    })),
+    edges: graph.edges.map((edge) => ({
+      ...edge,
+      conditions: edge.conditions ? [...edge.conditions] : undefined,
+      metadata: edge.metadata ? { ...edge.metadata } : undefined,
+    })),
+    metadata: graph.metadata ? { ...graph.metadata } : undefined,
+  };
+}
+
 export class InMemoryCausalGraphStore implements CausalGraphStore {
   private graphs = new Map<string, CausalGraphData>();
   private agentIndex = new Map<string, string[]>();
 
   async save(graph: CausalGraphData): Promise<void> {
-    this.graphs.set(graph.id, { ...graph });
+    this.graphs.set(graph.id, cloneGraphData(graph));
 
     const agentId = graph.metadata?.agentId as string | undefined;
     if (agentId) {
@@ -19,7 +50,7 @@ export class InMemoryCausalGraphStore implements CausalGraphStore {
 
   async load(graphId: string): Promise<CausalGraphData | null> {
     const graph = this.graphs.get(graphId);
-    return graph ? { ...graph } : null;
+    return graph ? cloneGraphData(graph) : null;
   }
 
   async loadForAgent(agentId: string): Promise<CausalGraphData | null> {
@@ -58,7 +89,7 @@ export class InMemoryCausalGraphStore implements CausalGraphStore {
       return graphs;
     }
 
-    return Array.from(this.graphs.values()).map((g) => ({ ...g }));
+    return Array.from(this.graphs.values()).map((g) => cloneGraphData(g));
   }
 
   clear(): void {

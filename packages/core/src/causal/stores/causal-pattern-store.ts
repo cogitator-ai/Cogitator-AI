@@ -1,11 +1,21 @@
 import type { CausalPattern, CausalPatternStore } from '@cogitator-ai/types';
 
+function clonePattern(pattern: CausalPattern): CausalPattern {
+  return {
+    ...pattern,
+    pattern: {
+      ...pattern.pattern,
+      conditions: [...pattern.pattern.conditions],
+    },
+  };
+}
+
 export class InMemoryCausalPatternStore implements CausalPatternStore {
   private patterns = new Map<string, CausalPattern>();
   private agentIndex = new Map<string, Set<string>>();
 
   async save(pattern: CausalPattern): Promise<void> {
-    this.patterns.set(pattern.id, { ...pattern });
+    this.patterns.set(pattern.id, clonePattern(pattern));
 
     if (!this.agentIndex.has(pattern.agentId)) {
       this.agentIndex.set(pattern.agentId, new Set());
@@ -33,8 +43,8 @@ export class InMemoryCausalPatternStore implements CausalPatternStore {
         !context.effect ||
         pattern.pattern.effect.toLowerCase().includes(context.effect.toLowerCase());
 
-      if (triggerMatch || effectMatch) {
-        patterns.push({ ...pattern });
+      if (triggerMatch && effectMatch) {
+        patterns.push(clonePattern(pattern));
       }
     }
 
@@ -110,7 +120,7 @@ export class InMemoryCausalPatternStore implements CausalPatternStore {
     for (const id of patternIds) {
       const pattern = this.patterns.get(id);
       if (pattern) {
-        patterns.push({ ...pattern });
+        patterns.push(clonePattern(pattern));
         totalSuccessRate += pattern.successRate;
       }
     }

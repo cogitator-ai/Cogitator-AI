@@ -9,8 +9,108 @@ import {
   CausalInferenceEngine,
   CounterfactualReasoner,
   evaluateCounterfactual,
+  CausalReasoner,
+  InMemoryCausalGraphStore,
+  InMemoryCausalPatternStore,
+  InMemoryInterventionLog,
+  CausalExtractor,
 } from '../causal';
-import type { CausalNode, CausalEdge, CausalGraph } from '@cogitator-ai/types';
+import type {
+  CausalNode,
+  CausalEdge,
+  CausalGraph,
+  CausalGraphData,
+  CausalPattern,
+  InterventionRecord,
+  ExecutionTrace,
+  LLMBackend,
+  ChatResponse,
+  ChatStreamChunk,
+} from '@cogitator-ai/types';
+
+function createMockLLM(content: string): LLMBackend {
+  const response: ChatResponse = {
+    id: 'chat-test',
+    content,
+    finishReason: 'stop',
+    usage: {
+      inputTokens: 10,
+      outputTokens: 10,
+      totalTokens: 20,
+    },
+  };
+
+  return {
+    provider: 'openai',
+    chat: vi.fn(async () => response),
+    chatStream: async function* (): AsyncGenerator<ChatStreamChunk> {},
+  };
+}
+
+function createTrace(overrides: Partial<ExecutionTrace> = {}): ExecutionTrace {
+  return {
+    id: 'trace-test',
+    runId: 'run-test',
+    agentId: 'agent-test',
+    threadId: 'thread-test',
+    input: 'Collect data and summarize it',
+    output: 'Summary completed',
+    steps: [
+      {
+        index: 0,
+        type: 'tool_call',
+        timestamp: 1,
+        duration: 5,
+        toolCall: {
+          id: 'call-1',
+          name: 'collect_data',
+          arguments: { source: 'docs' },
+        },
+        toolResult: {
+          callId: 'call-1',
+          name: 'collect_data',
+          result: 'data collected',
+        },
+      },
+      {
+        index: 1,
+        type: 'tool_call',
+        timestamp: 2,
+        duration: 5,
+        toolCall: {
+          id: 'call-2',
+          name: 'summarize',
+          arguments: { format: 'brief' },
+        },
+        toolResult: {
+          callId: 'call-2',
+          name: 'summarize',
+          result: 'summary completed',
+        },
+      },
+    ],
+    toolCalls: [],
+    reflections: [],
+    metrics: {
+      success: true,
+      toolAccuracy: 1,
+      efficiency: 1,
+      completeness: 1,
+      coherence: 1,
+    },
+    score: 1,
+    model: 'test-model',
+    createdAt: new Date(0),
+    duration: 10,
+    usage: {
+      inputTokens: 10,
+      outputTokens: 10,
+      cost: 0,
+    },
+    isDemo: false,
+    ...overrides,
+  };
+}
 
 describe('CausalGraphImpl', () => {
   let graph: CausalGraphImpl;
@@ -238,6 +338,40 @@ describe('CausalGraphImpl', () => {
       expect(blanketIds).toContain('C');
     });
   });
+
+  describe('serialization', () => {
+    it('should preserve persisted metadata when restoring from data', () => {
+      const data: CausalGraphData = {
+        id: 'persisted-graph',
+        name: 'Persisted Graph',
+        nodes: [
+          { id: 'X', name: 'Treatment', variableType: 'treatment' },
+          { id: 'Y', name: 'Outcome', variableType: 'outcome' },
+        ],
+        edges: [
+          {
+            id: 'e1',
+            source: 'X',
+            target: 'Y',
+            relationType: 'causes',
+            strength: 0.8,
+            confidence: 0.9,
+          },
+        ],
+        createdAt: 100,
+        updatedAt: 200,
+        version: 7,
+      };
+
+      const restored = CausalGraphImpl.fromData(data).toData();
+
+      expect(restored.createdAt).toBe(data.createdAt);
+      expect(restored.updatedAt).toBe(data.updatedAt);
+      expect(restored.version).toBe(data.version);
+      expect(restored.nodes).toEqual(data.nodes);
+      expect(restored.edges).toEqual(data.edges);
+    });
+  });
 });
 
 describe('CausalGraphBuilder', () => {
@@ -436,6 +570,28 @@ describe('CausalInferenceEngine', () => {
     expect(result).toBeDefined();
     expect(typeof result.effect).toBe('number');
   });
+
+  it('should weight ATT by treated strata rather than population strata', () => {
+    const data: Record<string, number[]> = { X: [], Y: [], Z: [] };
+    const addRows = (count: number, z: number, x: number, y: number) => {
+      for (let i = 0; i < count; i++) {
+        data.X.push(x);
+        data.Y.push(y);
+        data.Z.push(z);
+      }
+    };
+
+    addRows(1, 0, 1, 1);
+    addRows(9, 0, 0, 0);
+    addRows(9, 1, 1, 5);
+    addRows(1, 1, 0, 2);
+
+    const ate = engine.estimateATE('X', 'Y', data);
+    const att = engine.estimateATT('X', 'Y', data);
+
+    expect(ate.effect).toBeCloseTo(2);
+    expect(att.effect).toBeCloseTo(2.8);
+  });
 });
 
 describe('CounterfactualReasoner', () => {
@@ -466,6 +622,212 @@ describe('CounterfactualReasoner', () => {
     expect(result).toBeDefined();
     expect(result.factualValue).toBe(0.1);
     expect(typeof result.counterfactualValue).toBe('number');
+  });
+});
+
+describe('CausalReasoner', () => {
+  it('should report only the nodes and edges actually added from a trace', async () => {
+    const llm = createMockLLM(
+      JSON.stringify({
+        relationships: [
+          {
+            cause: {
+              id: 'collect_data',
+              name: 'Collect Data',
+              type: 'treatment',
+            },
+            effect: {
+              id: 'summary_quality',
+              name: 'Summary Quality',
+              type: 'outcome',
+            },
+            relationType: 'causes',
+            strength: 0.8,
+            confidence: 0.9,
+            mechanism: 'Collecting data gives the summarizer enough evidence.',
+          },
+        ],
+        reasoning: 'Both trace batches describe the same causal relationship.',
+      })
+    );
+    const reasoner = new CausalReasoner({
+      llmBackend: llm,
+      config: {
+        discoveryBatchSize: 1,
+      },
+    });
+
+    const result = await reasoner.learnFromTrace(createTrace(), 'agent-test');
+    const graph = await reasoner.getGraph('agent-test');
+
+    expect(result).toEqual({
+      nodesAdded: 2,
+      edgesAdded: 1,
+      patternsFound: 1,
+    });
+    expect(graph.getNodes()).toHaveLength(2);
+    expect(graph.getEdges()).toHaveLength(1);
+  });
+});
+
+describe('causal stores', () => {
+  it('should isolate stored graph data from caller mutations', async () => {
+    const store = new InMemoryCausalGraphStore();
+    const data: CausalGraphData = {
+      id: 'graph-store-test',
+      name: 'Graph Store Test',
+      nodes: [
+        {
+          id: 'X',
+          name: 'Treatment',
+          variableType: 'treatment',
+          equation: {
+            type: 'linear',
+            coefficients: { Z: 1 },
+            intercept: 0,
+          },
+        },
+        { id: 'Y', name: 'Outcome', variableType: 'outcome' },
+      ],
+      edges: [
+        {
+          id: 'e1',
+          source: 'X',
+          target: 'Y',
+          relationType: 'causes',
+          strength: 0.8,
+          confidence: 0.9,
+          conditions: ['ready'],
+        },
+      ],
+      createdAt: 1,
+      updatedAt: 2,
+      version: 3,
+      metadata: { agentId: 'agent-store' },
+    };
+
+    await store.save(data);
+    data.nodes[0].name = 'Mutated';
+    data.edges[0].conditions!.push('mutated');
+
+    const loaded = await store.load('graph-store-test');
+    expect(loaded!.nodes[0].name).toBe('Treatment');
+    expect(loaded!.edges[0].conditions).toEqual(['ready']);
+
+    loaded!.nodes[0].name = 'Loaded mutation';
+    loaded!.edges[0].conditions!.push('loaded');
+
+    const reloaded = await store.load('graph-store-test');
+    expect(reloaded!.nodes[0].name).toBe('Treatment');
+    expect(reloaded!.edges[0].conditions).toEqual(['ready']);
+  });
+
+  it('should filter relevant patterns by each provided field', async () => {
+    const store = new InMemoryCausalPatternStore();
+    const makePattern = (
+      id: string,
+      trigger: string,
+      effect: string,
+      score: number
+    ): CausalPattern => ({
+      id,
+      agentId: 'agent-pattern',
+      pattern: {
+        trigger,
+        effect,
+        conditions: [],
+      },
+      occurrences: score,
+      successRate: 1,
+      avgStrength: 1,
+      lastSeen: score,
+      createdAt: score,
+    });
+
+    await store.save(makePattern('search-success', 'search docs', 'answer found', 3));
+    await store.save(makePattern('summarize-success', 'summarize docs', 'answer found', 2));
+    await store.save(makePattern('search-failure', 'search docs', 'timeout', 1));
+
+    expect(
+      (await store.findRelevant('agent-pattern', { trigger: 'search' }, 10)).map((p) => p.id)
+    ).toEqual(['search-success', 'search-failure']);
+    expect(
+      (await store.findRelevant('agent-pattern', { effect: 'timeout' }, 10)).map((p) => p.id)
+    ).toEqual(['search-failure']);
+    expect(
+      (
+        await store.findRelevant('agent-pattern', { trigger: 'summarize', effect: 'answer' }, 10)
+      ).map((p) => p.id)
+    ).toEqual(['summarize-success']);
+  });
+
+  it('should isolate intervention records returned from history', async () => {
+    const log = new InMemoryInterventionLog();
+    const record: InterventionRecord = {
+      id: 'intervention-store-test',
+      agentId: 'agent-intervention',
+      intervention: { X: 1 },
+      observedBefore: { Y: 0 },
+      observedAfter: { Y: 1 },
+      expectedEffect: {
+        action: 'Set X',
+        effects: [
+          {
+            variable: 'Y',
+            expectedValue: 1,
+            probability: 0.9,
+            mechanism: 'X causes Y',
+          },
+        ],
+        sideEffects: [],
+        confidence: 0.9,
+        reasoning: 'test',
+      },
+      actualEffect: { Y: 1 },
+      success: true,
+      timestamp: 1,
+    };
+
+    await log.log(record);
+    record.expectedEffect.effects[0].expectedValue = 0;
+
+    const history = await log.getHistory('agent-intervention', 1);
+    expect(history[0].expectedEffect.effects[0].expectedValue).toBe(1);
+
+    history[0].expectedEffect.effects[0].expectedValue = 0;
+    const reloaded = await log.getHistory('agent-intervention', 1);
+    expect(reloaded[0].expectedEffect.effects[0].expectedValue).toBe(1);
+  });
+});
+
+describe('CausalExtractor', () => {
+  it('should ignore malformed relationships from LLM output', async () => {
+    const extractor = new CausalExtractor({
+      llmBackend: createMockLLM(
+        JSON.stringify({
+          relationships: [
+            {},
+            {
+              cause: { id: 'valid_cause', name: 'Valid Cause', type: 'treatment' },
+              effect: { id: 'valid_effect', name: 'Valid Effect', type: 'outcome' },
+              relationType: 'causes',
+              strength: 2,
+              confidence: 2,
+              mechanism: 'test',
+            },
+          ],
+          reasoning: 'test',
+        })
+      ),
+    });
+    const graph = CausalGraphBuilder.create('extractor-malformed').build();
+
+    const result = await extractor.extractFromText('extract relationships', graph);
+
+    expect(result.nodes.map((node) => node.id).sort()).toEqual(['valid_cause', 'valid_effect']);
+    expect(result.edges).toHaveLength(1);
+    expect(result.edges[0].strength).toBe(1);
+    expect(result.edges[0].confidence).toBe(1);
   });
 });
 
@@ -603,8 +965,8 @@ describe('regression: counterfactual polynomial evaluation', () => {
   });
 });
 
-describe('regression: d-separation hasAllBlockedTriples must check ALL triples', () => {
-  it('should not report a path as blocked when only some triples are blocked', () => {
+describe('regression: d-separation blocks a path when any triple is blocked', () => {
+  it('should report a chain path as blocked when one non-collider is conditioned', () => {
     const graph = CausalGraphBuilder.create('partial-block')
       .variable('A', 'A', 'observed')
       .variable('B', 'B', 'observed')
@@ -622,12 +984,13 @@ describe('regression: d-separation hasAllBlockedTriples must check ALL triples',
 
     const path = result.paths.find((p) => p.nodes.length === 4);
     expect(path).toBeDefined();
-    expect(path!.isBlocked).toBe(false);
-
-    expect(result.openPaths.length).toBeGreaterThan(0);
+    expect(path!.isBlocked).toBe(true);
+    expect(path!.blockingNodes).toEqual(['B']);
+    expect(result.separated).toBe(true);
+    expect(result.openPaths).toHaveLength(0);
   });
 
-  it('should report path as blocked only when ALL triples are blocked', () => {
+  it('should report all conditioned non-colliders on a blocked path', () => {
     const graph = CausalGraphBuilder.create('all-blocked')
       .variable('A', 'A', 'observed')
       .variable('B', 'B', 'observed')
@@ -672,8 +1035,30 @@ describe('regression: d-separation hasAllBlockedTriples must check ALL triples',
     expect(result.openPaths.length).toBeGreaterThan(0);
   });
 
-  it('should distinguish partial vs full blocking with multiple conditioning nodes', () => {
+  it('should keep collider paths open when a collider descendant is conditioned', () => {
     const graph = CausalGraphBuilder.create('partial-vs-full')
+      .variable('A', 'A', 'observed')
+      .variable('B', 'B', 'observed')
+      .variable('C', 'C', 'observed')
+      .variable('D', 'D', 'observed')
+      .from('A')
+      .causes('B')
+      .from('C')
+      .causes('B')
+      .from('B')
+      .causes('D')
+      .build();
+
+    const unconditioned = dSeparation(graph, 'A', 'C', []);
+    expect(unconditioned.separated).toBe(true);
+
+    const conditionedOnDescendant = dSeparation(graph, 'A', 'C', ['D']);
+    expect(conditionedOnDescendant.separated).toBe(false);
+    expect(conditionedOnDescendant.openPaths.length).toBeGreaterThan(0);
+  });
+
+  it('should block a longer chain with any conditioned non-collider', () => {
+    const graph = CausalGraphBuilder.create('longer-chain')
       .variable('A', 'A', 'observed')
       .variable('B', 'B', 'observed')
       .variable('C', 'C', 'observed')
@@ -689,10 +1074,12 @@ describe('regression: d-separation hasAllBlockedTriples must check ALL triples',
       .causes('E')
       .build();
 
-    const partialResult = dSeparation(graph, 'A', 'E', ['B']);
-    const partialPath = partialResult.paths.find((p) => p.nodes.length === 5);
-    expect(partialPath).toBeDefined();
-    expect(partialPath!.isBlocked).toBe(false);
+    const singleConditioned = dSeparation(graph, 'A', 'E', ['B']);
+    const singlePath = singleConditioned.paths.find((p) => p.nodes.length === 5);
+    expect(singlePath).toBeDefined();
+    expect(singlePath!.isBlocked).toBe(true);
+    expect(singlePath!.blockingNodes).toEqual(['B']);
+    expect(singleConditioned.separated).toBe(true);
 
     const fullResult = dSeparation(graph, 'A', 'E', ['B', 'C', 'D']);
     const fullPath = fullResult.paths.find((p) => p.nodes.length === 5);

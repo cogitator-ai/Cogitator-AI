@@ -247,6 +247,65 @@ export class CausalInferenceEngine {
     return Array.from(strataMap.entries()).map(([key, indices]) => ({ key, indices }));
   }
 
+  private estimateATTFromData(
+    treatment: string,
+    outcome: string,
+    adjustmentVars: string[],
+    data: Record<string, number[]>
+  ): { estimate: number; standardError: number; confidenceInterval: [number, number] } {
+    const treatmentValues = data[treatment];
+    const outcomeValues = data[outcome];
+
+    if (!treatmentValues || !outcomeValues) {
+      return { estimate: NaN, standardError: NaN, confidenceInterval: [NaN, NaN] };
+    }
+
+    const n = Math.min(treatmentValues.length, outcomeValues.length);
+    if (n === 0) {
+      return { estimate: NaN, standardError: NaN, confidenceInterval: [NaN, NaN] };
+    }
+
+    if (adjustmentVars.length === 0) {
+      return this.estimateEffectFromData(treatment, outcome, [], data, 1);
+    }
+
+    const strata = this.stratifyData(data, adjustmentVars, n);
+    const treatedTotal = treatmentValues.slice(0, n).filter((value) => value >= 0.5).length;
+    if (treatedTotal === 0) {
+      return { estimate: NaN, standardError: NaN, confidenceInterval: [NaN, NaN] };
+    }
+
+    let weightedEffect = 0;
+    let totalWeight = 0;
+
+    for (const stratum of strata) {
+      const stratumTreated: number[] = [];
+      const stratumControl: number[] = [];
+
+      for (const i of stratum.indices) {
+        if (treatmentValues[i] >= 0.5) {
+          stratumTreated.push(outcomeValues[i]);
+        } else {
+          stratumControl.push(outcomeValues[i]);
+        }
+      }
+
+      if (stratumTreated.length > 0 && stratumControl.length > 0) {
+        const treatedMean = stratumTreated.reduce((a, b) => a + b, 0) / stratumTreated.length;
+        const controlMean = stratumControl.reduce((a, b) => a + b, 0) / stratumControl.length;
+        const weight = stratumTreated.length / treatedTotal;
+        weightedEffect += (treatedMean - controlMean) * weight;
+        totalWeight += weight;
+      }
+    }
+
+    return {
+      estimate: totalWeight > 0 ? weightedEffect / totalWeight : NaN,
+      standardError: NaN,
+      confidenceInterval: [NaN, NaN],
+    };
+  }
+
   computeCounterfactual(query: CounterfactualQuery): CounterfactualResult {
     if (!this.config.enableCounterfactual) {
       throw new Error('Counterfactual reasoning is disabled in config');
@@ -305,17 +364,16 @@ export class CausalInferenceEngine {
       };
     }
 
-    const ateResult = this.estimateATE(treatment, outcome, data);
-
-    const att = ateResult.effect;
+    const adjustmentSet = identifiability.adjustmentSet!;
+    const attResult = this.estimateATTFromData(treatment, outcome, adjustmentSet.variables, data);
 
     return {
-      effect: att,
-      standardError: ateResult.standardError,
-      confidenceInterval: ateResult.confidenceInterval,
-      adjustmentSet: identifiability.adjustmentSet!,
+      effect: attResult.estimate,
+      standardError: attResult.standardError,
+      confidenceInterval: attResult.confidenceInterval,
+      adjustmentSet,
       isIdentifiable: true,
-      formula: `ATT = E[Y(1) - Y(0) | T=1] estimated via ${identifiability.adjustmentSet!.type} adjustment`,
+      formula: `ATT = E[Y(1) - Y(0) | T=1] estimated via ${adjustmentSet.type} adjustment`,
     };
   }
 

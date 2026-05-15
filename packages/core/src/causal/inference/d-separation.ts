@@ -105,10 +105,7 @@ function isPathBlocked(
     }
   }
 
-  const totalTriples = path.nodes.length - 2;
-  const blocked = blockingNodes.length === totalTriples;
-
-  return { blocked, blockingNodes };
+  return { blocked: blockingNodes.length > 0, blockingNodes };
 }
 
 function getLocalTripleType(graph: CausalGraph, a: string, b: string, c: string): TripleType {

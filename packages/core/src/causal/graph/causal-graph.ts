@@ -30,9 +30,6 @@ export class CausalGraphImpl implements CausalGraph {
 
   static fromData(data: CausalGraphData): CausalGraphImpl {
     const graph = new CausalGraphImpl(data.id, data.name);
-    graph.createdAt = data.createdAt;
-    graph.updatedAt = data.updatedAt;
-    graph.version = data.version;
 
     for (const node of data.nodes) {
       graph.addNode(node);
@@ -40,6 +37,10 @@ export class CausalGraphImpl implements CausalGraph {
     for (const edge of data.edges) {
       graph.addEdge(edge);
     }
+
+    graph.createdAt = data.createdAt;
+    graph.updatedAt = data.updatedAt;
+    graph.version = data.version;
     return graph;
   }
 

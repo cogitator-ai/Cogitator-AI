@@ -1,11 +1,26 @@
 import type { InterventionRecord, InterventionLog } from '@cogitator-ai/types';
 
+function cloneRecord(record: InterventionRecord): InterventionRecord {
+  return {
+    ...record,
+    intervention: { ...record.intervention },
+    observedBefore: { ...record.observedBefore },
+    observedAfter: { ...record.observedAfter },
+    actualEffect: { ...record.actualEffect },
+    expectedEffect: {
+      ...record.expectedEffect,
+      effects: record.expectedEffect.effects.map((effect) => ({ ...effect })),
+      sideEffects: record.expectedEffect.sideEffects.map((effect) => ({ ...effect })),
+    },
+  };
+}
+
 export class InMemoryInterventionLog implements InterventionLog {
   private records = new Map<string, InterventionRecord>();
   private agentIndex = new Map<string, string[]>();
 
   async log(record: InterventionRecord): Promise<void> {
-    this.records.set(record.id, { ...record });
+    this.records.set(record.id, cloneRecord(record));
 
     if (!this.agentIndex.has(record.agentId)) {
       this.agentIndex.set(record.agentId, []);
@@ -23,7 +38,7 @@ export class InMemoryInterventionLog implements InterventionLog {
     for (let i = recordIds.length - 1; i >= start; i--) {
       const record = this.records.get(recordIds[i]);
       if (record) {
-        records.push({ ...record });
+        records.push(cloneRecord(record));
       }
     }
 
@@ -48,7 +63,7 @@ export class InMemoryInterventionLog implements InterventionLog {
       const overlap = interventionKeys.filter((k) => recordKeys.includes(k));
 
       if (overlap.length > 0) {
-        similar.push({ ...record });
+        similar.push(cloneRecord(record));
       }
     }
 
