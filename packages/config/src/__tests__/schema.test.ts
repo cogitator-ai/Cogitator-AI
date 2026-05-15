@@ -3,11 +3,23 @@ import { CogitatorConfigSchema, LLMProviderSchema } from '../schema';
 
 describe('LLMProviderSchema', () => {
   it('accepts valid providers', () => {
-    expect(LLMProviderSchema.parse('ollama')).toBe('ollama');
-    expect(LLMProviderSchema.parse('openai')).toBe('openai');
-    expect(LLMProviderSchema.parse('anthropic')).toBe('anthropic');
-    expect(LLMProviderSchema.parse('google')).toBe('google');
-    expect(LLMProviderSchema.parse('vllm')).toBe('vllm');
+    const providers = [
+      'ollama',
+      'openai',
+      'anthropic',
+      'google',
+      'azure',
+      'bedrock',
+      'vllm',
+      'mistral',
+      'groq',
+      'together',
+      'deepseek',
+    ];
+
+    for (const provider of providers) {
+      expect(LLMProviderSchema.parse(provider)).toBe(provider);
+    }
   });
 
   it('rejects invalid providers', () => {
@@ -25,12 +37,22 @@ describe('CogitatorConfigSchema', () => {
   it('accepts full config', () => {
     const config = {
       llm: {
-        defaultProvider: 'ollama',
+        defaultProvider: 'groq',
         defaultModel: 'llama3.1:8b',
         providers: {
           ollama: { baseUrl: 'http://localhost:11434' },
           openai: { apiKey: 'sk-xxx', baseUrl: 'https://api.openai.com/v1' },
           anthropic: { apiKey: 'sk-ant-xxx' },
+          mistral: { apiKey: 'mistral-xxx' },
+          groq: { apiKey: 'gsk-xxx' },
+          together: { apiKey: 'together-xxx' },
+          deepseek: { apiKey: 'deepseek-xxx' },
+          azure: {
+            apiKey: 'azure-xxx',
+            endpoint: 'https://example.openai.azure.com',
+            deployment: 'gpt-4o',
+          },
+          bedrock: { accessKeyId: 'AKIA-test', secretAccessKey: 'secret-test' },
         },
       },
       limits: {
@@ -41,8 +63,11 @@ describe('CogitatorConfigSchema', () => {
     };
 
     const result = CogitatorConfigSchema.parse(config);
-    expect(result.llm?.defaultProvider).toBe('ollama');
+    expect(result.llm?.defaultProvider).toBe('groq');
     expect(result.llm?.providers?.ollama?.baseUrl).toBe('http://localhost:11434');
+    expect(result.llm?.providers?.groq?.apiKey).toBe('gsk-xxx');
+    expect(result.llm?.providers?.azure?.deployment).toBe('gpt-4o');
+    expect(result.llm?.providers?.bedrock?.region).toBeUndefined();
     expect(result.limits?.maxConcurrentRuns).toBe(10);
   });
 

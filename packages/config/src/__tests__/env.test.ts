@@ -24,9 +24,14 @@ describe('loadEnvConfig()', () => {
           'GOOGLE_API_KEY',
           'AZURE_OPENAI_API_KEY',
           'AZURE_OPENAI_ENDPOINT',
+          'AZURE_OPENAI_DEPLOYMENT',
           'AWS_REGION',
           'AWS_ACCESS_KEY_ID',
           'AWS_SECRET_ACCESS_KEY',
+          'MISTRAL_API_KEY',
+          'GROQ_API_KEY',
+          'TOGETHER_API_KEY',
+          'DEEPSEEK_API_KEY',
         ].includes(key)
     );
     for (const key of keysToDelete) {
@@ -136,11 +141,13 @@ describe('loadEnvConfig()', () => {
     process.env.COGITATOR_AZURE_API_KEY = 'azure-key';
     process.env.COGITATOR_AZURE_ENDPOINT = 'https://myresource.openai.azure.com';
     process.env.COGITATOR_AZURE_API_VERSION = '2024-02-15-preview';
+    process.env.COGITATOR_AZURE_DEPLOYMENT = 'gpt-4o';
 
     const config = loadEnvConfig();
     expect(config.llm?.providers?.azure?.apiKey).toBe('azure-key');
     expect(config.llm?.providers?.azure?.endpoint).toBe('https://myresource.openai.azure.com');
     expect(config.llm?.providers?.azure?.apiVersion).toBe('2024-02-15-preview');
+    expect(config.llm?.providers?.azure?.deployment).toBe('gpt-4o');
   });
 
   it('loads Azure config from standard AZURE_OPENAI_* vars', () => {
@@ -148,10 +155,12 @@ describe('loadEnvConfig()', () => {
     delete process.env.COGITATOR_AZURE_ENDPOINT;
     process.env.AZURE_OPENAI_API_KEY = 'azure-std-key';
     process.env.AZURE_OPENAI_ENDPOINT = 'https://std.openai.azure.com';
+    process.env.AZURE_OPENAI_DEPLOYMENT = 'gpt-4o-mini';
 
     const config = loadEnvConfig();
     expect(config.llm?.providers?.azure?.apiKey).toBe('azure-std-key');
     expect(config.llm?.providers?.azure?.endpoint).toBe('https://std.openai.azure.com');
+    expect(config.llm?.providers?.azure?.deployment).toBe('gpt-4o-mini');
   });
 
   it('skips Azure config when apiKey or endpoint missing', () => {
@@ -193,5 +202,41 @@ describe('loadEnvConfig()', () => {
     expect(config.llm?.providers?.bedrock?.region).toBe('ap-southeast-1');
     expect(config.llm?.providers?.bedrock?.accessKeyId).toBeUndefined();
     expect(config.llm?.providers?.bedrock?.secretAccessKey).toBeUndefined();
+  });
+
+  it('loads Bedrock credentials without explicit region', () => {
+    process.env.COGITATOR_BEDROCK_ACCESS_KEY_ID = 'AKIA-no-region';
+    process.env.COGITATOR_BEDROCK_SECRET_ACCESS_KEY = 'secret-no-region';
+
+    const config = loadEnvConfig();
+    expect(config.llm?.providers?.bedrock?.region).toBeUndefined();
+    expect(config.llm?.providers?.bedrock?.accessKeyId).toBe('AKIA-no-region');
+    expect(config.llm?.providers?.bedrock?.secretAccessKey).toBe('secret-no-region');
+  });
+
+  it('loads OpenAI-compatible provider API keys from COGITATOR_ vars', () => {
+    process.env.COGITATOR_MISTRAL_API_KEY = 'mistral-key';
+    process.env.COGITATOR_GROQ_API_KEY = 'groq-key';
+    process.env.COGITATOR_TOGETHER_API_KEY = 'together-key';
+    process.env.COGITATOR_DEEPSEEK_API_KEY = 'deepseek-key';
+
+    const config = loadEnvConfig();
+    expect(config.llm?.providers?.mistral?.apiKey).toBe('mistral-key');
+    expect(config.llm?.providers?.groq?.apiKey).toBe('groq-key');
+    expect(config.llm?.providers?.together?.apiKey).toBe('together-key');
+    expect(config.llm?.providers?.deepseek?.apiKey).toBe('deepseek-key');
+  });
+
+  it('loads OpenAI-compatible provider API keys from standard vars', () => {
+    process.env.MISTRAL_API_KEY = 'mistral-std-key';
+    process.env.GROQ_API_KEY = 'groq-std-key';
+    process.env.TOGETHER_API_KEY = 'together-std-key';
+    process.env.DEEPSEEK_API_KEY = 'deepseek-std-key';
+
+    const config = loadEnvConfig();
+    expect(config.llm?.providers?.mistral?.apiKey).toBe('mistral-std-key');
+    expect(config.llm?.providers?.groq?.apiKey).toBe('groq-std-key');
+    expect(config.llm?.providers?.together?.apiKey).toBe('together-std-key');
+    expect(config.llm?.providers?.deepseek?.apiKey).toBe('deepseek-std-key');
   });
 });

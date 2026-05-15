@@ -56,6 +56,12 @@ llm:
       baseUrl: https://custom.openai.com
     ollama:
       baseUrl: http://localhost:11434
+    groq:
+      apiKey: groq-key
+    azure:
+      apiKey: azure-key
+      endpoint: https://example.openai.azure.com
+      deployment: gpt-4o
 `
       );
 
@@ -68,6 +74,10 @@ llm:
       expect(config?.llm?.providers?.ollama).toEqual({
         baseUrl: 'http://localhost:11434',
       });
+      expect(config?.llm?.providers?.groq).toEqual({
+        apiKey: 'groq-key',
+      });
+      expect(config?.llm?.providers?.azure?.deployment).toBe('gpt-4o');
     });
 
     it('parses limits config', () => {

@@ -63,6 +63,11 @@ COGITATOR_OLLAMA_BASE_URL=http://localhost:11434
 COGITATOR_OPENAI_API_KEY=sk-xxx
 COGITATOR_ANTHROPIC_API_KEY=sk-ant-xxx
 COGITATOR_GOOGLE_API_KEY=xxx
+COGITATOR_AZURE_DEPLOYMENT=gpt-4o
+COGITATOR_MISTRAL_API_KEY=xxx
+COGITATOR_GROQ_API_KEY=xxx
+COGITATOR_TOGETHER_API_KEY=xxx
+COGITATOR_DEEPSEEK_API_KEY=xxx
 ```
 
 Standard provider env vars are also supported:
@@ -72,6 +77,10 @@ OPENAI_API_KEY=sk-xxx
 ANTHROPIC_API_KEY=sk-ant-xxx
 GOOGLE_API_KEY=xxx
 OLLAMA_HOST=http://localhost:11434
+MISTRAL_API_KEY=xxx
+GROQ_API_KEY=xxx
+TOGETHER_API_KEY=xxx
+DEEPSEEK_API_KEY=xxx
 ```
 
 ## Programmatic Configuration
@@ -123,54 +132,76 @@ const config = loadConfig({
 ### Ollama (Local)
 
 ```yaml
-providers:
-  ollama:
-    baseUrl: http://localhost:11434
+llm:
+  providers:
+    ollama:
+      baseUrl: http://localhost:11434
 ```
 
 ### OpenAI
 
 ```yaml
-providers:
-  openai:
-    apiKey: sk-xxx
-    baseUrl: https://api.openai.com/v1  # optional, for proxies
+llm:
+  providers:
+    openai:
+      apiKey: sk-xxx
+      baseUrl: https://api.openai.com/v1 # optional, for proxies
 ```
 
 ### Anthropic
 
 ```yaml
-providers:
-  anthropic:
-    apiKey: sk-ant-xxx
+llm:
+  providers:
+    anthropic:
+      apiKey: sk-ant-xxx
 ```
 
 ### Google Gemini
 
 ```yaml
-providers:
-  google:
-    apiKey: xxx
+llm:
+  providers:
+    google:
+      apiKey: xxx
 ```
 
 ### Azure OpenAI
 
 ```yaml
-providers:
-  azure:
-    apiKey: xxx
-    endpoint: https://your-resource.openai.azure.com
-    apiVersion: '2024-02-15-preview'  # optional
+llm:
+  providers:
+    azure:
+      apiKey: xxx
+      endpoint: https://your-resource.openai.azure.com
+      apiVersion: '2024-02-15-preview' # optional
+      deployment: gpt-4o # optional
 ```
 
 ### AWS Bedrock
 
 ```yaml
-providers:
-  bedrock:
-    region: us-east-1
-    accessKeyId: xxx  # optional, uses AWS credentials chain
-    secretAccessKey: xxx  # optional
+llm:
+  providers:
+    bedrock:
+      region: us-east-1 # optional, can use AWS config chain
+      accessKeyId: xxx # optional, uses AWS credentials chain
+      secretAccessKey: xxx # optional
+```
+
+### OpenAI-Compatible Providers
+
+```yaml
+llm:
+  providers:
+    mistral:
+      apiKey: xxx
+    groq:
+      apiKey: xxx
+    together:
+      apiKey: xxx
+    deepseek:
+      apiKey: xxx
 ```
 
 ## Config Merging

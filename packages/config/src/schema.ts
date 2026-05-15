@@ -8,6 +8,10 @@ export const LLMProviderSchema = z.enum([
   'azure',
   'bedrock',
   'vllm',
+  'mistral',
+  'groq',
+  'together',
+  'deepseek',
 ]);
 
 export const ProvidersConfigSchema = z.object({
@@ -20,16 +24,21 @@ export const ProvidersConfigSchema = z.object({
       apiKey: z.string(),
       endpoint: z.string(),
       apiVersion: z.string().optional(),
+      deployment: z.string().optional(),
     })
     .optional(),
   bedrock: z
     .object({
-      region: z.string(),
+      region: z.string().optional(),
       accessKeyId: z.string().optional(),
       secretAccessKey: z.string().optional(),
     })
     .optional(),
   vllm: z.object({ baseUrl: z.string() }).optional(),
+  mistral: z.object({ apiKey: z.string() }).optional(),
+  groq: z.object({ apiKey: z.string() }).optional(),
+  together: z.object({ apiKey: z.string() }).optional(),
+  deepseek: z.object({ apiKey: z.string() }).optional(),
 });
 
 export const LLMConfigSchema = z.object({

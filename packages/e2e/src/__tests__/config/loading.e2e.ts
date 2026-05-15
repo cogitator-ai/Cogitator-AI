@@ -14,10 +14,11 @@ describe('Config: Loading & Validation', () => {
   it('defineConfig creates a validated config object', () => {
     const config = defineConfig({
       llm: {
-        defaultProvider: 'anthropic',
-        defaultModel: 'claude-sonnet-4-20250514',
+        defaultProvider: 'groq',
+        defaultModel: 'llama-3.3-70b-versatile',
         providers: {
           anthropic: { apiKey: 'sk-ant-test' },
+          groq: { apiKey: 'gsk-test' },
           ollama: { baseUrl: 'http://localhost:11434' },
         },
       },
@@ -32,9 +33,10 @@ describe('Config: Loading & Validation', () => {
       },
     });
 
-    expect(config.llm?.defaultProvider).toBe('anthropic');
-    expect(config.llm?.defaultModel).toBe('claude-sonnet-4-20250514');
+    expect(config.llm?.defaultProvider).toBe('groq');
+    expect(config.llm?.defaultModel).toBe('llama-3.3-70b-versatile');
     expect(config.llm?.providers?.anthropic?.apiKey).toBe('sk-ant-test');
+    expect(config.llm?.providers?.groq?.apiKey).toBe('gsk-test');
     expect(config.llm?.providers?.ollama?.baseUrl).toBe('http://localhost:11434');
     expect(config.limits?.maxConcurrentRuns).toBe(8);
     expect(config.limits?.defaultTimeout).toBe(60000);

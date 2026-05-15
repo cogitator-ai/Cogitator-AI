@@ -2,7 +2,7 @@
  * Environment variable configuration loader
  */
 
-import { DeployTargetSchema, type CogitatorConfigInput } from '../schema';
+import { DeployTargetSchema, LLMProviderSchema, type CogitatorConfigInput } from '../schema';
 
 const ENV_PREFIX = 'COGITATOR_';
 
@@ -21,9 +21,14 @@ const ENV_PREFIX = 'COGITATOR_';
  * - COGITATOR_AZURE_API_KEY -> llm.providers.azure.apiKey
  * - COGITATOR_AZURE_ENDPOINT -> llm.providers.azure.endpoint
  * - COGITATOR_AZURE_API_VERSION -> llm.providers.azure.apiVersion
+ * - COGITATOR_AZURE_DEPLOYMENT -> llm.providers.azure.deployment
  * - COGITATOR_BEDROCK_REGION -> llm.providers.bedrock.region
  * - COGITATOR_BEDROCK_ACCESS_KEY_ID -> llm.providers.bedrock.accessKeyId
  * - COGITATOR_BEDROCK_SECRET_ACCESS_KEY -> llm.providers.bedrock.secretAccessKey
+ * - COGITATOR_MISTRAL_API_KEY -> llm.providers.mistral.apiKey
+ * - COGITATOR_GROQ_API_KEY -> llm.providers.groq.apiKey
+ * - COGITATOR_TOGETHER_API_KEY -> llm.providers.together.apiKey
+ * - COGITATOR_DEEPSEEK_API_KEY -> llm.providers.deepseek.apiKey
  * - COGITATOR_LIMITS_MAX_CONCURRENT_RUNS -> limits.maxConcurrentRuns
  * - COGITATOR_LIMITS_DEFAULT_TIMEOUT -> limits.defaultTimeout
  * - COGITATOR_LIMITS_MAX_TOKENS_PER_RUN -> limits.maxTokensPerRun
@@ -37,20 +42,15 @@ const ENV_PREFIX = 'COGITATOR_';
  * - AWS_REGION -> llm.providers.bedrock.region
  * - AWS_ACCESS_KEY_ID -> llm.providers.bedrock.accessKeyId
  * - AWS_SECRET_ACCESS_KEY -> llm.providers.bedrock.secretAccessKey
+ * - MISTRAL_API_KEY -> llm.providers.mistral.apiKey
+ * - GROQ_API_KEY -> llm.providers.groq.apiKey
+ * - TOGETHER_API_KEY -> llm.providers.together.apiKey
+ * - DEEPSEEK_API_KEY -> llm.providers.deepseek.apiKey
  */
-const VALID_PROVIDERS = [
-  'ollama',
-  'openai',
-  'anthropic',
-  'google',
-  'azure',
-  'bedrock',
-  'vllm',
-] as const;
-type LLMProvider = (typeof VALID_PROVIDERS)[number];
+type LLMProvider = NonNullable<NonNullable<CogitatorConfigInput['llm']>['defaultProvider']>;
 
 function isValidProvider(value: string): value is LLMProvider {
-  return VALID_PROVIDERS.includes(value as LLMProvider);
+  return LLMProviderSchema.safeParse(value).success;
 }
 
 export function loadEnvConfig(): CogitatorConfigInput {
@@ -133,23 +133,45 @@ function loadProviderConfigs(): ProvidersConfig {
   const azureEndpoint = getEnv('AZURE_ENDPOINT') ?? process.env.AZURE_OPENAI_ENDPOINT;
   if (azureApiKey && azureEndpoint) {
     const azureApiVersion = getEnv('AZURE_API_VERSION');
+    const azureDeployment = getEnv('AZURE_DEPLOYMENT') ?? process.env.AZURE_OPENAI_DEPLOYMENT;
     providers.azure = {
       apiKey: azureApiKey,
       endpoint: azureEndpoint,
       ...(azureApiVersion ? { apiVersion: azureApiVersion } : {}),
+      ...(azureDeployment ? { deployment: azureDeployment } : {}),
     };
   }
 
   const bedrockRegion = getEnv('BEDROCK_REGION') ?? process.env.AWS_REGION;
-  if (bedrockRegion) {
-    const bedrockAccessKeyId = getEnv('BEDROCK_ACCESS_KEY_ID') ?? process.env.AWS_ACCESS_KEY_ID;
-    const bedrockSecretAccessKey =
-      getEnv('BEDROCK_SECRET_ACCESS_KEY') ?? process.env.AWS_SECRET_ACCESS_KEY;
+  const bedrockAccessKeyId = getEnv('BEDROCK_ACCESS_KEY_ID') ?? process.env.AWS_ACCESS_KEY_ID;
+  const bedrockSecretAccessKey =
+    getEnv('BEDROCK_SECRET_ACCESS_KEY') ?? process.env.AWS_SECRET_ACCESS_KEY;
+  if (bedrockRegion || bedrockAccessKeyId || bedrockSecretAccessKey) {
     providers.bedrock = {
-      region: bedrockRegion,
+      ...(bedrockRegion ? { region: bedrockRegion } : {}),
       ...(bedrockAccessKeyId ? { accessKeyId: bedrockAccessKeyId } : {}),
       ...(bedrockSecretAccessKey ? { secretAccessKey: bedrockSecretAccessKey } : {}),
     };
+  }
+
+  const mistralApiKey = getEnv('MISTRAL_API_KEY') ?? process.env.MISTRAL_API_KEY;
+  if (mistralApiKey) {
+    providers.mistral = { apiKey: mistralApiKey };
+  }
+
+  const groqApiKey = getEnv('GROQ_API_KEY') ?? process.env.GROQ_API_KEY;
+  if (groqApiKey) {
+    providers.groq = { apiKey: groqApiKey };
+  }
+
+  const togetherApiKey = getEnv('TOGETHER_API_KEY') ?? process.env.TOGETHER_API_KEY;
+  if (togetherApiKey) {
+    providers.together = { apiKey: togetherApiKey };
+  }
+
+  const deepseekApiKey = getEnv('DEEPSEEK_API_KEY') ?? process.env.DEEPSEEK_API_KEY;
+  if (deepseekApiKey) {
+    providers.deepseek = { apiKey: deepseekApiKey };
   }
 
   return providers;

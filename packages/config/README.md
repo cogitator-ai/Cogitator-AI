@@ -20,7 +20,7 @@ llm:
   defaultModel: gpt-4o
   providers:
     openai:
-      apiKey: ${OPENAI_API_KEY}
+      apiKey: sk-xxx
     ollama:
       baseUrl: http://localhost:11434
 
@@ -66,7 +66,7 @@ const config = defineConfig({
 
 ```yaml
 llm:
-  defaultProvider: openai # ollama | openai | anthropic | google | azure | bedrock | vllm
+  defaultProvider: openai # ollama | openai | anthropic | google | azure | bedrock | vllm | mistral | groq | together | deepseek
   defaultModel: gpt-4o
   providers:
     ollama:
@@ -82,12 +82,21 @@ llm:
       apiKey: xxx
       endpoint: https://xxx.openai.azure.com
       apiVersion: 2024-02-15-preview # optional
+      deployment: gpt-4o # optional
     bedrock:
-      region: us-east-1
+      region: us-east-1 # optional, can use AWS config chain
       accessKeyId: xxx # optional, uses AWS credentials chain
       secretAccessKey: xxx # optional
     vllm:
       baseUrl: http://localhost:8000
+    mistral:
+      apiKey: xxx
+    groq:
+      apiKey: xxx
+    together:
+      apiKey: xxx
+    deepseek:
+      apiKey: xxx
 ```
 
 ### Memory Configuration
@@ -283,7 +292,7 @@ logging:
 
 ## Environment Variables
 
-All configuration can be set via environment variables with `COGITATOR_` prefix:
+Supported provider, limits, and deploy settings can be set via environment variables with the `COGITATOR_` prefix:
 
 | Variable                               | Description           |
 | -------------------------------------- | --------------------- |
@@ -299,9 +308,14 @@ All configuration can be set via environment variables with `COGITATOR_` prefix:
 | `COGITATOR_AZURE_API_KEY`              | Azure OpenAI API key  |
 | `COGITATOR_AZURE_ENDPOINT`             | Azure OpenAI endpoint |
 | `COGITATOR_AZURE_API_VERSION`          | Azure API version     |
+| `COGITATOR_AZURE_DEPLOYMENT`           | Azure deployment name |
 | `COGITATOR_BEDROCK_REGION`             | AWS Bedrock region    |
 | `COGITATOR_BEDROCK_ACCESS_KEY_ID`      | AWS access key ID     |
 | `COGITATOR_BEDROCK_SECRET_ACCESS_KEY`  | AWS secret access key |
+| `COGITATOR_MISTRAL_API_KEY`            | Mistral API key       |
+| `COGITATOR_GROQ_API_KEY`               | Groq API key          |
+| `COGITATOR_TOGETHER_API_KEY`           | Together API key      |
+| `COGITATOR_DEEPSEEK_API_KEY`           | DeepSeek API key      |
 | `COGITATOR_LIMITS_MAX_CONCURRENT_RUNS` | Max concurrent runs   |
 | `COGITATOR_LIMITS_DEFAULT_TIMEOUT`     | Default timeout (ms)  |
 | `COGITATOR_LIMITS_MAX_TOKENS_PER_RUN`  | Max tokens per run    |
@@ -321,6 +335,10 @@ AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
 AWS_REGION=us-east-1
 AWS_ACCESS_KEY_ID=xxx
 AWS_SECRET_ACCESS_KEY=xxx
+MISTRAL_API_KEY=xxx
+GROQ_API_KEY=xxx
+TOGETHER_API_KEY=xxx
+DEEPSEEK_API_KEY=xxx
 ```
 
 ---
@@ -415,18 +433,18 @@ llm:
   defaultModel: gpt-4o
   providers:
     openai:
-      apiKey: ${OPENAI_API_KEY}
+      apiKey: sk-prod-openai
     anthropic:
-      apiKey: ${ANTHROPIC_API_KEY}
+      apiKey: sk-ant-prod
 
 memory:
   adapter: postgres
   postgres:
-    connectionString: ${DATABASE_URL}
+    connectionString: postgresql://user:pass@db.example.com:5432/cogitator
     poolSize: 20
   embedding:
     provider: openai
-    apiKey: ${OPENAI_API_KEY}
+    apiKey: sk-prod-openai
   contextBuilder:
     maxTokens: 8000
     strategy: hybrid

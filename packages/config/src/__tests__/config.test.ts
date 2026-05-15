@@ -149,6 +149,34 @@ llm:
       ).toThrow('Invalid configuration');
     });
 
+    it('accepts all runtime LLM providers', () => {
+      const providers = [
+        'ollama',
+        'openai',
+        'anthropic',
+        'google',
+        'azure',
+        'bedrock',
+        'vllm',
+        'mistral',
+        'groq',
+        'together',
+        'deepseek',
+      ] as const;
+
+      for (const provider of providers) {
+        const config = loadConfig({
+          skipYaml: true,
+          skipEnv: true,
+          overrides: {
+            llm: { defaultProvider: provider },
+          },
+        });
+
+        expect(config.llm?.defaultProvider).toBe(provider);
+      }
+    });
+
     it('throws on invalid limits', () => {
       expect(() =>
         loadConfig({
