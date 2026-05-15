@@ -11,13 +11,17 @@ import { exec, isCommandAvailable } from '../utils/exec.js';
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
+const PREFLIGHT_TIMEOUT_MS = 3_000;
+
 export class FlyProvider implements DeployProvider {
   readonly name = 'fly';
 
   async preflight(config: DeployConfig, _projectDir: string): Promise<PreflightResult> {
     const checks: PreflightCheck[] = [];
 
-    const flyAvailable = isCommandAvailable('flyctl') || isCommandAvailable('fly');
+    const flyAvailable =
+      isCommandAvailable('flyctl', PREFLIGHT_TIMEOUT_MS) ||
+      isCommandAvailable('fly', PREFLIGHT_TIMEOUT_MS);
     checks.push({
       name: 'flyctl installed',
       passed: flyAvailable,
@@ -26,7 +30,7 @@ export class FlyProvider implements DeployProvider {
     });
 
     if (flyAvailable) {
-      const authResult = exec('flyctl auth whoami');
+      const authResult = exec('flyctl auth whoami', { timeout: PREFLIGHT_TIMEOUT_MS });
       checks.push({
         name: 'Fly.io authenticated',
         passed: authResult.success,

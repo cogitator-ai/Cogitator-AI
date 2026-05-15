@@ -1,5 +1,11 @@
 # @cogitator-ai/deploy
 
+## 0.1.7
+
+### Patch Changes
+
+- Bound Docker and Fly.io preflight command checks so unavailable CLIs or daemons cannot hang CI or deployment validation.
+
 ## 0.1.6
 
 ### Patch Changes

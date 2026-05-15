@@ -11,13 +11,15 @@ import { exec, isCommandAvailable } from '../utils/exec.js';
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
+const PREFLIGHT_TIMEOUT_MS = 3_000;
+
 export class DockerProvider implements DeployProvider {
   readonly name = 'docker';
 
   async preflight(config: DeployConfig, _projectDir: string): Promise<PreflightResult> {
     const checks: PreflightCheck[] = [];
 
-    const dockerAvailable = isCommandAvailable('docker');
+    const dockerAvailable = isCommandAvailable('docker', PREFLIGHT_TIMEOUT_MS);
     checks.push({
       name: 'Docker installed',
       passed: dockerAvailable,
@@ -26,7 +28,7 @@ export class DockerProvider implements DeployProvider {
     });
 
     if (dockerAvailable) {
-      const daemonRunning = exec('docker info').success;
+      const daemonRunning = exec('docker info', { timeout: PREFLIGHT_TIMEOUT_MS }).success;
       checks.push({
         name: 'Docker daemon running',
         passed: daemonRunning,
@@ -36,7 +38,9 @@ export class DockerProvider implements DeployProvider {
     }
 
     if (config.registry) {
-      const loginCheck = exec(`docker login ${config.registry} --get-login`);
+      const loginCheck = exec(`docker login ${config.registry} --get-login`, {
+        timeout: PREFLIGHT_TIMEOUT_MS,
+      });
       checks.push({
         name: 'Registry authentication',
         passed: loginCheck.success,

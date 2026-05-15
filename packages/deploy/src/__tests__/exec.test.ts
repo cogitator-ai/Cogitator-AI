@@ -37,6 +37,11 @@ describe('exec', () => {
     expect(result.success).toBe(true);
     expect(result.output).toContain('hello from stdin');
   });
+
+  it('returns failure when a command times out', () => {
+    const result = exec('node -e "setTimeout(() => {}, 1000)"', { timeout: 50 });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('isCommandAvailable', () => {

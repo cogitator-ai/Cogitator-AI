@@ -24,7 +24,7 @@ export function exec(command: string, options?: ExecSyncOptions): ExecResult {
   }
 }
 
-export function isCommandAvailable(command: string): boolean {
+export function isCommandAvailable(command: string, timeoutMs = 2_000): boolean {
   const check = process.platform === 'win32' ? `where ${command}` : `which ${command}`;
-  return exec(check).success;
+  return exec(check, { timeout: timeoutMs }).success;
 }
