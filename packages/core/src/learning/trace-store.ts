@@ -7,7 +7,16 @@ export class InMemoryTraceStore implements TraceStore {
   private runIdIndex = new Map<string, string>();
 
   async store(trace: ExecutionTrace): Promise<void> {
+    const existing = this.traces.get(trace.id);
+    if (existing) {
+      this.removeFromIndexes(existing);
+    }
+
     this.traces.set(trace.id, trace);
+    this.addToIndexes(trace);
+  }
+
+  private addToIndexes(trace: ExecutionTrace): void {
     this.runIdIndex.set(trace.runId, trace.id);
 
     let agentTraces = this.agentIndex.get(trace.agentId);
@@ -24,6 +33,24 @@ export class InMemoryTraceStore implements TraceStore {
         this.demoIndex.set(trace.agentId, agentDemos);
       }
       agentDemos.add(trace.id);
+    }
+  }
+
+  private removeFromIndexes(trace: ExecutionTrace): void {
+    if (this.runIdIndex.get(trace.runId) === trace.id) {
+      this.runIdIndex.delete(trace.runId);
+    }
+
+    const agentTraces = this.agentIndex.get(trace.agentId);
+    agentTraces?.delete(trace.id);
+    if (agentTraces?.size === 0) {
+      this.agentIndex.delete(trace.agentId);
+    }
+
+    const agentDemos = this.demoIndex.get(trace.agentId);
+    agentDemos?.delete(trace.id);
+    if (agentDemos?.size === 0) {
+      this.demoIndex.delete(trace.agentId);
     }
   }
 
@@ -143,9 +170,7 @@ export class InMemoryTraceStore implements TraceStore {
     if (!trace) return false;
 
     this.traces.delete(id);
-    this.runIdIndex.delete(trace.runId);
-    this.agentIndex.get(trace.agentId)?.delete(id);
-    this.demoIndex.get(trace.agentId)?.delete(id);
+    this.removeFromIndexes(trace);
     return true;
   }
 
@@ -182,16 +207,9 @@ export class InMemoryTraceStore implements TraceStore {
     const agentTraces = this.agentIndex.get(agentId);
     if (!agentTraces) return;
 
-    for (const id of agentTraces) {
-      const trace = this.traces.get(id);
-      if (trace) {
-        this.traces.delete(id);
-        this.runIdIndex.delete(trace.runId);
-      }
+    for (const id of Array.from(agentTraces)) {
+      await this.delete(id);
     }
-
-    this.agentIndex.delete(agentId);
-    this.demoIndex.delete(agentId);
   }
 
   async getStats(agentId: string): Promise<TraceStoreStats> {

@@ -27,11 +27,15 @@ export class PromptLogger implements LLMBackend {
   readonly provider: LLMProvider;
 
   private backend: LLMBackend;
-  private store: PromptStore;
+  private store: Pick<PromptStore, 'capture'>;
   private config: Required<PromptLoggerConfig>;
   private context: PromptLoggerContext | null = null;
 
-  constructor(backend: LLMBackend, store: PromptStore, config: PromptLoggerConfig = {}) {
+  constructor(
+    backend: LLMBackend,
+    store: Pick<PromptStore, 'capture'>,
+    config: PromptLoggerConfig = {}
+  ) {
     this.backend = backend;
     this.store = store;
     this.provider = backend.provider;
@@ -96,7 +100,7 @@ export class PromptLogger implements LLMBackend {
         latencyMs,
       };
 
-      await this.store.capture(captured);
+      await this.captureSafely(captured);
 
       return response;
     } catch (error) {
@@ -112,7 +116,7 @@ export class PromptLogger implements LLMBackend {
         error: error instanceof Error ? error.message : String(error),
       };
 
-      await this.store.capture(captured);
+      await this.captureSafely(captured);
 
       throw error;
     }
@@ -191,7 +195,7 @@ export class PromptLogger implements LLMBackend {
         latencyMs,
       };
 
-      await this.store.capture(captured);
+      await this.captureSafely(captured);
     }
   }
 
@@ -203,11 +207,19 @@ export class PromptLogger implements LLMBackend {
   private generateId(): string {
     return `prompt-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
   }
+
+  private async captureSafely(prompt: CapturedPrompt): Promise<void> {
+    try {
+      await this.store.capture(prompt);
+    } catch {
+      return;
+    }
+  }
 }
 
 export function wrapWithPromptLogger(
   backend: LLMBackend,
-  store: PromptStore,
+  store: Pick<PromptStore, 'capture'>,
   config?: PromptLoggerConfig
 ): PromptLogger {
   return new PromptLogger(backend, store, config);

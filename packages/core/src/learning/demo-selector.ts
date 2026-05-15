@@ -14,14 +14,20 @@ export class DemoSelector {
   private agentDemos = new Map<string, Set<string>>();
   private maxDemos: number;
   private minScore: number;
+  private diversityWeight: number;
 
   constructor(options: DemoSelectorOptions) {
     this.traceStore = options.traceStore;
     this.maxDemos = options.maxDemos ?? 10;
     this.minScore = options.minScore ?? 0.8;
+    this.diversityWeight = Math.max(0, Math.min(1, options.diversityWeight ?? 0.3));
   }
 
   async selectDemos(agentId: string, input: string, limit: number): Promise<Demo[]> {
+    if (limit <= 0) {
+      return [];
+    }
+
     const agentDemoIds = this.agentDemos.get(agentId);
     if (!agentDemoIds || agentDemoIds.size === 0) {
       return [];
@@ -48,10 +54,7 @@ export class DemoSelector {
 
     scored.sort((a, b) => b.score - a.score);
 
-    const selected = this.diversifySelection(
-      scored.map((s) => s.demo),
-      limit
-    );
+    const selected = this.diversifySelection(scored, limit);
 
     for (const demo of selected) {
       demo.usageCount++;
@@ -179,22 +182,26 @@ export class DemoSelector {
     return inputWords.size > 0 ? matches / inputWords.size : 0;
   }
 
-  private diversifySelection(demos: Demo[], limit: number): Demo[] {
-    if (demos.length <= limit) {
-      return demos;
+  private diversifySelection(scored: Array<{ demo: Demo; score: number }>, limit: number): Demo[] {
+    if (limit <= 0) {
+      return [];
+    }
+
+    if (scored.length <= limit) {
+      return scored.map((s) => s.demo);
     }
 
     const selected: Demo[] = [];
-    const remaining = [...demos];
+    const remaining = [...scored];
 
-    selected.push(remaining.shift()!);
+    selected.push(remaining.shift()!.demo);
 
     while (selected.length < limit && remaining.length > 0) {
       let bestIndex = 0;
-      let bestDiversity = -1;
+      let bestScore = -1;
 
       for (let i = 0; i < remaining.length; i++) {
-        const candidate = remaining[i];
+        const candidate = remaining[i].demo;
         let minSimilarity = 1;
 
         for (const existing of selected) {
@@ -203,13 +210,15 @@ export class DemoSelector {
         }
 
         const diversity = 1 - minSimilarity;
-        if (diversity > bestDiversity) {
-          bestDiversity = diversity;
+        const combinedScore =
+          remaining[i].score * (1 - this.diversityWeight) + diversity * this.diversityWeight;
+        if (combinedScore > bestScore) {
+          bestScore = combinedScore;
           bestIndex = i;
         }
       }
 
-      selected.push(remaining.splice(bestIndex, 1)[0]);
+      selected.push(remaining.splice(bestIndex, 1)[0].demo);
     }
 
     return selected;

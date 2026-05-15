@@ -40,11 +40,15 @@ export class BranchEvaluator {
     context: AgentContext,
     siblings: ThoughtBranch[] = []
   ): Promise<BranchScore> {
-    if (this.reflectionEngine && branch.proposedAction.type === 'tool_call') {
-      return this.evaluateWithReflection(branch, goal, context, siblings);
-    }
+    try {
+      if (this.reflectionEngine && branch.proposedAction.type === 'tool_call') {
+        return await this.evaluateWithReflection(branch, goal, context, siblings);
+      }
 
-    return this.evaluateWithLLM(branch, goal, siblings);
+      return await this.evaluateWithLLM(branch, goal, siblings);
+    } catch {
+      return this.createFallbackScore(branch, siblings);
+    }
   }
 
   async evaluateBatch(

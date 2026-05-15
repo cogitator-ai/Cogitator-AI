@@ -55,6 +55,8 @@ export class PromptMonitor {
     const agentId = trace.agentId;
     const window = this.getOrCreateWindow(agentId);
 
+    this.rotateWindowIfNeeded(agentId, window);
+
     if (trace.score !== undefined) {
       window.scores.push(trace.score);
     }
@@ -68,8 +70,6 @@ export class PromptMonitor {
       window.errors++;
     }
     window.total++;
-
-    this.rotateWindowIfNeeded(agentId, window);
 
     return this.checkForDegradation(agentId, window);
   }
@@ -226,7 +226,7 @@ export class PromptMonitor {
     const newAlerts: DegradationAlert[] = [];
 
     const currentAvgScore = this.mean(window.scores);
-    if (baseline.avgScore > 0 && currentAvgScore > 0) {
+    if (baseline.avgScore > 0 && window.scores.length > 0) {
       const scoreChange = (baseline.avgScore - currentAvgScore) / baseline.avgScore;
       if (scoreChange >= this.config.scoreDropThreshold) {
         const alert = this.createAlert(

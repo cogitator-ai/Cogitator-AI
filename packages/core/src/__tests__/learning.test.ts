@@ -211,6 +211,30 @@ describe('InMemoryTraceStore', () => {
     expect(stats.averageScore).toBeCloseTo(0.8, 1);
     expect(stats.topPerformers).toHaveLength(3);
   });
+
+  it('should update indexes when replacing a trace with the same id', async () => {
+    const original = createMockTrace({
+      id: 'trace_same',
+      runId: 'run_old',
+      agentId: 'agent_old',
+      isDemo: true,
+    });
+    const replacement = createMockTrace({
+      id: 'trace_same',
+      runId: 'run_new',
+      agentId: 'agent_new',
+      isDemo: false,
+    });
+
+    await store.store(original);
+    await store.store(replacement);
+
+    expect(await store.getByRunId('run_old')).toBeNull();
+    expect(await store.getAll('agent_old')).toHaveLength(0);
+    expect(await store.getDemos('agent_old')).toHaveLength(0);
+    expect(await store.getByRunId('run_new')).toEqual(replacement);
+    expect(await store.getAll('agent_new')).toEqual([replacement]);
+  });
 });
 
 describe('MetricEvaluator', () => {
@@ -366,6 +390,30 @@ describe('MetricEvaluator', () => {
 
       expect(customMetric).toHaveBeenCalledWith(trace, undefined);
     });
+
+    it('should preserve zero scores returned by LLM metrics', async () => {
+      vi.mocked(mockLLM.chat).mockResolvedValue({
+        content: JSON.stringify({ score: 0, reasoning: 'failed completely' }),
+        usage: { inputTokens: 10, outputTokens: 20 },
+        finishReason: 'stop',
+      });
+
+      const zeroEvaluator = new MetricEvaluator({
+        llm: mockLLM,
+        model: 'test-model',
+        config: {
+          metrics: [{ name: 'completeness', type: 'numeric', description: 'Completeness' }],
+          aggregation: 'average',
+          passThreshold: 0.5,
+        },
+      });
+
+      const result = await zeroEvaluator.evaluate(createMockTrace());
+
+      expect(result.score).toBe(0);
+      expect(result.passed).toBe(false);
+      expect(result.results[0].reasoning).toBe('failed completely');
+    });
   });
 });
 
@@ -415,6 +463,14 @@ describe('DemoSelector', () => {
 
     const demos = await selector.selectDemos('agent1', 'What is deep learning?', 2);
     expect(demos.length).toBeLessThanOrEqual(2);
+  });
+
+  it('should return no demos for non-positive limits', async () => {
+    const trace = createMockTrace({ input: 'What is AI?', score: 0.9, agentId: 'agent1' });
+    await store.store(trace);
+    await selector.addDemo(trace);
+
+    await expect(selector.selectDemos('agent1', 'What is AI?', 0)).resolves.toEqual([]);
   });
 
   it('should remove a demo', async () => {
@@ -559,6 +615,67 @@ describe('AgentOptimizer', () => {
     expect(trace.output).toBe(runResult.output);
     expect(trace.score).toBeGreaterThanOrEqual(0);
     expect(trace.score).toBeLessThanOrEqual(1);
+  });
+
+  it('should extract runtime span attributes into trace steps', async () => {
+    const runResult: RunResult = {
+      runId: 'run_runtime',
+      agentId: 'agent_runtime',
+      threadId: 'thread_runtime',
+      output: 'failed',
+      toolCalls: [{ id: 'call_1', name: 'calculator', arguments: { expr: '2+2' } }],
+      messages: [{ role: 'user', content: 'Calculate 2+2' }],
+      modelUsed: 'google/gemini-test',
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        totalTokens: 15,
+        cost: 0.01,
+        duration: 25,
+      },
+      trace: {
+        traceId: 'trace_runtime',
+        spans: [
+          {
+            id: 'span_llm',
+            traceId: 'trace_runtime',
+            name: 'llm.chat',
+            kind: 'client',
+            status: 'ok',
+            startTime: 1,
+            endTime: 11,
+            duration: 10,
+            attributes: { 'llm.input_tokens': 10, 'llm.output_tokens': 5 },
+          },
+          {
+            id: 'span_tool',
+            traceId: 'trace_runtime',
+            name: 'tool.calculator',
+            kind: 'internal',
+            status: 'error',
+            startTime: 12,
+            endTime: 25,
+            duration: 13,
+            attributes: {
+              'tool.name': 'calculator',
+              'tool.call_id': 'call_1',
+              'tool.success': false,
+              'tool.error': 'boom',
+            },
+          },
+        ],
+      },
+    };
+
+    const trace = await optimizer.captureTrace(runResult, 'Calculate 2+2');
+
+    expect(trace.model).toBe('google/gemini-test');
+    expect(trace.steps).toHaveLength(2);
+    expect(trace.steps[0].tokensUsed).toEqual({ input: 10, output: 5 });
+    expect(trace.steps[1].toolCall?.id).toBe('call_1');
+    expect(trace.steps[1].toolResult?.error).toBe('boom');
+    expect(trace.metrics.success).toBe(false);
+    expect(trace.metrics.toolAccuracy).toBe(0);
   });
 
   it('should capture trace with expected output', async () => {

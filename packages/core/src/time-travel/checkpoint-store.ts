@@ -16,14 +16,13 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
   private labelIndex = new Map<string, Set<string>>();
 
   async save(checkpoint: ExecutionCheckpoint): Promise<void> {
-    this.checkpoints.set(checkpoint.id, checkpoint);
-    this.addToIndex(this.traceIndex, checkpoint.traceId, checkpoint.id);
-    this.addToIndex(this.agentIndex, checkpoint.agentId, checkpoint.id);
-    this.addToIndex(this.runIdIndex, checkpoint.runId, checkpoint.id);
-
-    if (checkpoint.label) {
-      this.addToIndex(this.labelIndex, checkpoint.label, checkpoint.id);
+    const existing = this.checkpoints.get(checkpoint.id);
+    if (existing) {
+      this.removeFromIndexes(existing);
     }
+
+    this.checkpoints.set(checkpoint.id, checkpoint);
+    this.addToIndexes(checkpoint);
   }
 
   async load(id: string): Promise<ExecutionCheckpoint | null> {
@@ -108,13 +107,7 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
     if (!checkpoint) return false;
 
     this.checkpoints.delete(id);
-    this.removeFromIndex(this.traceIndex, checkpoint.traceId, id);
-    this.removeFromIndex(this.agentIndex, checkpoint.agentId, id);
-    this.removeFromIndex(this.runIdIndex, checkpoint.runId, id);
-
-    if (checkpoint.label) {
-      this.removeFromIndex(this.labelIndex, checkpoint.label, id);
-    }
+    this.removeFromIndexes(checkpoint);
 
     return true;
   }
@@ -240,8 +233,32 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
     set.add(id);
   }
 
+  private addToIndexes(checkpoint: ExecutionCheckpoint): void {
+    this.addToIndex(this.traceIndex, checkpoint.traceId, checkpoint.id);
+    this.addToIndex(this.agentIndex, checkpoint.agentId, checkpoint.id);
+    this.addToIndex(this.runIdIndex, checkpoint.runId, checkpoint.id);
+
+    if (checkpoint.label) {
+      this.addToIndex(this.labelIndex, checkpoint.label, checkpoint.id);
+    }
+  }
+
   private removeFromIndex(index: Map<string, Set<string>>, key: string, id: string): void {
-    index.get(key)?.delete(id);
+    const set = index.get(key);
+    set?.delete(id);
+    if (set?.size === 0) {
+      index.delete(key);
+    }
+  }
+
+  private removeFromIndexes(checkpoint: ExecutionCheckpoint): void {
+    this.removeFromIndex(this.traceIndex, checkpoint.traceId, checkpoint.id);
+    this.removeFromIndex(this.agentIndex, checkpoint.agentId, checkpoint.id);
+    this.removeFromIndex(this.runIdIndex, checkpoint.runId, checkpoint.id);
+
+    if (checkpoint.label) {
+      this.removeFromIndex(this.labelIndex, checkpoint.label, checkpoint.id);
+    }
   }
 
   private extractMessagesUpToStep(messages: Message[], stepIndex: number): Message[] {
@@ -269,7 +286,9 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
     for (const span of result.trace.spans) {
       if (span.name.startsWith('tool.')) {
         if (count < stepIndex && span.attributes?.result !== undefined) {
-          const callId = span.attributes?.call_id as string;
+          const callId =
+            this.getStringAttribute(span.attributes, 'tool.call_id') ??
+            this.getStringAttribute(span.attributes, 'call_id');
           if (callId) {
             toolResults[callId] = span.attributes.result;
           }
@@ -313,5 +332,10 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
       }
     }
     return count;
+  }
+
+  private getStringAttribute(attributes: Record<string, unknown>, key: string): string | undefined {
+    const value = attributes[key];
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
   }
 }

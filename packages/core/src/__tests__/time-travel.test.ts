@@ -210,6 +210,32 @@ describe('InMemoryCheckpointStore', () => {
       expect(found).toHaveLength(1);
       expect(found[0].label).toBe('important');
     });
+
+    it('should update indexes when replacing a checkpoint with the same id', async () => {
+      await store.save(
+        createMockCheckpoint({
+          id: 'ckpt_same',
+          traceId: 'trace_old',
+          agentId: 'agent_old',
+          runId: 'run_old',
+          label: 'old',
+        })
+      );
+      const replacement = createMockCheckpoint({
+        id: 'ckpt_same',
+        traceId: 'trace_new',
+        agentId: 'agent_new',
+        runId: 'run_new',
+        label: 'new',
+      });
+      await store.save(replacement);
+
+      expect(await store.getByTrace('trace_old')).toHaveLength(0);
+      expect(await store.getByAgent('agent_old')).toHaveLength(0);
+      expect(await store.getByLabel('old')).toHaveLength(0);
+      expect(await store.getByTrace('trace_new')).toEqual([replacement]);
+      expect(await store.list({ runId: 'run_new' })).toEqual([replacement]);
+    });
   });
 
   describe('delete', () => {
@@ -431,6 +457,25 @@ describe('TraceComparator', () => {
       expect(diff.status).toBe('different');
       expect(diff.differences).toContain('Type: llm_call → tool_call');
     });
+
+    it('should detect one-sided tool results', () => {
+      const step1 = {
+        index: 0,
+        type: 'tool_call' as const,
+        timestamp: 1000,
+        duration: 100,
+        toolCall: { id: 'call_1', name: 'calculator', arguments: {} },
+      };
+      const step2 = {
+        ...step1,
+        toolResult: { callId: 'call_1', name: 'calculator', result: 4 },
+      };
+
+      const diff = comparator.compareSteps(step1, step2);
+
+      expect(diff.status).toBe('different');
+      expect(diff.differences).toContain('Tool result added');
+    });
   });
 
   describe('formatDiff', () => {
@@ -562,6 +607,15 @@ describe('TimeTravel', () => {
 
       await tt.deleteCheckpoint(checkpoint.id);
       expect(await tt.getCheckpoint(checkpoint.id)).toBeNull();
+    });
+
+    it('should reject non-positive checkpoint intervals', async () => {
+      const mockCogitator = {} as ConstructorParameters<typeof TimeTravel>[0];
+      const tt = new TimeTravel(mockCogitator);
+
+      await expect(tt.checkpointEvery(createMockRunResult(), 0)).rejects.toThrow(
+        'positive integer'
+      );
     });
   });
 

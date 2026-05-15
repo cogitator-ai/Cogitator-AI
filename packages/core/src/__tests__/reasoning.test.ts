@@ -14,7 +14,12 @@ import type {
   AgentContext,
   LLMBackend,
   ChatResponse,
+  ChatStreamChunk,
 } from '@cogitator-ai/types';
+
+async function* emptyStream(): AsyncGenerator<ChatStreamChunk> {
+  yield* [];
+}
 
 describe('parseBranchResponse', () => {
   it('parses valid JSON response', () => {
@@ -84,6 +89,26 @@ describe('parseBranchResponse', () => {
     const parsed = parseBranchResponse(response);
     expect(parsed?.branches).toHaveLength(1);
     expect(parsed?.branches[0].thought).toBe('valid');
+  });
+
+  it('filters branches with malformed action payloads', () => {
+    const response = JSON.stringify({
+      branches: [
+        { thought: 'missing tool name', action: { type: 'tool_call', arguments: {} } },
+        {
+          thought: 'array arguments',
+          action: { type: 'tool_call', toolName: 'calc', arguments: [] },
+        },
+        { thought: 'missing response content', action: { type: 'response' } },
+        { thought: 'missing sub goal', action: { type: 'sub_goal' } },
+        { thought: 'valid tool', action: { type: 'tool_call', toolName: 'calc', arguments: {} } },
+      ],
+    });
+
+    const parsed = parseBranchResponse(response);
+
+    expect(parsed?.branches).toHaveLength(1);
+    expect(parsed?.branches[0].thought).toBe('valid tool');
   });
 });
 
@@ -517,6 +542,21 @@ describe('BranchEvaluator', () => {
 
   it('creates fallback score on parse failure', async () => {
     const llm = createMockLLM('invalid');
+    const evaluator = new BranchEvaluator({ llm, model: 'gpt-4' });
+
+    const score = await evaluator.evaluate(createBranch(), 'Goal', createContext(), []);
+
+    expect(score.confidence).toBe(0.5);
+    expect(score.progress).toBe(0.3);
+    expect(score.reasoning).toContain('Fallback');
+  });
+
+  it('creates fallback score when LLM evaluation throws', async () => {
+    const llm: LLMBackend = {
+      provider: 'openai',
+      chat: vi.fn().mockRejectedValue(new Error('provider unavailable')),
+      chatStream: vi.fn(emptyStream),
+    };
     const evaluator = new BranchEvaluator({ llm, model: 'gpt-4' });
 
     const score = await evaluator.evaluate(createBranch(), 'Goal', createContext(), []);

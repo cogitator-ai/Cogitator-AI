@@ -123,7 +123,7 @@ export interface MetricDefinition {
 
 export interface MetricEvaluatorConfig {
   metrics: MetricDefinition[];
-  aggregation: 'weighted-average' | 'min' | 'product';
+  aggregation: 'weighted-average' | 'average' | 'min' | 'product';
   passThreshold: number;
 }
 

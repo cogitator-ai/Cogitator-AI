@@ -151,6 +151,21 @@ export function parseBranchResponse(response: string): ParsedBranches | null {
       if (typeof b.thought !== 'string' || !b.thought) return false;
       if (!b.action || typeof b.action !== 'object') return false;
       if (!['tool_call', 'response', 'sub_goal'].includes(b.action.type)) return false;
+      if (b.action.type === 'tool_call') {
+        return (
+          typeof b.action.toolName === 'string' &&
+          b.action.toolName.length > 0 &&
+          !!b.action.arguments &&
+          typeof b.action.arguments === 'object' &&
+          !Array.isArray(b.action.arguments)
+        );
+      }
+      if (b.action.type === 'response') {
+        return typeof b.action.content === 'string';
+      }
+      if (b.action.type === 'sub_goal') {
+        return typeof b.action.goal === 'string' && b.action.goal.length > 0;
+      }
       return true;
     });
 

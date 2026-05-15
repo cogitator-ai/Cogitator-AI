@@ -117,7 +117,11 @@ export class TraceComparator {
         }
       }
 
-      if (step1.toolResult && step2.toolResult) {
+      if (step1.toolResult && !step2.toolResult) {
+        differences.push('Tool result removed');
+      } else if (!step1.toolResult && step2.toolResult) {
+        differences.push('Tool result added');
+      } else if (step1.toolResult && step2.toolResult) {
         const resultComparison = this.compareToolResults(step1.toolResult, step2.toolResult);
         if (!resultComparison.similar) {
           differences.push(...resultComparison.differences);

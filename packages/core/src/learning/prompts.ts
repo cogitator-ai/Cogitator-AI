@@ -215,8 +215,10 @@ export function parseInstructionEvaluationResponse(content: string): Instruction
 
     const parsed = JSON.parse(jsonStr);
 
+    const rawScore = Number(parsed.score);
+
     return {
-      score: Math.max(0, Math.min(1, Number(parsed.score) || 0.5)),
+      score: Number.isFinite(rawScore) ? Math.max(0, Math.min(1, rawScore)) : 0.5,
       strengths: Array.isArray(parsed.strengths) ? parsed.strengths.map(String) : [],
       weaknesses: Array.isArray(parsed.weaknesses) ? parsed.weaknesses.map(String) : [],
       reasoning: String(parsed.reasoning ?? ''),

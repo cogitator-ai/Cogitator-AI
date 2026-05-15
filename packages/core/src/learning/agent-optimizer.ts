@@ -98,7 +98,7 @@ export class AgentOptimizer {
       reflections: runResult.reflections ? [...runResult.reflections] : [],
       metrics,
       score: 0,
-      model: '',
+      model: runResult.modelUsed ?? this.model,
       createdAt: new Date(),
       duration: runResult.usage.duration,
       usage: {
@@ -268,8 +268,24 @@ export class AgentOptimizer {
     let index = 0;
 
     for (const span of runResult.trace.spans) {
-      if (span.name.includes('tool_call') || span.attributes?.toolName) {
-        const toolCall = runResult.toolCalls.find((tc) => tc.name === span.attributes?.toolName);
+      const toolName =
+        this.getStringAttribute(span.attributes, 'tool.name') ??
+        this.getStringAttribute(span.attributes, 'toolName') ??
+        (span.name.startsWith('tool.') ? span.name.slice('tool.'.length) : undefined);
+
+      if (span.name.startsWith('tool.') || span.name.includes('tool_call') || toolName) {
+        const callId =
+          this.getStringAttribute(span.attributes, 'tool.call_id') ??
+          this.getStringAttribute(span.attributes, 'call_id');
+        const toolCall =
+          (callId ? runResult.toolCalls.find((tc) => tc.id === callId) : undefined) ??
+          (toolName ? runResult.toolCalls.find((tc) => tc.name === toolName) : undefined);
+        const resultCallId = callId ?? toolCall?.id;
+        const resultName = toolCall?.name ?? toolName;
+        const error =
+          span.status === 'error' || span.attributes['tool.success'] === false
+            ? String(span.attributes['tool.error'] ?? span.attributes.error ?? 'Unknown error')
+            : undefined;
 
         steps.push({
           index: index++,
@@ -277,17 +293,15 @@ export class AgentOptimizer {
           timestamp: span.startTime,
           duration: span.duration,
           toolCall,
-          toolResult: toolCall
-            ? {
-                callId: toolCall.id,
-                name: toolCall.name,
-                result: span.attributes?.result,
-                error:
-                  span.status === 'error'
-                    ? String(span.attributes?.error ?? 'Unknown error')
-                    : undefined,
-              }
-            : undefined,
+          toolResult:
+            resultCallId && resultName
+              ? {
+                  callId: resultCallId,
+                  name: resultName,
+                  result: span.attributes?.result,
+                  error,
+                }
+              : undefined,
         });
       } else if (span.name.includes('llm') || span.name.includes('chat')) {
         steps.push({
@@ -296,8 +310,14 @@ export class AgentOptimizer {
           timestamp: span.startTime,
           duration: span.duration,
           tokensUsed: {
-            input: Number(span.attributes?.inputTokens ?? 0),
-            output: Number(span.attributes?.outputTokens ?? 0),
+            input:
+              this.getNumberAttribute(span.attributes, 'llm.input_tokens') ??
+              this.getNumberAttribute(span.attributes, 'inputTokens') ??
+              0,
+            output:
+              this.getNumberAttribute(span.attributes, 'llm.output_tokens') ??
+              this.getNumberAttribute(span.attributes, 'outputTokens') ??
+              0,
           },
         });
       }
@@ -338,6 +358,23 @@ export class AgentOptimizer {
       completeness,
       coherence: 0.5,
     };
+  }
+
+  private getStringAttribute(attributes: Record<string, unknown>, key: string): string | undefined {
+    const value = attributes[key];
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+  }
+
+  private getNumberAttribute(attributes: Record<string, unknown>, key: string): number | undefined {
+    const value = attributes[key];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    }
+    return undefined;
   }
 
   getTraceStore(): TraceStore {

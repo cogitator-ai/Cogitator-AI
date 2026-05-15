@@ -269,6 +269,10 @@ export class AutoOptimizer {
       return false;
     }
 
+    if ((this.runCounts.get(agentId) ?? 0) < this.config.minRunsForOptimization) {
+      return false;
+    }
+
     return true;
   }
 

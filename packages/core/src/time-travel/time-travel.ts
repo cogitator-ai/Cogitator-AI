@@ -74,6 +74,10 @@ export class TimeTravel {
     interval: number,
     labelPrefix?: string
   ): Promise<ExecutionCheckpoint[]> {
+    if (!Number.isInteger(interval) || interval <= 0) {
+      throw new Error('Checkpoint interval must be a positive integer');
+    }
+
     const stepCount = this.countSteps(result);
     const checkpoints: ExecutionCheckpoint[] = [];
 

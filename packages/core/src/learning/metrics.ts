@@ -290,7 +290,8 @@ Respond with JSON: { "score": 0.X, "reasoning": "..." }`;
       }
 
       const parsed = JSON.parse(jsonStr);
-      const score = Math.max(0, Math.min(1, Number(parsed.score) || 0.5));
+      const rawScore = Number(parsed.score);
+      const score = Number.isFinite(rawScore) ? Math.max(0, Math.min(1, rawScore)) : 0.5;
       const reasoning = String(parsed.reasoning || 'No reasoning provided');
 
       return { score, reasoning };
@@ -316,6 +317,9 @@ Respond with JSON: { "score": 0.X, "reasoning": "..." }`;
 
         return totalWeight > 0 ? weightedSum / totalWeight : 0;
       }
+
+      case 'average':
+        return results.reduce((sum, r) => sum + r.value, 0) / results.length;
 
       case 'min':
         return Math.min(...results.map((r) => r.value));
