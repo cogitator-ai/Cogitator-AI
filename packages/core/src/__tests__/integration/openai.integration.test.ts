@@ -61,8 +61,8 @@ describe.skipIf(!hasOpenAIKey)('OpenAI Integration', () => {
         messages: [{ role: 'user', content: 'Count from 1 to 5.' }],
         maxTokens: 50,
       })) {
-        if (chunk.content) {
-          chunks.push(chunk.content);
+        if (chunk.delta.content) {
+          chunks.push(chunk.delta.content);
         }
       }
 
@@ -121,19 +121,23 @@ describe.skipIf(!hasOpenAIKey)('OpenAI Integration', () => {
       const agent = new Agent({
         name: 'MathAgent',
         instructions: 'You are a math assistant. Use tools to calculate.',
-        model: 'openai:gpt-4o-mini',
+        model: 'openai/gpt-4o-mini',
         tools: [calculatorTool],
-      });
-
-      const cogitator = new Cogitator({
-        defaultModel: 'openai:gpt-4o-mini',
-      });
-
-      const result = await cogitator.run(agent, 'What is 12 times 8?', {
         maxIterations: 3,
       });
 
-      expect(result.success).toBe(true);
+      const cogitator = new Cogitator({
+        llm: {
+          providers: {
+            openai: { apiKey: process.env.OPENAI_API_KEY! },
+          },
+        },
+      });
+
+      const result = await cogitator.run(agent, {
+        input: 'What is 12 times 8?',
+      });
+
       expect(result.output).toContain('96');
 
       await cogitator.close();

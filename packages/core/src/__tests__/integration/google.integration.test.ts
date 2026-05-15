@@ -101,8 +101,8 @@ describe.skipIf(!hasGoogleKey)('Google Integration', () => {
   describe('Cogitator with Google', () => {
     it('runs simple agent', async () => {
       const cogitator = new Cogitator({
-        defaultModel: 'google/gemini-2.5-flash',
         llm: {
+          defaultModel: 'google/gemini-2.5-flash',
           providers: {
             google: { apiKey: process.env.GOOGLE_API_KEY! },
           },

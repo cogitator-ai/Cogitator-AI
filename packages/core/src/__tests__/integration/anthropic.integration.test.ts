@@ -61,8 +61,8 @@ describe.skipIf(!hasAnthropicKey)('Anthropic Integration', () => {
         messages: [{ role: 'user', content: 'Count from 1 to 5.' }],
         maxTokens: 50,
       })) {
-        if (chunk.content) {
-          chunks.push(chunk.content);
+        if (chunk.delta.content) {
+          chunks.push(chunk.delta.content);
         }
       }
 
@@ -117,19 +117,23 @@ describe.skipIf(!hasAnthropicKey)('Anthropic Integration', () => {
       const agent = new Agent({
         name: 'MathAgent',
         instructions: 'You are a math assistant. Use tools to calculate.',
-        model: 'anthropic:claude-3-5-haiku-latest',
+        model: 'anthropic/claude-3-5-haiku-latest',
         tools: [calculatorTool],
-      });
-
-      const cogitator = new Cogitator({
-        defaultModel: 'anthropic:claude-3-5-haiku-latest',
-      });
-
-      const result = await cogitator.run(agent, 'What is 12 times 8?', {
         maxIterations: 3,
       });
 
-      expect(result.success).toBe(true);
+      const cogitator = new Cogitator({
+        llm: {
+          providers: {
+            anthropic: { apiKey: process.env.ANTHROPIC_API_KEY! },
+          },
+        },
+      });
+
+      const result = await cogitator.run(agent, {
+        input: 'What is 12 times 8?',
+      });
+
       expect(result.output).toContain('96');
 
       await cogitator.close();

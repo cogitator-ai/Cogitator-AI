@@ -108,6 +108,7 @@ const result = await cog.run(agent, {
 | `threadId`          | `string`                       | Thread ID for memory persistence               |
 | `context`           | `Record<string, unknown>`      | Additional context injected into system prompt |
 | `stream`            | `boolean`                      | Enable token streaming                         |
+| `signal`            | `AbortSignal`                  | Cancel the run and linked provider/tool work   |
 | `onToken`           | `(token: string) => void`      | Streaming callback                             |
 | `onToolCall`        | `(call: ToolCall) => void`     | Called when agent invokes a tool               |
 | `onToolResult`      | `(result: ToolResult) => void` | Called when a tool returns                     |
@@ -115,6 +116,8 @@ const result = await cog.run(agent, {
 | `timeout`           | `number`                       | Override agent timeout (ms)                    |
 | `parallelToolCalls` | `boolean`                      | Execute tool calls in parallel                 |
 | `useMemory`         | `boolean`                      | Enable/disable memory for this run             |
+| `loadHistory`       | `boolean`                      | Load prior memory history for this run         |
+| `saveHistory`       | `boolean`                      | Persist run messages to memory                 |
 
 ### RunResult
 

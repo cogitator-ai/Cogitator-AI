@@ -139,7 +139,7 @@ providers: {
 
 ### OpenAI-Compatible Providers
 
-Mistral, Groq, Together, and DeepSeek use the OpenAI SDK under the hood with a custom base URL. The configuration is straightforward:
+Mistral, Groq, Together, DeepSeek, and vLLM use the OpenAI SDK under the hood with a provider-specific base URL. Hosted providers only need an API key; vLLM needs the base URL of your OpenAI-compatible server.
 
 ```typescript
 providers: {
@@ -147,6 +147,7 @@ providers: {
   groq: { apiKey: process.env.GROQ_API_KEY! },
   together: { apiKey: process.env.TOGETHER_API_KEY! },
   deepseek: { apiKey: process.env.DEEPSEEK_API_KEY! },
+  vllm: { baseUrl: 'http://localhost:8000/v1' },
 }
 ```
 
@@ -155,6 +156,7 @@ model: 'mistral/mistral-large-latest';
 model: 'groq/llama-3.3-70b-versatile';
 model: 'together/meta-llama/Llama-3.3-70B-Instruct-Turbo';
 model: 'deepseek/deepseek-chat';
+model: 'vllm/mistral-7b';
 ```
 
 ## Custom Backends (Plugin System)
@@ -165,8 +167,12 @@ Register custom LLM backends for providers not included by default:
 import { defineBackend, registerLLMBackend } from '@cogitator-ai/core';
 
 const myBackend = defineBackend({
-  name: 'my-provider',
-  factory: (config) => new MyCustomBackend(config),
+  provider: 'my-provider',
+  metadata: {
+    name: 'My Provider',
+    version: '1.0.0',
+  },
+  create: (config) => new MyCustomBackend(config),
 });
 
 registerLLMBackend(myBackend);

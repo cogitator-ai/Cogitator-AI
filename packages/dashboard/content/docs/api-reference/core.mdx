@@ -17,10 +17,10 @@ const cogitator = new Cogitator(config: CogitatorConfig);
 
 **Methods:**
 
-| Method  | Signature                                                            | Description           |
-| ------- | -------------------------------------------------------------------- | --------------------- |
-| `run`   | `run(agent: Agent, input: string \| RunOptions): Promise<RunResult>` | Execute an agent      |
-| `close` | `close(): Promise<void>`                                             | Cleanup all resources |
+| Method  | Signature                                                    | Description           |
+| ------- | ------------------------------------------------------------ | --------------------- |
+| `run`   | `run(agent: Agent, options: RunOptions): Promise<RunResult>` | Execute an agent      |
+| `close` | `close(): Promise<void>`                                     | Cleanup all resources |
 
 ### Agent
 
@@ -34,15 +34,16 @@ const agent = new Agent(config: AgentConfig);
 
 **AgentConfig:**
 
-| Property         | Type             | Default  | Description                       |
-| ---------------- | ---------------- | -------- | --------------------------------- |
-| `name`           | `string`         | required | Agent identifier                  |
-| `instructions`   | `string`         | `''`     | System prompt                     |
-| `tools`          | `Tool[]`         | `[]`     | Available tools                   |
-| `model`          | `string`         | —        | Model override (`provider/model`) |
-| `temperature`    | `number`         | —        | Sampling temperature              |
-| `maxTokens`      | `number`         | —        | Max tokens in response            |
-| `responseFormat` | `ResponseFormat` | —        | JSON mode / json_schema           |
+| Property        | Type     | Default  | Description                 |
+| --------------- | -------- | -------- | --------------------------- |
+| `name`          | `string` | required | Agent identifier            |
+| `instructions`  | `string` | required | System prompt               |
+| `model`         | `string` | required | Model id (`provider/model`) |
+| `tools`         | `Tool[]` | `[]`     | Available tools             |
+| `temperature`   | `number` | `0.7`    | Sampling temperature        |
+| `maxIterations` | `number` | `10`     | Max tool-call iterations    |
+| `timeout`       | `number` | `120000` | Run timeout in milliseconds |
+| `maxTokens`     | `number` | —        | Max tokens in response      |
 
 ### ToolRegistry
 
@@ -54,7 +55,8 @@ import { ToolRegistry } from '@cogitator-ai/core';
 const registry = new ToolRegistry();
 registry.register(tool);
 registry.get('tool_name');
-registry.list();
+registry.getAll();
+registry.getNames();
 ```
 
 ### ReflectionEngine
@@ -151,7 +153,7 @@ Wrap an agent as a callable tool:
 ```typescript
 import { agentAsTool } from '@cogitator-ai/core';
 
-const delegateTool = agentAsTool(agent, options?: AgentAsToolOptions);
+const delegateTool = agentAsTool(cogitator, agent, options);
 ```
 
 ### withCache()
@@ -175,11 +177,14 @@ import {
 } from '@cogitator-ai/core';
 ```
 
-| Backend            | Provider String | Description          |
-| ------------------ | --------------- | -------------------- |
-| `OllamaBackend`    | `ollama`        | Local Ollama models  |
-| `OpenAIBackend`    | `openai`        | OpenAI API           |
-| `AnthropicBackend` | `anthropic`     | Anthropic Claude API |
+| Backend              | Provider String | Description          |
+| -------------------- | --------------- | -------------------- |
+| `OllamaBackend`      | `ollama`        | Local Ollama models  |
+| `OpenAIBackend`      | `openai`        | OpenAI API           |
+| `AnthropicBackend`   | `anthropic`     | Anthropic Claude API |
+| `GoogleBackend`      | `google`        | Google Gemini API    |
+| `AzureOpenAIBackend` | `azure`         | Azure OpenAI API     |
+| `BedrockBackend`     | `bedrock`       | AWS Bedrock Converse |
 
 ## Built-in Tools
 

@@ -108,8 +108,15 @@ describe('createLLMBackend', () => {
   });
 
   describe('vllm', () => {
-    it('should throw not implemented error', () => {
-      expect(() => createLLMBackend('vllm', {})).toThrow('Provider vllm not yet implemented');
+    it('should throw if no baseUrl provided', () => {
+      expect(() => createLLMBackend('vllm', {})).toThrow('vLLM baseUrl is required');
+    });
+
+    it('should create vLLM backend using OpenAI-compatible client', () => {
+      const backend = createLLMBackend('vllm', {
+        providers: { vllm: { baseUrl: 'http://localhost:8000/v1' } },
+      });
+      expect(backend.provider).toBe('vllm');
     });
   });
 });

@@ -5,7 +5,7 @@ Core runtime for Cogitator AI agents. Build and run LLM-powered agents with tool
 ## Installation
 
 ```bash
-pnpm add @cogitator-ai/core
+pnpm add @cogitator-ai/core zod
 ```
 
 ## Quick Start
@@ -32,7 +32,13 @@ const agent = new Agent({
   tools: [calculator],
 });
 
-const cog = new Cogitator();
+const cog = new Cogitator({
+  llm: {
+    providers: {
+      openai: { apiKey: process.env.OPENAI_API_KEY! },
+    },
+  },
+});
 const result = await cog.run(agent, {
   input: 'What is 25 * 4?',
 });
@@ -62,42 +68,45 @@ console.log(result.output);
 ### Supported Providers
 
 ```typescript
-// Ollama (local, default)
-const cog = new Cogitator({ defaultModel: 'ollama/llama3.1:8b' });
+const agent = new Agent({
+  name: 'assistant',
+  instructions: 'You are helpful.',
 
-// OpenAI
-const cog = new Cogitator({ defaultModel: 'openai/gpt-4o' });
+  // Ollama (local, default backend when no provider prefix is present)
+  model: 'ollama/llama3.1:8b',
 
-// Anthropic Claude
-const cog = new Cogitator({ defaultModel: 'anthropic/claude-sonnet-4-5-20250929' });
-
-// Google Gemini
-const cog = new Cogitator({ defaultModel: 'google/gemini-2.5-flash' });
-
-// vLLM
-const cog = new Cogitator({ defaultModel: 'vllm/mistral-7b' });
+  // Cloud providers use the same provider/model format:
+  // model: 'openai/gpt-4o'
+  // model: 'anthropic/claude-sonnet-4-5-20250929'
+  // model: 'google/gemini-2.5-flash'
+  // model: 'vllm/mistral-7b'
+});
 ```
 
 ### Backend Configuration
 
 ```typescript
-import { Cogitator, OllamaBackend, OpenAIBackend, AnthropicBackend } from '@cogitator-ai/core';
+import { Cogitator } from '@cogitator-ai/core';
 
 const cog = new Cogitator({
   llm: {
     defaultProvider: 'openai',
-    ollama: {
-      baseUrl: 'http://localhost:11434',
-    },
-    openai: {
-      apiKey: process.env.OPENAI_API_KEY,
-      organization: 'org-xxx',
-    },
-    anthropic: {
-      apiKey: process.env.ANTHROPIC_API_KEY,
-    },
-    google: {
-      apiKey: process.env.GOOGLE_API_KEY,
+    providers: {
+      ollama: {
+        baseUrl: 'http://localhost:11434',
+      },
+      openai: {
+        apiKey: process.env.OPENAI_API_KEY!,
+      },
+      anthropic: {
+        apiKey: process.env.ANTHROPIC_API_KEY!,
+      },
+      google: {
+        apiKey: process.env.GOOGLE_API_KEY!,
+      },
+      vllm: {
+        baseUrl: 'http://localhost:8000/v1',
+      },
     },
   },
 });
@@ -129,9 +138,12 @@ Register custom LLM backends:
 import { registerLLMBackend, defineBackend, createLLMBackendFromPlugin } from '@cogitator-ai/core';
 
 const myPlugin = defineBackend({
-  name: 'my-provider',
-  displayName: 'My Custom Provider',
-  description: 'Custom LLM backend',
+  provider: 'my-provider',
+  metadata: {
+    name: 'My Custom Provider',
+    version: '1.0.0',
+    description: 'Custom LLM backend',
+  },
   create: (config) => new MyBackend(config),
 });
 

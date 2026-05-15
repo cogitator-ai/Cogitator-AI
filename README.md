@@ -45,7 +45,13 @@ const agent = new Agent({
   tools: [weather],
 });
 
-const cog = new Cogitator();
+const cog = new Cogitator({
+  llm: {
+    providers: {
+      google: { apiKey: process.env.GOOGLE_API_KEY! },
+    },
+  },
+});
 const result = await cog.run(agent, { input: 'What is the weather in Tokyo?' });
 console.log(result.output);
 ```
@@ -180,7 +186,7 @@ Install only what you need. Everything is a separate npm package.
 
 | Package                                                                                      | What it does                                                                                    | Example                                                              |
 | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| [`@cogitator-ai/core`](https://www.npmjs.com/package/@cogitator-ai/core)                     | Agents, tools, LLM backends, streaming, everything you need to start                            | [12 core examples](./examples/core/)                                 |
+| [`@cogitator-ai/core`](https://www.npmjs.com/package/@cogitator-ai/core)                     | Agents, tools, LLM backends, streaming, everything you need to start                            | [13 core examples](./examples/core/)                                 |
 | [`@cogitator-ai/memory`](https://www.npmjs.com/package/@cogitator-ai/memory)                 | Your agents remember things. Redis, Postgres, SQLite, MongoDB, Qdrant, in-memory                | [4 memory examples](./examples/memory/)                              |
 | [`@cogitator-ai/swarms`](https://www.npmjs.com/package/@cogitator-ai/swarms)                 | 7 swarm strategies — hierarchy, round-robin, consensus, pipeline, debate, auction, negotiation  | [4 swarm examples](./examples/swarms/)                               |
 | [`@cogitator-ai/workflows`](https://www.npmjs.com/package/@cogitator-ai/workflows)           | DAG workflows with branching, human approval gates, map-reduce                                  | [3 workflow examples](./examples/workflows/)                         |
@@ -308,7 +314,7 @@ All with Swagger docs, SSE streaming, and WebSocket support. See [integration ex
 
 ---
 
-## 55 Runnable Examples
+## 65 Runnable Examples
 
 Every major feature has a working example you can run right now.
 
@@ -316,22 +322,24 @@ Every major feature has a working example you can run right now.
 npx tsx examples/core/01-basic-agent.ts
 ```
 
-| Category                                        | Count | What you'll learn                                                                                                                                              |
-| ----------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`core/`](./examples/core/)                     | 12    | Agents, tools, streaming, caching, tree-of-thought, reflection, optimization, time-travel, cost routing, constitutional AI, prompt injection, causal reasoning |
-| [`memory/`](./examples/memory/)                 | 4     | In-memory storage, context building, semantic search, knowledge graphs                                                                                         |
-| [`swarms/`](./examples/swarms/)                 | 4     | Debate, pipeline, hierarchical coordination, negotiation                                                                                                       |
-| [`workflows/`](./examples/workflows/)           | 3     | DAG workflows, human-in-the-loop, map-reduce                                                                                                                   |
-| [`a2a/`](./examples/a2a/)                       | 2     | A2A server and client                                                                                                                                          |
-| [`mcp/`](./examples/mcp/)                       | 1     | MCP server integration                                                                                                                                         |
-| [`rag/`](./examples/rag/)                       | 3     | Basic retrieval, chunking strategies, agent with RAG                                                                                                           |
-| [`evals/`](./examples/evals/)                   | 3     | Basic evaluation, LLM judge, A/B comparison                                                                                                                    |
-| [`voice/`](./examples/voice/)                   | 3     | Voice pipeline, realtime sessions, voice agents                                                                                                                |
-| [`browser/`](./examples/browser/)               | 4     | Web scraping, form automation, stealth agents, crypto price scraper                                                                                            |
-| [`integrations/`](./examples/integrations/)     | 7     | Express, Fastify, Hono, Koa, Next.js, OpenAI compat, AI SDK                                                                                                    |
-| [`infrastructure/`](./examples/infrastructure/) | 4     | Redis, PostgreSQL, job queues, Docker deploy                                                                                                                   |
-| [`channels/`](./examples/channels/)             | 3     | Telegram assistant, multi-channel super-assistant, WebChat bot                                                                                                 |
-| [`advanced/`](./examples/advanced/)             | 3     | Self-modifying agents, neuro-symbolic reasoning, WASM tools                                                                                                    |
+| Category                                                    | Count | What you'll learn                                                                                                                                              |
+| ----------------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`core/`](./examples/core/)                                 | 13    | Agents, tools, streaming, caching, tree-of-thought, reflection, optimization, time-travel, cost routing, constitutional AI, prompt injection, causal reasoning |
+| [`memory/`](./examples/memory/)                             | 4     | In-memory storage, context building, semantic search, knowledge graphs                                                                                         |
+| [`swarms/`](./examples/swarms/)                             | 4     | Debate, pipeline, hierarchical coordination, negotiation                                                                                                       |
+| [`workflows/`](./examples/workflows/)                       | 3     | DAG workflows, human-in-the-loop, map-reduce                                                                                                                   |
+| [`a2a/`](./examples/a2a/)                                   | 2     | A2A server and client                                                                                                                                          |
+| [`mcp/`](./examples/mcp/)                                   | 1     | MCP server integration                                                                                                                                         |
+| [`rag/`](./examples/rag/)                                   | 3     | Basic retrieval, chunking strategies, agent with RAG                                                                                                           |
+| [`evals/`](./examples/evals/)                               | 3     | Basic evaluation, LLM judge, A/B comparison                                                                                                                    |
+| [`voice/`](./examples/voice/)                               | 3     | Voice pipeline, realtime sessions, voice agents                                                                                                                |
+| [`browser/`](./examples/browser/)                           | 4     | Web scraping, form automation, stealth agents, crypto price scraper                                                                                            |
+| [`integrations/`](./examples/integrations/)                 | 7     | Express, Fastify, Hono, Koa, Next.js, OpenAI compat, AI SDK                                                                                                    |
+| [`infrastructure/`](./examples/infrastructure/)             | 5     | Redis, PostgreSQL, job queues, Docker deploy, sandbox execution                                                                                                |
+| [`channels/`](./examples/channels/)                         | 3     | Telegram assistant, multi-channel super-assistant, WebChat bot                                                                                                 |
+| [`device-tools/`](./examples/device-tools/)                 | 6     | Local screenshots, clipboard, notifications, URL opening, shell execution, device skill setup                                                                  |
+| [`create-cogitator-app/`](./examples/create-cogitator-app/) | 1     | Programmatic project scaffolding                                                                                                                               |
+| [`advanced/`](./examples/advanced/)                         | 3     | Self-modifying agents, neuro-symbolic reasoning, WASM tools                                                                                                    |
 
 Default LLM is **Google Gemini 2.5 Flash** - free tier, no credit card. See [`examples/README.md`](./examples/README.md) for setup.
 

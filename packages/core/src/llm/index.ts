@@ -161,7 +161,14 @@ export function createLLMBackend(
       });
 
     case 'vllm':
-      throw new Error(`Provider ${provider} not yet implemented`);
+      if (!providers.vllm?.baseUrl) {
+        throw new Error('vLLM baseUrl is required');
+      }
+      return new OpenAIBackend({
+        apiKey: 'vllm',
+        baseUrl: providers.vllm.baseUrl,
+        provider,
+      });
 
     default: {
       const _exhaustive: never = provider;
