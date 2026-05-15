@@ -80,6 +80,10 @@ export function validateSkill(skill: Skill): SkillValidationResult {
     errors.push(`Missing environment variables: ${missingEnv.join(', ')}`);
   }
 
+  if (missingDependencies.length > 0) {
+    errors.push(`Missing dependencies: ${missingDependencies.join(', ')}`);
+  }
+
   return {
     valid: errors.length === 0,
     errors,

@@ -252,7 +252,7 @@ export class AnthropicBackend extends BaseLLMBackend {
         case 'assistant':
           anthropicMessages.push({
             role: 'assistant',
-            content: this.convertContent(m.content),
+            content: this.convertAssistantContent(m),
           });
           break;
         case 'tool':
@@ -279,6 +279,28 @@ export class AnthropicBackend extends BaseLLMBackend {
     }
 
     return content.map((part) => this.convertContentPart(part));
+  }
+
+  private convertAssistantContent(message: Message): string | Anthropic.ContentBlockParam[] {
+    const content = this.convertContent(message.content);
+    const toolCalls = (message as Message & { toolCalls?: ToolCall[] }).toolCalls;
+    if (!toolCalls || toolCalls.length === 0) {
+      return content;
+    }
+
+    const blocks: Anthropic.ContentBlockParam[] =
+      typeof content === 'string' ? (content ? [{ type: 'text', text: content }] : []) : content;
+
+    blocks.push(
+      ...toolCalls.map((tc) => ({
+        type: 'tool_use' as const,
+        id: tc.id,
+        name: tc.name,
+        input: tc.arguments,
+      }))
+    );
+
+    return blocks;
   }
 
   private convertContentPart(part: ContentPart): Anthropic.ContentBlockParam {

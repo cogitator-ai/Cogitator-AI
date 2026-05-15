@@ -191,6 +191,64 @@ describe('BedrockBackend', () => {
       });
     });
 
+    it('serializes assistant tool calls before tool results', async () => {
+      mockSend.mockResolvedValueOnce({
+        output: { message: { content: [{ text: 'The weather is sunny.' }] } },
+        stopReason: 'end_turn',
+        usage: { inputTokens: 30, outputTokens: 10, totalTokens: 40 },
+      });
+
+      await backend.chat({
+        model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+        messages: [
+          { role: 'user', content: 'What is the weather?' },
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [
+              {
+                id: 'tool-1',
+                name: 'get_weather',
+                arguments: { city: 'Berlin' },
+              },
+            ],
+          },
+          {
+            role: 'tool',
+            content: '{"temperature": 25, "condition": "sunny"}',
+            toolCallId: 'tool-1',
+            name: 'get_weather',
+          },
+        ],
+      });
+
+      const command = mockSend.mock.calls[0][0] as MockConverseCommand;
+      const input = command.input as { messages: Array<{ role: string; content: unknown[] }> };
+      expect(input.messages[1]).toEqual({
+        role: 'assistant',
+        content: [
+          {
+            toolUse: {
+              toolUseId: 'tool-1',
+              name: 'get_weather',
+              input: { city: 'Berlin' },
+            },
+          },
+        ],
+      });
+      expect(input.messages[2]).toEqual({
+        role: 'user',
+        content: [
+          {
+            toolResult: {
+              toolUseId: 'tool-1',
+              content: [{ text: '{"temperature": 25, "condition": "sunny"}' }],
+            },
+          },
+        ],
+      });
+    });
+
     it('handles connection errors', async () => {
       mockSend.mockRejectedValueOnce(new Error('socket hang up'));
 

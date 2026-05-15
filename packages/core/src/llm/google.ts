@@ -391,6 +391,17 @@ export class GoogleBackend extends BaseLLMBackend {
 
         case 'assistant': {
           const parts = this.convertContentToParts(msg.content);
+          const toolCalls = (msg as Message & { toolCalls?: ToolCall[] }).toolCalls;
+          if (toolCalls && toolCalls.length > 0) {
+            parts.push(
+              ...toolCalls.map((tc) => ({
+                functionCall: {
+                  name: tc.name,
+                  args: tc.arguments,
+                },
+              }))
+            );
+          }
           contents.push({
             role: 'model',
             parts: parts.length > 0 ? parts : [{ text: '' }],

@@ -231,7 +231,17 @@ describe('GoogleBackend', () => {
         model: 'gemini-2.5-flash',
         messages: [
           { role: 'user', content: 'What is the weather?' },
-          { role: 'assistant', content: '' },
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [
+              {
+                id: 'call_1',
+                name: 'get_weather',
+                arguments: { city: 'Tokyo' },
+              },
+            ],
+          },
           {
             role: 'tool',
             content: '{"temperature": 25, "condition": "sunny"}',
@@ -247,6 +257,10 @@ describe('GoogleBackend', () => {
       const functionResponseContent = body.contents.find((c: { parts: unknown[] }) =>
         c.parts.some((p) => typeof p === 'object' && p !== null && 'functionResponse' in p)
       );
+      const functionCallContent = body.contents.find((c: { parts: unknown[] }) =>
+        c.parts.some((p) => typeof p === 'object' && p !== null && 'functionCall' in p)
+      );
+      expect(functionCallContent).toBeDefined();
       expect(functionResponseContent).toBeDefined();
     });
 

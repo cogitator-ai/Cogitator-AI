@@ -54,7 +54,9 @@ export class LocalInjectionClassifier implements InjectionClassifier {
 
     for (const pattern of patterns) {
       try {
+        pattern.lastIndex = 0;
         const match = pattern.exec(input);
+        pattern.lastIndex = 0;
         if (match) {
           threats.push({
             type: 'custom',

@@ -18,6 +18,10 @@ export function stableStringify(obj: unknown): string {
     return JSON.stringify(obj);
   }
 
+  if (obj instanceof Date) {
+    return JSON.stringify(obj.toISOString());
+  }
+
   if (Array.isArray(obj)) {
     return '[' + obj.map(stableStringify).join(',') + ']';
   }

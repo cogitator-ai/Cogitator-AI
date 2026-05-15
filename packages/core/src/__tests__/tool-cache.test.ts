@@ -76,6 +76,15 @@ describe('Tool Cache', () => {
       expect(stableStringify(42)).toBe('42');
       expect(stableStringify(null)).toBe('null');
     });
+
+    it('preserves Date values in cache keys', () => {
+      const first = stableStringify({ at: new Date('2026-01-01T00:00:00.000Z') });
+      const second = stableStringify({ at: new Date('2026-01-02T00:00:00.000Z') });
+
+      expect(first).toBe('{"at":"2026-01-01T00:00:00.000Z"}');
+      expect(second).toBe('{"at":"2026-01-02T00:00:00.000Z"}');
+      expect(first).not.toBe(second);
+    });
   });
 
   describe('generateCacheKey', () => {

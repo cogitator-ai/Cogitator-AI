@@ -72,7 +72,9 @@ export async function executeTool(
       runId,
       agentId,
       sandboxManager,
-      initializeSandbox
+      initializeSandbox,
+      signal,
+      extraContext
     );
   }
 
@@ -106,7 +108,9 @@ async function executeInSandbox(
   runId: string,
   agentId: string,
   sandboxManager: SandboxManager | undefined,
-  initializeSandbox: () => Promise<void>
+  initializeSandbox: () => Promise<void>,
+  signal?: AbortSignal,
+  extraContext?: { threadId?: string; userId?: string; channelType?: string; channelId?: string }
 ): Promise<ToolResult> {
   await initializeSandbox();
 
@@ -115,7 +119,8 @@ async function executeInSandbox(
     const context: ToolContext = {
       agentId,
       runId,
-      signal: new AbortController().signal,
+      signal: signal ?? new AbortController().signal,
+      ...extraContext,
     };
     try {
       const result = await tool.execute(

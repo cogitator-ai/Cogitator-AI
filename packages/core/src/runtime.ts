@@ -179,14 +179,15 @@ export class Cogitator {
       }, timeout);
     }
 
-    options.onRunStart?.({ runId, agentId: agent.id, input: options.input, threadId });
-
     const rootSpanId = `span_${nanoid(12)}`;
 
     try {
+      options.onRunStart?.({ runId, agentId: agent.id, input: options.input, threadId });
+
       await this.initializeAll(agent);
 
       const registry = new ToolRegistry();
+      registry.registerMany(this.tools.getAll());
       if (agent.tools && agent.tools.length > 0) {
         registry.registerMany(agent.tools);
       }
@@ -242,10 +243,11 @@ export class Cogitator {
         options.saveHistory !== false &&
         options.useMemory !== false
       ) {
+        const currentUserMessage = messages[messages.length - 1];
         await saveEntry(
           threadId,
           agent.id,
-          { role: 'user', content: options.input },
+          currentUserMessage,
           this.state.memoryAdapter,
           undefined,
           undefined,
@@ -648,7 +650,10 @@ export class Cogitator {
 
   private async initializeAll(agent: Agent): Promise<void> {
     if (!this.initPromise) {
-      this.initPromise = this._doInitializeAll(agent);
+      this.initPromise = this._doInitializeAll(agent).catch((error: unknown) => {
+        this.initPromise = undefined;
+        throw error;
+      });
     }
     await this.initPromise;
   }

@@ -41,6 +41,14 @@ describe('TaskAnalyzer', () => {
     expect(requirements.needsToolCalling).toBe(true);
   });
 
+  it('does not match capability keywords inside unrelated words', () => {
+    const vision = analyzer.analyze('I foresee a concise answer');
+    expect(vision.needsVision).toBe(false);
+
+    const tools = analyzer.analyze('Explain capillary action briefly');
+    expect(tools.needsToolCalling).toBe(false);
+  });
+
   it('detects long context needs', () => {
     const requirements = analyzer.analyze('Analyze this entire codebase repository');
     expect(requirements.needsLongContext).toBe(true);

@@ -62,6 +62,7 @@ export class OTLPExporter {
 
   start(): void {
     if (!this.config.enabled) return;
+    if (this.flushTimer) return;
 
     this.flushTimer = setInterval(() => {
       void this.flush();
@@ -84,6 +85,10 @@ export class OTLPExporter {
 
   onRunComplete(result: RunResult): void {
     this.traceIds.delete(result.runId);
+  }
+
+  onRunError(_error: Error, runId: string): void {
+    this.traceIds.delete(runId);
   }
 
   exportSpan(runId: string, span: CogitatorSpan): void {

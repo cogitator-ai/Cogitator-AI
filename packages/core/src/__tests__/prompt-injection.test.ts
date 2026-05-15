@@ -293,6 +293,19 @@ describe('PromptInjectionDetector', () => {
       expect(result.safe).toBe(false);
     });
 
+    it('handles global custom patterns across repeated analyses', async () => {
+      const detector = new PromptInjectionDetector({
+        action: 'block',
+        patterns: [/stateful\s+attack/gi],
+      });
+
+      const first = await detector.analyze('stateful attack');
+      const second = await detector.analyze('stateful attack');
+
+      expect(first.safe).toBe(false);
+      expect(second.safe).toBe(false);
+    });
+
     it('can remove patterns dynamically', async () => {
       const pattern = /removable\s+pattern/i;
       const detector = new PromptInjectionDetector({ action: 'block' });
@@ -703,6 +716,24 @@ describe('Pattern Utilities', () => {
       );
 
       expect(threats.every((t) => t.type !== 'direct_injection')).toBe(true);
+    });
+
+    it('handles global patterns across repeated calls', () => {
+      const enabledTypes = new Set<InjectionThreatType>(['custom']);
+      const patterns = [
+        {
+          type: 'custom' as const,
+          pattern: /repeatable attack/gi,
+          confidence: 0.9,
+          description: 'repeatable',
+        },
+      ];
+
+      const first = matchPatterns('repeatable attack', patterns, enabledTypes);
+      const second = matchPatterns('repeatable attack', patterns, enabledTypes);
+
+      expect(first).toHaveLength(1);
+      expect(second).toHaveLength(1);
     });
   });
 

@@ -386,6 +386,20 @@ describe('ReflectionEngine', () => {
     };
   }
 
+  function createContext(overrides: Partial<AgentContext> = {}): AgentContext {
+    return {
+      agentId: 'agent-1',
+      agentName: 'Test',
+      runId: 'run-1',
+      threadId: 'thread-1',
+      goal: 'test',
+      iterationIndex: 0,
+      previousActions: [],
+      availableTools: [],
+      ...overrides,
+    };
+  }
+
   it('caps reflections map at MAX_REFLECTION_RUNS (100)', async () => {
     const llm = createMockLLM();
     const insightStore = createMockInsightStore();
@@ -425,6 +439,34 @@ describe('ReflectionEngine', () => {
     expect(engine.getRunReflections('run-109')).toHaveLength(1);
   });
 
+  it('stores fallback reflections when LLM output is unparseable', async () => {
+    const llm = createMockLLM();
+    const insightStore = createMockInsightStore();
+    const context = createContext({ runId: 'run-fallback' });
+
+    (llm.chat as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      content: 'not json',
+    });
+
+    const engine = new ReflectionEngine({
+      llm,
+      insightStore,
+      config: {
+        enabled: true,
+        reflectionModel: 'gpt-4o',
+        storeInsights: false,
+      },
+    });
+
+    const result = await engine.reflectOnToolCall(
+      { type: 'tool_call', toolName: 'test', input: {}, output: 'ok' },
+      context
+    );
+
+    expect(result.reflection.analysis.reasoning).toBe('Action completed');
+    expect(engine.getRunReflections('run-fallback')).toHaveLength(1);
+  });
+
   it('throws error when reflectionModel is empty string', async () => {
     const llm = createMockLLM();
     const insightStore = createMockInsightStore();
@@ -438,16 +480,7 @@ describe('ReflectionEngine', () => {
       },
     });
 
-    const context: AgentContext = {
-      agentId: 'agent-1',
-      agentName: 'Test',
-      runId: 'run-1',
-      threadId: 'thread-1',
-      goal: 'test',
-      iterationIndex: 0,
-      previousActions: [],
-      availableTools: [],
-    };
+    const context = createContext();
 
     await expect(
       engine.reflectOnToolCall(

@@ -64,7 +64,7 @@ describe('createLLMBackend', () => {
       const backend = createLLMBackend('mistral', {
         providers: { mistral: { apiKey: 'test-key' } },
       });
-      expect(backend.provider).toBe('openai');
+      expect(backend.provider).toBe('mistral');
     });
   });
 
@@ -77,7 +77,7 @@ describe('createLLMBackend', () => {
       const backend = createLLMBackend('groq', {
         providers: { groq: { apiKey: 'test-key' } },
       });
-      expect(backend.provider).toBe('openai');
+      expect(backend.provider).toBe('groq');
     });
   });
 
@@ -90,7 +90,7 @@ describe('createLLMBackend', () => {
       const backend = createLLMBackend('together', {
         providers: { together: { apiKey: 'test-key' } },
       });
-      expect(backend.provider).toBe('openai');
+      expect(backend.provider).toBe('together');
     });
   });
 
@@ -103,7 +103,7 @@ describe('createLLMBackend', () => {
       const backend = createLLMBackend('deepseek', {
         providers: { deepseek: { apiKey: 'test-key' } },
       });
-      expect(backend.provider).toBe('openai');
+      expect(backend.provider).toBe('deepseek');
     });
   });
 
@@ -133,6 +133,13 @@ describe('parseModel', () => {
     expect(parseModel('gpt-4')).toEqual({
       provider: null,
       model: 'gpt-4',
+    });
+  });
+
+  it('should not treat unknown slash prefixes as providers', () => {
+    expect(parseModel('meta-llama/Llama-3-70b')).toEqual({
+      provider: null,
+      model: 'meta-llama/Llama-3-70b',
     });
   });
 

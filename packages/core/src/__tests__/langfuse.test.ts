@@ -143,6 +143,51 @@ describe('LangfuseExporter', () => {
 
       exporter.onRunComplete(result);
     });
+
+    it('cleans unfinished spans and generations for completed run', () => {
+      exporter.onRunStart({
+        runId: 'run-1',
+        agentId: 'agent-1',
+        agentName: 'Test',
+        input: 'Hello',
+      });
+
+      exporter.onSpanStart('run-1', {
+        id: 'span-1',
+        name: 'processing',
+        startTime: Date.now(),
+        attributes: {},
+      });
+      const generationId = exporter.onLLMCall({
+        runId: 'run-1',
+        model: 'gpt-4',
+        messages: [],
+      });
+
+      const result: RunResult = {
+        runId: 'run-1',
+        agentId: 'agent-1',
+        threadId: 'thread-1',
+        output: 'Response',
+        toolCalls: [],
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0, duration: 0 },
+        model: 'gpt-4',
+        trace: { runId: 'run-1', spans: [], startTime: 0, endTime: 0 },
+      };
+
+      exporter.onRunComplete(result);
+
+      const internals = exporter as unknown as {
+        activeSpans: Map<string, unknown>;
+        activeGenerations: Map<string, unknown>;
+        spanRunIds: Map<string, string>;
+        generationRunIds: Map<string, string>;
+      };
+      expect(internals.activeSpans.has('span-1')).toBe(false);
+      expect(internals.activeGenerations.has(generationId)).toBe(false);
+      expect(internals.spanRunIds.has('span-1')).toBe(false);
+      expect(internals.generationRunIds.has(generationId)).toBe(false);
+    });
   });
 
   describe('onSpanStart / onSpanEnd', () => {

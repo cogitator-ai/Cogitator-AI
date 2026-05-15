@@ -52,7 +52,9 @@ export class ReflectionEngine {
     const parsed = parseReflectionResponse(response);
 
     if (!parsed) {
-      return this.createFallbackResult(action, context);
+      const fallback = this.createFallbackResult(action, context);
+      await this.processReflection(fallback.reflection, context);
+      return fallback;
     }
 
     const reflection = this.createReflection(action, context, parsed);
@@ -77,7 +79,9 @@ export class ReflectionEngine {
     const parsed = parseReflectionResponse(response);
 
     if (!parsed) {
-      return this.createFallbackResult(action, context, true);
+      const fallback = this.createFallbackResult(action, context, true);
+      await this.processReflection(fallback.reflection, context);
+      return fallback;
     }
 
     const reflection = this.createReflection(action, context, parsed);
@@ -106,7 +110,9 @@ export class ReflectionEngine {
     };
 
     if (!parsed) {
-      return this.createFallbackResult(action, context, !success);
+      const fallback = this.createFallbackResult(action, context, !success);
+      await this.processReflection(fallback.reflection, context);
+      return fallback;
     }
 
     const reflection = this.createReflection(action, context, parsed);

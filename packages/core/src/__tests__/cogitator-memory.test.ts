@@ -168,6 +168,38 @@ describe('Cogitator with Memory', () => {
       expect(result2.messages.length).toBe(3);
     });
 
+    it('persists multimodal user content in memory', async () => {
+      cog = new Cogitator(memoryConfig);
+      agent = new Agent({
+        id: 'test-agent',
+        name: 'Test Agent',
+        model: 'ollama/llama3.1:8b',
+        instructions: 'You are helpful.',
+      });
+
+      const threadId = 'thread_images';
+
+      mockResponses.push({ role: 'assistant', content: 'I see it' });
+      await cog.run(agent, {
+        input: 'Describe this',
+        threadId,
+        images: ['https://example.com/img.png'],
+      });
+
+      const entries = await cog.memory!.getEntries({ threadId });
+      expect(entries.success).toBe(true);
+
+      const userMessage = entries.data.find((entry) => entry.message.role === 'user')?.message;
+      expect(Array.isArray(userMessage?.content)).toBe(true);
+      expect(userMessage?.content).toEqual([
+        { type: 'text', text: 'Describe this' },
+        {
+          type: 'image_url',
+          image_url: { url: 'https://example.com/img.png', detail: 'auto' },
+        },
+      ]);
+    });
+
     it('closes memory adapter properly', async () => {
       cog = new Cogitator(memoryConfig);
       agent = new Agent({

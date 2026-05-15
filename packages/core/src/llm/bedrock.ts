@@ -398,12 +398,26 @@ export class BedrockBackend extends BaseLLMBackend {
           });
           break;
 
-        case 'assistant':
+        case 'assistant': {
+          const blocks = await this.convertContentToBlocks(msg.content);
+          const toolCalls = (msg as Message & { toolCalls?: ToolCall[] }).toolCalls;
+          if (toolCalls && toolCalls.length > 0) {
+            blocks.push(
+              ...toolCalls.map((tc) => ({
+                toolUse: {
+                  toolUseId: tc.id,
+                  name: tc.name,
+                  input: tc.arguments as DocumentType,
+                },
+              }))
+            );
+          }
           bedrockMessages.push({
             role: 'assistant',
-            content: await this.convertContentToBlocks(msg.content),
+            content: blocks,
           });
           break;
+        }
 
         case 'tool':
           bedrockMessages.push({

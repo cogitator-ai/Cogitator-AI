@@ -171,6 +171,34 @@ describe('LLMDebugWrapper', () => {
     const completeLog = logger.calls.find((c) => c.message.includes('Stream complete'));
     expect(completeLog).toBeDefined();
     expect(completeLog!.level).toBe('info');
+
+    const data = completeLog!.data as Record<string, unknown>;
+    expect(data.chunkCount).toBe(2);
+    expect(data.contentLength).toBe(3);
+    expect(data.content).toBe('Hi!');
+  });
+
+  it('keeps only a bounded stream content preview', async () => {
+    const longStreamBackend = makeMockBackend({
+      chatStream: vi.fn().mockImplementation(async function* () {
+        yield { id: 'chunk-1', delta: { content: 'A'.repeat(20) } } satisfies ChatStreamChunk;
+        yield {
+          id: 'chunk-2',
+          delta: { content: 'B'.repeat(20) },
+          finishReason: 'stop',
+        } satisfies ChatStreamChunk;
+      }),
+    });
+    const wrapper = new LLMDebugWrapper(longStreamBackend, { logger, maxContentLength: 10 });
+
+    for await (const _chunk of wrapper.chatStream(makeRequest())) {
+      /* consume */
+    }
+
+    const completeLog = logger.calls.find((c) => c.message.includes('Stream complete'));
+    const data = completeLog!.data as Record<string, unknown>;
+    expect(data.contentLength).toBe(40);
+    expect(data.content).toBe('A'.repeat(10) + '... [truncated]');
   });
 
   it('skips logging when enabled=false', async () => {

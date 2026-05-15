@@ -96,6 +96,15 @@ const DOMAIN_PATTERNS: Record<string, RegExp> = {
   finance: /\b(finance|financial|investment|stock|trading|budget|accounting|revenue|profit)\b/i,
 };
 
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function hasKeyword(text: string, keyword: string): boolean {
+  const pattern = escapeRegex(keyword).replace(/\s+/g, '\\s+');
+  return new RegExp(`\\b${pattern}\\b`, 'i').test(text);
+}
+
 export class TaskAnalyzer {
   analyze(task: string): TaskRequirements {
     const lower = task.toLowerCase();
@@ -113,11 +122,11 @@ export class TaskAnalyzer {
   }
 
   private detectVision(task: string): boolean {
-    return VISION_KEYWORDS.some((k) => task.includes(k));
+    return VISION_KEYWORDS.some((k) => hasKeyword(task, k));
   }
 
   private detectToolNeeds(task: string): boolean {
-    return TOOL_KEYWORDS.some((k) => task.includes(k));
+    return TOOL_KEYWORDS.some((k) => hasKeyword(task, k));
   }
 
   private detectLongContext(task: string): boolean {
@@ -139,24 +148,24 @@ export class TaskAnalyzer {
       'many pages',
     ];
     const lower = task.toLowerCase();
-    return longContextIndicators.some((k) => lower.includes(k));
+    return longContextIndicators.some((k) => hasKeyword(lower, k));
   }
 
   private detectReasoningLevel(task: string): ReasoningLevel {
-    if (ADVANCED_REASONING_KEYWORDS.some((k) => task.includes(k))) {
+    if (ADVANCED_REASONING_KEYWORDS.some((k) => hasKeyword(task, k))) {
       return 'advanced';
     }
-    if (MODERATE_REASONING_KEYWORDS.some((k) => task.includes(k))) {
+    if (MODERATE_REASONING_KEYWORDS.some((k) => hasKeyword(task, k))) {
       return 'moderate';
     }
     return 'basic';
   }
 
   private detectSpeedNeeds(task: string): SpeedPreference {
-    if (SPEED_KEYWORDS.fast.some((k) => task.includes(k))) {
+    if (SPEED_KEYWORDS.fast.some((k) => hasKeyword(task, k))) {
       return 'fast';
     }
-    if (SPEED_KEYWORDS.slow.some((k) => task.includes(k))) {
+    if (SPEED_KEYWORDS.slow.some((k) => hasKeyword(task, k))) {
       return 'slow-ok';
     }
     return 'balanced';

@@ -437,6 +437,29 @@ describe('Cogitator', () => {
         await cog.close();
       });
 
+      it('routes onRunStart failures through run error handling', async () => {
+        const cog = new Cogitator();
+        const agent = createTestAgent();
+        const onRunError = vi.fn();
+        const startError = new Error('start callback failed');
+
+        await expect(
+          cog.run(agent, {
+            input: 'Test',
+            timeout: 100,
+            onRunStart: () => {
+              throw startError;
+            },
+            onRunError,
+          })
+        ).rejects.toThrow('start callback failed');
+
+        expect(onRunError).toHaveBeenCalledWith(startError, expect.stringMatching(/^run_/));
+        expect(mockBackendHelper.backend.chat).not.toHaveBeenCalled();
+
+        await cog.close();
+      });
+
       it('calls onRunComplete on success', async () => {
         const cog = new Cogitator();
         const agent = createTestAgent();
@@ -781,6 +804,35 @@ describe('Cogitator', () => {
     });
   });
 
+  describe('initialization', () => {
+    it('retries after an initialization failure', async () => {
+      const { createLLMBackend } = await import('../llm/index');
+      const cog = new Cogitator({
+        reflection: { enabled: true },
+      });
+      const agent = createTestAgent();
+
+      vi.mocked(createLLMBackend).mockImplementationOnce(() => {
+        throw new Error('init failed');
+      });
+
+      await expect(cog.run(agent, { input: 'First attempt' })).rejects.toThrow('init failed');
+
+      mockBackendHelper.setResponse({
+        id: 'resp_1',
+        content: 'Recovered',
+        finishReason: 'stop',
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      });
+
+      const result = await cog.run(agent, { input: 'Second attempt' });
+
+      expect(result.output).toBe('Recovered');
+
+      await cog.close();
+    });
+  });
+
   describe('estimateCost()', () => {
     it('returns cost estimate for agent', async () => {
       const cog = new Cogitator();
@@ -828,6 +880,96 @@ describe('Cogitator', () => {
       const cog = new Cogitator();
       expect(cog.tools).toBeDefined();
       expect(typeof cog.tools.register).toBe('function');
+    });
+
+    it('uses globally registered tools during runs', async () => {
+      const cog = new Cogitator();
+      const globalTool = tool({
+        name: 'global_lookup',
+        description: 'Global lookup tool',
+        parameters: z.object({ query: z.string() }),
+        execute: async ({ query }) => ({ source: 'global', query }),
+      });
+      const onToolResult = vi.fn();
+      const agent = createTestAgent();
+
+      cog.tools.register(globalTool);
+      mockBackendHelper.setResponses([
+        {
+          id: 'resp_1',
+          content: '',
+          finishReason: 'tool_calls',
+          toolCalls: [{ id: 'call_1', name: 'global_lookup', arguments: { query: 'status' } }],
+          usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+        },
+        {
+          id: 'resp_2',
+          content: 'Global lookup complete',
+          finishReason: 'stop',
+          usage: { inputTokens: 12, outputTokens: 6, totalTokens: 18 },
+        },
+      ]);
+
+      const result = await cog.run(agent, { input: 'Lookup status', onToolResult });
+
+      expect(result.output).toBe('Global lookup complete');
+      expect(result.toolCalls).toHaveLength(1);
+      expect(onToolResult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          callId: 'call_1',
+          name: 'global_lookup',
+          result: { source: 'global', query: 'status' },
+        })
+      );
+
+      await cog.close();
+    });
+
+    it('lets agent tools override global tools with the same name', async () => {
+      const cog = new Cogitator();
+      const globalTool = tool({
+        name: 'shared_tool',
+        description: 'Global shared tool',
+        parameters: z.object({}),
+        execute: async () => ({ source: 'global' }),
+      });
+      const agentTool = tool({
+        name: 'shared_tool',
+        description: 'Agent shared tool',
+        parameters: z.object({}),
+        execute: async () => ({ source: 'agent' }),
+      });
+      const onToolResult = vi.fn();
+      const agent = createTestAgent({ tools: [agentTool] });
+
+      cog.tools.register(globalTool);
+      mockBackendHelper.setResponses([
+        {
+          id: 'resp_1',
+          content: '',
+          finishReason: 'tool_calls',
+          toolCalls: [{ id: 'call_1', name: 'shared_tool', arguments: {} }],
+          usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+        },
+        {
+          id: 'resp_2',
+          content: 'Agent tool complete',
+          finishReason: 'stop',
+          usage: { inputTokens: 12, outputTokens: 6, totalTokens: 18 },
+        },
+      ]);
+
+      await cog.run(agent, { input: 'Use shared tool', onToolResult });
+
+      expect(onToolResult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          callId: 'call_1',
+          name: 'shared_tool',
+          result: { source: 'agent' },
+        })
+      );
+
+      await cog.close();
     });
   });
 });

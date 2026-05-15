@@ -109,6 +109,21 @@ describe('validateSkill', () => {
     expect(result.valid).toBe(false);
     expect(result.missingEnv).toContain('NONEXISTENT_VAR_12345');
   });
+
+  it('fails on missing dependencies', () => {
+    const skill = defineSkill({
+      name: 'test',
+      version: '1.0.0',
+      description: 'Test',
+      tools: [searchTool],
+      dependencies: ['definitely-missing-cogitator-dep'],
+    });
+
+    const result = validateSkill(skill);
+    expect(result.valid).toBe(false);
+    expect(result.missingDependencies).toContain('definitely-missing-cogitator-dep');
+    expect(result.errors).toContain('Missing dependencies: definitely-missing-cogitator-dep');
+  });
 });
 
 describe('mergeSkillsIntoAgent', () => {

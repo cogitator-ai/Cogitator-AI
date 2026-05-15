@@ -345,7 +345,9 @@ export function matchPatterns(
   for (const { type, pattern, confidence, description } of patterns) {
     if (!enabledTypes.has(type)) continue;
 
+    pattern.lastIndex = 0;
     const match = pattern.exec(input);
+    pattern.lastIndex = 0;
     if (match) {
       threats.push({
         type,

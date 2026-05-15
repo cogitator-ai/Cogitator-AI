@@ -244,7 +244,17 @@ describe('AnthropicBackend', () => {
         model: 'claude-sonnet-4-20250514',
         messages: [
           { role: 'user', content: 'What is the weather?' },
-          { role: 'assistant', content: '' },
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [
+              {
+                id: 'toolu_123',
+                name: 'get_weather',
+                arguments: { city: 'Tokyo' },
+              },
+            ],
+          },
           {
             role: 'tool',
             content: '{"temperature": 25, "condition": "sunny"}',
@@ -258,7 +268,17 @@ describe('AnthropicBackend', () => {
         expect.objectContaining({
           messages: [
             { role: 'user', content: 'What is the weather?' },
-            { role: 'assistant', content: '' },
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'toolu_123',
+                  name: 'get_weather',
+                  input: { city: 'Tokyo' },
+                },
+              ],
+            },
             {
               role: 'user',
               content: [

@@ -67,6 +67,8 @@ export class LangfuseExporter {
   private activeTraces = new Map<string, LangfuseTrace>();
   private activeSpans = new Map<string, LangfuseSpan>();
   private activeGenerations = new Map<string, LangfuseGeneration>();
+  private spanRunIds = new Map<string, string>();
+  private generationRunIds = new Map<string, string>();
 
   constructor(config: LangfuseConfig) {
     this.config = config;
@@ -136,7 +138,7 @@ export class LangfuseExporter {
       },
     });
 
-    this.activeTraces.delete(result.runId);
+    this.cleanupRun(result.runId);
   }
 
   onSpanStart(runId: string, span: Omit<Span, 'endTime' | 'duration' | 'status'>): void {
@@ -152,6 +154,7 @@ export class LangfuseExporter {
     });
 
     this.activeSpans.set(span.id, langfuseSpan);
+    this.spanRunIds.set(span.id, runId);
   }
 
   onSpanEnd(span: Span): void {
@@ -163,6 +166,7 @@ export class LangfuseExporter {
     });
 
     this.activeSpans.delete(span.id);
+    this.spanRunIds.delete(span.id);
   }
 
   onLLMCall(options: {
@@ -190,6 +194,7 @@ export class LangfuseExporter {
     });
 
     this.activeGenerations.set(generation.id, generation);
+    this.generationRunIds.set(generation.id, options.runId);
     return generation.id;
   }
 
@@ -214,6 +219,7 @@ export class LangfuseExporter {
     });
 
     this.activeGenerations.delete(options.generationId);
+    this.generationRunIds.delete(options.generationId);
   }
 
   onToolCall(runId: string, call: ToolCall): void {
@@ -227,6 +233,7 @@ export class LangfuseExporter {
     });
 
     this.activeSpans.set(`tool:${call.id}`, span);
+    this.spanRunIds.set(`tool:${call.id}`, runId);
   }
 
   onToolResult(_runId: string, result: ToolResult): void {
@@ -235,6 +242,25 @@ export class LangfuseExporter {
     if (span) {
       span.end({ output: result.result });
       this.activeSpans.delete(spanKey);
+      this.spanRunIds.delete(spanKey);
+    }
+  }
+
+  private cleanupRun(runId: string): void {
+    this.activeTraces.delete(runId);
+
+    for (const [spanId, ownerRunId] of this.spanRunIds.entries()) {
+      if (ownerRunId === runId) {
+        this.activeSpans.delete(spanId);
+        this.spanRunIds.delete(spanId);
+      }
+    }
+
+    for (const [generationId, ownerRunId] of this.generationRunIds.entries()) {
+      if (ownerRunId === runId) {
+        this.activeGenerations.delete(generationId);
+        this.generationRunIds.delete(generationId);
+      }
     }
   }
 

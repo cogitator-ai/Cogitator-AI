@@ -17,6 +17,45 @@ function makeSpan(id: string): Span {
 }
 
 describe('OTLPExporter', () => {
+  it('cleans trace ids when a run fails', () => {
+    const exporter = new OTLPExporter({
+      endpoint: 'http://localhost:4318/v1/traces',
+      enabled: true,
+    });
+
+    exporter.onRunStart({
+      runId: 'run-1',
+      agentId: 'agent-1',
+      agentName: 'Test',
+      input: 'test',
+    });
+
+    exporter.onRunError(new Error('failed'), 'run-1');
+
+    const traceIds = (exporter as unknown as { traceIds: Map<string, string> }).traceIds;
+    expect(traceIds.has('run-1')).toBe(false);
+  });
+
+  it('starts flush interval only once', () => {
+    vi.useFakeTimers();
+
+    const exporter = new OTLPExporter({
+      endpoint: 'http://localhost:4318/v1/traces',
+      enabled: true,
+    });
+
+    const intervalSpy = vi.spyOn(globalThis, 'setInterval');
+
+    exporter.start();
+    exporter.start();
+    exporter.stop();
+
+    expect(intervalSpy).toHaveBeenCalledTimes(1);
+
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
   it('caps pending spans at MAX_PENDING_SPANS on failed flush pushback', async () => {
     const exporter = new OTLPExporter({
       endpoint: 'http://localhost:4318/v1/traces',

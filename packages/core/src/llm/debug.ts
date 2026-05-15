@@ -98,11 +98,23 @@ export class LLMDebugWrapper implements LLMBackend {
       this.logRequest(requestId, request, true);
     }
 
-    const chunks: ChatStreamChunk[] = [];
+    let chunkCount = 0;
+    let contentLength = 0;
+    let contentPreview = '';
+    let finalToolCalls: ChatStreamChunk['delta']['toolCalls'];
     let finalChunk: ChatStreamChunk | null = null;
 
     try {
       for await (const chunk of this.backend.chatStream(request)) {
+        chunkCount++;
+        if (chunk.delta.content) {
+          contentLength += chunk.delta.content.length;
+          contentPreview = this.appendTruncatedContent(contentPreview, chunk.delta.content);
+        }
+        if (chunk.delta.toolCalls) {
+          finalToolCalls = chunk.delta.toolCalls;
+        }
+
         if (this.options.logStream) {
           this.options.logger.log('debug', `[${requestId}] Stream chunk`, {
             id: chunk.id,
@@ -112,7 +124,6 @@ export class LLMDebugWrapper implements LLMBackend {
           });
         }
 
-        chunks.push(chunk);
         if (chunk.finishReason) {
           finalChunk = chunk;
         }
@@ -122,7 +133,15 @@ export class LLMDebugWrapper implements LLMBackend {
       const duration = Date.now() - startTime;
 
       if (this.options.logResponse) {
-        this.logStreamComplete(requestId, chunks, finalChunk, duration);
+        this.logStreamComplete(
+          requestId,
+          chunkCount,
+          contentLength,
+          contentPreview,
+          finalToolCalls,
+          finalChunk,
+          duration
+        );
       }
     } catch (error) {
       const duration = Date.now() - startTime;
@@ -169,19 +188,21 @@ export class LLMDebugWrapper implements LLMBackend {
 
   private logStreamComplete(
     requestId: string,
-    chunks: ChatStreamChunk[],
+    chunkCount: number,
+    contentLength: number,
+    contentPreview: string,
+    toolCalls: ChatStreamChunk['delta']['toolCalls'],
     finalChunk: ChatStreamChunk | null,
     duration: number
   ): void {
-    const fullContent = chunks.map((c) => c.delta.content ?? '').join('');
     this.options.logger.log('info', `[${requestId}] Stream complete`, {
       duration: `${duration}ms`,
-      chunkCount: chunks.length,
+      chunkCount,
       finishReason: finalChunk?.finishReason,
       usage: finalChunk?.usage,
-      contentLength: fullContent.length,
-      content: this.truncateContent(fullContent),
-      toolCalls: finalChunk?.delta.toolCalls?.map((tc) => ({
+      contentLength,
+      content: contentPreview,
+      toolCalls: toolCalls?.map((tc) => ({
         id: tc.id,
         name: tc.name,
         argumentsPreview: this.truncateContent(JSON.stringify(tc.arguments)),
@@ -232,6 +253,13 @@ export class LLMDebugWrapper implements LLMBackend {
       return content;
     }
     return content.substring(0, this.options.maxContentLength) + '... [truncated]';
+  }
+
+  private appendTruncatedContent(current: string, next: string): string {
+    if (current.endsWith('... [truncated]')) {
+      return current;
+    }
+    return this.truncateContent(current + next);
   }
 }
 

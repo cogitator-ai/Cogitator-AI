@@ -43,6 +43,24 @@ import { GoogleBackend } from './google';
 import { AzureOpenAIBackend } from './azure';
 import { BedrockBackend } from './bedrock';
 
+const KNOWN_PROVIDERS: readonly LLMProvider[] = [
+  'ollama',
+  'openai',
+  'anthropic',
+  'google',
+  'azure',
+  'bedrock',
+  'vllm',
+  'mistral',
+  'groq',
+  'together',
+  'deepseek',
+];
+
+function isLLMProvider(provider: string): provider is LLMProvider {
+  return KNOWN_PROVIDERS.includes(provider as LLMProvider);
+}
+
 /**
  * Create an LLM backend from configuration
  */
@@ -109,6 +127,7 @@ export function createLLMBackend(
       return new OpenAIBackend({
         apiKey: providers.mistral.apiKey,
         baseUrl: 'https://api.mistral.ai/v1',
+        provider,
       });
 
     case 'groq':
@@ -118,6 +137,7 @@ export function createLLMBackend(
       return new OpenAIBackend({
         apiKey: providers.groq.apiKey,
         baseUrl: 'https://api.groq.com/openai/v1',
+        provider,
       });
 
     case 'together':
@@ -127,6 +147,7 @@ export function createLLMBackend(
       return new OpenAIBackend({
         apiKey: providers.together.apiKey,
         baseUrl: 'https://api.together.xyz/v1',
+        provider,
       });
 
     case 'deepseek':
@@ -136,6 +157,7 @@ export function createLLMBackend(
       return new OpenAIBackend({
         apiKey: providers.deepseek.apiKey,
         baseUrl: 'https://api.deepseek.com/v1',
+        provider,
       });
 
     case 'vllm':
@@ -158,8 +180,11 @@ export function parseModel(modelString: string): {
 } {
   if (modelString.includes('/')) {
     const [provider, ...rest] = modelString.split('/');
+    if (!isLLMProvider(provider)) {
+      return { provider: null, model: modelString };
+    }
     return {
-      provider: provider as LLMProvider,
+      provider,
       model: rest.join('/'),
     };
   }
