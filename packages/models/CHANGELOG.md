@@ -1,5 +1,11 @@
 # @cogitator-ai/models
 
+## 17.1.8
+
+### Patch Changes
+
+- Publish audit hardening fixes for provider configuration, model registry data, core runtime behavior, shared runtime types, and channel delivery reliability.
+
 ## 17.1.6
 
 ### Patch Changes

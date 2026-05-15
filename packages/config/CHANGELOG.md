@@ -1,5 +1,13 @@
 # @cogitator-ai/config
 
+## 0.5.4
+
+### Patch Changes
+
+- Publish audit hardening fixes for provider configuration, model registry data, core runtime behavior, shared runtime types, and channel delivery reliability.
+- Updated dependencies
+  - @cogitator-ai/types@0.22.2
+
 ## 0.5.3
 
 ### Patch Changes

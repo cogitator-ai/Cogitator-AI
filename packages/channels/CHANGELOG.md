@@ -1,5 +1,20 @@
 # @cogitator-ai/channels
 
+## 0.2.3
+
+### Patch Changes
+
+- Publish audit hardening fixes for provider configuration, model registry data, core runtime behavior, shared runtime types, and channel delivery reliability.
+- Updated dependencies
+  - @cogitator-ai/config@0.5.4
+  - @cogitator-ai/core@0.19.2
+  - @cogitator-ai/models@17.1.8
+  - @cogitator-ai/types@0.22.2
+  - @cogitator-ai/browser@0.1.4
+  - @cogitator-ai/mcp@17.0.9
+  - @cogitator-ai/memory@0.6.20
+  - @cogitator-ai/rag@0.1.8
+
 ## 0.2.2
 
 ### Patch Changes

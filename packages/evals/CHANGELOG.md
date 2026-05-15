@@ -1,5 +1,12 @@
 # @cogitator-ai/evals
 
+## 0.1.10
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/core@0.19.2
+
 ## 0.1.9
 
 ### Patch Changes

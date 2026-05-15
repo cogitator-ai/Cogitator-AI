@@ -1,5 +1,14 @@
 # @cogitator-ai/worker
 
+## 0.3.18
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/core@0.19.2
+  - @cogitator-ai/types@0.22.2
+  - @cogitator-ai/swarms@0.4.18
+
 ## 0.3.17
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/wasm-tools",
-  "version": "0.5.8",
+  "version": "0.5.9",
   "description": "WASM-based tools for Cogitator agents",
   "type": "module",
   "main": "./dist/index.js",

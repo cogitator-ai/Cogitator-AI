@@ -1,5 +1,13 @@
 # @cogitator-ai/a2a
 
+## 0.3.10
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/core@0.19.2
+  - @cogitator-ai/types@0.22.2
+
 ## 0.3.9
 
 ### Patch Changes
