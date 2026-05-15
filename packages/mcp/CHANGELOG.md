@@ -1,5 +1,11 @@
 # @cogitator-ai/mcp
 
+## 17.0.10
+
+### Patch Changes
+
+- Republish packages with resolved internal dependency versions so npm installs do not receive workspace protocol dependencies.
+
 ## 17.0.9
 
 ### Patch Changes

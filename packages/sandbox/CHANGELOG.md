@@ -1,5 +1,11 @@
 # @cogitator-ai/sandbox
 
+## 0.2.28
+
+### Patch Changes
+
+- Republish packages with resolved internal dependency versions so npm installs do not receive workspace protocol dependencies.
+
 ## 0.2.27
 
 ### Patch Changes

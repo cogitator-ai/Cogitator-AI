@@ -1,5 +1,14 @@
 # @cogitator-ai/self-modifying
 
+## 17.0.17
+
+### Patch Changes
+
+- Republish packages with resolved internal dependency versions so npm installs do not receive workspace protocol dependencies.
+- Updated dependencies
+  - @cogitator-ai/core@0.19.3
+  - @cogitator-ai/neuro-symbolic@15.1.15
+
 ## 17.0.16
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @cogitator-ai/memory
 
+## 0.6.21
+
+### Patch Changes
+
+- Republish packages with resolved internal dependency versions so npm installs do not receive workspace protocol dependencies.
+
 ## 0.6.20
 
 ### Patch Changes

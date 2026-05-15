@@ -1,5 +1,13 @@
 # @cogitator-ai/next
 
+## 0.2.11
+
+### Patch Changes
+
+- Republish packages with resolved internal dependency versions so npm installs do not receive workspace protocol dependencies.
+- Updated dependencies
+  - @cogitator-ai/core@0.19.3
+
 ## 0.2.10
 
 ### Patch Changes

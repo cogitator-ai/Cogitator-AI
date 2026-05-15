@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/mcp",
-  "version": "17.0.9",
+  "version": "17.0.10",
   "description": "MCP (Model Context Protocol) integration for Cogitator",
   "type": "module",
   "main": "./dist/index.js",

@@ -1,5 +1,14 @@
 # @cogitator-ai/swarms
 
+## 0.4.19
+
+### Patch Changes
+
+- Republish packages with resolved internal dependency versions so npm installs do not receive workspace protocol dependencies.
+- Updated dependencies
+  - @cogitator-ai/core@0.19.3
+  - @cogitator-ai/workflows@0.5.16
+
 ## 0.4.18
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { readdirSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
@@ -8,7 +8,7 @@ const REGISTRIES = ['https://registry.npmjs.org', 'https://npm.pkg.github.com'];
 
 const packagesDir = join(process.cwd(), 'packages');
 
-function getPublishablePackages(): string[] {
+function getPublishablePackages(selectedPackages: string[]): string[] {
   const packages: string[] = [];
 
   for (const dir of readdirSync(packagesDir)) {
@@ -18,7 +18,13 @@ function getPublishablePackages(): string[] {
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
     if (pkg.private) continue;
 
-    packages.push(dir);
+    if (
+      selectedPackages.length === 0 ||
+      selectedPackages.includes(dir) ||
+      selectedPackages.includes(pkg.name)
+    ) {
+      packages.push(dir);
+    }
   }
 
   return packages;
@@ -31,10 +37,14 @@ function publish(packageDir: string, registry: string): boolean {
   console.log(`\n📦 Publishing ${pkg.name}@${pkg.version} to ${registry}`);
 
   try {
-    execSync(`npm publish --access public --registry ${registry}`, {
-      cwd: pkgPath,
-      stdio: 'inherit',
-    });
+    execFileSync(
+      'pnpm',
+      ['publish', '--no-git-checks', '--access', 'public', '--registry', registry],
+      {
+        cwd: pkgPath,
+        stdio: 'inherit',
+      }
+    );
     console.log(`✅ ${pkg.name} published to ${registry}`);
     return true;
   } catch {
@@ -44,7 +54,7 @@ function publish(packageDir: string, registry: string): boolean {
 }
 
 async function main() {
-  const packages = getPublishablePackages();
+  const packages = getPublishablePackages(process.argv.slice(2));
 
   console.log('🚀 Publishing packages to all registries...\n');
   console.log(`Packages: ${packages.join(', ')}`);

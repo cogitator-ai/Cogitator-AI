@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/cli",
-  "version": "0.3.14",
+  "version": "0.3.15",
   "description": "CLI for Cogitator AI Agent Runtime",
   "type": "module",
   "main": "./dist/index.js",

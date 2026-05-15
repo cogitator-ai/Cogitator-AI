@@ -1,5 +1,11 @@
 # @cogitator-ai/test-utils
 
+## 0.1.9
+
+### Patch Changes
+
+- Republish packages with resolved internal dependency versions so npm installs do not receive workspace protocol dependencies.
+
 ## 0.1.8
 
 ### Patch Changes

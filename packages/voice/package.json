@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/voice",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Voice/Realtime agent capabilities for Cogitator",
   "type": "module",
   "main": "./dist/index.js",
