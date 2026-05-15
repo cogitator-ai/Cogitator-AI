@@ -21,6 +21,7 @@ vi.mock('pg', () => {
 describe('vector-search tool', () => {
   const originalEnv = { ...process.env };
   let mockFetch: ReturnType<typeof vi.fn>;
+  const ctx = { agentId: 'test', runId: 'run1', signal: new AbortController().signal };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -279,6 +280,25 @@ describe('vector-search tool', () => {
 
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('OpenAI embedding error');
+    });
+
+    it('honors the tool context abort signal', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      mockFetch.mockImplementationOnce((_url: string, init?: RequestInit) => {
+        expect(init?.signal?.aborted).toBe(true);
+        const error = new Error('Aborted');
+        error.name = 'AbortError';
+        return Promise.reject(error);
+      });
+
+      const result = await vectorSearch.execute(
+        { query: 'test' },
+        { ...ctx, signal: controller.signal }
+      );
+
+      expect(result).toHaveProperty('error');
+      expect((result as { error: string }).error).toContain('aborted');
     });
   });
 

@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import { tool } from '../tool';
+import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
+
+const IMAGE_GENERATION_TIMEOUT_MS = 60_000;
 
 export interface GenerateImageConfig {
   apiKey?: string;
@@ -33,7 +36,7 @@ export function createGenerateImageTool(config: GenerateImageConfig = {}) {
         .describe('"vivid" for dramatic/hyper-real images, "natural" for more realistic/subdued.'),
     }),
     sideEffects: ['network', 'external'],
-    execute: async ({ prompt, size, quality, style }) => {
+    execute: async ({ prompt, size, quality, style }, context) => {
       const key = apiKey || process.env.OPENAI_API_KEY;
       if (!key) {
         throw new Error(
@@ -41,22 +44,38 @@ export function createGenerateImageTool(config: GenerateImageConfig = {}) {
         );
       }
 
-      const response = await fetch(`${baseUrl}/images/generations`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-          model: 'dall-e-3',
-          prompt,
-          n: 1,
-          size: size || '1024x1024',
-          quality: quality || 'standard',
-          style: style || 'vivid',
-          response_format: 'url',
-        }),
-      });
+      const abort = createLinkedAbortController(context?.signal, IMAGE_GENERATION_TIMEOUT_MS);
+
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/images/generations`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${key}`,
+          },
+          body: JSON.stringify({
+            model: 'dall-e-3',
+            prompt,
+            n: 1,
+            size: size || '1024x1024',
+            quality: quality || 'standard',
+            style: style || 'vivid',
+            response_format: 'url',
+          }),
+          signal: abort.signal,
+        });
+      } catch (err) {
+        const error = err as Error;
+        if (error.name === 'AbortError') {
+          throw new Error(
+            getAbortErrorMessage('Image generation request', abort, IMAGE_GENERATION_TIMEOUT_MS)
+          );
+        }
+        throw err;
+      } finally {
+        abort.cleanup();
+      }
 
       if (!response.ok) {
         const error = await response.text();

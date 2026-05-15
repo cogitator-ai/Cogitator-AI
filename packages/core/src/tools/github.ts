@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { tool } from '../tool';
+import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
 
 const githubParams = z.object({
   action: z
@@ -46,15 +47,15 @@ function encodePath(filePath: string): string {
 async function githubFetch(
   endpoint: string,
   token: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  signal?: AbortSignal
 ): Promise<unknown> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30_000);
+  const abort = createLinkedAbortController(signal, 30_000);
 
   try {
     const response = await fetch(`${GITHUB_API}${endpoint}`, {
       ...options,
-      signal: controller.signal,
+      signal: abort.signal,
       headers: {
         Accept: 'application/vnd.github+json',
         Authorization: `Bearer ${token}`,
@@ -69,8 +70,14 @@ async function githubFetch(
     }
 
     return response.json();
+  } catch (err) {
+    const error = err as Error;
+    if (error.name === 'AbortError') {
+      throw new Error(getAbortErrorMessage('GitHub API request', abort, 30_000));
+    }
+    throw err;
   } finally {
-    clearTimeout(timeoutId);
+    abort.cleanup();
   }
 }
 
@@ -141,7 +148,8 @@ interface SearchResult {
 async function executeAction(
   action: GitHubAction,
   params: z.infer<typeof githubParams>,
-  token: string
+  token: string,
+  signal: AbortSignal
 ): Promise<unknown> {
   const {
     owner,
@@ -173,10 +181,12 @@ async function executeAction(
 
   const qs = queryParams.toString();
   const queryString = qs ? `?${qs}` : '';
+  const request = (endpoint: string, options?: RequestInit) =>
+    githubFetch(endpoint, token, options, signal);
 
   switch (action) {
     case 'get_repo': {
-      const data = (await githubFetch(`/repos/${enc.owner}/${enc.repo}`, token)) as RepoInfo;
+      const data = (await request(`/repos/${enc.owner}/${enc.repo}`)) as RepoInfo;
       return {
         name: data.name,
         fullName: data.full_name,
@@ -192,9 +202,8 @@ async function executeAction(
     }
 
     case 'list_issues': {
-      const data = (await githubFetch(
-        `/repos/${enc.owner}/${enc.repo}/issues${queryString}`,
-        token
+      const data = (await request(
+        `/repos/${enc.owner}/${enc.repo}/issues${queryString}`
       )) as IssueInfo[];
       return data
         .filter((i) => !('pull_request' in i))
@@ -211,10 +220,7 @@ async function executeAction(
 
     case 'get_issue': {
       if (!number) throw new Error('Issue number required');
-      const data = (await githubFetch(
-        `/repos/${enc.owner}/${enc.repo}/issues/${number}`,
-        token
-      )) as IssueInfo;
+      const data = (await request(`/repos/${enc.owner}/${enc.repo}/issues/${number}`)) as IssueInfo;
       return {
         number: data.number,
         title: data.title,
@@ -235,7 +241,7 @@ async function executeAction(
       if (labels) payload.labels = labels;
       if (assignees) payload.assignees = assignees;
 
-      const data = (await githubFetch(`/repos/${enc.owner}/${enc.repo}/issues`, token, {
+      const data = (await request(`/repos/${enc.owner}/${enc.repo}/issues`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -258,7 +264,7 @@ async function executeAction(
       if (labels) payload.labels = labels;
       if (assignees) payload.assignees = assignees;
 
-      const data = (await githubFetch(`/repos/${enc.owner}/${enc.repo}/issues/${number}`, token, {
+      const data = (await request(`/repos/${enc.owner}/${enc.repo}/issues/${number}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -274,9 +280,8 @@ async function executeAction(
     }
 
     case 'list_prs': {
-      const data = (await githubFetch(
-        `/repos/${enc.owner}/${enc.repo}/pulls${queryString}`,
-        token
+      const data = (await request(
+        `/repos/${enc.owner}/${enc.repo}/pulls${queryString}`
       )) as PRInfo[];
       return data.map((pr) => ({
         number: pr.number,
@@ -292,10 +297,7 @@ async function executeAction(
 
     case 'get_pr': {
       if (!number) throw new Error('PR number required');
-      const data = (await githubFetch(
-        `/repos/${enc.owner}/${enc.repo}/pulls/${number}`,
-        token
-      )) as PRInfo;
+      const data = (await request(`/repos/${enc.owner}/${enc.repo}/pulls/${number}`)) as PRInfo;
       return {
         number: data.number,
         title: data.title,
@@ -318,7 +320,7 @@ async function executeAction(
       if (!head) throw new Error('Head branch required');
       if (!base) throw new Error('Base branch required');
 
-      const data = (await githubFetch(`/repos/${enc.owner}/${enc.repo}/pulls`, token, {
+      const data = (await request(`/repos/${enc.owner}/${enc.repo}/pulls`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title, body, head, base }),
@@ -335,9 +337,8 @@ async function executeAction(
     case 'get_file': {
       if (!path) throw new Error('File path required');
       const refParam = ref ? `?ref=${encodeURIComponent(ref)}` : '';
-      const data = (await githubFetch(
-        `/repos/${enc.owner}/${enc.repo}/contents/${encodePath(path)}${refParam}`,
-        token
+      const data = (await request(
+        `/repos/${enc.owner}/${enc.repo}/contents/${encodePath(path)}${refParam}`
       )) as FileContent;
 
       const content =
@@ -359,9 +360,8 @@ async function executeAction(
       if (ref) queryParams.set('sha', ref);
       const commitQs = queryParams.toString();
       const commitQueryString = commitQs ? `?${commitQs}` : '';
-      const data = (await githubFetch(
-        `/repos/${enc.owner}/${enc.repo}/commits${commitQueryString}`,
-        token
+      const data = (await request(
+        `/repos/${enc.owner}/${enc.repo}/commits${commitQueryString}`
       )) as CommitInfo[];
       return data.map((c) => ({
         sha: c.sha.slice(0, 7),
@@ -376,9 +376,8 @@ async function executeAction(
     case 'search_code': {
       if (!query) throw new Error('Search query required');
       const searchQuery = `${query} repo:${owner}/${repo}`;
-      const data = (await githubFetch(
-        `/search/code?q=${encodeURIComponent(searchQuery)}&per_page=${perPage}&page=${page}`,
-        token
+      const data = (await request(
+        `/search/code?q=${encodeURIComponent(searchQuery)}&per_page=${perPage}&page=${page}`
       )) as SearchResult;
       return {
         totalCount: data.total_count,
@@ -392,9 +391,8 @@ async function executeAction(
     case 'search_issues': {
       if (!query) throw new Error('Search query required');
       const searchQuery = `${query} repo:${owner}/${repo}`;
-      const data = (await githubFetch(
-        `/search/issues?q=${encodeURIComponent(searchQuery)}&per_page=${perPage}&page=${page}`,
-        token
+      const data = (await request(
+        `/search/issues?q=${encodeURIComponent(searchQuery)}&per_page=${perPage}&page=${page}`
       )) as SearchResult;
       return {
         totalCount: data.total_count,
@@ -416,14 +414,19 @@ export const githubApi = tool({
   category: 'development',
   tags: ['github', 'git', 'issues', 'pr', 'code', 'repository'],
   sideEffects: ['network'],
-  execute: async (params) => {
+  execute: async (params, context) => {
     const token = process.env.GITHUB_TOKEN;
     if (!token) {
       return { error: 'GITHUB_TOKEN environment variable not set' };
     }
 
     try {
-      return await executeAction(params.action, params, token);
+      return await executeAction(
+        params.action,
+        params,
+        token,
+        context?.signal ?? new AbortController().signal
+      );
     } catch (err) {
       return { error: (err as Error).message, action: params.action };
     }

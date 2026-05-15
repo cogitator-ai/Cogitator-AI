@@ -3,6 +3,12 @@ import { createAnalyzeImageTool } from '../tools/image-analyze';
 import { createGenerateImageTool } from '../tools/image-generate';
 import type { LLMBackend, ChatResponse } from '@cogitator-ai/types';
 
+const mockContext = {
+  agentId: 'test-agent',
+  runId: 'test-run',
+  signal: new AbortController().signal,
+};
+
 describe('image tools', () => {
   describe('createAnalyzeImageTool', () => {
     const mockLlm: LLMBackend = {
@@ -268,6 +274,23 @@ describe('image tools', () => {
           }),
         })
       );
+    });
+
+    it('honors the tool context abort signal', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      mockFetch.mockImplementationOnce((_url: string, init?: RequestInit) => {
+        expect(init?.signal?.aborted).toBe(true);
+        const error = new Error('Aborted');
+        error.name = 'AbortError';
+        return Promise.reject(error);
+      });
+
+      const tool = createGenerateImageTool({ apiKey: 'custom-key' });
+
+      await expect(
+        tool.execute({ prompt: 'test' }, { ...mockContext, signal: controller.signal })
+      ).rejects.toThrow('Image generation request aborted');
     });
   });
 });

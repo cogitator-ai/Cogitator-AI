@@ -8,6 +8,7 @@ describe('audio tools', () => {
     runId: 'test-run',
     agentId: 'test-agent',
     threadId: 'test-thread',
+    signal: new AbortController().signal,
   };
 
   beforeEach(() => {
@@ -149,6 +150,30 @@ describe('audio tools', () => {
         tool.execute({ audio: { data: audioData, format: 'mp3' } }, mockContext)
       ).rejects.toThrow('Transcription failed: Invalid audio');
     });
+
+    it('should honor the tool context abort signal', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((_url: string, init?: RequestInit) => {
+          expect(init?.signal?.aborted).toBe(true);
+          const error = new Error('Aborted');
+          error.name = 'AbortError';
+          return Promise.reject(error);
+        })
+      );
+
+      const tool = createTranscribeAudioTool({ apiKey: 'test-key' });
+      const audioData = Buffer.from('fake audio').toString('base64');
+
+      await expect(
+        tool.execute(
+          { audio: { data: audioData, format: 'mp3' } },
+          { ...mockContext, signal: controller.signal }
+        )
+      ).rejects.toThrow('Transcription request aborted');
+    });
   });
 
   describe('createGenerateSpeechTool', () => {
@@ -287,6 +312,26 @@ describe('audio tools', () => {
       await expect(tool.execute({ text: 'Hello' }, mockContext)).rejects.toThrow(
         'Speech generation failed: Text too long'
       );
+    });
+
+    it('should honor the tool context abort signal', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((_url: string, init?: RequestInit) => {
+          expect(init?.signal?.aborted).toBe(true);
+          const error = new Error('Aborted');
+          error.name = 'AbortError';
+          return Promise.reject(error);
+        })
+      );
+
+      const tool = createGenerateSpeechTool({ apiKey: 'test-key' });
+
+      await expect(
+        tool.execute({ text: 'Hello' }, { ...mockContext, signal: controller.signal })
+      ).rejects.toThrow('Speech generation request aborted');
     });
   });
 });

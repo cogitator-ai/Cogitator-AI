@@ -4,6 +4,7 @@
 
 import { z } from 'zod';
 import { tool } from '../tool';
+import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
 
 const httpRequestParams = z.object({
   url: z.string().url().describe('The URL to request'),
@@ -34,19 +35,16 @@ export const httpRequest = tool({
     'Make an HTTP request. Supports all common HTTP methods, custom headers, and request body. Returns response status, headers, and body.',
   parameters: httpRequestParams,
   sideEffects: ['network'],
-  execute: async ({ url, method = 'GET', headers = {}, body, timeout = 30000 }) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
+  execute: async ({ url, method = 'GET', headers = {}, body, timeout = 30000 }, context) => {
+    const abort = createLinkedAbortController(context?.signal, timeout);
 
     try {
       const response = await fetch(url, {
         method,
         headers,
         body: body && ['POST', 'PUT', 'PATCH'].includes(method) ? body : undefined,
-        signal: controller.signal,
+        signal: abort.signal,
       });
-
-      clearTimeout(timeoutId);
 
       const responseHeaders: Record<string, string> = {};
       response.headers.forEach((value, key) => {
@@ -79,12 +77,13 @@ export const httpRequest = tool({
         method,
       };
     } catch (err) {
-      clearTimeout(timeoutId);
       const error = err as Error;
       if (error.name === 'AbortError') {
-        return { error: `Request timed out after ${timeout.toString()}ms`, url, method };
+        return { error: getAbortErrorMessage('Request', abort, timeout), url, method };
       }
       return { error: error.message, url, method };
+    } finally {
+      abort.cleanup();
     }
   },
 });

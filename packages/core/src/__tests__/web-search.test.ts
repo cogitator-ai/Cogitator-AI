@@ -125,6 +125,25 @@ describe('web_search tool', () => {
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('Tavily API error');
     });
+
+    it('honors the tool context abort signal', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      mockFetch.mockImplementationOnce((_url: string, init?: RequestInit) => {
+        expect(init?.signal?.aborted).toBe(true);
+        const error = new Error('Aborted');
+        error.name = 'AbortError';
+        return Promise.reject(error);
+      });
+
+      const result = await webSearch.execute(
+        { query: 'test' },
+        { ...ctx, signal: controller.signal }
+      );
+
+      expect(result).toHaveProperty('error');
+      expect((result as { error: string }).error).toContain('aborted');
+    });
   });
 
   describe('Brave provider', () => {

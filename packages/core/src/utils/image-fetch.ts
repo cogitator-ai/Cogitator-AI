@@ -1,4 +1,5 @@
 import type { ImageBase64ContentPart } from '@cogitator-ai/types';
+import { createLinkedAbortController, getAbortErrorMessage } from './abort';
 
 export type ImageMediaType = ImageBase64ContentPart['image_base64']['media_type'];
 
@@ -30,16 +31,14 @@ function normalizeMediaType(contentType: string | null): ImageMediaType {
 
 export async function fetchImageAsBase64(
   url: string,
-  options?: { timeout?: number }
+  options?: { timeout?: number; signal?: AbortSignal }
 ): Promise<FetchedImage> {
   const timeout = options?.timeout ?? 30000;
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
+  const abort = createLinkedAbortController(options?.signal, timeout);
 
   try {
     const response = await fetch(url, {
-      signal: controller.signal,
+      signal: abort.signal,
       headers: {
         Accept: 'image/*',
       },
@@ -56,8 +55,14 @@ export async function fetchImageAsBase64(
     const data = Buffer.from(buffer).toString('base64');
 
     return { data, mediaType };
+  } catch (err) {
+    const error = err as Error;
+    if (error.name === 'AbortError') {
+      throw new Error(getAbortErrorMessage('Image fetch', abort, timeout));
+    }
+    throw err;
   } finally {
-    clearTimeout(timeoutId);
+    abort.cleanup();
   }
 }
 
@@ -76,7 +81,8 @@ export function parseDataUrl(dataUrl: string): FetchedImage | null {
 }
 
 export async function resolveImage(
-  imageSource: string | { data: string; mimeType: string }
+  imageSource: string | { data: string; mimeType: string },
+  options?: { timeout?: number; signal?: AbortSignal }
 ): Promise<FetchedImage> {
   if (typeof imageSource !== 'string') {
     return {
@@ -91,5 +97,5 @@ export async function resolveImage(
     throw new Error('Invalid data URL format');
   }
 
-  return fetchImageAsBase64(imageSource);
+  return fetchImageAsBase64(imageSource, options);
 }

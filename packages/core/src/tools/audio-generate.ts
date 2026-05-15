@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import { tool } from '../tool';
+import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
+
+const SPEECH_GENERATION_TIMEOUT_MS = 60_000;
 
 export type TTSModel = 'tts-1' | 'tts-1-hd' | 'gpt-4o-mini-tts';
 
@@ -82,7 +85,7 @@ export function createGenerateSpeechTool(config: GenerateSpeechConfig = {}) {
       format: formatSchema.optional().describe('Output audio format (default: mp3)'),
     }),
     sideEffects: ['network', 'external'],
-    execute: async ({ text, voice, model, speed, format }): Promise<SpeechResult> => {
+    execute: async ({ text, voice, model, speed, format }, context): Promise<SpeechResult> => {
       const apiKey = getApiKey();
       if (!apiKey) {
         throw new Error('OpenAI API key required for speech generation');
@@ -93,20 +96,36 @@ export function createGenerateSpeechTool(config: GenerateSpeechConfig = {}) {
       const selectedFormat = format || config.defaultFormat || 'mp3';
       const selectedSpeed = speed ?? config.defaultSpeed ?? 1.0;
 
-      const response = await fetch('https://api.openai.com/v1/audio/speech', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: selectedModel,
-          input: text,
-          voice: selectedVoice,
-          speed: selectedSpeed,
-          response_format: selectedFormat,
-        }),
-      });
+      const abort = createLinkedAbortController(context?.signal, SPEECH_GENERATION_TIMEOUT_MS);
+
+      let response: Response;
+      try {
+        response = await fetch('https://api.openai.com/v1/audio/speech', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: selectedModel,
+            input: text,
+            voice: selectedVoice,
+            speed: selectedSpeed,
+            response_format: selectedFormat,
+          }),
+          signal: abort.signal,
+        });
+      } catch (err) {
+        const error = err as Error;
+        if (error.name === 'AbortError') {
+          throw new Error(
+            getAbortErrorMessage('Speech generation request', abort, SPEECH_GENERATION_TIMEOUT_MS)
+          );
+        }
+        throw err;
+      } finally {
+        abort.cleanup();
+      }
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));

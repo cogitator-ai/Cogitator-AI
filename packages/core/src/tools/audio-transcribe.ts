@@ -1,7 +1,10 @@
 import { z } from 'zod';
 import { tool } from '../tool';
 import { audioInputToBuffer } from '../utils/audio-fetch';
+import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
 import type { AudioFormat } from '@cogitator-ai/types';
+
+const TRANSCRIPTION_TIMEOUT_MS = 60_000;
 
 export type TranscriptionModel = 'whisper-1' | 'gpt-4o-transcribe' | 'gpt-4o-mini-transcribe';
 
@@ -56,14 +59,18 @@ export function createTranscribeAudioTool(config: TranscribeAudioConfig = {}) {
         .optional()
         .describe('Include word-level timestamps (only supported with whisper-1)'),
     }),
-    execute: async ({ audio, language, model, timestamps }): Promise<TranscriptionResult> => {
+    execute: async (
+      { audio, language, model, timestamps },
+      context
+    ): Promise<TranscriptionResult> => {
       const apiKey = getApiKey();
       if (!apiKey) {
         throw new Error('OpenAI API key required for audio transcription');
       }
 
       const { buffer, filename } = await audioInputToBuffer(
-        audio as string | { data: string; format: AudioFormat }
+        audio as string | { data: string; format: AudioFormat },
+        { signal: context?.signal, timeout: TRANSCRIPTION_TIMEOUT_MS }
       );
 
       const selectedModel = model || config.defaultModel || 'whisper-1';
@@ -82,11 +89,27 @@ export function createTranscribeAudioTool(config: TranscribeAudioConfig = {}) {
         formData.append('timestamp_granularities[]', 'word');
       }
 
-      const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}` },
-        body: formData,
-      });
+      const abort = createLinkedAbortController(context?.signal, TRANSCRIPTION_TIMEOUT_MS);
+
+      let response: Response;
+      try {
+        response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}` },
+          body: formData,
+          signal: abort.signal,
+        });
+      } catch (err) {
+        const error = err as Error;
+        if (error.name === 'AbortError') {
+          throw new Error(
+            getAbortErrorMessage('Transcription request', abort, TRANSCRIPTION_TIMEOUT_MS)
+          );
+        }
+        throw err;
+      } finally {
+        abort.cleanup();
+      }
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));

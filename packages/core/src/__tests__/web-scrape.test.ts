@@ -339,6 +339,25 @@ describe('web_scrape tool', () => {
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('timed out');
     });
+
+    it('honors the tool context abort signal', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      mockFetch.mockImplementationOnce((_url: string, init?: RequestInit) => {
+        expect(init?.signal?.aborted).toBe(true);
+        const error = new Error('Aborted');
+        error.name = 'AbortError';
+        return Promise.reject(error);
+      });
+
+      const result = await webScrape.execute(
+        { url: 'https://example.com' },
+        { ...ctx, signal: controller.signal }
+      );
+
+      expect(result).toHaveProperty('error');
+      expect((result as { error: string }).error).toContain('aborted');
+    });
   });
 
   describe('HTML cleaning', () => {

@@ -127,6 +127,24 @@ describe('audio-fetch utils', () => {
         fetchAudioAsBuffer('https://example.com/slow.mp3', { timeout: 50 })
       ).rejects.toThrow();
     });
+
+    it('should honor an abort signal', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((_url: string, init?: RequestInit) => {
+          expect(init?.signal?.aborted).toBe(true);
+          const error = new Error('Aborted');
+          error.name = 'AbortError';
+          return Promise.reject(error);
+        })
+      );
+
+      await expect(
+        fetchAudioAsBuffer('https://example.com/audio.mp3', { signal: controller.signal })
+      ).rejects.toThrow('Audio fetch aborted');
+    });
   });
 
   describe('audioInputToBuffer', () => {

@@ -116,6 +116,21 @@ describe('image-fetch utils', () => {
 
       await fetchImageAsBase64('https://example.com/image.jpg', { timeout: 5000 });
     });
+
+    it('honors an abort signal', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      mockFetch.mockImplementation((_url, options) => {
+        expect(options.signal.aborted).toBe(true);
+        const error = new Error('Aborted');
+        error.name = 'AbortError';
+        return Promise.reject(error);
+      });
+
+      await expect(
+        fetchImageAsBase64('https://example.com/image.jpg', { signal: controller.signal })
+      ).rejects.toThrow('Image fetch aborted');
+    });
   });
 
   describe('resolveImage', () => {

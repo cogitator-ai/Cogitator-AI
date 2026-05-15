@@ -1,4 +1,5 @@
 import type { AudioFormat, AudioInput } from '@cogitator-ai/types';
+import { createLinkedAbortController, getAbortErrorMessage } from './abort';
 
 export interface FetchedAudio {
   buffer: Buffer;
@@ -53,15 +54,14 @@ function detectAudioFormat(contentType: string | null, url: string): AudioFormat
 
 export async function fetchAudioAsBuffer(
   url: string,
-  options?: { timeout?: number }
+  options?: { timeout?: number; signal?: AbortSignal }
 ): Promise<FetchedAudio> {
   const timeout = options?.timeout ?? 60000;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
+  const abort = createLinkedAbortController(options?.signal, timeout);
 
   try {
     const response = await fetch(url, {
-      signal: controller.signal,
+      signal: abort.signal,
       headers: { Accept: 'audio/*' },
     });
 
@@ -80,13 +80,20 @@ export async function fetchAudioAsBuffer(
     }
 
     return { buffer, format, filename: `audio.${format}` };
+  } catch (err) {
+    const error = err as Error;
+    if (error.name === 'AbortError') {
+      throw new Error(getAbortErrorMessage('Audio fetch', abort, timeout));
+    }
+    throw err;
   } finally {
-    clearTimeout(timeoutId);
+    abort.cleanup();
   }
 }
 
 export async function audioInputToBuffer(
-  input: AudioInput
+  input: AudioInput,
+  options?: { timeout?: number; signal?: AbortSignal }
 ): Promise<{ buffer: Buffer; filename: string; format: AudioFormat }> {
   if (typeof input === 'string') {
     if (input.startsWith('data:audio/')) {
@@ -100,7 +107,7 @@ export async function audioInputToBuffer(
         return { buffer, format, filename: `audio.${format}` };
       }
     }
-    return fetchAudioAsBuffer(input);
+    return fetchAudioAsBuffer(input, options);
   }
 
   const buffer = Buffer.from(input.data, 'base64');

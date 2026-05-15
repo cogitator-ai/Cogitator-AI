@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { httpRequest } from '../tools/http';
 
 const mockContext = {
@@ -6,6 +6,10 @@ const mockContext = {
   runId: 'run_test',
   signal: new AbortController().signal,
 };
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('httpRequest tool', () => {
   it('makes GET request', async () => {
@@ -59,6 +63,29 @@ describe('httpRequest tool', () => {
     );
     expect(result).toHaveProperty('error');
     expect((result as { error: string }).error).toContain('timed out');
+  });
+
+  it('honors the tool context abort signal', async () => {
+    const controller = new AbortController();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init?: RequestInit) => {
+        const signal = init?.signal;
+        expect(signal?.aborted).toBe(true);
+        const error = new Error('Aborted');
+        error.name = 'AbortError';
+        return Promise.reject(error);
+      })
+    );
+    controller.abort();
+
+    const result = await httpRequest.execute(
+      { url: 'https://example.com' },
+      { ...mockContext, signal: controller.signal }
+    );
+
+    expect(result).toHaveProperty('error');
+    expect((result as { error: string }).error).toContain('aborted');
   });
 
   it('returns response headers', async () => {

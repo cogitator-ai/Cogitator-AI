@@ -221,6 +221,25 @@ describe('send_email tool', () => {
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('Resend API error');
     });
+
+    it('honors the tool context abort signal', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      mockFetch.mockImplementationOnce((_url: string, init?: RequestInit) => {
+        expect(init?.signal?.aborted).toBe(true);
+        const error = new Error('Aborted');
+        error.name = 'AbortError';
+        return Promise.reject(error);
+      });
+
+      const result = await sendEmail.execute(
+        { to: 'test@example.com', subject: 'Test', body: 'Body' },
+        { ...ctx, signal: controller.signal }
+      );
+
+      expect(result).toHaveProperty('error');
+      expect((result as { error: string }).error).toContain('aborted');
+    });
   });
 
   describe('explicit provider selection', () => {

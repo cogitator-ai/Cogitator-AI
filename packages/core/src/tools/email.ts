@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import { tool } from '../tool';
+import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
+
+const EMAIL_TIMEOUT_MS = 30_000;
 
 const sendEmailParams = z.object({
   to: z
@@ -46,8 +49,9 @@ async function sendViaResend(params: {
   cc?: string[];
   bcc?: string[];
   apiKey: string;
+  signal: AbortSignal;
 }): Promise<EmailResult> {
-  const { to, subject, body, html, from, replyTo, cc, bcc, apiKey } = params;
+  const { to, subject, body, html, from, replyTo, cc, bcc, apiKey, signal } = params;
 
   const payload: Record<string, unknown> = {
     from: from ?? process.env.RESEND_FROM_EMAIL ?? 'onboarding@resend.dev',
@@ -65,14 +69,28 @@ async function sendViaResend(params: {
   if (cc && cc.length > 0) payload.cc = cc;
   if (bcc && bcc.length > 0) payload.bcc = bcc;
 
-  const response = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(payload),
-  });
+  const abort = createLinkedAbortController(signal, EMAIL_TIMEOUT_MS);
+
+  let response: Response;
+  try {
+    response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(payload),
+      signal: abort.signal,
+    });
+  } catch (err) {
+    const error = err as Error;
+    if (error.name === 'AbortError') {
+      throw new Error(getAbortErrorMessage('Resend email request', abort, EMAIL_TIMEOUT_MS));
+    }
+    throw err;
+  } finally {
+    abort.cleanup();
+  }
 
   if (!response.ok) {
     const error = await response.text();
@@ -98,13 +116,22 @@ async function sendViaSMTP(params: {
   replyTo?: string;
   cc?: string[];
   bcc?: string[];
+  signal: AbortSignal;
 }): Promise<EmailResult> {
+  if (params.signal.aborted) {
+    throw new Error('SMTP email request aborted');
+  }
+
   let nodemailer: typeof import('nodemailer');
 
   try {
     nodemailer = await import('nodemailer');
   } catch {
     throw new Error('nodemailer package not installed. Run: pnpm add nodemailer');
+  }
+
+  if (params.signal.aborted) {
+    throw new Error('SMTP email request aborted');
   }
 
   const { to, subject, body, html, from, replyTo, cc, bcc } = params;
@@ -146,6 +173,10 @@ async function sendViaSMTP(params: {
   if (cc && cc.length > 0) mailOptions.cc = cc.join(', ');
   if (bcc && bcc.length > 0) mailOptions.bcc = bcc.join(', ');
 
+  if (params.signal.aborted) {
+    throw new Error('SMTP email request aborted');
+  }
+
   const result = await transporter.sendMail(mailOptions);
 
   return {
@@ -170,17 +201,10 @@ export const sendEmail = tool({
   category: 'communication',
   tags: ['email', 'send', 'notification', 'communication'],
   sideEffects: ['network', 'external'],
-  execute: async ({
-    to,
-    subject,
-    body,
-    html = false,
-    from,
-    replyTo,
-    cc,
-    bcc,
-    provider: requestedProvider,
-  }) => {
+  execute: async (
+    { to, subject, body, html = false, from, replyTo, cc, bcc, provider: requestedProvider },
+    context
+  ) => {
     const toArray_ = toArray(to);
     const ccArray = toArray(cc);
     const bccArray = toArray(bcc);
@@ -213,6 +237,7 @@ export const sendEmail = tool({
             cc: ccArray,
             bcc: bccArray,
             apiKey,
+            signal: context?.signal ?? new AbortController().signal,
           });
         }
 
@@ -226,6 +251,7 @@ export const sendEmail = tool({
             replyTo,
             cc: ccArray,
             bcc: bccArray,
+            signal: context?.signal ?? new AbortController().signal,
           });
 
         default:

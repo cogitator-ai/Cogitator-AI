@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import { tool } from '../tool';
+import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
+
+const SEARCH_TIMEOUT_MS = 30_000;
 
 const webSearchParams = z.object({
   query: z.string().min(1).describe('Search query'),
@@ -38,26 +41,53 @@ export interface SearchResponse {
   answer?: string;
 }
 
+async function fetchSearch(
+  provider: string,
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal
+): Promise<Response> {
+  const abort = createLinkedAbortController(signal, SEARCH_TIMEOUT_MS);
+
+  try {
+    return await fetch(url, { ...init, signal: abort.signal });
+  } catch (err) {
+    const error = err as Error;
+    if (error.name === 'AbortError') {
+      throw new Error(getAbortErrorMessage(`${provider} search`, abort, SEARCH_TIMEOUT_MS));
+    }
+    throw err;
+  } finally {
+    abort.cleanup();
+  }
+}
+
 async function searchTavily(
   query: string,
   maxResults: number,
   searchDepth: 'basic' | 'advanced',
   includeAnswer: boolean,
-  apiKey: string
+  apiKey: string,
+  signal: AbortSignal
 ): Promise<SearchResponse> {
-  const response = await fetch('https://api.tavily.com/search', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
+  const response = await fetchSearch(
+    'Tavily',
+    'https://api.tavily.com/search',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        api_key: apiKey,
+        query,
+        max_results: maxResults,
+        search_depth: searchDepth,
+        include_answer: includeAnswer,
+      }),
     },
-    body: JSON.stringify({
-      api_key: apiKey,
-      query,
-      max_results: maxResults,
-      search_depth: searchDepth,
-      include_answer: includeAnswer,
-    }),
-  });
+    signal
+  );
 
   if (!response.ok) {
     const text = await response.text();
@@ -85,19 +115,25 @@ async function searchTavily(
 async function searchBrave(
   query: string,
   maxResults: number,
-  apiKey: string
+  apiKey: string,
+  signal: AbortSignal
 ): Promise<SearchResponse> {
   const params = new URLSearchParams({
     q: query,
     count: maxResults.toString(),
   });
 
-  const response = await fetch(`https://api.search.brave.com/res/v1/web/search?${params}`, {
-    headers: {
-      Accept: 'application/json',
-      'X-Subscription-Token': apiKey,
+  const response = await fetchSearch(
+    'Brave Search',
+    `https://api.search.brave.com/res/v1/web/search?${params}`,
+    {
+      headers: {
+        Accept: 'application/json',
+        'X-Subscription-Token': apiKey,
+      },
     },
-  });
+    signal
+  );
 
   if (!response.ok) {
     const text = await response.text();
@@ -122,19 +158,25 @@ async function searchBrave(
 async function searchSerper(
   query: string,
   maxResults: number,
-  apiKey: string
+  apiKey: string,
+  signal: AbortSignal
 ): Promise<SearchResponse> {
-  const response = await fetch('https://google.serper.dev/search', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-API-KEY': apiKey,
+  const response = await fetchSearch(
+    'Serper',
+    'https://google.serper.dev/search',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-KEY': apiKey,
+      },
+      body: JSON.stringify({
+        q: query,
+        num: maxResults,
+      }),
     },
-    body: JSON.stringify({
-      q: query,
-      num: maxResults,
-    }),
-  });
+    signal
+  );
 
   if (!response.ok) {
     const text = await response.text();
@@ -189,13 +231,16 @@ export const webSearch = tool({
   parameters: webSearchParams,
   category: 'web',
   tags: ['search', 'web', 'internet'],
-  execute: async ({
-    query,
-    provider: requestedProvider,
-    maxResults = 5,
-    searchDepth = 'basic',
-    includeAnswer = false,
-  }) => {
+  execute: async (
+    {
+      query,
+      provider: requestedProvider,
+      maxResults = 5,
+      searchDepth = 'basic',
+      includeAnswer = false,
+    },
+    context
+  ) => {
     let provider: 'tavily' | 'brave' | 'serper';
     let apiKey: string;
 
@@ -223,11 +268,28 @@ export const webSearch = tool({
     try {
       switch (provider) {
         case 'tavily':
-          return await searchTavily(query, maxResults, searchDepth, includeAnswer, apiKey);
+          return await searchTavily(
+            query,
+            maxResults,
+            searchDepth,
+            includeAnswer,
+            apiKey,
+            context?.signal ?? new AbortController().signal
+          );
         case 'brave':
-          return await searchBrave(query, maxResults, apiKey);
+          return await searchBrave(
+            query,
+            maxResults,
+            apiKey,
+            context?.signal ?? new AbortController().signal
+          );
         case 'serper':
-          return await searchSerper(query, maxResults, apiKey);
+          return await searchSerper(
+            query,
+            maxResults,
+            apiKey,
+            context?.signal ?? new AbortController().signal
+          );
       }
     } catch (err) {
       return { error: (err as Error).message, query, provider };

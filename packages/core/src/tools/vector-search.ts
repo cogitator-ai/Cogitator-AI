@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import { tool } from '../tool';
+import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
+
+const EMBEDDING_TIMEOUT_MS = 30_000;
 
 const vectorSearchParams = z.object({
   query: z.string().min(1).describe('Search query (will be converted to embedding)'),
@@ -49,79 +52,100 @@ export interface VectorSearchResponse {
 async function getEmbedding(
   text: string,
   provider: 'openai' | 'ollama' | 'google',
-  model?: string
+  model: string | undefined,
+  signal: AbortSignal
 ): Promise<number[]> {
-  switch (provider) {
-    case 'openai': {
-      const apiKey = process.env.OPENAI_API_KEY;
-      if (!apiKey) throw new Error('OPENAI_API_KEY not set');
+  const abort = createLinkedAbortController(signal, EMBEDDING_TIMEOUT_MS);
 
-      const response = await fetch('https://api.openai.com/v1/embeddings', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          input: text,
-          model: model ?? 'text-embedding-3-small',
-        }),
-      });
+  const fetchEmbedding = async (url: string, init: RequestInit): Promise<Response> => {
+    try {
+      return await fetch(url, { ...init, signal: abort.signal });
+    } catch (err) {
+      const error = err as Error;
+      if (error.name === 'AbortError') {
+        throw new Error(
+          getAbortErrorMessage(`${provider} embedding request`, abort, EMBEDDING_TIMEOUT_MS)
+        );
+      }
+      throw err;
+    }
+  };
 
-      if (!response.ok) {
-        const err = await response.text();
-        throw new Error(`OpenAI embedding error: ${err}`);
+  try {
+    switch (provider) {
+      case 'openai': {
+        const apiKey = process.env.OPENAI_API_KEY;
+        if (!apiKey) throw new Error('OPENAI_API_KEY not set');
+
+        const response = await fetchEmbedding('https://api.openai.com/v1/embeddings', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            input: text,
+            model: model ?? 'text-embedding-3-small',
+          }),
+        });
+
+        if (!response.ok) {
+          const err = await response.text();
+          throw new Error(`OpenAI embedding error: ${err}`);
+        }
+
+        const data = (await response.json()) as { data: Array<{ embedding: number[] }> };
+        return data.data[0].embedding;
       }
 
-      const data = (await response.json()) as { data: Array<{ embedding: number[] }> };
-      return data.data[0].embedding;
-    }
-
-    case 'ollama': {
-      const baseUrl = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
-      const response = await fetch(`${baseUrl}/api/embeddings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: model ?? 'nomic-embed-text',
-          prompt: text,
-        }),
-      });
-
-      if (!response.ok) {
-        const err = await response.text();
-        throw new Error(`Ollama embedding error: ${err}`);
-      }
-
-      const data = (await response.json()) as { embedding: number[] };
-      return data.embedding;
-    }
-
-    case 'google': {
-      const apiKey = process.env.GOOGLE_API_KEY;
-      if (!apiKey) throw new Error('GOOGLE_API_KEY not set');
-
-      const modelId = model ?? 'text-embedding-004';
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:embedContent?key=${apiKey}`,
-        {
+      case 'ollama': {
+        const baseUrl = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
+        const response = await fetchEmbedding(`${baseUrl}/api/embeddings`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: `models/${modelId}`,
-            content: { parts: [{ text }] },
+            model: model ?? 'nomic-embed-text',
+            prompt: text,
           }),
-        }
-      );
+        });
 
-      if (!response.ok) {
-        const err = await response.text();
-        throw new Error(`Google embedding error: ${err}`);
+        if (!response.ok) {
+          const err = await response.text();
+          throw new Error(`Ollama embedding error: ${err}`);
+        }
+
+        const data = (await response.json()) as { embedding: number[] };
+        return data.embedding;
       }
 
-      const data = (await response.json()) as { embedding: { values: number[] } };
-      return data.embedding.values;
+      case 'google': {
+        const apiKey = process.env.GOOGLE_API_KEY;
+        if (!apiKey) throw new Error('GOOGLE_API_KEY not set');
+
+        const modelId = model ?? 'text-embedding-004';
+        const response = await fetchEmbedding(
+          `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:embedContent?key=${apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: `models/${modelId}`,
+              content: { parts: [{ text }] },
+            }),
+          }
+        );
+
+        if (!response.ok) {
+          const err = await response.text();
+          throw new Error(`Google embedding error: ${err}`);
+        }
+
+        const data = (await response.json()) as { embedding: { values: number[] } };
+        return data.embedding.values;
+      }
     }
+  } finally {
+    abort.cleanup();
   }
 }
 
@@ -206,16 +230,19 @@ export const vectorSearch = tool({
   parameters: vectorSearchParams,
   category: 'database',
   tags: ['search', 'vector', 'embedding', 'semantic', 'similarity'],
-  execute: async ({
-    query,
-    collection = 'documents',
-    topK = 5,
-    threshold = 0.7,
-    filter,
-    embeddingProvider,
-    embeddingModel,
-    connectionString,
-  }) => {
+  execute: async (
+    {
+      query,
+      collection = 'documents',
+      topK = 5,
+      threshold = 0.7,
+      filter,
+      embeddingProvider,
+      embeddingModel,
+      connectionString,
+    },
+    context
+  ) => {
     const provider = embeddingProvider ?? detectEmbeddingProvider();
     if (!provider) {
       return {
@@ -233,7 +260,12 @@ export const vectorSearch = tool({
     }
 
     try {
-      const embedding = await getEmbedding(query, provider, embeddingModel);
+      const embedding = await getEmbedding(
+        query,
+        provider,
+        embeddingModel,
+        context?.signal ?? new AbortController().signal
+      );
 
       const results = await searchPgVector(connStr, embedding, collection, topK, threshold, filter);
 

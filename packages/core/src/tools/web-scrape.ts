@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { tool } from '../tool';
+import { createLinkedAbortController, getAbortErrorMessage } from '../utils/abort';
 
 const webScrapeParams = z.object({
   url: z.string().url().describe('URL to scrape'),
@@ -232,17 +233,19 @@ export const webScrape = tool({
   category: 'web',
   tags: ['scrape', 'web', 'extract', 'html'],
   sideEffects: ['network'],
-  execute: async ({
-    url,
-    selector,
-    format = 'text',
-    maxLength = 50000,
-    timeout = 30000,
-    includeLinks = false,
-    includeImages = false,
-  }) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
+  execute: async (
+    {
+      url,
+      selector,
+      format = 'text',
+      maxLength = 50000,
+      timeout = 30000,
+      includeLinks = false,
+      includeImages = false,
+    },
+    context
+  ) => {
+    const abort = createLinkedAbortController(context?.signal, timeout);
 
     try {
       const response = await fetch(url, {
@@ -251,10 +254,8 @@ export const webScrape = tool({
             'Mozilla/5.0 (compatible; CogitatorBot/1.0; +https://github.com/cogitator-ai/Cogitator-AI)',
           Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         },
-        signal: controller.signal,
+        signal: abort.signal,
       });
-
-      clearTimeout(timeoutId);
 
       if (!response.ok) {
         return { error: `HTTP ${response.status}: ${response.statusText}`, url };
@@ -312,12 +313,13 @@ export const webScrape = tool({
 
       return result;
     } catch (err) {
-      clearTimeout(timeoutId);
       const error = err as Error;
       if (error.name === 'AbortError') {
-        return { error: `Request timed out after ${timeout}ms`, url };
+        return { error: getAbortErrorMessage('Request', abort, timeout), url };
       }
       return { error: error.message, url };
+    } finally {
+      abort.cleanup();
     }
   },
 });
