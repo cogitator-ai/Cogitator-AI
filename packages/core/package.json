@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/core",
-  "version": "0.19.0",
+  "version": "0.19.1",
   "description": "Core runtime for Cogitator AI agents",
   "type": "module",
   "main": "./dist/index.js",
@@ -27,8 +27,6 @@
     "@cogitator-ai/memory": "workspace:*",
     "@cogitator-ai/models": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "@types/node": "^25.0.10",
-    "@types/pg": "^8.10.9",
     "nanoid": "^5.0.4",
     "openai": "^6.22.0",
     "zod": "^4.3.6"
@@ -38,6 +36,8 @@
   },
   "devDependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.991.0",
+    "@types/node": "^25.0.10",
+    "@types/pg": "^8.10.9",
     "typescript": "^5.3.0",
     "vitest": "^4.0.18"
   },
@@ -46,6 +46,7 @@
     "@cogitator-ai/sandbox": "workspace:*",
     "better-sqlite3": "^11.0.0",
     "langfuse": "^3.0.0",
+    "nodemailer": "^6.0.0",
     "pg": "^8.0.0"
   },
   "peerDependenciesMeta": {
@@ -59,6 +60,9 @@
       "optional": true
     },
     "langfuse": {
+      "optional": true
+    },
+    "nodemailer": {
       "optional": true
     },
     "pg": {

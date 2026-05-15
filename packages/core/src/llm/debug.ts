@@ -205,9 +205,23 @@ export class LLMDebugWrapper implements LLMBackend {
           typeof m.content === 'string'
             ? this.truncateContent(m.content)
             : Array.isArray(m.content)
-              ? m.content.map((p) =>
-                  p.type === 'text' ? { ...p, text: this.truncateContent(p.text) } : p
-                )
+              ? m.content.map((p) => {
+                  if (p.type === 'text') return { ...p, text: this.truncateContent(p.text) };
+                  if (p.type === 'image_url')
+                    return {
+                      type: 'image_url',
+                      image_url: { url: '[image]', detail: p.image_url.detail },
+                    };
+                  if (p.type === 'image_base64')
+                    return {
+                      type: 'image_base64',
+                      image_base64: {
+                        data: `[base64 ${p.image_base64.media_type}]`,
+                        media_type: p.image_base64.media_type,
+                      },
+                    };
+                  return p;
+                })
               : m.content,
       })),
     };

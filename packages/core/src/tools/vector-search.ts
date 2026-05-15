@@ -163,12 +163,12 @@ async function searchPgVector(
     const vectorStr = `[${embedding.join(',')}]`;
 
     let filterClause = '';
-    const params: unknown[] = [vectorStr, topK];
+    const params: unknown[] = [vectorStr, topK, threshold];
 
     if (filter && Object.keys(filter).length > 0) {
       const conditions = Object.entries(filter).map(([key, value], idx) => {
         params.push(JSON.stringify({ [key]: value }));
-        return `metadata @> $${idx + 3}::jsonb`;
+        return `metadata @> $${idx + 4}::jsonb`;
       });
       filterClause = `AND ${conditions.join(' AND ')}`;
     }
@@ -180,7 +180,7 @@ async function searchPgVector(
         metadata,
         1 - (embedding <=> $1::vector) as similarity
       FROM ${collection}
-      WHERE 1 - (embedding <=> $1::vector) >= ${threshold}
+      WHERE 1 - (embedding <=> $1::vector) >= $3
       ${filterClause}
       ORDER BY embedding <=> $1::vector
       LIMIT $2

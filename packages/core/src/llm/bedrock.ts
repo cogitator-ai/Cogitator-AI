@@ -192,6 +192,7 @@ export class BedrockBackend extends BaseLLMBackend {
 
           return new BedrockRuntimeClient(clientConfig);
         } catch {
+          this.clientPromise = null;
           throw llmConfigError(
             ctx,
             'AWS SDK not installed. Run: pnpm add @aws-sdk/client-bedrock-runtime'

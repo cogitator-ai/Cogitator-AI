@@ -138,7 +138,7 @@ export async function initializeSandbox(
     getLogger().warn('Sandbox initialization failed', {
       error: err instanceof Error ? err.message : String(err),
     });
-    state.sandboxInitialized = true;
+    state.sandboxInitialized = false;
   }
 }
 

@@ -14,17 +14,7 @@ import { parseModel } from '../llm/index';
 
 const DEFAULT_PRICING = { input: 0.15, output: 0.6 };
 
-const LOCAL_MODEL_PATTERNS = [
-  'ollama',
-  'llama',
-  'phi',
-  'qwen',
-  'mixtral',
-  'codellama',
-  'deepseek',
-  'gemma',
-  'mistral',
-];
+const LOCAL_PROVIDER_PREFIXES = ['ollama/'];
 
 export class CostEstimator {
   private taskAnalyzer: TaskAnalyzer;
@@ -175,7 +165,7 @@ export class CostEstimator {
 
   private isLocalModel(model: string): boolean {
     const lower = model.toLowerCase();
-    return LOCAL_MODEL_PATTERNS.some((p) => lower.includes(p));
+    return LOCAL_PROVIDER_PREFIXES.some((p) => lower.startsWith(p));
   }
 
   private createLocalModelEstimate(

@@ -7,57 +7,102 @@ description: Key TypeScript type definitions from @cogitator-ai/types.
 
 ```typescript
 interface AgentConfig {
+  id?: string;
   name: string;
-  instructions?: string;
+  description?: string;
+  provider?: string;
+  model: string;
+  instructions: string;
   tools?: Tool[];
-  model?: string;
+  skills?: Skill[];
   temperature?: number;
+  topP?: number;
   maxTokens?: number;
+  stopSequences?: string[];
   responseFormat?: ResponseFormat;
+  maxIterations?: number;
+  timeout?: number;
 }
 
 type ResponseFormat =
   | { type: 'text' }
-  | { type: 'json_object' }
-  | { type: 'json_schema'; schema: Record<string, unknown> };
+  | { type: 'json' }
+  | { type: 'json_schema'; schema: ZodType };
 
 interface RunOptions {
   input: string;
+  images?: ImageInput[];
+  audio?: AudioInput[];
+  context?: Record<string, unknown>;
   threadId?: string;
+  timeout?: number;
   stream?: boolean;
   onToken?: (token: string) => void;
-  signal?: AbortSignal;
+  onToolCall?: (call: ToolCall) => void;
+  onToolResult?: (result: ToolResult) => void;
+  useMemory?: boolean;
+  loadHistory?: boolean;
+  saveHistory?: boolean;
+  parallelToolCalls?: boolean;
 }
 
 interface RunResult {
-  text: string;
-  toolCalls: ToolCall[];
-  usage?: TokenUsage;
-  metadata?: Record<string, unknown>;
+  readonly output: string;
+  readonly structured?: unknown;
+  readonly runId: string;
+  readonly agentId: string;
+  readonly threadId: string;
+  readonly modelUsed?: string;
+  readonly usage: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+    readonly cost: number;
+    readonly duration: number;
+  };
+  readonly toolCalls: readonly ToolCall[];
+  readonly messages: readonly Message[];
 }
 ```
 
 ## Tool Types
 
 ```typescript
-interface Tool {
+interface Tool<TParams = unknown, TResult = unknown> {
   name: string;
   description: string;
-  parameters: ZodSchema;
-  execute: (params: unknown, context?: ToolContext) => Promise<unknown>;
+  category?: ToolCategory;
+  tags?: string[];
+  parameters: ZodType<TParams>;
+  execute(params: TParams, context: ToolContext): Promise<TResult>;
+  sideEffects?: SideEffectType[];
+  requiresApproval?: boolean | ApprovalCheck;
+  timeout?: number;
+  sandbox?: SandboxConfig;
+  toJSON(): ToolSchema;
 }
 
-interface ToolConfig {
+interface ToolConfig<TParams = unknown, TResult = unknown> {
   name: string;
   description: string;
-  parameters: ZodSchema;
-  execute: (params: unknown, context?: ToolContext) => Promise<unknown>;
+  category?: ToolCategory;
+  tags?: string[];
+  parameters: ZodType<TParams>;
+  execute: (params: TParams, context: ToolContext) => Promise<TResult>;
+  sideEffects?: SideEffectType[];
+  requiresApproval?: boolean | ((params: TParams) => boolean);
+  timeout?: number;
+  sandbox?: SandboxConfig;
 }
 
 interface ToolContext {
-  agentName: string;
+  agentId: string;
+  runId: string;
+  signal: AbortSignal;
   threadId?: string;
-  signal?: AbortSignal;
+  userId?: string;
+  channelType?: string;
+  channelId?: string;
 }
 
 interface ToolCall {
@@ -67,7 +112,8 @@ interface ToolCall {
 }
 
 interface ToolResult {
-  toolCallId: string;
+  callId: string;
+  name: string;
   result: unknown;
   error?: string;
 }
@@ -75,7 +121,11 @@ interface ToolResult {
 interface ToolSchema {
   name: string;
   description: string;
-  parameters: Record<string, unknown>;
+  parameters: {
+    type: 'object';
+    properties: Record<string, unknown>;
+    required?: string[];
+  };
 }
 ```
 
@@ -84,56 +134,92 @@ interface ToolSchema {
 ```typescript
 type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
 
+type MessageContent = string | ContentPart[];
+
 interface Message {
   role: MessageRole;
-  content?: string;
-  toolCalls?: ToolCall[];
-  toolCallId?: string;
+  content: MessageContent;
   name?: string;
+  toolCallId?: string;
 }
 
-interface TokenUsage {
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
+interface ToolCallMessage extends Message {
+  role: 'assistant';
+  content: string;
+  toolCalls: ToolCall[];
+}
+
+interface ToolResultMessage extends Message {
+  role: 'tool';
+  content: string;
+  toolCallId: string;
+  name: string;
 }
 ```
 
 ## LLM Types
 
 ```typescript
-type LLMProvider = 'ollama' | 'openai' | 'anthropic' | 'google' | 'azure' | 'bedrock';
+type LLMProvider =
+  | 'ollama'
+  | 'openai'
+  | 'anthropic'
+  | 'google'
+  | 'azure'
+  | 'bedrock'
+  | 'vllm'
+  | 'mistral'
+  | 'groq'
+  | 'together'
+  | 'deepseek';
 
 interface LLMConfig {
-  defaultProvider: LLMProvider;
-  providers: Record<string, ProviderConfig>;
+  provider: LLMProvider;
+  model: string;
+  temperature?: number;
+  topP?: number;
+  maxTokens?: number;
+  stopSequences?: string[];
 }
 
 interface ChatRequest {
+  model: string;
   messages: Message[];
-  model?: string;
-  temperature?: number;
-  maxTokens?: number;
   tools?: ToolSchema[];
-  responseFormat?: ResponseFormat;
+  toolChoice?: ToolChoice;
+  temperature?: number;
+  topP?: number;
+  maxTokens?: number;
+  stop?: string[];
   stream?: boolean;
+  responseFormat?: LLMResponseFormat;
 }
 
 interface ChatResponse {
-  message: Message;
-  usage: TokenUsage;
-  finishReason: 'stop' | 'tool_calls' | 'length';
+  id: string;
+  content: string;
+  toolCalls?: ToolCall[];
+  finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  };
 }
 
 interface ChatStreamChunk {
-  delta: string;
-  toolCalls?: ToolCall[];
-  finishReason?: string;
+  id: string;
+  delta: {
+    content?: string;
+    toolCalls?: Partial<ToolCall>[];
+  };
+  finishReason?: 'stop' | 'tool_calls' | 'length' | 'error';
 }
 
 interface LLMBackend {
+  readonly provider: LLMProvider;
   chat(request: ChatRequest): Promise<ChatResponse>;
-  chatStream(request: ChatRequest): AsyncIterable<ChatStreamChunk>;
+  chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk>;
 }
 ```
 
@@ -141,22 +227,47 @@ interface LLMBackend {
 
 ```typescript
 interface CogitatorConfig {
-  llm: LLMConfig;
+  llm?: {
+    defaultProvider?: LLMProvider;
+    defaultModel?: string;
+    providers?: LLMProvidersConfig;
+  };
+  limits?: {
+    maxConcurrentRuns?: number;
+    defaultTimeout?: number;
+    maxTokensPerRun?: number;
+  };
   memory?: MemoryConfig;
+  sandbox?: SandboxManagerConfig;
+  reflection?: ReflectionConfig;
+  guardrails?: GuardrailConfig;
+  costRouting?: CostRoutingConfig;
+  knowledgeGraph?: KnowledgeGraphConfig;
+  promptOptimization?: PromptOptimizationConfig;
+  security?: {
+    promptInjection?: PromptInjectionConfig;
+  };
+  context?: ContextManagerConfig;
   logging?: LoggingConfig;
+  deploy?: DeployConfig;
 }
 
 interface MemoryConfig {
-  adapter: 'memory' | 'redis' | 'postgres' | 'sqlite' | 'mongodb' | 'qdrant';
-  connectionString?: string;
-  embedding?: EmbeddingConfig;
+  adapter?: 'memory' | 'redis' | 'postgres' | 'sqlite' | 'mongodb' | 'qdrant';
+  inMemory?: Omit<InMemoryAdapterConfig, 'provider'>;
+  redis?: Omit<RedisAdapterConfig, 'provider'>;
+  postgres?: Omit<PostgresAdapterConfig, 'provider'>;
+  sqlite?: Omit<SQLiteAdapterConfig, 'provider'>;
+  mongodb?: Omit<MongoDBAdapterConfig, 'provider'>;
+  qdrant?: Omit<QdrantAdapterConfig, 'provider'>;
+  embedding?: EmbeddingServiceConfig;
+  contextBuilder?: Partial<ContextBuilderConfig>;
 }
 
-interface EmbeddingConfig {
-  provider: 'openai' | 'ollama' | 'google';
-  model: string;
-  dimensions?: number;
-}
+type EmbeddingServiceConfig =
+  | OpenAIEmbeddingConfig
+  | OllamaEmbeddingConfig
+  | GoogleEmbeddingConfig;
 ```
 
 ## Error Types
@@ -169,13 +280,37 @@ class CogitatorError extends Error {
 }
 
 enum ErrorCode {
-  UNKNOWN = 'UNKNOWN',
-  INVALID_CONFIG = 'INVALID_CONFIG',
-  LLM_ERROR = 'LLM_ERROR',
-  TOOL_ERROR = 'TOOL_ERROR',
-  MEMORY_ERROR = 'MEMORY_ERROR',
-  TIMEOUT = 'TIMEOUT',
-  RATE_LIMIT = 'RATE_LIMIT',
-  AUTH_ERROR = 'AUTH_ERROR',
+  LLM_UNAVAILABLE = 'LLM_UNAVAILABLE',
+  LLM_RATE_LIMITED = 'LLM_RATE_LIMITED',
+  LLM_TIMEOUT = 'LLM_TIMEOUT',
+  LLM_INVALID_RESPONSE = 'LLM_INVALID_RESPONSE',
+  LLM_CONTEXT_LENGTH_EXCEEDED = 'LLM_CONTEXT_LENGTH_EXCEEDED',
+  LLM_CONTENT_FILTERED = 'LLM_CONTENT_FILTERED',
+  SANDBOX_UNAVAILABLE = 'SANDBOX_UNAVAILABLE',
+  SANDBOX_TIMEOUT = 'SANDBOX_TIMEOUT',
+  SANDBOX_OOM = 'SANDBOX_OOM',
+  SANDBOX_EXECUTION_FAILED = 'SANDBOX_EXECUTION_FAILED',
+  SANDBOX_INVALID_MODULE = 'SANDBOX_INVALID_MODULE',
+  TOOL_NOT_FOUND = 'TOOL_NOT_FOUND',
+  TOOL_INVALID_ARGS = 'TOOL_INVALID_ARGS',
+  TOOL_EXECUTION_FAILED = 'TOOL_EXECUTION_FAILED',
+  TOOL_TIMEOUT = 'TOOL_TIMEOUT',
+  MEMORY_UNAVAILABLE = 'MEMORY_UNAVAILABLE',
+  MEMORY_WRITE_FAILED = 'MEMORY_WRITE_FAILED',
+  MEMORY_READ_FAILED = 'MEMORY_READ_FAILED',
+  AGENT_NOT_FOUND = 'AGENT_NOT_FOUND',
+  AGENT_ALREADY_RUNNING = 'AGENT_ALREADY_RUNNING',
+  AGENT_MAX_ITERATIONS = 'AGENT_MAX_ITERATIONS',
+  WORKFLOW_NOT_FOUND = 'WORKFLOW_NOT_FOUND',
+  WORKFLOW_STEP_FAILED = 'WORKFLOW_STEP_FAILED',
+  WORKFLOW_CYCLE_DETECTED = 'WORKFLOW_CYCLE_DETECTED',
+  SWARM_NO_WORKERS = 'SWARM_NO_WORKERS',
+  SWARM_CONSENSUS_FAILED = 'SWARM_CONSENSUS_FAILED',
+  PROMPT_INJECTION_DETECTED = 'PROMPT_INJECTION_DETECTED',
+  VALIDATION_ERROR = 'VALIDATION_ERROR',
+  CONFIGURATION_ERROR = 'CONFIGURATION_ERROR',
+  INTERNAL_ERROR = 'INTERNAL_ERROR',
+  NOT_IMPLEMENTED = 'NOT_IMPLEMENTED',
+  CIRCUIT_OPEN = 'CIRCUIT_OPEN',
 }
 ```

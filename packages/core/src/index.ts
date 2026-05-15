@@ -166,19 +166,47 @@ export {
   ModelSelector,
   CostTracker,
   BudgetEnforcer,
+  TokenEstimator,
+  CostEstimator,
 } from './cost-routing/index';
 export type { CostAwareRouterOptions, CostFilter, BudgetCheckResult } from './cost-routing/index';
 
 export {
   BaseLLMBackend,
+  OpenAICompatibleBackend,
   OllamaBackend,
   OpenAIBackend,
   AnthropicBackend,
   GoogleBackend,
   AzureOpenAIBackend,
   BedrockBackend,
+  LLMError,
+  createLLMError,
+  wrapSDKError,
+  llmUnavailable,
+  llmInvalidResponse,
+  llmTimeout,
+  llmConfigError,
+  llmNotImplemented,
+  LLMDebugWrapper,
+  withDebug,
+  llmPluginRegistry,
+  registerLLMBackend,
+  unregisterLLMBackend,
+  createLLMBackendFromPlugin,
+  listLLMPlugins,
+  hasLLMPlugin,
+  defineBackend,
   createLLMBackend,
   parseModel,
+} from './llm/index';
+export type {
+  LLMErrorContext,
+  LLMDebugOptions,
+  LLMDebugLogger,
+  LLMBackendFactory,
+  LLMPluginMetadata,
+  LLMPlugin,
 } from './llm/index';
 
 export {

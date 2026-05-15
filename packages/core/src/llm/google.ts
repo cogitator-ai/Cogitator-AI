@@ -195,6 +195,69 @@ export class GoogleBackend extends BaseLLMBackend {
     const id = this.generateId();
     let buffer = '';
     const accumulatedToolCalls: ToolCall[] = [];
+    const mapFinish = this.mapFinishReason.bind(this);
+
+    function* processLine(line: string) {
+      if (!line.startsWith('data: ')) return;
+      const jsonStr = line.slice(6).trim();
+      if (!jsonStr || jsonStr === '[DONE]') return;
+
+      let chunk: GeminiStreamChunk;
+      try {
+        chunk = JSON.parse(jsonStr) as GeminiStreamChunk;
+      } catch (e) {
+        getLogger().warn('Failed to parse stream chunk in Google backend', {
+          json: jsonStr.slice(0, 200),
+          error: e instanceof Error ? e.message : String(e),
+        });
+        return;
+      }
+
+      if (chunk.candidates?.[0]) {
+        const candidate = chunk.candidates[0];
+        const parts = candidate.content?.parts ?? [];
+
+        for (const part of parts) {
+          if ('text' in part) {
+            yield {
+              id,
+              delta: { content: part.text },
+            } as ChatStreamChunk;
+          } else if ('functionCall' in part) {
+            const toolCall: ToolCall = {
+              id: `call_${nanoid(12)}`,
+              name: part.functionCall.name,
+              arguments: part.functionCall.args,
+            };
+            accumulatedToolCalls.push(toolCall);
+          }
+        }
+
+        if (candidate.finishReason) {
+          const finishReason =
+            accumulatedToolCalls.length > 0
+              ? ('tool_calls' as const)
+              : mapFinish(candidate.finishReason);
+          const streamChunk: ChatStreamChunk = {
+            id,
+            delta: {
+              toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined,
+            },
+            finishReason,
+          };
+
+          if (chunk.usageMetadata) {
+            streamChunk.usage = {
+              inputTokens: chunk.usageMetadata.promptTokenCount,
+              outputTokens: chunk.usageMetadata.candidatesTokenCount ?? 0,
+              totalTokens: chunk.usageMetadata.totalTokenCount,
+            };
+          }
+
+          yield streamChunk;
+        }
+      }
+    }
 
     try {
       while (true) {
@@ -207,65 +270,12 @@ export class GoogleBackend extends BaseLLMBackend {
         buffer = lines.pop() ?? '';
 
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const jsonStr = line.slice(6).trim();
-            if (!jsonStr || jsonStr === '[DONE]') continue;
-
-            try {
-              const chunk = JSON.parse(jsonStr) as GeminiStreamChunk;
-
-              if (chunk.candidates?.[0]) {
-                const candidate = chunk.candidates[0];
-                const parts = candidate.content?.parts ?? [];
-
-                for (const part of parts) {
-                  if ('text' in part) {
-                    yield {
-                      id,
-                      delta: { content: part.text },
-                    };
-                  } else if ('functionCall' in part) {
-                    const toolCall: ToolCall = {
-                      id: `call_${nanoid(12)}`,
-                      name: part.functionCall.name,
-                      arguments: part.functionCall.args,
-                    };
-                    accumulatedToolCalls.push(toolCall);
-                  }
-                }
-
-                if (candidate.finishReason) {
-                  const finishReason =
-                    accumulatedToolCalls.length > 0
-                      ? ('tool_calls' as const)
-                      : this.mapFinishReason(candidate.finishReason);
-                  const streamChunk: ChatStreamChunk = {
-                    id,
-                    delta: {
-                      toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined,
-                    },
-                    finishReason,
-                  };
-
-                  if (chunk.usageMetadata) {
-                    streamChunk.usage = {
-                      inputTokens: chunk.usageMetadata.promptTokenCount,
-                      outputTokens: chunk.usageMetadata.candidatesTokenCount,
-                      totalTokens: chunk.usageMetadata.totalTokenCount,
-                    };
-                  }
-
-                  yield streamChunk;
-                }
-              }
-            } catch (e) {
-              getLogger().warn('Failed to parse stream chunk in Google backend', {
-                json: jsonStr.slice(0, 200),
-                error: e instanceof Error ? e.message : String(e),
-              });
-            }
-          }
+          yield* processLine(line);
         }
+      }
+
+      if (buffer.trim()) {
+        yield* processLine(buffer);
       }
     } finally {
       reader.releaseLock();
@@ -544,9 +554,9 @@ export class GoogleBackend extends BaseLLMBackend {
       finishReason:
         toolCalls.length > 0 ? 'tool_calls' : this.mapFinishReason(candidate.finishReason),
       usage: {
-        inputTokens: data.usageMetadata.promptTokenCount,
-        outputTokens: data.usageMetadata.candidatesTokenCount,
-        totalTokens: data.usageMetadata.totalTokenCount,
+        inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
+        outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+        totalTokens: data.usageMetadata?.totalTokenCount ?? 0,
       },
     };
   }

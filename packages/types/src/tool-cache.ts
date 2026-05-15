@@ -70,12 +70,17 @@ export interface WithCacheOptions extends ToolCacheConfig {
 
 export interface RedisClientLike {
   get(key: string): Promise<string | null>;
-  set(key: string, value: string): Promise<string>;
   setex(key: string, seconds: number, value: string): Promise<string>;
   del(...keys: string[]): Promise<number>;
-  keys(pattern: string): Promise<string[]>;
   mget(...keys: string[]): Promise<(string | null)[]>;
   zadd(key: string, score: number, member: string): Promise<number>;
   zrange(key: string, start: number, stop: number): Promise<string[]>;
   zrem(key: string, ...members: string[]): Promise<number>;
+  incr(key: string): Promise<number>;
+  decr(key: string): Promise<number>;
+  exists(...keys: string[]): Promise<number>;
+  scan(
+    cursor: number | string,
+    options: { match: string; count?: number }
+  ): Promise<[number | string, string[]]>;
 }

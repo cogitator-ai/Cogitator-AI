@@ -172,51 +172,66 @@ export class OllamaBackend extends BaseLLMBackend {
     let validChunks = 0;
     let parseErrors = 0;
 
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
 
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        let data: OllamaChatResponse;
-        try {
-          data = JSON.parse(line) as OllamaChatResponse;
-        } catch {
-          parseErrors++;
-          getLogger().warn('Malformed JSON in Ollama stream, skipping line', {
-            line: line.slice(0, 200),
-          });
-          continue;
-        }
-        validChunks++;
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let data: OllamaChatResponse;
+          try {
+            data = JSON.parse(line) as OllamaChatResponse;
+          } catch {
+            parseErrors++;
+            getLogger().warn('Malformed JSON in Ollama stream, skipping line', {
+              line: line.slice(0, 200),
+            });
+            continue;
+          }
+          validChunks++;
 
-        const chunk: ChatStreamChunk = {
-          id,
-          delta: {
-            content: data.message.content,
-            toolCalls: data.message.tool_calls?.map((tc) => ({
-              id: tc.id ?? `call_${nanoid(12)}`,
-              name: tc.function.name,
-              arguments: tc.function.arguments,
-            })),
-          },
-          finishReason: data.done ? (data.message.tool_calls ? 'tool_calls' : 'stop') : undefined,
-        };
+          let finishReason: ChatStreamChunk['finishReason'];
+          if (data.done) {
+            if (data.message.tool_calls) {
+              finishReason = 'tool_calls';
+            } else if (data.done_reason === 'length') {
+              finishReason = 'length';
+            } else {
+              finishReason = 'stop';
+            }
+          }
 
-        if (data.done && (data.prompt_eval_count || data.eval_count)) {
-          chunk.usage = {
-            inputTokens: data.prompt_eval_count ?? 0,
-            outputTokens: data.eval_count ?? 0,
-            totalTokens: (data.prompt_eval_count ?? 0) + (data.eval_count ?? 0),
+          const chunk: ChatStreamChunk = {
+            id,
+            delta: {
+              content: data.message.content,
+              toolCalls: data.message.tool_calls?.map((tc) => ({
+                id: tc.id ?? `call_${nanoid(12)}`,
+                name: tc.function.name,
+                arguments: tc.function.arguments,
+              })),
+            },
+            finishReason,
           };
-        }
 
-        yield chunk;
+          if (data.done && (data.prompt_eval_count || data.eval_count)) {
+            chunk.usage = {
+              inputTokens: data.prompt_eval_count ?? 0,
+              outputTokens: data.eval_count ?? 0,
+              totalTokens: (data.prompt_eval_count ?? 0) + (data.eval_count ?? 0),
+            };
+          }
+
+          yield chunk;
+        }
       }
+    } finally {
+      reader.releaseLock?.();
     }
 
     if (validChunks === 0 && parseErrors > 0) {
@@ -304,11 +319,20 @@ export class OllamaBackend extends BaseLLMBackend {
       arguments: tc.function.arguments,
     }));
 
+    let finishReason: ChatResponse['finishReason'];
+    if (toolCalls) {
+      finishReason = 'tool_calls';
+    } else if (data.done_reason === 'length') {
+      finishReason = 'length';
+    } else {
+      finishReason = 'stop';
+    }
+
     return {
       id: this.generateId(),
       content: data.message.content,
       toolCalls,
-      finishReason: toolCalls ? 'tool_calls' : 'stop',
+      finishReason,
       usage: {
         inputTokens: data.prompt_eval_count ?? 0,
         outputTokens: data.eval_count ?? 0,

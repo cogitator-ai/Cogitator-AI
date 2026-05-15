@@ -55,6 +55,7 @@ export class InMemoryToolCacheStorage implements ToolCacheStorage {
   }
 
   async set(key: string, entry: CacheEntry): Promise<void> {
+    if (this.maxSize <= 0) return;
     while (this.cache.size >= this.maxSize) {
       await this.evictOldest();
     }

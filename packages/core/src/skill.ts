@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import type { Skill, SkillConfig, SkillValidationResult, Tool } from '@cogitator-ai/types';
 
 export function defineSkill(config: SkillConfig): Skill {
@@ -65,6 +66,7 @@ export function validateSkill(skill: Skill): SkillValidationResult {
   }
 
   if (skill.dependencies) {
+    const require = createRequire(import.meta.url);
     for (const dep of skill.dependencies) {
       try {
         require.resolve(dep);

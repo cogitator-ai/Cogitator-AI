@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync, readdirSync, unlinkSync, existsSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { join, basename, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { tool } from '../tool';
@@ -72,9 +72,14 @@ export default {
       name: z.string().describe('Tool name (used as filename)'),
       code: z.string().describe('JavaScript ESM code for the tool'),
     }),
+    requiresApproval: true,
+    sideEffects: ['process', 'filesystem', 'network'],
     execute: async ({ name, code }) => {
       mkdirSync(toolsDir, { recursive: true });
       const filePath = join(toolsDir, `${name}.mjs`);
+      if (!resolve(filePath).startsWith(resolve(toolsDir) + '/')) {
+        return { success: false, error: 'Invalid tool name' };
+      }
       writeFileSync(filePath, code);
 
       try {
@@ -104,6 +109,9 @@ export default {
     }),
     execute: async ({ name: toolName, params }) => {
       const filePath = join(toolsDir, `${toolName}.mjs`);
+      if (!resolve(filePath).startsWith(resolve(toolsDir) + '/')) {
+        return { success: false, error: 'Invalid tool name' };
+      }
       if (!existsSync(filePath)) {
         return { success: false, error: `Tool "${toolName}" not found at ${filePath}` };
       }
@@ -162,6 +170,9 @@ export default {
     }),
     execute: async ({ name: toolName }) => {
       const filePath = join(toolsDir, `${toolName}.mjs`);
+      if (!resolve(filePath).startsWith(resolve(toolsDir) + '/')) {
+        return { success: false, error: 'Invalid tool name' };
+      }
       if (!existsSync(filePath)) {
         return { success: false, error: `Tool "${toolName}" not found` };
       }

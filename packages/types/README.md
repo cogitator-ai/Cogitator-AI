@@ -133,13 +133,13 @@ interface ToolContext {
 
 ### Tool Interfaces
 
-| Type                           | Description                                                        |
-| ------------------------------ | ------------------------------------------------------------------ |
-| `ToolConfig<TParams, TResult>` | Tool definition with execute function                              |
-| `Tool<TParams, TResult>`       | Full tool with toJSON() method                                     |
-| `ToolContext`                  | Execution context with agentId, runId, signal                      |
-| `ToolSchema`                   | JSON Schema representation for LLM                                 |
-| `ToolCategory`                 | `'math' \| 'text' \| 'file' \| 'network' \| 'system' \| 'utility'` |
+| Type                           | Description                                                                                                                   |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `ToolConfig<TParams, TResult>` | Tool definition with execute function                                                                                         |
+| `Tool<TParams, TResult>`       | Full tool with toJSON() method                                                                                                |
+| `ToolContext`                  | Execution context with agentId, runId, signal                                                                                 |
+| `ToolSchema`                   | JSON Schema representation for LLM                                                                                            |
+| `ToolCategory`                 | `'math' \| 'text' \| 'file' \| 'network' \| 'system' \| 'utility' \| 'web' \| 'database' \| 'communication' \| 'development'` |
 
 ### Tool Options
 
@@ -219,7 +219,18 @@ import type {
 } from '@cogitator-ai/types';
 
 // Supported providers
-type LLMProvider = 'ollama' | 'openai' | 'anthropic' | 'google' | 'vllm';
+type LLMProvider =
+  | 'ollama'
+  | 'openai'
+  | 'anthropic'
+  | 'google'
+  | 'azure'
+  | 'bedrock'
+  | 'vllm'
+  | 'mistral'
+  | 'groq'
+  | 'together'
+  | 'deepseek';
 
 // LLM configuration
 const llmConfig: LLMConfig = {
@@ -271,8 +282,8 @@ const config: CogitatorConfig = {
     defaultTimeout: 30000,
     maxTokensPerRun: 100000,
   },
-  memory: { type: 'redis', redis: { host: 'localhost' } },
-  sandbox: { type: 'docker', image: 'node:20-alpine' },
+  memory: { adapter: 'redis', redis: { host: 'localhost' } },
+  sandbox: { defaults: { type: 'docker', image: 'node:20-alpine' } },
   reflection: { enabled: true, reflectAfterError: true },
 };
 
@@ -447,7 +458,11 @@ const reflection: Reflection = {
       content: 'Broaden search queries when results are empty',
       context: 'search operations',
       confidence: 0.85,
-      /* ... */
+      usageCount: 0,
+      createdAt: new Date(),
+      lastUsedAt: new Date(),
+      agentId: 'agent_789',
+      source: { runId: 'run_456', reflectionId: 'ref_123' },
     },
   ],
   goal: 'Find recent AI news',
@@ -545,11 +560,12 @@ const trace: ExecutionTrace = {
   id: 'trace_123',
   runId: 'run_456',
   agentId: 'agent_789',
+  threadId: 'thread_abc',
   input: 'Calculate compound interest',
   output: 'The compound interest is $1,628.89',
-  steps: [
-    /* execution steps */
-  ],
+  steps: [],
+  toolCalls: [],
+  reflections: [],
   metrics: {
     success: true,
     toolAccuracy: 0.95,
@@ -558,8 +574,15 @@ const trace: ExecutionTrace = {
     coherence: 0.9,
   },
   score: 0.92,
+  model: 'gpt-4o',
+  createdAt: new Date(),
+  duration: 1500,
+  usage: {
+    inputTokens: 100,
+    outputTokens: 50,
+    cost: 0.0023,
+  },
   isDemo: true,
-  /* ... */
 };
 ```
 

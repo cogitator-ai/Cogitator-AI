@@ -111,6 +111,7 @@ export class Cogitator {
   };
 
   private costEstimator?: CostEstimator;
+  private initPromise?: Promise<void>;
 
   /**
    * Create a new Cogitator runtime.
@@ -646,6 +647,13 @@ export class Cogitator {
   }
 
   private async initializeAll(agent: Agent): Promise<void> {
+    if (!this.initPromise) {
+      this.initPromise = this._doInitializeAll(agent);
+    }
+    await this.initPromise;
+  }
+
+  private async _doInitializeAll(agent: Agent): Promise<void> {
     if (this.config.memory?.adapter && !this.state.memoryInitialized) {
       await initializeMemory(this.config, this.state);
     }
@@ -849,5 +857,6 @@ export class Cogitator {
   async close(): Promise<void> {
     await cleanupState(this.state);
     this.backends.clear();
+    this.initPromise = undefined;
   }
 }

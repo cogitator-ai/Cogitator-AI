@@ -1,4 +1,4 @@
-import type { Channel, ChannelMessage } from '@cogitator-ai/types';
+import type { Attachment, Channel, ChannelMessage } from '@cogitator-ai/types';
 import { markdownToWhatsApp } from '../formatters/whatsapp-markdown';
 
 export interface WhatsAppChannelConfig {
@@ -164,15 +164,12 @@ export class WhatsAppChannel implements Channel {
     });
   }
 
-  async sendFile(
-    channelId: string,
-    file: { buffer?: Buffer; mimeType: string; filename?: string }
-  ): Promise<void> {
+  async sendFile(channelId: string, file: Attachment): Promise<void> {
     if (!this.sock) throw new Error('WhatsApp not connected');
     if (!file.buffer) return;
 
     await this.sock.sendMessage(channelId, {
-      document: file.buffer,
+      document: Buffer.from(file.buffer),
       mimetype: file.mimeType,
       fileName: file.filename ?? 'file',
     });

@@ -62,6 +62,9 @@ export async function streamChat(
               arguments: partial.arguments ?? {},
             });
           }
+        } else if (toolCalls.length > 0 && partial.arguments) {
+          const last = toolCalls[toolCalls.length - 1];
+          last.arguments = { ...last.arguments, ...partial.arguments };
         }
       }
     }

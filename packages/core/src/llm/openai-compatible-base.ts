@@ -201,11 +201,24 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
             role: 'user' as const,
             content: this.convertContent(m.content),
           };
-        case 'assistant':
-          return {
+        case 'assistant': {
+          const assistantMsg: OpenAI.Chat.ChatCompletionAssistantMessageParam = {
             role: 'assistant' as const,
             content: this.getTextContent(m.content),
           };
+          const toolCalls = (m as Message & { toolCalls?: ToolCall[] }).toolCalls;
+          if (toolCalls && toolCalls.length > 0) {
+            assistantMsg.tool_calls = toolCalls.map((tc) => ({
+              id: tc.id,
+              type: 'function' as const,
+              function: {
+                name: tc.name,
+                arguments: JSON.stringify(tc.arguments),
+              },
+            }));
+          }
+          return assistantMsg;
+        }
         case 'tool':
           return {
             role: 'tool' as const,

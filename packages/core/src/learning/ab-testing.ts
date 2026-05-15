@@ -311,27 +311,47 @@ export class ABTestingFramework {
   }
 
   private incompleteBeta(x: number, a: number, b: number): number {
-    if (x === 0) return 0;
-    if (x === 1) return 1;
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
 
-    const maxIterations = 200;
-    const epsilon = 1e-10;
-
-    const logBeta = this.lnGamma(a) + this.lnGamma(b) - this.lnGamma(a + b);
-    const logPrefix = a * Math.log(x) + (b - 1) * Math.log(1 - x) - logBeta;
-
-    let sum = 0;
-
-    for (let n = 0; n < maxIterations; n++) {
-      const logTerm =
-        this.lnGamma(a + b + n) - this.lnGamma(a + 1 + n) - this.lnGamma(b) + n * Math.log(1 - x);
-      const term = Math.exp(logTerm);
-
-      if (n > 0 && Math.abs(term) < epsilon) break;
-      sum += term;
+    if (x > (a + 1) / (a + b + 2)) {
+      return 1 - this.incompleteBeta(1 - x, b, a);
     }
 
-    return sum * Math.exp(logPrefix + logBeta);
+    const lnPrefix = a * Math.log(x) + b * Math.log(1 - x) - Math.log(a) - this.lnBeta(a, b);
+
+    let f = 1,
+      c = 1,
+      d = 1;
+    const maxIter = 200;
+    const eps = 1e-14;
+
+    for (let m = 1; m <= maxIter; m++) {
+      let numerator = (m * (b - m) * x) / ((a + 2 * m - 1) * (a + 2 * m));
+      d = 1 + numerator * d;
+      if (Math.abs(d) < 1e-30) d = 1e-30;
+      d = 1 / d;
+      c = 1 + numerator / c;
+      if (Math.abs(c) < 1e-30) c = 1e-30;
+      f *= c * d;
+
+      numerator = (-(a + m) * (a + b + m) * x) / ((a + 2 * m) * (a + 2 * m + 1));
+      d = 1 + numerator * d;
+      if (Math.abs(d) < 1e-30) d = 1e-30;
+      d = 1 / d;
+      c = 1 + numerator / c;
+      if (Math.abs(c) < 1e-30) c = 1e-30;
+      const delta = c * d;
+      f *= delta;
+
+      if (Math.abs(delta - 1) < eps) break;
+    }
+
+    return Math.exp(lnPrefix) * f;
+  }
+
+  private lnBeta(a: number, b: number): number {
+    return this.lnGamma(a) + this.lnGamma(b) - this.lnGamma(a + b);
   }
 
   private lnGamma(z: number): number {

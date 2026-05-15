@@ -7,6 +7,8 @@ export {
   initializeReflection,
   initializeGuardrails,
   initializeCostRouting,
+  initializeSecurity,
+  initializeContextManager,
   cleanupState,
 } from './initializers';
 export {

@@ -172,12 +172,11 @@ export function llmNotImplemented(context: LLMErrorContext, feature: string): LL
 export function wrapSDKError(error: unknown, ctx: LLMErrorContext): LLMError {
   if (isSDKAPIError(error)) {
     const statusCode = error.status ?? 500;
-    ctx.statusCode = statusCode;
-    ctx.responseBody = error.message;
+    const enrichedCtx = { ...ctx, statusCode, responseBody: error.message };
 
     const retryAfterMs = parseRetryAfterHeader(error.headers) ?? parseRetryAfter(error.message);
 
-    return createLLMError(ctx, statusCode, error.message, {
+    return createLLMError(enrichedCtx, statusCode, error.message, {
       cause: error,
       retryAfterOverride: retryAfterMs,
     });

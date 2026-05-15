@@ -443,7 +443,7 @@ describe('vector-search tool', () => {
       expect(queryParams).toContain(10);
     });
 
-    it('applies similarity threshold', async () => {
+    it('applies similarity threshold as parameterized query', async () => {
       const { Client } = await import('pg');
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
@@ -454,7 +454,9 @@ describe('vector-search tool', () => {
       });
 
       const queryCall = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      expect(queryCall).toContain('>= 0.8');
+      expect(queryCall).toContain('>= $3');
+      const queryParams = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][1];
+      expect(queryParams[2]).toBe(0.8);
     });
 
     it('applies metadata filter', async () => {

@@ -424,7 +424,7 @@ describe('InputFilter', () => {
     expect(result.harmScores.length).toBeGreaterThan(0);
   });
 
-  it('allows but reports harmful input in non-strict mode', async () => {
+  it('blocks harmful input even in non-strict mode', async () => {
     mockLLM.chat = vi.fn().mockResolvedValue({
       id: 'test',
       content: JSON.stringify({
@@ -437,8 +437,9 @@ describe('InputFilter', () => {
 
     const result = await filter.filter('Request with detected harm');
 
-    expect(result.allowed).toBe(true);
+    expect(result.allowed).toBe(false);
     expect(result.harmScores.length).toBeGreaterThan(0);
+    expect(result.blockedReason).toContain('violence');
   });
 
   it('uses quick scan for obvious patterns', async () => {
@@ -496,7 +497,7 @@ describe('OutputFilter', () => {
     expect(result.allowed).toBe(false);
   });
 
-  it('allows but reports harmful output in non-strict mode', async () => {
+  it('blocks harmful output even in non-strict mode', async () => {
     mockLLM.chat = vi.fn().mockResolvedValue({
       id: 'test',
       content: JSON.stringify({
@@ -509,8 +510,9 @@ describe('OutputFilter', () => {
 
     const result = await filter.filter('Output with detected harm', []);
 
-    expect(result.allowed).toBe(true);
+    expect(result.allowed).toBe(false);
     expect(result.harmScores.length).toBeGreaterThan(0);
+    expect(result.blockedReason).toContain('hate');
   });
 });
 

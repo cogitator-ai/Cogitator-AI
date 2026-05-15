@@ -60,15 +60,13 @@ export class TimeTravel {
     stepIndex: number,
     label?: string
   ): Promise<ExecutionCheckpoint> {
-    const store = this.checkpointStore as InMemoryCheckpointStore;
-    const checkpoint = store.createFromRunResult(result, stepIndex, { label });
-    await store.save(checkpoint);
+    const checkpoint = this.checkpointStore.createFromRunResult(result, stepIndex, { label });
+    await this.checkpointStore.save(checkpoint);
     return checkpoint;
   }
 
   async checkpointAll(result: RunResult, labelPrefix?: string): Promise<ExecutionCheckpoint[]> {
-    const store = this.checkpointStore as InMemoryCheckpointStore;
-    return store.createAllFromRunResult(result, { labelPrefix });
+    return this.checkpointStore.createAllFromRunResult(result, { labelPrefix });
   }
 
   async checkpointEvery(
@@ -76,15 +74,14 @@ export class TimeTravel {
     interval: number,
     labelPrefix?: string
   ): Promise<ExecutionCheckpoint[]> {
-    const store = this.checkpointStore as InMemoryCheckpointStore;
     const stepCount = this.countSteps(result);
     const checkpoints: ExecutionCheckpoint[] = [];
 
     for (let i = 0; i < stepCount; i += interval) {
-      const checkpoint = store.createFromRunResult(result, i, {
+      const checkpoint = this.checkpointStore.createFromRunResult(result, i, {
         label: labelPrefix ? `${labelPrefix}_step_${i}` : undefined,
       });
-      await store.save(checkpoint);
+      await this.checkpointStore.save(checkpoint);
       checkpoints.push(checkpoint);
     }
 

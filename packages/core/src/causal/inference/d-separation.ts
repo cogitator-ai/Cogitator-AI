@@ -91,6 +91,8 @@ function isPathBlocked(
   path: CausalPath,
   conditioningSet: Set<string>
 ): { blocked: boolean; blockingNodes: string[] } {
+  if (path.nodes.length < 3) return { blocked: false, blockingNodes: [] };
+
   const blockingNodes: string[] = [];
 
   for (let i = 1; i < path.nodes.length - 1; i++) {
@@ -98,21 +100,13 @@ function isPathBlocked(
     const curr = path.nodes[i];
     const next = path.nodes[i + 1];
 
-    const tripleType = getLocalTripleType(graph, prev, curr, next);
-
-    if (tripleType === 'chain' || tripleType === 'fork') {
-      if (conditioningSet.has(curr)) {
-        blockingNodes.push(curr);
-      }
-    } else if (tripleType === 'collider') {
-      const colliderOrDescendantInZ = isColliderOrDescendantInSet(graph, curr, conditioningSet);
-      if (!colliderOrDescendantInZ) {
-        blockingNodes.push(curr);
-      }
+    if (isTripleBlocked(graph, prev, curr, next, conditioningSet)) {
+      blockingNodes.push(curr);
     }
   }
 
-  const blocked = blockingNodes.length > 0 || hasAllBlockedTriples(graph, path, conditioningSet);
+  const totalTriples = path.nodes.length - 2;
+  const blocked = blockingNodes.length === totalTriples;
 
   return { blocked, blockingNodes };
 }
@@ -157,29 +151,21 @@ function isColliderOrDescendantInSet(
   return false;
 }
 
-function hasAllBlockedTriples(
+function isTripleBlocked(
   graph: CausalGraph,
-  path: CausalPath,
+  prev: string,
+  curr: string,
+  next: string,
   conditioningSet: Set<string>
 ): boolean {
-  if (path.nodes.length < 3) return false;
+  const tripleType = getLocalTripleType(graph, prev, curr, next);
 
-  for (let i = 1; i < path.nodes.length - 1; i++) {
-    const prev = path.nodes[i - 1];
-    const curr = path.nodes[i];
-    const next = path.nodes[i + 1];
+  if (tripleType === 'chain' || tripleType === 'fork') {
+    return conditioningSet.has(curr);
+  }
 
-    const tripleType = getLocalTripleType(graph, prev, curr, next);
-
-    if (tripleType === 'chain' || tripleType === 'fork') {
-      if (conditioningSet.has(curr)) {
-        return true;
-      }
-    } else if (tripleType === 'collider') {
-      if (!isColliderOrDescendantInSet(graph, curr, conditioningSet)) {
-        return true;
-      }
-    }
+  if (tripleType === 'collider') {
+    return !isColliderOrDescendantInSet(graph, curr, conditioningSet);
   }
 
   return false;

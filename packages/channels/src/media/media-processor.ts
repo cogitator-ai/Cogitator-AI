@@ -33,7 +33,7 @@ export class MediaProcessor {
           if (att.buffer) {
             const mimeType = this.normalizeImageMime(att.mimeType);
             images.push({
-              data: att.buffer.toString('base64'),
+              data: Buffer.from(att.buffer).toString('base64'),
               mimeType,
             });
           } else if (att.url) {
@@ -51,7 +51,7 @@ export class MediaProcessor {
       const firstAudio = audioAttachments[0];
       if (firstAudio.buffer) {
         transcribedText = await this.transcribeAudio(
-          firstAudio.buffer,
+          Buffer.from(firstAudio.buffer),
           firstAudio.mimeType,
           systemNotes
         );

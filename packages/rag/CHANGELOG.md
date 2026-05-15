@@ -1,5 +1,13 @@
 # @cogitator-ai/rag
 
+## 0.1.7
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.22.1
+  - @cogitator-ai/memory@0.6.19
+
 ## 0.1.6
 
 ### Patch Changes

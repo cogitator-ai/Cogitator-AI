@@ -15,9 +15,14 @@ import type {
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 
+type PoolClient = {
+  query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
+  release(): void;
+};
+
 type Pool = {
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
-  connect(): Promise<{ release(): void }>;
+  connect(): Promise<PoolClient>;
   end(): Promise<void>;
 };
 
@@ -228,8 +233,48 @@ export class PostgresTraceStore implements CombinedPersistentStore {
   }
 
   async storeTraceMany(traces: ExecutionTrace[]): Promise<void> {
-    for (const trace of traces) {
-      await this.storeTrace(trace);
+    if (!this.pool) throw new Error('Not connected');
+    if (traces.length === 0) return;
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      for (const trace of traces) {
+        await client.query(
+          `INSERT INTO ${this.schema}.traces
+           (id, run_id, agent_id, thread_id, input, output, context, steps, tool_calls, reflections, metrics, score, model, duration, usage, labels, is_demo, expected, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+          [
+            trace.id,
+            trace.runId,
+            trace.agentId,
+            trace.threadId,
+            trace.input,
+            trace.output,
+            trace.context ?? null,
+            trace.steps,
+            trace.toolCalls,
+            trace.reflections ?? null,
+            trace.metrics,
+            trace.score,
+            trace.model,
+            trace.duration,
+            trace.usage,
+            trace.labels ?? [],
+            trace.isDemo,
+            trace.expected ?? null,
+            trace.createdAt,
+          ]
+        );
+      }
+
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
     }
   }
 
@@ -677,26 +722,46 @@ export class PostgresTraceStore implements CombinedPersistentStore {
   ): Promise<void> {
     if (!this.pool) throw new Error('Not connected');
 
-    const test = await this.getABTest(testId);
-    if (!test) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
 
-    const results = variant === 'control' ? test.controlResults : test.treatmentResults;
-    const newResults: ABTestResults = {
-      sampleSize: results.sampleSize + 1,
-      successRate:
-        (results.successRate * results.sampleSize + (score >= 0.5 ? 1 : 0)) /
-        (results.sampleSize + 1),
-      avgScore: (results.avgScore * results.sampleSize + score) / (results.sampleSize + 1),
-      avgLatency: (results.avgLatency * results.sampleSize + latency) / (results.sampleSize + 1),
-      totalCost: results.totalCost + cost,
-      scores: [...results.scores, score],
-    };
+      const lockResult = await client.query(
+        `SELECT * FROM ${this.schema}.ab_tests WHERE id = $1 FOR UPDATE`,
+        [testId]
+      );
 
-    const column = variant === 'control' ? 'control_results' : 'treatment_results';
-    await this.pool.query(`UPDATE ${this.schema}.ab_tests SET ${column} = $1 WHERE id = $2`, [
-      newResults,
-      testId,
-    ]);
+      if (lockResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return;
+      }
+
+      const test = this.rowToABTest(lockResult.rows[0]);
+      const results = variant === 'control' ? test.controlResults : test.treatmentResults;
+      const newResults: ABTestResults = {
+        sampleSize: results.sampleSize + 1,
+        successRate:
+          (results.successRate * results.sampleSize + (score >= 0.5 ? 1 : 0)) /
+          (results.sampleSize + 1),
+        avgScore: (results.avgScore * results.sampleSize + score) / (results.sampleSize + 1),
+        avgLatency: (results.avgLatency * results.sampleSize + latency) / (results.sampleSize + 1),
+        totalCost: results.totalCost + cost,
+        scores: [...results.scores, score],
+      };
+
+      const column = variant === 'control' ? 'control_results' : 'treatment_results';
+      await client.query(`UPDATE ${this.schema}.ab_tests SET ${column} = $1 WHERE id = $2`, [
+        newResults,
+        testId,
+      ]);
+
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async list(agentId?: string, status?: ABTestStatus): Promise<ABTest[]> {

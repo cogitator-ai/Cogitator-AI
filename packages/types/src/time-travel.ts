@@ -10,7 +10,7 @@
 
 import type { Message, ToolCall } from './message';
 import type { RunResult } from './runtime';
-import type { ExecutionStep } from './learning';
+import type { ExecutionStep, ExecutionTrace } from './learning';
 
 export type ReplayMode = 'deterministic' | 'live';
 export type StepDiffStatus = 'identical' | 'similar' | 'different' | 'only_in_1' | 'only_in_2';
@@ -50,6 +50,20 @@ export interface TimeTravelCheckpointStore {
   getByAgent(agentId: string, limit?: number): Promise<ExecutionCheckpoint[]>;
   getByLabel(label: string): Promise<ExecutionCheckpoint[]>;
   clear(agentId?: string): Promise<void>;
+  createFromRunResult(
+    result: RunResult,
+    stepIndex: number,
+    options?: { label?: string; metadata?: Record<string, unknown> }
+  ): ExecutionCheckpoint;
+  createAllFromRunResult(
+    result: RunResult,
+    options?: { labelPrefix?: string }
+  ): Promise<ExecutionCheckpoint[]>;
+  createFromTrace(
+    trace: ExecutionTrace,
+    stepIndex: number,
+    options?: { label?: string; metadata?: Record<string, unknown> }
+  ): ExecutionCheckpoint;
 }
 
 export interface ReplayOptions {

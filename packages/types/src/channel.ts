@@ -13,7 +13,7 @@ export type AttachmentType = 'image' | 'file' | 'audio' | 'video';
 export interface Attachment {
   type: AttachmentType;
   url?: string;
-  buffer?: Buffer;
+  buffer?: Uint8Array;
   mimeType: string;
   filename?: string;
 }

@@ -108,7 +108,9 @@ const cog = new Cogitator({
 ```typescript
 import { createLLMBackend, parseModel } from '@cogitator-ai/core';
 
-const backend = createLLMBackend('openai', { apiKey: process.env.OPENAI_API_KEY });
+const backend = createLLMBackend('openai', {
+  providers: { openai: { apiKey: process.env.OPENAI_API_KEY } },
+});
 
 const response = await backend.chat({
   model: 'gpt-4o',
@@ -117,6 +119,53 @@ const response = await backend.chat({
     { role: 'user', content: 'Hello!' },
   ],
 });
+```
+
+### LLM Plugin System
+
+Register custom LLM backends:
+
+```typescript
+import { registerLLMBackend, defineBackend, createLLMBackendFromPlugin } from '@cogitator-ai/core';
+
+const myPlugin = defineBackend({
+  name: 'my-provider',
+  displayName: 'My Custom Provider',
+  description: 'Custom LLM backend',
+  create: (config) => new MyBackend(config),
+});
+
+registerLLMBackend(myPlugin);
+const backend = createLLMBackendFromPlugin('my-provider', { apiKey: '...' });
+```
+
+### LLM Debug Wrapper
+
+Wrap any backend for request/response logging:
+
+```typescript
+import { withDebug } from '@cogitator-ai/core';
+
+const debugBackend = withDebug(backend, {
+  logStream: true,
+  maxContentLength: 500,
+});
+```
+
+### LLM Error Handling
+
+```typescript
+import { LLMError, llmUnavailable, llmTimeout } from '@cogitator-ai/core';
+
+try {
+  await backend.chat(request);
+} catch (error) {
+  if (error instanceof LLMError) {
+    console.log('Provider:', error.provider);
+    console.log('Status:', error.statusCode);
+    console.log('Retryable:', error.retryable);
+  }
+}
 ```
 
 ---
@@ -1434,6 +1483,9 @@ import type {
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
+  LLMErrorContext,
+  LLMDebugOptions,
+  LLMPlugin,
 } from '@cogitator-ai/core';
 ```
 
@@ -1500,15 +1552,23 @@ import type {
 ### Error Types
 
 ```typescript
-import { CogitatorError, ErrorCode, isRetryableError, getRetryDelay } from '@cogitator-ai/core';
+import {
+  CogitatorError,
+  LLMError,
+  ErrorCode,
+  isRetryableError,
+  getRetryDelay,
+} from '@cogitator-ai/core';
 
 try {
   await riskyOperation();
 } catch (error) {
-  if (error instanceof CogitatorError) {
+  if (error instanceof LLMError) {
+    console.log('Provider:', error.provider);
+    console.log('Status:', error.statusCode);
+  } else if (error instanceof CogitatorError) {
     console.log('Code:', error.code);
     console.log('Retryable:', isRetryableError(error));
-    console.log('Retry delay:', getRetryDelay(error, 1000));
   }
 }
 ```

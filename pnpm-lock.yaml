@@ -436,12 +436,6 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
-      '@types/node':
-        specifier: ^25.0.10
-        version: 25.0.10
-      '@types/pg':
-        specifier: ^8.10.9
-        version: 8.16.0
       better-sqlite3:
         specifier: ^11.0.0
         version: 11.10.0
@@ -451,6 +445,9 @@ importers:
       nanoid:
         specifier: ^5.0.4
         version: 5.1.6
+      nodemailer:
+        specifier: ^6.0.0
+        version: 6.10.1
       openai:
         specifier: ^6.22.0
         version: 6.22.0(ws@8.19.0)(zod@4.3.6)
@@ -465,6 +462,12 @@ importers:
       '@aws-sdk/client-bedrock-runtime':
         specifier: ^3.991.0
         version: 3.991.0
+      '@types/node':
+        specifier: ^25.0.10
+        version: 25.0.10
+      '@types/pg':
+        specifier: ^8.10.9
+        version: 8.16.0
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
@@ -11157,6 +11160,11 @@ packages:
       detect-libc: 2.1.2
     dev: false
     optional: true
+
+  /nodemailer@6.10.1:
+    resolution: {integrity: sha512-Z+iLaBGVaSjbIzQ4pX6XV41HrooLsQ10ZWPUehGmuantvzWoDVBnmsdUcOIDM1t+yPor5pDhVlDESgOMEGxhHA==}
+    engines: {node: '>=6.0.0'}
+    dev: false
 
   /npm-to-yarn@3.0.1:
     resolution: {integrity: sha512-tt6PvKu4WyzPwWUzy/hvPFqn+uwXO0K1ZHka8az3NnrhWJDmSqI8ncWq0fkL0k/lmmi5tAC11FXwXuh0rFbt1A==}

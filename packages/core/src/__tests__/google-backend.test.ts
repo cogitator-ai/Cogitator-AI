@@ -469,6 +469,87 @@ describe('GoogleBackend', () => {
       expect(url).toContain('alt=sse');
     });
 
+    it('should flush remaining buffer when stream ends without trailing newline', async () => {
+      const encoder = new TextEncoder();
+
+      const mockReader = {
+        read: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: encoder.encode(
+              'data: {"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}\n\n' +
+                'data: {"candidates":[{"content":{"parts":[{"text":" world"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7}}'
+            ),
+          })
+          .mockResolvedValueOnce({ done: true, value: undefined }),
+        releaseLock: vi.fn(),
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        body: {
+          getReader: () => mockReader,
+        },
+      });
+
+      const results: string[] = [];
+      for await (const chunk of backend.chatStream({
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'Hi' }],
+      })) {
+        if (chunk.delta.content) {
+          results.push(chunk.delta.content);
+        }
+      }
+
+      expect(results).toEqual(['Hello', ' world']);
+    });
+
+    it('should not lose final chunk data when buffer has no trailing newline', async () => {
+      const encoder = new TextEncoder();
+
+      let readIndex = 0;
+      const chunks = [
+        'data: {"candidates":[{"content":{"parts":[{"text":"Part one"}]}}]}\n\n',
+        'data: {"candidates":[{"content":{"parts":[{"text":" part two"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":4,"totalTokenCount":14}}',
+      ];
+
+      const mockReader = {
+        read: vi.fn().mockImplementation(async () => {
+          if (readIndex < chunks.length) {
+            return { done: false, value: encoder.encode(chunks[readIndex++]) };
+          }
+          return { done: true, value: undefined };
+        }),
+        releaseLock: vi.fn(),
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        body: {
+          getReader: () => mockReader,
+        },
+      });
+
+      const results: string[] = [];
+      let finishReason: string | undefined;
+      for await (const chunk of backend.chatStream({
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'Test' }],
+      })) {
+        if (chunk.delta.content) {
+          results.push(chunk.delta.content);
+        }
+        if (chunk.finishReason) {
+          finishReason = chunk.finishReason;
+        }
+      }
+
+      expect(results).toEqual(['Part one', ' part two']);
+      expect(finishReason).toBe('stop');
+    });
+
     it('should handle streaming API errors', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,

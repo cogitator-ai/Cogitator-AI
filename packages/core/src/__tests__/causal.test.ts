@@ -603,6 +603,105 @@ describe('regression: counterfactual polynomial evaluation', () => {
   });
 });
 
+describe('regression: d-separation hasAllBlockedTriples must check ALL triples', () => {
+  it('should not report a path as blocked when only some triples are blocked', () => {
+    const graph = CausalGraphBuilder.create('partial-block')
+      .variable('A', 'A', 'observed')
+      .variable('B', 'B', 'observed')
+      .variable('C', 'C', 'observed')
+      .variable('D', 'D', 'observed')
+      .from('A')
+      .causes('B')
+      .from('B')
+      .causes('C')
+      .from('C')
+      .causes('D')
+      .build();
+
+    const result = dSeparation(graph, 'A', 'D', ['B']);
+
+    const path = result.paths.find((p) => p.nodes.length === 4);
+    expect(path).toBeDefined();
+    expect(path!.isBlocked).toBe(false);
+
+    expect(result.openPaths.length).toBeGreaterThan(0);
+  });
+
+  it('should report path as blocked only when ALL triples are blocked', () => {
+    const graph = CausalGraphBuilder.create('all-blocked')
+      .variable('A', 'A', 'observed')
+      .variable('B', 'B', 'observed')
+      .variable('C', 'C', 'observed')
+      .variable('D', 'D', 'observed')
+      .from('A')
+      .causes('B')
+      .from('B')
+      .causes('C')
+      .from('C')
+      .causes('D')
+      .build();
+
+    const result = dSeparation(graph, 'A', 'D', ['B', 'C']);
+
+    expect(result.separated).toBe(true);
+    expect(result.blockedPaths.length).toBeGreaterThan(0);
+    expect(result.openPaths).toHaveLength(0);
+
+    const path = result.blockedPaths[0];
+    expect(path.blockingNodes).toContain('B');
+    expect(path.blockingNodes).toContain('C');
+  });
+
+  it('should report path as open when no triples in a multi-triple path are blocked', () => {
+    const graph = CausalGraphBuilder.create('none-blocked')
+      .variable('A', 'A', 'observed')
+      .variable('B', 'B', 'observed')
+      .variable('C', 'C', 'observed')
+      .variable('D', 'D', 'observed')
+      .from('A')
+      .causes('B')
+      .from('B')
+      .causes('C')
+      .from('C')
+      .causes('D')
+      .build();
+
+    const result = dSeparation(graph, 'A', 'D', []);
+
+    expect(result.separated).toBe(false);
+    expect(result.openPaths.length).toBeGreaterThan(0);
+  });
+
+  it('should distinguish partial vs full blocking with multiple conditioning nodes', () => {
+    const graph = CausalGraphBuilder.create('partial-vs-full')
+      .variable('A', 'A', 'observed')
+      .variable('B', 'B', 'observed')
+      .variable('C', 'C', 'observed')
+      .variable('D', 'D', 'observed')
+      .variable('E', 'E', 'observed')
+      .from('A')
+      .causes('B')
+      .from('B')
+      .causes('C')
+      .from('C')
+      .causes('D')
+      .from('D')
+      .causes('E')
+      .build();
+
+    const partialResult = dSeparation(graph, 'A', 'E', ['B']);
+    const partialPath = partialResult.paths.find((p) => p.nodes.length === 5);
+    expect(partialPath).toBeDefined();
+    expect(partialPath!.isBlocked).toBe(false);
+
+    const fullResult = dSeparation(graph, 'A', 'E', ['B', 'C', 'D']);
+    const fullPath = fullResult.paths.find((p) => p.nodes.length === 5);
+    expect(fullPath).toBeDefined();
+    expect(fullPath!.isBlocked).toBe(true);
+    expect(fullPath!.blockingNodes).toEqual(['B', 'C', 'D']);
+  });
+});
+
 describe('regression: sampleGaussian NaN guard', () => {
   it('should never return NaN from CounterfactualReasoner noise sampling', () => {
     const reasoner = new CounterfactualReasoner({

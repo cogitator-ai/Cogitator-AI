@@ -79,7 +79,7 @@ export class ModelSelector {
     }
 
     if (this.config.preferLocal) {
-      const local = scored.find((s) => this.isLocalModel(s.model.id));
+      const local = scored.find((s) => this.isLocalModel(s.model));
       if (local && local.score >= scored[0].score * 0.8) {
         return this.toRecommendation(local, scored, requirements);
       }
@@ -108,7 +108,7 @@ export class ModelSelector {
       reasons.push('Large context window');
     }
 
-    const isLocal = this.isLocalModel(model.id);
+    const isLocal = this.isLocalModel(model);
     if (isLocal) {
       score += 15;
       reasons.push('Local model (no API cost)');
@@ -225,18 +225,8 @@ export class ModelSelector {
     };
   }
 
-  private isLocalModel(modelId: string): boolean {
-    const lower = modelId.toLowerCase();
-    return (
-      lower.includes('ollama') ||
-      lower.includes('llama') ||
-      lower.includes('phi') ||
-      lower.includes('qwen') ||
-      lower.includes('mixtral') ||
-      lower.includes('codellama') ||
-      lower.includes('deepseek') ||
-      lower.includes('gemma')
-    );
+  private isLocalModel(model: ModelInfo): boolean {
+    return model.provider === 'ollama';
   }
 
   private isAdvancedModel(modelId: string): boolean {

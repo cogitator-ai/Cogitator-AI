@@ -31,33 +31,54 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
   }
 
   async list(query: CheckpointQuery): Promise<ExecutionCheckpoint[]> {
-    let candidates: ExecutionCheckpoint[] = [];
+    let candidateIds: Set<string> | null = null;
 
     if (query.traceId) {
-      const traceCheckpoints = this.traceIndex.get(query.traceId);
-      if (!traceCheckpoints) return [];
-      for (const id of traceCheckpoints) {
-        const cp = this.checkpoints.get(id);
-        if (cp) candidates.push(cp);
+      const ids = this.traceIndex.get(query.traceId);
+      if (!ids) return [];
+      candidateIds = new Set(ids);
+    }
+
+    if (query.agentId) {
+      const ids = this.agentIndex.get(query.agentId);
+      if (!ids) return [];
+      if (candidateIds) {
+        for (const id of candidateIds) {
+          if (!ids.has(id)) candidateIds.delete(id);
+        }
+      } else {
+        candidateIds = new Set(ids);
       }
-    } else if (query.agentId) {
-      const agentCheckpoints = this.agentIndex.get(query.agentId);
-      if (!agentCheckpoints) return [];
-      for (const id of agentCheckpoints) {
-        const cp = this.checkpoints.get(id);
-        if (cp) candidates.push(cp);
+    }
+
+    if (query.runId) {
+      const ids = this.runIdIndex.get(query.runId);
+      if (!ids) return [];
+      if (candidateIds) {
+        for (const id of candidateIds) {
+          if (!ids.has(id)) candidateIds.delete(id);
+        }
+      } else {
+        candidateIds = new Set(ids);
       }
-    } else if (query.runId) {
-      const runCheckpoints = this.runIdIndex.get(query.runId);
-      if (!runCheckpoints) return [];
-      for (const id of runCheckpoints) {
-        const cp = this.checkpoints.get(id);
-        if (cp) candidates.push(cp);
+    }
+
+    if (query.label) {
+      const ids = this.labelIndex.get(query.label);
+      if (!ids) return [];
+      if (candidateIds) {
+        for (const id of candidateIds) {
+          if (!ids.has(id)) candidateIds.delete(id);
+        }
+      } else {
+        candidateIds = new Set(ids);
       }
-    } else if (query.label) {
-      const labelCheckpoints = this.labelIndex.get(query.label);
-      if (!labelCheckpoints) return [];
-      for (const id of labelCheckpoints) {
+    }
+
+    let candidates: ExecutionCheckpoint[];
+    if (candidateIds) {
+      candidates = [];
+      for (const id of candidateIds) {
         const cp = this.checkpoints.get(id);
         if (cp) candidates.push(cp);
       }

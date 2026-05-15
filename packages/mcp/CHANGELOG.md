@@ -1,5 +1,12 @@
 # @cogitator-ai/mcp
 
+## 17.0.8
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.22.1
+
 ## 17.0.7
 
 ### Patch Changes

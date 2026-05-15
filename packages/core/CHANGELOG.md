@@ -1,5 +1,30 @@
 # @cogitator-ai/core
 
+## 0.19.1
+
+### Patch Changes
+
+- fix(core): comprehensive audit — 30+ critical/high bugs fixed
+
+  Critical fixes:
+  - Streaming: tool call continuation chunks no longer silently dropped
+  - Security: prompt injection in LLM classifier fixed, path traversal in self-tools patched, SQL injection in vector-search fixed
+  - Constitutional AI: fail-open default removed, violations now always blocked
+  - Causal reasoning: d-separation algorithm correctness fix
+  - Learning: incompleteBeta replaced with Lentz's continued fraction, postgres trace store race condition fixed
+
+  High-severity fixes:
+  - LLM backends: OpenAI tool_calls preserved in multi-turn, Google stream buffer flushed, Anthropic stop_reason captured, Bedrock init cache reset, Ollama reader released
+  - Runtime: initialization race condition fixed, ESM require.resolve compatibility
+  - Redis cache: KEYS command replaced with counter + SCAN
+
+  Also: 21 missing public API exports added (LLM errors, debug wrapper, plugin system, cost estimators), 6 new test files (68 tests), 9 regression tests, nodemailer peer dependency added.
+
+- Updated dependencies
+  - @cogitator-ai/types@0.22.1
+  - @cogitator-ai/memory@0.6.19
+  - @cogitator-ai/sandbox@0.2.26
+
 ## 0.18.7
 
 ### Patch Changes

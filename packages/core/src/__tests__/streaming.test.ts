@@ -213,6 +213,100 @@ describe('streamChat', () => {
     expect(onToken).toHaveBeenCalledWith(' world');
   });
 
+  it('merges continuation chunks without id/name into the last tool call', async () => {
+    const chunks: ChatStreamChunk[] = [
+      {
+        id: 'chunk_1',
+        delta: {
+          toolCalls: [{ id: 'tc_1', name: 'search', arguments: { query: 'hello' } }],
+        },
+      },
+      {
+        id: 'chunk_2',
+        delta: {
+          toolCalls: [{ arguments: { limit: 10 } } as Partial<ToolCall>],
+        },
+      },
+      {
+        id: 'chunk_3',
+        delta: {},
+        finishReason: 'tool_calls',
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      },
+    ];
+
+    const backend = createMockBackend(chunks);
+    const result = await streamChat(backend, 'gpt-4', messages, registry, agent, onToken);
+
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls![0]).toEqual({
+      id: 'tc_1',
+      name: 'search',
+      arguments: { query: 'hello', limit: 10 },
+    });
+  });
+
+  it('merges multiple continuation chunks without id/name', async () => {
+    const chunks: ChatStreamChunk[] = [
+      {
+        id: 'chunk_1',
+        delta: {
+          toolCalls: [{ id: 'tc_1', name: 'search', arguments: { query: 'cats' } }],
+        },
+      },
+      {
+        id: 'chunk_2',
+        delta: {
+          toolCalls: [{ arguments: { limit: 5 } } as Partial<ToolCall>],
+        },
+      },
+      {
+        id: 'chunk_3',
+        delta: {
+          toolCalls: [{ arguments: { offset: 20 } } as Partial<ToolCall>],
+        },
+      },
+      {
+        id: 'chunk_4',
+        delta: {},
+        finishReason: 'tool_calls',
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      },
+    ];
+
+    const backend = createMockBackend(chunks);
+    const result = await streamChat(backend, 'gpt-4', messages, registry, agent, onToken);
+
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls![0].arguments).toEqual({
+      query: 'cats',
+      limit: 5,
+      offset: 20,
+    });
+  });
+
+  it('ignores continuation chunks when no tool call exists yet', async () => {
+    const chunks: ChatStreamChunk[] = [
+      {
+        id: 'chunk_1',
+        delta: {
+          toolCalls: [{ arguments: { stray: true } } as Partial<ToolCall>],
+        },
+      },
+      {
+        id: 'chunk_2',
+        delta: {},
+        finishReason: 'stop',
+        usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 },
+      },
+    ];
+
+    const backend = createMockBackend(chunks);
+    const result = await streamChat(backend, 'gpt-4', messages, registry, agent, onToken);
+
+    expect(result.toolCalls).toEqual([]);
+  });
+
   it('defaults arguments to empty object when chunk has no arguments', async () => {
     const chunks: ChatStreamChunk[] = [
       {

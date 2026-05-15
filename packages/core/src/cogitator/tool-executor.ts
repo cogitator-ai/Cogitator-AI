@@ -50,7 +50,11 @@ export async function executeTool(
       signal: signal ?? new AbortController().signal,
       ...extraContext,
     };
-    const guardResult = await constitutionalAI.guardTool(tool, toolCall.arguments, context);
+    const guardResult = await constitutionalAI.guardTool(
+      tool,
+      validatedArgs as Record<string, unknown>,
+      context
+    );
     if (!guardResult.approved) {
       return {
         callId: toolCall.id,
@@ -157,9 +161,18 @@ async function executeInSandbox(
     };
   }
 
+  if (!result.data) {
+    return {
+      callId: toolCall.id,
+      name: toolCall.name,
+      result: null,
+      error: 'Sandbox returned success but no data',
+    };
+  }
+
   if (isWasm) {
     try {
-      const parsed = JSON.parse(result.data!.stdout);
+      const parsed = JSON.parse(result.data.stdout);
       return {
         callId: toolCall.id,
         name: toolCall.name,
@@ -169,7 +182,7 @@ async function executeInSandbox(
       return {
         callId: toolCall.id,
         name: toolCall.name,
-        result: result.data!.stdout,
+        result: result.data.stdout,
       };
     }
   }
@@ -178,11 +191,11 @@ async function executeInSandbox(
     callId: toolCall.id,
     name: toolCall.name,
     result: {
-      stdout: result.data!.stdout,
-      stderr: result.data!.stderr,
-      exitCode: result.data!.exitCode,
-      timedOut: result.data!.timedOut,
-      duration: result.data!.duration,
+      stdout: result.data.stdout,
+      stderr: result.data.stderr,
+      exitCode: result.data.exitCode,
+      timedOut: result.data.timedOut,
+      duration: result.data.duration,
       command: args.command,
     },
   };

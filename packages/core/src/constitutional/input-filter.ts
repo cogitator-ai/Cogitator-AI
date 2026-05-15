@@ -99,16 +99,12 @@ export class InputFilter {
       return { allowed: true, harmScores };
     }
 
-    if (this.config.strictMode) {
-      const categories = [...new Set(violations.map((v) => v.category))];
-      return {
-        allowed: false,
-        harmScores,
-        blockedReason: `Input violates safety policies: ${categories.join(', ')}`,
-      };
-    }
-
-    return { allowed: true, harmScores };
+    const categories = [...new Set(violations.map((v) => v.category))];
+    return {
+      allowed: false,
+      harmScores,
+      blockedReason: `Input violates safety policies: ${categories.join(', ')}`,
+    };
   }
 
   updateConstitution(constitution: Constitution): void {

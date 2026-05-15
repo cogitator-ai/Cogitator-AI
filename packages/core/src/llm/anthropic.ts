@@ -154,6 +154,7 @@ export class AnthropicBackend extends BaseLLMBackend {
     let inputTokens = 0;
     let outputTokens = 0;
     let jsonSchemaContent = '';
+    let streamStopReason: string | null = null;
 
     for await (const event of stream) {
       if (event.type === 'message_start') {
@@ -202,6 +203,10 @@ export class AnthropicBackend extends BaseLLMBackend {
         }
       } else if (event.type === 'message_delta') {
         outputTokens = event.usage.output_tokens;
+        const delta = (event as { delta?: { stop_reason?: string | null } }).delta;
+        if (delta?.stop_reason) {
+          streamStopReason = delta.stop_reason;
+        }
       } else if (event.type === 'message_stop') {
         if (jsonSchemaContent) {
           yield {
@@ -215,7 +220,7 @@ export class AnthropicBackend extends BaseLLMBackend {
           delta: {
             toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           },
-          finishReason: toolCalls.length > 0 ? 'tool_calls' : 'stop',
+          finishReason: toolCalls.length > 0 ? 'tool_calls' : this.mapStopReason(streamStopReason),
           usage: {
             inputTokens,
             outputTokens,
