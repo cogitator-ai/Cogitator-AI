@@ -94,7 +94,7 @@ export class ConstitutionalAI {
   }
 
   async filterInput(input: string, context?: string): Promise<FilterResult> {
-    if (!this._config.filterInput) {
+    if (!this._config.enabled || !this._config.filterInput) {
       return { allowed: true, harmScores: [] };
     }
 
@@ -104,7 +104,7 @@ export class ConstitutionalAI {
   }
 
   async filterOutput(output: string, context: Message[]): Promise<FilterResult> {
-    if (!this._config.filterOutput) {
+    if (!this._config.enabled || !this._config.filterOutput) {
       return { allowed: true, harmScores: [] };
     }
 
@@ -130,7 +130,7 @@ export class ConstitutionalAI {
     args: Record<string, unknown>,
     context: ToolContext
   ): Promise<ToolGuardResult> {
-    if (!this._config.filterToolCalls) {
+    if (!this._config.enabled || !this._config.filterToolCalls) {
       return {
         approved: true,
         requiresConfirmation: false,
@@ -143,6 +143,15 @@ export class ConstitutionalAI {
   }
 
   async critiqueAndRevise(response: string, context: Message[]): Promise<RevisionResult> {
+    if (!this._config.enabled) {
+      return {
+        original: response,
+        revised: response,
+        iterations: 0,
+        critiqueHistory: [],
+      };
+    }
+
     return this.critiqueReviser.critiqueAndRevise(response, context);
   }
 

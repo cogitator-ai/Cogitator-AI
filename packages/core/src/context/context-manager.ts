@@ -109,7 +109,7 @@ export class ContextManager {
   async compress(messages: Message[], modelString: string): Promise<CompressionResult> {
     const state = this.checkState(messages, modelString);
 
-    if (!state.needsCompression) {
+    if (!this.config.enabled || !state.needsCompression) {
       return {
         messages,
         originalTokens: state.currentTokens,

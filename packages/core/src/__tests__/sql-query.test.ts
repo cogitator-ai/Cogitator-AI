@@ -183,6 +183,17 @@ describe('sql-query tool', () => {
 
       expect(result).not.toHaveProperty('error');
     });
+
+    it('blocks SELECT FOR UPDATE in read-only mode', async () => {
+      process.env.DATABASE_URL = 'postgres://localhost/db';
+
+      const result = await sqlQuery.execute({
+        query: 'SELECT * FROM users WHERE id = $1 FOR UPDATE',
+        params: [1],
+      });
+
+      expect(result).toHaveProperty('error');
+    });
   });
 
   describe('PostgreSQL queries', () => {
@@ -263,6 +274,45 @@ describe('sql-query tool', () => {
       expect(calledQuery).toContain('LIMIT');
     });
 
+    it('adds LIMIT when LIMIT only appears inside a string literal', async () => {
+      const { Client } = await import('pg');
+      const mockInstance = new Client();
+      (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({
+        rows: [{ title: 'LIMIT' }],
+      });
+
+      await sqlQuery.execute({ query: "SELECT * FROM songs WHERE title = 'LIMIT'" });
+
+      const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(calledQuery).toBe("SELECT * FROM songs WHERE title = 'LIMIT'\nLIMIT 101");
+    });
+
+    it('adds LIMIT when LIMIT only appears inside a comment', async () => {
+      const { Client } = await import('pg');
+      const mockInstance = new Client();
+      (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({
+        rows: [{ id: 1 }],
+      });
+
+      await sqlQuery.execute({ query: 'SELECT * FROM users -- LIMIT 1' });
+
+      const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(calledQuery).toBe('SELECT * FROM users -- LIMIT 1\nLIMIT 101');
+    });
+
+    it('removes a trailing semicolon before appending LIMIT past comments', async () => {
+      const { Client } = await import('pg');
+      const mockInstance = new Client();
+      (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({
+        rows: [{ id: 1 }],
+      });
+
+      await sqlQuery.execute({ query: 'SELECT * FROM users; -- keep this comment' });
+
+      const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(calledQuery).toBe('SELECT * FROM users -- keep this comment\nLIMIT 101');
+    });
+
     it('does not add LIMIT if already present', async () => {
       const { Client } = await import('pg');
       const mockInstance = new Client();
@@ -274,6 +324,35 @@ describe('sql-query tool', () => {
 
       const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
       expect(calledQuery).toBe('SELECT * FROM users LIMIT 5');
+    });
+
+    it('does not append LIMIT to SHOW queries', async () => {
+      const { Client } = await import('pg');
+      const mockInstance = new Client();
+      (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({
+        rows: [{ server_version: '15.0' }],
+      });
+
+      await sqlQuery.execute({ query: 'SHOW server_version' });
+
+      const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(calledQuery).toBe('SHOW server_version');
+    });
+
+    it('does not append LIMIT to mutations when readOnly is false', async () => {
+      const { Client } = await import('pg');
+      const mockInstance = new Client();
+      (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({
+        rows: [],
+      });
+
+      await sqlQuery.execute({
+        query: 'DELETE FROM users WHERE id = $1',
+        params: [1],
+        readOnly: false,
+      });
+
+      expect(mockInstance.query).toHaveBeenCalledWith('DELETE FROM users WHERE id = $1', [1]);
     });
 
     it('handles query errors gracefully', async () => {

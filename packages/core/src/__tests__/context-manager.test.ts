@@ -202,6 +202,20 @@ describe('ContextManager', () => {
         expect(result.strategy).toBe('truncate');
       });
 
+      it('returns original messages when context manager is disabled', async () => {
+        const disabledManager = new ContextManager({
+          enabled: false,
+          strategy: 'truncate',
+          compressionThreshold: 0.01,
+        });
+        const messages = createMessages(50, 100);
+
+        const result = await disabledManager.compress(messages, 'openai:gpt-4');
+
+        expect(result.messages).toEqual(messages);
+        expect(result.compressedTokens).toBe(result.originalTokens);
+      });
+
       it('truncates old messages when compression needed', async () => {
         const messages = createMessages(50, 100);
         const result = await manager.compress(messages, 'openai:gpt-4');
@@ -385,7 +399,10 @@ describe('ContextManager', () => {
       const messages: Message[] = [{ role: 'user', content: 'x'.repeat(50000) }];
       const result = await manager.compress(messages, 'openai:gpt-4');
 
-      expect(result.messages.length).toBeLessThanOrEqual(1);
+      expect(result.messages).toHaveLength(1);
+      expect(result.messages[0].role).toBe('user');
+      expect(String(result.messages[0].content)).toContain('...');
+      expect(result.compressedTokens).toBeLessThanOrEqual(result.originalTokens);
     });
 
     it('handles messages with complex content', async () => {

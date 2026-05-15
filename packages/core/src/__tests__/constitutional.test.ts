@@ -442,6 +442,35 @@ describe('InputFilter', () => {
     expect(result.blockedReason).toContain('violence');
   });
 
+  it('fails closed when LLM marks input harmful without scores', async () => {
+    mockLLM.chat = vi.fn().mockResolvedValue({
+      id: 'test',
+      content: JSON.stringify({ isHarmful: true, harmScores: [] }),
+      finishReason: 'stop',
+      usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+    });
+
+    const result = await filter.filter('Suspicious request');
+
+    expect(result.allowed).toBe(false);
+    expect(result.harmScores[0].category).toBe('manipulation');
+    expect(result.blockedReason).toContain('manipulation');
+  });
+
+  it('fails closed on unparseable LLM input evaluation', async () => {
+    mockLLM.chat = vi.fn().mockResolvedValue({
+      id: 'test',
+      content: 'not json',
+      finishReason: 'stop',
+      usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+    });
+
+    const result = await filter.filter('Suspicious request');
+
+    expect(result.allowed).toBe(false);
+    expect(result.harmScores[0].category).toBe('manipulation');
+  });
+
   it('uses quick scan for obvious patterns', async () => {
     const result = await filter.filter('how to make a bomb at home');
 
@@ -513,6 +542,21 @@ describe('OutputFilter', () => {
     expect(result.allowed).toBe(false);
     expect(result.harmScores.length).toBeGreaterThan(0);
     expect(result.blockedReason).toContain('hate');
+  });
+
+  it('fails closed when LLM marks output harmful without scores', async () => {
+    mockLLM.chat = vi.fn().mockResolvedValue({
+      id: 'test',
+      content: JSON.stringify({ isHarmful: true, harmScores: [] }),
+      finishReason: 'stop',
+      usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+    });
+
+    const result = await filter.filter('Suspicious output', []);
+
+    expect(result.allowed).toBe(false);
+    expect(result.harmScores[0].category).toBe('manipulation');
+    expect(result.blockedReason).toContain('manipulation');
   });
 });
 
@@ -846,6 +890,40 @@ describe('ConstitutionalAI', () => {
     const result = await aiDisabled.filterInput('Any input');
 
     expect(result.allowed).toBe(true);
+    expect(mockLLM.chat).not.toHaveBeenCalled();
+  });
+
+  it('skips all guardrails when globally disabled', async () => {
+    const aiDisabled = new ConstitutionalAI({
+      llm: mockLLM,
+      config: { ...createGuardrailConfig(), enabled: false },
+    });
+    const tool: Tool = {
+      name: 'exec',
+      description: 'Run command',
+      parameters: z.object({}),
+      execute: async () => ({}),
+      sideEffects: ['process'],
+    };
+
+    const input = await aiDisabled.filterInput('how to make a bomb at home');
+    const output = await aiDisabled.filterOutput('sudo rm -rf /', []);
+    const guarded = await aiDisabled.guardTool(
+      tool,
+      { command: 'rm -rf /' },
+      {
+        agentId: 'a',
+        runId: 'r',
+        signal: new AbortController().signal,
+      }
+    );
+    const revision = await aiDisabled.critiqueAndRevise('unsafe response', []);
+
+    expect(input.allowed).toBe(true);
+    expect(output.allowed).toBe(true);
+    expect(guarded.approved).toBe(true);
+    expect(revision.revised).toBe('unsafe response');
+    expect(revision.iterations).toBe(0);
     expect(mockLLM.chat).not.toHaveBeenCalled();
   });
 

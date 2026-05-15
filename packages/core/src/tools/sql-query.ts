@@ -35,10 +35,160 @@ export interface QueryResult {
   executionTime: number;
 }
 
+function stripSqlLiteralsAndComments(query: string): string {
+  let output = '';
+  let index = 0;
+
+  while (index < query.length) {
+    const char = query[index];
+    const next = query[index + 1];
+
+    if (char === '-' && next === '-') {
+      output += '  ';
+      index += 2;
+      while (index < query.length && query[index] !== '\n') {
+        output += ' ';
+        index++;
+      }
+      continue;
+    }
+
+    if (char === '/' && next === '*') {
+      output += '  ';
+      index += 2;
+      while (index < query.length && !(query[index] === '*' && query[index + 1] === '/')) {
+        output += ' ';
+        index++;
+      }
+      if (index < query.length) {
+        output += '  ';
+        index += 2;
+      }
+      continue;
+    }
+
+    const dollarQuote = /^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/.exec(query.slice(index));
+    if (dollarQuote) {
+      const tag = dollarQuote[0];
+      output += ' '.repeat(tag.length);
+      index += tag.length;
+      const end = query.indexOf(tag, index);
+      const contentEnd = end === -1 ? query.length : end;
+      output += ' '.repeat(contentEnd - index);
+      index = contentEnd;
+      if (end !== -1) {
+        output += ' '.repeat(tag.length);
+        index += tag.length;
+      }
+      continue;
+    }
+
+    if (char === "'") {
+      output += ' ';
+      index++;
+      while (index < query.length) {
+        output += ' ';
+        if (query[index] === "'" && query[index + 1] === "'") {
+          output += ' ';
+          index += 2;
+          continue;
+        }
+        if (query[index] === "'") {
+          index++;
+          break;
+        }
+        index++;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      output += ' ';
+      index++;
+      while (index < query.length) {
+        output += ' ';
+        if (query[index] === '"' && query[index + 1] === '"') {
+          output += ' ';
+          index += 2;
+          continue;
+        }
+        if (query[index] === '"') {
+          index++;
+          break;
+        }
+        index++;
+      }
+      continue;
+    }
+
+    output += char;
+    index++;
+  }
+
+  return output;
+}
+
+function firstSqlKeyword(query: string): string | undefined {
+  return /^[A-Z]+/.exec(stripSqlLiteralsAndComments(query).trim().toUpperCase())?.[0];
+}
+
+function hasMultipleStatements(query: string): boolean {
+  const statements = stripSqlLiteralsAndComments(query)
+    .split(';')
+    .filter((statement) => statement.trim().length > 0);
+  return statements.length > 1;
+}
+
+function hasTopLevelKeyword(query: string, keyword: string): boolean {
+  const normalized = stripSqlLiteralsAndComments(query).toUpperCase();
+  let depth = 0;
+
+  for (let index = 0; index < normalized.length; index++) {
+    const char = normalized[index];
+
+    if (char === '(') {
+      depth++;
+      continue;
+    }
+
+    if (char === ')') {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+
+    if (
+      depth === 0 &&
+      normalized.startsWith(keyword, index) &&
+      !/[A-Z0-9_]/.test(normalized[index - 1] ?? '') &&
+      !/[A-Z0-9_]/.test(normalized[index + keyword.length] ?? '')
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function trimTrailingSqlTerminator(query: string): string {
+  const stripped = stripSqlLiteralsAndComments(query);
+  let index = stripped.length - 1;
+
+  while (index >= 0 && /\s/.test(stripped[index])) {
+    index--;
+  }
+
+  if (stripped[index] !== ';') {
+    return query.replace(/\s*$/, '');
+  }
+
+  return `${query.slice(0, index)}${query.slice(index + 1)}`.replace(/\s*$/, '');
+}
+
 function isReadOnlyQuery(query: string): boolean {
-  const normalized = query.trim().toUpperCase();
+  const normalized = stripSqlLiteralsAndComments(query).trim().toUpperCase();
+  const firstKeyword = firstSqlKeyword(query);
   const allowedPrefixes = ['SELECT', 'WITH', 'SHOW', 'DESCRIBE', 'EXPLAIN'];
-  if (!allowedPrefixes.some((prefix) => normalized.startsWith(prefix))) {
+  if (!firstKeyword || !allowedPrefixes.includes(firstKeyword)) {
     return false;
   }
   const dangerousKeywords = [
@@ -55,14 +205,27 @@ function isReadOnlyQuery(query: string): boolean {
     'EXECUTE',
     'CALL',
   ];
-  const withoutStrings = normalized.replace(/'[^']*'/g, '');
-  const statements = withoutStrings.split(';').filter((s) => s.trim().length > 0);
-  if (statements.length > 1) return false;
+  if (hasMultipleStatements(query)) return false;
   for (const keyword of dangerousKeywords) {
     const regex = new RegExp(`\\b${keyword}\\b`);
-    if (regex.test(withoutStrings)) return false;
+    if (regex.test(normalized)) return false;
   }
+  if (/\bFOR\s+(NO\s+KEY\s+)?UPDATE\b/.test(normalized)) return false;
+  if (/\bFOR\s+(KEY\s+)?SHARE\b/.test(normalized)) return false;
   return true;
+}
+
+function withRowLimit(query: string, maxRows: number): string {
+  const firstKeyword = firstSqlKeyword(query);
+  if (firstKeyword !== 'SELECT' && firstKeyword !== 'WITH') {
+    return query;
+  }
+
+  if (hasTopLevelKeyword(query, 'LIMIT') || hasTopLevelKeyword(query, 'FETCH')) {
+    return query;
+  }
+
+  return `${trimTrailingSqlTerminator(query)}\nLIMIT ${maxRows + 1}`;
 }
 
 async function queryPostgres(
@@ -84,9 +247,7 @@ async function queryPostgres(
   try {
     await client.connect();
 
-    const limitedQuery = query.toUpperCase().includes('LIMIT')
-      ? query
-      : `${query.replace(/;?\s*$/, '')} LIMIT ${maxRows + 1}`;
+    const limitedQuery = withRowLimit(query, maxRows);
 
     const result = await client.query(limitedQuery, params);
     const executionTime = Date.now() - start;
@@ -126,9 +287,7 @@ async function querySqlite(
   const start = Date.now();
 
   try {
-    const limitedQuery = query.toUpperCase().includes('LIMIT')
-      ? query
-      : `${query.replace(/;?\s*$/, '')} LIMIT ${maxRows + 1}`;
+    const limitedQuery = withRowLimit(query, maxRows);
 
     const stmt = db.prepare(limitedQuery);
     const rows = stmt.all(...params) as Record<string, unknown>[];

@@ -83,6 +83,16 @@ export class InputFilter {
     });
 
     const result = parseEvaluationResponse(response.content);
+    if (result.isHarmful && result.harmScores.length === 0) {
+      return [
+        {
+          category: 'manipulation',
+          severity: 'high',
+          confidence: 1,
+          reasoning: 'Safety evaluator marked input as harmful without category details',
+        },
+      ];
+    }
     return result.harmScores;
   }
 
