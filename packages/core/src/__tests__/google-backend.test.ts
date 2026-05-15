@@ -292,6 +292,33 @@ describe('GoogleBackend', () => {
       expect(url).toContain('gemini-2.5-flash:generateContent');
     });
 
+    it('should normalize gemini-3-pro to the active 3.1 preview', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          candidates: [
+            {
+              content: { role: 'model', parts: [{ text: 'OK' }] },
+              finishReason: 'STOP',
+            },
+          ],
+          usageMetadata: {
+            promptTokenCount: 5,
+            candidatesTokenCount: 2,
+            totalTokenCount: 7,
+          },
+        }),
+      });
+
+      await backend.chat({
+        model: 'gemini-3-pro',
+        messages: [{ role: 'user', content: 'Test' }],
+      });
+
+      const [url] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(url).toContain('gemini-3.1-pro-preview:generateContent');
+    });
+
     it('should include generation config', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,

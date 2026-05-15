@@ -87,7 +87,7 @@ export const OPENAI_MODELS: ModelInfo[] = [
     id: 'o4-mini-2025-04-16',
     provider: 'openai',
     displayName: 'o4 Mini',
-    pricing: { input: 1.21, output: 4.84 },
+    pricing: { input: 1.1, output: 4.4 },
     contextWindow: 200000,
     maxOutputTokens: 100000,
     capabilities: {

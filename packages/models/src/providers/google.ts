@@ -2,11 +2,11 @@ import type { ModelInfo } from '../types';
 
 export const GOOGLE_MODELS: ModelInfo[] = [
   {
-    id: 'gemini-3-pro-preview',
+    id: 'gemini-3.1-pro-preview',
     provider: 'google',
-    displayName: 'Gemini 3 Pro Preview',
-    pricing: { input: 3, output: 15 },
-    contextWindow: 1000000,
+    displayName: 'Gemini 3.1 Pro Preview',
+    pricing: { input: 2, output: 12 },
+    contextWindow: 1048576,
     maxOutputTokens: 65536,
     capabilities: {
       supportsTools: true,
@@ -15,15 +15,15 @@ export const GOOGLE_MODELS: ModelInfo[] = [
       supportsStreaming: true,
       supportsJson: true,
     },
-    aliases: ['gemini-3-pro'],
+    aliases: ['gemini-3.1-pro', 'gemini-3-pro'],
   },
   {
     id: 'gemini-3-flash-preview',
     provider: 'google',
     displayName: 'Gemini 3 Flash Preview',
-    pricing: { input: 0.75, output: 3 },
-    contextWindow: 1000000,
-    maxOutputTokens: 65536,
+    pricing: { input: 0.5, output: 3 },
+    contextWindow: 1048576,
+    maxOutputTokens: 65535,
     capabilities: {
       supportsTools: true,
       supportsVision: true,
@@ -34,10 +34,42 @@ export const GOOGLE_MODELS: ModelInfo[] = [
     aliases: ['gemini-3-flash'],
   },
   {
+    id: 'gemini-3.1-flash-lite-preview',
+    provider: 'google',
+    displayName: 'Gemini 3.1 Flash-Lite Preview',
+    pricing: { input: 0.25, output: 1.5 },
+    contextWindow: 1048576,
+    maxOutputTokens: 65536,
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsJson: true,
+    },
+    aliases: ['gemini-3.1-flash-lite', 'gemini-3-flash-lite'],
+  },
+  {
+    id: 'gemini-3-pro-preview',
+    provider: 'google',
+    displayName: 'Gemini 3 Pro Preview',
+    pricing: { input: 2, output: 12 },
+    contextWindow: 1048576,
+    maxOutputTokens: 65535,
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsJson: true,
+    },
+    deprecated: true,
+  },
+  {
     id: 'gemini-2.5-pro',
     provider: 'google',
     displayName: 'Gemini 2.5 Pro',
-    pricing: { input: 1.875, output: 12.5 },
+    pricing: { input: 1.25, output: 10 },
     contextWindow: 1000000,
     maxOutputTokens: 65536,
     capabilities: {
@@ -52,7 +84,7 @@ export const GOOGLE_MODELS: ModelInfo[] = [
     id: 'gemini-2.5-flash',
     provider: 'google',
     displayName: 'Gemini 2.5 Flash',
-    pricing: { input: 0.65, output: 2.5 },
+    pricing: { input: 0.3, output: 2.5 },
     contextWindow: 1000000,
     maxOutputTokens: 65536,
     capabilities: {
@@ -68,7 +100,7 @@ export const GOOGLE_MODELS: ModelInfo[] = [
     id: 'gemini-2.5-flash-lite',
     provider: 'google',
     displayName: 'Gemini 2.5 Flash Lite',
-    pricing: { input: 0.2, output: 0.4 },
+    pricing: { input: 0.1, output: 0.4 },
     contextWindow: 1000000,
     maxOutputTokens: 65536,
     capabilities: {

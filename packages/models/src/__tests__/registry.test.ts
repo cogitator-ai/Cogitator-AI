@@ -30,6 +30,15 @@ describe('ModelRegistry', () => {
       expect(model?.provider).toBe('anthropic');
     });
 
+    it('should resolve gemini-3-pro to the active 3.1 preview', () => {
+      const model = registry.getModel('gemini-3-pro');
+      expect(model?.id).toBe('gemini-3.1-pro-preview');
+      expect(model?.deprecated).toBeFalsy();
+
+      const oldPreview = registry.getModel('gemini-3-pro-preview');
+      expect(oldPreview?.deprecated).toBe(true);
+    });
+
     it('should return null for unknown model', () => {
       const model = registry.getModel('unknown-model-xyz');
       expect(model).toBeNull();
@@ -106,6 +115,22 @@ describe('ModelRegistry', () => {
     it('should filter by max price', () => {
       const cheapModels = registry.listModels({ maxPricePerMillion: 1 });
       expect(cheapModels.every((m) => (m.pricing.input + m.pricing.output) / 2 <= 1)).toBe(true);
+    });
+
+    it('should filter out models with tool support when supportsTools is false', () => {
+      const modelsWithoutTools = registry.listModels({ supportsTools: false });
+      expect(modelsWithoutTools.length).toBeGreaterThan(0);
+      expect(
+        modelsWithoutTools.every((m) => (m.capabilities?.supportsTools ?? false) === false)
+      ).toBe(true);
+    });
+
+    it('should filter out models with vision support when supportsVision is false', () => {
+      const modelsWithoutVision = registry.listModels({ supportsVision: false });
+      expect(modelsWithoutVision.length).toBeGreaterThan(0);
+      expect(
+        modelsWithoutVision.every((m) => (m.capabilities?.supportsVision ?? false) === false)
+      ).toBe(true);
     });
   });
 
@@ -188,6 +213,30 @@ describe('ModelRegistry initialization', () => {
     expect(reg.isInitialized()).toBe(true);
     reg.shutdown();
   });
+
+  it('should resolve fetched model ids case-insensitively', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          'custom/Mixed-Case-Model': {
+            max_tokens: 4096,
+            input_cost_per_token: 0,
+            output_cost_per_token: 0,
+            litellm_provider: 'openai',
+          },
+        }),
+    });
+
+    const reg = new ModelRegistry({
+      fallbackToBuiltin: false,
+      cache: { ttl: 60_000, storage: 'memory' },
+    });
+    await reg.initialize();
+
+    expect(reg.getModel('mixed-case-model')?.id).toBe('Mixed-Case-Model');
+    expect(reg.getModel('openai/MIXED-CASE-MODEL')?.id).toBe('Mixed-Case-Model');
+  });
 });
 
 describe('ModelRegistry filters', () => {
@@ -209,6 +258,34 @@ describe('ModelRegistry filters', () => {
   it('should return empty array for impossible filter', () => {
     const result = registry.listModels({ provider: 'nonexistent-provider-xyz' });
     expect(result).toEqual([]);
+  });
+
+  it('should allow maxPricePerMillion to be zero', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          'ollama/free-model': {
+            max_tokens: 4096,
+            litellm_provider: 'ollama',
+          },
+        }),
+    });
+
+    const reg = new ModelRegistry({
+      fallbackToBuiltin: false,
+      cache: { ttl: 60_000, storage: 'memory' },
+    });
+    try {
+      await reg.initialize();
+
+      const freeModels = reg.listModels({ maxPricePerMillion: 0 });
+      expect(freeModels.map((m) => m.id)).toContain('free-model');
+      expect(freeModels.every((m) => (m.pricing.input + m.pricing.output) / 2 <= 0)).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

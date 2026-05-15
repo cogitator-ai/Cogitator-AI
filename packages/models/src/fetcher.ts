@@ -90,6 +90,7 @@ function normalizeProvider(litellmProvider: string | undefined, modelId: string)
     modelId.startsWith('gpt-') ||
     modelId.startsWith('o1') ||
     modelId.startsWith('o3') ||
+    modelId.startsWith('o4') ||
     modelId.includes('davinci') ||
     modelId.includes('curie')
   ) {
@@ -188,7 +189,7 @@ export function transformLiteLLMData(data: LiteLLMModelData): ModelInfo[] {
       contextWindow,
       maxOutputTokens,
       capabilities: {
-        supportsTools: entry.supports_function_calling ?? entry.supports_tool_choice,
+        supportsTools: entry.supports_function_calling || entry.supports_tool_choice || undefined,
         supportsVision: entry.supports_vision,
         supportsFunctions: entry.supports_function_calling,
         supportsJson: entry.supports_response_schema,

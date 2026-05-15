@@ -199,13 +199,30 @@ describe('transformLiteLLMData', () => {
   it('infers provider from model id prefix', () => {
     const data: LiteLLMModelData = {
       'gpt-4.1': { max_tokens: 128000 },
+      'o4-mini': { max_tokens: 200000 },
       'claude-opus-4-5': { max_tokens: 200000 },
     };
 
     const result = transformLiteLLMData(data);
 
     expect(result.find((m) => m.id === 'gpt-4.1')?.provider).toBe('openai');
+    expect(result.find((m) => m.id === 'o4-mini')?.provider).toBe('openai');
     expect(result.find((m) => m.id === 'claude-opus-4-5')?.provider).toBe('anthropic');
+  });
+
+  it('detects tool support from tool choice when function calling is false', () => {
+    const data: LiteLLMModelData = {
+      'tool-choice-model': {
+        max_tokens: 4096,
+        supports_function_calling: false,
+        supports_tool_choice: true,
+      },
+    };
+
+    const result = transformLiteLLMData(data);
+
+    expect(result[0].capabilities?.supportsTools).toBe(true);
+    expect(result[0].capabilities?.supportsFunctions).toBe(false);
   });
 
   it('creates display name from id', () => {

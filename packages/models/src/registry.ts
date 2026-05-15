@@ -112,19 +112,28 @@ export class ModelRegistry {
           return false;
         }
 
-        if (filter.supportsTools && !model.capabilities?.supportsTools) {
+        if (
+          filter.supportsTools !== undefined &&
+          (model.capabilities?.supportsTools ?? false) !== filter.supportsTools
+        ) {
           return false;
         }
 
-        if (filter.supportsVision && !model.capabilities?.supportsVision) {
+        if (
+          filter.supportsVision !== undefined &&
+          (model.capabilities?.supportsVision ?? false) !== filter.supportsVision
+        ) {
           return false;
         }
 
-        if (filter.minContextWindow && model.contextWindow < filter.minContextWindow) {
+        if (
+          filter.minContextWindow !== undefined &&
+          model.contextWindow < filter.minContextWindow
+        ) {
           return false;
         }
 
-        if (filter.maxPricePerMillion) {
+        if (filter.maxPricePerMillion !== undefined) {
           const avgPrice = (model.pricing.input + model.pricing.output) / 2;
           if (avgPrice > filter.maxPricePerMillion) {
             return false;
@@ -175,11 +184,12 @@ export class ModelRegistry {
     const providerModels = new Map<string, string[]>();
 
     for (const model of models) {
-      this.models.set(model.id, model);
+      const modelKey = model.id.toLowerCase();
+      this.models.set(modelKey, model);
 
       if (model.aliases) {
         for (const alias of model.aliases) {
-          this.aliases.set(alias.toLowerCase(), model.id);
+          this.aliases.set(alias.toLowerCase(), modelKey);
         }
       }
 
