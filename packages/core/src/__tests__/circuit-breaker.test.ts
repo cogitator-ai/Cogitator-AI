@@ -10,6 +10,10 @@ function retryableError(message: string): CogitatorError {
   });
 }
 
+async function rejectRetryable(message: string): Promise<never> {
+  throw retryableError(message);
+}
+
 describe('CircuitBreaker', () => {
   it('initial state is closed', () => {
     const breaker = new CircuitBreaker();
@@ -27,7 +31,7 @@ describe('CircuitBreaker', () => {
     const breaker = new CircuitBreaker({ failureThreshold: 3 });
 
     for (let i = 0; i < 3; i++) {
-      await breaker.execute(() => Promise.reject(retryableError('fail'))).catch(() => {});
+      await breaker.execute(() => rejectRetryable('fail')).catch(() => {});
     }
 
     expect(breaker.getState()).toBe('open');
@@ -35,7 +39,7 @@ describe('CircuitBreaker', () => {
 
   it('rejects calls when open', async () => {
     const breaker = new CircuitBreaker({ failureThreshold: 1 });
-    await breaker.execute(() => Promise.reject(retryableError('fail'))).catch(() => {});
+    await breaker.execute(() => rejectRetryable('fail')).catch(() => {});
 
     expect(breaker.getState()).toBe('open');
 
@@ -53,7 +57,7 @@ describe('CircuitBreaker', () => {
       onStateChange,
     });
 
-    await breaker.execute(() => Promise.reject(retryableError('fail'))).catch(() => {});
+    await breaker.execute(() => rejectRetryable('fail')).catch(() => {});
     expect(breaker.getState()).toBe('open');
 
     vi.advanceTimersByTime(100);
@@ -76,7 +80,7 @@ describe('CircuitBreaker', () => {
       halfOpenRequests: 2,
     });
 
-    await breaker.execute(() => Promise.reject(retryableError('fail'))).catch(() => {});
+    await breaker.execute(() => rejectRetryable('fail')).catch(() => {});
     vi.advanceTimersByTime(100);
 
     await breaker.execute(() => Promise.resolve('ok'));
@@ -96,10 +100,10 @@ describe('CircuitBreaker', () => {
       halfOpenRequests: 3,
     });
 
-    await breaker.execute(() => Promise.reject(retryableError('fail'))).catch(() => {});
+    await breaker.execute(() => rejectRetryable('fail')).catch(() => {});
     vi.advanceTimersByTime(100);
 
-    await breaker.execute(() => Promise.reject(retryableError('still broken'))).catch(() => {});
+    await breaker.execute(() => rejectRetryable('still broken')).catch(() => {});
     expect(breaker.getState()).toBe('open');
 
     vi.useRealTimers();
@@ -109,7 +113,7 @@ describe('CircuitBreaker', () => {
     const breaker = new CircuitBreaker({ failureThreshold: 5 });
 
     await breaker.execute(() => Promise.resolve('ok'));
-    await breaker.execute(() => Promise.reject(retryableError('err'))).catch(() => {});
+    await breaker.execute(() => rejectRetryable('err')).catch(() => {});
 
     const stats = breaker.getStats();
     expect(stats.state).toBe('closed');
@@ -122,7 +126,7 @@ describe('CircuitBreaker', () => {
 
   it('reset() restores closed state', async () => {
     const breaker = new CircuitBreaker({ failureThreshold: 1 });
-    await breaker.execute(() => Promise.reject(retryableError('fail'))).catch(() => {});
+    await breaker.execute(() => rejectRetryable('fail')).catch(() => {});
     expect(breaker.getState()).toBe('open');
 
     breaker.reset();
@@ -156,7 +160,7 @@ describe('CircuitBreakerRegistry', () => {
     const b = registry.get('b');
 
     await a.execute(() => Promise.resolve('ok'));
-    await b.execute(() => Promise.reject(retryableError('err'))).catch(() => {});
+    await b.execute(() => rejectRetryable('err')).catch(() => {});
 
     const stats = registry.getAllStats();
     expect(Object.keys(stats)).toEqual(['a', 'b']);
