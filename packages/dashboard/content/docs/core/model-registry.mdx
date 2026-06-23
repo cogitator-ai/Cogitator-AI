@@ -12,11 +12,11 @@ import { initializeModels, getModel, getPrice, listModels } from '@cogitator-ai/
 
 await initializeModels();
 
-const model = getModel('gpt-4o');
-console.log(model?.contextWindow); // 128000
+const model = getModel('gpt-5.4-mini');
+console.log(model?.contextWindow); // 272000
 console.log(model?.capabilities?.supportsVision); // true
 
-const price = getPrice('claude-sonnet-4-5-20250929');
+const price = getPrice('claude-sonnet-4-6');
 console.log(`$${price?.input}/M input, $${price?.output}/M output`);
 ```
 
@@ -55,8 +55,8 @@ await registry.initialize();
 ### Methods
 
 ```typescript
-registry.getModel('gpt-4o');
-registry.getPrice('gpt-4o');
+registry.getModel('gpt-5.4-mini');
+registry.getPrice('gpt-5.4-mini');
 registry.listModels({ provider: 'openai', supportsTools: true });
 registry.listProviders();
 registry.getProvider('anthropic');
@@ -104,6 +104,19 @@ The registry includes built-in data for 15 providers:
 OpenAI, Anthropic, Google, Ollama, Azure OpenAI, AWS Bedrock, Mistral AI, Cohere, Groq, Together AI, Fireworks AI, DeepInfra, Perplexity, Replicate, xAI.
 
 Additional providers are automatically discovered when LiteLLM data is fetched.
+
+## Built-in Models
+
+Built-in fallbacks cover current model families for major providers, including OpenAI GPT-5.5/GPT-5.4, Anthropic Claude Fable 5 / Opus 4.8 / Sonnet 4.6, and Google Gemini 3.5 Flash / Gemini 3.1 models.
+
+```typescript
+import { BUILTIN_MODELS, OPENAI_MODELS, ANTHROPIC_MODELS, GOOGLE_MODELS } from '@cogitator-ai/models';
+
+const activeOpenAI = OPENAI_MODELS.filter((model) => !model.deprecated);
+const cheapToolModels = BUILTIN_MODELS.filter(
+  (model) => model.capabilities?.supportsTools && (model.pricing.input + model.pricing.output) / 2 <= 5
+);
+```
 
 ## Caching
 
@@ -166,8 +179,8 @@ import {
 
 await initializeModels();
 
-getModel('gpt-4o');
-getPrice('gpt-4o-mini');
+getModel('gpt-5.4-mini');
+getPrice('claude-sonnet-4-6');
 listModels({ provider: 'google' });
 
 shutdownModels();

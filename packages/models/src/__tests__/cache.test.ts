@@ -131,6 +131,21 @@ describe('ModelCache', () => {
       expect(result).toBeNull();
     });
 
+    it('returns null for malformed cached model entries', async () => {
+      const { readFile } = await import('fs/promises');
+      const mockEntry = {
+        models: [{ id: 'broken-model' }],
+        timestamp: Date.now(),
+        version: '1.0.0',
+      };
+      vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify(mockEntry));
+
+      const cache = new ModelCache({ storage: 'file' });
+      const result = await cache.get();
+
+      expect(result).toBeNull();
+    });
+
     it('writes to file cache', async () => {
       const { writeFile, mkdir } = await import('fs/promises');
 

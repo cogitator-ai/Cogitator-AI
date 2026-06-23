@@ -1,5 +1,14 @@
 # @cogitator-ai/models
 
+## 17.1.9
+
+### Patch Changes
+
+- Fix model registry metadata merging and refresh builtin fallback models.
+  - Validate file cache entries before loading them.
+  - Preserve builtin deprecation and capability metadata when LiteLLM refreshes.
+  - Add current OpenAI, Anthropic, and Google fallback model metadata.
+
 ## 17.1.8
 
 ### Patch Changes

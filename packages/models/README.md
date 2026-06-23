@@ -27,11 +27,11 @@ import { initializeModels, getModel, getPrice, listModels } from '@cogitator-ai/
 
 await initializeModels();
 
-const model = getModel('gpt-4o');
+const model = getModel('gpt-5.4-mini');
 console.log(model?.contextWindow);
 console.log(model?.capabilities?.supportsVision);
 
-const price = getPrice('claude-sonnet-4-5-20250929');
+const price = getPrice('claude-sonnet-4-6');
 console.log(`Input: $${price?.input}/M tokens`);
 console.log(`Output: $${price?.output}/M tokens`);
 
@@ -97,9 +97,9 @@ interface CacheOptions {
 ```typescript
 await registry.initialize();
 
-const model = registry.getModel('gpt-4o');
+const model = registry.getModel('gpt-5.4-mini');
 
-const price = registry.getPrice('claude-sonnet-4-5-20250929');
+const price = registry.getPrice('claude-sonnet-4-6');
 
 const models = registry.listModels({
   provider: 'anthropic',
@@ -136,8 +136,8 @@ import {
 
 await initializeModels();
 
-const model = getModel('gpt-4o-mini');
-const price = getPrice('gpt-4o-mini');
+const model = getModel('gpt-5.4-mini');
+const price = getPrice('gpt-5.4-mini');
 const allModels = listModels();
 
 const registry = getModelRegistry();
@@ -184,14 +184,14 @@ interface ModelCapabilities {
 ### Example Model
 
 ```typescript
-const model = getModel('gpt-4o');
+const model = getModel('gpt-5.4-mini');
 // {
-//   id: 'gpt-4o',
+//   id: 'gpt-5.4-mini',
 //   provider: 'openai',
-//   displayName: 'GPT-4o',
-//   pricing: { input: 2.5, output: 10 },
-//   contextWindow: 128000,
-//   maxOutputTokens: 16384,
+//   displayName: 'GPT-5.4 Mini',
+//   pricing: { input: 0.75, output: 4.5 },
+//   contextWindow: 272000,
+//   maxOutputTokens: 128000,
 //   capabilities: {
 //     supportsVision: true,
 //     supportsTools: true,
@@ -311,18 +311,22 @@ import {
 
 ### OpenAI Models
 
+- gpt-5.5, gpt-5.5-pro
+- gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gpt-5.4-pro
 - gpt-4.1, gpt-4.1-mini, gpt-4.1-nano
 - gpt-4o, gpt-4o-mini
 - o3, o3-mini, o3-pro, o4-mini
 
 ### Anthropic Models
 
+- claude-fable-5, claude-opus-4-8, claude-sonnet-4-6
 - claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5
 - claude-opus-4-1, claude-sonnet-4, claude-opus-4
 
 ### Google Models
 
-- gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-3.1-flash-lite-preview
+- gemini-3.5-flash, gemini-3.1-pro-preview
+- gemini-3-flash-preview, gemini-3.1-flash-lite
 - gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite
 
 ---
@@ -396,6 +400,8 @@ interface LiteLLMModelEntry {
   litellm_provider?: string;
   supports_function_calling?: boolean;
   supports_vision?: boolean;
+  supports_response_schema?: boolean;
+  supports_tool_choice?: boolean;
   deprecation_date?: string;
 }
 ```

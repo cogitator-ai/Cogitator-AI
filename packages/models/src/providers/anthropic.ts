@@ -2,6 +2,53 @@ import type { ModelInfo } from '../types';
 
 export const ANTHROPIC_MODELS: ModelInfo[] = [
   {
+    id: 'claude-fable-5',
+    provider: 'anthropic',
+    displayName: 'Claude Fable 5',
+    pricing: { input: 10, output: 50 },
+    contextWindow: 1000000,
+    maxOutputTokens: 128000,
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsJson: true,
+    },
+  },
+  {
+    id: 'claude-opus-4-8',
+    provider: 'anthropic',
+    displayName: 'Claude Opus 4.8',
+    pricing: { input: 5, output: 25 },
+    contextWindow: 1000000,
+    maxOutputTokens: 128000,
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsJson: true,
+    },
+    aliases: ['claude-opus-4.8'],
+  },
+  {
+    id: 'claude-sonnet-4-6',
+    provider: 'anthropic',
+    displayName: 'Claude Sonnet 4.6',
+    pricing: { input: 3, output: 15 },
+    contextWindow: 1000000,
+    maxOutputTokens: 128000,
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsJson: true,
+    },
+    aliases: ['claude-sonnet-4.6'],
+  },
+  {
     id: 'claude-opus-4-5-20251101',
     provider: 'anthropic',
     displayName: 'Claude Opus 4.5',

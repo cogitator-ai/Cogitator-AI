@@ -139,4 +139,31 @@ describe('Builtin data integrity', () => {
       ).toBeGreaterThanOrEqual(0);
     }
   });
+
+  it('includes current flagship fallback models', () => {
+    const modelIds = BUILTIN_MODELS.map((model) => model.id);
+
+    expect(modelIds).toEqual(
+      expect.arrayContaining([
+        'gpt-5.5',
+        'gpt-5.4',
+        'gpt-5.4-mini',
+        'claude-fable-5',
+        'claude-opus-4-8',
+        'claude-sonnet-4-6',
+        'gemini-3.5-flash',
+        'gemini-3.1-flash-lite',
+      ])
+    );
+  });
+
+  it('keeps current flagship fallback pricing in sync', () => {
+    const byId = new Map(BUILTIN_MODELS.map((model) => [model.id, model]));
+
+    expect(byId.get('gpt-5.5')?.pricing).toEqual({ input: 5, output: 30 });
+    expect(byId.get('gpt-5.4-mini')?.pricing).toEqual({ input: 0.75, output: 4.5 });
+    expect(byId.get('claude-fable-5')?.pricing).toEqual({ input: 10, output: 50 });
+    expect(byId.get('claude-sonnet-4-6')?.maxOutputTokens).toBe(128000);
+    expect(byId.get('gemini-3.5-flash')?.pricing).toEqual({ input: 1.5, output: 9 });
+  });
 });

@@ -185,6 +185,7 @@ describe('transformLiteLLMData', () => {
     const data: LiteLLMModelData = {
       'claude-3': { max_tokens: 200000, litellm_provider: 'anthropic' },
       'gemini-pro': { max_tokens: 32000, litellm_provider: 'vertex_ai' },
+      'gemini-3.5-flash': { max_tokens: 1048576, litellm_provider: 'vertex_ai-language-models' },
       'llama-3': { max_tokens: 8192, litellm_provider: 'together_ai' },
     };
 
@@ -193,6 +194,7 @@ describe('transformLiteLLMData', () => {
 
     expect(providers).toContain('anthropic');
     expect(providers).toContain('google');
+    expect(result.find((m) => m.id === 'gemini-3.5-flash')?.provider).toBe('google');
     expect(providers).toContain('together');
   });
 
@@ -208,6 +210,18 @@ describe('transformLiteLLMData', () => {
     expect(result.find((m) => m.id === 'gpt-4.1')?.provider).toBe('openai');
     expect(result.find((m) => m.id === 'o4-mini')?.provider).toBe('openai');
     expect(result.find((m) => m.id === 'claude-opus-4-5')?.provider).toBe('anthropic');
+  });
+
+  it('infers provider from mixed-case model ids', () => {
+    const data: LiteLLMModelData = {
+      'OpenAI/GPT-5.5': { max_tokens: 128000 },
+      'Claude-Fable-5': { max_tokens: 1000000 },
+    };
+
+    const result = transformLiteLLMData(data);
+
+    expect(result.find((m) => m.id === 'GPT-5.5')?.provider).toBe('openai');
+    expect(result.find((m) => m.id === 'Claude-Fable-5')?.provider).toBe('anthropic');
   });
 
   it('detects tool support from tool choice when function calling is false', () => {

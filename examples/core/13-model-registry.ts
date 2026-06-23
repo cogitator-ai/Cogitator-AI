@@ -12,23 +12,23 @@ import {
 header('Model Registry');
 
 section('Built-in models (no network needed)');
-const gpt4o = getModel('gpt-4o');
+const gpt54Mini = getModel('gpt-5.4-mini');
 console.log(
-  `${gpt4o?.displayName}: ${gpt4o?.contextWindow} context, $${gpt4o?.pricing.input}/M input`
+  `${gpt54Mini?.displayName}: ${gpt54Mini?.contextWindow} context, $${gpt54Mini?.pricing.input}/M input`
 );
 
-const claude = getModel('claude-sonnet-4-5');
+const claude = getModel('claude-sonnet-4-6');
 console.log(
   `${claude?.displayName}: ${claude?.contextWindow} context, $${claude?.pricing.input}/M input`
 );
 
 section('Pricing lookup');
-const price = getPrice('gpt-4o-mini');
+const price = getPrice('gpt-5.4-mini');
 if (price) {
   const inputTokens = 50_000;
   const outputTokens = 10_000;
   const cost = (inputTokens / 1_000_000) * price.input + (outputTokens / 1_000_000) * price.output;
-  console.log(`GPT-4o Mini: ${inputTokens} in + ${outputTokens} out = $${cost.toFixed(4)}`);
+  console.log(`GPT-5.4 Mini: ${inputTokens} in + ${outputTokens} out = $${cost.toFixed(4)}`);
 }
 
 section('Filter: cheap tool-calling models');

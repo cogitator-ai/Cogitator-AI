@@ -2,6 +2,22 @@ import type { ModelInfo } from '../types';
 
 export const GOOGLE_MODELS: ModelInfo[] = [
   {
+    id: 'gemini-3.5-flash',
+    provider: 'google',
+    displayName: 'Gemini 3.5 Flash',
+    pricing: { input: 1.5, output: 9 },
+    contextWindow: 1048576,
+    maxOutputTokens: 65535,
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsJson: true,
+    },
+    aliases: ['gemini-3.5'],
+  },
+  {
     id: 'gemini-3.1-pro-preview',
     provider: 'google',
     displayName: 'Gemini 3.1 Pro Preview',
@@ -34,6 +50,22 @@ export const GOOGLE_MODELS: ModelInfo[] = [
     aliases: ['gemini-3-flash'],
   },
   {
+    id: 'gemini-3.1-flash-lite',
+    provider: 'google',
+    displayName: 'Gemini 3.1 Flash-Lite',
+    pricing: { input: 0.25, output: 1.5 },
+    contextWindow: 1048576,
+    maxOutputTokens: 65536,
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsJson: true,
+    },
+    aliases: ['gemini-3-flash-lite'],
+  },
+  {
     id: 'gemini-3.1-flash-lite-preview',
     provider: 'google',
     displayName: 'Gemini 3.1 Flash-Lite Preview',
@@ -47,7 +79,7 @@ export const GOOGLE_MODELS: ModelInfo[] = [
       supportsStreaming: true,
       supportsJson: true,
     },
-    aliases: ['gemini-3.1-flash-lite', 'gemini-3-flash-lite'],
+    deprecated: true,
   },
   {
     id: 'gemini-3-pro-preview',

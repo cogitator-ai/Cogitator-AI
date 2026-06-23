@@ -69,43 +69,46 @@ const PROVIDER_MAPPINGS: Record<string, string> = {
 };
 
 function normalizeProvider(litellmProvider: string | undefined, modelId: string): string {
-  if (litellmProvider) {
-    const normalized = PROVIDER_MAPPINGS[litellmProvider];
+  const normalizedProvider = litellmProvider?.toLowerCase();
+  const normalizedModelId = modelId.toLowerCase();
+
+  if (normalizedProvider) {
+    const normalized = PROVIDER_MAPPINGS[normalizedProvider];
     if (normalized) return normalized;
 
     for (const [prefix, provider] of Object.entries(PROVIDER_MAPPINGS)) {
-      if (litellmProvider.startsWith(prefix)) {
+      if (normalizedProvider.startsWith(prefix)) {
         return provider;
       }
     }
   }
 
-  const prefixMatch = /^([a-z_-]+)\//.exec(modelId);
+  const prefixMatch = /^([a-z_-]+)\//.exec(normalizedModelId);
   if (prefixMatch) {
     const prefix = prefixMatch[1];
     return PROVIDER_MAPPINGS[prefix] ?? prefix;
   }
 
   if (
-    modelId.startsWith('gpt-') ||
-    modelId.startsWith('o1') ||
-    modelId.startsWith('o3') ||
-    modelId.startsWith('o4') ||
-    modelId.includes('davinci') ||
-    modelId.includes('curie')
+    normalizedModelId.startsWith('gpt-') ||
+    normalizedModelId.startsWith('o1') ||
+    normalizedModelId.startsWith('o3') ||
+    normalizedModelId.startsWith('o4') ||
+    normalizedModelId.includes('davinci') ||
+    normalizedModelId.includes('curie')
   ) {
     return 'openai';
   }
-  if (modelId.startsWith('claude')) {
+  if (normalizedModelId.startsWith('claude')) {
     return 'anthropic';
   }
-  if (modelId.startsWith('gemini') || modelId.startsWith('palm')) {
+  if (normalizedModelId.startsWith('gemini') || normalizedModelId.startsWith('palm')) {
     return 'google';
   }
   if (
-    modelId.startsWith('llama') ||
-    modelId.startsWith('mistral') ||
-    modelId.startsWith('mixtral')
+    normalizedModelId.startsWith('llama') ||
+    normalizedModelId.startsWith('mistral') ||
+    normalizedModelId.startsWith('mixtral')
   ) {
     return 'meta';
   }

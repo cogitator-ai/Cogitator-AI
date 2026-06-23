@@ -237,6 +237,72 @@ describe('ModelRegistry initialization', () => {
     expect(reg.getModel('mixed-case-model')?.id).toBe('Mixed-Case-Model');
     expect(reg.getModel('openai/MIXED-CASE-MODEL')?.id).toBe('Mixed-Case-Model');
   });
+
+  it('should merge fetched builtin updates without losing local metadata', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          'gemini-3-pro-preview': {
+            max_input_tokens: 1048576,
+            max_output_tokens: 65535,
+            input_cost_per_token: 0.000002,
+            output_cost_per_token: 0.000012,
+            litellm_provider: 'vertex_ai',
+          },
+          'o3-2025-04-16': {
+            max_input_tokens: 200000,
+            max_output_tokens: 100000,
+            input_cost_per_token: 0.000002,
+            output_cost_per_token: 0.000008,
+            litellm_provider: 'openai',
+            supports_function_calling: true,
+            supports_tool_choice: true,
+          },
+        }),
+    });
+
+    const reg = new ModelRegistry({
+      fallbackToBuiltin: true,
+      cache: { ttl: 60_000, storage: 'memory' },
+    });
+    await reg.initialize();
+
+    const deprecatedPreview = reg.getModel('gemini-3-pro-preview');
+    expect(deprecatedPreview?.deprecated).toBe(true);
+    expect(deprecatedPreview?.pricing).toEqual({ input: 2, output: 12 });
+
+    const o3 = reg.getModel('o3-2025-04-16');
+    expect(o3?.capabilities?.supportsTools).toBe(true);
+    expect(o3?.capabilities?.supportsFunctions).toBe(true);
+    expect(o3?.capabilities?.supportsStreaming).toBe(true);
+  });
+
+  it('should merge fetched builtin ids case-insensitively', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          'openai/GPT-4O': {
+            max_input_tokens: 128000,
+            max_output_tokens: 16384,
+            input_cost_per_token: 0.0000025,
+            output_cost_per_token: 0.00001,
+            litellm_provider: 'openai',
+          },
+        }),
+    });
+
+    const reg = new ModelRegistry({
+      fallbackToBuiltin: true,
+      cache: { ttl: 60_000, storage: 'memory' },
+    });
+    await reg.initialize();
+
+    const openai = reg.getProvider('openai');
+    const gpt4oEntries = openai?.models.filter((id) => id.toLowerCase() === 'gpt-4o') ?? [];
+    expect(gpt4oEntries).toHaveLength(1);
+  });
 });
 
 describe('ModelRegistry filters', () => {

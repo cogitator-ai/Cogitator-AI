@@ -1,16 +1,19 @@
+import { z } from 'zod';
 import type { ModelInfo, CacheOptions } from './types';
+import { ModelInfoSchema } from './types';
 import { writeFile, readFile, mkdir, unlink } from 'fs/promises';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 
-interface CacheEntry {
-  models: ModelInfo[];
-  timestamp: number;
-  version: string;
-}
-
 const CACHE_VERSION = '1.0.0';
 const DEFAULT_CACHE_PATH = join(homedir(), '.cogitator', 'models-cache.json');
+const CacheEntrySchema = z.object({
+  models: z.array(ModelInfoSchema),
+  timestamp: z.number().finite(),
+  version: z.literal(CACHE_VERSION),
+});
+
+type CacheEntry = z.infer<typeof CacheEntrySchema>;
 
 export class ModelCache {
   private memoryCache: CacheEntry | null = null;
@@ -91,13 +94,13 @@ export class ModelCache {
       const content = await readFile(this.options.filePath, 'utf-8');
       if (!content.trim()) return null;
 
-      const entry = JSON.parse(content) as CacheEntry;
+      const result = CacheEntrySchema.safeParse(JSON.parse(content));
 
-      if (!entry.models || !entry.timestamp || entry.version !== CACHE_VERSION) {
+      if (!result.success) {
         return null;
       }
 
-      return entry;
+      return result.data;
     } catch {
       return null;
     }

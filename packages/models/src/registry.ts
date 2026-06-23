@@ -218,25 +218,42 @@ export class ModelRegistry {
     const modelMap = new Map<string, ModelInfo>();
 
     for (const model of BUILTIN_MODELS) {
-      modelMap.set(model.id, model);
+      modelMap.set(model.id.toLowerCase(), model);
     }
 
     for (const model of fetched) {
-      const existing = modelMap.get(model.id);
+      const modelKey = model.id.toLowerCase();
+      const existing = modelMap.get(modelKey);
       if (existing) {
-        modelMap.set(model.id, {
+        modelMap.set(modelKey, {
           ...existing,
           pricing: model.pricing,
-          contextWindow: model.contextWindow || existing.contextWindow,
-          maxOutputTokens: model.maxOutputTokens || existing.maxOutputTokens,
-          deprecated: model.deprecated,
+          contextWindow: model.contextWindow ?? existing.contextWindow,
+          maxOutputTokens: model.maxOutputTokens ?? existing.maxOutputTokens,
+          capabilities: this.mergeCapabilities(existing.capabilities, model.capabilities),
+          deprecated: existing.deprecated || model.deprecated || undefined,
         });
       } else {
-        modelMap.set(model.id, model);
+        modelMap.set(modelKey, model);
       }
     }
 
     return Array.from(modelMap.values());
+  }
+
+  private mergeCapabilities(
+    existing: ModelInfo['capabilities'],
+    fetched: ModelInfo['capabilities']
+  ): ModelInfo['capabilities'] {
+    if (!existing && !fetched) return undefined;
+
+    return {
+      supportsVision: fetched?.supportsVision ?? existing?.supportsVision,
+      supportsTools: fetched?.supportsTools ?? existing?.supportsTools,
+      supportsFunctions: fetched?.supportsFunctions ?? existing?.supportsFunctions,
+      supportsStreaming: fetched?.supportsStreaming ?? existing?.supportsStreaming,
+      supportsJson: fetched?.supportsJson ?? existing?.supportsJson,
+    };
   }
 
   private normalizeModelId(id: string): string {
