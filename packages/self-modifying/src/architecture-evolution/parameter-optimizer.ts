@@ -82,11 +82,20 @@ export class ParameterOptimizer {
 
     const mergedConfig = this.mergeConfigs(this.baseConfig, selection.candidate.config);
 
+    const bestEvaluated = this.candidates
+      .filter((c) => c.evaluationCount > 0)
+      .sort((a, b) => b.score - a.score)[0];
+
+    const shouldAdopt =
+      !bestEvaluated ||
+      selection.candidate.id === bestEvaluated.id ||
+      selection.score >= bestEvaluated.score * 0.9;
+
     return {
       recommendedConfig: mergedConfig,
       candidate: selection.candidate,
       metrics: this.calculateMetrics(),
-      shouldAdopt: true,
+      shouldAdopt,
       confidence: selection.score,
       reasoning: selection.reasoning,
     };
@@ -247,23 +256,20 @@ export class ParameterOptimizer {
     const mutated = { ...config };
     const mutationRate = 0.3;
 
-    if (Math.random() < mutationRate && mutated.temperature !== undefined) {
-      mutated.temperature = Math.max(
-        0,
-        Math.min(2, mutated.temperature + (Math.random() - 0.5) * 0.3)
-      );
+    if (Math.random() < mutationRate) {
+      const base = mutated.temperature ?? this.baseConfig.temperature;
+      mutated.temperature = Math.max(0, Math.min(2, base + (Math.random() - 0.5) * 0.3));
     }
 
-    if (Math.random() < mutationRate && mutated.maxTokens !== undefined) {
+    if (Math.random() < mutationRate) {
+      const base = mutated.maxTokens ?? this.baseConfig.maxTokens;
       const delta = Math.floor((Math.random() - 0.5) * 1000);
-      mutated.maxTokens = Math.max(100, Math.min(32000, mutated.maxTokens + delta));
+      mutated.maxTokens = Math.max(100, Math.min(32000, base + delta));
     }
 
-    if (Math.random() < mutationRate && mutated.reflectionDepth !== undefined) {
-      mutated.reflectionDepth = Math.max(
-        0,
-        Math.min(5, mutated.reflectionDepth + Math.round(Math.random() * 2 - 1))
-      );
+    if (Math.random() < mutationRate) {
+      const base = mutated.reflectionDepth ?? this.baseConfig.reflectionDepth;
+      mutated.reflectionDepth = Math.max(0, Math.min(5, base + Math.round(Math.random() * 2 - 1)));
     }
 
     return mutated;
@@ -316,12 +322,16 @@ export class ParameterOptimizer {
   }
 
   private shouldEvolve(): boolean {
-    const minEvaluations = this.candidates.reduce(
+    const evaluatedCandidates = this.candidates.filter((c) => c.evaluationCount > 0);
+    if (evaluatedCandidates.length === 0) return false;
+
+    const minEvaluations = evaluatedCandidates.reduce(
       (min, c) => Math.min(min, c.evaluationCount),
       Infinity
     );
 
-    if (minEvaluations < 3) return false;
+    const minRequired = this.config.minEvaluationsBeforeEvolution ?? 3;
+    if (minEvaluations < minRequired) return false;
 
     const evaluationsSinceEvolution = this.history.filter(
       (h) => h.timestamp > this.getLastEvolutionTime()
@@ -415,6 +425,20 @@ export class ParameterOptimizer {
 
     if (a.model !== undefined && b.model !== undefined && a.model !== b.model) {
       distance += 1;
+      fields++;
+    }
+
+    if (
+      a.toolStrategy !== undefined &&
+      b.toolStrategy !== undefined &&
+      a.toolStrategy !== b.toolStrategy
+    ) {
+      distance += 1;
+      fields++;
+    }
+
+    if (a.reflectionDepth !== undefined && b.reflectionDepth !== undefined) {
+      distance += Math.abs(a.reflectionDepth - b.reflectionDepth) / 5;
       fields++;
     }
 

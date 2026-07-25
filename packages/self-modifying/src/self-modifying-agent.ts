@@ -1,3 +1,4 @@
+import { nanoid } from 'nanoid';
 import type {
   Agent,
   AgentConfig,
@@ -9,6 +10,8 @@ import type {
   MetaObservation,
   MetaAdaptation,
   ModificationCheckpoint,
+  AppliedModification,
+  ModificationRequest,
   SelfModifyingEvent,
   CapabilityGap,
   Message,
@@ -44,6 +47,8 @@ export interface RunContext {
   observations: MetaObservation[];
   adaptations: MetaAdaptation[];
   checkpoints: ModificationCheckpoint[];
+  modificationsCount: number;
+  appliedModifications: AppliedModification[];
 }
 
 export class SelfModifyingAgent {
@@ -63,6 +68,7 @@ export class SelfModifyingAgent {
 
   private currentContext: RunContext | null = null;
   private isInitialized = false;
+  private storedExecutableTools: Tool[] = [];
 
   constructor(options: SelfModifyingAgentOptions) {
     this.agent = options.agent;
@@ -145,7 +151,7 @@ export class SelfModifyingAgent {
     const tools = this.getAvailableTools();
 
     const baseConfig: ArchitectureConfig = {
-      model: 'default',
+      model: this.agent.model ?? 'default',
       temperature: 0.7,
       maxTokens: 4096,
       toolStrategy: 'sequential',
@@ -162,6 +168,8 @@ export class SelfModifyingAgent {
       observations: [],
       adaptations: [],
       checkpoints: [],
+      modificationsCount: 0,
+      appliedModifications: [],
     };
 
     void this.emitter.emit({
@@ -172,6 +180,10 @@ export class SelfModifyingAgent {
     });
 
     try {
+      if (this.config.constraints.enabled && this.config.constraints.autoRollback) {
+        await this.createCheckpoint();
+      }
+
       if (this.config.architectureEvolution.enabled) {
         await this.optimizeArchitecture(input);
       }
@@ -215,6 +227,10 @@ export class SelfModifyingAgent {
 
       return result;
     } catch (error) {
+      if (this.config.constraints.enabled && this.config.constraints.autoRollback) {
+        await this.autoRollbackOnError();
+      }
+
       void this.emitter.emit({
         type: 'run_completed',
         runId,
@@ -301,7 +317,7 @@ export class SelfModifyingAgent {
       this.agent.name || 'agent',
       agentConfig,
       this.currentContext.tools,
-      []
+      [...this.currentContext.appliedModifications]
     );
 
     this.currentContext.checkpoints.push(checkpoint);
@@ -322,6 +338,13 @@ export class SelfModifyingAgent {
 
     if (this.currentContext) {
       this.currentContext.tools = restored.tools;
+      this.currentContext.currentConfig = {
+        ...this.currentContext.currentConfig,
+        model: restored.agentConfig.model ?? this.currentContext.currentConfig.model,
+        temperature:
+          restored.agentConfig.temperature ?? this.currentContext.currentConfig.temperature,
+        maxTokens: restored.agentConfig.maxTokens ?? this.currentContext.currentConfig.maxTokens,
+      };
     }
 
     void this.emitter.emit({
@@ -340,7 +363,8 @@ export class SelfModifyingAgent {
   private async ensureInitialized(): Promise<void> {
     if (this.isInitialized) return;
 
-    await this.toolStore.list({ status: 'active' });
+    const activeTools = await this.toolStore.list({ status: 'active' });
+    this.storedExecutableTools = activeTools.map((t) => this.toolGenerator.createExecutableTool(t));
 
     this.isInitialized = true;
   }
@@ -447,7 +471,7 @@ export class SelfModifyingAgent {
   }
 
   private getAvailableTools(): Tool[] {
-    return this.agent.tools ?? [];
+    return [...(this.agent.tools ?? []), ...this.storedExecutableTools];
   }
 
   private async optimizeArchitecture(input: string): Promise<void> {
@@ -456,22 +480,24 @@ export class SelfModifyingAgent {
     try {
       const result = await this.parameterOptimizer.optimize(input);
 
-      if (result.shouldAdopt && result.confidence > 0.6) {
-        const validation = await this.modificationValidator.validate({
+      if (result.shouldAdopt && result.confidence > 0.6 && this.canApplyModification()) {
+        const validation = await this.validateModification({
           type: 'config_change',
           target: 'architecture',
           changes: result.recommendedConfig,
           reason: result.reasoning,
         });
 
-        if (validation.valid) {
+        if (validation) {
           this.currentContext.currentConfig = result.recommendedConfig;
+          this.recordModification('config_change', result.recommendedConfig);
 
           void this.emitter.emit({
             type: 'architecture_evolved',
             runId: this.currentContext.runId,
             timestamp: new Date(),
             data: {
+              success: true,
               candidateId: result.candidate?.id,
               changes: result.recommendedConfig,
               metrics: result.metrics,
@@ -484,7 +510,10 @@ export class SelfModifyingAgent {
         type: 'architecture_evolved',
         runId: this.currentContext.runId,
         timestamp: new Date(),
-        data: { error: error instanceof Error ? error.message : String(error) },
+        data: {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        },
       });
     }
   }
@@ -496,6 +525,12 @@ export class SelfModifyingAgent {
       const analysis = await this.gapAnalyzer.analyze(input, this.currentContext.tools);
 
       for (const gap of analysis.gaps) {
+        if (
+          this.currentContext.generatedTools.length >= this.config.toolGeneration.maxToolsPerSession
+        ) {
+          break;
+        }
+
         if (gap.confidence >= this.config.toolGeneration.minConfidenceForGeneration) {
           void this.emitter.emit({
             type: 'tool_generation_started',
@@ -506,11 +541,41 @@ export class SelfModifyingAgent {
 
           const tool = await this.generateTool(gap);
 
-          if (tool) {
-            this.currentContext.generatedTools.push(tool);
-            const executableTool = this.toolGenerator.createExecutableTool(tool);
-            this.currentContext.tools.push(executableTool);
+          if (!tool) continue;
+
+          const linesOfCode = tool.implementation.split('\n').length;
+          const validated = await this.validateModification({
+            type: 'tool_generation',
+            target: tool.name,
+            changes: { name: tool.name, implementation: tool.implementation },
+            reason: `Generated tool for gap: ${gap.suggestedToolName}`,
+            payload: {
+              sandboxExecution: this.config.toolGeneration.sandboxConfig?.enabled ?? false,
+              linesOfCode,
+              complexity: linesOfCode,
+              modificationDepth: 1,
+            },
+          });
+
+          if (!validated || !this.canApplyModification()) {
+            void this.emitter.emit({
+              type: 'tool_generation_completed',
+              runId: this.currentContext.runId,
+              timestamp: new Date(),
+              data: {
+                toolId: tool.id,
+                name: tool.name,
+                success: false,
+                error: 'Rejected by safety constraints or modification limit',
+              },
+            });
+            continue;
           }
+
+          this.currentContext.generatedTools.push(tool);
+          const executableTool = this.toolGenerator.createExecutableTool(tool);
+          this.currentContext.tools.push(executableTool);
+          this.recordModification('tool_generation', { toolId: tool.id, name: tool.name });
         }
       }
     } catch (error) {
@@ -693,6 +758,49 @@ export class SelfModifyingAgent {
     });
   }
 
+  private async validateModification(request: ModificationRequest): Promise<boolean> {
+    if (!this.config.constraints.enabled) return true;
+
+    const validation = await this.modificationValidator.validate(request);
+
+    if (validation.rollbackRequired && this.config.constraints.autoRollback) {
+      await this.autoRollbackOnError();
+    }
+
+    return validation.valid;
+  }
+
+  private canApplyModification(): boolean {
+    if (!this.config.constraints.enabled) return true;
+    if (!this.currentContext) return true;
+    return this.currentContext.modificationsCount < this.config.constraints.maxModificationsPerRun;
+  }
+
+  private recordModification(type: string, data: unknown): void {
+    if (!this.currentContext) return;
+    this.currentContext.modificationsCount++;
+    this.currentContext.appliedModifications.push({
+      id: `mod_${nanoid(8)}`,
+      type,
+      appliedAt: new Date(),
+      data,
+    });
+  }
+
+  private async autoRollbackOnError(): Promise<void> {
+    if (!this.currentContext) return;
+
+    const now = Date.now();
+    const window = this.config.constraints.rollbackWindow;
+    const target = this.currentContext.checkpoints
+      .filter((c) => now - c.timestamp.getTime() <= window)
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())[0];
+
+    if (target) {
+      await this.rollbackToCheckpoint(target.id);
+    }
+  }
+
   private estimateConfidence(output: string): number {
     if (!output) return 0.3;
     if (output.length < 50) return 0.4;
@@ -700,7 +808,8 @@ export class SelfModifyingAgent {
     return 0.8;
   }
 
-  private isTaskComplete(_output: string): boolean {
-    return true;
+  private isTaskComplete(output: string): boolean {
+    if (!output.trim()) return false;
+    return this.estimateConfidence(output) >= 0.6;
   }
 }

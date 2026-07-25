@@ -37,10 +37,12 @@ ${contextSection}
 
 Respond with a JSON object:
 {
-  "complexity": "trivial" | "simple" | "moderate" | "complex" | "extreme",
+  "complexity": "trivial" | "simple" | "moderate" | "complex" | "expert" | "extreme",
   "domain": "general" | "coding" | "reasoning" | "creative" | "factual" | "conversational",
   "estimatedTokens": number,
   "requiresTools": boolean,
+  "requiresReasoning": boolean,
+  "requiresCreativity": boolean,
   "toolIntensity": "none" | "light" | "moderate" | "heavy",
   "reasoningDepth": "shallow" | "moderate" | "deep" | "exhaustive",
   "creativityLevel": "low" | "moderate" | "high",
@@ -152,6 +154,8 @@ export function parseTaskProfileResponse(response: string): TaskProfile | null {
       domain: parsed.domain || 'general',
       estimatedTokens: parsed.estimatedTokens || 1000,
       requiresTools: Boolean(parsed.requiresTools),
+      requiresReasoning: Boolean(parsed.requiresReasoning),
+      requiresCreativity: Boolean(parsed.requiresCreativity),
       toolIntensity: parsed.toolIntensity || 'none',
       reasoningDepth: parsed.reasoningDepth || 'moderate',
       creativityLevel: parsed.creativityLevel || 'moderate',
@@ -164,11 +168,11 @@ export function parseTaskProfileResponse(response: string): TaskProfile | null {
 }
 
 export function parseCandidateGenerationResponse(response: string): EvolutionCandidate[] {
-  const jsonMatch = /\[[\s\S]*\]/.exec(response);
-  if (!jsonMatch) return [];
+  const json = extractJsonArray(response);
+  if (!json) return [];
 
   try {
-    const parsed = JSON.parse(jsonMatch[0]);
+    const parsed = JSON.parse(json);
     if (!Array.isArray(parsed)) return [];
 
     return parsed
@@ -213,4 +217,44 @@ export function parsePerformanceAnalysisResponse(response: string): {
   } catch {
     return null;
   }
+}
+
+function extractJsonArray(text: string): string | null {
+  const start = text.indexOf('[');
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (ch === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (ch === '[' || ch === '{') depth++;
+    else if (ch === ']' || ch === '}') {
+      depth--;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+
+  return null;
 }

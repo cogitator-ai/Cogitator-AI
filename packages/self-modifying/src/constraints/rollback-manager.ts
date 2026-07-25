@@ -119,9 +119,28 @@ export class RollbackManager {
     if (!checkpoint) return null;
 
     return {
-      agentConfig: checkpoint.agentConfig as unknown as AgentConfig,
+      agentConfig: this.toAgentConfig(checkpoint.agentConfig),
       tools: checkpoint.tools.map((t) => ({ ...t })),
     };
+  }
+
+  private toAgentConfig(record: Record<string, unknown>): AgentConfig {
+    const config: AgentConfig = {
+      name: typeof record.name === 'string' ? record.name : 'agent',
+      model: typeof record.model === 'string' ? record.model : 'default',
+      instructions: typeof record.instructions === 'string' ? record.instructions : '',
+    };
+
+    if (typeof record.id === 'string') config.id = record.id;
+    if (typeof record.description === 'string') config.description = record.description;
+    if (typeof record.provider === 'string') config.provider = record.provider;
+    if (typeof record.temperature === 'number') config.temperature = record.temperature;
+    if (typeof record.topP === 'number') config.topP = record.topP;
+    if (typeof record.maxTokens === 'number') config.maxTokens = record.maxTokens;
+    if (typeof record.maxIterations === 'number') config.maxIterations = record.maxIterations;
+    if (typeof record.timeout === 'number') config.timeout = record.timeout;
+
+    return config;
   }
 
   async rollbackToLatest(

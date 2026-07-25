@@ -1,5 +1,78 @@
 import type { GeneratedTool, GeneratedToolStore as IGeneratedToolStore } from '@cogitator-ai/types';
 
+const STOP_WORDS = new Set([
+  'the',
+  'and',
+  'for',
+  'not',
+  'are',
+  'was',
+  'were',
+  'been',
+  'being',
+  'have',
+  'has',
+  'had',
+  'does',
+  'did',
+  'will',
+  'would',
+  'could',
+  'should',
+  'may',
+  'might',
+  'shall',
+  'can',
+  'this',
+  'that',
+  'these',
+  'those',
+  'with',
+  'from',
+  'into',
+  'through',
+  'during',
+  'before',
+  'after',
+  'above',
+  'below',
+  'between',
+  'under',
+  'over',
+  'again',
+  'further',
+  'then',
+  'once',
+  'here',
+  'there',
+  'when',
+  'where',
+  'why',
+  'how',
+  'all',
+  'each',
+  'every',
+  'both',
+  'few',
+  'more',
+  'most',
+  'other',
+  'some',
+  'such',
+  'only',
+  'own',
+  'same',
+  'than',
+  'too',
+  'very',
+  'just',
+  'because',
+  'but',
+  'nor',
+  'yet',
+  'about',
+]);
+
 export interface ToolUsageRecord {
   toolId: string;
   timestamp: Date;
@@ -25,7 +98,7 @@ export class InMemoryGeneratedToolStore implements IGeneratedToolStore {
 
   async save(tool: GeneratedTool): Promise<void> {
     const existing = this.tools.get(tool.id);
-    const version = existing ? existing.version + 1 : tool.version;
+    const version = existing ? existing.version + 1 : 1;
     this.tools.set(tool.id, { ...tool, version, updatedAt: new Date() });
   }
 
@@ -140,17 +213,27 @@ export class InMemoryGeneratedToolStore implements IGeneratedToolStore {
   }
 
   async findSimilar(description: string, limit: number = 5): Promise<GeneratedTool[]> {
-    const descWords = new Set(description.toLowerCase().split(/\s+/));
+    const descWords = new Set(
+      description
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w.length >= 3 && !STOP_WORDS.has(w))
+    );
     const scored: Array<{ tool: GeneratedTool; score: number }> = [];
 
     for (const tool of this.tools.values()) {
       if (tool.status === 'deprecated') continue;
 
-      const toolWords = new Set(`${tool.name} ${tool.description}`.toLowerCase().split(/\s+/));
+      const toolWords = new Set(
+        `${tool.name} ${tool.description}`
+          .toLowerCase()
+          .split(/\s+/)
+          .filter((w) => w.length >= 3 && !STOP_WORDS.has(w))
+      );
 
       let matchCount = 0;
       for (const word of descWords) {
-        if (word.length >= 3 && toolWords.has(word)) {
+        if (toolWords.has(word)) {
           matchCount++;
         }
       }
@@ -204,13 +287,13 @@ export class InMemoryGeneratedToolStore implements IGeneratedToolStore {
     let removed = 0;
     const now = Date.now();
 
+    const keysToRemove: string[] = [];
+
     for (const [id, tool] of this.tools) {
       if (options.maxAge && tool.createdAt) {
         const age = now - tool.createdAt.getTime();
         if (age > options.maxAge && tool.status !== 'active') {
-          this.tools.delete(id);
-          this.usageRecords.delete(id);
-          removed++;
+          keysToRemove.push(id);
           continue;
         }
       }
@@ -218,11 +301,15 @@ export class InMemoryGeneratedToolStore implements IGeneratedToolStore {
       if (options.minUsage !== undefined) {
         const usage = tool.usageCount || 0;
         if (usage < options.minUsage && tool.status === 'deprecated') {
-          this.tools.delete(id);
-          this.usageRecords.delete(id);
-          removed++;
+          keysToRemove.push(id);
         }
       }
+    }
+
+    for (const id of keysToRemove) {
+      this.tools.delete(id);
+      this.usageRecords.delete(id);
+      removed++;
     }
 
     if (options.maxDeprecated !== undefined) {

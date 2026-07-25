@@ -9,8 +9,32 @@ export function extractJson(text: string): string | null {
     cleaned = codeBlockMatch[1].trim();
   }
 
-  const start = cleaned.indexOf('{');
-  if (start === -1) return null;
+  const objectStart = cleaned.indexOf('{');
+  const arrayStart = cleaned.indexOf('[');
+
+  let start: number;
+  let open: string;
+  let close: string;
+
+  if (objectStart === -1 && arrayStart === -1) {
+    return null;
+  } else if (objectStart === -1) {
+    start = arrayStart;
+    open = '[';
+    close = ']';
+  } else if (arrayStart === -1) {
+    start = objectStart;
+    open = '{';
+    close = '}';
+  } else if (objectStart < arrayStart) {
+    start = objectStart;
+    open = '{';
+    close = '}';
+  } else {
+    start = arrayStart;
+    open = '[';
+    close = ']';
+  }
 
   let depth = 0;
   let inString = false;
@@ -36,8 +60,8 @@ export function extractJson(text: string): string | null {
 
     if (inString) continue;
 
-    if (ch === '{') depth++;
-    else if (ch === '}') {
+    if (ch === open) depth++;
+    else if (ch === close) {
       depth--;
       if (depth === 0) {
         return cleaned.slice(start, i + 1);
@@ -48,7 +72,7 @@ export function extractJson(text: string): string | null {
   if (depth > 0) {
     let repaired = cleaned.slice(start);
     repaired = repaired.replace(/,\s*$/, '');
-    repaired += '}'.repeat(depth);
+    repaired += close.repeat(depth);
     try {
       JSON.parse(repaired);
       return repaired;

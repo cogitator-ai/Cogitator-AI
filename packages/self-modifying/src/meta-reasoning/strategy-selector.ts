@@ -143,6 +143,12 @@ export class StrategySelector {
       if (currentMode === 'intuitive' && alternatives.includes('analytical')) {
         return 'analytical';
       }
+      if (currentMode === 'reflective' && alternatives.includes('intuitive')) {
+        return 'intuitive';
+      }
+      if (currentMode === 'exploratory' && alternatives.includes('analytical')) {
+        return 'analytical';
+      }
 
       return alternatives[0] ?? null;
     }

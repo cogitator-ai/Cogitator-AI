@@ -46,7 +46,11 @@ describe('SelfModifyingAgent tool execution', () => {
         .mockResolvedValueOnce(
           chatResponse('', [{ id: 'call_1', name: 'calculator', arguments: { input: '6*7' } }])
         )
-        .mockResolvedValueOnce(chatResponse('The answer is 42.')),
+        .mockResolvedValueOnce(
+          chatResponse(
+            'The answer to your calculation is 42. I used the calculator tool to compute 6 times 7.'
+          )
+        ),
     };
 
     const agent = createMockAgent([calculator]);
@@ -63,7 +67,9 @@ describe('SelfModifyingAgent tool execution', () => {
 
     const result = await selfMod.run('What is 6 times 7?');
 
-    expect(result.output).toBe('The answer is 42.');
+    expect(result.output).toBe(
+      'The answer to your calculation is 42. I used the calculator tool to compute 6 times 7.'
+    );
     expect(calculator.execute).toHaveBeenCalledOnce();
     expect(calculator.execute).toHaveBeenCalledWith(
       { input: '6*7' },
@@ -89,7 +95,11 @@ describe('SelfModifyingAgent tool execution', () => {
         .mockResolvedValueOnce(
           chatResponse('', [{ id: 'call_2', name: 'format', arguments: { input: 'found it' } }])
         )
-        .mockResolvedValueOnce(chatResponse('Here is your formatted result.')),
+        .mockResolvedValueOnce(
+          chatResponse(
+            'Here is your formatted result. I searched for the information and then formatted it for you.'
+          )
+        ),
     };
 
     const agent = createMockAgent([search, format]);
@@ -106,7 +116,9 @@ describe('SelfModifyingAgent tool execution', () => {
 
     const result = await selfMod.run('Search and format');
 
-    expect(result.output).toBe('Here is your formatted result.');
+    expect(result.output).toBe(
+      'Here is your formatted result. I searched for the information and then formatted it for you.'
+    );
     expect(search.execute).toHaveBeenCalledOnce();
     expect(format.execute).toHaveBeenCalledOnce();
     expect(vi.mocked(mockLLM.chat!)).toHaveBeenCalledTimes(3);
@@ -122,7 +134,11 @@ describe('SelfModifyingAgent tool execution', () => {
         .mockResolvedValueOnce(
           chatResponse('', [{ id: 'call_1', name: 'broken', arguments: { input: 'test' } }])
         )
-        .mockResolvedValueOnce(chatResponse('The tool failed but I can help anyway.')),
+        .mockResolvedValueOnce(
+          chatResponse(
+            'The tool failed but I can still help you with your request. Let me try a different approach.'
+          )
+        ),
     };
 
     const agent = createMockAgent([failTool]);
@@ -139,7 +155,9 @@ describe('SelfModifyingAgent tool execution', () => {
 
     const result = await selfMod.run('Use the broken tool');
 
-    expect(result.output).toBe('The tool failed but I can help anyway.');
+    expect(result.output).toBe(
+      'The tool failed but I can still help you with your request. Let me try a different approach.'
+    );
     const secondCall = vi.mocked(mockLLM.chat!).mock.calls[1][0];
     const toolMsg = secondCall.messages.find((m: { role: string }) => m.role === 'tool');
     expect(toolMsg?.content).toContain('tool crashed');
@@ -152,7 +170,11 @@ describe('SelfModifyingAgent tool execution', () => {
         .mockResolvedValueOnce(
           chatResponse('', [{ id: 'call_1', name: 'nonexistent', arguments: { input: 'x' } }])
         )
-        .mockResolvedValueOnce(chatResponse('I could not find that tool.')),
+        .mockResolvedValueOnce(
+          chatResponse(
+            'I could not find that tool in my available tools. Let me try to help you without it.'
+          )
+        ),
     };
 
     const agent = createMockAgent([]);
@@ -169,7 +191,9 @@ describe('SelfModifyingAgent tool execution', () => {
 
     const result = await selfMod.run('Call a tool');
 
-    expect(result.output).toBe('I could not find that tool.');
+    expect(result.output).toBe(
+      'I could not find that tool in my available tools. Let me try to help you without it.'
+    );
     const secondCall = vi.mocked(mockLLM.chat!).mock.calls[1][0];
     const toolMsg = secondCall.messages.find((m: { role: string }) => m.role === 'tool');
     expect(toolMsg?.content).toContain('not found');
@@ -177,7 +201,13 @@ describe('SelfModifyingAgent tool execution', () => {
 
   it('works without any tools (no tools passed to LLM)', async () => {
     const mockLLM: Partial<LLMBackend> = {
-      chat: vi.fn().mockResolvedValueOnce(chatResponse('Hello world')),
+      chat: vi
+        .fn()
+        .mockResolvedValueOnce(
+          chatResponse(
+            'Hello world! I am a test assistant and I am here to help you with your questions.'
+          )
+        ),
     };
 
     const agent = createMockAgent([]);
@@ -194,7 +224,9 @@ describe('SelfModifyingAgent tool execution', () => {
 
     const result = await selfMod.run('Just say hi');
 
-    expect(result.output).toBe('Hello world');
+    expect(result.output).toBe(
+      'Hello world! I am a test assistant and I am here to help you with your questions.'
+    );
     const chatCall = vi.mocked(mockLLM.chat!).mock.calls[0][0];
     expect(chatCall.tools).toBeUndefined();
   });

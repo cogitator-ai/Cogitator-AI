@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type {
   Tool,
   LLMBackend,
@@ -151,7 +152,6 @@ Consider tool composition before suggesting new tools.`,
       return 1.0;
     }
 
-    const _intentWords = userIntent.toLowerCase().split(/\s+/).length;
     const toolDescriptionWords = availableTools
       .map((t) => t.description.toLowerCase().split(/\s+/))
       .flat();
@@ -222,7 +222,8 @@ Consider tool composition before suggesting new tools.`,
       .map((t) => t.name)
       .sort()
       .join(',');
-    return `${userIntent.slice(0, 100)}|${toolSignature}`;
+    const raw = `${userIntent}|${toolSignature}`;
+    return createHash('sha256').update(raw).digest('hex');
   }
 
   clearCache(): void {

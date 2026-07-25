@@ -299,13 +299,44 @@ Be thorough but practical - focus on real issues.`,
     const params = tool.parameters;
 
     if (params.type === 'object' && params.properties) {
-      const validInput: Record<string, unknown> = {};
       const properties = params.properties as Record<string, { type?: string; default?: unknown }>;
+      const required = Array.isArray(params.required)
+        ? new Set(params.required as string[])
+        : new Set<string>();
 
+      const validInput: Record<string, unknown> = {};
       for (const [key, schema] of Object.entries(properties)) {
         validInput[key] = this.generateSampleValue(schema.type, schema.default);
       }
       testCases.push({ input: validInput });
+
+      const emptyInput: Record<string, unknown> = {};
+      for (const [key, schema] of Object.entries(properties)) {
+        if (!required.has(key)) {
+          emptyInput[key] = this.generateSampleValue(schema.type, schema.default);
+        }
+      }
+      if (Object.keys(emptyInput).length > 0) {
+        testCases.push({ input: emptyInput });
+      }
+
+      const edgeInput: Record<string, unknown> = {};
+      for (const [key, schema] of Object.entries(properties)) {
+        edgeInput[key] = this.generateEdgeValue(schema.type);
+      }
+      testCases.push({ input: edgeInput });
+
+      if (required.size > 0) {
+        const missingRequired: Record<string, unknown> = {};
+        for (const [key, schema] of Object.entries(properties)) {
+          if (!required.has(key)) {
+            missingRequired[key] = this.generateSampleValue(schema.type, schema.default);
+          }
+        }
+        testCases.push({ input: missingRequired, shouldThrow: true });
+      }
+    } else {
+      testCases.push({ input: {} });
     }
 
     return testCases;
@@ -328,6 +359,25 @@ Be thorough but practical - focus on real issues.`,
         return {};
       default:
         return null;
+    }
+  }
+
+  private generateEdgeValue(type?: string): unknown {
+    switch (type) {
+      case 'string':
+        return '';
+      case 'number':
+        return 0;
+      case 'integer':
+        return -1;
+      case 'boolean':
+        return false;
+      case 'array':
+        return [null, 0, ''];
+      case 'object':
+        return { unexpected: true };
+      default:
+        return undefined;
     }
   }
 

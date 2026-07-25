@@ -92,10 +92,21 @@ export class ModificationValidator {
       return this.evaluateExpression(rule, request.payload as Record<string, unknown>);
     }
 
-    return this.evaluateExpression(
-      rule.expression ?? '',
-      request.payload as Record<string, unknown>
-    );
+    const context = request.payload as Record<string, unknown>;
+    const checks: boolean[] = [];
+
+    if (rule.expression) {
+      checks.push(this.evaluateExpression(rule.expression, context));
+    }
+
+    if (rule.pattern) {
+      const subject = JSON.stringify(request.changes ?? request.payload ?? '');
+      checks.push(rule.pattern.test(subject));
+    }
+
+    if (checks.length === 0) return false;
+
+    return checks.every(Boolean);
   }
 
   private evaluateExpression(expression: string, context: Record<string, unknown>): boolean {
@@ -181,7 +192,7 @@ export class ModificationValidator {
   ): Promise<ConstraintCheckResult[]> {
     const results: ConstraintCheckResult[] = [];
 
-    if (request.type !== 'tool_generation') {
+    if (request.type !== 'tool_generation' && request.type !== 'tool_creation') {
       return results;
     }
 
@@ -239,7 +250,7 @@ export class ModificationValidator {
 
       if (
         constraint.maxTokensPerRun &&
-        payload.tokensUsed &&
+        payload.tokensUsed != null &&
         payload.tokensUsed > constraint.maxTokensPerRun
       ) {
         satisfied = false;
@@ -249,7 +260,7 @@ export class ModificationValidator {
       if (
         satisfied &&
         constraint.maxCostPerRun &&
-        payload.cost &&
+        payload.cost != null &&
         payload.cost > constraint.maxCostPerRun
       ) {
         satisfied = false;
@@ -259,7 +270,7 @@ export class ModificationValidator {
       if (
         satisfied &&
         constraint.maxToolsActive &&
-        payload.activeTools &&
+        payload.activeTools != null &&
         payload.activeTools > constraint.maxToolsActive
       ) {
         satisfied = false;

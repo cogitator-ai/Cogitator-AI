@@ -54,7 +54,11 @@ export class ObservationCollector {
 
   collect(context: ObservationContext, insights: Insight[]): MetaObservation {
     const { runId, iteration, goal, currentMode } = context;
-    const prevObservations = this.observations.get(runId) ?? [];
+    let prevObservations = this.observations.get(runId);
+    if (!prevObservations) {
+      prevObservations = [];
+      this.observations.set(runId, prevObservations);
+    }
     const lastObs = prevObservations[prevObservations.length - 1];
     const actions = this.actionHistory.get(runId) ?? [];
     const confidenceHist = this.confidenceHistory.get(runId) ?? [];
@@ -62,7 +66,7 @@ export class ObservationCollector {
     const currentConfidence = confidenceHist[confidenceHist.length - 1] ?? 0.5;
     const progressScore = this.calculateProgress(actions);
     const progressDelta = lastObs ? progressScore - lastObs.progressScore : 0;
-    const stagnationCount = progressDelta < 0.05 ? (lastObs?.stagnationCount ?? 0) + 1 : 0;
+    const stagnationCount = lastObs ? (progressDelta < 0.05 ? lastObs.stagnationCount + 1 : 0) : 0;
     const repetitionScore = this.calculateRepetition(actions);
     const toolSuccessRate = this.calculateToolSuccessRate(actions);
     const confidenceTrend = this.calculateTrend(confidenceHist);

@@ -1,4 +1,5 @@
 import type { MetaObservation, ReasoningMode, ReasoningModeConfig } from '@cogitator-ai/types';
+import { extractJson } from '../utils';
 
 export function buildMetaAssessmentPrompt(
   observation: MetaObservation,
@@ -62,20 +63,20 @@ Analyze the agent's reasoning process and respond with a JSON object:
   "reasoning": "string",
   "issues": [
     {
-      "type": "stagnation" | "repetition" | "resource_exhaustion" | "confidence_decline" | "strategy_mismatch" | "goal_drift",
-      "severity": "low" | "medium" | "high" | "critical",
+      "type": "stagnation" | "low_confidence" | "high_cost" | "repetition" | "tool_failure",
+      "severity": "low" | "medium" | "high",
       "description": "string"
     }
   ],
   "opportunities": [
     {
-      "type": "strategy_switch" | "temperature_adjust" | "tool_pivot" | "goal_refinement" | "context_injection",
+      "type": "mode_switch" | "parameter_tune" | "context_add" | "tool_compose",
       "description": "string",
       "expectedImprovement": number
     }
   ],
   "recommendation": {
-    "action": "continue" | "switch_mode" | "adjust_parameters" | "inject_context" | "escalate" | "abort",
+    "action": "continue" | "switch_mode" | "adjust_parameters" | "inject_context" | "abort",
     "newMode": "string",
     "parameterChanges": {},
     "contextAddition": "string",
@@ -117,46 +118,6 @@ export function parseMetaAssessmentResponse(content: string): ParsedAssessment |
   } catch {
     return null;
   }
-}
-
-function extractJson(text: string): string | null {
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-
-    if (escape) {
-      escape = false;
-      continue;
-    }
-
-    if (ch === '\\' && inString) {
-      escape = true;
-      continue;
-    }
-
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-
-    if (inString) continue;
-
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) {
-        return text.slice(start, i + 1);
-      }
-    }
-  }
-
-  return null;
 }
 
 export const META_REASONING_SYSTEM_PROMPT = `You are a meta-reasoning system analyzing an AI agent's reasoning process.

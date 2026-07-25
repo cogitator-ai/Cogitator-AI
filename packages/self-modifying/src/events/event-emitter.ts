@@ -30,7 +30,7 @@ export class SelfModifyingEventEmitter {
       ...(wildcardHandlers ? [...wildcardHandlers] : []),
     ];
 
-    await Promise.allSettled(
+    const results = await Promise.allSettled(
       allHandlers.map((h) => {
         try {
           return Promise.resolve(h(event));
@@ -39,21 +39,12 @@ export class SelfModifyingEventEmitter {
         }
       })
     );
-  }
 
-  createEvent(
-    type: SelfModifyingEventType,
-    runId: string,
-    agentId: string,
-    data: unknown
-  ): SelfModifyingEvent {
-    return {
-      type,
-      runId,
-      agentId,
-      timestamp: new Date(),
-      data,
-    };
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        console.error(`[self-modifying] event handler for "${event.type}" failed:`, result.reason);
+      }
+    }
   }
 
   removeAllListeners(event?: SelfModifyingEventType | '*'): void {

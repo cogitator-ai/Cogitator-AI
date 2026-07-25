@@ -152,8 +152,9 @@ export class EvolutionStrategy {
 
     const d = shape - 1 / 3;
     const c = 1 / Math.sqrt(9 * d);
+    const maxIterations = 1000;
 
-    while (true) {
+    for (let i = 0; i < maxIterations; i++) {
       let x: number;
       let v: number;
 
@@ -173,6 +174,8 @@ export class EvolutionStrategy {
         return d * v;
       }
     }
+
+    return d;
   }
 
   private sampleNormal(): number {
@@ -202,7 +205,7 @@ export class EvolutionStrategy {
           (this.strategy.explorationConstant ?? 2) / Math.sqrt(this.totalSelections)
         );
       case 'thompson_sampling':
-        return 0.5;
+        return Math.max(0.05, 1 / Math.sqrt(this.totalSelections + 1));
       default:
         return 0.1;
     }

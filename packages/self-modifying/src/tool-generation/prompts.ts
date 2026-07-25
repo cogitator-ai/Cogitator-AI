@@ -7,9 +7,30 @@ Rules:
 - Plain JavaScript only, no TypeScript
 - No require/import/eval/process/fetch
 - Must have an async function called "execute"
+- Always propagate errors with throw, never silently swallow them
 
 Example response:
-{"name":"add","description":"Add two numbers","implementation":"async function execute(params) { try { return params.a + params.b; } catch(e) { return 0; } }","parameters":{"type":"object","properties":{"a":{"type":"number"},"b":{"type":"number"}},"required":["a","b"]},"reasoning":"Simple addition"}`;
+{"name":"add","description":"Add two numbers","implementation":"async function execute(params) { if (typeof params.a !== 'number' || typeof params.b !== 'number') { throw new Error('Parameters a and b must be numbers'); } return params.a + params.b; }","parameters":{"type":"object","properties":{"a":{"type":"number"},"b":{"type":"number"}},"required":["a","b"]},"reasoning":"Simple addition"}`;
+
+const TOOL_NAME_REGEX = /^[a-z_][a-z0-9_]*$/;
+
+function sanitizeForPrompt(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
+}
+
+function sanitizeToolName(name: string): string {
+  const cleaned = name
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '_')
+    .replace(/^[0-9]/, '_$&')
+    .slice(0, 64);
+  return TOOL_NAME_REGEX.test(cleaned) ? cleaned : `generated_tool_${Date.now()}`;
+}
 
 export function buildGapAnalysisPrompt(
   userIntent: string,
@@ -52,19 +73,51 @@ Respond with a JSON object:
 
 export function buildToolGenerationPrompt(
   gap: CapabilityGap,
-  _existingTools: Array<{ name: string; description: string }>,
-  _constraints?: {
+  existingTools: Array<{ name: string; description: string }>,
+  constraints?: {
     maxLines?: number;
     allowedModules?: string[];
     securityLevel?: 'strict' | 'moderate' | 'permissive';
   }
 ): string {
-  return `Create a tool named "${gap.suggestedToolName}".
-Task: ${gap.description}
-Formula/Logic: ${gap.requiredCapability}
+  const toolName = sanitizeToolName(gap.suggestedToolName);
+  const description = sanitizeForPrompt(gap.description);
+  const capability = sanitizeForPrompt(gap.requiredCapability);
 
+  const existingToolsSection =
+    existingTools.length > 0
+      ? `\nEXISTING TOOLS (avoid duplication, consider composing with these):\n${existingTools.map((t) => `- ${t.name}: ${t.description}`).join('\n')}\n`
+      : '';
+
+  const constraintsSection: string[] = [];
+  if (constraints?.maxLines) {
+    constraintsSection.push(`- Maximum ${constraints.maxLines} lines of code`);
+  }
+  if (constraints?.securityLevel) {
+    constraintsSection.push(`- Security level: ${constraints.securityLevel}`);
+  }
+  if (constraints?.allowedModules && constraints.allowedModules.length > 0) {
+    constraintsSection.push(
+      `- Only these modules may be referenced: ${constraints.allowedModules.join(', ')}`
+    );
+  }
+  if (constraints?.securityLevel === 'strict') {
+    constraintsSection.push(
+      '- No eval, Function constructor, process, global, globalThis, fetch, setTimeout, setInterval',
+      '- No bracket notation access to global objects',
+      '- No prototype chain manipulation'
+    );
+  }
+
+  const constraintsText =
+    constraintsSection.length > 0 ? `\nCONSTRAINTS:\n${constraintsSection.join('\n')}\n` : '';
+
+  return `Create a tool named "${toolName}".
+Task: ${description}
+Formula/Logic: ${capability}
+${existingToolsSection}${constraintsText}
 Respond with ONLY this JSON (no other text):
-{"name":"${gap.suggestedToolName}","description":"${gap.description}","implementation":"async function execute(params) { try { /* YOUR CODE HERE */ } catch(e) { throw e; } }","parameters":{"type":"object","properties":{/* DEFINE PARAMS */},"required":[/* REQUIRED PARAMS */]},"reasoning":"explanation"}`;
+{"name":"${toolName}","description":"${description}","implementation":"async function execute(params) { /* YOUR CODE HERE — throw on invalid input */ }","parameters":{"type":"object","properties":{/* DEFINE PARAMS */},"required":[/* REQUIRED PARAMS */]},"reasoning":"explanation"}`;
 }
 
 export function buildToolValidationPrompt(
@@ -78,7 +131,7 @@ Name: ${tool.name}
 Description: ${tool.description}
 
 IMPLEMENTATION:
-\`\`\`typescript
+\`\`\`javascript
 ${tool.implementation}
 \`\`\`
 
@@ -123,7 +176,7 @@ Name: ${tool.name}
 Description: ${tool.description}
 
 CURRENT IMPLEMENTATION:
-\`\`\`typescript
+\`\`\`javascript
 ${tool.implementation}
 \`\`\`
 
@@ -165,7 +218,9 @@ export function parseGapAnalysisResponse(response: string): {
             id: String(g.id || `gap_${idx}`),
             description: String(g.description || ''),
             requiredCapability: String(g.requiredCapability || ''),
-            suggestedToolName: String(g.suggestedToolName || `generated_tool_${idx}`),
+            suggestedToolName: sanitizeToolName(
+              String(g.suggestedToolName || `generated_tool_${idx}`)
+            ),
             complexity: (['simple', 'moderate', 'complex'].includes(String(g.complexity))
               ? g.complexity
               : 'moderate') as 'simple' | 'moderate' | 'complex',
@@ -194,15 +249,29 @@ export function parseToolGenerationResponse(response: string): GeneratedTool | n
     } catch {}
   }
 
-  const fnRegex = /(?:async\s+)?function\s+execute\s*\([^)]*\)\s*\{[\s\S]*?\n\}/;
+  const fnRegex = /(?:async\s+)?function\s+execute\s*\([^)]*\)\s*\{[\s\S]*\}/;
   const fnMatch = fnRegex.exec(response);
   if (fnMatch) {
+    let impl = fnMatch[0];
+    let braceDepth = 0;
+    let endIdx = impl.length;
+    const firstBrace = impl.indexOf('{');
+    for (let i = firstBrace; i < impl.length; i++) {
+      if (impl[i] === '{') braceDepth++;
+      if (impl[i] === '}') braceDepth--;
+      if (braceDepth === 0) {
+        endIdx = i + 1;
+        break;
+      }
+    }
+    impl = impl.slice(0, endIdx);
+
     const nameRegex = /["']?name["']?\s*[:=]\s*["']([^"']+)["']/;
     const nameMatch = nameRegex.exec(response);
     return buildToolFromParsed({
       name: nameMatch?.[1] ?? 'generated_tool',
       description: '',
-      implementation: fnMatch[0],
+      implementation: impl,
       parameters: { type: 'object', properties: {} },
     });
   }

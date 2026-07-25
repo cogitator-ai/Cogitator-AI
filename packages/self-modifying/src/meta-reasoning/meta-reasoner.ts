@@ -106,19 +106,23 @@ export class MetaReasoner {
         );
 
       case 'confidence_drop':
+      case 'on_low_confidence':
         return context.confidence < this.config.triggerOnConfidenceDrop;
 
       case 'progress_stall':
+      case 'on_stagnation':
         return context.stagnationCount >= this.config.triggerOnProgressStall;
 
-      case 'periodic':
-        return (
-          context.iteration > 0 && context.iteration % this.config.triggerAfterIterations === 0
-        );
+      case 'periodic': {
+        const elapsed = Date.now() - lastAssessment;
+        return elapsed >= this.config.metaAssessmentCooldown * this.config.triggerAfterIterations;
+      }
 
+      case 'on_failure':
       case 'tool_call_failed':
         return true;
 
+      case 'on_request':
       case 'explicit_request':
         return true;
 
@@ -293,34 +297,37 @@ export class MetaReasoner {
     return adaptation;
   }
 
-  rollback(runId: string): MetaAdaptation | null {
+  rollback(runId: string, adaptationId?: string): MetaAdaptation | null {
     const runAdaptations = this.adaptations.get(runId) ?? [];
-    const lastAdaptation = runAdaptations[runAdaptations.length - 1];
+    const target = adaptationId
+      ? runAdaptations.find((a) => a.id === adaptationId)
+      : runAdaptations[runAdaptations.length - 1];
 
-    if (!lastAdaptation?.rollbackable) {
+    if (!target?.rollbackable) {
       return null;
     }
 
-    if (lastAdaptation.rollbackDeadline && Date.now() > lastAdaptation.rollbackDeadline) {
+    if (target.rollbackDeadline && Date.now() > target.rollbackDeadline) {
       return null;
     }
 
     const rollback: MetaAdaptation = {
       id: `rollback_${nanoid(10)}`,
-      assessmentId: lastAdaptation.assessmentId,
+      assessmentId: target.assessmentId,
       timestamp: Date.now(),
 
       type: 'rollback',
-      before: lastAdaptation.after,
-      after: lastAdaptation.before,
+      before: target.after,
+      after: target.before,
 
       rollbackable: false,
     };
 
-    if (lastAdaptation.type === 'mode_switch' && lastAdaptation.before.mode) {
-      this.currentMode.set(runId, lastAdaptation.before.mode);
+    if (target.type === 'mode_switch' && target.before.mode) {
+      this.currentMode.set(runId, target.before.mode);
     }
 
+    target.rollbackable = false;
     runAdaptations.push(rollback);
     return rollback;
   }
@@ -337,7 +344,7 @@ export class MetaReasoner {
       adaptation.outcome = outcome;
 
       if (this.config.rollbackOnDecline && !outcome.improved && adaptation.rollbackable) {
-        this.rollback(runId);
+        this.rollback(runId, adaptationId);
       }
     }
   }
@@ -352,7 +359,7 @@ export class MetaReasoner {
   }
 
   getModeConfig(mode: ReasoningMode): ReasoningModeConfig {
-    return this.config.modeProfiles[mode];
+    return this.config.modeProfiles[mode] ?? this.config.modeProfiles[this.config.defaultMode];
   }
 
   getRunStats(runId: string): {

@@ -120,7 +120,7 @@ export class ToolGenerator {
   async generateQuick(
     description: string,
     name: string,
-    _parameters: Record<string, unknown>
+    parameters: Record<string, unknown>
   ): Promise<GeneratedTool | null> {
     const gap: CapabilityGap = {
       id: `quick_${Date.now()}`,
@@ -133,6 +133,14 @@ export class ToolGenerator {
     };
 
     const result = await this.generate(gap, []);
+
+    if (result.tool && Object.keys(parameters).length > 0) {
+      result.tool.parameters = {
+        type: 'object',
+        properties: parameters,
+      };
+    }
+
     return result.tool;
   }
 
@@ -206,9 +214,17 @@ export class ToolGenerator {
   createExecutableTool(generated: GeneratedTool): Tool {
     const sandbox = this.sandbox;
     const tool = generated;
+    const paramSchema = buildZodSchema(generated.parameters);
 
     const execute = async (params: unknown): Promise<unknown> => {
-      const result = await sandbox.execute(tool, params);
+      const parsed = paramSchema.safeParse(params);
+      if (!parsed.success) {
+        throw new Error(
+          `Invalid parameters: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`
+        );
+      }
+
+      const result = await sandbox.execute(tool, parsed.data);
       if (!result.success) {
         throw new Error(result.error ?? 'Tool execution failed');
       }
@@ -218,7 +234,7 @@ export class ToolGenerator {
     return {
       name: generated.name,
       description: generated.description,
-      parameters: z.record(z.string(), z.unknown()) as ZodType<unknown>,
+      parameters: paramSchema as ZodType<unknown>,
       execute,
       toJSON: () => ({
         name: generated.name,
@@ -239,5 +255,57 @@ export class ToolGenerator {
       return this.llm.complete({ messages, temperature });
     }
     return this.llm.chat({ model: this.model, messages, temperature });
+  }
+}
+
+function buildZodSchema(parameters: Record<string, unknown>): ZodType<unknown> {
+  if (
+    parameters.type !== 'object' ||
+    !parameters.properties ||
+    typeof parameters.properties !== 'object'
+  ) {
+    return z.record(z.string(), z.unknown());
+  }
+
+  const properties = parameters.properties as Record<string, Record<string, unknown>>;
+  const required = Array.isArray(parameters.required)
+    ? new Set(parameters.required as string[])
+    : new Set<string>();
+
+  const shape: Record<string, ZodType<unknown>> = {};
+
+  for (const [key, propSchema] of Object.entries(properties)) {
+    let fieldSchema: ZodType<unknown> = jsonTypeToZod(propSchema.type as string | undefined);
+
+    if (!required.has(key)) {
+      fieldSchema = fieldSchema.optional() as ZodType<unknown>;
+    }
+
+    shape[key] = fieldSchema;
+  }
+
+  if (Object.keys(shape).length === 0) {
+    return z.record(z.string(), z.unknown());
+  }
+
+  return z.object(shape).passthrough() as ZodType<unknown>;
+}
+
+function jsonTypeToZod(type?: string): ZodType<unknown> {
+  switch (type) {
+    case 'string':
+      return z.string();
+    case 'number':
+      return z.number();
+    case 'integer':
+      return z.number().int();
+    case 'boolean':
+      return z.boolean();
+    case 'array':
+      return z.array(z.unknown());
+    case 'object':
+      return z.record(z.string(), z.unknown());
+    default:
+      return z.unknown();
   }
 }

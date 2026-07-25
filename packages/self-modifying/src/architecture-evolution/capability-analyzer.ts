@@ -121,6 +121,7 @@ const COMPLEXITY_INDICATORS = {
   simple: ['explain', 'define', 'list', 'describe', 'show'],
   moderate: ['compare', 'analyze', 'summarize', 'evaluate', 'implement'],
   complex: ['design', 'architect', 'optimize', 'comprehensive', 'detailed'],
+  expert: ['expert', 'advanced', 'specialized', 'intricate', 'sophisticated'],
   extreme: ['novel', 'research', 'breakthrough', 'state-of-the-art', 'cutting-edge'],
 };
 
@@ -237,6 +238,8 @@ export class CapabilityAnalyzer {
       domain,
       estimatedTokens: this.estimateTokens(wordCount, complexity),
       requiresTools: toolAnalysis.requiresTools,
+      requiresReasoning: domain === 'reasoning' || domain === 'coding',
+      requiresCreativity: domain === 'creative',
       toolIntensity: toolAnalysis.intensity,
       reasoningDepth: this.estimateReasoningDepth(complexity, domain),
       creativityLevel:
@@ -375,15 +378,15 @@ export class CapabilityAnalyzer {
     domain: TaskProfile['domain'],
     task: string
   ): TaskProfile['accuracyRequirement'] {
-    if (domain === 'coding' || domain === 'factual') {
-      return 'high';
-    }
-
     const criticalIndicators = ['critical', 'exact', 'precise', 'must be correct', 'no errors'];
     for (const indicator of criticalIndicators) {
       if (task.includes(indicator)) {
         return 'critical';
       }
+    }
+
+    if (domain === 'coding' || domain === 'factual') {
+      return 'high';
     }
 
     const approximateIndicators = ['rough', 'approximate', 'estimate', 'about', 'roughly'];
