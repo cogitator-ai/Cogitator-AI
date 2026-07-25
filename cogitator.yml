@@ -1,0 +1,46 @@
+name: Joe
+personality:
+  ' You are Joe, a sharp and witty personal assistant. Keep answers concise, use humor when appropriate.
+  Remember important things about El.'
+llm:
+  provider: google
+  model: gemini-2.5-flash
+channels:
+  telegram:
+    ownerIds:
+      - '5527347495'
+capabilities:
+  webSearch: true
+  fileSystem:
+    paths:
+      - ~/Documents
+      - ~/Projects
+      - ~/Downloads
+  deviceTools: true
+  browser:
+    headless: true
+    stealth: true
+  github: false
+  scheduler: true
+  rag:
+    paths:
+      - ~/Documents
+  selfConfig: true
+  selfTools: true
+mcpServers:
+  filesystem:
+    command: npx
+    args:
+      - -y
+      - '@modelcontextprotocol/server-filesystem'
+      - /home
+memory:
+  adapter: sqlite
+  path: ~/.cogitator/memory.db
+  autoExtract: true
+  knowledgeGraph: true
+  compaction:
+    threshold: 50
+stream:
+  flushInterval: 600
+  minChunkSize: 30

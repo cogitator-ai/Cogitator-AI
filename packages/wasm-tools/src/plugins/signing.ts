@@ -552,7 +552,7 @@ function ed25519Verify(message: Uint8Array, signature: Uint8Array, publicKey: Ui
 
 function getRandomBytes(len: number): Uint8Array {
   const bytes = new Uint8Array(len);
-  if (typeof globalThis.crypto !== 'undefined' && globalThis.crypto.getRandomValues) {
+  if (globalThis.crypto?.getRandomValues) {
     globalThis.crypto.getRandomValues(bytes);
   } else {
     throw new Error(

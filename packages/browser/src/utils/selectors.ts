@@ -1,9 +1,17 @@
 import type { Page, Locator } from 'playwright';
 
 function escapeCssString(str: string): string {
-  return str
-    .replace(/["\\]/g, '\\$&')
-    .replace(/[\0-\x1f\x7f]/g, (ch) => `\\${ch.codePointAt(0)!.toString(16)} `);
+  const escaped = str.replace(/["\\]/g, '\\$&');
+  let result = '';
+  for (const ch of escaped) {
+    const code = ch.codePointAt(0)!;
+    if (code <= 0x1f || code === 0x7f) {
+      result += `\\${code.toString(16)} `;
+    } else {
+      result += ch;
+    }
+  }
+  return result;
 }
 
 export async function smartSelect(page: Page, identifier: string): Promise<Locator | null> {

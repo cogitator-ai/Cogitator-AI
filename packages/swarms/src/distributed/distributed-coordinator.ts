@@ -457,10 +457,10 @@ export class DistributedSwarmCoordinator implements SwarmCoordinatorInterface {
     }
 
     if (this._messageBus) {
-      await this._messageBus.clear();
+      this._messageBus.clear();
     }
     if (this._blackboard) {
-      await this._blackboard.clear();
+      this._blackboard.clear();
     }
   }
 

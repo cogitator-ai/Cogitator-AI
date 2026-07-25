@@ -265,7 +265,7 @@ async function resolveNode(
   nodeIdOrName: string
 ): Promise<GraphNode | null> {
   const byIdResult = await adapter.getNode(nodeIdOrName);
-  if (byIdResult.success && byIdResult.data && byIdResult.data.agentId === agentId) {
+  if (byIdResult.success && byIdResult.data?.agentId === agentId) {
     return byIdResult.data;
   }
 

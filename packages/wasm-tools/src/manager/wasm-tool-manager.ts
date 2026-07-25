@@ -201,7 +201,7 @@ export class WasmToolManager {
         },
         (error) => {
           signal.removeEventListener('abort', onAbort);
-          reject(error);
+          reject(error instanceof Error ? error : new Error(String(error)));
         }
       );
     });
