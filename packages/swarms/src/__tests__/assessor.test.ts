@@ -155,12 +155,12 @@ describe('ModelScorer', () => {
           supportsStreaming: true,
           supportsJson: true,
         },
-        pricing: { input: 0.5, output: 0.5 },
+        pricing: { input: 15, output: 15 },
         contextWindow: 8192,
         isLocal: false,
         isAvailable: true,
       };
-      const reqs = createMockRequirements();
+      const reqs = createMockRequirements({ costSensitivity: 'high' });
 
       const localResult = scorer.score(localModel, reqs);
       const cloudResult = scorer.score(cloudModel, reqs);

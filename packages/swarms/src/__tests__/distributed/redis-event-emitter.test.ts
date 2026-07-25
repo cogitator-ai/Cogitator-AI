@@ -51,11 +51,33 @@ function createMockRedis() {
     },
     async unsubscribe(): Promise<void> {},
     async quit(): Promise<void> {},
+    async eval(_script: string, _numKeys: number, ...args: string[]): Promise<number> {
+      const key = args[0];
+      const maxEvents = parseInt(args[1], 10);
+      const value = args[2];
+      if (!data.has(key)) {
+        data.set(key, []);
+      }
+      data.get(key)!.push(value);
+      const arr = data.get(key)!;
+      if (arr.length > maxEvents) {
+        data.set(key, arr.slice(-maxEvents));
+      }
+      return 1;
+    },
     on(event: string, handler: (...args: unknown[]) => void): typeof mock {
       if (!eventHandlers.has(event)) {
         eventHandlers.set(event, []);
       }
       eventHandlers.get(event)!.push(handler);
+      return mock;
+    },
+    removeAllListeners(event?: string): typeof mock {
+      if (event) {
+        eventHandlers.delete(event);
+      } else {
+        eventHandlers.clear();
+      }
       return mock;
     },
     duplicate(): typeof mock {
@@ -75,6 +97,10 @@ function createMockRedis() {
 describe('RedisSwarmEventEmitter', () => {
   let mockRedis: ReturnType<typeof createMockRedis>;
   let emitter: RedisSwarmEventEmitter;
+
+  const triggerEvent = (channel: string, event: SwarmEvent) => {
+    mockRedis.triggerMessage(channel, JSON.stringify({ _sid: 'other-instance', e: event }));
+  };
 
   beforeEach(async () => {
     mockRedis = createMockRedis();
@@ -109,8 +135,8 @@ describe('RedisSwarmEventEmitter', () => {
       expect(publishSpy).toHaveBeenCalled();
       const [channel, message] = publishSpy.mock.calls[0];
       expect(channel).toBe('test:test-swarm:events:live');
-      const event = JSON.parse(message as string) as SwarmEvent;
-      expect(event.type).toBe('agent:complete');
+      const envelope = JSON.parse(message as string) as { _sid: string; e: SwarmEvent };
+      expect(envelope.e.type).toBe('agent:complete');
     });
 
     it('should trim events when exceeding maxEvents', async () => {
@@ -141,7 +167,7 @@ describe('RedisSwarmEventEmitter', () => {
         data: { test: true },
       };
 
-      mockRedis.triggerMessage('test:test-swarm:events:live', JSON.stringify(event));
+      triggerEvent('test:test-swarm:events:live', event);
 
       await new Promise((r) => setTimeout(r, 10));
 
@@ -160,8 +186,8 @@ describe('RedisSwarmEventEmitter', () => {
       const event1: SwarmEvent = { type: 'agent:start', timestamp: Date.now() };
       const event2: SwarmEvent = { type: 'agent:complete', timestamp: Date.now() };
 
-      mockRedis.triggerMessage('test:test-swarm:events:live', JSON.stringify(event1));
-      mockRedis.triggerMessage('test:test-swarm:events:live', JSON.stringify(event2));
+      triggerEvent('test:test-swarm:events:live', event1);
+      triggerEvent('test:test-swarm:events:live', event2);
 
       await new Promise((r) => setTimeout(r, 10));
 
@@ -174,7 +200,7 @@ describe('RedisSwarmEventEmitter', () => {
       emitter.off('swarm:start', handler);
 
       const event: SwarmEvent = { type: 'swarm:start', timestamp: Date.now() };
-      mockRedis.triggerMessage('test:test-swarm:events:live', JSON.stringify(event));
+      triggerEvent('test:test-swarm:events:live', event);
 
       await new Promise((r) => setTimeout(r, 10));
 
@@ -186,8 +212,8 @@ describe('RedisSwarmEventEmitter', () => {
       emitter.once('swarm:complete', handler);
 
       const event: SwarmEvent = { type: 'swarm:complete', timestamp: Date.now() };
-      mockRedis.triggerMessage('test:test-swarm:events:live', JSON.stringify(event));
-      mockRedis.triggerMessage('test:test-swarm:events:live', JSON.stringify(event));
+      triggerEvent('test:test-swarm:events:live', event);
+      triggerEvent('test:test-swarm:events:live', event);
 
       await new Promise((r) => setTimeout(r, 20));
 
@@ -201,7 +227,7 @@ describe('RedisSwarmEventEmitter', () => {
       unsubscribe();
 
       const event: SwarmEvent = { type: 'agent:error', timestamp: Date.now() };
-      mockRedis.triggerMessage('test:test-swarm:events:live', JSON.stringify(event));
+      triggerEvent('test:test-swarm:events:live', event);
 
       await new Promise((r) => setTimeout(r, 10));
 
@@ -217,7 +243,7 @@ describe('RedisSwarmEventEmitter', () => {
         agentName: 'test',
       };
 
-      mockRedis.triggerMessage('test:test-swarm:events:live', JSON.stringify(event));
+      triggerEvent('test:test-swarm:events:live', event);
 
       await new Promise((r) => setTimeout(r, 10));
 
@@ -245,7 +271,7 @@ describe('RedisSwarmEventEmitter', () => {
       ];
 
       for (const e of events) {
-        mockRedis.triggerMessage('test:test-swarm:events:live', JSON.stringify(e));
+        triggerEvent('test:test-swarm:events:live', e);
       }
 
       await new Promise((r) => setTimeout(r, 10));
@@ -262,7 +288,7 @@ describe('RedisSwarmEventEmitter', () => {
       ];
 
       for (const e of events) {
-        mockRedis.triggerMessage('test:test-swarm:events:live', JSON.stringify(e));
+        triggerEvent('test:test-swarm:events:live', e);
       }
 
       await new Promise((r) => setTimeout(r, 10));
@@ -275,7 +301,7 @@ describe('RedisSwarmEventEmitter', () => {
   describe('clearEvents', () => {
     it('should clear local events', async () => {
       const event: SwarmEvent = { type: 'swarm:start', timestamp: Date.now() };
-      mockRedis.triggerMessage('test:test-swarm:events:live', JSON.stringify(event));
+      triggerEvent('test:test-swarm:events:live', event);
 
       await new Promise((r) => setTimeout(r, 10));
 
@@ -309,8 +335,8 @@ describe('RedisSwarmEventEmitter', () => {
       const event1: SwarmEvent = { type: 'agent:start', timestamp: Date.now() };
       const event2: SwarmEvent = { type: 'agent:complete', timestamp: Date.now() };
 
-      mockRedis.triggerMessage('test:test-swarm:events:live', JSON.stringify(event1));
-      mockRedis.triggerMessage('test:test-swarm:events:live', JSON.stringify(event2));
+      triggerEvent('test:test-swarm:events:live', event1);
+      triggerEvent('test:test-swarm:events:live', event2);
 
       await new Promise((r) => setTimeout(r, 10));
 
@@ -331,8 +357,8 @@ describe('RedisSwarmEventEmitter', () => {
       const event1: SwarmEvent = { type: 'agent:start', timestamp: Date.now() };
       const event2: SwarmEvent = { type: 'agent:complete', timestamp: Date.now() };
 
-      mockRedis.triggerMessage('test:test-swarm:events:live', JSON.stringify(event1));
-      mockRedis.triggerMessage('test:test-swarm:events:live', JSON.stringify(event2));
+      triggerEvent('test:test-swarm:events:live', event1);
+      triggerEvent('test:test-swarm:events:live', event2);
 
       await new Promise((r) => setTimeout(r, 10));
 

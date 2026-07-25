@@ -15,6 +15,7 @@ const createMockRedis = () => {
     subscribe: vi.fn().mockResolvedValue(undefined),
     unsubscribe: vi.fn().mockResolvedValue(undefined),
     quit: vi.fn().mockResolvedValue(undefined),
+    removeAllListeners: vi.fn(),
     get: vi.fn().mockImplementation((key: string) => Promise.resolve(data.get(key) ?? null)),
     set: vi.fn().mockImplementation((key: string, value: string) => {
       data.set(key, value);
@@ -37,6 +38,39 @@ const createMockRedis = () => {
       return Promise.resolve(matchingKeys);
     }),
     publish: vi.fn().mockResolvedValue(1),
+    eval: vi.fn().mockImplementation((_script: string, _numKeys: number, ...args: string[]) => {
+      const sectionKey = args[0];
+      const historyKey = args[1];
+      const channel = args[2];
+      const sectionJson = args[3];
+      const notificationJson = args[4];
+      const historyEntryJson = args[5];
+      const senderId = args[7];
+
+      const section = JSON.parse(sectionJson) as Record<string, unknown>;
+      const current = data.get(sectionKey);
+      let version = 1;
+      if (current) {
+        version = ((JSON.parse(current) as Record<string, unknown>).version as number) + 1;
+      }
+      section.version = version;
+      data.set(sectionKey, JSON.stringify(section));
+
+      if (historyEntryJson) {
+        const entry = JSON.parse(historyEntryJson) as Record<string, unknown>;
+        entry.version = version;
+        if (!lists.has(historyKey)) lists.set(historyKey, []);
+        lists.get(historyKey)!.push(JSON.stringify(entry));
+      }
+
+      const notification = JSON.parse(notificationJson) as Record<string, unknown>;
+      notification.version = version;
+      notification._sid = senderId;
+      const handler = subscriptions.get('message');
+      if (handler) handler(channel, JSON.stringify(notification));
+
+      return Promise.resolve(version);
+    }),
     on: vi
       .fn()
       .mockImplementation((event: string, handler: (channel: string, message: string) => void) => {
@@ -93,13 +127,13 @@ describe('RedisBlackboard', () => {
     it('should persist to redis', () => {
       blackboard.write('results', ['data'], 'agent1');
 
-      expect(mockRedis.set).toHaveBeenCalled();
+      expect(mockRedis.eval).toHaveBeenCalled();
     });
 
     it('should publish change notification', () => {
       blackboard.write('results', ['data'], 'agent1');
 
-      expect(mockRedis.publish).toHaveBeenCalled();
+      expect(mockRedis.eval).toHaveBeenCalled();
     });
 
     it('should increment version on each write', () => {

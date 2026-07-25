@@ -70,8 +70,8 @@ describe('CircuitBreaker', () => {
 
       vi.advanceTimersByTime(1100);
 
-      expect(breaker.getState()).toBe('half-open');
       expect(breaker.canExecute()).toBe(true);
+      expect(breaker.getState()).toBe('half-open');
 
       vi.useRealTimers();
     });
@@ -84,6 +84,7 @@ describe('CircuitBreaker', () => {
       breaker.recordFailure();
 
       vi.advanceTimersByTime(1100);
+      breaker.canExecute();
       expect(breaker.getState()).toBe('half-open');
 
       breaker.recordSuccess();
@@ -103,6 +104,7 @@ describe('CircuitBreaker', () => {
       breaker.recordFailure();
 
       vi.advanceTimersByTime(1100);
+      breaker.canExecute();
       expect(breaker.getState()).toBe('half-open');
 
       breaker.recordFailure();

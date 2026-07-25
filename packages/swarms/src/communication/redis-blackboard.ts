@@ -1,3 +1,4 @@
+import { nanoid } from 'nanoid';
 import type {
   Blackboard,
   BlackboardConfig,
@@ -20,6 +21,43 @@ interface StoredSection<T = unknown> {
   version: number;
 }
 
+const MAX_HISTORY = 1000;
+
+const ATOMIC_WRITE_SCRIPT = `
+local sectionKey = KEYS[1]
+local historyKey = KEYS[2]
+local channel = KEYS[3]
+local sectionJson = ARGV[1]
+local notificationJson = ARGV[2]
+local historyEntryJson = ARGV[3]
+local maxHistory = tonumber(ARGV[4])
+local senderId = ARGV[5]
+
+local current = redis.call('GET', sectionKey)
+local version = 1
+if current then
+  version = cjson.decode(current).version + 1
+end
+
+local section = cjson.decode(sectionJson)
+section.version = version
+redis.call('SET', sectionKey, cjson.encode(section))
+
+if historyEntryJson ~= '' then
+  local entry = cjson.decode(historyEntryJson)
+  entry.version = version
+  redis.call('RPUSH', historyKey, cjson.encode(entry))
+  redis.call('LTRIM', historyKey, -maxHistory, -1)
+end
+
+local notification = cjson.decode(notificationJson)
+notification.version = version
+notification._sid = senderId
+redis.call('PUBLISH', channel, cjson.encode(notification))
+
+return version
+`;
+
 export class RedisBlackboard implements Blackboard {
   private redis: Redis;
   private subscriber: Redis;
@@ -29,6 +67,7 @@ export class RedisBlackboard implements Blackboard {
   private subscriptions = new Map<string, Set<(data: unknown, agentName: string) => void>>();
   private localCache = new Map<string, StoredSection>();
   private historyCache = new Map<string, BlackboardHistoryEntry[]>();
+  private readonly instanceId = nanoid(12);
 
   constructor(config: BlackboardConfig, options: RedisBlackboardOptions) {
     this.config = config;
@@ -61,10 +100,9 @@ export class RedisBlackboard implements Blackboard {
       };
       this.localCache.set(name, section);
 
-      const existing = await this.redis.get(this.sectionKey(name));
-      if (!existing) {
-        await this.redis.set(this.sectionKey(name), JSON.stringify(section));
+      const wasSet = await this.redis.set(this.sectionKey(name), JSON.stringify(section), 'NX');
 
+      if (wasSet === 'OK') {
         if (this.config.trackHistory) {
           const entry: BlackboardHistoryEntry = {
             value: initialData,
@@ -76,8 +114,11 @@ export class RedisBlackboard implements Blackboard {
           this.historyCache.set(name, [entry]);
         }
       } else {
-        const stored = JSON.parse(existing) as StoredSection;
-        this.localCache.set(name, stored);
+        const existing = await this.redis.get(this.sectionKey(name));
+        if (existing) {
+          const stored = JSON.parse(existing) as StoredSection;
+          this.localCache.set(name, stored);
+        }
       }
     }
 
@@ -85,7 +126,25 @@ export class RedisBlackboard implements Blackboard {
 
     this.subscriber.on('message', (_channel: string, messageJson: string) => {
       try {
-        const { section, data, agentName, version, timestamp } = JSON.parse(messageJson) as {
+        const parsed = JSON.parse(messageJson) as {
+          section: string;
+          data?: unknown;
+          agentName?: string;
+          version?: number;
+          timestamp?: number;
+          deleted?: boolean;
+          _sid?: string;
+        };
+
+        if (parsed._sid === this.instanceId) return;
+
+        if (parsed.deleted) {
+          this.localCache.delete(parsed.section);
+          this.historyCache.delete(parsed.section);
+          return;
+        }
+
+        const { section, data, agentName, version, timestamp } = parsed as {
           section: string;
           data: unknown;
           agentName: string;
@@ -103,7 +162,9 @@ export class RedisBlackboard implements Blackboard {
         this.localCache.set(section, stored);
 
         this.notifySubscribers(section, data, agentName);
-      } catch {}
+      } catch (error) {
+        console.warn('[RedisBlackboard] Failed to parse message:', error);
+      }
     });
   }
 
@@ -134,8 +195,6 @@ export class RedisBlackboard implements Blackboard {
 
     this.localCache.set(section, newSection);
 
-    void this.redis.set(this.sectionKey(section), JSON.stringify(newSection));
-
     if (this.config.trackHistory) {
       const entry: BlackboardHistoryEntry = {
         value: data,
@@ -147,13 +206,28 @@ export class RedisBlackboard implements Blackboard {
         this.historyCache.set(section, []);
       }
       this.historyCache.get(section)!.push(entry);
-      void this.redis.rpush(this.historyKey(section), JSON.stringify(entry));
     }
 
-    void this.redis.publish(
-      this.channelKey(),
-      JSON.stringify({ section, data, agentName, version, timestamp })
-    );
+    const historyEntryJson = this.config.trackHistory
+      ? JSON.stringify({ value: data, writtenBy: agentName, timestamp })
+      : '';
+
+    void this.redis
+      .eval(
+        ATOMIC_WRITE_SCRIPT,
+        3,
+        this.sectionKey(section),
+        this.historyKey(section),
+        this.channelKey(),
+        JSON.stringify(newSection),
+        JSON.stringify({ section, data, agentName, timestamp }),
+        historyEntryJson,
+        String(MAX_HISTORY),
+        this.instanceId
+      )
+      .catch((error: unknown) => {
+        console.warn('[RedisBlackboard] Write error:', error);
+      });
 
     this.notifySubscribers(section, data, agentName);
   }
@@ -182,8 +256,21 @@ export class RedisBlackboard implements Blackboard {
     this.localCache.delete(section);
     this.historyCache.delete(section);
     this.subscriptions.delete(section);
-    void this.redis.del(this.sectionKey(section));
-    void this.redis.del(this.historyKey(section));
+
+    void this.redis.del(this.sectionKey(section)).catch((error: unknown) => {
+      console.warn('[RedisBlackboard] Delete error:', error);
+    });
+    void this.redis.del(this.historyKey(section)).catch((error: unknown) => {
+      console.warn('[RedisBlackboard] Delete history error:', error);
+    });
+    void this.redis
+      .publish(
+        this.channelKey(),
+        JSON.stringify({ section, deleted: true, agentName: 'system', timestamp: Date.now() })
+      )
+      .catch((error: unknown) => {
+        console.warn('[RedisBlackboard] Publish delete error:', error);
+      });
   }
 
   subscribe(section: string, handler: (data: unknown, agentName: string) => void): () => void {
@@ -229,29 +316,47 @@ export class RedisBlackboard implements Blackboard {
     this.historyCache.clear();
 
     for (const section of sections) {
-      void this.redis.del(this.sectionKey(section));
-      void this.redis.del(this.historyKey(section));
+      void this.redis.del(this.sectionKey(section)).catch((error: unknown) => {
+        console.warn('[RedisBlackboard] Clear section error:', error);
+      });
+      void this.redis.del(this.historyKey(section)).catch((error: unknown) => {
+        console.warn('[RedisBlackboard] Clear history error:', error);
+      });
+      void this.redis
+        .publish(
+          this.channelKey(),
+          JSON.stringify({ section, deleted: true, agentName: 'system', timestamp: Date.now() })
+        )
+        .catch((error: unknown) => {
+          console.warn('[RedisBlackboard] Publish clear error:', error);
+        });
     }
   }
 
   async close(): Promise<void> {
+    this.subscriber.removeAllListeners('message');
     await this.subscriber.unsubscribe();
     await this.subscriber.quit();
   }
 
   async syncFromRedis(): Promise<void> {
     const pattern = `${this.keyPrefix}:${this.swarmId}:blackboard:*`;
-    const keys = await this.redis.keys(pattern);
+    let cursor = '0';
 
-    for (const key of keys) {
-      if (key.endsWith(':history')) continue;
+    do {
+      const [nextCursor, keys] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+      cursor = nextCursor;
 
-      const raw = await this.redis.get(key);
-      if (raw) {
-        const stored = JSON.parse(raw) as StoredSection;
-        this.localCache.set(stored.name, stored);
+      for (const key of keys) {
+        if (key.endsWith(':history')) continue;
+
+        const raw = await this.redis.get(key);
+        if (raw) {
+          const stored = JSON.parse(raw) as StoredSection;
+          this.localCache.set(stored.name, stored);
+        }
       }
-    }
+    } while (cursor !== '0');
   }
 
   private notifySubscribers(section: string, data: unknown, agentName: string): void {

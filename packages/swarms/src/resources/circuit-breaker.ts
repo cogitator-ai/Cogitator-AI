@@ -1,20 +1,19 @@
-/**
- * Circuit breaker for preventing cascading failures
- */
-
 export type CircuitState = 'closed' | 'open' | 'half-open';
 
 export interface CircuitBreakerConfig {
-  /** Number of failures before opening the circuit */
   threshold: number;
-  /** Time in ms to wait before allowing a test request */
   resetTimeout: number;
-  /** Number of successful requests needed to close the circuit from half-open */
   successThreshold?: number;
 }
 
+interface ResolvedCircuitBreakerConfig {
+  threshold: number;
+  resetTimeout: number;
+  successThreshold: number;
+}
+
 export class CircuitBreaker {
-  private config: CircuitBreakerConfig;
+  private config: ResolvedCircuitBreakerConfig;
   private state: CircuitState = 'closed';
   private failureCount = 0;
   private successCount = 0;
@@ -23,30 +22,26 @@ export class CircuitBreaker {
 
   constructor(config: CircuitBreakerConfig) {
     this.config = {
-      successThreshold: 1,
-      ...config,
+      threshold: config.threshold,
+      resetTimeout: config.resetTimeout,
+      successThreshold: config.successThreshold ?? 1,
     };
   }
 
   getState(): CircuitState {
-    if (this.state === 'open') {
-      const now = Date.now();
-      if (now - this.lastFailureTime >= this.config.resetTimeout) {
-        this.setState('half-open');
-      }
-    }
     return this.state;
   }
 
   canExecute(): boolean {
-    const state = this.getState();
-    return state === 'closed' || state === 'half-open';
+    this.checkOpenTimeout();
+    return this.state === 'closed' || this.state === 'half-open';
   }
 
   recordSuccess(): void {
+    this.checkOpenTimeout();
     if (this.state === 'half-open') {
       this.successCount++;
-      if (this.successCount >= this.config.successThreshold!) {
+      if (this.successCount >= this.config.successThreshold) {
         this.setState('closed');
         this.reset();
       }
@@ -83,6 +78,12 @@ export class CircuitBreaker {
         this.stateChangeListeners.splice(index, 1);
       }
     };
+  }
+
+  private checkOpenTimeout(): void {
+    if (this.state === 'open' && Date.now() - this.lastFailureTime >= this.config.resetTimeout) {
+      this.setState('half-open');
+    }
   }
 
   private setState(newState: CircuitState): void {

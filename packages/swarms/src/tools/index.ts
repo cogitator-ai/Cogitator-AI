@@ -47,6 +47,12 @@ export function createSwarmTools(context: SwarmToolContext): Tool<unknown, unkno
     context.agentName,
     context.agentWeight
   );
+  const negotiationTools = createNegotiationTools(
+    context.blackboard,
+    context.events,
+    context.agentName,
+    context.agentWeight
+  );
 
   return [
     messagingTools.sendMessage,
@@ -66,6 +72,15 @@ export function createSwarmTools(context: SwarmToolContext): Tool<unknown, unkno
     votingTools.getVotes,
     votingTools.changeVote,
     votingTools.getConsensusStatus,
+    negotiationTools.makeOffer,
+    negotiationTools.counterOffer,
+    negotiationTools.acceptOffer,
+    negotiationTools.rejectOffer,
+    negotiationTools.getNegotiationStatus,
+    negotiationTools.getCurrentOffers,
+    negotiationTools.proposeCoalition,
+    negotiationTools.joinCoalition,
+    negotiationTools.declareInterests,
   ] as Tool<unknown, unknown>[];
 }
 

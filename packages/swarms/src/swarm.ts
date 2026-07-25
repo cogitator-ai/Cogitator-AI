@@ -34,6 +34,7 @@ export class Swarm {
   private assessed = false;
   private lastAssessment?: AssessmentResult;
   private isDistributed: boolean;
+  private subscriptions: { event: SwarmEventType | '*'; handler: SwarmEventHandler }[] = [];
 
   constructor(cogitator: Cogitator, config: SwarmConfig, assessorConfig?: AssessorConfig) {
     this.config = this.validateConfig(config);
@@ -107,12 +108,12 @@ export class Swarm {
    * Run the swarm with the configured strategy
    */
   async run(options: SwarmRunOptions): Promise<StrategyResult> {
-    if (this.isDistributed && this.distributedCoordinator) {
-      await this.distributedCoordinator.initialize();
-    }
-
     if (this.assessorConfig && !this.assessed) {
       await this.runAssessment(options.input);
+    }
+
+    if (this.isDistributed && this.distributedCoordinator) {
+      await this.distributedCoordinator.initialize();
     }
 
     if (options.saveHistory !== undefined && this.localCoordinator) {
@@ -181,6 +182,9 @@ export class Swarm {
     this.config = assessor.assignModels(this.config, this.lastAssessment);
 
     if (this.isDistributed) {
+      if (this.distributedCoordinator) {
+        await this.distributedCoordinator.close();
+      }
       this.distributedCoordinator = new DistributedSwarmCoordinator({
         config: this.config,
         distributed: this.config.distributed!,
@@ -191,6 +195,10 @@ export class Swarm {
       this.coordinator = this.localCoordinator;
     }
     this.strategy = createStrategy(this.coordinator, this.config);
+
+    for (const { event, handler } of this.subscriptions) {
+      this.coordinator.events.on(event, handler);
+    }
 
     this.assessed = true;
   }
@@ -209,17 +217,13 @@ export class Swarm {
     return this.coordinator.getAgent(name);
   }
 
-  /**
-   * Subscribe to swarm events
-   */
   on(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void {
+    this.subscriptions.push({ event, handler });
     return this.coordinator.events.on(event, handler);
   }
 
-  /**
-   * Subscribe to swarm event once
-   */
   once(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void {
+    this.subscriptions.push({ event, handler });
     return this.coordinator.events.once(event, handler);
   }
 

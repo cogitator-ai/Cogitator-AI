@@ -15,10 +15,6 @@ const VISION_KEYWORDS = [
   'chart',
   'graph',
   'visual',
-  'see',
-  'look at',
-  'analyze this',
-  'show me',
   'drawing',
   'illustration',
   'png',
@@ -32,17 +28,12 @@ const TOOL_KEYWORDS = [
   'search',
   'calculate',
   'execute',
-  'run',
   'fetch',
   'api',
   'database',
-  'file',
-  'code',
   'browse',
   'query',
-  'call',
   'invoke',
-  'request',
   'download',
   'upload',
   'scrape',
@@ -113,11 +104,11 @@ export class TaskAnalyzer {
   }
 
   private detectVision(task: string): boolean {
-    return VISION_KEYWORDS.some((k) => task.includes(k));
+    return VISION_KEYWORDS.some((k) => new RegExp(`\\b${k}\\b`, 'i').test(task));
   }
 
   private detectToolNeeds(task: string): boolean {
-    return TOOL_KEYWORDS.some((k) => task.includes(k));
+    return TOOL_KEYWORDS.some((k) => new RegExp(`\\b${k}\\b`, 'i').test(task));
   }
 
   private detectLongContext(task: string): boolean {
@@ -126,14 +117,9 @@ export class TaskAnalyzer {
 
     const longContextIndicators = [
       'document',
-      'file',
       'codebase',
       'repository',
-      'large',
       'entire',
-      'full',
-      'complete',
-      'all of',
       'whole',
       'multiple files',
       'many pages',
@@ -163,11 +149,10 @@ export class TaskAnalyzer {
   }
 
   private detectCostSensitivity(task: string): CostSensitivity {
-    const lower = task;
-    if (/\b(cheap|free|budget|low.?cost|economical)\b/.test(lower)) {
+    if (/\b(cheap|free|budget|low.?cost|economical)\b/.test(task)) {
       return 'high';
     }
-    if (/\b(best|premium|quality|accurate|precise)\b/.test(lower)) {
+    if (/\b(best|premium|quality|accurate|precise)\b/.test(task)) {
       return 'low';
     }
     return 'medium';

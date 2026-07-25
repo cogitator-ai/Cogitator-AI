@@ -171,7 +171,8 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
   async runAgent(
     agentName: string,
     input: string,
-    context?: Record<string, unknown>
+    context?: Record<string, unknown>,
+    failoverChain?: Set<string>
   ): Promise<RunResult> {
     const swarmAgent = this.agents.get(agentName);
     if (!swarmAgent) {
@@ -236,7 +237,7 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
       this._events.emit('agent:error', { agentName, error }, agentName);
 
       if (this.config.errorHandling) {
-        return this.handleAgentError(swarmAgent, input, context, error as Error);
+        return this.handleAgentError(swarmAgent, input, context, error as Error, failoverChain);
       }
 
       throw error;
@@ -281,7 +282,8 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
     swarmAgent: SwarmAgent,
     input: string,
     context: Record<string, unknown> | undefined,
-    error: Error
+    error: Error,
+    failoverChain?: Set<string>
   ): Promise<RunResult> {
     const errorConfig = this.config.errorHandling!;
     const agentName = swarmAgent.agent.name;
@@ -293,12 +295,15 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
         }
         throw error;
 
-      case 'failover':
-        if (errorConfig.failover?.[agentName]) {
-          const backupAgentName = errorConfig.failover[agentName];
-          return this.runAgent(backupAgentName, input, context);
+      case 'failover': {
+        const chain = failoverChain ?? new Set<string>();
+        chain.add(agentName);
+        const backupAgentName = errorConfig.failover?.[agentName];
+        if (backupAgentName && !chain.has(backupAgentName)) {
+          return this.runAgent(backupAgentName, input, context, chain);
         }
         throw error;
+      }
 
       case 'skip':
         return {
@@ -418,7 +423,8 @@ export class SwarmCoordinator implements SwarmCoordinatorInterface {
     let state: NegotiationState | null;
     try {
       state = this._blackboard.read<NegotiationState>('negotiation');
-    } catch {
+    } catch (error) {
+      console.warn('[SwarmCoordinator] Failed to read negotiation state from blackboard:', error);
       return null;
     }
     if (!state) return null;

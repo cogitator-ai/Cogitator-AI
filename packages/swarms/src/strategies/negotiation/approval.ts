@@ -144,11 +144,30 @@ export class ApprovalIntegration {
 
     events.emit('negotiation:approval-required', { request, gate }, 'system');
 
+    if (!this.store && !gate.timeout) {
+      const fallbackResponse: NegotiationApprovalResponse = {
+        requestId,
+        decision: 'rejected',
+        approved: false,
+        respondedBy: 'system',
+        respondedAt: Date.now(),
+        continueNegotiation: true,
+      };
+      events.emit(
+        'negotiation:approval-received',
+        { requestId, response: fallbackResponse },
+        'system'
+      );
+      return fallbackResponse;
+    }
+
     return new Promise((resolve) => {
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      let unsubscribe: (() => void) | undefined;
 
       if (gate.timeout) {
         timeoutHandle = setTimeout(() => {
+          if (unsubscribe) unsubscribe();
           this.pendingApprovals.delete(requestId);
 
           const isApproved = gate.timeoutAction === 'approve';
@@ -179,7 +198,7 @@ export class ApprovalIntegration {
       this.pendingApprovals.set(requestId, { resolve, timeout: timeoutHandle });
 
       if (this.store) {
-        this.store.onResponse(requestId, (response: ApprovalResponse) => {
+        unsubscribe = this.store.onResponse(requestId, (response: ApprovalResponse) => {
           if (timeoutHandle) clearTimeout(timeoutHandle);
           this.pendingApprovals.delete(requestId);
 
@@ -274,8 +293,16 @@ export class ApprovalIntegration {
   }
 
   cancelAll(): void {
-    for (const [, pending] of this.pendingApprovals) {
+    for (const [requestId, pending] of this.pendingApprovals) {
       if (pending.timeout) clearTimeout(pending.timeout);
+      pending.resolve({
+        requestId,
+        decision: 'rejected',
+        approved: false,
+        respondedBy: 'system',
+        respondedAt: Date.now(),
+        continueNegotiation: false,
+      });
     }
     this.pendingApprovals.clear();
   }

@@ -27,7 +27,7 @@ export class ConvergenceCalculator {
       if (term) termValues.push(term.value);
     }
 
-    if (termValues.length < 2) return 1;
+    if (termValues.length < 2) return 0;
 
     const numericValues = termValues.filter((v): v is number => typeof v === 'number');
     if (numericValues.length >= 2) {

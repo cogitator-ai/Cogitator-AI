@@ -64,7 +64,13 @@ export function createBlackboardTools(blackboard: Blackboard, currentAgent: stri
       if (merge && typeof data === 'object' && data !== null) {
         const existing = blackboard.read(section);
         if (existing && typeof existing === 'object') {
-          const merged = { ...existing, ...data };
+          const merged = Array.isArray(existing)
+            ? Array.isArray(data)
+              ? [...existing, ...data]
+              : existing
+            : Array.isArray(data)
+              ? data
+              : { ...existing, ...data };
           blackboard.write(section, merged, currentAgent);
           return {
             written: true,

@@ -38,6 +38,7 @@ export interface SwarmAgentJobPayload {
 }
 
 export interface SwarmAgentJobResult {
+  jobId: string;
   swarmId: string;
   agentName: string;
   output: string;
@@ -60,8 +61,9 @@ interface SerializedAgentConfig {
 export class DistributedSwarmCoordinator implements SwarmCoordinatorInterface {
   private config: SwarmConfig;
   private distributed: DistributedSwarmConfig;
-  private redis: Redis;
-  private subscriber: Redis;
+  private redis!: Redis;
+  private subscriber!: Redis;
+  private redisConfig: { host: string; port: number; password?: string; db: number };
   private agents = new Map<string, SwarmAgent>();
   private _messageBus!: RedisMessageBus;
   private _blackboard!: RedisBlackboard;
@@ -69,6 +71,7 @@ export class DistributedSwarmCoordinator implements SwarmCoordinatorInterface {
   private swarmId: string;
   private keyPrefix: string;
   private resultHandlers = new Map<string, (result: SwarmAgentJobResult) => void>();
+  private pendingTimers = new Set<ReturnType<typeof setTimeout>>();
   private initialized = false;
   private aborted = false;
   private paused = false;
@@ -79,15 +82,12 @@ export class DistributedSwarmCoordinator implements SwarmCoordinatorInterface {
     this.swarmId = `swarm_${nanoid(12)}`;
     this.keyPrefix = options.distributed.redis?.keyPrefix ?? 'swarm';
 
-    const redisConfig = {
+    this.redisConfig = {
       host: options.distributed.redis?.host ?? 'localhost',
       port: options.distributed.redis?.port ?? 6379,
       password: options.distributed.redis?.password,
       db: options.distributed.redis?.db ?? 0,
     };
-
-    this.redis = new Redis(redisConfig);
-    this.subscriber = new Redis(redisConfig);
 
     this.initializeAgents();
   }
@@ -163,6 +163,9 @@ export class DistributedSwarmCoordinator implements SwarmCoordinatorInterface {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
+    this.redis = new Redis(this.redisConfig);
+    this.subscriber = new Redis(this.redisConfig);
+
     this._messageBus = new RedisMessageBus(
       this.config.messaging ?? { enabled: true, protocol: 'direct' },
       { redis: this.redis, swarmId: this.swarmId, keyPrefix: this.keyPrefix }
@@ -195,12 +198,14 @@ export class DistributedSwarmCoordinator implements SwarmCoordinatorInterface {
     this.subscriber.on('message', (_channel, messageJson) => {
       try {
         const result = JSON.parse(messageJson) as SwarmAgentJobResult;
-        const handler = this.resultHandlers.get(result.agentName);
+        const handler = this.resultHandlers.get(result.jobId);
         if (handler) {
           handler(result);
-          this.resultHandlers.delete(result.agentName);
+          this.resultHandlers.delete(result.jobId);
         }
-      } catch {}
+      } catch (error) {
+        console.warn('[DistributedSwarmCoordinator] Failed to process result message:', error);
+      }
     });
   }
 
@@ -246,7 +251,7 @@ export class DistributedSwarmCoordinator implements SwarmCoordinatorInterface {
       throw new Error(`Agent '${agentName}' not found in swarm`);
     }
 
-    while (this.paused) {
+    while (this.paused && !this.aborted) {
       await new Promise((r) => setTimeout(r, 100));
     }
 
@@ -297,6 +302,14 @@ export class DistributedSwarmCoordinator implements SwarmCoordinatorInterface {
       for (const settled of chunkResults) {
         if (settled.status === 'fulfilled') {
           results.set(settled.value.name, settled.value.result);
+        } else {
+          if (this.config.errorHandling?.onAgentFailure === 'skip') {
+            continue;
+          } else if (this.config.errorHandling?.onAgentFailure === 'abort') {
+            throw settled.reason;
+          } else {
+            throw settled.reason;
+          }
         }
       }
     }
@@ -361,12 +374,16 @@ export class DistributedSwarmCoordinator implements SwarmCoordinatorInterface {
 
     return new Promise<SwarmAgentJobResult>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
-        this.resultHandlers.delete(payload.agentName);
+        this.pendingTimers.delete(timeoutId);
+        this.resultHandlers.delete(payload.jobId);
         reject(new Error(`Job timeout for agent '${payload.agentName}' after ${timeout}ms`));
       }, timeout);
 
-      this.resultHandlers.set(payload.agentName, (result) => {
+      this.pendingTimers.add(timeoutId);
+
+      this.resultHandlers.set(payload.jobId, (result) => {
         clearTimeout(timeoutId);
+        this.pendingTimers.delete(timeoutId);
         if (result.error) {
           reject(new Error(result.error));
         } else {
@@ -439,11 +456,21 @@ export class DistributedSwarmCoordinator implements SwarmCoordinatorInterface {
       agent.tokenCount = 0;
     }
 
-    this._messageBus.clear();
-    this._blackboard.clear();
+    if (this._messageBus) {
+      await this._messageBus.clear();
+    }
+    if (this._blackboard) {
+      await this._blackboard.clear();
+    }
   }
 
   async close(): Promise<void> {
+    for (const timer of this.pendingTimers) {
+      clearTimeout(timer);
+    }
+    this.pendingTimers.clear();
+    this.resultHandlers.clear();
+
     if (this._messageBus) {
       await this._messageBus.close();
     }
@@ -453,8 +480,12 @@ export class DistributedSwarmCoordinator implements SwarmCoordinatorInterface {
     if (this._events) {
       await this._events.close();
     }
-    await this.subscriber.unsubscribe();
-    await this.subscriber.quit();
-    await this.redis.quit();
+    if (this.subscriber) {
+      await this.subscriber.unsubscribe();
+      await this.subscriber.quit();
+    }
+    if (this.redis) {
+      await this.redis.quit();
+    }
   }
 }

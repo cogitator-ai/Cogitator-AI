@@ -71,13 +71,18 @@ export class ResourceTracker {
     time: number | undefined;
   } {
     return {
-      tokens: this.config.tokenBudget
-        ? Math.max(0, this.config.tokenBudget - this.totalTokens)
-        : undefined,
-      cost: this.config.costLimit ? Math.max(0, this.config.costLimit - this.totalCost) : undefined,
-      time: this.config.timeout
-        ? Math.max(0, this.config.timeout - this.getElapsedTime())
-        : undefined,
+      tokens:
+        this.config.tokenBudget !== undefined
+          ? Math.max(0, this.config.tokenBudget - this.totalTokens)
+          : undefined,
+      cost:
+        this.config.costLimit !== undefined
+          ? Math.max(0, this.config.costLimit - this.totalCost)
+          : undefined,
+      time:
+        this.config.timeout !== undefined
+          ? Math.max(0, this.config.timeout - this.getElapsedTime())
+          : undefined,
     };
   }
 
@@ -86,14 +91,17 @@ export class ResourceTracker {
       totalTokens: this.totalTokens,
       totalCost: this.totalCost,
       elapsedTime: this.getElapsedTime(),
-      agentUsage: new Map(this.agentUsage),
+      agentUsage: new Map(
+        Array.from(this.agentUsage.entries()).map(([k, v]) => [k, { ...v }] as const)
+      ),
     };
   }
 
   getAgentUsage(
     agentName: string
   ): { tokens: number; cost: number; runs: number; duration: number } | undefined {
-    return this.agentUsage.get(agentName);
+    const usage = this.agentUsage.get(agentName);
+    return usage ? { ...usage } : undefined;
   }
 
   reset(): void {

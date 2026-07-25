@@ -329,11 +329,6 @@ export class NegotiationStrategy extends BaseStrategy {
   }
 
   private async checkForAgreement(): Promise<boolean> {
-    const currentState = this.coordinator.blackboard.read<NegotiationState>('negotiation');
-    if (!currentState) return false;
-
-    this.state = currentState;
-
     const acceptedOffers = this.state.offers.filter((o) => o.status === 'accepted');
 
     if (acceptedOffers.length === 0) return false;
@@ -390,7 +385,7 @@ export class NegotiationStrategy extends BaseStrategy {
       const acceptance = this.state.offers.find(
         (o) => o.from === recipient && o.inResponseTo === offer.id && o.status === 'accepted'
       );
-      return !!acceptance || offer.status === 'accepted';
+      return !!acceptance;
     });
   }
 
@@ -496,20 +491,15 @@ export class NegotiationStrategy extends BaseStrategy {
         );
 
         if (response.approved && response.suggestedModifications) {
-          const escalationOffer: NegotiationOffer = {
-            id: `escalation_${nanoid(8)}`,
-            from: 'escalation_authority',
-            to: Object.keys(this.state.interests),
-            terms: response.suggestedModifications,
-            reasoning: 'Terms proposed by escalation authority after deadlock',
-            timestamp: Date.now(),
-            status: 'pending',
-            round: this.state.round + 1,
-            phase: 'escalation',
-          };
-
-          this.state.offers.push(escalationOffer);
-          this.updateBlackboard();
+          this.coordinator.events.emit(
+            'negotiation:escalation',
+            {
+              reason: 'authority_modifications',
+              suggestedModifications: response.suggestedModifications,
+              respondedBy: response.respondedBy,
+            },
+            'system'
+          );
         }
       }
     }

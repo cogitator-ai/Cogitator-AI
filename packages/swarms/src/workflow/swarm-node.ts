@@ -55,38 +55,45 @@ export function swarmNode<S extends WorkflowState = WorkflowState>(
       }
       const extCtx = ctx as SwarmNodeContext<S>;
 
+      const isOwned = !(swarmOrConfig instanceof Swarm);
       const swarm =
         swarmOrConfig instanceof Swarm ? swarmOrConfig : new Swarm(extCtx.cogitator, swarmOrConfig);
 
-      let input: string;
-      if (options?.inputMapper) {
-        input = options.inputMapper(ctx.state, ctx.input);
-      } else if (typeof ctx.input === 'string') {
-        input = ctx.input;
-      } else if (ctx.input !== undefined) {
-        input = JSON.stringify(ctx.input);
-      } else {
-        input = JSON.stringify(ctx.state);
-      }
+      try {
+        let input: string;
+        if (options?.inputMapper) {
+          input = options.inputMapper(ctx.state, ctx.input);
+        } else if (typeof ctx.input === 'string') {
+          input = ctx.input;
+        } else if (ctx.input !== undefined) {
+          input = JSON.stringify(ctx.input);
+        } else {
+          input = JSON.stringify(ctx.state);
+        }
 
-      const result = await swarm.run({
-        input,
-        context: {
-          workflowContext: {
-            nodeId: ctx.nodeId,
-            step: ctx.step,
-            workflowState: ctx.state,
+        const result = await swarm.run({
+          input,
+          context: {
+            workflowContext: {
+              nodeId: ctx.nodeId,
+              step: ctx.step,
+              workflowState: ctx.state,
+            },
           },
-        },
-        ...options?.runOptions,
-      });
+          ...options?.runOptions,
+        });
 
-      const stateUpdate = options?.stateMapper?.(result);
+        const stateUpdate = options?.stateMapper?.(result);
 
-      return {
-        state: stateUpdate,
-        output: result.output,
-      };
+        return {
+          state: stateUpdate,
+          output: result.output,
+        };
+      } finally {
+        if (isOwned) {
+          await swarm.close();
+        }
+      }
     },
   };
 }
@@ -137,40 +144,63 @@ export function parallelSwarmsNode<S extends WorkflowState = WorkflowState>(
       }
       const extCtx = ctx as SwarmNodeContext<S>;
       const results: Record<string, StrategyResult> = {};
+      const errors: { key: string; error: unknown }[] = [];
 
-      await Promise.all(
+      const settled = await Promise.allSettled(
         swarms.map(async ({ swarm: swarmOrConfig, key, options }) => {
+          const isOwned = !(swarmOrConfig instanceof Swarm);
           const swarm =
             swarmOrConfig instanceof Swarm
               ? swarmOrConfig
               : new Swarm(extCtx.cogitator, swarmOrConfig);
 
-          let input: string;
-          if (options?.inputMapper) {
-            input = options.inputMapper(ctx.state, ctx.input);
-          } else if (typeof ctx.input === 'string') {
-            input = ctx.input;
-          } else if (ctx.input !== undefined) {
-            input = JSON.stringify(ctx.input);
-          } else {
-            input = JSON.stringify(ctx.state);
-          }
+          try {
+            let input: string;
+            if (options?.inputMapper) {
+              input = options.inputMapper(ctx.state, ctx.input);
+            } else if (typeof ctx.input === 'string') {
+              input = ctx.input;
+            } else if (ctx.input !== undefined) {
+              input = JSON.stringify(ctx.input);
+            } else {
+              input = JSON.stringify(ctx.state);
+            }
 
-          const result = await swarm.run({
-            input,
-            context: {
-              workflowContext: {
-                nodeId: ctx.nodeId,
-                step: ctx.step,
-                workflowState: ctx.state,
+            const result = await swarm.run({
+              input,
+              context: {
+                workflowContext: {
+                  nodeId: ctx.nodeId,
+                  step: ctx.step,
+                  workflowState: ctx.state,
+                },
               },
-            },
-            ...options?.runOptions,
-          });
+              ...options?.runOptions,
+            });
 
-          results[key] = result;
+            return { key, result };
+          } finally {
+            if (isOwned) {
+              await swarm.close();
+            }
+          }
         })
       );
+
+      for (const outcome of settled) {
+        if (outcome.status === 'fulfilled') {
+          results[outcome.value.key] = outcome.value.result;
+        } else {
+          errors.push({ key: 'unknown', error: outcome.reason });
+        }
+      }
+
+      if (errors.length > 0 && Object.keys(results).length === 0) {
+        throw new AggregateError(
+          errors.map((e) => e.error),
+          'All parallel swarms failed'
+        );
+      }
 
       const stateUpdate = mergeResults?.(results);
 

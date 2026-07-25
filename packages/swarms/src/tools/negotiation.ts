@@ -130,6 +130,13 @@ export function createNegotiationTools(
         return { success: false, error: 'No active negotiation session' };
       }
 
+      if (state.currentTurn !== null && state.currentTurn !== currentAgent) {
+        return {
+          success: false,
+          error: `Not your turn. Current turn: ${state.currentTurn}`,
+        };
+      }
+
       const originalOffer = state.offers.find((o) => o.id === inResponseTo);
       if (!originalOffer) {
         return { success: false, error: `Original offer not found: ${inResponseTo}` };
@@ -142,8 +149,12 @@ export function createNegotiationTools(
         };
       }
 
+      if (originalOffer.expiresAt && Date.now() > originalOffer.expiresAt) {
+        return { success: false, error: 'Offer has expired' };
+      }
+
       const recipients = Array.isArray(originalOffer.to) ? originalOffer.to : [originalOffer.to];
-      if (!recipients.includes(currentAgent) && originalOffer.from !== currentAgent) {
+      if (!recipients.includes(currentAgent)) {
         return { success: false, error: 'You are not a party to this offer' };
       }
 
@@ -207,6 +218,13 @@ export function createNegotiationTools(
         return { success: false, error: 'No active negotiation session' };
       }
 
+      if (state.currentTurn !== null && state.currentTurn !== currentAgent) {
+        return {
+          success: false,
+          error: `Not your turn. Current turn: ${state.currentTurn}`,
+        };
+      }
+
       const offer = state.offers.find((o) => o.id === offerId);
       if (!offer) {
         return { success: false, error: `Offer not found: ${offerId}` };
@@ -214,6 +232,10 @@ export function createNegotiationTools(
 
       if (offer.status !== 'pending') {
         return { success: false, error: `Cannot accept offer with status: ${offer.status}` };
+      }
+
+      if (offer.expiresAt && Date.now() > offer.expiresAt) {
+        return { success: false, error: 'Offer has expired' };
       }
 
       const recipients = Array.isArray(offer.to) ? offer.to : [offer.to];
@@ -264,6 +286,13 @@ export function createNegotiationTools(
         return { success: false, error: 'No active negotiation session' };
       }
 
+      if (state.currentTurn !== null && state.currentTurn !== currentAgent) {
+        return {
+          success: false,
+          error: `Not your turn. Current turn: ${state.currentTurn}`,
+        };
+      }
+
       const offer = state.offers.find((o) => o.id === offerId);
       if (!offer) {
         return { success: false, error: `Offer not found: ${offerId}` };
@@ -271,6 +300,10 @@ export function createNegotiationTools(
 
       if (offer.status !== 'pending') {
         return { success: false, error: `Cannot reject offer with status: ${offer.status}` };
+      }
+
+      if (offer.expiresAt && Date.now() > offer.expiresAt) {
+        return { success: false, error: 'Offer has expired' };
       }
 
       const recipients = Array.isArray(offer.to) ? offer.to : [offer.to];

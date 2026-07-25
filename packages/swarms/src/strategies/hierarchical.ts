@@ -64,9 +64,12 @@ export class HierarchicalStrategy extends BaseStrategy {
     );
     agentResults.set(supervisor.agent.name, supervisorResult);
 
+    const workerResults =
+      this.coordinator.blackboard.read<Record<string, RunResult>>('workerResults') ?? {};
     for (const worker of workers) {
-      if (worker.lastResult) {
-        agentResults.set(worker.agent.name, worker.lastResult);
+      const result = workerResults[worker.agent.name];
+      if (result) {
+        agentResults.set(worker.agent.name, result);
       }
     }
 

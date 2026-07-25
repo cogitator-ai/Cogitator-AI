@@ -138,7 +138,7 @@ export class ModelScorer {
 
     return {
       model,
-      score: Math.max(0, score),
+      score: Math.min(100, Math.max(0, score)),
       reasons,
     };
   }

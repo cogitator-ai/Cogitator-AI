@@ -227,8 +227,8 @@ Be honest in your assessment. Only bid high if you're truly well-suited for the 
     let score = 0.5;
 
     if (scoreMatch) {
-      score = Math.min(1, Math.max(0, parseFloat(scoreMatch[1])));
-      if (isNaN(score)) score = 0.5;
+      const parsed = parseFloat(scoreMatch[1]);
+      score = isNaN(parsed) ? 0.5 : Math.min(1, Math.max(0, parsed));
     }
 
     const capMatch = /CAPABILITIES:\s*([^\n]+)/i.exec(output);

@@ -6,10 +6,7 @@ import { z } from 'zod';
 import { tool } from '@cogitator-ai/core';
 import type { MessageBus } from '@cogitator-ai/types';
 
-/**
- * Create messaging tools bound to a message bus
- */
-export function createMessagingTools(messageBus: MessageBus, currentAgent: string) {
+export function createMessagingTools(messageBus: MessageBus, currentAgent: string, swarmId = '') {
   const sendMessage = tool({
     name: 'send_message',
     description: 'Send a message to another agent in the swarm',
@@ -24,7 +21,7 @@ export function createMessagingTools(messageBus: MessageBus, currentAgent: strin
     }),
     execute: async ({ to, message, channel, waitForReply }) => {
       const msg = await messageBus.send({
-        swarmId: '',
+        swarmId,
         from: currentAgent,
         to,
         type: 'request',
@@ -80,8 +77,10 @@ export function createMessagingTools(messageBus: MessageBus, currentAgent: strin
       channel: z.string().optional().describe('Filter by channel'),
       unreadOnly: z.boolean().optional().describe('Only return unread messages'),
     }),
-    execute: async ({ limit = 10, from, channel }) => {
-      let messages = messageBus.getMessages(currentAgent);
+    execute: async ({ limit = 10, from, channel, unreadOnly }) => {
+      let messages = unreadOnly
+        ? messageBus.getUnreadMessages(currentAgent)
+        : messageBus.getMessages(currentAgent);
 
       if (from) {
         messages = messages.filter((m) => m.from === from);
@@ -143,7 +142,7 @@ export function createMessagingTools(messageBus: MessageBus, currentAgent: strin
       }
 
       const reply = await messageBus.send({
-        swarmId: '',
+        swarmId,
         from: currentAgent,
         to: original.from,
         type: 'response',

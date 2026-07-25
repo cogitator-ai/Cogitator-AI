@@ -6,9 +6,6 @@ import { z } from 'zod';
 import { tool } from '@cogitator-ai/core';
 import type { SwarmCoordinatorInterface, Blackboard } from '@cogitator-ai/types';
 
-/**
- * Create delegation tools for supervisor agents
- */
 function safeRead<T>(blackboard: Blackboard, section: string, fallback: T): T {
   try {
     return blackboard.read<T>(section) ?? fallback;
@@ -17,11 +14,21 @@ function safeRead<T>(blackboard: Blackboard, section: string, fallback: T): T {
   }
 }
 
+class UpdateQueue {
+  private queue: Promise<void> = Promise.resolve();
+
+  enqueue(fn: () => void): void {
+    this.queue = this.queue.then(fn);
+  }
+}
+
 export function createDelegationTools(
   coordinator: SwarmCoordinatorInterface,
   blackboard: Blackboard,
   currentAgent: string
 ) {
+  const updateQueue = new UpdateQueue();
+
   const delegateTask = tool({
     name: 'delegate_task',
     description: 'Delegate a task to a worker agent',
@@ -60,7 +67,7 @@ export function createDelegationTools(
         }[]
       >(blackboard, 'tasks', []);
 
-      const taskId = `task_${Date.now()}_${worker}`;
+      const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${worker}`;
       tasks.push({
         id: taskId,
         worker,
@@ -82,28 +89,32 @@ export function createDelegationTools(
             },
           })
           .then((result) => {
-            const currentTasks = safeRead<typeof tasks>(blackboard, 'tasks', []);
-            const taskIndex = currentTasks.findIndex((t) => t.id === taskId);
-            if (taskIndex >= 0) {
-              currentTasks[taskIndex].status = 'completed';
-            }
-            blackboard.write('tasks', currentTasks, worker);
+            updateQueue.enqueue(() => {
+              const currentTasks = safeRead<typeof tasks>(blackboard, 'tasks', []);
+              const taskIndex = currentTasks.findIndex((t) => t.id === taskId);
+              if (taskIndex >= 0) {
+                currentTasks[taskIndex].status = 'completed';
+              }
+              blackboard.write('tasks', currentTasks, worker);
 
-            const workerResults = safeRead<Record<string, unknown>>(
-              blackboard,
-              'workerResults',
-              {}
-            );
-            workerResults[taskId] = result.output;
-            blackboard.write('workerResults', workerResults, worker);
+              const workerResults = safeRead<Record<string, unknown>>(
+                blackboard,
+                'workerResults',
+                {}
+              );
+              workerResults[taskId] = result.output;
+              blackboard.write('workerResults', workerResults, worker);
+            });
           })
           .catch(() => {
-            const currentTasks = safeRead<typeof tasks>(blackboard, 'tasks', []);
-            const taskIndex = currentTasks.findIndex((t) => t.id === taskId);
-            if (taskIndex >= 0) {
-              currentTasks[taskIndex].status = 'failed';
-            }
-            blackboard.write('tasks', currentTasks, worker);
+            updateQueue.enqueue(() => {
+              const currentTasks = safeRead<typeof tasks>(blackboard, 'tasks', []);
+              const taskIndex = currentTasks.findIndex((t) => t.id === taskId);
+              if (taskIndex >= 0) {
+                currentTasks[taskIndex].status = 'failed';
+              }
+              blackboard.write('tasks', currentTasks, worker);
+            });
           });
 
         return {
@@ -282,31 +293,47 @@ ${feedback}
 Please provide a revised response addressing the feedback.
 `.trim();
 
-      const result = await coordinator.runAgent(worker, revisionInput, {
-        delegationContext: {
-          delegatedBy: currentAgent,
+      try {
+        const result = await coordinator.runAgent(worker, revisionInput, {
+          delegationContext: {
+            delegatedBy: currentAgent,
+            taskId: targetTask.id,
+            isRevision: true,
+            originalTask: targetTask.task,
+          },
+        });
+
+        workerResults[targetTask.id] = result.output;
+        blackboard.write('workerResults', workerResults, worker);
+
+        const updatedTasks = safeRead<typeof tasks>(blackboard, 'tasks', []);
+        const taskIndex = updatedTasks.findIndex((t) => t.id === targetTask.id);
+        if (taskIndex >= 0) {
+          updatedTasks[taskIndex].status = 'revised';
+        }
+        blackboard.write('tasks', updatedTasks, worker);
+
+        return {
+          success: true,
           taskId: targetTask.id,
-          isRevision: true,
-          originalTask: targetTask.task,
-        },
-      });
+          worker,
+          revisedOutput: result.output,
+        };
+      } catch (error) {
+        const updatedTasks = safeRead<typeof tasks>(blackboard, 'tasks', []);
+        const taskIndex = updatedTasks.findIndex((t) => t.id === targetTask.id);
+        if (taskIndex >= 0) {
+          updatedTasks[taskIndex].status = 'failed';
+        }
+        blackboard.write('tasks', updatedTasks, worker);
 
-      workerResults[targetTask.id] = result.output;
-      blackboard.write('workerResults', workerResults, worker);
-
-      const updatedTasks = safeRead<typeof tasks>(blackboard, 'tasks', []);
-      const taskIndex = updatedTasks.findIndex((t) => t.id === targetTask.id);
-      if (taskIndex >= 0) {
-        updatedTasks[taskIndex].status = 'revised';
+        return {
+          success: false,
+          taskId: targetTask.id,
+          worker,
+          error: error instanceof Error ? error.message : 'Revision failed',
+        };
       }
-      blackboard.write('tasks', updatedTasks, worker);
-
-      return {
-        success: true,
-        taskId: targetTask.id,
-        worker,
-        revisedOutput: result.output,
-      };
     },
   });
 

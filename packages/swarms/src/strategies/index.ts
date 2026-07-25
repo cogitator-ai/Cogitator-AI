@@ -18,14 +18,6 @@ import type {
 import { DEFAULT_NEGOTIATION_CONFIG } from '@cogitator-ai/types';
 
 export { BaseStrategy } from './base';
-export { HierarchicalStrategy } from './hierarchical';
-export { RoundRobinStrategy } from './round-robin';
-export { ConsensusStrategy } from './consensus';
-export { AuctionStrategy } from './auction';
-export { PipelineStrategy } from './pipeline';
-export { DebateStrategy } from './debate';
-export { NegotiationStrategy } from './negotiation-strategy';
-
 import { HierarchicalStrategy } from './hierarchical';
 import { RoundRobinStrategy } from './round-robin';
 import { ConsensusStrategy } from './consensus';
@@ -33,6 +25,15 @@ import { AuctionStrategy } from './auction';
 import { PipelineStrategy } from './pipeline';
 import { DebateStrategy } from './debate';
 import { NegotiationStrategy } from './negotiation-strategy';
+export {
+  HierarchicalStrategy,
+  RoundRobinStrategy,
+  ConsensusStrategy,
+  AuctionStrategy,
+  PipelineStrategy,
+  DebateStrategy,
+  NegotiationStrategy,
+};
 
 /**
  * Create a strategy instance based on configuration

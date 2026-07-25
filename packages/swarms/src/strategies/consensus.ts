@@ -33,7 +33,10 @@ export class ConsensusStrategy extends BaseStrategy {
 
   constructor(coordinator: SwarmCoordinatorInterface, config: ConsensusConfig) {
     super(coordinator);
-    this.config = config;
+    this.config = {
+      ...config,
+      threshold: Math.min(1, Math.max(0.01, config.threshold)),
+    };
   }
 
   async execute(options: SwarmRunOptions): Promise<StrategyResult> {
@@ -271,6 +274,16 @@ export class ConsensusStrategy extends BaseStrategy {
 
     switch (this.config.resolution) {
       case 'unanimous': {
+        if (votes.length < agents.length) {
+          this.coordinator.events.emit('consensus:vote', {
+            warning: 'missing-votes',
+            expected: agents.length,
+            received: votes.length,
+            missing: agents
+              .filter((a) => !votes.some((v) => v.agentName === a.agent.name))
+              .map((a) => a.agent.name),
+          });
+        }
         if (countsArray.length === 1 && countsArray[0].count === agents.length) {
           return { reached: true, decision: countsArray[0].decision, voteCounts: countsArray };
         }
@@ -424,8 +437,8 @@ Provide your decision as: FINAL DECISION: [your decision]
     }
 
     output += '=== Final Vote Tally ===\n';
-    for (const [decision, count] of voteCounts) {
-      output += `  ${decision}: ${count} votes\n`;
+    for (const [decisionKey, count] of voteCounts) {
+      output += `  ${decisionKey}: ${count} votes\n`;
     }
 
     return output;

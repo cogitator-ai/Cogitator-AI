@@ -137,7 +137,8 @@ export class SwarmAssessor implements Assessor {
         assignments,
         discoveredModels,
         this.config.maxCostPerRun,
-        taskAnalysis.complexity
+        taskAnalysis.complexity,
+        roleAnalyses
       );
     }
 
@@ -241,7 +242,7 @@ export class SwarmAssessor implements Assessor {
     for (let i = 0; i < str.length; i++) {
       const char = str.charCodeAt(i);
       hash = (hash << 5) - hash + char;
-      hash = hash & hash;
+      hash = hash | 0;
     }
     return Math.abs(hash).toString(36);
   }
@@ -253,6 +254,7 @@ export class SwarmAssessor implements Assessor {
     if (config.agents) names.push(...config.agents.map((a) => a.name));
     if (config.moderator) names.push(config.moderator.name);
     if (config.router) names.push(config.router.name);
+    if (config.stages) names.push(...config.stages.map((s) => s.agent.name));
     return names;
   }
 
@@ -298,7 +300,8 @@ export class SwarmAssessor implements Assessor {
     assignments: ModelAssignment[],
     discoveredModels: DiscoveredModel[],
     budget: number,
-    complexity: TaskComplexity = 'moderate'
+    complexity: TaskComplexity = 'moderate',
+    roleAnalyses?: Map<string, RoleRequirements>
   ): void {
     let currentCost = this.estimateTotalCost(assignments, discoveredModels, complexity);
     if (currentCost <= budget) return;
@@ -320,17 +323,25 @@ export class SwarmAssessor implements Assessor {
 
       for (const fallbackId of item.assignment.fallbackModels) {
         const fallbackModel = discoveredModels.find((m) => m.id === fallbackId);
-        if (fallbackModel?.isLocal) {
-          const oldCost = item.model ? this.estimateModelCost(item.model, complexity) : 0;
-          const newCost = this.estimateModelCost(fallbackModel, complexity);
+        if (!fallbackModel) continue;
 
-          item.assignment.assignedModel = fallbackId;
-          item.assignment.provider = fallbackModel.provider;
-          item.assignment.reasons.push('Downgraded for cost optimization');
+        const oldCost = item.model ? this.estimateModelCost(item.model, complexity) : 0;
+        const newCost = this.estimateModelCost(fallbackModel, complexity);
 
-          currentCost -= oldCost - newCost;
-          break;
+        if (newCost >= oldCost) continue;
+
+        item.assignment.assignedModel = fallbackId;
+        item.assignment.provider = fallbackModel.provider;
+        item.assignment.reasons.push('Downgraded for cost optimization');
+
+        const reqs = roleAnalyses?.get(item.assignment.agentName);
+        if (reqs) {
+          const rescored = this.modelScorer.score(fallbackModel, reqs);
+          item.assignment.score = rescored.score;
         }
+
+        currentCost -= oldCost - newCost;
+        break;
       }
     }
   }

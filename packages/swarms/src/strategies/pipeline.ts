@@ -29,6 +29,7 @@ export class PipelineStrategy extends BaseStrategy {
   async execute(options: SwarmRunOptions): Promise<StrategyResult> {
     const agentResults = new Map<string, RunResult>();
     const stageOutputs = new Map<string, unknown>();
+    this.retryCounts.clear();
 
     this.coordinator.blackboard.write(
       'pipeline',
@@ -43,6 +44,8 @@ export class PipelineStrategy extends BaseStrategy {
 
     let currentInput: unknown = options.input;
     let stageIndex = 0;
+    let gotoJumps = 0;
+    const maxGotoJumps = this.config.stages.length * 3;
 
     while (stageIndex < this.config.stages.length) {
       const stage = this.config.stages[stageIndex];
@@ -104,8 +107,11 @@ export class PipelineStrategy extends BaseStrategy {
         completed: string[];
         failed: string[];
       }>('pipeline');
-      updatedState.completed.push(stage.name);
-      this.coordinator.blackboard.write('pipeline', updatedState, 'system');
+      this.coordinator.blackboard.write(
+        'pipeline',
+        { ...updatedState, completed: [...updatedState.completed, stage.name] },
+        'system'
+      );
 
       if (stage.gate) {
         const gateResult = await this.checkGate(stage, result, stageIndex, agentResults, options);
@@ -119,9 +125,15 @@ export class PipelineStrategy extends BaseStrategy {
             completed: string[];
             failed: string[];
           }>('pipeline');
-          state.failed.push(stage.name);
-          state.completed = state.completed.filter((s) => s !== stage.name);
-          this.coordinator.blackboard.write('pipeline', state, 'system');
+          this.coordinator.blackboard.write(
+            'pipeline',
+            {
+              ...state,
+              failed: [...state.failed, stage.name],
+              completed: state.completed.filter((s) => s !== stage.name),
+            },
+            'system'
+          );
 
           stageIndex = stageIndex - 1;
           const prevStageIndex = stageIndex - 1;
@@ -133,6 +145,12 @@ export class PipelineStrategy extends BaseStrategy {
         }
 
         if (gateResult.action === 'goto' && gateResult.targetStage !== undefined) {
+          gotoJumps++;
+          if (gotoJumps > maxGotoJumps) {
+            throw new Error(
+              `Pipeline aborted: exceeded max goto jumps (${maxGotoJumps}), possible cycle detected`
+            );
+          }
           stageIndex = gateResult.targetStage;
           continue;
         }

@@ -224,7 +224,7 @@ ${this.config.format === 'structured' ? '- Structure your argument with clear po
     for (const [agent, args] of Object.entries(argumentsByAgent)) {
       summary += `=== ${agent} ===\n`;
       args.forEach((arg, i) => {
-        summary += `Round ${i + 1}: ${arg.slice(0, 200)}...\n`;
+        summary += `Round ${i + 1}: ${arg}\n`;
       });
       summary += '\n';
     }

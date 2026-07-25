@@ -41,6 +41,9 @@ export class InMemoryBlackboard implements Blackboard {
   }
 
   read<T = unknown>(section: string): T {
+    if (!this.config.enabled) {
+      throw new Error('Blackboard is not enabled');
+    }
     const sec = this.sections.get(section);
     if (!sec) {
       throw new Error(`Blackboard section '${section}' not found`);
@@ -140,6 +143,7 @@ export class InMemoryBlackboard implements Blackboard {
   clear(): void {
     this.sections.clear();
     this.history.clear();
+    this.subscriptions.clear();
   }
 
   private notifySubscribers(section: string, data: unknown, agentName: string): void {

@@ -27,7 +27,7 @@ export class SwarmEventEmitterImpl implements SwarmEventEmitter {
     return () => this.off(event, handler);
   }
 
-  once(event: SwarmEventType, handler: SwarmEventHandler): () => void {
+  once(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void {
     const wrapper: SwarmEventHandler = (e) => {
       this.off(event, wrapper);
       void Promise.resolve(handler(e)).catch((error) => {

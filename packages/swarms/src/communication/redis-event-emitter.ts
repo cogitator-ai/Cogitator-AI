@@ -1,3 +1,4 @@
+import { nanoid } from 'nanoid';
 import type {
   SwarmEventEmitter,
   SwarmEventType,
@@ -13,6 +14,14 @@ export interface RedisEventEmitterOptions {
   maxEvents?: number;
 }
 
+const ATOMIC_PUSH_TRIM_SCRIPT = `
+local key = KEYS[1]
+local maxEvents = tonumber(ARGV[1])
+redis.call('RPUSH', key, ARGV[2])
+redis.call('LTRIM', key, -maxEvents, -1)
+return 1
+`;
+
 export class RedisSwarmEventEmitter implements SwarmEventEmitter {
   private redis: Redis;
   private subscriber: Redis;
@@ -21,6 +30,7 @@ export class RedisSwarmEventEmitter implements SwarmEventEmitter {
   private maxEvents: number;
   private handlers = new Map<SwarmEventType | '*', Set<SwarmEventHandler>>();
   private localEvents: SwarmEvent[] = [];
+  private readonly instanceId = nanoid(12);
 
   constructor(options: RedisEventEmitterOptions) {
     this.redis = options.redis;
@@ -43,13 +53,18 @@ export class RedisSwarmEventEmitter implements SwarmEventEmitter {
 
     this.subscriber.on('message', (_channel, messageJson) => {
       try {
-        const event = JSON.parse(messageJson) as SwarmEvent;
+        const envelope = JSON.parse(messageJson) as { _sid: string; e: SwarmEvent };
+        if (envelope._sid === this.instanceId) return;
+
+        const event = envelope.e;
         this.localEvents.push(event);
         if (this.localEvents.length > this.maxEvents) {
           this.localEvents = this.localEvents.slice(-this.maxEvents);
         }
         this.notifyHandlers(event);
-      } catch {}
+      } catch (error) {
+        console.warn('[RedisSwarmEventEmitter] Failed to parse message:', error);
+      }
     });
   }
 
@@ -62,7 +77,7 @@ export class RedisSwarmEventEmitter implements SwarmEventEmitter {
     return () => this.off(event, handler);
   }
 
-  once(event: SwarmEventType, handler: SwarmEventHandler): () => void {
+  once(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void {
     const wrapper: SwarmEventHandler = (e) => {
       this.off(event, wrapper);
       void Promise.resolve(handler(e)).catch((error) => {
@@ -73,7 +88,9 @@ export class RedisSwarmEventEmitter implements SwarmEventEmitter {
   }
 
   emit(event: SwarmEventType, data?: unknown, agentName?: string): void {
-    void this.emitAsync(event, data, agentName);
+    void this.emitAsync(event, data, agentName).catch((error) => {
+      console.warn('[RedisSwarmEventEmitter] Emit error:', error);
+    });
   }
 
   async emitAsync(event: SwarmEventType, data?: unknown, agentName?: string): Promise<void> {
@@ -84,16 +101,23 @@ export class RedisSwarmEventEmitter implements SwarmEventEmitter {
       data,
     };
 
-    const eventJson = JSON.stringify(swarmEvent);
-
-    await this.redis.rpush(this.eventsKey(), eventJson);
-
-    const len = await this.redis.llen(this.eventsKey());
-    if (len > this.maxEvents) {
-      await this.redis.ltrim(this.eventsKey(), len - this.maxEvents, -1);
+    this.localEvents.push(swarmEvent);
+    if (this.localEvents.length > this.maxEvents) {
+      this.localEvents = this.localEvents.slice(-this.maxEvents);
     }
 
-    await this.redis.publish(this.channelKey(), eventJson);
+    const eventJson = JSON.stringify(swarmEvent);
+
+    await this.redis.eval(
+      ATOMIC_PUSH_TRIM_SCRIPT,
+      1,
+      this.eventsKey(),
+      String(this.maxEvents),
+      eventJson
+    );
+
+    const envelope = JSON.stringify({ _sid: this.instanceId, e: swarmEvent });
+    await this.redis.publish(this.channelKey(), envelope);
   }
 
   off(event: SwarmEventType | '*', handler: SwarmEventHandler): void {
@@ -141,6 +165,7 @@ export class RedisSwarmEventEmitter implements SwarmEventEmitter {
   }
 
   async close(): Promise<void> {
+    this.subscriber.removeAllListeners('message');
     await this.subscriber.unsubscribe();
     await this.subscriber.quit();
   }
