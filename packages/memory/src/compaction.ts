@@ -31,6 +31,20 @@ export class CompactionService {
     }
 
     const entries = entriesResult.data;
+
+    const totalTokens = entries.reduce(
+      (sum, e) => sum + (e.tokenCount ?? countMessagesTokens([e.message])),
+      0
+    );
+    if (totalTokens < config.threshold) {
+      return {
+        sessionId,
+        originalMessages: entries.length,
+        compactedMessages: entries.length,
+        summaryTokens: 0,
+      };
+    }
+
     if (entries.length <= config.keepRecent) {
       return {
         sessionId,
@@ -40,8 +54,12 @@ export class CompactionService {
       };
     }
 
+    const sorted = [...entries].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+
     const strategy = strategies[config.strategy];
-    return strategy(this, sessionId, entries, config);
+    return strategy(this, sessionId, sorted, config);
   }
 
   async applySummary(
@@ -49,10 +67,6 @@ export class CompactionService {
     entriesToRemove: MemoryEntry[],
     summary: string
   ): Promise<number> {
-    for (const entry of entriesToRemove) {
-      await this.adapter.deleteEntry(entry.id);
-    }
-
     const summaryMessage: Message = {
       role: 'system',
       content: `[Conversation summary]\n${summary}`,
@@ -66,6 +80,10 @@ export class CompactionService {
       tokenCount: summaryTokens,
       metadata: { compactionSummary: true, compactedAt: new Date().toISOString() },
     });
+
+    for (const entry of entriesToRemove) {
+      await this.adapter.deleteEntry(entry.id);
+    }
 
     return summaryTokens;
   }

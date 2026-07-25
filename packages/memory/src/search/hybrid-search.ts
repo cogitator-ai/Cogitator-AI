@@ -41,6 +41,10 @@ export class HybridSearch {
         return this.keywordSearch(options, limit);
       case 'hybrid':
         return this.hybridSearch(options, weights, limit);
+      default: {
+        const _exhaustive: never = options.strategy;
+        return { success: false, error: `Unknown search strategy: ${_exhaustive}` };
+      }
     }
   }
 
@@ -99,6 +103,13 @@ export class HybridSearch {
         limit,
         filter: options.filter,
       });
+    }
+
+    if (options.filter) {
+      console.warn(
+        'HybridSearch: filter is provided but no keywordAdapter is configured; ' +
+          'falling back to local BM25 which does not support filtering'
+      );
     }
 
     return this.localBM25Search(options.query, limit);

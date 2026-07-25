@@ -4,8 +4,10 @@
  */
 
 import type { EmbeddingService, GoogleEmbeddingConfig } from '@cogitator-ai/types';
+import { fetchWithRetry } from './retry';
 
-const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
+const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
+const BATCH_LIMIT = 100;
 
 export class GoogleEmbeddingService implements EmbeddingService {
   readonly model: string;
@@ -13,27 +15,33 @@ export class GoogleEmbeddingService implements EmbeddingService {
   private customDimensions: boolean;
 
   private apiKey: string;
+  private baseUrl: string;
 
   constructor(config: Omit<GoogleEmbeddingConfig, 'provider'>) {
     this.apiKey = config.apiKey;
     this.model = config.model ?? 'gemini-embedding-001';
+    this.baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
     this.dimensions = config.dimensions ?? 3072;
     this.customDimensions = config.dimensions !== undefined;
   }
 
   async embed(text: string): Promise<number[]> {
-    const response = await fetch(
-      `${BASE_URL}/models/${this.model}:embedContent?key=${this.apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: `models/${this.model}`,
-          content: { parts: [{ text }] },
-          ...(this.customDimensions ? { outputDimensionality: this.dimensions } : {}),
-        }),
-      }
-    );
+    if (!text) {
+      throw new Error('Embedding text must not be empty');
+    }
+
+    const response = await fetchWithRetry(`${this.baseUrl}/models/${this.model}:embedContent`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': this.apiKey,
+      },
+      body: JSON.stringify({
+        model: `models/${this.model}`,
+        content: { parts: [{ text }] },
+        ...(this.customDimensions ? { outputDimensionality: this.dimensions } : {}),
+      }),
+    });
 
     if (!response.ok) {
       const error = await response.text();
@@ -41,18 +49,41 @@ export class GoogleEmbeddingService implements EmbeddingService {
     }
 
     const data = (await response.json()) as {
-      embedding: { values: number[] };
+      embedding?: { values?: number[] };
     };
 
-    return data.embedding.values;
+    const values = data.embedding?.values;
+    if (!Array.isArray(values)) {
+      throw new Error('Google embedding failed: missing embedding in response');
+    }
+
+    return values;
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
-    const response = await fetch(
-      `${BASE_URL}/models/${this.model}:batchEmbedContents?key=${this.apiKey}`,
+    if (texts.length === 0) {
+      return [];
+    }
+
+    const chunks: string[][] = [];
+    for (let i = 0; i < texts.length; i += BATCH_LIMIT) {
+      chunks.push(texts.slice(i, i + BATCH_LIMIT));
+    }
+
+    const results = await Promise.all(chunks.map((chunk) => this.embedChunk(chunk)));
+
+    return results.flat();
+  }
+
+  private async embedChunk(texts: string[]): Promise<number[][]> {
+    const response = await fetchWithRetry(
+      `${this.baseUrl}/models/${this.model}:batchEmbedContents`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': this.apiKey,
+        },
         body: JSON.stringify({
           requests: texts.map((text) => ({
             model: `models/${this.model}`,
@@ -69,9 +100,18 @@ export class GoogleEmbeddingService implements EmbeddingService {
     }
 
     const data = (await response.json()) as {
-      embeddings: { values: number[] }[];
+      embeddings?: { values?: number[] }[];
     };
 
-    return data.embeddings.map((e) => e.values);
+    if (!Array.isArray(data.embeddings)) {
+      throw new Error('Google batch embedding failed: missing embeddings in response');
+    }
+
+    return data.embeddings.map((entry) => {
+      if (!Array.isArray(entry.values)) {
+        throw new Error('Google batch embedding failed: missing values in response');
+      }
+      return entry.values;
+    });
   }
 }

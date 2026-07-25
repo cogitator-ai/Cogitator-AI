@@ -21,7 +21,7 @@ export function createEmbeddingService(config: EmbeddingServiceConfig): Embeddin
     default: {
       const exhaustive: never = config;
       throw new Error(
-        `Unknown embedding provider: ${(exhaustive as EmbeddingServiceConfig).provider}`
+        `Unknown embedding provider: ${String((exhaustive as Record<string, unknown>).provider)}`
       );
     }
   }

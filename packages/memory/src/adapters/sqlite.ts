@@ -89,8 +89,14 @@ export class SQLiteAdapter extends BaseMemoryAdapter {
 
   async disconnect(): Promise<MemoryResult<void>> {
     if (this.db) {
-      this.db.close();
-      this.db = null;
+      try {
+        this.db.close();
+        return this.success(undefined);
+      } catch (err) {
+        return this.failure((err as Error).message);
+      } finally {
+        this.db = null;
+      }
     }
     return this.success(undefined);
   }
@@ -188,7 +194,6 @@ export class SQLiteAdapter extends BaseMemoryAdapter {
     if (!this.db) return this.failure('Not connected');
 
     try {
-      this.db.prepare('DELETE FROM entries WHERE thread_id = ?').run(threadId);
       this.db.prepare('DELETE FROM threads WHERE id = ?').run(threadId);
       return this.success(undefined);
     } catch (err) {

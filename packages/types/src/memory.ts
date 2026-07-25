@@ -223,12 +223,14 @@ export interface OllamaEmbeddingConfig {
   provider: 'ollama';
   model?: string;
   baseUrl?: string;
+  dimensions?: number;
 }
 
 export interface GoogleEmbeddingConfig {
   provider: 'google';
   apiKey: string;
   model?: string;
+  baseUrl?: string;
   dimensions?: number;
 }
 

@@ -57,6 +57,7 @@ export class ContextBuilder {
   async build(options: BuildContextOptions): Promise<BuiltContext> {
     const availableTokens = this.config.maxTokens - this.config.reserveTokens;
     let usedTokens = 0;
+    let injectedSystemMessages = 0;
     const messages: Message[] = [];
     const facts: Fact[] = [];
     const semanticResults: (Embedding & { score: number })[] = [];
@@ -68,6 +69,7 @@ export class ContextBuilder {
       if (usedTokens + tokens <= availableTokens) {
         messages.push(systemMsg);
         usedTokens += tokens;
+        injectedSystemMessages++;
       }
     }
 
@@ -78,7 +80,7 @@ export class ContextBuilder {
         let factTokens = 0;
 
         for (const fact of factsResult.data) {
-          const tokens = countTokens(fact.content);
+          const tokens = countTokens(`- ${fact.content}`);
           if (factTokens + tokens <= factTokenBudget) {
             facts.push(fact);
             factTokens += tokens;
@@ -87,18 +89,20 @@ export class ContextBuilder {
 
         if (facts.length > 0) {
           const factsStr = facts.map((f) => `- ${f.content}`).join('\n');
+          const formattedBlock = `Known facts:\n${factsStr}`;
           if (messages.length > 0 && messages[0].role === 'system') {
             messages[0] = {
               ...messages[0],
-              content: `${messages[0].content}\n\nKnown facts:\n${factsStr}`,
+              content: `${messages[0].content}\n\n${formattedBlock}`,
             };
           } else {
             messages.unshift({
               role: 'system',
-              content: `Known facts:\n${factsStr}`,
+              content: formattedBlock,
             });
+            injectedSystemMessages++;
           }
-          usedTokens += factTokens;
+          usedTokens += countTokens(formattedBlock);
         }
       }
     }
@@ -140,6 +144,7 @@ export class ContextBuilder {
               role: 'system',
               content: `Relevant context:\n${contextStr}`,
             });
+            injectedSystemMessages++;
           }
           usedTokens += semanticTokens;
         }
@@ -164,7 +169,7 @@ export class ContextBuilder {
           const limitedEdges = gc.edges.filter(
             (e) => limitedNodeIds.has(e.sourceNodeId) && limitedNodeIds.has(e.targetNodeId)
           );
-          graphContext = await this.deps.graphContextBuilder.buildContext(
+          const rebuilt = await this.deps.graphContextBuilder.buildContext(
             options.agentId,
             options.currentInput,
             {
@@ -173,6 +178,9 @@ export class ContextBuilder {
               maxEdges: limitedEdges.length,
             }
           );
+          if (rebuilt.tokenCount <= graphTokenBudget) {
+            graphContext = rebuilt;
+          }
         }
 
         if (graphContext?.formattedContext) {
@@ -186,6 +194,7 @@ export class ContextBuilder {
               role: 'system',
               content: graphContext.formattedContext,
             });
+            injectedSystemMessages++;
           }
           usedTokens += graphContext.tokenCount;
         }
@@ -242,8 +251,7 @@ export class ContextBuilder {
       truncated,
       metadata: {
         originalMessageCount,
-        includedMessageCount:
-          messages.length - (this.config.includeSystemPrompt && options.systemPrompt ? 1 : 0),
+        includedMessageCount: messages.length - injectedSystemMessages,
         factsIncluded: facts.length,
         semanticResultsIncluded: semanticResults.length,
         graphNodesIncluded: graphContext?.nodes.length ?? 0,
@@ -262,7 +270,7 @@ export class ContextBuilder {
         selected.unshift(entry);
         usedTokens += entry.tokenCount;
       } else {
-        break;
+        continue;
       }
     }
 
@@ -287,18 +295,32 @@ export class ContextBuilder {
       const olderEntries = entries.slice(0, -10);
       const scoredEntries: { entry: MemoryEntry; score: number }[] = [];
 
+      const embeddable: { entry: MemoryEntry; text: string }[] = [];
       for (const entry of olderEntries) {
         if (entry.message.role === 'user' || entry.message.role === 'assistant') {
           const content = entry.message.content;
           if (typeof content === 'string' && content.length > 20) {
-            try {
-              const entryVector = await this.deps.embeddingService.embed(content);
-              const score = this.cosineSimilarity(inputVector, entryVector);
-              if (score > 0.6) {
-                scoredEntries.push({ entry, score });
-              }
-            } catch {}
+            embeddable.push({ entry, text: content });
           }
+        }
+      }
+
+      if (embeddable.length > 0) {
+        try {
+          const vectors = await this.deps.embeddingService.embedBatch(
+            embeddable.map((e) => e.text)
+          );
+          for (let i = 0; i < embeddable.length; i++) {
+            const score = this.cosineSimilarity(inputVector, vectors[i]);
+            if (score > 0.6) {
+              scoredEntries.push({ entry: embeddable[i].entry, score });
+            }
+          }
+        } catch (err) {
+          console.warn(
+            'Embedding failed for context entry',
+            err instanceof Error ? err.message : err
+          );
         }
       }
 

@@ -68,6 +68,7 @@ export const MemoryAdapterConfigSchema = z.discriminatedUnion('provider', [
   PostgresConfigSchema,
   SQLiteConfigSchema,
   MongoDBConfigSchema,
+  QdrantConfigSchema,
 ]);
 
 export const ContextStrategySchema = z.enum(['recent', 'relevant', 'hybrid']);
@@ -79,6 +80,16 @@ export const ContextBuilderConfigSchema = z.object({
   includeSystemPrompt: z.boolean().optional(),
   includeFacts: z.boolean().optional(),
   includeSemanticContext: z.boolean().optional(),
+  includeGraphContext: z.boolean().optional(),
+  graphContextOptions: z
+    .object({
+      maxNodes: z.number().optional(),
+      maxEdges: z.number().optional(),
+      maxDepth: z.number().optional(),
+      includeInferred: z.boolean().optional(),
+      entityTypes: z.array(z.string()).optional(),
+    })
+    .optional(),
 });
 
 export const EmbeddingProviderSchema = z.enum(['openai', 'ollama', 'google']);

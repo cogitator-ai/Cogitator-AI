@@ -657,6 +657,19 @@ export class PostgresGraphAdapter implements GraphAdapter {
   ): Promise<MemoryResult<GraphPath | null>> {
     await this.initialize();
 
+    if (startNodeId === endNodeId) {
+      const nodeResult = await this.getNode(startNodeId);
+      if (!nodeResult.success || !nodeResult.data) {
+        return this.failure(`Node not found: ${startNodeId}`);
+      }
+      return this.success({
+        nodes: [nodeResult.data],
+        edges: [],
+        totalWeight: 0,
+        length: 0,
+      });
+    }
+
     const result = await this.pool.query(
       `
       WITH RECURSIVE path_search AS (
@@ -761,7 +774,11 @@ export class PostgresGraphAdapter implements GraphAdapter {
         FROM ${this.schema}.graph_edges e
         JOIN ${this.schema}.graph_nodes n ON n.id = e.target_node_id
         WHERE e.source_node_id = $1
-           OR (e.target_node_id = $1 AND e.bidirectional = TRUE AND n.id = e.source_node_id)
+        UNION ALL
+        SELECT ${selectCols}
+        FROM ${this.schema}.graph_edges e
+        JOIN ${this.schema}.graph_nodes n ON n.id = e.source_node_id
+        WHERE e.target_node_id = $1 AND e.bidirectional = TRUE
       `;
     } else if (direction === 'incoming') {
       sql = `
@@ -769,7 +786,11 @@ export class PostgresGraphAdapter implements GraphAdapter {
         FROM ${this.schema}.graph_edges e
         JOIN ${this.schema}.graph_nodes n ON n.id = e.source_node_id
         WHERE e.target_node_id = $1
-           OR (e.source_node_id = $1 AND e.bidirectional = TRUE AND n.id = e.target_node_id)
+        UNION ALL
+        SELECT ${selectCols}
+        FROM ${this.schema}.graph_edges e
+        JOIN ${this.schema}.graph_nodes n ON n.id = e.target_node_id
+        WHERE e.source_node_id = $1 AND e.bidirectional = TRUE
       `;
     } else {
       sql = `
@@ -815,7 +836,8 @@ export class PostgresGraphAdapter implements GraphAdapter {
 
       await this.pool.query(
         `DELETE FROM ${this.schema}.graph_edges
-         WHERE source_node_id = target_node_id`
+         WHERE source_node_id = $1 AND target_node_id = $1`,
+        [targetNodeId]
       );
 
       if (sourceNode.success && sourceNode.data) {

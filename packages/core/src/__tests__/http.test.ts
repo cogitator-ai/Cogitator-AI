@@ -7,13 +7,24 @@ const mockContext = {
   signal: new AbortController().signal,
 };
 
+function mockFetchResponse(
+  body: unknown,
+  init?: { status?: number; headers?: Record<string, string> }
+) {
+  const status = init?.status ?? 200;
+  const headers = new Headers(init?.headers ?? { 'content-type': 'application/json' });
+  return vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status, headers }));
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe('httpRequest tool', () => {
   it('makes GET request', async () => {
-    const result = await httpRequest.execute({ url: 'https://httpbin.org/get' }, mockContext);
+    vi.stubGlobal('fetch', mockFetchResponse({ url: 'https://example.com/get', method: 'GET' }));
+
+    const result = await httpRequest.execute({ url: 'https://example.com/get' }, mockContext);
     expect(result).toHaveProperty('status', 200);
     expect(result).toHaveProperty('method', 'GET');
     expect(result).toHaveProperty('body');
@@ -21,9 +32,11 @@ describe('httpRequest tool', () => {
   });
 
   it('makes POST request with body', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse({ json: { test: 'data' }, method: 'POST' }));
+
     const result = await httpRequest.execute(
       {
-        url: 'https://httpbin.org/post',
+        url: 'https://example.com/post',
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ test: 'data' }),
@@ -37,13 +50,24 @@ describe('httpRequest tool', () => {
   });
 
   it('includes custom headers', async () => {
+    const fetchMock = mockFetchResponse({
+      headers: { 'X-Custom-Header': 'test-value' },
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
     const result = await httpRequest.execute(
       {
-        url: 'https://httpbin.org/headers',
+        url: 'https://example.com/headers',
         headers: { 'X-Custom-Header': 'test-value' },
       },
       mockContext
     );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const sentHeaders = requestInit.headers as Record<string, string>;
+    expect(sentHeaders['X-Custom-Header']).toBe('test-value');
+
     const body = JSON.parse((result as { body: string }).body);
     expect(body.headers['X-Custom-Header']).toBe('test-value');
   });
@@ -57,8 +81,26 @@ describe('httpRequest tool', () => {
   });
 
   it('handles timeout', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init?: RequestInit) => {
+        return new Promise((_, reject) => {
+          const signal = init?.signal;
+          if (signal) {
+            if (signal.aborted) {
+              reject(new DOMException('The operation was aborted', 'AbortError'));
+              return;
+            }
+            signal.addEventListener('abort', () => {
+              reject(new DOMException('The operation was aborted', 'AbortError'));
+            });
+          }
+        });
+      })
+    );
+
     const result = await httpRequest.execute(
-      { url: 'https://httpbin.org/delay/10', timeout: 1000 },
+      { url: 'https://example.com/delay/10', timeout: 1000 },
       mockContext
     );
     expect(result).toHaveProperty('error');
@@ -89,8 +131,16 @@ describe('httpRequest tool', () => {
   });
 
   it('returns response headers', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchResponse(
+        { ok: true },
+        { headers: { 'x-test': 'hello', 'content-type': 'application/json' } }
+      )
+    );
+
     const result = await httpRequest.execute(
-      { url: 'https://httpbin.org/response-headers?X-Test=hello' },
+      { url: 'https://example.com/response-headers' },
       mockContext
     );
     const headers = (result as { headers: Record<string, string> }).headers;
@@ -98,8 +148,10 @@ describe('httpRequest tool', () => {
   });
 
   it('handles non-2xx status codes', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse({ error: 'Not Found' }, { status: 404 }));
+
     const result = await httpRequest.execute(
-      { url: 'https://httpbin.org/status/404' },
+      { url: 'https://example.com/status/404' },
       mockContext
     );
     expect(result).toHaveProperty('status', 404);

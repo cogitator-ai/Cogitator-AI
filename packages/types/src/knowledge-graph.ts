@@ -165,6 +165,7 @@ export interface InferencePattern {
   minPathLength: number;
   maxPathLength: number;
   nodeTypeConstraints?: Record<number, EntityType[]>;
+  allowReverseTraversal?: boolean;
 }
 
 export interface InferenceConclusion {

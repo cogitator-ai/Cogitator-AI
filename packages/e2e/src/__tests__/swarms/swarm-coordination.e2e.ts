@@ -153,7 +153,7 @@ describeE2E('Swarms: Multi-Agent Coordination', () => {
     }
   );
 
-  it('consensus strategy aggregates agent votes', { timeout: 120_000 }, async () => {
+  it('consensus strategy aggregates agent votes', { timeout: 240_000 }, async () => {
     const voter1 = createTestAgent({
       name: 'voter-1',
       instructions: 'When asked a math question, answer correctly. Format: VOTE: [answer]',

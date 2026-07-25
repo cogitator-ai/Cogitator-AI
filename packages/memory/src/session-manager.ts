@@ -44,6 +44,7 @@ const SESSION_INTERNAL_KEYS = new Set([
   'userId',
   'channelType',
   'channelId',
+  'createdAt',
   'status',
   'messageCount',
   'lastActiveAt',
@@ -124,11 +125,22 @@ export class SessionManager implements ISessionManager {
     }
 
     const currentMeta = existing.data.metadata as SessionMetadata;
+
+    let safeMetadata: Record<string, unknown> | undefined;
+    if (data.metadata) {
+      safeMetadata = {};
+      for (const [key, value] of Object.entries(data.metadata)) {
+        if (!SESSION_INTERNAL_KEYS.has(key)) {
+          safeMetadata[key] = value;
+        }
+      }
+    }
+
     const updatedMeta: SessionMetadata = {
       ...currentMeta,
       ...(data.status !== undefined && { status: data.status }),
       ...(data.config !== undefined && { config: data.config }),
-      ...(data.metadata !== undefined && { ...data.metadata }),
+      ...(safeMetadata !== undefined && { ...safeMetadata }),
       lastActiveAt: new Date().toISOString(),
     };
 

@@ -15,7 +15,7 @@ const describeE2E = hasOllamaCloud ? describe : describe.skip;
 const OLLAMA_URL = hasOllamaCloud
   ? process.env.OLLAMA_URL || 'https://ollama.com'
   : process.env.OLLAMA_URL || 'http://localhost:11434';
-const TOOL_GEN_MODEL = process.env.TOOL_GEN_MODEL || 'gemma3:12b';
+const TOOL_GEN_MODEL = process.env.TOOL_GEN_MODEL || 'gpt-oss:20b';
 
 const toolGenConfig: ToolSelfGenerationConfig = {
   enabled: true,

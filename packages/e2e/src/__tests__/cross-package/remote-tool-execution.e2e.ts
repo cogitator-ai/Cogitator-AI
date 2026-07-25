@@ -7,7 +7,7 @@ import { startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server
 const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
 const describeHeavy = process.env.OLLAMA_API_KEY ? describe : describe.skip;
 
-const HEAVY_MODEL = 'ministral-3:8b';
+const HEAVY_MODEL = 'gpt-oss:20b';
 const OLLAMA_CLOUD_URL = process.env.OLLAMA_URL || 'https://ollama.com';
 
 describeE2E('Cross-Package: Remote Tool Execution', () => {

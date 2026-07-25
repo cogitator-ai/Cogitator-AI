@@ -114,9 +114,15 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
 
   async disconnect(): Promise<MemoryResult<void>> {
     if (this.client) {
-      await this.client.close();
-      this.client = null;
-      this.db = null;
+      try {
+        await this.client.close();
+        return this.success(undefined);
+      } catch (err) {
+        return this.failure((err as Error).message);
+      } finally {
+        this.client = null;
+        this.db = null;
+      }
     }
     return this.success(undefined);
   }
@@ -146,6 +152,9 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
       });
       return this.success(thread);
     } catch (err) {
+      if ((err as { code?: number }).code === 11000) {
+        return this.failure(`Thread already exists: ${thread.id}`);
+      }
       return this.failure((err as Error).message);
     }
   }

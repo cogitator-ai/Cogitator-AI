@@ -100,11 +100,15 @@ export class LLMEntityExtractor implements EntityExtractor {
   }
 
   async extractBatch(texts: string[], context?: ExtractionContext): Promise<ExtractionResult[]> {
-    const results: ExtractionResult[] = [];
+    const concurrency = 4;
+    const results: ExtractionResult[] = new Array(texts.length);
 
-    for (const text of texts) {
-      const result = await this.extract(text, context);
-      results.push(result);
+    for (let i = 0; i < texts.length; i += concurrency) {
+      const chunk = texts.slice(i, i + concurrency);
+      const chunkResults = await Promise.all(chunk.map((text) => this.extract(text, context)));
+      for (let j = 0; j < chunkResults.length; j++) {
+        results[i + j] = chunkResults[j];
+      }
     }
 
     return results;

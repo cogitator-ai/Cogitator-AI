@@ -52,10 +52,11 @@ export class CoreFactsStore {
     if (this.initialized) return;
 
     if (!this.db) {
+      if (!this.path) throw new Error('No database path configured');
       let DatabaseCtor: new (path: string) => Database;
       const betterSqlite = await import('better-sqlite3');
       DatabaseCtor = betterSqlite.default as unknown as new (path: string) => Database;
-      this.db = new DatabaseCtor(this.path!);
+      this.db = new DatabaseCtor(this.path);
 
       if (this.path !== ':memory:') {
         this.db.pragma('journal_mode = WAL');

@@ -3,6 +3,7 @@
  */
 
 import type { EmbeddingService, OpenAIEmbeddingConfig } from '@cogitator-ai/types';
+import { fetchWithRetry } from './retry';
 
 const DEFAULT_DIMENSIONS: Record<string, number> = {
   'text-embedding-3-small': 1536,
@@ -26,8 +27,16 @@ export class OpenAIEmbeddingService implements EmbeddingService {
     this.dimensions = config.dimensions ?? DEFAULT_DIMENSIONS[this.model] ?? 1536;
   }
 
+  private get supportsDimensions(): boolean {
+    return this.customDimensions && this.model.startsWith('text-embedding-3');
+  }
+
   async embed(text: string): Promise<number[]> {
-    const response = await fetch(`${this.baseUrl}/embeddings`, {
+    if (!text) {
+      throw new Error('Embedding text must not be empty');
+    }
+
+    const response = await fetchWithRetry(`${this.baseUrl}/embeddings`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -36,7 +45,7 @@ export class OpenAIEmbeddingService implements EmbeddingService {
       body: JSON.stringify({
         model: this.model,
         input: text,
-        ...(this.customDimensions ? { dimensions: this.dimensions } : {}),
+        ...(this.supportsDimensions ? { dimensions: this.dimensions } : {}),
       }),
     });
 
@@ -46,14 +55,23 @@ export class OpenAIEmbeddingService implements EmbeddingService {
     }
 
     const data = (await response.json()) as {
-      data: { embedding: number[] }[];
+      data?: { embedding?: number[] }[];
     };
 
-    return data.data[0].embedding;
+    const embedding = data.data?.[0]?.embedding;
+    if (!Array.isArray(embedding)) {
+      throw new Error('OpenAI embedding failed: missing embedding in response');
+    }
+
+    return embedding;
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
-    const response = await fetch(`${this.baseUrl}/embeddings`, {
+    if (texts.length === 0) {
+      return [];
+    }
+
+    const response = await fetchWithRetry(`${this.baseUrl}/embeddings`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -62,7 +80,7 @@ export class OpenAIEmbeddingService implements EmbeddingService {
       body: JSON.stringify({
         model: this.model,
         input: texts,
-        ...(this.customDimensions ? { dimensions: this.dimensions } : {}),
+        ...(this.supportsDimensions ? { dimensions: this.dimensions } : {}),
       }),
     });
 
@@ -72,9 +90,20 @@ export class OpenAIEmbeddingService implements EmbeddingService {
     }
 
     const data = (await response.json()) as {
-      data: { embedding: number[]; index: number }[];
+      data?: { embedding?: number[]; index?: number }[];
     };
 
-    return data.data.sort((a, b) => a.index - b.index).map((d) => d.embedding);
+    if (!Array.isArray(data.data)) {
+      throw new Error('OpenAI batch embedding failed: missing data in response');
+    }
+
+    return data.data
+      .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+      .map((item) => {
+        if (!Array.isArray(item.embedding)) {
+          throw new Error('OpenAI batch embedding failed: missing embedding in response');
+        }
+        return item.embedding;
+      });
   }
 }

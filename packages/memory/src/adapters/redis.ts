@@ -62,8 +62,14 @@ export class RedisAdapter extends BaseMemoryAdapter {
 
   async disconnect(): Promise<MemoryResult<void>> {
     if (this.client) {
-      await this.client.quit();
-      this.client = null;
+      try {
+        await this.client.quit();
+        return this.success(undefined);
+      } catch (err) {
+        return this.failure((err as Error).message);
+      } finally {
+        this.client = null;
+      }
     }
     return this.success(undefined);
   }
@@ -108,6 +114,8 @@ export class RedisAdapter extends BaseMemoryAdapter {
     threadId: string,
     metadata: Record<string, unknown>
   ): Promise<MemoryResult<Thread>> {
+    if (!this.client) return this.failure('Not connected');
+
     const result = await this.getThread(threadId);
     if (!result.success) return result;
     if (!result.data) return this.failure(`Thread not found: ${threadId}`);
@@ -116,7 +124,8 @@ export class RedisAdapter extends BaseMemoryAdapter {
     thread.metadata = { ...thread.metadata, ...metadata };
     thread.updatedAt = new Date();
 
-    await this.client!.setex(this.key('thread', threadId), this.ttl, JSON.stringify(thread));
+    const client = this.client;
+    await client.setex(this.key('thread', threadId), this.ttl, JSON.stringify(thread));
 
     return this.success(thread);
   }

@@ -84,7 +84,9 @@ export class PostgresAdapter
 
     try {
       await this.pool.query('CREATE EXTENSION IF NOT EXISTS vector');
-    } catch {}
+    } catch (err) {
+      console.warn('Failed to create vector extension:', (err as Error).message);
+    }
 
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.schema}.threads (
@@ -151,7 +153,9 @@ export class PostgresAdapter
         ON ${this.schema}.embeddings
         USING ivfflat (vector vector_cosine_ops) WITH (lists = 100)
       `);
-    } catch {}
+    } catch (err) {
+      console.warn('Failed to create ivfflat index:', (err as Error).message);
+    }
 
     try {
       await this.pool.query(`
@@ -163,7 +167,9 @@ export class PostgresAdapter
         CREATE INDEX IF NOT EXISTS idx_embeddings_tsv
         ON ${this.schema}.embeddings USING GIN (content_tsv)
       `);
-    } catch {}
+    } catch (err) {
+      console.warn('Failed to create tsvector column/index:', (err as Error).message);
+    }
   }
 
   async disconnect(): Promise<MemoryResult<void>> {
@@ -184,13 +190,18 @@ export class PostgresAdapter
     const id = threadId ?? this.generateId('thread');
     const now = new Date();
 
-    await this.pool.query(
-      `INSERT INTO ${this.schema}.threads (id, agent_id, metadata, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $4)`,
-      [id, agentId, metadata, now]
-    );
+    try {
+      await this.pool.query(
+        `INSERT INTO ${this.schema}.threads (id, agent_id, metadata, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $4)
+         ON CONFLICT (id) DO UPDATE SET agent_id = $2, metadata = $3, updated_at = $4`,
+        [id, agentId, metadata, now]
+      );
 
-    return this.success({ id, agentId, metadata, createdAt: now, updatedAt: now });
+      return this.success({ id, agentId, metadata, createdAt: now, updatedAt: now });
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
   }
 
   async getThread(threadId: string): Promise<MemoryResult<Thread | null>> {
@@ -242,8 +253,12 @@ export class PostgresAdapter
 
   async deleteThread(threadId: string): Promise<MemoryResult<void>> {
     if (!this.pool) return this.failure('Not connected');
-    await this.pool.query(`DELETE FROM ${this.schema}.threads WHERE id = $1`, [threadId]);
-    return this.success(undefined);
+    try {
+      await this.pool.query(`DELETE FROM ${this.schema}.threads WHERE id = $1`, [threadId]);
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
   }
 
   async addEntry(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): Promise<MemoryResult<MemoryEntry>> {
@@ -252,23 +267,27 @@ export class PostgresAdapter
     const id = this.generateId('entry');
     const now = new Date();
 
-    await this.pool.query(
-      `INSERT INTO ${this.schema}.entries
-       (id, thread_id, message, tool_calls, tool_results, token_count, metadata, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [
-        id,
-        entry.threadId,
-        entry.message,
-        entry.toolCalls ?? null,
-        entry.toolResults ?? null,
-        entry.tokenCount,
-        entry.metadata ?? {},
-        now,
-      ]
-    );
+    try {
+      await this.pool.query(
+        `INSERT INTO ${this.schema}.entries
+         (id, thread_id, message, tool_calls, tool_results, token_count, metadata, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          id,
+          entry.threadId,
+          entry.message,
+          entry.toolCalls ?? null,
+          entry.toolResults ?? null,
+          entry.tokenCount,
+          entry.metadata ?? {},
+          now,
+        ]
+      );
 
-    return this.success({ ...entry, id, createdAt: now });
+      return this.success({ ...entry, id, createdAt: now });
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
   }
 
   async getEntries(options: MemoryQueryOptions): Promise<MemoryResult<MemoryEntry[]>> {
@@ -339,14 +358,22 @@ export class PostgresAdapter
 
   async deleteEntry(entryId: string): Promise<MemoryResult<void>> {
     if (!this.pool) return this.failure('Not connected');
-    await this.pool.query(`DELETE FROM ${this.schema}.entries WHERE id = $1`, [entryId]);
-    return this.success(undefined);
+    try {
+      await this.pool.query(`DELETE FROM ${this.schema}.entries WHERE id = $1`, [entryId]);
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
   }
 
   async clearThread(threadId: string): Promise<MemoryResult<void>> {
     if (!this.pool) return this.failure('Not connected');
-    await this.pool.query(`DELETE FROM ${this.schema}.entries WHERE thread_id = $1`, [threadId]);
-    return this.success(undefined);
+    try {
+      await this.pool.query(`DELETE FROM ${this.schema}.entries WHERE thread_id = $1`, [threadId]);
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
   }
 
   async addFact(fact: Omit<Fact, 'id' | 'createdAt' | 'updatedAt'>): Promise<MemoryResult<Fact>> {
@@ -355,24 +382,28 @@ export class PostgresAdapter
     const id = this.generateId('fact');
     const now = new Date();
 
-    await this.pool.query(
-      `INSERT INTO ${this.schema}.facts
-       (id, agent_id, content, category, confidence, source, metadata, expires_at, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)`,
-      [
-        id,
-        fact.agentId,
-        fact.content,
-        fact.category,
-        fact.confidence,
-        fact.source,
-        fact.metadata ?? {},
-        fact.expiresAt ?? null,
-        now,
-      ]
-    );
+    try {
+      await this.pool.query(
+        `INSERT INTO ${this.schema}.facts
+         (id, agent_id, content, category, confidence, source, metadata, expires_at, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)`,
+        [
+          id,
+          fact.agentId,
+          fact.content,
+          fact.category,
+          fact.confidence,
+          fact.source,
+          fact.metadata ?? {},
+          fact.expiresAt ?? null,
+          now,
+        ]
+      );
 
-    return this.success({ ...fact, id, createdAt: now, updatedAt: now });
+      return this.success({ ...fact, id, createdAt: now, updatedAt: now });
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
   }
 
   async getFacts(agentId: string, category?: string): Promise<MemoryResult<Fact[]>> {
@@ -466,35 +497,43 @@ export class PostgresAdapter
 
   async deleteFact(factId: string): Promise<MemoryResult<void>> {
     if (!this.pool) return this.failure('Not connected');
-    await this.pool.query(`DELETE FROM ${this.schema}.facts WHERE id = $1`, [factId]);
-    return this.success(undefined);
+    try {
+      await this.pool.query(`DELETE FROM ${this.schema}.facts WHERE id = $1`, [factId]);
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
   }
 
   async searchFacts(agentId: string, query: string): Promise<MemoryResult<Fact[]>> {
     if (!this.pool) return this.failure('Not connected');
 
-    const result = await this.pool.query(
-      `SELECT * FROM ${this.schema}.facts
-       WHERE agent_id = $1 AND content ILIKE $2
-       AND (expires_at IS NULL OR expires_at > NOW())
-       ORDER BY confidence DESC`,
-      [agentId, `%${query.replace(/[%_\\]/g, '\\$&')}%`]
-    );
+    try {
+      const result = await this.pool.query(
+        `SELECT * FROM ${this.schema}.facts
+         WHERE agent_id = $1 AND content ILIKE $2
+         AND (expires_at IS NULL OR expires_at > NOW())
+         ORDER BY confidence DESC`,
+        [agentId, `%${query.replace(/[%_\\]/g, '\\$&')}%`]
+      );
 
-    return this.success(
-      result.rows.map((row) => ({
-        id: row.id as string,
-        agentId: row.agent_id as string,
-        content: row.content as string,
-        category: row.category as string,
-        confidence: row.confidence as number,
-        source: row.source as Fact['source'],
-        metadata: row.metadata as Record<string, unknown>,
-        createdAt: new Date(row.created_at as string),
-        updatedAt: new Date(row.updated_at as string),
-        expiresAt: row.expires_at ? new Date(row.expires_at as string) : undefined,
-      }))
-    );
+      return this.success(
+        result.rows.map((row) => ({
+          id: row.id as string,
+          agentId: row.agent_id as string,
+          content: row.content as string,
+          category: row.category as string,
+          confidence: row.confidence as number,
+          source: row.source as Fact['source'],
+          metadata: row.metadata as Record<string, unknown>,
+          createdAt: new Date(row.created_at as string),
+          updatedAt: new Date(row.updated_at as string),
+          expiresAt: row.expires_at ? new Date(row.expires_at as string) : undefined,
+        }))
+      );
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
   }
 
   async addEmbedding(
@@ -507,22 +546,26 @@ export class PostgresAdapter
 
     const vectorStr = `[${embedding.vector.join(',')}]`;
 
-    await this.pool.query(
-      `INSERT INTO ${this.schema}.embeddings
-       (id, source_id, source_type, vector, content, metadata, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        id,
-        embedding.sourceId,
-        embedding.sourceType,
-        vectorStr,
-        embedding.content,
-        embedding.metadata ?? {},
-        now,
-      ]
-    );
+    try {
+      await this.pool.query(
+        `INSERT INTO ${this.schema}.embeddings
+         (id, source_id, source_type, vector, content, metadata, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          id,
+          embedding.sourceId,
+          embedding.sourceType,
+          vectorStr,
+          embedding.content,
+          embedding.metadata ?? {},
+          now,
+        ]
+      );
 
-    return this.success({ ...embedding, id, createdAt: now });
+      return this.success({ ...embedding, id, createdAt: now });
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
   }
 
   async search(
@@ -563,7 +606,13 @@ export class PostgresAdapter
         id: row.id as string,
         sourceId: row.source_id as string,
         sourceType: row.source_type as Embedding['sourceType'],
-        vector: row.vector as number[],
+        vector:
+          typeof row.vector === 'string'
+            ? (row.vector as string)
+                .replace(/^\[|\]$/g, '')
+                .split(',')
+                .map(Number)
+            : (row.vector as number[]),
         content: row.content as string,
         metadata: row.metadata as Record<string, unknown>,
         createdAt: new Date(row.created_at as string),
@@ -574,14 +623,24 @@ export class PostgresAdapter
 
   async deleteEmbedding(embeddingId: string): Promise<MemoryResult<void>> {
     if (!this.pool) return this.failure('Not connected');
-    await this.pool.query(`DELETE FROM ${this.schema}.embeddings WHERE id = $1`, [embeddingId]);
-    return this.success(undefined);
+    try {
+      await this.pool.query(`DELETE FROM ${this.schema}.embeddings WHERE id = $1`, [embeddingId]);
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
   }
 
   async deleteBySource(sourceId: string): Promise<MemoryResult<void>> {
     if (!this.pool) return this.failure('Not connected');
-    await this.pool.query(`DELETE FROM ${this.schema}.embeddings WHERE source_id = $1`, [sourceId]);
-    return this.success(undefined);
+    try {
+      await this.pool.query(`DELETE FROM ${this.schema}.embeddings WHERE source_id = $1`, [
+        sourceId,
+      ]);
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
   }
 
   async keywordSearch(options: KeywordSearchOptions): Promise<MemoryResult<SearchResult[]>> {
@@ -624,6 +683,12 @@ export class PostgresAdapter
   }
 
   setVectorDimensions(dimensions: number): void {
+    if (this.pool) {
+      throw new Error('Cannot change vector dimensions after connecting');
+    }
+    if (!Number.isInteger(dimensions) || dimensions <= 0) {
+      throw new Error(`Invalid vector dimensions: ${dimensions}. Must be a positive integer`);
+    }
     this.vectorDimensions = dimensions;
   }
 }

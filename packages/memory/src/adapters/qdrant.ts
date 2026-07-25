@@ -91,7 +91,19 @@ export class QdrantAdapter implements EmbeddingAdapter {
   }
 
   async disconnect(): Promise<MemoryResult<void>> {
-    this.client = null;
+    if (this.client) {
+      try {
+        const client = this.client as QdrantClient & { close?: () => Promise<void> };
+        if (typeof client.close === 'function') {
+          await client.close();
+        }
+        return this.success(undefined);
+      } catch (err) {
+        return this.failure((err as Error).message);
+      } finally {
+        this.client = null;
+      }
+    }
     return this.success(undefined);
   }
 

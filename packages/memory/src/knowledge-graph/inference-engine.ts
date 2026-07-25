@@ -94,6 +94,7 @@ const DEFAULT_RULES: Omit<InferenceRule, 'id'>[] = [
       edgeTypes: ['causes', 'causes'],
       minPathLength: 2,
       maxPathLength: 2,
+      allowReverseTraversal: false,
     },
     conclusion: {
       edgeType: 'causes',
@@ -201,13 +202,24 @@ export class GraphInferenceEngine implements InferenceEngine {
         continue;
       }
 
+      if (rule.pattern.nodeTypeConstraints?.[0]) {
+        const sourceNodeResult = await this.graphAdapter.getNode(startEdge.sourceNodeId);
+        if (sourceNodeResult.success && sourceNodeResult.data) {
+          if (!rule.pattern.nodeTypeConstraints[0].includes(sourceNodeResult.data.type)) {
+            continue;
+          }
+        }
+      }
+
       const paths = await this.findMatchingPaths(
         agentId,
         startEdge,
         rule.pattern.edgeTypes.slice(1),
         rule.pattern.maxPathLength,
         rule.pattern.nodeTypeConstraints,
-        options?.minConfidence
+        options?.minConfidence,
+        1,
+        rule.pattern.allowReverseTraversal !== false
       );
 
       for (const path of paths) {
@@ -258,11 +270,11 @@ export class GraphInferenceEngine implements InferenceEngine {
     maxDepth: number,
     nodeTypeConstraints?: Record<number, string[]>,
     minConfidence?: number,
-    currentDepth = 1
+    currentDepth = 1,
+    allowReverse = true
   ): Promise<GraphEdge[][]> {
-    if (remainingTypes.length === 0 || currentDepth >= maxDepth) {
-      return [[]];
-    }
+    if (remainingTypes.length === 0) return [[]];
+    if (currentDepth >= maxDepth) return [];
 
     const nextType = remainingTypes[0];
     const currentNodeId = currentEdge.targetNodeId;
@@ -297,7 +309,7 @@ export class GraphInferenceEngine implements InferenceEngine {
       orientedEdges.push(...forwardResult.data);
     }
 
-    if (reverseResult.success) {
+    if (reverseResult.success && allowReverse) {
       for (const edge of reverseResult.data) {
         orientedEdges.push({
           ...edge,
@@ -317,7 +329,8 @@ export class GraphInferenceEngine implements InferenceEngine {
         maxDepth,
         nodeTypeConstraints,
         minConfidence,
-        currentDepth + 1
+        currentDepth + 1,
+        allowReverse
       );
 
       for (const subPath of subPaths) {

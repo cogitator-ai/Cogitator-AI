@@ -508,8 +508,34 @@ describe('PostgresAdapter', () => {
   });
 
   describe('vector dimensions', () => {
-    it('allows setting custom dimensions', () => {
-      adapter.setVectorDimensions(1536);
+    it('allows setting custom dimensions before connect', () => {
+      const freshAdapter = new PostgresAdapter({
+        host: 'localhost',
+        port: 5432,
+        database: 'test',
+        user: 'test',
+        password: 'test',
+      });
+      freshAdapter.setVectorDimensions(1536);
+    });
+
+    it('throws when setting dimensions after connect', () => {
+      expect(() => adapter.setVectorDimensions(1536)).toThrow(
+        'Cannot change vector dimensions after connecting'
+      );
+    });
+
+    it('rejects invalid dimensions', () => {
+      const freshAdapter = new PostgresAdapter({
+        host: 'localhost',
+        port: 5432,
+        database: 'test',
+        user: 'test',
+        password: 'test',
+      });
+      expect(() => freshAdapter.setVectorDimensions(0)).toThrow();
+      expect(() => freshAdapter.setVectorDimensions(-1)).toThrow();
+      expect(() => freshAdapter.setVectorDimensions(NaN)).toThrow();
     });
   });
 });

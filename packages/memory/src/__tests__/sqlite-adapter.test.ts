@@ -201,11 +201,10 @@ describe('SQLiteAdapter', () => {
       }
     });
 
-    it('deletes thread and its entries', async () => {
+    it('deletes thread and its entries via CASCADE', async () => {
       const result = await adapter.deleteThread('thread_123');
 
       expect(result.success).toBe(true);
-      expect(mockDb.prepare).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM entries'));
       expect(mockDb.prepare).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM threads'));
     });
   });

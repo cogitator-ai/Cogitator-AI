@@ -14,7 +14,6 @@ export interface BM25Document {
 interface IndexedDocument {
   id: string;
   content: string;
-  tokens: string[];
   termFreq: Map<string, number>;
   length: number;
 }
@@ -29,6 +28,7 @@ export class BM25Index {
   private documents = new Map<string, IndexedDocument>();
   private invertedIndex = new Map<string, Set<string>>();
   private avgDocLength = 0;
+  private totalDocLength = 0;
   private k1: number;
   private b: number;
   private tokenizerConfig: TokenizerConfig;
@@ -54,7 +54,6 @@ export class BM25Index {
     const indexed: IndexedDocument = {
       id: doc.id,
       content: doc.content,
-      tokens,
       termFreq,
       length: tokens.length,
     };
@@ -67,7 +66,8 @@ export class BM25Index {
       this.invertedIndex.set(term, docSet);
     }
 
-    this.updateAvgDocLength();
+    this.totalDocLength += tokens.length;
+    this.avgDocLength = this.totalDocLength / this.documents.size;
   }
 
   addDocuments(docs: BM25Document[]): void {
@@ -91,7 +91,8 @@ export class BM25Index {
     }
 
     this.documents.delete(id);
-    this.updateAvgDocLength();
+    this.totalDocLength -= doc.length;
+    this.avgDocLength = this.documents.size > 0 ? this.totalDocLength / this.documents.size : 0;
     return true;
   }
 
@@ -101,10 +102,18 @@ export class BM25Index {
     const queryTerms = tokenize(query, this.tokenizerConfig);
     if (queryTerms.length === 0) return [];
 
+    const candidateIds = new Set<string>();
+    for (const term of queryTerms) {
+      const postings = this.invertedIndex.get(term);
+      if (postings) for (const id of postings) candidateIds.add(id);
+    }
+
     const scores: BM25Result[] = [];
     const N = this.documents.size;
 
-    for (const [id, doc] of this.documents) {
+    for (const id of candidateIds) {
+      const doc = this.documents.get(id);
+      if (!doc) continue;
       const score = this.calculateScore(queryTerms, doc, N);
       if (score > 0) {
         scores.push({ id, content: doc.content, score });
@@ -124,9 +133,12 @@ export class BM25Index {
     this.documents.clear();
     this.invertedIndex.clear();
     this.avgDocLength = 0;
+    this.totalDocLength = 0;
   }
 
   private calculateScore(queryTerms: string[], doc: IndexedDocument, N: number): number {
+    if (this.avgDocLength === 0) return 0;
+
     let score = 0;
     const seen = new Set<string>();
 
@@ -149,18 +161,5 @@ export class BM25Index {
     }
 
     return score;
-  }
-
-  private updateAvgDocLength(): void {
-    if (this.documents.size === 0) {
-      this.avgDocLength = 0;
-      return;
-    }
-
-    let totalLength = 0;
-    for (const doc of this.documents.values()) {
-      totalLength += doc.length;
-    }
-    this.avgDocLength = totalLength / this.documents.size;
   }
 }

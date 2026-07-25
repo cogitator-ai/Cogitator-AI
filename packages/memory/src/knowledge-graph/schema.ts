@@ -132,12 +132,22 @@ export const GraphSemanticSearchOptionsSchema = z.object({
   entityTypes: z.array(EntityTypeSchema).optional(),
 });
 
-export const InferencePatternSchema = z.object({
-  edgeTypes: z.array(RelationTypeSchema).min(1),
-  minPathLength: z.number().int().min(2),
-  maxPathLength: z.number().int().min(2),
-  nodeTypeConstraints: z.record(z.string(), z.array(EntityTypeSchema)).optional(),
-});
+export const InferencePatternSchema = z
+  .object({
+    edgeTypes: z.array(RelationTypeSchema).min(1),
+    minPathLength: z.number().int().min(2),
+    maxPathLength: z.number().int().min(2),
+    nodeTypeConstraints: z.record(z.string(), z.array(EntityTypeSchema)).optional(),
+    allowReverseTraversal: z.boolean().optional(),
+  })
+  .refine((data) => data.minPathLength <= data.maxPathLength, {
+    message: 'minPathLength must be less than or equal to maxPathLength',
+    path: ['minPathLength'],
+  })
+  .refine((data) => data.edgeTypes.length <= data.maxPathLength, {
+    message: 'edgeTypes length must not exceed maxPathLength',
+    path: ['edgeTypes'],
+  });
 
 export const InferenceConclusionSchema = z.object({
   edgeType: RelationTypeSchema,

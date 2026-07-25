@@ -6,8 +6,6 @@ export interface RRFConfig {
 
 interface RankedItem {
   id: string;
-  rank: number;
-  score: number;
 }
 
 export function reciprocalRankFusion(
@@ -21,9 +19,12 @@ export function reciprocalRankFusion(
   for (let i = 0; i < resultSets.length; i++) {
     const weight = weights[i] ?? 1;
     const results = resultSets[i];
+    const seen = new Set<string>();
 
     for (let rank = 0; rank < results.length; rank++) {
       const item = results[rank];
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
       const rrfScore = weight * (1 / (k + rank + 1));
       scores.set(item.id, (scores.get(item.id) ?? 0) + rrfScore);
     }
@@ -38,17 +39,8 @@ export function fuseSearchResults(
   weights: HybridSearchWeights,
   config: RRFConfig = {}
 ): SearchResult[] {
-  const vectorRanked: RankedItem[] = vectorResults.map((r, i) => ({
-    id: r.id,
-    rank: i,
-    score: r.score,
-  }));
-
-  const keywordRanked: RankedItem[] = keywordResults.map((r, i) => ({
-    id: r.id,
-    rank: i,
-    score: r.score,
-  }));
+  const vectorRanked: RankedItem[] = vectorResults.map((r) => ({ id: r.id }));
+  const keywordRanked: RankedItem[] = keywordResults.map((r) => ({ id: r.id }));
 
   const fusedScores = reciprocalRankFusion(
     [vectorRanked, keywordRanked],
@@ -71,13 +63,16 @@ export function fuseSearchResults(
 
   return [...fusedScores.entries()]
     .sort((a, b) => b[1] - a[1])
-    .map(([id, score]) => {
-      const original = resultMap.get(id)!;
-      return {
-        ...original,
-        score,
-        vectorScore: vectorScoreMap.get(id),
-        keywordScore: keywordScoreMap.get(id),
-      };
+    .flatMap(([id, score]) => {
+      const original = resultMap.get(id);
+      if (!original) return [];
+      return [
+        {
+          ...original,
+          score,
+          vectorScore: vectorScoreMap.get(id),
+          keywordScore: keywordScoreMap.get(id),
+        },
+      ];
     });
 }

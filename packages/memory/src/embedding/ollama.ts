@@ -9,6 +9,7 @@
  */
 
 import type { EmbeddingService, OllamaEmbeddingConfig } from '@cogitator-ai/types';
+import { fetchWithRetry } from './retry';
 
 const MODEL_DIMENSIONS: Record<string, number> = {
   'nomic-embed-text': 768,
@@ -27,12 +28,15 @@ export class OllamaEmbeddingService implements EmbeddingService {
   constructor(config: Omit<OllamaEmbeddingConfig, 'provider'> = {}) {
     this.model = config.model ?? 'nomic-embed-text';
     this.baseUrl = config.baseUrl ?? 'http://localhost:11434';
-
-    this.dimensions = MODEL_DIMENSIONS[this.model] ?? 768;
+    this.dimensions = config.dimensions ?? MODEL_DIMENSIONS[this.model] ?? 768;
   }
 
   async embed(text: string): Promise<number[]> {
-    const response = await fetch(`${this.baseUrl}/api/embed`, {
+    if (!text) {
+      throw new Error('Embedding text must not be empty');
+    }
+
+    const response = await fetchWithRetry(`${this.baseUrl}/api/embed`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -49,14 +53,23 @@ export class OllamaEmbeddingService implements EmbeddingService {
     }
 
     const data = (await response.json()) as {
-      embeddings: number[][];
+      embeddings?: number[][];
     };
 
-    return data.embeddings[0];
+    const embedding = data.embeddings?.[0];
+    if (!Array.isArray(embedding)) {
+      throw new Error('Ollama embedding failed: missing embedding in response');
+    }
+
+    return embedding;
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
-    const response = await fetch(`${this.baseUrl}/api/embed`, {
+    if (texts.length === 0) {
+      return [];
+    }
+
+    const response = await fetchWithRetry(`${this.baseUrl}/api/embed`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -73,8 +86,12 @@ export class OllamaEmbeddingService implements EmbeddingService {
     }
 
     const data = (await response.json()) as {
-      embeddings: number[][];
+      embeddings?: number[][];
     };
+
+    if (!Array.isArray(data.embeddings)) {
+      throw new Error('Ollama batch embedding failed: missing embeddings in response');
+    }
 
     return data.embeddings;
   }

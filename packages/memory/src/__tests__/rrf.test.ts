@@ -8,14 +8,8 @@ function makeResult(id: string, score: number): SearchResult {
 
 describe('reciprocalRankFusion', () => {
   it('computes RRF scores for basic ranked items', () => {
-    const set1 = [
-      { id: 'a', rank: 0, score: 0.9 },
-      { id: 'b', rank: 1, score: 0.8 },
-    ];
-    const set2 = [
-      { id: 'b', rank: 0, score: 5.0 },
-      { id: 'c', rank: 1, score: 4.0 },
-    ];
+    const set1 = [{ id: 'a' }, { id: 'b' }];
+    const set2 = [{ id: 'b' }, { id: 'c' }];
 
     const scores = reciprocalRankFusion([set1, set2], [1, 1]);
 
@@ -30,14 +24,14 @@ describe('reciprocalRankFusion', () => {
   });
 
   it('uses default k=60', () => {
-    const set = [{ id: 'x', rank: 0, score: 1 }];
+    const set = [{ id: 'x' }];
     const scores = reciprocalRankFusion([set], [1]);
 
     expect(scores.get('x')).toBeCloseTo(1 / 61, 10);
   });
 
   it('respects custom k parameter', () => {
-    const set = [{ id: 'x', rank: 0, score: 1 }];
+    const set = [{ id: 'x' }];
     const scores = reciprocalRankFusion([set], [1], { k: 10 });
 
     expect(scores.get('x')).toBeCloseTo(1 / 11, 10);
@@ -54,7 +48,7 @@ describe('reciprocalRankFusion', () => {
   });
 
   it('handles a single result', () => {
-    const set = [{ id: 'only', rank: 0, score: 0.5 }];
+    const set = [{ id: 'only' }];
     const scores = reciprocalRankFusion([set], [1]);
 
     expect(scores.size).toBe(1);
@@ -62,8 +56,8 @@ describe('reciprocalRankFusion', () => {
   });
 
   it('applies weights correctly', () => {
-    const set1 = [{ id: 'a', rank: 0, score: 1 }];
-    const set2 = [{ id: 'b', rank: 0, score: 1 }];
+    const set1 = [{ id: 'a' }];
+    const set2 = [{ id: 'b' }];
 
     const scores = reciprocalRankFusion([set1, set2], [0.9, 0.1]);
 
@@ -74,16 +68,16 @@ describe('reciprocalRankFusion', () => {
   });
 
   it('accumulates scores for items appearing in multiple sets', () => {
-    const set1 = [{ id: 'shared', rank: 0, score: 1 }];
-    const set2 = [{ id: 'shared', rank: 0, score: 1 }];
+    const set1 = [{ id: 'shared' }];
+    const set2 = [{ id: 'shared' }];
 
     const scores = reciprocalRankFusion([set1, set2], [1, 1]);
     expect(scores.get('shared')).toBeCloseTo(2 / 61, 10);
   });
 
   it('uses weight=1 when weight array is shorter than result sets', () => {
-    const set1 = [{ id: 'a', rank: 0, score: 1 }];
-    const set2 = [{ id: 'b', rank: 0, score: 1 }];
+    const set1 = [{ id: 'a' }];
+    const set2 = [{ id: 'b' }];
 
     const scores = reciprocalRankFusion([set1, set2], [0.5]);
     expect(scores.get('a')).toBeCloseTo(0.5 / 61, 10);
@@ -91,11 +85,7 @@ describe('reciprocalRankFusion', () => {
   });
 
   it('rank position affects score (lower rank = higher score)', () => {
-    const set = [
-      { id: 'first', rank: 0, score: 1 },
-      { id: 'second', rank: 1, score: 1 },
-      { id: 'third', rank: 2, score: 1 },
-    ];
+    const set = [{ id: 'first' }, { id: 'second' }, { id: 'third' }];
 
     const scores = reciprocalRankFusion([set], [1]);
     expect(scores.get('first')!).toBeGreaterThan(scores.get('second')!);

@@ -937,7 +937,10 @@ export class SQLiteGraphAdapter implements GraphAdapter {
         sourceId
       );
 
-      db.prepare(`DELETE FROM graph_edges WHERE source_node_id = target_node_id`).run();
+      db.prepare(`DELETE FROM graph_edges WHERE source_node_id = ? AND target_node_id = ?`).run(
+        targetNodeId,
+        targetNodeId
+      );
 
       if (sourceNode.success && sourceNode.data) {
         const targetRow = db

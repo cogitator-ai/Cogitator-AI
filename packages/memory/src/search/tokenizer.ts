@@ -43,7 +43,7 @@ export function tokenize(text: string, config: TokenizerConfig = {}): string[] {
 
   normalized = normalized.replace(/[^\p{L}\p{N}\s]/gu, ' ');
 
-  const tokens = normalized.split(/\s+/).filter((t) => t.length >= minLength);
+  const tokens = normalized.split(/\s+/).filter((t) => t.length >= Math.max(minLength, 1));
 
   if (removeStopwords) {
     return tokens.filter((t) => !ENGLISH_STOPWORDS.has(t));
