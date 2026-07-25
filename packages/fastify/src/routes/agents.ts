@@ -2,7 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { AgentListResponse, AgentRunRequest, AgentRunResponse } from '../types.js';
 import { AgentRunRequestSchema } from '../types.js';
 import { FastifyStreamWriter, generateId } from '../streaming/index.js';
-import type { ToolCall } from '@cogitator-ai/types';
+import { CogitatorError, type ToolCall } from '@cogitator-ai/types';
 
 interface AgentParams {
   name: string;
@@ -34,7 +34,9 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const { name } = request.params;
-      const agent = fastify.cogitator.agents[name];
+      const agent = Object.hasOwn(fastify.cogitator.agents, name)
+        ? fastify.cogitator.agents[name]
+        : undefined;
 
       if (!agent) {
         return reply.status(404).send({
@@ -62,10 +64,13 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
 
         return response;
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        return reply.status(500).send({
-          error: { message, code: 'INTERNAL' },
-        });
+        if (CogitatorError.isCogitatorError(error)) {
+          return reply.status(500).send({ error: { message: error.message, code: error.code } });
+        }
+        request.log.error({ err: error }, 'agent run error');
+        return reply
+          .status(500)
+          .send({ error: { message: 'Internal server error', code: 'INTERNAL' } });
       }
     }
   );
@@ -84,7 +89,9 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const { name } = request.params;
-      const agent = fastify.cogitator.agents[name];
+      const agent = Object.hasOwn(fastify.cogitator.agents, name)
+        ? fastify.cogitator.agents[name]
+        : undefined;
 
       if (!agent) {
         return reply.status(404).send({
@@ -133,8 +140,12 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
         });
       } catch (error) {
         if (textStarted) writer.textEnd(textId);
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        writer.error(message, 'INTERNAL');
+        if (CogitatorError.isCogitatorError(error)) {
+          writer.error(error.message, error.code);
+        } else {
+          request.log.error({ err: error }, 'agent stream error');
+          writer.error('Internal server error', 'INTERNAL');
+        }
       } finally {
         writer.close();
       }

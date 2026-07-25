@@ -42,5 +42,4 @@ export type {
   MCPToolCallResult,
   MCPToolContent,
   ToolAdapterOptions,
-  ConvertedTools,
 } from './types';

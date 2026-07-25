@@ -9,7 +9,12 @@ import type {
   BlackboardResponse,
 } from '../types.js';
 import { ExpressStreamWriter, setupSSEHeaders, generateId } from '../streaming/index.js';
-import type { RunResult, SwarmMessage, SwarmEvent } from '@cogitator-ai/types';
+import {
+  CogitatorError,
+  type RunResult,
+  type SwarmMessage,
+  type SwarmEvent,
+} from '@cogitator-ai/types';
 
 export function createSwarmRoutes(ctx: RouteContext): Router {
   const router = Router();
@@ -35,7 +40,7 @@ export function createSwarmRoutes(ctx: RouteContext): Router {
 
   router.post('/swarms/:name/run', async (req: CogitatorRequest, res: Response) => {
     const { name } = req.params;
-    const swarmConfig = ctx.swarms[name];
+    const swarmConfig = Object.hasOwn(ctx.swarms, name) ? ctx.swarms[name] : undefined;
 
     if (!swarmConfig) {
       res.status(404).json({
@@ -87,23 +92,25 @@ export function createSwarmRoutes(ctx: RouteContext): Router {
 
       res.json(response);
     } catch (error) {
-      if (error instanceof Error && error.message.includes('Cannot find module')) {
+      if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
         res.status(501).json({
           error: { message: 'Swarms package not installed', code: 'UNIMPLEMENTED' },
         });
         return;
       }
 
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      res.status(500).json({
-        error: { message, code: 'INTERNAL' },
-      });
+      if (CogitatorError.isCogitatorError(error)) {
+        res.status(500).json({ error: { message: error.message, code: error.code } });
+      } else {
+        console.error('[CogitatorServer] Swarm run error:', error);
+        res.status(500).json({ error: { message: 'Internal server error', code: 'INTERNAL' } });
+      }
     }
   });
 
   router.post('/swarms/:name/stream', async (req: CogitatorRequest, res: Response) => {
     const { name } = req.params;
-    const swarmConfig = ctx.swarms[name];
+    const swarmConfig = Object.hasOwn(ctx.swarms, name) ? ctx.swarms[name] : undefined;
 
     if (!swarmConfig) {
       res.status(404).json({
@@ -169,11 +176,13 @@ export function createSwarmRoutes(ctx: RouteContext): Router {
 
       writer.finish(messageId);
     } catch (error) {
-      if (error instanceof Error && error.message.includes('Cannot find module')) {
+      if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
         writer.error('Swarms package not installed', 'UNIMPLEMENTED');
+      } else if (CogitatorError.isCogitatorError(error)) {
+        writer.error(error.message, error.code);
       } else {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        writer.error(message, 'INTERNAL');
+        console.error('[CogitatorServer] Swarm stream error:', error);
+        writer.error('Internal server error', 'INTERNAL');
       }
     } finally {
       writer.close();
@@ -182,7 +191,7 @@ export function createSwarmRoutes(ctx: RouteContext): Router {
 
   router.get('/swarms/:name/blackboard', async (req: CogitatorRequest, res: Response) => {
     const { name } = req.params;
-    const swarmConfig = ctx.swarms[name];
+    const swarmConfig = Object.hasOwn(ctx.swarms, name) ? ctx.swarms[name] : undefined;
 
     if (!swarmConfig) {
       res.status(404).json({

@@ -121,6 +121,7 @@ export class MCPClient {
           command: config.command,
           args: config.args,
           env: config.env,
+          cwd: config.cwd,
         });
 
       case 'http':
@@ -130,6 +131,7 @@ export class MCPClient {
         }
         return createHttpTransport({
           url: config.url,
+          headers: config.headers,
         });
 
       default:
@@ -144,15 +146,21 @@ export class MCPClient {
     const connectPromise = this.client.connect(this.transport);
 
     if (timeout) {
-      let timer: ReturnType<typeof setTimeout>;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('Connection timeout')), timeout);
-      });
-
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        await Promise.race([connectPromise, timeoutPromise]);
+        await Promise.race([
+          connectPromise,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+          }),
+        ]);
+      } catch (error) {
+        await this.client.close().catch(() => {});
+        throw error;
       } finally {
-        clearTimeout(timer!);
+        if (timer !== undefined) {
+          clearTimeout(timer);
+        }
       }
     } else {
       await connectPromise;
@@ -296,13 +304,22 @@ export class MCPClient {
     }
 
     return this.withRetry(async () => {
-      const result = await this.client.listTools();
+      const tools: MCPToolDefinition[] = [];
+      let cursor: string | undefined;
 
-      return result.tools.map((tool) => ({
-        name: tool.name,
-        description: tool.description ?? '',
-        inputSchema: tool.inputSchema as MCPToolDefinition['inputSchema'],
-      }));
+      do {
+        const result = await this.client.listTools(cursor ? { cursor } : {});
+        for (const tool of result.tools) {
+          tools.push({
+            name: tool.name,
+            description: tool.description ?? '',
+            inputSchema: tool.inputSchema as MCPToolDefinition['inputSchema'],
+          });
+        }
+        cursor = result.nextCursor;
+      } while (cursor);
+
+      return tools;
     }, 'listToolDefinitions');
   }
 
@@ -328,15 +345,21 @@ export class MCPClient {
 
       const content = result.content;
       if (content && Array.isArray(content) && content.length > 0) {
-        const firstContent = content[0];
-        if (firstContent.type === 'text') {
-          try {
-            return JSON.parse(firstContent.text);
-          } catch {
-            return firstContent.text;
+        const extract = (item: (typeof content)[number]): unknown => {
+          if (item.type === 'text') {
+            try {
+              return JSON.parse(item.text);
+            } catch {
+              return item.text;
+            }
           }
+          return item;
+        };
+
+        if (content.length === 1) {
+          return extract(content[0]);
         }
-        return firstContent;
+        return content.map(extract);
       }
 
       return result;
@@ -352,14 +375,23 @@ export class MCPClient {
     }
 
     return this.withRetry(async () => {
-      const result = await this.client.listResources();
+      const resources: MCPResource[] = [];
+      let cursor: string | undefined;
 
-      return result.resources.map((resource) => ({
-        uri: resource.uri,
-        name: resource.name,
-        description: resource.description,
-        mimeType: resource.mimeType,
-      }));
+      do {
+        const result = await this.client.listResources(cursor ? { cursor } : {});
+        for (const resource of result.resources) {
+          resources.push({
+            uri: resource.uri,
+            name: resource.name,
+            description: resource.description,
+            mimeType: resource.mimeType,
+          });
+        }
+        cursor = result.nextCursor;
+      } while (cursor);
+
+      return resources;
     }, 'listResources');
   }
 
@@ -393,17 +425,26 @@ export class MCPClient {
     }
 
     return this.withRetry(async () => {
-      const result = await this.client.listPrompts();
+      const prompts: MCPPrompt[] = [];
+      let cursor: string | undefined;
 
-      return result.prompts.map((prompt) => ({
-        name: prompt.name,
-        description: prompt.description,
-        arguments: prompt.arguments?.map((arg) => ({
-          name: arg.name,
-          description: arg.description,
-          required: arg.required,
-        })),
-      }));
+      do {
+        const result = await this.client.listPrompts(cursor ? { cursor } : {});
+        for (const prompt of result.prompts) {
+          prompts.push({
+            name: prompt.name,
+            description: prompt.description,
+            arguments: prompt.arguments?.map((arg) => ({
+              name: arg.name,
+              description: arg.description,
+              required: arg.required,
+            })),
+          });
+        }
+        cursor = result.nextCursor;
+      } while (cursor);
+
+      return prompts;
     }, 'listPrompts');
   }
 
@@ -445,8 +486,11 @@ export class MCPClient {
    */
   async close(): Promise<void> {
     if (this.connected) {
-      await this.client.close();
-      this.connected = false;
+      try {
+        await this.client.close();
+      } finally {
+        this.connected = false;
+      }
     }
   }
 }

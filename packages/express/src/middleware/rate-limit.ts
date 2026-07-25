@@ -6,19 +6,6 @@ interface RateLimitEntry {
   resetTime: number;
 }
 
-const store = new Map<string, RateLimitEntry>();
-
-function cleanupExpired(): void {
-  const now = Date.now();
-  for (const [key, entry] of store.entries()) {
-    if (entry.resetTime <= now) {
-      store.delete(key);
-    }
-  }
-}
-
-setInterval(cleanupExpired, 60000);
-
 function buildKeyGenerator(trustProxy: boolean) {
   return (req: Request): string => {
     if (trustProxy) {
@@ -39,6 +26,18 @@ export function createRateLimitMiddleware(config: RateLimitConfig) {
     keyGenerator = buildKeyGenerator(config.trustProxy ?? false),
     skip,
   } = config;
+
+  const store = new Map<string, RateLimitEntry>();
+
+  const cleanup = setInterval(() => {
+    const now = Date.now();
+    for (const [key, entry] of store.entries()) {
+      if (entry.resetTime <= now) {
+        store.delete(key);
+      }
+    }
+  }, 60000);
+  cleanup.unref();
 
   return (req: CogitatorRequest, res: Response, next: NextFunction) => {
     if (skip?.(req)) {

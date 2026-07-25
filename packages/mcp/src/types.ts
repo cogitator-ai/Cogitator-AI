@@ -2,8 +2,6 @@
  * MCP Integration Types
  */
 
-import type { Tool } from '@cogitator-ai/types';
-
 export type MCPTransportType = 'stdio' | 'http' | 'sse';
 
 export interface MCPRetryConfig {
@@ -36,8 +34,14 @@ export interface MCPClientConfig {
   /** For stdio transport: environment variables */
   env?: Record<string, string>;
 
+  /** For stdio transport: working directory of the spawned command */
+  cwd?: string;
+
   /** For HTTP transport: server URL */
   url?: string;
+
+  /** For HTTP transport: custom headers sent with each request */
+  headers?: Record<string, string>;
 
   /** Connection timeout in ms */
   timeout?: number;
@@ -144,6 +148,12 @@ export interface MCPServerConfig {
   /** For HTTP transport: host to bind to */
   host?: string;
 
+  /** For HTTP transport: maximum request body size in bytes (default: 10 MB) */
+  maxBodySize?: number;
+
+  /** For HTTP transport: value of the Access-Control-Allow-Origin header (default: '*') */
+  corsOrigin?: string;
+
   /** Enable logging */
   logging?: boolean;
 }
@@ -174,12 +184,4 @@ export interface ToolAdapterOptions {
 
   /** Transform tool description */
   descriptionTransform?: (description: string) => string;
-}
-
-/**
- * Result of converting MCP tools to Cogitator tools
- */
-export interface ConvertedTools {
-  tools: Tool[];
-  cleanup: () => Promise<void>;
 }

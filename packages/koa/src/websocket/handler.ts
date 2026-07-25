@@ -148,6 +148,7 @@ async function handleRun(
         input: payload.input,
         context: payload.context,
         stream: true,
+        signal: state.abortController.signal,
         onToken: (token: string) => {
           sendResponse(ws, {
             type: 'event',
@@ -189,7 +190,11 @@ async function handleRun(
 
       const { WorkflowExecutor } = await import('@cogitator-ai/workflows');
       const executor = new WorkflowExecutor(ctx.runtime);
-      const result = await executor.execute(workflow, { input: payload.input });
+      const result = await executor.execute(
+        workflow,
+        { input: payload.input },
+        { signal: state.abortController.signal }
+      );
 
       sendResponse(ws, {
         type: 'event',
@@ -209,16 +214,23 @@ async function handleRun(
 
       const { Swarm } = await import('@cogitator-ai/swarms');
       const swarm = new Swarm(ctx.runtime, swarmConfig);
-      const result = await swarm.run({
-        input: payload.input,
-        context: payload.context,
-      });
+      const { signal } = state.abortController;
+      const onAbort = () => swarm.abort();
+      signal.addEventListener('abort', onAbort);
+      try {
+        const result = await swarm.run({
+          input: payload.input,
+          context: payload.context,
+        });
 
-      sendResponse(ws, {
-        type: 'event',
-        id: message.id,
-        payload: { type: 'complete', result },
-      });
+        sendResponse(ws, {
+          type: 'event',
+          id: message.id,
+          payload: { type: 'complete', result },
+        });
+      } finally {
+        signal.removeEventListener('abort', onAbort);
+      }
     }
   } catch (error) {
     if (state.abortController?.signal.aborted) {

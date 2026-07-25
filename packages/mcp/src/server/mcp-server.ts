@@ -14,7 +14,7 @@ import type {
   MCPResourceContent,
   MCPPromptConfig,
 } from '../types';
-import { resultToMCPContent, zodToJsonSchema } from '../adapter/tool-adapter';
+import { resultToMCPContent } from '../adapter/tool-adapter';
 import { z } from 'zod';
 
 interface MCPCallToolResult {
@@ -45,7 +45,7 @@ interface MCPCallToolResult {
  * ```
  */
 export class MCPServer {
-  private server: McpServer;
+  private server?: McpServer;
   private config: MCPServerConfig;
   private tools = new Map<string, Tool>();
   private resources = new Map<string, MCPResourceConfig>();
@@ -55,10 +55,6 @@ export class MCPServer {
 
   constructor(config: MCPServerConfig) {
     this.config = config;
-    this.server = new McpServer({
-      name: config.name,
-      version: config.version,
-    });
   }
 
   /**
@@ -70,7 +66,6 @@ export class MCPServer {
     }
 
     this.tools.set(tool.name, tool);
-    this.registerMCPTool(tool);
   }
 
   /**
@@ -110,7 +105,6 @@ export class MCPServer {
     }
 
     this.resources.set(config.uri, config);
-    this.registerMCPResource(config);
   }
 
   /**
@@ -149,7 +143,6 @@ export class MCPServer {
     }
 
     this.prompts.set(config.name, config);
-    this.registerMCPPrompt(config);
   }
 
   /**
@@ -180,42 +173,76 @@ export class MCPServer {
   }
 
   /**
+   * Build a fresh SDK McpServer instance and register every tool, resource
+   * and prompt from the local maps onto it.
+   *
+   * The maps are the single source of truth: registration with the SDK is
+   * deferred until start() (stdio) or until each incoming request (HTTP), so
+   * unregister* calls made before start() are fully honoured and concurrent
+   * HTTP requests never share a single server/transport binding.
+   */
+  private buildServer(): McpServer {
+    const server = new McpServer({
+      name: this.config.name,
+      version: this.config.version,
+    });
+
+    for (const tool of this.tools.values()) {
+      this.registerMCPTool(server, tool);
+    }
+    for (const resource of this.resources.values()) {
+      this.registerMCPResource(server, resource);
+    }
+    for (const prompt of this.prompts.values()) {
+      this.registerMCPPrompt(server, prompt);
+    }
+
+    return server;
+  }
+
+  /**
    * Register a tool with the MCP server
    */
-  private registerMCPTool(tool: Tool): void {
-    const inputSchema = this.buildInputSchema(tool);
+  private registerMCPTool(server: McpServer, tool: Tool): void {
+    const inputShape = this.buildInputShape(tool);
 
-    this.server.tool(
+    server.tool(
       tool.name,
       tool.description,
-      inputSchema,
-      async (args): Promise<MCPCallToolResult> => {
-        return this.executeTool(tool, args as Record<string, unknown>);
+      inputShape,
+      async (args, extra): Promise<MCPCallToolResult> => {
+        return this.executeTool(tool, args as Record<string, unknown>, extra.signal);
       }
     );
   }
 
   /**
-   * Build the input schema for MCP tool registration
+   * Build the Zod raw shape the SDK expects for tool input schemas.
+   *
+   * The SDK validates inputs with Zod, so it needs the actual Zod schemas
+   * (a record of Zod types), not a converted JSON Schema. Passing JSON Schema
+   * objects makes the SDK silently drop the schema and skip validation.
    */
-  private buildInputSchema(tool: Tool): Record<string, unknown> {
-    if (tool.parameters) {
-      const jsonSchema = zodToJsonSchema(tool.parameters);
-      return jsonSchema.properties ?? {};
+  private buildInputShape(tool: Tool): Record<string, z.ZodTypeAny> {
+    const params = tool.parameters;
+    if (params instanceof z.ZodObject) {
+      return params.shape as Record<string, z.ZodTypeAny>;
     }
-
-    const schema = tool.toJSON();
-    return schema.parameters.properties;
+    return {};
   }
 
   /**
    * Execute a tool and return MCP-formatted result
    */
-  private async executeTool(tool: Tool, args: Record<string, unknown>): Promise<MCPCallToolResult> {
+  private async executeTool(
+    tool: Tool,
+    args: Record<string, unknown>,
+    signal?: AbortSignal
+  ): Promise<MCPCallToolResult> {
     const context: ToolContext = {
       agentId: 'mcp-server',
       runId: `mcp_${Date.now()}`,
-      signal: new AbortController().signal,
+      signal: signal ?? new AbortController().signal,
     };
 
     try {
@@ -265,7 +292,7 @@ export class MCPServer {
   /**
    * Register a resource with the MCP server
    */
-  private registerMCPResource(config: MCPResourceConfig): void {
+  private registerMCPResource(server: McpServer, config: MCPResourceConfig): void {
     const isTemplate = config.uri.includes('{');
 
     const formatContents = (result: MCPResourceContent | MCPResourceContent[], uriHref: string) => {
@@ -285,7 +312,7 @@ export class MCPServer {
     };
 
     if (isTemplate) {
-      this.server.registerResource(
+      server.registerResource(
         config.name,
         new ResourceTemplate(config.uri, { list: undefined }),
         {
@@ -310,7 +337,7 @@ export class MCPServer {
         }
       );
     } else {
-      this.server.registerResource(
+      server.registerResource(
         config.name,
         config.uri,
         {
@@ -336,7 +363,7 @@ export class MCPServer {
   /**
    * Register a prompt with the MCP server
    */
-  private registerMCPPrompt(config: MCPPromptConfig): void {
+  private registerMCPPrompt(server: McpServer, config: MCPPromptConfig): void {
     const argsSchema: Record<string, z.ZodTypeAny> = {};
 
     for (const arg of config.arguments || []) {
@@ -350,7 +377,7 @@ export class MCPServer {
       argsSchema[arg.name] = schema;
     }
 
-    this.server.registerPrompt(
+    server.registerPrompt(
       config.name,
       {
         title: config.title || config.name,
@@ -411,6 +438,7 @@ export class MCPServer {
 
     switch (this.config.transport) {
       case 'stdio': {
+        this.server = this.buildServer();
         const transport = new StdioServerTransport();
         await this.server.connect(transport);
         break;
@@ -443,11 +471,14 @@ export class MCPServer {
 
     const port = this.config.port ?? 3000;
     const host = this.config.host ?? 'localhost';
+    const maxBodySize = this.config.maxBodySize ?? 10 * 1024 * 1024;
+    const corsOrigin = this.config.corsOrigin ?? '*';
 
     this.httpServer = createServer(async (req, res) => {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Access-Control-Allow-Origin', corsOrigin);
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Mcp-Session-Id');
+      res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
 
       if (req.method === 'OPTIONS') {
         res.writeHead(204);
@@ -455,24 +486,73 @@ export class MCPServer {
         return;
       }
 
-      if (req.method !== 'POST' || req.url !== '/mcp') {
+      if (req.url !== '/mcp') {
         res.writeHead(404);
         res.end('Not Found');
         return;
       }
 
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) {
-        chunks.push(chunk as Buffer);
-      }
-      const body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
-
+      const server = this.buildServer();
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
       });
+      res.on('close', () => {
+        transport.close().catch(() => {});
+        server.close().catch(() => {});
+      });
 
-      await this.server.connect(transport);
-      await transport.handleRequest(req, res, body);
+      try {
+        await server.connect(transport);
+
+        if (req.method === 'POST') {
+          const chunks: Buffer[] = [];
+          let totalSize = 0;
+          let tooLarge = false;
+          for await (const chunk of req) {
+            const buffer = chunk as Buffer;
+            totalSize += buffer.length;
+            if (totalSize > maxBodySize) {
+              tooLarge = true;
+              break;
+            }
+            chunks.push(buffer);
+          }
+
+          if (tooLarge) {
+            res.writeHead(413, { 'Content-Type': 'text/plain' });
+            res.end('Payload Too Large');
+            req.destroy();
+            return;
+          }
+
+          let body: Record<string, unknown>;
+          try {
+            body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'text/plain' });
+            res.end('Bad Request: invalid JSON');
+            return;
+          }
+
+          await transport.handleRequest(req, res, body);
+        } else if (req.method === 'GET' || req.method === 'DELETE') {
+          await transport.handleRequest(req, res);
+        } else {
+          res.writeHead(405, { 'Content-Type': 'text/plain' });
+          res.end('Method Not Allowed');
+        }
+      } catch (error) {
+        if (this.config.logging) {
+          console.error(
+            '[MCPServer] HTTP request error:',
+            error instanceof Error ? error.message : String(error)
+          );
+        }
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Internal Server Error');
+        }
+      }
     });
 
     await new Promise<void>((resolve) => {
@@ -500,7 +580,10 @@ export class MCPServer {
       this.httpServer = undefined;
     }
 
-    await this.server.close();
+    if (this.server) {
+      await this.server.close();
+      this.server = undefined;
+    }
     this.started = false;
 
     if (this.config.logging) {

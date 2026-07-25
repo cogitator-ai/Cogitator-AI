@@ -6,6 +6,7 @@ import type {
   ThreadResponse,
   AddMessageRequest,
 } from '../types.js';
+import { CogitatorError } from '@cogitator-ai/types';
 
 export function createThreadRoutes(ctx: RouteContext): Router {
   const router = Router();
@@ -47,10 +48,12 @@ export function createThreadRoutes(ctx: RouteContext): Router {
       };
       res.json(response);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      res.status(500).json({
-        error: { message, code: 'INTERNAL' },
-      });
+      if (CogitatorError.isCogitatorError(error)) {
+        res.status(500).json({ error: { message: error.message, code: error.code } });
+      } else {
+        console.error('[CogitatorServer] Thread get error:', error);
+        res.status(500).json({ error: { message: 'Internal server error', code: 'INTERNAL' } });
+      }
     }
   });
 
@@ -92,10 +95,12 @@ export function createThreadRoutes(ctx: RouteContext): Router {
 
       res.status(201).json({ success: true });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      res.status(500).json({
-        error: { message, code: 'INTERNAL' },
-      });
+      if (CogitatorError.isCogitatorError(error)) {
+        res.status(500).json({ error: { message: error.message, code: error.code } });
+      } else {
+        console.error('[CogitatorServer] Thread add message error:', error);
+        res.status(500).json({ error: { message: 'Internal server error', code: 'INTERNAL' } });
+      }
     }
   });
 
@@ -120,10 +125,12 @@ export function createThreadRoutes(ctx: RouteContext): Router {
       }
       res.status(204).end();
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      res.status(500).json({
-        error: { message, code: 'INTERNAL' },
-      });
+      if (CogitatorError.isCogitatorError(error)) {
+        res.status(500).json({ error: { message: error.message, code: error.code } });
+      } else {
+        console.error('[CogitatorServer] Thread delete error:', error);
+        res.status(500).json({ error: { message: 'Internal server error', code: 'INTERNAL' } });
+      }
     }
   });
 

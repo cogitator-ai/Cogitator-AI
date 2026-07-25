@@ -20,7 +20,6 @@ const DEFAULT_CONFIG = {
   basePath: '/cogitator',
   enableWebSocket: false,
   enableSwagger: true,
-  requestTimeout: 30000,
 };
 
 export class CogitatorServer {

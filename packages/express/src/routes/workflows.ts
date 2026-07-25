@@ -8,6 +8,7 @@ import type {
   WorkflowRunResponse,
 } from '../types.js';
 import { ExpressStreamWriter, setupSSEHeaders, generateId } from '../streaming/index.js';
+import { CogitatorError } from '@cogitator-ai/types';
 
 export function createWorkflowRoutes(ctx: RouteContext): Router {
   const router = Router();
@@ -25,7 +26,7 @@ export function createWorkflowRoutes(ctx: RouteContext): Router {
 
   router.post('/workflows/:name/run', async (req: CogitatorRequest, res: Response) => {
     const { name } = req.params;
-    const workflow = ctx.workflows[name];
+    const workflow = Object.hasOwn(ctx.workflows, name) ? ctx.workflows[name] : undefined;
 
     if (!workflow) {
       res.status(404).json({
@@ -57,23 +58,25 @@ export function createWorkflowRoutes(ctx: RouteContext): Router {
 
       res.json(response);
     } catch (error) {
-      if (error instanceof Error && error.message.includes('Cannot find module')) {
+      if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
         res.status(501).json({
           error: { message: 'Workflows package not installed', code: 'UNIMPLEMENTED' },
         });
         return;
       }
 
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      res.status(500).json({
-        error: { message, code: 'INTERNAL' },
-      });
+      if (CogitatorError.isCogitatorError(error)) {
+        res.status(500).json({ error: { message: error.message, code: error.code } });
+      } else {
+        console.error('[CogitatorServer] Workflow run error:', error);
+        res.status(500).json({ error: { message: 'Internal server error', code: 'INTERNAL' } });
+      }
     }
   });
 
   router.post('/workflows/:name/stream', async (req: CogitatorRequest, res: Response) => {
     const { name } = req.params;
-    const workflow = ctx.workflows[name];
+    const workflow = Object.hasOwn(ctx.workflows, name) ? ctx.workflows[name] : undefined;
 
     if (!workflow) {
       res.status(404).json({
@@ -121,11 +124,13 @@ export function createWorkflowRoutes(ctx: RouteContext): Router {
 
       writer.finish(messageId);
     } catch (error) {
-      if (error instanceof Error && error.message.includes('Cannot find module')) {
+      if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
         writer.error('Workflows package not installed', 'UNIMPLEMENTED');
+      } else if (CogitatorError.isCogitatorError(error)) {
+        writer.error(error.message, error.code);
       } else {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        writer.error(message, 'INTERNAL');
+        console.error('[CogitatorServer] Workflow stream error:', error);
+        writer.error('Internal server error', 'INTERNAL');
       }
     } finally {
       writer.close();

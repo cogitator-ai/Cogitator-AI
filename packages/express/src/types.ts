@@ -75,7 +75,6 @@ export type { SwaggerConfig } from '@cogitator-ai/server-shared';
 export interface WebSocketConfig {
   path?: string;
   pingInterval?: number;
-  pingTimeout?: number;
   maxPayloadSize?: number;
 }
 
@@ -94,7 +93,6 @@ export interface CogitatorServerConfig {
     cors?: CorsConfig;
     swagger?: SwaggerConfig;
     websocket?: WebSocketConfig;
-    requestTimeout?: number;
   };
 }
 

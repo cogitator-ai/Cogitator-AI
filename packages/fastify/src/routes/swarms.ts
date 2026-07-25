@@ -7,7 +7,7 @@ import type {
 } from '../types.js';
 import { SwarmRunRequestSchema } from '../types.js';
 import { FastifyStreamWriter, generateId } from '../streaming/index.js';
-import type { RunResult, SwarmMessage, SwarmEvent } from '@cogitator-ai/types';
+import { CogitatorError, type RunResult, type SwarmMessage, type SwarmEvent } from '@cogitator-ai/types';
 
 interface SwarmParams {
   name: string;

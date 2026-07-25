@@ -33,7 +33,12 @@ export function createCorsMiddleware(config: CorsConfig) {
     const requestOrigin = req.headers.origin;
 
     if (origin === '*') {
-      res.setHeader('Access-Control-Allow-Origin', '*');
+      if (credentials && requestOrigin) {
+        res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+        res.setHeader('Vary', 'Origin');
+      } else {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+      }
     } else if (isOriginAllowed(requestOrigin, origin)) {
       res.setHeader('Access-Control-Allow-Origin', requestOrigin!);
       res.setHeader('Vary', 'Origin');

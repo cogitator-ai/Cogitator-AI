@@ -108,6 +108,10 @@ async function handleMessage(
 
     case 'subscribe':
       if (message.channel) {
+        if (state.subscriptions.size >= 64) {
+          sendResponse(ws, { type: 'error', error: 'Subscription limit reached (max 64)' });
+          break;
+        }
         state.subscriptions.set(message.channel, {
           channel: message.channel,
           callback: (data) => {
@@ -159,7 +163,7 @@ async function handleRun(
 
   try {
     if (payload.type === 'agent') {
-      const agent = ctx.agents[payload.name];
+      const agent = Object.hasOwn(ctx.agents, payload.name) ? ctx.agents[payload.name] : undefined;
       if (!agent) {
         sendResponse(ws, {
           type: 'error',
@@ -197,6 +201,12 @@ async function handleRun(
       });
 
       sendResponse(ws, { type: 'event', id: message.id, payload: { type: 'complete', result } });
+    } else {
+      sendResponse(ws, {
+        type: 'error',
+        id: message.id,
+        error: `Run type '${payload.type}' is not supported over WebSocket`,
+      });
     }
   } catch (error) {
     if (state.abortController?.signal.aborted) {

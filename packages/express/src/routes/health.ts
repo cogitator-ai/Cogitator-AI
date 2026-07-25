@@ -1,9 +1,7 @@
 import { Router } from 'express';
 import type { RouteContext, HealthResponse } from '../types.js';
 
-const startTime = Date.now();
-
-export function createHealthRoutes(_ctx: RouteContext): Router {
+export function createHealthRoutes(_ctx: RouteContext, startTime: number = Date.now()): Router {
   const router = Router();
 
   router.get('/health', (_req, res) => {

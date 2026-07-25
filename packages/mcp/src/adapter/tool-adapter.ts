@@ -59,7 +59,9 @@ export function jsonSchemaToZod(schema: {
       zodType = zodType.describe(prop.description);
     }
 
-    if (!required.has(key)) {
+    if (prop.default !== undefined) {
+      zodType = zodType.default(prop.default as never);
+    } else if (!required.has(key)) {
       zodType = zodType.optional();
     }
 
@@ -89,6 +91,20 @@ interface JsonSchemaProperty {
 }
 
 function jsonSchemaPropertyToZod(prop: JsonSchemaProperty): ZodTypeAny {
+  if (prop.allOf && prop.allOf.length > 0) {
+    const schemas = prop.allOf.map((variant) => jsonSchemaPropertyToZod(variant));
+    return schemas.reduce((acc, schema) => z.intersection(acc, schema));
+  }
+
+  const unionVariants = prop.oneOf ?? prop.anyOf;
+  if (unionVariants && unionVariants.length > 0) {
+    const schemas = unionVariants.map((variant) => jsonSchemaPropertyToZod(variant));
+    if (schemas.length === 1) {
+      return schemas[0];
+    }
+    return z.union(schemas as [ZodTypeAny, ZodTypeAny, ...ZodTypeAny[]]);
+  }
+
   if (prop.enum && Array.isArray(prop.enum)) {
     if (prop.enum.length >= 2 && prop.enum.every((v) => typeof v === 'string')) {
       return z.enum(prop.enum as [string, ...string[]]);
@@ -276,7 +292,8 @@ export function resultToMCPContent(result: unknown): MCPToolContent[] {
   if (typeof result === 'object') {
     if (
       Array.isArray(result) &&
-      result.every((item) => typeof item === 'object' && 'type' in item)
+      result.length > 0 &&
+      result.every((item) => typeof item === 'object' && item !== null && 'type' in item)
     ) {
       return result as MCPToolContent[];
     }

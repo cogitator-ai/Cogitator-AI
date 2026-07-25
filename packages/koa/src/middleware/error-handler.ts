@@ -8,19 +8,24 @@ export function createErrorHandler() {
     } catch (err) {
       if (ctx.headerSent) return;
 
-      const status = (err as { status?: number }).status;
-      if (status === 413) {
-        ctx.status = 413;
-        ctx.body = { error: { message: 'Payload too large', code: 'PAYLOAD_TOO_LARGE' } };
-        return;
-      }
-
       if (CogitatorError.isCogitatorError(err)) {
         ctx.status = ERROR_STATUS_CODES[err.code] || 500;
         ctx.body = {
           error: {
             message: err.message,
             code: err.code,
+          },
+        };
+        return;
+      }
+
+      const status = (err as { status?: number }).status;
+      if (status && status >= 400 && status < 600) {
+        ctx.status = status;
+        ctx.body = {
+          error: {
+            message: err instanceof Error ? err.message : 'HTTP error',
+            code: status === 413 ? 'PAYLOAD_TOO_LARGE' : 'HTTP_ERROR',
           },
         };
         return;

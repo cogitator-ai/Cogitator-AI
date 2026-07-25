@@ -8,7 +8,7 @@ import type {
   AgentRunResponse,
 } from '../types.js';
 import { ExpressStreamWriter, setupSSEHeaders, generateId } from '../streaming/index.js';
-import type { ToolCall } from '@cogitator-ai/types';
+import { CogitatorError, type ToolCall } from '@cogitator-ai/types';
 
 export function createAgentRoutes(ctx: RouteContext): Router {
   const router = Router();
@@ -26,7 +26,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
 
   router.post('/agents/:name/run', async (req: CogitatorRequest, res: Response) => {
     const { name } = req.params;
-    const agent = ctx.agents[name];
+    const agent = Object.hasOwn(ctx.agents, name) ? ctx.agents[name] : undefined;
 
     if (!agent) {
       res.status(404).json({
@@ -63,16 +63,18 @@ export function createAgentRoutes(ctx: RouteContext): Router {
 
       res.json(response);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      res.status(500).json({
-        error: { message, code: 'INTERNAL' },
-      });
+      if (CogitatorError.isCogitatorError(error)) {
+        res.status(500).json({ error: { message: error.message, code: error.code } });
+      } else {
+        console.error('[CogitatorServer] Agent run error:', error);
+        res.status(500).json({ error: { message: 'Internal server error', code: 'INTERNAL' } });
+      }
     }
   });
 
   router.post('/agents/:name/stream', async (req: CogitatorRequest, res: Response) => {
     const { name } = req.params;
-    const agent = ctx.agents[name];
+    const agent = Object.hasOwn(ctx.agents, name) ? ctx.agents[name] : undefined;
 
     if (!agent) {
       res.status(404).json({
@@ -128,8 +130,12 @@ export function createAgentRoutes(ctx: RouteContext): Router {
         totalTokens: result.usage.totalTokens,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      writer.error(message, 'INTERNAL');
+      if (CogitatorError.isCogitatorError(error)) {
+        writer.error(error.message, error.code);
+      } else {
+        console.error('[CogitatorServer] Agent stream error:', error);
+        writer.error('Internal server error', 'INTERNAL');
+      }
     } finally {
       writer.close();
     }

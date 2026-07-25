@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { WorkflowListResponse, WorkflowRunRequest, WorkflowRunResponse } from '../types.js';
 import { WorkflowRunRequestSchema } from '../types.js';
 import { FastifyStreamWriter, generateId } from '../streaming/index.js';
+import { CogitatorError } from '@cogitator-ai/types';
 
 interface WorkflowParams {
   name: string;
@@ -33,7 +34,9 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const { name } = request.params;
-      const workflow = fastify.cogitator.workflows[name];
+      const workflow = Object.hasOwn(fastify.cogitator.workflows, name)
+        ? fastify.cogitator.workflows[name]
+        : undefined;
 
       if (!workflow) {
         return reply.status(404).send({
@@ -68,10 +71,13 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
           });
         }
 
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        return reply.status(500).send({
-          error: { message, code: 'INTERNAL' },
-        });
+        if (CogitatorError.isCogitatorError(error)) {
+          return reply.status(500).send({ error: { message: error.message, code: error.code } });
+        }
+        request.log.error({ err: error }, 'workflow run error');
+        return reply
+          .status(500)
+          .send({ error: { message: 'Internal server error', code: 'INTERNAL' } });
       }
     }
   );
@@ -90,7 +96,9 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const { name } = request.params;
-      const workflow = fastify.cogitator.workflows[name];
+      const workflow = Object.hasOwn(fastify.cogitator.workflows, name)
+        ? fastify.cogitator.workflows[name]
+        : undefined;
 
       if (!workflow) {
         return reply.status(404).send({
@@ -139,9 +147,11 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
           writer.error('Workflows package not installed', 'UNIMPLEMENTED');
+        } else if (CogitatorError.isCogitatorError(error)) {
+          writer.error(error.message, error.code);
         } else {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          writer.error(message, 'INTERNAL');
+          request.log.error({ err: error }, 'workflow stream error');
+          writer.error('Internal server error', 'INTERNAL');
         }
       } finally {
         writer.close();
