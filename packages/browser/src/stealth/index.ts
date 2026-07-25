@@ -7,10 +7,13 @@ export async function applyStealthToContext(
   context: BrowserContext,
   config: StealthConfig
 ): Promise<void> {
-  if (config.fingerprintRandomization !== false || config.blockWebDriver !== false) {
-    for (const script of getEvasionScripts()) {
-      await context.addInitScript(script);
-    }
+  const scripts = getEvasionScripts({
+    blockWebDriver: config.blockWebDriver,
+    fingerprintRandomization: config.fingerprintRandomization,
+  });
+
+  for (const script of scripts) {
+    await context.addInitScript(script);
   }
 
   if (config.evasionScripts?.length) {
@@ -31,5 +34,7 @@ export function getStealthLaunchOptions(
 }
 
 export { getEvasionScripts } from './evasions';
+export type { EvasionScriptsOptions } from './evasions';
 export { humanLikeType, humanLikeClick, humanLikeScroll } from './human-like';
+export type { HumanLikeClickOptions } from './human-like';
 export { getRandomUserAgent, getAllUserAgents } from './user-agents';

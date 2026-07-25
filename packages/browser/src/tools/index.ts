@@ -23,9 +23,14 @@ export function browserTools(session: BrowserSession, options?: BrowserToolsOpti
 
   for (const mod of modules) {
     const factory = MODULE_FACTORIES[mod];
-    if (factory) {
-      tools.push(...factory(session));
+    if (!factory) {
+      throw new Error(
+        `Unknown browser tools module "${mod}". Available modules: ${Object.keys(
+          MODULE_FACTORIES
+        ).join(', ')}`
+      );
     }
+    tools.push(...factory(session));
   }
 
   return tools.map((t) => ({

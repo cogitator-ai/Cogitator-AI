@@ -1,16 +1,22 @@
 import type { Page, Locator } from 'playwright';
 
 function escapeCssString(str: string): string {
-  return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return str
+    .replace(/["\\]/g, '\\$&')
+    .replace(/[\0-\x1f\x7f]/g, (ch) => `\\${ch.codePointAt(0)!.toString(16)} `);
 }
 
 export async function smartSelect(page: Page, identifier: string): Promise<Locator | null> {
-  const cssLocator = page.locator(identifier);
-  if ((await cssLocator.count()) > 0) return cssLocator.first();
+  try {
+    const cssLocator = page.locator(identifier);
+    if ((await cssLocator.count()) > 0) return cssLocator.first();
+  } catch {}
 
   if (identifier.startsWith('//') || identifier.startsWith('(')) {
-    const xpathLocator = page.locator(`xpath=${identifier}`);
-    if ((await xpathLocator.count()) > 0) return xpathLocator.first();
+    try {
+      const xpathLocator = page.locator(`xpath=${identifier}`);
+      if ((await xpathLocator.count()) > 0) return xpathLocator.first();
+    } catch {}
   }
 
   const textLocator = page.getByText(identifier, { exact: false });
@@ -28,9 +34,9 @@ export async function findFormField(page: Page, label: string): Promise<Locator 
     () => page.locator(`textarea[name="${escaped}"]`),
     () => page.locator(`textarea[placeholder="${escaped}"]`),
     () => page.locator(`select[name="${escaped}"]`),
-    () => page.locator(`label:has-text("${escaped}") input`),
-    () => page.locator(`label:has-text("${escaped}") textarea`),
-    () => page.locator(`label:has-text("${escaped}") select`),
+    () => page.locator(`label:text-is("${escaped}") input`),
+    () => page.locator(`label:text-is("${escaped}") textarea`),
+    () => page.locator(`label:text-is("${escaped}") select`),
     () => page.getByLabel(label),
   ];
 

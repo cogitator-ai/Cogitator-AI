@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { BrowserSession } from '../session';
+
+vi.mock('node:fs/promises', () => ({
+  access: vi.fn().mockResolvedValue(undefined),
+}));
+
 import {
   createClickTool,
   createTypeTool,
@@ -142,10 +147,13 @@ describe('interaction tools', () => {
 
     it('clears field first when clearFirst is true', async () => {
       const t = createTypeTool(session);
-      await t.execute({ selector: '#input', text: 'new', clearFirst: true }, dummyContext);
+      await t.execute(
+        { selector: '#input', text: 'new', clearFirst: true, delay: 50 },
+        dummyContext
+      );
 
       expect(mockPage.fill).toHaveBeenCalledWith('#input', '');
-      expect(mockPage.fill).toHaveBeenCalledWith('#input', 'new');
+      expect(mockPage.type).toHaveBeenCalledWith('#input', 'new', { delay: 50 });
     });
 
     it('types with delay instead of fill', async () => {
@@ -350,7 +358,7 @@ describe('interaction tools', () => {
 
       expect(mockPage.locator).toHaveBeenCalled();
       expect(mockLocatorFirst.fill).toHaveBeenCalledWith('john');
-      expect(result).toEqual({ filled: ['username'], skipped: [] });
+      expect(result).toEqual({ filled: ['username'], skipped: [], errors: [] });
     });
 
     it('checks boolean true fields', async () => {
@@ -359,7 +367,7 @@ describe('interaction tools', () => {
       const result = await t.execute({ fields: { agree: true } }, dummyContext);
 
       expect(mockLocatorFirst.check).toHaveBeenCalled();
-      expect(result).toEqual({ filled: ['agree'], skipped: [] });
+      expect(result).toEqual({ filled: ['agree'], skipped: [], errors: [] });
     });
 
     it('unchecks boolean false fields', async () => {
@@ -368,7 +376,7 @@ describe('interaction tools', () => {
       const result = await t.execute({ fields: { newsletter: false } }, dummyContext);
 
       expect(mockLocatorFirst.uncheck).toHaveBeenCalled();
-      expect(result).toEqual({ filled: ['newsletter'], skipped: [] });
+      expect(result).toEqual({ filled: ['newsletter'], skipped: [], errors: [] });
     });
 
     it('selects option for array fields', async () => {
@@ -377,7 +385,7 @@ describe('interaction tools', () => {
       const result = await t.execute({ fields: { colors: ['red', 'blue'] } }, dummyContext);
 
       expect(mockLocatorFirst.selectOption).toHaveBeenCalledWith(['red', 'blue']);
-      expect(result).toEqual({ filled: ['colors'], skipped: [] });
+      expect(result).toEqual({ filled: ['colors'], skipped: [], errors: [] });
     });
 
     it('tries multiple selectors to find input', async () => {
@@ -393,7 +401,7 @@ describe('interaction tools', () => {
       const result = await t.execute({ fields: { email: 'test@test.com' } }, dummyContext);
 
       expect(mockPage.locator).toHaveBeenCalledTimes(6);
-      expect(result).toEqual({ filled: ['email'], skipped: [] });
+      expect(result).toEqual({ filled: ['email'], skipped: [], errors: [] });
     });
 
     it('skips fields where no selector matches', async () => {
@@ -401,7 +409,7 @@ describe('interaction tools', () => {
       const t = createFillFormTool(session);
       const result = await t.execute({ fields: { missing: 'value' } }, dummyContext);
 
-      expect(result).toEqual({ filled: [], skipped: ['missing'] });
+      expect(result).toEqual({ filled: [], skipped: ['missing'], errors: [] });
     });
 
     it('fills multiple fields', async () => {

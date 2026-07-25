@@ -12,6 +12,40 @@ import {
 } from '../utils/schemas';
 import { getAccessibilityTree, type AccessibilityNode } from '../utils/page-helpers';
 
+function parseImageDimensions(buffer: Buffer): { width: number; height: number } {
+  if (buffer.length >= 24 && buffer.readUInt32BE(0) === 0x89504e47) {
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+  }
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 9 < buffer.length) {
+      if (buffer[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+      const marker = buffer[offset + 1];
+      if (marker === 0xff) {
+        offset += 1;
+        continue;
+      }
+      const isSof =
+        (marker >= 0xc0 && marker <= 0xc3) ||
+        (marker >= 0xc5 && marker <= 0xc7) ||
+        (marker >= 0xc9 && marker <= 0xcb) ||
+        (marker >= 0xcd && marker <= 0xcf);
+      if (isSof) {
+        return { height: buffer.readUInt16BE(offset + 5), width: buffer.readUInt16BE(offset + 7) };
+      }
+      if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) {
+        offset += 2;
+        continue;
+      }
+      offset += 2 + buffer.readUInt16BE(offset + 2);
+    }
+  }
+  return { width: 0, height: 0 };
+}
+
 export function createScreenshotTool(session: BrowserSession) {
   return tool({
     name: 'browser_screenshot',
@@ -36,11 +70,12 @@ export function createScreenshotTool(session: BrowserSession) {
         buffer = await page.screenshot(options);
       }
 
+      const dims = parseImageDimensions(buffer);
       const viewport = page.viewportSize();
       return {
         image: buffer.toString('base64'),
-        width: viewport?.width ?? 0,
-        height: viewport?.height ?? 0,
+        width: dims.width || (viewport?.width ?? 0),
+        height: dims.height || (viewport?.height ?? 0),
       };
     },
   });
@@ -78,20 +113,22 @@ export function createFindByDescriptionTool(session: BrowserSession) {
     execute: async (params: FindByDescriptionInput) => {
       const page = session.page;
       const snapshot = await getAccessibilityTree(page);
-      if (!snapshot) return { elements: [] };
+      if (!snapshot) return { elements: [], total: 0 };
 
       const description = params.description.toLowerCase();
       const matches: Array<{ role: string; name: string; description: string }> = [];
+      const maxResults = 50;
 
       function walk(node: AccessibilityNode) {
         const name = (node.name ?? '').toLowerCase();
         const role = (node.role ?? '').toLowerCase();
         if (name.length >= 2) {
-          if (
-            name.includes(description) ||
-            (name.length >= 3 && description.toLowerCase().includes(name.toLowerCase())) ||
-            role.includes(description)
-          ) {
+          const nameContainsDescription = name.includes(description);
+          const descriptionContainsName =
+            name.length >= 3 &&
+            new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(description);
+          const roleMatches = description.length >= 3 && role.includes(description);
+          if (nameContainsDescription || descriptionContainsName || roleMatches) {
             matches.push({
               role: node.role ?? '',
               name: node.name ?? '',
@@ -105,7 +142,7 @@ export function createFindByDescriptionTool(session: BrowserSession) {
       }
       walk(snapshot);
 
-      return { elements: matches };
+      return { elements: matches.slice(0, maxResults), total: matches.length };
     },
   });
 }
@@ -135,6 +172,9 @@ export function createClickByDescriptionTool(session: BrowserSession) {
         const count = await locator.count();
         if (count > 0) {
           const idx = params.index ?? 0;
+          if (idx < 0 || idx >= count) {
+            return { clicked: false, element: null };
+          }
           await locator.nth(idx).click();
           return {
             clicked: true,

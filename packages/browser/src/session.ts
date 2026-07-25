@@ -6,7 +6,13 @@ import type {
   ProxyConfig,
 } from '@cogitator-ai/types';
 import type { Browser, BrowserContext, Page } from 'playwright';
-import { applyStealthToContext, getRandomUserAgent } from './stealth';
+import { applyStealthToContext, getStealthLaunchOptions } from './stealth';
+
+declare global {
+  interface SymbolConstructor {
+    readonly asyncDispose: unique symbol;
+  }
+}
 
 const DEFAULT_VIEWPORT = { width: 1280, height: 720 };
 const DEFAULT_TIMEOUT = 30_000;
@@ -74,6 +80,7 @@ export class BrowserSession {
   }
 
   get tabs(): Page[] {
+    this._pruneClosedPages();
     return [...this._pages];
   }
 
@@ -109,11 +116,17 @@ export class BrowserSession {
 
     if (this._config.locale) contextOptions.locale = this._config.locale;
     if (this._config.timezone) contextOptions.timezoneId = this._config.timezone;
-    if (this._config.geolocation) contextOptions.geolocation = this._config.geolocation;
+    if (this._config.geolocation) {
+      contextOptions.geolocation = this._config.geolocation;
+      contextOptions.permissions = ['geolocation'];
+    }
     if (this._config.userAgent) {
       contextOptions.userAgent = this._config.userAgent;
     } else if (this.stealthEnabled) {
-      contextOptions.userAgent = getRandomUserAgent(browserType as BrowserType);
+      Object.assign(
+        contextOptions,
+        getStealthLaunchOptions(this.stealthConfig!, browserType as BrowserType)
+      );
     }
 
     this._context = await this._browser.newContext(contextOptions);
@@ -142,13 +155,19 @@ export class BrowserSession {
     }
 
     const page = await this._context.newPage();
-
-    if (url) {
-      await page.goto(url, { timeout: this._config.timeout });
-    }
-
     this._pages.push(page);
     this._activePageIndex = this._pages.length - 1;
+
+    if (url) {
+      try {
+        await page.goto(url, { timeout: this._config.timeout });
+      } catch (error) {
+        this._pages.splice(this._pages.indexOf(page), 1);
+        this._activePageIndex = Math.max(0, this._pages.length - 1);
+        await page.close().catch(() => undefined);
+        throw error;
+      }
+    }
 
     return page;
   }
@@ -205,24 +224,41 @@ export class BrowserSession {
     const { readFile } = await import('node:fs/promises');
     const data = await readFile(filePath, 'utf-8');
     const parsed: unknown[] = JSON.parse(data);
-    const cookies = parsed.filter(
-      (c): c is BrowserCookie =>
-        typeof c === 'object' &&
-        c !== null &&
-        typeof (c as Record<string, unknown>).name === 'string' &&
-        typeof (c as Record<string, unknown>).value === 'string'
-    );
+    const cookies = parsed.filter((c): c is BrowserCookie => {
+      if (typeof c !== 'object' || c === null) return false;
+      const record = c as Record<string, unknown>;
+      if (typeof record.name !== 'string' || typeof record.value !== 'string') return false;
+      return typeof record.url === 'string' || typeof record.domain === 'string';
+    });
     await this.setCookies(cookies);
   }
 
   async close(): Promise<void> {
     if (!this._browser) return;
 
-    await this._browser.close();
-    this._browser = null;
-    this._context = null;
-    this._pages = [];
-    this._activePageIndex = 0;
+    try {
+      await this._browser.close();
+    } finally {
+      this._browser = null;
+      this._context = null;
+      this._pages = [];
+      this._activePageIndex = 0;
+    }
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.close();
+  }
+
+  private _pruneClosedPages(): void {
+    if (!this._pages.some((p) => p.isClosed())) return;
+
+    const active = this._pages[this._activePageIndex];
+    this._pages = this._pages.filter((p) => !p.isClosed());
+    this._activePageIndex =
+      active && !active.isClosed()
+        ? this._pages.indexOf(active)
+        : Math.min(this._activePageIndex, Math.max(0, this._pages.length - 1));
   }
 
   private _resolveProxy(proxy: string | ProxyConfig): Record<string, string | undefined> {

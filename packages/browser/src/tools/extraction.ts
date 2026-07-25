@@ -92,7 +92,7 @@ export function createGetLinksTool(session: BrowserSession) {
           return Array.from(anchors).map((a) => {
             const rawHref = a.getAttribute('href') ?? '';
             let href = rawHref;
-            if (baseUrl) {
+            if (baseUrl && rawHref) {
               try {
                 href = new URL(rawHref, baseUrl).href;
               } catch {
@@ -171,19 +171,30 @@ export function createExtractTableTool(session: BrowserSession) {
         const table = selector ? document.querySelector(selector) : document.querySelector('table');
         if (!table) return { headers: [] as string[], rows: [] as string[][] };
 
-        const headerRow = table.querySelector('thead tr') ?? table.querySelector('tr');
-        const headers = headerRow
-          ? Array.from(headerRow.querySelectorAll('th, td')).map((c) => c.textContent?.trim() ?? '')
-          : [];
+        const cellsOf = (row: Element) =>
+          Array.from(row.querySelectorAll('th, td')).map((c) => c.textContent?.trim() ?? '');
 
-        const bodyRows = table.querySelectorAll('tbody tr');
-        const rowNodes = bodyRows.length > 0 ? bodyRows : table.querySelectorAll('tr');
-        const rows: string[][] = [];
-        const startIdx = bodyRows.length > 0 ? 0 : 1;
-        for (let i = startIdx; i < rowNodes.length; i++) {
-          const cells = rowNodes[i].querySelectorAll('td, th');
-          rows.push(Array.from(cells).map((c) => c.textContent?.trim() ?? ''));
+        const theadRows = Array.from(table.querySelectorAll('thead tr'));
+        let headers: string[] = [];
+        let bodyRowNodes: Element[];
+
+        if (theadRows.length > 0) {
+          headers = cellsOf(theadRows[theadRows.length - 1]);
+          bodyRowNodes = Array.from(table.querySelectorAll('tbody tr'));
+          if (bodyRowNodes.length === 0) {
+            bodyRowNodes = Array.from(table.querySelectorAll('tr')).filter(
+              (tr) => !theadRows.includes(tr)
+            );
+          }
+        } else {
+          const allRows = Array.from(table.querySelectorAll('tr'));
+          headers = allRows.length > 0 ? cellsOf(allRows[0]) : [];
+          bodyRowNodes = allRows.slice(1);
         }
+
+        const rows = bodyRowNodes.map((tr) =>
+          Array.from(tr.querySelectorAll('td, th')).map((c) => c.textContent?.trim() ?? '')
+        );
         return { headers, rows };
       }, params.selector);
       return data;
@@ -206,7 +217,15 @@ export function createExtractStructuredTool(session: BrowserSession) {
         if (!scope) return '';
         const clone = scope.cloneNode(true) as HTMLElement;
         clone.querySelectorAll('script, style, noscript, svg').forEach((el) => el.remove());
-        return clone.innerText?.trim() ?? clone.textContent?.trim() ?? '';
+        const holder = document.createElement('div');
+        holder.style.position = 'absolute';
+        holder.style.left = '-9999px';
+        holder.style.top = '0';
+        holder.appendChild(clone);
+        document.body.appendChild(holder);
+        const text = clone.innerText.trim();
+        holder.remove();
+        return text;
       }, params.selector);
       return {
         instruction: params.instruction,

@@ -283,7 +283,7 @@ describe('applyStealthToContext', () => {
     expect(ctx.addInitScript).not.toHaveBeenCalled();
   });
 
-  it('applies evasions when only fingerprintRandomization is true', async () => {
+  it('applies only fingerprint evasions when blockWebDriver is false', async () => {
     const ctx = createMockContext();
     const config: StealthConfig = {
       fingerprintRandomization: true,
@@ -292,10 +292,21 @@ describe('applyStealthToContext', () => {
 
     await applyStealthToContext(ctx, config);
 
-    expect(ctx.addInitScript).toHaveBeenCalledTimes(getEvasionScripts().length);
+    const expectedCount = getEvasionScripts({
+      fingerprintRandomization: true,
+      blockWebDriver: false,
+    }).length;
+    expect(expectedCount).toBeLessThan(getEvasionScripts().length);
+    expect(ctx.addInitScript).toHaveBeenCalledTimes(expectedCount);
+
+    const injected = (ctx.addInitScript as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => call[0] as string
+    );
+    expect(injected.some((script) => script.includes('webdriver'))).toBe(false);
+    expect(injected.some((script) => script.includes('toDataURL'))).toBe(true);
   });
 
-  it('applies evasions when only blockWebDriver is true', async () => {
+  it('applies only webdriver evasions when fingerprintRandomization is false', async () => {
     const ctx = createMockContext();
     const config: StealthConfig = {
       fingerprintRandomization: false,
@@ -304,7 +315,18 @@ describe('applyStealthToContext', () => {
 
     await applyStealthToContext(ctx, config);
 
-    expect(ctx.addInitScript).toHaveBeenCalledTimes(getEvasionScripts().length);
+    const expectedCount = getEvasionScripts({
+      fingerprintRandomization: false,
+      blockWebDriver: true,
+    }).length;
+    expect(expectedCount).toBeLessThan(getEvasionScripts().length);
+    expect(ctx.addInitScript).toHaveBeenCalledTimes(expectedCount);
+
+    const injected = (ctx.addInitScript as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => call[0] as string
+    );
+    expect(injected.some((script) => script.includes('webdriver'))).toBe(true);
+    expect(injected.some((script) => script.includes('toDataURL'))).toBe(false);
   });
 });
 

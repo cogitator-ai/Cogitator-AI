@@ -159,7 +159,7 @@ describe('findFormField', () => {
 
   it('falls back to label text with input', async () => {
     const page = createMockPage();
-    page._setLocatorCount('label:has-text("Username") input', 1);
+    page._setLocatorCount('label:text-is("Username") input', 1);
 
     const result = await findFormField(page as never, 'Username');
 
@@ -168,7 +168,7 @@ describe('findFormField', () => {
 
   it('falls back to label text with textarea', async () => {
     const page = createMockPage();
-    page._setLocatorCount('label:has-text("Message") textarea', 1);
+    page._setLocatorCount('label:text-is("Message") textarea', 1);
 
     const result = await findFormField(page as never, 'Message');
 
@@ -177,7 +177,7 @@ describe('findFormField', () => {
 
   it('falls back to label text with select', async () => {
     const page = createMockPage();
-    page._setLocatorCount('label:has-text("Role") select', 1);
+    page._setLocatorCount('label:text-is("Role") select', 1);
 
     const result = await findFormField(page as never, 'Role');
 

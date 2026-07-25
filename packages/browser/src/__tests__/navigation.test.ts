@@ -128,6 +128,7 @@ describe('navigation tools', () => {
 
       expect(mockPage.goBack).toHaveBeenCalled();
       expect(result).toEqual({
+        navigated: false,
         url: 'https://previous.com',
         title: 'Previous',
       });
@@ -148,6 +149,7 @@ describe('navigation tools', () => {
 
       expect(mockPage.goForward).toHaveBeenCalled();
       expect(result).toEqual({
+        navigated: false,
         url: 'https://next.com',
         title: 'Next',
       });
@@ -257,7 +259,9 @@ describe('navigation tools', () => {
     });
 
     it('returns found: false on timeout error', async () => {
-      mockPage.waitForSelector.mockRejectedValueOnce(new Error('Timeout 30000ms exceeded'));
+      const timeoutError = new Error('Timeout 30000ms exceeded');
+      timeoutError.name = 'TimeoutError';
+      mockPage.waitForSelector.mockRejectedValueOnce(timeoutError);
       const t = createWaitForSelectorTool(session);
       const result = await t.execute({ selector: '.missing' }, dummyContext);
 

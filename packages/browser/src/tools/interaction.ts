@@ -50,12 +50,12 @@ export function createTypeTool(session: BrowserSession) {
     parameters: typeSchema,
     execute: async (params: TypeInput) => {
       const page = session.page;
-      if (params.clearFirst) {
-        await page.fill(params.selector, '');
-      }
-
       const useStealthDelay =
         !params.delay && session.stealthEnabled && session.stealthConfig?.humanLikeTyping;
+
+      if (params.clearFirst && (params.delay || useStealthDelay)) {
+        await page.fill(params.selector, '');
+      }
 
       if (params.delay) {
         await page.type(params.selector, params.text, { delay: params.delay });
@@ -166,16 +166,21 @@ export function createDragAndDropTool(session: BrowserSession) {
   });
 }
 
+function escapeSelectorString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
 function buildFieldSelectors(key: string): string[] {
+  const k = escapeSelectorString(key);
   return [
-    `input[name="${key}"]`,
-    `input[placeholder="${key}"]`,
-    `input[aria-label="${key}"]`,
-    `textarea[name="${key}"]`,
-    `select[name="${key}"]`,
-    `label:has-text("${key}") input`,
-    `label:has-text("${key}") textarea`,
-    `label:has-text("${key}") select`,
+    `input[name="${k}"]`,
+    `input[placeholder="${k}"]`,
+    `input[aria-label="${k}"]`,
+    `textarea[name="${k}"]`,
+    `select[name="${k}"]`,
+    `label:has-text("${k}") input`,
+    `label:has-text("${k}") textarea`,
+    `label:has-text("${k}") select`,
   ];
 }
 
@@ -190,42 +195,51 @@ export function createFillFormTool(session: BrowserSession) {
     execute: async (params: FillFormInput) => {
       const page = session.page;
       const filled: string[] = [];
+      const errors: Array<{ field: string; error: string }> = [];
 
       for (const [key, value] of Object.entries(params.fields)) {
-        const selectors = buildFieldSelectors(key);
+        try {
+          const selectors = buildFieldSelectors(key);
 
-        for (const sel of selectors) {
-          const loc = page.locator(sel);
-          const count = await loc.count();
-          if (count === 0) continue;
+          for (const sel of selectors) {
+            const loc = page.locator(sel);
+            const count = await loc.count();
+            if (count === 0) continue;
 
-          const el = loc.first();
+            const el = loc.first();
 
-          if (typeof value === 'string') {
-            if (session.stealthEnabled && session.stealthConfig?.humanLikeTyping) {
-              const delay = Math.floor(Math.random() * 101) + 50;
-              await el.type(value, { delay });
-            } else {
-              await el.fill(value);
+            if (typeof value === 'string') {
+              if (session.stealthEnabled && session.stealthConfig?.humanLikeTyping) {
+                const delay = Math.floor(Math.random() * 101) + 50;
+                await el.type(value, { delay });
+              } else {
+                await el.fill(value);
+              }
+            } else if (typeof value === 'boolean') {
+              if (value) {
+                await el.check();
+              } else {
+                await el.uncheck();
+              }
+            } else if (Array.isArray(value)) {
+              await el.selectOption(value);
             }
-          } else if (typeof value === 'boolean') {
-            if (value) {
-              await el.check();
-            } else {
-              await el.uncheck();
-            }
-          } else if (Array.isArray(value)) {
-            await el.selectOption(value);
+
+            filled.push(key);
+            break;
           }
-
-          filled.push(key);
-          break;
+        } catch (error) {
+          errors.push({
+            field: key,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       }
 
       return {
         filled,
         skipped: Object.keys(params.fields).filter((k) => !filled.includes(k)),
+        errors,
       };
     },
   });
@@ -239,7 +253,17 @@ export function createUploadFileTool(session: BrowserSession) {
     tags: ['browser', 'interaction'],
     parameters: uploadFileSchema,
     execute: async (params: UploadFileInput) => {
-      await session.page.setInputFiles(params.selector, params.filePaths);
+      const { access } = await import('node:fs/promises');
+      const { resolve } = await import('node:path');
+      const filePaths = params.filePaths.map((p) => resolve(p));
+      for (const filePath of filePaths) {
+        try {
+          await access(filePath);
+        } catch {
+          throw new Error(`Upload file not found: ${filePath}`);
+        }
+      }
+      await session.page.setInputFiles(params.selector, filePaths);
       return { uploaded: true };
     },
   });

@@ -233,6 +233,13 @@ describe('vision tools', () => {
     });
 
     it('respects index parameter', async () => {
+      mockPage.getByRole.mockReturnValue({
+        count: vi.fn().mockResolvedValue(3),
+        nth: vi.fn().mockReturnValue({
+          click: vi.fn().mockResolvedValue(undefined),
+        }),
+      });
+
       const t = createClickByDescriptionTool(session);
       const result = await t.execute({ description: 'Submit', index: 2 }, dummyContext);
 

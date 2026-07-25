@@ -1,5 +1,6 @@
 import { tool } from '@cogitator-ai/core';
 import type { BrowserSession } from '../session';
+import type { Page, Request, Response, Route } from 'playwright';
 import {
   interceptRequestSchema,
   waitForResponseSchema,
@@ -32,17 +33,31 @@ interface HarEntry {
   responseBody: string;
 }
 
+function networkTimingMs(request: Request): number {
+  let timing: { startTime: number; responseEnd: number };
+  try {
+    timing = request.timing();
+  } catch {
+    return 0;
+  }
+  const start = timing.startTime;
+  const end = timing.responseEnd;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < 0) return 0;
+  return Math.max(0, end - start);
+}
+
 class NetworkState {
   private _interceptors = new Map<string, () => Promise<void>>();
   private _apiCalls: ApiCallRecord[] = [];
-  private _listening = false;
+  private _listenedPage: Page | null = null;
+  private _responseHandler: ((response: Response) => void) | null = null;
   private _interceptorCounter = 0;
 
   get apiCalls() {
     return this._apiCalls;
   }
 
-  async addInterceptor(_page: unknown, id: string, remover: () => Promise<void>) {
+  async addInterceptor(id: string, remover: () => Promise<void>) {
     this._interceptors.set(id, remover);
   }
 
@@ -54,35 +69,27 @@ class NetworkState {
     }
   }
 
-  startListening(page: BrowserSession['page']) {
-    if (this._listening) return;
-    this._listening = true;
-    page.on(
-      'response',
-      async (response: {
-        request: () => {
-          url: () => string;
-          method: () => string;
-          resourceType: () => string;
-          headers: () => Record<string, string>;
-        };
-        status: () => number;
-        headers: () => Record<string, string>;
-      }) => {
-        const request = response.request();
-        const resourceType = request.resourceType();
-        if (resourceType === 'xhr' || resourceType === 'fetch') {
-          this._apiCalls.push({
-            url: request.url(),
-            method: request.method(),
-            status: response.status(),
-            timing: 0,
-            requestHeaders: request.headers(),
-            responseHeaders: response.headers(),
-          });
-        }
+  startListening(page: Page) {
+    if (this._listenedPage === page && this._responseHandler) return;
+    if (this._listenedPage && this._responseHandler) {
+      this._listenedPage.removeListener('response', this._responseHandler);
+    }
+    this._responseHandler = (response: Response) => {
+      const request = response.request();
+      const resourceType = request.resourceType();
+      if (resourceType === 'xhr' || resourceType === 'fetch') {
+        this._apiCalls.push({
+          url: request.url(),
+          method: request.method(),
+          status: response.status(),
+          timing: networkTimingMs(request),
+          requestHeaders: request.headers(),
+          responseHeaders: response.headers(),
+        });
       }
-    );
+    };
+    page.on('response', this._responseHandler);
+    this._listenedPage = page;
   }
 
   nextId() {
@@ -103,16 +110,26 @@ export function createInterceptRequestTool(session: BrowserSession, state: Netwo
     parameters: interceptRequestSchema,
     execute: async (params: InterceptRequestInput) => {
       const page = session.page;
+
+      if (params.action === 'modify' && !params.modify) {
+        return {
+          interceptorId: null,
+          warning:
+            "action 'modify' requires a 'modify' object with headers, body, or url; no interceptor was registered",
+        };
+      }
+
       const id = state.nextId();
 
-      const handler = async (route: {
-        abort: () => Promise<void>;
-        continue: (overrides?: Record<string, unknown>) => Promise<void>;
-      }) => {
+      const handler = async (route: Route) => {
         if (params.action === 'block') {
           await route.abort();
         } else if (params.action === 'modify' && params.modify) {
-          const overrides: Record<string, unknown> = {};
+          const overrides: {
+            headers?: Record<string, string>;
+            postData?: string;
+            url?: string;
+          } = {};
           if (params.modify.headers) overrides.headers = params.modify.headers;
           if (params.modify.body) overrides.postData = params.modify.body;
           if (params.modify.url) overrides.url = params.modify.url;
@@ -123,7 +140,7 @@ export function createInterceptRequestTool(session: BrowserSession, state: Netwo
       };
 
       await page.route(params.urlPattern, handler);
-      await state.addInterceptor(page, id, async () => {
+      await state.addInterceptor(id, async () => {
         await page.unroute(params.urlPattern, handler);
       });
 
@@ -143,7 +160,7 @@ export function createWaitForResponseTool(session: BrowserSession) {
     execute: async (params: WaitForResponseInput) => {
       const page = session.page;
       const response = await page.waitForResponse(
-        (resp: { url: () => string }) => resp.url().includes(params.urlPattern),
+        (resp: Response) => resp.url().includes(params.urlPattern),
         { timeout: params.timeout }
       );
       let body: string;
@@ -174,11 +191,7 @@ export function createBlockResourcesTool(session: BrowserSession, state: Network
       const page = session.page;
       const types = new Set<string>(params.types);
 
-      const handler = async (route: {
-        request: () => { resourceType: () => string };
-        abort: () => Promise<void>;
-        continue: () => Promise<void>;
-      }) => {
+      const handler = async (route: Route) => {
         if (types.has(route.request().resourceType())) {
           await route.abort();
         } else {
@@ -188,7 +201,7 @@ export function createBlockResourcesTool(session: BrowserSession, state: Network
 
       const id = state.nextId();
       await page.route('**/*', handler);
-      await state.addInterceptor(page, id, async () => {
+      await state.addInterceptor(id, async () => {
         await page.unroute('**/*', handler);
       });
 
@@ -200,7 +213,7 @@ export function createBlockResourcesTool(session: BrowserSession, state: Network
 export function createCaptureHarTool(session: BrowserSession) {
   let harEntries: HarEntry[] = [];
   let harCapturing = false;
-  let responseHandler: ((response: unknown) => void) | null = null;
+  let responseHandler: ((response: Response) => void) | null = null;
 
   return tool({
     name: 'browser_capture_har',
@@ -215,33 +228,22 @@ export function createCaptureHarTool(session: BrowserSession) {
       if (params.action === 'start') {
         harEntries = [];
         harCapturing = true;
-        responseHandler = async (response: unknown) => {
+        responseHandler = async (response: Response) => {
           if (!harCapturing) return;
-          const startTime = Date.now();
-          const resp = response as {
-            request: () => {
-              url: () => string;
-              method: () => string;
-              headers: () => Record<string, string>;
-            };
-            status: () => number;
-            headers: () => Record<string, string>;
-            text: () => Promise<string>;
-          };
-          const request = resp.request();
+          const request = response.request();
           let body = '';
           try {
-            body = await resp.text();
+            body = await response.text();
           } catch {
             /* response body may not be available */
           }
           harEntries.push({
             url: request.url(),
             method: request.method(),
-            status: resp.status(),
-            timing: Date.now() - startTime,
+            status: response.status(),
+            timing: networkTimingMs(request),
             requestHeaders: request.headers(),
-            responseHeaders: resp.headers(),
+            responseHeaders: response.headers(),
             responseBody: body,
           });
         };
@@ -256,7 +258,13 @@ export function createCaptureHarTool(session: BrowserSession) {
       }
       if (params.path) {
         const { writeFile } = await import('node:fs/promises');
-        await writeFile(params.path, JSON.stringify({ entries: harEntries }, null, 2));
+        const path = await import('node:path');
+        const basePath = process.cwd();
+        const target = path.resolve(basePath, path.normalize(params.path));
+        if (target !== basePath && !target.startsWith(basePath + path.sep)) {
+          throw new Error(`HAR output path must be within the working directory: ${params.path}`);
+        }
+        await writeFile(target, JSON.stringify({ entries: harEntries }, null, 2));
       }
       const entries = [...harEntries];
       harEntries = [];

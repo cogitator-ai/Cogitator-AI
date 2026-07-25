@@ -9,7 +9,7 @@ export async function getReadableText(page: Page, selector?: string): Promise<st
     clone
       .querySelectorAll('script, style, noscript, svg, link[rel="stylesheet"]')
       .forEach((el) => el.remove());
-    return clone.innerText?.trim() ?? clone.textContent?.trim() ?? '';
+    return clone.textContent?.trim() || clone.innerText?.trim() || '';
   }, selector);
 }
 
@@ -33,9 +33,8 @@ function parseAriaSnapshot(snapshot: string): AccessibilityNode {
   for (const line of lines) {
     if (!line.trim() || line.trim().startsWith('/')) continue;
 
-    const stripped = line.replace(/^- /, '');
-    const indent = stripped.search(/\S/);
-    const content = stripped.trim().replace(/^- /, '');
+    const indent = line.search(/\S/);
+    const content = line.trim().replace(/^- /, '');
 
     const match = /^(\w[\w\s]*?)(?:\s+"(.*)")?(?:\s+\[.*])?:?$/.exec(content);
     if (!match) continue;
@@ -69,20 +68,34 @@ export async function elementToInfo(handle: ElementHandle): Promise<ElementInfo>
     for (const attr of Array.from(el.attributes)) {
       attrs[attr.name] = attr.value;
     }
+
+    const hasSize = rect.width > 0 && rect.height > 0;
+    let visible = hasSize;
+    if (hasSize) {
+      const win = el.ownerDocument?.defaultView ?? window;
+      let node: Element | null = el;
+      while (visible && node) {
+        const style = win.getComputedStyle(node);
+        if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') {
+          visible = false;
+        }
+        node = node.parentElement;
+      }
+    }
+
     return {
       tag: el.tagName.toLowerCase(),
       text: htmlEl.textContent?.trim().slice(0, 200) ?? '',
       attributes: attrs,
-      boundingBox:
-        rect.width > 0 && rect.height > 0
-          ? {
-              x: rect.x,
-              y: rect.y,
-              width: rect.width,
-              height: rect.height,
-            }
-          : undefined,
-      visible: rect.width > 0 && rect.height > 0,
+      boundingBox: hasSize
+        ? {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+          }
+        : undefined,
+      visible,
     };
   });
 }

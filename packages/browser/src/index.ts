@@ -122,6 +122,8 @@ export {
   getAllUserAgents,
 } from './stealth';
 
+export type { EvasionScriptsOptions, HumanLikeClickOptions } from './stealth';
+
 export { smartSelect, findFormField } from './utils/selectors';
 export { getReadableText, getAccessibilityTree, elementToInfo } from './utils/page-helpers';
 export type { AccessibilityNode } from './utils/page-helpers';

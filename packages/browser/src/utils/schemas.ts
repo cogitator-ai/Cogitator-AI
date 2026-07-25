@@ -3,7 +3,13 @@ import { z } from 'zod';
 const waitUntilEnum = z.enum(['load', 'domcontentloaded', 'networkidle', 'commit']);
 
 export const navigateSchema = z.object({
-  url: z.string().url().describe('URL to navigate to'),
+  url: z
+    .string()
+    .min(1)
+    .refine((value) => /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value), {
+      message: 'URL must start with a scheme such as https:, about:, data:, or file:',
+    })
+    .describe('URL to navigate to'),
   waitUntil: waitUntilEnum.optional().describe('When to consider navigation succeeded'),
 });
 export type NavigateInput = z.infer<typeof navigateSchema>;

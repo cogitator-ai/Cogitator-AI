@@ -45,8 +45,9 @@ export function createGoBackTool(session: BrowserSession) {
     parameters: goBackSchema,
     execute: async () => {
       const page = session.page;
-      await page.goBack();
+      const response = await page.goBack();
       return {
+        navigated: response !== null,
         url: page.url(),
         title: await page.title(),
       };
@@ -63,8 +64,9 @@ export function createGoForwardTool(session: BrowserSession) {
     parameters: goForwardSchema,
     execute: async () => {
       const page = session.page;
-      await page.goForward();
+      const response = await page.goForward();
       return {
+        navigated: response !== null,
         url: page.url(),
         title: await page.title(),
       };
@@ -141,8 +143,11 @@ export function createWaitForSelectorTool(session: BrowserSession) {
           timeout: params.timeout,
         });
         return { found: true };
-      } catch {
-        return { found: false };
+      } catch (error) {
+        if (error instanceof Error && error.name === 'TimeoutError') {
+          return { found: false };
+        }
+        throw error;
       }
     },
   });
