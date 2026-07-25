@@ -28,7 +28,7 @@ export function createNeuroSymbolicTools(options: NeuroSymbolicToolsOptions = {}
   const constraintTools = createConstraintTools(ns);
   const planningTools = createPlanningTools(ns);
 
-  const graphTools = options.graphAdapter ? createGraphTools(ns, options.graphAdapter) : undefined;
+  const graphTools = options.graphAdapter ? createGraphTools(options.graphAdapter) : undefined;
 
   const baseTools = [
     logicTools.queryLogic,

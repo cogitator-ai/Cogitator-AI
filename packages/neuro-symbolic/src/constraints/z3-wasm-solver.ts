@@ -117,7 +117,6 @@ interface Z3Model {
 export class Z3WASMSolver {
   private config: Required<Z3SolverConfig>;
   private ctx: Z3ContextInstance | null = null;
-  private variables = new Map<string, Z3Expr>();
 
   constructor(config: Partial<Z3SolverConfig> = {}) {
     this.config = { ...DEFAULT_Z3_CONFIG, ...config };
@@ -135,7 +134,7 @@ export class Z3WASMSolver {
     }
   }
 
-  private createVariable(variable: ConstraintVariable): Z3Expr {
+  private createVariable(variable: ConstraintVariable, variables: Map<string, Z3Expr>): Z3Expr {
     if (!this.ctx) throw new Error('Z3 not initialized');
 
     let z3Var: Z3Expr;
@@ -161,16 +160,16 @@ export class Z3WASMSolver {
         throw new Error(`Unknown variable type: ${variable.type}`);
     }
 
-    this.variables.set(variable.name, z3Var);
+    variables.set(variable.name, z3Var);
     return z3Var;
   }
 
-  private translateExpression(expr: ConstraintExpression): Z3Expr {
+  private translateExpression(expr: ConstraintExpression, variables: Map<string, Z3Expr>): Z3Expr {
     if (!this.ctx) throw new Error('Z3 not initialized');
 
     switch (expr.type) {
       case 'variable': {
-        const z3Var = this.variables.get(expr.name);
+        const z3Var = variables.get(expr.name);
         if (!z3Var) throw new Error(`Unknown variable: ${expr.name}`);
         return z3Var;
       }
@@ -187,7 +186,7 @@ export class Z3WASMSolver {
       }
 
       case 'operation': {
-        const operands = expr.operands.map((op) => this.translateExpression(op));
+        const operands = expr.operands.map((op) => this.translateExpression(op, variables));
 
         switch (expr.operator) {
           case 'not':
@@ -304,11 +303,15 @@ export class Z3WASMSolver {
     }
   }
 
-  private addDomainConstraints(solver: Z3Solver, variables: ConstraintVariable[]): void {
+  private addDomainConstraints(
+    solver: Z3Solver,
+    problemVariables: ConstraintVariable[],
+    variables: Map<string, Z3Expr>
+  ): void {
     if (!this.ctx) return;
 
-    for (const variable of variables) {
-      const z3Var = this.variables.get(variable.name);
+    for (const variable of problemVariables) {
+      const z3Var = variables.get(variable.name);
       if (!z3Var || !variable.domain) continue;
 
       if (variable.domain.min !== undefined) {
@@ -329,10 +332,10 @@ export class Z3WASMSolver {
         return { status: 'error', message: 'Failed to initialize Z3' };
       }
 
-      this.variables.clear();
+      const variables = new Map<string, Z3Expr>();
 
       for (const variable of problem.variables) {
-        this.createVariable(variable);
+        this.createVariable(variable, variables);
       }
 
       let solver: Z3Solver;
@@ -347,19 +350,21 @@ export class Z3WASMSolver {
 
       solver.setTimeout(this.config.timeout);
 
-      this.addDomainConstraints(solver, problem.variables);
+      this.addDomainConstraints(solver, problem.variables, variables);
 
       for (const constraint of problem.constraints) {
-        const z3Expr = this.translateExpression(constraint.expression);
+        const z3Expr = this.translateExpression(constraint.expression, variables);
         if (constraint.isHard) {
           solver.add(z3Expr);
         } else if (isOptimizing) {
           (solver as Z3Optimizer).add_soft(z3Expr, constraint.weight || 1);
+        } else {
+          solver.add(z3Expr);
         }
       }
 
       if (isOptimizing && problem.objective) {
-        const objExpr = this.translateExpression(problem.objective.expression);
+        const objExpr = this.translateExpression(problem.objective.expression, variables);
         const optimizer = solver as Z3Optimizer;
 
         if (problem.objective.type === 'minimize') {
@@ -375,7 +380,7 @@ export class Z3WASMSolver {
         const model = solver.model();
         const assignments: Record<string, boolean | number> = {};
 
-        for (const [name, z3Var] of this.variables) {
+        for (const [name, z3Var] of variables) {
           const value = model.eval(z3Var, true);
           const rawValue = value.value();
 
@@ -399,7 +404,7 @@ export class Z3WASMSolver {
         const result: ConstraintModel = { assignments };
 
         if (problem.objective) {
-          const objExpr = this.translateExpression(problem.objective.expression);
+          const objExpr = this.translateExpression(problem.objective.expression, variables);
           const objValue = model.eval(objExpr, true).value();
           if (typeof objValue === 'number') {
             result.objectiveValue = objValue;

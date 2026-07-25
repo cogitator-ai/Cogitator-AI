@@ -201,7 +201,14 @@ export class KnowledgeBase {
   clone(): KnowledgeBase {
     const kb = new KnowledgeBase(this.options);
     for (const [key, clauses] of this.clauses) {
-      kb.clauses.set(key, [...clauses]);
+      kb.clauses.set(
+        key,
+        clauses.map((c) => ({
+          head: structuredClone(c.head),
+          body: c.body.map((g) => structuredClone(g)),
+          metadata: c.metadata ? structuredClone(c.metadata) : undefined,
+        }))
+      );
     }
     kb.factCount = this.factCount;
     kb.ruleCount = this.ruleCount;
@@ -224,14 +231,14 @@ export class KnowledgeBase {
     });
   }
 
-  static import(json: string): KnowledgeBase {
+  static import(json: string, options?: KnowledgeBaseOptions): KnowledgeBase {
     const data = JSON.parse(json) as {
       clauses: Clause[];
       factCount: number;
       ruleCount: number;
     };
 
-    const kb = new KnowledgeBase();
+    const kb = new KnowledgeBase(options);
     for (const clause of data.clauses) {
       kb.addClause(clause);
     }

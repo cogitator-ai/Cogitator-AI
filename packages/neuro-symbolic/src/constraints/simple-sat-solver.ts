@@ -25,7 +25,7 @@ function createSeededRandom(seed: number): RandomFn {
   let s = seed;
   return () => {
     s = (s * 1664525 + 1013904223) & 0xffffffff;
-    return (s >>> 0) / 0xffffffff;
+    return (s >>> 0) / 0x100000000;
   };
 }
 
@@ -281,6 +281,31 @@ function flipVariable(
       for (const delta of [-1, -0.1, 0.1, 1]) {
         const newVal = val + delta;
         if (newVal >= min && newVal <= max) {
+          const neighbor = new Map(assignment);
+          neighbor.set(variable.name, newVal);
+          neighbors.push(neighbor);
+        }
+      }
+      break;
+    }
+
+    case 'bitvec': {
+      const bitWidth = variable.bitWidth || 8;
+      const maxVal = Math.pow(2, bitWidth) - 1;
+      const val = current as number;
+
+      for (let bit = 0; bit < bitWidth; bit++) {
+        const flipped = val ^ (1 << bit);
+        if (flipped >= 0 && flipped <= maxVal) {
+          const neighbor = new Map(assignment);
+          neighbor.set(variable.name, flipped);
+          neighbors.push(neighbor);
+        }
+      }
+
+      for (const delta of [-1, 1]) {
+        const newVal = val + delta;
+        if (newVal >= 0 && newVal <= maxVal) {
           const neighbor = new Map(assignment);
           neighbor.set(variable.name, newVal);
           neighbors.push(neighbor);

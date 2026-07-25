@@ -343,13 +343,23 @@ export function applyEffect(
 
     case 'conditional': {
       if (evaluatePrecondition(effect.condition, state, parameters)) {
-        let currentState: PlanState = { ...state, variables: newVariables };
+        let currentState: PlanState = {
+          ...state,
+          id: nanoid(8),
+          variables: newVariables,
+          timestamp: new Date(),
+        };
         for (const thenEffect of effect.thenEffects) {
           currentState = applyEffect(thenEffect, currentState, parameters);
         }
         return currentState;
       } else if (effect.elseEffects) {
-        let currentState: PlanState = { ...state, variables: newVariables };
+        let currentState: PlanState = {
+          ...state,
+          id: nanoid(8),
+          variables: newVariables,
+          timestamp: new Date(),
+        };
         for (const elseEffect of effect.elseEffects) {
           currentState = applyEffect(elseEffect, currentState, parameters);
         }
@@ -485,7 +495,7 @@ export function effectToString(eff: Effect): string {
   }
 }
 
-export function actionToString(action: PlanAction, _schema?: ActionSchema): string {
+export function actionToString(action: PlanAction): string {
   const params = Object.entries(action.parameters)
     .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
     .join(', ');

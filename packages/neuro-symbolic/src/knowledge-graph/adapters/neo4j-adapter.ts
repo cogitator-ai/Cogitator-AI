@@ -326,6 +326,9 @@ export class Neo4jGraphAdapter implements GraphAdapter {
         params.minConfidence = query.minConfidence;
       }
       if (query.namePattern) {
+        if (query.namePattern.length > 200) {
+          return { success: false, error: 'namePattern exceeds maximum length of 200 characters' };
+        }
         whereClauses.push(
           '(n.name =~ $namePattern OR any(a IN n.aliases WHERE a =~ $namePattern))'
         );
@@ -396,9 +399,9 @@ export class Neo4jGraphAdapter implements GraphAdapter {
     } catch (error) {
       if (
         error instanceof Error &&
-        (error.message.includes('gds') ||
-          error.message.includes('Unknown function') ||
-          error.message.includes('similarity.cosine'))
+        (error.message.includes('Unknown function') ||
+          error.message.includes('similarity.cosine') ||
+          /gds\.(similarity|graph)/.test(error.message))
       ) {
         const nodesResult = await this.queryNodes({
           agentId: options.agentId,
@@ -996,6 +999,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
              MATCH (target:GraphNode {id: $targetId})
              CREATE (target)-[r2:RELATION]->(t)
              SET r2 = properties(r)
+             SET r2.id = randomUUID(), r2.createdAt = datetime()
              DELETE r`,
             { sourceId, targetId: targetNodeId }
           );
@@ -1006,6 +1010,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
              MATCH (target:GraphNode {id: $targetId})
              CREATE (s)-[r2:RELATION]->(target)
              SET r2 = properties(r)
+             SET r2.id = randomUUID(), r2.createdAt = datetime()
              DELETE r`,
             { sourceId, targetId: targetNodeId }
           );
@@ -1078,7 +1083,8 @@ export class Neo4jGraphAdapter implements GraphAdapter {
       let nodeCount = 0;
       for (const record of nodeResult.records) {
         const type = record.get('type') as EntityType;
-        const count = (record.get('count') as { low: number }).low;
+        const rawCount = record.get('count');
+        const count = typeof rawCount === 'number' ? rawCount : (rawCount as { low: number }).low;
         if (type in nodesByType) {
           nodesByType[type] = count;
         }
@@ -1094,7 +1100,8 @@ export class Neo4jGraphAdapter implements GraphAdapter {
       let edgeCount = 0;
       for (const record of edgeResult.records) {
         const type = record.get('type') as RelationType;
-        const count = (record.get('count') as { low: number }).low;
+        const rawCount = record.get('count');
+        const count = typeof rawCount === 'number' ? rawCount : (rawCount as { low: number }).low;
         if (type in edgesByType) {
           edgesByType[type] = count;
         }

@@ -21,6 +21,7 @@ export class MemoryGraphAdapter implements GraphAdapter {
   private nodes = new Map<string, GraphNode>();
   private edges = new Map<string, GraphEdge>();
   private nodesByAgent = new Map<string, Set<string>>();
+  private edgesByAgent = new Map<string, Set<string>>();
   private edgesBySource = new Map<string, Set<string>>();
   private edgesByTarget = new Map<string, Set<string>>();
 
@@ -199,6 +200,11 @@ export class MemoryGraphAdapter implements GraphAdapter {
 
     this.edges.set(id, newEdge);
 
+    if (!this.edgesByAgent.has(edge.agentId)) {
+      this.edgesByAgent.set(edge.agentId, new Set());
+    }
+    this.edgesByAgent.get(edge.agentId)!.add(id);
+
     if (!this.edgesBySource.has(edge.sourceNodeId)) {
       this.edgesBySource.set(edge.sourceNodeId, new Set());
     }
@@ -264,6 +270,7 @@ export class MemoryGraphAdapter implements GraphAdapter {
     }
 
     this.edges.delete(edgeId);
+    this.edgesByAgent.get(edge.agentId)?.delete(edgeId);
     this.edgesBySource.get(edge.sourceNodeId)?.delete(edgeId);
     this.edgesByTarget.get(edge.targetNodeId)?.delete(edgeId);
 
@@ -272,9 +279,15 @@ export class MemoryGraphAdapter implements GraphAdapter {
 
   async queryEdges(query: EdgeQuery): Promise<MemoryResult<GraphEdge[]>> {
     const results: GraphEdge[] = [];
+    const agentEdges = this.edgesByAgent.get(query.agentId);
 
-    for (const edge of this.edges.values()) {
-      if (edge.agentId !== query.agentId) continue;
+    if (!agentEdges) {
+      return { success: true, data: [] };
+    }
+
+    for (const edgeId of agentEdges) {
+      const edge = this.edges.get(edgeId);
+      if (!edge) continue;
       if (query.sourceNodeId && edge.sourceNodeId !== query.sourceNodeId) continue;
       if (query.targetNodeId && edge.targetNodeId !== query.targetNodeId) continue;
       if (query.types && !query.types.includes(edge.type)) continue;
@@ -561,8 +574,10 @@ export class MemoryGraphAdapter implements GraphAdapter {
       }
     }
 
-    for (const edge of this.edges.values()) {
-      if (edge.agentId === agentId) {
+    const agentEdges = this.edgesByAgent.get(agentId) ?? new Set();
+    for (const edgeId of agentEdges) {
+      const edge = this.edges.get(edgeId);
+      if (edge) {
         edgeCount++;
         edgesByType[edge.type]++;
       }

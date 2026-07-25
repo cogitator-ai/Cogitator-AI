@@ -415,9 +415,9 @@ export function expressionToString(expr: ConstraintExpression): string {
 
       switch (op) {
         case 'not':
-          return `¬${operands[0]}`;
+          return operands.length >= 1 ? `¬${operands[0]}` : '¬?';
         case 'abs':
-          return `|${operands[0]}|`;
+          return operands.length >= 1 ? `|${operands[0]}|` : '|?|';
         case 'and':
           return `(${operands.join(' ∧ ')})`;
         case 'or':
@@ -425,15 +425,23 @@ export function expressionToString(expr: ConstraintExpression): string {
         case 'add':
           return `(${operands.join(' + ')})`;
         case 'sub':
-          return `(${operands[0]} - ${operands[1]})`;
+          return operands.length >= 2
+            ? `(${operands[0]} - ${operands[1]})`
+            : `(sub ${operands.join(', ')})`;
         case 'mul':
           return `(${operands.join(' × ')})`;
         case 'div':
-          return `(${operands[0]} ÷ ${operands[1]})`;
+          return operands.length >= 2
+            ? `(${operands[0]} ÷ ${operands[1]})`
+            : `(div ${operands.join(', ')})`;
         case 'mod':
-          return `(${operands[0]} mod ${operands[1]})`;
+          return operands.length >= 2
+            ? `(${operands[0]} mod ${operands[1]})`
+            : `(mod ${operands.join(', ')})`;
         case 'pow':
-          return `(${operands[0]} ^ ${operands[1]})`;
+          return operands.length >= 2
+            ? `(${operands[0]} ^ ${operands[1]})`
+            : `(pow ${operands.join(', ')})`;
         case 'eq':
           return `(${operands[0]} = ${operands[1]})`;
         case 'neq':

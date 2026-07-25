@@ -121,10 +121,19 @@ function resolve(state: ResolverState, ctx: ResolverContext): { success: boolean
   if (
     ctx.config.enableNegation &&
     resolvedGoal.functor === '\\+' &&
-    resolvedGoal.args.length === 1 &&
-    resolvedGoal.args[0].type === 'compound'
+    resolvedGoal.args.length === 1
   ) {
-    const negatedGoal = resolvedGoal.args[0] as CompoundTerm;
+    const arg = resolvedGoal.args[0];
+    const negatedGoal: CompoundTerm =
+      arg.type === 'compound'
+        ? arg
+        : arg.type === 'atom'
+          ? { type: 'compound', functor: arg.value, args: [] }
+          : null!;
+
+    if (!negatedGoal) {
+      return { success: false };
+    }
     const childNode = createProofNode(resolvedGoal, state.substitution, state.depth + 1);
     state.proofNode.children.push(childNode);
 
@@ -349,6 +358,7 @@ function resolve(state: ResolverState, ctx: ResolverContext): { success: boolean
   }
 
   let anySuccess = false;
+  let cutFired = false;
 
   for (const clause of clauses) {
     if (ctx.solutions.length >= ctx.config.maxSolutions) {
@@ -388,12 +398,13 @@ function resolve(state: ResolverState, ctx: ResolverContext): { success: boolean
     }
 
     if (result.cut && ctx.config.enableCut) {
+      cutFired = true;
       break;
     }
   }
 
   state.proofNode.status = anySuccess ? 'success' : 'failure';
-  return { success: anySuccess };
+  return { success: anySuccess, cut: cutFired || undefined };
 }
 
 function renameClause(clause: Clause, suffix: string): Clause {

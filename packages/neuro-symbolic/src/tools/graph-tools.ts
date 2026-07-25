@@ -8,9 +8,8 @@ import type {
   RelationType,
 } from '@cogitator-ai/types';
 import { tool } from '@cogitator-ai/core';
-import type { NeuroSymbolic } from '../orchestrator';
 
-export function createGraphTools(_ns: NeuroSymbolic, graphAdapter: GraphAdapter) {
+export function createGraphTools(graphAdapter: GraphAdapter) {
   const findPath = tool({
     name: 'find_graph_path',
     description:
@@ -109,35 +108,29 @@ export function createGraphTools(_ns: NeuroSymbolic, graphAdapter: GraphAdapter)
         return { success: false, error: nodesResult.error };
       }
 
-      const results: {
-        id: string;
-        name: string;
-        type: string;
-        description?: string;
-        edges?: { direction: string; type: string; targetNode: string }[];
-      }[] = [];
+      const nodes = nodesResult.data;
 
-      for (const node of nodesResult.data) {
-        const nodeInfo: (typeof results)[0] = {
-          id: node.id,
-          name: node.name,
-          type: node.type,
-          description: node.description,
-        };
+      const edgeMaps = includeEdges
+        ? await Promise.all(
+            nodes.map(async (node) => {
+              const neighborsResult = await graphAdapter.getNeighbors(node.id, 'both');
+              if (!neighborsResult.success) return [];
+              return neighborsResult.data.map(({ node: neighbor, edge }) => ({
+                direction: edge.sourceNodeId === node.id ? 'outgoing' : 'incoming',
+                type: edge.type as string,
+                targetNode: neighbor.name,
+              }));
+            })
+          )
+        : undefined;
 
-        if (includeEdges) {
-          const neighborsResult = await graphAdapter.getNeighbors(node.id, 'both');
-          if (neighborsResult.success) {
-            nodeInfo.edges = neighborsResult.data.map(({ node: neighbor, edge }) => ({
-              direction: edge.sourceNodeId === node.id ? 'outgoing' : 'incoming',
-              type: edge.type,
-              targetNode: neighbor.name,
-            }));
-          }
-        }
-
-        results.push(nodeInfo);
-      }
+      const results = nodes.map((node, i) => ({
+        id: node.id,
+        name: node.name,
+        type: node.type as string,
+        description: node.description,
+        ...(edgeMaps ? { edges: edgeMaps[i] } : {}),
+      }));
 
       return {
         success: true,
@@ -272,7 +265,7 @@ async function resolveNode(
   nodeIdOrName: string
 ): Promise<GraphNode | null> {
   const byIdResult = await adapter.getNode(nodeIdOrName);
-  if (byIdResult.success && byIdResult.data) {
+  if (byIdResult.success && byIdResult.data && byIdResult.data.agentId === agentId) {
     return byIdResult.data;
   }
 
@@ -289,13 +282,15 @@ function formatPath(path: { nodes: GraphNode[]; edges: GraphEdge[] }): string {
   if (path.nodes.length === 1) return path.nodes[0].name;
 
   const parts: string[] = [];
-  for (let i = 0; i < path.nodes.length - 1; i++) {
+  const edgeCount = Math.min(path.edges.length, path.nodes.length - 1);
+
+  for (let i = 0; i < edgeCount; i++) {
     const node = path.nodes[i];
     const edge = path.edges[i];
-    if (!edge) break;
     parts.push(`${node.name} -[${edge.type}${edge.label ? `: ${edge.label}` : ''}]->`);
   }
-  parts.push(path.nodes[path.nodes.length - 1].name);
+
+  parts.push(path.nodes[edgeCount].name);
 
   return parts.join(' ');
 }

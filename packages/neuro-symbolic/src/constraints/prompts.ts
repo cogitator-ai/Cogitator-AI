@@ -153,9 +153,25 @@ function extractJSON(text: string): string | null {
   const start = text.indexOf('{');
   if (start === -1) return null;
   let depth = 0;
+  let inString = false;
+  let escaped = false;
   for (let i = start; i < text.length; i++) {
-    if (text[i] === '{') depth++;
-    else if (text[i] === '}') depth--;
+    const ch = text[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\' && inString) {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') depth--;
     if (depth === 0) return text.slice(start, i + 1);
   }
   return null;
@@ -182,7 +198,7 @@ export function parseNLConstraintsResponse(response: string): ParseNLConstraints
       })),
       objective: parsed.objective
         ? {
-            type: parsed.objective.type as 'minimize' | 'maximize',
+            type: parsed.objective.type === 'maximize' ? 'maximize' : 'minimize',
             expression: String(parsed.objective.expression),
           }
         : undefined,

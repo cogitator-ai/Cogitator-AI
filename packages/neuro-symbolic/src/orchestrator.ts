@@ -129,7 +129,10 @@ export class NeuroSymbolic {
     this.knowledgeBase.assertFact(predicate, terms);
   }
 
-  queryLogic(queryString: string): NeuroSymbolicResult<LogicQueryResult> {
+  queryLogic(
+    queryString: string,
+    options?: { maxSolutions?: number }
+  ): NeuroSymbolicResult<LogicQueryResult> {
     const startTime = Date.now();
 
     const parseResult = parseQuery(queryString);
@@ -141,7 +144,15 @@ export class NeuroSymbolic {
       };
     }
 
-    const result = this.resolver.query(parseResult.value);
+    const resolver =
+      options?.maxSolutions != null
+        ? createResolver(this.knowledgeBase, {
+            ...this.config.logic,
+            maxSolutions: options.maxSolutions,
+          })
+        : this.resolver;
+
+    const result = resolver.query(parseResult.value);
 
     return {
       success: result.success,
@@ -155,8 +166,9 @@ export class NeuroSymbolic {
     const result = this.queryLogic(queryString);
 
     return {
-      success: true,
+      success: result.success,
       data: result.success && (result.data?.success ?? false),
+      error: result.error,
       duration: Date.now() - startTime,
     };
   }
@@ -254,8 +266,9 @@ export class NeuroSymbolic {
     const result = await solve(problem, this.config.constraints);
 
     return {
-      success: true,
+      success: result.status !== 'error',
       data: result,
+      error: result.status === 'error' ? result.message : undefined,
       duration: Date.now() - startTime,
     };
   }
@@ -284,7 +297,7 @@ export class NeuroSymbolic {
     const result = validatePlan(plan, this.actionRegistry);
 
     return {
-      success: result.valid,
+      success: true,
       data: result,
       duration: Date.now() - startTime,
     };
@@ -321,7 +334,7 @@ export class NeuroSymbolic {
     const result = this.planRepairer.repair(plan);
 
     return {
-      success: result.success,
+      success: true,
       data: result,
       duration: Date.now() - startTime,
     };
@@ -402,6 +415,11 @@ export class NeuroSymbolic {
     if (config.knowledgeGraph) {
       this.config.knowledgeGraph = { ...this.config.knowledgeGraph, ...config.knowledgeGraph };
     }
+  }
+
+  clearKnowledgeBase(): void {
+    this.knowledgeBase.clear();
+    this.resolver = createResolver(this.knowledgeBase, this.config.logic);
   }
 
   reset(): void {

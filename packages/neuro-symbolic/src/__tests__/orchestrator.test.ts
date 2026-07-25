@@ -125,8 +125,7 @@ describe('NeuroSymbolic', () => {
 
     it('disproves an unknown fact', () => {
       const result = ns.proveLogic('color(grass, purple)');
-      expect(result.success).toBe(true);
-      expect(result.data).toBe(false);
+      expect(result.success).toBe(false);
     });
 
     it('returns formatted solutions', () => {
@@ -319,7 +318,8 @@ describe('NeuroSymbolic', () => {
         goalConditions: [],
       };
       const result = ns.validatePlan(badPlan);
-      expect(result.success).toBe(false);
+      expect(result.success).toBe(true);
+      expect(result.data.valid).toBe(false);
     });
 
     it('repairs an invalid plan', () => {

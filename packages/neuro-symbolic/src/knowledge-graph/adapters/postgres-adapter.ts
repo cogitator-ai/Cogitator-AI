@@ -231,6 +231,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
        WHERE id = (
          SELECT id FROM ${this.schema}.graph_nodes
          WHERE agent_id = $1 AND (name = $2 OR $2 = ANY(aliases))
+         ORDER BY created_at ASC
          LIMIT 1
        )
        RETURNING *`,
@@ -331,6 +332,9 @@ export class PostgresGraphAdapter implements GraphAdapter {
       params.push(query.minConfidence);
     }
     if (query.namePattern) {
+      if (query.namePattern.length > 200) {
+        return { success: false, error: 'namePattern exceeds maximum length of 200 characters' };
+      }
       sql += ` AND (name ~* $${paramIndex} OR EXISTS (SELECT 1 FROM unnest(aliases) a WHERE a ~* $${paramIndex}))`;
       params.push(query.namePattern);
       paramIndex++;

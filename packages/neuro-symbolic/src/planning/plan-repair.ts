@@ -311,49 +311,64 @@ export class PlanRepairer {
     suggestions: PlanRepairSuggestion[]
   ): Plan | null {
     let currentPlan = plan;
-    let currentErrorCount = validation.errors.length;
+    let currentValidation = validation;
+    let currentSuggestions = suggestions;
     let insertions = 0;
     let removals = 0;
     let iterations = 0;
 
-    for (const suggestion of suggestions) {
-      if (iterations >= this.config.maxIterations) break;
+    while (iterations < this.config.maxIterations) {
       iterations++;
+      let mutated = false;
 
-      let newPlan: Plan | null = null;
+      for (const suggestion of currentSuggestions) {
+        if (iterations >= this.config.maxIterations) break;
+        iterations++;
 
-      switch (suggestion.type) {
-        case 'insert':
-          if (insertions < this.config.maxInsertions && suggestion.action) {
-            newPlan = this.insertAction(currentPlan, suggestion.position!, suggestion.action);
-            insertions++;
-          }
-          break;
+        let newPlan: Plan | null = null;
 
-        case 'remove':
-          if (removals < this.config.maxRemovals) {
-            newPlan = this.removeAction(currentPlan, suggestion.position!);
-            removals++;
-          }
-          break;
+        switch (suggestion.type) {
+          case 'insert':
+            if (insertions < this.config.maxInsertions && suggestion.action) {
+              const pos = Math.min(suggestion.position!, currentPlan.actions.length);
+              newPlan = this.insertAction(currentPlan, pos, suggestion.action);
+              insertions++;
+            }
+            break;
 
-        case 'reorder':
-          newPlan = this.reorderActions(currentPlan, suggestion);
-          break;
-      }
+          case 'remove':
+            if (
+              removals < this.config.maxRemovals &&
+              suggestion.position! < currentPlan.actions.length
+            ) {
+              newPlan = this.removeAction(currentPlan, suggestion.position!);
+              removals++;
+            }
+            break;
 
-      if (newPlan) {
-        const newValidation = this.validator.validate(newPlan);
-
-        if (newValidation.valid) {
-          return newPlan;
+          case 'reorder':
+            newPlan = this.reorderActions(currentPlan, suggestion);
+            break;
         }
 
-        if (newValidation.errors.length < currentErrorCount) {
-          currentPlan = newPlan;
-          currentErrorCount = newValidation.errors.length;
+        if (newPlan) {
+          const newValidation = this.validator.validate(newPlan);
+
+          if (newValidation.valid) {
+            return newPlan;
+          }
+
+          if (newValidation.errors.length < currentValidation.errors.length) {
+            currentPlan = newPlan;
+            currentValidation = newValidation;
+            currentSuggestions = this.generateSuggestions(currentPlan, currentValidation);
+            mutated = true;
+            break;
+          }
         }
       }
+
+      if (!mutated) break;
     }
 
     const finalValidation = this.validator.validate(currentPlan);
@@ -395,13 +410,20 @@ export class PlanRepairer {
 
   private reorderActions(plan: Plan, suggestion: PlanRepairSuggestion): Plan | null {
     const targetIndex = suggestion.position;
-    if (targetIndex === undefined || targetIndex <= 0) return null;
-    const reordered = [...plan.actions];
-    [reordered[targetIndex - 1], reordered[targetIndex]] = [
-      reordered[targetIndex],
-      reordered[targetIndex - 1],
-    ];
-    return { ...plan, id: nanoid(8), actions: reordered };
+    if (targetIndex === undefined) return null;
+
+    const swapMatch = /Swap action \d+ with action (\d+)/.exec(suggestion.reason);
+    const swapWith = swapMatch
+      ? parseInt(swapMatch[1], 10)
+      : targetIndex > 0
+        ? targetIndex - 1
+        : null;
+
+    if (swapWith === null || swapWith === targetIndex) return null;
+    if (swapWith < 0 || swapWith >= plan.actions.length) return null;
+    if (targetIndex < 0 || targetIndex >= plan.actions.length) return null;
+
+    return this.swapActions(plan, targetIndex, swapWith);
   }
 
   private getStateAtPosition(plan: Plan, position: number): PlanState {

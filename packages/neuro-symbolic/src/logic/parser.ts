@@ -139,10 +139,6 @@ class Lexer {
     let numStr = '';
     let hasDecimal = false;
 
-    if (this.peek() === '-') {
-      numStr += this.advance();
-    }
-
     while (this.pos < this.input.length) {
       const ch = this.peek();
       if (/\d/.test(ch)) {
@@ -211,6 +207,10 @@ class Lexer {
     if (ch === '!') {
       this.advance();
       return { type: 'cut' };
+    }
+    if (ch === ';') {
+      this.advance();
+      return { type: 'operator', value: ';' };
     }
 
     if (ch === ':' && this.input[this.pos + 1] === '-') {
@@ -305,6 +305,7 @@ class Lexer {
 class Parser {
   private currentToken: Token;
   private lexer: Lexer;
+  private anonVarCounter = 0;
 
   constructor(input: string) {
     this.lexer = new Lexer(input);
@@ -419,7 +420,7 @@ class Parser {
     if (token.type === 'variable') {
       this.advance();
       if (token.value === '_') {
-        return { type: 'variable', name: `_G${Math.random().toString(36).slice(2, 8)}` };
+        return { type: 'variable', name: `_G${this.anonVarCounter++}` };
       }
       return { type: 'variable', name: token.value };
     }
@@ -559,12 +560,17 @@ class Parser {
   parseQuery(): CompoundTerm[] {
     return this.parseBody();
   }
+
+  expectEof(): void {
+    this.expect('eof');
+  }
 }
 
 export function parseTerm(input: string): ParseResult<Term> {
   try {
     const parser = new Parser(input);
     const term = parser.parseTerm();
+    parser.expectEof();
     return { success: true, value: term };
   } catch (e) {
     return {
@@ -619,6 +625,7 @@ export function parseQuery(input: string): ParseResult<CompoundTerm[]> {
   try {
     const parser = new Parser(input);
     const goals = parser.parseQuery();
+    parser.expectEof();
     return { success: true, value: goals };
   } catch (e) {
     return {
@@ -690,8 +697,22 @@ export function termToValue(term: Term): unknown {
       return term.value;
     case 'variable':
       return `?${term.name}`;
-    case 'list':
+    case 'list': {
+      const allPairs =
+        term.elements.length > 0 &&
+        term.elements.every(
+          (e) => e.type === 'compound' && e.functor === '=' && e.args.length === 2
+        );
+      if (allPairs) {
+        const obj: Record<string, unknown> = {};
+        for (const e of term.elements) {
+          const compound = e as CompoundTerm;
+          obj[String(termToValue(compound.args[0]))] = termToValue(compound.args[1]);
+        }
+        return obj;
+      }
       return term.elements.map(termToValue);
+    }
     case 'compound':
       if (term.functor === '=' && term.args.length === 2) {
         const key = termToValue(term.args[0]);

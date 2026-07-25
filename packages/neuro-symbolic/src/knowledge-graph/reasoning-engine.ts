@@ -117,6 +117,8 @@ function calculatePathConfidence(path: GraphPath): number {
   return confidence;
 }
 
+const MAX_INTERMEDIATE_PATHS = 1000;
+
 export async function multiHopQuery(
   ctx: ReasoningContext,
   startNodeId: string,
@@ -137,7 +139,7 @@ export async function multiHopQuery(
   }
 
   currentNodes.push(startResult.data);
-  const paths: GraphPath[] = [
+  let paths: GraphPath[] = [
     {
       nodes: [startResult.data],
       edges: [],
@@ -151,6 +153,8 @@ export async function multiHopQuery(
     const nextPaths: GraphPath[] = [];
 
     for (let i = 0; i < currentNodes.length; i++) {
+      if (nextPaths.length >= MAX_INTERMEDIATE_PATHS) break;
+
       const node = currentNodes[i];
       const path = paths[i];
 
@@ -163,6 +167,8 @@ export async function multiHopQuery(
       if (!edgesResult.success || !edgesResult.data) continue;
 
       for (const edge of edgesResult.data) {
+        if (nextPaths.length >= MAX_INTERMEDIATE_PATHS) break;
+
         const targetResult = await ctx.adapter.getNode(edge.targetNodeId);
         if (!targetResult.success || !targetResult.data) continue;
 
@@ -188,8 +194,7 @@ export async function multiHopQuery(
     }
 
     currentNodes = nextNodes;
-    paths.length = 0;
-    paths.push(...nextPaths);
+    paths = nextPaths;
   }
 
   result.paths = paths;
@@ -411,22 +416,26 @@ export async function inferComposedRelations(ctx: ReasoningContext): Promise<Inf
 
 export async function runFullInference(ctx: ReasoningContext): Promise<InferredEdge[]> {
   const allInferred: InferredEdge[] = [];
+  const remainingBudget = () => ctx.config.maxInferences - allInferred.length;
 
-  const transitive = await inferTransitiveRelations(ctx);
+  const transitiveCtx = { ...ctx, config: { ...ctx.config, maxInferences: remainingBudget() } };
+  const transitive = await inferTransitiveRelations(transitiveCtx);
   allInferred.push(...transitive);
 
   if (allInferred.length >= ctx.config.maxInferences) {
     return allInferred.slice(0, ctx.config.maxInferences);
   }
 
-  const inverse = await inferInverseRelations(ctx);
+  const inverseCtx = { ...ctx, config: { ...ctx.config, maxInferences: remainingBudget() } };
+  const inverse = await inferInverseRelations(inverseCtx);
   allInferred.push(...inverse);
 
   if (allInferred.length >= ctx.config.maxInferences) {
     return allInferred.slice(0, ctx.config.maxInferences);
   }
 
-  const composed = await inferComposedRelations(ctx);
+  const composedCtx = { ...ctx, config: { ...ctx.config, maxInferences: remainingBudget() } };
+  const composed = await inferComposedRelations(composedCtx);
   allInferred.push(...composed);
 
   return allInferred.slice(0, ctx.config.maxInferences);

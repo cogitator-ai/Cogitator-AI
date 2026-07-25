@@ -384,7 +384,8 @@ export function suggestQuestions(nodes: GraphNode[], edges: GraphEdge[]): string
   }
 
   for (const relType of relationTypes) {
-    suggestions.push(`Who ${relType.replace(/_/g, ' ')} whom?`);
+    const readable = relType.replace(/_/g, ' ');
+    suggestions.push(`Which entities have a "${readable}" relationship?`);
   }
 
   if (nodes.length > 0) {
@@ -403,7 +404,6 @@ export interface QueryClarification {
 }
 
 export function generateClarifications(
-  _question: string,
   analysis: NLQueryAnalysis,
   availableEntities: string[],
   availableRelations: string[]

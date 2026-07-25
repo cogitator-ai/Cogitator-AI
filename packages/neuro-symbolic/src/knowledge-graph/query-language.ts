@@ -618,7 +618,10 @@ export function parseQueryString(queryString: string): GraphQuery {
         query.offset = parseInt(match[1], 10);
       }
     } else if (currentSection === 'where') {
-      const tripleMatch = /(\?\s*\w+|"[^"]+"|[\w]+)\s+(\w+)\s+(\?\s*\w+|"[^"]+"|[\w]+)/.exec(line);
+      const tripleMatch =
+        /(\?\s*[\w]+|"[^"]+"|[\w][\w.\-]*)\s+([\w.\-]+)\s+(\?\s*[\w]+|"[^"]+"|[\w][\w.\-]*)/.exec(
+          line
+        );
       if (tripleMatch) {
         const subjStr = tripleMatch[1];
         const predicate = tripleMatch[2];

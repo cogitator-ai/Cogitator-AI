@@ -29,44 +29,31 @@ export function createLogicTools(ns: NeuroSymbolic) {
         .describe('Maximum number of solutions to return (default: 10)'),
     }),
     execute: async ({ query, maxSolutions }, _context: ToolContext) => {
-      const config = ns.getConfig();
-      const originalMax = config.logic?.maxSolutions;
+      const result = ns.queryLogic(query, maxSolutions ? { maxSolutions } : undefined);
 
-      if (maxSolutions) {
-        ns.updateConfig({ logic: { maxSolutions } });
-      }
-
-      try {
-        const result = ns.queryLogic(query);
-
-        if (!result.success || !result.data) {
-          return {
-            success: false,
-            error: result.error || 'Query failed',
-            solutions: [],
-          };
-        }
-
-        const solutions = result.data.solutions.map((subst) => {
-          const bindings: Record<string, string> = {};
-          for (const [varName, term] of subst.entries()) {
-            bindings[varName] = termToString(term);
-          }
-          return bindings;
-        });
-
+      if (!result.success || !result.data) {
         return {
-          success: result.data.success,
-          solutionCount: solutions.length,
-          solutions,
-          formatted: formatSolutions(result.data),
-          duration: result.duration,
+          success: false,
+          error: result.error || 'Query failed',
+          solutions: [],
         };
-      } finally {
-        if (maxSolutions) {
-          ns.updateConfig({ logic: { maxSolutions: originalMax ?? 10 } });
-        }
       }
+
+      const solutions = result.data.solutions.map((subst) => {
+        const bindings: Record<string, string> = {};
+        for (const [varName, term] of subst.entries()) {
+          bindings[varName] = termToString(term);
+        }
+        return bindings;
+      });
+
+      return {
+        success: result.data.success,
+        solutionCount: solutions.length,
+        solutions,
+        formatted: formatSolutions(result.data),
+        duration: result.duration,
+      };
     },
   });
 
@@ -87,6 +74,14 @@ export function createLogicTools(ns: NeuroSymbolic) {
         ),
     }),
     execute: async ({ clause }, _context: ToolContext) => {
+      if (!clause.trimEnd().endsWith('.')) {
+        return {
+          success: false,
+          errors: ['Clause must end with a period (e.g. "parent(tom, mary).")'],
+          knowledgeBaseStats: undefined,
+        };
+      }
+
       const result = ns.loadLogicProgram(clause);
 
       const kb = ns.getKnowledgeBase();
@@ -125,7 +120,7 @@ export function createLogicTools(ns: NeuroSymbolic) {
     }),
     execute: async ({ program, clearExisting }, _context: ToolContext) => {
       if (clearExisting) {
-        ns.reset();
+        ns.clearKnowledgeBase();
       }
 
       const result = ns.loadLogicProgram(program);

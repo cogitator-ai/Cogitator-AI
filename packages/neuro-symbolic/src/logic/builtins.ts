@@ -22,6 +22,8 @@ type BuiltinHandler = (goal: CompoundTerm, subst: Substitution) => BuiltinResult
 
 const builtins = new Map<string, BuiltinHandler>();
 
+let builtinVarCounter = 0;
+
 function registerBuiltin(name: string, arity: number, handler: BuiltinHandler): void {
   builtins.set(`${name}/${arity}`, handler);
 }
@@ -81,6 +83,19 @@ function evaluateArithmetic(term: Term, subst: Substitution): number {
     return t.value;
   }
 
+  if (isAtom(t)) {
+    switch (t.value) {
+      case 'pi':
+        return Math.PI;
+      case 'e':
+        return Math.E;
+      case 'random':
+        return Math.random();
+      default:
+        throw new Error(`Cannot evaluate arithmetic expression: ${t.value}`);
+    }
+  }
+
   if (isCompound(t)) {
     const args = t.args.map((a) => evaluateArithmetic(a, subst));
 
@@ -101,6 +116,9 @@ function evaluateArithmetic(term: Term, subst: Substitution): number {
       case 'mod':
         if (args[1] === 0) throw new Error('Division by zero');
         return args[0] % args[1];
+      case 'rem':
+        if (args[1] === 0) throw new Error('Division by zero');
+        return Math.trunc(args[0]) % Math.trunc(args[1]);
       case '^':
       case '**':
         return Math.pow(args[0], args[1]);
@@ -262,15 +280,18 @@ registerBuiltin('member', 2, (goal, subst) => {
     return failure();
   }
 
-  const elements = listToArray(list, subst);
-  if (!elements) return failure();
-
   const substitutions: Substitution[] = [];
-  for (const item of elements) {
-    const result = unify(elem, item, subst);
-    if (result) {
-      substitutions.push(result);
+
+  let current: Term = list;
+  while (isList(current)) {
+    for (const item of current.elements) {
+      const result = unify(elem, item, subst);
+      if (result) {
+        substitutions.push(result);
+      }
     }
+    if (!current.tail) break;
+    current = applySubstitution(current.tail, subst);
   }
 
   return multiSuccess(substitutions);
@@ -313,6 +334,19 @@ registerBuiltin('append', 3, (goal, subst) => {
     return multiSuccess(substitutions);
   }
 
+  if (isList(list1)) {
+    const elements1 = listToArray(list1, subst);
+    if (!elements1) return failure();
+
+    const combined: ListTerm = {
+      type: 'list',
+      elements: elements1,
+      tail: list2,
+    };
+    const unifyResult = unify(result, combined, subst);
+    return unifyResult ? success(unifyResult) : failure();
+  }
+
   return failure();
 });
 
@@ -331,7 +365,7 @@ registerBuiltin('length', 2, (goal, subst) => {
   if (isNumber(len) && Number.isInteger(len.value) && len.value >= 0) {
     const elements: Term[] = [];
     for (let i = 0; i < len.value; i++) {
-      elements.push({ type: 'variable', name: `_E${i}` });
+      elements.push({ type: 'variable', name: `_E${builtinVarCounter++}` });
     }
     const result = unify(list, arrayToList(elements), subst);
     return result ? success(result) : failure();
@@ -388,7 +422,9 @@ function compareTerms(a: Term, b: Term): number {
     }
     return 0;
   }
-  return termToString(a).localeCompare(termToString(b));
+  const sa = termToString(a);
+  const sb = termToString(b);
+  return sa < sb ? -1 : sa > sb ? 1 : 0;
 }
 
 registerBuiltin('sort', 2, (goal, subst) => {
@@ -509,7 +545,7 @@ registerBuiltin('functor', 3, (goal, subst) => {
 
     const args: Term[] = [];
     for (let i = 0; i < a.value; i++) {
-      args.push({ type: 'variable', name: `_A${i}` });
+      args.push({ type: 'variable', name: `_A${builtinVarCounter++}` });
     }
 
     const compound: CompoundTerm = {
@@ -539,6 +575,54 @@ registerBuiltin('arg', 3, (goal, subst) => {
   return result ? success(result) : failure();
 });
 
+registerBuiltin('=..', 2, (goal, subst) => {
+  const term = applySubstitution(goal.args[0], subst);
+  const list = applySubstitution(goal.args[1], subst);
+
+  if (!isVariable(term)) {
+    let elements: Term[];
+    if (isCompound(term) && term.args.length > 0) {
+      elements = [{ type: 'atom', value: term.functor }, ...term.args];
+    } else if (isAtom(term)) {
+      elements = [term];
+    } else if (isNumber(term)) {
+      elements = [term];
+    } else if (isString(term)) {
+      elements = [term];
+    } else {
+      return failure();
+    }
+    const result = unify(goal.args[1], arrayToList(elements), subst);
+    return result ? success(result) : failure();
+  }
+
+  if (isList(list)) {
+    const elements = listToArray(list, subst);
+    if (!elements || elements.length === 0) return failure();
+
+    const resolved = elements.map((e) => applySubstitution(e, subst));
+    const head = resolved[0];
+
+    let constructed: Term;
+    if (resolved.length === 1) {
+      constructed = head;
+    } else if (isAtom(head)) {
+      constructed = {
+        type: 'compound',
+        functor: head.value,
+        args: resolved.slice(1),
+      };
+    } else {
+      return failure();
+    }
+
+    const result = unify(goal.args[0], constructed, subst);
+    return result ? success(result) : failure();
+  }
+
+  return failure();
+});
+
 registerBuiltin('copy_term', 2, (goal, subst) => {
   const original = applySubstitution(goal.args[0], subst);
   const copy = goal.args[1];
@@ -546,7 +630,7 @@ registerBuiltin('copy_term', 2, (goal, subst) => {
   function renameCopy(term: Term, mapping: Map<string, string>): Term {
     if (isVariable(term)) {
       if (!mapping.has(term.name)) {
-        mapping.set(term.name, `_C${mapping.size}`);
+        mapping.set(term.name, `_C${builtinVarCounter++}`);
       }
       return { type: 'variable', name: mapping.get(term.name)! };
     }

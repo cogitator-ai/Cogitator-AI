@@ -46,6 +46,7 @@ export class PlanValidator {
     const errors: PlanValidationError[] = [];
     const warnings: PlanValidationWarning[] = [];
     const stateTrace: PlanState[] = [plan.initialState];
+    const appliedActionIndices: number[] = [];
 
     let currentState = plan.initialState;
 
@@ -89,6 +90,7 @@ export class PlanValidator {
 
       currentState = applyAction(action, currentState, schema);
       stateTrace.push(currentState);
+      appliedActionIndices.push(i);
     }
 
     const satisfiedGoals: string[] = [];
@@ -111,7 +113,11 @@ export class PlanValidator {
     }
 
     if (this.config.detectRedundancy) {
-      const redundancyWarnings = this.detectRedundantActions(plan, stateTrace);
+      const redundancyWarnings = this.detectRedundantActions(
+        plan,
+        stateTrace,
+        appliedActionIndices
+      );
       warnings.push(...redundancyWarnings);
     }
 
@@ -191,7 +197,11 @@ export class PlanValidator {
     return errors;
   }
 
-  private detectRedundantActions(plan: Plan, stateTrace: PlanState[]): PlanValidationWarning[] {
+  private detectRedundantActions(
+    plan: Plan,
+    stateTrace: PlanState[],
+    appliedActionIndices: number[]
+  ): PlanValidationWarning[] {
     const warnings: PlanValidationWarning[] = [];
 
     for (let i = 1; i < stateTrace.length; i++) {
@@ -202,10 +212,11 @@ export class PlanValidator {
       const afterStr = JSON.stringify(after.variables);
 
       if (beforeStr === afterStr) {
+        const actionIdx = appliedActionIndices[i - 1];
         warnings.push({
           type: 'redundant_action',
-          actionIndex: i - 1,
-          message: `Action ${plan.actions[i - 1].schemaName} has no effect`,
+          actionIndex: actionIdx,
+          message: `Action ${plan.actions[actionIdx].schemaName} has no effect`,
         });
       }
     }

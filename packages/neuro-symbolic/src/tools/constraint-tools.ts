@@ -2,7 +2,14 @@ import { z } from 'zod';
 import type { ToolContext } from '@cogitator-ai/types';
 import { tool } from '@cogitator-ai/core';
 import type { NeuroSymbolic } from '../orchestrator';
-import { ConstraintBuilder, Expr, isZ3Available, variable, constant } from '../constraints';
+import { ConstraintBuilder, Expr, isZ3Available, constant } from '../constraints';
+
+let cachedZ3Available: boolean | undefined;
+
+async function getZ3Available(): Promise<boolean> {
+  cachedZ3Available ??= await isZ3Available();
+  return cachedZ3Available;
+}
 
 const variableSchema = z.object({
   name: z.string().describe('Variable name'),
@@ -58,8 +65,17 @@ export function createConstraintTools(ns: NeuroSymbolic) {
       }
 
       for (const c of constraintDefs) {
-        const leftExpr = parseOperand(c.left, varExprs);
-        const rightExpr = parseOperand(c.right, varExprs);
+        let leftExpr: Expr;
+        let rightExpr: Expr;
+        try {
+          leftExpr = parseOperand(c.left, varExprs);
+          rightExpr = parseOperand(c.right, varExprs);
+        } catch (err) {
+          return {
+            status: 'error',
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
 
         switch (c.op) {
           case 'eq':
@@ -110,7 +126,7 @@ export function createConstraintTools(ns: NeuroSymbolic) {
       const problem = builder.build();
       const result = await ns.solve(problem);
 
-      const z3Available = await isZ3Available();
+      const z3Available = await getZ3Available();
 
       if (!result.data) {
         return {
@@ -180,16 +196,18 @@ function parseOperand(operand: string, varExprs: Map<string, Expr>): Expr {
     return constant(num);
   }
 
-  if (operand === 'true') {
+  if (trimmed === 'true') {
     return constant(true);
   }
-  if (operand === 'false') {
+  if (trimmed === 'false') {
     return constant(false);
   }
 
-  const varExpr = varExprs.get(operand);
+  const varExpr = varExprs.get(trimmed);
   if (!varExpr) {
-    return variable(operand);
+    throw new Error(
+      `Unknown operand '${trimmed}'. Declare it in the variables list or use a number/boolean literal.`
+    );
   }
   return varExpr;
 }
