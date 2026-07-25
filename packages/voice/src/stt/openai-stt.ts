@@ -80,6 +80,7 @@ type TranscribeFn = (audio: Buffer, options?: STTOptions) => Promise<TranscribeR
 
 class OpenAISTTStream extends EventEmitter implements STTStream {
   private chunks: Buffer[] = [];
+  private closed = false;
   private readonly transcribeFn: TranscribeFn;
   private readonly options?: STTStreamOptions;
 
@@ -90,10 +91,18 @@ class OpenAISTTStream extends EventEmitter implements STTStream {
   }
 
   write(chunk: Buffer): void {
+    if (this.closed) {
+      throw new Error('OpenAISTTStream: cannot write after close');
+    }
     this.chunks.push(chunk);
   }
 
   async close(): Promise<TranscribeResult> {
+    if (this.closed) {
+      return { text: '' };
+    }
+    this.closed = true;
+
     const combined = Buffer.concat(this.chunks);
     this.chunks = [];
 

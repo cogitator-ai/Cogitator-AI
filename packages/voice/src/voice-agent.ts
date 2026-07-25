@@ -53,10 +53,10 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
   }
 
   async close(): Promise<void> {
-    for (const [id, entry] of this.sessions) {
-      await this.cleanupSession(id, entry);
-    }
+    const entries = [...this.sessions.entries()];
     this.sessions.clear();
+
+    await Promise.allSettled(entries.map(([id, entry]) => this.cleanupSession(id, entry)));
 
     if (this.transport) {
       await this.transport.close();
@@ -81,17 +81,17 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
     const entry: SessionEntry = { client };
 
     if (this.config.mode === 'pipeline') {
-      this.setupPipelineSession(sessionId, entry);
+      this.setupPipelineSession(entry);
     } else {
-      this.setupRealtimeSession(sessionId, entry);
+      this.setupRealtimeSession(entry);
     }
 
     this.sessions.set(sessionId, entry);
     this.emit('session_start', sessionId);
 
     client.on('close', () => {
+      if (!this.sessions.delete(sessionId)) return;
       void this.cleanupSession(sessionId, entry);
-      this.sessions.delete(sessionId);
       this.emit('session_end', sessionId);
     });
 
@@ -100,7 +100,7 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
     });
   }
 
-  private setupPipelineSession(_sessionId: string, entry: SessionEntry): void {
+  private setupPipelineSession(entry: SessionEntry): void {
     const session = this.pipeline!.createSession();
     entry.pipelineSession = session;
 
@@ -133,7 +133,7 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
     });
   }
 
-  private setupRealtimeSession(_sessionId: string, entry: SessionEntry): void {
+  private setupRealtimeSession(entry: SessionEntry): void {
     const session = new RealtimeSession({
       provider: this.config.realtimeProvider!,
       apiKey: this.config.realtimeApiKey!,

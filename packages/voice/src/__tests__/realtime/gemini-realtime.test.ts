@@ -210,16 +210,36 @@ describe('GeminiRealtimeAdapter', () => {
   });
 
   describe('interrupt()', () => {
-    it('sends empty clientContent to signal interruption', async () => {
+    it('drops inbound audio until turnComplete', async () => {
       adapter = new GeminiRealtimeAdapter(createConfig());
       await adapter.connect();
-      mockWs.send.mockClear();
+
+      const audioChunks: Buffer[] = [];
+      adapter.on('audio', (chunk) => audioChunks.push(chunk));
 
       adapter.interrupt();
 
-      expect(mockWs.send).toHaveBeenCalledOnce();
-      const sent = JSON.parse(mockWs.send.mock.calls[0]![0] as string);
-      expect(sent.clientContent).toEqual({ turnComplete: true });
+      mockWs.emit(
+        'message',
+        JSON.stringify({
+          serverContent: {
+            modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm', data: 'AAAA' } }] },
+          },
+        })
+      );
+      expect(audioChunks).toHaveLength(0);
+
+      mockWs.emit('message', JSON.stringify({ serverContent: { turnComplete: true } }));
+
+      mockWs.emit(
+        'message',
+        JSON.stringify({
+          serverContent: {
+            modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm', data: 'AAAA' } }] },
+          },
+        })
+      );
+      expect(audioChunks).toHaveLength(1);
     });
   });
 

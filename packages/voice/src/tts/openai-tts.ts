@@ -34,28 +34,36 @@ export class OpenAITTS implements TTSProvider {
   }
 
   async synthesize(text: string, options?: TTSOptions): Promise<Buffer> {
+    this.validateText(text);
     const response = await this.client.audio.speech.create(this.buildParams(text, options));
     const arrayBuffer = await response.arrayBuffer();
     return Buffer.from(arrayBuffer);
   }
 
   async *streamSynthesize(text: string, options?: TTSOptions): AsyncGenerator<Buffer> {
+    this.validateText(text);
     const response = await this.client.audio.speech.create(this.buildParams(text, options));
-    const body = (response as unknown as { body: ReadableStream<Uint8Array> | null }).body;
 
+    const body: unknown = response.body;
     if (!body) {
       throw new Error('OpenAI TTS returned empty response body');
     }
 
-    const reader = body.getReader();
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        yield Buffer.from(value);
+    if (typeof (body as ReadableStream<Uint8Array>).getReader === 'function') {
+      const reader = (body as ReadableStream<Uint8Array>).getReader();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          yield Buffer.from(value);
+        }
+      } finally {
+        await reader.cancel();
+        reader.releaseLock();
       }
-    } finally {
-      reader.releaseLock();
+    } else {
+      const arrayBuffer = await response.arrayBuffer();
+      yield Buffer.from(arrayBuffer);
     }
   }
 
@@ -70,5 +78,11 @@ export class OpenAITTS implements TTSProvider {
       }),
       ...(options?.instructions && { instructions: options.instructions }),
     };
+  }
+
+  private validateText(text: string): void {
+    if (!text || text.trim().length === 0) {
+      throw new Error('OpenAI TTS: text must not be empty');
+    }
   }
 }

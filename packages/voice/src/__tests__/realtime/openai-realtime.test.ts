@@ -59,9 +59,7 @@ describe('OpenAIRealtimeAdapter', () => {
       adapter = new OpenAIRealtimeAdapter(createConfig());
       await adapter.connect();
 
-      expect(capturedUrl).toBe(
-        'wss://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview'
-      );
+      expect(capturedUrl).toBe('wss://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime');
     });
 
     it('uses custom model in WebSocket URL', async () => {

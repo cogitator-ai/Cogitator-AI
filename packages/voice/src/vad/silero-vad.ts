@@ -31,6 +31,7 @@ export class SileroVAD implements VADProvider {
   private readonly threshold: number;
   private readonly silenceDuration: number;
   private readonly sampleRate: number;
+  private readonly expectedChunkSize: number;
 
   private session: OnnxSession | null = null;
   private ort: OnnxRuntime | null = null;
@@ -47,6 +48,7 @@ export class SileroVAD implements VADProvider {
     this.threshold = config.threshold ?? 0.5;
     this.silenceDuration = config.silenceDuration ?? 500;
     this.sampleRate = config.sampleRate ?? 16000;
+    this.expectedChunkSize = Math.round(this.sampleRate * 0.032);
 
     this.hn = new Float32Array(2 * 1 * 64);
     this.cn = new Float32Array(2 * 1 * 64);
@@ -71,6 +73,16 @@ export class SileroVAD implements VADProvider {
       throw new Error('SileroVAD: must call init() before process()');
     }
 
+    if (samples.length === 0) {
+      return { type: 'silence' };
+    }
+
+    if (samples.length !== this.expectedChunkSize) {
+      throw new Error(
+        `SileroVAD: expected ${this.expectedChunkSize} samples per chunk at ${this.sampleRate}Hz, got ${samples.length}`
+      );
+    }
+
     const { Tensor } = this.ort;
     const input = new Tensor('float32', samples, [1, samples.length]);
     const sr = new Tensor('int64', BigInt64Array.from([BigInt(this.sampleRate)]), [1]);
@@ -93,6 +105,12 @@ export class SileroVAD implements VADProvider {
     this.silenceMs = 0;
     this.hn = new Float32Array(2 * 1 * 64);
     this.cn = new Float32Array(2 * 1 * 64);
+  }
+
+  dispose(): void {
+    this.session = null;
+    this.ort = null;
+    this.reset();
   }
 
   private evaluate(probability: number, chunkLength: number): VADEvent {

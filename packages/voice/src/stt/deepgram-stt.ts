@@ -75,6 +75,7 @@ export class DeepgramSTT implements STTProvider {
         'Content-Type': 'audio/wav',
       },
       body: new Uint8Array(audio),
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) {
@@ -91,7 +92,7 @@ export class DeepgramSTT implements STTProvider {
   }
 
   private mapBatchResponse(data: DeepgramBatchResponse): TranscribeResult {
-    const alt = data.results.channels[0]?.alternatives[0];
+    const alt = data.results?.channels?.[0]?.alternatives?.[0];
 
     const result: TranscribeResult = {
       text: alt?.transcript ?? '',
@@ -114,9 +115,13 @@ export class DeepgramSTT implements STTProvider {
   }
 }
 
+const CLOSE_TIMEOUT_MS = 10_000;
+
 class DeepgramSTTStream extends EventEmitter implements STTStream {
   private ws: WebSocket;
   private ready = false;
+  private closed = false;
+  private closePromise: Promise<TranscribeResult> | null = null;
   private pendingChunks: Buffer[] = [];
   private lastResult: TranscribeResult = { text: '' };
 
@@ -131,7 +136,7 @@ class DeepgramSTTStream extends EventEmitter implements STTStream {
     const params = new URLSearchParams({
       model,
       punctuate: 'true',
-      interim_results: 'true',
+      interim_results: String(options?.interimResults ?? true),
     });
 
     const lang = options?.language ?? language;
@@ -179,6 +184,9 @@ class DeepgramSTTStream extends EventEmitter implements STTStream {
   }
 
   write(chunk: Buffer): void {
+    if (this.closed) {
+      throw new Error('DeepgramSTTStream: cannot write after close');
+    }
     if (this.ready) {
       this.ws.send(chunk);
     } else {
@@ -187,15 +195,45 @@ class DeepgramSTTStream extends EventEmitter implements STTStream {
   }
 
   async close(): Promise<TranscribeResult> {
-    if (!this.ready) {
-      this.ws.close();
-      return this.lastResult;
-    }
+    if (this.closePromise) return this.closePromise;
+    this.closed = true;
 
-    return new Promise<TranscribeResult>((resolve) => {
-      this.ws.on('close', () => resolve(this.lastResult));
-      this.ws.send(JSON.stringify({ type: 'CloseStream' }));
+    this.closePromise = new Promise<TranscribeResult>((resolve) => {
+      if (this.ws.readyState === WebSocket.CLOSED || this.ws.readyState === WebSocket.CONNECTING) {
+        if (this.ws.readyState === WebSocket.CONNECTING) {
+          this.ws.terminate();
+        }
+        resolve(this.lastResult);
+        return;
+      }
+
+      const timeout = setTimeout(() => {
+        this.ws.terminate();
+        resolve(this.lastResult);
+      }, CLOSE_TIMEOUT_MS);
+
+      this.ws.once('close', () => {
+        clearTimeout(timeout);
+        resolve(this.lastResult);
+      });
+
+      if (this.ready) {
+        this.ws.send(JSON.stringify({ type: 'CloseStream' }));
+      } else {
+        if (this.pendingChunks.length > 0) {
+          this.emit(
+            'error',
+            new Error(
+              `DeepgramSTTStream: ${this.pendingChunks.length} chunk(s) dropped (connection not ready)`
+            )
+          );
+          this.pendingChunks = [];
+        }
+        this.ws.close();
+      }
     });
+
+    return this.closePromise;
   }
 
   private mapStreamResult(msg: DeepgramStreamMessage): TranscribeResult {

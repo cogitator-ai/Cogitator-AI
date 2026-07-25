@@ -7,25 +7,31 @@ type RealtimeAdapter = OpenAIRealtimeAdapter | GeminiRealtimeAdapter;
 
 const FORWARDED_EVENTS = [
   'connected',
+  'disconnected',
   'speech_start',
   'transcript',
   'audio',
   'tool_call',
+  'turn_end',
   'error',
 ] as const;
 
 interface RealtimeSessionEvents {
   connected: [];
+  disconnected: [code: number, reason: string];
   audio: [chunk: Buffer];
   transcript: [text: string, role: 'user' | 'assistant'];
   tool_call: [name: string, args: unknown];
   speech_start: [];
+  turn_end: [];
   error: [error: Error];
 }
 
 export class RealtimeSession extends EventEmitter<RealtimeSessionEvents> {
   private readonly adapter: RealtimeAdapter;
   private readonly _provider: RealtimeSessionConfig['provider'];
+  private readonly forwarders = new Map<string, (...args: unknown[]) => void>();
+  private _closed = false;
 
   constructor(config: RealtimeSessionConfig) {
     super();
@@ -42,9 +48,11 @@ export class RealtimeSession extends EventEmitter<RealtimeSessionEvents> {
     }
 
     for (const event of FORWARDED_EVENTS) {
-      this.adapter.on(event, (...args: unknown[]) => {
+      const forwarder = (...args: unknown[]) => {
         this.emit(event, ...(args as never));
-      });
+      };
+      this.forwarders.set(event, forwarder);
+      this.adapter.on(event, forwarder);
     }
   }
 
@@ -69,6 +77,12 @@ export class RealtimeSession extends EventEmitter<RealtimeSessionEvents> {
   }
 
   close(): void {
+    if (this._closed) return;
+    this._closed = true;
+    for (const [event, forwarder] of this.forwarders) {
+      this.adapter.off(event, forwarder);
+    }
+    this.forwarders.clear();
     this.adapter.close();
   }
 }

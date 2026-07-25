@@ -2,15 +2,18 @@ import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
 import type { RealtimeSessionConfig } from '../types.js';
 
-const DEFAULT_MODEL = 'gpt-4o-mini-realtime-preview';
+const DEFAULT_MODEL = 'gpt-4o-mini-realtime';
 const BASE_URL = 'wss://api.openai.com/v1/realtime';
+const CONNECT_TIMEOUT_MS = 30_000;
 
 interface OpenAIRealtimeEvents {
   connected: [];
+  disconnected: [code: number, reason: string];
   audio: [chunk: Buffer];
   transcript: [text: string, role: 'user' | 'assistant'];
   tool_call: [name: string, args: unknown];
   speech_start: [];
+  turn_end: [];
   error: [error: Error];
 }
 
@@ -26,29 +29,67 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
   }
 
   async connect(): Promise<void> {
+    if (this.ws) {
+      throw new Error('Already connected or connecting — call close() first');
+    }
+
     const url = `${BASE_URL}?model=${this.model}`;
 
     return new Promise<void>((resolve, reject) => {
-      this.ws = new WebSocket(url, {
+      let settled = false;
+      const settleResolve = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const settleReject = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      };
+
+      const ws = new WebSocket(url, {
         headers: {
           Authorization: `Bearer ${this.config.apiKey}`,
           'OpenAI-Beta': 'realtime=v1',
         },
       });
+      this.ws = ws;
 
-      this.ws.on('open', () => {
+      const timer = setTimeout(() => {
+        this.ws = null;
+        ws.removeAllListeners();
+        ws.close();
+        settleReject(new Error(`Connect timed out after ${CONNECT_TIMEOUT_MS}ms`));
+      }, CONNECT_TIMEOUT_MS);
+
+      ws.on('open', () => {
         this.sendSessionUpdate();
         this.emit('connected');
-        resolve();
+        settleResolve();
       });
 
-      this.ws.on('message', (data: Buffer | string) => {
-        this.handleMessage(typeof data === 'string' ? data : data.toString());
+      ws.on('message', (data: WebSocket.RawData) => {
+        const buf = Array.isArray(data)
+          ? Buffer.concat(data)
+          : data instanceof ArrayBuffer
+            ? Buffer.from(new Uint8Array(data))
+            : data;
+        this.handleMessage(buf.toString());
       });
 
-      this.ws.on('error', (err: Error) => {
+      ws.on('error', (err: Error) => {
         this.emit('error', err);
-        reject(err);
+        settleReject(err);
+      });
+
+      ws.on('close', (code: number, reason: Buffer) => {
+        const reasonStr = reason.toString() || 'connection closed';
+        this.ws = null;
+        this.emit('disconnected', code, reasonStr);
+        settleReject(new Error(`WebSocket closed before connect (code ${code}): ${reasonStr}`));
       });
     });
   }
@@ -77,8 +118,11 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
   }
 
   close(): void {
-    this.ws?.close();
+    const ws = this.ws;
+    if (!ws) return;
     this.ws = null;
+    ws.removeAllListeners();
+    ws.close();
   }
 
   private sendSessionUpdate(): void {
@@ -86,6 +130,7 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
       voice: this.config.voice ?? 'coral',
       input_audio_format: 'pcm16',
       output_audio_format: 'pcm16',
+      input_audio_transcription: { model: 'whisper-1' },
       turn_detection: { type: 'server_vad' },
     };
 
@@ -116,16 +161,26 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
     const type = event.type as string;
 
     switch (type) {
-      case 'response.audio.delta':
-        this.emit('audio', Buffer.from(event.delta as string, 'base64'));
+      case 'response.audio.delta': {
+        const delta = event.delta;
+        if (typeof delta !== 'string') {
+          this.emit('error', new Error('Malformed response.audio.delta: missing or invalid delta'));
+          break;
+        }
+        this.emit('audio', Buffer.from(delta, 'base64'));
         break;
+      }
 
       case 'conversation.item.input_audio_transcription.completed':
-        this.emit('transcript', event.transcript as string, 'user');
+        if (typeof event.transcript === 'string') {
+          this.emit('transcript', event.transcript, 'user');
+        }
         break;
 
       case 'response.audio_transcript.done':
-        this.emit('transcript', event.transcript as string, 'assistant');
+        if (typeof event.transcript === 'string') {
+          this.emit('transcript', event.transcript, 'assistant');
+        }
         break;
 
       case 'input_audio_buffer.speech_started':
@@ -136,9 +191,17 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
         void this.handleToolCall(event);
         break;
 
+      case 'response.done':
+        this.emit('turn_end');
+        break;
+
       case 'error': {
-        const errObj = event.error as { message: string; code?: string };
-        this.emit('error', new Error(errObj.message));
+        const errObj = event.error;
+        const message =
+          errObj && typeof errObj === 'object' && 'message' in errObj
+            ? String((errObj as Record<string, unknown>).message)
+            : 'Unknown server error';
+        this.emit('error', new Error(message));
         break;
       }
     }

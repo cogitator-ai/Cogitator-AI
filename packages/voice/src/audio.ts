@@ -65,6 +65,9 @@ export function wavToPcm(wav: Buffer): { samples: Float32Array; sampleRate: numb
   while (offset + 8 <= wav.length) {
     const chunkId = wav.toString('ascii', offset, offset + 4);
     const chunkSize = view.getUint32(offset + 4, true);
+    if (offset + 8 + chunkSize > wav.length) {
+      throw new Error('Truncated WAV chunk');
+    }
     if (chunkId === 'data') {
       const pcmData = wav.subarray(offset + 8, offset + 8 + chunkSize);
       return { samples: pcm16ToFloat32(pcmData), sampleRate };
@@ -76,6 +79,9 @@ export function wavToPcm(wav: Buffer): { samples: Float32Array; sampleRate: numb
 }
 
 export function resample(samples: Float32Array, fromRate: number, toRate: number): Float32Array {
+  if (fromRate <= 0 || toRate <= 0) {
+    throw new Error(`Sample rates must be positive, got fromRate=${fromRate}, toRate=${toRate}`);
+  }
   if (fromRate === toRate) return new Float32Array(samples);
   const ratio = fromRate / toRate;
   const outputLength = Math.round(samples.length / ratio);

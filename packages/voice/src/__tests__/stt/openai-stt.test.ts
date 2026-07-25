@@ -188,15 +188,16 @@ describe('OpenAISTT', () => {
       expect(combined).toEqual(Buffer.concat([Buffer.from('chunk1'), Buffer.from('chunk2')]));
     });
 
-    it('clears chunks after close so stream can be reused', async () => {
+    it('clears chunks after close', async () => {
       const stream = stt.createStream();
       stream.write(Buffer.from('first-batch'));
       mockCreate.mockResolvedValue({ text: 'first' });
       await stream.close();
 
-      stream.write(Buffer.from('second-batch'));
+      const stream2 = stt.createStream();
+      stream2.write(Buffer.from('second-batch'));
       mockCreate.mockResolvedValue({ text: 'second' });
-      const result = await stream.close();
+      const result = await stream2.close();
 
       expect(result.text).toBe('second');
       const secondArgs = mockCreate.mock.calls[1][0];

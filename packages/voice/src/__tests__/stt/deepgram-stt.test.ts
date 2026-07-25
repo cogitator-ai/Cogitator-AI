@@ -19,7 +19,10 @@ vi.mock('ws', () => {
     wsConstructorCalls.push([url, protocols]);
     EventEmitter.call(this);
     this.send = vi.fn();
-    this.close = vi.fn();
+    this.close = vi.fn(() => {
+      this.readyState = 3;
+      this.emit('close');
+    });
     this.readyState = 1;
     this.OPEN = 1;
     wsInstances.push(this);

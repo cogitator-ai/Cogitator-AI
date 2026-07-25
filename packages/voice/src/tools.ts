@@ -8,8 +8,13 @@ export interface VoiceTool<TParams = unknown> {
   execute: (params: TParams) => Promise<unknown>;
 }
 
+const MAX_AUDIO_BASE64_LENGTH = 50 * 1024 * 1024 * 1.37;
+
 const TranscribeParamsSchema = z.object({
-  audioBase64: z.string().describe('Base64-encoded audio data'),
+  audioBase64: z
+    .string()
+    .max(Math.ceil(MAX_AUDIO_BASE64_LENGTH))
+    .describe('Base64-encoded audio data'),
   language: z.string().optional().describe('Language code (e.g., "en", "es")'),
 });
 
@@ -18,6 +23,10 @@ type TranscribeParams = z.infer<typeof TranscribeParamsSchema>;
 const SpeakParamsSchema = z.object({
   text: z.string().describe('Text to convert to speech'),
   voice: z.string().optional().describe('Voice to use'),
+  format: z
+    .enum(['pcm16', 'mp3', 'opus', 'aac', 'flac', 'wav'])
+    .optional()
+    .describe('Output audio format'),
 });
 
 type SpeakParams = z.infer<typeof SpeakParamsSchema>;
@@ -40,9 +49,9 @@ export function speakTool(tts: TTSProvider): VoiceTool<SpeakParams> {
     name: 'speak_text',
     description: 'Convert text to speech audio',
     parameters: SpeakParamsSchema,
-    execute: async ({ text, voice }) => {
-      const audio = await tts.synthesize(text, { voice });
-      return { audioBase64: audio.toString('base64'), format: 'mp3' };
+    execute: async ({ text, voice, format }) => {
+      const audio = await tts.synthesize(text, { voice, format });
+      return { audioBase64: audio.toString('base64'), format: format ?? 'mp3' };
     },
   };
 }

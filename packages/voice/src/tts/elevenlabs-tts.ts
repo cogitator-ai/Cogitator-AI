@@ -19,9 +19,11 @@ function mapFormat(format?: VoiceAudioFormat): string {
     case 'flac':
       return 'flac_22050';
     case 'wav':
-      return 'pcm_44100';
+      throw new Error(
+        'ElevenLabs does not support WAV output. Use pcm16 for raw PCM or mp3 for a compressed format.'
+      );
     case 'aac':
-      return 'mp3_44100_128';
+      throw new Error('ElevenLabs does not support AAC output. Use mp3 for a compressed format.');
     case 'mp3':
     default:
       return 'mp3_44100_128';
@@ -42,12 +44,14 @@ export class ElevenLabsTTS implements TTSProvider {
   }
 
   async synthesize(text: string, options?: TTSOptions): Promise<Buffer> {
+    this.validateText(text);
     const response = await this.request(text, options);
     const arrayBuffer = await response.arrayBuffer();
     return Buffer.from(arrayBuffer);
   }
 
   async *streamSynthesize(text: string, options?: TTSOptions): AsyncGenerator<Buffer> {
+    this.validateText(text);
     const response = await this.request(text, options, '/stream');
 
     if (!response.body) {
@@ -62,6 +66,7 @@ export class ElevenLabsTTS implements TTSProvider {
         yield Buffer.from(value);
       }
     } finally {
+      await reader.cancel();
       reader.releaseLock();
     }
   }
@@ -85,6 +90,7 @@ export class ElevenLabsTTS implements TTSProvider {
           similarity_boost: 0.75,
         },
       }),
+      signal: AbortSignal.timeout(60_000),
     });
 
     if (!response.ok) {
@@ -93,5 +99,11 @@ export class ElevenLabsTTS implements TTSProvider {
     }
 
     return response;
+  }
+
+  private validateText(text: string): void {
+    if (!text || text.trim().length === 0) {
+      throw new Error('ElevenLabs TTS: text must not be empty');
+    }
   }
 }

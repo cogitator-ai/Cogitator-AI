@@ -5,13 +5,16 @@ import type { RealtimeSessionConfig } from '../types.js';
 const DEFAULT_MODEL = 'gemini-live-2.5-flash-native-audio';
 const BASE_URL =
   'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
+const CONNECT_TIMEOUT_MS = 30_000;
 
 interface GeminiRealtimeEvents {
   connected: [];
+  disconnected: [code: number, reason: string];
   audio: [chunk: Buffer];
   transcript: [text: string, role: 'user' | 'assistant'];
   tool_call: [name: string, args: unknown];
   speech_start: [];
+  turn_end: [];
   error: [error: Error];
 }
 
@@ -26,7 +29,7 @@ interface GeminiServerContent {
 }
 
 interface GeminiFunctionCall {
-  id: string;
+  id?: string;
   name: string;
   args: Record<string, unknown>;
 }
@@ -37,12 +40,18 @@ interface GeminiMessage {
   toolCall?: {
     functionCalls: GeminiFunctionCall[];
   };
+  error?: {
+    code?: number;
+    message?: string;
+    status?: string;
+  };
 }
 
 export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   private readonly config: RealtimeSessionConfig;
   private readonly model: string;
   private ws: WebSocket | null = null;
+  private interrupting = false;
 
   constructor(config: RealtimeSessionConfig) {
     super();
@@ -51,17 +60,48 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   }
 
   async connect(): Promise<void> {
+    if (this.ws) {
+      throw new Error('Already connected or connecting — call close() first');
+    }
+
     const url = `${BASE_URL}?key=${this.config.apiKey}`;
 
     return new Promise<void>((resolve, reject) => {
-      this.ws = new WebSocket(url);
+      let settled = false;
+      const settleResolve = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const settleReject = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      };
 
-      this.ws.on('open', () => {
+      const ws = new WebSocket(url);
+      this.ws = ws;
+
+      const timer = setTimeout(() => {
+        this.ws = null;
+        ws.removeAllListeners();
+        ws.close();
+        settleReject(new Error(`Connect timed out after ${CONNECT_TIMEOUT_MS}ms`));
+      }, CONNECT_TIMEOUT_MS);
+
+      ws.on('open', () => {
         this.sendSetup();
       });
 
-      this.ws.on('message', (data: Buffer | string) => {
-        const raw = typeof data === 'string' ? data : data.toString();
+      ws.on('message', (data: WebSocket.RawData) => {
+        const buf = Array.isArray(data)
+          ? Buffer.concat(data)
+          : data instanceof ArrayBuffer
+            ? Buffer.from(new Uint8Array(data))
+            : data;
+        const raw = buf.toString();
         let msg: GeminiMessage;
         try {
           msg = JSON.parse(raw) as GeminiMessage;
@@ -72,16 +112,32 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
 
         if (msg.setupComplete) {
           this.emit('connected');
-          resolve();
+          settleResolve();
+          return;
+        }
+
+        if (msg.error) {
+          const message =
+            msg.error.message ?? `Gemini error (code: ${msg.error.code ?? 'unknown'})`;
+          const err = new Error(message);
+          this.emit('error', err);
+          settleReject(err);
           return;
         }
 
         this.handleMessage(msg);
       });
 
-      this.ws.on('error', (err: Error) => {
+      ws.on('error', (err: Error) => {
         this.emit('error', err);
-        reject(err);
+        settleReject(err);
+      });
+
+      ws.on('close', (code: number, reason: Buffer) => {
+        const reasonStr = reason.toString() || 'connection closed';
+        this.ws = null;
+        this.emit('disconnected', code, reasonStr);
+        settleReject(new Error(`WebSocket closed before connect (code ${code}): ${reasonStr}`));
       });
     });
   }
@@ -108,15 +164,21 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
     });
   }
 
+  /**
+   * Gemini Live barge-in is driven by incoming user audio, not a control message.
+   * This sets an internal flag that drops inbound model audio until the current
+   * turn completes (turnComplete), simulating an interruption on the consumer side.
+   */
   interrupt(): void {
-    this.send({
-      clientContent: { turnComplete: true },
-    });
+    this.interrupting = true;
   }
 
   close(): void {
-    this.ws?.close();
+    const ws = this.ws;
+    if (!ws) return;
     this.ws = null;
+    ws.removeAllListeners();
+    ws.close();
   }
 
   private sendSetup(): void {
@@ -156,6 +218,12 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   }
 
   private handleMessage(msg: GeminiMessage): void {
+    if (msg.error) {
+      const message = msg.error.message ?? `Gemini error (code: ${msg.error.code ?? 'unknown'})`;
+      this.emit('error', new Error(message));
+      return;
+    }
+
     if (msg.serverContent) {
       this.handleServerContent(msg.serverContent);
     }
@@ -166,27 +234,33 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   }
 
   private handleServerContent(content: GeminiServerContent): void {
-    if (!content.modelTurn?.parts) return;
+    if (!this.interrupting && content.modelTurn?.parts) {
+      for (const part of content.modelTurn.parts) {
+        if (part.inlineData) {
+          this.emit('audio', Buffer.from(part.inlineData.data, 'base64'));
+        }
+        if (part.text) {
+          this.emit('transcript', part.text, 'assistant');
+        }
+      }
+    }
 
-    for (const part of content.modelTurn.parts) {
-      if (part.inlineData) {
-        this.emit('audio', Buffer.from(part.inlineData.data, 'base64'));
-      }
-      if (part.text) {
-        this.emit('transcript', part.text, 'assistant');
-      }
+    if (content.turnComplete) {
+      this.interrupting = false;
+      this.emit('turn_end');
     }
   }
 
   private async handleToolCalls(calls: GeminiFunctionCall[]): Promise<void> {
     const responses = await Promise.all(
-      calls.map(async (call) => {
+      calls.map(async (call, index) => {
+        const id = call.id ?? `${call.name}-${index}`;
         this.emit('tool_call', call.name, call.args);
 
         const tool = this.config.tools?.find((t) => t.name === call.name);
         if (!tool) {
           return {
-            id: call.id,
+            id,
             name: call.name,
             response: { result: JSON.stringify({ error: `Unknown tool: ${call.name}` }) },
           };
@@ -201,7 +275,7 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
         }
 
         return {
-          id: call.id,
+          id,
           name: call.name,
           response: { result },
         };

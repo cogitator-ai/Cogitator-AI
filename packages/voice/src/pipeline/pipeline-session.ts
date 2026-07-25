@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import type { STTStream, VoicePipelineConfig } from '../types.js';
+import type { STTStream, VADEvent, VoicePipelineConfig } from '../types.js';
 import { pcm16ToFloat32 } from '../audio.js';
 
 type SessionState = 'idle' | 'listening' | 'processing' | 'speaking';
@@ -23,6 +23,7 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
   private interrupted = false;
   private closed = false;
   private activeProcessing: Promise<void> | null = null;
+  private vadQueue: Promise<void> = Promise.resolve();
 
   constructor(config: VoicePipelineConfig) {
     super();
@@ -36,7 +37,12 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
     if (this.closed) return;
 
     if (this.vad) {
-      void this.handleVAD(chunk);
+      const samples = pcm16ToFloat32(chunk);
+      const eventOrPromise = this.vad.process(samples);
+      this.vadQueue = this.vadQueue.then(async () => {
+        const event = await eventOrPromise;
+        this.applyVADEvent(event, chunk);
+      });
     } else {
       this.handleNoVAD(chunk);
     }
@@ -78,10 +84,7 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
     this.removeAllListeners();
   }
 
-  private async handleVAD(chunk: Buffer): Promise<void> {
-    const samples = pcm16ToFloat32(chunk);
-    const event = await this.vad!.process(samples);
-
+  private applyVADEvent(event: VADEvent, chunk: Buffer): void {
     switch (event.type) {
       case 'speech_start':
         if (this.state === 'idle') {

@@ -115,6 +115,7 @@ describe('OpenAITTS', () => {
             return Promise.resolve({ done: true, value: undefined });
           },
           releaseLock: vi.fn(),
+          cancel: vi.fn(),
         }),
       },
     });

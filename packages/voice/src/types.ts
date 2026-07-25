@@ -58,6 +58,7 @@ export interface VoicePipelineConfig {
   tts: TTSProvider;
   vad?: VADProvider;
   agent: { run: (input: string) => Promise<{ content: string }> };
+  /** @deprecated Not used by the pipeline. Audio is processed at provider-native rates. */
   sampleRate?: number;
 }
 

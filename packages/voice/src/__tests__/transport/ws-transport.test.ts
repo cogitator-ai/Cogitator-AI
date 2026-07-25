@@ -94,24 +94,23 @@ describe('WebSocketTransport', () => {
     expect(client.id.length).toBeGreaterThan(0);
   });
 
-  it('rejects connections over maxConnections with code 1013', async () => {
+  it('rejects connections over maxConnections with HTTP 503', async () => {
     transport = new WebSocketTransport({ maxConnections: 1 });
     await transport.listen(0);
     const port = transport.port!;
 
-    const code = await new Promise<number>((resolve) => {
+    const errorMessage = await new Promise<string>((resolve) => {
       transport.once('connection', () => {
         const ws2 = new WebSocket(`ws://localhost:${port}/voice`);
         openSockets.push(ws2);
-        ws2.on('close', (c: number) => resolve(c));
-        ws2.on('error', () => {});
+        ws2.on('error', (err: Error) => resolve(err.message));
       });
 
       const ws1 = new WebSocket(`ws://localhost:${port}/voice`);
       openSockets.push(ws1);
     });
 
-    expect(code).toBe(1013);
+    expect(errorMessage).toContain('503');
   });
 
   it('rejects connections on wrong path', async () => {
