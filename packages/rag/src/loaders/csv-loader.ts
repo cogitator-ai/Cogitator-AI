@@ -43,6 +43,12 @@ export class CSVLoader implements DocumentLoader {
     const headers = result.meta.fields ?? [];
     const contentCol = this.contentColumn ?? headers[0];
 
+    if (this.contentColumn && !headers.includes(this.contentColumn)) {
+      throw new Error(
+        `CSVLoader: contentColumn "${this.contentColumn}" not found in CSV headers: ${headers.join(', ')}`
+      );
+    }
+
     return result.data.map((row) => {
       const content = row[contentCol] ?? '';
       const metadata = this.extractMetadata(row);

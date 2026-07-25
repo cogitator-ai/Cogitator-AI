@@ -28,8 +28,8 @@ export class RAGPipeline {
   private readonly deps: RAGPipelineDeps;
   private stats = { documentsIngested: 0, chunksStored: 0, queriesProcessed: 0 };
 
-  constructor(config: RAGPipelineConfig, deps: RAGPipelineDeps) {
-    this.config = RAGPipelineConfigSchema.parse(config);
+  constructor(config: RAGPipelineConfig, deps: RAGPipelineDeps, alreadyParsed = false) {
+    this.config = alreadyParsed ? config : RAGPipelineConfigSchema.parse(config);
     this.deps = deps;
   }
 
@@ -50,9 +50,7 @@ export class RAGPipeline {
         );
       }
 
-      for (let i = 0; i < chunks.length; i++) {
-        await this.storeChunk(chunks[i], vectors[i], doc);
-      }
+      await Promise.all(chunks.map((chunk, i) => this.storeChunk(chunk, vectors[i], doc)));
 
       totalChunks += chunks.length;
     }
@@ -64,7 +62,8 @@ export class RAGPipeline {
   }
 
   async query(text: string, options?: Partial<RetrievalConfig>): Promise<RetrievalResult[]> {
-    const results = await this.deps.retriever.retrieve(text, options);
+    const merged: Partial<RetrievalConfig> = { ...this.config.retrieval, ...options };
+    const results = await this.deps.retriever.retrieve(text, merged);
     this.stats.queriesProcessed++;
 
     if (this.deps.reranker && this.config.reranking?.enabled) {

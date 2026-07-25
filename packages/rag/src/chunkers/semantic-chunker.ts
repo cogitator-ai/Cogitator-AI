@@ -9,11 +9,16 @@ export interface SemanticChunkerOptions {
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
-  const len = Math.min(a.length, b.length);
+  if (a.length !== b.length) {
+    throw new Error(
+      `Embedding dimension mismatch: ${a.length} vs ${b.length}. ` +
+        'Ensure all embeddings come from the same model.'
+    );
+  }
   let dot = 0;
   let normA = 0;
   let normB = 0;
-  for (let i = 0; i < len; i++) {
+  for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
     normA += a[i] * a[i];
     normB += b[i] * b[i];
@@ -38,10 +43,24 @@ export class SemanticChunker implements AsyncChunker {
   private readonly maxChunkSize: number;
 
   constructor(options: SemanticChunkerOptions) {
+    if (
+      options.breakpointThreshold !== undefined &&
+      (options.breakpointThreshold < 0 || options.breakpointThreshold > 1)
+    ) {
+      throw new Error('breakpointThreshold must be between 0 and 1');
+    }
+
+    const maxChunkSize = options.maxChunkSize ?? 2000;
+    const minChunkSize = options.minChunkSize ?? Math.min(100, maxChunkSize);
+
+    if (minChunkSize > maxChunkSize) {
+      throw new Error('minChunkSize must not exceed maxChunkSize');
+    }
+
     this.embeddingService = options.embeddingService;
     this.breakpointThreshold = options.breakpointThreshold ?? 0.5;
-    this.minChunkSize = options.minChunkSize ?? 100;
-    this.maxChunkSize = options.maxChunkSize ?? 2000;
+    this.minChunkSize = minChunkSize;
+    this.maxChunkSize = maxChunkSize;
   }
 
   async chunk(text: string, documentId: string): Promise<DocumentChunk[]> {
@@ -115,6 +134,11 @@ export class SemanticChunker implements AsyncChunker {
     return result;
   }
 
+  private findSentenceOffset(sentence: string, originalText: string, searchFrom: number): number {
+    const idx = originalText.indexOf(sentence, searchFrom);
+    return idx >= 0 ? idx : searchFrom;
+  }
+
   private buildChunks(
     groups: string[][],
     originalText: string,
@@ -124,24 +148,22 @@ export class SemanticChunker implements AsyncChunker {
     let searchFrom = 0;
 
     for (const group of groups) {
-      const content = group.join(' ');
+      const startOffset = this.findSentenceOffset(group[0], originalText, searchFrom);
+      const lastSentence = group[group.length - 1];
+      const lastStart = this.findSentenceOffset(lastSentence, originalText, startOffset);
+      const endOffset = lastStart + lastSentence.length;
+
+      const content = originalText.slice(startOffset, endOffset);
 
       if (content.length <= this.maxChunkSize) {
-        const startOffset = originalText.indexOf(group[0], searchFrom);
-        const lastSentence = group[group.length - 1];
-        const lastStart = originalText.indexOf(lastSentence, startOffset >= 0 ? startOffset : 0);
-        const endOffset =
-          lastStart >= 0 ? lastStart + lastSentence.length : startOffset + content.length;
-
         chunks.push({
           id: nanoid(),
           documentId,
           content,
-          startOffset: Math.max(0, startOffset),
+          startOffset,
           endOffset,
           order: chunks.length,
         });
-
         searchFrom = endOffset;
       } else {
         const subChunks = this.splitLargeGroup(
@@ -175,26 +197,50 @@ export class SemanticChunker implements AsyncChunker {
     let offset = searchFrom;
 
     for (const sentence of sentences) {
+      if (sentence.length > this.maxChunkSize) {
+        if (currentSentences.length > 0) {
+          const chunk = this.emitSentenceGroup(
+            currentSentences,
+            originalText,
+            documentId,
+            offset,
+            order++
+          );
+          chunks.push(chunk);
+          offset = chunk.endOffset;
+          currentSentences = [];
+          currentLength = 0;
+        }
+
+        const sentenceStart = this.findSentenceOffset(sentence, originalText, offset);
+        for (let pos = 0; pos < sentence.length; pos += this.maxChunkSize) {
+          const sliceEnd = Math.min(pos + this.maxChunkSize, sentence.length);
+          const slice = sentence.slice(pos, sliceEnd);
+          chunks.push({
+            id: nanoid(),
+            documentId,
+            content: slice,
+            startOffset: sentenceStart + pos,
+            endOffset: sentenceStart + sliceEnd,
+            order: order++,
+          });
+        }
+        offset = sentenceStart + sentence.length;
+        continue;
+      }
+
       const newLength = currentLength + (currentSentences.length > 0 ? 1 : 0) + sentence.length;
 
       if (newLength > this.maxChunkSize && currentSentences.length > 0) {
-        const content = currentSentences.join(' ');
-        const startOffset = originalText.indexOf(currentSentences[0], offset);
-        const lastSentence = currentSentences[currentSentences.length - 1];
-        const lastStart = originalText.indexOf(lastSentence, startOffset >= 0 ? startOffset : 0);
-        const endOffset =
-          lastStart >= 0 ? lastStart + lastSentence.length : startOffset + content.length;
-
-        chunks.push({
-          id: nanoid(),
+        const chunk = this.emitSentenceGroup(
+          currentSentences,
+          originalText,
           documentId,
-          content,
-          startOffset: Math.max(0, startOffset),
-          endOffset,
-          order: order++,
-        });
-
-        offset = endOffset;
+          offset,
+          order++
+        );
+        chunks.push(chunk);
+        offset = chunk.endOffset;
         currentSentences = [sentence];
         currentLength = sentence.length;
       } else {
@@ -204,23 +250,33 @@ export class SemanticChunker implements AsyncChunker {
     }
 
     if (currentSentences.length > 0) {
-      const content = currentSentences.join(' ');
-      const startOffset = originalText.indexOf(currentSentences[0], offset);
-      const lastSentence = currentSentences[currentSentences.length - 1];
-      const lastStart = originalText.indexOf(lastSentence, startOffset >= 0 ? startOffset : 0);
-      const endOffset =
-        lastStart >= 0 ? lastStart + lastSentence.length : startOffset + content.length;
-
-      chunks.push({
-        id: nanoid(),
-        documentId,
-        content,
-        startOffset: Math.max(0, startOffset),
-        endOffset,
-        order: order++,
-      });
+      chunks.push(
+        this.emitSentenceGroup(currentSentences, originalText, documentId, offset, order++)
+      );
     }
 
     return chunks;
+  }
+
+  private emitSentenceGroup(
+    sentences: string[],
+    originalText: string,
+    documentId: string,
+    searchFrom: number,
+    order: number
+  ): DocumentChunk {
+    const startOffset = this.findSentenceOffset(sentences[0], originalText, searchFrom);
+    const lastSentence = sentences[sentences.length - 1];
+    const lastStart = this.findSentenceOffset(lastSentence, originalText, startOffset);
+    const endOffset = lastStart + lastSentence.length;
+
+    return {
+      id: nanoid(),
+      documentId,
+      content: originalText.slice(startOffset, endOffset),
+      startOffset,
+      endOffset,
+      order,
+    };
   }
 }

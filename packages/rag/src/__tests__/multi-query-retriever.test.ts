@@ -45,11 +45,12 @@ describe('MultiQueryRetriever', () => {
     expect(mockExpandQuery).toHaveBeenCalledWith('original query');
   });
 
-  it('runs base retriever on each expanded query variant', async () => {
+  it('runs base retriever on each expanded query variant plus original', async () => {
     await retriever.retrieve('original query');
-    expect(mockBaseRetriever.retrieve).toHaveBeenCalledTimes(3);
+    expect(mockBaseRetriever.retrieve).toHaveBeenCalledTimes(4);
     const calls = (mockBaseRetriever.retrieve as ReturnType<typeof vi.fn>).mock.calls;
     const queries = calls.map((c) => c[0]);
+    expect(queries).toContain('original query');
     expect(queries).toContain('expanded query 1');
     expect(queries).toContain('expanded query 2');
     expect(queries).toContain('expanded query 3');
@@ -97,9 +98,10 @@ describe('MultiQueryRetriever', () => {
     expect(results).toHaveLength(4);
   });
 
-  it('handles empty expand results', async () => {
+  it('falls back to original query when expand returns empty', async () => {
     (mockExpandQuery as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     const results = await retriever.retrieve('query');
+    expect(mockBaseRetriever.retrieve).toHaveBeenCalledWith('query', undefined);
     expect(results).toEqual([]);
   });
 });

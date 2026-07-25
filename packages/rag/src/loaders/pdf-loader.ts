@@ -3,10 +3,15 @@ import { resolve } from 'node:path';
 import { nanoid } from 'nanoid';
 import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
 
+type PdfPageData = {
+  pageIndex: number;
+  getTextContent(): Promise<{ items: Array<{ str: string }> }>;
+};
+
 type PdfParseFn = (
   dataBuffer: Buffer,
   options?: {
-    pagerender?: (pageData: { pageIndex: number }) => string | Promise<string>;
+    pagerender?: (pageData: PdfPageData) => string | Promise<string>;
     max?: number;
   }
 ) => Promise<{
@@ -53,7 +58,7 @@ export class PDFLoader implements DocumentLoader {
     buffer: Buffer,
     source: string
   ): Promise<RAGDocument[]> {
-    const result = await pdfParse(buffer);
+    const result = await this.parseWithErrorContext(pdfParse, buffer, source);
     const title = result.info?.Title;
 
     const metadata: Record<string, unknown> = { pages: result.numpages };
@@ -75,10 +80,20 @@ export class PDFLoader implements DocumentLoader {
     buffer: Buffer,
     source: string
   ): Promise<RAGDocument[]> {
-    const result = await pdfParse(buffer);
-    const title = result.info?.Title;
+    const pageTexts: string[] = [];
 
-    const pages = result.text.split(/\f/).filter((p) => p.trim().length > 0);
+    const result = await this.parseWithErrorContext(pdfParse, buffer, source, {
+      pagerender: async (pageData: PdfPageData) => {
+        if (typeof pageData.getTextContent !== 'function') return '';
+        const textContent = await pageData.getTextContent();
+        const text = textContent.items.map((item) => item.str).join('');
+        pageTexts.push(text);
+        return text;
+      },
+    });
+
+    const title = result.info?.Title;
+    const pages = pageTexts.filter((p) => p.trim().length > 0);
 
     if (pages.length === 0) {
       return [this.buildPageDoc(result.text, source, 1, result.numpages, title)];
@@ -87,6 +102,20 @@ export class PDFLoader implements DocumentLoader {
     return pages.map((text, i) =>
       this.buildPageDoc(text.trim(), source, i + 1, result.numpages, title)
     );
+  }
+
+  private async parseWithErrorContext(
+    pdfParse: PdfParseFn,
+    buffer: Buffer,
+    source: string,
+    options?: Parameters<PdfParseFn>[1]
+  ): Promise<{ numpages: number; info: Record<string, unknown>; text: string }> {
+    try {
+      return await pdfParse(buffer, options);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`PDFLoader: failed to parse "${source}": ${message}`);
+    }
   }
 
   private buildPageDoc(

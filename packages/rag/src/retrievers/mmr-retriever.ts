@@ -23,11 +23,13 @@ const CANDIDATE_MULTIPLIER = 3;
 type ScoredEmbedding = Embedding & { score: number };
 
 function cosineSimilarity(a: number[], b: number[]): number {
-  const len = Math.min(a.length, b.length);
+  if (a.length !== b.length) {
+    throw new Error(`Vector dimension mismatch: ${a.length} vs ${b.length}`);
+  }
   let dot = 0;
   let normA = 0;
   let normB = 0;
-  for (let i = 0; i < len; i++) {
+  for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
     normA += a[i] * a[i];
     normB += b[i] * b[i];
@@ -70,15 +72,16 @@ export class MMRRetriever implements Retriever {
     const candidates = result.data;
     if (candidates.length === 0) return [];
 
-    const selected = this.selectMMR(candidates, topK);
+    const lambda = options?.mmrLambda ?? this.defaultLambda;
+    const selected = this.selectMMR(candidates, topK, lambda);
     return selected.map((entry) => this.toRetrievalResult(entry));
   }
 
   private selectMMR(
     candidates: ScoredEmbedding[],
-    topK: number
+    topK: number,
+    lambda: number
   ): (ScoredEmbedding & { mmrScore: number })[] {
-    const lambda = this.defaultLambda;
     const remaining = new Set(candidates.map((_, i) => i));
     const selected: (ScoredEmbedding & { mmrScore: number })[] = [];
 
@@ -89,11 +92,12 @@ export class MMRRetriever implements Retriever {
       for (const idx of remaining) {
         const relevance = candidates[idx].score;
 
-        let maxSelectedSim = 0;
+        let maxSelectedSim = -Infinity;
         for (const sel of selected) {
           const sim = cosineSimilarity(candidates[idx].vector, sel.vector);
           if (sim > maxSelectedSim) maxSelectedSim = sim;
         }
+        if (maxSelectedSim === -Infinity) maxSelectedSim = 0;
 
         const mmrScore = lambda * relevance - (1 - lambda) * maxSelectedSim;
 
@@ -122,7 +126,7 @@ export class MMRRetriever implements Retriever {
       content: entry.content,
       score: entry.mmrScore,
       source: entry.sourceType,
-      metadata: entry.metadata,
+      metadata: { ...entry.metadata, originalScore: entry.score },
     };
   }
 }

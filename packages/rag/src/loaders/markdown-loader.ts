@@ -5,7 +5,7 @@ import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
 
 const MD_EXTENSIONS = new Set(['md', 'mdx']);
 
-const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/;
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 
 export interface MarkdownLoaderOptions {
   stripFrontmatter?: boolean;

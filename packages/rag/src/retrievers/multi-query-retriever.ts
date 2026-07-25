@@ -3,6 +3,7 @@ import type { Retriever, RetrievalConfig, RetrievalResult } from '@cogitator-ai/
 export interface MultiQueryRetrieverConfig {
   baseRetriever: Retriever;
   expandQuery: (query: string) => Promise<string[]>;
+  defaultTopK?: number;
 }
 
 const DEFAULT_TOP_K = 10;
@@ -10,23 +11,32 @@ const DEFAULT_TOP_K = 10;
 export class MultiQueryRetriever implements Retriever {
   private readonly baseRetriever: Retriever;
   private readonly expandQuery: (query: string) => Promise<string[]>;
+  private readonly defaultTopK: number;
 
   constructor(config: MultiQueryRetrieverConfig) {
     this.baseRetriever = config.baseRetriever;
     this.expandQuery = config.expandQuery;
+    this.defaultTopK = config.defaultTopK ?? DEFAULT_TOP_K;
   }
 
   async retrieve(query: string, options?: Partial<RetrievalConfig>): Promise<RetrievalResult[]> {
-    const variants = await this.expandQuery(query);
+    const expanded = await this.expandQuery(query);
+    const variants = expanded.length > 0 ? expanded : [query];
 
-    if (variants.length === 0) return [];
+    if (!variants.includes(query)) {
+      variants.unshift(query);
+    }
 
-    const allResults = await Promise.all(
+    const settled = await Promise.allSettled(
       variants.map((variant) => this.baseRetriever.retrieve(variant, options))
     );
 
+    const allResults = settled.flatMap((outcome) =>
+      outcome.status === 'fulfilled' ? outcome.value : []
+    );
+
     const merged = this.deduplicateAndMerge(allResults.flat());
-    const topK = options?.topK ?? DEFAULT_TOP_K;
+    const topK = options?.topK ?? this.defaultTopK;
 
     return merged.slice(0, topK);
   }

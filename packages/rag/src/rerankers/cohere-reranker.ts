@@ -14,10 +14,11 @@ interface CohereRerankResponse {
 
 const DEFAULT_MODEL = 'rerank-v3.5';
 const COHERE_RERANK_URL = 'https://api.cohere.com/v2/rerank';
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 export class CohereReranker implements Reranker {
-  private apiKey: string;
-  private model: string;
+  private readonly apiKey: string;
+  private readonly model: string;
 
   constructor(config: CohereRerankerConfig) {
     this.apiKey = config.apiKey;
@@ -45,6 +46,7 @@ export class CohereReranker implements Reranker {
         documents: results.map((r) => r.content),
         top_n: n,
       }),
+      signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -53,6 +55,10 @@ export class CohereReranker implements Reranker {
     }
 
     const data = (await response.json()) as CohereRerankResponse;
+
+    if (!Array.isArray(data.results)) {
+      throw new Error('Cohere rerank returned unexpected response: missing results array');
+    }
 
     const mapped = data.results
       .filter(({ index }) => index >= 0 && index < results.length)

@@ -9,7 +9,7 @@ export interface RAGTool<TParams = unknown> {
 }
 
 const SearchParamsSchema = z.object({
-  query: z.string(),
+  query: z.string().min(1),
   limit: z.number().int().positive().optional(),
   threshold: z.number().min(0).max(1).optional(),
 });
@@ -17,7 +17,7 @@ const SearchParamsSchema = z.object({
 type SearchParams = z.infer<typeof SearchParamsSchema>;
 
 const IngestParamsSchema = z.object({
-  source: z.string(),
+  source: z.string().min(1),
 });
 
 type IngestParams = z.infer<typeof IngestParamsSchema>;
@@ -27,8 +27,9 @@ export function createSearchTool(pipeline: RAGPipeline): RAGTool<SearchParams> {
     name: 'rag_search',
     description: 'Search the knowledge base using semantic search',
     parameters: SearchParamsSchema,
-    execute: async ({ query, limit, threshold }) => {
+    execute: async (params) => {
       try {
+        const { query, limit, threshold } = SearchParamsSchema.parse(params);
         const results = await pipeline.query(query, { topK: limit, threshold });
         return { success: true, query, results, count: results.length };
       } catch (err) {
@@ -43,8 +44,9 @@ export function createIngestTool(pipeline: RAGPipeline): RAGTool<IngestParams> {
     name: 'rag_ingest',
     description: 'Ingest documents into the knowledge base',
     parameters: IngestParamsSchema,
-    execute: async ({ source }) => {
+    execute: async (params) => {
       try {
+        const { source } = IngestParamsSchema.parse(params);
         const { documents, chunks } = await pipeline.ingest(source);
         return { success: true, source, documents, chunks };
       } catch (err) {

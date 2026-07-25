@@ -75,16 +75,22 @@ export class RAGPipelineBuilder {
       new SimilarityRetriever({
         embeddingAdapter: this.embeddingAdapter,
         embeddingService: this.embeddingService,
+        defaultTopK: config.retrieval.topK,
+        defaultThreshold: config.retrieval.threshold,
       });
 
-    return new RAGPipeline(config, {
-      loader: this.loader,
-      chunker,
-      embeddingService: this.embeddingService,
-      embeddingAdapter: this.embeddingAdapter,
-      retriever,
-      reranker: this.reranker,
-    });
+    return new RAGPipeline(
+      config,
+      {
+        loader: this.loader,
+        chunker,
+        embeddingService: this.embeddingService,
+        embeddingAdapter: this.embeddingAdapter,
+        retriever,
+        reranker: this.reranker,
+      },
+      true
+    );
   }
 
   private resolveConfig(): RAGPipelineConfig {

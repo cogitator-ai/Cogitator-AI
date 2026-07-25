@@ -40,6 +40,7 @@ interface MultiQueryDeps {
   strategy: 'multi-query';
   baseRetriever: Retriever;
   expandQuery: (query: string) => Promise<string[]>;
+  topK?: number;
 }
 
 export type CreateRetrieverConfig = SimilarityDeps | MMRDeps | HybridDeps | MultiQueryDeps;
@@ -75,6 +76,12 @@ export function createRetriever(config: CreateRetrieverConfig): Retriever {
       return new MultiQueryRetriever({
         baseRetriever: config.baseRetriever,
         expandQuery: config.expandQuery,
+        defaultTopK: config.topK,
       });
+
+    default: {
+      const _exhaustive: never = config;
+      throw new Error(`Unknown retriever strategy: ${JSON.stringify(_exhaustive)}`);
+    }
   }
 }

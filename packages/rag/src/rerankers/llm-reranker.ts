@@ -4,8 +4,10 @@ export interface LLMRerankerConfig {
   generateFn: (prompt: string) => Promise<string>;
 }
 
+const MAX_DOCUMENTS_IN_PROMPT = 50;
+
 export class LLMReranker implements Reranker {
-  private generateFn: (prompt: string) => Promise<string>;
+  private readonly generateFn: (prompt: string) => Promise<string>;
 
   constructor(config: LLMRerankerConfig) {
     this.generateFn = config.generateFn;
@@ -35,14 +37,16 @@ export class LLMReranker implements Reranker {
       }));
 
       return topN ? reranked.slice(0, topN) : reranked;
-    } catch {
+    } catch (error) {
+      console.warn('[LLMReranker] Reranking failed, returning original order:', error);
       const fallback = [...results];
       return topN ? fallback.slice(0, topN) : fallback;
     }
   }
 
   private buildPrompt(query: string, results: RetrievalResult[]): string {
-    const docs = results.map((r, i) => `[${i}] ${r.content}`).join('\n\n');
+    const limited = results.slice(0, MAX_DOCUMENTS_IN_PROMPT);
+    const docs = limited.map((r, i) => `[${i}] ${r.content}`).join('\n\n');
 
     return [
       "Score each document's relevance to the query on a scale of 0-10.",
@@ -56,20 +60,30 @@ export class LLMReranker implements Reranker {
   }
 
   private parseScores(response: string, count: number): Array<{ index: number; score: number }> {
-    const jsonMatch = /\[[\s\S]*?\]/.exec(response);
-    if (!jsonMatch) throw new Error('No JSON array found in response');
+    const candidates = response.match(/\[[\s\S]*?\]/g);
+    if (!candidates) throw new Error('No JSON array found in response');
 
-    const parsed: unknown = JSON.parse(jsonMatch[0]);
-    if (!Array.isArray(parsed)) throw new Error('Response is not an array');
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      try {
+        const parsed: unknown = JSON.parse(candidates[i]);
+        if (!Array.isArray(parsed)) continue;
 
-    return parsed.filter(
-      (item): item is { index: number; score: number } =>
-        typeof item === 'object' &&
-        item !== null &&
-        typeof (item as Record<string, unknown>).index === 'number' &&
-        typeof (item as Record<string, unknown>).score === 'number' &&
-        (item as { index: number }).index >= 0 &&
-        (item as { index: number }).index < count
-    );
+        const scores = parsed.filter(
+          (item): item is { index: number; score: number } =>
+            typeof item === 'object' &&
+            item !== null &&
+            typeof (item as Record<string, unknown>).index === 'number' &&
+            typeof (item as Record<string, unknown>).score === 'number' &&
+            (item as { index: number }).index >= 0 &&
+            (item as { index: number }).index < count
+        );
+
+        if (scores.length > 0) return scores;
+      } catch {
+        continue;
+      }
+    }
+
+    throw new Error('No valid JSON array found in response');
   }
 }

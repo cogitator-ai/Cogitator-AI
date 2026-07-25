@@ -23,7 +23,14 @@ export class JSONLoader implements DocumentLoader {
   async load(source: string): Promise<RAGDocument[]> {
     const filePath = resolve(source);
     const raw = await readFile(filePath, 'utf-8');
-    const data: unknown = JSON.parse(raw);
+
+    let data: unknown;
+    try {
+      data = JSON.parse(raw);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`JSONLoader: failed to parse "${filePath}": ${message}`);
+    }
 
     const items = Array.isArray(data) ? data : [data];
     return items.map((item) => this.itemToDocument(item, filePath));
@@ -53,16 +60,21 @@ export class JSONLoader implements DocumentLoader {
 
   private extractContent(obj: Record<string, unknown>): string {
     if (this.contentField && this.contentField in obj) {
-      return String(obj[this.contentField]);
+      return this.valueToString(obj[this.contentField]);
     }
 
     for (const field of CONTENT_FIELDS) {
       if (field in obj) {
-        return String(obj[field]);
+        return this.valueToString(obj[field]);
       }
     }
 
     return JSON.stringify(obj, null, 2);
+  }
+
+  private valueToString(value: unknown): string {
+    if (typeof value === 'string') return value;
+    return JSON.stringify(value, null, 2);
   }
 
   private extractMetadata(obj: Record<string, unknown>): Record<string, unknown> | undefined {

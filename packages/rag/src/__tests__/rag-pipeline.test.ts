@@ -169,7 +169,7 @@ describe('RAGPipeline', () => {
       const pipeline = createPipeline();
       const results = await pipeline.query('search query');
 
-      expect(retriever.retrieve).toHaveBeenCalledWith('search query', undefined);
+      expect(retriever.retrieve).toHaveBeenCalledWith('search query', expect.any(Object));
       expect(results).toHaveLength(2);
       expect(results[0].score).toBe(0.95);
     });
@@ -178,7 +178,10 @@ describe('RAGPipeline', () => {
       const pipeline = createPipeline();
       await pipeline.query('search query', { topK: 5 });
 
-      expect(retriever.retrieve).toHaveBeenCalledWith('search query', { topK: 5 });
+      expect(retriever.retrieve).toHaveBeenCalledWith(
+        'search query',
+        expect.objectContaining({ topK: 5 })
+      );
     });
 
     it('applies reranker when configured', async () => {
