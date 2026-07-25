@@ -70,12 +70,25 @@ export interface TimerManagerConfig {
    * Handler for timer missed events (overdue timers)
    */
   onTimerMissed?: (entry: TimerEntry, delayMs: number) => void;
+
+  /**
+   * Maximum consecutive handler errors before dead-lettering a timer.
+   * Set to 0 for unlimited retries (previous behavior).
+   * @default 5
+   */
+  maxRetries?: number;
+
+  /**
+   * Called when a timer is dead-lettered after exceeding maxRetries
+   */
+  onDeadLetter?: (entry: TimerEntry, error: Error) => void;
 }
 
 const DEFAULT_POLL_INTERVAL = 1000;
 const DEFAULT_BATCH_SIZE = 100;
 const DEFAULT_CLEANUP_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_CLEANUP_INTERVAL = 60 * 60 * 1000;
+const DEFAULT_MAX_RETRIES = 5;
 
 /**
  * Timer manager stats
@@ -96,8 +109,10 @@ export interface TimerManagerStats {
  */
 export class TimerManager {
   private store: TimerStore;
-  private config: Required<Omit<TimerManagerConfig, 'onError' | 'onTimerFired' | 'onTimerMissed'>> &
-    Pick<TimerManagerConfig, 'onError' | 'onTimerFired' | 'onTimerMissed'>;
+  private config: Required<
+    Omit<TimerManagerConfig, 'onError' | 'onTimerFired' | 'onTimerMissed' | 'onDeadLetter'>
+  > &
+    Pick<TimerManagerConfig, 'onError' | 'onTimerFired' | 'onTimerMissed' | 'onDeadLetter'>;
   private handlers = new Map<string, TimerHandler>();
   private defaultHandler?: TimerHandler;
   private pollTimer?: ReturnType<typeof setInterval>;
@@ -121,9 +136,11 @@ export class TimerManager {
       cleanupMaxAge: config.cleanupMaxAge ?? DEFAULT_CLEANUP_MAX_AGE,
       cleanupInterval: config.cleanupInterval ?? DEFAULT_CLEANUP_INTERVAL,
       enableCleanup: config.enableCleanup ?? true,
+      maxRetries: config.maxRetries ?? DEFAULT_MAX_RETRIES,
       onError: config.onError,
       onTimerFired: config.onTimerFired,
       onTimerMissed: config.onTimerMissed,
+      onDeadLetter: config.onDeadLetter,
     };
   }
 
@@ -252,6 +269,18 @@ export class TimerManager {
       this.errorTotal++;
       const err = error instanceof Error ? error : new Error(String(error));
       this.config.onError?.(err, entry);
+
+      const consecutiveErrors = (entry.consecutiveErrors ?? 0) + 1;
+      await this.store.update(entry.id, {
+        consecutiveErrors,
+        lastError: err.message,
+        lastRunStatus: 'error',
+      });
+
+      if (this.config.maxRetries > 0 && consecutiveErrors >= this.config.maxRetries) {
+        await this.store.markFired(entry.id);
+        this.config.onDeadLetter?.(entry, err);
+      }
     }
   }
 

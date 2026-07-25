@@ -1,13 +1,3 @@
-/**
- * Parallel subworkflow execution
- *
- * Features:
- * - Execute multiple subworkflows in parallel
- * - Configurable concurrency
- * - Aggregate results
- * - Partial failure handling
- */
-
 import type { Workflow, WorkflowState, WorkflowResult } from '@cogitator-ai/types';
 import {
   executeSubworkflow,
@@ -17,80 +7,27 @@ import {
   type SubworkflowErrorStrategy,
 } from './subworkflow-node';
 
-/**
- * Parallel subworkflow definition
- */
 export interface ParallelSubworkflowDef<PS extends WorkflowState, CS extends WorkflowState> {
   id: string;
   config: SubworkflowConfig<PS, CS>;
 }
 
-/**
- * Parallel subworkflows configuration
- */
 export interface ParallelSubworkflowsConfig<S extends WorkflowState> {
   name: string;
-
-  /**
-   * Get subworkflow definitions to execute
-   */
   subworkflows:
     | ParallelSubworkflowDef<S, WorkflowState>[]
     | ((state: S) => ParallelSubworkflowDef<S, WorkflowState>[]);
-
-  /**
-   * Maximum concurrent subworkflows
-   * @default Infinity
-   */
   concurrency?: number;
-
-  /**
-   * Continue if some subworkflows fail
-   * @default false
-   */
   continueOnError?: boolean;
-
-  /**
-   * Error handling strategy for all subworkflows
-   */
   onError?: SubworkflowErrorStrategy;
-
-  /**
-   * Aggregate results into parent state
-   */
   aggregator: (results: Map<string, SubworkflowResult<S, WorkflowState>>, parentState: S) => S;
-
-  /**
-   * Maximum nesting depth for all subworkflows
-   * @default 10
-   */
   maxDepth?: number;
-
-  /**
-   * Share checkpoint store with parent
-   * @default true
-   */
   shareCheckpoints?: boolean;
-
-  /**
-   * Called when a subworkflow starts
-   */
   onSubworkflowStart?: (id: string, config: SubworkflowConfig<S, WorkflowState>) => void;
-
-  /**
-   * Called when a subworkflow completes
-   */
   onSubworkflowComplete?: (id: string, result: SubworkflowResult<S, WorkflowState>) => void;
-
-  /**
-   * Called on progress
-   */
   onProgress?: (progress: ParallelProgress) => void;
 }
 
-/**
- * Progress event for parallel execution
- */
 export interface ParallelProgress {
   total: number;
   completed: number;
@@ -100,9 +37,6 @@ export interface ParallelProgress {
   running: number;
 }
 
-/**
- * Parallel subworkflows result
- */
 export interface ParallelSubworkflowsResult<S extends WorkflowState> {
   success: boolean;
   parentState: S;
@@ -117,9 +51,6 @@ export interface ParallelSubworkflowsResult<S extends WorkflowState> {
   };
 }
 
-/**
- * Execute subworkflows with concurrency limit
- */
 async function executeWithConcurrency<T>(
   items: { id: string; execute: () => Promise<T> }[],
   concurrency: number,
@@ -130,6 +61,7 @@ async function executeWithConcurrency<T>(
   const pending: Promise<void>[] = [];
   let nextIndex = 0;
   let stopExecution = false;
+  let firstError: Error | undefined;
 
   const executeNext = async (): Promise<void> => {
     if (stopExecution) return;
@@ -149,7 +81,11 @@ async function executeWithConcurrency<T>(
 
       if (!continueOnError) {
         stopExecution = true;
-        throw err;
+        if (!firstError) {
+          firstError = err;
+        }
+        onComplete?.(item.id, undefined as T, err);
+        return;
       }
 
       onComplete?.(item.id, undefined as T, err);
@@ -163,16 +99,15 @@ async function executeWithConcurrency<T>(
     pending.push(executeNext());
   }
 
-  try {
-    await Promise.all(pending);
-  } catch {}
+  await Promise.all(pending);
+
+  if (firstError) {
+    throw firstError;
+  }
 
   return results;
 }
 
-/**
- * Execute multiple subworkflows in parallel
- */
 export async function executeParallelSubworkflows<S extends WorkflowState>(
   parentState: S,
   config: ParallelSubworkflowsConfig<S>,
@@ -264,7 +199,7 @@ export async function executeParallelSubworkflows<S extends WorkflowState>(
     }
   }
 
-  const overallSuccess = failed === 0 || continueOnError;
+  const overallSuccess = failed === 0 || (continueOnError && successful > 0);
 
   const newParentState = overallSuccess ? config.aggregator(results, parentState) : parentState;
 
@@ -283,9 +218,6 @@ export async function executeParallelSubworkflows<S extends WorkflowState>(
   };
 }
 
-/**
- * Create a parallel subworkflows node factory
- */
 export function parallelSubworkflows<S extends WorkflowState>(
   name: string,
   config: Omit<ParallelSubworkflowsConfig<S>, 'name'>
@@ -293,10 +225,6 @@ export function parallelSubworkflows<S extends WorkflowState>(
   return { name, ...config };
 }
 
-/**
- * Create a fan-out/fan-in pattern
- * Fans out to multiple identical subworkflows with different inputs
- */
 export function fanOutFanIn<S extends WorkflowState, CS extends WorkflowState>(
   name: string,
   config: {
@@ -333,10 +261,6 @@ export function fanOutFanIn<S extends WorkflowState, CS extends WorkflowState>(
   };
 }
 
-/**
- * Create a scatter-gather pattern
- * Scatters work across multiple workflows and gathers results
- */
 export function scatterGather<S extends WorkflowState, CS extends WorkflowState>(
   name: string,
   config: {
@@ -345,6 +269,7 @@ export function scatterGather<S extends WorkflowState, CS extends WorkflowState>
     outputMapper: (results: Map<string, WorkflowResult<CS>>, state: S) => S;
     concurrency?: number;
     timeout?: number;
+    continueOnError?: boolean;
   }
 ): ParallelSubworkflowsConfig<S> {
   const subworkflows: ParallelSubworkflowDef<S, WorkflowState>[] = [];
@@ -366,7 +291,7 @@ export function scatterGather<S extends WorkflowState, CS extends WorkflowState>
     name,
     subworkflows,
     concurrency: config.concurrency,
-    continueOnError: true,
+    continueOnError: config.continueOnError ?? true,
     aggregator: (results, state) => {
       const workflowResults = new Map<string, WorkflowResult<CS>>();
       for (const [id, result] of results) {
@@ -379,10 +304,6 @@ export function scatterGather<S extends WorkflowState, CS extends WorkflowState>
   };
 }
 
-/**
- * Create a race pattern
- * Executes multiple subworkflows and returns the first successful result
- */
 export async function raceSubworkflows<PS extends WorkflowState, CS extends WorkflowState>(
   parentState: PS,
   subworkflows: SubworkflowConfig<PS, CS>[],
@@ -399,6 +320,7 @@ export async function raceSubworkflows<PS extends WorkflowState, CS extends Work
     const result = await executeSubworkflow(parentState, config, {
       ...context,
       depth: context.depth + 1,
+      signal,
     });
 
     if (signal.aborted) {
@@ -421,10 +343,6 @@ export async function raceSubworkflows<PS extends WorkflowState, CS extends Work
   }
 }
 
-/**
- * Create a fallback pattern
- * Tries subworkflows in order until one succeeds
- */
 export async function fallbackSubworkflows<PS extends WorkflowState, CS extends WorkflowState>(
   parentState: PS,
   subworkflows: SubworkflowConfig<PS, CS>[],

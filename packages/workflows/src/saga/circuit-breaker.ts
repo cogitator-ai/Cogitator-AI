@@ -150,6 +150,7 @@ export class CircuitBreaker {
         const elapsed = now - breaker.lastStateChange;
         if (elapsed >= this.config.resetTimeout) {
           this.changeState(nodeId, breaker, 'half-open');
+          breaker.halfOpenAttempts++;
           return true;
         }
         return false;
@@ -347,7 +348,9 @@ export class CircuitBreaker {
     for (const handler of this.eventHandlers) {
       try {
         handler(event);
-      } catch {}
+      } catch (err) {
+        console.warn('[CircuitBreaker] Event handler error:', err);
+      }
     }
   }
 }
@@ -379,7 +382,7 @@ export class CircuitBreakerOpenError extends Error {
   readonly lastFailure?: number;
 
   constructor(nodeId: string, breaker: CircuitBreakerData) {
-    super(`Circuit breaker is open for node '${nodeId}'`);
+    super(`Circuit breaker is ${breaker.state} for node '${nodeId}'`);
     this.name = 'CircuitBreakerOpenError';
     this.nodeId = nodeId;
     this.state = breaker.state;

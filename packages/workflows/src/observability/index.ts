@@ -11,7 +11,13 @@
  * - Token usage and cost tracking
  */
 
-export { WorkflowTracer, createTracer, getGlobalTracer, setGlobalTracer } from './tracer';
+export {
+  WorkflowTracer,
+  createTracer,
+  getGlobalTracer,
+  setGlobalTracer,
+  type SpanScope,
+} from './tracer';
 
 export {
   WorkflowMetricsCollector,

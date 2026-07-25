@@ -28,6 +28,7 @@ export class InMemoryApprovalStore implements ApprovalStore {
 
     if (options.cleanupInterval) {
       this.cleanupInterval = setInterval(() => this.cleanup(), options.cleanupInterval);
+      this.cleanupInterval.unref();
     }
   }
 
@@ -177,11 +178,12 @@ export class FileApprovalStore implements ApprovalStore {
 
     if (options.pollInterval) {
       this.watchInterval = setInterval(() => this.checkForResponses(), options.pollInterval);
+      this.watchInterval.unref();
     }
   }
 
   private sanitizeId(id: string): string {
-    return path.basename(id).replace(/[/\\]/g, '_');
+    return Buffer.from(id).toString('base64url');
   }
 
   private getRequestPath(id: string): string {
@@ -359,10 +361,16 @@ export class FileApprovalStore implements ApprovalStore {
 
       if (stats.mtimeMs > lastCheck) {
         this.lastResponseCheck.set(requestId, stats.mtimeMs);
-        this.firedCallbacks.add(requestId);
 
-        const content = await fs.readFile(filePath, 'utf-8');
-        const response = JSON.parse(content) as ApprovalResponse;
+        let response: ApprovalResponse;
+        try {
+          const content = await fs.readFile(filePath, 'utf-8');
+          response = JSON.parse(content) as ApprovalResponse;
+        } catch {
+          continue;
+        }
+
+        this.firedCallbacks.add(requestId);
 
         for (const callback of callbacks) {
           callback(response);
@@ -427,56 +435,63 @@ function isEnoent(err: unknown): boolean {
   return err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
-/**
- * Create an approval store that delegates responses
- * to another store (e.g., for delegation handling)
- */
 export function withDelegation(
   store: ApprovalStore,
   options: {
     onDelegation?: (request: ApprovalRequest, from: string, to: string) => Promise<void>;
   } = {}
 ): ApprovalStore {
-  const wrapper: ApprovalStore = Object.create(store);
+  return {
+    createRequest: (request) => store.createRequest(request),
+    getRequest: (id) => store.getRequest(id),
+    getPendingRequests: (workflowId?) => store.getPendingRequests(workflowId),
+    getPendingForAssignee: (assignee) => store.getPendingForAssignee(assignee),
+    getResponse: (requestId) => store.getResponse(requestId),
+    deleteRequest: (id) => store.deleteRequest(id),
+    onResponse: (requestId, callback) => store.onResponse(requestId, callback),
 
-  wrapper.submitResponse = async (response: ApprovalResponse): Promise<void> => {
-    if (response.delegatedTo) {
-      const request = await store.getRequest(response.requestId);
+    submitResponse: async (response: ApprovalResponse): Promise<void> => {
+      if (response.delegatedTo) {
+        const request = await store.getRequest(response.requestId);
 
-      if (request) {
-        const delegatedRequest: ApprovalRequest = {
-          ...request,
-          id: nanoid(),
-          assignee: response.delegatedTo,
-          metadata: {
-            ...request.metadata,
-            originalRequestId: request.id,
-            delegatedFrom: response.respondedBy,
-            delegatedAt: response.respondedAt,
+        if (request) {
+          const delegatedRequest: ApprovalRequest = {
+            ...request,
+            id: nanoid(),
+            assignee: response.delegatedTo,
+            createdAt: Date.now(),
+            metadata: {
+              ...request.metadata,
+              originalRequestId: request.id,
+              delegatedFrom: response.respondedBy,
+              delegatedAt: response.respondedAt,
+              delegationReason: response.delegationReason,
+            },
+          };
+
+          await store.createRequest(delegatedRequest);
+
+          const delegatedResponse: ApprovalResponse = {
+            requestId: request.id,
+            decision: 'delegated',
+            respondedBy: response.respondedBy,
+            respondedAt: response.respondedAt,
+            delegatedTo: response.delegatedTo,
             delegationReason: response.delegationReason,
-          },
-        };
+          };
+          await store.submitResponse(delegatedResponse);
 
-        await store.createRequest(delegatedRequest);
+          await options.onDelegation?.(
+            delegatedRequest,
+            response.respondedBy,
+            response.delegatedTo
+          );
 
-        const delegatedResponse: ApprovalResponse = {
-          requestId: request.id,
-          decision: 'delegated',
-          respondedBy: response.respondedBy,
-          respondedAt: response.respondedAt,
-          delegatedTo: response.delegatedTo,
-          delegationReason: response.delegationReason,
-        };
-        await store.submitResponse(delegatedResponse);
-
-        await options.onDelegation?.(delegatedRequest, response.respondedBy, response.delegatedTo);
-
-        return;
+          return;
+        }
       }
-    }
 
-    await store.submitResponse(response);
+      await store.submitResponse(response);
+    },
   };
-
-  return wrapper;
 }

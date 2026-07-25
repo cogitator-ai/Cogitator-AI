@@ -39,13 +39,14 @@ interface LatencySample {
   timestamp: number;
 }
 
-/**
- * Calculate percentile from sorted array
- */
 function percentile(sortedValues: number[], p: number): number {
   if (sortedValues.length === 0) return 0;
   const idx = Math.ceil((p / 100) * sortedValues.length) - 1;
   return sortedValues[Math.max(0, idx)];
+}
+
+function escapePrometheusValue(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
 }
 
 /**
@@ -81,10 +82,9 @@ export class WorkflowMetricsCollector {
     return this.config.prefix ? `${this.config.prefix}_${name}` : name;
   }
 
-  /**
-   * Record workflow start
-   */
   recordWorkflowStart(workflowName: string, labels?: Record<string, string>): void {
+    if (!this.config.enabled) return;
+
     const key = this.metricName('executions_total');
     this.incrementCounter(key, { workflow: workflowName, ...labels });
 
@@ -92,15 +92,14 @@ export class WorkflowMetricsCollector {
     this.incrementGauge(activeKey, { workflow: workflowName });
   }
 
-  /**
-   * Record workflow completion
-   */
   recordWorkflowComplete(
     workflowName: string,
     durationMs: number,
     status: 'success' | 'failure' | 'cancelled',
     labels?: Record<string, string>
   ): void {
+    if (!this.config.enabled) return;
+
     const activeKey = this.metricName('active_workflows');
     this.decrementGauge(activeKey, { workflow: workflowName });
 
@@ -115,9 +114,6 @@ export class WorkflowMetricsCollector {
     this.lastUpdated = Date.now();
   }
 
-  /**
-   * Record node execution
-   */
   recordNodeExecution(
     workflowName: string,
     nodeName: string,
@@ -126,6 +122,8 @@ export class WorkflowMetricsCollector {
     success: boolean,
     retries = 0
   ): void {
+    if (!this.config.enabled) return;
+
     if (!this.nodeMetrics.has(workflowName)) {
       this.nodeMetrics.set(workflowName, new Map());
     }
@@ -145,6 +143,9 @@ export class WorkflowMetricsCollector {
     const nodeData = workflowNodes.get(nodeName)!;
     nodeData.executionCount++;
     nodeData.durations.push(durationMs);
+    if (nodeData.durations.length > 1000) {
+      nodeData.durations.shift();
+    }
 
     if (success) {
       nodeData.successCount++;
@@ -169,10 +170,9 @@ export class WorkflowMetricsCollector {
     });
   }
 
-  /**
-   * Record token usage
-   */
   recordTokenUsage(workflowName: string, inputTokens: number, outputTokens: number): void {
+    if (!this.config.enabled) return;
+
     if (!this.tokenUsage.has(workflowName)) {
       this.tokenUsage.set(workflowName, {
         input: 0,
@@ -192,10 +192,9 @@ export class WorkflowMetricsCollector {
     });
   }
 
-  /**
-   * Record cost
-   */
   recordCost(workflowName: string, cost: number): void {
+    if (!this.config.enabled) return;
+
     const current = this.costTracking.get(workflowName) ?? 0;
     this.costTracking.set(workflowName, current + cost);
 
@@ -457,24 +456,18 @@ export class WorkflowMetricsCollector {
     return lines.join('\n');
   }
 
-  /**
-   * Format labels for Prometheus
-   */
   private formatPrometheusLabels(labels?: Record<string, string>): string {
     if (!labels || Object.keys(labels).length === 0) {
       return '';
     }
 
     const pairs = Object.entries(labels)
-      .map(([k, v]) => `${k}="${v}"`)
+      .map(([k, v]) => `${k}="${escapePrometheusValue(v)}"`)
       .join(',');
 
     return `{${pairs}}`;
   }
 
-  /**
-   * Parse labels from key
-   */
   private parseLabels(labelsPart?: string): Record<string, string> {
     if (!labelsPart) return {};
 
@@ -482,7 +475,10 @@ export class WorkflowMetricsCollector {
     const pairs = labelsPart.split(',');
 
     for (const pair of pairs) {
-      const [k, v] = pair.split('=');
+      const idx = pair.indexOf('=');
+      if (idx === -1) continue;
+      const k = pair.slice(0, idx);
+      const v = pair.slice(idx + 1);
       if (k && v) {
         labels[k] = v;
       }

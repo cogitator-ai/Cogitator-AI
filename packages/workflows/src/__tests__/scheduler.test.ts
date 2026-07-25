@@ -121,6 +121,7 @@ describe('WorkflowScheduler', () => {
           after: ['process'],
         })
         .addNode('done', async () => ({}))
+        .entryPoint('process')
         .build();
 
       const loopBack = scheduler.getNextNodes(workflow, 'check', { value: 3 });

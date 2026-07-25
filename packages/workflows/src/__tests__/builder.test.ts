@@ -94,6 +94,7 @@ describe('WorkflowBuilder', () => {
           after: ['process'],
         })
         .addNode('done', async () => ({ output: 'complete' }))
+        .entryPoint('process')
         .build();
 
       const loopEdge = workflow.edges.find((e) => e.type === 'loop');

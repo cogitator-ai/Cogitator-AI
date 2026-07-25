@@ -1,14 +1,3 @@
-/**
- * WorkflowTracer - Distributed tracing for workflow execution
- *
- * Features:
- * - W3C Trace Context propagation
- * - Hierarchical span creation (workflow → node → tool)
- * - Automatic span lifecycle management
- * - Context-aware span attributes
- * - Multi-backend export support
- */
-
 import type {
   TracingConfig,
   WorkflowSpan,
@@ -18,7 +7,8 @@ import type {
   TraceContext,
   Baggage,
 } from '@cogitator-ai/types';
-import { nanoid } from 'nanoid';
+import { randomBytes } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { type SpanExporterInstance, createSpanExporter, NoopSpanExporter } from './exporters';
 import {
   TRACE_PARENT_HEADER,
@@ -33,40 +23,26 @@ import {
 
 const TRACE_VERSION = '00';
 const DEFAULT_SAMPLE_RATE = 1.0;
+const HEX_RE = /^[0-9a-f]+$/;
 
-/**
- * Generate a random trace ID (32 hex chars)
- */
 function generateTraceId(): string {
-  return nanoid(16)
-    .split('')
-    .map((c) => c.charCodeAt(0).toString(16).padStart(2, '0'))
-    .join('')
-    .slice(0, 32);
+  return randomBytes(16).toString('hex');
 }
 
-/**
- * Generate a random span ID (16 hex chars)
- */
 function generateSpanId(): string {
-  return nanoid(8)
-    .split('')
-    .map((c) => c.charCodeAt(0).toString(16).padStart(2, '0'))
-    .join('')
-    .slice(0, 16);
+  return randomBytes(8).toString('hex');
 }
 
-/**
- * Parse W3C traceparent header
- * Format: {version}-{trace-id}-{parent-id}-{trace-flags}
- */
 function parseTraceParent(header: string): TraceContext | null {
   const parts = header.split('-');
   if (parts.length !== 4) return null;
 
   const [version, traceId, spanId, flags] = parts;
-  if (version !== TRACE_VERSION) return null;
-  if (traceId.length !== 32 || spanId.length !== 16) return null;
+
+  if (version === 'ff') return null;
+  if (version.length !== 2 || !HEX_RE.test(version)) return null;
+  if (traceId.length !== 32 || !HEX_RE.test(traceId) || /^0+$/.test(traceId)) return null;
+  if (spanId.length !== 16 || !HEX_RE.test(spanId) || /^0+$/.test(spanId)) return null;
 
   return {
     traceId,
@@ -75,45 +51,35 @@ function parseTraceParent(header: string): TraceContext | null {
   };
 }
 
-/**
- * Format TraceContext to W3C traceparent header
- */
 function formatTraceParent(ctx: TraceContext): string {
   const flags = (ctx.traceFlags ?? 1).toString(16).padStart(2, '0');
   return `${TRACE_VERSION}-${ctx.traceId}-${ctx.spanId}-${flags}`;
 }
 
-/**
- * Parse W3C baggage header
- * Format: key1=value1,key2=value2
- */
 function parseBaggage(header: string): Baggage {
   const baggage: Baggage = {};
   const pairs = header.split(',');
 
   for (const pair of pairs) {
-    const [key, value] = pair.split('=');
+    const idx = pair.indexOf('=');
+    if (idx === -1) continue;
+    const key = pair.slice(0, idx).trim();
+    const value = pair.slice(idx + 1).trim();
     if (key && value) {
-      baggage[key.trim()] = decodeURIComponent(value.trim());
+      baggage[key] = decodeURIComponent(value);
     }
   }
 
   return baggage;
 }
 
-/**
- * Format Baggage to W3C baggage header
- */
 function formatBaggage(baggage: Baggage): string {
   return Object.entries(baggage)
     .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
     .join(',');
 }
 
-/**
- * Active span context for scoped operations
- */
-interface SpanScope {
+export interface SpanScope {
   span: WorkflowSpan;
   end: (status?: SpanStatus, message?: string) => void;
   addEvent: (name: string, attributes?: Record<string, unknown>) => void;
@@ -122,17 +88,19 @@ interface SpanScope {
   recordException: (error: Error) => void;
 }
 
-/**
- * WorkflowTracer - Main tracing class
- */
+interface AsyncSpanContext {
+  spanStack: WorkflowSpan[];
+}
+
 export class WorkflowTracer {
   private config: TracingConfig;
   private exporter: SpanExporterInstance;
-  private spanStack: WorkflowSpan[] = [];
   private completedSpans: WorkflowSpan[] = [];
   private currentTraceContext: TraceContext | null = null;
   private baggage: Baggage = {};
-  private sampleDecision = true;
+  private sampleRate: number;
+  private asyncLocalStorage = new AsyncLocalStorage<AsyncSpanContext>();
+  private rootSpanStack: WorkflowSpan[] = [];
 
   constructor(config: Partial<TracingConfig> = {}) {
     this.config = {
@@ -144,6 +112,8 @@ export class WorkflowTracer {
       exporter: 'console',
       ...config,
     };
+
+    this.sampleRate = this.config.sampleRate ?? 1.0;
 
     if (!this.config.enabled) {
       this.exporter = new NoopSpanExporter();
@@ -157,20 +127,18 @@ export class WorkflowTracer {
       batchSize: this.config.batchSize,
       flushInterval: this.config.flushInterval,
     });
-
-    this.sampleDecision = Math.random() < (this.config.sampleRate ?? 1.0);
   }
 
-  /**
-   * Check if this tracer is sampling
-   */
   isSampled(): boolean {
-    return this.config.enabled && this.sampleDecision;
+    return this.config.enabled;
   }
 
-  /**
-   * Set trace context from incoming request headers
-   */
+  private getSpanStack(): WorkflowSpan[] {
+    const ctx = this.asyncLocalStorage.getStore();
+    if (ctx) return ctx.spanStack;
+    return this.rootSpanStack;
+  }
+
   setContextFromHeaders(headers: Record<string, string>): void {
     const traceparent = headers[TRACE_PARENT_HEADER];
     if (traceparent) {
@@ -188,9 +156,6 @@ export class WorkflowTracer {
     }
   }
 
-  /**
-   * Get headers for outgoing request context propagation
-   */
   getContextHeaders(): Record<string, string> {
     const headers: Record<string, string> = {};
 
@@ -209,36 +174,25 @@ export class WorkflowTracer {
     return headers;
   }
 
-  /**
-   * Set a baggage value
-   */
   setBaggage(key: string, value: string): void {
     this.baggage[key] = value;
   }
 
-  /**
-   * Get a baggage value
-   */
   getBaggage(key: string): string | undefined {
     return this.baggage[key];
   }
 
-  /**
-   * Get current trace context
-   */
   getTraceContext(): TraceContext | null {
     return this.currentTraceContext;
   }
 
-  /**
-   * Start a new workflow trace
-   */
   startWorkflowSpan(
     workflowName: string,
     workflowId: string,
     runId: string,
     attributes?: Record<string, unknown>
   ): SpanScope {
+    const sampled = Math.random() < this.sampleRate;
     const traceId = this.currentTraceContext?.traceId ?? generateTraceId();
     const spanId = generateSpanId();
     const parentSpanId = this.currentTraceContext?.spanId;
@@ -267,25 +221,27 @@ export class WorkflowTracer {
     this.currentTraceContext = {
       traceId,
       spanId,
-      traceFlags: 1,
+      traceFlags: sampled ? 1 : 0,
     };
 
-    this.spanStack.push(span);
+    const spanStack = this.getSpanStack();
+    spanStack.push(span);
 
-    return this.createSpanScope(span);
+    return this.createSpanScope(span, sampled);
   }
 
-  /**
-   * Start a node execution span
-   */
   startNodeSpan(
     nodeName: string,
     nodeType: string,
     attributes?: Record<string, unknown>
   ): SpanScope {
-    const parentSpan = this.spanStack[this.spanStack.length - 1];
+    const spanStack = this.getSpanStack();
+    const parentSpan = spanStack[spanStack.length - 1];
     const traceId = parentSpan?.traceId ?? generateTraceId();
     const spanId = generateSpanId();
+    const sampled = this.currentTraceContext
+      ? (this.currentTraceContext.traceFlags ?? 0) & 1
+      : true;
 
     const span: WorkflowSpan = {
       traceId,
@@ -307,21 +263,22 @@ export class WorkflowTracer {
     this.currentTraceContext = {
       traceId,
       spanId,
-      traceFlags: 1,
+      traceFlags: sampled ? 1 : 0,
     };
 
-    this.spanStack.push(span);
+    spanStack.push(span);
 
-    return this.createSpanScope(span);
+    return this.createSpanScope(span, Boolean(sampled));
   }
 
-  /**
-   * Start a tool execution span
-   */
   startToolSpan(toolName: string, attributes?: Record<string, unknown>): SpanScope {
-    const parentSpan = this.spanStack[this.spanStack.length - 1];
+    const spanStack = this.getSpanStack();
+    const parentSpan = spanStack[spanStack.length - 1];
     const traceId = parentSpan?.traceId ?? generateTraceId();
     const spanId = generateSpanId();
+    const sampled = this.currentTraceContext
+      ? (this.currentTraceContext.traceFlags ?? 0) & 1
+      : true;
 
     const span: WorkflowSpan = {
       traceId,
@@ -339,22 +296,29 @@ export class WorkflowTracer {
       status: 'unset',
     };
 
-    this.spanStack.push(span);
+    this.currentTraceContext = {
+      traceId,
+      spanId,
+      traceFlags: sampled ? 1 : 0,
+    };
 
-    return this.createSpanScope(span);
+    spanStack.push(span);
+
+    return this.createSpanScope(span, Boolean(sampled));
   }
 
-  /**
-   * Start a custom span
-   */
   startSpan(
     name: string,
     kind: SpanKind = 'internal',
     attributes?: Record<string, unknown>
   ): SpanScope {
-    const parentSpan = this.spanStack[this.spanStack.length - 1];
+    const spanStack = this.getSpanStack();
+    const parentSpan = spanStack[spanStack.length - 1];
     const traceId = parentSpan?.traceId ?? generateTraceId();
     const spanId = generateSpanId();
+    const sampled = this.currentTraceContext
+      ? (this.currentTraceContext.traceFlags ?? 0) & 1
+      : true;
 
     const span: WorkflowSpan = {
       traceId,
@@ -369,15 +333,25 @@ export class WorkflowTracer {
       status: 'unset',
     };
 
-    this.spanStack.push(span);
+    spanStack.push(span);
 
-    return this.createSpanScope(span);
+    return this.createSpanScope(span, Boolean(sampled));
   }
 
   /**
-   * Create a span scope with lifecycle methods
+   * Run a function within an isolated async span context.
+   * Concurrent branches each get their own span stack, preventing
+   * parent-child corruption in parallel DAG nodes.
    */
-  private createSpanScope(span: WorkflowSpan): SpanScope {
+  runInContext<T>(fn: () => T): T {
+    const parentCtx = this.asyncLocalStorage.getStore();
+    const newCtx: AsyncSpanContext = {
+      spanStack: parentCtx ? [...parentCtx.spanStack] : [...this.rootSpanStack],
+    };
+    return this.asyncLocalStorage.run(newCtx, fn);
+  }
+
+  private createSpanScope(span: WorkflowSpan, sampled: boolean): SpanScope {
     return {
       span,
 
@@ -388,21 +362,24 @@ export class WorkflowTracer {
           span.statusMessage = message;
         }
 
-        const idx = this.spanStack.indexOf(span);
+        const spanStack = this.getSpanStack();
+        const idx = spanStack.indexOf(span);
         if (idx !== -1) {
-          this.spanStack.splice(idx, 1);
+          spanStack.splice(idx, 1);
         }
 
-        const parentSpan = this.spanStack[this.spanStack.length - 1];
+        const parentSpan = spanStack[spanStack.length - 1];
         if (parentSpan) {
           this.currentTraceContext = {
             traceId: parentSpan.traceId,
             spanId: parentSpan.spanId,
-            traceFlags: 1,
+            traceFlags: sampled ? 1 : 0,
           };
         }
 
-        this.completedSpans.push(span);
+        if (sampled) {
+          this.completedSpans.push(span);
+        }
       },
 
       addEvent: (name: string, attributes?: Record<string, unknown>) => {
@@ -437,25 +414,17 @@ export class WorkflowTracer {
     };
   }
 
-  /**
-   * Add a link between spans
-   */
   addLink(span: WorkflowSpan, link: SpanLink): void {
     span.links.push(link);
   }
 
-  /**
-   * Get current active span
-   */
   getCurrentSpan(): WorkflowSpan | undefined {
-    return this.spanStack[this.spanStack.length - 1];
+    const spanStack = this.getSpanStack();
+    return spanStack[spanStack.length - 1];
   }
 
-  /**
-   * Flush completed spans to exporter
-   */
   async flush(): Promise<void> {
-    if (!this.isSampled() || this.completedSpans.length === 0) {
+    if (this.completedSpans.length === 0) {
       return;
     }
 
@@ -465,17 +434,11 @@ export class WorkflowTracer {
     await this.exporter.export(spansToExport);
   }
 
-  /**
-   * Shutdown tracer and flush remaining spans
-   */
   async shutdown(): Promise<void> {
     await this.flush();
     await this.exporter.shutdown();
   }
 
-  /**
-   * Run a function with automatic span creation
-   */
   async trace<T>(
     name: string,
     fn: (scope: SpanScope) => Promise<T>,
@@ -498,16 +461,10 @@ export class WorkflowTracer {
   }
 }
 
-/**
- * Create a tracer instance
- */
 export function createTracer(config?: Partial<TracingConfig>): WorkflowTracer {
   return new WorkflowTracer(config);
 }
 
-/**
- * Global tracer instance for convenience
- */
 let globalTracer: WorkflowTracer | null = null;
 
 export function getGlobalTracer(): WorkflowTracer {

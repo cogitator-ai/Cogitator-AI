@@ -303,6 +303,7 @@ function waitWithAbort(delay: number, signal?: AbortSignal): Promise<void> {
       signal?.removeEventListener('abort', onAbort);
       resolve();
     }, delay);
+    timeout.unref?.();
 
     signal?.addEventListener('abort', onAbort, { once: true });
   });

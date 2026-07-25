@@ -1,18 +1,3 @@
-/**
- * Map-Reduce pattern implementation for workflows
- *
- * Features:
- * - Dynamic fan-out based on state
- * - Configurable concurrency limits
- * - Partial failure handling (continue with successful items)
- * - Progress tracking per item
- * - Streaming reduce (process as items complete)
- * - Nested map-reduce support
- */
-
-/**
- * Item result wrapper
- */
 export interface MapItemResult<T> {
   index: number;
   item: unknown;
@@ -22,9 +7,6 @@ export interface MapItemResult<T> {
   duration: number;
 }
 
-/**
- * Map progress event
- */
 export interface MapProgressEvent<T> {
   total: number;
   completed: number;
@@ -35,57 +17,16 @@ export interface MapProgressEvent<T> {
   running: number;
 }
 
-/**
- * Map node configuration
- */
 export interface MapNodeConfig<S, T> {
   name: string;
-
-  /**
-   * Extract items to map over from state
-   */
   items: (state: S) => unknown[];
-
-  /**
-   * Map function to apply to each item
-   */
   mapper: (item: unknown, index: number, state: S) => Promise<T> | T;
-
-  /**
-   * Maximum concurrent mappers
-   * @default Infinity
-   */
   concurrency?: number;
-
-  /**
-   * Continue processing if some items fail
-   * @default false
-   */
   continueOnError?: boolean;
-
-  /**
-   * Progress callback
-   */
   onProgress?: (progress: MapProgressEvent<T>) => void;
-
-  /**
-   * Filter items before mapping
-   */
   filter?: (item: unknown, index: number, state: S) => boolean;
-
-  /**
-   * Transform items before mapping
-   */
   transform?: (item: unknown, index: number, state: S) => unknown;
-
-  /**
-   * Timeout per item (ms)
-   */
   timeout?: number;
-
-  /**
-   * Retry configuration per item
-   */
   retry?: {
     maxAttempts: number;
     delay?: number;
@@ -93,43 +34,15 @@ export interface MapNodeConfig<S, T> {
   };
 }
 
-/**
- * Reduce node configuration
- */
 export interface ReduceNodeConfig<S, T, R> {
   name: string;
-
-  /**
-   * Initial accumulator value
-   */
   initial: R | ((state: S) => R);
-
-  /**
-   * Reducer function
-   */
   reducer: (accumulator: R, item: MapItemResult<T>, state: S) => R;
-
-  /**
-   * Process items as they complete (streaming)
-   * @default false
-   */
   streaming?: boolean;
-
-  /**
-   * Only include successful items in reduce
-   * @default true
-   */
   successOnly?: boolean;
-
-  /**
-   * Final transformation
-   */
   finalize?: (result: R, state: S) => R;
 }
 
-/**
- * Map-Reduce result
- */
 export interface MapReduceResult<T, R> {
   results: MapItemResult<T>[];
   reduced: R;
@@ -142,18 +55,12 @@ export interface MapReduceResult<T, R> {
   };
 }
 
-/**
- * Map-Reduce node configuration
- */
 export interface MapReduceNodeConfig<S, T, R> {
   name: string;
   map: Omit<MapNodeConfig<S, T>, 'name'>;
   reduce: Omit<ReduceNodeConfig<S, T, R>, 'name'>;
 }
 
-/**
- * Execute items with concurrency limit
- */
 async function executeWithConcurrency<T>(
   items: unknown[],
   mapper: (item: unknown, index: number) => Promise<MapItemResult<T>>,
@@ -184,9 +91,6 @@ async function executeWithConcurrency<T>(
   return results;
 }
 
-/**
- * Execute single item with timeout and retry
- */
 async function executeItem<S, T>(
   item: unknown,
   index: number,
@@ -208,12 +112,22 @@ async function executeItem<S, T>(
       let resultPromise = Promise.resolve(config.mapper(processedItem, index, state));
 
       if (config.timeout) {
-        resultPromise = Promise.race([
-          resultPromise,
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Item timeout exceeded')), config.timeout)
-          ),
-        ]);
+        let timer: ReturnType<typeof setTimeout>;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Item timeout exceeded')), config.timeout);
+        });
+        try {
+          const result = await Promise.race([resultPromise, timeoutPromise]);
+          return {
+            index,
+            item,
+            result,
+            success: true,
+            duration: Date.now() - startTime,
+          };
+        } finally {
+          clearTimeout(timer!);
+        }
       }
 
       const result = await resultPromise;
@@ -249,9 +163,6 @@ async function executeItem<S, T>(
   };
 }
 
-/**
- * Execute a map operation
- */
 export async function executeMap<S, T>(
   state: S,
   config: MapNodeConfig<S, T>
@@ -266,6 +177,7 @@ export async function executeMap<S, T>(
   let completed = 0;
   let successful = 0;
   let failed = 0;
+  let started = false;
 
   const emitProgress = (current?: MapItemResult<T>) => {
     if (config.onProgress) {
@@ -276,7 +188,7 @@ export async function executeMap<S, T>(
         failed,
         currentItem: current,
         pending: items.length - completed,
-        running: Math.min(concurrency, items.length - completed),
+        running: started ? Math.min(concurrency, items.length - completed) : 0,
       });
     }
   };
@@ -284,6 +196,7 @@ export async function executeMap<S, T>(
   emitProgress();
 
   const mapper = async (item: unknown, index: number): Promise<MapItemResult<T>> => {
+    started = true;
     const result = await executeItem(item, index, state, config);
 
     completed++;
@@ -300,14 +213,25 @@ export async function executeMap<S, T>(
     return result;
   };
 
-  const allResults = await executeWithConcurrency(items, mapper, concurrency);
-
-  return allResults;
+  try {
+    return await executeWithConcurrency(items, mapper, concurrency);
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    const partialResults: MapItemResult<T>[] = [];
+    for (let i = 0; i < items.length; i++) {
+      partialResults.push({
+        index: i,
+        item: items[i],
+        result: undefined as T,
+        success: false,
+        error: err,
+        duration: 0,
+      });
+    }
+    throw Object.assign(err, { partialResults });
+  }
 }
 
-/**
- * Execute a reduce operation
- */
 export function executeReduce<S, T, R>(
   results: MapItemResult<T>[],
   state: S,
@@ -329,9 +253,6 @@ export function executeReduce<S, T, R>(
   return result;
 }
 
-/**
- * Execute a map-reduce operation
- */
 export async function executeMapReduce<S, T, R>(
   state: S,
   config: MapReduceNodeConfig<S, T, R>
@@ -350,21 +271,30 @@ export async function executeMapReduce<S, T, R>(
         ? (config.reduce.initial as (state: S) => R)(state)
         : config.reduce.initial;
 
+    const reduceConfig = {
+      name: `${config.name}:reduce`,
+      ...config.reduce,
+    };
+
+    const streamingQueue: MapItemResult<T>[] = [];
+    let nextExpectedIndex = 0;
+
+    const drainQueue = () => {
+      streamingQueue.sort((a, b) => a.index - b.index);
+      while (streamingQueue.length > 0 && streamingQueue[0].index === nextExpectedIndex) {
+        const item = streamingQueue.shift()!;
+        if (item.success && reduceConfig.successOnly !== false) {
+          streamingAccumulator = reduceConfig.reducer(streamingAccumulator!, item, state);
+        }
+        nextExpectedIndex++;
+      }
+    };
+
     const originalOnProgress = mapConfig.onProgress;
     mapConfig.onProgress = (progress) => {
-      if (progress.currentItem?.success) {
-        const reduceConfig = {
-          name: `${config.name}:reduce`,
-          ...config.reduce,
-        };
-
-        if (reduceConfig.successOnly !== false || progress.currentItem.success) {
-          streamingAccumulator = reduceConfig.reducer(
-            streamingAccumulator!,
-            progress.currentItem,
-            state
-          );
-        }
+      if (progress.currentItem) {
+        streamingQueue.push(progress.currentItem);
+        drainQueue();
       }
       originalOnProgress?.(progress);
     };
@@ -404,9 +334,6 @@ export async function executeMapReduce<S, T, R>(
   };
 }
 
-/**
- * Create a map node factory
- */
 export function mapNode<S, T>(
   name: string,
   config: Omit<MapNodeConfig<S, T>, 'name'>
@@ -414,9 +341,6 @@ export function mapNode<S, T>(
   return { name, ...config };
 }
 
-/**
- * Create a reduce node factory
- */
 export function reduceNode<S, T, R>(
   name: string,
   config: Omit<ReduceNodeConfig<S, T, R>, 'name'>
@@ -424,9 +348,6 @@ export function reduceNode<S, T, R>(
   return { name, ...config };
 }
 
-/**
- * Create a map-reduce node factory
- */
 export function mapReduceNode<S, T, R>(
   name: string,
   config: Omit<MapReduceNodeConfig<S, T, R>, 'name'>
@@ -434,9 +355,6 @@ export function mapReduceNode<S, T, R>(
   return { name, ...config };
 }
 
-/**
- * Parallel map helper - execute all items in parallel
- */
 export async function parallelMap<S, T>(
   state: S,
   items: (state: S) => unknown[],
@@ -455,9 +373,6 @@ export async function parallelMap<S, T>(
   });
 }
 
-/**
- * Sequential map helper - execute items one by one
- */
 export async function sequentialMap<S, T>(
   state: S,
   items: (state: S) => unknown[],
@@ -476,9 +391,6 @@ export async function sequentialMap<S, T>(
   });
 }
 
-/**
- * Batched map helper - process items in fixed-size batches
- */
 export async function batchedMap<S, T>(
   state: S,
   items: (state: S) => unknown[],
@@ -498,12 +410,9 @@ export async function batchedMap<S, T>(
   });
 }
 
-/**
- * Collect helper - reduce results to an array
- */
 export function collect<T>(): Omit<ReduceNodeConfig<unknown, T, T[]>, 'name'> {
   return {
-    initial: [],
+    initial: () => [] as T[],
     reducer: (acc, item) => {
       acc.push(item.result);
       return acc;
@@ -511,9 +420,6 @@ export function collect<T>(): Omit<ReduceNodeConfig<unknown, T, T[]>, 'name'> {
   };
 }
 
-/**
- * Sum helper - reduce numbers to sum
- */
 export function sum(): Omit<ReduceNodeConfig<unknown, number, number>, 'name'> {
   return {
     initial: 0,
@@ -521,9 +427,6 @@ export function sum(): Omit<ReduceNodeConfig<unknown, number, number>, 'name'> {
   };
 }
 
-/**
- * Count helper - count successful items
- */
 export function count(): Omit<ReduceNodeConfig<unknown, unknown, number>, 'name'> {
   return {
     initial: 0,
@@ -531,9 +434,6 @@ export function count(): Omit<ReduceNodeConfig<unknown, unknown, number>, 'name'
   };
 }
 
-/**
- * First helper - get first result
- */
 export function first<T>(): Omit<ReduceNodeConfig<unknown, T, T | undefined>, 'name'> {
   return {
     initial: undefined,
@@ -541,9 +441,6 @@ export function first<T>(): Omit<ReduceNodeConfig<unknown, T, T | undefined>, 'n
   };
 }
 
-/**
- * Last helper - get last result
- */
 export function last<T>(): Omit<ReduceNodeConfig<unknown, T, T | undefined>, 'name'> {
   return {
     initial: undefined,
@@ -551,14 +448,11 @@ export function last<T>(): Omit<ReduceNodeConfig<unknown, T, T | undefined>, 'na
   };
 }
 
-/**
- * GroupBy helper - group results by key
- */
 export function groupBy<T, K extends string | number>(
   keyFn: (result: T, item: MapItemResult<T>) => K
 ): Omit<ReduceNodeConfig<unknown, T, Record<K, T[]>>, 'name'> {
   return {
-    initial: {} as Record<K, T[]>,
+    initial: () => ({}) as Record<K, T[]>,
     reducer: (acc, item) => {
       const key = keyFn(item.result, item);
       if (!acc[key]) {
@@ -570,14 +464,11 @@ export function groupBy<T, K extends string | number>(
   };
 }
 
-/**
- * Partition helper - partition results by predicate
- */
 export function partition<T>(
   predicate: (result: T, item: MapItemResult<T>) => boolean
 ): Omit<ReduceNodeConfig<unknown, T, { pass: T[]; fail: T[] }>, 'name'> {
   return {
-    initial: { pass: [], fail: [] },
+    initial: () => ({ pass: [] as T[], fail: [] as T[] }),
     reducer: (acc, item) => {
       if (predicate(item.result, item)) {
         acc.pass.push(item.result);
@@ -589,12 +480,9 @@ export function partition<T>(
   };
 }
 
-/**
- * FlatMap helper - flatten arrays of results
- */
 export function flatMap<T>(): Omit<ReduceNodeConfig<unknown, T[], T[]>, 'name'> {
   return {
-    initial: [],
+    initial: () => [] as T[],
     reducer: (acc, item) => {
       acc.push(...item.result);
       return acc;
@@ -602,9 +490,6 @@ export function flatMap<T>(): Omit<ReduceNodeConfig<unknown, T[], T[]>, 'name'> 
   };
 }
 
-/**
- * Stats helper - compute statistics from numeric results
- */
 export function stats(): Omit<
   ReduceNodeConfig<
     unknown,
@@ -620,13 +505,13 @@ export function stats(): Omit<
   'name'
 > {
   return {
-    initial: {
+    initial: () => ({
       count: 0,
       sum: 0,
       avg: 0,
       min: Infinity,
       max: -Infinity,
-    },
+    }),
     reducer: (acc, item) => {
       acc.count++;
       acc.sum += item.result;

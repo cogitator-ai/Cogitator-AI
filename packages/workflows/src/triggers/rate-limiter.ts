@@ -116,6 +116,14 @@ export class TokenBucket {
   }
 
   /**
+   * Check whether the bucket has refilled to capacity
+   */
+  isAtCapacity(): boolean {
+    this.refill();
+    return this.tokens >= this.capacity;
+  }
+
+  /**
    * Reset the bucket to full capacity
    */
   reset(): void {
@@ -153,6 +161,7 @@ export class RateLimiter {
     this.cleanupInterval = setInterval(() => {
       this.cleanup();
     }, cleanupIntervalMs);
+    this.cleanupInterval.unref?.();
   }
 
   /**
@@ -217,7 +226,7 @@ export class RateLimiter {
 
   private cleanup(): void {
     for (const [key, bucket] of this.buckets) {
-      if (bucket.getTokens() >= this.config.capacity) {
+      if (bucket.isAtCapacity()) {
         this.buckets.delete(key);
       }
     }
@@ -241,6 +250,7 @@ export class SlidingWindowRateLimiter {
     this.cleanupInterval = setInterval(() => {
       this.cleanup();
     }, cleanupIntervalMs);
+    this.cleanupInterval.unref?.();
   }
 
   /**

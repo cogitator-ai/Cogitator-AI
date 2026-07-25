@@ -54,14 +54,17 @@ export abstract class BaseDLQ {
 export class InMemoryDLQ extends BaseDLQ {
   private entries = new Map<string, DeadLetterEntry>();
   private defaultTTL: number;
+  private maxSize: number;
   private cleanupInterval?: ReturnType<typeof setInterval>;
 
-  constructor(options: { defaultTTL?: number; cleanupIntervalMs?: number } = {}) {
+  constructor(options: { defaultTTL?: number; cleanupIntervalMs?: number; maxSize?: number } = {}) {
     super();
     this.defaultTTL = options.defaultTTL ?? 7 * 24 * 60 * 60 * 1000;
+    this.maxSize = options.maxSize ?? 10_000;
 
     if (options.cleanupIntervalMs) {
       this.cleanupInterval = setInterval(() => void this.cleanup(), options.cleanupIntervalMs);
+      this.cleanupInterval.unref();
     }
   }
 
@@ -75,6 +78,13 @@ export class InMemoryDLQ extends BaseDLQ {
       createdAt: now,
       expiresAt: now + this.defaultTTL,
     };
+
+    if (this.entries.size >= this.maxSize) {
+      const oldestKey = this.entries.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.entries.delete(oldestKey);
+      }
+    }
 
     this.entries.set(id, extended);
     return id;
@@ -192,9 +202,7 @@ export class FileDLQ extends BaseDLQ {
   private async ensureInitialized(): Promise<void> {
     if (this.initialized) return;
 
-    try {
-      await fs.mkdir(this.directory, { recursive: true });
-    } catch {}
+    await fs.mkdir(this.directory, { recursive: true });
     this.initialized = true;
   }
 
@@ -349,7 +357,7 @@ export function createDLQEntry(
   } = {}
 ): DeadLetterEntry {
   return {
-    id: '',
+    id: `dlq_${nanoid(12)}`,
     nodeId,
     workflowId,
     workflowName,
@@ -375,6 +383,7 @@ export function createDLQEntry(
 export function createInMemoryDLQ(options?: {
   defaultTTL?: number;
   cleanupIntervalMs?: number;
+  maxSize?: number;
 }): InMemoryDLQ {
   return new InMemoryDLQ(options);
 }

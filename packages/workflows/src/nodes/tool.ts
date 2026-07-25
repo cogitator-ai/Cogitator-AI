@@ -1,7 +1,3 @@
-/**
- * ToolNode - Run a single tool as a workflow node
- */
-
 import type {
   WorkflowNode,
   WorkflowState,
@@ -11,20 +7,11 @@ import type {
 } from '@cogitator-ai/types';
 
 export interface ToolNodeOptions<S = WorkflowState, TArgs = unknown> {
-  /**
-   * Map current state to tool arguments
-   */
   argsMapper: (state: S, input?: unknown) => TArgs;
-
-  /**
-   * Map tool result to state updates
-   */
   stateMapper?: (result: unknown) => Partial<S>;
+  signal?: AbortSignal;
 }
 
-/**
- * Create a workflow node that runs a single tool
- */
 export function toolNode<S extends WorkflowState = WorkflowState, TArgs = unknown>(
   tool: Tool<TArgs, unknown>,
   options: ToolNodeOptions<S, TArgs>
@@ -34,11 +21,10 @@ export function toolNode<S extends WorkflowState = WorkflowState, TArgs = unknow
     fn: async (ctx): Promise<NodeResult<S>> => {
       const args = options.argsMapper(ctx.state, ctx.input);
 
-      const abortController = new AbortController();
       const toolContext: ToolContext = {
-        agentId: 'workflow',
+        agentId: `workflow:${ctx.workflowId}:${ctx.nodeId}`,
         runId: ctx.workflowId,
-        signal: abortController.signal,
+        signal: options.signal ?? new AbortController().signal,
       };
 
       const result = await tool.execute(args, toolContext);

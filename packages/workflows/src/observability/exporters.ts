@@ -21,6 +21,7 @@ export interface ExporterConfig {
   headers?: Record<string, string>;
   batchSize?: number;
   flushInterval?: number;
+  verbose?: boolean;
 }
 
 /**
@@ -59,23 +60,22 @@ export class ConsoleSpanExporter implements SpanExporterInstance {
   async shutdown(): Promise<void> {}
 }
 
-/**
- * OTLP HTTP exporter for OpenTelemetry-compatible backends
- * (Jaeger, Tempo, Honeycomb, Datadog, etc.)
- */
 export class OTLPSpanExporter implements SpanExporterInstance {
   private endpoint: string;
   private headers: Record<string, string>;
   private batchSize: number;
   private flushInterval: number;
+  private maxRetries: number;
   private pendingSpans: WorkflowSpan[] = [];
   private flushTimer: ReturnType<typeof setInterval> | null = null;
+  private consecutiveFailures = 0;
 
   constructor(config: {
     endpoint?: string;
     headers?: Record<string, string>;
     batchSize?: number;
     flushInterval?: number;
+    maxRetries?: number;
   }) {
     this.endpoint = config.endpoint ?? 'http://localhost:4318/v1/traces';
     this.headers = {
@@ -84,10 +84,12 @@ export class OTLPSpanExporter implements SpanExporterInstance {
     };
     this.batchSize = config.batchSize ?? 512;
     this.flushInterval = config.flushInterval ?? 5000;
+    this.maxRetries = config.maxRetries ?? 5;
 
     this.flushTimer = setInterval(() => {
       void this.flush();
     }, this.flushInterval);
+    this.flushTimer.unref();
   }
 
   async export(spans: WorkflowSpan[]): Promise<void> {
@@ -112,12 +114,30 @@ export class OTLPSpanExporter implements SpanExporterInstance {
       });
 
       if (!response.ok) {
-        console.error(`OTLP export failed: ${response.status.toString()} ${response.statusText}`);
-        this.pendingSpans.unshift(...spansToExport);
+        this.consecutiveFailures++;
+        if (this.consecutiveFailures > this.maxRetries) {
+          console.error(
+            `OTLP export: dropping ${spansToExport.length} span(s) after ${this.consecutiveFailures} consecutive failures`
+          );
+          this.consecutiveFailures = 0;
+        } else {
+          this.pendingSpans.unshift(...spansToExport);
+        }
+      } else {
+        this.consecutiveFailures = 0;
       }
     } catch (error) {
-      console.error('OTLP export error:', error);
-      this.pendingSpans.unshift(...spansToExport);
+      this.consecutiveFailures++;
+      if (this.consecutiveFailures > this.maxRetries) {
+        console.error(
+          `OTLP export: dropping ${spansToExport.length} span(s) after ${this.consecutiveFailures} consecutive failures`,
+          error
+        );
+        this.consecutiveFailures = 0;
+      } else {
+        console.error('OTLP export error:', error);
+        this.pendingSpans.unshift(...spansToExport);
+      }
     }
   }
 
@@ -359,7 +379,7 @@ export class NoopSpanExporter implements SpanExporterInstance {
 export function createSpanExporter(config: ExporterConfig): SpanExporterInstance {
   switch (config.type) {
     case 'console':
-      return new ConsoleSpanExporter(true);
+      return new ConsoleSpanExporter(config.verbose ?? false);
 
     case 'otlp':
       return new OTLPSpanExporter({

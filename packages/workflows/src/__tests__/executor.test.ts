@@ -102,6 +102,7 @@ describe('WorkflowExecutor', () => {
         .addNode('done', async (ctx) => ({
           state: { steps: [...ctx.state.steps, 'done'] },
         }))
+        .entryPoint('increment')
         .build();
 
       const executor = new WorkflowExecutor(mockCogitator);
@@ -124,6 +125,7 @@ describe('WorkflowExecutor', () => {
           after: ['increment'],
         })
         .addNode('done', async () => ({}))
+        .entryPoint('increment')
         .build();
 
       const executor = new WorkflowExecutor(mockCogitator);

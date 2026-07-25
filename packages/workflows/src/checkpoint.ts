@@ -14,19 +14,19 @@ export class InMemoryCheckpointStore implements CheckpointStore {
   private checkpoints = new Map<string, WorkflowCheckpoint>();
 
   async save(checkpoint: WorkflowCheckpoint): Promise<void> {
-    this.checkpoints.set(checkpoint.id, { ...checkpoint });
+    this.checkpoints.set(checkpoint.id, structuredClone(checkpoint));
   }
 
   async load(id: string): Promise<WorkflowCheckpoint | null> {
     const checkpoint = this.checkpoints.get(id);
-    return checkpoint ? { ...checkpoint } : null;
+    return checkpoint ? structuredClone(checkpoint) : null;
   }
 
   async list(workflowName: string): Promise<WorkflowCheckpoint[]> {
     const result: WorkflowCheckpoint[] = [];
     for (const checkpoint of this.checkpoints.values()) {
       if (checkpoint.workflowName === workflowName) {
-        result.push({ ...checkpoint });
+        result.push(structuredClone(checkpoint));
       }
     }
     return result.sort((a, b) => b.timestamp - a.timestamp);
@@ -52,9 +52,7 @@ export class FileCheckpointStore implements CheckpointStore {
   }
 
   private async ensureDirectory(): Promise<void> {
-    try {
-      await fs.mkdir(this.directory, { recursive: true });
-    } catch {}
+    await fs.mkdir(this.directory, { recursive: true });
   }
 
   private getFilePath(id: string): string {
@@ -65,17 +63,25 @@ export class FileCheckpointStore implements CheckpointStore {
   async save(checkpoint: WorkflowCheckpoint): Promise<void> {
     await this.ensureDirectory();
     const filePath = this.getFilePath(checkpoint.id);
-    await fs.writeFile(filePath, JSON.stringify(checkpoint, null, 2), 'utf-8');
+    const tmpPath = `${filePath}.tmp`;
+    await fs.writeFile(tmpPath, JSON.stringify(checkpoint, null, 2), 'utf-8');
+    await fs.rename(tmpPath, filePath);
   }
 
   async load(id: string): Promise<WorkflowCheckpoint | null> {
+    const filePath = this.getFilePath(id);
+
+    let content: string;
     try {
-      const filePath = this.getFilePath(id);
-      const content = await fs.readFile(filePath, 'utf-8');
-      return JSON.parse(content) as WorkflowCheckpoint;
-    } catch {
-      return null;
+      content = await fs.readFile(filePath, 'utf-8');
+    } catch (e: unknown) {
+      if (e instanceof Error && 'code' in e && (e as NodeJS.ErrnoException).code === 'ENOENT') {
+        return null;
+      }
+      throw e;
     }
+
+    return JSON.parse(content) as WorkflowCheckpoint;
   }
 
   async list(workflowName: string): Promise<WorkflowCheckpoint[]> {

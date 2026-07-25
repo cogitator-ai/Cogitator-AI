@@ -28,41 +28,40 @@ interface DelayConfig {
   jitter: number;
 }
 
+const RETRYABLE_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'ENETUNREACH',
+  'EAI_AGAIN',
+  'EPIPE',
+]);
+
+const RETRYABLE_PATTERNS: RegExp[] = [
+  /\btimeout\b/i,
+  /\bnetwork\b/i,
+  /\bconnection\s+(reset|refused|closed|aborted)\b/i,
+  /\bsocket\s+hang\s+up\b/i,
+  /\brate[\s-]?limit/i,
+  /\b(429|500|502|503|504)\b/,
+];
+
 /**
  * Default retryable error checker - retries on network/timeout errors
  */
 function defaultIsRetryable(error: Error): boolean {
-  const retryableErrors = [
-    'ECONNRESET',
-    'ECONNREFUSED',
-    'ETIMEDOUT',
-    'ENOTFOUND',
-    'ENETUNREACH',
-    'EAI_AGAIN',
-    'EPIPE',
-  ];
-
-  const retryableMessages = [
-    'timeout',
-    'network',
-    'connection',
-    'socket',
-    'ETIMEDOUT',
-    'rate limit',
-    '429',
-    '500',
-    '502',
-    '503',
-    '504',
-  ];
-
   const errorCode = (error as NodeJS.ErrnoException).code;
-  if (errorCode && retryableErrors.includes(errorCode)) {
+  if (errorCode && RETRYABLE_CODES.has(errorCode)) {
     return true;
   }
 
-  const message = error.message.toLowerCase();
-  return retryableMessages.some((m) => message.includes(m.toLowerCase()));
+  const statusCode = (error as { statusCode?: number }).statusCode;
+  if (statusCode && [429, 500, 502, 503, 504].includes(statusCode)) {
+    return true;
+  }
+
+  return RETRYABLE_PATTERNS.some((p) => p.test(error.message));
 }
 
 /**
@@ -94,11 +93,18 @@ function calculateDelay(attempt: number, config: DelayConfig): number {
   return Math.max(0, Math.round(baseDelay + jitter));
 }
 
-/**
- * Sleep for specified milliseconds
- */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    if (signal) {
+      const onAbort = (): void => {
+        clearTimeout(timer);
+        resolve();
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
 }
 
 /**
@@ -229,7 +235,7 @@ export async function executeWithRetry<T>(
       };
       options.onRetry?.(attemptInfo);
 
-      await sleep(delay);
+      await sleep(delay, options.abortSignal);
     }
   }
 

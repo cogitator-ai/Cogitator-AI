@@ -236,6 +236,10 @@ export class JobScheduler {
     options: ScheduleOptions = {},
     existingRunId?: string
   ): Promise<string> {
+    if (this.disposed) {
+      throw new Error('Scheduler is disposed');
+    }
+
     const runId = existingRunId ?? nanoid();
     const now = Date.now();
 
@@ -422,10 +426,10 @@ export class JobScheduler {
       if (!job.enabled) continue;
 
       if (job.nextRun <= now) {
-        void this.scheduleRun(job.workflow, {
+        this.scheduleRun(job.workflow, {
           ...job.options,
           triggerId: `cron:${job.id}`,
-        });
+        }).catch(() => {});
 
         job.nextRun = getNextCronOccurrence(job.expression, {
           currentDate: new Date(now + 1000),
@@ -447,6 +451,7 @@ export class JobScheduler {
         break;
       }
 
+      this.runningCount++;
       this.onRunReady?.(item.runId);
     }
   }

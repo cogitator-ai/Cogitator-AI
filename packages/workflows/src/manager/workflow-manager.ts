@@ -146,6 +146,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
     try {
       const result = await this.executor.execute(workflow, input, {
         ...options,
+        signal: abortController.signal,
         onNodeStart: (node) => {
           void this.updateRunNodes(runId, node, 'start');
           options?.onNodeStart?.(node);
@@ -210,6 +211,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       throw error;
     } finally {
       this.activeRuns.delete(runId);
+      this.runLocks.delete(runId);
       this.scheduler.runCompleted(runId);
     }
   }
@@ -267,7 +269,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
   }
 
   /**
-   * Pause a running workflow
+   * Pause a running workflow (aborts execution; resume requires a checkpoint)
    */
   async pause(runId: string): Promise<void> {
     const run = await this.runStore.get(runId);
@@ -275,6 +277,11 @@ export class DefaultWorkflowManager implements IWorkflowManager {
 
     if (run.status !== 'running') {
       throw new Error(`Cannot pause run in status: ${run.status}`);
+    }
+
+    const active = this.activeRuns.get(runId);
+    if (active) {
+      active.abort();
     }
 
     await this.runStore.update(runId, {
@@ -413,6 +420,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       const result = await this.executor.execute(workflow, run.state as Partial<S>, {
         checkpoint: !!this.checkpointStore,
         skipNodes,
+        signal: abortController.signal,
       });
 
       await this.runStore.update(newRunId, {
@@ -445,6 +453,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       throw error;
     } finally {
       this.activeRuns.delete(newRunId);
+      this.runLocks.delete(newRunId);
       this.scheduler.runCompleted(newRunId);
     }
   }
@@ -481,6 +490,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
   dispose(): void {
     this.stop();
     this.activeRuns.clear();
+    this.runLocks.clear();
     this.workflows.clear();
     this.stateChangeCallbacks.clear();
     this.scheduler.dispose();
@@ -500,6 +510,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
           message: `Workflow not found: ${run.workflowName}`,
         },
       });
+      this.scheduler.runCompleted(runId);
       return;
     }
 
@@ -508,19 +519,23 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       startedAt: Date.now(),
     });
 
-    this.scheduler.runStarted(runId);
-    const active = { abort: () => {} };
-    this.activeRuns.set(runId, active);
+    const abortController = new AbortController();
+    this.activeRuns.set(runId, { abort: () => abortController.abort() });
 
     try {
-      const result = await this.executor.execute(workflow, run.input as Partial<WorkflowState>);
+      const result = await this.executor.execute(workflow, run.input as Partial<WorkflowState>, {
+        signal: abortController.signal,
+      });
 
       await this.runStore.update(runId, {
-        status: 'completed',
+        status: result.error ? 'failed' : 'completed',
         state: result.state,
-        output: result.state,
+        output: result.error ? undefined : result.state,
         completedAt: Date.now(),
         checkpointId: result.checkpointId,
+        error: result.error
+          ? { name: result.error.name, message: result.error.message, stack: result.error.stack }
+          : undefined,
       });
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));

@@ -9,9 +9,10 @@
 
 import type { ApprovalNotifier, ApprovalRequest } from '@cogitator-ai/types';
 
-/**
- * Console notifier for development and debugging
- */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class ConsoleNotifier implements ApprovalNotifier {
   private prefix: string;
 
@@ -111,23 +112,45 @@ export class WebhookNotifier implements ApprovalNotifier {
     };
   }
 
-  private async send(payload: unknown): Promise<void> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+  private async send(payload: unknown, retries = 2): Promise<void> {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
-    try {
-      const response = await fetch(this.url, {
-        method: 'POST',
-        headers: this.headers,
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
+      try {
+        const response = await fetch(this.url, {
+          method: 'POST',
+          headers: this.headers,
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
 
-      if (!response.ok) {
-        throw new Error(`Webhook failed: ${response.status} ${response.statusText}`);
+        if (!response.ok) {
+          const isTransient = response.status >= 500 || response.status === 429;
+          if (isTransient && attempt < retries) {
+            await delay(1000 * 2 ** attempt);
+            continue;
+          }
+          throw new Error(`Webhook failed: ${response.status} ${response.statusText}`);
+        }
+
+        return;
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError' && attempt < retries) {
+          await delay(1000 * 2 ** attempt);
+          continue;
+        }
+        if (
+          attempt < retries &&
+          !(error instanceof Error && error.message.startsWith('Webhook failed:'))
+        ) {
+          await delay(1000 * 2 ** attempt);
+          continue;
+        }
+        throw error;
+      } finally {
+        clearTimeout(timeoutId);
       }
-    } finally {
-      clearTimeout(timeoutId);
     }
   }
 
@@ -259,9 +282,8 @@ export class CompositeNotifier implements ApprovalNotifier {
       }
     }
 
-    if (errors.length > 0) {
-      const combined = new AggregateError(errors, `${errors.length} notifier(s) failed`);
-      throw combined;
+    if (errors.length > 0 && !this.continueOnError) {
+      throw new AggregateError(errors, `${errors.length} notifier(s) failed`);
     }
   }
 }
@@ -322,22 +344,44 @@ export function priorityRouter(options: {
     }
   };
 
+  const warnNoNotifier = (request: ApprovalRequest, method: string): void => {
+    console.warn(
+      `priorityRouter: no notifier configured for priority "${request.priority ?? 'undefined'}" (${method}), notification dropped for request ${request.id}`
+    );
+  };
+
   return {
     async notify(request) {
       const notifier = getNotifier(request);
-      await notifier?.notify(request);
+      if (notifier) {
+        await notifier.notify(request);
+      } else {
+        warnNoNotifier(request, 'notify');
+      }
     },
     async notifyEscalation(request, reason) {
       const notifier = getNotifier(request);
-      await notifier?.notifyEscalation(request, reason);
+      if (notifier) {
+        await notifier.notifyEscalation(request, reason);
+      } else {
+        warnNoNotifier(request, 'notifyEscalation');
+      }
     },
     async notifyTimeout(request) {
       const notifier = getNotifier(request);
-      await notifier?.notifyTimeout(request);
+      if (notifier) {
+        await notifier.notifyTimeout(request);
+      } else {
+        warnNoNotifier(request, 'notifyTimeout');
+      }
     },
     async notifyDelegation(request, from, to) {
       const notifier = getNotifier(request);
-      await notifier?.notifyDelegation(request, from, to);
+      if (notifier) {
+        await notifier.notifyDelegation(request, from, to);
+      } else {
+        warnNoNotifier(request, 'notifyDelegation');
+      }
     },
   };
 }

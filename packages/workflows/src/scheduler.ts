@@ -137,21 +137,22 @@ export class WorkflowScheduler {
    */
   async runWithConcurrency<T>(tasks: (() => Promise<T>)[], maxConcurrency: number): Promise<T[]> {
     const results: T[] = [];
+    const errors: Error[] = [];
     const executing = new Set<Promise<void>>();
 
     for (const task of tasks) {
-      const promise = task().then((result) => {
-        results.push(result);
-      });
-
-      const tracked = promise.then(
-        () => {
-          executing.delete(tracked);
+      const promise = task().then(
+        (result) => {
+          results.push(result);
         },
-        () => {
-          executing.delete(tracked);
+        (error: unknown) => {
+          errors.push(error instanceof Error ? error : new Error(String(error)));
         }
       );
+
+      const tracked = promise.then(() => {
+        executing.delete(tracked);
+      });
 
       executing.add(tracked);
 
@@ -161,6 +162,11 @@ export class WorkflowScheduler {
     }
 
     await Promise.all(executing);
+
+    if (errors.length > 0) {
+      throw new AggregateError(errors, `${errors.length.toString()} task(s) failed`);
+    }
+
     return results;
   }
 
@@ -193,25 +199,34 @@ export class WorkflowScheduler {
     const results: T[] = new Array(tasks.length);
     let nextIndex = 0;
     let completedCount = 0;
+    let settled = false;
 
     return new Promise((resolve, reject) => {
       const startNext = () => {
+        if (settled) return;
+
         while (nextIndex < tasks.length && nextIndex - completedCount < maxConcurrency) {
           const index = nextIndex++;
 
           tasks[index]()
             .then(async (result) => {
+              if (settled) return;
               results[index] = result;
               await onComplete(result, index);
               completedCount++;
 
               if (completedCount === tasks.length) {
+                settled = true;
                 resolve(results);
               } else {
                 startNext();
               }
             })
-            .catch(reject);
+            .catch((error: unknown) => {
+              if (settled) return;
+              settled = true;
+              reject(error instanceof Error ? error : new Error(String(error)));
+            });
         }
       };
 

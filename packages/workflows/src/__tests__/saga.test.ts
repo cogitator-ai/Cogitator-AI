@@ -243,7 +243,7 @@ describe('Saga Pattern', () => {
       const state: TestState = { value: 0, steps: [] };
       const report = await manager.compensate(state, 'step3', new Error('Test failure'));
 
-      expect(order).toEqual(['comp3', 'comp2', 'comp1']);
+      expect(order).toEqual(['comp2', 'comp1']);
       expect(report.allSuccessful).toBe(true);
     });
 
@@ -274,7 +274,7 @@ describe('Saga Pattern', () => {
       const report = await manager.compensate(state, 'step2', new Error('Test failure'));
 
       expect(executed).toEqual(['comp1']);
-      expect(report.compensated.find((r) => r.nodeId === 'step2')?.skipped).toBe(true);
+      expect(report.compensated.find((r) => r.nodeId === 'step2')).toBeUndefined();
     });
 
     it('only compensates completed nodes', async () => {
@@ -299,7 +299,7 @@ describe('Saga Pattern', () => {
       const state: TestState = { value: 0, steps: [] };
       await manager.compensate(state, 'step2', new Error('Test failure'));
 
-      expect(executed).toEqual(['comp2', 'comp1']);
+      expect(executed).toEqual(['comp1']);
       expect(executed).not.toContain('comp3');
     });
 
@@ -327,7 +327,6 @@ describe('Saga Pattern', () => {
       const report = await manager.compensate(state, 'step3', new Error('Test failure'));
 
       expect(executed).toContain('comp1');
-      expect(executed).toContain('comp3');
       expect(report.allSuccessful).toBe(false);
       expect(report.partialFailures).toContain('step2');
     });

@@ -167,13 +167,19 @@ async function executeApprovalChain<S extends WorkflowState>(
     responses.push(response);
     lastResponse = response;
 
+    const timedOut = response.respondedBy === '__timeout__';
+
+    if (timedOut && step.timeoutAction === 'skip') {
+      continue;
+    }
+
     if (step.required && !isApproved(approval.type, response.decision)) {
       return {
         approved: false,
         decision: response.decision,
         response,
         state,
-        timedOut: response.respondedBy === '__timeout__',
+        timedOut,
         escalated: response.respondedBy === '__escalation__',
       };
     }
@@ -295,7 +301,7 @@ async function handleTimeout(
         await store.createRequest(escalatedRequest);
         await notifier?.notify(escalatedRequest);
 
-        const escalationTimeout = request.timeout ?? 30 * 60 * 1000;
+        const escalationTimeout = Math.max(request.timeout ?? 0, 30 * 60 * 1000);
 
         return new Promise<ApprovalResponse>((resolve) => {
           let settled = false;

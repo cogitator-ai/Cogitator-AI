@@ -130,21 +130,11 @@ export class CompensationManager<S = WorkflowState> {
     const compensated: CompensationResult[] = [];
     const partialFailures: string[] = [];
 
-    const nodesToCompensate = this.getCompensableNodes();
+    const nodesToCompensate = this.getCompensableNodes().filter(
+      (nodeId) => nodeId !== failedNodeId
+    );
 
-    const sortedNodes = this.sortByCompensationOrder(nodesToCompensate);
-
-    const parallelNodes: string[] = [];
-    const sequentialNodes: string[] = [];
-
-    for (const nodeId of sortedNodes) {
-      const step = this.steps.get(nodeId)!;
-      if (step.order === 'parallel') {
-        parallelNodes.push(nodeId);
-      } else {
-        sequentialNodes.push(nodeId);
-      }
-    }
+    const groups = this.buildCompensationGroups(nodesToCompensate);
 
     const executeStep = async (nodeId: string): Promise<void> => {
       const step = this.steps.get(nodeId)!;
@@ -176,6 +166,9 @@ export class CompensationManager<S = WorkflowState> {
           break;
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
+          if (attempt < (step.retries ?? 0)) {
+            await this.delay(100 * Math.pow(2, attempt));
+          }
         }
       }
 
@@ -192,12 +185,12 @@ export class CompensationManager<S = WorkflowState> {
       }
     };
 
-    if (parallelNodes.length > 0) {
-      await Promise.all(parallelNodes.map(executeStep));
-    }
-
-    for (const nodeId of sequentialNodes) {
-      await executeStep(nodeId);
+    for (const group of groups) {
+      if (group.length === 1) {
+        await executeStep(group[0]);
+      } else {
+        await Promise.all(group.map(executeStep));
+      }
     }
 
     return {
@@ -213,41 +206,53 @@ export class CompensationManager<S = WorkflowState> {
   }
 
   /**
-   * Sort nodes by their compensation order
+   * Build ordered compensation groups respecting execution order.
+   * Consecutive parallel nodes are grouped and run concurrently at their
+   * correct position. Forward-order nodes run individually in forward order.
    */
-  private sortByCompensationOrder(nodes: string[]): string[] {
-    const result: string[] = [];
-    const parallel: string[] = [];
-    const reverse: string[] = [];
-    const forward: string[] = [];
+  private buildCompensationGroups(nodes: string[]): string[][] {
+    const nodeSet = new Set(nodes);
+    const groups: string[][] = [];
+    const forwardNodes: string[] = [];
+    let currentParallelGroup: string[] = [];
 
-    for (const nodeId of nodes) {
-      const step = this.steps.get(nodeId);
-      const order = step?.order ?? 'reverse';
+    const flushParallel = (): void => {
+      if (currentParallelGroup.length > 0) {
+        groups.push(currentParallelGroup);
+        currentParallelGroup = [];
+      }
+    };
 
-      switch (order) {
-        case 'parallel':
-          parallel.push(nodeId);
-          break;
-        case 'forward':
-          forward.push(nodeId);
-          break;
-        case 'reverse':
-        default:
-          reverse.push(nodeId);
-          break;
+    for (const nodeId of [...this.executionOrder].reverse()) {
+      if (!nodeSet.has(nodeId)) continue;
+
+      const order = this.steps.get(nodeId)?.order ?? 'reverse';
+
+      if (order === 'forward') {
+        forwardNodes.push(nodeId);
+        continue;
+      }
+
+      if (order === 'parallel') {
+        currentParallelGroup.push(nodeId);
+      } else {
+        flushParallel();
+        groups.push([nodeId]);
       }
     }
 
-    result.push(...parallel);
+    flushParallel();
 
-    const reverseOrder = [...this.executionOrder].reverse().filter((n) => reverse.includes(n));
-    result.push(...reverseOrder);
+    const forwardOrdered = this.executionOrder.filter((n) => forwardNodes.includes(n));
+    for (const nodeId of forwardOrdered) {
+      groups.push([nodeId]);
+    }
 
-    const forwardOrder = this.executionOrder.filter((n) => forward.includes(n));
-    result.push(...forwardOrder);
+    return groups;
+  }
 
-    return result;
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**

@@ -230,8 +230,15 @@ export function getNextCronOccurrences(
  */
 export function cronMatchesDate(expression: string, date: Date, timezone?: string): boolean {
   const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
+  const parsed = parseCronExpression(normalized);
 
-  let checkDate = date;
+  let minute: number;
+  let hour: number;
+  let dayOfMonth: number;
+  let month: number;
+  let dayOfWeek: number;
+  let second: number;
+
   if (timezone) {
     const formatter = new Intl.DateTimeFormat('en-US', {
       timeZone: timezone,
@@ -246,23 +253,24 @@ export function cronMatchesDate(expression: string, date: Date, timezone?: strin
     const parts = formatter.formatToParts(date);
     const get = (type: string) => parseInt(parts.find((p) => p.type === type)?.value ?? '0');
 
-    checkDate = new Date(
-      get('year'),
-      get('month') - 1,
-      get('day'),
-      get('hour'),
-      get('minute'),
-      get('second')
-    );
+    minute = get('minute');
+    hour = get('hour') % 24;
+    dayOfMonth = get('day');
+    month = get('month');
+    second = get('second');
+
+    const utcDate = new Date(date.toLocaleString('en-US', { timeZone: 'UTC' }));
+    const tzDate = new Date(date.toLocaleString('en-US', { timeZone: timezone }));
+    const dayDiff = Math.round((tzDate.getTime() - utcDate.getTime()) / 86400000);
+    dayOfWeek = (date.getUTCDay() + dayDiff + 7) % 7;
+  } else {
+    minute = date.getMinutes();
+    hour = date.getHours();
+    dayOfMonth = date.getDate();
+    month = date.getMonth() + 1;
+    dayOfWeek = date.getDay();
+    second = date.getSeconds();
   }
-
-  const parsed = parseCronExpression(normalized);
-
-  const minute = checkDate.getMinutes();
-  const hour = checkDate.getHours();
-  const dayOfMonth = checkDate.getDate();
-  const month = checkDate.getMonth() + 1;
-  const dayOfWeek = checkDate.getDay();
 
   if (!parsed.fields.minute.includes(minute)) return false;
   if (!parsed.fields.hour.includes(hour)) return false;
@@ -285,7 +293,6 @@ export function cronMatchesDate(expression: string, date: Date, timezone?: strin
   }
 
   if (parsed.hasSeconds && parsed.fields.second) {
-    const second = checkDate.getSeconds();
     if (!parsed.fields.second.includes(second)) return false;
   }
 
@@ -342,9 +349,15 @@ export function describeCronExpression(expression: string): string {
 
   if (minute === '*' && hour === '*') {
     descriptions.push('Every minute');
-  } else if (minute.startsWith('*/')) {
+  } else if (minute.startsWith('*/') && hour === '*') {
     const interval = minute.slice(2);
     descriptions.push(`Every ${interval} minutes`);
+  } else if (hour.startsWith('*/')) {
+    const interval = hour.slice(2);
+    descriptions.push(`Every ${interval} hours`);
+    if (minute !== '0' && minute !== '*') {
+      descriptions.push(`at minute ${minute}`);
+    }
   } else if (hour === '*') {
     descriptions.push(`At minute ${minute} of every hour`);
   } else if (minute === '0') {

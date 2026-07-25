@@ -23,6 +23,7 @@ export interface WebhookRequest {
   path: string;
   headers: Record<string, string | string[] | undefined>;
   body?: unknown;
+  rawBody?: string | Buffer;
   query?: Record<string, string>;
   ip?: string;
 }
@@ -110,6 +111,7 @@ export class WebhookTriggerExecutor {
     this.cleanupInterval = setInterval(() => {
       this.cleanupDeduplicationCache();
     }, cleanupMs);
+    this.cleanupInterval.unref?.();
   }
 
   /**
@@ -431,7 +433,8 @@ export class WebhookTriggerExecutor {
 
         const algorithm = auth.algorithm === 'sha512' ? 'sha512' : 'sha256';
         const payload =
-          typeof request.body === 'string' ? request.body : JSON.stringify(request.body);
+          request.rawBody ??
+          (typeof request.body === 'string' ? request.body : JSON.stringify(request.body));
 
         const expectedSignature = crypto
           .createHmac(algorithm, auth.secret)
@@ -471,7 +474,7 @@ export class WebhookTriggerExecutor {
   }
 
   private isDuplicate(triggerId: string, dedupKey: string, windowMs: number): boolean {
-    const cacheKey = `${triggerId}:${dedupKey}`;
+    const cacheKey = `${triggerId}\0${dedupKey}`;
     const existing = this.deduplicationCache.get(cacheKey);
 
     if (existing && Date.now() - existing < windowMs) {
@@ -501,7 +504,7 @@ export class WebhookTriggerExecutor {
   }
 
   private normalizePathKey(path: string, method: string): string {
-    return `${method.toUpperCase()}:${path.toLowerCase()}`;
+    return `${method.toUpperCase()}:${path}`;
   }
 
   private getClientKey(request: WebhookRequest): string {
@@ -509,10 +512,9 @@ export class WebhookTriggerExecutor {
   }
 
   private timingSafeCompare(a: string, b: string): boolean {
-    const aBuf = Buffer.from(a);
-    const bBuf = Buffer.from(b);
-    if (aBuf.length !== bBuf.length) return false;
-    return crypto.timingSafeEqual(aBuf, bBuf);
+    const aHash = crypto.createHash('sha256').update(a).digest();
+    const bHash = crypto.createHash('sha256').update(b).digest();
+    return crypto.timingSafeEqual(aHash, bHash);
   }
 
   private getHeader(

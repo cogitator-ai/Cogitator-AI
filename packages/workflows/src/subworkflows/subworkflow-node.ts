@@ -1,14 +1,3 @@
-/**
- * Subworkflow node implementation
- *
- * Features:
- * - State mapping parent ↔ child
- * - Error propagation strategies
- * - Recursive workflows with depth limits
- * - Shared checkpoints
- * - Timeout support
- */
-
 import type {
   Workflow,
   WorkflowState,
@@ -19,97 +8,34 @@ import type {
 import type { Cogitator } from '@cogitator-ai/core';
 import { WorkflowExecutor } from '../executor';
 
-/**
- * Error handling strategy for subworkflows
- */
 export type SubworkflowErrorStrategy = 'propagate' | 'catch' | 'retry' | 'ignore';
 
-/**
- * Subworkflow retry configuration
- */
 export interface SubworkflowRetryConfig {
   maxAttempts: number;
   delay?: number;
   backoff?: 'linear' | 'exponential';
 }
 
-/**
- * Subworkflow configuration
- */
 export interface SubworkflowConfig<PS extends WorkflowState, CS extends WorkflowState> {
   name: string;
-
-  /**
-   * The child workflow to execute
-   */
   workflow: Workflow<CS>;
-
-  /**
-   * Map parent state to child initial state
-   */
   inputMapper: (parentState: PS, context: SubworkflowContext) => Partial<CS>;
-
-  /**
-   * Map child result back to parent state
-   */
   outputMapper: (
     childResult: WorkflowResult<CS>,
     parentState: PS,
     context: SubworkflowContext
   ) => PS;
-
-  /**
-   * Error handling strategy
-   * @default 'propagate'
-   */
   onError?: SubworkflowErrorStrategy;
-
-  /**
-   * Retry config when onError is 'retry'
-   */
   retryConfig?: SubworkflowRetryConfig;
-
-  /**
-   * Maximum nesting depth
-   * @default 10
-   */
   maxDepth?: number;
-
-  /**
-   * Timeout for subworkflow execution (ms)
-   */
   timeout?: number;
-
-  /**
-   * Share checkpoint store with parent
-   * @default true
-   */
   shareCheckpoints?: boolean;
-
-  /**
-   * Called before subworkflow starts
-   */
   onStart?: (childState: Partial<CS>, context: SubworkflowContext) => void;
-
-  /**
-   * Called after subworkflow completes
-   */
   onComplete?: (result: WorkflowResult<CS>, context: SubworkflowContext) => void;
-
-  /**
-   * Called on subworkflow error
-   */
   onChildError?: (error: Error, context: SubworkflowContext) => void;
-
-  /**
-   * Condition to run subworkflow
-   */
   condition?: (parentState: PS, context: SubworkflowContext) => boolean;
 }
 
-/**
- * Subworkflow execution context
- */
 export interface SubworkflowContext {
   cogitator: Cogitator;
   parentWorkflowId: string;
@@ -118,11 +44,9 @@ export interface SubworkflowContext {
   depth: number;
   checkpointStore?: CheckpointStore;
   metadata?: Record<string, unknown>;
+  signal?: AbortSignal;
 }
 
-/**
- * Subworkflow result
- */
 export interface SubworkflowResult<PS extends WorkflowState, CS extends WorkflowState> {
   success: boolean;
   parentState: PS;
@@ -133,9 +57,6 @@ export interface SubworkflowResult<PS extends WorkflowState, CS extends Workflow
   depth: number;
 }
 
-/**
- * Error thrown when max depth is exceeded
- */
 export class MaxDepthExceededError extends Error {
   readonly depth: number;
   readonly maxDepth: number;
@@ -148,9 +69,8 @@ export class MaxDepthExceededError extends Error {
   }
 }
 
-/**
- * Execute a subworkflow
- */
+const DEFAULT_RETRY_CONFIG: SubworkflowRetryConfig = { maxAttempts: 3, delay: 1000 };
+
 export async function executeSubworkflow<PS extends WorkflowState, CS extends WorkflowState>(
   parentState: PS,
   config: SubworkflowConfig<PS, CS>,
@@ -195,20 +115,33 @@ export async function executeSubworkflow<PS extends WorkflowState, CS extends Wo
 
   let lastError: Error | undefined;
   let childResult: WorkflowResult<CS> | undefined;
-  const maxAttempts =
-    config.onError === 'retry' && config.retryConfig ? config.retryConfig.maxAttempts : 1;
+
+  const retryConfig =
+    config.onError === 'retry' ? (config.retryConfig ?? DEFAULT_RETRY_CONFIG) : config.retryConfig;
+  const maxAttempts = retryConfig?.maxAttempts ?? 1;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (context.signal?.aborted) {
+      lastError = new Error('Subworkflow aborted');
+      break;
+    }
+
     try {
       const executePromise = executor.execute(config.workflow, childInput, executeOptions);
 
       if (config.timeout) {
-        childResult = await Promise.race([
-          executePromise,
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Subworkflow timeout exceeded')), config.timeout)
-          ),
-        ]);
+        let timer: ReturnType<typeof setTimeout>;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Subworkflow timeout exceeded')),
+            config.timeout
+          );
+        });
+        try {
+          childResult = await Promise.race([executePromise, timeoutPromise]);
+        } finally {
+          clearTimeout(timer!);
+        }
       } else {
         childResult = await executePromise;
       }
@@ -229,10 +162,10 @@ export async function executeSubworkflow<PS extends WorkflowState, CS extends Wo
       lastError = error instanceof Error ? error : new Error(String(error));
       config.onChildError?.(lastError, context);
 
-      if (attempt < maxAttempts - 1 && config.retryConfig) {
-        const delay = config.retryConfig.delay ?? 1000;
+      if (attempt < maxAttempts - 1 && retryConfig) {
+        const delay = retryConfig.delay ?? 1000;
         const actualDelay =
-          config.retryConfig.backoff === 'exponential'
+          retryConfig.backoff === 'exponential'
             ? delay * Math.pow(2, attempt)
             : delay * (attempt + 1);
         await new Promise((resolve) => setTimeout(resolve, actualDelay));
@@ -268,9 +201,6 @@ export async function executeSubworkflow<PS extends WorkflowState, CS extends Wo
   }
 }
 
-/**
- * Create a subworkflow node factory
- */
 export function subworkflowNode<PS extends WorkflowState, CS extends WorkflowState>(
   name: string,
   config: Omit<SubworkflowConfig<PS, CS>, 'name'>
@@ -278,9 +208,6 @@ export function subworkflowNode<PS extends WorkflowState, CS extends WorkflowSta
   return { name, ...config };
 }
 
-/**
- * Create a simple subworkflow that just passes state through
- */
 export function simpleSubworkflow<S extends WorkflowState>(
   name: string,
   workflow: Workflow<S>,
@@ -297,9 +224,6 @@ export function simpleSubworkflow<S extends WorkflowState>(
   };
 }
 
-/**
- * Create a subworkflow that extracts a subset of parent state
- */
 export function nestedSubworkflow<
   PS extends WorkflowState,
   K extends keyof PS,
@@ -324,9 +248,6 @@ export function nestedSubworkflow<
   };
 }
 
-/**
- * Create a conditional subworkflow
- */
 export function conditionalSubworkflow<PS extends WorkflowState, CS extends WorkflowState>(
   name: string,
   config: Omit<SubworkflowConfig<PS, CS>, 'name'> & {

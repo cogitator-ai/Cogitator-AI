@@ -13,6 +13,10 @@ import type {
   CheckpointStrategy,
   NodeResult,
 } from '@cogitator-ai/types';
+
+export interface ExecutorExecuteOptions extends WorkflowExecuteOptions {
+  signal?: AbortSignal;
+}
 import type { Cogitator } from '@cogitator-ai/core';
 import { nanoid } from 'nanoid';
 import { WorkflowScheduler } from './scheduler';
@@ -49,7 +53,7 @@ export class WorkflowExecutor {
   async execute<S extends WorkflowState>(
     workflow: Workflow<S>,
     input?: Partial<S>,
-    options?: WorkflowExecuteOptions
+    options?: ExecutorExecuteOptions
   ): Promise<WorkflowResult<S>> {
     const workflowId = options?.workflowId ?? `wf_${nanoid(12)}`;
     const startTime = Date.now();
@@ -162,6 +166,11 @@ export class WorkflowExecutor {
 
     try {
       while (currentNodes.length > 0 && iterations < maxIterations) {
+        if (options?.signal?.aborted) {
+          error = new Error('Workflow execution aborted');
+          break;
+        }
+
         iterations++;
 
         const nodesToRun = currentNodes.filter((n) => workflow.nodes.has(n) && !skipNodes?.has(n));
@@ -208,7 +217,7 @@ export class WorkflowExecutor {
         currentNodes = [...new Set(nextNodes)];
       }
 
-      if (iterations >= maxIterations) {
+      if (iterations >= maxIterations && currentNodes.length > 0) {
         error = new Error(`Workflow exceeded max iterations (${maxIterations.toString()})`);
       }
     } catch (e) {
@@ -287,7 +296,7 @@ export class WorkflowExecutor {
       'onNodeStart' | 'onNodeComplete' | 'onNodeError' | 'onNodeProgress'
     >
   ): AsyncIterable<StreamingWorkflowEvent> {
-    const workflowId = `wf_${nanoid(12)}`;
+    const workflowId = options?.workflowId ?? `wf_${nanoid(12)}`;
     const startTime = Date.now();
 
     yield {

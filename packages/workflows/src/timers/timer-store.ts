@@ -220,24 +220,34 @@ export class FileTimerStore implements TimerStore {
   private async ensureInitialized(): Promise<void> {
     if (this.initialized) return;
 
-    try {
-      await fs.mkdir(this.directory, { recursive: true });
+    await fs.mkdir(this.directory, { recursive: true });
 
-      try {
-        const content = await fs.readFile(this.indexFile, 'utf-8');
-        const timers = JSON.parse(content) as TimerEntry[];
-        for (const timer of timers) {
-          this.cache.set(timer.id, timer);
-        }
-      } catch {}
-    } catch {}
+    try {
+      const content = await fs.readFile(this.indexFile, 'utf-8');
+      const timers = JSON.parse(content) as TimerEntry[];
+      for (const timer of timers) {
+        this.cache.set(timer.id, timer);
+      }
+    } catch (error: unknown) {
+      const isNotFound =
+        error instanceof Error &&
+        'code' in error &&
+        (error as NodeJS.ErrnoException).code === 'ENOENT';
+      if (!isNotFound) {
+        throw new Error(
+          `Failed to load timer store from ${this.indexFile}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
 
     this.initialized = true;
   }
 
   private async persist(): Promise<void> {
     const timers = Array.from(this.cache.values());
-    await fs.writeFile(this.indexFile, JSON.stringify(timers, null, 2));
+    const tmpFile = `${this.indexFile}.${process.pid}.tmp`;
+    await fs.writeFile(tmpFile, JSON.stringify(timers, null, 2));
+    await fs.rename(tmpFile, this.indexFile);
   }
 
   async schedule(

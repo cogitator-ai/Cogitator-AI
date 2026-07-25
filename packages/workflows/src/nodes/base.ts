@@ -1,7 +1,3 @@
-/**
- * Base node interfaces and types
- */
-
 import type {
   WorkflowNode,
   WorkflowState,
@@ -9,12 +5,10 @@ import type {
   NodeContext,
   NodeResult,
 } from '@cogitator-ai/types';
+import type { Cogitator } from '@cogitator-ai/core';
 
 export type { WorkflowNode, NodeConfig, NodeContext, NodeResult };
 
-/**
- * Extended context with Cogitator for agent nodes
- */
 export interface ExtendedNodeContext<S = WorkflowState> extends NodeContext<S> {
-  cogitator: import('@cogitator-ai/core').Cogitator;
+  cogitator: Cogitator;
 }

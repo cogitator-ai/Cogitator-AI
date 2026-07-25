@@ -398,12 +398,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 
 ---
 
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=cogitator-ai/Cogitator-AI&type=date&legend=top-left)](https://www.star-history.com/#cogitator-ai/Cogitator-AI&type=date&legend=top-left)
-
----
-
 ## License
 
 MIT - see [LICENSE](./LICENSE).

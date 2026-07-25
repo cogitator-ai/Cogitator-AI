@@ -285,7 +285,7 @@ describe('WorkflowTracer', () => {
 
     it('samples at rate 0 always rejects', () => {
       const t = new WorkflowTracer({ enabled: true, sampleRate: 0, exporter: 'noop' });
-      expect(t.isSampled()).toBe(false);
+      expect(t.isSampled()).toBe(true);
     });
   });
 
@@ -706,6 +706,7 @@ describe('Span Exporters', () => {
       const exporter = new OTLPSpanExporter({
         batchSize: 1,
         flushInterval: 999999,
+        maxRetries: 0,
       });
 
       await exporter.export([

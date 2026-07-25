@@ -20,6 +20,7 @@ export interface CronTriggerState {
   triggerId: string;
   workflowName: string;
   config: CronTriggerConfig;
+  createdAt: number;
   lastRun?: number;
   nextRun?: number;
   runCount: number;
@@ -43,10 +44,13 @@ export interface CronTriggerResult {
 /**
  * Cron trigger executor
  */
+const MAX_TIMEOUT_DELAY = 2_147_483_647;
+
 export class CronTriggerExecutor {
   private triggers = new Map<string, CronTriggerState>();
   private timeouts = new Map<string, ReturnType<typeof setTimeout>>();
   private intervals = new Map<string, ReturnType<typeof setInterval>>();
+  private inFlight = new Set<string>();
   private onFire?: (trigger: WorkflowTrigger, context: TriggerContext) => Promise<string>;
 
   constructor(
@@ -73,6 +77,7 @@ export class CronTriggerExecutor {
       triggerId,
       workflowName,
       config,
+      createdAt: Date.now(),
       nextRun,
       runCount: 0,
       errorCount: 0,
@@ -167,9 +172,10 @@ export class CronTriggerExecutor {
   }
 
   /**
-   * Manually fire a trigger
+   * Manually fire a trigger.
+   * Pass fireAt to replay a historical occurrence (catch-up).
    */
-  async fire(triggerId: string): Promise<CronTriggerResult> {
+  async fire(triggerId: string, fireAt?: number): Promise<CronTriggerResult> {
     const state = this.triggers.get(triggerId);
     if (!state) {
       return {
@@ -178,7 +184,7 @@ export class CronTriggerExecutor {
       };
     }
 
-    const now = Date.now();
+    const now = fireAt ?? Date.now();
 
     if (
       state.config.maxConcurrent !== undefined &&
@@ -188,6 +194,15 @@ export class CronTriggerExecutor {
         triggered: false,
         skipped: true,
         reason: `Max concurrent runs reached: ${state.config.maxConcurrent}`,
+        nextRun: state.nextRun,
+      };
+    }
+
+    if (this.inFlight.has(triggerId)) {
+      return {
+        triggered: false,
+        skipped: true,
+        reason: 'Fire already in progress',
         nextRun: state.nextRun,
       };
     }
@@ -219,6 +234,7 @@ export class CronTriggerExecutor {
       context.payload = input;
     }
 
+    this.inFlight.add(triggerId);
     state.activeRuns++;
     state.lastRun = now;
 
@@ -246,6 +262,8 @@ export class CronTriggerExecutor {
         reason: state.lastError,
         nextRun: state.nextRun,
       };
+    } finally {
+      this.inFlight.delete(triggerId);
     }
   }
 
@@ -272,7 +290,7 @@ export class CronTriggerExecutor {
         break;
       }
 
-      const result = await this.fire(triggerId);
+      const result = await this.fire(triggerId, nextRun.getTime());
       results.push(result);
 
       currentTime = nextRun.getTime() + 1;
@@ -315,6 +333,7 @@ export class CronTriggerExecutor {
     const existingInterval = this.intervals.get(triggerId);
     if (existingInterval) {
       clearInterval(existingInterval);
+      this.intervals.delete(triggerId);
     }
 
     const now = Date.now();
@@ -324,30 +343,47 @@ export class CronTriggerExecutor {
 
     const delay = Math.max(0, nextRun - now);
 
-    const timeoutId = setTimeout(() => {
+    const timeoutId = this.safeSetTimeout(() => {
       this.timeouts.delete(triggerId);
       if (!this.triggers.has(triggerId)) return;
 
-      this.fire(triggerId).catch(() => {});
+      void this.fire(triggerId).then(() => {
+        if (!this.triggers.has(triggerId)) return;
 
-      const checkInterval = this.calculateCheckInterval(state.config);
-      const interval = setInterval(() => {
         const currentState = this.triggers.get(triggerId);
-        if (!currentState?.enabled) {
-          clearInterval(interval);
-          return;
-        }
+        if (!currentState?.enabled) return;
 
-        const currentNow = Date.now();
-        if (currentState.nextRun && currentNow >= currentState.nextRun) {
-          this.fire(triggerId).catch(() => {});
-        }
-      }, checkInterval);
+        const checkInterval = this.calculateCheckInterval(currentState.config);
+        const interval = setInterval(() => {
+          const s = this.triggers.get(triggerId);
+          if (!s?.enabled) {
+            clearInterval(interval);
+            this.intervals.delete(triggerId);
+            return;
+          }
 
-      this.intervals.set(triggerId, interval);
+          const currentNow = Date.now();
+          if (s.nextRun && currentNow >= s.nextRun && !this.inFlight.has(triggerId)) {
+            void this.fire(triggerId);
+          }
+        }, checkInterval);
+
+        this.intervals.set(triggerId, interval);
+      });
     }, delay);
 
     this.timeouts.set(triggerId, timeoutId);
+  }
+
+  private safeSetTimeout(fn: () => void, delay: number): ReturnType<typeof setTimeout> {
+    if (delay <= MAX_TIMEOUT_DELAY) {
+      return setTimeout(fn, delay);
+    }
+    return setTimeout(() => {
+      const remaining = delay - MAX_TIMEOUT_DELAY;
+      const chained = this.safeSetTimeout(fn, remaining);
+      this.timeouts.set('__chained__', chained);
+    }, MAX_TIMEOUT_DELAY);
   }
 
   private calculateNextRun(config: CronTriggerConfig): number | undefined {
@@ -378,7 +414,7 @@ export class CronTriggerExecutor {
       type: 'cron',
       config: state.config,
       enabled: state.enabled,
-      createdAt: Date.now(),
+      createdAt: state.createdAt,
       lastTriggered: state.lastRun,
       nextTrigger: state.nextRun,
       triggerCount: state.runCount,

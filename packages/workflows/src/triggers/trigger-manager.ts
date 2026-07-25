@@ -20,6 +20,7 @@ import { type CronTriggerExecutor, createCronTrigger } from './cron-trigger';
 import {
   type WebhookTriggerExecutor,
   createWebhookTrigger,
+  validateWebhookTriggerConfig,
   type WebhookRequest,
 } from './webhook-trigger';
 
@@ -47,7 +48,8 @@ export class InMemoryTriggerStore implements TriggerStore {
   }
 
   async get(id: string): Promise<WorkflowTrigger | null> {
-    return this.triggers.get(id) ?? null;
+    const trigger = this.triggers.get(id);
+    return trigger ? { ...trigger } : null;
   }
 
   async update(id: string, updates: Partial<WorkflowTrigger>): Promise<void> {
@@ -62,7 +64,7 @@ export class InMemoryTriggerStore implements TriggerStore {
   }
 
   async list(workflowName?: string): Promise<WorkflowTrigger[]> {
-    const all = Array.from(this.triggers.values());
+    const all = Array.from(this.triggers.values()).map((t) => ({ ...t }));
     if (workflowName) {
       return all.filter((t) => t.workflowName === workflowName);
     }
@@ -70,11 +72,15 @@ export class InMemoryTriggerStore implements TriggerStore {
   }
 
   async listEnabled(): Promise<WorkflowTrigger[]> {
-    return Array.from(this.triggers.values()).filter((t) => t.enabled);
+    return Array.from(this.triggers.values())
+      .filter((t) => t.enabled)
+      .map((t) => ({ ...t }));
   }
 
   async listByType(type: 'cron' | 'webhook' | 'event'): Promise<WorkflowTrigger[]> {
-    return Array.from(this.triggers.values()).filter((t) => t.type === type);
+    return Array.from(this.triggers.values())
+      .filter((t) => t.type === type)
+      .map((t) => ({ ...t }));
   }
 
   clear(): void {
@@ -162,9 +168,10 @@ export class DefaultTriggerManager implements ITriggerManager {
         } catch {}
       }
 
+      const fresh = await this.store.get(trigger.id);
       await this.store.update(trigger.id, {
         lastTriggered: context.timestamp,
-        triggerCount: trigger.triggerCount + 1,
+        triggerCount: (fresh?.triggerCount ?? trigger.triggerCount) + 1,
       });
 
       if (config.onTriggerFire) {
@@ -230,6 +237,10 @@ export class DefaultTriggerManager implements ITriggerManager {
 
       case 'webhook': {
         const config = trigger.config as WebhookTriggerConfig;
+        const errors = validateWebhookTriggerConfig(config);
+        if (errors.length > 0) {
+          throw new Error(`Invalid webhook trigger config: ${errors.join('; ')}`);
+        }
         this.webhookExecutor.register(trigger.workflowName, config, id);
         break;
       }
@@ -362,9 +373,10 @@ export class DefaultTriggerManager implements ITriggerManager {
       } catch {}
     }
 
+    const fresh = await this.store.get(id);
     await this.store.update(id, {
       lastTriggered: context.timestamp,
-      triggerCount: trigger.triggerCount + 1,
+      triggerCount: (fresh?.triggerCount ?? trigger.triggerCount) + 1,
     });
 
     if (this.config.onTriggerFire) {
@@ -483,42 +495,49 @@ export class DefaultTriggerManager implements ITriggerManager {
       existing();
     }
 
-    const unsubscribe = this.eventEmitter.on(config.eventType, async (payload) => {
-      if (config.source) {
-        const eventSource = (payload as { source?: string })?.source;
-        if (eventSource !== config.source) return;
-      }
+    const unsubscribe = this.eventEmitter.on(config.eventType, (payload) => {
+      void (async () => {
+        if (config.source) {
+          const eventSource = (payload as { source?: string })?.source;
+          if (eventSource !== config.source) return;
+        }
 
-      if (config.filter && !config.filter(payload)) {
-        return;
-      }
+        if (config.filter && !config.filter(payload)) {
+          return;
+        }
 
-      const transformedPayload = config.transform ? config.transform(payload) : payload;
+        const transformedPayload = config.transform ? config.transform(payload) : payload;
 
-      const trigger = await this.store.get(id);
-      if (!trigger?.enabled) return;
+        const trigger = await this.store.get(id);
+        if (!trigger?.enabled) return;
 
-      const context: TriggerContext = {
-        triggerId: id,
-        triggerType: 'event',
-        timestamp: Date.now(),
-        payload: transformedPayload,
-        metadata: {
-          eventType: config.eventType,
-          source: config.source,
-        },
-      };
+        const context: TriggerContext = {
+          triggerId: id,
+          triggerType: 'event',
+          timestamp: Date.now(),
+          payload: transformedPayload,
+          metadata: {
+            eventType: config.eventType,
+            source: config.source,
+          },
+        };
 
-      for (const callback of this.triggerCallbacks) {
-        try {
-          callback(trigger, context);
-        } catch {}
-      }
+        for (const callback of this.triggerCallbacks) {
+          try {
+            callback(trigger, context);
+          } catch {}
+        }
 
-      await this.store.update(id, {
-        lastTriggered: context.timestamp,
-        triggerCount: trigger.triggerCount + 1,
-      });
+        const fresh = await this.store.get(id);
+        await this.store.update(id, {
+          lastTriggered: context.timestamp,
+          triggerCount: (fresh?.triggerCount ?? trigger.triggerCount) + 1,
+        });
+
+        if (this.config.onTriggerFire) {
+          await this.config.onTriggerFire(trigger, context);
+        }
+      })().catch(() => {});
     });
 
     this.eventListeners.set(id, unsubscribe);

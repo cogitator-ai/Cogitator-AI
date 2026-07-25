@@ -242,7 +242,7 @@ describe('toolNode', () => {
       parameters: z.object({ x: z.number() }),
       execute: vi.fn(async ({ x }, toolCtx) => {
         expect(toolCtx.runId).toBe('wf-42');
-        expect(toolCtx.agentId).toBe('workflow');
+        expect(toolCtx.agentId).toBe('workflow:wf-42:test-node');
         return x;
       }),
     };

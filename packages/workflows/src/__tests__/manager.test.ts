@@ -389,7 +389,6 @@ describe('Workflow Manager', () => {
         pollInterval: 10,
         onRunReady: (runId) => {
           onRunReady(runId);
-          scheduler.runStarted(runId);
           startedRuns.push(runId);
         },
       });

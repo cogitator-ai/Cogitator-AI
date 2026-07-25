@@ -10,7 +10,7 @@
  */
 
 import type { IdempotencyStore, IdempotencyRecord } from '@cogitator-ai/types';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { promises as fs } from 'fs';
 import { dirname, join } from 'path';
 
@@ -24,6 +24,19 @@ export interface IdempotencyCheckResult {
   record?: IdempotencyRecord;
 }
 
+function canonicalStringify(value: unknown): string {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => canonicalStringify(v)).join(',')}]`;
+  }
+  const sorted = Object.keys(value as Record<string, unknown>)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${canonicalStringify((value as Record<string, unknown>)[k])}`)
+    .join(',');
+  return `{${sorted}}`;
+}
+
 /**
  * Generate idempotency key from inputs
  */
@@ -32,7 +45,7 @@ export function generateIdempotencyKey(
   nodeId: string,
   input?: unknown
 ): string {
-  const data = JSON.stringify({
+  const data = canonicalStringify({
     workflowId,
     nodeId,
     input: input ?? null,
@@ -45,7 +58,7 @@ export function generateIdempotencyKey(
  * Generate idempotency key with custom components
  */
 export function generateCustomKey(...components: unknown[]): string {
-  const data = JSON.stringify(components);
+  const data = canonicalStringify(components);
   return createHash('sha256').update(data).digest('hex').slice(0, 32);
 }
 
@@ -74,6 +87,7 @@ export class InMemoryIdempotencyStore extends BaseIdempotencyStore {
 
     if (options.cleanupIntervalMs) {
       this.cleanupInterval = setInterval(() => void this.cleanup(), options.cleanupIntervalMs);
+      this.cleanupInterval.unref();
     }
   }
 
@@ -174,9 +188,7 @@ export class FileIdempotencyStore extends BaseIdempotencyStore {
   private async ensureInitialized(): Promise<void> {
     if (this.initialized) return;
 
-    try {
-      await fs.mkdir(this.directory, { recursive: true });
-    } catch {}
+    await fs.mkdir(this.directory, { recursive: true });
     this.initialized = true;
   }
 
@@ -202,7 +214,7 @@ export class FileIdempotencyStore extends BaseIdempotencyStore {
     const filePath = this.getFilePath(key);
 
     const dir = dirname(filePath);
-    await fs.mkdir(dir, { recursive: true }).catch(() => {});
+    await fs.mkdir(dir, { recursive: true });
 
     const record: IdempotencyRecord = {
       key,
@@ -219,7 +231,9 @@ export class FileIdempotencyStore extends BaseIdempotencyStore {
       status: error ? 'failed' : 'completed',
     };
 
-    await fs.writeFile(filePath, JSON.stringify(record, null, 2));
+    const tmpPath = `${filePath}.${randomBytes(4).toString('hex')}.tmp`;
+    await fs.writeFile(tmpPath, JSON.stringify(record, null, 2));
+    await fs.rename(tmpPath, filePath);
   }
 
   async get(key: string): Promise<IdempotencyRecord | null> {
@@ -272,8 +286,10 @@ export class FileIdempotencyStore extends BaseIdempotencyStore {
   }
 }
 
+const inFlight = new Map<string, Promise<unknown>>();
+
 /**
- * Idempotent operation wrapper
+ * Idempotent operation wrapper with concurrency guard
  */
 export async function idempotent<T>(
   store: IdempotencyStore,
@@ -291,9 +307,27 @@ export async function idempotent<T>(
     return check.record.result as T;
   }
 
-  const result = await fn();
-  await store.store(key, result);
-  return result;
+  const existing = inFlight.get(key);
+  if (existing) {
+    return existing as Promise<T>;
+  }
+
+  const execution = (async (): Promise<T> => {
+    try {
+      const result = await fn();
+      await store.store(key, result);
+      return result;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      await store.store(key, undefined, error);
+      throw error;
+    } finally {
+      inFlight.delete(key);
+    }
+  })();
+
+  inFlight.set(key, execution);
+  return execution;
 }
 
 /**

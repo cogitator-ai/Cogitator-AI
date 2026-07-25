@@ -8,6 +8,8 @@ export { WorkflowBuilder } from './builder';
 
 export { WorkflowExecutor, NodeExecutionError } from './executor';
 
+export type { ExecutorExecuteOptions } from './executor';
+
 export { WorkflowScheduler } from './scheduler';
 
 export { InMemoryCheckpointStore, FileCheckpointStore, createCheckpointId } from './checkpoint';

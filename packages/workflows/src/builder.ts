@@ -288,7 +288,10 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
       } else if (roots.length === 1) {
         entryPoint = roots[0];
       } else {
-        entryPoint = roots[0];
+        throw new Error(
+          `Workflow has multiple root nodes: ${roots.join(', ')}. ` +
+            'Use .entryPoint() to specify which one should be the entry point.'
+        );
       }
     }
 

@@ -1,17 +1,3 @@
-/**
- * @cogitator-ai/workflows - Subworkflows module
- *
- * Enables nested and parallel workflow execution.
- *
- * Features:
- * - Single subworkflow execution
- * - Parallel subworkflows with concurrency control
- * - State mapping between parent and child
- * - Error handling strategies
- * - Depth limits to prevent infinite recursion
- * - Race and fallback patterns
- */
-
 export {
   type SubworkflowErrorStrategy,
   type SubworkflowRetryConfig,
