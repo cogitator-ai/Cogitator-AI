@@ -117,7 +117,7 @@ describe('createAuthMiddleware', () => {
 
 describe('createCorsMiddleware', () => {
   it('allows all origins with wildcard', () => {
-    const middleware = createCorsMiddleware({ origin: '*' });
+    const middleware = createCorsMiddleware({ origin: '*', credentials: false });
     const req = mockReq({ headers: { origin: 'https://example.com' } });
     const res = mockRes();
     const next = mockNext();

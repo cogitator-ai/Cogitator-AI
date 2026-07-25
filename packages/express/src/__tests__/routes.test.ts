@@ -27,6 +27,11 @@ function createMockAgent() {
           name: 'calculator',
           description: 'does math',
           parameters: { type: 'object', properties: {} },
+          toJSON: () => ({
+            name: 'calculator',
+            description: 'does math',
+            parameters: { type: 'object', properties: {} },
+          }),
         },
       ],
     },
