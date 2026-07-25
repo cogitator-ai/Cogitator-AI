@@ -9,7 +9,12 @@ import type {
   SwarmRunResponse,
   BlackboardResponse,
 } from '../types.js';
-import type { RunResult, SwarmMessage, SwarmEvent } from '@cogitator-ai/types';
+import {
+  CogitatorError,
+  type RunResult,
+  type SwarmMessage,
+  type SwarmEvent,
+} from '@cogitator-ai/types';
 
 export function createSwarmRoutes(): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
@@ -33,7 +38,7 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
   app.post('/swarms/:name/run', async (c) => {
     const ctx = c.get('cogitator');
     const name = c.req.param('name');
-    const swarmConfig = ctx.swarms[name];
+    const swarmConfig = Object.hasOwn(ctx.swarms, name) ? ctx.swarms[name] : undefined;
 
     if (!swarmConfig) {
       return c.json({ error: { message: `Swarm '${name}' not found`, code: 'NOT_FOUND' } }, 404);
@@ -88,22 +93,25 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
 
       return c.json(response);
     } catch (error) {
-      if (error instanceof Error && error.message.includes('Cannot find module')) {
+      if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
         return c.json(
           { error: { message: 'Swarms package not installed', code: 'UNIMPLEMENTED' } },
           501
         );
       }
 
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return c.json({ error: { message, code: 'INTERNAL' } }, 500);
+      if (CogitatorError.isCogitatorError(error)) {
+        return c.json({ error: { message: error.message, code: error.code } }, 500);
+      }
+      console.error('[CogitatorHono] Swarm run error:', error);
+      return c.json({ error: { message: 'Internal server error', code: 'INTERNAL' } }, 500);
     }
   });
 
   app.post('/swarms/:name/stream', async (c) => {
     const ctx = c.get('cogitator');
     const name = c.req.param('name');
-    const swarmConfig = ctx.swarms[name];
+    const swarmConfig = Object.hasOwn(ctx.swarms, name) ? ctx.swarms[name] : undefined;
 
     if (!swarmConfig) {
       return c.json({ error: { message: `Swarm '${name}' not found`, code: 'NOT_FOUND' } }, 404);
@@ -170,11 +178,13 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
 
         await writer.finish(messageId);
       } catch (error) {
-        if (error instanceof Error && error.message.includes('Cannot find module')) {
+        if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
           await writer.error('Swarms package not installed', 'UNIMPLEMENTED');
+        } else if (CogitatorError.isCogitatorError(error)) {
+          await writer.error(error.message, error.code);
         } else {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          await writer.error(message, 'INTERNAL');
+          console.error('[CogitatorHono] Swarm stream error:', error);
+          await writer.error('Internal server error', 'INTERNAL');
         }
       } finally {
         writer.close();
@@ -185,7 +195,7 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
   app.get('/swarms/:name/blackboard', (c) => {
     const ctx = c.get('cogitator');
     const name = c.req.param('name');
-    const swarmConfig = ctx.swarms[name];
+    const swarmConfig = Object.hasOwn(ctx.swarms, name) ? ctx.swarms[name] : undefined;
 
     if (!swarmConfig) {
       return c.json({ error: { message: `Swarm '${name}' not found`, code: 'NOT_FOUND' } }, 404);

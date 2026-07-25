@@ -12,10 +12,11 @@ export function createToolRoutes(): Hono<HonoEnv> {
       const tools = agent.config.tools || [];
       for (const tool of tools) {
         if (!toolsSet.has(tool.name)) {
+          const schema = tool.toJSON();
           toolsSet.set(tool.name, {
-            name: tool.name,
-            description: tool.description,
-            parameters: tool.parameters,
+            name: schema.name,
+            description: schema.description,
+            parameters: schema.parameters,
           });
         }
       }

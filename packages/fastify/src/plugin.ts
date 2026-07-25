@@ -25,30 +25,33 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
   fastify.decorateRequest('cogitatorRequestId', '');
   fastify.decorateRequest('cogitatorStartTime', 0);
 
-  fastify.addHook('onRequest', createAuthHook(opts.auth));
-
-  if (opts.rateLimit) {
-    try {
-      const rateLimitModule = await import('@fastify/rate-limit');
-      await fastify.register(rateLimitModule.default, {
-        max: opts.rateLimit.max,
-        timeWindow: opts.rateLimit.timeWindow,
-        keyGenerator: opts.rateLimit.keyGenerator,
-        errorResponseBuilder: opts.rateLimit.errorResponseBuilder,
-      });
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
-        fastify.log.warn('@fastify/rate-limit not installed, skipping rate limiting');
-      } else {
-        throw err;
-      }
-    }
-  }
-
   const prefix = opts.prefix ?? '/cogitator';
 
   await fastify.register(
     async (instance) => {
+      instance.addHook('onRequest', createAuthHook(opts.auth));
+
+      if (opts.rateLimit) {
+        try {
+          const rateLimitModule = await import('@fastify/rate-limit');
+          await instance.register(rateLimitModule.default, {
+            max: opts.rateLimit.max,
+            timeWindow: opts.rateLimit.timeWindow,
+            keyGenerator: opts.rateLimit.keyGenerator,
+            errorResponseBuilder: opts.rateLimit.errorResponseBuilder,
+          });
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
+            instance.log.warn('@fastify/rate-limit not installed, skipping rate limiting');
+          } else {
+            throw err;
+          }
+        }
+      }
+
+      instance.setErrorHandler((error: FastifyError, request, reply) => {
+        errorHandler(error, request, reply);
+      });
       if (opts.enableSwagger) {
         try {
           const swaggerModule = await import('@fastify/swagger');
@@ -112,10 +115,6 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
     },
     { prefix }
   );
-
-  fastify.setErrorHandler((error: FastifyError, request, reply) => {
-    errorHandler(error, request, reply);
-  });
 };
 
 export const cogitatorPlugin = fp(cogitatorPluginImpl, {

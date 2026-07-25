@@ -24,7 +24,9 @@ export async function* parseSSEStream(
 
         try {
           yield JSON.parse(data) as StreamEvent;
-        } catch {}
+        } catch {
+          console.warn('[cogitator] Failed to parse SSE data:', data);
+        }
       }
     }
   }
@@ -36,7 +38,9 @@ export async function* parseSSEStream(
       if (data !== '[DONE]') {
         try {
           yield JSON.parse(data) as StreamEvent;
-        } catch {}
+        } catch {
+          console.warn('[cogitator] Failed to parse SSE data:', data);
+        }
       }
     }
   }

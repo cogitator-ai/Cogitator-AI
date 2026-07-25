@@ -130,7 +130,8 @@ async function handleRun(
     return;
   }
 
-  state.abortController = new AbortController();
+  const abortController = new AbortController();
+  state.abortController = abortController;
 
   try {
     if (payload.type === 'agent') {
@@ -148,7 +149,7 @@ async function handleRun(
         input: payload.input,
         context: payload.context,
         stream: true,
-        signal: state.abortController.signal,
+        signal: abortController.signal,
         onToken: (token: string) => {
           sendResponse(ws, {
             type: 'event',
@@ -193,7 +194,7 @@ async function handleRun(
       const result = await executor.execute(
         workflow,
         { input: payload.input },
-        { signal: state.abortController.signal }
+        { signal: abortController.signal }
       );
 
       sendResponse(ws, {
@@ -214,7 +215,7 @@ async function handleRun(
 
       const { Swarm } = await import('@cogitator-ai/swarms');
       const swarm = new Swarm(ctx.runtime, swarmConfig);
-      const { signal } = state.abortController;
+      const { signal } = abortController;
       const onAbort = () => swarm.abort();
       signal.addEventListener('abort', onAbort);
       try {

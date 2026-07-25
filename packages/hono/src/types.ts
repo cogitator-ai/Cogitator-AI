@@ -46,7 +46,6 @@ export type AuthFunction = (
 export interface WebSocketConfig {
   path?: string;
   pingInterval?: number;
-  pingTimeout?: number;
   maxPayloadSize?: number;
 }
 

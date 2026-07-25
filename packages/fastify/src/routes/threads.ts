@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { ThreadResponse, AddMessageRequest } from '../types.js';
 import { AddMessageRequestSchema } from '../types.js';
+import { CogitatorError } from '@cogitator-ai/types';
 
 interface ThreadParams {
   id: string;
@@ -49,10 +50,13 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
         };
         return response;
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        return reply.status(500).send({
-          error: { message, code: 'INTERNAL' },
-        });
+        if (CogitatorError.isCogitatorError(error)) {
+          return reply.status(500).send({ error: { message: error.message, code: error.code } });
+        }
+        request.log.error({ err: error }, 'thread get error');
+        return reply
+          .status(500)
+          .send({ error: { message: 'Internal server error', code: 'INTERNAL' } });
       }
     }
   );
@@ -98,10 +102,13 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
 
         return reply.status(201).send({ success: true });
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        return reply.status(500).send({
-          error: { message, code: 'INTERNAL' },
-        });
+        if (CogitatorError.isCogitatorError(error)) {
+          return reply.status(500).send({ error: { message: error.message, code: error.code } });
+        }
+        request.log.error({ err: error }, 'thread add message error');
+        return reply
+          .status(500)
+          .send({ error: { message: 'Internal server error', code: 'INTERNAL' } });
       }
     }
   );
@@ -136,10 +143,13 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
         }
         return reply.status(204).send();
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        return reply.status(500).send({
-          error: { message, code: 'INTERNAL' },
-        });
+        if (CogitatorError.isCogitatorError(error)) {
+          return reply.status(500).send({ error: { message: error.message, code: error.code } });
+        }
+        request.log.error({ err: error }, 'thread delete error');
+        return reply
+          .status(500)
+          .send({ error: { message: 'Internal server error', code: 'INTERNAL' } });
       }
     }
   );

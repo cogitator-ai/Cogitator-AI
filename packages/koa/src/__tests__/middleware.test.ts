@@ -150,9 +150,12 @@ describe('createBodyParser', () => {
     const app = buildApp();
     const largeBody = JSON.stringify({ data: 'x'.repeat(1024 * 1024 + 1) });
 
-    await expect(
-      request(app.callback()).post('/echo').set('Content-Type', 'application/json').send(largeBody)
-    ).rejects.toThrow(/socket hang up|ECONNRESET/);
+    const res = await request(app.callback())
+      .post('/echo')
+      .set('Content-Type', 'application/json')
+      .send(largeBody);
+
+    expect(res.status).toBe(413);
   });
 });
 
@@ -262,7 +265,7 @@ describe('createAuthMiddleware', () => {
     const res = await request(app.callback()).get('/test');
     expect(res.status).toBe(401);
     expect(res.body).toEqual({
-      error: { message: 'invalid token', code: 'UNAUTHORIZED' },
+      error: { message: 'Unauthorized', code: 'UNAUTHORIZED' },
     });
   });
 

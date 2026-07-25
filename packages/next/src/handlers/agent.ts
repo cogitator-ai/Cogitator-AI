@@ -1,6 +1,8 @@
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 import type { AgentHandlerOptions, AgentInput, AgentResponse } from '../types.js';
 
+const MAX_BODY_SIZE = 1024 * 1024;
+
 function parseDefaultInput(body: unknown): AgentInput {
   const data = body as { input?: string; context?: Record<string, unknown>; threadId?: string };
 
@@ -17,24 +19,35 @@ export function createAgentHandler(
   options?: AgentHandlerOptions
 ) {
   return async (req: Request): Promise<Response> => {
-    let body: unknown;
-    try {
-      body = await req.json();
-    } catch {
-      return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
-        status: 400,
+    const contentLength = Number(req.headers.get('content-length'));
+    if (Number.isFinite(contentLength) && contentLength > MAX_BODY_SIZE) {
+      return new Response(JSON.stringify({ error: 'Payload too large' }), {
+        status: 413,
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
     let input: AgentInput;
-    try {
-      input = options?.parseInput ? await options.parseInput(req) : parseDefaultInput(body);
-    } catch (err) {
-      return new Response(
-        JSON.stringify({ error: err instanceof Error ? err.message : 'Parse error' }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
-      );
+    if (options?.parseInput) {
+      try {
+        input = await options.parseInput(req);
+      } catch (err) {
+        return new Response(
+          JSON.stringify({ error: err instanceof Error ? err.message : 'Parse error' }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+    } else {
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      input = parseDefaultInput(body);
     }
 
     let runContext: Record<string, unknown> = {};
@@ -43,9 +56,13 @@ export function createAgentHandler(
         const ctx = await options.beforeRun(req, input);
         if (ctx) runContext = ctx;
       } catch (err) {
+        const status = (err as { status?: number }).status;
         return new Response(
           JSON.stringify({ error: err instanceof Error ? err.message : 'Unauthorized' }),
-          { status: 401, headers: { 'Content-Type': 'application/json' } }
+          {
+            status: status && status >= 400 && status < 600 ? status : 401,
+            headers: { 'Content-Type': 'application/json' },
+          }
         );
       }
     }

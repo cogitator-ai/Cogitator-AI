@@ -24,18 +24,30 @@ function readBody(ctx: Context): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let settled = false;
 
     ctx.req.on('data', (chunk: Buffer) => {
+      if (settled) return;
       size += chunk.length;
       if (size > MAX_BODY_SIZE) {
-        ctx.req.destroy();
+        settled = true;
+        chunks.length = 0;
+        ctx.req.resume();
         reject(new PayloadTooLargeError());
         return;
       }
       chunks.push(chunk);
     });
-    ctx.req.on('end', () => resolve(Buffer.concat(chunks).toString()));
-    ctx.req.on('error', reject);
+    ctx.req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks).toString());
+    });
+    ctx.req.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
   });
 }
 

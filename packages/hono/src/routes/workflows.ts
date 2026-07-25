@@ -8,6 +8,7 @@ import type {
   WorkflowRunRequest,
   WorkflowRunResponse,
 } from '../types.js';
+import { CogitatorError } from '@cogitator-ai/types';
 
 export function createWorkflowRoutes(): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
@@ -27,7 +28,7 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
   app.post('/workflows/:name/run', async (c) => {
     const ctx = c.get('cogitator');
     const name = c.req.param('name');
-    const workflow = ctx.workflows[name];
+    const workflow = Object.hasOwn(ctx.workflows, name) ? ctx.workflows[name] : undefined;
 
     if (!workflow) {
       return c.json({ error: { message: `Workflow '${name}' not found`, code: 'NOT_FOUND' } }, 404);
@@ -60,22 +61,25 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
 
       return c.json(response);
     } catch (error) {
-      if (error instanceof Error && error.message.includes('Cannot find module')) {
+      if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
         return c.json(
           { error: { message: 'Workflows package not installed', code: 'UNIMPLEMENTED' } },
           501
         );
       }
 
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return c.json({ error: { message, code: 'INTERNAL' } }, 500);
+      if (CogitatorError.isCogitatorError(error)) {
+        return c.json({ error: { message: error.message, code: error.code } }, 500);
+      }
+      console.error('[CogitatorHono] Workflow run error:', error);
+      return c.json({ error: { message: 'Internal server error', code: 'INTERNAL' } }, 500);
     }
   });
 
   app.post('/workflows/:name/stream', async (c) => {
     const ctx = c.get('cogitator');
     const name = c.req.param('name');
-    const workflow = ctx.workflows[name];
+    const workflow = Object.hasOwn(ctx.workflows, name) ? ctx.workflows[name] : undefined;
 
     if (!workflow) {
       return c.json({ error: { message: `Workflow '${name}' not found`, code: 'NOT_FOUND' } }, 404);
@@ -123,11 +127,13 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
 
         await writer.finish(messageId);
       } catch (error) {
-        if (error instanceof Error && error.message.includes('Cannot find module')) {
+        if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
           await writer.error('Workflows package not installed', 'UNIMPLEMENTED');
+        } else if (CogitatorError.isCogitatorError(error)) {
+          await writer.error(error.message, error.code);
         } else {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          await writer.error(message, 'INTERNAL');
+          console.error('[CogitatorHono] Workflow stream error:', error);
+          await writer.error('Internal server error', 'INTERNAL');
         }
       } finally {
         writer.close();

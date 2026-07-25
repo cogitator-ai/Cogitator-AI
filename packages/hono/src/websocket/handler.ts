@@ -101,7 +101,7 @@ async function handleRun(
 
   try {
     if (payload.type === 'agent') {
-      const agent = ctx.agents[payload.name];
+      const agent = Object.hasOwn(ctx.agents, payload.name) ? ctx.agents[payload.name] : undefined;
       if (!agent) {
         sendResponse(socket, {
           type: 'error',
@@ -144,7 +144,9 @@ async function handleRun(
         payload: { type: 'complete', result },
       });
     } else if (payload.type === 'workflow') {
-      const workflow = ctx.workflows[payload.name];
+      const workflow = Object.hasOwn(ctx.workflows, payload.name)
+        ? ctx.workflows[payload.name]
+        : undefined;
       if (!workflow) {
         sendResponse(socket, {
           type: 'error',
@@ -164,7 +166,9 @@ async function handleRun(
         payload: { type: 'complete', result },
       });
     } else if (payload.type === 'swarm') {
-      const swarmConfig = ctx.swarms[payload.name];
+      const swarmConfig = Object.hasOwn(ctx.swarms, payload.name)
+        ? ctx.swarms[payload.name]
+        : undefined;
       if (!swarmConfig) {
         sendResponse(socket, {
           type: 'error',

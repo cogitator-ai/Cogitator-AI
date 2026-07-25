@@ -1,9 +1,9 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { HealthResponse } from '../types.js';
 
-const startTime = Date.now();
-
 export const healthRoutes: FastifyPluginAsync = async (fastify) => {
+  const startTime = Date.now();
+
   fastify.get('/health', async () => {
     const response: HealthResponse = {
       status: 'ok',

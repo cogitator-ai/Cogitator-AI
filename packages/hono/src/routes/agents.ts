@@ -3,7 +3,7 @@ import { streamSSE } from 'hono/streaming';
 import { generateId } from '@cogitator-ai/server-shared';
 import { HonoStreamWriter } from '../streaming/hono-stream-writer.js';
 import type { HonoEnv, AgentListResponse, AgentRunRequest, AgentRunResponse } from '../types.js';
-import type { ToolCall } from '@cogitator-ai/types';
+import { CogitatorError, type ToolCall } from '@cogitator-ai/types';
 
 export function createAgentRoutes(): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
@@ -23,7 +23,7 @@ export function createAgentRoutes(): Hono<HonoEnv> {
   app.post('/agents/:name/run', async (c) => {
     const ctx = c.get('cogitator');
     const name = c.req.param('name');
-    const agent = ctx.agents[name];
+    const agent = Object.hasOwn(ctx.agents, name) ? ctx.agents[name] : undefined;
 
     if (!agent) {
       return c.json({ error: { message: `Agent '${name}' not found`, code: 'NOT_FOUND' } }, 404);
@@ -63,15 +63,18 @@ export function createAgentRoutes(): Hono<HonoEnv> {
 
       return c.json(response);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return c.json({ error: { message, code: 'INTERNAL' } }, 500);
+      if (CogitatorError.isCogitatorError(error)) {
+        return c.json({ error: { message: error.message, code: error.code } }, 500);
+      }
+      console.error('[CogitatorHono] Agent run error:', error);
+      return c.json({ error: { message: 'Internal server error', code: 'INTERNAL' } }, 500);
     }
   });
 
   app.post('/agents/:name/stream', async (c) => {
     const ctx = c.get('cogitator');
     const name = c.req.param('name');
-    const agent = ctx.agents[name];
+    const agent = Object.hasOwn(ctx.agents, name) ? ctx.agents[name] : undefined;
 
     if (!agent) {
       return c.json({ error: { message: `Agent '${name}' not found`, code: 'NOT_FOUND' } }, 404);
@@ -135,8 +138,12 @@ export function createAgentRoutes(): Hono<HonoEnv> {
         if (textStarted) {
           await writer.textEnd(textId);
         }
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        await writer.error(message, 'INTERNAL');
+        if (CogitatorError.isCogitatorError(error)) {
+          await writer.error(error.message, error.code);
+        } else {
+          console.error('[CogitatorHono] Agent stream error:', error);
+          await writer.error('Internal server error', 'INTERNAL');
+        }
       } finally {
         writer.close();
       }

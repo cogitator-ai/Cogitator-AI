@@ -7,7 +7,12 @@ import type {
 } from '../types.js';
 import { SwarmRunRequestSchema } from '../types.js';
 import { FastifyStreamWriter, generateId } from '../streaming/index.js';
-import { CogitatorError, type RunResult, type SwarmMessage, type SwarmEvent } from '@cogitator-ai/types';
+import {
+  CogitatorError,
+  type RunResult,
+  type SwarmMessage,
+  type SwarmEvent,
+} from '@cogitator-ai/types';
 
 interface SwarmParams {
   name: string;
@@ -47,7 +52,9 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const { name } = request.params;
-      const swarmConfig = fastify.cogitator.swarms[name];
+      const swarmConfig = Object.hasOwn(fastify.cogitator.swarms, name)
+        ? fastify.cogitator.swarms[name]
+        : undefined;
 
       if (!swarmConfig) {
         return reply.status(404).send({
@@ -96,10 +103,13 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
           });
         }
 
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        return reply.status(500).send({
-          error: { message, code: 'INTERNAL' },
-        });
+        if (CogitatorError.isCogitatorError(error)) {
+          return reply.status(500).send({ error: { message: error.message, code: error.code } });
+        }
+        request.log.error({ err: error }, 'swarm run error');
+        return reply
+          .status(500)
+          .send({ error: { message: 'Internal server error', code: 'INTERNAL' } });
       }
     }
   );
@@ -118,7 +128,9 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const { name } = request.params;
-      const swarmConfig = fastify.cogitator.swarms[name];
+      const swarmConfig = Object.hasOwn(fastify.cogitator.swarms, name)
+        ? fastify.cogitator.swarms[name]
+        : undefined;
 
       if (!swarmConfig) {
         return reply.status(404).send({
@@ -176,9 +188,11 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
           writer.error('Swarms package not installed', 'UNIMPLEMENTED');
+        } else if (CogitatorError.isCogitatorError(error)) {
+          writer.error(error.message, error.code);
         } else {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          writer.error(message, 'INTERNAL');
+          request.log.error({ err: error }, 'swarm stream error');
+          writer.error('Internal server error', 'INTERNAL');
         }
       } finally {
         writer.close();
@@ -199,7 +213,9 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const { name } = request.params;
-      const swarmConfig = fastify.cogitator.swarms[name];
+      const swarmConfig = Object.hasOwn(fastify.cogitator.swarms, name)
+        ? fastify.cogitator.swarms[name]
+        : undefined;
 
       if (!swarmConfig) {
         return reply.status(404).send({

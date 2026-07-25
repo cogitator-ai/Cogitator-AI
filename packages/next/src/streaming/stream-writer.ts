@@ -64,8 +64,14 @@ export class StreamWriter {
   }
 
   async finish(messageId: string, usage?: Usage): Promise<void> {
+    if (this.closed) return;
     await this.write(createFinishEvent(messageId, usage));
-    await this.writer.write(encodeDone());
+    if (this.closed) return;
+    try {
+      await this.writer.write(encodeDone());
+    } catch {
+      this.closed = true;
+    }
   }
 
   async close(): Promise<void> {

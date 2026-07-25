@@ -10,22 +10,17 @@ import {
 export function createSwaggerRoutes(config?: SwaggerConfig): Router<CogitatorState> {
   const router = new Router<CogitatorState>();
 
-  let cachedSpec: ReturnType<typeof generateOpenAPISpec> | undefined;
-
   function getSpec(routeCtx: {
     agents: OpenAPIContext['agents'];
     workflows: OpenAPIContext['workflows'];
     swarms: OpenAPIContext['swarms'];
   }) {
-    if (!cachedSpec) {
-      const openAPICtx: OpenAPIContext = {
-        agents: routeCtx.agents,
-        workflows: routeCtx.workflows,
-        swarms: routeCtx.swarms,
-      };
-      cachedSpec = generateOpenAPISpec(openAPICtx, config ?? {});
-    }
-    return cachedSpec;
+    const openAPICtx: OpenAPIContext = {
+      agents: routeCtx.agents,
+      workflows: routeCtx.workflows,
+      swarms: routeCtx.swarms,
+    };
+    return generateOpenAPISpec(openAPICtx, config ?? {});
   }
 
   router.get('/openapi.json', (ctx) => {

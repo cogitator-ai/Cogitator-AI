@@ -1,9 +1,7 @@
 import { Hono } from 'hono';
 import type { HonoEnv, HealthResponse } from '../types.js';
 
-const startTime = Date.now();
-
-export function createHealthRoutes(): Hono<HonoEnv> {
+export function createHealthRoutes(startTime: number = Date.now()): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
 
   app.get('/health', (c) => {

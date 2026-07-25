@@ -18,6 +18,7 @@ import {
 export class HonoStreamWriter {
   private stream: SSEStreamingApi;
   private closed = false;
+  private finished = false;
 
   constructor(stream: SSEStreamingApi) {
     this.stream = stream;
@@ -27,7 +28,6 @@ export class HonoStreamWriter {
     if (this.closed) return;
     await this.stream.writeSSE({
       data: JSON.stringify(data),
-      event: 'message',
     });
   }
 
@@ -79,16 +79,19 @@ export class HonoStreamWriter {
 
   async finish(messageId: string, usage?: Usage): Promise<void> {
     if (this.closed) return;
+    this.finished = true;
     await this.write(createFinishEvent(messageId, usage));
-    await this.stream.writeSSE({ data: '[DONE]', event: 'message' });
+    await this.stream.writeSSE({ data: '[DONE]' });
   }
 
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    try {
-      this.stream.abort();
-    } catch {}
+    if (!this.finished) {
+      try {
+        this.stream.abort();
+      } catch {}
+    }
   }
 
   get isClosed(): boolean {

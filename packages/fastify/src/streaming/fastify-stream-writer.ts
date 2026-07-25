@@ -39,6 +39,7 @@ export class FastifyStreamWriter {
   }
 
   start(messageId: string): void {
+    if (this.closed) return;
     this.setupHeaders();
     this.write(createStartEvent(messageId));
   }

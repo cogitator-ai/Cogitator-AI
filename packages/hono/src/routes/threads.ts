@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { HonoEnv, ThreadResponse, AddMessageRequest } from '../types.js';
+import { CogitatorError } from '@cogitator-ai/types';
 
 export function createThreadRoutes(): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
@@ -37,8 +38,11 @@ export function createThreadRoutes(): Hono<HonoEnv> {
       };
       return c.json(response);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return c.json({ error: { message, code: 'INTERNAL' } }, 500);
+      if (CogitatorError.isCogitatorError(error)) {
+        return c.json({ error: { message: error.message, code: error.code } }, 500);
+      }
+      console.error('[CogitatorHono] Thread get error:', error);
+      return c.json({ error: { message: 'Internal server error', code: 'INTERNAL' } }, 500);
     }
   });
 
@@ -77,8 +81,11 @@ export function createThreadRoutes(): Hono<HonoEnv> {
 
       return c.json({ success: true }, 201);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return c.json({ error: { message, code: 'INTERNAL' } }, 500);
+      if (CogitatorError.isCogitatorError(error)) {
+        return c.json({ error: { message: error.message, code: error.code } }, 500);
+      }
+      console.error('[CogitatorHono] Thread add message error:', error);
+      return c.json({ error: { message: 'Internal server error', code: 'INTERNAL' } }, 500);
     }
   });
 
@@ -98,8 +105,11 @@ export function createThreadRoutes(): Hono<HonoEnv> {
 
       return c.body(null, 204);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return c.json({ error: { message, code: 'INTERNAL' } }, 500);
+      if (CogitatorError.isCogitatorError(error)) {
+        return c.json({ error: { message: error.message, code: error.code } }, 500);
+      }
+      console.error('[CogitatorHono] Thread delete error:', error);
+      return c.json({ error: { message: 'Internal server error', code: 'INTERNAL' } }, 500);
     }
   });
 

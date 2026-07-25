@@ -8,6 +8,11 @@ import type {
 import { KoaStreamWriter, setupSSEHeaders } from '../streaming/index.js';
 import { generateId } from '@cogitator-ai/server-shared';
 
+function isModuleNotFoundError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND';
+}
+
 export function createWorkflowRoutes(): Router<CogitatorState> {
   const router = new Router<CogitatorState>();
 
@@ -57,7 +62,7 @@ export function createWorkflowRoutes(): Router<CogitatorState> {
 
       ctx.body = response;
     } catch (error) {
-      if (error instanceof Error && error.message.includes('Cannot find module')) {
+      if (isModuleNotFoundError(error)) {
         ctx.status = 501;
         ctx.body = { error: { message: 'Workflows package not installed', code: 'UNIMPLEMENTED' } };
         return;
@@ -119,7 +124,7 @@ export function createWorkflowRoutes(): Router<CogitatorState> {
 
       writer.finish(messageId);
     } catch (error) {
-      if (error instanceof Error && error.message.includes('Cannot find module')) {
+      if (isModuleNotFoundError(error)) {
         writer.error('Workflows package not installed', 'UNIMPLEMENTED');
       } else {
         const message = error instanceof Error ? error.message : 'Unknown error';

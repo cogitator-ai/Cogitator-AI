@@ -125,7 +125,9 @@ async function handleRun(
 
   try {
     if (type === 'agent') {
-      const agent = fastify.cogitator.agents[name];
+      const agent = Object.hasOwn(fastify.cogitator.agents, name)
+        ? fastify.cogitator.agents[name]
+        : undefined;
       if (!agent) {
         sendResponse(socket, {
           type: 'error',

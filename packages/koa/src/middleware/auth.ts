@@ -15,7 +15,7 @@ export function createAuthMiddleware(authFn: AuthFunction) {
       ctx.status = 401;
       ctx.body = {
         error: {
-          message: err instanceof Error ? err.message : 'Unauthorized',
+          message: 'Unauthorized',
           code: 'UNAUTHORIZED',
         },
       };

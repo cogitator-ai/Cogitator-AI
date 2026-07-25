@@ -10,6 +10,11 @@ import { KoaStreamWriter, setupSSEHeaders } from '../streaming/index.js';
 import { generateId } from '@cogitator-ai/server-shared';
 import type { RunResult, SwarmMessage, SwarmEvent } from '@cogitator-ai/types';
 
+function isModuleNotFoundError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND';
+}
+
 export function createSwarmRoutes(): Router<CogitatorState> {
   const router = new Router<CogitatorState>();
 
@@ -86,7 +91,7 @@ export function createSwarmRoutes(): Router<CogitatorState> {
 
       ctx.body = response;
     } catch (error) {
-      if (error instanceof Error && error.message.includes('Cannot find module')) {
+      if (isModuleNotFoundError(error)) {
         ctx.status = 501;
         ctx.body = { error: { message: 'Swarms package not installed', code: 'UNIMPLEMENTED' } };
         return;
@@ -165,7 +170,7 @@ export function createSwarmRoutes(): Router<CogitatorState> {
 
       writer.finish(messageId);
     } catch (error) {
-      if (error instanceof Error && error.message.includes('Cannot find module')) {
+      if (isModuleNotFoundError(error)) {
         writer.error('Swarms package not installed', 'UNIMPLEMENTED');
       } else {
         const message = error instanceof Error ? error.message : 'Unknown error';

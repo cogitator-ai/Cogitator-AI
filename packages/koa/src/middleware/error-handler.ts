@@ -22,12 +22,22 @@ export function createErrorHandler() {
       const status = (err as { status?: number }).status;
       if (status && status >= 400 && status < 600) {
         ctx.status = status;
-        ctx.body = {
-          error: {
-            message: err instanceof Error ? err.message : 'HTTP error',
-            code: status === 413 ? 'PAYLOAD_TOO_LARGE' : 'HTTP_ERROR',
-          },
-        };
+        if (status >= 500) {
+          console.error('[CogitatorKoa] Unhandled error:', err);
+          ctx.body = {
+            error: {
+              message: 'Internal server error',
+              code: ErrorCode.INTERNAL_ERROR,
+            },
+          };
+        } else {
+          ctx.body = {
+            error: {
+              message: err instanceof Error ? err.message : 'HTTP error',
+              code: status === 413 ? 'PAYLOAD_TOO_LARGE' : 'HTTP_ERROR',
+            },
+          };
+        }
         return;
       }
 

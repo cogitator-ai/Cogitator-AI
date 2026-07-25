@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useReducer, useRef } from 'react';
 import type {
   UseChatOptions,
   UseChatReturn,
@@ -31,6 +31,12 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
   stateRef.current = state;
 
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+    };
+  }, []);
 
   const handleStreamEvent = useCallback(
     (event: StreamEvent, toolCalls: Map<string, { name: string; args: string }>) => {
