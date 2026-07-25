@@ -48,12 +48,28 @@ export interface AgentCardSigningOptions {
   secret: string;
 }
 
+function sortedStringify(value: unknown): string {
+  if (value === null || value === undefined || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => sortedStringify(item)).join(',')}]`;
+  }
+  const sorted = Object.keys(value as Record<string, unknown>)
+    .sort((a, b) => a.localeCompare(b))
+    .map(
+      (key) => `${JSON.stringify(key)}:${sortedStringify((value as Record<string, unknown>)[key])}`
+    )
+    .join(',');
+  return `{${sorted}}`;
+}
+
 export function signAgentCard(
   card: AgentCard,
   options: AgentCardSigningOptions
 ): AgentCard & { signature: string } {
   const algorithm = options.algorithm ?? 'hmac-sha256';
-  const payload = JSON.stringify(card, Object.keys(card).sort());
+  const payload = sortedStringify(card);
   const signature = createHmac('sha256', options.secret).update(payload).digest('hex');
   return { ...card, signature: `${algorithm}:${signature}` };
 }
@@ -69,7 +85,7 @@ export function verifyAgentCardSignature(
   const sig = card.signature.slice(colonIdx + 1);
   if (algorithm !== 'hmac-sha256' || !sig) return false;
   const { signature: _, ...cardWithoutSig } = card;
-  const payload = JSON.stringify(cardWithoutSig, Object.keys(cardWithoutSig).sort());
+  const payload = sortedStringify(cardWithoutSig);
   const expected = createHmac('sha256', secret).update(payload).digest('hex');
   const sigBuf = Buffer.from(sig, 'hex');
   const expectedBuf = Buffer.from(expected, 'hex');

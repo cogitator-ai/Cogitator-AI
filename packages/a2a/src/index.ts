@@ -7,6 +7,7 @@ export { generateAgentCard, signAgentCard, verifyAgentCardSignature } from './ag
 export type { AgentCardOptions, AgentCardSigningOptions } from './agent-card.js';
 
 export { InMemoryTaskStore } from './task-store.js';
+export type { InMemoryTaskStoreConfig } from './task-store.js';
 
 export { RedisTaskStore } from './redis-task-store.js';
 export type { RedisClientLike, RedisTaskStoreConfig } from './redis-task-store.js';
@@ -39,6 +40,7 @@ export {
   contentTypeNotSupported,
   invalidAgentResponse,
   agentNotFound,
+  unauthorized,
   parseError,
   invalidRequest,
   methodNotFound,

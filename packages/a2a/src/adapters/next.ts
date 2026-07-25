@@ -1,6 +1,7 @@
 import type { A2AServer } from '../server.js';
 import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
+import { buildSseErrorEvent } from './sse-error-event.js';
 
 export function a2aNext(server: A2AServer) {
   return {
@@ -11,7 +12,7 @@ export function a2aNext(server: A2AServer) {
 
     async POST(request: Request): Promise<Response> {
       const contentType = request.headers.get('content-type');
-      if (contentType && !contentType.includes('application/json')) {
+      if (contentType && !contentType.startsWith('application/json')) {
         return Response.json(
           createErrorResponse(null, errors.contentTypeNotSupported(contentType))
         );
@@ -30,19 +31,37 @@ export function a2aNext(server: A2AServer) {
 
       if (isStreaming) {
         const encoder = new TextEncoder();
+        let cancelled = false;
+
         const stream = new ReadableStream({
           async start(controller) {
             try {
               for await (const event of server.handleJsonRpcStream(body)) {
+                if (cancelled) break;
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
               }
-              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              if (!cancelled) {
+                controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              }
             } catch (error) {
-              controller.enqueue(
-                encoder.encode(`data: ${JSON.stringify({ error: String(error) })}\n\n`)
-              );
+              try {
+                if (!cancelled) {
+                  controller.enqueue(
+                    encoder.encode(`data: ${JSON.stringify(buildSseErrorEvent(error))}\n\n`)
+                  );
+                }
+              } catch {
+                /* stream already closed */
+              }
             }
-            controller.close();
+            try {
+              controller.close();
+            } catch {
+              /* already closed */
+            }
+          },
+          cancel() {
+            cancelled = true;
           },
         });
 
@@ -51,6 +70,7 @@ export function a2aNext(server: A2AServer) {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
             Connection: 'keep-alive',
+            'X-Accel-Buffering': 'no',
           },
         });
       }

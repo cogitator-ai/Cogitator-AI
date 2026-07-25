@@ -1,4 +1,5 @@
 import type { Tool, ToolContext, ToolSchema } from '@cogitator-ai/types';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type {
   AgentCard,
@@ -59,6 +60,11 @@ export class A2AClient {
       this.cachedCard = data;
     }
     return this.cachedCard!;
+  }
+
+  async refreshAgentCard(): Promise<AgentCard> {
+    this.cachedCard = null;
+    return this.agentCard();
   }
 
   async sendMessage(message: A2AMessage, config?: SendMessageConfiguration): Promise<A2ATask> {
@@ -323,7 +329,9 @@ export class A2AClient {
             if (event.type === 'status-update' && isTerminalState(event.status.state)) {
               return;
             }
-          } catch {}
+          } catch {
+            process.stderr.write(`[a2a] Failed to parse SSE event: ${data.slice(0, 200)}\n`);
+          }
         }
       }
     } finally {
@@ -355,6 +363,6 @@ export class A2AClient {
   }
 
   private generateRequestId(): string {
-    return `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    return `req_${randomUUID()}`;
   }
 }

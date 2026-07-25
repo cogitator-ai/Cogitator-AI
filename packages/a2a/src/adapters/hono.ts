@@ -3,6 +3,7 @@ import { streamSSE } from 'hono/streaming';
 import type { A2AServer } from '../server.js';
 import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
+import { buildSseErrorEvent } from './sse-error-event.js';
 
 export function a2aHono(server: A2AServer): Hono {
   const app = new Hono();
@@ -14,7 +15,7 @@ export function a2aHono(server: A2AServer): Hono {
 
   app.post('/a2a', async (c) => {
     const contentType = c.req.header('content-type');
-    if (contentType && !contentType.includes('application/json')) {
+    if (contentType && !contentType.startsWith('application/json')) {
       return c.json(createErrorResponse(null, errors.contentTypeNotSupported(contentType)));
     }
 
@@ -30,6 +31,7 @@ export function a2aHono(server: A2AServer): Hono {
       (body as Record<string, unknown>)?.method === 'message/stream';
 
     if (isStreaming) {
+      c.header('X-Accel-Buffering', 'no');
       return streamSSE(c, async (stream) => {
         try {
           for await (const event of server.handleJsonRpcStream(body)) {
@@ -37,7 +39,11 @@ export function a2aHono(server: A2AServer): Hono {
           }
           await stream.writeSSE({ data: '[DONE]' });
         } catch (error) {
-          await stream.writeSSE({ data: JSON.stringify({ error: String(error) }) });
+          try {
+            await stream.writeSSE({ data: JSON.stringify(buildSseErrorEvent(error)) });
+          } catch {
+            /* stream already closed by client disconnect */
+          }
         }
       });
     }

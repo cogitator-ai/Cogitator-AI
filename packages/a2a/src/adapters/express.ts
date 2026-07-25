@@ -1,7 +1,8 @@
-import { Router, json, type Request, type Response } from 'express';
+import { Router, json, type Request, type Response, type NextFunction } from 'express';
 import type { A2AServer } from '../server.js';
 import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
+import { buildSseErrorEvent } from './sse-error-event.js';
 
 export function a2aExpress(server: A2AServer): Router {
   const router = Router();
@@ -13,7 +14,7 @@ export function a2aExpress(server: A2AServer): Router {
 
   router.post('/a2a', json(), async (req: Request, res: Response) => {
     const contentType = req.headers['content-type'];
-    if (contentType && !contentType.includes('application/json')) {
+    if (contentType && !contentType.startsWith('application/json')) {
       res.json(createErrorResponse(null, errors.contentTypeNotSupported(contentType)));
       return;
     }
@@ -27,6 +28,7 @@ export function a2aExpress(server: A2AServer): Router {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
       });
 
       try {
@@ -37,7 +39,7 @@ export function a2aExpress(server: A2AServer): Router {
         if (!res.writableEnded) res.write('data: [DONE]\n\n');
       } catch (error) {
         if (!res.writableEnded) {
-          res.write(`data: ${JSON.stringify({ error: String(error) })}\n\n`);
+          res.write(`data: ${JSON.stringify(buildSseErrorEvent(error))}\n\n`);
         }
       }
       if (!res.writableEnded) res.end();
@@ -50,6 +52,14 @@ export function a2aExpress(server: A2AServer): Router {
     } catch (error) {
       res.json(createErrorResponse(null, errors.internalError(String(error))));
     }
+  });
+
+  router.use((err: Error, _req: Request, res: Response, next: NextFunction) => {
+    if (err instanceof SyntaxError) {
+      res.json(createErrorResponse(null, errors.parseError('Invalid JSON body')));
+      return;
+    }
+    next(err);
   });
 
   return router;

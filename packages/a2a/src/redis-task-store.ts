@@ -8,6 +8,7 @@ export interface RedisClientLike {
   setex?(key: string, seconds: number, value: string): Promise<unknown>;
   scan?(cursor: number | string, ...args: string[]): Promise<[string, string[]]>;
   mget?(...keys: string[]): Promise<(string | null)[]>;
+  eval?(script: string, numKeys: number, ...args: string[]): Promise<unknown>;
 }
 
 export interface RedisTaskStoreConfig {
@@ -15,6 +16,23 @@ export interface RedisTaskStoreConfig {
   keyPrefix?: string;
   ttl?: number;
 }
+
+const ATOMIC_UPDATE_SCRIPT = `
+local key = KEYS[1]
+local existing = redis.call('GET', key)
+if not existing then return 0 end
+local task = cjson.decode(existing)
+local update = cjson.decode(ARGV[1])
+for k, v in pairs(update) do task[k] = v end
+local result = cjson.encode(task)
+local ttl = tonumber(ARGV[2])
+if ttl and ttl > 0 then
+  redis.call('SETEX', key, ttl, result)
+else
+  redis.call('SET', key, result)
+end
+return 1
+`;
 
 export class RedisTaskStore implements TaskStore {
   private client: RedisClientLike;
@@ -47,10 +65,19 @@ export class RedisTaskStore implements TaskStore {
   }
 
   async update(taskId: string, update: Partial<A2ATask>): Promise<void> {
+    const key = this.prefix + taskId;
+    const updateJson = JSON.stringify(update);
+    const ttlArg = String(this.ttl ?? 0);
+
+    if (this.client.eval) {
+      const result = await this.client.eval(ATOMIC_UPDATE_SCRIPT, 1, key, updateJson, ttlArg);
+      if (result === 0) return;
+      return;
+    }
+
     const existing = await this.get(taskId);
     if (!existing) return;
     const updated = { ...existing, ...update };
-    const key = this.prefix + taskId;
     const json = JSON.stringify(updated);
     if (this.ttl && this.client.setex) {
       await this.client.setex(key, this.ttl, json);

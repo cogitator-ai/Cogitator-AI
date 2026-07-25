@@ -26,6 +26,7 @@ export class TaskManager extends EventEmitter {
 
   constructor(config?: TaskManagerConfig) {
     super();
+    this.setMaxListeners(100);
     this.store = config?.taskStore ?? new InMemoryTaskStore();
   }
 
@@ -60,6 +61,11 @@ export class TaskManager extends EventEmitter {
         stream: !!onToken,
         onToken,
       });
+
+      if (result.requiresInput) {
+        return await this.requestInput(task.id, result);
+      }
+
       return await this.completeTask(task.id, result);
     } catch (error) {
       if (abortController.signal.aborted) {
@@ -142,6 +148,12 @@ export class TaskManager extends EventEmitter {
     const controller = this.activeTasks.get(taskId);
     if (controller) controller.abort();
 
+    const rechecked = await this.store.get(taskId);
+    if (!rechecked) throw new A2AError(errors.taskNotFound(taskId));
+    if (isTerminalState(rechecked.status.state)) {
+      return rechecked;
+    }
+
     const status: TaskStatus = {
       state: 'canceled',
       timestamp: new Date().toISOString(),
@@ -175,6 +187,11 @@ export class TaskManager extends EventEmitter {
 
     this.emitStatusUpdate(updated);
     return updated;
+  }
+
+  abortExecution(taskId: string): void {
+    const controller = this.activeTasks.get(taskId);
+    if (controller) controller.abort();
   }
 
   async listTasks(filter?: TaskFilter): Promise<A2ATask[]> {
@@ -224,6 +241,37 @@ export class TaskManager extends EventEmitter {
     }
 
     return artifacts;
+  }
+
+  private async requestInput(taskId: string, result: AgentRunResult): Promise<A2ATask> {
+    const existing = await this.store.get(taskId);
+    if (!existing) throw new A2AError(errors.taskNotFound(taskId));
+
+    const artifacts = this.buildArtifacts(result);
+    const agentMessage: A2AMessage = {
+      role: 'agent',
+      parts: [{ type: 'text', text: result.output }],
+      taskId,
+    };
+
+    const status: TaskStatus = {
+      state: 'input-required',
+      timestamp: new Date().toISOString(),
+      message: result.output || undefined,
+    };
+
+    const history = [...existing.history, agentMessage];
+    await this.store.update(taskId, { status, artifacts, history });
+
+    const updatedTask = await this.store.get(taskId);
+    if (!updatedTask) throw new A2AError(errors.taskNotFound(taskId));
+
+    this.emitStatusUpdate(updatedTask);
+    for (const artifact of artifacts) {
+      this.emitArtifactUpdate(updatedTask.id, artifact);
+    }
+
+    return updatedTask;
   }
 
   private emitStatusUpdate(task: A2ATask): void {

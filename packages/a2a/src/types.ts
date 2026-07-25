@@ -160,6 +160,7 @@ export type A2AStreamEvent = TaskStatusUpdateEvent | TaskArtifactUpdateEvent | T
 export interface AgentRunResult {
   output: string;
   structured?: unknown;
+  requiresInput?: boolean;
   runId: string;
   agentId: string;
   threadId: string;

@@ -2,6 +2,7 @@ import type { Middleware, Context } from 'koa';
 import type { A2AServer } from '../server.js';
 import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
+import { buildSseErrorEvent } from './sse-error-event.js';
 
 export function a2aKoa(server: A2AServer): Middleware {
   return async (ctx: Context, next: () => Promise<void>) => {
@@ -13,7 +14,7 @@ export function a2aKoa(server: A2AServer): Middleware {
 
     if (ctx.path === '/a2a' && ctx.method === 'POST') {
       const contentType = ctx.headers['content-type'];
-      if (contentType && !contentType.includes('application/json')) {
+      if (contentType && !contentType.startsWith('application/json')) {
         ctx.body = createErrorResponse(null, errors.contentTypeNotSupported(contentType));
         return;
       }
@@ -36,6 +37,7 @@ export function a2aKoa(server: A2AServer): Middleware {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no',
         });
 
         try {
@@ -46,7 +48,7 @@ export function a2aKoa(server: A2AServer): Middleware {
           if (!res.writableEnded) res.write('data: [DONE]\n\n');
         } catch (error) {
           if (!res.writableEnded) {
-            res.write(`data: ${JSON.stringify({ error: String(error) })}\n\n`);
+            res.write(`data: ${JSON.stringify(buildSseErrorEvent(error))}\n\n`);
           }
         }
         if (!res.writableEnded) res.end();

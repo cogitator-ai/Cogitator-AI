@@ -1,10 +1,20 @@
 import type { A2ATask, TaskFilter, TaskStore } from './types.js';
 
+export interface InMemoryTaskStoreConfig {
+  maxSize?: number;
+}
+
 export class InMemoryTaskStore implements TaskStore {
   private tasks = new Map<string, A2ATask>();
+  private maxSize: number;
+
+  constructor(config?: InMemoryTaskStoreConfig) {
+    this.maxSize = config?.maxSize ?? 10_000;
+  }
 
   async create(task: A2ATask): Promise<void> {
     this.tasks.set(task.id, structuredClone(task));
+    this.evictIfNeeded();
   }
 
   async get(taskId: string): Promise<A2ATask | null> {
@@ -43,5 +53,17 @@ export class InMemoryTaskStore implements TaskStore {
 
   async delete(taskId: string): Promise<void> {
     this.tasks.delete(taskId);
+  }
+
+  private evictIfNeeded(): void {
+    if (this.tasks.size <= this.maxSize) return;
+    let oldest: { id: string; time: number } | null = null;
+    for (const [id, task] of this.tasks) {
+      const time = new Date(task.status.timestamp).getTime();
+      if (!oldest || time < oldest.time) {
+        oldest = { id, time };
+      }
+    }
+    if (oldest) this.tasks.delete(oldest.id);
   }
 }

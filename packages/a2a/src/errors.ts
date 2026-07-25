@@ -48,6 +48,10 @@ export function agentNotFound(agentName: string): JsonRpcError {
   return { code: -32007, message: `Agent not found: ${agentName}`, data: { agentName } };
 }
 
+export function unauthorized(detail?: string): JsonRpcError {
+  return { code: -32000, message: detail ? `Unauthorized: ${detail}` : 'Unauthorized' };
+}
+
 export function parseError(detail?: string): JsonRpcError {
   return { code: -32700, message: detail ? `Parse error: ${detail}` : 'Parse error' };
 }

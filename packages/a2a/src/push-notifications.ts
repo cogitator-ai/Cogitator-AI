@@ -38,14 +38,34 @@ function isPrivateUrl(urlStr: string): boolean {
     return true;
   }
   if (!['http:', 'https:'].includes(parsed.protocol)) return true;
-  const hostname = parsed.hostname;
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
-  if (hostname === '[::1]') return true;
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
+  if (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname === '0.0.0.0' ||
+    hostname === '::' ||
+    hostname === '[::]'
+  )
+    return true;
   if (hostname.startsWith('169.254.')) return true;
   if (hostname.startsWith('10.')) return true;
   if (hostname.startsWith('192.168.')) return true;
   if (/^172\.(1[6-9]|2\d|3[01])\./.exec(hostname)) return true;
   if (hostname.endsWith('.local') || hostname.endsWith('.internal')) return true;
+  const mappedV4 = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(hostname);
+  if (mappedV4) {
+    const v4 = mappedV4[1];
+    if (
+      v4.startsWith('127.') ||
+      v4.startsWith('10.') ||
+      v4.startsWith('192.168.') ||
+      v4.startsWith('169.254.') ||
+      v4 === '0.0.0.0' ||
+      /^172\.(1[6-9]|2\d|3[01])\./.exec(v4)
+    )
+      return true;
+  }
   return false;
 }
 
@@ -57,9 +77,11 @@ export function validateWebhookUrl(url: string): void {
 
 export class PushNotificationSender {
   private store: PushNotificationStore;
+  private allowPrivateUrls: boolean;
 
-  constructor(store: PushNotificationStore) {
+  constructor(store: PushNotificationStore, allowPrivateUrls = false) {
     this.store = store;
+    this.allowPrivateUrls = allowPrivateUrls;
   }
 
   async notify(taskId: string, event: A2AStreamEvent): Promise<void> {
@@ -77,6 +99,10 @@ export class PushNotificationSender {
   }
 
   private async sendWebhook(config: PushNotificationConfig, event: A2AStreamEvent): Promise<void> {
+    if (!this.allowPrivateUrls) {
+      validateWebhookUrl(config.webhookUrl);
+    }
+
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
     if (config.authenticationInfo) {
@@ -96,6 +122,8 @@ export class PushNotificationSender {
       body: JSON.stringify(event),
       signal: AbortSignal.timeout(10000),
     });
+
+    await response.arrayBuffer().catch(() => undefined);
 
     if (!response.ok) {
       throw new Error(`Webhook returned HTTP ${response.status}`);

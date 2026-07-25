@@ -2,9 +2,17 @@ import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import type { A2AServer } from '../server.js';
 import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
+import { buildSseErrorEvent } from './sse-error-event.js';
 
 export function a2aFastify(server: A2AServer): FastifyPluginAsync {
   return async (fastify: FastifyInstance) => {
+    fastify.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
+      if (error instanceof SyntaxError || error.statusCode === 400) {
+        return reply.send(createErrorResponse(null, errors.parseError('Invalid JSON body')));
+      }
+      return reply.send(createErrorResponse(null, errors.internalError(error.message)));
+    });
+
     fastify.get('/.well-known/agent.json', async (_request, reply) => {
       const cards = server.getAgentCards();
       return reply.send(cards.length === 1 ? cards[0] : cards);
@@ -12,7 +20,7 @@ export function a2aFastify(server: A2AServer): FastifyPluginAsync {
 
     fastify.post('/a2a', async (request, reply) => {
       const contentType = request.headers['content-type'];
-      if (contentType && !contentType.includes('application/json')) {
+      if (contentType && !contentType.startsWith('application/json')) {
         return reply.send(createErrorResponse(null, errors.contentTypeNotSupported(contentType)));
       }
 
@@ -26,6 +34,7 @@ export function a2aFastify(server: A2AServer): FastifyPluginAsync {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no',
         });
 
         try {
@@ -36,7 +45,7 @@ export function a2aFastify(server: A2AServer): FastifyPluginAsync {
           if (!reply.raw.writableEnded) reply.raw.write('data: [DONE]\n\n');
         } catch (error) {
           if (!reply.raw.writableEnded) {
-            reply.raw.write(`data: ${JSON.stringify({ error: String(error) })}\n\n`);
+            reply.raw.write(`data: ${JSON.stringify(buildSseErrorEvent(error))}\n\n`);
           }
         }
         if (!reply.raw.writableEnded) reply.raw.end();

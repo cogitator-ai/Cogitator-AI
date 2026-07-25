@@ -168,7 +168,7 @@ describe('PushNotificationSender', () => {
   it('should send webhook POST to registered urls', async () => {
     const store = new InMemoryPushNotificationStore();
     await store.create('task_1', { webhookUrl });
-    const sender = new PushNotificationSender(store);
+    const sender = new PushNotificationSender(store, true);
 
     const event: A2AStreamEvent = {
       type: 'status-update',
@@ -189,7 +189,7 @@ describe('PushNotificationSender', () => {
     const store = new InMemoryPushNotificationStore();
     await store.create('task_1', { webhookUrl: `${webhookUrl}/hook1` });
     await store.create('task_1', { webhookUrl: `${webhookUrl}/hook2` });
-    const sender = new PushNotificationSender(store);
+    const sender = new PushNotificationSender(store, true);
 
     const event: A2AStreamEvent = {
       type: 'status-update',
@@ -211,7 +211,7 @@ describe('PushNotificationSender', () => {
         credentials: { token: 'my-secret-token' },
       },
     });
-    const sender = new PushNotificationSender(store);
+    const sender = new PushNotificationSender(store, true);
 
     await sender.notify('task_1', {
       type: 'status-update',
@@ -233,7 +233,7 @@ describe('PushNotificationSender', () => {
         credentials: { key: 'api-key-value' },
       },
     });
-    const sender = new PushNotificationSender(store);
+    const sender = new PushNotificationSender(store, true);
 
     await sender.notify('task_1', {
       type: 'status-update',
@@ -249,7 +249,7 @@ describe('PushNotificationSender', () => {
   it('should not throw when webhook fails', async () => {
     const store = new InMemoryPushNotificationStore();
     await store.create('task_1', { webhookUrl: 'http://localhost:1' });
-    const sender = new PushNotificationSender(store);
+    const sender = new PushNotificationSender(store, true);
 
     await expect(
       sender.notify('task_1', {
@@ -263,7 +263,7 @@ describe('PushNotificationSender', () => {
 
   it('should do nothing when no configs exist', async () => {
     const store = new InMemoryPushNotificationStore();
-    const sender = new PushNotificationSender(store);
+    const sender = new PushNotificationSender(store, true);
 
     await expect(
       sender.notify('task_1', {
@@ -496,6 +496,7 @@ describe('Webhook receives events on task completion', () => {
       agents: { helper: createMockAgent('helper') },
       cogitator: createMockCogitator('done'),
       pushNotificationStore: pushStore,
+      allowPrivateUrls: true,
     });
 
     const sendResponse = await server.handleJsonRpc({

@@ -2,7 +2,7 @@ export interface JsonRpcRequest {
   jsonrpc: '2.0';
   method: string;
   params?: unknown;
-  id: string | number;
+  id?: string | number;
 }
 
 export interface JsonRpcResponse {
@@ -35,11 +35,12 @@ export function isValidRequest(req: unknown): req is JsonRpcRequest {
 
   const obj = req as Record<string, unknown>;
 
-  return (
-    obj.jsonrpc === '2.0' &&
-    typeof obj.method === 'string' &&
-    (typeof obj.id === 'string' || typeof obj.id === 'number')
-  );
+  if (obj.jsonrpc !== '2.0' || typeof obj.method !== 'string') {
+    return false;
+  }
+
+  if (obj.id === undefined) return true;
+  return typeof obj.id === 'string' || typeof obj.id === 'number';
 }
 
 export function parseJsonRpcRequest(body: unknown): JsonRpcRequest | JsonRpcRequest[] {

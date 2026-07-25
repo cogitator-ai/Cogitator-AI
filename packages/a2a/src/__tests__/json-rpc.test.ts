@@ -47,8 +47,8 @@ describe('JSON-RPC 2.0', () => {
       expect(isValidRequest({ jsonrpc: '2.0', method: 123, id: 1 })).toBe(false);
     });
 
-    it('should reject missing id', () => {
-      expect(isValidRequest({ jsonrpc: '2.0', method: 'test' })).toBe(false);
+    it('should accept notifications (missing id)', () => {
+      expect(isValidRequest({ jsonrpc: '2.0', method: 'test' })).toBe(true);
     });
 
     it('should reject null', () => {

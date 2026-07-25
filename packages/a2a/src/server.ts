@@ -12,6 +12,7 @@ import type {
   CogitatorLike,
   PushNotificationConfig,
   PushNotificationStore,
+  A2AAuthConfig,
 } from './types.js';
 import type { JsonRpcRequest, JsonRpcResponse } from './json-rpc.js';
 import {
@@ -45,6 +46,7 @@ export class A2AServer {
   private cardSigning?: AgentCardSigningOptions;
   private extendedCardGenerator?: (agentName: string) => ExtendedAgentCard;
   private allowPrivateUrls: boolean;
+  private auth?: A2AAuthConfig;
 
   constructor(config: A2AServerConfig) {
     const agentNames = Object.keys(config.agents);
@@ -59,10 +61,11 @@ export class A2AServer {
     this.cardSigning = config.cardSigning;
     this.extendedCardGenerator = config.extendedCardGenerator;
     this.allowPrivateUrls = config.allowPrivateUrls ?? false;
+    this.auth = config.auth;
 
     this.pushNotificationStore =
       config.pushNotificationStore ?? new InMemoryPushNotificationStore();
-    this.pushSender = new PushNotificationSender(this.pushNotificationStore);
+    this.pushSender = new PushNotificationSender(this.pushNotificationStore, this.allowPrivateUrls);
 
     this.taskManager = new TaskManager({
       taskStore: config.taskStore ?? new InMemoryTaskStore(),
@@ -114,7 +117,7 @@ export class A2AServer {
     return cards;
   }
 
-  async handleJsonRpc(body: unknown): Promise<JsonRpcResponse> {
+  async handleJsonRpc(body: unknown, authToken?: string): Promise<JsonRpcResponse | null> {
     let request: JsonRpcRequest;
     try {
       const parsed = parseJsonRpcRequest(body);
@@ -130,9 +133,21 @@ export class A2AServer {
     }
 
     try {
+      await this.validateAuth(authToken);
+    } catch (e) {
+      if (request.id === undefined) return null;
+      if (e instanceof A2AError) {
+        return createErrorResponse(request.id, e.jsonRpcError);
+      }
+      return createErrorResponse(request.id, errors.internalError(String(e)));
+    }
+
+    try {
       const result = await this.routeMethod(request.method, request.params);
+      if (request.id === undefined) return null;
       return createSuccessResponse(request.id, result);
     } catch (e) {
+      if (request.id === undefined) return null;
       if (e instanceof A2AError) {
         return createErrorResponse(request.id, e.jsonRpcError);
       }
@@ -143,7 +158,7 @@ export class A2AServer {
     }
   }
 
-  async *handleJsonRpcStream(body: unknown): AsyncGenerator<A2AStreamEvent> {
+  async *handleJsonRpcStream(body: unknown, authToken?: string): AsyncGenerator<A2AStreamEvent> {
     let request: JsonRpcRequest;
     try {
       const parsed = parseJsonRpcRequest(body);
@@ -169,6 +184,22 @@ export class A2AServer {
           state: 'failed',
           timestamp: new Date().toISOString(),
           message: e instanceof Error ? e.message : 'Invalid JSON-RPC request',
+        },
+        timestamp: new Date().toISOString(),
+      };
+      return;
+    }
+
+    try {
+      await this.validateAuth(authToken);
+    } catch (e) {
+      yield {
+        type: 'status-update',
+        taskId: '',
+        status: {
+          state: 'failed',
+          timestamp: new Date().toISOString(),
+          message: e instanceof Error ? e.message : 'Authentication failed',
         },
         timestamp: new Date().toISOString(),
       };
@@ -239,9 +270,11 @@ export class A2AServer {
     this.taskManager.on('event', onEvent);
 
     let task: A2ATask;
-    if (params.message.taskId) {
-      taskId = params.message.taskId;
-      task = await this.taskManager.continueTask(params.message.taskId, params.message);
+    const isContinued = !!params.message.taskId;
+    if (isContinued) {
+      const continuedTaskId = params.message.taskId!;
+      taskId = continuedTaskId;
+      task = await this.taskManager.continueTask(continuedTaskId, params.message);
     } else {
       task = await this.taskManager.createTask(params.message, params.message.contextId);
       taskId = task.id;
@@ -273,12 +306,14 @@ export class A2AServer {
       });
 
     try {
-      yield {
-        type: 'status-update',
-        taskId: task.id,
-        status: task.status,
-        timestamp: new Date().toISOString(),
-      };
+      if (!isContinued) {
+        yield {
+          type: 'status-update',
+          taskId: task.id,
+          status: task.status,
+          timestamp: new Date().toISOString(),
+        };
+      }
 
       let done = false;
       while (!done) {
@@ -292,6 +327,18 @@ export class A2AServer {
           const finalTask = await this.taskManager.getTask(task.id);
           if (isTerminalState(finalTask.status.state)) {
             done = true;
+          } else {
+            yield {
+              type: 'status-update',
+              taskId: task.id,
+              status: {
+                state: 'failed',
+                timestamp: new Date().toISOString(),
+                message: 'Execution ended without reaching a terminal state',
+              },
+              timestamp: new Date().toISOString(),
+            };
+            done = true;
           }
         } else {
           await new Promise<void>((r) => {
@@ -301,7 +348,19 @@ export class A2AServer {
       }
     } finally {
       this.taskManager.removeListener('event', onEvent);
+      this.taskManager.abortExecution(task.id);
       await executionPromise.catch(() => {});
+    }
+  }
+
+  private async validateAuth(authToken?: string): Promise<void> {
+    if (!this.auth) return;
+    if (!authToken) {
+      throw new A2AError(errors.unauthorized('Authentication required'));
+    }
+    const valid = await this.auth.validate(authToken);
+    if (!valid) {
+      throw new A2AError(errors.unauthorized('Invalid credentials'));
     }
   }
 
