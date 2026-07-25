@@ -3,15 +3,26 @@ import { z } from 'zod';
 import type { Tool, ToolContext, ToolSchema } from '@cogitator-ai/types';
 import { FileWatcher } from './file-watcher.js';
 import { WasmLoader } from './wasm-loader.js';
-import type { LoadedModule, WasmToolCallbacks, WasmToolManagerOptions } from './types.js';
+import type {
+  LoadedModule,
+  PluginOutput,
+  WasmToolCallbacks,
+  WasmToolManagerOptions,
+} from './types.js';
 
 const DEFAULT_DEBOUNCE_MS = 100;
+
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
 
 export class WasmToolManager {
   private loader = new WasmLoader();
   private watcher: FileWatcher | null = null;
   private modules = new Map<string, LoadedModule>();
+  private opQueues = new Map<string, Promise<void>>();
   private initialized = false;
+  private closed = false;
   private callbacks: WasmToolCallbacks = {};
   private options: Required<WasmToolManagerOptions>;
 
@@ -36,12 +47,14 @@ export class WasmToolManager {
       onAdd: (path) => void this.handleAdd(path),
       onChange: (path) => void this.handleReload(path),
       onUnlink: (path) => void this.handleUnlink(path),
+      onError: (error) => this.callbacks.onError?.('watcher', pattern, error),
     });
   }
 
   async load(wasmPath: string): Promise<Tool<unknown, unknown>> {
     await this.ensureInitialized();
-    return this.loadModule(wasmPath);
+    const name = this.getModuleName(wasmPath);
+    return this.runSerialized(name, () => this.loadModule(wasmPath));
   }
 
   getTools(): Tool<unknown, unknown>[] {
@@ -61,10 +74,15 @@ export class WasmToolManager {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
+
     if (this.watcher) {
       await this.watcher.close();
       this.watcher = null;
     }
+
+    await Promise.all(Array.from(this.opQueues.values()));
+    this.opQueues.clear();
 
     for (const mod of this.modules.values()) {
       await mod.plugin.close?.();
@@ -79,53 +97,80 @@ export class WasmToolManager {
     }
   }
 
+  private runSerialized<T>(name: string, op: () => Promise<T>): Promise<T> {
+    const prev = this.opQueues.get(name) ?? Promise.resolve();
+    const result = prev.then(op);
+    this.opQueues.set(
+      name,
+      result.then(
+        () => undefined,
+        () => undefined
+      )
+    );
+    return result;
+  }
+
   private async handleAdd(wasmPath: string): Promise<void> {
     const name = this.getModuleName(wasmPath);
-    try {
-      const existing = this.modules.get(name);
-      if (existing) {
-        await existing.plugin.close?.();
-      }
-      await this.loadModule(wasmPath);
-      this.callbacks.onLoad?.(name, wasmPath);
-    } catch (error) {
-      this.callbacks.onError?.(name, wasmPath, error as Error);
-    }
+    await this.runSerialized(name, () => this.loadOrReload(wasmPath, 'onLoad'));
   }
 
   private async handleReload(wasmPath: string): Promise<void> {
     const name = this.getModuleName(wasmPath);
+    await this.runSerialized(name, () => this.loadOrReload(wasmPath, 'onReload'));
+  }
+
+  private async loadOrReload(wasmPath: string, event: 'onLoad' | 'onReload'): Promise<void> {
+    const name = this.getModuleName(wasmPath);
     try {
-      const existing = this.modules.get(name);
-      if (existing) {
-        await existing.plugin.close?.();
-      }
       await this.loadModule(wasmPath);
-      this.callbacks.onReload?.(name, wasmPath);
+      this.callbacks[event]?.(name, wasmPath);
     } catch (error) {
-      this.callbacks.onError?.(name, wasmPath, error as Error);
+      this.callbacks.onError?.(name, wasmPath, toError(error));
     }
   }
 
   private async handleUnlink(wasmPath: string): Promise<void> {
     const name = this.getModuleName(wasmPath);
-    try {
-      const existing = this.modules.get(name);
-      if (existing) {
-        await existing.plugin.close?.();
-        this.modules.delete(name);
-        this.callbacks.onUnload?.(name, wasmPath);
+    await this.runSerialized(name, async () => {
+      try {
+        const existing = this.modules.get(name);
+        if (existing) {
+          await existing.plugin.close?.();
+          this.modules.delete(name);
+          this.callbacks.onUnload?.(name, wasmPath);
+        }
+      } catch (error) {
+        this.callbacks.onError?.(name, wasmPath, toError(error));
       }
-    } catch (error) {
-      this.callbacks.onError?.(name, wasmPath, error as Error);
-    }
+    });
   }
 
   private async loadModule(wasmPath: string): Promise<Tool<unknown, unknown>> {
-    const name = this.getModuleName(wasmPath);
-    const plugin = await this.loader.load(wasmPath, this.options.useWasi);
-    const tool = this.createProxyTool(name);
+    if (this.closed) {
+      throw new Error('WasmToolManager is closed');
+    }
 
+    const name = this.getModuleName(wasmPath);
+    const existing = this.modules.get(name);
+    if (existing) {
+      if (existing.path !== wasmPath) {
+        console.warn(
+          `[wasm-tools] Module name "${name}" collision: ${wasmPath} replaces ${existing.path}`
+        );
+      }
+      await existing.plugin.close?.();
+      this.modules.delete(name);
+    }
+
+    const plugin = await this.loader.load(wasmPath, this.options.useWasi);
+
+    if (this.closed) {
+      await plugin.close?.();
+      throw new Error('WasmToolManager is closed');
+    }
+
+    const tool = this.createProxyTool(name);
     this.modules.set(name, {
       name,
       path: wasmPath,
@@ -137,6 +182,31 @@ export class WasmToolManager {
     return tool;
   }
 
+  private callPlugin(
+    mod: LoadedModule,
+    input: string,
+    signal: AbortSignal
+  ): Promise<PluginOutput | null> {
+    if (signal.aborted) {
+      return Promise.reject(new Error(`WASM tool ${mod.name} aborted`));
+    }
+
+    return new Promise((resolve, reject) => {
+      const onAbort = (): void => reject(new Error(`WASM tool ${mod.name} aborted`));
+      signal.addEventListener('abort', onAbort, { once: true });
+      mod.plugin.call('run', input).then(
+        (output) => {
+          signal.removeEventListener('abort', onAbort);
+          resolve(output);
+        },
+        (error) => {
+          signal.removeEventListener('abort', onAbort);
+          reject(error);
+        }
+      );
+    });
+  }
+
   private createProxyTool(name: string): Tool<unknown, unknown> {
     const parameters = z.record(z.string(), z.unknown());
 
@@ -144,13 +214,16 @@ export class WasmToolManager {
       name,
       description: `WASM tool: ${name}`,
       parameters,
-      execute: async (params: unknown, _context: ToolContext) => {
+      execute: async (params: unknown, context: ToolContext) => {
         const mod = this.modules.get(name);
         if (!mod) {
           throw new Error(`Module ${name} not loaded`);
         }
         const input = JSON.stringify(params);
-        const output = await mod.plugin.call('run', input);
+        const output = await this.callPlugin(mod, input, context.signal);
+        if (!output) {
+          throw new Error(`WASM tool ${name} returned no output`);
+        }
         try {
           return JSON.parse(output.text());
         } catch {

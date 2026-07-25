@@ -55,7 +55,7 @@ function stringToBytes(str: string): number[] {
 function md5(message: string): string {
   const bytes = stringToBytes(message);
   const originalLength = bytes.length;
-  const bitLength = originalLength * 8;
+  const bitLength = BigInt(originalLength) * 8n;
 
   bytes.push(0x80);
   while (bytes.length % 64 !== 56) {
@@ -63,7 +63,7 @@ function md5(message: string): string {
   }
 
   for (let i = 0; i < 8; i++) {
-    bytes.push((bitLength >>> (i * 8)) & 0xff);
+    bytes.push(Number((bitLength >> BigInt(i * 8)) & 0xffn));
   }
 
   const s = [
@@ -335,9 +335,10 @@ export function hash(): number {
         hashResult = sha1(input.text);
         break;
       case 'sha256':
-      default:
         hashResult = sha256(input.text);
         break;
+      default:
+        throw new Error(`Unsupported algorithm: ${input.algorithm}`);
     }
 
     const output: HashOutput = {

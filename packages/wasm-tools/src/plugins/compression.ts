@@ -35,10 +35,11 @@ function base64Encode(bytes: Uint8Array): string {
 }
 
 function base64Decode(str: string): Uint8Array {
-  const cleanStr = str.replace(/[^A-Za-z0-9+/]/g, '');
+  const trimmed = str.trimEnd();
+  const cleanStr = trimmed.replace(/[^A-Za-z0-9+/]/g, '');
   const len = cleanStr.length;
   const outputLen =
-    Math.floor((len * 3) / 4) - (str.endsWith('==') ? 2 : str.endsWith('=') ? 1 : 0);
+    Math.floor((len * 3) / 4) - (trimmed.endsWith('==') ? 2 : trimmed.endsWith('=') ? 1 : 0);
   const bytes = new Uint8Array(outputLen);
 
   const lookup: Record<string, number> = {};
@@ -580,6 +581,10 @@ export function compression(): number {
     const inputEncoding = input.inputEncoding ?? 'utf8';
     const outputEncoding = input.outputEncoding ?? 'base64';
     const level = input.level ?? 6;
+
+    if (level < 0 || level > 9) {
+      throw new Error(`Compression level must be between 0 and 9, got ${level}`);
+    }
 
     let inputBytes: Uint8Array;
     if (inputEncoding === 'base64') {

@@ -24,15 +24,65 @@ interface Base64Output {
 const STANDARD_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const URL_SAFE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 
+function stringToUtf8Bytes(str: string): number[] {
+  const bytes: number[] = [];
+  for (let i = 0; i < str.length; i++) {
+    let c = str.charCodeAt(i);
+    if (c < 0x80) {
+      bytes.push(c);
+    } else if (c < 0x800) {
+      bytes.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f));
+    } else if (c >= 0xd800 && c < 0xdc00 && i + 1 < str.length) {
+      const c2 = str.charCodeAt(++i);
+      c = 0x10000 + ((c & 0x3ff) << 10) + (c2 & 0x3ff);
+      bytes.push(
+        0xf0 | (c >> 18),
+        0x80 | ((c >> 12) & 0x3f),
+        0x80 | ((c >> 6) & 0x3f),
+        0x80 | (c & 0x3f)
+      );
+    } else {
+      bytes.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+    }
+  }
+  return bytes;
+}
+
+function utf8BytesToString(bytes: number[]): string {
+  let result = '';
+  let i = 0;
+  while (i < bytes.length) {
+    const b = bytes[i++];
+    if (b < 0x80) {
+      result += String.fromCharCode(b);
+    } else if (b < 0xe0) {
+      result += String.fromCharCode(((b & 0x1f) << 6) | (bytes[i++] & 0x3f));
+    } else if (b < 0xf0) {
+      result += String.fromCharCode(
+        ((b & 0x0f) << 12) | ((bytes[i++] & 0x3f) << 6) | (bytes[i++] & 0x3f)
+      );
+    } else {
+      const cp =
+        ((b & 0x07) << 18) |
+        ((bytes[i++] & 0x3f) << 12) |
+        ((bytes[i++] & 0x3f) << 6) |
+        (bytes[i++] & 0x3f);
+      result += String.fromCodePoint(cp);
+    }
+  }
+  return result;
+}
+
 function encodeBase64(input: string, urlSafe: boolean): string {
   const chars = urlSafe ? URL_SAFE_CHARS : STANDARD_CHARS;
+  const inputBytes = stringToUtf8Bytes(input);
   let result = '';
   let i = 0;
 
-  while (i < input.length) {
-    const a = input.charCodeAt(i++);
-    const b = i < input.length ? input.charCodeAt(i++) : 0;
-    const c = i < input.length ? input.charCodeAt(i++) : 0;
+  while (i < inputBytes.length) {
+    const a = inputBytes[i++];
+    const b = i < inputBytes.length ? inputBytes[i++] : 0;
+    const c = i < inputBytes.length ? inputBytes[i++] : 0;
 
     const bitmap = (a << 16) | (b << 8) | c;
 
@@ -43,7 +93,7 @@ function encodeBase64(input: string, urlSafe: boolean): string {
       chars.charAt(bitmap & 63);
   }
 
-  const padding = input.length % 3;
+  const padding = inputBytes.length % 3;
   if (padding === 1) {
     result = result.slice(0, -2) + (urlSafe ? '' : '==');
   } else if (padding === 2) {
@@ -69,7 +119,7 @@ function decodeBase64(input: string, urlSafe: boolean): string {
     lookup[chars[i]] = i;
   }
 
-  let result = '';
+  const decodedBytes: number[] = [];
   let buffer = 0;
   let bits = 0;
 
@@ -84,11 +134,11 @@ function decodeBase64(input: string, urlSafe: boolean): string {
 
     if (bits >= 8) {
       bits -= 8;
-      result += String.fromCharCode((buffer >> bits) & 0xff);
+      decodedBytes.push((buffer >> bits) & 0xff);
     }
   }
 
-  return result;
+  return utf8BytesToString(decodedBytes);
 }
 
 export function base64(): number {
@@ -96,6 +146,10 @@ export function base64(): number {
     const inputStr = Host.inputString();
     const input: Base64Input = JSON.parse(inputStr);
     const urlSafe = input.urlSafe ?? false;
+
+    if (input.operation !== 'encode' && input.operation !== 'decode') {
+      throw new Error(`Unknown operation: ${input.operation}`);
+    }
 
     let result: string;
     if (input.operation === 'encode') {

@@ -328,7 +328,7 @@ function sha512(message: Uint8Array): Uint8Array {
 
 const ED25519_P = 2n ** 255n - 19n;
 const ED25519_L = 2n ** 252n + 27742317777372353535851937790883648493n;
-const ED25519_D = (-121665n * modInv(121666n, ED25519_P)) % ED25519_P;
+const ED25519_D = mod(-121665n * modInv(121666n, ED25519_P), ED25519_P);
 
 function mod(a: bigint, m: bigint): bigint {
   return ((a % m) + m) % m;
@@ -359,10 +359,10 @@ function modPow(base: bigint, exp: bigint, m: bigint): bigint {
 type Point = { x: bigint; y: bigint; z: bigint; t: bigint };
 
 function pointAdd(p1: Point, p2: Point): Point {
-  const a = (mod(p1.y - p1.x, ED25519_P) * mod(p2.y - p2.x, ED25519_P)) % ED25519_P;
-  const b = (mod(p1.y + p1.x, ED25519_P) * mod(p2.y + p2.x, ED25519_P)) % ED25519_P;
-  const c = (2n * p1.t * p2.t * ED25519_D) % ED25519_P;
-  const d = (2n * p1.z * p2.z) % ED25519_P;
+  const a = mod(mod(p1.y - p1.x, ED25519_P) * mod(p2.y - p2.x, ED25519_P), ED25519_P);
+  const b = mod(mod(p1.y + p1.x, ED25519_P) * mod(p2.y + p2.x, ED25519_P), ED25519_P);
+  const c = mod(2n * p1.t * p2.t * ED25519_D, ED25519_P);
+  const d = mod(2n * p1.z * p2.z, ED25519_P);
   const e = mod(b - a, ED25519_P);
   const f = mod(d - c, ED25519_P);
   const g = mod(d + c, ED25519_P);
@@ -378,11 +378,12 @@ function pointAdd(p1: Point, p2: Point): Point {
 function pointDouble(p: Point): Point {
   const a = mod(p.x * p.x, ED25519_P);
   const b = mod(p.y * p.y, ED25519_P);
-  const c = 2n * mod(p.z * p.z, ED25519_P);
-  const h = mod(a + b, ED25519_P);
-  const e = mod(h - mod((p.x + p.y) * (p.x + p.y), ED25519_P), ED25519_P);
-  const g = mod(a - b, ED25519_P);
-  const f = mod(c + g, ED25519_P);
+  const c = mod(2n * mod(p.z * p.z, ED25519_P), ED25519_P);
+  const d = mod(-a, ED25519_P);
+  const e = mod(mod((p.x + p.y) * (p.x + p.y), ED25519_P) - a - b, ED25519_P);
+  const g = mod(d + b, ED25519_P);
+  const f = mod(g - c, ED25519_P);
+  const h = mod(d - b, ED25519_P);
   return {
     x: mod(e * f, ED25519_P),
     y: mod(g * h, ED25519_P),
@@ -437,7 +438,7 @@ function bytesToPoint(bytes: Uint8Array): Point {
 }
 
 const ED25519_G: Point = (() => {
-  const gy = (4n * modInv(5n, ED25519_P)) % ED25519_P;
+  const gy = mod(4n * modInv(5n, ED25519_P), ED25519_P);
   const gx2 = mod((gy * gy - 1n) * modInv(ED25519_D * gy * gy + 1n, ED25519_P), ED25519_P);
   let gx = modPow(gx2, (ED25519_P + 3n) / 8n, ED25519_P);
   if (mod(gx * gx - gx2, ED25519_P) !== 0n) {
@@ -551,8 +552,12 @@ function ed25519Verify(message: Uint8Array, signature: Uint8Array, publicKey: Ui
 
 function getRandomBytes(len: number): Uint8Array {
   const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = Math.floor(Math.random() * 256);
+  if (typeof globalThis.crypto !== 'undefined' && globalThis.crypto.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    throw new Error(
+      'Cryptographically secure RNG not available. Provide a seed via generateKeypair input instead.'
+    );
   }
   return bytes;
 }
@@ -588,6 +593,11 @@ export function signing(): number {
         if (!input.message) throw new Error('message required for signing');
 
         const privateKey = decodeKey(input.privateKey, encoding);
+        if (privateKey.length !== 32) {
+          throw new Error(
+            `Invalid private key length: expected 32 bytes, got ${privateKey.length}`
+          );
+        }
         const message = new TextEncoder().encode(input.message);
         const signature = ed25519Sign(message, privateKey);
 
@@ -604,7 +614,13 @@ export function signing(): number {
         if (!input.message) throw new Error('message required for verification');
 
         const publicKey = decodeKey(input.publicKey, encoding);
+        if (publicKey.length !== 32) {
+          throw new Error(`Invalid public key length: expected 32 bytes, got ${publicKey.length}`);
+        }
         const signature = decodeKey(input.signature, encoding);
+        if (signature.length !== 64) {
+          throw new Error(`Invalid signature length: expected 64 bytes, got ${signature.length}`);
+        }
         const message = new TextEncoder().encode(input.message);
         const valid = ed25519Verify(message, signature, publicKey);
 

@@ -18,7 +18,7 @@ const mockCreatePlugin = vi.fn().mockImplementation((source: unknown, _options: 
 });
 
 vi.mock('@extism/extism', () => {
-  return { default: mockCreatePlugin };
+  return { default: mockCreatePlugin, createPlugin: mockCreatePlugin };
 });
 
 describe('WasmLoader', () => {
@@ -60,8 +60,8 @@ describe('WasmLoader', () => {
 
     expect(fs.readFile).not.toHaveBeenCalled();
     expect(plugin).toBeDefined();
-    expect((plugin as unknown as { source: { url: string } }).source).toEqual({
-      url: 'https://example.com/test.wasm',
+    expect((plugin as unknown as { source: { wasm: Array<{ url: string }> } }).source).toEqual({
+      wasm: [{ url: 'https://example.com/test.wasm' }],
     });
   });
 

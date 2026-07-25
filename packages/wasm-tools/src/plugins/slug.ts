@@ -184,6 +184,9 @@ export function slug(): number {
     const input: SlugInput = JSON.parse(inputStr);
 
     const separator = input.separator ?? '-';
+    if (separator.length === 0) {
+      throw new Error('Separator must not be empty');
+    }
     const lowercase = input.lowercase ?? true;
 
     const result = generateSlug(input.text, separator, lowercase, input.maxLength);

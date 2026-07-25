@@ -151,6 +151,13 @@ export function csv(): number {
     const delimiter = input.delimiter ?? ',';
     const quote = input.quote ?? '"';
 
+    if (delimiter.length !== 1) {
+      throw new Error(`Delimiter must be a single character, got "${delimiter}"`);
+    }
+    if (quote.length !== 1) {
+      throw new Error(`Quote must be a single character, got "${quote}"`);
+    }
+
     let result: string[][] | string;
     let rowCount: number;
     let columnCount: number;

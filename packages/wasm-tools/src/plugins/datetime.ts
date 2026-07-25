@@ -20,7 +20,11 @@ function parseOffset(tz?: string): number {
   if (!tz || tz === 'UTC' || tz === 'Z') return 0;
 
   const match = /^([+-])(\d{2}):?(\d{2})$/.exec(tz);
-  if (!match) return 0;
+  if (!match) {
+    throw new Error(
+      `Unsupported timezone format: "${tz}". Use UTC, Z, or an offset like +05:30 / -0800.`
+    );
+  }
 
   const sign = match[1] === '+' ? 1 : -1;
   const hours = parseInt(match[2], 10);
@@ -130,13 +134,24 @@ function dateDiff(date1: Date, date2: Date, unit: string): number {
   const diffMs = date2.getTime() - date1.getTime();
 
   switch (unit) {
-    case 'years':
-      return date2.getUTCFullYear() - date1.getUTCFullYear();
-    case 'months':
-      return (
+    case 'years': {
+      let years = date2.getUTCFullYear() - date1.getUTCFullYear();
+      const m1 = date1.getUTCMonth();
+      const m2 = date2.getUTCMonth();
+      if (m2 < m1 || (m2 === m1 && date2.getUTCDate() < date1.getUTCDate())) {
+        years--;
+      }
+      return years;
+    }
+    case 'months': {
+      let months =
         (date2.getUTCFullYear() - date1.getUTCFullYear()) * 12 +
-        (date2.getUTCMonth() - date1.getUTCMonth())
-      );
+        (date2.getUTCMonth() - date1.getUTCMonth());
+      if (date2.getUTCDate() < date1.getUTCDate()) {
+        months--;
+      }
+      return months;
+    }
     case 'days':
       return Math.floor(diffMs / (24 * 60 * 60 * 1000));
     case 'hours':

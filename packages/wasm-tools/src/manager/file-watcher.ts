@@ -38,6 +38,14 @@ export class FileWatcher {
       this.clearDebounce(path);
       callbacks.onUnlink(path);
     });
+
+    this.watcher.on('error', (error) => {
+      callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
+    });
+
+    this.watcher.on('ready', () => {
+      callbacks.onReady?.();
+    });
   }
 
   private debounce(path: string, fn: () => void): void {

@@ -57,6 +57,7 @@ function safeEval(expression: string): number {
         if (right === 0) throw new Error('Division by zero');
         left /= right;
       } else {
+        if (right === 0) throw new Error('Modulo by zero');
         left %= right;
       }
     }
@@ -67,7 +68,8 @@ function safeEval(expression: string): number {
     if (tokens[pos] === '(') {
       pos++;
       const val = parseExpr();
-      if (tokens[pos] === ')') pos++;
+      if (tokens[pos] !== ')') throw new Error('Missing closing parenthesis');
+      pos++;
       return val;
     }
     if (tokens[pos] === '-') {
@@ -83,7 +85,11 @@ function safeEval(expression: string): number {
     return num;
   }
 
-  return parseExpr();
+  const result = parseExpr();
+  if (pos < tokens.length) {
+    throw new Error(`Unexpected token: ${tokens[pos]}`);
+  }
+  return result;
 }
 
 export function calculate(): number {
