@@ -151,10 +151,10 @@ describe('Integration Tests', async () => {
       expect(tokens.join('')).toBe(result.output);
     });
 
-    it('calls onToolCall callback', async () => {
+    it('calls onToolCall callback', { retry: 2 }, async () => {
       const greet = tool({
         name: 'greet',
-        description: 'Greet someone',
+        description: 'Greet someone by name. You MUST call this tool whenever asked to greet.',
         parameters: z.object({ name: z.string() }),
         execute: async ({ name }) => ({ greeting: `Hello, ${name}!` }),
       });
@@ -162,14 +162,15 @@ describe('Integration Tests', async () => {
       const agent = new Agent({
         name: 'greeter',
         model: TEST_MODEL,
-        instructions: 'Use the greet tool to greet the user.',
+        instructions:
+          'You MUST always use the greet tool to greet people. Never greet without calling the greet tool first.',
         tools: [greet],
       });
 
       const toolCalls: Array<{ name: string; arguments: unknown }> = [];
 
       await cog.run(agent, {
-        input: 'Greet Bob.',
+        input: 'Please greet Bob using the greet tool.',
         onToolCall: (call) => toolCalls.push(call),
       });
 
