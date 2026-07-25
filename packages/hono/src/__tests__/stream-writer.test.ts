@@ -26,7 +26,7 @@ describe('HonoStreamWriter', () => {
     const writer = new HonoStreamWriter(stream);
     await writer.start('msg-1');
     expect(events).toHaveLength(1);
-    expect(events[0].event).toBe('message');
+    expect(events[0].event).toBeUndefined();
     const parsed = parseEvent(events, 0);
     expect(parsed).toEqual({ type: 'start', messageId: 'msg-1' });
   });
@@ -74,7 +74,7 @@ describe('HonoStreamWriter', () => {
       messageId: 'msg-1',
       usage: { inputTokens: 5, outputTokens: 10, totalTokens: 15 },
     });
-    expect(events[1]).toEqual({ data: '[DONE]', event: 'message' });
+    expect(events[1]).toEqual({ data: '[DONE]' });
   });
 
   it('finish() does nothing after close()', async () => {

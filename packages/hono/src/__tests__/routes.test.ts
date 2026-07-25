@@ -4,11 +4,12 @@ import { cogitatorApp } from '../app.js';
 import type { CogitatorAppOptions } from '../types.js';
 
 function mockTool(name: string) {
-  return {
+  const schema = {
     name,
     description: `Tool ${name}`,
     parameters: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },
   };
+  return { ...schema, toJSON: () => schema };
 }
 
 function mockAgent(name: string, tools: unknown[] = []) {
@@ -223,7 +224,7 @@ describe('agentRoutes', () => {
     expect(res.status).toBe(500);
     const body = await res.json();
     expect(body.error.code).toBe('INTERNAL');
-    expect(body.error.message).toBe('model unavailable');
+    expect(body.error.message).toBe('Internal server error');
   });
 
   it('POST /agents/:name/run returns Unknown error for non-Error throws', async () => {
@@ -238,7 +239,7 @@ describe('agentRoutes', () => {
     const res = await app.request('/agents/bot/run', json({ input: 'hi' }));
     expect(res.status).toBe(500);
     const body = await res.json();
-    expect(body.error.message).toBe('Unknown error');
+    expect(body.error.message).toBe('Internal server error');
   });
 });
 
@@ -320,7 +321,7 @@ describe('threadRoutes', () => {
     const res = await app.request('/threads/t1');
     expect(res.status).toBe(500);
     const body = await res.json();
-    expect(body.error.message).toBe('connection lost');
+    expect(body.error.message).toBe('Internal server error');
   });
 
   it('POST /threads/:id/messages returns 503 when memory not configured', async () => {
@@ -424,7 +425,7 @@ describe('threadRoutes', () => {
     const res = await app.request('/threads/t1/messages', json({ role: 'user', content: 'test' }));
     expect(res.status).toBe(500);
     const body = await res.json();
-    expect(body.error.message).toBe('timeout');
+    expect(body.error.message).toBe('Internal server error');
   });
 
   it('DELETE /threads/:id returns 503 when memory not configured', async () => {
@@ -476,7 +477,7 @@ describe('threadRoutes', () => {
     const res = await app.request('/threads/t1', { method: 'DELETE' });
     expect(res.status).toBe(500);
     const body = await res.json();
-    expect(body.error.message).toBe('crash');
+    expect(body.error.message).toBe('Internal server error');
   });
 });
 

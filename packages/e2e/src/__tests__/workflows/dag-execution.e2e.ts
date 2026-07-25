@@ -128,6 +128,7 @@ describeE2E('Workflows: DAG Execution', () => {
   it('loop exits after condition met', async () => {
     const workflow = new WorkflowBuilder<TestState>('loop')
       .initialState({ ...defaultState })
+      .entryPoint('increment')
       .addNode('increment', async (ctx) => ({
         state: {
           counter: ctx.state.counter + 1,

@@ -8,8 +8,8 @@ const describeOllamaCloud = process.env.OLLAMA_API_KEY ? describe : describe.ski
 
 describeOllamaCloud('Multi-Provider: Ollama Cloud Backend', () => {
   let backend: OllamaBackend;
-  const model = process.env.OLLAMA_CLOUD_MODEL ?? 'gemma3:4b';
-  const toolModel = process.env.OLLAMA_CLOUD_TOOL_MODEL ?? 'devstral-small-2:24b';
+  const model = process.env.OLLAMA_CLOUD_MODEL ?? 'gpt-oss:20b';
+  const toolModel = process.env.OLLAMA_CLOUD_TOOL_MODEL ?? 'gpt-oss:20b';
 
   beforeAll(() => {
     backend = new OllamaBackend({

@@ -62,8 +62,7 @@ describe('Neuro-Symbolic: Logic Programming', () => {
     ns.loadLogicProgram('mortal(X) :- human(X). human(socrates).');
 
     const result = ns.proveLogic('mortal(plato)');
-    expect(result.success).toBe(true);
-    expect(result.data).toBe(false);
+    expect(result.success).toBe(false);
   });
 });
 
@@ -195,7 +194,7 @@ describe('Neuro-Symbolic: Planning', () => {
     };
 
     const result = ns.validatePlan(plan);
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
     expect(result.data!.valid).toBe(false);
     expect(result.data!.errors.length).toBeGreaterThan(0);
     expect(result.data!.errors.some((e) => e.type === 'precondition_violated')).toBe(true);

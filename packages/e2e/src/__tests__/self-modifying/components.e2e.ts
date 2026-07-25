@@ -82,7 +82,8 @@ describe('ToolSandbox', () => {
     const tool = createGeneratedTool({
       implementation: `
         async function execute(params) {
-          await new Promise(resolve => setTimeout(resolve, 10000));
+          const start = Date.now();
+          while (Date.now() - start < 10000) {}
           return params;
         }
       `,
@@ -444,10 +445,13 @@ describe('SelfModifyingEventEmitter', () => {
       received.push(event);
     });
 
-    const event = emitter.createEvent('tool_generation_completed', 'run_1', 'agent_1', {
-      toolName: 'calculator',
+    await emitter.emit({
+      type: 'tool_generation_completed',
+      runId: 'run_1',
+      agentId: 'agent_1',
+      timestamp: new Date(),
+      data: { toolName: 'calculator' },
     });
-    await emitter.emit(event);
 
     expect(received).toHaveLength(1);
     expect(received[0].type).toBe('tool_generation_completed');
@@ -461,9 +465,27 @@ describe('SelfModifyingEventEmitter', () => {
       received.push(event);
     });
 
-    await emitter.emit(emitter.createEvent('run_started', 'r1', 'a1', {}));
-    await emitter.emit(emitter.createEvent('tool_generation_started', 'r1', 'a1', {}));
-    await emitter.emit(emitter.createEvent('checkpoint_created', 'r1', 'a1', {}));
+    await emitter.emit({
+      type: 'run_started',
+      runId: 'r1',
+      agentId: 'a1',
+      timestamp: new Date(),
+      data: {},
+    });
+    await emitter.emit({
+      type: 'tool_generation_started',
+      runId: 'r1',
+      agentId: 'a1',
+      timestamp: new Date(),
+      data: {},
+    });
+    await emitter.emit({
+      type: 'checkpoint_created',
+      runId: 'r1',
+      agentId: 'a1',
+      timestamp: new Date(),
+      data: {},
+    });
 
     expect(received).toHaveLength(3);
     expect(received[0].type).toBe('run_started');
