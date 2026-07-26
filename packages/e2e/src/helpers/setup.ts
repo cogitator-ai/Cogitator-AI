@@ -14,7 +14,7 @@ import type { SwarmConfig } from '@cogitator-ai/swarms';
 import { z } from 'zod';
 import { LLMJudge } from './judge';
 
-const TEST_MODEL = process.env.TEST_MODEL || 'qwen2.5:0.5b';
+const TEST_MODEL = process.env.TEST_MODEL || 'gpt-oss:20b';
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 
 export async function isOllamaRunning(): Promise<boolean> {

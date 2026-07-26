@@ -5,7 +5,7 @@ import { Agent } from '../../agent';
 import { tool } from '../../tool';
 import { z } from 'zod';
 
-const TEST_MODEL = process.env.TEST_MODEL || 'qwen2.5:0.5b';
+const TEST_MODEL = process.env.TEST_MODEL || 'gpt-oss:20b';
 
 async function isOllamaRunning(): Promise<boolean> {
   try {

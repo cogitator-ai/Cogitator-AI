@@ -127,7 +127,7 @@ describeGoogle('Core: Multi-Provider Consistency', () => {
       name: 'ollama',
       available: true,
       create: () => createTestCogitator(),
-      model: `ollama/${process.env.TEST_MODEL || 'qwen2.5:0.5b'}`,
+      model: `ollama/${process.env.TEST_MODEL || 'gpt-oss:20b'}`,
     });
   }
 
