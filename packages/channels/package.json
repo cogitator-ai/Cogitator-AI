@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/channels",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Messaging channel connectors and Gateway for Cogitator AI agents",
   "type": "module",
   "main": "./dist/index.js",

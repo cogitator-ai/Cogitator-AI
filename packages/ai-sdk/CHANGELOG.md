@@ -1,5 +1,13 @@
 # @cogitator-ai/ai-sdk
 
+## 0.2.15
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/core@0.19.4
+  - @cogitator-ai/types@0.22.3
+
 ## 0.2.14
 
 ### Patch Changes

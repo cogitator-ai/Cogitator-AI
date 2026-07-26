@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/config",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "description": "Configuration loading for Cogitator (YAML, env)",
   "type": "module",
   "main": "./dist/index.js",

@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/worker",
-  "version": "0.3.19",
+  "version": "0.3.20",
   "description": "Distributed job queue for Cogitator agent execution",
   "type": "module",
   "main": "./dist/index.js",
