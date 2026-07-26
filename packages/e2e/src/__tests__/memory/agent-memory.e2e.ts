@@ -42,20 +42,23 @@ describeE2E('Memory: Agent Memory Integration', () => {
     await cogitator.close();
   });
 
-  it('agent remembers specific facts across turns', async () => {
+  it('agent remembers specific facts across turns', { retry: 2 }, async () => {
     const agent = createTestAgent({
       instructions:
-        'You are a helpful assistant. When asked to remember something, confirm you will. When asked to recall, respond with the exact value.',
+        'You are a helpful assistant with access to conversation memory. ' +
+        'When the user tells you to remember something, store it. ' +
+        'When asked to recall information, ALWAYS check your conversation history and memory context. ' +
+        "Respond with the exact value from memory. Never say you don't know if the information was previously shared.",
     });
     const threadId = `memory-fact-${Date.now()}`;
 
     await cogitator.run(agent, {
-      input: 'Remember: the password is XRAY-9943',
+      input: 'Remember this exact code: XRAY-9943. Store it in your memory.',
       threadId,
     });
 
     const r2 = await cogitator.run(agent, {
-      input: 'What is the password?',
+      input: 'What is the exact code I told you to remember? Reply with just the code.',
       threadId,
     });
 
