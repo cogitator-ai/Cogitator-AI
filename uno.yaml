@@ -1,0 +1,7 @@
+version: 1
+
+services:
+  - name: cogitator
+    dockerfile: ./Dockerfile.dashboard
+    ports: [3005]
+    deploy_mode: pet
