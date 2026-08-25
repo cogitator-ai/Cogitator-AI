@@ -46,7 +46,7 @@
     "@fastify/swagger-ui": "^5.2.2",
     "@fastify/rate-limit": "^10.2.1",
     "@fastify/websocket": "^11.0.2",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.2.0",
     "@types/ws": "^8.5.0",
     "fastify": "^5.7.4",
     "typescript": "^5.6.0",

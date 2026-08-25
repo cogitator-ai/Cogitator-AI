@@ -29,7 +29,7 @@
     "nanoid": "^5.0.4"
   },
   "devDependencies": {
-    "@types/node": "^25.0.10",
+    "@types/node": "^26.2.0",
     "typescript": "^5.3.0",
     "vitest": "^4.0.18"
   },
