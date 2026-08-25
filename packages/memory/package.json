@@ -30,7 +30,7 @@
   },
   "optionalDependencies": {
     "@qdrant/js-client-rest": "^1.13.0",
-    "better-sqlite3": "^11.6.0",
+    "better-sqlite3": "^13.0.3",
     "ioredis": "^5.9.3",
     "mongodb": "^6.16.0",
     "pg": "^8.18.0"
