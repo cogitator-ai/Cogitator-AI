@@ -37,7 +37,7 @@
     "date-fns": "^4.1.0",
     "framer-motion": "^12.34.0",
     "fumadocs-core": "^16.6.2",
-    "fumadocs-mdx": "^14.2.7",
+    "fumadocs-mdx": "^15.3.1",
     "fumadocs-ui": "^16.6.2",
     "ioredis": "^5.9.3",
     "jose": "^6.1.3",
