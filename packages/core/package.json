@@ -37,7 +37,7 @@
   "devDependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.991.0",
     "@cogitator-ai/sandbox": "workspace:*",
-    "@types/node": "^25.0.10",
+    "@types/node": "^26.2.0",
     "@types/pg": "^8.10.9",
     "typescript": "^5.3.0",
     "vitest": "^4.0.18"
