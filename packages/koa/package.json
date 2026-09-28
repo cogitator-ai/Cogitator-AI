@@ -33,13 +33,13 @@
   "optionalDependencies": {
     "@cogitator-ai/workflows": "workspace:*",
     "@cogitator-ai/swarms": "workspace:*",
-    "ws": "^8.0.0"
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@cogitator-ai/workflows": "workspace:*",
     "@cogitator-ai/swarms": "workspace:*",
-    "supertest": "^7.0.0",
-    "@types/supertest": "^6.0.0",
+    "supertest": "^7.3.0",
+    "@types/supertest": "^7.2.1",
     "vitest": "^3.0.0",
     "@types/koa": "^2.15.0",
     "@types/koa__router": "^12.0.0",
@@ -47,7 +47,7 @@
     "koa": "^2.15.0",
     "@koa/router": "^13.1.0",
     "typescript": "^5.6.0",
-    "ws": "^8.18.0"
+    "ws": "^8.21.3"
   },
   "repository": {
     "type": "git",
