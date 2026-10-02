@@ -1,5 +1,21 @@
 # @cogitator-ai/express
 
+## 0.4.0
+
+### Minor Changes
+
+- `CogitatorRequest` takes a route params type (defaults to the previous one) so routes compile against @types/express 5; tested on express 5.
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.21.0
+  - @cogitator-ai/server-shared@0.2.0
+  - @cogitator-ai/types@0.24.0
+
 ## 0.3.1
 
 ## 0.3.0

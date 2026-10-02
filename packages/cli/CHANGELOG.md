@@ -1,5 +1,31 @@
 # @cogitator-ai/cli
 
+## 0.5.0
+
+### Minor Changes
+
+- `cogitator init` writes a `pnpm-workspace.yaml` that allows the native builds pnpm 10.26+/11 would otherwise refuse; generated projects require Node 22.12+ and `build` targets node22.
+- Prompts (clack 1): pressing Enter on an empty field no longer saves the grey placeholder as the value. Extra positional arguments are now an error instead of being silently dropped (commander 15).
+- Current model lists and Ollama defaults (`qwen3:8b`).
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/channels@0.4.0
+  - @cogitator-ai/config@0.7.0
+  - @cogitator-ai/core@0.21.0
+  - @cogitator-ai/deploy@0.3.0
+  - @cogitator-ai/memory@0.8.0
+  - @cogitator-ai/models@18.0.0
+  - @cogitator-ai/types@0.24.0
+
 ## 0.4.0
 
 ### Minor Changes

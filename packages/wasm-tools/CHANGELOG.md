@@ -1,5 +1,16 @@
 # @cogitator-ai/wasm-tools
 
+## 0.7.0
+
+### Minor Changes
+
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.24.0
+
 ## 0.6.0
 
 ### Minor Changes

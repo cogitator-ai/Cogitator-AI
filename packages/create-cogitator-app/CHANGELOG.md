@@ -1,5 +1,12 @@
 # create-cogitator-app
 
+## 0.2.0
+
+### Minor Changes
+
+- pnpm projects get a `pnpm-workspace.yaml` allowing the native builds pnpm 10.26+/11 would otherwise refuse, so a fresh project installs again; current default models.
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
 ## 0.1.1
 
 ### Patch Changes

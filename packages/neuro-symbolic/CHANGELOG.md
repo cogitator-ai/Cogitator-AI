@@ -1,5 +1,19 @@
 # @cogitator-ai/neuro-symbolic
 
+## 17.0.0
+
+### Major Changes
+
+- Optional z3-solver accepts 4 and 5.
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.21.0
+  - @cogitator-ai/types@0.24.0
+
 ## 16.0.0
 
 ### Major Changes

@@ -1,5 +1,21 @@
 # @cogitator-ai/fastify
 
+## 0.3.0
+
+### Minor Changes
+
+- Optional `@fastify/rate-limit` and `@fastify/swagger-ui` ranges accept 10 or 11 and 5 or 6; fastify-plugin 6.
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.21.0
+  - @cogitator-ai/server-shared@0.2.0
+  - @cogitator-ai/types@0.24.0
+
 ## 0.2.1
 
 ## 0.2.0

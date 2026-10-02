@@ -1,5 +1,16 @@
 # @cogitator-ai/evals
 
+## 0.2.0
+
+### Minor Changes
+
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/core@0.21.0
+
 ## 0.1.13
 
 ### Patch Changes

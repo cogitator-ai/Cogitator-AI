@@ -1,5 +1,30 @@
 # @cogitator-ai/channels
 
+## 0.4.0
+
+### Minor Changes
+
+- Local Whisper returned an empty transcript with transformers.js 4; it now uses the public `return_timestamps: false` option and installs pinned dependency ranges.
+- Scheduler uses cron-parser 5; OpenAI STT defaults to `gpt-transcribe`.
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/browser@0.3.0
+  - @cogitator-ai/core@0.21.0
+  - @cogitator-ai/mcp@19.0.0
+  - @cogitator-ai/memory@0.8.0
+  - @cogitator-ai/models@18.0.0
+  - @cogitator-ai/rag@0.3.0
+  - @cogitator-ai/types@0.24.0
+
 ## 0.3.0
 
 ### Minor Changes

@@ -1,5 +1,12 @@
 # @cogitator-ai/models
 
+## 18.0.0
+
+### Major Changes
+
+- Registry adds GPT-6, gpt-5.6, Claude 5.5 / Fable 5.1 and Gemini 3.8 / 3.5 Flash-Lite and marks retired models deprecated.
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
 ## 17.1.9
 
 ### Patch Changes

@@ -1,5 +1,19 @@
 # @cogitator-ai/voice
 
+## 0.3.0
+
+### Minor Changes
+
+- OpenAI STT defaults to `gpt-transcribe`; realtime defaults to `gpt-realtime-2.1-mini` with `gpt-live-transcribe`; the `openai` peer accepts ^6 || ^7.
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.21.0
+  - @cogitator-ai/types@0.24.0
+
 ## 0.2.0
 
 ### Minor Changes

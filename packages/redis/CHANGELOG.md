@@ -1,5 +1,12 @@
 # @cogitator-ai/redis
 
+## 0.4.0
+
+### Minor Changes
+
+- ioredis 6 (peer range ^5 || ^6).
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
 ## 0.3.0
 
 ### Minor Changes

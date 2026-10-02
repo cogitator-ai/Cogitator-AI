@@ -1,5 +1,19 @@
 # @cogitator-ai/next
 
+## 0.4.0
+
+### Minor Changes
+
+- Peer ranges state what is supported: next ^14 || ^15 || ^16, react ^18.2 || ^19.
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.21.0
+  - @cogitator-ai/types@0.24.0
+
 ## 0.3.0
 
 ### Minor Changes

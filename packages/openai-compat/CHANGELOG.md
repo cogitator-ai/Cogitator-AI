@@ -1,5 +1,19 @@
 # @cogitator-ai/openai-compat
 
+## 21.0.0
+
+### Major Changes
+
+- ioredis peer accepts ^5 || ^6.
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.21.0
+  - @cogitator-ai/types@0.24.0
+
 ## 20.0.0
 
 ### Major Changes

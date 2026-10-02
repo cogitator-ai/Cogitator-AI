@@ -1,5 +1,19 @@
 # @cogitator-ai/rag
 
+## 0.3.0
+
+### Minor Changes
+
+- PDFLoader runs on pdf-parse 2 with the same documents and metadata; per-page mode reports the real page number after skipped empty pages.
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/memory@0.8.0
+  - @cogitator-ai/types@0.24.0
+
 ## 0.2.0
 
 ### Minor Changes

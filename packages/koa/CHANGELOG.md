@@ -1,5 +1,23 @@
 # @cogitator-ai/koa
 
+## 0.3.0
+
+### Minor Changes
+
+- Tested on koa 3 and @koa/router 15.
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.21.0
+  - @cogitator-ai/memory@0.8.0
+  - @cogitator-ai/server-shared@0.2.0
+  - @cogitator-ai/types@0.24.0
+
 ## 0.2.1
 
 ## 0.2.0

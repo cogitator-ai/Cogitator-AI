@@ -1,5 +1,19 @@
 # @cogitator-ai/workflows
 
+## 0.7.0
+
+### Minor Changes
+
+- Timers use cron-parser 5 (next/prev verified against v4 across time zones and DST).
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.21.0
+  - @cogitator-ai/types@0.24.0
+
 ## 0.6.1
 
 ### Patch Changes

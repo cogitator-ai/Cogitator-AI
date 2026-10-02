@@ -1,5 +1,12 @@
 # @cogitator-ai/types
 
+## 0.24.0
+
+### Minor Changes
+
+- Added `ToolCall.replay`, `ChatUsage` (`cachedInputTokens`, `reasoningTokens`) and `OpenAIProviderConfig.api`.
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
 ## 0.23.0
 
 ### Minor Changes

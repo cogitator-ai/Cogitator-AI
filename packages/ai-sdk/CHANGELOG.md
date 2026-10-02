@@ -1,5 +1,20 @@
 # @cogitator-ai/ai-sdk
 
+## 0.3.0
+
+### Minor Changes
+
+- Support AI SDK 4, 5, 6 and 7. `cogitatorModel()`/`createCogitatorProvider()` detect the installed `ai` major (v1/v2/v3/v4, override via `specificationVersion`) at runtime and in the types, so existing ai@4 code keeps compiling and running. Agent tool calls are reported as provider-executed tool calls instead of client tool calls, so the AI SDK no longer runs them again. `fromAISDK()` wraps LanguageModelV1–V4. `toAISDKTool()` emits `inputSchema` plus `parameters` and passes the tool context through.
+
+  **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.21.0
+  - @cogitator-ai/types@0.24.0
+
 ## 0.2.16
 
 ### Patch Changes

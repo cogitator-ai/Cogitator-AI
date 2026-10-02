@@ -1,5 +1,21 @@
 # @cogitator-ai/worker
 
+## 0.5.0
+
+### Minor Changes
+
+- BullMQ 6; ioredis is a required peer (BullMQ no longer depends on it).
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.21.0
+  - @cogitator-ai/swarms@0.6.0
+  - @cogitator-ai/types@0.24.0
+
 ## 0.4.1
 
 ### Patch Changes

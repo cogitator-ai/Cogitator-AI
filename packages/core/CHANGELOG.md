@@ -1,5 +1,27 @@
 # @cogitator-ai/core
 
+## 0.21.0
+
+### Minor Changes
+
+- The official OpenAI backend uses the Responses API and defaults to `gpt-6.1-sol`; OpenAI-compatible providers stay on Chat Completions (`api: 'responses' | 'chat-completions'` forces either). Encrypted reasoning items are round-tripped between tool calls; reasoning models get no temperature/top_p.
+- Anthropic and Bedrock: current Claude models no longer fail with HTTP 400 on the default temperature (sampling params are omitted on Claude 4.7+/Fable, at most one of temperature/top_p on other 4.x); native structured outputs on Claude 4.5+; forced tool choice falls back to auto on models that reject it; default Anthropic model `claude-sonnet-5-5`; more precise stop reasons.
+- Retired model ids replaced with current ones (GPT-6, Claude 5.5, Gemini 3.8 / 3.5 Flash-Lite); context windows for GPT-5/6, Claude 5 and Gemini 3.
+- **Breaking:** `image-generate` uses `gpt-image-2.5-flare` (DALL-E 3 is retired): results carry `imageBase64`, `url` is optional, default size/quality are `auto` (`config.model` keeps the DALL-E request shape). Transcription defaults to `gpt-transcribe` (`whisper-1` when word timestamps are requested); TTS defaults to `gpt-4o-mini-tts`.
+- Errors rethrown from catch blocks keep the original error as `cause`.
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/memory@0.8.0
+  - @cogitator-ai/models@18.0.0
+  - @cogitator-ai/sandbox@0.4.0
+  - @cogitator-ai/types@0.24.0
+
 ## 0.20.0
 
 ### Minor Changes

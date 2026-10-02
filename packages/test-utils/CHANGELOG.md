@@ -1,5 +1,16 @@
 # @cogitator-ai/test-utils
 
+## 0.2.0
+
+### Minor Changes
+
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.24.0
+
 ## 0.1.11
 
 ### Patch Changes

@@ -1,5 +1,16 @@
 # @cogitator-ai/self-modifying
 
+## 19.0.0
+
+### Major Changes
+
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.24.0
+
 ## 18.0.0
 
 ### Major Changes

@@ -1,5 +1,19 @@
 # @cogitator-ai/memory
 
+## 0.8.0
+
+### Minor Changes
+
+- Optional dependencies move to ioredis 6, mongodb 7 and better-sqlite3 13; peer ranges keep the previous majors.
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/redis@0.4.0
+  - @cogitator-ai/types@0.24.0
+
 ## 0.7.0
 
 ### Minor Changes

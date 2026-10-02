@@ -1,5 +1,21 @@
 # @cogitator-ai/swarms
 
+## 0.6.0
+
+### Minor Changes
+
+- Model discovery and scoring know current models (GPT-6, Claude 5.5, Gemini 3.x, qwen3); `llama3` no longer claims tool support; ioredis 6.
+- **Breaking:** requires Node.js 22.12 or newer (Node 20 reached end of life).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.21.0
+  - @cogitator-ai/types@0.24.0
+  - @cogitator-ai/workflows@0.7.0
+
 ## 0.5.1
 
 ### Patch Changes
