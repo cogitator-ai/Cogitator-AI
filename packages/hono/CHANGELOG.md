@@ -1,5 +1,28 @@
 # @cogitator-ai/hono
 
+## 0.2.0
+
+### Minor Changes
+
+- Fixed 22 issues in the Hono adapter. Routes returned 500 for every CogitatorError, and the error handler also turned HTTPExceptions into 500; statuses are now mapped type-safely. Failed workflows came back as success over REST, SSE and WS. A client disconnect never aborted runs; agent and workflow runs now get request/stream abort signals and swarms are aborted. HonoStreamWriter.close() aborted the stream on the error path, so the error event could be lost. There was no body size limit; a bodyLimit option (default 1 MiB, 413) and createBodyLimitMiddleware are added. A workflow POST with no body is now accepted. Bodies are now type-validated and workflow options whitelisted. Thread role is validated, metadata is kept, tokenCount is estimated and adapter errors are masked. SSE tool-call ids now match tool results, /agents no longer leaks instructions, and agentUsage Maps are serialized. The WebSocket endpoint was an unfinished 501 stub; it is now built on the runtime's upgradeWebSocket helper behind the auth middleware, with maxPayloadSize enforcement (close 1009) and binary frames. Abort signals are wired so stop and close actually cancel runs, the stop race is fixed, messages are masked, unknown types get explicit errors, and threadId is supported. Dead pingInterval config is removed.
+
+  **Breaking changes**
+  - WebSocketConfig.pingInterval is removed; it was never implemented because Hono's WSContext has no ping API.
+  - GET /agents `description` is now agent.config.description, no longer the first 100 chars of instructions.
+  - Memory adapter error strings are masked as 'Internal server error'.
+  - HonoStreamWriter.close() no longer calls stream.abort(); it only marks the writer closed.
+  - Workflow runs that end with result.error now return an error (500 / SSE error event / WS error).
+  - Request bodies are type-validated and unsupported workflow options are dropped; request bodies are limited to 1 MiB by default (configurable via bodyLimit).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.20.0
+  - @cogitator-ai/memory@0.7.0
+  - @cogitator-ai/types@0.23.0
+
 ## 0.1.14
 
 ### Patch Changes

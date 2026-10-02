@@ -1,5 +1,27 @@
 # @cogitator-ai/a2a
 
+## 0.4.0
+
+### Minor Changes
+
+- Resumed the unfinished 2026-07-26 audit at step 4. Critical: no framework adapter passed credentials, so any server configured with `auth` rejected every request. getAuthToken() was added and wired into all 5 adapters, and the auth scheme is now advertised on the agent card. Streaming fixes: artifact events used to be emitted after the terminal status and so never reached SSE clients. input-required streams ended with a fake failure. Listeners leaked on continuation errors. A rejected execution hung the stream. Client disconnects now abort the LLM run through an AbortSignal. Multi-turn tasks now replay the transcript, where before only the newest message was sent, and artifacts accumulate. SendMessageConfiguration is implemented: blocking:false, historyLength, acceptedOutputModes, timeout, and the new pushNotificationConfig. SSRF fixes: 127.0.0.2, CGNAT, IPv6 ULA/link-local, hex IPv4-mapped addresses, DNS rebinding (now pinned at connect time) and redirects. Client fixes: the stream timeout is now an idle timeout (it used to kill streams after 30s), CRLF SSE framing, JSON-RPC errors on non-2xx responses, and asTool. Also: the Redis cjson empty-array corruption, running tasks being evicted, and wrong JSON-RPC error codes.
+
+  **Breaking changes**
+  - tasks/pushNotification/create now returns TaskNotFound (-32001) for unknown task ids
+  - Structurally invalid JSON-RPC requests now return -32600 Invalid Request instead of -32700
+  - Adapters stream only for method message/stream; Accept: text/event-stream no longer turns message/send into SSE
+  - JSON-RPC notifications get HTTP 204 with no body
+  - Continuations pass threadId (contextId), loadHistory:false and a transcript input to CogitatorLike.run; artifacts accumulate across turns
+  - Streams end on input-required; artifact events precede the final status event
+  - asTool results may include taskId/state, and output is the latest answer
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.20.0
+  - @cogitator-ai/types@0.23.0
+
 ## 0.3.12
 
 ### Patch Changes

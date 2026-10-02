@@ -1,5 +1,27 @@
 # @cogitator-ai/openai-compat
 
+## 20.0.0
+
+### Major Changes
+
+- Re-audit; the old report was renamed to openai-compat-audit-2026-02-25.md. Critical: RedisThreadStorage and PostgresThreadStorage used require() in an ESM package and could never connect; they now load the optional peers with a dynamic import. The adapter and server could not use persistent storage at all; a `storage` option was added. The per-process cache served stale data to other instances; it was removed, and per-thread locks prevent lost updates. Client function tools were a dead end, with submitToolOutputs leaving runs in_progress forever. They now drive a real requires_action → submit → resume flow on the same agent run, with expiry and cancel handling. Streaming fixes: SSE headers were never sent, early events were lost, emitting 'error' crashed, delta index grew per token (the SDK built N parts), and the stored message id did not match the streamed one. Run fixes: multi-turn context was lost, cancel never aborted the agent, the advertised 'cogitator' model was unusable (defaultModel added), run options were ignored, images were dropped, and the active-run guard was missing. Server/route fixes: the setup race (examples slept before start), logging:true crashing on pino-pretty, message desc ordering, limit parsing, files purpose and Content-Disposition, timing-safe auth with public /health, and list runs.
+
+  **Breaking changes**
+  - Assistant `function` tools are now executed client-side via requires_action (previously ignored)
+  - cancelRun throws (HTTP 400) for runs that already finished
+  - A thread rejects a second run while one is active (HTTP 400)
+  - Message listing order is by insertion (desc = newest first) instead of second-resolution timestamps
+  - OpenAIServer.start() no longer prints to the console unless logging is enabled; logging uses plain pino JSON instead of pino-pretty
+  - Model id 'cogitator' requires the new defaultModel option
+  - ThreadManager no longer caches; every read goes to storage
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.20.0
+  - @cogitator-ai/types@0.23.0
+
 ## 19.0.17
 
 ### Patch Changes

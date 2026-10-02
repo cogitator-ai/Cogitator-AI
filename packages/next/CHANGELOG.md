@@ -1,5 +1,27 @@
 # @cogitator-ai/next
 
+## 0.3.0
+
+### Minor Changes
+
+- The chat handler never streamed tokens because it called cogitator.run without stream:true. The old e2e test passed anyway, since it accepted a bare text-start. The async callbacks passed to core's sync onToken/onToolCall/onToolResult caused unhandled rejections when a client disconnected; they now go through a serialized write queue that aborts the run on failure. Text blocks were left unbalanced across multiple tool results. Runs now abort when the client disconnects (both handlers). afterRun no longer writes after [DONE]. Null bodies no longer crash, a chunked body can no longer get past the 1MB limit, and empty input returns 400 instead of running the agent. Request metadata is now passed to the run as context. The finish event now returns threadId so multi-turn memory works, and the false AI SDK v5 compatibility header and claim are removed. In the client hooks: onFinish no longer gets stale or truncated content (synchronous reducer mirror), a superseded request no longer clears the loading state, stop() and send() keep the partial reply, and reload() no longer hides the last user message. Added HttpError with a status field and status-based retry (408/429/502/503/504); retry waits can be cancelled, and maxRetries: NaN no longer loops forever. useCogitatorAgent no longer lets an older run overwrite a newer result, and it aborts on unmount and reset. The SSE parser now handles data: without a space and flushes the decoder. Fixed the README and docs configs. The example ran new Function on model output; it now uses a small arithmetic parser.
+
+  **Breaking changes**
+  - createChatHandler returns 400 'No user message provided' instead of running the agent with an empty input; createAgentHandler returns 400 for missing, blank or non-string input, a non-object context or a non-string threadId
+  - Removed the 'x-vercel-ai-ui-message-stream: v1' response header (the payloads never matched the AI SDK UI message schema)
+  - afterRun now runs before the finish event; if it throws, the client gets an error event and no finish or [DONE]
+  - beforeRun's returned object can no longer override stream, signal, onToken, onToolCall or onToolResult
+  - useCogitatorChat and useCogitatorAgent HTTP errors are now HttpError with message 'Request failed: <status> - <server error>' (useCogitatorChat used to put the raw response body in the message)
+  - useCogitatorChat no longer calls onFinish after a stream 'error' event
+  - FinishEvent gains an optional threadId; useCogitatorChat adopts the server's threadId automatically
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.20.0
+  - @cogitator-ai/types@0.23.0
+
 ## 0.2.12
 
 ### Patch Changes

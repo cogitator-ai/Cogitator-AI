@@ -1,5 +1,28 @@
 # @cogitator-ai/swarms
 
+## 0.5.0
+
+### Minor Changes
+
+- Distributed swarms had never worked. They now use a Redis-list job protocol with jobId matching and lazy connection, and run end to end with the worker's DistributedSwarmWorker. Shared coordinator logic moved into a new BaseSwarmCoordinator, which adds retry and failover without recursion, abort and timeout signals (SwarmTimeoutError), per-run and per-turn token budgets, and a concurrency pool. Several strategies were broken and are fixed: hierarchical delegation through the plain Swarm API, consensus ties and abstentions, pipeline first-stage retry, debate token caps, and negotiation agreement through tools. Supervisors and negotiators now get their strategy tools automatically. Communication now has read tracking, exactly-once delivery and isolated handlers. The assessor returns provider-qualified models. README, dashboard swarm docs and swarm examples 01/03/04 were rewritten or fixed and verified with Gemini.
+
+  **Breaking changes**
+  - Swarm.reset() now returns Promise<void>
+  - Assessment assignedModel is provider-qualified (e.g. 'ollama/qwen2.5:0.5b')
+  - Consensus threshold is measured against all eligible voters, not just the votes cast
+  - Registering two different agents with the same name throws
+  - SwarmAgentJobPayload.agentConfig is now SerializedSwarmAgentConfig and the payload gains runOptions
+  - Swarm examples import types from @cogitator-ai/swarms; scripts/test.sh removed and the test script is now 'vitest run'
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.20.0
+  - @cogitator-ai/types@0.23.0
+  - @cogitator-ai/workflows@0.6.0
+
 ## 0.4.20
 
 ### Patch Changes

@@ -1,5 +1,26 @@
 # @cogitator-ai/core
 
+## 0.20.0
+
+### Minor Changes
+
+- Re-audit of @cogitator-ai/core (+ @cogitator-ai/types). The most important fixes: (1) the first sandboxed tool call of a Cogitator instance ran natively on the host because the executor captured a stale undefined sandbox manager, a security bug; (2) Tool.timeout is now enforced for native tools; (3) trace spans were orphaned because the root span id did not match the children's parentId; (4) tool-call structure is kept intact across runtime, memory, compression and providers: duplicate-call errors are persisted, reflection hints are deferred, and loaded or compressed history is cleaned of orphaned tool results and unanswered calls; (5) RunOptions.audio was documented but silently ignored and is now implemented via Whisper; (6) reflection, guardrails, the LLM injection classifier and cost routing sent provider-prefixed or wrong model ids; (7) backends: Gemini 3 thought signatures are now round-tripped, a new ToolCall.thoughtSignature field was added in types, and the 400 it caused was confirmed with a real API call; system prompts are no longer overwritten for Anthropic, Gemini and Bedrock; parallel tool results are grouped into one turn; OpenAI uses max_completion_tokens; empty tool arguments are handled; Ollama error lines and blocked Gemini prompts are reported; stream errors are wrapped; (8) tools: Postgres read-only queries run in a READ ONLY transaction; SQLite mutations work; Google and Tavily keys are moved out of the URL and body; the deprecated embedding default is fixed; the Redis tool-cache size counter no longer drifts; the HTTP tool handles HEAD requests; self-tools updates are atomic. Docs: invalid @cogitator-ai/core/\* subpath imports were fixed across the advanced docs. Report: docs/audits/core-audit.md (previous report kept as core-audit-2026-05-15.md).
+
+  **Breaking changes**
+  - OpenAIBackend against the official endpoint (no baseUrl) now sends maxTokens as max_completion_tokens instead of max_tokens (custom baseUrl and compatible providers unchanged).
+  - vector_search Google default embedding model changed from shut-down text-embedding-004 (768 dims) to gemini-embedding-001 (matches @cogitator-ai/memory); pgvector column dimension must match.
+  - When security.promptInjection.classifier='llm' is configured through Cogitator without llmModel, the classifier now uses the agent's model instead of a bare 'gpt-4o-mini' on the default provider.
+  - Internal (not exported from package root): executeTool/initializeSandbox now take/return SandboxManager | undefined; initializeSecurity takes the agent.
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/memory@0.7.0
+  - @cogitator-ai/sandbox@0.3.0
+  - @cogitator-ai/types@0.23.0
+
 ## 0.19.4
 
 ### Patch Changes

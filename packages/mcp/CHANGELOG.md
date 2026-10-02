@@ -1,5 +1,23 @@
 # @cogitator-ai/mcp
 
+## 18.0.0
+
+### Major Changes
+
+- Resumed the unfinished 2026-07-26 audit at step 4. Main fixes: callTool now throws MCPToolError for isError results, where it used to return the error text as a success. Protocol errors and tool failures are no longer retried with backoff. Concurrent calls share one reconnect, the abort signal and timeout are passed through, and close() always closes the transport, so stdio children no longer leak. jsonSchemaToZod no longer drops arguments for object schemas without properties, and now handles type arrays, nullable, const and additionalProperties; an invalid regex pattern no longer breaks getTools. On the server: the tool's full Zod schema goes to the SDK (no double transforms or lost modifiers), image/audio/resource content passes through, prompts and resources propagate errors as JSON-RPC errors, prompts without arguments work, logging goes to stderr so it no longer corrupts stdio JSON-RPC, start() rejects on EADDRINUSE instead of hanging, stop() closes keep-alive connections, and getPort() was added. New tests use the real SDK over HTTP instead of mocks.
+
+  **Breaking changes**
+  - MCPClient.callTool throws MCPToolError when the server returns isError: true (previously returned the error text)
+  - callTool returns structuredContent when present and null for empty results (previously the raw protocol envelope)
+  - mcpContentToResult unwraps a single non-text block instead of returning a one-element array
+  - MCPServer resource read / prompt get handler errors are now JSON-RPC errors instead of fake 'Error: ...' content/messages
+  - MCPServer logging writes to stderr instead of stdout
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.23.0
+
 ## 17.0.11
 
 ### Patch Changes

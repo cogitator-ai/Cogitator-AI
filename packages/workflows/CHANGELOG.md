@@ -1,5 +1,25 @@
 # @cogitator-ai/workflows
 
+## 0.6.0
+
+### Minor Changes
+
+- Joins were broken: a join node could run once per arriving branch, the first time before slower branches had finished. A reachability-based join barrier fixes this. Entry-point detection in the builder was inverted: only the first of several independent roots ran, and a root addParallel was skipped. Subworkflow child failures were reported as success; they now propagate, and timeouts abort the child. Per-node timeout, retries and retryDelay were ignored and are now enforced. Run-level policies are honoured: defaultRetry, defaultCircuitBreaker, deadLetterQueue, idempotencyStore, approval/timer stores, and the manager's defaultTimeout. The run signal reaches agent and tool nodes, and a tracer and metricsCollector can be passed. New adapters (timerWorkflowNode, humanWorkflowNode, mapWorkflowNode, mapReduceWorkflowNode, subworkflowWorkflowNode, parallelSubworkflowsNode) make the documented helpers usable inside a workflow. Conditionals can target any construct, the scheduler uses an order-preserving pool, and the trigger manager and checkpoint store no longer swallow errors. README rewritten with type-checked snippets; docs updated; examples 01-03 verified with Gemini.
+
+  **Breaking changes**
+  - Builds with several independent root nodes now throw; previously only the first root silently ran
+  - A root addParallel is now the entry point
+  - Nodes placed after a loop must be its back or exit node, otherwise the build throws
+  - Subworkflow child failures now fail the parent subworkflow node
+  - addNode accepts a WorkflowNode as well as a NodeFn (additive)
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.20.0
+  - @cogitator-ai/types@0.23.0
+
 ## 0.5.17
 
 ### Patch Changes

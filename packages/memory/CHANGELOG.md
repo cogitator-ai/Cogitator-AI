@@ -1,5 +1,24 @@
 # @cogitator-ai/memory
 
+## 0.7.0
+
+### Minor Changes
+
+- createThread on an existing id wiped history in the in-memory adapter and failed in SQLite and MongoDB; it is now a non-destructive upsert everywhere. Entries saved in the same millisecond now keep insertion order, using per-thread strictly increasing timestamps plus rowid ordering in SQLite. Cross-agent leakage is fixed: ContextBuilder no longer injects embeddings scoped to other agents, and the in-memory, Postgres and Qdrant embedding stores now filter consistently by metadata.agentId and metadata.threadId. The 'relevant' strategy, which used to throw 'not implemented', now works. Hybrid no longer wastes 30% of the budget and keeps chronological order. Compaction puts the summary before the kept messages and includes tool calls. SessionManager.list() works without userId through an index thread, delete() updates the index, and compact() delegates to an optional CompactionService. Redis adapter: cluster hash-tag prefix, TTL refresh on the thread key, stale index pruning, and errors returned as results. Postgres search returns failures instead of throwing, and MongoDB gets a compound index. CoreFactsStore writes are transactional, embedding fetch retries network errors and honours Retry-After, and graph LIKE now escapes wildcards. README (including snippets that did not compile) and the memory docs were updated.
+
+  **Breaking changes**
+  - createThread with an existing thread id now upserts metadata instead of resetting (in-memory) or failing (SQLite/MongoDB)
+  - Semantic context no longer includes embeddings whose metadata.agentId belongs to another agent
+  - Qdrant filters use metadata.threadId/metadata.agentId payload keys
+  - SessionManager constructor accepts an options object { compaction }; compact() throws without it
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/redis@0.3.0
+  - @cogitator-ai/types@0.23.0
+
 ## 0.6.22
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @cogitator-ai/types
 
+## 0.23.0
+
+### Minor Changes
+
+- Declarative package (steps 7, 8 and 10 skipped). Build and lint are clean, all 33 modules are exported, and zod is correctly a dependency. Reviewed the diff since 2026-05-15; no any or @ts-ignore found. One fix: DeployTarget advertised 'railway' | 'k8s' | 'ssh', which had no deploy providers and crashed at deploy time. It is narrowed to 'docker' | 'fly', with the config schema changed to match. The edit is a minimal one-line change to deploy.ts; message.ts, self-modifying.ts and the README, which the core agent was editing at the same time, were left untouched.
+
+  **Breaking changes**
+  - DeployTarget is now 'docker' | 'fly' (removed the never-implemented 'railway' | 'k8s' | 'ssh').
+
 ## 0.22.3
 
 ### Patch Changes

@@ -1,5 +1,24 @@
 # @cogitator-ai/self-modifying
 
+## 18.0.0
+
+### Major Changes
+
+- Fixed a critical sandbox escape. Generated tools could reach the worker's `process` through host-realm constructors: Array["constr"+"uctor"]("return process")() gave getBuiltinModule('child_process') and the full process.env (95 vars, including API keys). Verified against the previous code. The sandbox is rewritten: a fresh vm context with no host objects, JSON-only boundary, code generation disabled, empty worker env. Other fixes: generated tools never became 'active' (getGeneratedTools always empty); tools were stored before the constraint check and never loaded in later runs; toJSON nested the whole JSON schema inside properties; llm.complete ignored the model; every config_change was rejected and triggered a rollback because tool-only safety rules were applied to it (added SafetyConstraint.appliesTo in types); the parameter optimizer never learned (recordOutcome never called, nothing ever adopted); LLM candidate configs with hallucinated models were applied unvalidated; meta-reasoning ignored config.triggers, accepted recommendations with no confidence and its parameter adjustments did nothing; the run loop re-ran the agent up to 10 times for any answer under 50 characters; config.enabled was ignored; concurrent runs shared one context; agent temperature/maxTokens and the provider prefix were ignored; tool args were not schema-validated; on() handlers were typed `never`. The validator flagged RegExp.exec as shell execution, and its generated test cases contradicted each other, so correct tools were rejected. READMEs/docs were fixed (broken Quick Start, wrong method names and signatures).
+
+  **Breaking changes**
+  - SelfModifyingAgent.on() now returns an unsubscribe function, and handlers are typed per event via SelfModifyingEventDataMap (previously typed `never`).
+  - ToolContext.agentId passed to tools is agent.id (matches core), not agent.name.
+  - Short answers no longer trigger repeated agent runs. Meta-reasoning only intervenes on incomplete steps (empty or truncated answer).
+  - Architecture evolution only changes the model when the new availableModels option is set. The baseline reflectionDepth is 0. toolStrategy 'parallel'/'adaptive' now runs tool calls concurrently.
+  - Default safety constraints now carry appliesTo ['tool_generation','tool_creation'], so config changes are no longer checked against them.
+  - ToolGenerator.generateQuick returns null when no valid tool is produced (previously returned the failed tool).
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.23.0
+
 ## 17.0.18
 
 ### Patch Changes

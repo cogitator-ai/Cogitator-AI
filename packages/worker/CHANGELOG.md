@@ -1,5 +1,27 @@
 # @cogitator-ai/worker
 
+## 0.4.0
+
+### Minor Changes
+
+- Distributed swarm results never reached the coordinator: they had no jobId and nothing consumed the job list. A new DistributedSwarmWorker fixes this and is verified end to end with Redis and Ollama. Model strings were double-prefixed ('openai/openai/gpt-4'). Serialized tools were replaced by stubs that returned fake success; they are now resolved from the worker's tools registry and fail fast when missing. 4 of 5 swarm topologies always threw; the new buildSwarmConfig maps all of them. Workflow jobs threw 'not implemented' and now run on a validated DAG interpreter with agent, transform, condition and parallel nodes. WorkerConfig accepts a shared cogitator and tools runtime instead of creating a bare Cogitator per job. Redis cluster now uses a real ioredis Cluster instead of the first node only. Blocking connections set maxRetriesPerRequest: null. A forced stop closes everything, and the publisher is configured once instead of per job from env. getWorkersCount, job-duration metrics and Prometheus label escaping now work, and tool outputs are recovered. Payload types are aliased from swarms. README, docs and examples/infrastructure/03-worker-queue.ts were updated and verified.
+
+  **Breaking changes**
+  - processSwarmAgentJob(payload, { publisher, isFinalAttempt? }) now requires a publisher instead of building an env-based Redis client
+  - Agents that reference tools need implementations registered in the worker `tools` option (stubs were removed)
+  - SerializedAgent.provider widened to LLMProvider; maxIterations added
+  - Workflow jobs now execute instead of throwing
+  - Swarm agent job payload/result types now alias the @cogitator-ai/swarms contract
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.20.0
+  - @cogitator-ai/swarms@0.5.0
+  - @cogitator-ai/types@0.23.0
+
 ## 0.3.20
 
 ### Patch Changes

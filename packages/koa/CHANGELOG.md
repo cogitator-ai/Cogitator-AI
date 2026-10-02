@@ -1,5 +1,29 @@
 # @cogitator-ai/koa
 
+## 0.2.0
+
+### Minor Changes
+
+- Fixed 27 issues in the Koa adapter. Auth wrapped next(), so route errors without a 5xx status came back as 401. Prototype names like constructor and toString crashed REST and WS lookups. /tools returned raw Zod objects instead of JSON Schema, and /agents leaked system-prompt text. Non-Cogitator error messages and memory adapter errors reached clients, and CogitatorError statuses were ignored. Failed workflows (result.error) came back as 200, workflow_completed or WS complete. Request bodies had no type validation, and workflow options were forwarded whole (skipNodes crash, forged workflowId). Thread role is now validated, metadata is kept and tokenCount is estimated. SSE tool-call ids now match their tool-result. A client disconnect now aborts agent, workflow and swarm runs; the old req 'close' listener was unreliable. Map fields no longer serialize as {}. The body parser hung when koa-bodyparser had already run; it now drains before returning 413 and takes a bodyLimit option. WebSocket now has handshake auth and noServer path routing that leaves other upgrade listeners alone. pingTimeout is implemented, the stop/run race is fixed, unknown messages and run types get explicit errors, and threadId is supported. Dead app-level enableWebSocket/websocket config is removed.
+
+  **Breaking changes**
+  - CogitatorAppOptions.enableWebSocket and .websocket are removed; they only printed a console.log. Use setupWebSocket(server, ctx, config).
+  - GET /agents `description` is now agent.config.description, no longer the first 100 chars of instructions.
+  - Non-CogitatorError messages and memory adapter error strings are masked as 'Internal server error' in REST, SSE and WS responses.
+  - Workflow runs that end with result.error now return an error (500 / SSE error event / WS error), not success.
+  - Workflow request `options` other than maxConcurrency, maxIterations and checkpoint are dropped; invalid option types return 400.
+  - Request bodies are type-validated (input string, context object, threadId string, timeout > 0, role user|assistant|system) and invalid ones return 400.
+  - WebSocket: with no other upgrade listener, non-matching upgrade paths get 404 instead of 400. When other listeners exist they are left to those listeners.
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.20.0
+  - @cogitator-ai/memory@0.7.0
+  - @cogitator-ai/types@0.23.0
+
 ## 0.1.14
 
 ### Patch Changes

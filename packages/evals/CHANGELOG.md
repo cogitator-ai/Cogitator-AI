@@ -1,5 +1,14 @@
 # @cogitator-ai/evals
 
+## 0.1.13
+
+### Patch Changes
+
+- Internal peer dependencies are now declared as version ranges instead of exact pins, so the package keeps installing cleanly alongside newer 0.x releases of @cogitator-ai/core.
+- EvalSuite no longer swallows case failures silently: a case whose attempts all fail or time out now carries an `error` message on its result, timeouts are retried like other failures, and the per-attempt timeout timer is cleared.
+- Updated dependencies
+  - @cogitator-ai/core@0.20.0
+
 ## 0.1.12
 
 ### Patch Changes

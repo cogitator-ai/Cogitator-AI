@@ -1,5 +1,21 @@
 # @cogitator-ai/sandbox
 
+## 0.3.0
+
+### Minor Changes
+
+- `wasm.memoryPages` (default 256 = 16 MB) is now passed to Extism as `memory.maxPages`, capping the memory Extism allocates for plugin input, output and vars. It was previously ignored.
+- The WASM executor could not load any local module: it passed a raw Buffer as the Extism manifest ("Expected wasm key in manifest", reproduced). Its timeouts could never stop a spinning module, and concurrent calls hit 'plugin is not reentrant'. Rewritten: correct manifests, a worker per plugin (runInWorker) terminated on timeout, a per-key plugin pool with LRU, and executor-level defaults and allowedHosts honored. The native executor ran join(' ') through the shell. That broke argument boundaries (the package's own example failed with a shell syntax error), allowed shell injection through args, passed the full host process.env (secrets) to executed code, ignored stdin, and hung on grandchildren after a timeout. Fixed: exact argv for multi-element commands (single-element commands still use the shell), minimal env, stdin piped, whole process group killed. Docker fixes: the pool reused containers across different security settings (host mounts or bridge network handed to an isolated request); multiplexed frames split across chunks were dropped; host config ignored DOCKER_HOST; network.allowedHosts was silently ignored (now rejected), dns wired; 0MB/negative limits silently ran unlimited (now rejected); containers that failed to start leaked; the cleanup interval kept the process alive; containers are now labeled. Manager: concurrent initialize() created duplicate executors; fallbacks skipped the manager defaults.
+
+  **Breaking changes**
+  - NativeSandboxExecutor: multi-element commands run with exact argv and no shell (e.g. ['echo', '$VAR'] no longer expands; use ['echo $VAR'] or ['sh','-c',...]). Only PATH/HOME/temp/locale/Windows system variables are inherited from process.env.
+  - DockerSandboxExecutor: network.allowedHosts is rejected with an error instead of being ignored. Zero/negative memory or CPU limits are rejected. Without docker options, Dockerode defaults (DOCKER_HOST) are used instead of a hard-coded /var/run/docker.sock.
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.23.0
+
 ## 0.2.29
 
 ### Patch Changes

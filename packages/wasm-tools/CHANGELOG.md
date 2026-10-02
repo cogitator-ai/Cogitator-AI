@@ -1,5 +1,26 @@
 # @cogitator-ai/wasm-tools
 
+## 0.6.0
+
+### Minor Changes
+
+- An abort that arrived while a WASM plugin was still being created was missed, so the call hung until its timeout. The abort signal is now checked once the plugin is ready.
+- The 14 pre-built WASM tools could not run at all. extism-js 1.5 output needs host functions (get_log_level) that @extism/extism 1.0.3 lacks; it now requires ^2.0.0-rc13, which is npm's latest. WASI was also disabled, and QuickJS plugins need it. defineWasmTool().execute() returned its params instead of running WASM. It now validates params, runs the module in an Extism worker thread with a working timeout and abort, caches compiled modules, and sets tool.timeout. @extism/extism moved from devDependencies to dependencies (the manager imports it at runtime). tsc no longer ships tests and plugins in dist; build-wasm now fails when a plugin fails to compile. WasmToolManager got a timeout plus plugin recycling after timeout or abort. Plugins: a base64 decoder bug broke gzip decompression and base64 Ed25519 keys. Compression: empty input, CRC/size checks, a zip-bomb cap, and LZ77 matching at levels 1-3. Ed25519 key generation always failed; it now uses a host-side node:crypto seed via the schema, and signatures match node:crypto byte for byte. Markdown had an XSS hole (javascript:/data: URLs, code-fence class injection) plus emphasis, table and escaping bugs. Others: strict base64, a JSONPath subset, rewritten XML query evaluation and stricter parsing, CSV quoting and validation, real unified diff output, datetime month clamping and validation, a better ReDoS heuristic, slug punctuation, email/URL/IP validation with IPv6 canonicalization, calc edge cases. One shared UTF-8/base64/hex module. A plugin test harness (esbuild + node:vm) lets CI cover plugin logic without extism-js. README, docs site and example updated.
+
+  **Breaking changes**
+  - Tool execute() now actually runs the WASM module (it used to return its input).
+  - compression: decompress now defaults to inputEncoding 'base64' and outputEncoding 'utf8'.
+  - diff: 'unified' output is now a standard unified diff (---/+++ headers, @@ hunks, '+'/'-'/' ' prefixes).
+  - xml: absolute queries start at the root element; a query with no match returns type 'empty'.
+  - json: output gains 'found'; wildcard, slice and recursive paths always return arrays; null values report type 'null'.
+  - validation: IPv4 with leading zeros is rejected; IPv6 'normalized' is the RFC 5952 canonical form; only the email domain is lower-cased.
+  - @extism/extism must be >= 2.0.0-rc13 (needed by the pre-built extism-js plugins).
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.23.0
+
 ## 0.5.11
 
 ### Patch Changes

@@ -1,5 +1,24 @@
 # @cogitator-ai/rag
 
+## 0.2.0
+
+### Minor Changes
+
+- The published package could not be imported in plain Node ESM: all relative imports were extensionless, so dist/index.js failed outside bundlers, tsx and vitest. All imports now use .js, guarded by a test and verified with `node import()`. CSVLoader always crashed in real Node because of papaparse CJS interop. RecursiveChunker lost text and produced wrong offsets and fully-contained duplicate chunks whenever separators repeated (509 violations in 3000 randomized runs). It was rewritten on offset spans; the property test now finds 0 violations. RAGPipelineBuilder ignored retrieval.strategy: mmr, hybrid and multi-query silently fell back to similarity. They are now wired, with withHybridSearch/withQueryExpander and multiQueryCount. Hybrid retrieval's BM25 index was never populated, so it is now auto-indexed through a ChunkIndexer contract with correct RRF keys and keyword-only hits mapped back to their chunks. Undefined query options overrode the configured topK/threshold. Loader metadata (frontmatter, page numbers, CSV columns, titles) was dropped at ingest. Vector-store writes were unbounded. RetrievalResult.source is now the document path/URL. MMR now re-embeds when the store (e.g. Qdrant) returns no vectors. Multi-query falls back to the original query when expansion fails and throws when every retrieval fails. WebLoader had SSRF bypasses (bracketed and IPv4-mapped IPv6, missing ranges, DNS rebinding). It now uses http(s) with a guarded connect-time lookup on every redirect hop, adds allowPrivateNetwork, content-type handling, decompression and charset decoding. HTMLLoader now drops scripts/styles and keeps block boundaries. rag_ingest gained allowedRoots/allowUrls, because it could read any local file. VERSION is read from package.json. README, docs site and examples were updated; the docs' hybrid example passed the wrong type.
+
+  **Breaking changes**
+  - RAGPipelineBuilder now honours retrieval.strategy: 'mmr' builds an MMRRetriever, and 'hybrid'/'multi-query' throw at build() unless withHybridSearch()/withQueryExpander() (or withRetriever()) is provided. Previously all of these silently used similarity.
+  - RetrievalResult.source is the document path/URL instead of the constant 'document'.
+  - WebLoader only accepts HTML/XML, text/\* and JSON responses (others throw). It now uses node:http(s) instead of global fetch, so fetch mocks no longer intercept it.
+  - MultiQueryRetriever falls back to the original query when expandQuery throws, and throws when every variant retrieval fails (previously it returned []).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/memory@0.7.0
+  - @cogitator-ai/types@0.23.0
+
 ## 0.1.10
 
 ### Patch Changes

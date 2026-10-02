@@ -1,5 +1,16 @@
 # @cogitator-ai/redis
 
+## 0.3.0
+
+### Minor Changes
+
+- keys() ignored keyPrefix: the pattern was not prefixed and the results came back prefixed, so del(...keys) prefixed them twice and deleted nothing. The dashboard's invalidateCache never worked and the e2e cleanup leaked its keys. keys() now prefixes the glob-escaped pattern and strips the prefix from results. It also uses SCAN instead of the blocking KEYS command and covers every master in cluster mode. subscribe() matched channels with endsWith, so 'events' also received 'user-events'; matching is now exact. A second callback on the same channel overwrote and leaked the first; callbacks are now kept per channel and unsubscribe removes them all. A malformed REDIS_CLUSTER_NODES used to fall back silently to localhost and now throws. An empty cluster node list and a missing ioredis now give clear errors. README and the deployment docs were corrected: backoff wording, hash tags, a snippet that did not type-check, keys and pub/sub semantics, and the claim that worker uses this client. ioredis behaviour was verified against a live Redis 7.
+
+  **Breaking changes**
+  - RedisClient.keys() results are relative to keyPrefix (previously returned prefixed keys that could not be used with get/del); unchanged when no prefix
+  - subscribe callbacks no longer fire for channels that merely end with the subscribed name
+  - createConfigFromEnv throws when REDIS_CLUSTER_NODES is set but malformed instead of falling back to standalone localhost
+
 ## 0.2.24
 
 ### Patch Changes

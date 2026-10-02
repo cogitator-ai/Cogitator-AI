@@ -1,5 +1,37 @@
 # @cogitator-ai/channels
 
+## 0.3.0
+
+### Minor Changes
+
+- Full first audit of @cogitator-ai/channels: 59 issues found and fixed. Security fixes: any paired (non-owner) user could approve others via /pair; self-config tools let any chat user read or rewrite the config and .env (now owner/terminal only, with newline-injection protection and 0600 files); fileSystem.paths was only a prompt hint (file tools are now sandboxed, symlink-aware). Gateway bugs: a user-supplied sessionManager was ignored; compaction targeted the empty session-record thread and the 'summary' was just text truncation (now an LLM summary on the real thread, keeping the documented message-count threshold); interrupt mode never aborted runs; debounce bypassed the queue; a 90 s timer leaked per streamed message; streaming skipped platform markdown conversion; stats were hard-coded to 0. StreamBuffer lost text when splitting at the platform limit. Scheduler: cron tasks fired every 60 s (now uses cron-parser with timezone support) and a single store error stopped the scheduler for good. Channels: Telegram webhook mode never served updates; Discord DMs never arrived and long streamed answers spammed duplicate chunks; Slack had no groupId and used the wrong thread_ts; WhatsApp edits used the wrong key shape, stop() triggered reconnects, and the QR code was never shown (printQRInTerminal is deprecated); WebChat left unauthorized sockets open and crashed on EADDRINUSE; the terminal channel called process.exit(0) inside gateway.stop(). RuntimeBuilder: postgres config was silently ignored; date and core facts in instructions froze at startup; owner commands had no handlers; the Playwright cache path was macOS-only. Media and formatters: several decode and format bugs fixed. Docs, examples and the root README were corrected.
+
+  **Breaking changes**
+  - Channel adapters (Telegram, Discord, Slack, WhatsApp, WebChat) now throw from sendText/editText/sendFile/deleteMessage when not started, when the target is unavailable, or when the platform rejects the call. Previously they returned '' or swallowed the error.
+  - DiscordChannel.sendText returns the id of the first chunk (was the last). Continuation chunks are tracked and edited or deleted together with it.
+  - OwnerCommandsConfig.onCompact now receives a second threadId argument.
+  - PairingMiddleware: only owners can approve /pair codes; approved non-owners no longer can.
+  - TerminalChannel: Ctrl+C, Ctrl+D and /quit call onExit (default: raise SIGINT) instead of process.exit(0); stop() no longer exits the process.
+  - StreamBuffer.forceNewMessage() now commits buffered text instead of discarding it. Splitting at maxMessageChars respects the limit and loses no text. replyTo applies to the first message only.
+  - RuntimeBuilder: file tools are restricted to capabilities.fileSystem.paths; self-config tools work only for channel owners and the terminal; the gateway agent is now a per-message factory (BuiltRuntime.agent is still the base agent).
+  - Gateway: compaction runs when the conversation thread holds at least `threshold` messages (the documented meaning), using an LLM summary; it no longer uses the session-record counter.
+  - Removed the internal file src/media/index.ts (it was not reachable through package exports).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/browser@0.2.0
+  - @cogitator-ai/core@0.20.0
+  - @cogitator-ai/mcp@18.0.0
+  - @cogitator-ai/memory@0.7.0
+  - @cogitator-ai/rag@0.2.0
+  - @cogitator-ai/types@0.23.0
+
 ## 0.2.5
 
 ### Patch Changes

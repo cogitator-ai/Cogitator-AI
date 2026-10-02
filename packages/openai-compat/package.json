@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/openai-compat",
-  "version": "19.0.17",
+  "version": "20.0.0",
   "description": "OpenAI Assistants API compatibility layer for Cogitator",
   "type": "module",
   "main": "./dist/index.js",
@@ -39,8 +39,8 @@
     "vitest": "^4.0.18"
   },
   "peerDependencies": {
-    "@cogitator-ai/core": "workspace:*",
-    "@cogitator-ai/types": "workspace:*",
+    "@cogitator-ai/core": "workspace:>=0.20.0",
+    "@cogitator-ai/types": "workspace:>=0.23.0",
     "ioredis": "^5.0.0",
     "pg": "^8.0.0"
   },

@@ -1,5 +1,24 @@
 # @cogitator-ai/browser
 
+## 0.2.0
+
+### Minor Changes
+
+- Session lifecycle: fixed a race where concurrent ensureStarted() calls launched extra browsers, a browser-process leak when start() failed, a dead session after an unexpected context close, and tab indexes going stale after closes. Implemented the documented-but-ignored persistentContext and pool.maxPages options, tracking of popups and target=\_blank pages, merging partial stealth configs with their defaults, and cookie path defaults. Stealth: humanLikeMouse was never used. Click, click_by_description, hover and scroll now honour it. humanLikeClick scrolls into view, accepts a Locator, keeps button/clickCount/position and remembers the last mouse position. navigator.platform and languages now match the user agent and locale, evasions are patched on Navigator.prototype, and the UA pool is desktop-only. Network: API call timing was always 0 (now recorded on requestfinished). Calls are captured from session start in all tabs. Interceptors are context-level, use route.fallback so overlapping rules still work, merge headers and support /regex/ patterns. New browser_remove_interceptor tool. HAR capture rewritten: ordered entries, waits for in-flight requests, no leaks between captures, text-only bodies, real HAR 1.2 file. The exported network factories were unusable because they needed a non-exported argument. Vision/extraction: the aria-snapshot parser dropped paragraphs, list items and YAML-quoted names. Fixed nested tables in extract_table, extract_structured no longer clones the DOM (that had side effects), plus visibility and screenshot-option fixes. Schemas tightened. README, root README count and docs site updated.
+
+  **Breaking changes**
+  - browser_capture_har: the file written to path is now HAR 1.2 ({ log: { entries } }) instead of { entries }; responseBody is omitted for binary bodies or bodies over 1 MB.
+  - Interceptors (browser_intercept_request, browser_block_resources) are registered on the browser context, so they apply to every tab, not just the tab that was active.
+  - createInterceptRequestTool, createBlockResourcesTool and createGetApiCallsTool now take only (session). The old second argument had a non-exported type and could not be supplied.
+  - In stealth mode with humanLikeTyping, browser_type replaces the field value (clears it first) instead of appending.
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.20.0
+  - @cogitator-ai/types@0.23.0
+
 ## 0.1.6
 
 ### Patch Changes

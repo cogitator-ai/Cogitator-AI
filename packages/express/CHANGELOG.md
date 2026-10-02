@@ -1,5 +1,27 @@
 # @cogitator-ai/express
 
+## 0.3.0
+
+### Minor Changes
+
+- Every SSE stream (agents, workflows, swarms) was cut off right after it started. The routes closed the writer on req.on('close'), which since Node 16 fires about 2ms after the body is parsed, not on disconnect (confirmed with a probe). They now use res.on('close') guarded by writableEnded, and a disconnect aborts the run, workflow or swarm. Other fixes: finish() wrote after end(). Tool-call ids did not match tool-result ids, and tool arguments were never sent. Text is now split into blocks around tool calls. Workflow failures (returned as result.error) were reported as 200 or workflow_completed. CogitatorError codes always became 500. Malformed JSON and oversized bodies returned 500. Validation: input type, context, threadId, timeout, whitelisted workflow options, thread roles. Thread metadata was dropped. The agent list leaked system prompts. CORS origin '\*' granted credentials to every origin by default. The rate limiter could be bypassed by spoofing X-Forwarded-For or sending requests with no address. On WebSocket: auth was bypassed, 'stop' was a no-op, subscriptions were dead code (now an agent:<name> channel hub), and messages were not validated. enableWebSocket was half-wired; added CogitatorServer.attachWebSocket(). README and docs had a non-existent Cogitator config, an undefined routeContext and a fake requestTimeout option; fixed. The example ran new Function on model output; it now uses the shared examples/\_shared/arithmetic.ts.
+
+  **Breaking changes**
+  - CORS: credentials now default to false when origin is '_' (plain 'Access-Control-Allow-Origin: _'); pass credentials: true explicitly to keep reflecting the origin. Disallowed origins no longer get Allow-Credentials or preflight grants
+  - GET /agents returns agent.config.description instead of the first 100 characters of the instructions
+  - Workflow runs that fail now return 500 WORKFLOW_FAILED (and the stream sends an error event) instead of 200 or workflow_completed
+  - WebSocket upgrades now go through the configured auth function (401 when it throws)
+  - Stricter validation: input must be a non-empty string, context an object, threadId a string, swarm timeout positive; workflow options are type-checked and limited to maxConcurrency, maxIterations and checkpoint; thread messages need a user/assistant/system role and a non-empty string content
+  - Rate limiter: with trustProxy it keys by the nearest X-Forwarded-For hop; requests without an address share one bucket; an invalid windowMs or max throws at construction
+  - CogitatorError codes now map to their own HTTP status in routes (e.g. LLM_RATE_LIMITED gives 429 instead of 500)
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.20.0
+  - @cogitator-ai/types@0.23.0
+
 ## 0.2.15
 
 ### Patch Changes

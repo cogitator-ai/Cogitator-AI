@@ -1,5 +1,15 @@
 # @cogitator-ai/ai-sdk
 
+## 0.2.16
+
+### Patch Changes
+
+- Internal peer dependencies are now declared as version ranges instead of exact pins, so the package keeps installing cleanly alongside newer 0.x releases of @cogitator-ai/core.
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.20.0
+  - @cogitator-ai/types@0.23.0
+
 ## 0.2.15
 
 ### Patch Changes

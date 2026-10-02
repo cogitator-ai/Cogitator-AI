@@ -1,5 +1,24 @@
 # @cogitator-ai/config
 
+## 0.6.0
+
+### Minor Changes
+
+- The documented `${VAR}` references in cogitator.yml were never interpolated: a literal '${OPENAI_API_KEY}' was sent as the API key. ${VAR}, ${VAR:-default}, ${VAR-default} and $$ are now implemented and exported. OLLAMA_API_KEY in the environment overrode a YAML Ollama baseUrl with https://ollama.com; the schema now applies the Ollama default after merging. OLLAMA_URL is now supported, OLLAMA_HOST without a scheme is normalised, and GEMINI_API_KEY is accepted as a Google alias. YAML whose top level is not a mapping was merged as garbage; it now fails with the file path. Prototype keys are skipped during merge. Validation errors are formatted with z.prettifyError. Port and integer fields are validated. The DeployTarget enum is narrowed to docker|fly. Added a shared parseDotenv/loadDotenvFile, now used by the CLI and deploy; a round-trip test caught an escaped-quote bug in it, now fixed. Removed the bogus typescript peerDependency. Fixed an env-dependent flaky test.
+
+  **Breaking changes**
+  - The env layer no longer sets the Ollama baseUrl when only OLLAMA_API_KEY is set. The default is applied after merging, so a YAML baseUrl now wins (previously env forced https://ollama.com).
+  - ProvidersConfigSchema.ollama input `baseUrl` is now optional; output still always has baseUrl.
+  - DeployTargetSchema is narrowed to 'docker' | 'fly'.
+  - deploy.port must be an integer in 1-65535. instances, maxConcurrentRuns and maxTokensPerRun must be integers.
+  - YAML strings containing `${...}` or `$$` are now interpolated.
+  - loadYamlConfig throws for non-mapping files and includes the path in parse errors.
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.23.0
+
 ## 0.5.6
 
 ### Patch Changes

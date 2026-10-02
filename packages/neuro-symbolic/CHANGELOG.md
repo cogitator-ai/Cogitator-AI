@@ -1,5 +1,30 @@
 # @cogitator-ai/neuro-symbolic
 
+## 16.0.0
+
+### Major Changes
+
+- Two critical bugs fixed. First, Prolog operator precedence was inverted, so text rules with arithmetic were wrong: `X is 2 + 3 * 4` parsed as `(X is 2) + ...`. Second, the Z3 backend never worked: it called a non-existent `solver.setTimeout`, so the default `solve()` returned `status: 'error'` whenever z3-solver was installed. Logic module: the parser was rewritten in ISO style (shared operator table, functional notation, `?`/`?-` queries, real error positions). The resolver was rewritten with cut barriers, so cut is now local to its clause and if-then-else commits to its condition; added findall/forall/between/call/not. Arithmetic now follows ISO semantics (mod, //). termToString output now parses back to the same term, and applySubstitution no longer stops at depth 100. Z3 solver rewritten against the real z3-solver API: Int/Real mixing, bit-vectors, soft constraints, timeouts. The built-in SAT solver now proves unsat and finds optimal objectives on finite domains. Graph queries: fixed a join bug that returned results when an earlier pattern had no matches, removed the silent 1000-node limit, and implemented bidirectional edges, type predicates and describe. The query-string parser was rewritten because single-line queries and FILTER/ORDER BY were ignored. Natural-language queries fixed (word matching, relation mapping, count). Graph adapters now limit shortest-path and traversal to the requesting agent; also fixed the traverse limit, a merge that deleted the target node, and a Neo4j LIMIT float error. Planning: ordering-threat detection was dead code and is now implemented; precondition checks compare values deeply; repair suggestions are checked by simulation. Orchestrator: config fields that were ignored now take effect, async calls return error results instead of throwing, and validateAndRepair checks invariants on the final plan. README and docs page rewritten (most of their examples did not match the real API); example extended.
+
+  **Breaking changes**
+  - Prolog text now parses with ISO precedence: `X is 2 + 3 * 4` gives 14; the old parser produced `(X is 2) + ...`
+  - Cut is local to its clause and if-then-else commits to its condition (previously cut pruned ancestor alternatives, and else ran when then failed)
+  - `mod` follows the sign of the divisor and `//` truncates toward zero
+  - Variables starting with `_` (including anonymous `_`) are no longer included in query solutions
+  - createKnowledgeBase(program) throws on syntax errors; parseClause fails on trailing input after the first clause
+  - NeuroSymbolic.repairPlan().success is false when the repair fails (data still contains suggestions); validateAndRepair().success requires invariants to hold on the final plan
+  - GraphAdapter.getNeighbors('outgoing'/'incoming') in the memory/postgres/neo4j adapters includes bidirectional edges from the other direction (aligned with @cogitator-ai/memory); findShortestPath/traverse enforce agentId
+  - termToString quotes atoms that need it and prints operators infix
+  - applySubstitution(term, subst) no longer accepts a third depth argument
+  - Graph tools use NeuroSymbolicToolsOptions.agentId when given; otherwise they use the tool context agentId as before
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.20.0
+  - @cogitator-ai/types@0.23.0
+
 ## 15.1.16
 
 ### Patch Changes

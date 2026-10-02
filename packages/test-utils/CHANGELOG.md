@@ -1,5 +1,12 @@
 # @cogitator-ai/test-utils
 
+## 0.1.11
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/types@0.23.0
+
 ## 0.1.10
 
 ### Patch Changes

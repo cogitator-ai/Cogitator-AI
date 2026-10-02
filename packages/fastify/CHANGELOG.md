@@ -1,5 +1,25 @@
 # @cogitator-ai/fastify
 
+## 0.2.0
+
+### Minor Changes
+
+- SSE streams had the same truncation bug as express: request.raw.on('close') fires once the body is parsed. The routes now use reply.raw close guarded by writableEnded, and a disconnect aborts the run, workflow or swarm. Raw SSE writes never called reply.hijack(), and writeHead dropped headers set by hooks (CORS, rate-limit). The writer now hijacks the reply, merges reply.getHeaders(), and does nothing on close() before start(). The plugin's error handler turned schema-validation errors, malformed JSON and @fastify/rate-limit 429s into 500. They are now 400 INVALID_INPUT with details, or keep their 4xx status. Workflow failures were reported as success. CogitatorError codes always became 500. Tool-call ids did not match tool results. Exported schemas were tightened: non-blank input, workflow options limited to known keys, timeout > 0, non-empty content. Thread metadata was dropped. The agent list leaked system prompts. A rejected WebSocket upgrade leaked its socket and blocked fastify.close(), because the auth onRequest hook was added before @fastify/websocket's own hook. On WebSocket, 'stop' was a no-op and subscriptions were dead code (now an agent:<name> channel hub), and messages were not validated. The docs sample used eval() and an invalid config. The example ran new Function on model output; fixed.
+
+  **Breaking changes**
+  - Exported AgentRunRequestSchema and SwarmRunRequestSchema require a non-blank input; SwarmRunRequestSchema needs timeout > 0; WorkflowRunRequestSchema.options sets additionalProperties: false and requires integers >= 1; AddMessageRequestSchema content needs minLength 1
+  - Validation errors, malformed JSON and rate-limited requests now return 400/429 (previously 500)
+  - GET /agents returns agent.config.description instead of the first 100 characters of the instructions
+  - Workflow runs that fail now return 500 WORKFLOW_FAILED (and the stream sends an error event) instead of success
+  - CogitatorError codes now map to their own HTTP status in routes
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.20.0
+  - @cogitator-ai/types@0.23.0
+
 ## 0.1.15
 
 ### Patch Changes

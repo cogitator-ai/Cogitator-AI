@@ -1,5 +1,26 @@
 # @cogitator-ai/voice
 
+## 0.2.0
+
+### Minor Changes
+
+- The OpenAI Realtime adapter still used the beta protocol, which was shut down on 2026-05-12. It now uses the GA interface: `gpt-realtime-mini`, the new `session.update` shape and the new event names. Tool calls are now handled once per completed response, and unknown tools return an error output. The Gemini Live adapter had a default model that only exists on Vertex AI; it is now `gemini-3.8-live`. The API key moved from the URL to a header. It now uses `realtimeInput.audio`/`text`, real input/output transcription (model thoughts are no longer emitted as transcripts), barge-in handling, and an `interrupt()` that no longer drops the next turn. Both providers were verified live against Gemini. Audio/text sent before connect is now queued instead of lost. OpenAISTT failed on every call with its default model because only whisper-1 accepts `verbose_json`; raw PCM is now wrapped into WAV. Deepgram streaming now declares linear16/sample_rate and returns the full utterance instead of only the last segment. SileroVAD accepts any chunk size and supports the v5 model. Pipeline fixes: interrupt race, VAD queue poisoning, `close()` no longer hangs on a stuck agent (abort signal passed to the agent), empty-transcript handling. Transport fixes: header injection in `verifyClient`, `attachToServer` no longer destroys other paths' upgrades, dead peers are terminated, `verifyClient` can be async. VoiceAgent gained control messages (interrupt/end_of_speech/text), realtime instructions and tools, `attach()`, and 1011 close on provider failure; a misbehaving client can no longer crash the server. Added `createCogitatorRunner`; the README Quick Start had passed a core Agent, which has no `run()`. VERSION is read from package.json. Docs site, README and examples updated; examples/package.json was missing `@cogitator-ai/voice`.
+
+  **Breaking changes**
+  - OpenAIRealtimeAdapter speaks the GA Realtime protocol (beta was shut down upstream); default model gpt-realtime-mini, default voice marin.
+  - GeminiRealtimeAdapter default model is gemini-3.8-live; tool responses are structured { result } / { error } objects instead of JSON strings; text input uses realtimeInput.text.
+  - ElevenLabsTTS format 'pcm16' now returns 24kHz PCM (was 16kHz) to match OpenAI.
+  - PipelineSession.close()/interrupt() abort the in-flight turn instead of waiting for it; VoiceAgentRunner.run receives a second context argument { sessionId, signal } (backward compatible).
+  - VoiceAgent emits 'error' only when a listener is attached; unknown client control messages are reported as errors; WebSocketTransport no longer answers 404 for foreign paths when attached to an external server.
+  - OpenAISTT uses response_format 'json' for non-whisper models (no word timestamps/duration there).
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @cogitator-ai/core@0.20.0
+  - @cogitator-ai/types@0.23.0
+
 ## 0.1.13
 
 ### Patch Changes
