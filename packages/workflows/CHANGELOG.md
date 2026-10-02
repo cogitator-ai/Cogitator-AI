@@ -1,5 +1,11 @@
 # @cogitator-ai/workflows
 
+## 0.6.1
+
+### Patch Changes
+
+- Nodes with `config.timeout` now cancel the timed-out attempt: each attempt gets its own AbortSignal (linked to the run signal) that is aborted with the `NodeTimeoutError`. Previously agent nodes kept their LLM request running in the background after a timeout, and retries stacked parallel generations.
+
 ## 0.6.0
 
 ### Minor Changes

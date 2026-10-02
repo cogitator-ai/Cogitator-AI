@@ -1,5 +1,11 @@
 # @cogitator-ai/worker
 
+## 0.4.1
+
+### Patch Changes
+
+- @cogitator-ai/swarms@0.5.1
+
 ## 0.4.0
 
 ### Minor Changes

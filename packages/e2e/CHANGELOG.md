@@ -1,5 +1,18 @@
 # @cogitator-ai/e2e
 
+## 0.1.33
+
+### Patch Changes
+
+- Updated dependencies
+  - @cogitator-ai/workflows@0.6.1
+  - @cogitator-ai/express@0.3.1
+  - @cogitator-ai/fastify@0.2.1
+  - @cogitator-ai/hono@0.2.1
+  - @cogitator-ai/koa@0.2.1
+  - @cogitator-ai/swarms@0.5.1
+  - @cogitator-ai/worker@0.4.1
+
 ## 0.1.32
 
 ### Patch Changes
