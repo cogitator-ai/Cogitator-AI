@@ -131,15 +131,13 @@ describe('agents', () => {
 
 describe('errors', () => {
   test('maps a CogitatorError to its status, code and Retry-After', async () => {
-    const { cogitator } = fakeCogitator(() =>
-      Promise.reject(
-        new CogitatorError({
-          message: 'Slow down',
-          code: ErrorCode.LLM_RATE_LIMITED,
-          retryAfter: 2500,
-        })
-      )
-    );
+    const { cogitator } = fakeCogitator(async () => {
+      throw new CogitatorError({
+        message: 'Slow down',
+        code: ErrorCode.LLM_RATE_LIMITED,
+        retryAfter: 2500,
+      });
+    });
     const request = serveCogitator({ cogitator, agents: { chat: chatAgent() } });
 
     const res = await request('/cogitator/agents/chat/run', json({ input: 'hi' }));
