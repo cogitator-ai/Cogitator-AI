@@ -5,7 +5,7 @@ import { Agent } from '../../agent';
 
 const hasGoogleKey = !!process.env.GOOGLE_API_KEY;
 
-describe.skipIf(!hasGoogleKey)('Google Integration', () => {
+describe.skipIf(!hasGoogleKey)('Google Integration', { retry: 2 }, () => {
   let backend: GoogleBackend;
 
   beforeAll(() => {
