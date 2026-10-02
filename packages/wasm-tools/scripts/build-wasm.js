@@ -13,6 +13,7 @@
  */
 
 import { execSync, spawnSync } from 'node:child_process';
+import { buildSync } from 'esbuild';
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,10 +50,14 @@ function buildPlugin(name) {
   console.log(`Building ${name}...`);
 
   try {
-    // Bundle with esbuild
-    execSync(`npx esbuild ${inputTs} --bundle --format=cjs --target=es2020 --outfile=${outputJs}`, {
-      stdio: 'inherit',
-      cwd: rootDir,
+    buildSync({
+      entryPoints: [inputTs],
+      bundle: true,
+      format: 'cjs',
+      target: 'es2020',
+      outfile: outputJs,
+      absWorkingDir: rootDir,
+      logLevel: 'warning',
     });
 
     // Compile to WASM with interface file

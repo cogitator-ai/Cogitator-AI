@@ -62,18 +62,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish packages
-        run: |
-          # Publish and ignore "already exists" errors
-          pnpm publish -r --access public --no-git-checks 2>&1 | tee publish.log || true
-          # Check if there were real errors (not just "already published")
-          if grep -q "npm error" publish.log; then
-            if ! grep -q "You cannot publish over the previously published versions" publish.log && \
-               ! grep -q "cannot publish over" publish.log; then
-              echo "Real publish error occurred"
-              cat publish.log
-              exit 1
-            fi
-          fi
-          echo "Publish completed successfully (some packages may have been already published)"
+        # pnpm publish -r skips versions that already exist in the registry,
+        # so any non-zero exit is a real failure.
+        run: pnpm publish -r --access public --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

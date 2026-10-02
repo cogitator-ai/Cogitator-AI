@@ -1,3 +1,14 @@
 packages:
   - 'packages/*'
   - 'examples'
+
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+  sharp: true
+  onnxruntime-node: true
+  msgpackr-extract: true
+  cpu-features: false
+  ssh2: false
+  protobufjs: false
+  '@whiskeysockets/baileys': false
