@@ -122,6 +122,10 @@ export async function invokeWasm(invocation: WasmInvocation): Promise<unknown> {
       );
       if (signal) {
         onAbort = () => reject(new Error(`WASM tool ${toolName} aborted`));
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
         signal.addEventListener('abort', onAbort, { once: true });
       }
       plugin

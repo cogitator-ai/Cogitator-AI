@@ -108,6 +108,21 @@ describe('invokeWasm', () => {
     expect(pluginState.close).toHaveBeenCalledTimes(1);
   });
 
+  it('honours an abort that lands while the plugin is being created', async () => {
+    pluginState.call.mockImplementation(() => new Promise(() => undefined));
+    const controller = new AbortController();
+    pluginState.createPlugin.mockImplementation(async () => {
+      controller.abort();
+      return { call: pluginState.call, close: pluginState.close };
+    });
+
+    await expect(
+      invokeWasm(invocation({ signal: controller.signal, timeout: 60_000 }))
+    ).rejects.toThrow('WASM tool tool aborted');
+    expect(pluginState.call).not.toHaveBeenCalled();
+    expect(pluginState.close).toHaveBeenCalledTimes(1);
+  });
+
   it('does not start a plugin when the signal is already aborted', async () => {
     const controller = new AbortController();
     controller.abort();
