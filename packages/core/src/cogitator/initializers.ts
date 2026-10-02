@@ -13,11 +13,18 @@ import { CostAwareRouter } from '../cost-routing/index';
 import { PromptInjectionDetector } from '../security/index';
 import { ContextManager } from '../context/index';
 import type { Agent } from '../agent';
+import { parseModel } from '../llm/index';
 
 export type SandboxManager = {
   initialize(): Promise<void>;
   execute(
-    request: { command: string[]; cwd?: string; env?: Record<string, string>; timeout?: number },
+    request: {
+      command: string[];
+      stdin?: string;
+      cwd?: string;
+      env?: Record<string, string>;
+      timeout?: number;
+    },
     config: {
       type: string;
       image?: string;
@@ -126,19 +133,23 @@ export async function initializeMemory(
 export async function initializeSandbox(
   config: CogitatorConfig,
   state: InitializerState
-): Promise<void> {
-  if (state.sandboxInitialized) return;
+): Promise<SandboxManager | undefined> {
+  if (state.sandboxInitialized) return state.sandboxManager;
 
   try {
     const { SandboxManager } = await import('@cogitator-ai/sandbox');
-    state.sandboxManager = new SandboxManager(config.sandbox) as SandboxManager;
-    await state.sandboxManager.initialize();
+    const manager = new SandboxManager(config.sandbox) as SandboxManager;
+    await manager.initialize();
+    state.sandboxManager = manager;
     state.sandboxInitialized = true;
+    return manager;
   } catch (err) {
     getLogger().warn('Sandbox initialization failed', {
       error: err instanceof Error ? err.message : String(err),
     });
+    state.sandboxManager = undefined;
     state.sandboxInitialized = false;
+    return undefined;
   }
 }
 
@@ -150,13 +161,14 @@ export async function initializeReflection(
 ): Promise<void> {
   if (state.reflectionInitialized || !config.reflection?.enabled) return;
 
-  const backend = getBackend(config.reflection.reflectionModel ?? agent.model);
+  const modelString = config.reflection.reflectionModel ?? agent.model;
+  const backend = getBackend(modelString);
 
   state.insightStore = new InMemoryInsightStore();
   state.reflectionEngine = new ReflectionEngine({
     llm: backend,
     insightStore: state.insightStore,
-    config: config.reflection,
+    config: { ...config.reflection, reflectionModel: parseModel(modelString).model },
   });
 
   state.reflectionInitialized = true;
@@ -170,12 +182,13 @@ export function initializeGuardrails(
 ): void {
   if (state.guardrailsInitialized || !config.guardrails?.enabled) return;
 
-  const backend = getBackend(config.guardrails.model ?? agent.model);
+  const modelString = config.guardrails.model ?? agent.model;
+  const backend = getBackend(modelString);
 
   state.constitutionalAI = new ConstitutionalAI({
     llm: backend,
     constitution: config.guardrails.constitution,
-    config: config.guardrails,
+    config: { ...config.guardrails, model: parseModel(modelString).model },
   });
 
   state.guardrailsInitialized = true;
@@ -191,6 +204,7 @@ export function initializeCostRouting(config: CogitatorConfig, state: Initialize
 export function initializeSecurity(
   config: CogitatorConfig,
   state: InitializerState,
+  agent: Agent,
   getBackend: (model: string) => LLMBackend
 ): void {
   if (state.securityInitialized || !config.security?.promptInjection) return;
@@ -198,8 +212,9 @@ export function initializeSecurity(
   const injectionConfig = { ...config.security.promptInjection };
 
   if (injectionConfig.classifier === 'llm' && !injectionConfig.llmBackend) {
-    const model = injectionConfig.llmModel ?? 'gpt-4o-mini';
-    injectionConfig.llmBackend = getBackend(model);
+    const modelString = injectionConfig.llmModel ?? agent.model;
+    injectionConfig.llmBackend = getBackend(modelString);
+    injectionConfig.llmModel = parseModel(modelString).model;
   }
 
   state.injectionDetector = new PromptInjectionDetector(injectionConfig);

@@ -6,6 +6,8 @@ import {
   calculateRMS,
   float32ToPcm16,
   pcm16ToFloat32,
+  detectAudioFormat,
+  audioMimeType,
 } from '../audio';
 
 describe('audio utilities', () => {
@@ -109,6 +111,45 @@ describe('audio utilities', () => {
     it('returns 1 for DC offset of 1', () => {
       const samples = new Float32Array(100).fill(1);
       expect(calculateRMS(samples)).toBeCloseTo(1, 5);
+    });
+  });
+
+  describe('pcm16ToFloat32 odd-length input', () => {
+    it('ignores a trailing odd byte instead of throwing', () => {
+      const samples = pcm16ToFloat32(Buffer.from([0xff, 0x7f, 0x01]));
+      expect(samples).toHaveLength(1);
+      expect(samples[0]).toBeCloseTo(1, 5);
+    });
+
+    it('reads from a Buffer view with a non-zero byteOffset', () => {
+      const backing = Buffer.from([0xaa, 0x00, 0x80, 0xbb]);
+      const view = backing.subarray(1, 3);
+      expect(Array.from(pcm16ToFloat32(view))).toEqual([-1]);
+    });
+  });
+
+  describe('detectAudioFormat', () => {
+    it.each([
+      ['wav', pcmToWav(Buffer.alloc(4), 16000)],
+      ['mp3', Buffer.concat([Buffer.from('ID3'), Buffer.alloc(8)])],
+      ['mp3', Buffer.from([0xff, 0xfb, 0x90, 0x00])],
+      ['ogg', Buffer.from('OggS\0\0\0\0')],
+      ['flac', Buffer.from('fLaC\0\0\0\0')],
+      ['webm', Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x00])],
+      ['mp4', Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypM4A ')])],
+    ])('detects %s', (format, data) => {
+      expect(detectAudioFormat(data)).toBe(format);
+    });
+
+    it('returns null for raw PCM and tiny buffers', () => {
+      expect(detectAudioFormat(Buffer.alloc(64))).toBeNull();
+      expect(detectAudioFormat(Buffer.from([1, 2]))).toBeNull();
+      expect(detectAudioFormat(Buffer.from([0xff, 0xf1, 0x50, 0x80]))).toBeNull();
+    });
+
+    it('maps formats to mime types', () => {
+      expect(audioMimeType('mp3')).toBe('audio/mpeg');
+      expect(audioMimeType('wav')).toBe('audio/wav');
     });
   });
 });

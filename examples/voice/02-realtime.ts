@@ -4,18 +4,20 @@ import { RealtimeSession } from '@cogitator-ai/voice';
 async function main() {
   header('02 — Realtime Voice Session');
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    console.log('Set OPENAI_API_KEY to run this example');
+  const googleKey = process.env.GOOGLE_API_KEY;
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!googleKey && !openaiKey) {
+    console.log('Set GOOGLE_API_KEY (Gemini Live) or OPENAI_API_KEY (OpenAI Realtime)');
     process.exit(0);
   }
+  const provider = googleKey ? 'gemini' : 'openai';
 
-  section('1. Create realtime session');
+  section(`1. Create realtime session (${provider})`);
   const session = new RealtimeSession({
-    provider: 'openai',
-    apiKey,
+    provider,
+    apiKey: (googleKey ?? openaiKey)!,
     instructions: 'You are a helpful voice assistant. Keep responses brief.',
-    voice: 'coral',
+    voice: provider === 'gemini' ? 'Puck' : 'marin',
     tools: [
       {
         name: 'get_weather',
@@ -27,38 +29,50 @@ async function main() {
         },
         execute: async (args: unknown) => {
           const { location } = args as { location: string };
-          return { temperature: 72, condition: 'sunny', location };
+          return { temperature: 22, unit: 'celsius', condition: 'sunny', location };
         },
       },
     ],
   });
 
-  console.log('Session created (OpenAI Realtime API)');
-
   section('2. Set up event handlers');
+  let audioBytes = 0;
+  session.on('audio', (chunk) => {
+    audioBytes += chunk.length;
+  });
   session.on('transcript', (text, role) => {
     console.log(`  [${role}] ${text}`);
   });
-
   session.on('tool_call', (name, args) => {
     console.log(`  Tool called: ${name}(${JSON.stringify(args)})`);
   });
-
   session.on('error', (err) => {
     console.error(`  Error: ${err.message}`);
   });
 
   section('3. Connect & send message');
   await session.connect();
-  console.log('  Connected to OpenAI Realtime API');
+  console.log('  Connected');
 
   session.sendText('What is the weather in San Francisco?');
-  console.log('  Sent text message, waiting for response...');
+  console.log('  Sent text message, waiting for the spoken answer...');
 
-  await new Promise((resolve) => setTimeout(resolve, 5000));
+  const deadline = Date.now() + 30_000;
+  let spoke = false;
+  while (!spoke && Date.now() < deadline) {
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, deadline - Date.now());
+      session.once('turn_end', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    spoke = audioBytes > 0;
+  }
 
+  console.log(`  Received ${audioBytes} bytes of PCM16 24kHz audio`);
   session.close();
   console.log('\nSession closed. Done.');
 }
 
-main();
+void main();

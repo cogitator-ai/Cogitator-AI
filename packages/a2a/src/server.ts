@@ -32,7 +32,45 @@ import {
   PushNotificationSender,
   validateWebhookUrl,
 } from './push-notifications.js';
-import { isTerminalState } from './types.js';
+import { isStreamFinalState } from './types.js';
+
+type HeaderGetter = (name: string) => string | null | undefined;
+
+const MAX_LIST_LIMIT = 1000;
+
+interface SendMessageParams {
+  message: A2AMessage;
+  configuration?: SendMessageConfiguration;
+  agentName?: string;
+}
+
+function failedStatusEvent(message: string, taskId = ''): A2AStreamEvent {
+  const timestamp = new Date().toISOString();
+  return {
+    type: 'status-update',
+    taskId,
+    status: { state: 'failed', timestamp, message },
+    timestamp,
+  };
+}
+
+function errorMessageOf(error: unknown): string {
+  if (error instanceof A2AError) return error.message;
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isValidMessage(message: unknown): message is A2AMessage {
+  if (!message || typeof message !== 'object') return false;
+  const m = message as Partial<A2AMessage>;
+  return (m.role === 'user' || m.role === 'agent') && Array.isArray(m.parts);
+}
+
+function assertOptionalNonNegativeInt(value: unknown, name: string): void {
+  if (value === undefined) return;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new A2AError(errors.invalidParams(`${name} must be a non-negative integer`));
+  }
+}
 
 export class A2AServer {
   private agents: Record<string, IAgent>;
@@ -90,8 +128,38 @@ export class A2AServer {
           extendedAgentCard: hasExtendedCard,
         },
       });
+      if (this.auth) {
+        const schemeName = this.auth.type === 'bearer' ? 'bearer' : 'apiKey';
+        card.securitySchemes = {
+          [schemeName]:
+            this.auth.type === 'bearer'
+              ? { type: 'http', scheme: 'bearer' }
+              : {
+                  type: 'apiKey',
+                  location: 'header',
+                  parameterName: this.auth.headerName ?? 'x-api-key',
+                },
+        };
+        card.security = [{ [schemeName]: [] }];
+      }
       this.agentCards.set(name, card);
     }
+  }
+
+  /**
+   * Extract the credential configured by `auth` from request headers:
+   * the token of an `Authorization: Bearer` header, or the API key header.
+   * Framework adapters call this and pass the result to handleJsonRpc / handleJsonRpcStream.
+   */
+  getAuthToken(getHeader: HeaderGetter): string | undefined {
+    if (!this.auth) return undefined;
+    if (this.auth.type === 'bearer') {
+      const header = getHeader('authorization');
+      const match = header ? /^Bearer\s+(.+)$/i.exec(header.trim()) : null;
+      return match ? match[1].trim() : undefined;
+    }
+    const key = getHeader(this.auth.headerName ?? 'x-api-key');
+    return key ? key.trim() || undefined : undefined;
   }
 
   getAgentCard(agentName?: string): AgentCard {
@@ -127,7 +195,10 @@ export class A2AServer {
       request = parsed;
     } catch (e) {
       if (e instanceof JsonRpcParseError) {
-        return createErrorResponse(null, errors.parseError(e.message));
+        return createErrorResponse(
+          null,
+          e.code === -32600 ? errors.invalidRequest(e.message) : errors.parseError(e.message)
+        );
       }
       return createErrorResponse(null, errors.internalError(String(e)));
     }
@@ -158,154 +229,128 @@ export class A2AServer {
     }
   }
 
-  async *handleJsonRpcStream(body: unknown, authToken?: string): AsyncGenerator<A2AStreamEvent> {
+  async *handleJsonRpcStream(
+    body: unknown,
+    authToken?: string,
+    signal?: AbortSignal
+  ): AsyncGenerator<A2AStreamEvent> {
     let request: JsonRpcRequest;
     try {
       const parsed = parseJsonRpcRequest(body);
       if (Array.isArray(parsed)) {
-        yield {
-          type: 'status-update',
-          taskId: '',
-          status: {
-            state: 'failed',
-            timestamp: new Date().toISOString(),
-            message: 'Batch requests are not supported',
-          },
-          timestamp: new Date().toISOString(),
-        };
+        yield failedStatusEvent('Batch requests are not supported');
         return;
       }
       request = parsed;
     } catch (e) {
-      yield {
-        type: 'status-update',
-        taskId: '',
-        status: {
-          state: 'failed',
-          timestamp: new Date().toISOString(),
-          message: e instanceof Error ? e.message : 'Invalid JSON-RPC request',
-        },
-        timestamp: new Date().toISOString(),
-      };
+      yield failedStatusEvent(e instanceof Error ? e.message : 'Invalid JSON-RPC request');
       return;
     }
 
     try {
       await this.validateAuth(authToken);
     } catch (e) {
-      yield {
-        type: 'status-update',
-        taskId: '',
-        status: {
-          state: 'failed',
-          timestamp: new Date().toISOString(),
-          message: e instanceof Error ? e.message : 'Authentication failed',
-        },
-        timestamp: new Date().toISOString(),
-      };
+      yield failedStatusEvent(e instanceof Error ? e.message : 'Authentication failed');
       return;
     }
 
     if (request.method !== 'message/stream') {
-      yield {
-        type: 'status-update',
-        taskId: '',
-        status: {
-          state: 'failed',
-          timestamp: new Date().toISOString(),
-          message: `Unsupported method for streaming: ${request.method}`,
-        },
-        timestamp: new Date().toISOString(),
-      };
+      yield failedStatusEvent(`Unsupported method for streaming: ${request.method}`);
       return;
     }
 
-    const params = request.params as
-      | { message: A2AMessage; configuration?: SendMessageConfiguration; agentName?: string }
-      | undefined;
-    if (!params?.message?.parts || !params.message.role) {
-      yield {
-        type: 'status-update',
-        taskId: '',
-        status: {
-          state: 'failed',
-          timestamp: new Date().toISOString(),
-          message: 'Missing required parameter: message with role and parts',
-        },
-        timestamp: new Date().toISOString(),
-      };
+    const params = request.params as Partial<SendMessageParams> | undefined;
+    if (!params || !isValidMessage(params.message)) {
+      yield failedStatusEvent('Missing required parameter: message with role and parts');
       return;
     }
+    const message = params.message;
 
     const agentName = params.agentName ?? Object.keys(this.agents)[0];
     const agent = this.agents[agentName];
     if (!agent) {
-      yield {
-        type: 'status-update',
-        taskId: '',
-        status: {
-          state: 'failed',
-          timestamp: new Date().toISOString(),
-          message: `Agent not found: ${agentName}`,
-        },
-        timestamp: new Date().toISOString(),
-      };
+      yield failedStatusEvent(`Agent not found: ${agentName}`);
       return;
     }
 
+    if (signal?.aborted) return;
+
     const eventQueue: A2AStreamEvent[] = [];
-    let resolve: (() => void) | null = null;
-    let taskId: string | null = null;
+    let wake: (() => void) | null = null;
+    const notify = () => {
+      if (wake) {
+        wake();
+        wake = null;
+      }
+    };
+    let taskId: string | null = message.taskId ?? null;
 
     const onEvent = (event: A2AStreamEvent) => {
       if (taskId && event.taskId === taskId) {
         eventQueue.push(event);
-        if (resolve) {
-          resolve();
-          resolve = null;
-        }
+        notify();
       }
+    };
+    let executingTaskId: string | null = null;
+    const onAbort = () => {
+      if (executingTaskId) this.taskManager.abortExecution(executingTaskId);
+      notify();
     };
 
     this.taskManager.on('event', onEvent);
+    signal?.addEventListener('abort', onAbort, { once: true });
 
-    let task: A2ATask;
-    const isContinued = !!params.message.taskId;
-    if (isContinued) {
-      const continuedTaskId = params.message.taskId!;
-      taskId = continuedTaskId;
-      task = await this.taskManager.continueTask(continuedTaskId, params.message);
-    } else {
-      task = await this.taskManager.createTask(params.message, params.message.contextId);
-      taskId = task.id;
-    }
-
-    const onToken = (token: string) => {
-      const event: TokenStreamEvent = {
-        type: 'token',
-        taskId: task.id,
-        token,
-        timestamp: new Date().toISOString(),
-      };
-      eventQueue.push(event);
-      if (resolve) {
-        resolve();
-        resolve = null;
-      }
-    };
-
-    let executionDone = false;
-    const executionPromise = this.taskManager
-      .executeTask(task, this.cogitator, agent, params.message, onToken)
-      .then(() => {
-        executionDone = true;
-        if (resolve) {
-          resolve();
-          resolve = null;
-        }
-      });
+    let executionPromise: Promise<unknown> | null = null;
 
     try {
+      let task: A2ATask;
+      const isContinued = !!message.taskId;
+      try {
+        this.validateInitialPushConfig(params.configuration);
+        if (isContinued) {
+          task = await this.taskManager.continueTask(message.taskId!, message);
+        } else {
+          task = await this.taskManager.createTask(message, message.contextId);
+          taskId = task.id;
+          await this.registerInitialPushConfig(task.id, params.configuration);
+        }
+      } catch (error) {
+        yield failedStatusEvent(errorMessageOf(error), taskId ?? '');
+        return;
+      }
+
+      const currentTaskId = task.id;
+      const onToken = (token: string) => {
+        const event: TokenStreamEvent = {
+          type: 'token',
+          taskId: currentTaskId,
+          token,
+          timestamp: new Date().toISOString(),
+        };
+        eventQueue.push(event);
+        notify();
+      };
+
+      let executionDone = false;
+      let executionError: unknown;
+      executingTaskId = task.id;
+      executionPromise = this.taskManager
+        .executeTask(task, this.cogitator, agent, message, {
+          onToken,
+          timeout: params.configuration?.timeout,
+        })
+        .then(
+          () => {
+            executionDone = true;
+            notify();
+          },
+          (error: unknown) => {
+            executionError = error;
+            executionDone = true;
+            notify();
+          }
+        );
+
       if (!isContinued) {
         yield {
           type: 'status-update',
@@ -315,41 +360,37 @@ export class A2AServer {
         };
       }
 
-      let done = false;
-      while (!done) {
-        if (eventQueue.length > 0) {
-          const event = eventQueue.shift()!;
+      while (!signal?.aborted) {
+        const event = eventQueue.shift();
+        if (event) {
           yield event;
-          if (event.type === 'status-update' && isTerminalState(event.status.state)) {
-            done = true;
+          if (event.type === 'status-update' && isStreamFinalState(event.status.state)) {
+            return;
           }
-        } else if (executionDone) {
-          const finalTask = await this.taskManager.getTask(task.id);
-          if (isTerminalState(finalTask.status.state)) {
-            done = true;
-          } else {
-            yield {
-              type: 'status-update',
-              taskId: task.id,
-              status: {
-                state: 'failed',
-                timestamp: new Date().toISOString(),
-                message: 'Execution ended without reaching a terminal state',
-              },
-              timestamp: new Date().toISOString(),
-            };
-            done = true;
-          }
-        } else {
-          await new Promise<void>((r) => {
-            resolve = r;
-          });
+          continue;
         }
+
+        if (executionDone) {
+          if (executionError !== undefined) {
+            yield failedStatusEvent(errorMessageOf(executionError), task.id);
+            return;
+          }
+          const finalTask = await this.taskManager.getTask(task.id);
+          if (!isStreamFinalState(finalTask.status.state)) {
+            yield failedStatusEvent('Execution ended without reaching a terminal state', task.id);
+          }
+          return;
+        }
+
+        await new Promise<void>((r) => {
+          wake = r;
+        });
       }
     } finally {
       this.taskManager.removeListener('event', onEvent);
-      this.taskManager.abortExecution(task.id);
-      await executionPromise.catch(() => {});
+      signal?.removeEventListener('abort', onAbort);
+      if (executingTaskId) this.taskManager.abortExecution(executingTaskId);
+      if (executionPromise) await executionPromise;
     }
   }
 
@@ -392,64 +433,144 @@ export class A2AServer {
   }
 
   private async handleSendMessage(params: unknown): Promise<A2ATask> {
-    const { message, agentName } = params as {
-      message: A2AMessage;
-      configuration?: SendMessageConfiguration;
-      agentName?: string;
-    };
+    const { message, agentName, configuration } = (params ?? {}) as Partial<SendMessageParams>;
 
-    if (!message?.parts || !message.role) {
+    if (!isValidMessage(message)) {
       throw new A2AError(errors.invalidParams('message is required with role and parts'));
     }
+    assertOptionalNonNegativeInt(configuration?.historyLength, 'configuration.historyLength');
+    assertOptionalNonNegativeInt(configuration?.timeout, 'configuration.timeout');
 
     const resolvedAgentName = agentName ?? Object.keys(this.agents)[0];
     const agent = this.agents[resolvedAgentName];
     if (!agent) throw new A2AError(errors.agentNotFound(resolvedAgentName));
 
+    this.validateInitialPushConfig(configuration);
+
+    let task: A2ATask;
     if (message.taskId) {
-      const task = await this.taskManager.continueTask(message.taskId, message);
-      return await this.taskManager.executeTask(task, this.cogitator, agent, message);
+      task = await this.taskManager.continueTask(message.taskId, message);
+    } else {
+      task = await this.taskManager.createTask(message, message.contextId);
+      await this.registerInitialPushConfig(task.id, configuration);
     }
 
-    const task = await this.taskManager.createTask(message, message.contextId);
-    return await this.taskManager.executeTask(task, this.cogitator, agent, message);
+    const execution = this.taskManager.executeTask(task, this.cogitator, agent, message, {
+      timeout: configuration?.timeout,
+    });
+
+    if (configuration?.blocking === false) {
+      execution.catch((error: unknown) => {
+        process.stderr.write(`[a2a] Background task ${task.id} failed: ${errorMessageOf(error)}\n`);
+      });
+      return this.shapeTask(task, configuration);
+    }
+
+    return this.shapeTask(await execution, configuration);
+  }
+
+  private validateInitialPushConfig(configuration?: SendMessageConfiguration): void {
+    const pushConfig = configuration?.pushNotificationConfig;
+    if (!pushConfig) return;
+    if (!pushConfig.webhookUrl) {
+      throw new A2AError(errors.invalidParams('pushNotificationConfig.webhookUrl is required'));
+    }
+    this.assertWebhookAllowed(pushConfig.webhookUrl);
+  }
+
+  private async registerInitialPushConfig(
+    taskId: string,
+    configuration?: SendMessageConfiguration
+  ): Promise<void> {
+    const pushConfig = configuration?.pushNotificationConfig;
+    if (!pushConfig) return;
+    try {
+      await this.pushNotificationStore.create(taskId, pushConfig);
+    } catch (error) {
+      await this.taskManager.failTask(
+        taskId,
+        `Failed to register push notification: ${errorMessageOf(error)}`
+      );
+      throw error;
+    }
+  }
+
+  private assertWebhookAllowed(webhookUrl: string): void {
+    if (this.allowPrivateUrls) return;
+    try {
+      validateWebhookUrl(webhookUrl);
+    } catch (e) {
+      throw new A2AError(errors.invalidParams(e instanceof Error ? e.message : String(e)));
+    }
+  }
+
+  /**
+   * Apply historyLength / acceptedOutputModes from the request configuration
+   */
+  private shapeTask(
+    task: A2ATask,
+    configuration?: Pick<SendMessageConfiguration, 'historyLength' | 'acceptedOutputModes'>
+  ): A2ATask {
+    let shaped = task;
+    const historyLength = configuration?.historyLength;
+    if (historyLength !== undefined) {
+      shaped = {
+        ...shaped,
+        history: historyLength === 0 ? [] : shaped.history.slice(-historyLength),
+      };
+    }
+    const accepted = configuration?.acceptedOutputModes;
+    if (accepted && accepted.length > 0) {
+      shaped = {
+        ...shaped,
+        artifacts: shaped.artifacts.filter((a) => !a.mimeType || accepted.includes(a.mimeType)),
+      };
+    }
+    return shaped;
   }
 
   private async handleGetTask(params: unknown): Promise<A2ATask> {
-    const { id } = params as { id: string };
+    const { id, historyLength } = (params ?? {}) as { id?: string; historyLength?: number };
     if (!id) throw new A2AError(errors.invalidParams('id is required'));
-    return this.taskManager.getTask(id);
+    assertOptionalNonNegativeInt(historyLength, 'historyLength');
+    return this.shapeTask(await this.taskManager.getTask(id), { historyLength });
   }
 
   private async handleCancelTask(params: unknown): Promise<A2ATask> {
-    const { id } = params as { id: string };
+    const { id } = (params ?? {}) as { id?: string };
     if (!id) throw new A2AError(errors.invalidParams('id is required'));
     return this.taskManager.cancelTask(id);
   }
 
   private async handleListTasks(params: unknown): Promise<{ tasks: A2ATask[] }> {
-    const filter = (params ?? {}) as TaskFilter;
+    const raw = (params ?? {}) as TaskFilter;
+    assertOptionalNonNegativeInt(raw.limit, 'limit');
+    assertOptionalNonNegativeInt(raw.offset, 'offset');
+    const filter: TaskFilter = {
+      contextId: raw.contextId,
+      state: raw.state,
+      offset: raw.offset,
+      limit: Math.min(raw.limit ?? MAX_LIST_LIMIT, MAX_LIST_LIMIT),
+    };
     const tasks = await this.taskManager.listTasks(filter);
     return { tasks };
   }
 
   private async handleCreatePushNotification(params: unknown): Promise<PushNotificationConfig> {
-    const { taskId, config } = params as { taskId: string; config: PushNotificationConfig };
+    const { taskId, config } = (params ?? {}) as {
+      taskId?: string;
+      config?: PushNotificationConfig;
+    };
     if (!taskId) throw new A2AError(errors.invalidParams('taskId is required'));
     if (!config?.webhookUrl)
       throw new A2AError(errors.invalidParams('config.webhookUrl is required'));
-    if (!this.allowPrivateUrls) {
-      try {
-        validateWebhookUrl(config.webhookUrl);
-      } catch (e) {
-        throw new A2AError(errors.invalidParams(e instanceof Error ? e.message : String(e)));
-      }
-    }
+    this.assertWebhookAllowed(config.webhookUrl);
+    await this.taskManager.getTask(taskId);
     return this.pushNotificationStore.create(taskId, config);
   }
 
   private async handleGetPushNotification(params: unknown): Promise<PushNotificationConfig | null> {
-    const { taskId, configId } = params as { taskId: string; configId: string };
+    const { taskId, configId } = (params ?? {}) as { taskId?: string; configId?: string };
     if (!taskId || !configId) {
       throw new A2AError(errors.invalidParams('taskId and configId are required'));
     }
@@ -457,13 +578,13 @@ export class A2AServer {
   }
 
   private async handleListPushNotifications(params: unknown): Promise<PushNotificationConfig[]> {
-    const { taskId } = params as { taskId: string };
+    const { taskId } = (params ?? {}) as { taskId?: string };
     if (!taskId) throw new A2AError(errors.invalidParams('taskId is required'));
     return this.pushNotificationStore.list(taskId);
   }
 
   private async handleDeletePushNotification(params: unknown): Promise<{ success: boolean }> {
-    const { taskId, configId } = params as { taskId: string; configId: string };
+    const { taskId, configId } = (params ?? {}) as { taskId?: string; configId?: string };
     if (!taskId || !configId) {
       throw new A2AError(errors.invalidParams('taskId and configId are required'));
     }

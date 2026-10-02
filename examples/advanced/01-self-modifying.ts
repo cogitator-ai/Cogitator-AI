@@ -126,7 +126,7 @@ When you lack a tool for a task, explain what capability is missing.`,
     }
   }
 
-  const generatedTools = await toolStore.list({ status: 'active' });
+  const generatedTools = await toolStore.list({ status: 'validated' });
   console.log(`\n  Total generated tools in store: ${generatedTools.length}`);
 
   section('3. Checkpoint and rollback safety');

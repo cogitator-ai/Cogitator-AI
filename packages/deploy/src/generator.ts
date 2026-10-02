@@ -1,13 +1,19 @@
 import type { DeployConfig, GeneratedArtifact, GeneratedArtifacts } from '@cogitator-ai/types';
-import { generateDockerfile } from './templates/dockerfile.js';
+import { generateDockerfile, type DockerfilePackageManager } from './templates/dockerfile.js';
 import { generateDockerCompose } from './templates/docker-compose.js';
 import { generateFlyToml } from './templates/fly-toml.js';
 
 export interface GeneratorOptions {
   hasTypeScript: boolean;
+  packageManager?: DockerfilePackageManager;
+  hasLockfile?: boolean;
+  hasBuildScript?: boolean;
+  startCommand?: string[];
 }
 
-const DOCKERIGNORE = `node_modules
+export const ARTIFACTS_DIR = '.cogitator';
+
+export const DOCKERIGNORE = `node_modules
 dist
 .git
 .gitignore
@@ -24,13 +30,11 @@ export class ArtifactGenerator {
 
     files.push({
       path: 'Dockerfile',
-      content: generateDockerfile({ config, hasTypeScript: options.hasTypeScript }),
+      content: generateDockerfile({ config, ...options }),
     });
 
-    files.push({
-      path: '.dockerignore',
-      content: DOCKERIGNORE,
-    });
+    files.push({ path: '.dockerignore', content: DOCKERIGNORE });
+    files.push({ path: 'Dockerfile.dockerignore', content: DOCKERIGNORE });
 
     if (target === 'docker') {
       files.push({
@@ -46,6 +50,6 @@ export class ArtifactGenerator {
       });
     }
 
-    return { files, outputDir: '.cogitator' };
+    return { files, outputDir: ARTIFACTS_DIR };
   }
 }

@@ -28,6 +28,8 @@ import type { Cogitator } from '@cogitator-ai/core';
 import { WorkflowExecutor } from '../executor';
 import { type JobScheduler, createJobScheduler } from './scheduler';
 import { InMemoryRunStore } from './run-store';
+import { createTracer, type WorkflowTracer } from '../observability/tracer';
+import type { WorkflowMetricsCollector } from '../observability/metrics';
 
 /**
  * Workflow manager configuration
@@ -37,7 +39,12 @@ export interface WorkflowManagerConfig {
   runStore?: RunStore;
   checkpointStore?: CheckpointStore;
   maxConcurrency?: number;
+  /** Cancel runs that take longer than this many ms (marked failed with a timeout error) */
   defaultTimeout?: number;
+  /** Tracer used for every run (overridden per run by `options.tracing`) */
+  tracer?: WorkflowTracer;
+  /** Metrics collector used for every run (`options.metrics.enabled: false` opts a run out) */
+  metrics?: WorkflowMetricsCollector;
   onRunStateChange?: (run: WorkflowRun) => void;
 }
 
@@ -54,9 +61,15 @@ export class DefaultWorkflowManager implements IWorkflowManager {
   private activeRuns = new Map<string, { abort: () => void }>();
   private stateChangeCallbacks = new Set<(run: WorkflowRun) => void>();
   private runLocks = new Map<string, Promise<void>>();
+  private defaultTimeout?: number;
+  private tracer?: WorkflowTracer;
+  private metrics?: WorkflowMetricsCollector;
 
   constructor(config: WorkflowManagerConfig) {
     this.cogitator = config.cogitator;
+    this.defaultTimeout = config.defaultTimeout;
+    this.tracer = config.tracer;
+    this.metrics = config.metrics;
     this.runStore = config.runStore ?? new InMemoryRunStore();
     this.checkpointStore = config.checkpointStore;
 
@@ -143,10 +156,24 @@ export class DefaultWorkflowManager implements IWorkflowManager {
     this.activeRuns.set(runId, { abort: () => abortController.abort() });
     this.scheduler.runStarted(runId);
 
+    let timedOut = false;
+    const timeoutHandle =
+      this.defaultTimeout !== undefined && this.defaultTimeout > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            abortController.abort();
+          }, this.defaultTimeout)
+        : undefined;
+
+    const runTracer = options?.tracing ? createTracer(options.tracing) : this.tracer;
+    const runMetrics = options?.metrics?.enabled === false ? undefined : this.metrics;
+
     try {
-      const result = await this.executor.execute(workflow, input, {
+      const executed = await this.executor.execute(workflow, input, {
         ...options,
         signal: abortController.signal,
+        tracer: runTracer,
+        metricsCollector: runMetrics,
         onNodeStart: (node) => {
           void this.updateRunNodes(runId, node, 'start');
           options?.onNodeStart?.(node);
@@ -160,6 +187,15 @@ export class DefaultWorkflowManager implements IWorkflowManager {
           options?.onNodeError?.(node, error);
         },
       });
+
+      const result: WorkflowResult<S> = timedOut
+        ? {
+            ...executed,
+            error: new Error(
+              `Workflow run '${runId}' timed out after ${String(this.defaultTimeout)}ms`
+            ),
+          }
+        : executed;
 
       if (result.error) {
         await this.runStore.update(runId, {
@@ -210,6 +246,12 @@ export class DefaultWorkflowManager implements IWorkflowManager {
 
       throw error;
     } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (runTracer && runTracer !== this.tracer) {
+        await runTracer.flush().catch((error: unknown) => {
+          console.warn('[WorkflowManager] Failed to flush run traces:', error);
+        });
+      }
       this.activeRuns.delete(runId);
       this.runLocks.delete(runId);
       this.scheduler.runCompleted(runId);

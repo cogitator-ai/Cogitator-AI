@@ -3,6 +3,7 @@ import type {
   ChannelMessage,
   ChannelType,
   Attachment,
+  AttachmentType,
   SendOptions,
 } from '@cogitator-ai/types';
 import { chunkDiscordText } from '../formatters/discord-chunker';
@@ -13,9 +14,17 @@ export interface DiscordConfig {
   mentionOnly?: boolean;
 }
 
+interface DiscordSentMessage {
+  id: string;
+  edit(content: string): Promise<unknown>;
+  react(emoji: string): Promise<unknown>;
+  delete(): Promise<unknown>;
+}
+
 interface DiscordClient {
   user: { id: string } | null;
   on(event: string, handler: (...args: unknown[]) => void): void;
+  once(event: string, handler: (...args: unknown[]) => void): void;
   login(token: string): Promise<unknown>;
   destroy(): Promise<void>;
   channels: {
@@ -26,15 +35,17 @@ interface DiscordClient {
 interface DiscordChannelObj {
   id: string;
   isTextBased(): boolean;
-  send(options: Record<string, unknown>): Promise<{ id: string }>;
+  send(options: Record<string, unknown>): Promise<DiscordSentMessage>;
   messages: {
-    fetch(id: string): Promise<{
-      edit(content: string): Promise<void>;
-      react(emoji: string): Promise<void>;
-      delete(): Promise<void>;
-    }>;
+    fetch(id: string): Promise<DiscordSentMessage>;
   };
   sendTyping(): Promise<void>;
+}
+
+interface DiscordAttachment {
+  url: string;
+  name?: string | null;
+  contentType?: string | null;
 }
 
 interface DiscordMessage {
@@ -47,7 +58,25 @@ interface DiscordMessage {
     displayName?: string;
   };
   channel: { id: string };
-  guild?: { id: string };
+  guild?: { id: string } | null;
+  attachments?: { values(): IterableIterator<DiscordAttachment> };
+  reference?: { messageId?: string } | null;
+}
+
+interface DiscordModule {
+  Client: new (options: Record<string, unknown>) => unknown;
+  GatewayIntentBits: Record<string, number>;
+  Partials?: Record<string, number>;
+  Events?: Record<string, string>;
+}
+
+const MAX_TRACKED_MESSAGES = 500;
+
+function attachmentType(contentType: string): AttachmentType {
+  if (contentType.startsWith('image/')) return 'image';
+  if (contentType.startsWith('audio/')) return 'audio';
+  if (contentType.startsWith('video/')) return 'video';
+  return 'file';
 }
 
 export class DiscordChannel implements Channel {
@@ -55,6 +84,7 @@ export class DiscordChannel implements Channel {
   private handler: ((msg: ChannelMessage) => Promise<void>) | null = null;
   private client: DiscordClient | null = null;
   private botUserId: string | null = null;
+  private readonly continuations = new Map<string, string[]>();
 
   constructor(private readonly config: DiscordConfig) {}
 
@@ -63,12 +93,11 @@ export class DiscordChannel implements Channel {
   }
 
   async start(): Promise<void> {
-    let discord: {
-      Client: new (options: Record<string, unknown>) => unknown;
-      GatewayIntentBits: Record<string, number>;
-    };
+    if (this.client) return;
+
+    let discord: DiscordModule;
     try {
-      discord = (await import('discord.js')) as unknown as typeof discord;
+      discord = (await import('discord.js')) as unknown as DiscordModule;
     } catch {
       throw new Error(
         'discord.js is required for Discord support. Install it: pnpm add discord.js'
@@ -81,21 +110,36 @@ export class DiscordChannel implements Channel {
       discord.GatewayIntentBits.DirectMessages,
       discord.GatewayIntentBits.MessageContent,
     ];
+    const partials = discord.Partials?.Channel !== undefined ? [discord.Partials.Channel] : [];
 
-    const client = new discord.Client({ intents }) as DiscordClient;
+    const client = new discord.Client({ intents, partials }) as DiscordClient;
     this.client = client;
 
-    client.on('ready', () => {
-      if (client.user) {
-        this.botUserId = client.user.id;
-      }
+    const readyEvent = discord.Events?.ClientReady ?? 'ready';
+    const ready = new Promise<void>((resolve) => {
+      client.once(readyEvent, () => resolve());
     });
 
     client.on('messageCreate', (raw: unknown) => {
-      void this.handleDiscordMessage(raw as DiscordMessage);
+      void this.handleDiscordMessage(raw as DiscordMessage).catch((err: unknown) => {
+        console.error('[discord] Message handler error:', err);
+      });
     });
 
-    await client.login(this.config.token);
+    try {
+      await client.login(this.config.token);
+      await ready;
+    } catch (err) {
+      this.client = null;
+      await client.destroy().catch(() => {});
+      throw err;
+    }
+
+    this.botUserId = client.user?.id ?? null;
+  }
+
+  private mentionPattern(): RegExp | null {
+    return this.botUserId ? new RegExp(`<@!?${this.botUserId}>`, 'g') : null;
   }
 
   private async handleDiscordMessage(discordMsg: DiscordMessage): Promise<void> {
@@ -103,17 +147,31 @@ export class DiscordChannel implements Channel {
     if (discordMsg.author.bot) return;
 
     const isDM = !discordMsg.guild;
+    const mention = this.mentionPattern();
+
     if (this.config.mentionOnly && !isDM) {
-      if (!this.botUserId || !discordMsg.content.includes(`<@${this.botUserId}>`)) {
-        return;
+      if (!mention?.test(discordMsg.content)) return;
+      mention.lastIndex = 0;
+    }
+
+    const text = mention ? discordMsg.content.replace(mention, '').trim() : discordMsg.content;
+
+    const attachments: Attachment[] = [];
+    if (discordMsg.attachments) {
+      for (const att of discordMsg.attachments.values()) {
+        const mimeType = att.contentType ?? 'application/octet-stream';
+        attachments.push({
+          type: attachmentType(mimeType),
+          url: att.url,
+          mimeType,
+          ...(att.name ? { filename: att.name } : {}),
+        });
       }
     }
 
-    let text = discordMsg.content;
-    if (this.botUserId) {
-      text = text.replace(new RegExp(`<@!?${this.botUserId}>`, 'g'), '').trim();
-    }
+    if (!text && attachments.length === 0) return;
 
+    const replyTo = discordMsg.reference?.messageId;
     const msg: ChannelMessage = {
       id: discordMsg.id,
       channelType: 'discord',
@@ -123,6 +181,8 @@ export class DiscordChannel implements Channel {
       groupId: discordMsg.guild?.id,
       text,
       raw: discordMsg,
+      ...(attachments.length > 0 ? { attachments } : {}),
+      ...(replyTo ? { replyTo } : {}),
     };
 
     await this.handler(msg);
@@ -130,92 +190,116 @@ export class DiscordChannel implements Channel {
 
   async stop(): Promise<void> {
     if (this.client) {
-      await this.client.destroy();
+      const client = this.client;
       this.client = null;
+      this.botUserId = null;
+      this.continuations.clear();
+      await client.destroy();
+    }
+  }
+
+  private async fetchTextChannel(channelId: string): Promise<DiscordChannelObj> {
+    if (!this.client) throw new Error('Discord channel is not started');
+    const channel = await this.client.channels.fetch(channelId);
+    if (!channel?.isTextBased()) {
+      throw new Error(`Discord channel ${channelId} is not a text channel`);
+    }
+    return channel;
+  }
+
+  private rememberContinuations(primaryId: string, ids: string[]): void {
+    if (ids.length === 0) {
+      this.continuations.delete(primaryId);
+      return;
+    }
+    this.continuations.set(primaryId, ids);
+    if (this.continuations.size > MAX_TRACKED_MESSAGES) {
+      const oldest = this.continuations.keys().next().value;
+      if (oldest !== undefined) this.continuations.delete(oldest);
     }
   }
 
   async sendText(channelId: string, text: string, options?: SendOptions): Promise<string> {
-    if (!this.client) return '';
-
-    const channel = await this.client.channels.fetch(channelId);
-    if (!channel?.isTextBased()) return '';
-
+    const channel = await this.fetchTextChannel(channelId);
     const chunks = chunkDiscordText(text);
-    let lastId = '';
+    if (chunks.length === 0) return '';
 
+    const ids: string[] = [];
     for (let i = 0; i < chunks.length; i++) {
       const msgOptions: Record<string, unknown> = { content: chunks[i] };
       if (i === 0 && options?.replyTo) {
-        msgOptions.reply = { messageReference: options.replyTo };
+        msgOptions.reply = { messageReference: options.replyTo, failIfNotExists: false };
       }
       const sent = await channel.send(msgOptions);
-      lastId = sent.id;
+      ids.push(sent.id);
     }
 
-    return lastId;
+    const [primaryId, ...rest] = ids;
+    this.rememberContinuations(primaryId, rest);
+    return primaryId;
   }
 
   async editText(channelId: string, messageId: string, text: string): Promise<void> {
-    if (!this.client) return;
-
-    const channel = await this.client.channels.fetch(channelId);
-    if (!channel?.isTextBased()) return;
-
+    const channel = await this.fetchTextChannel(channelId);
     const chunks = chunkDiscordText(text);
+    if (chunks.length === 0) return;
 
-    try {
-      const msg = await channel.messages.fetch(messageId);
-      await msg.edit(chunks[0] ?? text.slice(0, 2000));
-    } catch {}
+    const primary = await channel.messages.fetch(messageId);
+    await primary.edit(chunks[0]);
+
+    const previous = this.continuations.get(messageId) ?? [];
+    const next: string[] = [];
 
     for (let i = 1; i < chunks.length; i++) {
-      await channel.send({ content: chunks[i] });
+      const existingId = previous[i - 1];
+      if (existingId) {
+        const existing = await channel.messages.fetch(existingId);
+        await existing.edit(chunks[i]);
+        next.push(existingId);
+      } else {
+        const sent = await channel.send({ content: chunks[i] });
+        next.push(sent.id);
+      }
     }
+
+    for (const staleId of previous.slice(chunks.length - 1)) {
+      const stale = await channel.messages.fetch(staleId);
+      await stale.delete();
+    }
+
+    this.rememberContinuations(messageId, next);
   }
 
   async sendFile(channelId: string, file: Attachment): Promise<void> {
-    if (!this.client) return;
+    const source = file.buffer ? Buffer.from(file.buffer) : file.url;
+    if (!source) throw new Error('Attachment must have either a buffer or a url');
 
-    const channel = await this.client.channels.fetch(channelId);
-    if (!channel?.isTextBased()) return;
-
+    const channel = await this.fetchTextChannel(channelId);
     await channel.send({
-      files: [{ attachment: file.url ?? file.buffer, name: file.filename }],
+      files: [{ attachment: source, ...(file.filename ? { name: file.filename } : {}) }],
     });
   }
 
   async sendTyping(channelId: string): Promise<void> {
     if (!this.client) return;
-
-    const channel = await this.client.channels.fetch(channelId);
-    if (!channel?.isTextBased()) return;
-
+    const channel = await this.fetchTextChannel(channelId);
     await channel.sendTyping();
   }
 
   async deleteMessage(channelId: string, messageId: string): Promise<void> {
-    if (!this.client) return;
-
-    const channel = await this.client.channels.fetch(channelId);
-    if (!channel?.isTextBased()) return;
-
-    try {
-      const msg = await channel.messages.fetch(messageId);
+    const channel = await this.fetchTextChannel(channelId);
+    const ids = [messageId, ...(this.continuations.get(messageId) ?? [])];
+    this.continuations.delete(messageId);
+    for (const id of ids) {
+      const msg = await channel.messages.fetch(id);
       await msg.delete();
-    } catch {}
+    }
   }
 
   async setReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
-    if (!this.client) return;
-
-    const channel = await this.client.channels.fetch(channelId);
-    if (!channel?.isTextBased()) return;
-
-    try {
-      const msg = await channel.messages.fetch(messageId);
-      await msg.react(emoji);
-    } catch {}
+    const channel = await this.fetchTextChannel(channelId);
+    const msg = await channel.messages.fetch(messageId);
+    await msg.react(emoji);
   }
 }
 

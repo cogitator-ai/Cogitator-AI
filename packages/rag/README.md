@@ -52,23 +52,42 @@ await pipeline.ingest('./docs');
 const results = await pipeline.query('How does authentication work?');
 
 for (const r of results) {
-  console.log(`[${r.score.toFixed(3)}] ${r.content.slice(0, 100)}...`);
+  console.log(`[${r.score.toFixed(3)}] ${r.source}: ${r.content.slice(0, 100)}...`);
 }
 ```
+
+Every stored chunk carries the document's loader metadata (e.g. Markdown frontmatter, PDF page numbers, CSV metadata columns, page title/URL) plus `documentId`, `source`, `sourceType`, `order`, `startOffset` and `endOffset`. Retrieval results expose the document path/URL as `result.source` and the rest in `result.metadata`.
 
 ---
 
 ## Document Loaders
 
-| Loader           | Formats               | Optional Dep | Notes                         |
-| ---------------- | --------------------- | ------------ | ----------------------------- |
-| `TextLoader`     | `.txt`                | —            | Files and directories         |
-| `MarkdownLoader` | `.md`                 | —            | Strips frontmatter by default |
-| `JSONLoader`     | `.json`               | —            | Configurable content field    |
-| `CSVLoader`      | `.csv`                | `papaparse`  | Column selection, row mapping |
-| `HTMLLoader`     | `.html`, `.htm`       | `cheerio`    | CSS selector support          |
-| `PDFLoader`      | `.pdf`                | `pdf-parse`  | Text extraction from PDFs     |
-| `WebLoader`      | `http://`, `https://` | `cheerio`    | Fetches and parses web pages  |
+| Loader           | Formats               | Optional Dep | Notes                                                  |
+| ---------------- | --------------------- | ------------ | ------------------------------------------------------ |
+| `TextLoader`     | `.txt`                | —            | Files and directories                                  |
+| `MarkdownLoader` | `.md`, `.mdx`         | —            | Optional frontmatter -> metadata                       |
+| `JSONLoader`     | `.json`               | —            | Configurable content field                             |
+| `CSVLoader`      | `.csv`                | `papaparse`  | Column selection, `row` number in metadata             |
+| `HTMLLoader`     | `.html`, `.htm`       | `cheerio`    | CSS selector, scripts/styles removed, block-aware text |
+| `PDFLoader`      | `.pdf`                | `pdf-parse`  | Whole document or one document per page                |
+| `WebLoader`      | `http://`, `https://` | `cheerio`    | HTML, plain text and JSON pages; SSRF-protected        |
+
+Directory sources (`TextLoader`, `MarkdownLoader`) are loaded in sorted file-name order.
+
+### WebLoader security
+
+`WebLoader` blocks loopback, private, link-local, CGNAT, multicast and cloud-metadata addresses — including IPv4-mapped IPv6 forms and hostnames that **resolve** to such addresses. The check runs at connect time for every redirect hop, so DNS rebinding cannot bypass it. To ingest an intranet site, opt in explicitly:
+
+```typescript
+const intranet = new WebLoader({
+  allowPrivateNetwork: true,
+  headers: { Authorization: `Bearer ${process.env.WIKI_TOKEN}` },
+  timeoutMs: 15_000,
+  maxResponseBytes: 10 * 1024 * 1024,
+});
+```
+
+Responses are decompressed (gzip, deflate, br), decoded using the declared charset, and limited to `maxResponseBytes` (50MB by default). Non-text content types are rejected.
 
 ```typescript
 import { MarkdownLoader, WebLoader, CSVLoader } from '@cogitator-ai/rag';
@@ -101,7 +120,7 @@ const chunks = chunker.chunk(text, documentId);
 
 ### Recursive
 
-Splits on configurable separators (`\n\n`, `\n`, `. `, ` `) trying to keep paragraphs and sentences intact.
+Splits on configurable separators (`\n\n`, `\n`, `. `, ` `) trying to keep paragraphs and sentences intact. Chunk offsets always point into the original text, chunks never exceed `chunkSize`, sentence punctuation is kept and overlap never produces a chunk fully contained in the previous one.
 
 ```typescript
 import { RecursiveChunker } from '@cogitator-ai/rag';
@@ -115,7 +134,7 @@ const chunker = new RecursiveChunker({
 
 ### Semantic
 
-Uses embedding similarity between sentences to find natural breakpoints. Async — requires an `EmbeddingService`.
+Uses embedding similarity between sentences (and blank-line separated blocks) to find natural breakpoints. Async — requires an `EmbeddingService`.
 
 ```typescript
 import { SemanticChunker } from '@cogitator-ai/rag';
@@ -152,6 +171,29 @@ const chunker = createChunker(
 | `hybrid`      | `HybridRetriever`     | Combines BM25 keyword search with vector search (RRF)         |
 | `multi-query` | `MultiQueryRetriever` | Expands query into variants, merges results                   |
 
+`RAGPipelineBuilder` builds the retriever matching `retrieval.strategy` when no custom `withRetriever()` is given:
+
+```typescript
+const pipeline = new RAGPipelineBuilder()
+  .withLoader(loader)
+  .withEmbeddingService(embeddingService)
+  .withEmbeddingAdapter(embeddingAdapter)
+  .withHybridSearch(new HybridSearch({ embeddingAdapter, embeddingService })) // 'hybrid'
+  .withQueryExpander(expandWithLLM) // 'multi-query'
+  .withConfig({
+    chunking: { strategy: 'recursive', chunkSize: 500, chunkOverlap: 50 },
+    retrieval: { strategy: 'multi-query', multiQueryCount: 3, topK: 5 },
+  })
+  .build();
+```
+
+| Strategy      | Builder requirement                        | Config used                                                                                                     |
+| ------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `similarity`  | —                                          | `topK`, `threshold`                                                                                             |
+| `mmr`         | —                                          | `mmrLambda`, `topK`, `threshold`                                                                                |
+| `hybrid`      | `withHybridSearch(hybridSearch, weights?)` | `topK`, `threshold`                                                                                             |
+| `multi-query` | `withQueryExpander(fn)`                    | `multiQueryCount` (max variants), `topK`; base is hybrid when `withHybridSearch()` is set, similarity otherwise |
+
 ### Similarity
 
 ```typescript
@@ -169,7 +211,7 @@ const results = await retriever.retrieve('What is TypeScript?');
 
 ### MMR
 
-Reduces redundancy by penalizing results that are too similar to already-selected ones.
+Reduces redundancy by penalizing results that are too similar to already-selected ones. If the vector store does not return stored vectors (e.g. Qdrant), candidates are re-embedded to compute diversity.
 
 ```typescript
 import { MMRRetriever } from '@cogitator-ai/rag';
@@ -184,7 +226,7 @@ const retriever = new MMRRetriever({
 
 ### Hybrid
 
-Requires `HybridSearch` from `@cogitator-ai/memory`.
+Requires `HybridSearch` from `@cogitator-ai/memory`. Chunks ingested through `RAGPipeline` are added to the HybridSearch BM25 index automatically (any retriever implementing `ChunkIndexer.indexChunk()` is notified on ingest), and keyword-only hits are mapped back to their chunk, document and metadata.
 
 ```typescript
 import { HybridRetriever } from '@cogitator-ai/rag';
@@ -198,7 +240,7 @@ const retriever = new HybridRetriever({
 
 ### Multi-Query
 
-Generates query variations and merges results. You provide the expansion function (typically an LLM call).
+Generates query variations and merges results (best score per chunk). You provide the expansion function (typically an LLM call). The original query is always searched; variants are de-duplicated and capped by `defaultMaxQueries` / `multiQueryCount`. If expansion fails the original query is used alone; if every retrieval fails the error is thrown.
 
 ```typescript
 import { MultiQueryRetriever } from '@cogitator-ai/rag';
@@ -211,6 +253,7 @@ const retriever = new MultiQueryRetriever({
     );
     return response.split('\n').filter(Boolean);
   },
+  defaultMaxQueries: 3,
 });
 ```
 
@@ -279,9 +322,8 @@ Use `ragTools()` to give a Cogitator agent access to your knowledge base.
 
 ```typescript
 import { Agent, tool } from '@cogitator-ai/core';
-import { RAGPipelineBuilder, TextLoader, createSearchTool } from '@cogitator-ai/rag';
+import { RAGPipelineBuilder, TextLoader, ragTools } from '@cogitator-ai/rag';
 import { InMemoryEmbeddingAdapter, OpenAIEmbeddingService } from '@cogitator-ai/memory';
-import { z } from 'zod';
 
 const pipeline = new RAGPipelineBuilder()
   .withLoader(new TextLoader())
@@ -295,26 +337,19 @@ const pipeline = new RAGPipelineBuilder()
 
 await pipeline.ingest('./knowledge-base');
 
-const ragSearch = createSearchTool(pipeline);
-
-const searchKB = tool({
-  name: ragSearch.name,
-  description: ragSearch.description,
-  parameters: z.object({
-    query: z.string().describe('Search query'),
-    limit: z.number().int().positive().optional(),
-    threshold: z.number().min(0).max(1).optional(),
-  }),
-  execute: async (params) => ragSearch.execute(params),
-});
+const [ragSearch, ragIngest] = ragTools(pipeline, { allowedRoots: ['./knowledge-base'] });
 
 const agent = new Agent({
   name: 'docs-assistant',
-  model: 'gpt-4o',
+  model: 'openai/gpt-4o',
   instructions: 'Use rag_search to find information before answering.',
-  tools: [searchKB],
+  tools: [tool(ragSearch), tool(ragIngest)],
 });
 ```
+
+`RAGTool` objects carry Zod parameter schemas and can be passed to `tool()` directly. `rag_search` falls back to the pipeline's configured `topK`/`threshold` when the model omits `limit`/`threshold`.
+
+**Security:** `rag_ingest` reads whatever source the model passes. When the tool is exposed to an LLM, restrict it with `allowedRoots` (paths are canonicalized, so `..` traversal and symlink escapes are rejected) and `allowUrls: false` if web ingestion is not needed. URL ingestion goes through the SSRF-protected `WebLoader` when the pipeline uses one.
 
 ---
 

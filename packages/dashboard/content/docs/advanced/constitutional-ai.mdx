@@ -10,7 +10,7 @@ Constitutional AI provides a multi-layered guardrail system for agent behavior. 
 ## Setting Up Guardrails
 
 ```typescript
-import { ConstitutionalAI, DEFAULT_CONSTITUTION } from '@cogitator-ai/core/constitutional';
+import { ConstitutionalAI, DEFAULT_CONSTITUTION } from '@cogitator-ai/core';
 
 const guardrails = new ConstitutionalAI({
   llm: backend,
@@ -141,11 +141,7 @@ The `ToolGuard` checks for dangerous commands (`rm -rf /`, `format c:`), sensiti
 Build a custom constitution from scratch or extend the default:
 
 ```typescript
-import {
-  createConstitution,
-  extendConstitution,
-  DEFAULT_CONSTITUTION,
-} from '@cogitator-ai/core/constitutional';
+import { createConstitution, extendConstitution, DEFAULT_CONSTITUTION } from '@cogitator-ai/core';
 
 const customConstitution = createConstitution([
   {

@@ -13,7 +13,7 @@ The reflection cycle follows four phases: **generate** a response, **evaluate** 
 
 ```typescript
 import { Cogitator, Agent } from '@cogitator-ai/core';
-import { ReflectionEngine, InMemoryInsightStore } from '@cogitator-ai/core/reflection';
+import { ReflectionEngine, InMemoryInsightStore } from '@cogitator-ai/core';
 
 const insightStore = new InMemoryInsightStore();
 
@@ -21,7 +21,8 @@ const reflectionEngine = new ReflectionEngine({
   llm: backend,
   insightStore,
   config: {
-    reflectionModel: 'openai/gpt-4o-mini',
+    enabled: true,
+    reflectionModel: 'gpt-4o-mini',
     storeInsights: true,
     minConfidenceToStore: 0.3,
     maxInsightsPerAgent: 100,
@@ -29,7 +30,7 @@ const reflectionEngine = new ReflectionEngine({
 });
 ```
 
-The `ReflectionEngine` requires an LLM backend for generating reflections, an `InsightStore` for persistence, and a config that controls quality thresholds.
+The `ReflectionEngine` requires an LLM backend for generating reflections, an `InsightStore` for persistence, and a config that controls quality thresholds. A standalone engine sends `reflectionModel` to the backend as-is, so pass the provider's own model id. When reflection is enabled through `new Cogitator({ reflection: { enabled: true } })`, `reflectionModel` may be a `provider/model` id (for example `openai/gpt-4o-mini`) and defaults to the running agent's model.
 
 ## Reflecting on Tool Calls
 

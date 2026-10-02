@@ -106,63 +106,63 @@ function myersDiff(oldArr: string[], newArr: string[]): DiffChange[] {
   return changes;
 }
 
+function formatRange(start: number, count: number): string {
+  if (count === 0) return `${start - 1},0`;
+  return count === 1 ? `${start}` : `${start},${count}`;
+}
+
 function formatUnified(changes: DiffChange[], context: number): string {
-  const lines: string[] = [];
-  let i = 0;
+  const changeIndexes: number[] = [];
+  changes.forEach((change, index) => {
+    if (change.type !== 'equal') changeIndexes.push(index);
+  });
+  if (changeIndexes.length === 0) return '';
 
-  while (i < changes.length) {
-    let start = i;
-    while (start > 0 && i - start < context && changes[start - 1].type === 'equal') {
-      start--;
+  const hunks: Array<{ start: number; end: number }> = [];
+  for (const index of changeIndexes) {
+    const start = Math.max(0, index - context);
+    const end = Math.min(changes.length - 1, index + context);
+    const last = hunks[hunks.length - 1];
+    if (last && start <= last.end + 1) {
+      last.end = Math.max(last.end, end);
+    } else {
+      hunks.push({ start, end });
     }
+  }
 
-    let end = i;
-    while (end < changes.length) {
-      if (changes[end].type !== 'equal') {
-        let nextChange = end + 1;
-        while (nextChange < changes.length && changes[nextChange].type === 'equal') {
-          nextChange++;
-        }
-        if (nextChange - end <= context * 2 && nextChange < changes.length) {
-          end = nextChange;
-        } else {
-          end = Math.min(end + context, changes.length - 1);
-          break;
-        }
-      }
-      end++;
-    }
+  const oldLineAt: number[] = [];
+  const newLineAt: number[] = [];
+  let oldLine = 1;
+  let newLine = 1;
+  for (const change of changes) {
+    oldLineAt.push(oldLine);
+    newLineAt.push(newLine);
+    if (change.type !== 'add') oldLine++;
+    if (change.type !== 'remove') newLine++;
+  }
 
-    if (end >= changes.length) end = changes.length - 1;
-
-    let hasChanges = false;
-    for (let j = start; j <= end; j++) {
-      if (changes[j].type !== 'equal') {
-        hasChanges = true;
-        break;
-      }
-    }
-
-    if (hasChanges) {
-      for (let j = start; j <= end; j++) {
-        const change = changes[j];
-        if (change.type === 'add') {
-          lines.push(`+ ${change.value}`);
-        } else if (change.type === 'remove') {
-          lines.push(`- ${change.value}`);
-        } else {
-          lines.push(`  ${change.value}`);
-        }
-      }
-    }
-
-    i = end + 1;
-    while (i < changes.length && changes[i].type === 'equal') {
-      i++;
+  const lines: string[] = ['--- original', '+++ modified'];
+  for (const hunk of hunks) {
+    const slice = changes.slice(hunk.start, hunk.end + 1);
+    const oldCount = slice.filter((c) => c.type !== 'add').length;
+    const newCount = slice.filter((c) => c.type !== 'remove').length;
+    lines.push(
+      `@@ -${formatRange(oldLineAt[hunk.start], oldCount)} +${formatRange(newLineAt[hunk.start], newCount)} @@`
+    );
+    for (const change of slice) {
+      const prefix = change.type === 'add' ? '+' : change.type === 'remove' ? '-' : ' ';
+      lines.push(`${prefix}${change.value}`);
     }
   }
 
   return lines.join('\n');
+}
+
+function splitLines(text: string): string[] {
+  if (text === '') return [];
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines;
 }
 
 function formatInline(changes: DiffChange[]): string {
@@ -186,11 +186,20 @@ export function diff(): number {
     const inputStr = Host.inputString();
     const input: DiffInput = JSON.parse(inputStr);
 
+    if (typeof input.original !== 'string' || typeof input.modified !== 'string') {
+      throw new Error('original and modified must be strings');
+    }
     const format = input.format ?? 'unified';
+    if (format !== 'unified' && format !== 'inline' && format !== 'json') {
+      throw new Error(`Unknown format: ${String(format)}`);
+    }
     const context = input.context ?? 3;
+    if (!Number.isInteger(context) || context < 0) {
+      throw new Error('context must be a non-negative integer');
+    }
 
-    const oldLines = input.original.split('\n');
-    const newLines = input.modified.split('\n');
+    const oldLines = splitLines(input.original);
+    const newLines = splitLines(input.modified);
 
     const changes = myersDiff(oldLines, newLines);
 

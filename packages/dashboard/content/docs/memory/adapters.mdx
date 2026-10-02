@@ -40,6 +40,8 @@ console.log(memory.stats); // { threads: 1, entries: 1 }
 | ------------ | ------ | ------- | ------------------------------------- |
 | `maxEntries` | number | 10000   | Max entries before oldest are evicted |
 
+Calling `createThread` with an existing thread id is an upsert in every adapter: stored entries and `createdAt` are kept, only the metadata changes.
+
 **When to use:** Unit tests, prototyping, ephemeral agents that don't need persistence.
 
 ## Redis
@@ -83,6 +85,8 @@ const memory = new RedisAdapter({
 | `keyPrefix` | string | `cogitator:` or `{cogitator}:` for cluster | Key prefix for all Redis keys  |
 | `ttl`       | number | 86400                                      | TTL in seconds (24h default)   |
 | `password`  | string | —                                          | Redis authentication password  |
+
+Each write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way; expired entries are pruned from the index on read. In cluster mode a custom `keyPrefix` without a hash tag is wrapped automatically (`'myapp:'` → `'{myapp}:'`) so all keys of the adapter map to one slot.
 
 **When to use:** Ephemeral conversations that should auto-expire, high-throughput scenarios, or when you already run Redis.
 
@@ -249,6 +253,8 @@ const { data: results } = await qdrant.search({
 | `apiKey`     | string | —                       | API key for Qdrant Cloud             |
 | `collection` | string | `cogitator`             | Collection name                      |
 | `dimensions` | number | —                       | Vector dimensions (must match model) |
+
+Embedding metadata is stored in the point payload, so `filter.threadId` / `filter.agentId` match the `metadata.threadId` / `metadata.agentId` payload keys.
 
 **Requires:** `pnpm add @qdrant/js-client-rest`
 

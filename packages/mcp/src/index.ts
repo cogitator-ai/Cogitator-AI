@@ -7,7 +7,7 @@
  * - Tool Adapter: Convert between Cogitator and MCP tool formats
  */
 
-export { MCPClient, connectMCPServer } from './client/mcp-client';
+export { MCPClient, MCPToolError, connectMCPServer } from './client/mcp-client';
 export { createStdioTransport, createHttpTransport } from './client/transports';
 export type { StdioTransportConfig, HttpTransportConfig } from './client/transports';
 
@@ -26,6 +26,7 @@ export {
 
 export type {
   MCPClientConfig,
+  MCPCallToolOptions,
   MCPRetryConfig,
   MCPServerConfig,
   MCPTransportType,

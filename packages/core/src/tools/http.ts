@@ -29,6 +29,15 @@ const httpRequestParams = z.object({
     .describe('Request timeout in milliseconds (default: 30000, max: 60000)'),
 });
 
+function normalizeJsonBody(body: string): string {
+  if (!body.trim()) return body;
+  try {
+    return JSON.stringify(JSON.parse(body));
+  } catch {
+    return body;
+  }
+}
+
 export const httpRequest = tool({
   name: 'http_request',
   description:
@@ -52,14 +61,10 @@ export const httpRequest = tool({
       });
 
       const contentType = response.headers.get('content-type') || '';
-      let responseBody: string;
-
-      if (contentType.includes('application/json')) {
-        const json: unknown = await response.json();
-        responseBody = JSON.stringify(json);
-      } else {
-        responseBody = await response.text();
-      }
+      const rawBody = await response.text();
+      let responseBody = contentType.includes('application/json')
+        ? normalizeJsonBody(rawBody)
+        : rawBody;
 
       const maxBodySize = 100000;
       const truncated = responseBody.length > maxBodySize;

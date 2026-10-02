@@ -188,8 +188,7 @@ sandbox:
       pidsLimit: 100
     network:
       mode: none # none | bridge | host
-      allowedHosts:
-        - api.example.com
+      # allowedHosts: [api.example.com]  # wasm only; the docker executor rejects it
       dns:
         - 8.8.8.8
 
@@ -328,8 +327,9 @@ Standard provider env vars are also supported:
 ```bash
 OPENAI_API_KEY=sk-xxx
 ANTHROPIC_API_KEY=sk-ant-xxx
-GOOGLE_API_KEY=xxx
-OLLAMA_HOST=http://localhost:11434
+GOOGLE_API_KEY=xxx            # or GEMINI_API_KEY
+OLLAMA_URL=http://localhost:11434   # or OLLAMA_HOST (scheme optional, e.g. 127.0.0.1:11434)
+OLLAMA_API_KEY=xxx            # Ollama Cloud / authenticated Ollama
 AZURE_OPENAI_API_KEY=xxx
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
 AWS_REGION=us-east-1
@@ -340,6 +340,29 @@ GROQ_API_KEY=xxx
 TOGETHER_API_KEY=xxx
 DEEPSEEK_API_KEY=xxx
 ```
+
+When `OLLAMA_API_KEY` is set without any Ollama URL (from env or YAML), the Ollama base URL defaults to `https://ollama.com`; otherwise it defaults to `http://localhost:11434`. An API key in the environment never replaces a `baseUrl` configured in YAML.
+
+### `${VAR}` References in YAML
+
+String values in YAML files can reference environment variables:
+
+```yaml
+llm:
+  providers:
+    openai:
+      apiKey: ${OPENAI_API_KEY}
+      baseUrl: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+```
+
+| Syntax            | Result                                        |
+| ----------------- | --------------------------------------------- |
+| `${VAR}`          | Value of `VAR`, or an empty string when unset |
+| `${VAR:-default}` | `default` when `VAR` is unset **or empty**    |
+| `${VAR-default}`  | `default` only when `VAR` is unset            |
+| `$$`              | A literal `$`                                 |
+
+Substituted values are always strings, so use references for string fields (keys, URLs, model names) — numeric fields such as `deploy.port` must stay literal.
 
 ---
 
@@ -378,23 +401,23 @@ import type { CogitatorConfigInput, CogitatorConfigOutput } from '@cogitator-ai/
 
 ### Available Schemas
 
-| Schema                           | Description                  |
-| -------------------------------- | ---------------------------- |
-| `CogitatorConfigSchema`          | Full configuration           |
-| `LLMConfigSchema`                | LLM providers and defaults   |
-| `MemoryConfigSchema`             | Memory adapters and settings |
-| `SandboxConfigSchema`            | Sandbox execution settings   |
-| `ReflectionConfigSchema`         | Self-reflection settings     |
-| `GuardrailConfigSchema`          | Safety guardrails            |
-| `CostRoutingConfigSchema`        | Cost-aware model selection   |
-| `KnowledgeGraphConfigSchema`     | Knowledge graph settings     |
-| `PromptOptimizationConfigSchema` | Prompt optimization          |
-| `SecurityConfigSchema`           | Security / injection config  |
-| `ContextManagerConfigSchema`     | Context compression          |
-| `LoggingConfigSchema`            | Logging settings             |
-| `DeployConfigSchema`             | Deployment settings          |
-| `DeployTargetSchema`             | Deploy target enum           |
-| `DeployServerSchema`             | Server framework enum        |
+| Schema                           | Description                            |
+| -------------------------------- | -------------------------------------- |
+| `CogitatorConfigSchema`          | Full configuration                     |
+| `LLMConfigSchema`                | LLM providers and defaults             |
+| `MemoryConfigSchema`             | Memory adapters and settings           |
+| `SandboxConfigSchema`            | Sandbox execution settings             |
+| `ReflectionConfigSchema`         | Self-reflection settings               |
+| `GuardrailConfigSchema`          | Safety guardrails                      |
+| `CostRoutingConfigSchema`        | Cost-aware model selection             |
+| `KnowledgeGraphConfigSchema`     | Knowledge graph settings               |
+| `PromptOptimizationConfigSchema` | Prompt optimization                    |
+| `SecurityConfigSchema`           | Security / injection config            |
+| `ContextManagerConfigSchema`     | Context compression                    |
+| `LoggingConfigSchema`            | Logging settings                       |
+| `DeployConfigSchema`             | Deployment settings                    |
+| `DeployTargetSchema`             | Deploy target enum (`docker` \| `fly`) |
+| `DeployServerSchema`             | Server framework enum                  |
 
 ---
 
@@ -518,7 +541,7 @@ const config = defineConfig({
 
 ### loadYamlConfig(path?)
 
-Load and parse YAML config file. Returns `null` if no config file found.
+Load and parse a YAML config file and resolve `${VAR}` references. Returns `null` if no config file is found or the file is empty; throws when the file cannot be parsed (the message includes the path) or its top level is not a mapping.
 
 ```typescript
 import { loadYamlConfig } from '@cogitator-ai/config';
@@ -534,6 +557,26 @@ Load config from environment variables.
 import { loadEnvConfig } from '@cogitator-ai/config';
 
 const config = loadEnvConfig();
+```
+
+### interpolateEnv(value, env?) / interpolateEnvString(value, env?)
+
+Apply `${VAR}` substitution to a parsed config object or a single string (used by `loadYamlConfig`).
+
+```typescript
+import { interpolateEnvString } from '@cogitator-ai/config';
+
+interpolateEnvString('${HOST:-localhost}:${PORT}', { PORT: '8080' }); // 'localhost:8080'
+```
+
+### parseDotenv(content) / loadDotenvFile(path)
+
+Parse `.env` files (`KEY=VALUE`, `export` prefix, single/double quotes with escapes, inline comments). `loadDotenvFile` returns `{}` when the file does not exist. Neither function mutates `process.env`.
+
+```typescript
+import { loadDotenvFile } from '@cogitator-ai/config';
+
+const env = { ...loadDotenvFile('.env'), ...process.env };
 ```
 
 ---

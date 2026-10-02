@@ -1,15 +1,24 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Koa from 'koa';
 import request from 'supertest';
 import { cogitatorApp } from '../app.js';
 import type { CogitatorAppOptions, CogitatorState } from '../types.js';
 
+beforeEach(() => {
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 function mockTool(name: string) {
-  return {
+  const schema = {
     name,
     description: `Tool ${name}`,
     parameters: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },
   };
+  return { ...schema, toJSON: () => schema };
 }
 
 function mockAgent(name: string, tools: unknown[] = []) {
@@ -100,12 +109,16 @@ describe('agentRoutes', () => {
     expect(res.body.agents[0].tools).toEqual(['search']);
   });
 
-  it('GET /agents truncates instructions to 100 chars', async () => {
-    const longInstructions = 'A'.repeat(200);
-    const agent = { config: { instructions: longInstructions, tools: [] } };
-    const app = buildApp({ agents: { long: agent as never } });
+  it('GET /agents exposes the agent description, never its instructions', async () => {
+    const agent = {
+      config: { instructions: 'secret system prompt', description: 'Public summary', tools: [] },
+    };
+    const bare = { config: { instructions: 'another secret', tools: [] } };
+    const app = buildApp({ agents: { described: agent as never, bare: bare as never } });
     const res = await request(app.callback()).get('/agents');
-    expect(res.body.agents[0].description).toHaveLength(100);
+    expect(res.body.agents[0].description).toBe('Public summary');
+    expect(res.body.agents[1].description).toBeUndefined();
+    expect(JSON.stringify(res.body)).not.toContain('secret');
   });
 
   it('GET /agents handles agent with no tools', async () => {
@@ -219,10 +232,10 @@ describe('agentRoutes', () => {
       .set('Content-Type', 'application/json');
     expect(res.status).toBe(500);
     expect(res.body.error.code).toBe('INTERNAL');
-    expect(res.body.error.message).toBe('model unavailable');
+    expect(res.body.error.message).toBe('Internal server error');
   });
 
-  it('POST /agents/:name/run returns Unknown error for non-Error throws', async () => {
+  it('POST /agents/:name/run masks non-Error throws', async () => {
     const runtime = mockRuntime({
       run: vi.fn().mockRejectedValue('string error'),
     });
@@ -236,7 +249,7 @@ describe('agentRoutes', () => {
       .send({ input: 'hi' })
       .set('Content-Type', 'application/json');
     expect(res.status).toBe(500);
-    expect(res.body.error.message).toBe('Unknown error');
+    expect(res.body.error.message).toBe('Internal server error');
   });
 });
 
@@ -299,7 +312,7 @@ describe('threadRoutes', () => {
 
     const res = await request(app.callback()).get('/threads/t1');
     expect(res.status).toBe(500);
-    expect(res.body.error.message).toBe('disk full');
+    expect(res.body.error.message).toBe('Internal server error');
   });
 
   it('GET /threads/:id returns 500 on thrown exception', async () => {
@@ -313,7 +326,7 @@ describe('threadRoutes', () => {
 
     const res = await request(app.callback()).get('/threads/t1');
     expect(res.status).toBe(500);
-    expect(res.body.error.message).toBe('connection lost');
+    expect(res.body.error.message).toBe('Internal server error');
   });
 
   it('POST /threads/:id/messages returns 503 when memory not configured', async () => {
@@ -374,7 +387,7 @@ describe('threadRoutes', () => {
       expect.objectContaining({
         threadId: 't1',
         message: { role: 'user', content: 'hello' },
-        tokenCount: 0,
+        tokenCount: expect.any(Number),
       })
     );
   });
@@ -394,7 +407,7 @@ describe('threadRoutes', () => {
       .send({ role: 'user', content: 'test' })
       .set('Content-Type', 'application/json');
     expect(res.status).toBe(500);
-    expect(res.body.error.message).toBe('write failed');
+    expect(res.body.error.message).toBe('Internal server error');
   });
 
   it('POST /threads/:id/messages returns 500 on thrown exception', async () => {
@@ -412,7 +425,7 @@ describe('threadRoutes', () => {
       .send({ role: 'user', content: 'test' })
       .set('Content-Type', 'application/json');
     expect(res.status).toBe(500);
-    expect(res.body.error.message).toBe('timeout');
+    expect(res.body.error.message).toBe('Internal server error');
   });
 
   it('DELETE /threads/:id returns 503 when memory not configured', async () => {
@@ -446,7 +459,7 @@ describe('threadRoutes', () => {
 
     const res = await request(app.callback()).delete('/threads/t1');
     expect(res.status).toBe(500);
-    expect(res.body.error.message).toBe('locked');
+    expect(res.body.error.message).toBe('Internal server error');
   });
 
   it('DELETE /threads/:id returns 500 on thrown exception', async () => {
@@ -461,7 +474,7 @@ describe('threadRoutes', () => {
 
     const res = await request(app.callback()).delete('/threads/t1');
     expect(res.status).toBe(500);
-    expect(res.body.error.message).toBe('crash');
+    expect(res.body.error.message).toBe('Internal server error');
   });
 });
 

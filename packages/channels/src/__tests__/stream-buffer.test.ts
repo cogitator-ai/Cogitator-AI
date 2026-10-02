@@ -396,11 +396,22 @@ describe('StreamBuffer', () => {
   });
 
   describe('maxMessageChars', () => {
-    it('auto-splits by creating new message when buffer exceeds limit', async () => {
+    it('auto-splits into messages that respect the limit without losing text', async () => {
       const channel = createMockChannel();
       let msgCounter = 0;
-      (channel.sendText as ReturnType<typeof vi.fn>).mockImplementation(() =>
-        Promise.resolve(`msg_${++msgCounter}`)
+      const sent = new Map<string, string>();
+      (channel.sendText as ReturnType<typeof vi.fn>).mockImplementation(
+        (_ch: string, text: string) => {
+          const id = `msg_${++msgCounter}`;
+          sent.set(id, text);
+          return Promise.resolve(id);
+        }
+      );
+      (channel.editText as ReturnType<typeof vi.fn>).mockImplementation(
+        (_ch: string, id: string, text: string) => {
+          sent.set(id, text);
+          return Promise.resolve();
+        }
       );
 
       const buffer = new StreamBuffer(channel, 'ch1', {
@@ -416,11 +427,38 @@ describe('StreamBuffer', () => {
       expect(channel.sendText).toHaveBeenCalledTimes(1);
 
       buffer.append(' and now exceeding the limit heavily');
-      await wait(80);
+      await buffer.finish();
 
-      expect(channel.sendText).toHaveBeenCalledTimes(2);
+      const messages = buffer.getMessageIds().map((id) => sent.get(id) ?? '');
+      expect(messages.length).toBeGreaterThan(1);
+      for (const text of messages) {
+        expect(text.length).toBeLessThanOrEqual(10);
+      }
+      expect(messages.join(' ').replace(/\s+/g, ' ')).toBe(
+        'Short and now exceeding the limit heavily'
+      );
+    });
 
-      await buffer.abort();
+    it('commits the pending text of the first message before splitting', async () => {
+      const channel = createMockChannel();
+      let msgCounter = 0;
+      (channel.sendText as ReturnType<typeof vi.fn>).mockImplementation(() =>
+        Promise.resolve(`msg_${++msgCounter}`)
+      );
+
+      const buffer = new StreamBuffer(channel, 'ch1', {
+        flushInterval: 10_000,
+        minChunkSize: 1,
+        maxMessageChars: 12,
+      });
+
+      buffer.append('hello world and more');
+      await buffer.finish();
+
+      const texts = (channel.sendText as ReturnType<typeof vi.fn>).mock.calls.map(
+        (c: unknown[]) => c[1]
+      );
+      expect(texts).toEqual(['hello world', 'and more']);
     });
   });
 
@@ -635,7 +673,7 @@ describe('StreamBuffer', () => {
   });
 
   describe('generation counter', () => {
-    it('ignores late sendText result from stale generation', async () => {
+    it('tracks a late sendText result of the previous message', async () => {
       const channel = createMockChannel();
       let callCount = 0;
       (channel.sendText as ReturnType<typeof vi.fn>).mockImplementation(async () => {
@@ -662,8 +700,7 @@ describe('StreamBuffer', () => {
       await wait(200);
       await buffer.finish();
 
-      expect(buffer.getMessageIds()).not.toContain('msg_stale');
-      expect(buffer.getMessageIds()).toContain('msg_fresh');
+      expect(buffer.getMessageIds()).toEqual(['msg_stale', 'msg_fresh']);
 
       await buffer.abort();
     });

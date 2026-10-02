@@ -44,6 +44,17 @@ console.log(`Processed: ${result.stats.successful}/${result.stats.total}`);
 console.log('Summaries:', result.reduced);
 ```
 
+Inside a workflow, wrap the configuration with `mapReduceWorkflowNode`:
+
+```typescript
+builder.addNode(
+  'summarize-docs',
+  mapReduceWorkflowNode(mapReduceNode<DocState, string, string[]>('summarize-docs', config), {
+    stateMapper: (result) => ({ summaries: result.reduced }),
+  })
+);
+```
+
 ### Map Options
 
 ```typescript
@@ -160,7 +171,11 @@ const subConfig = subworkflowNode<ParentState, ChildState>('deep-analysis', {
   maxDepth: 5,
   timeout: 60000,
 });
+
+builder.addNode('deep-analysis', subworkflowWorkflowNode(subConfig));
 ```
+
+A child run that fails (`result.error`) counts as a failed attempt, so `retry`/`onError` apply; a timed-out child run is cancelled. Nested depth is tracked automatically through the node context.
 
 ### Error Strategies
 
@@ -244,6 +259,8 @@ const config = fanOutFanIn<BatchState, { input: string; output?: string }>('proc
   concurrency: 4,
   continueOnError: true,
 });
+
+builder.addNode('process-batch', parallelSubworkflowsNode(config));
 ```
 
 ### Scatter-Gather
@@ -413,4 +430,4 @@ const workflow = new WorkflowBuilder<MultiSearchState>('parallel-search')
   .build();
 ```
 
-The `merge` node has `after: ['web', 'academic', 'github']` so it waits for all parallel branches to complete before executing.
+The `merge` node has `after: ['web', 'academic', 'github']` so it waits for all parallel branches to complete before executing — even when branches have different lengths, the join runs exactly once, after every upstream node that can still reach it has finished. Its `ctx.input` contains the outputs of all its dependencies.

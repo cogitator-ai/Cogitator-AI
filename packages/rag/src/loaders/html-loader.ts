@@ -15,6 +15,24 @@ export interface HTMLLoaderOptions {
   selector?: string;
 }
 
+const NON_CONTENT_SELECTOR = 'script, style, noscript, template, svg, iframe, object, head';
+const BLOCK_SELECTOR =
+  'address, article, aside, blockquote, dd, div, dl, dt, fieldset, figcaption, figure, footer, ' +
+  'form, h1, h2, h3, h4, h5, h6, header, hr, li, main, nav, ol, p, pre, section, table, tr, ul';
+
+function normalizeWhitespace(text: string): string {
+  return text
+    .replace(/\r\n?/g, '\n')
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * Extracts readable text from HTML: scripts, styles and other non-content elements are
+ * dropped, block elements become line breaks and whitespace is normalized.
+ */
 export class HTMLLoader implements DocumentLoader {
   readonly supportedTypes = ['html', 'htm'];
   readonly selector: string;
@@ -33,8 +51,21 @@ export class HTMLLoader implements DocumentLoader {
     const cheerio = await loadCheerio();
     const $ = cheerio.load(html);
 
-    const content = $(this.selector).text().trim();
-    const title = $('title').text().trim() || undefined;
+    const title = $('title').first().text().trim() || undefined;
+
+    $(NON_CONTENT_SELECTOR).remove();
+    $('br').replaceWith('\n');
+    $(BLOCK_SELECTOR).each((_, element) => {
+      $(element).before('\n').after('\n');
+    });
+    $('td, th').after(' ');
+
+    const content = normalizeWhitespace(
+      $(this.selector)
+        .map((_, element) => $(element).text())
+        .get()
+        .join('\n\n')
+    );
 
     const metadata: Record<string, unknown> = {};
     if (title) metadata.title = title;

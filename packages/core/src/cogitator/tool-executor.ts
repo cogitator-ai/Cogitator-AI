@@ -3,6 +3,14 @@ import { ToolRegistry } from '../registry';
 import { getLogger } from '../logger';
 import type { SandboxManager } from './initializers';
 import type { ConstitutionalAI } from '../constitutional/index';
+import { createLinkedAbortController } from '../utils/abort';
+
+type ExtraToolContext = {
+  threadId?: string;
+  userId?: string;
+  channelType?: string;
+  channelId?: string;
+};
 
 export async function executeTool(
   registry: ToolRegistry,
@@ -12,9 +20,9 @@ export async function executeTool(
   sandboxManager: SandboxManager | undefined,
   constitutionalAI: ConstitutionalAI | undefined,
   filterToolCalls: boolean,
-  initializeSandbox: () => Promise<void>,
+  initializeSandbox: () => Promise<SandboxManager | undefined>,
   signal?: AbortSignal,
-  extraContext?: { threadId?: string; userId?: string; channelType?: string; channelId?: string }
+  extraContext?: ExtraToolContext
 ): Promise<ToolResult> {
   const tool = registry.get(toolCall.name);
 
@@ -78,15 +86,36 @@ export async function executeTool(
     );
   }
 
+  return executeNatively(tool, toolCall, validatedArgs, runId, agentId, signal, extraContext);
+}
+
+async function executeNatively(
+  tool: Tool,
+  toolCall: ToolCall,
+  args: unknown,
+  runId: string,
+  agentId: string,
+  signal?: AbortSignal,
+  extraContext?: ExtraToolContext
+): Promise<ToolResult> {
+  const timeoutMs = tool.timeout && tool.timeout > 0 ? tool.timeout : undefined;
+  const abort = timeoutMs ? createLinkedAbortController(signal, timeoutMs) : undefined;
   const context: ToolContext = {
     agentId,
     runId,
-    signal: signal ?? new AbortController().signal,
+    signal: abort?.signal ?? signal ?? new AbortController().signal,
     ...extraContext,
   };
 
   try {
-    const result = await tool.execute(validatedArgs, context);
+    const execution = tool.execute(args as Parameters<typeof tool.execute>[0], context);
+    const result = abort
+      ? await raceWithAbort(execution, abort.signal, () =>
+          abort.timedOut
+            ? new Error(`Tool "${tool.name}" timed out after ${timeoutMs}ms`)
+            : toError(abort.signal.reason, `Tool "${tool.name}" aborted`)
+        )
+      : await execution;
     return {
       callId: toolCall.id,
       name: toolCall.name,
@@ -99,7 +128,37 @@ export async function executeTool(
       result: null,
       error: error instanceof Error ? error.message : String(error),
     };
+  } finally {
+    abort?.cleanup();
   }
+}
+
+function raceWithAbort<T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+  createError: () => Error
+): Promise<T> {
+  if (signal.aborted) {
+    promise.catch(() => undefined);
+    return Promise.reject(createError());
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      promise.catch(() => undefined);
+      reject(createError());
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', onAbort);
+    });
+  });
+}
+
+function toError(reason: unknown, fallbackMessage: string): Error {
+  if (reason instanceof Error) return reason;
+  if (reason === undefined || reason === null) return new Error(fallbackMessage);
+  return new Error(String(reason));
 }
 
 async function executeInSandbox(
@@ -108,34 +167,23 @@ async function executeInSandbox(
   runId: string,
   agentId: string,
   sandboxManager: SandboxManager | undefined,
-  initializeSandbox: () => Promise<void>,
+  initializeSandbox: () => Promise<SandboxManager | undefined>,
   signal?: AbortSignal,
-  extraContext?: { threadId?: string; userId?: string; channelType?: string; channelId?: string }
+  extraContext?: ExtraToolContext
 ): Promise<ToolResult> {
-  await initializeSandbox();
+  const manager = sandboxManager ?? (await initializeSandbox());
 
-  if (!sandboxManager) {
+  if (!manager) {
     getLogger().warn('Sandbox unavailable, executing natively', { tool: tool.name });
-    const context: ToolContext = {
-      agentId,
+    return executeNatively(
+      tool,
+      toolCall,
+      toolCall.arguments,
       runId,
-      signal: signal ?? new AbortController().signal,
-      ...extraContext,
-    };
-    try {
-      const result = await tool.execute(
-        toolCall.arguments as Parameters<typeof tool.execute>[0],
-        context
-      );
-      return { callId: toolCall.id, name: toolCall.name, result };
-    } catch (error) {
-      return {
-        callId: toolCall.id,
-        name: toolCall.name,
-        result: null,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
+      agentId,
+      signal,
+      extraContext
+    );
   }
 
   const args = toolCall.arguments;
@@ -155,7 +203,7 @@ async function executeInSandbox(
         timeout: tool.timeout,
       };
 
-  const result = await sandboxManager.execute(request, sandboxConfig);
+  const result = await manager.execute(request, sandboxConfig);
 
   if (!result.success) {
     return {

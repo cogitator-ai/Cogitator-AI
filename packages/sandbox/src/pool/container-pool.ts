@@ -4,10 +4,11 @@
 
 import type { SandboxMount } from '@cogitator-ai/types';
 import type { Docker, DockerContainer } from '../docker-types';
+import { cpusToNanoCpus } from '../utils/parse-resources';
 
 interface PooledContainer {
   container: DockerContainer;
-  image: string;
+  key: string;
   inUse: boolean;
   lastUsed: number;
 }
@@ -18,6 +19,7 @@ export interface ContainerCreateOptions {
   cpuShares?: number;
   pidsLimit?: number;
   networkMode?: string;
+  dns?: string[];
   mounts?: SandboxMount[];
   user?: string;
 }
@@ -25,6 +27,22 @@ export interface ContainerCreateOptions {
 export interface ContainerPoolOptions {
   maxSize?: number;
   idleTimeoutMs?: number;
+}
+
+export const SANDBOX_CONTAINER_LABEL = 'ai.cogitator.sandbox';
+
+function poolKey(image: string, options: ContainerCreateOptions): string {
+  return JSON.stringify([
+    image,
+    options.memory ?? null,
+    options.cpus ?? null,
+    options.cpuShares ?? null,
+    options.pidsLimit ?? null,
+    options.networkMode ?? 'none',
+    options.dns ?? [],
+    (options.mounts ?? []).map((m) => [m.source, m.target, m.readOnly ?? false]),
+    options.user ?? null,
+  ]);
 }
 
 export class ContainerPool {
@@ -40,10 +58,12 @@ export class ContainerPool {
     this.idleTimeoutMs = options.idleTimeoutMs ?? 60_000;
 
     this.cleanupInterval = setInterval(() => void this.cleanup(), this.idleTimeoutMs / 2);
+    this.cleanupInterval.unref?.();
   }
 
   async acquire(image: string, options: ContainerCreateOptions): Promise<DockerContainer> {
-    const available = this.containers.find((c) => !c.inUse && c.image === image);
+    const key = poolKey(image, options);
+    const available = this.containers.find((c) => !c.inUse && c.key === key);
 
     if (available) {
       available.inUse = true;
@@ -56,7 +76,7 @@ export class ContainerPool {
     if (this.containers.length < this.maxSize) {
       this.containers.push({
         container,
-        image,
+        key,
         inUse: true,
         lastUsed: Date.now(),
       });
@@ -108,12 +128,14 @@ export class ContainerPool {
       Image: image,
       Cmd: ['sleep', 'infinity'],
       User: options.user,
+      Labels: { [SANDBOX_CONTAINER_LABEL]: 'true' },
       HostConfig: {
         Memory: options.memory,
-        NanoCpus: options.cpus ? Math.floor(options.cpus * 1e9) : undefined,
+        NanoCpus: options.cpus ? cpusToNanoCpus(options.cpus) : undefined,
         CpuShares: options.cpuShares,
         PidsLimit: options.pidsLimit ?? 100,
         NetworkMode: options.networkMode ?? 'none',
+        Dns: options.dns?.length ? options.dns : undefined,
         Binds: binds,
         SecurityOpt: ['no-new-privileges'],
         CapDrop: ['ALL'],
@@ -122,7 +144,12 @@ export class ContainerPool {
       WorkingDir: '/workspace',
     });
 
-    await container.start();
+    try {
+      await container.start();
+    } catch (error) {
+      await this.destroyContainer(container);
+      throw error;
+    }
     return container;
   }
 

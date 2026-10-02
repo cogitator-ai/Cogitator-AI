@@ -1,6 +1,9 @@
 export {
   SelfModifyingAgent,
   type SelfModifyingAgentOptions,
+  type SelfModifyingAgentConfig,
+  type SelfModifyingEventDataMap,
+  type TypedSelfModifyingEvent,
   type RunContext,
 } from './self-modifying-agent';
 
@@ -15,11 +18,16 @@ export {
   buildGapAnalysisPrompt,
   buildToolGenerationPrompt,
   buildToolValidationPrompt,
+  buildToolImprovementPrompt,
   parseGapAnalysisResponse,
   parseToolGenerationResponse,
+  parseValidationResponse,
   type GapAnalyzerOptions,
   type ToolGeneratorOptions,
   type ToolValidatorOptions,
+  type ValidationRule,
+  type SandboxTestCase,
+  type GenerateOptions,
   type GenerationResult,
   type ToolUsageRecord,
   type ToolMetrics,
@@ -48,13 +56,17 @@ export {
   ARCHITECTURE_ANALYSIS_SYSTEM_PROMPT,
   buildTaskProfilePrompt,
   buildCandidateGenerationPrompt,
+  buildPerformanceAnalysisPrompt,
   parseTaskProfileResponse,
   parseCandidateGenerationResponse,
+  parsePerformanceAnalysisResponse,
+  sanitizeCandidateConfig,
   type CapabilityAnalyzerOptions,
   type EvolutionStrategyOptions,
   type ParameterOptimizerOptions,
   type SelectionResult,
   type OptimizationResult,
+  type HistoricalRecord,
 } from './architecture-evolution';
 
 export {
@@ -64,6 +76,8 @@ export {
   DEFAULT_SAFETY_CONSTRAINTS,
   DEFAULT_CAPABILITY_CONSTRAINTS,
   DEFAULT_RESOURCE_CONSTRAINTS,
+  createDefaultConstraints,
+  mergeConstraints,
   mergeSafetyConstraints,
   mergeCapabilityConstraints,
   mergeResourceConstraints,

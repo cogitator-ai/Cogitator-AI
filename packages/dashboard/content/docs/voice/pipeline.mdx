@@ -22,19 +22,21 @@ import { VoicePipeline, OpenAISTT, OpenAITTS } from '@cogitator-ai/voice';
 const pipeline = new VoicePipeline({
   stt: new OpenAISTT({ apiKey: process.env.OPENAI_API_KEY! }),
   tts: new OpenAITTS({ apiKey: process.env.OPENAI_API_KEY! }),
-  agent: myAgent,
+  agent: createCogitatorRunner(cogitator, agent),
 });
 ```
 
-### `process(audio)`
+The `agent` is any `VoiceAgentRunner` — `{ run(input, context?) => Promise<{ content }> }`. `context` carries the `sessionId` and an abort `signal`. `createCogitatorRunner(cogitator, agent)` builds one from a Cogitator runtime and agent (memory thread `voice:<sessionId>` per session).
 
-Transcribes the audio, runs the agent, synthesizes the response.
+### `process(audio, options?)`
+
+Transcribes the audio, runs the agent, synthesizes the response. Silent input (empty transcript) skips the agent and TTS and returns empty strings and an empty buffer; an empty agent reply skips TTS. Pass `{ sessionId }` to forward a session id to the agent.
 
 ```typescript
 const result = await pipeline.process(audioBuffer);
 
-console.log(result.transcript);  // what the user said
-console.log(result.response);    // what the agent replied
+console.log(result.transcript); // what the user said
+console.log(result.response); // what the agent replied
 // result.audio — synthesized response as Buffer
 ```
 
@@ -57,7 +59,12 @@ const session = pipeline.createSession();
 session.pushAudio(pcm16Chunk);
 ```
 
-If the pipeline has a VAD provider, the session automatically detects when speech starts and ends. Without VAD, it starts streaming to STT immediately.
+If the pipeline has a VAD provider, the session automatically detects when speech starts and ends. Without VAD, it streams to STT immediately and the turn is committed with `endAudio()`.
+
+```typescript
+session.endAudio(); // commit buffered audio (no-VAD mode)
+await session.sendText('Hi there'); // run a turn from text, bypassing STT
+```
 
 ### Events
 
@@ -87,23 +94,28 @@ session.on('audio', (chunk: Buffer) => {
   playAudio(chunk);
 });
 
+session.on('turn_end', () => {
+  console.log('Agent finished speaking');
+});
+
 session.on('error', (error: Error) => {
   console.error('Session error:', error);
 });
 ```
 
-| Event | Payload | Description |
-| --- | --- | --- |
-| `speech_start` | — | VAD detected speech beginning |
-| `speech_end` | — | VAD detected speech ending |
-| `transcript` | `(text, isFinal)` | STT result (interim or final) |
-| `agent_response` | `(text)` | Agent's text response |
-| `audio` | `(chunk: Buffer)` | Streamed TTS audio chunk |
-| `error` | `(error: Error)` | Processing error |
+| Event            | Payload           | Description                             |
+| ---------------- | ----------------- | --------------------------------------- |
+| `speech_start`   | —                 | VAD detected speech beginning           |
+| `speech_end`     | —                 | VAD detected speech ending              |
+| `transcript`     | `(text, isFinal)` | STT result (interim or final)           |
+| `agent_response` | `(text)`          | Agent's text response                   |
+| `audio`          | `(chunk: Buffer)` | Streamed TTS audio chunk                |
+| `turn_end`       | —                 | Response fully spoken (or empty)        |
+| `error`          | `(error: Error)`  | Processing error (STT, VAD, agent, TTS) |
 
 ### Interruption
 
-Interrupt the current processing at any stage — stops STT, cancels agent, halts TTS streaming:
+Interrupt the current processing at any stage — discards the STT stream, aborts the agent run (its `signal` fires) and stops TTS streaming. A stale turn never emits events or changes state after an interruption:
 
 ```typescript
 session.interrupt();
@@ -117,7 +129,7 @@ After interruption, the session returns to idle and is ready for new audio input
 await session.close();
 ```
 
-Cleans up all resources, stops any in-progress processing, and removes event listeners.
+Aborts any in-progress turn (without waiting for hung providers), releases the STT stream and removes event listeners.
 
 ## Pipeline with VAD
 
@@ -157,12 +169,19 @@ microphoneStream.on('data', (chunk) => {
 import { VoiceAgent, OpenAISTT, OpenAITTS, EnergyVAD } from '@cogitator-ai/voice';
 
 const voiceAgent = new VoiceAgent({
-  agent: myAgent,
+  agent: createCogitatorRunner(cogitator, agent),
   mode: 'pipeline',
   stt: new OpenAISTT({ apiKey: process.env.OPENAI_API_KEY! }),
   tts: new OpenAITTS({ apiKey: process.env.OPENAI_API_KEY! }),
   vad: new EnergyVAD(),
-  transport: { path: '/voice', maxConnections: 50 },
+  transport: {
+    path: '/voice',
+    maxConnections: 50,
+    verifyClient: async (req) =>
+      (await isValidToken(req.headers.authorization))
+        ? true
+        : { code: 401, message: 'Unauthorized' },
+  },
 });
 
 voiceAgent.on('session_start', (id) => console.log(`Session: ${id}`));
@@ -175,12 +194,23 @@ console.log(`Active sessions: ${voiceAgent.activeSessions}`);
 await voiceAgent.close();
 ```
 
+Use `voiceAgent.attach(httpServer)` instead of `listen()` to share an existing HTTP server; upgrades for other paths are left to other handlers. Errors are only emitted when an `error` listener is attached — a misbehaving client cannot crash the process.
+
+### WebSocket protocol
+
+| Direction        | Format | Content                                                                        |
+| ---------------- | ------ | ------------------------------------------------------------------------------ |
+| Client -> Server | Binary | PCM16 mono (16kHz pipeline / Gemini, 24kHz OpenAI realtime)                    |
+| Client -> Server | JSON   | `{ type: 'interrupt' }`, `{ type: 'end_of_speech' }`, `{ type: 'text', text }` |
+| Server -> Client | Binary | Response audio                                                                 |
+| Server -> Client | JSON   | `transcript`, `agent_response`, `speech_start`, `speech_end`, `turn_end`       |
+
 ### VoicePipelineConfig
 
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `stt` | `STTProvider` | Yes | Speech-to-text provider |
-| `tts` | `TTSProvider` | Yes | Text-to-speech provider |
-| `vad` | `VADProvider` | No | Voice activity detection |
-| `agent` | `{ run(input) => Promise<{ content }> }` | Yes | Agent or compatible object |
-| `sampleRate` | `number` | No | Audio sample rate (default 16000) |
+| Field        | Type               | Required | Description                                                  |
+| ------------ | ------------------ | -------- | ------------------------------------------------------------ |
+| `stt`        | `STTProvider`      | Yes      | Speech-to-text provider                                      |
+| `tts`        | `TTSProvider`      | Yes      | Text-to-speech provider                                      |
+| `vad`        | `VADProvider`      | No       | Voice activity detection                                     |
+| `agent`      | `VoiceAgentRunner` | Yes      | `createCogitatorRunner(...)` or any `{ run(input, ctx) }`    |
+| `sampleRate` | `number`           | No       | Deprecated, unused (configure the STT/VAD providers instead) |

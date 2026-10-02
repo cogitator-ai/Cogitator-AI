@@ -26,6 +26,7 @@ async function main() {
 
   const assistant = new Agent({
     name: 'assistant',
+    description: 'General assistant with a calculator tool',
     model: DEFAULT_MODEL,
     instructions: 'You are a helpful assistant. Use tools when appropriate. Be concise.',
     tools: [calculator],

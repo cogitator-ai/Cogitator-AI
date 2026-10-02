@@ -497,7 +497,7 @@ groups:
 
 The available endpoints depend on which server adapter you use.
 
-**Dashboard (`@cogitator-ai/dashboard` — Next.js):**
+**Dashboard (`@cogitator-ai/dashboard` — Next.js, deprecated admin dashboard):**
 
 | Endpoint            | Purpose                             | Expected Response |
 | ------------------- | ----------------------------------- | ----------------- |

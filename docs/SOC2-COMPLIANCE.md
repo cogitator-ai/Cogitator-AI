@@ -63,6 +63,8 @@ Cogitator is an open-source AI agent runtime that processes potentially sensitiv
 
 ### CC6.1 - Logical Access Controls
 
+> **Note:** The admin dashboard in `packages/dashboard` (Supabase auth, API keys, RBAC) is **deprecated and unmaintained**. Do not rely on it as an access control in production. Put authentication in front of your server adapter (`@cogitator-ai/express`, `fastify`, `hono`, `koa`, `next`) instead.
+
 #### Authentication
 
 | Control                | Implementation                                                                          | Evidence                                        |
@@ -783,32 +785,32 @@ npx snyk test
 
 ### SOC2 Trust Service Criteria Mapping
 
-| TSC                      | Control                    | Implementation                                                              | Status |
-| ------------------------ | -------------------------- | --------------------------------------------------------------------------- | ------ |
-| **Security**             |                            |                                                                             |        |
-| CC6.1                    | Logical access controls    | Dashboard: API key + Supabase auth, role-based access (admin/user/readonly) | ✅     |
-| CC6.2                    | System access restrictions | Sandbox isolation                                                           | ✅     |
-| CC6.3                    | Security event monitoring  | Audit logging, Langfuse                                                     | ✅     |
-| CC6.6                    | Encryption                 | TLS, encryption at rest                                                     | ✅     |
-| CC6.7                    | Vulnerability management   | Dependency scanning, updates                                                | ✅     |
-| **Availability**         |                            |                                                                             |        |
-| A1.1                     | System availability        | Health checks, HA architecture                                              | ✅     |
-| A1.2                     | Capacity planning          | Resource limits, auto-scaling                                               | ✅     |
-| A1.3                     | Backup and recovery        | Database backups, DR plan                                                   | ✅     |
-| **Processing Integrity** |                            |                                                                             |        |
-| PI1.1                    | Processing accuracy        | Input validation (Zod)                                                      | ✅     |
-| PI1.2                    | Processing completeness    | Transaction handling                                                        | ✅     |
-| PI1.3                    | Processing timeliness      | Timeouts, streaming                                                         | ✅     |
-| **Confidentiality**      |                            |                                                                             |        |
-| C1.1                     | Information classification | Data classification policy                                                  | ✅     |
-| C1.2                     | Information protection     | Encryption, access controls                                                 | ✅     |
-| C1.3                     | Information disposal       | TTL, secure deletion                                                        | ✅     |
-| **Privacy**              |                            |                                                                             |        |
-| P1.1                     | Privacy notice             | Configurable by deployer                                                    | ✅     |
-| P2.1                     | Consent                    | Deployer responsibility                                                     | ✅     |
-| P3.1                     | Collection                 | Configurable data collection                                                | ✅     |
-| P4.1                     | Use                        | Limited to service provision                                                | ✅     |
-| P6.1                     | Data subject rights        | Export/delete APIs                                                          | ✅     |
+| TSC                      | Control                    | Implementation                                                  | Status |
+| ------------------------ | -------------------------- | --------------------------------------------------------------- | ------ |
+| **Security**             |                            |                                                                 |        |
+| CC6.1                    | Logical access controls    | Deprecated dashboard auth only; use auth in your server adapter | ⚠️     |
+| CC6.2                    | System access restrictions | Sandbox isolation                                               | ✅     |
+| CC6.3                    | Security event monitoring  | Audit logging, Langfuse                                         | ✅     |
+| CC6.6                    | Encryption                 | TLS, encryption at rest                                         | ✅     |
+| CC6.7                    | Vulnerability management   | Dependency scanning, updates                                    | ✅     |
+| **Availability**         |                            |                                                                 |        |
+| A1.1                     | System availability        | Health checks, HA architecture                                  | ✅     |
+| A1.2                     | Capacity planning          | Resource limits, auto-scaling                                   | ✅     |
+| A1.3                     | Backup and recovery        | Database backups, DR plan                                       | ✅     |
+| **Processing Integrity** |                            |                                                                 |        |
+| PI1.1                    | Processing accuracy        | Input validation (Zod)                                          | ✅     |
+| PI1.2                    | Processing completeness    | Transaction handling                                            | ✅     |
+| PI1.3                    | Processing timeliness      | Timeouts, streaming                                             | ✅     |
+| **Confidentiality**      |                            |                                                                 |        |
+| C1.1                     | Information classification | Data classification policy                                      | ✅     |
+| C1.2                     | Information protection     | Encryption, access controls                                     | ✅     |
+| C1.3                     | Information disposal       | TTL, secure deletion                                            | ✅     |
+| **Privacy**              |                            |                                                                 |        |
+| P1.1                     | Privacy notice             | Configurable by deployer                                        | ✅     |
+| P2.1                     | Consent                    | Deployer responsibility                                         | ✅     |
+| P3.1                     | Collection                 | Configurable data collection                                    | ✅     |
+| P4.1                     | Use                        | Limited to service provision                                    | ✅     |
+| P6.1                     | Data subject rights        | Export/delete APIs                                              | ✅     |
 
 ---
 

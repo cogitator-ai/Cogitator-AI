@@ -2,46 +2,78 @@ import type { Cogitator, Agent } from '@cogitator-ai/core';
 import type { ChatHandlerOptions, ChatInput, ChatMessage } from '../types.js';
 import { StreamWriter } from '../streaming/stream-writer.js';
 import { generateId } from '../streaming/encoder.js';
+import {
+  exceedsDeclaredSize,
+  hookErrorResponse,
+  isPlainObject,
+  jsonError,
+  readJsonBody,
+} from './http.js';
 
 const SSE_HEADERS = {
   'Content-Type': 'text/event-stream',
   'Cache-Control': 'no-cache',
   Connection: 'keep-alive',
   'X-Accel-Buffering': 'no',
-  'x-vercel-ai-ui-message-stream': 'v1',
 } as const;
 
-const MAX_BODY_SIZE = 1024 * 1024;
+const CHAT_ROLES: ReadonlySet<string> = new Set(['user', 'assistant', 'system']);
 
-function parseDefaultInput(body: unknown): ChatInput {
-  const data = body as { messages?: unknown[]; threadId?: string };
+function isChatRole(role: unknown): role is ChatMessage['role'] {
+  return typeof role === 'string' && CHAT_ROLES.has(role);
+}
+
+type ParseResult = { ok: true; input: ChatInput } | { ok: false; error: string };
+
+function parseDefaultInput(body: unknown): ParseResult {
+  if (!isPlainObject(body)) {
+    return { ok: false, error: 'Request body must be a JSON object' };
+  }
+
+  if (!Array.isArray(body.messages)) {
+    return { ok: false, error: 'messages must be an array' };
+  }
+
+  if (body.threadId !== undefined && body.threadId !== null && typeof body.threadId !== 'string') {
+    return { ok: false, error: 'threadId must be a string' };
+  }
+
+  if (body.metadata !== undefined && body.metadata !== null && !isPlainObject(body.metadata)) {
+    return { ok: false, error: 'metadata must be an object' };
+  }
+
   const messages: ChatMessage[] = [];
-
-  if (Array.isArray(data.messages)) {
-    for (const msg of data.messages) {
-      if (msg && typeof msg === 'object' && 'role' in msg && 'content' in msg) {
-        messages.push({
-          id: (msg as { id?: string }).id ?? generateId('msg'),
-          role: (msg as { role: string }).role as 'user' | 'assistant' | 'system',
-          content: String((msg as { content: unknown }).content),
-        });
-      }
+  for (const msg of body.messages) {
+    if (!isPlainObject(msg) || !isChatRole(msg.role) || typeof msg.content !== 'string') {
+      continue;
     }
+    messages.push({
+      id: typeof msg.id === 'string' && msg.id ? msg.id : generateId('msg'),
+      role: msg.role,
+      content: msg.content,
+      metadata: isPlainObject(msg.metadata) ? msg.metadata : undefined,
+    });
   }
 
   return {
-    messages,
-    threadId: typeof data.threadId === 'string' ? data.threadId : undefined,
+    ok: true,
+    input: {
+      messages,
+      threadId: typeof body.threadId === 'string' ? body.threadId : undefined,
+      metadata: isPlainObject(body.metadata) ? body.metadata : undefined,
+    },
   };
 }
 
-function getLastUserMessage(messages: ChatMessage[]): string {
+function getLastUserMessage(messages: readonly ChatMessage[] | undefined): string | undefined {
+  if (!Array.isArray(messages)) return undefined;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'user') {
-      return messages[i].content;
+    const message = messages[i];
+    if (message?.role === 'user' && typeof message.content === 'string' && message.content.trim()) {
+      return message.content;
     }
   }
-  return '';
+  return undefined;
 }
 
 export function createChatHandler(
@@ -50,12 +82,8 @@ export function createChatHandler(
   options?: ChatHandlerOptions
 ) {
   return async (req: Request): Promise<Response> => {
-    const contentLength = Number(req.headers.get('content-length'));
-    if (Number.isFinite(contentLength) && contentLength > MAX_BODY_SIZE) {
-      return new Response(JSON.stringify({ error: 'Payload too large' }), {
-        status: 413,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    if (exceedsDeclaredSize(req)) {
+      return jsonError('Payload too large', 413);
     }
 
     let input: ChatInput;
@@ -63,22 +91,19 @@ export function createChatHandler(
       try {
         input = await options.parseInput(req);
       } catch (err) {
-        return new Response(
-          JSON.stringify({ error: err instanceof Error ? err.message : 'Parse error' }),
-          { status: 400, headers: { 'Content-Type': 'application/json' } }
-        );
+        return jsonError(err instanceof Error ? err.message : 'Parse error', 400);
       }
     } else {
-      let body: unknown;
-      try {
-        body = await req.json();
-      } catch {
-        return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      input = parseDefaultInput(body);
+      const body = await readJsonBody(req);
+      if (!body.ok) return body.response;
+      const parsed = parseDefaultInput(body.body);
+      if (!parsed.ok) return jsonError(parsed.error, 400);
+      input = parsed.input;
+    }
+
+    const userMessage = getLastUserMessage(input.messages);
+    if (userMessage === undefined) {
+      return jsonError('No user message provided', 400);
     }
 
     let runContext: Record<string, unknown> = {};
@@ -87,14 +112,7 @@ export function createChatHandler(
         const ctx = await options.beforeRun(req, input);
         if (ctx) runContext = ctx;
       } catch (err) {
-        const status = (err as { status?: number }).status;
-        return new Response(
-          JSON.stringify({ error: err instanceof Error ? err.message : 'Unauthorized' }),
-          {
-            status: status && status >= 400 && status < 600 ? status : 401,
-            headers: { 'Content-Type': 'application/json' },
-          }
-        );
+        return hookErrorResponse(err, 'Unauthorized');
       }
     }
 
@@ -102,58 +120,106 @@ export function createChatHandler(
     const sw = new StreamWriter(writable.getWriter());
     const messageId = generateId('msg');
 
+    const abortController = new AbortController();
+    const abortRun = () => {
+      if (!abortController.signal.aborted) abortController.abort();
+    };
+    const parentSignals = [req.signal, runContext.signal].filter(
+      (signal): signal is AbortSignal => signal instanceof AbortSignal
+    );
+    for (const signal of parentSignals) {
+      if (signal.aborted) abortRun();
+      else signal.addEventListener('abort', abortRun, { once: true });
+    }
+
+    let queue: Promise<void> = Promise.resolve();
+    const emit = (write: () => Promise<void>): Promise<void> => {
+      queue = queue.then(write).catch(abortRun);
+      return queue;
+    };
+
+    let textId: string | null = null;
+    let streamedText = false;
+
+    const writeText = async (delta: string) => {
+      if (textId === null) {
+        textId = generateId('txt');
+        await sw.textStart(textId);
+      }
+      await sw.textDelta(textId, delta);
+    };
+
+    const endText = async () => {
+      if (textId === null) return;
+      const id = textId;
+      textId = null;
+      await sw.textEnd(id);
+    };
+
     const runStream = async () => {
-      let currentTextId = generateId('txt');
-      let textStarted = false;
-
       try {
-        await sw.start(messageId);
-        await sw.textStart(currentTextId);
-        textStarted = true;
-
-        const userMessage = getLastUserMessage(input.messages);
+        await emit(() => sw.start(messageId));
 
         const result = await cogitator.run(agent, {
           input: userMessage,
           threadId: input.threadId,
+          context: input.metadata,
           ...runContext,
-          onToken: async (token: string) => {
-            await sw.textDelta(currentTextId, token);
+          stream: true,
+          signal: abortController.signal,
+          onToken: (token: string) => {
+            if (!token) return;
+            streamedText = true;
+            void emit(() => writeText(token));
           },
-          onToolCall: async (tc) => {
-            if (textStarted) {
-              await sw.textEnd(currentTextId);
-              textStarted = false;
-            }
-            await sw.toolCallStart(tc.id, tc.name);
-            await sw.toolCallDelta(tc.id, JSON.stringify(tc.arguments));
-            await sw.toolCallEnd(tc.id);
+          onToolCall: (tc) => {
+            void emit(async () => {
+              await endText();
+              await sw.toolCallStart(tc.id, tc.name);
+              await sw.toolCallDelta(tc.id, JSON.stringify(tc.arguments));
+              await sw.toolCallEnd(tc.id);
+            });
           },
-          onToolResult: async (tr) => {
-            await sw.toolResult(generateId('tr'), tr.callId, tr.result);
-            currentTextId = generateId('txt');
-            await sw.textStart(currentTextId);
-            textStarted = true;
+          onToolResult: (tr) => {
+            void emit(() => sw.toolResult(generateId('tr'), tr.callId, tr.result));
           },
         });
 
-        if (textStarted) {
-          await sw.textEnd(currentTextId);
+        await queue;
+
+        if (!streamedText && result.output) {
+          await emit(() => writeText(result.output));
         }
-
-        await sw.finish(messageId, {
-          inputTokens: result.usage.inputTokens,
-          outputTokens: result.usage.outputTokens,
-          totalTokens: result.usage.totalTokens,
-        });
+        await emit(endText);
 
         if (options?.afterRun) {
           await options.afterRun(result);
         }
+
+        await emit(() =>
+          sw.finish(
+            messageId,
+            {
+              inputTokens: result.usage.inputTokens,
+              outputTokens: result.usage.outputTokens,
+              totalTokens: result.usage.totalTokens,
+            },
+            result.threadId
+          )
+        );
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Unknown error';
-        await sw.error(message);
+        await queue;
+        if (!sw.isClosed) {
+          const message = err instanceof Error ? err.message : 'Unknown error';
+          await emit(async () => {
+            await endText();
+            await sw.error(message);
+          });
+        }
       } finally {
+        for (const signal of parentSignals) {
+          signal.removeEventListener('abort', abortRun);
+        }
         await sw.close();
       }
     };

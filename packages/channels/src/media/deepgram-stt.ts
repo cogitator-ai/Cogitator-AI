@@ -1,4 +1,5 @@
 import type { SttProvider } from './media-processor';
+import { baseMimeType } from './audio-format';
 
 export interface DeepgramSttConfig {
   apiKey: string;
@@ -17,7 +18,7 @@ export class DeepgramSttProvider implements SttProvider {
     this.language = config.language;
   }
 
-  async transcribe(buffer: Buffer, _mimeType: string): Promise<string> {
+  async transcribe(buffer: Buffer, mimeType: string): Promise<string> {
     const params = new URLSearchParams({ model: this.model });
     if (this.language) params.set('language', this.language);
 
@@ -25,7 +26,7 @@ export class DeepgramSttProvider implements SttProvider {
       method: 'POST',
       headers: {
         Authorization: `Token ${this.apiKey}`,
-        'Content-Type': 'audio/ogg',
+        'Content-Type': baseMimeType(mimeType),
       },
       body: new Uint8Array(buffer),
     });
@@ -36,9 +37,9 @@ export class DeepgramSttProvider implements SttProvider {
     }
 
     const data = (await res.json()) as {
-      results: { channels: Array<{ alternatives: Array<{ transcript: string }> }> };
+      results?: { channels?: Array<{ alternatives?: Array<{ transcript?: string }> }> };
     };
 
-    return data.results.channels[0]?.alternatives[0]?.transcript?.trim() ?? '';
+    return data.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() ?? '';
   }
 }

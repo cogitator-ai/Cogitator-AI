@@ -14,6 +14,7 @@ const createMockRedis = () => {
     psubscribe: vi.fn().mockResolvedValue(undefined),
     punsubscribe: vi.fn().mockResolvedValue(undefined),
     quit: vi.fn().mockResolvedValue(undefined),
+    off: vi.fn(),
     rpush: vi.fn().mockImplementation((key: string, value: string) => {
       if (!data.has(key)) data.set(key, []);
       data.get(key)!.push(value);

@@ -38,12 +38,29 @@ interface BrowserSessionConfig {
   locale?: string;              // e.g. 'en-US'
   timezone?: string;            // e.g. 'America/New_York'
   geolocation?: { latitude: number; longitude: number };
-  persistentContext?: string;   // path for persistent browser data
+  persistentContext?: string;   // user data dir; profile survives restarts
   cookies?: BrowserCookie[];    // initial cookies
   timeout?: number;             // navigation timeout, default: 30000ms
   actionTimeout?: number;       // action timeout, default: 10000ms
-  pool?: { maxPages: number };
+  pool?: { maxPages: number };  // max open tabs for newTab(), positive integer
 }
+```
+
+### Persistent Profile
+
+`persistentContext` launches Playwright's persistent context with the given user data directory. Cookies, `localStorage`, IndexedDB and cache survive across sessions, which keeps logins without exporting cookies. In this mode `session.browser` is `null` and the profile's existing tabs become the session's tabs.
+
+```typescript
+const session = new BrowserSession({ persistentContext: './.browser-profile' });
+await session.start();
+```
+
+### Tab Limit
+
+`pool.maxPages` caps the number of tabs `newTab()` may open. Opening a tab beyond the limit throws `Tab limit reached: pool.maxPages is N`.
+
+```typescript
+const session = new BrowserSession({ pool: { maxPages: 3 } });
 ```
 
 ### Browser Types
@@ -87,11 +104,29 @@ new BrowserSession({
 
 ### `start()`
 
-Launches the browser, creates a context with the configured options, opens the first tab, and applies stealth evasions if enabled.
+Launches the browser, creates a context with the configured options, opens the first tab, and applies stealth evasions if enabled. If any step fails, everything launched so far is closed and the error is rethrown, so the session can be started again. Calling `start()` while the session is running or starting throws.
 
 ```typescript
 const session = new BrowserSession({ headless: false });
 await session.start();
+```
+
+### `ensureStarted()`
+
+Starts the session if needed. Concurrent callers share a single launch. Tools returned by `browserTools()` call it before every execution, so a session that was never started, or whose browser was closed or crashed, is (re)launched on the next tool call.
+
+```typescript
+await Promise.all([session.ensureStarted(), session.ensureStarted()]); // one browser
+```
+
+### `onStart(listener)`
+
+Registers a listener that receives the `BrowserContext` after every successful start, and immediately if the session is already running. Returns an unsubscribe function. The network tools use it to record traffic from the first request.
+
+```typescript
+const unsubscribe = session.onStart((context) => {
+  context.on('request', (req) => console.log(req.url()));
+});
 ```
 
 ### `close()`
@@ -104,7 +139,7 @@ await session.close();
 
 ### `page`
 
-Returns the currently active `Page` object. Throws if the session hasn't been started.
+Returns the currently active `Page` object. Throws if the session hasn't been started. If the active tab was closed, the session falls back to an open tab. `session.started` tells whether a context is running and `session.activeTabIndex` returns the active tab index.
 
 ```typescript
 const page = session.page;
@@ -113,11 +148,11 @@ console.log(page.url());
 
 ## Tab Management
 
-Sessions support multiple tabs. New tabs automatically become the active tab.
+Sessions support multiple tabs. New tabs automatically become the active tab. Pages opened by the site itself (popups, `target="_blank"` links) are tracked in `tabs` too, without changing the active tab.
 
 ### `newTab(url?)`
 
-Opens a new tab, optionally navigating to a URL. Returns the Playwright `Page` object.
+Opens a new tab, optionally navigating to a URL. Returns the Playwright `Page` object. If navigation fails the tab is closed and the error is rethrown. Respects `pool.maxPages`.
 
 ```typescript
 const page = await session.newTab('https://example.com');
@@ -141,7 +176,7 @@ await session.closeTab(1);
 
 ### `tabs`
 
-Returns a copy of all open `Page` objects.
+Returns a copy of all open `Page` objects. Tabs closed outside the session are pruned, and `switchTab`/`closeTab` indexes always refer to this pruned list.
 
 ```typescript
 for (const tab of session.tabs) {
@@ -161,7 +196,7 @@ const cookies = await session.getCookies();
 
 ### `setCookies(cookies)`
 
-Adds cookies to the browser context.
+Adds cookies to the browser context. Cookies with a `domain` but no `path` default to `path: '/'`.
 
 ```typescript
 await session.setCookies([
@@ -171,7 +206,7 @@ await session.setCookies([
 
 ### `saveCookies(filePath)` / `loadCookies(filePath)`
 
-Persist cookies to a JSON file and restore them later. Useful for maintaining login state across sessions.
+Persist cookies to a JSON file and restore them later. Useful for maintaining login state across sessions. `loadCookies` requires a JSON array and skips entries without `name`, `value`, and `url` or `domain`.
 
 ```typescript
 await session.saveCookies('./cookies.json');
@@ -200,12 +235,12 @@ await session.start();
 For advanced use cases, you can access the underlying Playwright objects directly:
 
 ```typescript
-session.browser;   // Browser | null
+session.browser;   // Browser | null (null with persistentContext)
 session.context;   // BrowserContext | null
 session.page;      // active Page
 ```
 
 ## Next Steps
 
-- [Tools Reference](/docs/browser/tools) — all 32 tools that operate on the session
+- [Tools Reference](/docs/browser/tools) — all 33 tools that operate on the session
 - [Stealth](/docs/browser/stealth) — anti-detection configuration

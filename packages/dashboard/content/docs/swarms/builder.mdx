@@ -64,6 +64,18 @@ swarm('pipeline').strategy('pipeline').pipeline({
 });
 ```
 
+Swarm metadata (role, expertise, weight, model lock) is attached by agent name. Slot defaults apply automatically (`supervisor`, `worker`, `moderator`, `router`); agent names must be unique:
+
+```typescript
+swarm('debate-team')
+  .strategy('debate')
+  .agents([advocateAgent, criticAgent])
+  .agentMetadata({
+    [advocateAgent.name]: { role: 'advocate' },
+    [criticAgent.name]: { role: 'critic', weight: 2 },
+  });
+```
+
 ### Strategy-Specific Configuration
 
 Each strategy has its own configuration method that matches the strategy name:
@@ -148,7 +160,8 @@ swarm('team')
     enabled: true,
     sections: { tasks: [], results: {} },
     trackHistory: true,
-  });
+  })
+  .observability({ messageLogging: true, blackboardLogging: true });
 ```
 
 ### Resources and Error Handling
@@ -158,17 +171,21 @@ swarm('team')
   .strategy('hierarchical')
   .resources({
     maxConcurrency: 5,
-    tokenBudget: 100_000,
+    tokenBudget: 100_000, // per run
     costLimit: 2.0,
     timeout: 300_000,
+    perAgent: { maxTokens: 2_000, maxIterations: 5, timeout: 60_000 },
   })
   .errorHandling({
-    onAgentFailure: 'retry',
+    onAgentFailure: 'retry', // 'retry' | 'failover' | 'skip' | 'abort'
     retry: { maxRetries: 3, backoff: 'exponential', initialDelay: 1000, maxDelay: 30000 },
     failover: { 'primary-coder': 'backup-coder' },
     circuitBreaker: { enabled: true, threshold: 5, resetTimeout: 60_000 },
+    partialResults: true,
   });
 ```
+
+Budgets restart at the beginning of every run. `retry` makes `maxRetries` additional attempts with the configured backoff; `failover` follows the mapping until an agent succeeds (cycles are detected); `partialResults` lets parallel phases return the agents that succeeded.
 
 ### Distributed Mode
 
@@ -227,6 +244,8 @@ const result = await team.run({
   input: 'Build a REST API for user management',
   context: { language: 'typescript', framework: 'express' },
   saveHistory: false,
+  timeout: 120_000,
+  onAgentComplete: (agent, run) => console.log(agent, run.usage.totalTokens),
 });
 
 console.log(result.output);
@@ -235,11 +254,20 @@ console.log(result.agentResults);
 
 The `SwarmRunOptions`:
 
-| Field         | Type                      | Description                                              |
-| ------------- | ------------------------- | -------------------------------------------------------- |
-| `input`       | `string`                  | The task to execute                                      |
-| `context`     | `Record<string, unknown>` | Additional context passed to all agents                  |
-| `saveHistory` | `boolean`                 | Whether to persist conversation history (default `true`) |
+| Field             | Type                                     | Description                                                                        |
+| ----------------- | ---------------------------------------- | ---------------------------------------------------------------------------------- |
+| `input`           | `string`                                 | The task to execute                                                                |
+| `context`         | `Record<string, unknown>`                | Additional context passed to all agents                                            |
+| `saveHistory`     | `boolean`                                | Whether to persist conversation history (default `true`)                           |
+| `threadId`        | `string`                                 | Base thread id; each agent uses `${threadId}:${agentName}`                         |
+| `timeout`         | `number`                                 | Rejects with `SwarmTimeoutError` and cancels in-flight LLM calls when exceeded     |
+| `onAgentStart`    | `(agent) => void`                        | Called when an agent turn starts                                                   |
+| `onAgentComplete` | `(agent, result) => void`                | Called when an agent turn completes                                                |
+| `onAgentError`    | `(agent, error) => void`                 | Called when an agent turn fails                                                    |
+| `onMessage`       | `(message) => void`                      | Called for every message sent on the swarm's message bus                           |
+| `onEvent`         | `(event) => void`                        | Called for every swarm event during this run                                       |
+
+A `Swarm` instance runs one task at a time — concurrent `run()` calls on the same instance are rejected.
 
 ## Swarm Instance API
 
@@ -269,8 +297,8 @@ team.once('swarm:complete', (event) => {
 // control
 team.pause();
 team.resume();
-team.abort();
-team.reset();
+team.abort(); // also cancels in-flight LLM calls
+await team.reset();
 
 // distributed cleanup
 await team.close();

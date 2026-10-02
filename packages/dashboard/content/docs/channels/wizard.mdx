@@ -15,11 +15,14 @@ npx @cogitator-ai/cli wizard
 
 The wizard walks you through:
 
-1. **LLM provider and model** — Google, OpenAI, Anthropic, or Ollama
-2. **Channels** — Telegram, Discord, Slack (with token prompts)
-3. **Capabilities** — web search, file system access, scheduler, RAG
-4. **Memory** — adapter, knowledge graph, auto-extraction
-5. **Personality** — custom system prompt for the assistant
+1. **LLM provider and model** — Google, OpenAI, Anthropic, or Ollama (local or cloud); models are fetched live
+2. **Channels** — Telegram, Discord, Slack (bot tokens and owner user IDs)
+3. **Capabilities** — web search, file system, GitHub, device tools, browser, scheduler, RAG, self-config, self-tools
+4. **MCP servers** — any command line, quoted arguments supported
+5. **Memory** — SQLite database path
+6. **Personality** — custom system prompt for the assistant
+
+Secrets are merged into `.env` without removing your other variables or comments. If `cogitator.yml` already exists, the wizard asks before overwriting it.
 
 After setup, start the assistant:
 
@@ -35,7 +38,7 @@ Re-run the wizard with `--edit` to modify an existing `cogitator.yml`:
 cogitator wizard --edit
 ```
 
-This loads the current config and lets you change individual sections.
+This loads the current config and pre-fills every prompt. Leaving a secret blank keeps the value already in `.env`; existing MCP servers and settings the wizard does not ask about (security, rate limits, stream tuning) are preserved.
 
 ## Generated Files
 
@@ -102,8 +105,14 @@ await runtime.gateway.start();
 | `channels` | `object` | `{}` | Channel configs (telegram, discord, slack) |
 | `capabilities` | `object` | `{}` | Enabled capabilities |
 | `memory.adapter` | `sqlite \| postgres` | `sqlite` | Memory storage backend |
+| `memory.path` | `string` | `~/.cogitator/memory.db` | SQLite file |
+| `memory.connectionString` | `string` | `DATABASE_URL` | Postgres connection (requires `pg`) |
+| `memory.compaction.threshold` | `number` | — | Messages in a conversation before compaction |
 | `memory.knowledgeGraph` | `boolean` | `true` | Enable knowledge graph |
 | `memory.autoExtract` | `boolean` | `true` | Auto-extract entities from conversations |
+| `capabilities.fileSystem.paths` | `string[]` | home dir | File tools are restricted to these paths |
+| `capabilities.selfConfig` | `boolean` | `false` | Config/env tools — usable only by channel owners and the local terminal |
+| `security.dmPolicy` | `open \| allowlist \| pairing \| disabled` | `open` | Who may DM the assistant |
 | `stream.flushInterval` | `number` | `600` | Stream flush interval (ms) |
 | `stream.minChunkSize` | `number` | `30` | Minimum chunk size before flushing |
 | `rateLimit.maxPerMinute` | `number` | `30` | Per-user rate limit |

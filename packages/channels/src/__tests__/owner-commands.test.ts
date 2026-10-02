@@ -121,7 +121,7 @@ describe('OwnerCommandsMiddleware', () => {
     const ctx = createCtx();
     await mw.handle(createMsg({ text: '/compact all' }), ctx, vi.fn());
 
-    expect(onCompact).toHaveBeenCalledWith('all');
+    expect(onCompact).toHaveBeenCalledWith('all', 'thread_1');
     expect(ctx.channel.sendText).toHaveBeenCalledWith('ch_1', 'Compacted 50 messages');
   });
 

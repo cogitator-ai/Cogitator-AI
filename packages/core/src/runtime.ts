@@ -37,6 +37,7 @@ import {
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import {
   buildInitialMessages,
+  buildInputWithAudio,
   saveEntry,
   enrichMessagesWithInsights,
   addContextToMessages,
@@ -203,6 +204,12 @@ export class Cogitator {
 
       await this.initializeAll(agent);
 
+      const input = await buildInputWithAudio(options.input, options.audio, {
+        apiKey: this.config.llm?.providers?.openai?.apiKey ?? process.env.OPENAI_API_KEY,
+        signal: abortController.signal,
+      });
+      const runOptions: RunOptions = input === options.input ? options : { ...options, input };
+
       const registry = new ToolRegistry();
       registry.registerMany(this.tools.getAll());
       if (agent.tools && agent.tools.length > 0) {
@@ -210,30 +217,35 @@ export class Cogitator {
       }
 
       let effectiveModel = agent.model;
+      let backend: LLMBackend;
+      let model: string;
 
       if (this.state.costRouter && this.config.costRouting?.autoSelectModel) {
-        const recommendation = await this.state.costRouter.recommendModel(options.input);
+        const recommendation = await this.state.costRouter.recommendModel(input);
         effectiveModel = `${recommendation.provider}/${recommendation.modelId}`;
 
         const budgetCheck = this.state.costRouter.checkBudget(recommendation.estimatedCost);
         if (!budgetCheck.allowed) {
           throw new Error(`Budget exceeded: ${budgetCheck.reason}`);
         }
-      }
 
-      const backend = this.getBackend(effectiveModel, agent.config.provider);
-      const model = agent.config.provider ? effectiveModel : parseModel(effectiveModel).model;
+        backend = this.getBackend(effectiveModel, recommendation.provider);
+        model = recommendation.modelId;
+      } else {
+        backend = this.getBackend(effectiveModel, agent.config.provider);
+        model = agent.config.provider ? effectiveModel : parseModel(effectiveModel).model;
+      }
 
       const messages = await buildInitialMessages(
         agent,
-        options,
+        runOptions,
         threadId,
         this.state.memoryAdapter,
         this.state.contextBuilder
       );
 
       if (this.state.injectionDetector) {
-        const injectionResult = await this.state.injectionDetector.analyze(options.input);
+        const injectionResult = await this.state.injectionDetector.analyze(input);
         if (injectionResult.action === 'blocked') {
           const threatTypes = injectionResult.threats.map((t) => t.type).join(', ');
           throw new CogitatorError({
@@ -245,7 +257,7 @@ export class Cogitator {
       }
 
       if (this.state.constitutionalAI && this.config.guardrails?.filterInput) {
-        const inputResult = await this.state.constitutionalAI.filterInput(options.input);
+        const inputResult = await this.state.constitutionalAI.filterInput(input);
         if (!inputResult.allowed) {
           throw new Error(`Input blocked: ${inputResult.blockedReason ?? 'Policy violation'}`);
         }
@@ -286,7 +298,7 @@ export class Cogitator {
         agentName: agent.name,
         runId,
         threadId,
-        goal: options.input,
+        goal: input,
         iterationIndex: 0,
         previousActions: [],
         availableTools: registry.getNames(),
@@ -427,7 +439,23 @@ export class Cogitator {
                 result: null,
                 error: 'Duplicate tool call detected. Try a different approach.',
               };
-              messages.push(createToolMessage(tc, errorResult));
+              const duplicateMessage = createToolMessage(tc, errorResult);
+              messages.push(duplicateMessage);
+              if (
+                this.state.memoryAdapter &&
+                options.saveHistory !== false &&
+                options.useMemory !== false
+              ) {
+                await saveEntry(
+                  threadId,
+                  agent.id,
+                  duplicateMessage,
+                  this.state.memoryAdapter,
+                  undefined,
+                  [errorResult],
+                  options.onMemoryError
+                );
+              }
             }
             lastToolCallSig = '';
             continue;
@@ -474,6 +502,8 @@ export class Cogitator {
                 }
                 return results;
               })();
+
+          const reflectionMessages: Message[] = [];
 
           for (const { toolCall, result, toolSpanStart, toolSpanEnd } of toolResults) {
             const toolSpan = createSpan(
@@ -539,7 +569,7 @@ export class Cogitator {
                 allReflections.push(reflectionResult.reflection);
 
                 if (reflectionResult.shouldAdjustStrategy && reflectionResult.suggestedAction) {
-                  messages.push({
+                  reflectionMessages.push({
                     role: 'system',
                     content: `Reflection: ${reflectionResult.reflection.analysis.reasoning}. Consider: ${reflectionResult.suggestedAction}`,
                   });
@@ -554,6 +584,8 @@ export class Cogitator {
               }
             }
           }
+
+          messages.push(...reflectionMessages);
         } else {
           break;
         }
@@ -603,7 +635,8 @@ export class Cogitator {
         },
         'ok',
         'server',
-        options.onSpan
+        options.onSpan,
+        rootSpanId
       );
       spans.unshift(rootSpan);
 
@@ -667,7 +700,8 @@ export class Cogitator {
         },
         'error',
         'server',
-        options.onSpan
+        options.onSpan,
+        rootSpanId
       );
       spans.unshift(errorSpan);
 
@@ -710,7 +744,7 @@ export class Cogitator {
     }
 
     if (this.config.security?.promptInjection && !this.state.securityInitialized) {
-      initializeSecurity(this.config, this.state, (model) => this.getBackend(model));
+      initializeSecurity(this.config, this.state, agent, (model) => this.getBackend(model));
     }
 
     if (this.config.context?.enabled && !this.state.contextManagerInitialized) {

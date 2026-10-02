@@ -1,11 +1,16 @@
 import type {
   BrowserSessionConfig,
   BrowserCookie,
-  BrowserType,
   StealthConfig,
   ProxyConfig,
 } from '@cogitator-ai/types';
-import type { Browser, BrowserContext, Page } from 'playwright';
+import type {
+  Browser,
+  BrowserContext,
+  BrowserContextOptions,
+  LaunchOptions,
+  Page,
+} from 'playwright';
 import { applyStealthToContext, getStealthLaunchOptions } from './stealth';
 
 declare global {
@@ -26,6 +31,23 @@ const DEFAULT_STEALTH_CONFIG: StealthConfig = {
   evasionScripts: [],
 };
 
+type PlaywrightCookie = Parameters<BrowserContext['addCookies']>[0][number];
+
+export type BrowserStartListener = (context: BrowserContext) => void;
+
+function toPlaywrightCookies(cookies: BrowserCookie[]): PlaywrightCookie[] {
+  return cookies.map((cookie) =>
+    cookie.domain && !cookie.path ? { ...cookie, path: '/' } : cookie
+  ) as PlaywrightCookie[];
+}
+
+function isCookieRecord(value: unknown): value is BrowserCookie {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  if (typeof record.name !== 'string' || typeof record.value !== 'string') return false;
+  return typeof record.url === 'string' || typeof record.domain === 'string';
+}
+
 export class BrowserSession {
   private _config: Required<
     Pick<BrowserSessionConfig, 'headless' | 'browser' | 'viewport' | 'timeout' | 'actionTimeout'>
@@ -35,8 +57,14 @@ export class BrowserSession {
   private _context: BrowserContext | null = null;
   private _pages: Page[] = [];
   private _activePageIndex = 0;
+  private _starting: Promise<void> | null = null;
+  private _startListeners = new Set<BrowserStartListener>();
 
   constructor(config?: BrowserSessionConfig) {
+    const maxPages = config?.pool?.maxPages;
+    if (maxPages !== undefined && (!Number.isInteger(maxPages) || maxPages < 1)) {
+      throw new Error(`pool.maxPages must be a positive integer, got ${maxPages}`);
+    }
     this._config = {
       headless: true,
       browser: 'chromium',
@@ -51,6 +79,10 @@ export class BrowserSession {
     return this._config;
   }
 
+  get started(): boolean {
+    return this._context !== null;
+  }
+
   get stealthEnabled(): boolean {
     return !!this._config.stealth;
   }
@@ -58,23 +90,22 @@ export class BrowserSession {
   get stealthConfig(): StealthConfig | null {
     if (!this._config.stealth) return null;
     if (this._config.stealth === true) return { ...DEFAULT_STEALTH_CONFIG };
-    return this._config.stealth;
+    return { ...DEFAULT_STEALTH_CONFIG, ...this._config.stealth };
   }
 
   async ensureStarted(): Promise<void> {
-    if (!this._browser) await this.start();
+    if (this._context) return;
+    if (this._starting) {
+      await this._starting;
+      return;
+    }
+    await this.start();
   }
 
   get page(): Page {
+    this._pruneClosedPages();
     if (!this._pages.length) {
-      throw new Error('BrowserSession not started');
-    }
-    if (this._pages[this._activePageIndex].isClosed()) {
-      const openIdx = this._pages.findIndex((p) => !p.isClosed());
-      if (openIdx === -1) {
-        throw new Error('All pages are closed');
-      }
-      this._activePageIndex = openIdx;
+      throw new Error(this._context ? 'All pages are closed' : 'BrowserSession not started');
     }
     return this._pages[this._activePageIndex];
   }
@@ -82,6 +113,11 @@ export class BrowserSession {
   get tabs(): Page[] {
     this._pruneClosedPages();
     return [...this._pages];
+  }
+
+  get activeTabIndex(): number {
+    this._pruneClosedPages();
+    return this._activePageIndex;
   }
 
   get browser(): Browser | null {
@@ -92,60 +128,24 @@ export class BrowserSession {
     return this._context;
   }
 
+  onStart(listener: BrowserStartListener): () => void {
+    this._startListeners.add(listener);
+    if (this._context) listener(this._context);
+    return () => {
+      this._startListeners.delete(listener);
+    };
+  }
+
   async start(): Promise<void> {
-    if (this._browser) {
+    if (this._context || this._starting) {
       throw new Error('Session already started. Call close() first.');
     }
 
-    const pw = await import('playwright');
-
-    const launchOptions: Record<string, unknown> = {
-      headless: this._config.headless,
-    };
-
-    if (this._config.proxy) {
-      launchOptions.proxy = this._resolveProxy(this._config.proxy);
-    }
-
-    const browserType = this._config.browser ?? 'chromium';
-    this._browser = await pw[browserType].launch(launchOptions);
-
-    const contextOptions: Record<string, unknown> = {
-      viewport: this._config.viewport,
-    };
-
-    if (this._config.locale) contextOptions.locale = this._config.locale;
-    if (this._config.timezone) contextOptions.timezoneId = this._config.timezone;
-    if (this._config.geolocation) {
-      contextOptions.geolocation = this._config.geolocation;
-      contextOptions.permissions = ['geolocation'];
-    }
-    if (this._config.userAgent) {
-      contextOptions.userAgent = this._config.userAgent;
-    } else if (this.stealthEnabled) {
-      Object.assign(
-        contextOptions,
-        getStealthLaunchOptions(this.stealthConfig!, browserType as BrowserType)
-      );
-    }
-
-    this._context = await this._browser.newContext(contextOptions);
-
-    if (this.stealthEnabled) {
-      await applyStealthToContext(this._context, this.stealthConfig!);
-    }
-
-    this._context.setDefaultNavigationTimeout(this._config.timeout);
-    this._context.setDefaultTimeout(this._config.actionTimeout);
-
-    const firstPage = await this._context.newPage();
-    this._pages = [firstPage];
-    this._activePageIndex = 0;
-
-    if (this._config.cookies?.length) {
-      await this._context.addCookies(
-        this._config.cookies as Parameters<BrowserContext['addCookies']>[0]
-      );
+    this._starting = this._launch();
+    try {
+      await this._starting;
+    } finally {
+      this._starting = null;
     }
   }
 
@@ -154,16 +154,20 @@ export class BrowserSession {
       throw new Error('BrowserSession not started');
     }
 
+    const maxPages = this._config.pool?.maxPages;
+    if (maxPages !== undefined && this.tabs.length >= maxPages) {
+      throw new Error(`Tab limit reached: pool.maxPages is ${maxPages}`);
+    }
+
     const page = await this._context.newPage();
-    this._pages.push(page);
-    this._activePageIndex = this._pages.length - 1;
+    this._trackPage(page);
+    this._activePageIndex = this._pages.indexOf(page);
 
     if (url) {
       try {
         await page.goto(url, { timeout: this._config.timeout });
       } catch (error) {
-        this._pages.splice(this._pages.indexOf(page), 1);
-        this._activePageIndex = Math.max(0, this._pages.length - 1);
+        this._untrackPage(page);
         await page.close().catch(() => undefined);
         throw error;
       }
@@ -173,31 +177,24 @@ export class BrowserSession {
   }
 
   switchTab(index: number): void {
-    if (index < 0 || index >= this._pages.length) {
-      throw new Error(`Tab index ${index} out of range [0..${this._pages.length - 1}]`);
-    }
+    this._pruneClosedPages();
+    this._assertTabIndex(index);
     this._activePageIndex = index;
   }
 
   async closeTab(index?: number): Promise<void> {
+    this._pruneClosedPages();
     const idx = index ?? this._activePageIndex;
 
     if (this._pages.length <= 1) {
       throw new Error('Cannot close the last tab');
     }
 
-    if (idx < 0 || idx >= this._pages.length) {
-      throw new Error(`Tab index ${idx} out of range [0..${this._pages.length - 1}]`);
-    }
+    this._assertTabIndex(idx);
 
-    await this._pages[idx].close();
-    this._pages.splice(idx, 1);
-
-    if (this._activePageIndex >= this._pages.length) {
-      this._activePageIndex = this._pages.length - 1;
-    } else if (this._activePageIndex > idx) {
-      this._activePageIndex--;
-    }
+    const page = this._pages[idx];
+    await page.close();
+    this._untrackPage(page);
   }
 
   async getCookies(): Promise<BrowserCookie[]> {
@@ -211,7 +208,7 @@ export class BrowserSession {
     if (!this._context) {
       throw new Error('BrowserSession not started');
     }
-    await this._context.addCookies(cookies as Parameters<BrowserContext['addCookies']>[0]);
+    await this._context.addCookies(toPlaywrightCookies(cookies));
   }
 
   async saveCookies(filePath: string): Promise<void> {
@@ -223,31 +220,144 @@ export class BrowserSession {
   async loadCookies(filePath: string): Promise<void> {
     const { readFile } = await import('node:fs/promises');
     const data = await readFile(filePath, 'utf-8');
-    const parsed: unknown[] = JSON.parse(data);
-    const cookies = parsed.filter((c): c is BrowserCookie => {
-      if (typeof c !== 'object' || c === null) return false;
-      const record = c as Record<string, unknown>;
-      if (typeof record.name !== 'string' || typeof record.value !== 'string') return false;
-      return typeof record.url === 'string' || typeof record.domain === 'string';
-    });
-    await this.setCookies(cookies);
+    const parsed: unknown = JSON.parse(data);
+    if (!Array.isArray(parsed)) {
+      throw new Error(`Cookie file ${filePath} must contain a JSON array of cookies`);
+    }
+    await this.setCookies(parsed.filter(isCookieRecord));
   }
 
   async close(): Promise<void> {
-    if (!this._browser) return;
+    if (this._starting) {
+      await this._starting.catch(() => undefined);
+    }
 
-    try {
-      await this._browser.close();
-    } finally {
-      this._browser = null;
-      this._context = null;
-      this._pages = [];
-      this._activePageIndex = 0;
+    const browser = this._browser;
+    const context = this._context;
+    if (!browser && !context) return;
+
+    this._reset();
+
+    if (browser) {
+      await browser.close();
+    } else if (context) {
+      await context.close();
     }
   }
 
   async [Symbol.asyncDispose](): Promise<void> {
     await this.close();
+  }
+
+  private async _launch(): Promise<void> {
+    const pw = await import('playwright');
+    const browserType = this._config.browser;
+    const launcher = pw[browserType];
+    const stealth = this.stealthConfig;
+
+    const launchOptions: LaunchOptions = { headless: this._config.headless };
+    if (this._config.proxy) {
+      launchOptions.proxy = this._resolveProxy(this._config.proxy);
+    }
+
+    const contextOptions: BrowserContextOptions = { viewport: this._config.viewport };
+    if (this._config.locale) contextOptions.locale = this._config.locale;
+    if (this._config.timezone) contextOptions.timezoneId = this._config.timezone;
+    if (this._config.geolocation) {
+      contextOptions.geolocation = this._config.geolocation;
+      contextOptions.permissions = ['geolocation'];
+    }
+    if (this._config.userAgent) {
+      contextOptions.userAgent = this._config.userAgent;
+    } else if (stealth) {
+      Object.assign(contextOptions, getStealthLaunchOptions(stealth, browserType));
+    }
+
+    let browser: Browser | null = null;
+    let context: BrowserContext | null = null;
+
+    try {
+      if (this._config.persistentContext) {
+        context = await launcher.launchPersistentContext(this._config.persistentContext, {
+          ...launchOptions,
+          ...contextOptions,
+        });
+      } else {
+        browser = await launcher.launch(launchOptions);
+        context = await browser.newContext(contextOptions);
+      }
+
+      if (stealth) {
+        await applyStealthToContext(context, stealth, {
+          userAgent: contextOptions.userAgent,
+          locale: contextOptions.locale,
+        });
+      }
+
+      context.setDefaultNavigationTimeout(this._config.timeout);
+      context.setDefaultTimeout(this._config.actionTimeout);
+
+      if (this._config.cookies?.length) {
+        await context.addCookies(toPlaywrightCookies(this._config.cookies));
+      }
+
+      const existingPages = context.pages();
+      const initialPages = existingPages.length ? existingPages : [await context.newPage()];
+
+      this._browser = browser;
+      this._context = context;
+      this._pages = [...initialPages];
+      this._activePageIndex = 0;
+
+      const activeContext = context;
+      activeContext.on('page', (page) => {
+        if (this._context === activeContext) this._trackPage(page);
+      });
+      activeContext.on('close', () => {
+        if (this._context === activeContext) this._reset();
+      });
+
+      for (const listener of this._startListeners) {
+        listener(activeContext);
+      }
+    } catch (error) {
+      this._reset();
+      if (browser) {
+        await browser.close().catch(() => undefined);
+      } else if (context) {
+        await context.close().catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+
+  private _reset(): void {
+    this._browser = null;
+    this._context = null;
+    this._pages = [];
+    this._activePageIndex = 0;
+  }
+
+  private _trackPage(page: Page): void {
+    if (!this._pages.includes(page)) {
+      this._pages.push(page);
+    }
+  }
+
+  private _untrackPage(page: Page): void {
+    const idx = this._pages.indexOf(page);
+    if (idx === -1) return;
+
+    this._pages.splice(idx, 1);
+    if (this._activePageIndex > idx || this._activePageIndex >= this._pages.length) {
+      this._activePageIndex = Math.max(0, this._activePageIndex - 1);
+    }
+  }
+
+  private _assertTabIndex(index: number): void {
+    if (!Number.isInteger(index) || index < 0 || index >= this._pages.length) {
+      throw new Error(`Tab index ${index} out of range [0..${this._pages.length - 1}]`);
+    }
   }
 
   private _pruneClosedPages(): void {
@@ -261,7 +371,7 @@ export class BrowserSession {
         : Math.min(this._activePageIndex, Math.max(0, this._pages.length - 1));
   }
 
-  private _resolveProxy(proxy: string | ProxyConfig): Record<string, string | undefined> {
+  private _resolveProxy(proxy: string | ProxyConfig): NonNullable<LaunchOptions['proxy']> {
     if (typeof proxy === 'string') {
       return { server: proxy };
     }

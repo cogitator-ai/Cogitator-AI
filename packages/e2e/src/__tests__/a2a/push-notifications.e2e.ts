@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
-import { A2AClient, InMemoryPushNotificationStore } from '@cogitator-ai/a2a';
+import { A2AClient, A2AError, InMemoryPushNotificationStore } from '@cogitator-ai/a2a';
 import type { AgentRunResult, A2AStreamEvent, CogitatorLike } from '@cogitator-ai/a2a';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
 import { startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
@@ -140,12 +140,12 @@ describe('A2A: Push Notifications', () => {
       expect(remaining).toHaveLength(0);
     });
 
-    it('accepts push notification for any task id', async () => {
-      const config = await client.createPushNotification('nonexistent_task_xyz', {
-        webhookUrl: 'https://example.com/hook',
-      });
-      expect(config.id).toBeDefined();
-      expect(config.webhookUrl).toBe('https://example.com/hook');
+    it('rejects push notification configs for unknown tasks (TaskNotFound)', async () => {
+      const error = await client
+        .createPushNotification('nonexistent_task_xyz', { webhookUrl: 'https://example.com/hook' })
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(A2AError);
+      expect((error as A2AError).code).toBe(-32001);
     });
   });
 

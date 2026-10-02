@@ -4,12 +4,153 @@
 
 import { nanoid } from 'nanoid';
 import type { MessageBus, MessageBusConfig, SwarmMessage } from '@cogitator-ai/types';
+import { invokeSafely } from '../utils/invoke.js';
 
-export class InMemoryMessageBus implements MessageBus {
+export type MessageListener = (msg: SwarmMessage) => void;
+
+/**
+ * Message bus that remembers which messages each agent has already consumed.
+ */
+export interface ReadTrackingMessageBus extends MessageBus {
+  markAsRead(agentName: string, messageIds: readonly string[]): void;
+  resetTurnCounts(agentName?: string): void;
+  onMessage(listener: MessageListener): () => void;
+}
+
+export function isReadTrackingMessageBus(bus: MessageBus): bus is ReadTrackingMessageBus {
+  const candidate = bus as Partial<ReadTrackingMessageBus>;
+  return (
+    typeof candidate.markAsRead === 'function' &&
+    typeof candidate.resetTurnCounts === 'function' &&
+    typeof candidate.onMessage === 'function'
+  );
+}
+
+export function isMessageForAgent(message: SwarmMessage, agentName: string): boolean {
+  return (message.to === agentName || message.to === 'broadcast') && message.from !== agentName;
+}
+
+/**
+ * Shared bookkeeping for message bus implementations: per-turn quotas,
+ * per-agent read receipts and bus-wide listeners.
+ */
+export class MessageBusState {
+  private turnCounts = new Map<string, number>();
+  private readReceipts = new Map<string, Set<string>>();
+  private listeners = new Set<MessageListener>();
+
+  constructor(private readonly label: string) {}
+
+  consumeTurnQuota(config: MessageBusConfig, from: string): void {
+    if (!config.maxMessagesPerTurn) return;
+
+    const count = this.turnCounts.get(from) ?? 0;
+    if (count >= config.maxMessagesPerTurn) {
+      throw new Error(
+        `Agent ${from} exceeded max messages per turn (${config.maxMessagesPerTurn})`
+      );
+    }
+    this.turnCounts.set(from, count + 1);
+  }
+
+  resetTurnCounts(agentName?: string): void {
+    if (agentName === undefined) {
+      this.turnCounts.clear();
+    } else {
+      this.turnCounts.delete(agentName);
+    }
+  }
+
+  markAsRead(agentName: string, messageIds: readonly string[]): void {
+    let receipts = this.readReceipts.get(agentName);
+    if (!receipts) {
+      receipts = new Set();
+      this.readReceipts.set(agentName, receipts);
+    }
+    for (const id of messageIds) {
+      receipts.add(id);
+    }
+  }
+
+  isRead(agentName: string, messageId: string): boolean {
+    return this.readReceipts.get(agentName)?.has(messageId) ?? false;
+  }
+
+  forgetMessages(messageIds: readonly string[]): void {
+    if (messageIds.length === 0) return;
+    for (const receipts of this.readReceipts.values()) {
+      for (const id of messageIds) {
+        receipts.delete(id);
+      }
+    }
+  }
+
+  onMessage(listener: MessageListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  notifyListeners(message: SwarmMessage): void {
+    for (const listener of [...this.listeners]) {
+      invokeSafely(listener, [message], `${this.label} Listener error`);
+    }
+  }
+
+  clear(): void {
+    this.turnCounts.clear();
+    this.readReceipts.clear();
+  }
+}
+
+export function notifyMessageSubscribers(
+  subscriptions: Map<string, Set<MessageListener>>,
+  message: SwarmMessage,
+  label: string
+): void {
+  if (message.to !== 'broadcast') {
+    for (const handler of [...(subscriptions.get(message.to) ?? [])]) {
+      invokeSafely(handler, [message], `${label} Handler error`);
+    }
+    return;
+  }
+
+  for (const [agentName, handlers] of subscriptions) {
+    if (agentName === message.from) continue;
+    for (const handler of [...handlers]) {
+      invokeSafely(handler, [message], `${label} Broadcast handler error`);
+    }
+  }
+}
+
+export function addSubscription(
+  subscriptions: Map<string, Set<MessageListener>>,
+  agentName: string,
+  handler: MessageListener
+): () => void {
+  let handlers = subscriptions.get(agentName);
+  if (!handlers) {
+    handlers = new Set();
+    subscriptions.set(agentName, handlers);
+  }
+  handlers.add(handler);
+
+  return () => {
+    const current = subscriptions.get(agentName);
+    if (!current) return;
+    current.delete(handler);
+    if (current.size === 0) {
+      subscriptions.delete(agentName);
+    }
+  };
+}
+
+export class InMemoryMessageBus implements ReadTrackingMessageBus {
   private messages: SwarmMessage[] = [];
-  private subscriptions = new Map<string, Set<(msg: SwarmMessage) => void>>();
+  private subscriptions = new Map<string, Set<MessageListener>>();
   private config: MessageBusConfig;
-  private agentMessageCounts = new Map<string, number>();
+  private state = new MessageBusState('[MessageBus]');
 
   constructor(config: MessageBusConfig) {
     this.config = config;
@@ -24,19 +165,11 @@ export class InMemoryMessageBus implements MessageBus {
       throw new Error(`Message exceeds max length of ${this.config.maxMessageLength} characters`);
     }
 
-    if (this.config.maxMessagesPerTurn) {
-      const count = this.agentMessageCounts.get(message.from) ?? 0;
-      if (count >= this.config.maxMessagesPerTurn) {
-        throw new Error(
-          `Agent ${message.from} exceeded max messages per turn (${this.config.maxMessagesPerTurn})`
-        );
-      }
-      this.agentMessageCounts.set(message.from, count + 1);
-    }
-
     if (this.config.maxTotalMessages && this.messages.length >= this.config.maxTotalMessages) {
       throw new Error(`Max total messages (${this.config.maxTotalMessages}) reached`);
     }
+
+    this.state.consumeTurnQuota(this.config, message.from);
 
     const fullMessage: SwarmMessage = {
       ...message,
@@ -45,7 +178,8 @@ export class InMemoryMessageBus implements MessageBus {
     };
 
     this.messages.push(fullMessage);
-    this.notifySubscribers(fullMessage);
+    notifyMessageSubscribers(this.subscriptions, fullMessage, '[MessageBus]');
+    this.state.notifyListeners(fullMessage);
 
     return fullMessage;
   }
@@ -61,21 +195,15 @@ export class InMemoryMessageBus implements MessageBus {
     });
   }
 
-  subscribe(agentName: string, handler: (msg: SwarmMessage) => void): () => void {
-    if (!this.subscriptions.has(agentName)) {
-      this.subscriptions.set(agentName, new Set());
-    }
-    this.subscriptions.get(agentName)!.add(handler);
+  subscribe(agentName: string, handler: MessageListener): () => void {
+    return addSubscription(this.subscriptions, agentName, handler);
+  }
 
-    return () => {
-      const handlers = this.subscriptions.get(agentName);
-      if (handlers) {
-        handlers.delete(handler);
-        if (handlers.size === 0) {
-          this.subscriptions.delete(agentName);
-        }
-      }
-    };
+  /**
+   * Listen to every message sent through the bus, regardless of recipient.
+   */
+  onMessage(listener: MessageListener): () => void {
+    return this.state.onMessage(listener);
   }
 
   getMessages(agentName: string, limit?: number): SwarmMessage[] {
@@ -99,42 +227,30 @@ export class InMemoryMessageBus implements MessageBus {
     return [...this.messages];
   }
 
+  /**
+   * Messages addressed to the agent (directly or via broadcast) that it has not read yet.
+   * Use {@link markAsRead} once the messages have been delivered to the agent.
+   */
   getUnreadMessages(agentName: string): SwarmMessage[] {
     return this.messages.filter(
-      (m) => (m.to === agentName || m.to === 'broadcast') && m.from !== agentName
+      (m) => isMessageForAgent(m, agentName) && !this.state.isRead(agentName, m.id)
     );
+  }
+
+  markAsRead(agentName: string, messageIds: readonly string[]): void {
+    this.state.markAsRead(agentName, messageIds);
   }
 
   clear(): void {
     this.messages = [];
-    this.agentMessageCounts.clear();
+    this.state.clear();
   }
 
-  resetTurnCounts(): void {
-    this.agentMessageCounts.clear();
-  }
-
-  private notifySubscribers(message: SwarmMessage): void {
-    if (message.to !== 'broadcast') {
-      const handlers = this.subscriptions.get(message.to);
-      if (handlers) {
-        for (const handler of handlers) {
-          void Promise.resolve(handler(message)).catch((error) => {
-            console.warn('[MessageBus] Handler error:', error);
-          });
-        }
-      }
-    } else {
-      for (const [agentName, handlers] of this.subscriptions) {
-        if (agentName !== message.from) {
-          for (const handler of handlers) {
-            void Promise.resolve(handler(message)).catch((error) => {
-              console.warn('[MessageBus] Broadcast handler error:', error);
-            });
-          }
-        }
-      }
-    }
+  /**
+   * Reset per-turn message quotas for one agent, or for all agents when omitted.
+   */
+  resetTurnCounts(agentName?: string): void {
+    this.state.resetTurnCounts(agentName);
   }
 }
 

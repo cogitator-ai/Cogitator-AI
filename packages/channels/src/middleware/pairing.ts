@@ -1,5 +1,12 @@
 import type { GatewayMiddleware, ChannelMessage, MiddlewareContext } from '@cogitator-ai/types';
-import { nanoid } from 'nanoid';
+import {
+  findPendingByUser,
+  generatePairingCode,
+  isPairCommand,
+  parsePairCommand,
+  prunePending,
+  type PendingPairing,
+} from './pairing-codes';
 
 export interface PairingConfig {
   ownerIds: Record<string, string>;
@@ -7,17 +14,11 @@ export interface PairingConfig {
   expiresIn?: number;
 }
 
-interface PendingPairing {
-  code: string;
-  userId: string;
-  channelType: string;
-  expiresAt: number;
-}
-
 export class PairingMiddleware implements GatewayMiddleware {
   readonly name = 'pairing';
-  private approved = new Set<string>();
-  private pending = new Map<string, PendingPairing>();
+  private readonly ownerKeys = new Set<string>();
+  private readonly approved = new Set<string>();
+  private readonly pending = new Map<string, PendingPairing>();
   private readonly codeLength: number;
   private readonly expiresIn: number;
 
@@ -26,7 +27,9 @@ export class PairingMiddleware implements GatewayMiddleware {
     this.expiresIn = (config.expiresIn ?? 300) * 1000;
 
     for (const [channelType, ownerId] of Object.entries(config.ownerIds)) {
-      this.approved.add(`${channelType}:${ownerId}`);
+      const key = `${channelType}:${ownerId}`;
+      this.ownerKeys.add(key);
+      this.approved.add(key);
     }
   }
 
@@ -36,18 +39,21 @@ export class PairingMiddleware implements GatewayMiddleware {
     next: () => Promise<void>
   ): Promise<void> {
     const userKey = `${msg.channelType}:${msg.userId}`;
+    const now = Date.now();
+    prunePending(this.pending, now);
+
+    if (this.ownerKeys.has(userKey) && isPairCommand(msg.text)) {
+      await this.handleApproval(msg, ctx);
+      return;
+    }
 
     if (this.approved.has(userKey)) {
-      if (msg.text.startsWith('/pair ')) {
-        await this.handleApproval(msg, ctx);
-        return;
-      }
       await next();
       return;
     }
 
-    const existing = this.findPendingByUser(userKey);
-    if (existing && existing.expiresAt > Date.now()) {
+    const existing = findPendingByUser(this.pending, userKey);
+    if (existing) {
       await ctx.channel.sendText(
         msg.channelId,
         `Waiting for approval. Your code: \`${existing.code}\``
@@ -55,12 +61,12 @@ export class PairingMiddleware implements GatewayMiddleware {
       return;
     }
 
-    const code = nanoid(this.codeLength).toUpperCase();
+    const code = generatePairingCode(this.codeLength);
     this.pending.set(code, {
       code,
       userId: msg.userId,
       channelType: msg.channelType,
-      expiresAt: Date.now() + this.expiresIn,
+      expiresAt: now + this.expiresIn,
     });
 
     await ctx.channel.sendText(
@@ -70,17 +76,11 @@ export class PairingMiddleware implements GatewayMiddleware {
   }
 
   private async handleApproval(msg: ChannelMessage, ctx: MiddlewareContext): Promise<void> {
-    const code = msg.text.replace('/pair ', '').trim().toUpperCase();
-    const pairing = this.pending.get(code);
+    const code = parsePairCommand(msg.text);
+    const pairing = code ? this.pending.get(code) : undefined;
 
-    if (!pairing) {
+    if (!code || !pairing) {
       await ctx.channel.sendText(msg.channelId, 'Invalid or expired pairing code.');
-      return;
-    }
-
-    if (pairing.expiresAt < Date.now()) {
-      this.pending.delete(code);
-      await ctx.channel.sendText(msg.channelId, 'Pairing code expired.');
       return;
     }
 
@@ -89,13 +89,6 @@ export class PairingMiddleware implements GatewayMiddleware {
     this.pending.delete(code);
 
     await ctx.channel.sendText(msg.channelId, `User approved (${userKey}).`);
-  }
-
-  private findPendingByUser(userKey: string): PendingPairing | undefined {
-    for (const p of this.pending.values()) {
-      if (`${p.channelType}:${p.userId}` === userKey) return p;
-    }
-    return undefined;
   }
 
   isApproved(channelType: string, userId: string): boolean {

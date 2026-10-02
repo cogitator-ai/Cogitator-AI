@@ -1,4 +1,5 @@
 import type { FastifyReply } from 'fastify';
+import type { OutgoingHttpHeaders } from 'http';
 import { encodeSSE, encodeDone } from './helpers.js';
 import {
   createStartEvent,
@@ -19,18 +20,37 @@ import {
 export class FastifyStreamWriter {
   private reply: FastifyReply;
   private closed = false;
+  private started = false;
 
   constructor(reply: FastifyReply) {
     this.reply = reply;
   }
 
+  private get writable(): boolean {
+    if (this.closed) return false;
+    const raw = this.reply.raw;
+    if (raw.writableEnded || raw.destroyed) {
+      this.closed = true;
+      return false;
+    }
+    return true;
+  }
+
   private write(data: unknown): void {
-    if (this.closed) return;
+    if (!this.writable) return;
     this.reply.raw.write(encodeSSE(data));
   }
 
   private setupHeaders(): void {
+    this.started = true;
+    if (this.reply.raw.headersSent) return;
+    const headers: OutgoingHttpHeaders = {};
+    for (const [name, value] of Object.entries(this.reply.getHeaders())) {
+      if (value !== undefined) headers[name] = value;
+    }
+    this.reply.hijack();
     this.reply.raw.writeHead(200, {
+      ...headers,
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
@@ -39,7 +59,7 @@ export class FastifyStreamWriter {
   }
 
   start(messageId: string): void {
-    if (this.closed) return;
+    if (!this.writable) return;
     this.setupHeaders();
     this.write(createStartEvent(messageId));
   }
@@ -87,7 +107,7 @@ export class FastifyStreamWriter {
   }
 
   finish(messageId: string, usage?: Usage): void {
-    if (this.closed) return;
+    if (!this.writable) return;
     this.write(createFinishEvent(messageId, usage));
     this.reply.raw.write(encodeDone());
   }
@@ -95,6 +115,7 @@ export class FastifyStreamWriter {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    if (!this.started || this.reply.raw.writableEnded) return;
     try {
       this.reply.raw.end();
     } catch {}

@@ -1,4 +1,5 @@
 import type {
+  Term,
   GraphAdapter,
   GraphQuery,
   GraphQueryResult,
@@ -23,6 +24,7 @@ import {
   createResolver,
   parseQuery,
   formatSolutions,
+  termFromValue,
 } from './logic';
 
 import {
@@ -95,7 +97,7 @@ export class NeuroSymbolic {
     };
 
     this.agentId = options.agentId || 'default';
-    this.graphAdapter = options.graphAdapter;
+    this.graphAdapter = options.graphAdapter ?? options.config?.knowledgeGraph?.adapter;
 
     this.knowledgeBase = createKnowledgeBase();
     this.resolver = createResolver(this.knowledgeBase, this.config.logic);
@@ -116,14 +118,14 @@ export class NeuroSymbolic {
   }
 
   assertFact(predicate: string, ...args: unknown[]): void {
-    const terms = args.map((arg) => {
+    const terms = args.map((arg): Term => {
       if (typeof arg === 'string') {
-        return { type: 'atom' as const, value: arg };
+        return { type: 'atom', value: arg };
       }
-      if (typeof arg === 'number') {
-        return { type: 'number' as const, value: arg };
+      if (typeof arg === 'number' && !Number.isFinite(arg)) {
+        throw new Error(`Cannot assert non-finite number ${arg} as a fact argument`);
       }
-      return { type: 'atom' as const, value: String(arg) };
+      return termFromValue(arg);
     });
 
     this.knowledgeBase.assertFact(predicate, terms);
@@ -157,6 +159,7 @@ export class NeuroSymbolic {
     return {
       success: result.success,
       data: result,
+      error: result.explanation,
       duration: Date.now() - startTime,
     };
   }
@@ -198,13 +201,22 @@ export class NeuroSymbolic {
       variables: new Map(),
     };
 
-    const result = await executeQuery(query, ctx);
+    const defaultLimit = this.config.knowledgeGraph?.defaultQueryLimit;
+    const effectiveQuery =
+      query.limit === undefined && defaultLimit !== undefined && defaultLimit > 0
+        ? { ...query, limit: defaultLimit }
+        : query;
 
-    return {
-      success: true,
-      data: result,
-      duration: Date.now() - startTime,
-    };
+    try {
+      const result = await executeQuery(effectiveQuery, ctx);
+      return { success: true, data: result, duration: Date.now() - startTime };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        duration: Date.now() - startTime,
+      };
+    }
   }
 
   async askGraph(question: string): Promise<NeuroSymbolicResult<NaturalLanguageQueryResult>> {
@@ -218,18 +230,29 @@ export class NeuroSymbolic {
       };
     }
 
+    if (this.config.knowledgeGraph?.enableNaturalLanguage === false) {
+      return {
+        success: false,
+        error: 'Natural language graph queries are disabled',
+        duration: Date.now() - startTime,
+      };
+    }
+
     const ctx: NLQueryContext = {
       adapter: this.graphAdapter,
       agentId: this.agentId,
     };
 
-    const result = await executeNLQuery(question, ctx);
-
-    return {
-      success: true,
-      data: result,
-      duration: Date.now() - startTime,
-    };
+    try {
+      const result = await executeNLQuery(question, ctx);
+      return { success: true, data: result, duration: Date.now() - startTime };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        duration: Date.now() - startTime,
+      };
+    }
   }
 
   createGraphQuery(): GraphQueryBuilder {
@@ -247,13 +270,20 @@ export class NeuroSymbolic {
       };
     }
 
-    const result = await this.reasoningEngine.findPath(startNodeId, endNodeId);
-
-    return {
-      success: result.paths.length > 0,
-      data: result,
-      duration: Date.now() - startTime,
-    };
+    try {
+      const result = await this.reasoningEngine.findPath(startNodeId, endNodeId);
+      return {
+        success: result.paths.length > 0,
+        data: result,
+        duration: Date.now() - startTime,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        duration: Date.now() - startTime,
+      };
+    }
   }
 
   createConstraintProblem(name?: string): ConstraintBuilder {
@@ -291,10 +321,15 @@ export class NeuroSymbolic {
     return this.actionRegistry.getAll();
   }
 
+  private validationConfig(): { maxSteps: number } | undefined {
+    const maxPlanLength = this.config.planning?.maxPlanLength;
+    return maxPlanLength !== undefined ? { maxSteps: maxPlanLength } : undefined;
+  }
+
   validatePlan(plan: Plan): NeuroSymbolicResult<PlanValidationResult> {
     const startTime = Date.now();
 
-    const result = validatePlan(plan, this.actionRegistry);
+    const result = validatePlan(plan, this.actionRegistry, this.validationConfig());
 
     return {
       success: true,
@@ -334,8 +369,9 @@ export class NeuroSymbolic {
     const result = this.planRepairer.repair(plan);
 
     return {
-      success: true,
+      success: result.success,
       data: result,
+      error: result.success ? undefined : result.explanation,
       duration: Date.now() - startTime,
     };
   }
@@ -350,12 +386,7 @@ export class NeuroSymbolic {
   > {
     const startTime = Date.now();
 
-    const validation = validatePlan(plan, this.actionRegistry);
-
-    let invariants: InvariantCheckResult[] | undefined;
-    if (this.config.planning?.verifyInvariants) {
-      invariants = this.invariantChecker.checkPlan(plan);
-    }
+    const validation = validatePlan(plan, this.actionRegistry, this.validationConfig());
 
     let repair: PlanRepairResult | undefined;
     let finalPlan = plan;
@@ -367,7 +398,14 @@ export class NeuroSymbolic {
       }
     }
 
-    const success = validation.valid || (repair?.success ?? false);
+    let invariants: InvariantCheckResult[] | undefined;
+    if (this.config.planning?.verifyInvariants) {
+      invariants = this.invariantChecker.checkPlan(finalPlan);
+    }
+
+    const planIsValid = validation.valid || (repair?.success ?? false);
+    const invariantsHold = invariants?.every((r) => r.satisfied) ?? true;
+    const success = planIsValid && invariantsHold;
 
     return {
       success,
@@ -383,6 +421,14 @@ export class NeuroSymbolic {
 
   getKnowledgeBase(): KnowledgeBase {
     return this.knowledgeBase;
+  }
+
+  getGraphAdapter(): GraphAdapter | undefined {
+    return this.graphAdapter;
+  }
+
+  getAgentId(): string {
+    return this.agentId;
   }
 
   getActionRegistry(): ActionRegistry {

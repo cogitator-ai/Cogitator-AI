@@ -3,23 +3,16 @@
  */
 
 import { Command } from 'commander';
-import { execSync } from 'node:child_process';
 import { dirname } from 'node:path';
 import chalk from 'chalk';
 import { log } from '../utils/logger.js';
-import { findDockerCompose, checkDocker } from '../utils/docker.js';
+import { findDockerCompose, checkDocker, composePs } from '../utils/docker.js';
+import { listOllamaModels, resolveOllamaUrl } from '../utils/ollama.js';
 
-interface ServiceStatus {
-  Name: string;
-  State: string;
-  Status: string;
-  Health?: string;
-}
-
-async function checkOllama(): Promise<boolean> {
+async function checkOllama(baseUrl: string): Promise<boolean> {
   try {
-    const res = await fetch('http://localhost:11434/api/tags');
-    return res.ok;
+    await listOllamaModels(baseUrl, { apiKey: process.env.OLLAMA_API_KEY, timeoutMs: 3000 });
+    return true;
   } catch {
     return false;
   }
@@ -33,29 +26,20 @@ export const statusCommand = new Command('status')
     log.info('Cogitator Services Status');
     console.log();
 
-    if (!checkDocker()) {
-      log.error('Docker is not running');
+    const dockerAvailable = checkDocker();
+    if (!dockerAvailable) {
+      log.warn('Docker is not running — skipping Docker Compose services');
       log.dim('Start Docker Desktop or run: sudo systemctl start docker');
-      process.exit(1);
+      console.log();
     }
 
-    const composePath = findDockerCompose();
+    const composePath = dockerAvailable ? findDockerCompose() : null;
 
     if (composePath) {
       const composeDir = dirname(composePath);
 
       try {
-        const output = execSync('docker compose ps --format json', {
-          cwd: composeDir,
-          encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
-
-        const services = output
-          .trim()
-          .split('\n')
-          .filter(Boolean)
-          .map((line) => JSON.parse(line) as ServiceStatus);
+        const services = composePs(composeDir);
 
         if (services.length === 0) {
           log.warn('No services running');
@@ -69,24 +53,26 @@ export const statusCommand = new Command('status')
             const icon = isRunning ? chalk.green('●') : chalk.red('○');
             const name = svc.Name.padEnd(20);
             const state = isRunning ? chalk.green(svc.State) : chalk.red(svc.State);
-            console.log(`  ${icon} ${name} ${state}  ${chalk.dim(svc.Status)}`);
+            const health = svc.Health ? chalk.dim(` (${svc.Health})`) : '';
+            console.log(`  ${icon} ${name} ${state}${health}  ${chalk.dim(svc.Status)}`);
           }
           console.log();
         }
-      } catch {
-        log.dim('No docker-compose services found');
+      } catch (error) {
+        log.warn('Failed to query docker compose services');
+        log.dim(error instanceof Error ? error.message.split('\n')[0] : String(error));
+        console.log();
       }
     }
 
     console.log(chalk.dim('  External Services:'));
     console.log();
 
-    const ollamaRunning = await checkOllama();
+    const ollamaUrl = resolveOllamaUrl();
+    const ollamaRunning = await checkOllama(ollamaUrl);
     const ollamaIcon = ollamaRunning ? chalk.green('●') : chalk.red('○');
     const ollamaState = ollamaRunning ? chalk.green('running') : chalk.red('stopped');
-    console.log(
-      `  ${ollamaIcon} ${'Ollama'.padEnd(20)} ${ollamaState}  ${chalk.dim('localhost:11434')}`
-    );
+    console.log(`  ${ollamaIcon} ${'Ollama'.padEnd(20)} ${ollamaState}  ${chalk.dim(ollamaUrl)}`);
 
     console.log();
 

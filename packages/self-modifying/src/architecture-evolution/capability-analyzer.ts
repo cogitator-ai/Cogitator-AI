@@ -1,5 +1,21 @@
+import { createHash } from 'node:crypto';
 import type { Tool, LLMBackend, TaskProfile } from '@cogitator-ai/types';
 import { buildTaskProfilePrompt, parseTaskProfileResponse } from './prompts';
+import { llmChat } from '../utils/llm-helper';
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function containsPhrase(text: string, phrase: string): boolean {
+  return new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(phrase)}(?:s|es|ed|ing)?(?:$|[^a-z0-9])`).test(
+    text
+  );
+}
+
+function tokenize(text: string): string[] {
+  return text.split(/[^a-z0-9-]+/).filter(Boolean);
+}
 
 export interface CapabilityAnalyzerOptions {
   llm?: LLMBackend;
@@ -146,7 +162,7 @@ export class CapabilityAnalyzer {
       constraints?: { maxCost?: number; maxLatency?: number };
     }
   ): Promise<TaskProfile> {
-    const cacheKey = this.buildCacheKey(taskDescription);
+    const cacheKey = this.buildCacheKey(taskDescription, context);
     const cached = this.profileCache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < this.cacheTTL) {
       return cached.profile;
@@ -190,32 +206,20 @@ export class CapabilityAnalyzer {
         constraints: context?.constraints,
       });
 
-      const response = llm.complete
-        ? await llm.complete({
-            messages: [
-              {
-                role: 'system',
-                content:
-                  'You are a task analysis expert. Analyze tasks and determine their characteristics.',
-              },
-              { role: 'user', content: prompt },
-            ],
-            temperature: 0.2,
-          })
-        : await llm.chat({
-            model: this.model,
-            messages: [
-              {
-                role: 'system',
-                content:
-                  'You are a task analysis expert. Analyze tasks and determine their characteristics.',
-              },
-              { role: 'user', content: prompt },
-            ],
-            temperature: 0.2,
-          });
+      const content = await llmChat(
+        llm,
+        [
+          {
+            role: 'system',
+            content:
+              'You are a task analysis expert. Analyze tasks and determine their characteristics.',
+          },
+          { role: 'user', content: prompt },
+        ],
+        { model: this.model, temperature: 0.2 }
+      );
 
-      const parsed = parseTaskProfileResponse(response.content);
+      const parsed = parseTaskProfileResponse(content);
       if (parsed) {
         return parsed;
       }
@@ -226,8 +230,7 @@ export class CapabilityAnalyzer {
 
   private analyzeHeuristically(taskDescription: string, availableTools?: Tool[]): TaskProfile {
     const lowerTask = taskDescription.toLowerCase();
-    const words = lowerTask.split(/\s+/);
-    const wordCount = words.length;
+    const wordCount = tokenize(lowerTask).length;
 
     const domain = this.detectDomain(lowerTask);
     const complexity = this.detectComplexity(lowerTask, wordCount);
@@ -260,7 +263,7 @@ export class CapabilityAnalyzer {
 
     for (const [domain, keywords] of Object.entries(DOMAIN_KEYWORDS)) {
       for (const keyword of keywords) {
-        if (task.includes(keyword)) {
+        if (containsPhrase(task, keyword)) {
           scores[domain] += keyword.length > 5 ? 2 : 1;
         }
       }
@@ -272,7 +275,7 @@ export class CapabilityAnalyzer {
   }
 
   private detectComplexity(task: string, wordCount: number): TaskProfile['complexity'] {
-    const taskWords = new Set(task.split(/\s+/));
+    const taskWords = new Set(tokenize(task));
 
     for (const [level, indicators] of Object.entries(COMPLEXITY_INDICATORS).reverse()) {
       for (const indicator of indicators) {
@@ -309,14 +312,14 @@ export class CapabilityAnalyzer {
 
     let toolMentions = 0;
     for (const indicator of toolIndicators) {
-      if (task.includes(indicator)) {
+      if (containsPhrase(task, indicator)) {
         toolMentions++;
       }
     }
 
     if (availableTools?.length) {
       for (const tool of availableTools) {
-        if (task.includes(tool.name.toLowerCase())) {
+        if (containsPhrase(task, tool.name.toLowerCase())) {
           toolMentions += 2;
         }
       }
@@ -380,7 +383,7 @@ export class CapabilityAnalyzer {
   ): TaskProfile['accuracyRequirement'] {
     const criticalIndicators = ['critical', 'exact', 'precise', 'must be correct', 'no errors'];
     for (const indicator of criticalIndicators) {
-      if (task.includes(indicator)) {
+      if (containsPhrase(task, indicator)) {
         return 'critical';
       }
     }
@@ -391,7 +394,7 @@ export class CapabilityAnalyzer {
 
     const approximateIndicators = ['rough', 'approximate', 'estimate', 'about', 'roughly'];
     for (const indicator of approximateIndicators) {
-      if (task.includes(indicator)) {
+      if (containsPhrase(task, indicator)) {
         return 'approximate';
       }
     }
@@ -405,20 +408,33 @@ export class CapabilityAnalyzer {
     const relaxedIndicators = ['when possible', 'eventually', 'no rush'];
 
     for (const indicator of strictIndicators) {
-      if (task.includes(indicator)) return 'strict';
+      if (containsPhrase(task, indicator)) return 'strict';
     }
     for (const indicator of moderateIndicators) {
-      if (task.includes(indicator)) return 'moderate';
+      if (containsPhrase(task, indicator)) return 'moderate';
     }
     for (const indicator of relaxedIndicators) {
-      if (task.includes(indicator)) return 'relaxed';
+      if (containsPhrase(task, indicator)) return 'relaxed';
     }
 
     return 'none';
   }
 
-  private buildCacheKey(task: string): string {
-    return task.slice(0, 200).toLowerCase().replace(/\s+/g, ' ').trim();
+  private buildCacheKey(
+    task: string,
+    context?: {
+      availableTools?: Tool[];
+      previousTasks?: string[];
+      constraints?: { maxCost?: number; maxLatency?: number };
+    }
+  ): string {
+    const raw = JSON.stringify([
+      task.toLowerCase().replace(/\s+/g, ' ').trim(),
+      (context?.availableTools ?? []).map((t) => t.name).sort(),
+      context?.previousTasks ?? [],
+      context?.constraints ?? {},
+    ]);
+    return createHash('sha256').update(raw).digest('hex');
   }
 
   clearCache(): void {

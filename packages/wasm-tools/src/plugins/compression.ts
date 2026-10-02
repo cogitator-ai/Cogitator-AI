@@ -1,3 +1,5 @@
+import { base64Decode, base64Encode, utf8Decode, utf8Encode } from './shared/encoding';
+
 interface CompressionInput {
   data: string;
   operation: 'compress' | 'decompress';
@@ -14,109 +16,16 @@ interface CompressionOutput {
   error?: string;
 }
 
-const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-
-function base64Encode(bytes: Uint8Array): string {
-  let result = '';
-  const len = bytes.length;
-
-  for (let i = 0; i < len; i += 3) {
-    const b1 = bytes[i];
-    const b2 = i + 1 < len ? bytes[i + 1] : 0;
-    const b3 = i + 2 < len ? bytes[i + 2] : 0;
-
-    result += BASE64_CHARS[b1 >> 2];
-    result += BASE64_CHARS[((b1 & 3) << 4) | (b2 >> 4)];
-    result += i + 1 < len ? BASE64_CHARS[((b2 & 15) << 2) | (b3 >> 6)] : '=';
-    result += i + 2 < len ? BASE64_CHARS[b3 & 63] : '=';
-  }
-
-  return result;
-}
-
-function base64Decode(str: string): Uint8Array {
-  const trimmed = str.trimEnd();
-  const cleanStr = trimmed.replace(/[^A-Za-z0-9+/]/g, '');
-  const len = cleanStr.length;
-  const outputLen =
-    Math.floor((len * 3) / 4) - (trimmed.endsWith('==') ? 2 : trimmed.endsWith('=') ? 1 : 0);
-  const bytes = new Uint8Array(outputLen);
-
-  const lookup: Record<string, number> = {};
-  for (let i = 0; i < BASE64_CHARS.length; i++) {
-    lookup[BASE64_CHARS[i]] = i;
-  }
-
-  let byteIdx = 0;
-  for (let i = 0; i < len; i += 4) {
-    const b1 = lookup[cleanStr[i]] ?? 0;
-    const b2 = lookup[cleanStr[i + 1]] ?? 0;
-    const b3 = lookup[cleanStr[i + 2]] ?? 0;
-    const b4 = lookup[cleanStr[i + 3]] ?? 0;
-
-    bytes[byteIdx++] = (b1 << 2) | (b2 >> 4);
-    if (byteIdx < outputLen) bytes[byteIdx++] = ((b2 & 15) << 4) | (b3 >> 2);
-    if (byteIdx < outputLen) bytes[byteIdx++] = ((b3 & 3) << 6) | b4;
-  }
-
-  return bytes;
-}
-
-function utf8Encode(str: string): Uint8Array {
-  const bytes: number[] = [];
-  for (let i = 0; i < str.length; i++) {
-    let c = str.charCodeAt(i);
-    if (c < 0x80) {
-      bytes.push(c);
-    } else if (c < 0x800) {
-      bytes.push(0xc0 | (c >> 6));
-      bytes.push(0x80 | (c & 0x3f));
-    } else if (c >= 0xd800 && c < 0xdc00 && i + 1 < str.length) {
-      const c2 = str.charCodeAt(++i);
-      c = 0x10000 + ((c & 0x3ff) << 10) + (c2 & 0x3ff);
-      bytes.push(0xf0 | (c >> 18));
-      bytes.push(0x80 | ((c >> 12) & 0x3f));
-      bytes.push(0x80 | ((c >> 6) & 0x3f));
-      bytes.push(0x80 | (c & 0x3f));
-    } else {
-      bytes.push(0xe0 | (c >> 12));
-      bytes.push(0x80 | ((c >> 6) & 0x3f));
-      bytes.push(0x80 | (c & 0x3f));
-    }
-  }
-  return new Uint8Array(bytes);
-}
-
-function utf8Decode(bytes: Uint8Array): string {
-  let result = '';
-  let i = 0;
-  while (i < bytes.length) {
-    const b = bytes[i++];
-    if (b < 0x80) {
-      result += String.fromCharCode(b);
-    } else if (b < 0xe0) {
-      result += String.fromCharCode(((b & 0x1f) << 6) | (bytes[i++] & 0x3f));
-    } else if (b < 0xf0) {
-      result += String.fromCharCode(
-        ((b & 0x0f) << 12) | ((bytes[i++] & 0x3f) << 6) | (bytes[i++] & 0x3f)
-      );
-    } else {
-      const cp =
-        ((b & 0x07) << 18) |
-        ((bytes[i++] & 0x3f) << 12) |
-        ((bytes[i++] & 0x3f) << 6) |
-        (bytes[i++] & 0x3f);
-      result += String.fromCodePoint(cp);
-    }
-  }
-  return result;
-}
+const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 function deflateRaw(data: Uint8Array, level: number = 6): Uint8Array {
   const output: number[] = [];
   const len = data.length;
 
   if (level === 0 || len < 10) {
+    if (len === 0) {
+      return new Uint8Array([0x03, 0x00]);
+    }
     let pos = 0;
     while (pos < len) {
       const blockLen = Math.min(65535, len - pos);
@@ -137,6 +46,7 @@ function deflateRaw(data: Uint8Array, level: number = 6): Uint8Array {
   }
 
   const windowSize = 32768;
+  const maxChain = Math.max(4, level * 8);
   const hashTable = new Map<number, number[]>();
 
   const getHash = (pos: number): number => {
@@ -153,7 +63,7 @@ function deflateRaw(data: Uint8Array, level: number = 6): Uint8Array {
     let bestDist = 0;
     let bestLen = 0;
 
-    for (let i = candidates.length - 1; i >= 0 && i >= candidates.length - 16; i--) {
+    for (let i = candidates.length - 1; i >= 0 && i >= candidates.length - maxChain; i--) {
       const candPos = candidates[i];
       const dist = pos - candPos;
 
@@ -203,7 +113,7 @@ function deflateRaw(data: Uint8Array, level: number = 6): Uint8Array {
 
   let pos = 0;
   while (pos < len) {
-    const match = level > 3 ? findMatch(pos) : null;
+    const match = findMatch(pos);
 
     const hash = getHash(pos);
     if (!hashTable.has(hash)) {
@@ -353,8 +263,13 @@ function inflateRaw(data: Uint8Array): Uint8Array {
       bitBuf = 0;
       bitCount = 0;
 
+      if (pos + 4 > data.length) throw new Error('Unexpected end of data');
       const len = data[pos] | (data[pos + 1] << 8);
+      const nlen = data[pos + 2] | (data[pos + 3] << 8);
+      if ((len ^ 0xffff) !== nlen) throw new Error('Invalid stored block length');
       pos += 4;
+      if (pos + len > data.length) throw new Error('Unexpected end of data');
+      if (output.length + len > MAX_OUTPUT_BYTES) throw new Error('Decompressed data too large');
 
       for (let i = 0; i < len; i++) {
         output.push(data[pos++]);
@@ -392,8 +307,9 @@ function inflateRaw(data: Uint8Array): Uint8Array {
           if (sym < 16) {
             allLens.push(sym);
           } else if (sym === 16) {
+            if (allLens.length === 0) throw new Error('Invalid code length repeat');
             const repeat = readBits(2) + 3;
-            const last = allLens[allLens.length - 1] || 0;
+            const last = allLens[allLens.length - 1];
             for (let i = 0; i < repeat; i++) allLens.push(last);
           } else if (sym === 17) {
             const repeat = readBits(3) + 3;
@@ -404,6 +320,7 @@ function inflateRaw(data: Uint8Array): Uint8Array {
           }
         }
 
+        if (allLens.length > hlit + hdist) throw new Error('Invalid code lengths');
         litlenCodes = allLens.slice(0, hlit);
         distCodes = allLens.slice(hlit);
       }
@@ -415,15 +332,22 @@ function inflateRaw(data: Uint8Array): Uint8Array {
         const sym = decodeSymbol(litlenTree, () => readBits(1));
 
         if (sym < 256) {
+          if (output.length >= MAX_OUTPUT_BYTES) throw new Error('Decompressed data too large');
           output.push(sym);
         } else if (sym === 256) {
           break;
         } else {
           const lenIdx = sym - 257;
+          if (lenIdx >= LITLEN_BASE.length) throw new Error('Invalid length symbol');
           const length = LITLEN_BASE[lenIdx] + readBits(LITLEN_EXTRA[lenIdx]);
 
           const distSym = decodeSymbol(distTree, () => readBits(1));
+          if (distSym >= DIST_BASE.length) throw new Error('Invalid distance symbol');
           const distance = DIST_BASE[distSym] + readBits(DIST_EXTRA[distSym]);
+          if (distance > output.length) throw new Error('Invalid distance: too far back');
+          if (output.length + length > MAX_OUTPUT_BYTES) {
+            throw new Error('Decompressed data too large');
+          }
 
           const start = output.length - distance;
           for (let i = 0; i < length; i++) {
@@ -541,7 +465,7 @@ function gzipCompress(data: Uint8Array, level: number): Uint8Array {
 }
 
 function gzipDecompress(data: Uint8Array): Uint8Array {
-  if (data[0] !== 0x1f || data[1] !== 0x8b) {
+  if (data.length < 18 || data[0] !== 0x1f || data[1] !== 0x8b) {
     throw new Error('Invalid gzip header');
   }
 
@@ -569,8 +493,34 @@ function gzipDecompress(data: Uint8Array): Uint8Array {
     pos += 2;
   }
 
+  if (pos > data.length - 8) {
+    throw new Error('Truncated gzip data');
+  }
+
   const deflatedData = data.slice(pos, data.length - 8);
-  return inflateRaw(deflatedData);
+  const inflated = inflateRaw(deflatedData);
+
+  const trailer = data.length - 8;
+  const expectedCrc =
+    (data[trailer] |
+      (data[trailer + 1] << 8) |
+      (data[trailer + 2] << 16) |
+      (data[trailer + 3] << 24)) >>>
+    0;
+  const expectedSize =
+    (data[trailer + 4] |
+      (data[trailer + 5] << 8) |
+      (data[trailer + 6] << 16) |
+      (data[trailer + 7] << 24)) >>>
+    0;
+  if (crc32(inflated) !== expectedCrc) {
+    throw new Error('Gzip CRC32 mismatch: data is corrupted');
+  }
+  if (inflated.length >>> 0 !== expectedSize) {
+    throw new Error('Gzip size mismatch: data is corrupted');
+  }
+
+  return inflated;
 }
 
 export function compression(): number {
@@ -578,11 +528,19 @@ export function compression(): number {
     const inputStr = Host.inputString();
     const input: CompressionInput = JSON.parse(inputStr);
 
-    const inputEncoding = input.inputEncoding ?? 'utf8';
-    const outputEncoding = input.outputEncoding ?? 'base64';
+    if (input.operation !== 'compress' && input.operation !== 'decompress') {
+      throw new Error(`Unknown operation: ${String(input.operation)}`);
+    }
+    if (typeof input.data !== 'string') {
+      throw new Error('data must be a string');
+    }
+
+    const isCompress = input.operation === 'compress';
+    const inputEncoding = input.inputEncoding ?? (isCompress ? 'utf8' : 'base64');
+    const outputEncoding = input.outputEncoding ?? (isCompress ? 'base64' : 'utf8');
     const level = input.level ?? 6;
 
-    if (level < 0 || level > 9) {
+    if (!Number.isInteger(level) || level < 0 || level > 9) {
       throw new Error(`Compression level must be between 0 and 9, got ${level}`);
     }
 

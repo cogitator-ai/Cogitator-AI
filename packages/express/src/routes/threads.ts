@@ -6,7 +6,18 @@ import type {
   ThreadResponse,
   AddMessageRequest,
 } from '../types.js';
-import { CogitatorError } from '@cogitator-ai/types';
+import { handleRouteError, isPlainObject, sendError } from './utils.js';
+
+const MESSAGE_ROLES: ReadonlySet<string> = new Set(['user', 'assistant', 'system']);
+
+function parseMessageBody(body: unknown): AddMessageRequest | null {
+  if (!isPlainObject(body)) return null;
+  const { role, content, metadata } = body;
+  if (typeof role !== 'string' || !MESSAGE_ROLES.has(role)) return null;
+  if (typeof content !== 'string' || content === '') return null;
+  if (metadata !== undefined && !isPlainObject(metadata)) return null;
+  return { role: role as AddMessageRequest['role'], content, metadata };
+}
 
 export function createThreadRoutes(ctx: RouteContext): Router {
   const router = Router();
@@ -18,9 +29,7 @@ export function createThreadRoutes(ctx: RouteContext): Router {
   router.get('/threads/:id', async (req: CogitatorRequest, res: Response) => {
     const memory = getMemory();
     if (!memory) {
-      res.status(503).json({
-        error: { message: 'Memory not configured', code: 'UNAVAILABLE' },
-      });
+      sendError(res, 503, 'Memory not configured', 'UNAVAILABLE');
       return;
     }
 
@@ -29,9 +38,7 @@ export function createThreadRoutes(ctx: RouteContext): Router {
     try {
       const result = await memory.getEntries({ threadId: id });
       if (!result.success) {
-        res.status(500).json({
-          error: { message: result.error, code: 'INTERNAL' },
-        });
+        sendError(res, 500, result.error, 'INTERNAL');
         return;
       }
 
@@ -48,31 +55,27 @@ export function createThreadRoutes(ctx: RouteContext): Router {
       };
       res.json(response);
     } catch (error) {
-      if (CogitatorError.isCogitatorError(error)) {
-        res.status(500).json({ error: { message: error.message, code: error.code } });
-      } else {
-        console.error('[CogitatorServer] Thread get error:', error);
-        res.status(500).json({ error: { message: 'Internal server error', code: 'INTERNAL' } });
-      }
+      handleRouteError(res, error, 'Thread get error');
     }
   });
 
   router.post('/threads/:id/messages', async (req: CogitatorRequest, res: Response) => {
     const memory = getMemory();
     if (!memory) {
-      res.status(503).json({
-        error: { message: 'Memory not configured', code: 'UNAVAILABLE' },
-      });
+      sendError(res, 503, 'Memory not configured', 'UNAVAILABLE');
       return;
     }
 
     const { id } = req.params;
-    const body = req.body as AddMessageRequest;
+    const body = parseMessageBody(req.body);
 
-    if (!body?.role || !body?.content) {
-      res.status(400).json({
-        error: { message: 'Missing required fields: role, content', code: 'INVALID_INPUT' },
-      });
+    if (!body) {
+      sendError(
+        res,
+        400,
+        'Invalid message: role must be user, assistant or system and content a non-empty string',
+        'INVALID_INPUT'
+      );
       return;
     }
 
@@ -84,32 +87,24 @@ export function createThreadRoutes(ctx: RouteContext): Router {
           content: body.content,
         },
         tokenCount: 0,
+        metadata: body.metadata,
       });
 
       if (!result.success) {
-        res.status(500).json({
-          error: { message: result.error, code: 'INTERNAL' },
-        });
+        sendError(res, 500, result.error, 'INTERNAL');
         return;
       }
 
       res.status(201).json({ success: true });
     } catch (error) {
-      if (CogitatorError.isCogitatorError(error)) {
-        res.status(500).json({ error: { message: error.message, code: error.code } });
-      } else {
-        console.error('[CogitatorServer] Thread add message error:', error);
-        res.status(500).json({ error: { message: 'Internal server error', code: 'INTERNAL' } });
-      }
+      handleRouteError(res, error, 'Thread add message error');
     }
   });
 
   router.delete('/threads/:id', async (req: CogitatorRequest, res: Response) => {
     const memory = getMemory();
     if (!memory) {
-      res.status(503).json({
-        error: { message: 'Memory not configured', code: 'UNAVAILABLE' },
-      });
+      sendError(res, 503, 'Memory not configured', 'UNAVAILABLE');
       return;
     }
 
@@ -118,19 +113,12 @@ export function createThreadRoutes(ctx: RouteContext): Router {
     try {
       const result = await memory.clearThread(id);
       if (!result.success) {
-        res.status(500).json({
-          error: { message: result.error, code: 'INTERNAL' },
-        });
+        sendError(res, 500, result.error, 'INTERNAL');
         return;
       }
       res.status(204).end();
     } catch (error) {
-      if (CogitatorError.isCogitatorError(error)) {
-        res.status(500).json({ error: { message: error.message, code: error.code } });
-      } else {
-        console.error('[CogitatorServer] Thread delete error:', error);
-        res.status(500).json({ error: { message: 'Internal server error', code: 'INTERNAL' } });
-      }
+      handleRouteError(res, error, 'Thread delete error');
     }
   });
 

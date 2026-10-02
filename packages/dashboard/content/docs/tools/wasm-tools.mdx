@@ -10,7 +10,7 @@ The `@cogitator-ai/wasm-tools` package provides tools that execute inside WebAss
 - **100-500x faster cold start** than Docker containers
 - **~20x lower memory footprint** per tool instance
 - **Memory-safe execution** in an isolated linear memory space
-- **No network access** by default -- tools cannot make outbound calls unless WASI is enabled
+- **No network or filesystem access** -- no hosts are allowed and no directories are pre-opened
 
 ```typescript
 import { createCalcTool, createHashTool, createCsvTool } from '@cogitator-ai/wasm-tools';
@@ -51,6 +51,30 @@ Every factory accepts an optional `{ timeout }` config:
 const calc = createCalcTool({ timeout: 10000 });
 ```
 
+### Executing Tools
+
+Inside Cogitator, tools run through the `@cogitator-ai/sandbox` WASM executor when it is available, otherwise through the tool's own `execute()`. You can also call them directly -- parameters are validated with the Zod schema, the module runs in an Extism worker thread, the timeout terminates the worker, and `context.signal` aborts the call:
+
+```typescript
+const result = await createCalcTool().execute(
+  { expression: '(2 + 3) * 4' },
+  { agentId: 'a', runId: 'r', signal: AbortSignal.timeout(5000) }
+);
+// { result: 20, expression: '(2 + 3) * 4' }
+```
+
+Plugin-level errors come back as data (`{ ..., error }`) so the agent can recover. A few behaviours worth knowing:
+
+- **json**: JSONPath subset -- `.key`, `['key']`, `[n]` (negative allowed), slices, `*`, `..key`. Multi-value paths return arrays; missing paths return `found: false`.
+- **xml**: `/root/child` (absolute from the root element), `//name`, `*`, `name[2]`, `/@attr`, `/text()`. A query without matches returns `type: 'empty'`. Malformed XML is rejected; DTD entities are never expanded.
+- **diff**: `unified` (default) is a standard unified diff with `---`/`+++` headers and `@@` hunks; `inline` and `json` are also available.
+- **validation**: IPv4 with leading zeros is rejected, IPv6 is normalized to the RFC 5952 canonical form, and only the email domain is lower-cased.
+- **markdown**: `sanitize` defaults to `true` -- raw HTML is escaped and `javascript:`/`data:`-style URLs become `#`.
+- **compression**: gzip interoperable with zlib; `decompress` defaults to base64 in / UTF-8 out and verifies CRC32.
+- **signing**: WASM has no secure RNG, so a 32-byte seed is generated on the host for `generateKeypair` (the seed is the private key). Signatures interoperate with `node:crypto`.
+- **datetime**: month arithmetic clamps to month end (`Jan 31 + 1 month = Feb 29`), impossible dates are rejected.
+- **regex**: nested unbounded quantifiers are rejected; any other catastrophic pattern is stopped by the timeout.
+
 ---
 
 ## Defining Custom WASM Tools
@@ -75,9 +99,11 @@ const imageProcessor = defineWasmTool({
   category: 'utility',
   tags: ['image', 'processing'],
   timeout: 10000,
-  wasi: false,
+  wasi: true,
 });
 ```
+
+Modules compiled with `extism-js` (like the pre-built ones) embed QuickJS and need `wasi: true`. Extism `>= 2.0.0-rc13` is required for their host functions.
 
 ### WasmToolConfig
 
@@ -91,8 +117,7 @@ const imageProcessor = defineWasmTool({
 | `category`     | `ToolCategory` | Optional category for grouping             |
 | `tags`         | `string[]`     | Optional tags for discovery                |
 | `timeout`      | `number`       | Execution timeout in ms (default: 5000)    |
-| `wasi`         | `boolean`      | Enable WASI for filesystem/env access      |
-| `memoryPages`  | `number`       | WASM linear memory pages to allocate       |
+| `wasi`         | `boolean`      | Enable WASI (needed for extism-js modules) |
 
 ---
 
@@ -103,7 +128,7 @@ For dynamic loading, hot-reloading, and managing multiple WASM modules at runtim
 ```typescript
 import { WasmToolManager } from '@cogitator-ai/wasm-tools';
 
-const manager = new WasmToolManager({ debounceMs: 100, useWasi: false });
+const manager = new WasmToolManager({ debounceMs: 100, useWasi: true, timeout: 30000 });
 
 const tool = await manager.load('./plugins/calc.wasm');
 
@@ -129,6 +154,8 @@ await manager.watch('./plugins/*.wasm', {
 
 When a `.wasm` file is modified, the manager closes the old plugin instance and loads the new one -- zero-downtime hot reload for agent tools.
 
+Manager tools call the module's `run` export. Plugins run in worker threads: when a call exceeds `timeout` (default 30 s) or its `context.signal` aborts, the call rejects and the plugin is replaced with a fresh instance.
+
 ### Manager API
 
 ```typescript
@@ -150,10 +177,10 @@ await manager.close();
 
 Each WASM tool runs inside an Extism plugin -- a lightweight WebAssembly runtime with strict isolation:
 
-1. **Loading**: The `WasmLoader` reads the `.wasm` binary from disk or URL and instantiates it via the Extism SDK
-2. **Execution**: Input parameters are JSON-serialized and passed to the exported WASM function via `plugin.call(functionName, input)`
+1. **Loading**: The `.wasm` binary is read from disk (compiled once and cached until the file changes) or fetched from a URL, and instantiated via the Extism SDK in a worker thread
+2. **Execution**: Validated parameters are JSON-serialized and passed to the exported WASM function via `plugin.call(functionName, input)`
 3. **Output**: The WASM function returns a byte buffer, which is parsed as JSON (or returned as raw text if parsing fails)
-4. **Isolation**: Each plugin has its own linear memory space -- it cannot access the host process memory, file system, or network unless WASI is explicitly enabled
+4. **Isolation**: Each plugin has its own linear memory space -- it cannot access host memory, and with no pre-opened directories or allowed hosts it has no file system or network access even with WASI enabled
 
 ```
 ┌─────────────────────────────────────┐
@@ -165,7 +192,7 @@ Each WASM tool runs inside an Extism plugin -- a lightweight WebAssembly runtime
 │  │        Extism WASM Sandbox      │ │
 │  │                                 │ │
 │  │  ┌─────────────────────────┐    │ │
-│  │  │   Linear Memory (64MB)  │    │ │
+│  │  │   Own linear memory     │    │ │
 │  │  │   No host access        │    │ │
 │  │  │   No network            │    │ │
 │  │  │   No filesystem         │    │ │
@@ -179,11 +206,11 @@ Each WASM tool runs inside an Extism plugin -- a lightweight WebAssembly runtime
 
 ### Security Benefits
 
-- **No `eval` or dynamic code execution** -- computation is compiled ahead of time into WASM bytecode
+- **No access to the host process** -- the module only sees the JSON input it is given
 - **Memory bounds checking** -- buffer overflows in WASM trap instead of corrupting host memory
-- **Deterministic execution** -- same input always produces same output (no ambient authority)
-- **Timeout enforcement** -- long-running computations are killed after the configured timeout
-- **ReDoS protection** -- regex tools in WASM are immune to catastrophic backtracking in the host runtime
+- **No ambient authority** -- no file system, network, or secure randomness inside the sandbox (randomness, when needed, is supplied by the host)
+- **Timeout enforcement** -- the worker thread running a long computation is terminated after the configured timeout
+- **ReDoS containment** -- catastrophic regexes run in the worker, never on the host event loop; the timeout kills them
 
 ---
 
@@ -194,8 +221,8 @@ Each WASM tool runs inside an Extism plugin -- a lightweight WebAssembly runtime
 | Cold start      | < 5 ms             | 500 ms - 2 s             |
 | Memory overhead | ~2 MB per instance | ~50 MB per container     |
 | Isolation       | Linear memory      | Full OS-level            |
-| Network access  | None (unless WASI) | Configurable             |
-| File system     | None (unless WASI) | Mountable volumes        |
+| Network access  | None               | Configurable             |
+| File system     | None               | Mountable volumes        |
 | Best for        | Pure computation   | I/O-heavy, multi-process |
 
 Use WASM tools when you need fast, lightweight sandboxing for pure computation (hashing, parsing, math, text processing). Use Docker sandboxing when tools need file system access, network calls, or a full OS environment.

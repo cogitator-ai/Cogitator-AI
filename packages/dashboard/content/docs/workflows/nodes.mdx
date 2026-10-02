@@ -233,39 +233,85 @@ The `next` field in the result lets you override the DAG routing dynamically at 
 
 ---
 
-## humanNode
+## Human-in-the-Loop Nodes
 
-Pauses the workflow for human approval or input. Part of the human-in-the-loop system.
+`approvalNode`, `choiceNode`, `inputNode`, `ratingNode`, `chainNode` and `managementChain` build approval configurations; `humanWorkflowNode` turns them into workflow nodes that pause until a response arrives in the `ApprovalStore`.
 
 ```typescript
-import { humanNode, approvalNode, choiceNode, inputNode } from '@cogitator-ai/workflows';
+import {
+  approvalNode,
+  choiceNode,
+  humanWorkflowNode,
+  InMemoryApprovalStore,
+  ConsoleNotifier,
+} from '@cogitator-ai/workflows';
 
-const approval = approvalNode({
-  name: 'manager-approval',
-  prompt: (state) => `Approve expense of $${state.amount}?`,
-  approvers: ['manager@company.com'],
-  timeout: 24 * 60 * 60 * 1000,
-});
+const approvalStore = new InMemoryApprovalStore();
 
-const choice = choiceNode({
-  name: 'select-action',
-  prompt: (state) => `How should we handle: ${state.issue}?`,
-  choices: ['fix', 'ignore', 'escalate'],
-});
+builder
+  .addNode(
+    'manager-approval',
+    humanWorkflowNode(
+      approvalNode<ExpenseState>('manager-approval', {
+        title: 'Approve expense',
+        description: (state) => `Approve expense of $${state.amount}?`,
+        assignee: 'manager@company.com',
+        timeout: 24 * 60 * 60 * 1000,
+        timeoutAction: 'reject',
+      }),
+      {
+        approvalStore,
+        approvalNotifier: new ConsoleNotifier(),
+        stateMapper: (result) => ({ approved: result.approved }),
+      }
+    )
+  )
+  .addNode(
+    'select-action',
+    humanWorkflowNode(
+      choiceNode<ExpenseState>('select-action', {
+        title: 'How should we handle it?',
+        choices: [
+          { id: 'fix', label: 'Fix', value: 'fix' },
+          { id: 'escalate', label: 'Escalate', value: 'escalate' },
+        ],
+      }),
+      { approvalStore }
+    ),
+    { after: ['manager-approval'] }
+  );
 
-const freeform = inputNode({
-  name: 'get-feedback',
-  prompt: (state) => `Provide feedback on: ${state.draft}`,
-});
+// Respond from an API handler or UI:
+await approvalStore.submitResponse({ requestId, decision: true, respondedBy: 'manager', respondedAt: Date.now() });
 ```
 
-These nodes integrate with `ApprovalStore` and `ApprovalNotifier` for persistence and notification delivery. See the human-in-the-loop module for store implementations (`InMemoryApprovalStore`, `FileApprovalStore`).
+The node output is `{ approved, decision, timedOut, escalated }`; use `stateMapper` to copy the decision into state for a following conditional.
+
+## Timer, Map-Reduce and Subworkflow Adapters
+
+Timer, map-reduce and subworkflow helpers return configurations. Wrap them with the matching adapter to add them to a builder:
+
+| Configuration helpers                                                              | Adapter                     |
+| ---------------------------------------------------------------------------------- | --------------------------- |
+| `delayNode`, `dynamicDelayNode`, `cronWaitNode`, `untilNode`                       | `timerWorkflowNode`         |
+| `mapNode`                                                                          | `mapWorkflowNode`           |
+| `mapReduceNode`                                                                    | `mapReduceWorkflowNode`     |
+| `subworkflowNode`, `simpleSubworkflow`, `nestedSubworkflow`, `conditionalSubworkflow` | `subworkflowWorkflowNode`   |
+| `parallelSubworkflows`, `fanOutFanIn`, `scatterGather`                             | `parallelSubworkflowsNode`  |
+
+```typescript
+builder
+  .addNode('cool-down', timerWorkflowNode(delayNode('cool-down', 5_000)))
+  .addNode('analyze', subworkflowWorkflowNode(subConfig), { after: ['cool-down'] });
+```
+
+Timers are cancelled when the run is aborted; subworkflow failures propagate to the parent (or follow `onError`), and timed-out child runs are cancelled.
 
 ---
 
 ## Wiring Nodes into Workflows
 
-All node factories return `WorkflowNode<S>` objects. Pass them directly to `WorkflowBuilder.addNode`:
+All node factories and adapters return `WorkflowNode<S>` objects. Pass them directly to `WorkflowBuilder.addNode` (a node's `config` — `timeout`, `retries`, `retryDelay` — is merged with the `config` passed to `addNode`):
 
 ```typescript
 const workflow = new WorkflowBuilder<MyState>('pipeline')

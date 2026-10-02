@@ -15,6 +15,7 @@ const createMockRedis = () => {
     subscribe: vi.fn().mockResolvedValue(undefined),
     unsubscribe: vi.fn().mockResolvedValue(undefined),
     quit: vi.fn().mockResolvedValue(undefined),
+    off: vi.fn(),
     removeAllListeners: vi.fn(),
     get: vi.fn().mockImplementation((key: string) => Promise.resolve(data.get(key) ?? null)),
     set: vi.fn().mockImplementation((key: string, value: string) => {

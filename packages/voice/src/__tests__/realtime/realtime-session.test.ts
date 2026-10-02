@@ -4,6 +4,7 @@ import type { RealtimeSessionConfig } from '../../types.js';
 
 type MockAdapter = EventEmitter & {
   connect: ReturnType<typeof vi.fn>;
+  isConnected: boolean;
   pushAudio: ReturnType<typeof vi.fn>;
   sendText: ReturnType<typeof vi.fn>;
   interrupt: ReturnType<typeof vi.fn>;
@@ -18,7 +19,11 @@ let geminiConstructorArgs: unknown[];
 vi.mock('../../realtime/openai-realtime', () => {
   return {
     OpenAIRealtimeAdapter: class extends EventEmitter {
-      connect = vi.fn().mockResolvedValue(undefined);
+      isConnected = false;
+      connect = vi.fn().mockImplementation(async () => {
+        this.isConnected = true;
+        this.emit('connected');
+      });
       pushAudio = vi.fn();
       sendText = vi.fn();
       interrupt = vi.fn();
@@ -35,7 +40,11 @@ vi.mock('../../realtime/openai-realtime', () => {
 vi.mock('../../realtime/gemini-realtime', () => {
   return {
     GeminiRealtimeAdapter: class extends EventEmitter {
-      connect = vi.fn().mockResolvedValue(undefined);
+      isConnected = false;
+      connect = vi.fn().mockImplementation(async () => {
+        this.isConnected = true;
+        this.emit('connected');
+      });
       pushAudio = vi.fn();
       sendText = vi.fn();
       interrupt = vi.fn();
@@ -124,16 +133,69 @@ describe('RealtimeSession', () => {
       expect(lastOpenAIAdapter.connect).toHaveBeenCalledOnce();
     });
 
-    it('pushAudio() delegates to adapter', () => {
+    it('pushAudio() delegates to adapter once connected', async () => {
       const session = new RealtimeSession(createConfig());
+      await session.connect();
       const chunk = Buffer.from([0x01, 0x02]);
       session.pushAudio(chunk);
 
       expect(lastOpenAIAdapter.pushAudio).toHaveBeenCalledWith(chunk);
     });
 
-    it('sendText() delegates to adapter', () => {
+    it('buffers audio pushed before connect and flushes it in order on connected', async () => {
       const session = new RealtimeSession(createConfig());
+      const connected = vi.fn();
+      session.on('connected', connected);
+      const a = Buffer.from([1]);
+      const b = Buffer.from([2]);
+      session.pushAudio(a);
+      session.pushAudio(b);
+      expect(lastOpenAIAdapter.pushAudio).not.toHaveBeenCalled();
+
+      await session.connect();
+
+      expect(lastOpenAIAdapter.pushAudio.mock.calls).toEqual([[a], [b]]);
+      expect(connected).toHaveBeenCalledOnce();
+    });
+
+    it('caps pre-connect buffering at 1MB by dropping the oldest audio', async () => {
+      const session = new RealtimeSession(createConfig());
+      const chunk = () => Buffer.alloc(256 * 1024);
+      const chunks = [chunk(), chunk(), chunk(), chunk(), chunk()];
+      for (const c of chunks) session.pushAudio(c);
+
+      await session.connect();
+
+      const flushed = lastOpenAIAdapter.pushAudio.mock.calls.map((c) => c[0] as Buffer);
+      expect(flushed).toHaveLength(4);
+      expect(flushed[0]).toBe(chunks[1]);
+    });
+
+    it('drops buffered audio on close and rejects connect() afterwards', async () => {
+      const session = new RealtimeSession(createConfig());
+      session.pushAudio(Buffer.from([1]));
+      session.close();
+
+      await expect(session.connect()).rejects.toThrow('closed');
+      expect(lastOpenAIAdapter.pushAudio).not.toHaveBeenCalled();
+    });
+
+    it('queues text sent before connect and flushes it after buffered audio', async () => {
+      const session = new RealtimeSession(createConfig());
+      const order: string[] = [];
+      lastOpenAIAdapter.pushAudio.mockImplementation(() => order.push('audio'));
+      lastOpenAIAdapter.sendText.mockImplementation((t: string) => order.push(`text:${t}`));
+      session.pushAudio(Buffer.from([1]));
+      session.sendText('early');
+      expect(order).toEqual([]);
+
+      await session.connect();
+      expect(order).toEqual(['audio', 'text:early']);
+    });
+
+    it('sendText() delegates to adapter once connected', async () => {
+      const session = new RealtimeSession(createConfig());
+      await session.connect();
       session.sendText('hello');
 
       expect(lastOpenAIAdapter.sendText).toHaveBeenCalledWith('hello');

@@ -1,16 +1,26 @@
-export const VERSION = '0.1.0';
+import { createRequire } from 'node:module';
 
-export { RAGPipeline, type RAGPipelineDeps } from './rag-pipeline';
-export { RAGPipelineBuilder } from './rag-builder';
+const packageJson = createRequire(import.meta.url)('../package.json') as { version: string };
 
-export * from './loaders';
-export * from './chunkers';
-export * from './retrievers';
-export * from './rerankers';
+export const VERSION: string = packageJson.version;
 
-export * from './schema';
+export { RAGPipeline, type RAGPipelineDeps } from './rag-pipeline.js';
+export { RAGPipelineBuilder } from './rag-builder.js';
 
-export { createSearchTool, createIngestTool, ragTools, type RAGTool } from './tools';
+export * from './loaders/index.js';
+export * from './chunkers/index.js';
+export * from './retrievers/index.js';
+export * from './rerankers/index.js';
+
+export * from './schema.js';
+
+export {
+  createSearchTool,
+  createIngestTool,
+  ragTools,
+  type RAGTool,
+  type IngestToolOptions,
+} from './tools.js';
 
 export type {
   RAGDocument,

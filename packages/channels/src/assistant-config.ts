@@ -42,6 +42,7 @@ const AssistantCapabilitiesSchema = z.object({
 const AssistantMemorySchema = z.object({
   adapter: z.enum(['sqlite', 'postgres']).default('sqlite'),
   path: z.string().optional(),
+  connectionString: z.string().optional(),
   autoExtract: z.boolean().default(true),
   knowledgeGraph: z.boolean().default(true),
   compaction: z.object({ threshold: z.number() }).optional(),

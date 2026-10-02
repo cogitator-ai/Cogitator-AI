@@ -9,6 +9,7 @@ const mockGetActiveCount = vi.fn();
 const mockGetCompletedCount = vi.fn();
 const mockGetFailedCount = vi.fn();
 const mockGetDelayedCount = vi.fn();
+const mockGetWorkersCount = vi.fn();
 const mockPause = vi.fn();
 const mockResume = vi.fn();
 const mockClean = vi.fn();
@@ -23,6 +24,7 @@ vi.mock('bullmq', () => {
     getCompletedCount = mockGetCompletedCount;
     getFailedCount = mockGetFailedCount;
     getDelayedCount = mockGetDelayedCount;
+    getWorkersCount = mockGetWorkersCount;
     pause = mockPause;
     resume = mockResume;
     clean = mockClean;
@@ -67,6 +69,7 @@ describe('JobQueue', () => {
     mockGetCompletedCount.mockResolvedValue(100);
     mockGetFailedCount.mockResolvedValue(3);
     mockGetDelayedCount.mockResolvedValue(1);
+    mockGetWorkersCount.mockResolvedValue(4);
   });
 
   afterEach(async () => {
@@ -260,7 +263,7 @@ describe('JobQueue', () => {
         failed: 3,
         delayed: 1,
         depth: 6,
-        workerCount: 0,
+        workerCount: 4,
       });
     });
   });

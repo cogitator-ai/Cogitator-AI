@@ -17,7 +17,7 @@ export class MessageQueue {
   push(msg: ChannelMessage, threadId: string): void {
     switch (this.mode) {
       case 'parallel':
-        void this.processor(msg);
+        void this.processor(msg).catch(() => {});
         break;
       case 'sequential':
         this.pushSequential(msg, threadId);
@@ -52,19 +52,27 @@ export class MessageQueue {
     const state = this.getThread(threadId);
     state.queue.push(msg);
     if (!state.processing) {
-      void this.drainSequential(state);
+      void this.drainSequential(threadId, state);
     }
   }
 
-  private async drainSequential(state: ThreadState): Promise<void> {
+  private release(threadId: string, state: ThreadState): void {
+    state.processing = false;
+    if (state.queue.length === 0 && this.threads.get(threadId) === state) {
+      this.threads.delete(threadId);
+    }
+  }
+
+  private async drainSequential(threadId: string, state: ThreadState): Promise<void> {
     state.processing = true;
-    while (state.queue.length > 0) {
-      const next = state.queue.shift()!;
+    let next = state.queue.shift();
+    while (next) {
       try {
         await this.processor(next);
       } catch {}
+      next = state.queue.shift();
     }
-    state.processing = false;
+    this.release(threadId, state);
   }
 
   private pushInterrupt(msg: ChannelMessage, threadId: string): void {
@@ -83,8 +91,8 @@ export class MessageQueue {
       .catch(() => {})
       .finally(() => {
         if (state.abortController === ac) {
-          state.processing = false;
           state.abortController = undefined;
+          this.release(threadId, state);
         }
       });
   }
@@ -94,11 +102,11 @@ export class MessageQueue {
     state.queue.push(msg);
 
     if (!state.processing) {
-      void this.drainCollect(state);
+      void this.drainCollect(threadId, state);
     }
   }
 
-  private async drainCollect(state: ThreadState): Promise<void> {
+  private async drainCollect(threadId: string, state: ThreadState): Promise<void> {
     state.processing = true;
 
     while (state.queue.length > 0) {
@@ -109,7 +117,7 @@ export class MessageQueue {
       } catch {}
     }
 
-    state.processing = false;
+    this.release(threadId, state);
   }
 
   private mergeMessages(msgs: ChannelMessage[]): ChannelMessage {

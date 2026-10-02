@@ -4,6 +4,7 @@ import type {
   KeywordSearchAdapter,
   KeywordSearchOptions,
   MemoryResult,
+  SearchFilter,
   SearchResult,
   SemanticSearchOptions,
 } from '@cogitator-ai/types';
@@ -25,6 +26,17 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
   const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
   return magnitude === 0 ? 0 : dotProduct / magnitude;
+}
+
+/**
+ * Embeddings are scoped by `metadata.agentId` / `metadata.threadId`.
+ */
+function matchesFilter(embedding: Embedding, filter: SearchFilter | undefined): boolean {
+  if (!filter) return true;
+  if (filter.sourceType && embedding.sourceType !== filter.sourceType) return false;
+  if (filter.agentId && embedding.metadata?.agentId !== filter.agentId) return false;
+  if (filter.threadId && embedding.metadata?.threadId !== filter.threadId) return false;
+  return true;
 }
 
 export class InMemoryEmbeddingAdapter implements EmbeddingAdapter, KeywordSearchAdapter {
@@ -56,7 +68,7 @@ export class InMemoryEmbeddingAdapter implements EmbeddingAdapter, KeywordSearch
     const results: (Embedding & { score: number })[] = [];
 
     for (const emb of this.embeddings.values()) {
-      if (options.filter?.sourceType && emb.sourceType !== options.filter.sourceType) {
+      if (!matchesFilter(emb, options.filter)) {
         continue;
       }
 
@@ -81,7 +93,7 @@ export class InMemoryEmbeddingAdapter implements EmbeddingAdapter, KeywordSearch
       const emb = this.embeddings.get(r.id);
       if (!emb) continue;
 
-      if (options.filter?.sourceType && emb.sourceType !== options.filter.sourceType) {
+      if (!matchesFilter(emb, options.filter)) {
         continue;
       }
 

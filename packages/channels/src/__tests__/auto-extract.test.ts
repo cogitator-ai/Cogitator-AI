@@ -12,6 +12,8 @@ describe('AutoExtractMiddleware', () => {
       getNodeByName: vi.fn().mockResolvedValue({ success: true, data: null }),
       updateNode: vi.fn().mockResolvedValue({ success: true }),
       addEdge: vi.fn().mockResolvedValue({ success: true }),
+      getEdgesBetween: vi.fn().mockResolvedValue({ success: true, data: [] }),
+      updateEdge: vi.fn().mockResolvedValue({ success: true }),
     },
   });
 

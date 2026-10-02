@@ -1,5 +1,6 @@
 import type {
   Tool,
+  ToolSchema,
   LLMBackend,
   CapabilityGap,
   GeneratedTool,
@@ -8,7 +9,8 @@ import type {
 } from '@cogitator-ai/types';
 import { z, type ZodType } from 'zod';
 import { ToolValidator } from './tool-validator';
-import { ToolSandbox } from './tool-sandbox';
+import { ToolSandbox, type SandboxTestCase } from './tool-sandbox';
+import { llmChat } from '../utils/llm-helper';
 import {
   TOOL_GENERATION_SYSTEM_PROMPT,
   buildToolGenerationPrompt,
@@ -20,6 +22,10 @@ export interface ToolGeneratorOptions {
   llm: LLMBackend;
   config: ToolSelfGenerationConfig;
   model?: string;
+}
+
+export interface GenerateOptions {
+  parameters?: Record<string, unknown>;
 }
 
 export interface GenerationResult {
@@ -52,7 +58,8 @@ export class ToolGenerator {
   async generate(
     gap: CapabilityGap,
     existingTools: Tool[],
-    testCases?: Array<{ input: unknown; expectedOutput?: unknown }>
+    testCases?: SandboxTestCase[],
+    options: GenerateOptions = {}
   ): Promise<GenerationResult> {
     let currentTool: GeneratedTool | null = null;
     let validationResult: ToolValidationResult | null = null;
@@ -65,13 +72,21 @@ export class ToolGenerator {
 
       try {
         if (currentTool === null) {
-          currentTool = await this.generateInitial(gap, existingTools);
+          currentTool = await this.generateInitial(gap, existingTools, options.parameters);
         } else if (validationResult) {
-          currentTool = await this.improve(currentTool, validationResult, iterations);
+          const improved = await this.improve(currentTool, validationResult, iterations);
+          if (!improved) {
+            continue;
+          }
+          currentTool = improved;
         }
 
         if (!currentTool) {
           continue;
+        }
+
+        if (options.parameters) {
+          currentTool.parameters = options.parameters;
         }
 
         validationResult = await this.validator.validate(currentTool, testCases);
@@ -132,21 +147,22 @@ export class ToolGenerator {
       reasoning: 'User-requested quick generation',
     };
 
-    const result = await this.generate(gap, []);
+    const result = await this.generate(
+      gap,
+      [],
+      undefined,
+      Object.keys(parameters).length > 0
+        ? { parameters: { type: 'object', properties: parameters } }
+        : {}
+    );
 
-    if (result.tool && Object.keys(parameters).length > 0) {
-      result.tool.parameters = {
-        type: 'object',
-        properties: parameters,
-      };
-    }
-
-    return result.tool;
+    return result.success ? result.tool : null;
   }
 
   private async generateInitial(
     gap: CapabilityGap,
-    existingTools: Tool[]
+    existingTools: Tool[],
+    parameters?: Record<string, unknown>
   ): Promise<GeneratedTool | null> {
     const toolSummaries = existingTools.map((t) => ({
       name: t.name,
@@ -157,17 +173,19 @@ export class ToolGenerator {
       maxLines: 100,
       securityLevel: 'strict',
       allowedModules: this.config.sandboxConfig?.allowedModules,
+      parameters,
     });
 
-    const response = await this.callLLM(
+    const content = await llmChat(
+      this.llm,
       [
         { role: 'system', content: TOOL_GENERATION_SYSTEM_PROMPT },
         { role: 'user', content: prompt },
       ],
-      0.4
+      { model: this.model, temperature: 0.4 }
     );
 
-    const tool = parseToolGenerationResponse(response.content);
+    const tool = parseToolGenerationResponse(content);
 
     if (tool) {
       tool.metadata = {
@@ -187,18 +205,21 @@ export class ToolGenerator {
   ): Promise<GeneratedTool | null> {
     const prompt = buildToolImprovementPrompt(tool, validationResult, iteration);
 
-    const response = await this.callLLM(
+    const content = await llmChat(
+      this.llm,
       [
         { role: 'system', content: TOOL_GENERATION_SYSTEM_PROMPT },
         { role: 'user', content: prompt },
       ],
-      0.3
+      { model: this.model, temperature: 0.3 }
     );
 
-    const improved = parseToolGenerationResponse(response.content);
+    const improved = parseToolGenerationResponse(content);
 
     if (improved) {
       improved.id = tool.id;
+      improved.name = tool.name;
+      improved.createdAt = tool.createdAt;
       improved.version = tool.version + 1;
       improved.metadata = {
         ...tool.metadata,
@@ -215,6 +236,7 @@ export class ToolGenerator {
     const sandbox = this.sandbox;
     const tool = generated;
     const paramSchema = buildZodSchema(generated.parameters);
+    const jsonSchema = toToolJsonSchema(generated.parameters);
 
     const execute = async (params: unknown): Promise<unknown> => {
       const parsed = paramSchema.safeParse(params);
@@ -239,23 +261,27 @@ export class ToolGenerator {
       toJSON: () => ({
         name: generated.name,
         description: generated.description,
-        parameters: {
-          type: 'object' as const,
-          properties: generated.parameters as Record<string, unknown>,
-        },
+        parameters: jsonSchema,
       }),
     };
   }
+}
 
-  private async callLLM(
-    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
-    temperature: number
-  ) {
-    if (this.llm.complete) {
-      return this.llm.complete({ messages, temperature });
-    }
-    return this.llm.chat({ model: this.model, messages, temperature });
-  }
+function toToolJsonSchema(parameters: Record<string, unknown>): ToolSchema['parameters'] {
+  const properties =
+    parameters.type === 'object' &&
+    parameters.properties &&
+    typeof parameters.properties === 'object' &&
+    !Array.isArray(parameters.properties)
+      ? (parameters.properties as Record<string, unknown>)
+      : {};
+  const required = Array.isArray(parameters.required)
+    ? parameters.required.filter((key): key is string => typeof key === 'string')
+    : [];
+
+  return required.length > 0
+    ? { type: 'object', properties, required }
+    : { type: 'object', properties };
 }
 
 function buildZodSchema(parameters: Record<string, unknown>): ZodType<unknown> {

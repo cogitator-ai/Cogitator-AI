@@ -11,6 +11,7 @@ import {
   createDiffTool,
   createSlugTool,
   createDatetimeTool,
+  createSigningTool,
   defineWasmTool,
   getWasmPath,
 } from '@cogitator-ai/wasm-tools';
@@ -57,7 +58,27 @@ async function main() {
   console.log(`    Description: ${calcSchema.description}`);
   console.log(`    Parameters: ${JSON.stringify(calcSchema.parameters, null, 2)}`);
 
-  section('4. Custom WASM tool definition');
+  section('4. Direct execution (no agent, no LLM)');
+
+  const ctx = { agentId: 'example', runId: 'direct', signal: AbortSignal.timeout(30_000) };
+  console.log('  calc:', JSON.stringify(await calc.execute({ expression: '(2 + 3) * 4' }, ctx)));
+  console.log(
+    '  hash:',
+    JSON.stringify(await hash.execute({ text: 'cogitator', algorithm: 'sha256' }, ctx))
+  );
+  console.log(
+    '  json:',
+    JSON.stringify(
+      await json.execute({ json: '{"users":[{"n":"a"},{"n":"b"}]}', query: '$.users[*].n' }, ctx)
+    )
+  );
+  const keypair = await createSigningTool().execute(
+    { operation: 'generateKeypair', algorithm: 'ed25519' },
+    ctx
+  );
+  console.log('  ed25519 public key:', (keypair as { publicKey?: string }).publicKey);
+
+  section('5. Custom WASM tool definition');
 
   const textStats = defineWasmTool({
     name: 'text_stats',
@@ -71,7 +92,7 @@ async function main() {
     category: 'utility',
     tags: ['text', 'analysis', 'statistics'],
     timeout: 3000,
-    wasi: false,
+    wasi: true,
   });
 
   const customSchema = textStats.toJSON!();
@@ -83,7 +104,7 @@ async function main() {
   console.log(`    Category: ${textStats.category}`);
   console.log(`    Tags: ${textStats.tags?.join(', ')}`);
 
-  section('5. Agent with WASM tools — data processing');
+  section('6. Agent with WASM tools — data processing');
 
   const dataAgent = new Agent({
     name: 'data-processor',
@@ -107,7 +128,7 @@ Please:
   console.log('  Output:', result1.output);
   console.log('  Tools used:', result1.toolCalls.map((tc) => tc.name).join(', '));
 
-  section('6. Validation and encoding pipeline');
+  section('7. Validation and encoding pipeline');
 
   const result2 = await cog.run(dataAgent, {
     input: `Validate these values:
@@ -119,7 +140,7 @@ Then base64-encode the valid email address.`,
   console.log('  Output:', result2.output);
   console.log('  Tools used:', result2.toolCalls.map((tc) => tc.name).join(', '));
 
-  section('7. Text diffing');
+  section('8. Text diffing');
 
   const result3 = await cog.run(dataAgent, {
     input: `Compare these two texts:
@@ -130,7 +151,7 @@ Show me the differences.`,
   console.log('  Output:', result3.output);
   console.log('  Tools used:', result3.toolCalls.map((tc) => tc.name).join(', '));
 
-  section('8. Tool call summary');
+  section('9. Tool call summary');
 
   const allResults = [result1, result2, result3];
   const allCalls = allResults.flatMap((r) => r.toolCalls);

@@ -379,6 +379,8 @@ export interface SwarmConfig {
   moderator?: Agent;
   /** Router agent for specialist routing */
   router?: Agent;
+  /** Per-agent swarm metadata (role, expertise, weight, locked), keyed by agent name */
+  agentMetadata?: Record<string, SwarmAgentMetadata>;
 
   hierarchical?: HierarchicalConfig;
   roundRobin?: RoundRobinConfig;
@@ -489,8 +491,21 @@ export interface StrategyResult {
   negotiationResult?: NegotiationResult;
 }
 
+/** Per-turn limits a strategy can apply to a single agent run */
+export interface SwarmAgentRunOptions {
+  /** Cap the response length of this turn (tokens) */
+  maxTokens?: number;
+  /** Cancel this turn after the given time (ms) */
+  timeout?: number;
+}
+
 export interface SwarmCoordinatorInterface {
-  runAgent(agentName: string, input: string, context?: Record<string, unknown>): Promise<RunResult>;
+  runAgent(
+    agentName: string,
+    input: string,
+    context?: Record<string, unknown>,
+    options?: SwarmAgentRunOptions
+  ): Promise<RunResult>;
   runAgentsParallel(
     agents: { name: string; input: string; context?: Record<string, unknown> }[],
     maxConcurrency?: number

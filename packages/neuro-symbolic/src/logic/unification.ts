@@ -8,6 +8,14 @@ import type {
   ListTerm,
   Substitution,
 } from '@cogitator-ai/types';
+import {
+  INFIX_OPERATORS,
+  PREFIX_OPERATORS,
+  MAX_PRIORITY,
+  ARGUMENT_PRIORITY,
+  formatAtom,
+  escapeQuoted,
+} from './operators';
 
 export function isAtom(term: Term): term is AtomTerm {
   return term.type === 'atom';
@@ -75,34 +83,45 @@ export function occursIn(variable: VariableTerm, term: Term): boolean {
   return false;
 }
 
-export function applySubstitution(term: Term, subst: Substitution, depth = 0): Term {
-  if (depth > 100) return term;
+export function applySubstitution(term: Term, subst: Substitution): Term {
+  return resolveTerm(term, subst, new Set());
+}
 
-  if (isVariable(term)) {
-    const bound = subst.get(term.name);
-    if (bound) {
-      return applySubstitution(bound, subst, depth + 1);
+function resolveTerm(term: Term, subst: Substitution, resolving: Set<string>): Term {
+  switch (term.type) {
+    case 'variable': {
+      if (resolving.has(term.name)) return term;
+      const bound = subst.get(term.name);
+      if (!bound) return term;
+      resolving.add(term.name);
+      const resolved = resolveTerm(bound, subst, resolving);
+      resolving.delete(term.name);
+      return resolved;
     }
-    return term;
-  }
 
-  if (isCompound(term)) {
-    return {
-      type: 'compound',
-      functor: term.functor,
-      args: term.args.map((arg) => applySubstitution(arg, subst, depth + 1)),
-    };
-  }
+    case 'compound':
+      return {
+        type: 'compound',
+        functor: term.functor,
+        args: term.args.map((arg) => resolveTerm(arg, subst, resolving)),
+      };
 
-  if (isList(term)) {
-    return {
-      type: 'list',
-      elements: term.elements.map((el) => applySubstitution(el, subst, depth + 1)),
-      tail: term.tail ? applySubstitution(term.tail, subst, depth + 1) : undefined,
-    };
-  }
+    case 'list': {
+      const elements = term.elements.map((el) => resolveTerm(el, subst, resolving));
+      if (!term.tail) return { type: 'list', elements };
 
-  return term;
+      const tail = resolveTerm(term.tail, subst, resolving);
+      if (tail.type !== 'list') return { type: 'list', elements, tail };
+
+      const merged = [...elements, ...tail.elements];
+      return tail.tail
+        ? { type: 'list', elements: merged, tail: tail.tail }
+        : { type: 'list', elements: merged };
+    }
+
+    default:
+      return term;
+  }
 }
 
 export function composeSubstitutions(s1: Substitution, s2: Substitution): Substitution {
@@ -277,29 +296,58 @@ export function substitutionToString(subst: Substitution): string {
 }
 
 export function termToString(term: Term): string {
+  return formatTerm(term, MAX_PRIORITY);
+}
+
+function formatNumber(value: number): string {
+  if (Number.isNaN(value)) return 'nan';
+  if (value === Infinity) return 'inf';
+  if (value === -Infinity) return '-inf';
+  return String(value);
+}
+
+function formatTerm(term: Term, maxPriority: number): string {
   switch (term.type) {
     case 'atom':
-      return term.value;
+      return formatAtom(term.value);
     case 'variable':
       return term.name;
     case 'number':
-      return term.value.toString();
+      return formatNumber(term.value);
     case 'string':
-      return `"${term.value}"`;
-    case 'compound':
-      if (term.args.length === 0) {
-        return term.functor;
-      }
-      return `${term.functor}(${term.args.map(termToString).join(', ')})`;
+      return `"${escapeQuoted(term.value, '"')}"`;
     case 'list': {
-      if (term.elements.length === 0 && !term.tail) {
-        return '[]';
-      }
-      const elements = term.elements.map(termToString).join(', ');
-      if (term.tail) {
-        return `[${elements}|${termToString(term.tail)}]`;
-      }
-      return `[${elements}]`;
+      if (term.elements.length === 0 && !term.tail) return '[]';
+      const elements = term.elements.map((el) => formatTerm(el, ARGUMENT_PRIORITY)).join(', ');
+      return term.tail
+        ? `[${elements}|${formatTerm(term.tail, ARGUMENT_PRIORITY)}]`
+        : `[${elements}]`;
     }
+    case 'compound':
+      return formatCompound(term, maxPriority);
   }
+}
+
+function formatCompound(term: CompoundTerm, maxPriority: number): string {
+  if (term.args.length === 0) return formatAtom(term.functor);
+
+  const infix = term.args.length === 2 ? INFIX_OPERATORS.get(term.functor) : undefined;
+  if (infix) {
+    const leftMax = infix.type === 'yfx' ? infix.priority : infix.priority - 1;
+    const rightMax = infix.type === 'xfy' ? infix.priority : infix.priority - 1;
+    const left = formatTerm(term.args[0], leftMax);
+    const right = formatTerm(term.args[1], rightMax);
+    const text = term.functor === ',' ? `${left}, ${right}` : `${left} ${term.functor} ${right}`;
+    return infix.priority > maxPriority ? `(${text})` : text;
+  }
+
+  const prefix = term.args.length === 1 ? PREFIX_OPERATORS.get(term.functor) : undefined;
+  if (prefix) {
+    const operandMax = prefix.type === 'fy' ? prefix.priority : prefix.priority - 1;
+    const text = `${term.functor} ${formatTerm(term.args[0], operandMax)}`;
+    return prefix.priority > maxPriority ? `(${text})` : text;
+  }
+
+  const args = term.args.map((arg) => formatTerm(arg, ARGUMENT_PRIORITY)).join(', ');
+  return `${formatAtom(term.functor)}(${args})`;
 }

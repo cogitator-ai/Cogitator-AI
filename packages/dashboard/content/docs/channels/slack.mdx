@@ -22,6 +22,10 @@ pnpm add @slack/bolt
    - `im:history` — read DM history
    - `im:read` — access DMs
    - `im:write` — send DMs
+   - `users:read` — show user display names to the agent
+   - `files:read` — receive file shares (images, voice, documents)
+   - `files:write` — send files
+   - `reactions:write` — status reactions
 5. **Subscribe to Events** (sidebar → Event Subscriptions → toggle on):
    - Bot events: `message.im`, `app_mention`
 6. **Install to Workspace** (sidebar → Install App → Install):
@@ -46,9 +50,8 @@ const slack = slackChannel({
 interface SlackConfig {
   token: string;
   signingSecret: string;
-  appToken?: string;
-  socketMode?: boolean;
-  port?: number;
+  appToken?: string; // enables Socket Mode
+  port?: number; // HTTP mode port, default 3000
 }
 ```
 
@@ -57,18 +60,22 @@ interface SlackConfig {
 | Feature | Support |
 |---------|---------|
 | DMs | ✅ |
-| Channel messages | ✅ (via @mention) |
+| Channel messages | ✅ (via @mention, `groupId` set so DM policies apply correctly) |
+| Threads | ✅ replies go to the thread root |
+| Incoming files | ✅ downloaded with the bot token (images → vision, audio → STT) |
+| Reactions | ✅ via `reactions.add` |
+| User names | ✅ resolved via `users.info` (cached) |
 | Socket Mode | ✅ (no public URL needed) |
 | HTTP Mode | ✅ (needs public endpoint) |
 | Streaming (edit) | ✅ via `chat.update` |
-| File uploads | ✅ via `files.uploadV2` |
-| Typing indicator | ⚠️ (no-op, Slack API doesn't support it) |
-| Markdown | ✅ Slack mrkdwn format |
+| File uploads | ✅ via `files.uploadV2` (buffers or URLs) |
+| Typing indicator | ❌ (no-op, Slack API doesn't support it) |
+| Markdown | ✅ converted to mrkdwn (`**b**` → `*b*`, links → `<url\|text>`, `&<>` escaped) |
 
 ## Socket Mode vs HTTP
 
 - **Socket Mode** (recommended for dev): no public URL needed, uses WebSocket. Requires `appToken`.
-- **HTTP Mode**: set `socketMode: false` and provide a `port`. Needs a publicly accessible URL.
+- **HTTP Mode**: omit `appToken` and provide a `port`. Needs a publicly accessible URL.
 
 ## Tips
 

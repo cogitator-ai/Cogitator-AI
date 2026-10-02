@@ -35,13 +35,16 @@ The orchestrator node runs the strategy and dispatches agent jobs to a Redis que
 import { Cogitator, Agent } from '@cogitator-ai/core';
 import { swarm } from '@cogitator-ai/swarms';
 
+const model = 'ollama/llama3.2';
+
 const team = swarm('distributed-team')
-  .strategy('hierarchical')
-  .supervisor(new Agent({ name: 'lead', instructions: 'Coordinate the team.' }))
-  .workers([
-    new Agent({ name: 'worker-a', instructions: 'Handle backend tasks.' }),
-    new Agent({ name: 'worker-b', instructions: 'Handle frontend tasks.' }),
-  ])
+  .strategy('pipeline')
+  .pipeline({
+    stages: [
+      { name: 'draft', agent: new Agent({ name: 'writer', model, instructions: 'Draft the text.' }) },
+      { name: 'review', agent: new Agent({ name: 'editor', model, instructions: 'Review it.' }) },
+    ],
+  })
   .distributed({
     enabled: true,
     redis: {
@@ -56,7 +59,7 @@ const team = swarm('distributed-team')
   })
   .build(cogitator);
 
-await team.run({ input: 'Build the checkout flow' });
+await team.run({ input: 'Write the release notes' });
 await team.close();
 ```
 
@@ -72,17 +75,20 @@ Always call `team.close()` when done to clean up Redis connections.
 | `redis.password`  | `undefined`          | Redis authentication password                  |
 | `redis.db`        | `0`                  | Redis database number                          |
 | `redis.keyPrefix` | `'swarm'`            | Key prefix for all Redis keys                  |
-| `queue`           | `'swarm-agent-jobs'` | Redis list name used as the job queue          |
+| `queue`           | `'swarm-agent-jobs'` | Job queue name (`{keyPrefix}:jobs:{queue}`)    |
 | `timeout`         | `300000`             | Timeout in ms for waiting on agent job results |
 
 ## How It Works
 
 When distributed mode is enabled, the `Swarm` creates a `DistributedSwarmCoordinator` instead of the local `SwarmCoordinator`. The distributed coordinator:
 
-1. **Initializes Redis-backed primitives** — `RedisMessageBus`, `RedisBlackboard`, and `RedisSwarmEventEmitter` replace their in-memory counterparts
-2. **Dispatches jobs** — when a strategy calls `runAgent()`, the coordinator serializes the agent config and pushes a job payload to a Redis list
-3. **Waits for results** — subscribes to a Redis pub/sub channel for job results, with a configurable timeout
-4. **Synchronizes state** — blackboard writes and messages are persisted in Redis, so all nodes see the same state
+1. **Uses Redis-backed primitives** — `RedisMessageBus`, `RedisBlackboard`, and `RedisSwarmEventEmitter` replace their in-memory counterparts. They are available right after construction and connect lazily on the first run.
+2. **Dispatches jobs** — when a strategy runs an agent, the coordinator serializes the agent (model, instructions, limits and tool schemas), the full turn context and run options, and pushes a `SwarmAgentJobPayload` onto the Redis list `{keyPrefix}:jobs:{queue}` (see `swarmJobQueueKey()`).
+3. **Waits for results** — results arrive on the `{keyPrefix}:{swarmId}:results` pub/sub channel and are matched by job id. Turns time out after `timeout` ms and are cancelled when the swarm is aborted or the run times out.
+4. **Applies the same policies as local swarms** — retry, failover, skip, budgets, circuit breaking and events behave exactly like in-process execution.
+5. **Synchronizes state** — blackboard writes and messages are persisted in Redis, so all nodes see the same state.
+
+Strategy tools that call back into the coordinator (hierarchical delegation, negotiation tools) only exist in-process, so prefer strategies such as pipeline, round-robin, consensus, debate and auction for distributed swarms. Agent tools are executed on the worker from its own tool registry.
 
 ## Redis Key Structure
 
@@ -189,73 +195,41 @@ await events.close();
 
 The emitter auto-trims the event list in Redis to `maxEvents` entries to prevent unbounded growth.
 
-## Building Worker Nodes
+## Running Worker Nodes
 
-Worker nodes consume jobs from the Redis queue, execute agents locally, and publish results back. A minimal worker implementation:
+`DistributedSwarmWorker` from `@cogitator-ai/worker` consumes the job queue, runs each agent turn with its own `Cogitator` and tools, and publishes the result back to the coordinator:
 
 ```typescript
-import Redis from 'ioredis';
-import { Cogitator, Agent } from '@cogitator-ai/core';
+import { Cogitator } from '@cogitator-ai/core';
+import { DistributedSwarmWorker } from '@cogitator-ai/worker';
 
-const redis = new Redis({ host: 'redis.example.com' });
-const cogitator = new Cogitator({
-  /* provider config */
-});
-
-async function processJobs() {
-  while (true) {
-    const [, jobJson] = await redis.blpop('swarm:jobs:swarm-agent-jobs', 0);
-    const job = JSON.parse(jobJson);
-
-    const agent = new Agent({
-      name: job.agentConfig.name,
-      instructions: job.agentConfig.instructions,
-      model: `${job.agentConfig.provider}/${job.agentConfig.model}`,
-    });
-
-    try {
-      const result = await cogitator.run(agent, { input: job.input, context: job.context });
-
-      await redis.publish(
-        `swarm:${job.swarmId}:results`,
-        JSON.stringify({
-          swarmId: job.swarmId,
-          agentName: job.agentName,
-          output: result.output,
-          toolCalls: result.toolCalls,
-          tokenUsage: {
-            prompt: result.usage.inputTokens,
-            completion: result.usage.outputTokens,
-            total: result.usage.totalTokens,
-          },
-        })
-      );
-    } catch (error) {
-      await redis.publish(
-        `swarm:${job.swarmId}:results`,
-        JSON.stringify({
-          swarmId: job.swarmId,
-          agentName: job.agentName,
-          output: '',
-          toolCalls: [],
-          tokenUsage: { prompt: 0, completion: 0, total: 0 },
-          error: error.message,
-        })
-      );
-    }
+const worker = new DistributedSwarmWorker(
+  {
+    redis: { host: 'redis.example.com', port: 6379, password: process.env.REDIS_PASSWORD },
+    keyPrefix: 'swarm', // must match distributed.redis.keyPrefix
+    queue: 'swarm-agent-jobs', // must match distributed.queue
+    concurrency: 4,
+    cogitator: new Cogitator({ llm: { defaultModel: 'ollama/llama3.2' } }),
+    tools: [searchTool, calculatorTool],
+  },
+  {
+    onJobFailed: (job, error) => console.error(job.agentName, error.message),
   }
-}
+);
 
-processJobs();
+await worker.start();
+process.on('SIGTERM', () => void worker.stop());
 ```
+
+Agents reference tools by name; a turn that needs a tool missing from the worker's `tools` fails with a clear error instead of running with a fake implementation. `stop()` stops taking new jobs and waits for in-flight turns.
 
 ## Scaling Considerations
 
-**Horizontal scaling** — spin up multiple worker nodes consuming from the same job queue. Redis `BLPOP` ensures each job is processed by exactly one worker.
+**Horizontal scaling** — spin up multiple worker nodes consuming from the same job queue. Redis `BLPOP` ensures each job is processed by exactly one worker; `concurrency` controls parallel turns per node.
 
 **State consistency** — the blackboard and message bus use Redis as the source of truth. Local caches provide fast reads; writes are immediately persisted and broadcast.
 
-**Connection management** — each distributed swarm creates 2 Redis connections (main + subscriber). Call `close()` when done to release connections.
+**Connection management** — a distributed swarm uses a command connection plus subscriber connections for messages, blackboard, events and results. Call `close()` when done to release them.
 
 **Timeouts** — configure the `timeout` option based on your expected agent execution time. Jobs that exceed the timeout will cause the coordinator to throw an error.
 

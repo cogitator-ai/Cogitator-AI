@@ -46,7 +46,11 @@ interface GatewayConfig {
   channels: Channel[];
   cogitator: Cogitator;
   memory?: MemoryAdapter;
+  sessionManager?: SessionManager; // defaults to SessionManager(memory)
   middleware?: GatewayMiddleware[];
+  hooks?: HookRegistry;
+  mediaProcessor?: MediaProcessor;
+  runTimeout?: number; // ms, defaults to the agent's timeout
 
   session?: {
     threadKey?: (msg: ChannelMessage) => string;
@@ -88,8 +92,9 @@ User sends message
   → MessageQueue (if configured): sequential/interrupt/collect
   → Middleware pipeline (pairing → rate-limit → ...)
   → Envelope formatting (if enabled): wrap with [channel user +elapsed timestamp]
-  → Session lookup/create
-  → Status reaction: 👀 → 🤔 (if enabled)
+  → Session lookup/create (emits session:created)
+  → Compaction (if the thread holds ≥ threshold messages)
+  → Status reaction: 👀 → 🤔 → 🔥 on tool calls (if enabled)
   → cogitator.run(agent, { input, threadId, stream })
   → Status reaction: 👍 or 😱
   → StreamBuffer flushes progressively via editText
@@ -120,7 +125,7 @@ const gateway = new Gateway({
 });
 ```
 
-Supported channels: Telegram (`setMessageReaction`), Discord (`react`). Channels without `setReaction` silently skip reactions.
+Supported channels: Telegram (`setMessageReaction`), Discord (`react`), Slack (`reactions.add`, default emojis mapped to Slack names). Channels without `setReaction` silently skip reactions.
 
 ## Inbound Debouncing
 
@@ -137,7 +142,7 @@ const gateway = new Gateway({
 });
 ```
 
-Messages are grouped by `channelType:channelId:userId`. Texts are joined with newlines, attachments are merged.
+Messages are grouped by `channelType:channelId:userId`. Texts are joined with newlines, attachments are merged. Merged messages then go through `queueMode` like any other message.
 
 ## Envelope Formatting
 
@@ -158,8 +163,10 @@ const gateway = new Gateway({
 The user's message `Hello world` becomes:
 
 ```
-[telegram Alice +2m30s Feb 28, 20:15] Hello world
+[Feb 28, 20:15 | telegram | Alice | +2m30s] Hello world
 ```
+
+Use `includeChatType: true` to add `DM`/`group`, and `includeSender`/`includeChannel: false` to drop those parts. Invalid time zones fall back to UTC.
 
 The elapsed time shows how long since the last message in this thread. The LLM naturally picks up on timing and context without explicit instructions.
 
@@ -178,7 +185,7 @@ const gateway = new Gateway({
 |------|----------|
 | `parallel` | Default. All messages processed immediately. |
 | `sequential` | FIFO per thread. Next message waits for current to finish. |
-| `interrupt` | Abort current processing, start new message immediately. |
+| `interrupt` | Abort current processing (the run's `AbortSignal` fires), start new message immediately. Aborted runs are not reported to `onError`. |
 | `collect` | Buffer messages during processing, merge all when idle. |
 
 `parallel` is the default and matches the behavior before Phase 4. For personal assistants, `sequential` or `collect` usually give the best UX.
@@ -214,12 +221,12 @@ const gateway = new Gateway({
 
 | Feature | Telegram | Discord | Slack | WhatsApp | WebChat |
 |---------|----------|---------|-------|----------|---------|
-| Streaming (edit) | ✅ | ✅ | ✅ | ❌ | ✅ |
-| Reactions | ✅ | ✅ | ❌ | ❌ | ❌ |
-| Typing indicator | ✅ | ✅ | ⚠️ | ✅ | ✅ |
-| Media (vision) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Voice (STT) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Max message length | 4096 | 2000 | ~4000 | ~65536 | unlimited |
+| Streaming (edit) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Reactions | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Typing indicator | ✅ | ✅ | ❌ | ✅ | ✅ |
+| Media (vision) | ✅ | ✅ | ✅ | ✅ | ❌ |
+| Voice (STT) | ✅ | ✅ | ✅ | ✅ | ❌ |
+| Max message length | 4096 | 2000 | 40000 | 65536 | unlimited |
 | Public URL needed | webhook only | no | HTTP mode only | no | no |
 | Auth model | Bot token | Bot token | 3 tokens | QR code | custom |
 
@@ -228,23 +235,29 @@ const gateway = new Gateway({
 Gateway integrates with `@cogitator-ai/memory` for persistent conversations:
 
 ```typescript
-import { SqliteMemory } from '@cogitator-ai/memory';
+import { SQLiteAdapter } from '@cogitator-ai/memory';
+
+const memory = new SQLiteAdapter({ provider: 'sqlite', path: './sessions.db' });
+await memory.connect();
 
 const gateway = new Gateway({
   // ...
-  memory: new SqliteMemory({ path: './sessions.db' }),
+  memory,
   session: {
     threadKey: (msg) => `${msg.channelType}:${msg.userId}`,
     compaction: {
       strategy: 'summary',
-      threshold: 100,
-      keepRecent: 20,
+      threshold: 100, // messages in the thread before compaction runs
+      keepRecent: 20, // newest messages kept verbatim
+      summaryModel: 'google/gemini-2.5-flash', // optional, defaults to the agent model
     },
   },
 });
 ```
 
 The `threadKey` function determines how sessions are grouped. By default, each user gets their own session per channel.
+
+Compaction summarizes everything except the newest `keepRecent` messages with an LLM call (`summaryPrompt` overrides the default prompt) and stores the summary as a system message. Strategies: `summary`, `sliding-window` (drop old messages), `hybrid`. A failed compaction is reported to `onError` and the message is still answered. Force it with `await gateway.compactThread(threadId)`.
 
 ## Stats
 
@@ -257,7 +270,13 @@ const stats = gateway.stats;
 //   messagesToday: 847,
 //   connectedChannels: ['telegram', 'discord'],
 // }
+
+gateway.getSessions();
+// [{ threadId: 'telegram:42', channelType: 'telegram', userId: '42', userName: 'Ann',
+//    messageCount: 18, lastActiveAt: 1767225600000, active: false }, ...]
 ```
+
+`activeSessions` counts threads with a run in progress; `messagesToday` resets at local midnight.
 
 ## Environment Variables
 

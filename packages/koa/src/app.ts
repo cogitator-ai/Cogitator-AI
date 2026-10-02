@@ -20,7 +20,7 @@ export function cogitatorApp(opts: CogitatorAppOptions): Router<CogitatorState> 
   const router = new Router<CogitatorState>();
 
   router.use(createErrorHandler());
-  router.use(createBodyParser());
+  router.use(createBodyParser({ limit: opts.bodyLimit }));
   router.use(createContextMiddleware(opts));
 
   if (opts.auth) {
@@ -43,12 +43,6 @@ export function cogitatorApp(opts: CogitatorAppOptions): Router<CogitatorState> 
   for (const sub of subrouters) {
     router.use(sub.routes());
     router.use(sub.allowedMethods());
-  }
-
-  if (opts.enableWebSocket) {
-    console.log(
-      '[CogitatorKoa] WebSocket support enabled — call setupWebSocket() with your HTTP server'
-    );
   }
 
   return router;

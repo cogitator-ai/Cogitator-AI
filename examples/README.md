@@ -83,6 +83,10 @@ Document loading, chunking strategies, retrieval-augmented generation with agent
 
 Basic evals, LLM-as-judge scoring, A/B comparison testing.
 
+### [`channels/`](./channels/) — Messaging Channels
+
+Telegram assistant with owner commands, YAML-style super assistant built with `RuntimeBuilder` (terminal + Telegram, scheduler, memory), WebChat bot with a browser client (`webchat-client.html`).
+
 ### [`voice/`](./voice/) — Voice & Realtime Agents
 
 STT/TTS pipeline, realtime speech-to-speech, WebSocket voice agent server.

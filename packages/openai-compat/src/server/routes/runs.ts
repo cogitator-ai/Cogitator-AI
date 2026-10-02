@@ -4,93 +4,108 @@
  * Implements OpenAI Runs API endpoints.
  */
 
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { OpenAIAdapter } from '../../client/openai-adapter';
-import type { CreateRunRequest, SubmitToolOutputsRequest } from '../../types/openai-types';
+import type {
+  CreateMessageRequest,
+  CreateRunRequest,
+  ListResponse,
+  Run,
+  SubmitToolOutputsRequest,
+} from '../../types/openai-types';
+import { paginate, parseLimit, parseOrder, sendInvalidRequest, sendNotFound } from './shared';
 
 export function registerRunRoutes(fastify: FastifyInstance, adapter: OpenAIAdapter) {
   fastify.post<{ Params: { thread_id: string }; Body: CreateRunRequest }>(
     '/v1/threads/:thread_id/runs',
     async (request, reply) => {
       const thread = await adapter.getThread(request.params.thread_id);
-
       if (!thread) {
-        return reply.status(404).send({
-          error: {
-            message: `No thread found with id '${request.params.thread_id}'`,
-            type: 'invalid_request_error',
-            code: 'not_found',
-          },
-        });
+        return sendNotFound(reply, 'thread', request.params.thread_id);
+      }
+      if (!request.body?.assistant_id) {
+        return sendInvalidRequest(reply, 'assistant_id is required', 'assistant_id');
       }
 
+      let run: Run;
       try {
-        const run = await adapter.createRun(request.params.thread_id, request.body);
-
-        if (request.body.stream) {
-          return handleStreamingRun(reply, adapter, request.params.thread_id, run.id);
-        }
-
-        return reply.status(201).send(run);
+        run = await adapter.createRun(request.params.thread_id, request.body);
       } catch (error) {
-        return reply.status(400).send({
-          error: {
-            message: error instanceof Error ? error.message : 'Failed to create run',
-            type: 'invalid_request_error',
-            code: 'invalid_request',
-          },
-        });
+        return sendInvalidRequest(reply, errorMessage(error, 'Failed to create run'));
       }
+
+      if (request.body.stream) {
+        return streamRun(reply, adapter, run.id, 0);
+      }
+      return reply.status(201).send(run);
     }
   );
 
   fastify.post<{
     Body: CreateRunRequest & {
-      thread?: { messages?: { role: 'user' | 'assistant'; content: string }[] };
+      thread?: { messages?: CreateMessageRequest[]; metadata?: Record<string, string> };
     };
   }>('/v1/threads/runs', async (request, reply) => {
-    const thread = await adapter.createThread();
-
-    if (request.body.thread?.messages) {
-      for (const msg of request.body.thread.messages) {
-        await adapter.addMessage(thread.id, msg);
-      }
+    if (!request.body?.assistant_id) {
+      return sendInvalidRequest(reply, 'assistant_id is required', 'assistant_id');
+    }
+    if (!(await adapter.getAssistant(request.body.assistant_id))) {
+      return sendInvalidRequest(reply, `Assistant ${request.body.assistant_id} not found`);
     }
 
+    const thread = await adapter.createThread(request.body.thread?.metadata);
+    for (const msg of request.body.thread?.messages ?? []) {
+      await adapter.addMessage(thread.id, msg);
+    }
+
+    let run: Run;
     try {
-      const run = await adapter.createRun(thread.id, request.body);
-
-      if (request.body.stream) {
-        return handleStreamingRun(reply, adapter, thread.id, run.id);
-      }
-
-      return reply.status(201).send(run);
+      run = await adapter.createRun(thread.id, request.body);
     } catch (error) {
-      return reply.status(400).send({
-        error: {
-          message: error instanceof Error ? error.message : 'Failed to create run',
-          type: 'invalid_request_error',
-          code: 'invalid_request',
-        },
-      });
+      await adapter.deleteThread(thread.id);
+      return sendInvalidRequest(reply, errorMessage(error, 'Failed to create run'));
     }
+
+    if (request.body.stream) {
+      return streamRun(reply, adapter, run.id, 0);
+    }
+    return reply.status(201).send(run);
+  });
+
+  fastify.get<{
+    Params: { thread_id: string };
+    Querystring: { limit?: string; order?: string; after?: string; before?: string };
+  }>('/v1/threads/:thread_id/runs', async (request, reply) => {
+    const thread = await adapter.getThread(request.params.thread_id);
+    if (!thread) {
+      return sendNotFound(reply, 'thread', request.params.thread_id);
+    }
+
+    const limit = parseLimit(request.query.limit);
+    if (limit === null)
+      return sendInvalidRequest(reply, 'limit must be between 1 and 100', 'limit');
+    const order = parseOrder(request.query.order);
+    if (order === null) return sendInvalidRequest(reply, "order must be 'asc' or 'desc'", 'order');
+
+    const runs = adapter.listRuns(request.params.thread_id);
+    const ordered = order === 'asc' ? runs.reverse() : runs;
+    const page = paginate(ordered, {
+      limit,
+      after: request.query.after,
+      before: request.query.before,
+    });
+
+    const response: ListResponse<Run> = { object: 'list', ...page };
+    return reply.send(response);
   });
 
   fastify.get<{ Params: { thread_id: string; run_id: string } }>(
     '/v1/threads/:thread_id/runs/:run_id',
     async (request, reply) => {
       const run = adapter.getRun(request.params.thread_id, request.params.run_id);
-
       if (!run) {
-        return reply.status(404).send({
-          error: {
-            message: `No run found with id '${request.params.run_id}'`,
-            type: 'invalid_request_error',
-            code: 'not_found',
-          },
-        });
+        return sendNotFound(reply, 'run', request.params.run_id);
       }
-
       return reply.send(run);
     }
   );
@@ -98,18 +113,15 @@ export function registerRunRoutes(fastify: FastifyInstance, adapter: OpenAIAdapt
   fastify.post<{ Params: { thread_id: string; run_id: string } }>(
     '/v1/threads/:thread_id/runs/:run_id/cancel',
     async (request, reply) => {
-      const run = adapter.cancelRun(request.params.thread_id, request.params.run_id);
-
-      if (!run) {
-        return reply.status(404).send({
-          error: {
-            message: `No run found with id '${request.params.run_id}'`,
-            type: 'invalid_request_error',
-            code: 'not_found',
-          },
-        });
+      let run: Run | undefined;
+      try {
+        run = adapter.cancelRun(request.params.thread_id, request.params.run_id);
+      } catch (error) {
+        return sendInvalidRequest(reply, errorMessage(error, 'Failed to cancel run'));
       }
-
+      if (!run) {
+        return sendNotFound(reply, 'run', request.params.run_id);
+      }
       return reply.send(run);
     }
   );
@@ -118,92 +130,68 @@ export function registerRunRoutes(fastify: FastifyInstance, adapter: OpenAIAdapt
     Params: { thread_id: string; run_id: string };
     Body: SubmitToolOutputsRequest;
   }>('/v1/threads/:thread_id/runs/:run_id/submit_tool_outputs', async (request, reply) => {
+    const cursor = adapter.getRunEventCursor(request.params.run_id);
+
+    let run: Run | undefined;
     try {
-      const run = await adapter.submitToolOutputs(
+      run = await adapter.submitToolOutputs(
         request.params.thread_id,
         request.params.run_id,
-        request.body
+        request.body ?? { tool_outputs: [] }
       );
-
-      if (!run) {
-        return reply.status(404).send({
-          error: {
-            message: `No run found with id '${request.params.run_id}'`,
-            type: 'invalid_request_error',
-            code: 'not_found',
-          },
-        });
-      }
-
-      if (request.body.stream) {
-        return handleStreamingRun(reply, adapter, request.params.thread_id, run.id);
-      }
-
-      return reply.send(run);
     } catch (error) {
-      return reply.status(400).send({
-        error: {
-          message: error instanceof Error ? error.message : 'Failed to submit tool outputs',
-          type: 'invalid_request_error',
-          code: 'invalid_request',
-        },
-      });
+      return sendInvalidRequest(reply, errorMessage(error, 'Failed to submit tool outputs'));
     }
+
+    if (!run) {
+      return sendNotFound(reply, 'run', request.params.run_id);
+    }
+
+    if (request.body?.stream) {
+      return streamRun(reply, adapter, run.id, cursor);
+    }
+    return reply.send(run);
   });
 }
 
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
 /**
- * Handle streaming run response using EventEmitter for real-time token delivery
+ * Stream run events as OpenAI-style server-sent events until the run
+ * finishes or pauses for tool outputs.
  */
-function handleStreamingRun(
-  reply: {
-    raw: {
-      write: (data: string) => void;
-      end: () => void;
-      on: (event: string, handler: () => void) => void;
-    };
-    header: (key: string, value: string) => void;
-  },
+async function streamRun(
+  reply: FastifyReply,
   adapter: OpenAIAdapter,
-  _threadId: string,
-  runId: string
-) {
-  reply.header('Content-Type', 'text/event-stream');
-  reply.header('Cache-Control', 'no-cache');
-  reply.header('Connection', 'keep-alive');
-  reply.header('X-Accel-Buffering', 'no');
-
-  const sendEvent = (event: string, data: unknown) => {
-    const dataStr = event === 'done' ? data : JSON.stringify(data);
-    reply.raw.write(`event: ${event}\n`);
-    reply.raw.write(`data: ${dataStr}\n\n`);
-  };
-
-  const emitter = adapter.getStreamEmitter(runId);
-  if (!emitter) {
-    sendEvent('error', {
-      error: { message: 'No stream available for this run', type: 'server_error' },
-    });
-    sendEvent('done', '[DONE]');
-    reply.raw.end();
-    return;
-  }
-
-  const eventHandler = (type: string, data: unknown) => {
-    sendEvent(type, data);
-  };
-
-  const endHandler = () => {
-    emitter.off('event', eventHandler);
-    emitter.off('end', endHandler);
-    reply.raw.end();
-  };
-
-  emitter.on('event', eventHandler);
-  emitter.on('end', endHandler);
-
-  reply.raw.on('close', () => {
-    emitter.off('event', eventHandler);
-    emitter.off('end', endHandler);
+  runId: string,
+  fromIndex: number
+): Promise<FastifyReply> {
+  reply.hijack();
+  const raw = reply.raw;
+  raw.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
   });
+
+  let closed = false;
+  raw.on('close', () => {
+    closed = true;
+  });
+
+  const events = adapter.streamRunEvents(runId, fromIndex);
+  try {
+    for await (const { event, data } of events) {
+      if (closed || raw.writableEnded) break;
+      const payload = typeof data === 'string' ? data : JSON.stringify(data);
+      raw.write(`event: ${event}\ndata: ${payload}\n\n`);
+    }
+  } finally {
+    await events.return(undefined);
+    if (!raw.writableEnded) raw.end();
+  }
+  return reply;
 }

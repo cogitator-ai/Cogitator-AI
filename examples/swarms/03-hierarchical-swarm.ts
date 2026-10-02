@@ -1,68 +1,7 @@
 import { createCogitator, DEFAULT_MODEL, header, section } from '../_shared/setup.js';
-import { Agent, tool } from '@cogitator-ai/core';
-import { SwarmCoordinator, HierarchicalStrategy } from '@cogitator-ai/swarms';
-import type { SwarmConfig } from '@cogitator-ai/types';
-import { z } from 'zod';
-
-function createSimpleDelegationTools(coordinator: SwarmCoordinator, supervisorName: string) {
-  const blackboard = coordinator.blackboard;
-
-  const delegateTask = tool({
-    name: 'delegate_task',
-    description: 'Delegate a task to a worker agent and get their response',
-    parameters: z.object({
-      worker: z.string().describe('Name of the worker agent to delegate to'),
-      task: z.string().describe('The task description to delegate'),
-    }),
-    execute: async ({ worker, task }) => {
-      const workerAgent = coordinator.getAgent(worker);
-      if (!workerAgent) {
-        const available = coordinator.getAgentsByRole('worker').map((a) => a.agent.name);
-        return {
-          success: false,
-          error: `Worker '${worker}' not found`,
-          availableWorkers: available,
-        };
-      }
-
-      const result = await coordinator.runAgent(worker, task, {
-        delegatedBy: supervisorName,
-      });
-
-      const workerResults = blackboard.has('workerResults')
-        ? blackboard.read<Record<string, string>>('workerResults')
-        : {};
-      workerResults[worker] = result.output;
-      blackboard.write('workerResults', workerResults, supervisorName);
-
-      return {
-        success: true,
-        worker,
-        output: result.output,
-        tokens: result.usage.totalTokens,
-      };
-    },
-  });
-
-  const listWorkers = tool({
-    name: 'list_workers',
-    description: 'List all available worker agents and their current state',
-    parameters: z.object({}),
-    execute: async () => {
-      const workers = coordinator.getAgentsByRole('worker');
-      return {
-        count: workers.length,
-        workers: workers.map((w) => ({
-          name: w.agent.name,
-          state: w.state,
-          description: w.agent.config.instructions.slice(0, 150),
-        })),
-      };
-    },
-  });
-
-  return { delegateTask, listWorkers };
-}
+import { Agent } from '@cogitator-ai/core';
+import { Swarm } from '@cogitator-ai/swarms';
+import type { SwarmConfig } from '@cogitator-ai/swarms';
 
 async function main() {
   header('03 — Hierarchical Swarm');
@@ -103,7 +42,6 @@ with CI/CD, containerization, and monitoring. Be practical and specific.`,
 Analyze the incoming task and delegate specific subtasks to your workers using the delegate_task tool.
 You MUST delegate to at least 2 workers before producing your final answer.
 After all delegations complete, synthesize worker outputs into a unified project plan.`,
-    tools: [],
     temperature: 0.3,
     maxIterations: 10,
   });
@@ -120,28 +58,21 @@ After all delegations complete, synthesize worker outputs into a unified project
     },
   };
 
-  const coordinator = new SwarmCoordinator(cog, config);
-
-  const tools = createSimpleDelegationTools(coordinator, 'project-manager');
-  supervisor.config.tools!.push(tools.delegateTask, tools.listWorkers);
+  const swarm = new Swarm(cog, config);
 
   section('Event listeners');
 
-  coordinator.events.on('agent:start', (event) => {
-    const { agentName } = event.data as { agentName: string };
-    console.log(`  [agent:start] ${agentName}`);
+  swarm.on('agent:start', (event) => {
+    console.log(`  [agent:start] ${event.agentName}`);
   });
 
-  coordinator.events.on('agent:complete', (event) => {
-    const { agentName } = event.data as { agentName: string };
-    console.log(`  [agent:complete] ${agentName}`);
+  swarm.on('agent:complete', (event) => {
+    console.log(`  [agent:complete] ${event.agentName}`);
   });
 
-  section('Running: plan a real-time dashboard project');
+  section('Running: plan a real-time analytics dashboard');
 
-  const strategy = new HierarchicalStrategy(coordinator, config.hierarchical);
-
-  const result = await strategy.execute({
+  const result = await swarm.run({
     input: `Plan a real-time analytics dashboard with WebSocket updates and role-based access.
 Delegate the frontend part to the frontend-specialist and the backend part to the backend-specialist.
 Then synthesize their responses into a short unified plan.`,
@@ -151,8 +82,8 @@ Then synthesize their responses into a short unified plan.`,
 
   section('Blackboard state');
 
-  for (const sectionName of coordinator.blackboard.getSections()) {
-    const entry = coordinator.blackboard.getSection(sectionName);
+  for (const sectionName of swarm.blackboard.getSections()) {
+    const entry = swarm.blackboard.getSection(sectionName);
     if (entry) {
       const preview =
         typeof entry.data === 'string'
@@ -183,7 +114,7 @@ Then synthesize their responses into a short unified plan.`,
 
   section('Resource usage');
 
-  const usage = coordinator.getResourceUsage();
+  const usage = swarm.getResourceUsage();
   console.log(`  Total tokens: ${usage.totalTokens}`);
   console.log(`  Total cost:   $${usage.totalCost.toFixed(4)}`);
   console.log(`  Elapsed time: ${usage.elapsedTime}ms`);

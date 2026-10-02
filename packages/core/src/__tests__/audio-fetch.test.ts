@@ -63,6 +63,26 @@ describe('audio-fetch utils', () => {
       expect(result.buffer).toBeInstanceOf(Buffer);
     });
 
+    it('should reject audio whose declared size exceeds 25MB before downloading', async () => {
+      const arrayBuffer = vi.fn();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          headers: new Headers({
+            'content-type': 'audio/mpeg',
+            'content-length': String(30 * 1024 * 1024),
+          }),
+          arrayBuffer,
+        })
+      );
+
+      await expect(fetchAudioAsBuffer('https://example.com/long.mp3')).rejects.toThrow(
+        'Audio file exceeds 25MB limit (got 30.0MB)'
+      );
+      expect(arrayBuffer).not.toHaveBeenCalled();
+    });
+
     it('should detect format from URL extension when content-type is missing', async () => {
       const mockAudioData = Buffer.from('fake audio data');
 

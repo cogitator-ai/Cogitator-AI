@@ -1,46 +1,34 @@
 /**
  * Swarm Agent job processor
  *
- * Executes a single agent within a distributed swarm context.
- * Reads shared state from Redis and publishes results back.
+ * Executes a single agent turn of a distributed swarm. The returned result always carries
+ * the job id so the swarm coordinator can match it; failures are reported as results with
+ * an `error` field instead of being thrown.
  */
 
-import { Cogitator, Agent } from '@cogitator-ai/core';
-import Redis from 'ioredis';
-import type { ToolSchema } from '@cogitator-ai/types';
-import type { SwarmAgentJobPayload, SwarmAgentJobResult } from '../types.js';
-import { recreateTools } from './shared.js';
+import type { SwarmAgentJobPayload, SwarmAgentJobResult, WorkerRuntime } from '../types';
+import { createAgentFromConfig, resolveCogitator, toErrorMessage } from './shared.js';
+import { findToolOutput } from './agent.js';
 
-export async function processSwarmAgentJob(
-  payload: SwarmAgentJobPayload
+export async function executeSwarmAgentJob(
+  payload: SwarmAgentJobPayload,
+  runtime: WorkerRuntime = {}
 ): Promise<SwarmAgentJobResult> {
-  const { swarmId, agentName, agentConfig, input, context, stateKeys } = payload;
-
-  let redis: Redis | null = null;
+  const { jobId, swarmId, agentName, agentConfig, input, context, runOptions } = payload;
 
   try {
-    const cogitator = new Cogitator();
-    const tools = recreateTools(agentConfig.tools as ToolSchema[]);
-
-    const agent = new Agent({
-      name: agentConfig.name,
-      model: `${agentConfig.provider}/${agentConfig.model}`,
-      instructions: agentConfig.instructions,
-      temperature: agentConfig.temperature,
-      maxTokens: agentConfig.maxTokens,
-      tools,
-    });
-
-    const result = await cogitator.run(agent, {
+    const agent = createAgentFromConfig(agentConfig, runtime);
+    const result = await resolveCogitator(runtime).run(agent, {
       input,
-      context: {
-        ...context,
-        _distributedSwarm: true,
-      },
+      context: { ...context, _distributedSwarm: true },
+      ...(runOptions?.threadId && { threadId: runOptions.threadId }),
+      ...(runOptions?.timeout !== undefined && { timeout: runOptions.timeout }),
+      ...(runOptions?.saveHistory !== undefined && { saveHistory: runOptions.saveHistory }),
     });
 
-    const jobResult: SwarmAgentJobResult = {
+    return {
       type: 'swarm-agent',
+      jobId,
       swarmId,
       agentName,
       output: result.output,
@@ -48,7 +36,7 @@ export async function processSwarmAgentJob(
       toolCalls: result.toolCalls.map((tc) => ({
         name: tc.name,
         input: tc.arguments,
-        output: undefined,
+        output: findToolOutput(result.messages, tc.id),
       })),
       tokenUsage: {
         prompt: result.usage.inputTokens,
@@ -56,41 +44,55 @@ export async function processSwarmAgentJob(
         total: result.usage.totalTokens,
       },
     };
-
-    redis = new Redis({
-      host: process.env.REDIS_HOST ?? 'localhost',
-      port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
-      password: process.env.REDIS_PASSWORD,
-    });
-
-    await redis.publish(stateKeys.results, JSON.stringify(jobResult));
-
-    return jobResult;
   } catch (error) {
-    const errorResult: SwarmAgentJobResult = {
+    return {
       type: 'swarm-agent',
+      jobId,
       swarmId,
       agentName,
       output: '',
       toolCalls: [],
       tokenUsage: { prompt: 0, completion: 0, total: 0 },
-      error: error instanceof Error ? error.message : 'Unknown error',
+      error: toErrorMessage(error),
     };
-
-    if (!redis) {
-      redis = new Redis({
-        host: process.env.REDIS_HOST ?? 'localhost',
-        port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
-        password: process.env.REDIS_PASSWORD,
-      });
-    }
-
-    await redis.publish(stateKeys.results, JSON.stringify(errorResult));
-
-    throw error;
-  } finally {
-    if (redis) {
-      await redis.quit();
-    }
   }
+}
+
+/**
+ * Publishes a job result on the channel the swarm coordinator listens to.
+ */
+export interface SwarmResultPublisher {
+  publish(channel: string, message: string): Promise<unknown>;
+}
+
+export interface SwarmAgentJobOptions extends WorkerRuntime {
+  /** Connection used to publish the result back to the coordinator */
+  publisher: SwarmResultPublisher;
+  /**
+   * Whether a failure is final. Non-final failures are rethrown without publishing so the
+   * queue can retry the job (default: true).
+   */
+  isFinalAttempt?: boolean;
+}
+
+/**
+ * Execute a swarm agent job and publish its result to `payload.stateKeys.results`.
+ * Throws after publishing when the agent failed, so queues mark the job as failed.
+ */
+export async function processSwarmAgentJob(
+  payload: SwarmAgentJobPayload,
+  options: SwarmAgentJobOptions
+): Promise<SwarmAgentJobResult> {
+  const result = await executeSwarmAgentJob(payload, options);
+  const isFinal = options.isFinalAttempt ?? true;
+
+  if (result.error === undefined || isFinal) {
+    await options.publisher.publish(payload.stateKeys.results, JSON.stringify(result));
+  }
+
+  if (result.error !== undefined) {
+    throw new Error(result.error);
+  }
+
+  return result;
 }

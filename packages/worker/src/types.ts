@@ -2,7 +2,12 @@
  * Worker types for distributed job processing
  */
 
-import type { ToolSchema } from '@cogitator-ai/types';
+import type { Cogitator } from '@cogitator-ai/core';
+import type { LLMProvider, Tool, ToolSchema } from '@cogitator-ai/types';
+import type {
+  SwarmAgentJobPayload as SwarmAgentJobContract,
+  SwarmAgentJobResult as SwarmAgentJobResultContract,
+} from '@cogitator-ai/swarms';
 
 /**
  * Serialized agent configuration for queue transport
@@ -11,15 +16,26 @@ import type { ToolSchema } from '@cogitator-ai/types';
 export interface SerializedAgent {
   name: string;
   instructions: string;
+  /** Model name; may already carry a provider prefix (e.g. 'openai/gpt-4o') */
   model: string;
-  provider: 'ollama' | 'openai' | 'anthropic';
+  /** Provider used when `model` has no provider prefix */
+  provider: LLMProvider;
   temperature?: number;
   maxTokens?: number;
+  maxIterations?: number;
+  /** Tool schemas; tools are resolved by name from the worker's tool registry */
   tools: ToolSchema[];
 }
 
 /**
  * Serialized workflow configuration
+ *
+ * Workflows run as a DAG over a shared state object (initialised from the job input).
+ * Node configs by type:
+ * - `agent`: {@link AgentNodeConfig}
+ * - `transform`: {@link TransformNodeConfig}
+ * - `condition`: {@link ConditionNodeConfig}; outgoing edges use `condition: 'true' | 'false'`
+ * - `parallel`: no config; a fan-out marker whose successors run concurrently
  */
 export interface SerializedWorkflow {
   id: string;
@@ -37,7 +53,43 @@ export interface SerializedWorkflowNode {
 export interface SerializedWorkflowEdge {
   from: string;
   to: string;
+  /** Branch taken from a condition node: 'true' or 'false' */
   condition?: string;
+}
+
+export interface AgentNodeConfig {
+  agentConfig: SerializedAgent;
+  /** Prompt template; `{{path}}` placeholders read from workflow state. Defaults to the state as JSON */
+  prompt?: string;
+  /** State key that receives the agent output (default: node id) */
+  outputKey?: string;
+}
+
+export type TransformOperation =
+  | 'uppercase'
+  | 'lowercase'
+  | 'trim'
+  | 'json-parse'
+  | 'json-stringify'
+  | 'template';
+
+export interface TransformNodeConfig {
+  transform: TransformOperation;
+  /** State path to read (default: the previous node's output key) */
+  inputKey?: string;
+  /** State key to write (default: node id) */
+  outputKey?: string;
+  /** Template used by the 'template' operation */
+  template?: string;
+}
+
+export type ConditionOperator = 'equals' | 'not-equals' | 'contains' | 'exists' | 'gt' | 'lt';
+
+export interface ConditionNodeConfig {
+  /** State path to test */
+  key: string;
+  operator: ConditionOperator;
+  value?: string | number | boolean | null;
 }
 
 /**
@@ -77,20 +129,10 @@ export interface SwarmJobPayload {
   metadata?: Record<string, unknown>;
 }
 
-export interface SwarmAgentJobPayload {
-  type: 'swarm-agent';
-  jobId: string;
-  swarmId: string;
-  agentName: string;
-  agentConfig: SerializedAgent;
-  input: string;
-  context?: Record<string, unknown>;
-  stateKeys: {
-    blackboard: string;
-    messages: string;
-    results: string;
-  };
-}
+/**
+ * Single agent turn of a distributed swarm (contract shared with `@cogitator-ai/swarms`)
+ */
+export type SwarmAgentJobPayload = SwarmAgentJobContract;
 
 export type JobPayload =
   | AgentJobPayload
@@ -130,15 +172,8 @@ export interface SwarmJobResult {
   }[];
 }
 
-export interface SwarmAgentJobResult {
+export interface SwarmAgentJobResult extends SwarmAgentJobResultContract {
   type: 'swarm-agent';
-  swarmId: string;
-  agentName: string;
-  output: string;
-  structured?: unknown;
-  toolCalls: { name: string; input: unknown; output: unknown }[];
-  tokenUsage: { prompt: number; completion: number; total: number };
-  error?: string;
 }
 
 export type JobResult = AgentJobResult | WorkflowJobResult | SwarmJobResult | SwarmAgentJobResult;
@@ -172,7 +207,20 @@ export interface QueueConfig {
   };
 }
 
-export interface WorkerConfig extends QueueConfig {
+/**
+ * Runtime dependencies used to execute jobs on a worker
+ */
+export interface WorkerRuntime {
+  /** Cogitator used to run agents (provider keys, memory, etc). Default: `new Cogitator()` */
+  cogitator?: Cogitator;
+  /**
+   * Tool implementations available on this worker. Serialized agents reference tools by
+   * name; a job that needs a tool missing from this list fails.
+   */
+  tools?: Tool[];
+}
+
+export interface WorkerConfig extends QueueConfig, WorkerRuntime {
   /** Number of worker instances */
   workerCount?: number;
   /** Concurrent jobs per worker */

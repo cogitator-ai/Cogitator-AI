@@ -40,6 +40,10 @@ export class DebateStrategy extends BaseStrategy {
       throw new Error('Debate strategy requires at least 2 debating agents');
     }
 
+    if (!Number.isInteger(this.config.rounds) || this.config.rounds < 1) {
+      throw new Error('Debate strategy requires at least 1 round');
+    }
+
     const moderator = moderators.length > 0 ? moderators[0] : null;
 
     this.coordinator.blackboard.write(
@@ -101,7 +105,14 @@ export class DebateStrategy extends BaseStrategy {
           debater.agent.name
         );
 
-        const result = await this.coordinator.runAgent(debater.agent.name, input, debaterContext);
+        const result = await this.coordinator.runAgent(
+          debater.agent.name,
+          input,
+          debaterContext,
+          this.config.maxTokensPerTurn !== undefined
+            ? { maxTokens: this.config.maxTokensPerTurn }
+            : undefined
+        );
         agentResults.set(`${debater.agent.name}_round${round}`, result);
 
         const message: SwarmMessage = {
@@ -118,13 +129,22 @@ export class DebateStrategy extends BaseStrategy {
         debateTranscript.push(message);
 
         const currentDebate = this.coordinator.blackboard.read<{ arguments: unknown[] }>('debate');
-        currentDebate.arguments.push({
-          agent: debater.agent.name,
-          role: debater.metadata.role,
-          round,
-          argument: result.output,
-        });
-        this.coordinator.blackboard.write('debate', currentDebate, debater.agent.name);
+        this.coordinator.blackboard.write(
+          'debate',
+          {
+            ...currentDebate,
+            arguments: [
+              ...currentDebate.arguments,
+              {
+                agent: debater.agent.name,
+                role: debater.metadata.role,
+                round,
+                argument: result.output,
+              },
+            ],
+          },
+          debater.agent.name
+        );
       }
     }
 

@@ -1,4 +1,5 @@
 import type { Context as HonoContext } from 'hono';
+import type { UpgradeWebSocket } from 'hono/ws';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 import type {
   Message,
@@ -45,8 +46,8 @@ export type AuthFunction = (
 
 export interface WebSocketConfig {
   path?: string;
-  pingInterval?: number;
   maxPayloadSize?: number;
+  upgradeWebSocket?: UpgradeWebSocket;
 }
 
 export type { SwaggerConfig } from '@cogitator-ai/server-shared';
@@ -62,6 +63,7 @@ export interface CogitatorAppOptions {
   swagger?: SwaggerConfig;
   enableWebSocket?: boolean;
   websocket?: WebSocketConfig;
+  bodyLimit?: number;
 }
 
 export interface CogitatorContext {
@@ -218,6 +220,25 @@ export interface WebSocketMessage {
   type: 'run' | 'stop' | 'ping';
   id?: string;
   payload?: unknown;
+}
+
+export interface WebSocketRunPayload {
+  type: 'agent' | 'workflow' | 'swarm';
+  name: string;
+  input: string;
+  context?: Record<string, unknown>;
+  threadId?: string;
+}
+
+export interface WebSocketClientState {
+  id: string;
+  abortController?: AbortController;
+}
+
+export interface WebSocketLike {
+  send(data: string): void;
+  close?(code?: number, reason?: string): void;
+  readonly readyState: number;
 }
 
 export interface WebSocketResponse {

@@ -427,7 +427,7 @@ export class SQLiteGraphAdapter implements GraphAdapter {
       params.push(...query.types);
     }
     if (query.namePattern) {
-      sql += ` AND name LIKE ?`;
+      sql += ` AND name LIKE ? ESCAPE '\\'`;
       params.push(`%${query.namePattern.replace(/[%_\\]/g, '\\$&')}%`);
     }
     if (query.minConfidence !== undefined) {

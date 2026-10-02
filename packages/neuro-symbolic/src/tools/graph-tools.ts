@@ -9,7 +9,13 @@ import type {
 } from '@cogitator-ai/types';
 import { tool } from '@cogitator-ai/core';
 
-export function createGraphTools(graphAdapter: GraphAdapter) {
+export interface GraphToolsOptions {
+  agentId?: string;
+}
+
+export function createGraphTools(graphAdapter: GraphAdapter, options: GraphToolsOptions = {}) {
+  const graphAgentId = (context: ToolContext): string => options.agentId ?? context.agentId;
+
   const findPath = tool({
     name: 'find_graph_path',
     description:
@@ -29,18 +35,18 @@ export function createGraphTools(graphAdapter: GraphAdapter) {
         .describe('Maximum path length (default: 5)'),
     }),
     execute: async ({ startNode, endNode, maxHops }, context: ToolContext) => {
-      const startNodeResult = await resolveNode(graphAdapter, context.agentId, startNode);
+      const startNodeResult = await resolveNode(graphAdapter, graphAgentId(context), startNode);
       if (!startNodeResult) {
         return { found: false, error: `Start node "${startNode}" not found` };
       }
 
-      const endNodeResult = await resolveNode(graphAdapter, context.agentId, endNode);
+      const endNodeResult = await resolveNode(graphAdapter, graphAgentId(context), endNode);
       if (!endNodeResult) {
         return { found: false, error: `End node "${endNode}" not found` };
       }
 
       const pathResult = await graphAdapter.findShortestPath(
-        context.agentId,
+        graphAgentId(context),
         startNodeResult.id,
         endNodeResult.id,
         maxHops ?? 5
@@ -98,7 +104,7 @@ export function createGraphTools(graphAdapter: GraphAdapter) {
     }),
     execute: async ({ nodeTypes, namePattern, limit, includeEdges }, context: ToolContext) => {
       const nodesResult = await graphAdapter.queryNodes({
-        agentId: context.agentId,
+        agentId: graphAgentId(context),
         types: nodeTypes as EntityType[],
         namePattern,
         limit: limit ?? 20,
@@ -159,7 +165,7 @@ export function createGraphTools(graphAdapter: GraphAdapter) {
     sideEffects: ['database'],
     execute: async ({ name, type, description, aliases, properties }, context: ToolContext) => {
       const result = await graphAdapter.addNode({
-        agentId: context.agentId,
+        agentId: graphAgentId(context),
         name,
         type: type as EntityType,
         description,
@@ -219,18 +225,18 @@ export function createGraphTools(graphAdapter: GraphAdapter) {
       { sourceNode, targetNode, type, label, weight, bidirectional },
       context: ToolContext
     ) => {
-      const sourceNodeResult = await resolveNode(graphAdapter, context.agentId, sourceNode);
+      const sourceNodeResult = await resolveNode(graphAdapter, graphAgentId(context), sourceNode);
       if (!sourceNodeResult) {
         return { success: false, error: `Source node "${sourceNode}" not found` };
       }
 
-      const targetNodeResult = await resolveNode(graphAdapter, context.agentId, targetNode);
+      const targetNodeResult = await resolveNode(graphAdapter, graphAgentId(context), targetNode);
       if (!targetNodeResult) {
         return { success: false, error: `Target node "${targetNode}" not found` };
       }
 
       const result = await graphAdapter.addEdge({
-        agentId: context.agentId,
+        agentId: graphAgentId(context),
         sourceNodeId: sourceNodeResult.id,
         targetNodeId: targetNodeResult.id,
         type: type as RelationType,

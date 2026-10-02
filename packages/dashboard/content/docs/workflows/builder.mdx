@@ -41,9 +41,9 @@ const builder = new WorkflowBuilder<{ count: number; items: string[] }>('counter
 });
 ```
 
-## `.addNode(name, fn, options?)`
+## `.addNode(name, node, options?)`
 
-Add a processing node to the workflow. The `fn` is a `NodeFn<S>` -- an async function that receives a `NodeContext<S>` and returns a `NodeResult<S>`.
+Add a processing node to the workflow. `node` is either a `NodeFn<S>` -- an async function that receives a `NodeContext<S>` and returns a `NodeResult<S>` -- or a `WorkflowNode<S>` created by a factory (`agentNode`, `toolNode`, `functionNode`, `customNode`, ...). A factory node's `config` is merged with `options.config`.
 
 ```typescript
 builder.addNode('process', async (ctx) => {
@@ -155,7 +155,7 @@ const workflow = new WorkflowBuilder<SearchState>('multi-search')
 
 ## `.entryPoint(nodeName)`
 
-Override the auto-detected entry point. By default, the builder picks the first node with no dependencies. Use this when you need explicit control.
+Override the auto-detected entry point. By default, the entry point is the single node (or conditional, loop or parallel construct) without `after`; targets of a parallel fan-out and a loop's `exit` node do not count as roots, so a root `addParallel` becomes the entry point. Several independent roots make `.build()` throw -- connect them through a parallel fan-out, or set `.entryPoint()` explicitly (execution starts there and follows the edges).
 
 ```typescript
 builder
@@ -169,8 +169,10 @@ builder
 
 Validates the workflow graph and returns a `Workflow<S>` object. Build-time validation checks:
 
+- Exactly one root exists when no `.entryPoint()` is set (no root or several independent roots throw)
 - Entry point exists in the node set
 - All edges reference existing nodes
+- Nodes that list a loop in `after` are that loop's `back` or `exit` node
 - Loop `back` and `exit` targets exist
 - Conditional targets exist
 - Parallel targets exist

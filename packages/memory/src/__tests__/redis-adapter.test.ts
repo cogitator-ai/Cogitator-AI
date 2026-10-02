@@ -291,3 +291,67 @@ describe('RedisAdapter', () => {
     });
   });
 });
+
+describe('RedisAdapter hardening', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCreateRedisClient.mockResolvedValue(mockRedisClient);
+  });
+
+  it('returns a failure result instead of throwing on Redis errors', async () => {
+    const adapter = new RedisAdapter({ provider: 'redis', host: 'localhost' });
+    await adapter.connect();
+    mockRedisClient.get.mockRejectedValueOnce(new Error('READONLY replica'));
+
+    const result = await adapter.getThread('t1');
+
+    expect(result).toEqual({ success: false, error: 'READONLY replica' });
+  });
+
+  it('adds a hash tag to custom cluster prefixes', async () => {
+    const adapter = new RedisAdapter({
+      provider: 'redis',
+      cluster: { nodes: [{ host: 'n1', port: 7000 }] },
+      keyPrefix: 'myapp:',
+    });
+    await adapter.connect();
+    mockRedisClient.get.mockResolvedValueOnce(null);
+
+    await adapter.getThread('t1');
+
+    expect(mockRedisClient.get).toHaveBeenCalledWith('{myapp}:thread:t1');
+  });
+
+  it('drops expired entry keys and applies the limit to live entries', async () => {
+    const adapter = new RedisAdapter({ provider: 'redis', host: 'localhost' });
+    await adapter.connect();
+    const live = (id: string) =>
+      JSON.stringify({
+        id,
+        threadId: 't1',
+        message: { role: 'user', content: id },
+        tokenCount: 1,
+        createdAt: new Date(),
+      });
+    mockRedisClient.zrange.mockResolvedValueOnce(['k1', 'k2', 'k3']);
+    mockRedisClient.mget.mockResolvedValueOnce([live('e1'), live('e2'), null]);
+
+    const result = await adapter.getEntries({ threadId: 't1', limit: 2 });
+
+    expect(mockRedisClient.zrem).toHaveBeenCalledWith('cogitator:thread:entries:t1', 'k3');
+    expect(result.success && result.data.map((e) => e.id)).toEqual(['e1', 'e2']);
+  });
+
+  it('refreshes the thread TTL when entries are added', async () => {
+    const adapter = new RedisAdapter({ provider: 'redis', host: 'localhost', ttl: 60 });
+    await adapter.connect();
+
+    await adapter.addEntry({
+      threadId: 't1',
+      message: { role: 'user', content: 'x' },
+      tokenCount: 1,
+    });
+
+    expect(mockRedisClient.expire).toHaveBeenCalledWith('cogitator:thread:t1', 60);
+  });
+});

@@ -6,6 +6,25 @@ import { z } from 'zod';
 import { tool } from '@cogitator-ai/core';
 import type { Blackboard } from '@cogitator-ai/types';
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Merge new data into an existing section value. Arrays are extended (array data is
+ * concatenated, any other value appended), objects are shallow-merged. Returns undefined
+ * when the values cannot be merged and the write should replace the section instead.
+ */
+function mergeSectionData(existing: unknown, data: unknown): unknown {
+  if (Array.isArray(existing)) {
+    return Array.isArray(data) ? [...existing, ...data] : [...existing, data];
+  }
+  if (isPlainObject(existing) && isPlainObject(data)) {
+    return { ...existing, ...data };
+  }
+  return undefined;
+}
+
 /**
  * Create blackboard tools bound to a blackboard instance
  */
@@ -21,9 +40,7 @@ export function createBlackboardTools(blackboard: Blackboard, currentAgent: stri
         .describe('Specific key within the section (reads entire section if omitted)'),
     }),
     execute: async ({ section, key }) => {
-      const data = blackboard.read(section);
-
-      if (data === undefined) {
+      if (!blackboard.has(section)) {
         return {
           found: false,
           section,
@@ -31,7 +48,12 @@ export function createBlackboardTools(blackboard: Blackboard, currentAgent: stri
         };
       }
 
-      if (key && typeof data === 'object' && data !== null) {
+      const data = blackboard.read(section);
+
+      if (key !== undefined) {
+        if (typeof data !== 'object' || data === null) {
+          return { found: false, section, key, data: null };
+        }
         const value = (data as Record<string, unknown>)[key];
         return {
           found: value !== undefined,
@@ -61,16 +83,10 @@ export function createBlackboardTools(blackboard: Blackboard, currentAgent: stri
         .describe('If true and data is an object, merge with existing data'),
     }),
     execute: async ({ section, data, merge }) => {
-      if (merge && typeof data === 'object' && data !== null) {
+      if (merge && blackboard.has(section)) {
         const existing = blackboard.read(section);
-        if (existing && typeof existing === 'object') {
-          const merged = Array.isArray(existing)
-            ? Array.isArray(data)
-              ? [...existing, ...data]
-              : existing
-            : Array.isArray(data)
-              ? data
-              : { ...existing, ...data };
+        const merged = mergeSectionData(existing, data);
+        if (merged !== undefined) {
           blackboard.write(section, merged, currentAgent);
           return {
             written: true,

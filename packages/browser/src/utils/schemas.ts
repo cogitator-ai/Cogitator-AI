@@ -25,9 +25,11 @@ export const reloadSchema = z.object({
 });
 export type ReloadInput = z.infer<typeof reloadSchema>;
 
+const timeoutSchema = z.number().int().min(0).describe('Timeout in milliseconds (0 disables it)');
+
 export const waitForNavigationSchema = z.object({
-  url: z.string().optional().describe('URL pattern to wait for'),
-  timeout: z.number().optional().describe('Timeout in milliseconds'),
+  url: z.string().optional().describe('URL glob pattern to wait for'),
+  timeout: timeoutSchema.optional(),
 });
 export type WaitForNavigationInput = z.infer<typeof waitForNavigationSchema>;
 
@@ -40,14 +42,14 @@ export const waitForSelectorSchema = z.object({
     .enum(['visible', 'hidden', 'attached', 'detached'])
     .optional()
     .describe('Element state to wait for'),
-  timeout: z.number().optional().describe('Timeout in milliseconds'),
+  timeout: timeoutSchema.optional(),
 });
 export type WaitForSelectorInput = z.infer<typeof waitForSelectorSchema>;
 
 export const clickSchema = z.object({
   selector: z.string().describe('CSS selector of element to click'),
   button: z.enum(['left', 'right', 'middle']).optional().describe('Mouse button'),
-  clickCount: z.number().min(1).optional().describe('Number of clicks (2 for double-click)'),
+  clickCount: z.number().int().min(1).optional().describe('Number of clicks (2 for double-click)'),
   position: z
     .object({
       x: z.number(),
@@ -61,7 +63,7 @@ export type ClickInput = z.infer<typeof clickSchema>;
 export const typeSchema = z.object({
   selector: z.string().describe('CSS selector of input element'),
   text: z.string().describe('Text to type'),
-  delay: z.number().optional().describe('Delay between keystrokes in ms'),
+  delay: z.number().min(0).optional().describe('Delay between keystrokes in ms'),
   clearFirst: z.boolean().optional().describe('Clear the field before typing'),
 });
 export type TypeInput = z.infer<typeof typeSchema>;
@@ -71,7 +73,7 @@ export const selectOptionSchema = z
     selector: z.string().describe('CSS selector of select element'),
     value: z.string().optional().describe('Option value to select'),
     label: z.string().optional().describe('Option label to select'),
-    index: z.number().optional().describe('Option index to select'),
+    index: z.number().int().min(0).optional().describe('Option index to select'),
   })
   .refine(
     (data) => data.value !== undefined || data.label !== undefined || data.index !== undefined,
@@ -92,7 +94,7 @@ export type HoverInput = z.infer<typeof hoverSchema>;
 
 export const scrollSchema = z.object({
   direction: z.enum(['up', 'down', 'left', 'right']).describe('Scroll direction'),
-  amount: z.number().optional().describe('Scroll amount in pixels'),
+  amount: z.number().min(0).optional().describe('Scroll amount in pixels (default 500)'),
   selector: z.string().optional().describe('CSS selector of scrollable element'),
 });
 export type ScrollInput = z.infer<typeof scrollSchema>;
@@ -121,7 +123,7 @@ export type FillFormInput = z.infer<typeof fillFormSchema>;
 
 export const uploadFileSchema = z.object({
   selector: z.string().describe('CSS selector of file input'),
-  filePaths: z.array(z.string()).describe('Absolute paths to files to upload'),
+  filePaths: z.array(z.string().min(1)).min(1).describe('Paths to files to upload'),
 });
 export type UploadFileInput = z.infer<typeof uploadFileSchema>;
 
@@ -151,7 +153,7 @@ export type GetLinksInput = z.infer<typeof getLinksSchema>;
 export const querySelectorAllSchema = z.object({
   selector: z.string().describe('CSS selector to query'),
   attributes: z.array(z.string()).optional().describe('Attributes to include per element'),
-  limit: z.number().optional().describe('Max elements to return'),
+  limit: z.number().int().min(0).optional().describe('Max elements to return'),
 });
 export type QuerySelectorAllInput = z.infer<typeof querySelectorAllSchema>;
 
@@ -185,12 +187,15 @@ export type FindByDescriptionInput = z.infer<typeof findByDescriptionSchema>;
 
 export const clickByDescriptionSchema = z.object({
   description: z.string().describe('Natural language description of element to click'),
-  index: z.number().optional().describe('Index of match to click if multiple found'),
+  index: z.number().int().min(0).optional().describe('Index of match to click if multiple found'),
 });
 export type ClickByDescriptionInput = z.infer<typeof clickByDescriptionSchema>;
 
 export const interceptRequestSchema = z.object({
-  urlPattern: z.string().describe('URL pattern to intercept (glob or regex)'),
+  urlPattern: z
+    .string()
+    .min(1)
+    .describe('URL glob (e.g. "**/api/**") or regular expression literal (e.g. "/\\.png$/i")'),
   action: z.enum(['block', 'modify', 'continue']).describe('What to do with matching requests'),
   modify: z
     .object({
@@ -203,27 +208,46 @@ export const interceptRequestSchema = z.object({
 });
 export type InterceptRequestInput = z.infer<typeof interceptRequestSchema>;
 
+export const removeInterceptorSchema = z.object({
+  interceptorId: z
+    .string()
+    .optional()
+    .describe('Interceptor ID to remove; omit to remove all interceptors'),
+});
+export type RemoveInterceptorInput = z.infer<typeof removeInterceptorSchema>;
+
 export const waitForResponseSchema = z.object({
-  urlPattern: z.string().describe('URL pattern to wait for'),
-  timeout: z.number().optional().describe('Timeout in milliseconds'),
+  urlPattern: z
+    .string()
+    .min(1)
+    .describe('URL substring or regular expression literal (e.g. "/api\\/v\\d+/") to wait for'),
+  timeout: timeoutSchema.optional(),
 });
 export type WaitForResponseInput = z.infer<typeof waitForResponseSchema>;
 
 export const blockResourcesSchema = z.object({
   types: z
     .array(z.enum(['image', 'stylesheet', 'font', 'media', 'script']))
+    .min(1)
     .describe('Resource types to block'),
 });
 export type BlockResourcesInput = z.infer<typeof blockResourcesSchema>;
 
 export const captureHarSchema = z.object({
   action: z.enum(['start', 'stop']).describe('Start or stop HAR capture'),
-  path: z.string().optional().describe('File path to save HAR (on stop)'),
+  path: z
+    .string()
+    .optional()
+    .describe('File path inside the working directory to save a HAR 1.2 file (on stop)'),
 });
 export type CaptureHarInput = z.infer<typeof captureHarSchema>;
 
 export const getApiCallsSchema = z.object({
-  urlPattern: z.string().optional().describe('Filter API calls by URL pattern'),
+  urlPattern: z
+    .string()
+    .optional()
+    .describe('Filter API calls by URL substring or regular expression literal'),
   method: z.string().optional().describe('Filter by HTTP method'),
+  clear: z.boolean().optional().describe('Clear the recorded API calls after returning them'),
 });
 export type GetApiCallsInput = z.infer<typeof getApiCallsSchema>;

@@ -26,6 +26,9 @@ export type {
   SwaggerConfig,
   WebSocketMessage,
   WebSocketResponse,
+  WebSocketRunPayload,
+  WebSocketClientState,
+  WebSocketLike,
 } from './types.js';
 
 export { HonoStreamWriter } from './streaming/hono-stream-writer.js';
@@ -33,6 +36,7 @@ export { HonoStreamWriter } from './streaming/hono-stream-writer.js';
 export { createContextMiddleware } from './middleware/context.js';
 export { createAuthMiddleware } from './middleware/auth.js';
 export { errorHandler } from './middleware/error-handler.js';
+export { createBodyLimitMiddleware } from './middleware/body-limit.js';
 
 export {
   createHealthRoutes,

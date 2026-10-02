@@ -120,6 +120,10 @@ export class SQLiteAdapter extends BaseMemoryAdapter {
       const stmt = this.db.prepare(`
         INSERT INTO threads (id, agent_id, metadata, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          agent_id = excluded.agent_id,
+          metadata = excluded.metadata,
+          updated_at = excluded.updated_at
       `);
       stmt.run(
         thread.id,
@@ -207,7 +211,7 @@ export class SQLiteAdapter extends BaseMemoryAdapter {
     const full: MemoryEntry = {
       ...entry,
       id: this.generateId('entry'),
-      createdAt: new Date(),
+      createdAt: this.nextEntryTimestamp(entry.threadId),
     };
 
     try {
@@ -247,11 +251,12 @@ export class SQLiteAdapter extends BaseMemoryAdapter {
         params.push(options.after.toISOString());
       }
 
-      let sql = `SELECT * FROM entries WHERE ${conditions.join(' AND ')} ORDER BY created_at ASC`;
+      let sql = `SELECT * FROM entries WHERE ${conditions.join(' AND ')} ORDER BY created_at ASC, rowid ASC`;
       if (options.limit) {
         sql = `SELECT * FROM (
-          SELECT * FROM entries WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC LIMIT ?
-        ) ORDER BY created_at ASC`;
+          SELECT *, rowid AS entry_order FROM entries WHERE ${conditions.join(' AND ')}
+          ORDER BY created_at DESC, rowid DESC LIMIT ?
+        ) ORDER BY created_at ASC, entry_order ASC`;
         params.push(options.limit);
       }
 

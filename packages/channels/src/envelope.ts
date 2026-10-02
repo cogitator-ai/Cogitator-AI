@@ -28,7 +28,6 @@ function sanitize(str: string): string {
 }
 
 function formatTime(timestamp: number, timezone?: string): string {
-  const tz = timezone === 'local' ? undefined : (timezone ?? 'utc');
   const opts: Intl.DateTimeFormatOptions = {
     month: 'short',
     day: 'numeric',
@@ -36,12 +35,16 @@ function formatTime(timestamp: number, timezone?: string): string {
     minute: '2-digit',
     hour12: false,
   };
-  if (tz && tz !== 'utc') {
-    opts.timeZone = tz;
-  } else if (tz === 'utc') {
-    opts.timeZone = 'UTC';
+  if (timezone !== 'local') {
+    opts.timeZone = !timezone || timezone.toLowerCase() === 'utc' ? 'UTC' : timezone;
   }
-  return new Intl.DateTimeFormat('en-US', opts).format(new Date(timestamp));
+  try {
+    return new Intl.DateTimeFormat('en-US', opts).format(new Date(timestamp));
+  } catch {
+    return new Intl.DateTimeFormat('en-US', { ...opts, timeZone: 'UTC' }).format(
+      new Date(timestamp)
+    );
+  }
 }
 
 export function formatEnvelope(

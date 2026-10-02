@@ -266,6 +266,8 @@ const shellTool = tool({
 });
 ```
 
+`timeout` is enforced for every tool: native tools get an aborted `context.signal` and the model receives a `Tool "<name>" timed out after <ms>ms` error; sandboxed tools forward it to the sandbox executor. The sandbox is initialized lazily on the first sandboxed call, and that call already runs inside it.
+
 ### Tool Registry
 
 ```typescript
@@ -391,6 +393,8 @@ const agent = new Agent({
 // Read-only by default (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN)
 ```
 
+Read-only queries on PostgreSQL run inside `BEGIN TRANSACTION READ ONLY` (always rolled back), so writes hidden in functions are rejected by the database. SQLite opens the file with `readonly: true`. With `readOnly: false`, row-less statements return `rows: []` and the affected row count in `rowCount`.
+
 **Dependencies:** `pg` for PostgreSQL, `better-sqlite3` for SQLite
 
 ### Vector Search Tool
@@ -405,7 +409,8 @@ const agent = new Agent({
 });
 
 // Embedding providers: OpenAI, Ollama, Google
-// Auto-detects from OPENAI_API_KEY, OLLAMA_BASE_URL, or GOOGLE_API_KEY
+// Auto-detects from OPENAI_API_KEY, OLLAMA_BASE_URL / OLLAMA_HOST, or GOOGLE_API_KEY
+// Default models: text-embedding-3-small, nomic-embed-text, gemini-embedding-001
 ```
 
 **Dependencies:** `pg` with pgvector extension
@@ -459,6 +464,8 @@ const agent = new Agent({
 
 const result = await cog.run(agent, {
   input: 'Analyze this data...',
+  images: ['https://example.com/chart.png'],
+  audio: [{ data: base64Wav, format: 'wav' }],
 
   threadId: 'thread_123',
   context: { userId: 'user_456', task: 'analysis' },
@@ -480,6 +487,8 @@ const result = await cog.run(agent, {
   onMemoryError: (error, op) => console.warn(`Memory ${op} failed`),
 });
 ```
+
+`audio` inputs are transcribed with OpenAI Whisper (`llm.providers.openai.apiKey` or `OPENAI_API_KEY`) and prepended to `input` before guardrails and prompt-injection checks run. History loaded from memory is repaired before it is sent: tool results without their assistant call and tool calls without results are dropped, so a truncated window never produces an invalid provider request.
 
 ### Run Result
 
@@ -1131,6 +1140,8 @@ const detector = new PromptInjectionDetector({
   action: 'block',
 });
 ```
+
+Inside `Cogitator` (`security.promptInjection`), omit `llmBackend` and pass a `provider/model` id as `llmModel`; without `llmModel` the classifier uses the running agent's model.
 
 ### Statistics & Callbacks
 

@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+export const OLLAMA_LOCAL_URL = 'http://localhost:11434';
+export const OLLAMA_CLOUD_URL = 'https://ollama.com';
+
 export const LLMProviderSchema = z.enum([
   'ollama',
   'openai',
@@ -15,7 +18,13 @@ export const LLMProviderSchema = z.enum([
 ]);
 
 export const ProvidersConfigSchema = z.object({
-  ollama: z.object({ baseUrl: z.string(), apiKey: z.string().optional() }).optional(),
+  ollama: z
+    .object({ baseUrl: z.string().optional(), apiKey: z.string().optional() })
+    .transform(({ baseUrl, apiKey }) => ({
+      baseUrl: baseUrl ?? (apiKey ? OLLAMA_CLOUD_URL : OLLAMA_LOCAL_URL),
+      ...(apiKey ? { apiKey } : {}),
+    }))
+    .optional(),
   openai: z.object({ apiKey: z.string(), baseUrl: z.string().optional() }).optional(),
   anthropic: z.object({ apiKey: z.string() }).optional(),
   google: z.object({ apiKey: z.string() }).optional(),
@@ -48,9 +57,9 @@ export const LLMConfigSchema = z.object({
 });
 
 export const LimitsConfigSchema = z.object({
-  maxConcurrentRuns: z.number().positive().optional(),
+  maxConcurrentRuns: z.number().int().positive().optional(),
   defaultTimeout: z.number().positive().optional(),
-  maxTokensPerRun: z.number().positive().optional(),
+  maxTokensPerRun: z.number().int().positive().optional(),
 });
 
 export const MemoryProviderSchema = z.enum([
@@ -368,17 +377,17 @@ export const ContextManagerConfigSchema = z.object({
   windowOverlap: z.number().positive().optional(),
 });
 
-export const DeployTargetSchema = z.enum(['docker', 'fly', 'railway', 'k8s', 'ssh']);
+export const DeployTargetSchema = z.enum(['docker', 'fly']);
 export const DeployServerSchema = z.enum(['express', 'fastify', 'hono', 'koa']);
 
 export const DeployConfigSchema = z.object({
   target: DeployTargetSchema.optional(),
   server: DeployServerSchema.optional(),
-  port: z.number().positive().optional(),
+  port: z.number().int().min(1).max(65535).optional(),
   registry: z.string().optional(),
   image: z.string().optional(),
   region: z.string().optional(),
-  instances: z.number().positive().optional(),
+  instances: z.number().int().positive().optional(),
   services: z
     .object({
       redis: z.boolean().optional(),

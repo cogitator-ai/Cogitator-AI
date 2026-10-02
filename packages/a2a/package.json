@@ -36,7 +36,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && tsx ../../scripts/fix-esm-imports.ts .",
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",

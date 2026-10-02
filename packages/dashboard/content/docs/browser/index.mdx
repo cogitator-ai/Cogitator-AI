@@ -1,11 +1,11 @@
 ---
 title: Browser
-description: Playwright-based browser automation for AI agents with 32 tools across navigation, interaction, extraction, vision, and network modules.
+description: Playwright-based browser automation for AI agents with 33 tools across navigation, interaction, extraction, vision, and network modules.
 ---
 
 ## What is @cogitator-ai/browser?
 
-`@cogitator-ai/browser` gives your agents the ability to browse the web. It wraps Playwright in a session-based API and exposes **32 tools** that agents can call to navigate pages, fill forms, extract data, take screenshots, and intercept network traffic.
+`@cogitator-ai/browser` gives your agents the ability to browse the web. It wraps Playwright in a session-based API and exposes **33 tools** that agents can call to navigate pages, fill forms, extract data, take screenshots, and intercept network traffic.
 
 Everything runs through `BrowserSession` which manages the browser lifecycle, tabs, cookies, and optional stealth mode for anti-detection. Tools are created via `browserTools()` and plug directly into any Cogitator agent.
 
@@ -64,7 +64,7 @@ await session.close();
 
 ## Tool Modules
 
-All 32 tools are organized into 5 modules. Use `browserTools(session)` to get all of them, or filter by module.
+All 33 tools are organized into 5 modules. Use `browserTools(session)` to get all of them, or filter by module.
 
 | Module | Tools | Description |
 | --- | --- | --- |
@@ -72,7 +72,7 @@ All 32 tools are organized into 5 modules. Use `browserTools(session)` to get al
 | [Interaction](/docs/browser/tools#interaction) | 9 | Clicking, typing, forms, drag & drop |
 | [Extraction](/docs/browser/tools#extraction) | 7 | Text, HTML, links, tables, structured data |
 | [Vision](/docs/browser/tools#vision) | 4 | Screenshots, accessibility tree, click-by-description |
-| [Network](/docs/browser/tools#network) | 5 | Request interception, HAR capture, API call tracking |
+| [Network](/docs/browser/tools#network) | 6 | Request interception, HAR capture, API call tracking |
 
 ### Module Filtering
 
@@ -108,7 +108,7 @@ const tools = [
 ## Next Steps
 
 - [BrowserSession](/docs/browser/session) — lifecycle, tabs, cookies, configuration
-- [Tools Reference](/docs/browser/tools) — all 32 tools with parameters
+- [Tools Reference](/docs/browser/tools) — all 33 tools with parameters
 - [Stealth](/docs/browser/stealth) — anti-detection and human-like behavior
 - [Vision](/docs/browser/vision) — screenshots and accessibility-based interaction
 - [Network](/docs/browser/network) — request interception and traffic capture

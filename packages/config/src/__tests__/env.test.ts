@@ -21,7 +21,11 @@ describe('loadEnvConfig()', () => {
           'OPENAI_API_KEY',
           'ANTHROPIC_API_KEY',
           'OLLAMA_HOST',
+          'OLLAMA_URL',
+          'OLLAMA_API_KEY',
           'GOOGLE_API_KEY',
+          'GEMINI_API_KEY',
+          'OPENAI_BASE_URL',
           'AZURE_OPENAI_API_KEY',
           'AZURE_OPENAI_ENDPOINT',
           'AZURE_OPENAI_DEPLOYMENT',
@@ -238,5 +242,49 @@ describe('loadEnvConfig()', () => {
     expect(config.llm?.providers?.groq?.apiKey).toBe('groq-std-key');
     expect(config.llm?.providers?.together?.apiKey).toBe('together-std-key');
     expect(config.llm?.providers?.deepseek?.apiKey).toBe('deepseek-std-key');
+  });
+
+  describe('Ollama', () => {
+    beforeEach(() => {
+      for (const key of [
+        'COGITATOR_OLLAMA_BASE_URL',
+        'COGITATOR_OLLAMA_API_KEY',
+        'OLLAMA_URL',
+        'OLLAMA_HOST',
+        'OLLAMA_API_KEY',
+      ]) {
+        delete process.env[key];
+      }
+    });
+
+    it('reads OLLAMA_URL (used by channels and the CLI)', () => {
+      process.env.OLLAMA_URL = 'https://ollama.example.com/';
+      expect(loadEnvConfig().llm?.providers?.ollama).toEqual({
+        baseUrl: 'https://ollama.example.com',
+      });
+    });
+
+    it('adds a scheme to OLLAMA_HOST values like 127.0.0.1:11434', () => {
+      process.env.OLLAMA_HOST = '127.0.0.1:11434';
+      expect(loadEnvConfig().llm?.providers?.ollama?.baseUrl).toBe('http://127.0.0.1:11434');
+    });
+
+    it('does not invent a baseUrl when only an API key is set', () => {
+      process.env.OLLAMA_API_KEY = 'key';
+      expect(loadEnvConfig().llm?.providers?.ollama).toEqual({ apiKey: 'key' });
+    });
+
+    it('ignores empty values', () => {
+      process.env.OLLAMA_URL = '';
+      process.env.OLLAMA_API_KEY = '';
+      expect(loadEnvConfig().llm?.providers?.ollama).toBeUndefined();
+    });
+  });
+
+  it('accepts GEMINI_API_KEY as an alias for Google', () => {
+    delete process.env.COGITATOR_GOOGLE_API_KEY;
+    delete process.env.GOOGLE_API_KEY;
+    process.env.GEMINI_API_KEY = 'gemini-key';
+    expect(loadEnvConfig().llm?.providers?.google?.apiKey).toBe('gemini-key');
   });
 });

@@ -88,6 +88,12 @@ if (result.success) {
 }
 ```
 
+### Fallback and Initialization
+
+`initialize()` is idempotent and safe to call concurrently; `execute()` calls it automatically. When the requested backend is unavailable the manager falls back (`wasm` → `docker` → `native`, `docker` → `native`) with a warning, and the manager `defaults` are applied to the fallback execution as well. The native fallback has **no isolation** — check `isDockerAvailable()` / `isWasmAvailable()` first if untrusted code must never reach the host.
+
+When no `docker` connection options are given, Dockerode's defaults are used, so `DOCKER_HOST` is respected.
+
 ### Availability Checks
 
 ```typescript
@@ -169,8 +175,15 @@ Docker containers run with these security settings:
   SecurityOpt: ['no-new-privileges'],  // No privilege escalation
   PidsLimit: 100,               // Limit process count
   ReadonlyRootfs: false,        // Writable (can enable true)
+  Labels: { 'ai.cogitator.sandbox': 'true' },
 }
 ```
+
+- `command` is executed as an argv array (no shell); use `['sh', '-c', '...']` for shell syntax.
+- Output is demultiplexed frame by frame (frames split across network chunks are reassembled) and capped at 50 000 bytes per stream.
+- Timed-out containers are destroyed instead of being returned to the pool.
+- `network.dns` is applied to new containers. `network.allowedHosts` is rejected because Docker cannot enforce an egress allow-list — use `mode: 'none'` or a dedicated network.
+- Containers are labeled `ai.cogitator.sandbox=true` (`SANDBOX_CONTAINER_LABEL`), so leftovers from a crashed process can be removed with `docker rm -f $(docker ps -aq --filter label=ai.cogitator.sandbox)`.
 
 ---
 
@@ -198,6 +211,8 @@ await pool.release(container);
 await pool.destroyAll();
 ```
 
+Containers are only reused for requests with identical settings (image, resources, network mode, DNS, mounts and user), so a container created with a host mount or network access is never handed to a request that asked for isolation. The idle-cleanup timer does not keep the Node.js process alive.
+
 ### Pool Options
 
 | Option          | Type     | Default | Description                            |
@@ -209,7 +224,7 @@ await pool.destroyAll();
 
 ## WASM Executor
 
-Execute WebAssembly modules via Extism.
+Execute WebAssembly modules via Extism. Each plugin runs in its own worker thread, so a timeout terminates a runaway module instead of blocking the event loop. Idle plugins are pooled per module / WASI / allowed-host combination (up to `cacheSize`); concurrent executions use separate plugin instances.
 
 ```typescript
 import { WasmSandboxExecutor } from '@cogitator-ai/sandbox';
@@ -240,6 +255,11 @@ const result = await wasm.execute(
 await wasm.disconnect();
 ```
 
+- Local paths, module specifiers and `http(s)` URLs are supported for `wasmModule`.
+- `wasmModule`, `functionName` and `wasi` from the executor options are used when the per-request config omits them.
+- `network.allowedHosts` is forwarded to Extism's HTTP allow-list (empty when `network.mode` is `'none'`).
+- `memoryPages` (default 256 = 16 MB) is passed to Extism as `memory.maxPages`. It caps the memory Extism allocates for plugin input, output and vars; the module's own linear memory is not limited by it.
+
 ---
 
 ## Native Executor
@@ -266,6 +286,12 @@ console.log(result.data?.stdout);
 ```
 
 **Warning:** Native execution has no isolation. Use only when Docker is unavailable.
+
+- A single-element command (`['ls -la | wc -l']`) runs through the system shell; longer commands are executed directly with exact argv (no shell), like Docker.
+- `stdin` is piped to the process.
+- Only `PATH`, `HOME`, temp-dir, locale and Windows system variables are inherited from the host environment; secrets in `process.env` are not passed to executed code. Add variables explicitly via `env`.
+- On timeout the whole process group is killed (`SIGKILL`) and the result is returned immediately with exit code `124`.
+- Output is capped at 50 000 bytes per stream while the process is still drained.
 
 ---
 
@@ -309,7 +335,7 @@ const result = await manager.execute(request, {
 });
 ```
 
-Supported formats: `'256B'`, `'256KB'`, `'256MB'`, `'256GB'`
+Supported formats: `'256B'`, `'256KB'`, `'256MB'`, `'1GB'`, `'1TB'`, Docker-style `'512m'` / `'2g'` and binary `'1GiB'` (all binary multiples, case-insensitive). Zero or negative memory and CPU limits are rejected instead of silently running unlimited.
 
 ### CPU
 

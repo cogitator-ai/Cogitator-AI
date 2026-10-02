@@ -1,26 +1,55 @@
 import type { DeployConfig } from '@cogitator-ai/types';
 
+export const COMPOSE_DATABASE_URL = 'postgresql://cogitator:cogitator@postgres:5432/cogitator';
+export const COMPOSE_REDIS_URL = 'redis://redis:6379';
+
+function yamlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+export function imageTag(config: DeployConfig): string {
+  const image = config.image ?? 'cogitator-app';
+  return config.registry
+    ? `${config.registry.replace(/\/+$/, '')}/${image}:latest`
+    : `${image}:latest`;
+}
+
 export function generateDockerCompose(config: DeployConfig): string {
   const port = config.port ?? 3000;
-  const image = config.image ?? 'cogitator-app';
   const lines: string[] = ['services:'];
 
-  const appEnv = ['    environment:', `      - NODE_ENV=production`, `      - PORT=${port}`];
-  if (config.services?.redis) appEnv.push('      - REDIS_URL=redis://redis:6379');
-  if (config.services?.postgres)
-    appEnv.push('      - DATABASE_URL=postgresql://cogitator:cogitator@postgres:5432/cogitator');
+  const environment: string[] = [
+    `      NODE_ENV: ${yamlString('production')}`,
+    `      PORT: ${yamlString(String(port))}`,
+  ];
+  if (config.services?.redis) environment.push(`      REDIS_URL: ${yamlString(COMPOSE_REDIS_URL)}`);
+  if (config.services?.postgres) {
+    environment.push(`      DATABASE_URL: ${yamlString(COMPOSE_DATABASE_URL)}`);
+  }
+  for (const [key, value] of Object.entries(config.env ?? {})) {
+    environment.push(`      ${key}: ${yamlString(value.replace(/\$/g, '$$$$'))}`);
+  }
+  for (const secret of config.secrets ?? []) {
+    if (!(secret in (config.env ?? {}))) {
+      environment.push(`      ${secret}: \${${secret}:-}`);
+    }
+  }
 
   const dependsOn: string[] = [];
   if (config.services?.redis) dependsOn.push('      redis:', '        condition: service_healthy');
-  if (config.services?.postgres)
+  if (config.services?.postgres) {
     dependsOn.push('      postgres:', '        condition: service_healthy');
+  }
 
   lines.push('  app:');
-  lines.push('    build: .');
-  lines.push(`    image: ${config.registry ? `${config.registry}/${image}` : image}`);
-  lines.push(`    ports:`);
+  lines.push('    build:');
+  lines.push('      context: ..');
+  lines.push('      dockerfile: .cogitator/Dockerfile');
+  lines.push(`    image: ${yamlString(imageTag(config))}`);
+  lines.push('    ports:');
   lines.push(`      - "${port}:${port}"`);
-  lines.push(...appEnv);
+  lines.push('    environment:');
+  lines.push(...environment);
   lines.push('    restart: unless-stopped');
   if (dependsOn.length > 0) {
     lines.push('    depends_on:');
@@ -31,6 +60,7 @@ export function generateDockerCompose(config: DeployConfig): string {
     lines.push('');
     lines.push('  redis:');
     lines.push('    image: redis:7-alpine');
+    lines.push('    restart: unless-stopped');
     lines.push('    volumes:');
     lines.push('      - redis-data:/data');
     lines.push('    healthcheck:');
@@ -44,6 +74,7 @@ export function generateDockerCompose(config: DeployConfig): string {
     lines.push('');
     lines.push('  postgres:');
     lines.push('    image: pgvector/pgvector:pg16');
+    lines.push('    restart: unless-stopped');
     lines.push('    environment:');
     lines.push('      POSTGRES_USER: cogitator');
     lines.push('      POSTGRES_PASSWORD: cogitator');

@@ -6,10 +6,16 @@
  * - Auto-retry with exponential backoff
  * - Job priorities and delays
  * - Prometheus metrics for HPA
+ * - Worker nodes for distributed swarms
  */
 
 export { JobQueue } from './queue';
 export { WorkerPool, type WorkerPoolEvents } from './worker';
+export {
+  DistributedSwarmWorker,
+  type DistributedSwarmWorkerConfig,
+  type DistributedSwarmWorkerEvents,
+} from './distributed-swarm-worker';
 export { formatPrometheusMetrics, DurationHistogram, MetricsCollector } from './metrics';
 
 export {
@@ -17,6 +23,11 @@ export {
   processWorkflowJob,
   processSwarmJob,
   processSwarmAgentJob,
+  executeSwarmAgentJob,
+  buildSwarmConfig,
+  validateWorkflow,
+  type SwarmAgentJobOptions,
+  type SwarmResultPublisher,
 } from './processors/index';
 
 export type {
@@ -24,6 +35,11 @@ export type {
   SerializedWorkflow,
   SerializedWorkflowNode,
   SerializedWorkflowEdge,
+  AgentNodeConfig,
+  TransformNodeConfig,
+  TransformOperation,
+  ConditionNodeConfig,
+  ConditionOperator,
   SerializedSwarm,
   JobPayload,
   AgentJobPayload,
@@ -37,5 +53,6 @@ export type {
   SwarmAgentJobResult,
   QueueConfig,
   WorkerConfig,
+  WorkerRuntime,
   QueueMetrics,
 } from './types';

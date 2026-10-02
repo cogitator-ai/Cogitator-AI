@@ -24,8 +24,13 @@ function createMockSession() {
       evaluate: vi.fn().mockResolvedValue('<div>outer</div>'),
     }),
   };
+  const firstMatch = { evaluate: vi.fn().mockResolvedValue('Hello World') };
+  mockPage.locator.mockImplementation(() => ({
+    evaluate: vi.fn().mockResolvedValue('<div>outer</div>'),
+    first: vi.fn().mockReturnValue(firstMatch),
+  }));
   const session = { page: mockPage } as unknown as BrowserSession;
-  return { session, mockPage };
+  return { session, mockPage, firstMatch };
 }
 
 const dummyContext = {
@@ -65,12 +70,33 @@ describe('extraction tools', () => {
       expect(json.parameters.type).toBe('object');
     });
 
-    it('extracts text from selector', async () => {
+    it('extracts rendered text of the first match for a selector', async () => {
       const t = createGetTextTool(session);
       const result = await t.execute({ selector: '.content' }, dummyContext);
 
-      expect(mockPage.textContent).toHaveBeenCalledWith('.content');
+      expect(mockPage.locator).toHaveBeenCalledWith('.content');
       expect(result).toEqual({ text: 'Hello World' });
+    });
+
+    it('selector evaluation prefers innerText and falls back to textContent', async () => {
+      const { session: s, firstMatch } = createMockSession();
+      await createGetTextTool(s).execute({ selector: '.content' }, dummyContext);
+      const evalFn = firstMatch.evaluate.mock.calls[0][0] as (el: unknown) => string;
+
+      const g = globalThis as Record<string, unknown>;
+      const original = g.HTMLElement;
+      class FakeHTMLElement {
+        innerText = 'rendered';
+        textContent = 'raw';
+      }
+      g.HTMLElement = FakeHTMLElement;
+      try {
+        expect(evalFn(new FakeHTMLElement())).toBe('rendered');
+        expect(evalFn({ textContent: 'svg text' })).toBe('svg text');
+        expect(evalFn({ textContent: null })).toBe('');
+      } finally {
+        g.HTMLElement = original;
+      }
     });
 
     it('extracts body innerText when no selector', async () => {
@@ -82,10 +108,10 @@ describe('extraction tools', () => {
       expect(result).toEqual({ text: 'Full page text' });
     });
 
-    it('returns empty string when textContent is null', async () => {
-      mockPage.textContent.mockResolvedValueOnce(null);
+    it('returns empty string when the page has no body', async () => {
+      mockPage.evaluate.mockResolvedValueOnce('');
       const t = createGetTextTool(session);
-      const result = await t.execute({ selector: '.missing' }, dummyContext);
+      const result = await t.execute({}, dummyContext);
 
       expect(result).toEqual({ text: '' });
     });

@@ -21,19 +21,17 @@ import { z } from 'zod';
 
 const cogitator = new Cogitator({
   llm: {
-    defaultProvider: 'anthropic',
+    defaultModel: 'anthropic/claude-sonnet-4-5-20250929',
     providers: {
-      anthropic: {
-        type: 'anthropic',
-        apiKey: process.env.ANTHROPIC_API_KEY!,
-        model: 'claude-sonnet-4-5-20250929',
-      },
+      anthropic: { apiKey: process.env.ANTHROPIC_API_KEY! },
     },
   },
 });
 
 const summarizer = new Agent({
   name: 'summarizer',
+  description: 'Summarizes text in a few sentences',
+  model: 'anthropic/claude-sonnet-4-5-20250929',
   instructions: 'You summarize text concisely. Keep it under 3 sentences.',
 });
 
@@ -58,9 +56,19 @@ interface CogitatorAppOptions {
   enableSwagger?: boolean;
   swagger?: SwaggerConfig;
   enableWebSocket?: boolean;
-  websocket?: WebSocketConfig;
+  websocket?: WebSocketConfig; // { path?, maxPayloadSize?, upgradeWebSocket? }
+  bodyLimit?: number; // max request body size in bytes, default 1 MiB
 }
 ```
+
+## Request Handling
+
+- Bodies are validated before anything reaches the runtime: `input` must be a non-empty string, `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number. Invalid bodies return `400 INVALID_INPUT`; bodies above `bodyLimit` return `413 PAYLOAD_TOO_LARGE`.
+- Workflow `options` are limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); other options are dropped and wrongly typed ones return `400 INVALID_INPUT`. The body itself is optional.
+- Thread messages accept the roles `user`, `assistant` and `system`; `metadata` is stored with the entry.
+- `CogitatorError`s keep their HTTP status and code (for example `429 LLM_RATE_LIMITED`), `HTTPException`s keep their response, and other errors are logged and returned as `500 Internal server error`. A workflow that ends with an error is reported as a failure.
+- Disconnecting clients abort the running agent, workflow or swarm.
+- `GET /agents` exposes each agent's `description`, never its `instructions`; `GET /tools` returns parameters as JSON Schema.
 
 ## Multi-Runtime Deployment
 
@@ -178,6 +186,35 @@ while (true) {
 }
 ```
 
+## WebSocket
+
+WebSocket upgrades depend on the runtime, so pass your runtime's `upgradeWebSocket` helper. The endpoint runs behind the same middleware as the REST routes, including `auth`.
+
+```typescript
+import { Hono } from 'hono';
+import { serve } from '@hono/node-server';
+import { createNodeWebSocket } from '@hono/node-ws';
+
+const root = new Hono();
+const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app: root });
+
+root.route(
+  '/cogitator',
+  cogitatorApp({
+    cogitator,
+    agents: { summarizer },
+    enableWebSocket: true,
+    websocket: { path: '/ws', upgradeWebSocket },
+  })
+);
+
+injectWebSocket(serve({ fetch: root.fetch, port: 3000 }));
+```
+
+Use `upgradeWebSocket` from `hono/bun`, `hono/deno` or `hono/cloudflare-workers` on those runtimes. Without it the endpoint answers `501 UNIMPLEMENTED`.
+
+Clients send `run` (`{ type: 'agent' | 'workflow' | 'swarm', name, input, context?, threadId? }`), `stop` and `ping`; the server answers with `event` (`token`, `tool-call`, `tool-result`, `complete`, `cancelled`), `error` and `pong`. Messages above `maxPayloadSize` close the socket with code `1009`, and closing the socket aborts its active run.
+
 ## Context Variables
 
 Inside custom Hono routes, the Cogitator context is available via Hono's `c.get()`:
@@ -204,6 +241,7 @@ import {
   cogitatorApp,
   createContextMiddleware,
   createAuthMiddleware,
+  createBodyLimitMiddleware,
   errorHandler,
   createHealthRoutes,
   createAgentRoutes,

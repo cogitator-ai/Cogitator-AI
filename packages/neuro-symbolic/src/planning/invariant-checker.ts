@@ -129,6 +129,13 @@ export class InvariantChecker {
         break;
       }
 
+      const applicable = schema.preconditions.every((pre) =>
+        evaluatePrecondition(pre, currentState, action.parameters)
+      );
+      if (!applicable) {
+        break;
+      }
+
       currentState = applyAction(action, currentState, schema);
       stateTrace.push(currentState);
     }
@@ -372,12 +379,9 @@ export function commonSafetyProperties(): {
       name: 'Bounded',
       description: 'Variable must stay within bounds',
       createCondition: (variable: string, value?: unknown) => {
-        if (!value || typeof value !== 'object') {
-          return { type: 'simple', variable, value: undefined };
-        }
-        const bounds = value as { min: number; max: number };
+        const bounds = (value ?? {}) as { min?: unknown; max?: unknown };
         if (typeof bounds.min !== 'number' || typeof bounds.max !== 'number') {
-          return { type: 'simple', variable, value: undefined };
+          throw new Error('Bounded safety property requires { min: number, max: number }');
         }
         return {
           type: 'and',
@@ -413,8 +417,8 @@ export function commonSafetyProperties(): {
       name: 'Mutex',
       description: 'At most one of the variables can be true',
       createCondition: (_variable: string, value?: unknown) => {
-        if (!Array.isArray(value)) {
-          return { type: 'and', conditions: [] };
+        if (!Array.isArray(value) || !value.every((v) => typeof v === 'string')) {
+          throw new Error('Mutex safety property requires an array of variable names');
         }
         const vars = value as string[];
         const conditions: Precondition[] = [];

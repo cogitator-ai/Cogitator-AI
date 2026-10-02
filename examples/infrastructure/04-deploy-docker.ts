@@ -43,7 +43,7 @@ async function main() {
       image: 'cogitator-example',
       services: { redis: true, postgres: false },
       health: { path: '/health', interval: '30s', timeout: '5s' },
-      resources: { memory: '512Mi', cpu: 1 },
+      resources: { memory: '512mb', cpu: 1 },
     },
   });
 
@@ -54,6 +54,11 @@ async function main() {
   console.log(
     `  Services: redis=${plan.config.services?.redis}, postgres=${plan.config.services?.postgres}`
   );
+  console.log(`  Secrets:  ${plan.config.secrets?.join(', ') || '(none)'}`);
+  if (plan.warnings.length > 0) {
+    console.log('\nWarnings:');
+    for (const warning of plan.warnings) console.log(`  - ${warning}`);
+  }
 
   console.log('\nPreflight checks:');
   for (const check of plan.preflight.checks) {
@@ -89,9 +94,8 @@ async function main() {
 
   section('5. Available providers');
 
-  for (const target of ['docker', 'fly'] as const) {
-    const provider = deployer.getProvider(target);
-    console.log(`  ${provider.name}`);
+  for (const target of deployer.availableTargets()) {
+    console.log(`  ${deployer.getProvider(target).name}`);
   }
 
   console.log('\nDone.');

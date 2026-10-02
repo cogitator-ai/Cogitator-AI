@@ -24,8 +24,17 @@ export class ExpressStreamWriter {
     this.res = res;
   }
 
+  private get writable(): boolean {
+    if (this.closed) return false;
+    if (this.res.writableEnded || this.res.destroyed) {
+      this.closed = true;
+      return false;
+    }
+    return true;
+  }
+
   private write(data: unknown): void {
-    if (this.closed) return;
+    if (!this.writable) return;
     this.res.write(encodeSSE(data));
   }
 
@@ -75,6 +84,7 @@ export class ExpressStreamWriter {
   }
 
   finish(messageId: string, usage?: Usage): void {
+    if (!this.writable) return;
     this.write(createFinishEvent(messageId, usage));
     this.res.write(encodeDone());
   }
@@ -82,6 +92,7 @@ export class ExpressStreamWriter {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    if (this.res.writableEnded) return;
     try {
       this.res.end();
     } catch {}

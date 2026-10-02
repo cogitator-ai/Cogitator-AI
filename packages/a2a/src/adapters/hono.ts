@@ -4,6 +4,7 @@ import type { A2AServer } from '../server.js';
 import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
 import { buildSseErrorEvent } from './sse-error-event.js';
+import { isStreamRequest } from './shared.js';
 
 export function a2aHono(server: A2AServer): Hono {
   const app = new Hono();
@@ -26,30 +27,39 @@ export function a2aHono(server: A2AServer): Hono {
       return c.json(createErrorResponse(null, errors.parseError('Invalid JSON body')));
     }
 
-    const isStreaming =
-      c.req.header('accept')?.includes('text/event-stream') ||
-      (body as Record<string, unknown>)?.method === 'message/stream';
+    const authToken = server.getAuthToken((name) => c.req.header(name));
 
-    if (isStreaming) {
+    if (isStreamRequest(body)) {
       c.header('X-Accel-Buffering', 'no');
       return streamSSE(c, async (stream) => {
+        const controller = new AbortController();
+        stream.onAbort(() => controller.abort());
         try {
-          for await (const event of server.handleJsonRpcStream(body)) {
+          for await (const event of server.handleJsonRpcStream(
+            body,
+            authToken,
+            controller.signal
+          )) {
+            if (controller.signal.aborted) return;
             await stream.writeSSE({ data: JSON.stringify(event) });
           }
-          await stream.writeSSE({ data: '[DONE]' });
+          if (!controller.signal.aborted) await stream.writeSSE({ data: '[DONE]' });
         } catch (error) {
+          if (controller.signal.aborted) return;
           try {
             await stream.writeSSE({ data: JSON.stringify(buildSseErrorEvent(error)) });
           } catch {
-            /* stream already closed by client disconnect */
+            return;
           }
         }
       });
     }
 
     try {
-      const response = await server.handleJsonRpc(body);
+      const response = await server.handleJsonRpc(body, authToken);
+      if (response === null) {
+        return c.body(null, 204);
+      }
       return c.json(response);
     } catch (error) {
       return c.json(createErrorResponse(null, errors.internalError(String(error))));

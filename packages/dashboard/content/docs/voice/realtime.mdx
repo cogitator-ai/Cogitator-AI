@@ -9,8 +9,8 @@ Realtime mode bypasses the STT -> Agent -> TTS pipeline entirely. Instead, the L
 
 `RealtimeSession` is a unified interface over two provider-specific adapters:
 
-- **OpenAI Realtime API** — WebSocket connection to `gpt-4o-mini-realtime-preview` with server-side VAD and tool calling
-- **Gemini Live API** — WebSocket connection to `gemini-live-2.5-flash-native-audio` with native audio generation
+- **OpenAI Realtime API (GA)** — WebSocket connection to `gpt-realtime-mini` with server-side VAD, input transcription and tool calling
+- **Gemini Live API** — WebSocket connection to `gemini-3.8-live` with native audio, input/output transcription and tool calling
 
 ## RealtimeSession
 
@@ -22,8 +22,8 @@ import { RealtimeSession } from '@cogitator-ai/voice';
 const session = new RealtimeSession({
   provider: 'openai',
   apiKey: process.env.OPENAI_API_KEY!,
-  model: 'gpt-4o-mini-realtime-preview',
-  voice: 'coral',
+  model: 'gpt-realtime-mini',
+  voice: 'marin',
   instructions: 'You are a helpful assistant.',
 });
 ```
@@ -34,7 +34,9 @@ const session = new RealtimeSession({
 await session.connect();
 ```
 
-Opens a WebSocket connection to the provider. For OpenAI, this sends a session configuration with voice, instructions, and tools. For Gemini, this sends a setup message with model config.
+Opens a WebSocket connection to the provider. For OpenAI, this sends a GA `session.update` (`type: 'realtime'`, audio formats, voice, transcription, instructions, tools). For Gemini, this sends a setup message with model config, transcription and tools and resolves on `setupComplete`. A failed connection rejects without emitting `error`.
+
+Audio and text sent before `connect()` resolves are queued (audio capped at 1MB) and flushed in order once the session is ready.
 
 ### Sending Audio
 
@@ -42,7 +44,7 @@ Opens a WebSocket connection to the provider. For OpenAI, this sends a session c
 session.pushAudio(pcm16Chunk);
 ```
 
-Send PCM16 audio frames (16kHz, mono, 16-bit LE). Both providers handle VAD server-side — they detect when the user starts and stops speaking.
+Send PCM16 mono frames — **24kHz for OpenAI**, **16kHz for Gemini**. Both providers handle VAD server-side — they detect when the user starts and stops speaking. Model audio is always PCM16 24kHz.
 
 ### Sending Text
 
@@ -58,7 +60,7 @@ Send a text message instead of audio. The model responds with audio.
 session.interrupt();
 ```
 
-Cancel the current response. For OpenAI, sends `response.cancel`. For Gemini, sends `turnComplete`.
+Cancel the current response. For OpenAI, sends `response.cancel` (only while a response is active). Gemini barge-in is driven by user audio, so `interrupt()` drops the remaining model audio of the current turn locally; when Gemini detects the user talking over the model it reports `interrupted` and the session emits `speech_start`.
 
 ### Closing
 
@@ -96,25 +98,27 @@ session.on('error', (error: Error) => {
 });
 ```
 
-| Event | Payload | Description |
-| --- | --- | --- |
-| `connected` | — | WebSocket connection established |
-| `audio` | `(chunk: Buffer)` | Audio response chunk from the model |
-| `transcript` | `(text, role)` | Transcription of user or assistant speech |
-| `speech_start` | — | Server-side VAD detected speech |
-| `tool_call` | `(name, args)` | Model invoked a tool |
-| `error` | `(error: Error)` | Connection or processing error |
+| Event          | Payload           | Description                                                 |
+| -------------- | ----------------- | ----------------------------------------------------------- |
+| `connected`    | —                 | Session ready (OpenAI socket open / Gemini `setupComplete`) |
+| `disconnected` | `(code, reason)`  | Connection closed after it was established                  |
+| `audio`        | `(chunk: Buffer)` | Audio response chunk from the model (PCM16 24kHz)           |
+| `transcript`   | `(text, role)`    | Full transcription of a user or assistant turn              |
+| `speech_start` | —                 | Server-side VAD detected speech / user barged in            |
+| `tool_call`    | `(name, args)`    | Model invoked a tool                                        |
+| `turn_end`     | —                 | Model finished its turn                                     |
+| `error`        | `(error: Error)`  | Connection or processing error                              |
 
 ## OpenAI Realtime API
 
-Default model: `gpt-4o-mini-realtime-preview`. Connects via WebSocket to `wss://api.openai.com/v1/realtime`.
+Default model: `gpt-realtime-mini` (also `gpt-realtime`). Connects via WebSocket to `wss://api.openai.com/v1/realtime` using the GA interface (the beta `OpenAI-Beta: realtime=v1` interface was shut down in May 2026).
 
 ```typescript
 const session = new RealtimeSession({
   provider: 'openai',
   apiKey: process.env.OPENAI_API_KEY!,
-  model: 'gpt-4o-mini-realtime-preview',
-  voice: 'coral',
+  model: 'gpt-realtime-mini',
+  voice: 'marin',
   instructions: 'You are a friendly assistant who speaks concisely.',
   tools: [
     {
@@ -140,23 +144,23 @@ session.pushAudio(pcm16Chunk);
 ### OpenAI Features
 
 - **Server-side VAD** — OpenAI handles turn detection, emits `speech_start` events
-- **Tool calling** — tools are executed automatically, results sent back to the model
-- **Input audio transcription** — user speech transcripts via `transcript` event
-- **Audio format** — PCM16 input and output
+- **Tool calling** — all function calls of a completed response are executed, their outputs sent back, then a single follow-up response is requested; unknown tools and invalid arguments are answered with an error output
+- **Input audio transcription** — user speech transcripts (`gpt-4o-mini-transcribe`) via `transcript` event
+- **Audio format** — PCM16 24kHz input and output
 
 ### OpenAI Voices
 
-`alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, `verse`
+`alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, `verse`, `marin` (default), `cedar`
 
 ## Gemini Live API
 
-Default model: `gemini-live-2.5-flash-native-audio`. Connects via WebSocket to the Gemini BidiGenerateContent endpoint.
+Default model: `gemini-3.8-live` (also `gemini-3.1-flash-live-preview`, `gemini-2.5-flash-native-audio-latest`). Connects via WebSocket to the Gemini Developer API `BidiGenerateContent` endpoint, authenticating with the `x-goog-api-key` header.
 
 ```typescript
 const session = new RealtimeSession({
   provider: 'gemini',
   apiKey: process.env.GOOGLE_API_KEY!,
-  model: 'gemini-live-2.5-flash-native-audio',
+  model: 'gemini-3.8-live',
   voice: 'Puck',
   instructions: 'You are a helpful assistant.',
   tools: [
@@ -182,8 +186,9 @@ session.pushAudio(pcm16Chunk);
 ### Gemini Features
 
 - **Native audio generation** — model generates audio directly
-- **Tool calling** — function declarations sent during setup, results returned via `toolResponse`
-- **Audio format** — PCM16 at 16kHz input, audio chunks returned in model responses
+- **Transcription** — input and output audio transcription is enabled; streamed fragments are emitted as one `transcript` per turn (user first, then assistant). Model "thought" parts are never emitted
+- **Tool calling** — function declarations sent during setup, structured results (`{ result }` / `{ error }`) returned via `toolResponse`
+- **Audio format** — PCM16 16kHz input (`realtimeInput.audio`), PCM16 24kHz output
 
 ### Gemini Voices
 
@@ -191,16 +196,17 @@ session.pushAudio(pcm16Chunk);
 
 ## Provider Comparison
 
-| Feature | OpenAI Realtime | Gemini Live |
-| --- | --- | --- |
-| Default model | `gpt-4o-mini-realtime-preview` | `gemini-live-2.5-flash-native-audio` |
-| Server-side VAD | Yes | Yes |
-| Tool calling | Yes | Yes |
-| User transcripts | Yes | No |
-| Text input | Yes | Yes |
-| Interruption | `response.cancel` | `turnComplete` |
-| Audio format | PCM16 (base64) | PCM16 (base64) |
-| Default voice | `coral` | `Puck` |
+| Feature          | OpenAI Realtime     | Gemini Live                                        |
+| ---------------- | ------------------- | -------------------------------------------------- |
+| Default model    | `gpt-realtime-mini` | `gemini-3.8-live`                                  |
+| Server-side VAD  | Yes                 | Yes                                                |
+| Tool calling     | Yes                 | Yes                                                |
+| User transcripts | Yes                 | Yes                                                |
+| Text input       | Yes                 | Yes                                                |
+| Interruption     | `response.cancel`   | Local audio drop; server `interrupted` on barge-in |
+| Input audio      | PCM16 24kHz         | PCM16 16kHz                                        |
+| Output audio     | PCM16 24kHz         | PCM16 24kHz                                        |
+| Default voice    | `marin`             | `Puck`                                             |
 
 ## Realtime with VoiceAgent
 
@@ -210,29 +216,30 @@ Use `VoiceAgent` to expose a realtime session over WebSocket transport:
 import { VoiceAgent } from '@cogitator-ai/voice';
 
 const voiceAgent = new VoiceAgent({
-  agent: myAgent,
+  agent: createCogitatorRunner(cogitator, agent),
   mode: 'realtime',
   realtimeProvider: 'openai',
   realtimeApiKey: process.env.OPENAI_API_KEY!,
-  realtimeModel: 'gpt-4o-mini-realtime-preview',
-  voice: 'coral',
+  realtimeModel: 'gpt-realtime-mini',
+  voice: 'marin',
+  tools: [weatherTool],
 });
 
 await voiceAgent.listen(8080);
 ```
 
-Each WebSocket client gets its own `RealtimeSession`. Audio from the client is forwarded to the realtime API, and audio/transcript events are forwarded back to the client.
+Each WebSocket client gets its own `RealtimeSession`. The session instructions come from `instructions` or, if unset, from `agent.instructions`; `tools` are executed server-side. Audio from the client is forwarded to the realtime API, and audio/`transcript`/`speech_start`/`turn_end` events are forwarded back. Clients can send `{ type: 'text', text }` and `{ type: 'interrupt' }` control messages. If the provider connection fails or drops, the client is closed with code `1011`.
 
 ## RealtimeSessionConfig
 
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `provider` | `'openai' \| 'gemini'` | Yes | Realtime API provider |
-| `apiKey` | `string` | Yes | API key |
-| `model` | `string` | No | Model override |
-| `instructions` | `string` | No | System instructions |
-| `voice` | `string` | No | Voice name (default: `coral` for OpenAI, `Puck` for Gemini) |
-| `tools` | `Array<RealtimeTool>` | No | Tools the model can invoke |
+| Field          | Type                   | Required | Description                                                 |
+| -------------- | ---------------------- | -------- | ----------------------------------------------------------- |
+| `provider`     | `'openai' \| 'gemini'` | Yes      | Realtime API provider                                       |
+| `apiKey`       | `string`               | Yes      | API key                                                     |
+| `model`        | `string`               | No       | Model override                                              |
+| `instructions` | `string`               | No       | System instructions                                         |
+| `voice`        | `string`               | No       | Voice name (default: `marin` for OpenAI, `Puck` for Gemini) |
+| `tools`        | `Array<RealtimeTool>`  | No       | Tools the model can invoke                                  |
 
 ### RealtimeTool
 

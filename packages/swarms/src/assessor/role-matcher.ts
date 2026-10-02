@@ -2,8 +2,9 @@ import type {
   TaskRequirements,
   RoleRequirements,
   SwarmAgent,
-  SwarmAgentMetadata,
+  SwarmConfig,
 } from '@cogitator-ai/types';
+import { collectSwarmAgentEntries } from '../agents';
 
 export class RoleMatcher {
   analyzeRole(agent: SwarmAgent, taskReqs: TaskRequirements): RoleRequirements {
@@ -104,64 +105,17 @@ export class RoleMatcher {
     return levels[newIndex];
   }
 
-  extractAgentsFromConfig(config: {
-    supervisor?: { name: string };
-    workers?: Array<{ name: string }>;
-    agents?: Array<{ name: string }>;
-    moderator?: { name: string };
-    router?: { name: string };
-    stages?: Array<{ agent: { name: string } }>;
-  }): SwarmAgent[] {
-    const agents: SwarmAgent[] = [];
-
-    if (config.supervisor) {
-      agents.push(this.createSwarmAgent(config.supervisor, 'supervisor'));
-    }
-
-    if (config.workers) {
-      for (const worker of config.workers) {
-        agents.push(this.createSwarmAgent(worker, 'worker'));
-      }
-    }
-
-    if (config.agents) {
-      for (const agent of config.agents) {
-        agents.push(this.createSwarmAgent(agent, 'worker'));
-      }
-    }
-
-    if (config.moderator) {
-      agents.push(this.createSwarmAgent(config.moderator, 'moderator'));
-    }
-
-    if (config.router) {
-      agents.push(this.createSwarmAgent(config.router, 'router'));
-    }
-
-    if (config.stages) {
-      for (const stage of config.stages) {
-        agents.push(this.createSwarmAgent(stage.agent, 'worker'));
-      }
-    }
-
-    return agents;
-  }
-
-  private createSwarmAgent(
-    agent: { name: string; model?: string; metadata?: SwarmAgentMetadata },
-    defaultRole: SwarmAgentMetadata['role']
-  ): SwarmAgent {
-    return {
-      agent: agent as SwarmAgent['agent'],
-      metadata: {
-        role: (agent as { metadata?: SwarmAgentMetadata }).metadata?.role ?? defaultRole,
-        expertise: (agent as { metadata?: SwarmAgentMetadata }).metadata?.expertise,
-        locked: (agent as { metadata?: SwarmAgentMetadata }).metadata?.locked,
-        ...(agent as { metadata?: SwarmAgentMetadata }).metadata,
-      },
+  /**
+   * All agents of a swarm config with their swarm metadata. Agents without an explicit role
+   * are assessed as workers.
+   */
+  extractAgentsFromConfig(config: SwarmConfig): SwarmAgent[] {
+    return collectSwarmAgentEntries(config).map(({ agent, metadata }) => ({
+      agent,
+      metadata: { ...metadata, role: metadata.role ?? 'worker' },
       state: 'idle',
       messageCount: 0,
       tokenCount: 0,
-    };
+    }));
   }
 }

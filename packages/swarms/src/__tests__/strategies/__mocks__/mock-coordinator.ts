@@ -3,6 +3,7 @@ import type {
   SwarmAgent,
   SwarmAgentMetadata,
   RunResult,
+  SwarmAgentRunOptions,
   MessageBus,
   Blackboard,
   SwarmEventEmitter,
@@ -18,6 +19,7 @@ export interface AgentCall {
   agent: string;
   input: string;
   context?: Record<string, unknown>;
+  options?: SwarmAgentRunOptions;
   timestamp: number;
 }
 
@@ -82,7 +84,8 @@ export class MockCoordinator implements SwarmCoordinatorInterface {
   async runAgent(
     agentName: string,
     input: string,
-    context?: Record<string, unknown>
+    context?: Record<string, unknown>,
+    options?: SwarmAgentRunOptions
   ): Promise<RunResult> {
     const swarmAgent = this.agents.get(agentName);
     if (!swarmAgent) {
@@ -93,6 +96,7 @@ export class MockCoordinator implements SwarmCoordinatorInterface {
       agent: agentName,
       input,
       context,
+      options,
       timestamp: Date.now(),
     });
 
@@ -106,7 +110,7 @@ export class MockCoordinator implements SwarmCoordinatorInterface {
         agentId: swarmAgent.agent.id,
       });
     } else if (typeof responseOrGenerator === 'function') {
-      const output = responseOrGenerator(input, context);
+      const output = await responseOrGenerator(input, context);
       result = createMockRunResult(output, { agentId: swarmAgent.agent.id });
     } else {
       result = responseOrGenerator;

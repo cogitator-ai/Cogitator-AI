@@ -137,7 +137,7 @@ const reviewBoard = new Swarm(cog, {
 
   consensus: {
     // Voting rules
-    threshold: 0.66, // 2/3 must agree
+    threshold: 0.66, // 2/3 of all eligible voters must agree (abstentions count against)
     maxRounds: 3, // Max discussion rounds
 
     // How to determine final answer
@@ -759,6 +759,8 @@ const result = await mySwarm.run({ input: 'Build a REST API' });
 console.log(mySwarm.getLastAssessment()?.totalEstimatedCost);
 ```
 
+Assigned models are provider-qualified (e.g. `ollama/llama3.2:3b`). Unlocked agents are replaced by clones running the assigned model; locked agents keep theirs.
+
 ---
 
 ## API Reference
@@ -805,7 +807,7 @@ class Swarm {
   abort(): void;
   isPaused(): boolean;
   isAborted(): boolean;
-  reset(): void;
+  reset(): Promise<void>;
 
   // Close distributed connections
   close(): Promise<void>;
@@ -835,6 +837,7 @@ interface SwarmConfig {
   stages?: PipelineStage[]; // legacy alias for pipeline.stages
   moderator?: Agent;
   router?: Agent;
+  // Agent names must be unique within a swarm (two different agents with the same name throw)
 
   // Strategy-specific config (use the matching key for your strategy)
   hierarchical?: HierarchicalConfig;

@@ -30,7 +30,7 @@ export class TextLoader implements DocumentLoader {
   }
 
   private async loadDirectory(dirPath: string): Promise<RAGDocument[]> {
-    const entries = await readdir(dirPath);
+    const entries = (await readdir(dirPath)).sort();
     const docs: RAGDocument[] = [];
 
     for (const entry of entries) {

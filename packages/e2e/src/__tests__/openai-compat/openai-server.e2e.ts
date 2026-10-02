@@ -52,7 +52,6 @@ describe('OpenAI-Compatible Server', () => {
     cogitator = createTestCogitator();
     const port = await getRandomPort();
     server = createOpenAIServer(cogitator, { port, host: '127.0.0.1', logging: false });
-    await new Promise((r) => setTimeout(r, 500));
     await server.start();
     url = server.getUrl();
   });
@@ -137,7 +136,6 @@ describeOllama('OpenAI-Compatible Server (with Ollama)', () => {
     cogitator = createTestCogitator();
     const port = await getRandomPort();
     server = createOpenAIServer(cogitator, { port, host: '127.0.0.1', logging: false });
-    await new Promise((r) => setTimeout(r, 500));
     await server.start();
     url = server.getUrl();
 

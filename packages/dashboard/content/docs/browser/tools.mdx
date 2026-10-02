@@ -1,11 +1,11 @@
 ---
 title: Tools Reference
-description: Complete reference for all 32 browser tools across navigation, interaction, extraction, vision, and network modules.
+description: Complete reference for all 33 browser tools across navigation, interaction, extraction, vision, and network modules.
 ---
 
 ## Overview
 
-`browserTools(session)` returns all 32 tools. You can filter by module or import individual tool factories.
+`browserTools(session)` returns all 33 tools. You can filter by module or import individual tool factories.
 
 ```typescript
 import { browserTools } from '@cogitator-ai/browser';
@@ -90,7 +90,7 @@ Click an element by CSS selector.
 
 ### `browser_type`
 
-Type text into an input element. Uses `fill()` for instant input or `type()` for keystroke simulation. When stealth is enabled, automatically adds human-like delays between keystrokes.
+Type text into an input element. Uses `fill()` for instant input, or keystrokes when `delay` is set (appending unless `clearFirst`). With stealth `humanLikeTyping`, the field is cleared and typed key by key with human-like delays, so the result matches `fill()`.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
@@ -186,7 +186,7 @@ Upload files to a file input element.
 
 ### `browser_get_text`
 
-Extract text content from the page or a specific element.
+Extract rendered text (`innerText`) from the page or the first element matching the selector. Hidden elements, scripts and styles are excluded.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
@@ -231,15 +231,15 @@ Query all elements matching a CSS selector. Returns tag, text, attributes, and v
 
 ### `browser_extract_table`
 
-Extract structured data from an HTML table as headers and rows.
+Extract structured data from an HTML table as headers and rows. Uses the table's own rows and cells, so nested tables do not leak extra rows. If the selector matches a wrapper element, the first table inside it is used.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `selector` | `string` | CSS selector of table |
+| `selector` | `string` | CSS selector of the table or a wrapper (defaults to the first table) |
 
 ### `browser_extract_structured`
 
-Extract clean readable text from the page. Removes scripts, styles, and non-visible elements. Returns the text alongside the extraction instruction for agent processing.
+Extract the rendered text of the page or a scoped element without cloning the DOM (no side effects on the page). Scripts, styles, and non-visible elements are excluded and runs of blank lines collapsed. Returns the text alongside the extraction instruction, URL, and title for agent processing.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
@@ -254,7 +254,7 @@ Extract clean readable text from the page. Removes scripts, styles, and non-visi
 
 ### `browser_screenshot`
 
-Take a screenshot of the page or element. Returns base64-encoded image data.
+Take a screenshot of the page or element (first match). Returns `{ image, mimeType, width, height }` with base64-encoded image data. `fullPage` only applies to page screenshots.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
@@ -291,17 +291,25 @@ Find an element by description and click it. Tries button, link, text, label, an
 
 ## Network
 
-5 tools for request interception and traffic monitoring. See the dedicated [Network](/docs/browser/network) page for details.
+6 tools for request interception and traffic monitoring. See the dedicated [Network](/docs/browser/network) page for details.
 
 ### `browser_intercept_request`
 
-Intercept HTTP requests matching a URL pattern.
+Intercept HTTP requests matching a URL pattern in every tab.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `urlPattern` | `string` | URL pattern (glob or regex) |
+| `urlPattern` | `string` | Glob (`**/api/**`) or regex literal (`/\.png$/i`) |
 | `action` | `enum` | `block` \| `modify` \| `continue` |
-| `modify` | `object` | `{ headers?, body?, url? }` for action=modify |
+| `modify` | `object` | `{ headers?, body?, url? }` for action=modify; headers are merged |
+
+### `browser_remove_interceptor`
+
+Remove an interceptor created by `browser_intercept_request` or `browser_block_resources`.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `interceptorId` | `string` | Interceptor to remove; omit to remove all |
 
 ### `browser_wait_for_response`
 
@@ -309,7 +317,7 @@ Wait for an HTTP response matching a URL pattern.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `urlPattern` | `string` | URL pattern to match |
+| `urlPattern` | `string` | URL substring or regex literal |
 | `timeout` | `number` | Timeout in milliseconds |
 
 ### `browser_block_resources`
@@ -322,12 +330,12 @@ Block specific resource types from loading.
 
 ### `browser_capture_har`
 
-Start or stop capturing HTTP traffic in HAR format.
+Start or stop capturing HTTP traffic of all tabs.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `action` | `enum` | `start` \| `stop` |
-| `path` | `string` | File path to save HAR on stop |
+| `path` | `string` | Path inside the working directory for a HAR 1.2 file (on stop) |
 
 ### `browser_get_api_calls`
 
@@ -335,5 +343,6 @@ Get captured XHR/fetch API calls with optional filtering.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `urlPattern` | `string` | Filter by URL pattern |
+| `urlPattern` | `string` | Filter by URL substring or regex literal |
 | `method` | `string` | Filter by HTTP method |
+| `clear` | `boolean` | Clear the recorded calls after returning them |

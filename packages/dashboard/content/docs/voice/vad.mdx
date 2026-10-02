@@ -17,7 +17,7 @@ interface VADProvider {
 type VADEvent =
   | { type: 'speech_start' }
   | { type: 'speech_end'; duration: number }
-  | { type: 'speech', probability: number }
+  | { type: 'speech'; probability: number }
   | { type: 'silence' };
 ```
 
@@ -25,14 +25,14 @@ Feed audio frames (as Float32Array samples) into `process()` and it returns an e
 
 ## Provider Comparison
 
-| Feature | EnergyVAD | SileroVAD |
-| --- | --- | --- |
-| Accuracy | Basic | High |
-| Dependencies | None | `onnxruntime-node` |
-| Speed | Instant | ~3ms per frame |
-| Noisy environments | Poor | Good |
-| Method | RMS energy threshold | Neural network (ONNX) |
-| Initialization | Sync constructor | Async `init()` required |
+| Feature            | EnergyVAD            | SileroVAD               |
+| ------------------ | -------------------- | ----------------------- |
+| Accuracy           | Basic                | High                    |
+| Dependencies       | None                 | `onnxruntime-node`      |
+| Speed              | Instant              | ~3ms per frame          |
+| Noisy environments | Poor                 | Good                    |
+| Method             | RMS energy threshold | Neural network (ONNX)   |
+| Initialization     | Sync constructor     | Async `init()` required |
 
 ## EnergyVAD
 
@@ -74,11 +74,11 @@ switch (event.type) {
 
 ### Configuration
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `threshold` | `number` | `0.01` | RMS energy threshold for speech detection |
-| `silenceDuration` | `number` | `500` | Silence duration (ms) before emitting `speech_end` |
-| `sampleRate` | `number` | `16000` | Audio sample rate in Hz |
+| Field             | Type     | Default | Description                                        |
+| ----------------- | -------- | ------- | -------------------------------------------------- |
+| `threshold`       | `number` | `0.01`  | RMS energy threshold for speech detection          |
+| `silenceDuration` | `number` | `500`   | Silence duration (ms) before emitting `speech_end` |
+| `sampleRate`      | `number` | `16000` | Audio sample rate in Hz                            |
 
 ## SileroVAD
 
@@ -88,7 +88,7 @@ Neural network-based VAD using the [Silero VAD](https://github.com/snakers4/sile
 pnpm add onnxruntime-node
 ```
 
-You also need the Silero VAD ONNX model file. Download it from the [Silero VAD repository](https://github.com/snakers4/silero-vad/blob/master/src/silero_vad/data/silero_vad.onnx).
+You also need the Silero VAD ONNX model file. Download it from the [Silero VAD repository](https://github.com/snakers4/silero-vad/blob/master/src/silero_vad/data/silero_vad.onnx). Both the v4 (`h`/`c` state) and v5 (`state` + context) model signatures are supported and detected automatically.
 
 ```typescript
 import { SileroVAD } from '@cogitator-ai/voice';
@@ -110,14 +110,16 @@ const event = await vad.process(float32Samples);
 // same event types as EnergyVAD
 ```
 
+Chunks of any length are accepted: samples are buffered into 32ms frames (512 samples at 16kHz, 256 at 8kHz) and the transitions within one call are summarized into a single event. Only 8kHz and 16kHz are supported.
+
 ### Configuration
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `modelPath` | `string` | required | Path to `silero_vad.onnx` model file |
-| `threshold` | `number` | `0.5` | Speech probability threshold (0-1) |
-| `silenceDuration` | `number` | `500` | Silence duration (ms) before `speech_end` |
-| `sampleRate` | `number` | `16000` | Audio sample rate in Hz |
+| Field             | Type     | Default  | Description                               |
+| ----------------- | -------- | -------- | ----------------------------------------- |
+| `modelPath`       | `string` | required | Path to `silero_vad.onnx` model file      |
+| `threshold`       | `number` | `0.5`    | Speech probability threshold (0-1)        |
+| `silenceDuration` | `number` | `500`    | Silence duration (ms) before `speech_end` |
+| `sampleRate`      | `number` | `16000`  | Audio sample rate in Hz                   |
 
 ## Using VAD with Pipeline
 
@@ -145,4 +147,4 @@ session.on('transcript', (text, isFinal) => {
 session.pushAudio(pcm16Chunk);
 ```
 
-Without VAD, the session starts streaming audio to STT immediately and relies on STT-level endpointing or manual `close()` to trigger transcription.
+Without VAD, the session starts streaming audio to STT immediately; call `session.endAudio()` (or send `{ type: 'end_of_speech' }` through `VoiceAgent`) to commit the turn.

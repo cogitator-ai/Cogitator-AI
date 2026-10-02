@@ -120,7 +120,7 @@ export class PipelineStrategy extends BaseStrategy {
           throw new Error(`Pipeline aborted at gate '${stage.name}': ${gateResult.reason}`);
         }
 
-        if (gateResult.action === 'retry-previous' && stageIndex > 0) {
+        if (gateResult.action === 'retry-previous') {
           const state = this.coordinator.blackboard.read<{
             completed: string[];
             failed: string[];
@@ -135,11 +135,11 @@ export class PipelineStrategy extends BaseStrategy {
             'system'
           );
 
-          stageIndex = stageIndex - 1;
-          const prevStageIndex = stageIndex - 1;
+          stageIndex = Math.max(0, stageIndex - 1);
+          const inputStageIndex = stageIndex - 1;
           currentInput =
-            prevStageIndex >= 0
-              ? (stageOutputs.get(this.config.stages[prevStageIndex].name) ?? options.input)
+            inputStageIndex >= 0
+              ? (stageOutputs.get(this.config.stages[inputStageIndex].name) ?? options.input)
               : options.input;
           continue;
         }
@@ -165,7 +165,7 @@ export class PipelineStrategy extends BaseStrategy {
     }
 
     const lastStageName = this.config.stages[this.config.stages.length - 1].name;
-    const finalOutput = stageOutputs.get(lastStageName) as string;
+    const finalOutput = String(stageOutputs.get(lastStageName) ?? '');
 
     return {
       output: finalOutput,

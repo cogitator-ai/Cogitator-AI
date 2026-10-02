@@ -8,6 +8,8 @@ export interface FetchedImage {
   mediaType: ImageMediaType;
 }
 
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+
 const SUPPORTED_MEDIA_TYPES = new Set<ImageMediaType>([
   'image/jpeg',
   'image/png',
@@ -48,10 +50,18 @@ export async function fetchImageAsBase64(
       throw new Error(`Failed to fetch image: HTTP ${response.status}`);
     }
 
+    const declaredLength = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_IMAGE_BYTES) {
+      throw new Error(`Image exceeds ${MAX_IMAGE_BYTES / 1024 / 1024}MB limit`);
+    }
+
     const contentType = response.headers.get('content-type');
     const mediaType = normalizeMediaType(contentType);
 
     const buffer = await response.arrayBuffer();
+    if (buffer.byteLength > MAX_IMAGE_BYTES) {
+      throw new Error(`Image exceeds ${MAX_IMAGE_BYTES / 1024 / 1024}MB limit`);
+    }
     const data = Buffer.from(buffer).toString('base64');
 
     return { data, mediaType };

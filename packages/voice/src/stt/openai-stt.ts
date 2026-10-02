@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import OpenAI from 'openai';
 import type { TranscriptionVerbose } from 'openai/resources/audio/transcriptions';
+import { audioMimeType, detectAudioFormat, pcmToWav } from '../audio.js';
 import type {
   STTProvider,
   STTOptions,
@@ -16,6 +17,28 @@ export interface OpenAISTTConfig {
 }
 
 const DEFAULT_MODEL = 'gpt-4o-mini-transcribe';
+const DEFAULT_SAMPLE_RATE = 16000;
+
+function supportsVerboseJson(model: string): boolean {
+  return model.startsWith('whisper');
+}
+
+function toUploadFile(audio: Buffer, sampleRate: number): File {
+  const format = detectAudioFormat(audio);
+  if (!format) {
+    return new File([new Uint8Array(pcmToWav(audio, sampleRate))], 'audio.wav', {
+      type: 'audio/wav',
+    });
+  }
+  return new File([new Uint8Array(audio)], `audio.${format}`, { type: audioMimeType(format) });
+}
+
+function hasContainerHeader(audio: Buffer): boolean {
+  const format = detectAudioFormat(audio);
+  if (format === null) return false;
+  if (format === 'mp3') return audio.toString('ascii', 0, 3) === 'ID3';
+  return true;
+}
 
 export class OpenAISTT implements STTProvider {
   readonly name = 'openai';
@@ -31,23 +54,50 @@ export class OpenAISTT implements STTProvider {
     this.model = config.model ?? DEFAULT_MODEL;
   }
 
+  /**
+   * Transcribe a complete audio file (wav, mp3, ogg, flac, webm, mp4). Headerless input is
+   * treated as raw PCM16 mono at 16kHz and wrapped into a WAV container.
+   */
   async transcribe(audio: Buffer, options?: STTOptions): Promise<TranscribeResult> {
-    const file = new File([new Uint8Array(audio)], 'audio.wav', { type: 'audio/wav' });
-
-    const response = await this.client.audio.transcriptions.create({
-      file,
-      model: this.model,
-      response_format: 'verbose_json',
-      timestamp_granularities: ['word'],
-      ...(options?.language && { language: options.language }),
-      ...(options?.prompt && { prompt: options.prompt }),
-    });
-
-    return this.mapResponse(response);
+    return this.transcribeFile(toUploadFile(audio, DEFAULT_SAMPLE_RATE), options);
   }
 
   createStream(options?: STTStreamOptions): STTStream {
-    return new OpenAISTTStream((audio, opts) => this.transcribe(audio, opts), options);
+    const sampleRate = options?.sampleRate ?? DEFAULT_SAMPLE_RATE;
+    return new OpenAISTTStream((audio, opts) => {
+      const file = hasContainerHeader(audio)
+        ? toUploadFile(audio, sampleRate)
+        : new File([new Uint8Array(pcmToWav(audio, sampleRate))], 'audio.wav', {
+            type: 'audio/wav',
+          });
+      return this.transcribeFile(file, opts);
+    }, options);
+  }
+
+  private async transcribeFile(file: File, options?: STTOptions): Promise<TranscribeResult> {
+    const common = {
+      file,
+      model: this.model,
+      ...(options?.language && { language: options.language }),
+      ...(options?.prompt && { prompt: options.prompt }),
+    };
+
+    if (supportsVerboseJson(this.model)) {
+      const response = await this.client.audio.transcriptions.create({
+        ...common,
+        response_format: 'verbose_json',
+        timestamp_granularities: ['word'],
+      });
+      return this.mapResponse(response);
+    }
+
+    const response = await this.client.audio.transcriptions.create({
+      ...common,
+      response_format: 'json',
+    });
+    const result: TranscribeResult = { text: response.text };
+    if (options?.language) result.language = options.language;
+    return result;
   }
 
   private mapResponse(response: TranscriptionVerbose): TranscribeResult {
@@ -81,6 +131,7 @@ type TranscribeFn = (audio: Buffer, options?: STTOptions) => Promise<TranscribeR
 class OpenAISTTStream extends EventEmitter implements STTStream {
   private chunks: Buffer[] = [];
   private closed = false;
+  private closePromise: Promise<TranscribeResult> | null = null;
   private readonly transcribeFn: TranscribeFn;
   private readonly options?: STTStreamOptions;
 
@@ -97,14 +148,21 @@ class OpenAISTTStream extends EventEmitter implements STTStream {
     this.chunks.push(chunk);
   }
 
-  async close(): Promise<TranscribeResult> {
-    if (this.closed) {
-      return { text: '' };
+  close(): Promise<TranscribeResult> {
+    if (!this.closePromise) {
+      this.closed = true;
+      this.closePromise = this.finish();
     }
-    this.closed = true;
+    return this.closePromise;
+  }
 
+  private async finish(): Promise<TranscribeResult> {
     const combined = Buffer.concat(this.chunks);
     this.chunks = [];
+
+    if (combined.length === 0) {
+      return { text: '' };
+    }
 
     try {
       const result = await this.transcribeFn(combined, this.options);
@@ -112,7 +170,7 @@ class OpenAISTTStream extends EventEmitter implements STTStream {
       return result;
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
-      this.emit('error', error);
+      if (this.listenerCount('error') > 0) this.emit('error', error);
       throw error;
     }
   }

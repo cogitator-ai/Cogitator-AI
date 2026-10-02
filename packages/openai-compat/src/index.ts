@@ -11,10 +11,22 @@ export type { OpenAIServerConfig } from './server/api-server';
 export { formatOpenAIError } from './server/middleware/error-handler';
 export type { AuthConfig } from './server/middleware/auth';
 
-export { OpenAIAdapter, createOpenAIAdapter } from './client/openai-adapter';
-export type { StreamEventType, StreamEmitterEvents } from './client/openai-adapter';
+export { OpenAIAdapter, createOpenAIAdapter, COGITATOR_MODEL_ID } from './client/openai-adapter';
+export type {
+  StreamEventType,
+  StreamEventData,
+  StreamEmitterEvents,
+  RunStreamEvent,
+  OpenAIAdapterOptions,
+} from './client/openai-adapter';
 export { ThreadManager } from './client/thread-manager';
-export type { StoredThread, StoredAssistant } from './client/thread-manager';
+export type {
+  StoredThread,
+  StoredAssistant,
+  LLMThreadMessage,
+  CreateAssistantParams,
+  UpdateAssistantParams,
+} from './client/thread-manager';
 
 export {
   InMemoryThreadStorage,

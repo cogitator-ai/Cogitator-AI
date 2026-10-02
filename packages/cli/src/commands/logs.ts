@@ -2,7 +2,7 @@
  * cogitator logs - view service logs
  */
 
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import { spawn } from 'node:child_process';
 import { dirname } from 'node:path';
 import { log } from '../utils/logger.js';
@@ -14,11 +14,16 @@ interface LogsOptions {
   timestamps: boolean;
 }
 
+export function parseTailOption(value: string): string {
+  if (value === 'all' || /^\d+$/.test(value)) return value;
+  throw new InvalidArgumentError('Expected a non-negative number of lines or "all".');
+}
+
 export const logsCommand = new Command('logs')
   .description('View logs from Docker services')
   .argument('[service]', 'Service name (redis, postgres, ollama)')
   .option('-f, --follow', 'Follow log output', false)
-  .option('-n, --tail <lines>', 'Number of lines to show', '100')
+  .option('-n, --tail <lines>', 'Number of lines to show (or "all")', parseTailOption, '100')
   .option('-t, --timestamps', 'Show timestamps', false)
   .action((service: string | undefined, options: LogsOptions) => {
     const composePath = findDockerCompose();
@@ -33,7 +38,7 @@ export const logsCommand = new Command('logs')
     const args = ['compose', 'logs'];
 
     if (options.follow) args.push('-f');
-    if (options.tail) args.push('--tail', options.tail);
+    args.push('--tail', options.tail);
     if (options.timestamps) args.push('-t');
 
     if (service) {

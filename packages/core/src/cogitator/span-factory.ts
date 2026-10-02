@@ -10,10 +10,11 @@ export function createSpan(
   attributes: Record<string, unknown>,
   status: 'ok' | 'error' | 'unset' = 'ok',
   kind: Span['kind'] = 'internal',
-  onSpan?: (span: Span) => void
+  onSpan?: (span: Span) => void,
+  id: string = `span_${nanoid(12)}`
 ): Span {
   const span: Span = {
-    id: `span_${nanoid(12)}`,
+    id,
     traceId,
     parentId,
     name,

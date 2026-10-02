@@ -39,7 +39,8 @@ describe('Channels E2E: Formatters', () => {
 
       const telegramResult = adaptMarkdown(input, 'telegram');
       expect(telegramResult).toContain('*Report*');
-      expect(telegramResult).toContain('**important**');
+      expect(telegramResult).toContain('Here is *important* data:');
+      expect(telegramResult).not.toContain('**');
       expect(telegramResult).toContain('```python');
 
       const slackResult = adaptMarkdown(input, 'slack');

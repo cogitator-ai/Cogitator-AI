@@ -6,6 +6,7 @@ import type {
   RetrievalConfig,
   RetrievalResult,
 } from '@cogitator-ai/types';
+import { resultSource } from './chunk-indexer.js';
 
 export interface MMRRetrieverConfig {
   embeddingAdapter: EmbeddingAdapter;
@@ -73,8 +74,35 @@ export class MMRRetriever implements Retriever {
     if (candidates.length === 0) return [];
 
     const lambda = options?.mmrLambda ?? this.defaultLambda;
-    const selected = this.selectMMR(candidates, topK, lambda);
+    const withVectors = await this.ensureVectors(candidates);
+    const selected = this.selectMMR(withVectors, topK, lambda);
     return selected.map((entry) => this.toRetrievalResult(entry));
+  }
+
+  /**
+   * Some vector stores (e.g. Qdrant) do not return stored vectors from search.
+   * Missing candidate vectors are re-embedded so diversity can still be computed.
+   */
+  private async ensureVectors(candidates: ScoredEmbedding[]): Promise<ScoredEmbedding[]> {
+    const missing = candidates
+      .map((candidate, index) => ({ candidate, index }))
+      .filter(({ candidate }) => !candidate.vector || candidate.vector.length === 0);
+    if (missing.length === 0) return candidates;
+
+    const vectors = await this.embedding.embedBatch(
+      missing.map(({ candidate }) => candidate.content)
+    );
+    if (vectors.length !== missing.length) {
+      throw new Error(
+        `Embedding count mismatch: got ${vectors.length} vectors for ${missing.length} candidates`
+      );
+    }
+
+    const result = [...candidates];
+    missing.forEach(({ candidate, index }, i) => {
+      result[index] = { ...candidate, vector: vectors[i]! };
+    });
+    return result;
   }
 
   private selectMMR(
@@ -125,7 +153,7 @@ export class MMRRetriever implements Retriever {
       documentId,
       content: entry.content,
       score: entry.mmrScore,
-      source: entry.sourceType,
+      source: resultSource(entry.metadata, entry.sourceType),
       metadata: { ...entry.metadata, originalScore: entry.score },
     };
   }

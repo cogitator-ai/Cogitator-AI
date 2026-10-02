@@ -4,8 +4,9 @@ import type {
   LLMBackend,
   ToolSelfGenerationConfig,
 } from '@cogitator-ai/types';
-import { ToolSandbox } from './tool-sandbox';
+import { ToolSandbox, type SandboxTestCase } from './tool-sandbox';
 import { buildToolValidationPrompt, parseValidationResponse } from './prompts';
+import { llmChat } from '../utils/llm-helper';
 
 export interface ToolValidatorOptions {
   llm?: LLMBackend;
@@ -13,7 +14,14 @@ export interface ToolValidatorOptions {
   model?: string;
 }
 
-interface ValidationRule {
+interface JsonPropertySchema {
+  type?: string;
+  default?: unknown;
+  enum?: unknown[];
+  examples?: unknown[];
+}
+
+export interface ValidationRule {
   id: string;
   name: string;
   severity: 'error' | 'warning' | 'info';
@@ -109,9 +117,9 @@ const STATIC_VALIDATION_RULES: ValidationRule[] = [
     severity: 'error',
     check: (code) => {
       if (code.includes('child_process')) return 'Uses child_process';
-      if (/\bexec\s*\(/.test(code)) return 'Uses exec()';
-      if (/\bspawn\s*\(/.test(code)) return 'Uses spawn()';
-      if (/\bexecSync\s*\(/.test(code)) return 'Uses execSync()';
+      if (/(?<![.\w$])exec\s*\(/.test(code)) return 'Uses exec()';
+      if (/\bspawn(?:Sync)?\s*\(/.test(code)) return 'Uses spawn()';
+      if (/\bexec(?:Sync|File|FileSync)\s*\(/.test(code)) return 'Uses execSync()/execFile()';
       return null;
     },
   },
@@ -155,7 +163,7 @@ export class ToolValidator {
 
   async validate(
     tool: GeneratedTool,
-    testCases?: Array<{ input: unknown; expectedOutput?: unknown; shouldThrow?: boolean }>
+    testCases?: SandboxTestCase[]
   ): Promise<ToolValidationResult> {
     const securityIssues: string[] = [];
     const logicIssues: string[] = [];
@@ -244,7 +252,7 @@ export class ToolValidator {
       if (result) {
         if (rule.severity === 'error') {
           errors.push(`[${rule.id}] ${result}`);
-        } else if (rule.severity === 'warning') {
+        } else {
           warnings.push(`[${rule.id}] ${result}`);
         }
       }
@@ -255,7 +263,7 @@ export class ToolValidator {
 
   private async runLLMValidation(
     tool: GeneratedTool,
-    testCases: Array<{ input: unknown; expectedOutput?: unknown; shouldThrow?: boolean }>
+    testCases: SandboxTestCase[]
   ): Promise<ToolValidationResult | null> {
     if (!this.llm) return null;
 
@@ -268,11 +276,14 @@ export class ToolValidator {
             ? `Should return ${JSON.stringify(tc.expectedOutput)}`
             : tc.shouldThrow
               ? 'Should throw an error'
-              : 'Should execute successfully',
+              : tc.allowThrow
+                ? 'Should either return a result or throw a descriptive error'
+                : 'Should execute successfully',
         }))
       );
 
-      const response = await this.callLLM(
+      const content = await llmChat(
+        this.llm,
         [
           {
             role: 'system',
@@ -282,70 +293,73 @@ Be thorough but practical - focus on real issues.`,
           },
           { role: 'user', content: prompt },
         ],
-        0.2
+        { model: this.model, temperature: 0.2 }
       );
 
-      return response ? parseValidationResponse(response.content) : null;
+      return parseValidationResponse(content);
     } catch {
       return null;
     }
   }
 
-  private generateBasicTestCases(
-    tool: GeneratedTool
-  ): Array<{ input: unknown; expectedOutput?: unknown; shouldThrow?: boolean }> {
-    const testCases: Array<{ input: unknown; expectedOutput?: unknown; shouldThrow?: boolean }> =
-      [];
+  private generateBasicTestCases(tool: GeneratedTool): SandboxTestCase[] {
     const params = tool.parameters;
 
-    if (params.type === 'object' && params.properties) {
-      const properties = params.properties as Record<string, { type?: string; default?: unknown }>;
-      const required = Array.isArray(params.required)
-        ? new Set(params.required as string[])
-        : new Set<string>();
+    if (params.type !== 'object' || !params.properties || typeof params.properties !== 'object') {
+      return [{ input: {} }];
+    }
 
-      const validInput: Record<string, unknown> = {};
-      for (const [key, schema] of Object.entries(properties)) {
-        validInput[key] = this.generateSampleValue(schema.type, schema.default);
+    const properties = params.properties as Record<string, JsonPropertySchema>;
+    const required = new Set(
+      Array.isArray(params.required)
+        ? params.required.filter((r): r is string => typeof r === 'string')
+        : []
+    );
+    const entries = Object.entries(properties);
+    const testCases: SandboxTestCase[] = [];
+
+    const validInput: Record<string, unknown> = {};
+    for (const [key, schema] of entries) {
+      validInput[key] = this.generateSampleValue(schema);
+    }
+    testCases.push({ input: validInput });
+
+    const hasOptional = entries.some(([key]) => !required.has(key));
+    if (required.size > 0 && hasOptional) {
+      const requiredOnlyInput: Record<string, unknown> = {};
+      for (const [key, schema] of entries) {
+        if (required.has(key)) {
+          requiredOnlyInput[key] = this.generateSampleValue(schema);
+        }
       }
-      testCases.push({ input: validInput });
+      testCases.push({ input: requiredOnlyInput });
+    }
 
-      const emptyInput: Record<string, unknown> = {};
-      for (const [key, schema] of Object.entries(properties)) {
+    const edgeInput: Record<string, unknown> = {};
+    for (const [key, schema] of entries) {
+      edgeInput[key] = this.generateEdgeValue(schema.type);
+    }
+    testCases.push({ input: edgeInput, allowThrow: true });
+
+    if (required.size > 0) {
+      const missingRequired: Record<string, unknown> = {};
+      for (const [key, schema] of entries) {
         if (!required.has(key)) {
-          emptyInput[key] = this.generateSampleValue(schema.type, schema.default);
+          missingRequired[key] = this.generateSampleValue(schema);
         }
       }
-      if (Object.keys(emptyInput).length > 0) {
-        testCases.push({ input: emptyInput });
-      }
-
-      const edgeInput: Record<string, unknown> = {};
-      for (const [key, schema] of Object.entries(properties)) {
-        edgeInput[key] = this.generateEdgeValue(schema.type);
-      }
-      testCases.push({ input: edgeInput });
-
-      if (required.size > 0) {
-        const missingRequired: Record<string, unknown> = {};
-        for (const [key, schema] of Object.entries(properties)) {
-          if (!required.has(key)) {
-            missingRequired[key] = this.generateSampleValue(schema.type, schema.default);
-          }
-        }
-        testCases.push({ input: missingRequired, shouldThrow: true });
-      }
-    } else {
-      testCases.push({ input: {} });
+      testCases.push({ input: missingRequired, shouldThrow: true });
     }
 
     return testCases;
   }
 
-  private generateSampleValue(type?: string, defaultValue?: unknown): unknown {
-    if (defaultValue !== undefined) return defaultValue;
+  private generateSampleValue(schema: JsonPropertySchema): unknown {
+    if (schema.default !== undefined) return schema.default;
+    if (Array.isArray(schema.examples) && schema.examples.length > 0) return schema.examples[0];
+    if (Array.isArray(schema.enum) && schema.enum.length > 0) return schema.enum[0];
 
-    switch (type) {
+    switch (schema.type) {
       case 'string':
         return 'test';
       case 'number':
@@ -402,16 +416,5 @@ Be thorough but practical - focus on real issues.`,
     }
 
     return Math.max(0, Math.min(1, score));
-  }
-
-  private async callLLM(
-    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
-    temperature: number
-  ) {
-    if (!this.llm) return null;
-    if (this.llm.complete) {
-      return this.llm.complete({ messages, temperature });
-    }
-    return this.llm.chat({ model: this.model, messages, temperature });
   }
 }

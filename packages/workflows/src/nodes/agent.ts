@@ -37,6 +37,7 @@ export function agentNode<S extends WorkflowState = WorkflowState>(
       try {
         const result = await extCtx.cogitator.run(agent, {
           input,
+          ...(extCtx.signal && { signal: extCtx.signal }),
           ...options?.runOptions,
         });
 
@@ -49,7 +50,8 @@ export function agentNode<S extends WorkflowState = WorkflowState>(
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(
-          `agentNode "${agent.name}" failed in workflow "${ctx.workflowId}", node "${ctx.nodeId}": ${message}`
+          `agentNode "${agent.name}" failed in workflow "${ctx.workflowId}", node "${ctx.nodeId}": ${message}`,
+          { cause: error }
         );
       }
     },

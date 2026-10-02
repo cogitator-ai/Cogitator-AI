@@ -3,13 +3,42 @@ import chalk from 'chalk';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { log, printBanner } from '../utils/logger.js';
+import { importUserModule } from '../utils/module-loader.js';
+import { loadDotenvInto } from '../utils/env.js';
+
+export interface GatewayLike {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  readonly stats: {
+    uptime: number;
+    activeSessions: number;
+    totalSessions: number;
+    messagesToday: number;
+    connectedChannels: string[];
+  };
+}
+
+export function isGatewayLike(value: unknown): value is GatewayLike {
+  if (typeof value !== 'object' || value === null) return false;
+  if (!('start' in value) || typeof value.start !== 'function') return false;
+  if (!('stop' in value) || typeof value.stop !== 'function') return false;
+  if (!('stats' in value)) return false;
+  const stats = value.stats;
+  return (
+    typeof stats === 'object' &&
+    stats !== null &&
+    'connectedChannels' in stats &&
+    Array.isArray(stats.connectedChannels)
+  );
+}
 
 export const assistantCommand = new Command('assistant')
   .description('Start AI assistant with live dashboard')
   .option('-c, --config <path>', 'Path to gateway config file', 'src/gateway.ts')
-  .option('-q, --quiet', 'Minimal output')
-  .action(async (options: { config: string; quiet: boolean }) => {
-    if (!options.quiet) printBanner();
+  .option('-q, --quiet', 'Minimal output (no banner, live status or hotkeys)')
+  .action(async (options: { config: string; quiet?: boolean }) => {
+    const quiet = options.quiet ?? false;
+    if (!quiet) printBanner();
 
     const configPath = resolve(process.cwd(), options.config);
 
@@ -20,21 +49,23 @@ export const assistantCommand = new Command('assistant')
     }
 
     log.info(`Loading config from ${chalk.dim(options.config)}`);
+    loadDotenvInto(resolve(process.cwd(), '.env'), process.env);
 
-    let gatewayModule: { gateway?: GatewayLike };
+    let gatewayExport: unknown;
     try {
-      gatewayModule = await importConfig(configPath);
+      const mod = await importUserModule(configPath, process.cwd());
+      gatewayExport = mod.gateway;
     } catch (err) {
       log.error(`Failed to load config: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
     }
 
-    const gateway = gatewayModule.gateway;
-    if (!gateway) {
+    if (!isGatewayLike(gatewayExport)) {
       log.error('Config file must export a "gateway" instance');
       log.dim('Example: export const gateway = new Gateway({ ... })');
       process.exit(1);
     }
+    const gateway = gatewayExport;
 
     try {
       await gateway.start();
@@ -43,21 +74,32 @@ export const assistantCommand = new Command('assistant')
       process.exit(1);
     }
 
-    printDashboard(gateway, options.quiet);
+    printDashboard(gateway, quiet);
 
+    let stopping = false;
+    let stopLiveLog: (() => void) | null = null;
     const shutdown = async () => {
+      if (stopping) return;
+      stopping = true;
+      stopLiveLog?.();
+      restoreTerminal();
       console.log();
       log.info('Shutting down gracefully...');
-      await gateway.stop();
-      log.success('All channels stopped');
-      process.exit(0);
+      try {
+        await gateway.stop();
+        log.success('All channels stopped');
+        process.exit(0);
+      } catch (err) {
+        log.error(`Shutdown failed: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
     };
 
     process.on('SIGINT', () => void shutdown());
     process.on('SIGTERM', () => void shutdown());
 
-    if (!options.quiet) {
-      startLiveLog(gateway);
+    if (!quiet) {
+      stopLiveLog = startLiveLog(gateway);
       startHotkeys(gateway, shutdown);
     }
   });
@@ -70,7 +112,7 @@ function printDashboard(gateway: GatewayLike, quiet: boolean): void {
   console.log(
     chalk.cyan('  │  ') +
       chalk.bold('Cogitator Assistant') +
-      chalk.cyan('                               │')
+      chalk.cyan('                            │')
   );
   console.log(chalk.cyan('  ╰─────────────────────────────────────────────────╯'));
   console.log();
@@ -87,15 +129,15 @@ function printDashboard(gateway: GatewayLike, quiet: boolean): void {
   console.log(chalk.dim(`  Messages: ${stats.messagesToday} today`));
   console.log();
 
-  if (!quiet) {
+  if (!quiet && process.stdin.isTTY) {
     console.log(
       chalk.dim('  Hotkeys: ') +
         chalk.dim.bold('s') +
         chalk.dim(' sessions  ') +
         chalk.dim.bold('c') +
         chalk.dim(' channels  ') +
-        chalk.dim.bold('p') +
-        chalk.dim(' pause  ') +
+        chalk.dim.bold('h') +
+        chalk.dim(' help  ') +
         chalk.dim.bold('q') +
         chalk.dim(' quit')
     );
@@ -104,7 +146,12 @@ function printDashboard(gateway: GatewayLike, quiet: boolean): void {
   }
 }
 
-let paused = false;
+function restoreTerminal(): void {
+  if (process.stdin.isTTY && process.stdin.isRaw) {
+    process.stdin.setRawMode(false);
+  }
+  process.stdin.pause();
+}
 
 function startHotkeys(gateway: GatewayLike, shutdown: () => Promise<void>): void {
   if (!process.stdin.isTTY) return;
@@ -114,7 +161,7 @@ function startHotkeys(gateway: GatewayLike, shutdown: () => Promise<void>): void
   process.stdin.setEncoding('utf8');
 
   process.stdin.on('data', (key: string) => {
-    if (key === '\u0003') {
+    if (key === '\u0003' || key === 'q') {
       void shutdown();
       return;
     }
@@ -134,33 +181,12 @@ function startHotkeys(gateway: GatewayLike, shutdown: () => Promise<void>): void
       }
 
       case 'c': {
-        const stats = gateway.stats;
         console.log();
         console.log(chalk.bold('  Channels'));
-        for (const ch of stats.connectedChannels) {
-          const icon = paused ? chalk.yellow('⏸') : chalk.green('✓');
-          console.log(`  ${icon} ${ch}`);
+        for (const ch of gateway.stats.connectedChannels) {
+          console.log(`  ${chalk.green('✓')} ${ch}`);
         }
         console.log();
-        break;
-      }
-
-      case 'p': {
-        paused = !paused;
-        if (paused) {
-          console.log();
-          log.warn('Channels paused — incoming messages will be queued');
-          console.log();
-        } else {
-          console.log();
-          log.success('Channels resumed');
-          console.log();
-        }
-        break;
-      }
-
-      case 'q': {
-        void shutdown();
         break;
       }
 
@@ -170,7 +196,6 @@ function startHotkeys(gateway: GatewayLike, shutdown: () => Promise<void>): void
         console.log(chalk.bold('  Hotkeys'));
         console.log(`  ${chalk.bold('s')}  Show sessions`);
         console.log(`  ${chalk.bold('c')}  Show channels`);
-        console.log(`  ${chalk.bold('p')}  Pause/resume channels`);
         console.log(`  ${chalk.bold('q')}  Graceful shutdown`);
         console.log(`  ${chalk.bold('h')}  This help`);
         console.log();
@@ -184,20 +209,22 @@ function clearLine(): void {
   process.stdout.write('\r\x1b[K');
 }
 
-function startLiveLog(gateway: GatewayLike): void {
+function startLiveLog(gateway: GatewayLike): () => void {
+  if (!process.stdout.isTTY) return () => {};
+
   const startTime = Date.now();
-
   const statusInterval = setInterval(() => {
-    const stats = gateway.stats;
     const uptime = formatUptime(Date.now() - startTime);
-
-    process.stdout.write(`\r${chalk.dim(`  ↑ ${uptime} · ${stats.messagesToday} msgs`)}    `);
+    process.stdout.write(
+      `\r${chalk.dim(`  ↑ ${uptime} · ${gateway.stats.messagesToday} msgs`)}    `
+    );
   }, 5000);
+  statusInterval.unref();
 
-  process.on('exit', () => clearInterval(statusInterval));
+  return () => clearInterval(statusInterval);
 }
 
-function formatUptime(ms: number): string {
+export function formatUptime(ms: number): string {
   const s = Math.floor(ms / 1000);
   const m = Math.floor(s / 60);
   const h = Math.floor(m / 60);
@@ -205,30 +232,4 @@ function formatUptime(ms: number): string {
   if (h > 0) return `${h}h ${m % 60}m`;
   if (m > 0) return `${m}m ${s % 60}s`;
   return `${s}s`;
-}
-
-async function importConfig(configPath: string): Promise<{ gateway?: GatewayLike }> {
-  if (configPath.endsWith('.ts')) {
-    try {
-      // @ts-expect-error tsx is an optional runtime loader
-      await import('tsx');
-    } catch {
-      log.warn('tsx not found. Install it for TypeScript config support: pnpm add -D tsx');
-    }
-  }
-
-  const url = `file://${configPath}`;
-  return import(url);
-}
-
-interface GatewayLike {
-  start(): Promise<void>;
-  stop(): Promise<void>;
-  stats: {
-    uptime: number;
-    activeSessions: number;
-    totalSessions: number;
-    messagesToday: number;
-    connectedChannels: string[];
-  };
 }

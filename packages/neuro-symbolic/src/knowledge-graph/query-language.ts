@@ -115,124 +115,164 @@ function getFieldValue(item: GraphNode | GraphEdge, field: string): unknown {
   }
 
   if (field.startsWith('properties.') && 'properties' in item) {
-    const propPath = field.substring(11);
-    return item.properties?.[propPath];
+    let current: unknown = item.properties;
+    for (const segment of field.substring('properties.'.length).split('.')) {
+      if (typeof current !== 'object' || current === null) return undefined;
+      current = (current as Record<string, unknown>)[segment];
+    }
+    return current;
   }
 
   return undefined;
 }
 
-async function matchPattern(
+interface GraphSnapshot {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  nodeById: Map<string, GraphNode>;
+}
+
+const TYPE_PREDICATES = new Set(['a', 'type', 'rdf:type']);
+
+async function loadSnapshot(ctx: QueryExecutionContext): Promise<GraphSnapshot> {
+  const [nodesResult, edgesResult] = await Promise.all([
+    ctx.adapter.queryNodes({ agentId: ctx.agentId }),
+    ctx.adapter.queryEdges({ agentId: ctx.agentId }),
+  ]);
+
+  if (!nodesResult.success) throw new Error(`Failed to load graph nodes: ${nodesResult.error}`);
+  if (!edgesResult.success) throw new Error(`Failed to load graph edges: ${edgesResult.error}`);
+
+  const nodeById = new Map(nodesResult.data.map((node) => [node.id, node]));
+  return { nodes: nodesResult.data, edges: edgesResult.data, nodeById };
+}
+
+function nodeMatchesValue(node: GraphNode, value: string): boolean {
+  return node.id === value || node.name === value || node.aliases.includes(value);
+}
+
+function bindNode(
+  binding: QueryBinding,
+  varName: string | null,
+  value: string | null,
+  node: GraphNode
+): QueryBinding | null {
+  if (value !== null) return nodeMatchesValue(node, value) ? binding : null;
+  if (varName === null) return binding;
+
+  const existing = binding[varName];
+  if (existing !== undefined) {
+    return typeof existing === 'object' && existing !== null && 'id' in existing
+      ? (existing as GraphNode).id === node.id
+        ? binding
+        : null
+      : null;
+  }
+  return { ...binding, [varName]: node };
+}
+
+function conditionsHold(
+  conditions: QueryCondition[],
+  subject: GraphNode,
+  object: GraphNode | string,
+  edge: GraphEdge | null
+): boolean {
+  for (const condition of conditions) {
+    const scope = condition.field.split('.')[0];
+    const fieldName = condition.field.replace(/^(subject|object|predicate)\./, '');
+    const item = scope === 'subject' ? subject : scope === 'object' ? object : edge;
+
+    const value =
+      item === null
+        ? undefined
+        : typeof item === 'string'
+          ? fieldName === 'type' || fieldName === 'object'
+            ? item
+            : undefined
+          : getFieldValue(item, fieldName);
+
+    if (!matchesCondition(value, condition)) return false;
+  }
+  return true;
+}
+
+function matchTypePattern(
   pattern: ParsedPattern,
-  ctx: QueryExecutionContext,
-  existingBindings: QueryBinding[]
-): Promise<QueryBinding[]> {
+  snapshot: GraphSnapshot,
+  bindings: QueryBinding[]
+): QueryBinding[] {
   const results: QueryBinding[] = [];
-  const { adapter, agentId } = ctx;
 
-  const nodesResult = await adapter.queryNodes({
-    agentId,
-    limit: 1000,
-  });
+  for (const binding of bindings) {
+    for (const node of snapshot.nodes) {
+      const withSubject = bindNode(binding, pattern.subjectVar, pattern.subjectValue, node);
+      if (!withSubject) continue;
 
-  if (!nodesResult.success || !nodesResult.data) {
-    return [];
-  }
-
-  const nodes = nodesResult.data;
-  const nodeMap = new Map<string, GraphNode>();
-  for (const node of nodes) {
-    nodeMap.set(node.id, node);
-  }
-
-  const edgesResult = await adapter.queryEdges({
-    agentId,
-    limit: 1000,
-  });
-
-  if (!edgesResult.success || !edgesResult.data) {
-    return [];
-  }
-
-  const edges = edgesResult.data;
-
-  const startBindings = existingBindings.length > 0 ? existingBindings : [{}];
-
-  for (const binding of startBindings) {
-    for (const edge of edges) {
-      const sourceNode = nodeMap.get(edge.sourceNodeId);
-      const targetNode = nodeMap.get(edge.targetNodeId);
-
-      if (!sourceNode || !targetNode) continue;
-
-      const newBinding: QueryBinding = { ...binding };
-      let matches = true;
-
-      if (pattern.subjectValue) {
-        if (sourceNode.name !== pattern.subjectValue && sourceNode.id !== pattern.subjectValue) {
-          matches = false;
-        }
-      } else if (pattern.subjectVar) {
-        const existingValue = binding[pattern.subjectVar];
-        if (existingValue) {
-          if ((existingValue as GraphNode).id !== sourceNode.id) {
-            matches = false;
-          }
-        } else {
-          newBinding[pattern.subjectVar] = sourceNode;
-        }
+      let withObject: QueryBinding = withSubject;
+      if (pattern.objectValue !== null) {
+        if (node.type.toLowerCase() !== pattern.objectValue.toLowerCase()) continue;
+      } else if (pattern.objectVar !== null) {
+        const existing = withSubject[pattern.objectVar];
+        if (existing !== undefined && existing !== node.type) continue;
+        withObject = { ...withSubject, [pattern.objectVar]: node.type };
       }
 
-      if (matches && pattern.predicateValue) {
+      if (conditionsHold(pattern.conditions, node, node.type, null)) {
+        results.push(withObject);
+      }
+    }
+  }
+
+  return results;
+}
+
+function matchPattern(
+  pattern: ParsedPattern,
+  snapshot: GraphSnapshot,
+  bindings: QueryBinding[],
+  undirected: boolean
+): QueryBinding[] {
+  const results =
+    pattern.predicateValue !== null && TYPE_PREDICATES.has(pattern.predicateValue)
+      ? matchTypePattern(pattern, snapshot, bindings)
+      : [];
+
+  for (const binding of bindings) {
+    for (const edge of snapshot.edges) {
+      const source = snapshot.nodeById.get(edge.sourceNodeId);
+      const target = snapshot.nodeById.get(edge.targetNodeId);
+      if (!source || !target) continue;
+
+      if (pattern.predicateValue !== null) {
         if (edge.type !== pattern.predicateValue && edge.label !== pattern.predicateValue) {
-          matches = false;
-        }
-      } else if (matches && pattern.predicateVar) {
-        const existingValue = binding[pattern.predicateVar];
-        if (existingValue) {
-          if ((existingValue as GraphEdge).id !== edge.id) {
-            matches = false;
-          }
-        } else {
-          newBinding[pattern.predicateVar] = edge;
+          continue;
         }
       }
 
-      if (matches && pattern.objectValue) {
-        if (targetNode.name !== pattern.objectValue && targetNode.id !== pattern.objectValue) {
-          matches = false;
-        }
-      } else if (matches && pattern.objectVar) {
-        const existingValue = binding[pattern.objectVar];
-        if (existingValue) {
-          if ((existingValue as GraphNode).id !== targetNode.id) {
-            matches = false;
-          }
-        } else {
-          newBinding[pattern.objectVar] = targetNode;
-        }
+      const orientations: [GraphNode, GraphNode][] = [[source, target]];
+      if ((edge.bidirectional || undirected) && source.id !== target.id) {
+        orientations.push([target, source]);
       }
 
-      if (matches) {
-        for (const condition of pattern.conditions) {
-          const item = condition.field.startsWith('subject')
-            ? sourceNode
-            : condition.field.startsWith('object')
-              ? targetNode
-              : edge;
+      for (const [subject, object] of orientations) {
+        let current = bindNode(binding, pattern.subjectVar, pattern.subjectValue, subject);
+        if (!current) continue;
 
-          const fieldName = condition.field.replace(/^(subject|object|predicate)\./, '');
-          const value = getFieldValue(item, fieldName);
-
-          if (!matchesCondition(value, condition)) {
-            matches = false;
-            break;
+        if (pattern.predicateVar !== null) {
+          const existing = current[pattern.predicateVar];
+          if (existing !== undefined) {
+            if ((existing as GraphEdge).id !== edge.id) continue;
+          } else {
+            current = { ...current, [pattern.predicateVar]: edge };
           }
         }
-      }
 
-      if (matches) {
-        results.push(newBinding);
+        current = bindNode(current, pattern.objectVar, pattern.objectValue, object);
+        if (!current) continue;
+
+        if (conditionsHold(pattern.conditions, subject, object, edge)) {
+          results.push(current);
+        }
       }
     }
   }
@@ -370,6 +410,8 @@ function applyAggregates(
 }
 
 function computeAggregate(bindings: QueryBinding[], fn: AggregateFunction, field: string): unknown {
+  if (fn === 'count' && field === '*') return bindings.length;
+
   const varName = field.split('.')[0];
   const fieldPath = field.substring(varName.length + 1);
 
@@ -419,9 +461,13 @@ export async function executeQuery(
 
   let bindings: QueryBinding[] = [];
 
-  for (const pattern of query.patterns) {
-    const parsed = parsePattern(pattern);
-    bindings = await matchPattern(parsed, ctx, bindings);
+  if (query.patterns.length > 0) {
+    const snapshot = await loadSnapshot(ctx);
+    bindings = [{}];
+    for (const pattern of query.patterns) {
+      bindings = matchPattern(parsePattern(pattern), snapshot, bindings, query.type === 'describe');
+      if (bindings.length === 0) break;
+    }
   }
 
   if (query.filters && query.filters.length > 0) {
@@ -577,67 +623,232 @@ export function variable(name: string, type?: 'node' | 'edge' | 'value'): QueryV
   return { name, type };
 }
 
+const QUERY_KEYWORDS = new Set([
+  'select',
+  'ask',
+  'construct',
+  'describe',
+  'where',
+  'filter',
+  'order',
+  'limit',
+  'offset',
+]);
+
+const FILTER_OPERATORS: Record<string, QueryOperator> = {
+  '=': 'eq',
+  '==': 'eq',
+  eq: 'eq',
+  '!=': 'neq',
+  neq: 'neq',
+  '>': 'gt',
+  gt: 'gt',
+  '>=': 'gte',
+  gte: 'gte',
+  '<': 'lt',
+  lt: 'lt',
+  '<=': 'lte',
+  lte: 'lte',
+  contains: 'contains',
+  startswith: 'startsWith',
+  endswith: 'endsWith',
+  regex: 'regex',
+  in: 'in',
+  notin: 'notIn',
+};
+
+const QUERY_TOKEN =
+  /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[{}()[\],]|!=|>=|<=|==|[<>=]|[^\s{}()[\],<>=!"']+/g;
+
+function tokenizeQuery(input: string): string[] {
+  return input.match(QUERY_TOKEN) ?? [];
+}
+
+function isQuoted(token: string): boolean {
+  if (token.length < 2) return false;
+  const quote = token[0];
+  return (quote === '"' || quote === "'") && token.endsWith(quote);
+}
+
+function unquote(token: string): string {
+  return token.slice(1, -1).replace(/\\(.)/g, '$1');
+}
+
+function parseLiteral(token: string): unknown {
+  if (isQuoted(token)) return unquote(token);
+  if (token === 'true') return true;
+  if (token === 'false') return false;
+  if (token === 'null') return null;
+  const num = Number(token);
+  if (token !== '' && Number.isFinite(num)) return num;
+  return token;
+}
+
+function parseTriplePart(token: string): string | QueryVariable {
+  if (token.startsWith('?')) return { name: token.substring(1) };
+  if (isQuoted(token)) return unquote(token);
+  return token;
+}
+
+function fieldReference(token: string): string {
+  return token.startsWith('?') ? token.substring(1) : token;
+}
+
 export function parseQueryString(queryString: string): GraphQuery {
-  const lines = queryString
-    .trim()
-    .split('\n')
-    .map((l) => l.trim());
+  const tokens = tokenizeQuery(queryString.trim());
   const query: GraphQuery = { type: 'select', patterns: [] };
+  let pos = 0;
 
-  let currentSection: 'select' | 'where' | 'filter' | 'order' | 'limit' | null = null;
+  const peek = (): string | undefined => tokens[pos];
+  const isKeyword = (token: string | undefined): boolean =>
+    token !== undefined && !isQuoted(token) && QUERY_KEYWORDS.has(token.toLowerCase());
 
-  for (const line of lines) {
-    const lower = line.toLowerCase();
-
-    if (lower.startsWith('select')) {
-      query.type = 'select';
-      currentSection = 'select';
-    } else if (lower.startsWith('ask')) {
-      query.type = 'ask';
-      currentSection = 'select';
-    } else if (lower.startsWith('construct')) {
-      query.type = 'construct';
-      currentSection = 'select';
-    } else if (lower.startsWith('describe')) {
-      query.type = 'describe';
-      currentSection = 'select';
-    } else if (lower.startsWith('where')) {
-      currentSection = 'where';
-    } else if (lower.startsWith('filter')) {
-      currentSection = 'filter';
-    } else if (lower.startsWith('order by')) {
-      currentSection = 'order';
-    } else if (lower.startsWith('limit')) {
-      const match = /limit\s+(\d+)/i.exec(line);
-      if (match) {
-        query.limit = parseInt(match[1], 10);
+  const parseWhere = (): void => {
+    let triple: string[] = [];
+    const flush = (): void => {
+      if (triple.length === 3) {
+        query.patterns.push({
+          subject: parseTriplePart(triple[0]),
+          predicate: parseTriplePart(triple[1]),
+          object: parseTriplePart(triple[2]),
+        });
       }
-    } else if (lower.startsWith('offset')) {
-      const match = /offset\s+(\d+)/i.exec(line);
-      if (match) {
-        query.offset = parseInt(match[1], 10);
+      triple = [];
+    };
+
+    while (pos < tokens.length) {
+      const token = tokens[pos];
+      if (token === '{') {
+        pos++;
+        continue;
       }
-    } else if (currentSection === 'where') {
-      const tripleMatch =
-        /(\?\s*[\w]+|"[^"]+"|[\w][\w.-]*)\s+([\w.-]+)\s+(\?\s*[\w]+|"[^"]+"|[\w][\w.-]*)/.exec(
-          line
-        );
-      if (tripleMatch) {
-        const subjStr = tripleMatch[1];
-        const predicate = tripleMatch[2];
-        const objStr = tripleMatch[3];
-
-        const parseTriplePart = (s: string): string | QueryVariable => {
-          if (s.startsWith('?')) return { name: s.substring(1).trim() };
-          if (s.startsWith('"')) return s.slice(1, -1);
-          return s;
-        };
-
-        const subject = parseTriplePart(subjStr);
-        const object = parseTriplePart(objStr);
-
-        query.patterns.push({ subject, predicate, object });
+      if (token === '}') {
+        pos++;
+        break;
       }
+      if (isKeyword(token)) {
+        if (token.toLowerCase() === 'filter') {
+          flush();
+          pos++;
+          parseFilter();
+          continue;
+        }
+        break;
+      }
+      pos++;
+
+      if (token === '.' || token === ',') {
+        flush();
+        continue;
+      }
+
+      const endsTriple = token.length > 1 && token.endsWith('.') && !isQuoted(token);
+      triple.push(endsTriple ? token.slice(0, -1) : token);
+      if (endsTriple || triple.length === 3) flush();
+    }
+    flush();
+  };
+
+  const parseFilter = (): void => {
+    let depth = 0;
+    const expression: string[] = [];
+    while (pos < tokens.length) {
+      const token = tokens[pos];
+      if (token === '(') {
+        depth++;
+        pos++;
+        continue;
+      }
+      if (token === ')') {
+        depth--;
+        pos++;
+        if (depth <= 0) break;
+        continue;
+      }
+      if (depth === 0 && (isKeyword(token) || token === '}')) break;
+      expression.push(token);
+      pos++;
+      if (depth === 0 && expression.length >= 3 && (expression[2] !== '[' || token === ']')) {
+        break;
+      }
+    }
+
+    if (expression.length < 3) return;
+    const operator = FILTER_OPERATORS[expression[1].toLowerCase()];
+    if (!operator) return;
+
+    const rawValue = expression.slice(2);
+    const value =
+      rawValue[0] === '['
+        ? rawValue.filter((t) => t !== '[' && t !== ']' && t !== ',').map(parseLiteral)
+        : parseLiteral(rawValue[0]);
+
+    query.filters ??= [];
+    query.filters.push({ field: fieldReference(expression[0]), operator, value });
+  };
+
+  const parseOrderBy = (): void => {
+    if (peek()?.toLowerCase() === 'by') pos++;
+    while (pos < tokens.length && !isKeyword(peek())) {
+      let token = tokens[pos++];
+      if (token === ',') continue;
+
+      let direction: 'asc' | 'desc' = 'asc';
+      const lower = token.toLowerCase();
+      if ((lower === 'asc' || lower === 'desc') && peek() === '(') {
+        direction = lower;
+        pos++;
+        token = tokens[pos++] ?? '';
+        if (peek() === ')') pos++;
+      } else if (peek()?.toLowerCase() === 'desc' || peek()?.toLowerCase() === 'asc') {
+        direction = tokens[pos++].toLowerCase() as 'asc' | 'desc';
+      }
+
+      if (token) {
+        query.orderBy ??= [];
+        query.orderBy.push({ field: fieldReference(token), direction });
+      }
+    }
+  };
+
+  const parseCount = (): number | undefined => {
+    const value = Number(tokens[pos]);
+    if (Number.isInteger(value) && value >= 0) {
+      pos++;
+      return value;
+    }
+    return undefined;
+  };
+
+  while (pos < tokens.length) {
+    const token = tokens[pos++];
+    switch (token.toLowerCase()) {
+      case 'select':
+      case 'ask':
+      case 'construct':
+      case 'describe':
+        query.type = token.toLowerCase() as GraphQuery['type'];
+        while (pos < tokens.length && !isKeyword(peek()) && peek() !== '{') pos++;
+        break;
+      case 'where':
+        parseWhere();
+        break;
+      case 'filter':
+        parseFilter();
+        break;
+      case 'order':
+        parseOrderBy();
+        break;
+      case 'limit':
+        query.limit = parseCount() ?? query.limit;
+        break;
+      case 'offset':
+        query.offset = parseCount() ?? query.offset;
+        break;
+      case '{':
+        pos--;
+        parseWhere();
+        break;
     }
   }
 

@@ -49,8 +49,20 @@ Creates a Hono sub-application with all Cogitator endpoints.
 | `auth`            | `(c: Context) => AuthContext` | Authentication function (receives Hono Context) |
 | `enableSwagger`   | `boolean`                     | Enable Swagger/OpenAPI docs                     |
 | `swagger`         | `SwaggerConfig`               | Swagger configuration                           |
-| `enableWebSocket` | `boolean`                     | Enable WebSocket support                        |
-| `websocket`       | `WebSocketConfig`             | WebSocket configuration                         |
+| `enableWebSocket` | `boolean`                     | Enable the WebSocket endpoint                   |
+| `websocket`       | `WebSocketConfig`             | WebSocket configuration (see below)             |
+| `bodyLimit`       | `number`                      | Max request body size in bytes (default 1 MiB)  |
+
+## Request Handling
+
+- Request bodies are validated before anything reaches the runtime: `input` must be a non-empty string, `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number. Invalid bodies return `400 INVALID_INPUT` with the offending field in the message.
+- Workflow runs accept an optional body. `options` is limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); any other option is dropped, and a wrongly typed one returns `400 INVALID_INPUT`.
+- Thread messages accept `role` of `user`, `assistant` or `system`; `metadata` is stored with the entry and a token estimate is recorded.
+- Bodies above `bodyLimit` return `413 PAYLOAD_TOO_LARGE`.
+- `CogitatorError`s are returned with their HTTP status and code (for example `429 LLM_RATE_LIMITED`). Any other error is logged and returned as `500 Internal server error` without internal details. A workflow that finishes with an error is reported as an error, never as a successful result.
+- When the client disconnects, the running agent, workflow or swarm is aborted, for both JSON and SSE endpoints.
+- `GET /agents` returns each agent's `description` and never exposes its `instructions`.
+- `GET /tools` returns tool parameters as JSON Schema.
 
 ## Endpoints
 
@@ -130,6 +142,51 @@ Deno.serve(app.fetch);
 
 The adapter uses Hono's built-in `streamSSE` for Server-Sent Events — no raw response manipulation needed. Works across all runtimes.
 
+Agent streams emit `tool-call-start`, `tool-call-delta` (the JSON arguments) and `tool-call-end` with the provider's tool call id, so `tool-result.toolCallId` always matches the call it belongs to.
+
+## WebSocket
+
+WebSocket upgrades are runtime-specific in Hono, so pass the `upgradeWebSocket` helper of your runtime. The endpoint goes through the same middleware as the REST routes, including `auth`.
+
+```typescript
+import { serve } from '@hono/node-server';
+import { createNodeWebSocket } from '@hono/node-ws';
+
+const app = new Hono();
+const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
+
+app.route(
+  '/cogitator',
+  cogitatorApp({
+    cogitator,
+    agents: { chat: chatAgent },
+    enableWebSocket: true,
+    websocket: { path: '/ws', upgradeWebSocket, maxPayloadSize: 1024 * 1024 },
+  })
+);
+
+const server = serve({ fetch: app.fetch, port: 3000 });
+injectWebSocket(server);
+```
+
+On Bun use `upgradeWebSocket` from `hono/bun`, on Deno from `hono/deno`, on Cloudflare Workers from `hono/cloudflare-workers`. Without `upgradeWebSocket` the endpoint answers `501 UNIMPLEMENTED`.
+
+**Protocol:**
+
+| Client sends | Payload                                                                        |
+| ------------ | ------------------------------------------------------------------------------ |
+| `run`        | `{ type: 'agent' \| 'workflow' \| 'swarm', name, input, context?, threadId? }` |
+| `stop`       | Cancels the current run                                                        |
+| `ping`       | Answered with `pong` (echoes `id`)                                             |
+
+| Server sends | Description                                                                               |
+| ------------ | ----------------------------------------------------------------------------------------- |
+| `event`      | `token`, `tool-call`, `tool-result`, `complete` (with the serialized result), `cancelled` |
+| `error`      | Invalid message, unknown resource, run already in progress, or a masked run failure       |
+| `pong`       | Heartbeat reply                                                                           |
+
+Messages larger than `maxPayloadSize` are rejected and the socket is closed with code `1009`. Closing the socket aborts the active run. `handleWebSocketMessage` and `createClientState` are exported for custom WebSocket integrations.
+
 ## Individual Route Access
 
 ```typescript
@@ -137,7 +194,15 @@ import {
   createAgentRoutes,
   createThreadRoutes,
   createToolRoutes,
+  createWorkflowRoutes,
+  createSwarmRoutes,
   createHealthRoutes,
+  createSwaggerRoutes,
+  createWebSocketRoutes,
+  createContextMiddleware,
+  createAuthMiddleware,
+  createBodyLimitMiddleware,
+  errorHandler,
 } from '@cogitator-ai/hono';
 ```
 

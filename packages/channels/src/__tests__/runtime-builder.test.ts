@@ -439,4 +439,56 @@ describe('RuntimeBuilder', () => {
 
     await built.cleanup();
   });
+  it('sandboxes file tools to the configured paths', async () => {
+    const config: AssistantConfig = {
+      ...minimalConfig,
+      capabilities: { fileSystem: { paths: ['/tmp/cogitator-allowed'] } },
+    };
+
+    const builder = new RuntimeBuilder(config, { GOOGLE_API_KEY: 'test-key' });
+    const built = await builder.build();
+
+    const fileRead = built.agent.tools.find((t: { name: string }) => t.name === 'file_read') as {
+      execute: (params: unknown, ctx: unknown) => Promise<{ error?: string }>;
+    };
+    const result = await fileRead.execute({ path: '/etc/passwd' }, {});
+    expect(result.error).toContain('Access denied');
+
+    await built.cleanup();
+  });
+
+  it('rebuilds instructions per message so core facts and time stay current', async () => {
+    const builder = new RuntimeBuilder(minimalConfig, { GOOGLE_API_KEY: 'test-key' });
+    const built = await builder.build();
+
+    mockFormatForPrompt.mockResolvedValue('name: Bob');
+    const factory = (
+      built.gateway as unknown as {
+        config: {
+          agent: (user: { id: string; channelType: string }) => Promise<{
+            id: string;
+            instructions: string;
+            model: string;
+          }>;
+        };
+      }
+    ).config.agent;
+    const perMessage = await factory({ id: 'u1', channelType: 'telegram' });
+
+    expect(perMessage.id).toBe(built.agent.id);
+    expect(perMessage.instructions).toContain('name: Bob');
+    expect(perMessage.model).toBe('google/gemini-2.5-flash');
+
+    await built.cleanup();
+  });
+
+  it('requires a connection string for the postgres adapter', async () => {
+    const config: AssistantConfig = {
+      ...minimalConfig,
+      memory: { ...minimalConfig.memory, adapter: 'postgres' },
+    };
+
+    const builder = new RuntimeBuilder(config, { GOOGLE_API_KEY: 'test-key' });
+    await expect(builder.build()).rejects.toThrow('connectionString');
+  });
 });

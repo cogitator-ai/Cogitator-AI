@@ -5,7 +5,7 @@ description: Unified Redis client with standalone and cluster support — the fo
 
 ## Overview
 
-The `@cogitator-ai/redis` package provides a unified Redis client that works identically in standalone and cluster modes. It wraps [ioredis](https://github.com/redis/ioredis) with a consistent interface used by `@cogitator-ai/memory`, `@cogitator-ai/worker`, and other packages.
+The `@cogitator-ai/redis` package provides a unified Redis client that works identically in standalone and cluster modes. It wraps [ioredis](https://github.com/redis/ioredis) with a consistent interface used by `@cogitator-ai/memory` (Redis adapter) and the dashboard.
 
 ```bash
 pnpm add @cogitator-ai/redis ioredis
@@ -61,7 +61,7 @@ const redis = await createRedisClient(config);
 | `REDIS_HOST` | Redis host (default: `localhost`) |
 | `REDIS_PORT` | Redis port (default: `6379`) |
 | `REDIS_PASSWORD` | Authentication password |
-| `REDIS_CLUSTER_NODES` | JSON array of `{host, port}` objects |
+| `REDIS_CLUSTER_NODES` | JSON array of `{host, port}` objects (a malformed value throws instead of falling back to localhost) |
 | `REDIS_KEY_PREFIX` | Key prefix (default: `cogitator:` / `{cogitator}:`) |
 
 ## Auto-Detection
@@ -107,8 +107,13 @@ await redis.publish('events', JSON.stringify({ type: 'update' }));
 // Utility
 await redis.ping();
 await redis.info('memory');
-await redis.keys('pattern:*');
+const keys = await redis.keys('cache:*');
+await redis.del(...keys);
 ```
+
+`keys()` is relative to `keyPrefix`: the prefix is added to the pattern and stripped from the results, so they can be passed straight to `get`/`del`. It uses `SCAN` (non-blocking) and visits every master node in cluster mode.
+
+Pub/sub channels are not prefixed. Subscribe on a `duplicate()` connection: a subscribed connection can only run pub/sub commands. Several callbacks can share a channel; `unsubscribe(channel)` removes all of them.
 
 ## Cluster Key Routing
 

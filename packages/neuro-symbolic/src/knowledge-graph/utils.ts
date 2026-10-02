@@ -15,29 +15,4 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return magnitude === 0 ? 0 : dotProduct / magnitude;
 }
 
-export function extractJSON(text: string): string | null {
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-  let depth = 0;
-  let inString = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (inString) {
-      if (ch === '\\') {
-        i++;
-      } else if (ch === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-    } else if (ch === '{') {
-      depth++;
-    } else if (ch === '}') {
-      depth--;
-      if (depth === 0) return text.slice(start, i + 1);
-    }
-  }
-  return null;
-}
+export { extractJSON } from '../utils/json';

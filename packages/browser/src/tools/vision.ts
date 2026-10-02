@@ -11,6 +11,8 @@ import {
   type ClickByDescriptionInput,
 } from '../utils/schemas';
 import { getAccessibilityTree, type AccessibilityNode } from '../utils/page-helpers';
+import { humanLikeClick } from '../stealth/human-like';
+import { usesHumanLikeMouse } from '../utils/human-mode';
 
 function parseImageDimensions(buffer: Buffer): { width: number; height: number } {
   if (buffer.length >= 24 && buffer.readUInt32BE(0) === 0x89504e47) {
@@ -56,26 +58,28 @@ export function createScreenshotTool(session: BrowserSession) {
     parameters: screenshotSchema,
     execute: async (params: ScreenshotInput) => {
       const page = session.page;
-      const options: Record<string, unknown> = { type: 'png' as const };
-      if (params.fullPage) options.fullPage = true;
-      if (params.quality != null) {
-        options.type = 'jpeg';
-        options.quality = params.quality;
-      }
+      const format =
+        params.quality != null
+          ? { type: 'jpeg' as const, quality: params.quality }
+          : { type: 'png' as const };
 
       let buffer: Buffer;
+      let fallback: { width: number; height: number } | null;
       if (params.selector) {
-        buffer = await page.locator(params.selector).screenshot(options);
+        const locator = page.locator(params.selector).first();
+        buffer = await locator.screenshot(format);
+        fallback = await locator.boundingBox();
       } else {
-        buffer = await page.screenshot(options);
+        buffer = await page.screenshot(params.fullPage ? { ...format, fullPage: true } : format);
+        fallback = page.viewportSize();
       }
 
       const dims = parseImageDimensions(buffer);
-      const viewport = page.viewportSize();
       return {
         image: buffer.toString('base64'),
-        width: dims.width || (viewport?.width ?? 0),
-        height: dims.height || (viewport?.height ?? 0),
+        mimeType: format.type === 'jpeg' ? 'image/jpeg' : 'image/png',
+        width: dims.width || Math.round(fallback?.width ?? 0),
+        height: dims.height || Math.round(fallback?.height ?? 0),
       };
     },
   });
@@ -91,7 +95,7 @@ export function createScreenshotElementTool(session: BrowserSession) {
     parameters: screenshotElementSchema,
     execute: async (params: ScreenshotElementInput) => {
       const page = session.page;
-      const locator = page.locator(params.selector);
+      const locator = page.locator(params.selector).first();
       const buffer = await locator.screenshot({ type: 'png' });
       const box = await locator.boundingBox();
       return {
@@ -175,7 +179,12 @@ export function createClickByDescriptionTool(session: BrowserSession) {
           if (idx < 0 || idx >= count) {
             return { clicked: false, element: null };
           }
-          await locator.nth(idx).click();
+          const target = locator.nth(idx);
+          if (usesHumanLikeMouse(session)) {
+            await humanLikeClick(page, target);
+          } else {
+            await target.click();
+          }
           return {
             clicked: true,
             element: { description: params.description, index: idx },

@@ -14,8 +14,12 @@ import {
   validatePlan,
   formatValidationResult,
   actionToString,
+  createNeuroSymbolic,
+  isZ3Available,
+  MemoryGraphAdapter,
+  parseQueryString,
 } from '@cogitator-ai/neuro-symbolic';
-import type { Plan, PlanState } from '@cogitator-ai/types';
+import type { Plan, PlanState, GraphNode, RelationType } from '@cogitator-ai/types';
 import { randomUUID } from 'node:crypto';
 
 async function main() {
@@ -286,6 +290,96 @@ async function main() {
     return sum + (schema?.cost ?? 0);
   }, 0);
   console.log(`  Total plan cost: ${totalCost}`);
+
+  section('6. Rules with arithmetic, cut and aggregation');
+
+  const pricing = createKnowledgeBase(`
+    price(laptop, 1200).
+    price(mouse, 25).
+    price(monitor, 300).
+    discount(Total, D) :- ( Total >= 1000 -> D is Total * 0.1 ; D = 0 ).
+    tier(P, premium) :- P >= 1000, !.
+    tier(P, standard) :- P >= 100, !.
+    tier(_, budget).
+  `);
+
+  console.log(
+    `  Cart total: ${formatSolutions(queryKnowledgeBase(pricing, 'findall(P, price(_, P), Ps), sum_list(Ps, Total), discount(Total, D)'))}`
+  );
+  console.log(
+    `  Tiers: ${formatSolutions(queryKnowledgeBase(pricing, 'price(Item, P), tier(P, Tier)'))}`
+  );
+
+  section('7. Optimisation with Z3 (falls back to the built-in solver)');
+
+  const ns = createNeuroSymbolic();
+  const staffing = ns.createConstraintProblem('staffing');
+  const seniors = staffing.int('seniors', 0, 10);
+  const juniors = staffing.int('juniors', 0, 10);
+  staffing.assert(seniors.add(juniors).gte(8), 'cover 8 shifts');
+  staffing.assert(seniors.mul(2).gte(juniors), 'one senior per two juniors');
+  staffing.minimize(seniors.mul(300).add(juniors.mul(180)));
+
+  const staffingResult = await ns.solve(staffing.build());
+  console.log(`  Solver backend: ${(await isZ3Available()) ? 'Z3' : 'simple-sat'}`);
+  if (staffingResult.data?.status === 'sat') {
+    const { assignments, objectiveValue } = staffingResult.data.model;
+    console.log(
+      `  Hire ${assignments.seniors} seniors and ${assignments.juniors} juniors (cost ${objectiveValue})`
+    );
+  } else {
+    console.log(`  Solver result: ${staffingResult.data?.status ?? staffingResult.error}`);
+  }
+
+  section('8. Knowledge graph queries');
+
+  const graph = new MemoryGraphAdapter();
+  const nodes: Record<string, GraphNode> = {};
+  for (const [name, type] of [
+    ['Alice', 'person'],
+    ['Bob', 'person'],
+    ['Acme', 'organization'],
+    ['Berlin', 'location'],
+  ] as const) {
+    const node = await graph.addNode({
+      agentId: 'demo',
+      name,
+      type,
+      aliases: [],
+      properties: {},
+      confidence: 1,
+      source: 'user',
+    });
+    if (node.success) nodes[name] = node.data;
+  }
+  const relate = (from: string, to: string, type: RelationType) =>
+    graph.addEdge({
+      agentId: 'demo',
+      sourceNodeId: nodes[from].id,
+      targetNodeId: nodes[to].id,
+      type,
+      weight: 1,
+      bidirectional: false,
+      properties: {},
+      confidence: 1,
+      source: 'user',
+    });
+  await relate('Alice', 'Acme', 'works_at');
+  await relate('Bob', 'Acme', 'works_at');
+  await relate('Acme', 'Berlin', 'located_in');
+
+  const graphNs = createNeuroSymbolic({ graphAdapter: graph, agentId: 'demo' });
+  const berliners = await graphNs.queryGraph(
+    parseQueryString('SELECT ?p WHERE { ?p works_at ?c . ?c located_in Berlin } ORDER BY ?p.name')
+  );
+  console.log(
+    `  Works in Berlin: ${berliners.data?.bindings.map((b) => (b.p as GraphNode).name).join(', ')}`
+  );
+
+  const answer = await graphNs.askGraph('Tell me about Acme');
+  console.log(
+    `  "Tell me about Acme":\n    ${answer.data?.naturalLanguageResponse.replace(/\n/g, '\n    ')}`
+  );
 
   console.log('\nDone.');
 }

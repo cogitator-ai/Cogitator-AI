@@ -230,7 +230,7 @@ When using `cogitatorModel` with `streamText`, the agent's full execution (inclu
 
 ### useChat Compatibility
 
-The `@cogitator-ai/next` package provides handlers that are already compatible with AI SDK's `useChat` hook. This package focuses on the lower-level model adapter.
+The `@cogitator-ai/next` handlers stream Cogitator's own SSE payloads, which do not match the AI SDK UI message stream, so consume them with `useCogitatorChat` from `@cogitator-ai/next/client` rather than `useChat`. This package focuses on the lower-level model adapter.
 
 ## License
 

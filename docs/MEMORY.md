@@ -184,6 +184,8 @@ interface MemoryAdapter {
 }
 ```
 
+Calling `createThread` with an existing `threadId` is an upsert in every adapter: stored entries and `createdAt` are kept, only the metadata is updated.
+
 ### Key Types
 
 ```typescript
@@ -279,6 +281,8 @@ interface SemanticSearchOptions {
 }
 ```
 
+`filter.threadId` / `filter.agentId` match the embedding's `metadata.threadId` / `metadata.agentId` (in Qdrant these are the `metadata.threadId` / `metadata.agentId` payload keys). Semantic context is scoped per agent: embeddings whose `metadata.agentId` belongs to another agent are never injected, while embeddings without an `agentId` (shared documents) are visible to every agent.
+
 ---
 
 ## Context Building
@@ -372,7 +376,7 @@ const service = createEmbeddingService({
 const service = createEmbeddingService({
   provider: 'google',
   apiKey: process.env.GOOGLE_API_KEY!,
-  model: 'text-embedding-004', // optional
+  model: 'gemini-embedding-001', // optional
 });
 
 const vector = await service.embed('hello world');
@@ -532,7 +536,7 @@ const rag = new RAGPipelineBuilder()
   .withLoader(new MarkdownLoader())
   .withEmbeddingService(embeddingService)
   .withEmbeddingAdapter(postgresAdapter) // EmbeddingAdapter from @cogitator-ai/memory
-  .withConfig({ chunking: { strategy: 'recursive', chunkSize: 512, overlap: 64 } })
+  .withConfig({ chunking: { strategy: 'recursive', chunkSize: 512, chunkOverlap: 64 } })
   .build();
 
 await rag.ingest('./docs/');

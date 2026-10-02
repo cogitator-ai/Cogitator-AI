@@ -1,39 +1,98 @@
 import type { DeployConfig } from '@cogitator-ai/types';
 
-interface DockerfileOptions {
+export type DockerfilePackageManager = 'pnpm' | 'npm' | 'yarn';
+
+export interface DockerfileOptions {
   config: DeployConfig;
   hasTypeScript: boolean;
+  packageManager?: DockerfilePackageManager;
+  hasLockfile?: boolean;
+  hasBuildScript?: boolean;
+  startCommand?: string[];
 }
 
-export function generateDockerfile({ config, hasTypeScript }: DockerfileOptions): string {
+export const NODE_IMAGE = 'node:22-alpine';
+
+interface InstallSteps {
+  copy: string;
+  install: string;
+  installProd: string;
+  build: string;
+}
+
+function installSteps(pm: DockerfilePackageManager, hasLockfile: boolean): InstallSteps {
+  switch (pm) {
+    case 'pnpm':
+      return {
+        copy: 'COPY package.json pnpm-lock.yaml* ./',
+        install: `RUN corepack enable && pnpm install${hasLockfile ? ' --frozen-lockfile' : ''}`,
+        installProd: `RUN corepack enable && pnpm install${hasLockfile ? ' --frozen-lockfile' : ''} --prod`,
+        build: 'RUN pnpm run build',
+      };
+    case 'yarn':
+      return {
+        copy: 'COPY package.json yarn.lock* .yarnrc.yml* ./',
+        install: `RUN corepack enable && yarn install${hasLockfile ? ' --frozen-lockfile' : ''}`,
+        installProd: `RUN corepack enable && yarn install${hasLockfile ? ' --frozen-lockfile' : ''} --production`,
+        build: 'RUN yarn run build',
+      };
+    case 'npm':
+      return {
+        copy: 'COPY package.json package-lock.json* ./',
+        install: hasLockfile ? 'RUN npm ci' : 'RUN npm install',
+        installProd: hasLockfile ? 'RUN npm ci --omit=dev' : 'RUN npm install --omit=dev',
+        build: 'RUN npm run build',
+      };
+  }
+}
+
+function healthcheck(config: DeployConfig, port: number): string {
+  const path = config.health?.path ?? '/health';
+  const interval = config.health?.interval ?? '30s';
+  const timeout = config.health?.timeout ?? '5s';
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `HEALTHCHECK --interval=${interval} --timeout=${timeout} CMD wget -q --spider http://localhost:${port}${normalizedPath} || exit 1`;
+}
+
+export function generateDockerfile(options: DockerfileOptions): string {
+  const { config, hasTypeScript } = options;
   const port = config.port ?? 3000;
+  const pm = options.packageManager ?? 'pnpm';
+  const steps = installSteps(pm, options.hasLockfile ?? true);
+  const startCommand = options.startCommand ?? [
+    'node',
+    hasTypeScript ? 'dist/server.js' : 'src/server.js',
+  ];
+  const cmd = `CMD ${JSON.stringify(startCommand)}`;
+  const env = `ENV NODE_ENV=production PORT=${port}`;
 
   if (!hasTypeScript) {
-    return `FROM node:20-alpine
+    return `FROM ${NODE_IMAGE}
 WORKDIR /app
-COPY package.json pnpm-lock.yaml* ./
-RUN corepack enable && pnpm install --frozen-lockfile --prod
+${steps.copy}
+${steps.installProd}
 COPY . .
+${env}
 EXPOSE ${port}
-HEALTHCHECK --interval=30s --timeout=5s CMD wget -q --spider http://localhost:${port}/health || exit 1
-CMD ["node", "src/server.js"]
+${healthcheck(config, port)}
+${cmd}
 `;
   }
 
-  return `FROM node:20-alpine AS builder
-WORKDIR /app
-COPY package.json pnpm-lock.yaml* ./
-RUN corepack enable && pnpm install --frozen-lockfile
-COPY . .
-RUN pnpm build
+  const build = options.hasBuildScript === false ? '' : `${steps.build}\n`;
 
-FROM node:20-alpine AS runtime
+  return `FROM ${NODE_IMAGE} AS builder
 WORKDIR /app
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./
+${steps.copy}
+${steps.install}
+COPY . .
+${build}
+FROM ${NODE_IMAGE} AS runtime
+WORKDIR /app
+COPY --from=builder /app ./
+${env}
 EXPOSE ${port}
-HEALTHCHECK --interval=30s --timeout=5s CMD wget -q --spider http://localhost:${port}/health || exit 1
-CMD ["node", "dist/server.js"]
+${healthcheck(config, port)}
+${cmd}
 `;
 }

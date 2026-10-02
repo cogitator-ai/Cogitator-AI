@@ -2,7 +2,7 @@
   "name": "@cogitator-ai/dashboard",
   "version": "0.1.1",
   "private": true,
-  "description": "Cogitator Dashboard - Real-time monitoring for AI agents",
+  "description": "Cogitator website: landing page and documentation (the admin dashboard is deprecated)",
   "type": "module",
   "scripts": {
     "dev": "next dev --turbopack",

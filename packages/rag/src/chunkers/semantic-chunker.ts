@@ -27,7 +27,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
-const SENTENCE_SPLIT_RE = /(?<=[.?!])\s+/;
+const SENTENCE_SPLIT_RE = /(?<=[.?!])\s+|\n\s*\n/;
 
 function splitSentences(text: string): string[] {
   return text
@@ -74,6 +74,11 @@ export class SemanticChunker implements AsyncChunker {
     }
 
     const embeddings = await this.embeddingService.embedBatch(sentences);
+    if (embeddings.length !== sentences.length) {
+      throw new Error(
+        `Embedding count mismatch: got ${embeddings.length} vectors for ${sentences.length} sentences`
+      );
+    }
 
     const similarities: number[] = [];
     for (let i = 0; i < embeddings.length - 1; i++) {

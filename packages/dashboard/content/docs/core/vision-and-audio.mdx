@@ -151,7 +151,7 @@ Supported audio formats: `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`, `og
 
 ### Inline Audio via RunOptions
 
-Audio files can be passed directly to the run:
+Audio files can be passed directly to the run. Each file is transcribed with OpenAI Whisper before the agent sees the input, and the transcripts are prepended to `input` as `[Audio transcription]: ...` (or `[Audio N transcription]: ...` for several files). Transcription uses `llm.providers.openai.apiKey`, falling back to `OPENAI_API_KEY`; the run fails with a clear error when neither is set. Prompt-injection detection and input guardrails run on the combined text.
 
 ```typescript
 const result = await cog.run(agent, {

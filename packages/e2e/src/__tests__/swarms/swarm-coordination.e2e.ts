@@ -6,7 +6,7 @@ import {
   isOllamaRunning,
 } from '../../helpers/setup';
 import type { Cogitator } from '@cogitator-ai/core';
-import { Swarm } from '@cogitator-ai/swarms';
+import { Swarm, SwarmTimeoutError } from '@cogitator-ai/swarms';
 const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
 
 describeE2E('Swarms: Multi-Agent Coordination', () => {
@@ -271,5 +271,125 @@ describeE2E('Swarms: Multi-Agent Coordination', () => {
     expect(iStart).toBeLessThan(iAgentStart);
     expect(iAgentStart).toBeLessThan(iAgentComplete);
     expect(iAgentComplete).toBeLessThan(iComplete);
+  });
+
+  it(
+    'debate uses agentMetadata roles and caps turns with maxTokensPerTurn',
+    { timeout: 180_000 },
+    async () => {
+      const pro = createTestAgent({ name: 'pro', instructions: 'You argue in favor. Be brief.' });
+      const con = createTestAgent({ name: 'con', instructions: 'You argue against. Be brief.' });
+
+      const swarm = new Swarm(cogitator, {
+        name: 'debate-metadata-test',
+        strategy: 'debate',
+        agents: [pro, con],
+        agentMetadata: { pro: { role: 'advocate' }, con: { role: 'critic' } },
+        debate: { rounds: 1, maxTokensPerTurn: 48 },
+      });
+
+      const result = await swarm.run({
+        input: 'Remote work is better than office work',
+        saveHistory: false,
+      });
+
+      const roles = (result.debateTranscript ?? []).map((m) => m.metadata?.role);
+      expect(roles).toEqual(['advocate', 'critic']);
+
+      for (const key of ['pro_round1', 'con_round1']) {
+        const turn = result.agentResults.get(key);
+        expect(turn).toBeDefined();
+        expect(turn!.usage.outputTokens).toBeLessThanOrEqual(64);
+      }
+    }
+  );
+
+  it(
+    'run timeout cancels in-flight LLM calls and the swarm stays reusable',
+    { timeout: 120_000 },
+    async () => {
+      const agent = createTestAgent({
+        name: 'slowpoke',
+        instructions: 'Write a very long, detailed essay of at least 2000 words.',
+      });
+      const swarm = new Swarm(cogitator, {
+        name: 'timeout-test',
+        strategy: 'round-robin',
+        agents: [agent],
+      });
+
+      const started = Date.now();
+      await expect(
+        swarm.run({
+          input: 'Essay about the history of computing',
+          timeout: 300,
+          saveHistory: false,
+        })
+      ).rejects.toBeInstanceOf(SwarmTimeoutError);
+      expect(Date.now() - started).toBeLessThan(10_000);
+
+      const quick = createTestAgent({ name: 'quick', instructions: 'Reply with exactly: OK' });
+      const second = new Swarm(cogitator, {
+        name: 'after-timeout',
+        strategy: 'round-robin',
+        agents: [quick],
+      });
+      const result = await second.run({ input: 'Go', saveHistory: false });
+      expect(String(result.output).length).toBeGreaterThan(0);
+    }
+  );
+
+  it('failover routes a broken agent to its backup', { timeout: 120_000 }, async () => {
+    const broken = createTestAgent({
+      name: 'broken',
+      model: 'ollama/nonexistent-model-xyz',
+      instructions: 'Never runs.',
+    });
+    const backup = createTestAgent({
+      name: 'backup',
+      instructions: 'Reply with exactly: BACKUP_OK',
+    });
+
+    const swarm = new Swarm(cogitator, {
+      name: 'failover-test',
+      strategy: 'pipeline',
+      pipeline: { stages: [{ name: 'only', agent: broken }] },
+      agents: [backup],
+      errorHandling: { onAgentFailure: 'failover', failover: { broken: 'backup' } },
+    });
+
+    const result = await swarm.run({ input: 'Go', saveHistory: false });
+
+    expect(String(result.output).length).toBeGreaterThan(0);
+    expect(swarm.getAgent('backup')!.state).toBe('completed');
+    expect(swarm.getAgent('broken')!.state).toBe('failed');
+  });
+
+  it('delivers bus messages to the recipient exactly once', { timeout: 120_000 }, async () => {
+    const reader = createTestAgent({ name: 'reader', instructions: 'Reply briefly.' });
+    const swarm = new Swarm(cogitator, {
+      name: 'message-delivery-test',
+      strategy: 'round-robin',
+      agents: [reader],
+    });
+
+    const received: number[] = [];
+    swarm.on('message:received', (event) => {
+      received.push((event.data as { count: number }).count);
+    });
+
+    await swarm.messageBus.send({
+      swarmId: swarm.id,
+      from: 'operator',
+      to: 'reader',
+      type: 'notification',
+      content: 'Remember the code word BLUEBIRD.',
+    });
+
+    await swarm.run({ input: 'Hello', saveHistory: false });
+    await swarm.run({ input: 'Hello again', saveHistory: false });
+
+    expect(received).toEqual([1]);
+    expect(swarm.messageBus.getUnreadMessages('reader')).toHaveLength(0);
   });
 });

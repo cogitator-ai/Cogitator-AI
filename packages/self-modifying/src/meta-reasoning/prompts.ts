@@ -1,4 +1,11 @@
-import type { MetaObservation, ReasoningMode, ReasoningModeConfig } from '@cogitator-ai/types';
+import type {
+  MetaIssue,
+  MetaObservation,
+  MetaOpportunity,
+  MetaRecommendation,
+  ReasoningMode,
+  ReasoningModeConfig,
+} from '@cogitator-ai/types';
 import { extractJson } from '../utils';
 
 export function buildMetaAssessmentPrompt(
@@ -86,38 +93,145 @@ Analyze the agent's reasoning process and respond with a JSON object:
 }`;
 }
 
+const REASONING_MODES: readonly ReasoningMode[] = [
+  'analytical',
+  'creative',
+  'systematic',
+  'intuitive',
+  'reflective',
+  'exploratory',
+];
+const ISSUE_TYPES: readonly MetaIssue['type'][] = [
+  'stagnation',
+  'low_confidence',
+  'high_cost',
+  'repetition',
+  'tool_failure',
+];
+const SEVERITIES: readonly MetaIssue['severity'][] = ['low', 'medium', 'high'];
+const OPPORTUNITY_TYPES: readonly MetaOpportunity['type'][] = [
+  'mode_switch',
+  'parameter_tune',
+  'context_add',
+  'tool_compose',
+];
+const ACTIONS: readonly MetaRecommendation['action'][] = [
+  'continue',
+  'switch_mode',
+  'adjust_parameters',
+  'inject_context',
+  'abort',
+];
+
 export interface ParsedAssessment {
-  onTrack: boolean;
-  confidence: number;
-  reasoning: string;
-  issues: Array<{
-    type: string;
-    severity: string;
-    description: string;
-  }>;
+  onTrack?: boolean;
+  confidence?: number;
+  reasoning?: string;
+  issues: MetaIssue[];
   opportunities: Array<{
-    type: string;
+    type: MetaOpportunity['type'];
     description: string;
     expectedImprovement: number;
   }>;
-  recommendation: {
-    action: string;
-    newMode?: string;
-    parameterChanges?: Record<string, unknown>;
+  recommendation?: {
+    action: MetaRecommendation['action'];
+    newMode?: ReasoningMode;
+    parameterChanges?: Partial<ReasoningModeConfig>;
     contextAddition?: string;
     confidence: number;
     reasoning: string;
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function pick<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
+  return typeof value === 'string' && (allowed as readonly string[]).includes(value)
+    ? (value as T)
+    : undefined;
+}
+
+function probability(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(1, Math.max(0, value))
+    : undefined;
+}
+
+function parseParameterChanges(value: unknown): Partial<ReasoningModeConfig> | undefined {
+  if (!isRecord(value)) return undefined;
+  const changes: Partial<ReasoningModeConfig> = {};
+  if (typeof value.temperature === 'number' && Number.isFinite(value.temperature)) {
+    changes.temperature = Math.min(2, Math.max(0, value.temperature));
+  }
+  if (typeof value.depth === 'number' && Number.isFinite(value.depth)) {
+    changes.depth = Math.min(10, Math.max(1, Math.round(value.depth)));
+  }
+  return Object.keys(changes).length > 0 ? changes : undefined;
+}
+
+function parseRecommendation(value: unknown): ParsedAssessment['recommendation'] {
+  if (!isRecord(value)) return undefined;
+  const action = pick(value.action, ACTIONS);
+  if (!action) return undefined;
+
+  return {
+    action,
+    newMode: pick(value.newMode, REASONING_MODES),
+    parameterChanges: parseParameterChanges(value.parameterChanges),
+    contextAddition:
+      typeof value.contextAddition === 'string' && value.contextAddition.trim()
+        ? value.contextAddition.trim()
+        : undefined,
+    confidence: probability(value.confidence) ?? 0,
+    reasoning: typeof value.reasoning === 'string' ? value.reasoning : '',
+  };
+}
+
 export function parseMetaAssessmentResponse(content: string): ParsedAssessment | null {
+  let parsed: unknown;
   try {
     const json = extractJson(content);
     if (!json) return null;
-    return JSON.parse(json) as ParsedAssessment;
+    parsed = JSON.parse(json);
   } catch {
     return null;
   }
+  if (!isRecord(parsed)) return null;
+
+  const issues: MetaIssue[] = [];
+  for (const raw of Array.isArray(parsed.issues) ? parsed.issues : []) {
+    if (!isRecord(raw)) continue;
+    const type = pick(raw.type, ISSUE_TYPES);
+    if (!type) continue;
+    issues.push({
+      type,
+      severity: pick(raw.severity, SEVERITIES) ?? 'medium',
+      description: typeof raw.description === 'string' ? raw.description : '',
+    });
+  }
+
+  const opportunities: ParsedAssessment['opportunities'] = [];
+  for (const raw of Array.isArray(parsed.opportunities) ? parsed.opportunities : []) {
+    if (!isRecord(raw)) continue;
+    const type = pick(raw.type, OPPORTUNITY_TYPES);
+    if (!type) continue;
+    opportunities.push({
+      type,
+      description: typeof raw.description === 'string' ? raw.description : '',
+      expectedImprovement: probability(raw.expectedImprovement) ?? 0.5,
+    });
+  }
+
+  return {
+    onTrack: typeof parsed.onTrack === 'boolean' ? parsed.onTrack : undefined,
+    confidence: probability(parsed.confidence),
+    reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : undefined,
+    issues,
+    opportunities,
+    recommendation: parseRecommendation(parsed.recommendation),
+  };
 }
 
 export const META_REASONING_SYSTEM_PROMPT = `You are a meta-reasoning system analyzing an AI agent's reasoning process.

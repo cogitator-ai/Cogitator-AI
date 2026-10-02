@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "cli": "node packages/cli/dist/index.js",
-    "build": "turbo run build && tsx scripts/fix-esm-imports.ts",
+    "build": "turbo run build",
     "dev": "turbo run dev",
     "test": "turbo run test",
     "test:watch": "turbo run test:watch",

@@ -1,9 +1,7 @@
 import type { Response, NextFunction, Request } from 'express';
 import type { CorsConfig } from '../types.js';
 
-function isOriginAllowed(origin: string | undefined, allowed: CorsConfig['origin']): boolean {
-  if (!origin) return false;
-
+function isOriginAllowed(origin: string, allowed: CorsConfig['origin']): boolean {
   if (typeof allowed === 'string') {
     return allowed === '*' || allowed === origin;
   }
@@ -22,7 +20,7 @@ function isOriginAllowed(origin: string | undefined, allowed: CorsConfig['origin
 export function createCorsMiddleware(config: CorsConfig) {
   const {
     origin,
-    credentials = true,
+    credentials = origin !== '*',
     methods = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders = ['Content-Type', 'Authorization', 'X-Request-ID'],
     exposedHeaders = ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset'],
@@ -31,31 +29,33 @@ export function createCorsMiddleware(config: CorsConfig) {
 
   return (req: Request, res: Response, next: NextFunction) => {
     const requestOrigin = req.headers.origin;
+    let allowed = false;
 
-    if (origin === '*') {
-      if (credentials && requestOrigin) {
-        res.setHeader('Access-Control-Allow-Origin', requestOrigin);
-        res.setHeader('Vary', 'Origin');
-      } else {
-        res.setHeader('Access-Control-Allow-Origin', '*');
-      }
-    } else if (isOriginAllowed(requestOrigin, origin)) {
-      res.setHeader('Access-Control-Allow-Origin', requestOrigin!);
+    if (origin === '*' && !credentials) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      allowed = true;
+    } else {
       res.setHeader('Vary', 'Origin');
+      if (requestOrigin && (origin === '*' || isOriginAllowed(requestOrigin, origin))) {
+        res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+        allowed = true;
+      }
     }
 
-    if (credentials) {
+    if (allowed && credentials) {
       res.setHeader('Access-Control-Allow-Credentials', 'true');
     }
 
-    if (exposedHeaders.length > 0) {
+    if (allowed && exposedHeaders.length > 0) {
       res.setHeader('Access-Control-Expose-Headers', exposedHeaders.join(', '));
     }
 
     if (req.method === 'OPTIONS') {
-      res.setHeader('Access-Control-Allow-Methods', methods.join(', '));
-      res.setHeader('Access-Control-Allow-Headers', allowedHeaders.join(', '));
-      res.setHeader('Access-Control-Max-Age', maxAge.toString());
+      if (allowed) {
+        res.setHeader('Access-Control-Allow-Methods', methods.join(', '));
+        res.setHeader('Access-Control-Allow-Headers', allowedHeaders.join(', '));
+        res.setHeader('Access-Control-Max-Age', maxAge.toString());
+      }
       res.status(204).end();
       return;
     }

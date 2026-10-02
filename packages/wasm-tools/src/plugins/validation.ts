@@ -11,88 +11,177 @@ interface ValidationOutput {
   error?: string;
 }
 
-const EMAIL_REGEX =
-  /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
-
+const EMAIL_LOCAL_REGEX = /^[a-zA-Z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-zA-Z0-9!#$%&'*+/=?^_`{|}~-]+)*$/;
+const DOMAIN_LABEL_REGEX = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/;
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const IPV4_OCTET = '(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])';
+const IPV4_REGEX = new RegExp(`^(?:${IPV4_OCTET}\\.){3}${IPV4_OCTET}$`);
 
-const IPV4_REGEX =
-  /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+type ValidationResult = { valid: boolean; normalized?: string };
 
-const IPV6_REGEX =
-  /^(?:(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,7}:|(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}|(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}|(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}|(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,6}|:(?::[0-9a-fA-F]{1,4}){1,7}|::(?:[fF]{4}:)?(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:[0-9a-fA-F]{1,4}:){1,4}:(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?))$/;
-
-function validateEmail(value: string): { valid: boolean; normalized?: string } {
-  const trimmed = value.trim().toLowerCase();
-  const valid = EMAIL_REGEX.test(trimmed) && trimmed.length <= 254;
-  return { valid, normalized: valid ? trimmed : undefined };
+function isValidHostname(hostname: string): boolean {
+  if (hostname.length === 0 || hostname.length > 253) return false;
+  const labels = hostname.replace(/\.$/, '').split('.');
+  return labels.every((label) => DOMAIN_LABEL_REGEX.test(label));
 }
 
-function validateUrl(value: string): { valid: boolean; normalized?: string } {
-  try {
-    const trimmed = value.trim();
+function validateEmail(value: string): ValidationResult {
+  const trimmed = value.trim();
+  const at = trimmed.lastIndexOf('@');
+  if (at <= 0 || at === trimmed.length - 1 || trimmed.length > 254) return { valid: false };
 
-    const hasProtocol = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed);
-    const urlStr = hasProtocol ? trimmed : `https://${trimmed}`;
+  const local = trimmed.slice(0, at);
+  const domain = trimmed.slice(at + 1);
+  if (local.length > 64 || !EMAIL_LOCAL_REGEX.test(local)) return { valid: false };
+  if (domain.endsWith('.') || !isValidHostname(domain)) return { valid: false };
 
-    const parts = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/([^/?#]+)(.*)$/.exec(urlStr);
-    if (!parts) return { valid: false };
+  return { valid: true, normalized: `${local}@${domain.toLowerCase()}` };
+}
 
-    const [, protocol, host] = parts;
+function parseIpv6Groups(part: string): number[] | null {
+  if (part === '') return [];
+  const result: number[] = [];
+  for (const group of part.split(':')) {
+    if (!/^[0-9a-fA-F]{1,4}$/.test(group)) return null;
+    result.push(parseInt(group, 16));
+  }
+  return result;
+}
 
-    if (!['http', 'https', 'ftp', 'ftps'].includes(protocol.toLowerCase())) {
-      return { valid: false };
+function parseIpv6(value: string): number[] | null {
+  let address = value;
+  let ipv4Tail: number[] = [];
+
+  const lastColon = address.lastIndexOf(':');
+  if (lastColon === -1) return null;
+
+  const last = address.slice(lastColon + 1);
+  if (last.includes('.')) {
+    if (!IPV4_REGEX.test(last)) return null;
+    const octets = last.split('.').map((n) => parseInt(n, 10));
+    ipv4Tail = [(octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]];
+    address = address.slice(0, lastColon + 1);
+    if (!address.endsWith('::')) address = address.slice(0, -1);
+  }
+
+  const pieces = address.split('::');
+  if (pieces.length > 2) return null;
+
+  const target = 8 - ipv4Tail.length;
+  if (pieces.length === 2) {
+    const head = parseIpv6Groups(pieces[0]);
+    const rest = parseIpv6Groups(pieces[1]);
+    if (!head || !rest) return null;
+    const missing = target - head.length - rest.length;
+    if (missing < 1) return null;
+    return [...head, ...new Array<number>(missing).fill(0), ...rest, ...ipv4Tail];
+  }
+
+  const groups = parseIpv6Groups(address);
+  if (groups?.length !== target) return null;
+  return [...groups, ...ipv4Tail];
+}
+
+function formatIpv6(groups: number[]): string {
+  if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
+    return `::ffff:${groups[6] >> 8}.${groups[6] & 0xff}.${groups[7] >> 8}.${groups[7] & 0xff}`;
+  }
+  let bestStart = -1;
+  let bestLength = 0;
+  for (let i = 0; i < groups.length; ) {
+    if (groups[i] !== 0) {
+      i++;
+      continue;
     }
-
-    const hostParts = host.split(':');
-    const hostname = hostParts[0];
-    const port = hostParts[1];
-
-    if (port && (!/^\d+$/.test(port) || parseInt(port) > 65535)) {
-      return { valid: false };
+    let j = i;
+    while (j < groups.length && groups[j] === 0) j++;
+    if (j - i > bestLength && j - i >= 2) {
+      bestStart = i;
+      bestLength = j - i;
     }
+    i = j;
+  }
 
-    if (
-      !/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$/.test(
-        hostname
-      )
-    ) {
-      if (!IPV4_REGEX.test(hostname) && !hostname.startsWith('[')) {
-        return { valid: false };
-      }
+  const hex = groups.map((g) => g.toString(16));
+  if (bestStart === -1) return hex.join(':');
+  const head = hex.slice(0, bestStart).join(':');
+  const tail = hex.slice(bestStart + bestLength).join(':');
+  return `${head}::${tail}`;
+}
+
+function validateIpv6(value: string): ValidationResult {
+  const trimmed = value.trim();
+  if (trimmed.includes('%')) return { valid: false };
+  const groups = parseIpv6(trimmed);
+  if (!groups) return { valid: false };
+  return { valid: true, normalized: formatIpv6(groups) };
+}
+
+function hasWhitespaceOrControl(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x20 || code === 0x7f || /\s/.test(value[i])) return true;
+  }
+  return false;
+}
+
+function validateUrl(value: string): ValidationResult {
+  const trimmed = value.trim();
+  if (hasWhitespaceOrControl(trimmed)) return { valid: false };
+
+  const hasProtocol = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed);
+  const urlStr = hasProtocol ? trimmed : `https://${trimmed}`;
+
+  const parts = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/([^/?#]*)([^#]*)(#.*)?$/.exec(urlStr);
+  if (!parts) return { valid: false };
+
+  const [, protocol, authority, pathAndQuery, fragment = ''] = parts;
+  const scheme = protocol.toLowerCase();
+  if (!['http', 'https', 'ftp', 'ftps'].includes(scheme)) return { valid: false };
+
+  const at = authority.lastIndexOf('@');
+  const userInfo = at === -1 ? '' : authority.slice(0, at + 1);
+  const hostPort = at === -1 ? authority : authority.slice(at + 1);
+
+  let host: string;
+  let port = '';
+  if (hostPort.startsWith('[')) {
+    const close = hostPort.indexOf(']');
+    if (close === -1) return { valid: false };
+    const ipv6 = parseIpv6(hostPort.slice(1, close));
+    if (!ipv6) return { valid: false };
+    host = `[${formatIpv6(ipv6)}]`;
+    const after = hostPort.slice(close + 1);
+    if (after) {
+      if (!after.startsWith(':')) return { valid: false };
+      port = after.slice(1);
     }
+  } else {
+    const colon = hostPort.lastIndexOf(':');
+    host = colon === -1 ? hostPort : hostPort.slice(0, colon);
+    port = colon === -1 ? '' : hostPort.slice(colon + 1);
+    const lowerHost = host.toLowerCase();
+    if (!IPV4_REGEX.test(lowerHost) && !isValidHostname(lowerHost)) return { valid: false };
+    host = lowerHost;
+  }
 
-    return { valid: true, normalized: urlStr };
-  } catch {
+  if (port && (!/^\d{1,5}$/.test(port) || parseInt(port, 10) > 65535)) {
     return { valid: false };
   }
+
+  const normalized = `${scheme}://${userInfo}${host}${port ? `:${port}` : ''}${pathAndQuery}${fragment}`;
+  return { valid: true, normalized };
 }
 
-function validateUuid(value: string): { valid: boolean; normalized?: string } {
+function validateUuid(value: string): ValidationResult {
   const trimmed = value.trim().toLowerCase();
   const valid = UUID_REGEX.test(trimmed);
   return { valid, normalized: valid ? trimmed : undefined };
 }
 
-function validateIpv4(value: string): { valid: boolean; normalized?: string } {
+function validateIpv4(value: string): ValidationResult {
   const trimmed = value.trim();
-  const valid = IPV4_REGEX.test(trimmed);
-
-  if (valid) {
-    const normalized = trimmed
-      .split('.')
-      .map((n) => parseInt(n, 10).toString())
-      .join('.');
-    return { valid: true, normalized };
-  }
-
-  return { valid: false };
-}
-
-function validateIpv6(value: string): { valid: boolean; normalized?: string } {
-  const trimmed = value.trim().toLowerCase();
-  const valid = IPV6_REGEX.test(trimmed);
-  return { valid, normalized: valid ? trimmed : undefined };
+  return IPV4_REGEX.test(trimmed) ? { valid: true, normalized: trimmed } : { valid: false };
 }
 
 export function validate(): number {
@@ -100,7 +189,10 @@ export function validate(): number {
     const inputStr = Host.inputString();
     const input: ValidationInput = JSON.parse(inputStr);
 
-    let result: { valid: boolean; normalized?: string };
+    if (typeof input.value !== 'string') {
+      throw new Error('value must be a string');
+    }
+    let result: ValidationResult;
 
     switch (input.type) {
       case 'email':

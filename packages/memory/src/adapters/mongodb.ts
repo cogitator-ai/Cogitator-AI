@@ -25,7 +25,8 @@ interface Collection<T = Document> {
   find(filter: Record<string, unknown>): Cursor<T>;
   updateOne(
     filter: Record<string, unknown>,
-    update: { $set: Partial<T> }
+    update: { $set: Partial<T>; $setOnInsert?: Partial<T> },
+    options?: { upsert?: boolean }
   ): Promise<{ modifiedCount: number }>;
   deleteOne(filter: Record<string, unknown>): Promise<{ deletedCount: number }>;
   deleteMany(filter: Record<string, unknown>): Promise<{ deletedCount: number }>;
@@ -103,8 +104,7 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
       this.db = this.client.db(this.database);
 
       await this.threads.createIndex({ agentId: 1 });
-      await this.entries.createIndex({ threadId: 1 });
-      await this.entries.createIndex({ createdAt: 1 });
+      await this.entries.createIndex({ threadId: 1, createdAt: 1 });
 
       return this.success(undefined);
     } catch (err) {
@@ -134,27 +134,24 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
   ): Promise<MemoryResult<Thread>> {
     if (!this.db) return this.failure('Not connected');
 
-    const thread: Thread = {
-      id: threadId ?? this.generateId('thread'),
-      agentId,
-      metadata,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+    const id = threadId ?? this.generateId('thread');
+    const now = new Date();
 
     try {
-      await this.threads.insertOne({
-        _id: thread.id,
-        agentId: thread.agentId,
-        metadata: thread.metadata,
-        createdAt: thread.createdAt,
-        updatedAt: thread.updatedAt,
+      await this.threads.updateOne(
+        { _id: id },
+        { $set: { agentId, metadata, updatedAt: now }, $setOnInsert: { createdAt: now } },
+        { upsert: true }
+      );
+      const stored = await this.threads.findOne({ _id: id });
+      return this.success({
+        id,
+        agentId,
+        metadata,
+        createdAt: stored?.createdAt ?? now,
+        updatedAt: now,
       });
-      return this.success(thread);
     } catch (err) {
-      if ((err as { code?: number }).code === 11000) {
-        return this.failure(`Thread already exists: ${thread.id}`);
-      }
       return this.failure((err as Error).message);
     }
   }
@@ -223,7 +220,7 @@ export class MongoDBAdapter extends BaseMemoryAdapter {
     const full: MemoryEntry = {
       ...entry,
       id: this.generateId('entry'),
-      createdAt: new Date(),
+      createdAt: this.nextEntryTimestamp(entry.threadId),
     };
 
     try {

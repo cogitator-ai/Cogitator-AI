@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Script } from 'node:vm';
 import { getEvasionScripts } from '../stealth/evasions';
 import { getRandomUserAgent, getAllUserAgents } from '../stealth/user-agents';
 import { applyStealthToContext, getStealthLaunchOptions } from '../stealth';
@@ -54,7 +55,67 @@ describe('evasions', () => {
   });
 });
 
+describe('evasion consistency', () => {
+  it('patches webdriver on Navigator.prototype instead of an own navigator property', () => {
+    const webdriver = getEvasionScripts().find((script) => script.includes("'webdriver'"));
+    expect(webdriver).toContain('Navigator.prototype');
+  });
+
+  it.each([
+    ['Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/138.0.0.0', 'Win32', 'Windows'],
+    [
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Version/18.5 Safari/605.1.15',
+      'MacIntel',
+      'macOS',
+    ],
+    [
+      'Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0',
+      'Linux x86_64',
+      'Linux',
+    ],
+    ['Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) Mobile/15E148', 'iPhone', 'iOS'],
+  ])('derives navigator.platform from %s', (userAgent, platform, uaPlatform) => {
+    const scripts = getEvasionScripts({ userAgent });
+    const platformScript = scripts.find((script) => script.includes("'platform'"));
+    expect(platformScript).toContain(JSON.stringify(platform));
+    expect(platformScript).toContain(JSON.stringify(uaPlatform));
+  });
+
+  it('adds no platform evasion without a user agent or with fingerprinting disabled', () => {
+    const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/138.0.0.0';
+    expect(getEvasionScripts().some((s) => s.includes("'platform'"))).toBe(false);
+    expect(
+      getEvasionScripts({ userAgent: ua, fingerprintRandomization: false }).some((s) =>
+        s.includes("'platform'")
+      )
+    ).toBe(false);
+    expect(getEvasionScripts({ userAgent: ua }).length).toBe(getEvasionScripts().length + 1);
+  });
+
+  it('derives navigator.languages from the locale', () => {
+    expect(getEvasionScripts({ locale: 'fr-CA' }).some((s) => s.includes('["fr-CA","fr"]'))).toBe(
+      true
+    );
+    expect(getEvasionScripts({ locale: 'ja' }).some((s) => s.includes('["ja"]'))).toBe(true);
+    expect(getEvasionScripts().some((s) => s.includes('["en-US","en"]'))).toBe(true);
+  });
+
+  it('every evasion script is syntactically valid JavaScript', () => {
+    const scripts = getEvasionScripts({ userAgent: 'Mozilla/5.0 (Windows NT 10.0) Chrome/138' });
+    for (const script of scripts) {
+      expect(() => new Script(script)).not.toThrow();
+    }
+  });
+});
+
 describe('user-agents', () => {
+  it('only contains desktop user agents to match the desktop viewport', () => {
+    const all = getAllUserAgents();
+    for (const ua of [...all.chromium, ...all.firefox, ...all.webkit]) {
+      expect(ua).not.toMatch(/Mobile|iPhone|iPad|Android/);
+    }
+  });
+
   it('getRandomUserAgent returns a string containing Mozilla', () => {
     const ua = getRandomUserAgent();
     expect(typeof ua).toBe('string');
@@ -137,11 +198,15 @@ describe('humanLikeClick', () => {
     vi.useFakeTimers();
     const { humanLikeClick } = await import('../stealth/human-like');
 
+    const mockLocator = {
+      first: vi.fn(),
+      scrollIntoViewIfNeeded: vi.fn().mockResolvedValue(undefined),
+      boundingBox: vi.fn().mockResolvedValue({ x: 100, y: 100, width: 50, height: 30 }),
+      click: vi.fn().mockResolvedValue(undefined),
+    };
+    mockLocator.first.mockReturnValue(mockLocator);
     const mockPage = {
-      locator: vi.fn().mockReturnValue({
-        boundingBox: vi.fn().mockResolvedValue({ x: 100, y: 100, width: 50, height: 30 }),
-        click: vi.fn().mockResolvedValue(undefined),
-      }),
+      locator: vi.fn().mockReturnValue(mockLocator),
       mouse: {
         move: vi.fn().mockResolvedValue(undefined),
         click: vi.fn().mockResolvedValue(undefined),
@@ -171,9 +236,12 @@ describe('humanLikeClick', () => {
     const { humanLikeClick } = await import('../stealth/human-like');
 
     const mockElement = {
+      first: vi.fn(),
+      scrollIntoViewIfNeeded: vi.fn().mockResolvedValue(undefined),
       boundingBox: vi.fn().mockResolvedValue(null),
       click: vi.fn().mockResolvedValue(undefined),
     };
+    mockElement.first.mockReturnValue(mockElement);
     const mockPage = {
       locator: vi.fn().mockReturnValue(mockElement),
       mouse: { move: vi.fn(), click: vi.fn() },
@@ -190,7 +258,115 @@ describe('humanLikeClick', () => {
   });
 });
 
+describe('humanLikeClick options', () => {
+  function createLocatorPage(box: { x: number; y: number; width: number; height: number }) {
+    const locator = {
+      first: vi.fn(),
+      scrollIntoViewIfNeeded: vi.fn().mockResolvedValue(undefined),
+      boundingBox: vi.fn().mockResolvedValue(box),
+      click: vi.fn().mockResolvedValue(undefined),
+      hover: vi.fn().mockResolvedValue(undefined),
+    };
+    locator.first.mockReturnValue(locator);
+    return {
+      locator,
+      page: {
+        locator: vi.fn().mockReturnValue(locator),
+        viewportSize: vi.fn().mockReturnValue({ width: 1280, height: 720 }),
+        mouse: {
+          move: vi.fn().mockResolvedValue(undefined),
+          click: vi.fn().mockResolvedValue(undefined),
+        },
+      },
+    };
+  }
+
+  async function settle<T>(promise: Promise<T>): Promise<T> {
+    for (let i = 0; i < 200; i++) {
+      await vi.advanceTimersByTimeAsync(50);
+    }
+    return promise;
+  }
+
+  it('scrolls into view, honours button/clickCount/position', async () => {
+    vi.useFakeTimers();
+    const { humanLikeClick } = await import('../stealth/human-like');
+    const { page, locator } = createLocatorPage({ x: 10, y: 20, width: 100, height: 40 });
+
+    await settle(
+      humanLikeClick(page as never, '#btn', {
+        button: 'right',
+        clickCount: 2,
+        position: { x: 5, y: 6 },
+      })
+    );
+
+    expect(page.locator).toHaveBeenCalledWith('#btn');
+    expect(locator.first).toHaveBeenCalled();
+    expect(locator.scrollIntoViewIfNeeded).toHaveBeenCalled();
+    const [x, y, opts] = page.mouse.click.mock.calls[0];
+    expect(x).toBe(15);
+    expect(y).toBe(26);
+    expect(opts).toMatchObject({ button: 'right', clickCount: 2 });
+    vi.useRealTimers();
+  });
+
+  it('accepts a Locator target and continues from the last mouse position', async () => {
+    vi.useFakeTimers();
+    const { humanLikeClick } = await import('../stealth/human-like');
+    const { page, locator } = createLocatorPage({ x: 100, y: 100, width: 20, height: 20 });
+
+    await settle(humanLikeClick(page as never, locator as never, { position: { x: 10, y: 10 } }));
+    page.mouse.move.mockClear();
+    await settle(humanLikeClick(page as never, locator as never, { position: { x: 10, y: 10 } }));
+
+    expect(page.locator).not.toHaveBeenCalled();
+    const lastMove = page.mouse.move.mock.calls.at(-1)!;
+    expect(lastMove).toEqual([110, 110]);
+    vi.useRealTimers();
+  });
+
+  it('humanLikeHover moves the mouse onto the element without clicking', async () => {
+    vi.useFakeTimers();
+    const { humanLikeHover } = await import('../stealth/human-like');
+    const { page } = createLocatorPage({ x: 0, y: 0, width: 50, height: 50 });
+
+    await settle(humanLikeHover(page as never, '#menu'));
+
+    expect(page.mouse.move).toHaveBeenCalled();
+    expect(page.mouse.click).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('humanLikeHover falls back to locator.hover when the element has no box', async () => {
+    const { humanLikeHover } = await import('../stealth/human-like');
+    const { page, locator } = createLocatorPage({ x: 0, y: 0, width: 0, height: 0 });
+    locator.boundingBox.mockResolvedValueOnce(null);
+
+    await humanLikeHover(page as never, '#hidden', { position: { x: 1, y: 2 } });
+
+    expect(locator.hover).toHaveBeenCalledWith({ position: { x: 1, y: 2 } });
+  });
+});
+
 describe('humanLikeScroll', () => {
+  it('scrolls horizontally for left/right', async () => {
+    vi.useFakeTimers();
+    const { humanLikeScroll } = await import('../stealth/human-like');
+    const mockPage = { mouse: { wheel: vi.fn().mockResolvedValue(undefined) } };
+
+    const promise = humanLikeScroll(mockPage as never, 'right', 400);
+    for (let i = 0; i < 50; i++) {
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    await promise;
+
+    const calls = mockPage.mouse.wheel.mock.calls as Array<[number, number]>;
+    expect(calls.every(([, dy]) => dy === 0)).toBe(true);
+    expect(calls.reduce((sum, [dx]) => sum + dx, 0)).toBeGreaterThan(0);
+    vi.useRealTimers();
+  });
+
   it('scrolls down in multiple steps', async () => {
     vi.useFakeTimers();
     const { humanLikeScroll } = await import('../stealth/human-like');
@@ -373,6 +549,8 @@ describe('BrowserSession stealth integration', () => {
     };
 
     const mockContext = {
+      pages: vi.fn().mockReturnValue([]),
+      on: vi.fn(),
       newPage: vi.fn().mockResolvedValue(mockPage),
       addCookies: vi.fn().mockResolvedValue(undefined),
       cookies: vi.fn().mockResolvedValue([]),
@@ -416,8 +594,24 @@ describe('BrowserSession stealth integration', () => {
     const session = new BrowserSession({ stealth: true });
     await session.start();
 
-    const evasionCount = getEvasionScripts().length;
+    const { userAgent } = pw.mockBrowser.newContext.mock.calls[0][0];
+    const evasionCount = getEvasionScripts({ userAgent }).length;
     expect(pw.mockContext.addInitScript).toHaveBeenCalledTimes(evasionCount);
+  });
+
+  it('aligns navigator.platform with the chosen user agent and languages with locale', async () => {
+    const { BrowserSession } = await import('../session');
+    const session = new BrowserSession({
+      stealth: true,
+      userAgent:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+      locale: 'de-DE',
+    });
+    await session.start();
+
+    const injected = pw.mockContext.addInitScript.mock.calls.map((call) => String(call[0]));
+    expect(injected.some((script) => script.includes('"Win32"'))).toBe(true);
+    expect(injected.some((script) => script.includes('["de-DE","de"]'))).toBe(true);
   });
 
   it('sets random userAgent when stealth is enabled and no custom UA', async () => {
@@ -470,7 +664,8 @@ describe('BrowserSession stealth integration', () => {
     });
     await session.start();
 
-    const evasionCount = getEvasionScripts().length;
+    const { userAgent } = pw.mockBrowser.newContext.mock.calls[0][0];
+    const evasionCount = getEvasionScripts({ userAgent }).length;
     expect(pw.mockContext.addInitScript).toHaveBeenCalledTimes(evasionCount + 1);
     const lastCall = pw.mockContext.addInitScript.mock.calls[evasionCount][0];
     expect(lastCall).toBe('window.__custom = true');

@@ -7,6 +7,11 @@ const MD_EXTENSIONS = new Set(['md', 'mdx']);
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 
+function unquote(value: string): string {
+  const quoted = /^(['"])(.*)\1$/.exec(value);
+  return quoted ? quoted[2]! : value;
+}
+
 export interface MarkdownLoaderOptions {
   stripFrontmatter?: boolean;
 }
@@ -54,17 +59,17 @@ export class MarkdownLoader implements DocumentLoader {
 
   private parseFrontmatter(raw: string): Record<string, unknown> {
     const result: Record<string, unknown> = {};
-    for (const line of raw.split('\n')) {
+    for (const line of raw.split(/\r?\n/)) {
       const match = /^(\w[\w\s-]*?):\s*(.+)$/.exec(line);
       if (match) {
-        result[match[1].trim()] = match[2].trim();
+        result[match[1]!.trim()] = unquote(match[2]!.trim());
       }
     }
     return result;
   }
 
   private async loadDirectory(dirPath: string): Promise<RAGDocument[]> {
-    const entries = await readdir(dirPath);
+    const entries = (await readdir(dirPath)).sort();
     const docs: RAGDocument[] = [];
 
     for (const entry of entries) {

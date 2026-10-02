@@ -1,9 +1,12 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { loadConfig } from '@cogitator-ai/config';
+import { Deployer, type DeployPlan } from '@cogitator-ai/deploy';
 import { log } from '../utils/logger.js';
-import type { DeployConfig, DeployTarget } from '@cogitator-ai/types';
+import type { DeployConfig, DeployResult, DeployStatus, DeployTarget } from '@cogitator-ai/types';
 
 interface DeployFlags {
   target?: string;
@@ -14,27 +17,35 @@ interface DeployFlags {
   region?: string;
 }
 
-function resolveTarget(
-  flag: string | undefined,
-  configTarget: DeployTarget | undefined
-): DeployTarget {
-  const raw = flag ?? configTarget ?? 'docker';
-  const valid: DeployTarget[] = ['docker', 'fly', 'railway', 'k8s', 'ssh'];
-  if (!valid.includes(raw as DeployTarget)) {
-    log.error(`Unknown deploy target: "${raw}"`);
-    log.dim(`Available targets: ${valid.join(', ')}`);
-    process.exit(1);
-  }
-  return raw as DeployTarget;
+function isDeployTarget(value: string, available: readonly string[]): value is DeployTarget {
+  return available.includes(value);
 }
 
-async function loadDeployConfig(configPath?: string): Promise<DeployConfig | undefined> {
+function resolveTarget(
+  flag: string | undefined,
+  configTarget: DeployTarget | undefined,
+  available: readonly string[]
+): DeployTarget {
+  const raw = flag ?? configTarget ?? 'docker';
+  if (!isDeployTarget(raw, available)) {
+    log.error(`Unsupported deploy target: "${raw}"`);
+    log.dim(`Available targets: ${available.join(', ')}`);
+    process.exit(1);
+  }
+  return raw;
+}
+
+function loadDeployConfig(projectDir: string, configPath?: string): DeployConfig | undefined {
+  if (configPath && !existsSync(resolve(projectDir, configPath))) {
+    log.error(`Config file not found: ${resolve(projectDir, configPath)}`);
+    process.exit(1);
+  }
   try {
-    const { loadConfig } = await import('@cogitator-ai/config');
-    const config = loadConfig({ configPath });
+    const config = loadConfig(configPath ? { configPath: resolve(projectDir, configPath) } : {});
     return config.deploy;
-  } catch {
-    return undefined;
+  } catch (error) {
+    log.error(`Failed to load config: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
   }
 }
 
@@ -62,25 +73,26 @@ function buildConfigOverrides(
 async function runDeploy(flags: DeployFlags): Promise<void> {
   const projectDir = resolve(process.cwd());
 
-  const spinner = ora('Loading configuration...').start();
-
-  const fileConfig = await loadDeployConfig(flags.config);
-  const target = resolveTarget(flags.target, fileConfig?.target);
+  const deployer = new Deployer();
+  const fileConfig = loadDeployConfig(projectDir, flags.config);
+  const target = resolveTarget(flags.target, fileConfig?.target, deployer.availableTargets());
   const configOverrides = buildConfigOverrides(flags, fileConfig);
 
-  spinner.text = 'Analyzing project...';
-
-  const { Deployer } = await import('@cogitator-ai/deploy');
-  const deployer = new Deployer();
-
-  const plan = await deployer.plan({
-    projectDir,
-    target,
-    dryRun: flags.dryRun,
-    noPush: !flags.push,
-    configOverrides,
-  });
-
+  const spinner = ora('Analyzing project...').start();
+  let plan: DeployPlan;
+  try {
+    plan = await deployer.plan({
+      projectDir,
+      target,
+      dryRun: flags.dryRun,
+      noPush: !flags.push,
+      configOverrides,
+    });
+  } catch (error) {
+    spinner.fail('Failed to plan deployment');
+    log.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
   spinner.stop();
 
   console.log();
@@ -95,8 +107,17 @@ async function runDeploy(flags: DeployFlags): Promise<void> {
   if (config.port) console.log(`    Port:     ${chalk.cyan(String(config.port))}`);
   if (config.region) console.log(`    Region:   ${chalk.cyan(config.region)}`);
   if (config.registry) console.log(`    Registry: ${chalk.cyan(config.registry)}`);
+  if (config.image) console.log(`    App:      ${chalk.cyan(config.image)}`);
   if (config.instances) console.log(`    Instances: ${chalk.cyan(String(config.instances))}`);
   console.log();
+
+  if (plan.warnings.length > 0) {
+    console.log(chalk.dim('  Warnings:'));
+    for (const warning of plan.warnings) {
+      console.log(`    ${chalk.yellow('!')} ${warning}`);
+    }
+    console.log();
+  }
 
   if (config.services?.redis || config.services?.postgres) {
     console.log(chalk.dim('  Services:'));
@@ -139,13 +160,20 @@ async function runDeploy(flags: DeployFlags): Promise<void> {
 
   const deploySpinner = ora('Deploying...').start();
 
-  const result = await deployer.deploy({
-    projectDir,
-    target,
-    dryRun: false,
-    noPush: !flags.push,
-    configOverrides,
-  });
+  let result: DeployResult;
+  try {
+    result = await deployer.deploy({
+      projectDir,
+      target,
+      dryRun: false,
+      noPush: !flags.push,
+      configOverrides,
+    });
+  } catch (error) {
+    deploySpinner.fail('Deploy failed');
+    log.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
 
   if (!result.success) {
     deploySpinner.fail('Deploy failed');
@@ -181,17 +209,22 @@ async function runDeploy(flags: DeployFlags): Promise<void> {
 
 async function runDeployStatus(flags: DeployFlags): Promise<void> {
   const projectDir = resolve(process.cwd());
-  const fileConfig = await loadDeployConfig(flags.config);
-  const target = resolveTarget(flags.target, fileConfig?.target);
+  const deployer = new Deployer();
+  const fileConfig = loadDeployConfig(projectDir, flags.config);
+  const target = resolveTarget(flags.target, fileConfig?.target, deployer.availableTargets());
   const configOverrides = buildConfigOverrides(flags, fileConfig);
 
   const spinner = ora('Checking deployment status...').start();
 
-  const { Deployer } = await import('@cogitator-ai/deploy');
-  const deployer = new Deployer();
-
-  const deployConfig: DeployConfig = { target, ...configOverrides };
-  const status = await deployer.status(target, deployConfig, projectDir);
+  const deployConfig: DeployConfig = { ...configOverrides, target };
+  let status: DeployStatus;
+  try {
+    status = await deployer.status(target, deployConfig, projectDir);
+  } catch (error) {
+    spinner.fail('Failed to check status');
+    log.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
 
   spinner.stop();
   console.log();
@@ -211,16 +244,14 @@ async function runDeployStatus(flags: DeployFlags): Promise<void> {
 
 async function runDeployDestroy(flags: DeployFlags): Promise<void> {
   const projectDir = resolve(process.cwd());
-  const fileConfig = await loadDeployConfig(flags.config);
-  const target = resolveTarget(flags.target, fileConfig?.target);
+  const deployer = new Deployer();
+  const fileConfig = loadDeployConfig(projectDir, flags.config);
+  const target = resolveTarget(flags.target, fileConfig?.target, deployer.availableTargets());
   const configOverrides = buildConfigOverrides(flags, fileConfig);
 
   const spinner = ora(`Destroying ${target} deployment...`).start();
 
-  const { Deployer } = await import('@cogitator-ai/deploy');
-  const deployer = new Deployer();
-
-  const deployConfig: DeployConfig = { target, ...configOverrides };
+  const deployConfig: DeployConfig = { ...configOverrides, target };
 
   try {
     await deployer.destroy(target, deployConfig, projectDir);
@@ -235,7 +266,7 @@ async function runDeployDestroy(flags: DeployFlags): Promise<void> {
 export const deployCommand = new Command('deploy')
   .description('Deploy your Cogitator project')
   .argument('[action]', 'Action to perform: status, destroy')
-  .option('-t, --target <target>', 'Deploy target (docker, fly, railway, k8s, ssh)')
+  .option('-t, --target <target>', 'Deploy target (docker, fly)')
   .option('-c, --config <path>', 'Config file path')
   .option('--registry <url>', 'Container registry URL')
   .option('--no-push', 'Skip pushing image to registry')

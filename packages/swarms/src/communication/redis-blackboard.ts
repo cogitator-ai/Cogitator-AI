@@ -1,11 +1,16 @@
 import { nanoid } from 'nanoid';
 import type {
-  Blackboard,
   BlackboardConfig,
   BlackboardSection,
   BlackboardHistoryEntry,
 } from '@cogitator-ai/types';
 import type { Redis } from 'ioredis';
+import {
+  BlackboardListeners,
+  type BlackboardSectionHandler,
+  type BlackboardWriteListener,
+  type ObservableBlackboard,
+} from './blackboard.js';
 
 export interface RedisBlackboardOptions {
   redis: Redis;
@@ -19,6 +24,16 @@ interface StoredSection<T = unknown> {
   lastModified: number;
   modifiedBy: string;
   version: number;
+}
+
+interface ChangeNotification {
+  section: string;
+  data?: unknown;
+  agentName?: string;
+  version?: number;
+  timestamp?: number;
+  deleted?: boolean;
+  _sid?: string;
 }
 
 const MAX_HISTORY = 1000;
@@ -58,16 +73,27 @@ redis.call('PUBLISH', channel, cjson.encode(notification))
 return version
 `;
 
-export class RedisBlackboard implements Blackboard {
+function parseStoredSection(raw: string): StoredSection | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredSection>;
+    if (typeof parsed.name !== 'string' || typeof parsed.version !== 'number') return null;
+    return parsed as StoredSection;
+  } catch {
+    return null;
+  }
+}
+
+export class RedisBlackboard implements ObservableBlackboard {
   private redis: Redis;
   private subscriber: Redis;
   private swarmId: string;
   private keyPrefix: string;
   private config: BlackboardConfig;
-  private subscriptions = new Map<string, Set<(data: unknown, agentName: string) => void>>();
+  private listeners = new BlackboardListeners('[RedisBlackboard]');
   private localCache = new Map<string, StoredSection>();
   private historyCache = new Map<string, BlackboardHistoryEntry[]>();
   private readonly instanceId = nanoid(12);
+  private initialized = false;
 
   constructor(config: BlackboardConfig, options: RedisBlackboardOptions) {
     this.config = config;
@@ -89,86 +115,101 @@ export class RedisBlackboard implements Blackboard {
     return `${this.keyPrefix}:${this.swarmId}:blackboard:changes`;
   }
 
-  async initialize(): Promise<void> {
-    for (const [name, initialData] of Object.entries(this.config.sections)) {
-      const section: StoredSection = {
-        name,
-        data: initialData,
-        lastModified: Date.now(),
-        modifiedBy: 'system',
-        version: 1,
-      };
-      this.localCache.set(name, section);
+  private readonly handleRemoteChange = (_channel: string, messageJson: string): void => {
+    try {
+      const parsed = JSON.parse(messageJson) as ChangeNotification;
+      if (parsed._sid === this.instanceId) return;
 
-      const wasSet = await this.redis.set(this.sectionKey(name), JSON.stringify(section), 'NX');
-
-      if (wasSet === 'OK') {
-        if (this.config.trackHistory) {
-          const entry: BlackboardHistoryEntry = {
-            value: initialData,
-            writtenBy: 'system',
-            timestamp: Date.now(),
-            version: 1,
-          };
-          await this.redis.rpush(this.historyKey(name), JSON.stringify(entry));
-          this.historyCache.set(name, [entry]);
-        }
-      } else {
-        const existing = await this.redis.get(this.sectionKey(name));
+      if (parsed.deleted) {
+        const existing = this.localCache.get(parsed.section);
+        this.localCache.delete(parsed.section);
+        this.historyCache.delete(parsed.section);
         if (existing) {
-          const stored = JSON.parse(existing) as StoredSection;
-          this.localCache.set(name, stored);
+          this.listeners.notify({
+            section: parsed.section,
+            data: undefined,
+            agentName: parsed.agentName ?? 'system',
+            version: existing.version,
+            deleted: true,
+          });
         }
+        return;
       }
-    }
 
-    await this.subscriber.subscribe(this.channelKey());
+      const agentName = parsed.agentName ?? 'unknown';
+      const version = parsed.version ?? (this.localCache.get(parsed.section)?.version ?? 0) + 1;
+      const timestamp = parsed.timestamp ?? Date.now();
 
-    this.subscriber.on('message', (_channel: string, messageJson: string) => {
-      try {
-        const parsed = JSON.parse(messageJson) as {
-          section: string;
-          data?: unknown;
-          agentName?: string;
-          version?: number;
-          timestamp?: number;
-          deleted?: boolean;
-          _sid?: string;
-        };
+      this.localCache.set(parsed.section, {
+        name: parsed.section,
+        data: parsed.data,
+        lastModified: timestamp,
+        modifiedBy: agentName,
+        version,
+      });
 
-        if (parsed._sid === this.instanceId) return;
-
-        if (parsed.deleted) {
-          this.localCache.delete(parsed.section);
-          this.historyCache.delete(parsed.section);
-          return;
-        }
-
-        const { section, data, agentName, version, timestamp } = parsed as {
-          section: string;
-          data: unknown;
-          agentName: string;
-          version: number;
-          timestamp: number;
-        };
-
-        const stored: StoredSection = {
-          name: section,
-          data,
-          lastModified: timestamp,
-          modifiedBy: agentName,
+      if (this.config.trackHistory) {
+        this.pushHistory(parsed.section, {
+          value: parsed.data,
+          writtenBy: agentName,
+          timestamp,
           version,
-        };
-        this.localCache.set(section, stored);
-
-        this.notifySubscribers(section, data, agentName);
-      } catch (error) {
-        console.warn('[RedisBlackboard] Failed to parse message:', error);
+        });
       }
-    });
+
+      this.listeners.notify({ section: parsed.section, data: parsed.data, agentName, version });
+    } catch (error) {
+      console.warn('[RedisBlackboard] Failed to parse message:', error);
+    }
+  };
+
+  async initialize(): Promise<void> {
+    if (this.initialized) return;
+    this.initialized = true;
+
+    try {
+      for (const [name, initialData] of Object.entries(this.config.sections)) {
+        const section: StoredSection = {
+          name,
+          data: initialData,
+          lastModified: Date.now(),
+          modifiedBy: 'system',
+          version: 1,
+        };
+
+        const wasSet = await this.redis.set(this.sectionKey(name), JSON.stringify(section), 'NX');
+
+        if (wasSet === 'OK') {
+          this.localCache.set(name, section);
+          if (this.config.trackHistory) {
+            const entry: BlackboardHistoryEntry = {
+              value: initialData,
+              writtenBy: 'system',
+              timestamp: section.lastModified,
+              version: 1,
+            };
+            await this.redis.rpush(this.historyKey(name), JSON.stringify(entry));
+            this.historyCache.set(name, [entry]);
+          }
+          continue;
+        }
+
+        const existing = await this.redis.get(this.sectionKey(name));
+        const stored = existing ? parseStoredSection(existing) : null;
+        this.localCache.set(name, stored ?? section);
+      }
+
+      this.subscriber.on('message', this.handleRemoteChange);
+      await this.subscriber.subscribe(this.channelKey());
+    } catch (error) {
+      this.subscriber.off('message', this.handleRemoteChange);
+      this.initialized = false;
+      throw error;
+    }
   }
 
   read<T = unknown>(section: string): T {
+    this.assertEnabled();
     const cached = this.localCache.get(section);
     if (!cached) {
       throw new Error(`Blackboard section '${section}' not found`);
@@ -177,9 +218,7 @@ export class RedisBlackboard implements Blackboard {
   }
 
   write<T>(section: string, data: T, agentName: string): void {
-    if (!this.config.enabled) {
-      throw new Error('Blackboard is not enabled');
-    }
+    this.assertEnabled();
 
     const existing = this.localCache.get(section);
     const version = existing ? existing.version + 1 : 1;
@@ -196,16 +235,7 @@ export class RedisBlackboard implements Blackboard {
     this.localCache.set(section, newSection);
 
     if (this.config.trackHistory) {
-      const entry: BlackboardHistoryEntry = {
-        value: data,
-        writtenBy: agentName,
-        timestamp,
-        version,
-      };
-      if (!this.historyCache.has(section)) {
-        this.historyCache.set(section, []);
-      }
-      this.historyCache.get(section)!.push(entry);
+      this.pushHistory(section, { value: data, writtenBy: agentName, timestamp, version });
     }
 
     const historyEntryJson = this.config.trackHistory
@@ -225,14 +255,20 @@ export class RedisBlackboard implements Blackboard {
         String(MAX_HISTORY),
         this.instanceId
       )
+      .then((storedVersion: unknown) => {
+        if (typeof storedVersion === 'number' && this.localCache.get(section) === newSection) {
+          newSection.version = storedVersion;
+        }
+      })
       .catch((error: unknown) => {
         console.warn('[RedisBlackboard] Write error:', error);
       });
 
-    this.notifySubscribers(section, data, agentName);
+    this.listeners.notify({ section, data, agentName, version });
   }
 
   append<T>(section: string, item: T, agentName: string): void {
+    this.assertEnabled();
     const current = this.localCache.get(section);
 
     if (!current) {
@@ -244,8 +280,7 @@ export class RedisBlackboard implements Blackboard {
       throw new Error(`Section '${section}' is not an array, cannot append`);
     }
 
-    const newData = [...current.data, item];
-    this.write(section, newData, agentName);
+    this.write(section, [...current.data, item], agentName);
   }
 
   has(section: string): boolean {
@@ -253,41 +288,28 @@ export class RedisBlackboard implements Blackboard {
   }
 
   delete(section: string): void {
+    const existing = this.localCache.get(section);
     this.localCache.delete(section);
     this.historyCache.delete(section);
-    this.subscriptions.delete(section);
+    this.removeFromRedis(section);
 
-    void this.redis.del(this.sectionKey(section)).catch((error: unknown) => {
-      console.warn('[RedisBlackboard] Delete error:', error);
-    });
-    void this.redis.del(this.historyKey(section)).catch((error: unknown) => {
-      console.warn('[RedisBlackboard] Delete history error:', error);
-    });
-    void this.redis
-      .publish(
-        this.channelKey(),
-        JSON.stringify({ section, deleted: true, agentName: 'system', timestamp: Date.now() })
-      )
-      .catch((error: unknown) => {
-        console.warn('[RedisBlackboard] Publish delete error:', error);
+    if (existing) {
+      this.listeners.notify({
+        section,
+        data: undefined,
+        agentName: 'system',
+        version: existing.version,
+        deleted: true,
       });
+    }
   }
 
-  subscribe(section: string, handler: (data: unknown, agentName: string) => void): () => void {
-    if (!this.subscriptions.has(section)) {
-      this.subscriptions.set(section, new Set());
-    }
-    this.subscriptions.get(section)!.add(handler);
+  subscribe(section: string, handler: BlackboardSectionHandler): () => void {
+    return this.listeners.subscribe(section, handler);
+  }
 
-    return () => {
-      const handlers = this.subscriptions.get(section);
-      if (handlers) {
-        handlers.delete(handler);
-        if (handlers.size === 0) {
-          this.subscriptions.delete(section);
-        }
-      }
-    };
+  onWrite(listener: BlackboardWriteListener): () => void {
+    return this.listeners.onWrite(listener);
   }
 
   getSections(): string[] {
@@ -307,7 +329,7 @@ export class RedisBlackboard implements Blackboard {
   }
 
   getHistory(section: string): BlackboardHistoryEntry[] {
-    return this.historyCache.get(section) ?? [];
+    return [...(this.historyCache.get(section) ?? [])];
   }
 
   clear(): void {
@@ -316,25 +338,18 @@ export class RedisBlackboard implements Blackboard {
     this.historyCache.clear();
 
     for (const section of sections) {
-      void this.redis.del(this.sectionKey(section)).catch((error: unknown) => {
-        console.warn('[RedisBlackboard] Clear section error:', error);
-      });
-      void this.redis.del(this.historyKey(section)).catch((error: unknown) => {
-        console.warn('[RedisBlackboard] Clear history error:', error);
-      });
-      void this.redis
-        .publish(
-          this.channelKey(),
-          JSON.stringify({ section, deleted: true, agentName: 'system', timestamp: Date.now() })
-        )
-        .catch((error: unknown) => {
-          console.warn('[RedisBlackboard] Publish clear error:', error);
-        });
+      this.removeFromRedis(section);
     }
   }
 
   async close(): Promise<void> {
-    this.subscriber.removeAllListeners('message');
+    this.subscriber.off('message', this.handleRemoteChange);
+    this.initialized = false;
+    if (this.subscriber.status === 'end') return;
+    if (this.subscriber.status === 'wait') {
+      this.subscriber.disconnect();
+      return;
+    }
     await this.subscriber.unsubscribe();
     await this.subscriber.quit();
   }
@@ -351,22 +366,46 @@ export class RedisBlackboard implements Blackboard {
         if (key.endsWith(':history')) continue;
 
         const raw = await this.redis.get(key);
-        if (raw) {
-          const stored = JSON.parse(raw) as StoredSection;
+        const stored = raw ? parseStoredSection(raw) : null;
+        if (stored && key === this.sectionKey(stored.name)) {
           this.localCache.set(stored.name, stored);
         }
       }
     } while (cursor !== '0');
   }
 
-  private notifySubscribers(section: string, data: unknown, agentName: string): void {
-    const handlers = this.subscriptions.get(section);
-    if (handlers) {
-      for (const handler of handlers) {
-        void Promise.resolve(handler(data, agentName)).catch((error) => {
-          console.warn('[RedisBlackboard] Handler error:', error);
-        });
-      }
+  private pushHistory(section: string, entry: BlackboardHistoryEntry): void {
+    let entries = this.historyCache.get(section);
+    if (!entries) {
+      entries = [];
+      this.historyCache.set(section, entries);
+    }
+    entries.push(entry);
+    if (entries.length > MAX_HISTORY) {
+      entries.splice(0, entries.length - MAX_HISTORY);
+    }
+  }
+
+  private removeFromRedis(section: string): void {
+    const notification: ChangeNotification = {
+      section,
+      deleted: true,
+      agentName: 'system',
+      timestamp: Date.now(),
+      _sid: this.instanceId,
+    };
+
+    void this.redis
+      .del(this.sectionKey(section), this.historyKey(section))
+      .then(() => this.redis.publish(this.channelKey(), JSON.stringify(notification)))
+      .catch((error: unknown) => {
+        console.warn('[RedisBlackboard] Delete error:', error);
+      });
+  }
+
+  private assertEnabled(): void {
+    if (!this.config.enabled) {
+      throw new Error('Blackboard is not enabled');
     }
   }
 }

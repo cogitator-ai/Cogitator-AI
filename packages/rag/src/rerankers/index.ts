@@ -1,2 +1,2 @@
-export { LLMReranker, type LLMRerankerConfig } from './llm-reranker';
-export { CohereReranker, type CohereRerankerConfig } from './cohere-reranker';
+export { LLMReranker, type LLMRerankerConfig } from './llm-reranker.js';
+export { CohereReranker, type CohereRerankerConfig } from './cohere-reranker.js';

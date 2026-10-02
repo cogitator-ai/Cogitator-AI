@@ -1,10 +1,21 @@
 # @cogitator-ai/dashboard
 
-Web dashboard for monitoring and managing Cogitator agents, runs, and workflows.
+Public website for Cogitator: the landing page, documentation (Fumadocs) and cookbook.
 
-> **Preview Release**: This dashboard is in active development. APIs may change.
+> [!WARNING]
+> **The admin dashboard is deprecated and no longer maintained.**
+>
+> Only the public site is supported: the landing page (`/`), the docs (`/docs`) and the cookbook (`/cookbook`).
+> Everything behind sign-in is frozen and will be removed in a future release. That covers the `/dashboard` UI, `/auth`, the `/api/*` routes (agents, runs, playground, MCP, API keys, config), Supabase auth and RBAC.
+> It gets no bug or security fixes. Do not deploy it to a public network.
+>
+> To monitor agents in production, use the OpenTelemetry / Langfuse integrations from `@cogitator-ai/core`. To expose agents over HTTP, use a server adapter (`@cogitator-ai/express`, `fastify`, `hono`, `koa`, `next`).
 
-## Features
+## Deprecated admin dashboard
+
+The rest of this document describes the deprecated admin dashboard and is kept for reference only.
+
+### Features
 
 - 📊 Real-time agent execution monitoring
 - 🔄 Workflow visualization and management
@@ -13,9 +24,9 @@ Web dashboard for monitoring and managing Cogitator agents, runs, and workflows.
 - 🔐 Role-based access control
 - 🔑 API key authentication for programmatic access
 
-## Quick Start
+### Quick Start
 
-### Development
+#### Development
 
 ```bash
 cd packages/dashboard
@@ -24,16 +35,16 @@ cp .env.production.example .env.local
 pnpm dev
 ```
 
-### Production
+#### Production
 
 ```bash
 pnpm build
 pnpm start
 ```
 
-## Authentication
+### Authentication
 
-### Session-based (Supabase)
+#### Session-based (Supabase)
 
 For web UI access, authentication uses Supabase Auth:
 
@@ -42,7 +53,7 @@ NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 ```
 
-### API Key Authentication
+#### API Key Authentication
 
 For programmatic access (scripts, CI/CD, integrations):
 
@@ -54,7 +65,7 @@ COGITATOR_API_KEY=cog_your_secret_key
 COGITATOR_API_KEYS='[{"id":"prod","hash":"sha256hash","name":"Production","role":"admin","createdAt":1234}]'
 ```
 
-#### Usage
+##### Usage
 
 ```bash
 # Via Authorization header
@@ -64,7 +75,7 @@ curl -H "Authorization: Bearer cog_xxx" https://dashboard.example.com/api/agents
 curl -H "X-API-Key: cog_xxx" https://dashboard.example.com/api/agents
 ```
 
-#### Generating API Keys
+##### Generating API Keys
 
 ```bash
 # Via API (admin only)
@@ -74,7 +85,7 @@ curl -X POST https://dashboard.example.com/api/auth/keys \
   -d '{"name": "CI Pipeline", "role": "user"}'
 ```
 
-### Roles
+#### Roles
 
 | Role       | Permissions                        |
 | ---------- | ---------------------------------- |
@@ -82,9 +93,9 @@ curl -X POST https://dashboard.example.com/api/auth/keys \
 | `user`     | Read/write agents, runs, workflows |
 | `readonly` | View-only access                   |
 
-## API Endpoints
+### API Endpoints
 
-### Agents
+#### Agents
 
 ```
 GET    /api/agents          List all agents
@@ -94,14 +105,14 @@ PATCH  /api/agents/:id      Update agent
 DELETE /api/agents/:id      Delete agent
 ```
 
-### Runs
+#### Runs
 
 ```
 GET    /api/runs            List runs (filterable)
 GET    /api/runs/:id        Get run details
 ```
 
-### Workflows
+#### Workflows
 
 ```
 GET    /api/workflows       List workflows
@@ -112,13 +123,13 @@ DELETE /api/workflows/:id   Delete workflow
 POST   /api/workflows/:id/run  Execute workflow
 ```
 
-### Playground
+#### Playground
 
 ```
 POST   /api/playground      Execute agent with input
 ```
 
-### MCP Integration
+#### MCP Integration
 
 ```
 GET    /api/mcp?action=clients     List connected MCP clients
@@ -127,7 +138,7 @@ POST   /api/mcp action=call-tool   Call MCP tool
 DELETE /api/mcp                    Disconnect all
 ```
 
-### Health
+#### Health
 
 ```
 GET    /api/health          Overall health status
@@ -135,11 +146,11 @@ GET    /api/health/live     Liveness probe
 GET    /api/health/ready    Readiness probe
 ```
 
-## Environment Variables
+### Environment Variables
 
 See [.env.production.example](.env.production.example) for all available options.
 
-### Required
+#### Required
 
 | Variable                        | Description           |
 | ------------------------------- | --------------------- |
@@ -147,7 +158,7 @@ See [.env.production.example](.env.production.example) for all available options
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key     |
 | `DATABASE_URL`                  | PostgreSQL connection |
 
-### Optional
+#### Optional
 
 | Variable                   | Description                | Default                  |
 | -------------------------- | -------------------------- | ------------------------ |
@@ -158,9 +169,9 @@ See [.env.production.example](.env.production.example) for all available options
 | `OPENAI_API_KEY`           | OpenAI API key             | -                        |
 | `ANTHROPIC_API_KEY`        | Anthropic API key          | -                        |
 
-## Deployment
+### Deployment
 
-### Vercel
+#### Vercel
 
 ```bash
 vercel
@@ -168,7 +179,7 @@ vercel
 
 The dashboard is optimized for Vercel deployment. Set environment variables in Vercel dashboard.
 
-### Docker
+#### Docker
 
 ```dockerfile
 FROM node:20-alpine
@@ -179,7 +190,7 @@ EXPOSE 3000
 CMD ["pnpm", "start"]
 ```
 
-### Self-hosted
+#### Self-hosted
 
 For full functionality including sandbox execution:
 

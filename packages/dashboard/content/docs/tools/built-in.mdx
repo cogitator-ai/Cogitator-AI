@@ -248,6 +248,8 @@ Executes SQL queries against PostgreSQL or SQLite. Supports parameterized querie
 | `maxRows`          | `number`    | Max rows returned (default: 100, max: 1000)    |
 | `readOnly`         | `boolean`   | Only allow SELECT queries (default: true)      |
 
+In read-only mode the query must be a single `SELECT`/`WITH`/`SHOW`/`DESCRIBE`/`EXPLAIN` statement. On PostgreSQL it additionally runs inside a `BEGIN TRANSACTION READ ONLY` block that is always rolled back, so side-effecting functions (for example `nextval()`) are rejected by the database itself; SQLite databases are opened with `readonly: true`. With `readOnly: false`, statements that return no rows (`INSERT`, `UPDATE`, `DELETE`) return `rows: []` and the number of affected rows in `rowCount`.
+
 ### `vector_search`
 
 Performs semantic similarity search using pgvector. Converts queries to embeddings via OpenAI, Ollama, or Google, then finds similar documents in PostgreSQL.
@@ -260,6 +262,9 @@ Performs semantic similarity search using pgvector. Converts queries to embeddin
 | `threshold`         | `number` | Minimum similarity 0-1 (default: 0.7) |
 | `filter`            | `Record` | Metadata filter as key-value pairs    |
 | `embeddingProvider` | `enum`   | `openai` \| `ollama` \| `google`      |
+| `embeddingModel`    | `string` | Embedding model override              |
+
+The provider is auto-detected from `OPENAI_API_KEY`, then `OLLAMA_BASE_URL`/`OLLAMA_HOST`, then `GOOGLE_API_KEY`. Default models: `text-embedding-3-small` (OpenAI), `nomic-embed-text` (Ollama), `gemini-embedding-001` (Google). The embedding dimension must match your pgvector column.
 
 ---
 

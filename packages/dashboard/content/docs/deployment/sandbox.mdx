@@ -78,9 +78,11 @@ await executor.disconnect();
 | `NetworkMode` | `none`              | No network access            |
 | `PidsLimit`   | `100`               | Prevent fork bombs           |
 
+Commands are argv arrays executed without a shell (use `['sh', '-c', '...']` for shell syntax). Output is demultiplexed frame by frame and capped at 50 000 bytes per stream, timed-out containers are destroyed, `network.dns` is applied, and `network.allowedHosts` is rejected because Docker cannot enforce an egress allow-list. Containers carry the `ai.cogitator.sandbox=true` label. Without explicit connection options Dockerode's defaults (including `DOCKER_HOST`) are used.
+
 ## WasmSandboxExecutor
 
-Runs code inside WASM modules via Extism. Cold start is 1-10ms (vs 1-5s for Docker) with 1-10MB memory per plugin.
+Runs code inside WASM modules via Extism. Every plugin runs in its own worker thread, so timeouts terminate runaway modules; concurrent executions use separate plugin instances.
 
 ```typescript
 import { WasmSandboxExecutor } from '@cogitator-ai/sandbox';
@@ -96,7 +98,7 @@ const result = await executor.execute(
 await executor.disconnect();
 ```
 
-Modules load from URLs, local paths, or npm packages. An LRU cache avoids reloading on repeated calls.
+Modules load from URLs, local paths, or npm packages. Idle plugins are pooled per module, WASI flag and allowed hosts (up to `cacheSize`). `network.allowedHosts` feeds Extism's HTTP allow-list. `memoryPages` (default 256 = 16 MB) is passed to Extism as `memory.maxPages` and caps the memory Extism allocates for plugin input, output and vars. The module's own linear memory is not limited by it.
 
 ## ContainerPool
 
@@ -120,7 +122,7 @@ await pool.release(container);
 await pool.release(container, { corrupted: true });
 ```
 
-Releasing with `corrupted: true` destroys the container instead of returning it. Idle containers are cleaned up automatically.
+Releasing with `corrupted: true` destroys the container instead of returning it. Idle containers are cleaned up automatically. A pooled container is only reused for requests with identical image, resources, network mode, DNS, mounts and user.
 
 ## Fallback Chain
 
@@ -129,6 +131,8 @@ Releasing with `corrupted: true` destroys the container instead of returning it.
 1. **WASM requested** -- Docker -- Native
 2. **Docker requested** -- Native
 3. **Native** -- always available, no isolation
+
+Manager `defaults` apply to fallback executions too, and initialization is shared by concurrent callers. The native executor runs a single-element command through the shell and longer commands with exact argv, pipes `stdin`, inherits only `PATH`, `HOME`, temp-dir, locale and Windows system variables from the host, and kills the whole process group on timeout. Check availability first when untrusted code must never run on the host:
 
 ```typescript
 const hasDocker = await sandbox.isDockerAvailable();

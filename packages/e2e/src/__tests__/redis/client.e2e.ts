@@ -3,6 +3,7 @@ import {
   parseClusterNodesEnv,
   createConfigFromEnv,
   createRedisClient,
+  detectRedisMode,
   type RedisClient,
 } from '@cogitator-ai/redis';
 
@@ -73,6 +74,12 @@ describe('Redis: Config Utilities', () => {
     } as NodeJS.ProcessEnv);
     expect(clusterConfig.keyPrefix).toBe('{cogitator}:');
   });
+
+  it('createConfigFromEnv rejects malformed REDIS_CLUSTER_NODES', () => {
+    expect(() =>
+      createConfigFromEnv({ REDIS_CLUSTER_NODES: 'h1:6379,h2:6379' } as NodeJS.ProcessEnv)
+    ).toThrow('REDIS_CLUSTER_NODES');
+  });
 });
 
 describeRedis('Redis: Client Operations', () => {
@@ -81,7 +88,7 @@ describeRedis('Redis: Client Operations', () => {
 
   afterAll(async () => {
     if (client) {
-      const keys = await client.keys(`${testPrefix}*`);
+      const keys = await client.keys('*');
       if (keys.length > 0) {
         await client.del(...keys);
       }
@@ -128,5 +135,50 @@ describeRedis('Redis: Client Operations', () => {
     expect(afterRemove).toEqual(['alpha', 'gamma']);
 
     await client.del('zset-key');
+  });
+
+  it('keys is relative to the key prefix so results can be deleted', async () => {
+    await client.set('cache:a', '1');
+    await client.setex('cache:b', 60, '2');
+    await client.set('other', '3');
+
+    const keys = await client.keys('cache:*');
+    expect(keys.sort()).toEqual(['cache:a', 'cache:b']);
+    expect(await client.mget(...keys.sort())).toEqual(['1', '2']);
+
+    expect(await client.del(...keys)).toBe(2);
+    expect(await client.keys('cache:*')).toEqual([]);
+    expect(await client.get('other')).toBe('3');
+  });
+
+  it('pub/sub delivers only exact channels to every subscriber', async () => {
+    const subscriber = client.duplicate();
+    const first: string[] = [];
+    const second: string[] = [];
+    const channel = `${testPrefix}events`;
+
+    try {
+      await subscriber.subscribe(channel, (_ch, message) => first.push(message));
+      await subscriber.subscribe(channel, (_ch, message) => second.push(message));
+      await subscriber.subscribe(`prefix-${channel}`, () => undefined);
+
+      await client.publish(`prefix-${channel}`, 'ignored');
+      await client.publish(channel, 'hello');
+      await expect.poll(() => first.length).toBe(1);
+
+      expect(first).toEqual(['hello']);
+      expect(second).toEqual(['hello']);
+
+      await subscriber.unsubscribe(channel);
+      await client.publish(channel, 'after-unsubscribe');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(first).toEqual(['hello']);
+    } finally {
+      await subscriber.quit();
+    }
+  });
+
+  it('detectRedisMode reports standalone for a single node', async () => {
+    expect(await detectRedisMode({ host: 'localhost', port: 6379 })).toBe('standalone');
   });
 });

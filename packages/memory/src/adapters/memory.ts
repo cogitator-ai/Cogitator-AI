@@ -41,21 +41,21 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
     metadata: Record<string, unknown> = {},
     threadId?: string
   ): Promise<MemoryResult<Thread>> {
+    const id = threadId ?? this.generateId('thread');
+    const now = new Date();
+    const existing = this.threads.get(id);
+
     const thread: Thread = {
-      id: threadId ?? this.generateId('thread'),
+      id,
       agentId,
       metadata,
-      createdAt: new Date(),
-      updatedAt: new Date(),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
     };
-    const existingEntries = this.threadEntries.get(thread.id);
-    if (existingEntries) {
-      for (const entryId of existingEntries) {
-        this.entries.delete(entryId);
-      }
+    this.threads.set(id, thread);
+    if (!this.threadEntries.has(id)) {
+      this.threadEntries.set(id, []);
     }
-    this.threads.set(thread.id, thread);
-    this.threadEntries.set(thread.id, []);
     return this.success(thread);
   }
 
@@ -97,7 +97,7 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
     const full: MemoryEntry = {
       ...entry,
       id: this.generateId('entry'),
-      createdAt: new Date(),
+      createdAt: this.nextEntryTimestamp(entry.threadId),
     };
 
     this.entries.set(full.id, full);

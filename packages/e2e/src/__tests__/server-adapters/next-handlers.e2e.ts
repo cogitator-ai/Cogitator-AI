@@ -60,15 +60,59 @@ describe('Next.js Handlers', () => {
 
     const text = await response.text();
     const events = parseSSEEvents(text);
-    expect(events.length).toBeGreaterThan(0);
+    const payloads = events
+      .map((e) => e.data)
+      .filter((d): d is Record<string, unknown> => typeof d === 'object' && d !== null);
+    const types = payloads.map((d) => d.type);
 
-    const hasContent = events.some((e) => {
-      if (typeof e.data !== 'object' || e.data === null) return false;
-      const d = e.data as Record<string, unknown>;
-      return d.type === 'text-delta' || d.type === 'text-start';
-    });
-    expect(hasContent).toBe(true);
+    expect(types[0]).toBe('start');
+    expect(types).not.toContain('error');
+
+    const streamed = payloads
+      .filter((d) => d.type === 'text-delta')
+      .map((d) => String(d.delta))
+      .join('');
+    expect(streamed.trim().length).toBeGreaterThan(0);
+
+    const textStarts = payloads.filter((d) => d.type === 'text-start').map((d) => d.id);
+    const textEnds = payloads.filter((d) => d.type === 'text-end').map((d) => d.id);
+    expect(textEnds).toEqual(textStarts);
+
+    const finish = payloads.find((d) => d.type === 'finish');
+    expect(finish).toBeDefined();
+    expect(typeof finish?.threadId).toBe('string');
+    expect(events.at(-1)?.data).toBe('[DONE]');
   }, 60_000);
+
+  it('createChatHandler rejects requests without a user message', async () => {
+    const handler = createChatHandler(cogitator, agent);
+
+    const response = await handler(
+      new Request('http://localhost/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'assistant', content: 'hi' }] }),
+      })
+    );
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe('No user message provided');
+  });
+
+  it('createAgentHandler rejects blank input before calling the model', async () => {
+    const handler = createAgentHandler(cogitator, agent);
+
+    const response = await handler(
+      new Request('http://localhost/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: '   ' }),
+      })
+    );
+
+    expect(response.status).toBe(400);
+  });
 
   it('handler returns error for invalid input', async () => {
     const handler = createAgentHandler(cogitator, agent);

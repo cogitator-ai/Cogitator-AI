@@ -1,4 +1,5 @@
 import { createCogitator, DEFAULT_MODEL, header } from '../_shared/setup.js';
+import { evaluateArithmetic } from '../_shared/arithmetic.js';
 import { Agent, tool } from '@cogitator-ai/core';
 import { cogitatorPlugin } from '@cogitator-ai/fastify';
 import Fastify from 'fastify';
@@ -8,13 +9,16 @@ const PORT = 3101;
 
 const calculator = tool({
   name: 'calculator',
-  description: 'Evaluate a math expression',
+  description: 'Evaluate an arithmetic expression (+ - * / % and parentheses)',
   parameters: z.object({
     expression: z.string().describe('Math expression to evaluate'),
   }),
   execute: async ({ expression }) => {
-    const result = new Function(`return (${expression})`)() as number;
-    return { expression, result };
+    try {
+      return { expression, result: evaluateArithmetic(expression) };
+    } catch (error) {
+      return { expression, error: error instanceof Error ? error.message : String(error) };
+    }
   },
 });
 
@@ -25,6 +29,7 @@ async function main() {
 
   const assistant = new Agent({
     name: 'assistant',
+    description: 'General assistant with a calculator tool',
     model: DEFAULT_MODEL,
     instructions: 'You are a helpful assistant. Use tools when appropriate. Be concise.',
     tools: [calculator],
@@ -51,14 +56,21 @@ async function main() {
   console.log(`  curl -X POST http://localhost:${PORT}/cogitator/agents/assistant/run \\`);
   console.log(`    -H 'Content-Type: application/json' \\`);
   console.log(`    -d '{"input": "What is 123 * 456?"}'`);
+  console.log(`  curl -N -X POST http://localhost:${PORT}/cogitator/agents/assistant/stream \\`);
+  console.log(`    -H 'Content-Type: application/json' \\`);
+  console.log(`    -d '{"input": "Explain recursion in one sentence"}'`);
   console.log();
 
-  process.on('SIGINT', async () => {
+  process.on('SIGINT', () => {
     console.log('\nShutting down...');
-    await fastify.close();
-    await cog.close();
-    process.exit(0);
+    void fastify
+      .close()
+      .then(() => cog.close())
+      .finally(() => process.exit(0));
   });
 }
 
-main();
+main().catch((error: unknown) => {
+  console.error(error);
+  process.exit(1);
+});

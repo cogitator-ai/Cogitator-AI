@@ -9,7 +9,7 @@ export function createErrorHandler() {
       if (ctx.headerSent) return;
 
       if (CogitatorError.isCogitatorError(err)) {
-        ctx.status = ERROR_STATUS_CODES[err.code] || 500;
+        ctx.status = err.statusCode ?? ERROR_STATUS_CODES[err.code] ?? 500;
         ctx.body = {
           error: {
             message: err.message,

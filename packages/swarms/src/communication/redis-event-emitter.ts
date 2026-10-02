@@ -6,12 +6,18 @@ import type {
   SwarmEventHandler,
 } from '@cogitator-ai/types';
 import type { Redis } from 'ioredis';
+import { invokeSafely } from '../utils/invoke.js';
 
 export interface RedisEventEmitterOptions {
   redis: Redis;
   swarmId: string;
   keyPrefix?: string;
   maxEvents?: number;
+}
+
+interface EventEnvelope {
+  _sid: string;
+  e: SwarmEvent;
 }
 
 const ATOMIC_PUSH_TRIM_SCRIPT = `
@@ -22,6 +28,16 @@ redis.call('LTRIM', key, -maxEvents, -1)
 return 1
 `;
 
+function parseSwarmEvent(raw: string): SwarmEvent | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<SwarmEvent>;
+    if (typeof parsed.type !== 'string' || typeof parsed.timestamp !== 'number') return null;
+    return parsed as SwarmEvent;
+  } catch {
+    return null;
+  }
+}
+
 export class RedisSwarmEventEmitter implements SwarmEventEmitter {
   private redis: Redis;
   private subscriber: Redis;
@@ -31,6 +47,7 @@ export class RedisSwarmEventEmitter implements SwarmEventEmitter {
   private handlers = new Map<SwarmEventType | '*', Set<SwarmEventHandler>>();
   private localEvents: SwarmEvent[] = [];
   private readonly instanceId = nanoid(12);
+  private initialized = false;
 
   constructor(options: RedisEventEmitterOptions) {
     this.redis = options.redis;
@@ -48,31 +65,39 @@ export class RedisSwarmEventEmitter implements SwarmEventEmitter {
     return `${this.keyPrefix}:${this.swarmId}:events:live`;
   }
 
+  private readonly handleRemoteEvent = (_channel: string, messageJson: string): void => {
+    try {
+      const envelope = JSON.parse(messageJson) as EventEnvelope;
+      if (envelope._sid === this.instanceId) return;
+
+      this.recordLocally(envelope.e);
+      this.notifyHandlers(envelope.e);
+    } catch (error) {
+      console.warn('[RedisSwarmEventEmitter] Failed to parse message:', error);
+    }
+  };
+
   async initialize(): Promise<void> {
-    await this.subscriber.subscribe(this.channelKey());
+    if (this.initialized) return;
+    this.initialized = true;
 
-    this.subscriber.on('message', (_channel, messageJson) => {
-      try {
-        const envelope = JSON.parse(messageJson) as { _sid: string; e: SwarmEvent };
-        if (envelope._sid === this.instanceId) return;
-
-        const event = envelope.e;
-        this.localEvents.push(event);
-        if (this.localEvents.length > this.maxEvents) {
-          this.localEvents = this.localEvents.slice(-this.maxEvents);
-        }
-        this.notifyHandlers(event);
-      } catch (error) {
-        console.warn('[RedisSwarmEventEmitter] Failed to parse message:', error);
-      }
-    });
+    this.subscriber.on('message', this.handleRemoteEvent);
+    try {
+      await this.subscriber.subscribe(this.channelKey());
+    } catch (error) {
+      this.subscriber.off('message', this.handleRemoteEvent);
+      this.initialized = false;
+      throw error;
+    }
   }
 
   on(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void {
-    if (!this.handlers.has(event)) {
-      this.handlers.set(event, new Set());
+    let handlers = this.handlers.get(event);
+    if (!handlers) {
+      handlers = new Set();
+      this.handlers.set(event, handlers);
     }
-    this.handlers.get(event)!.add(handler);
+    handlers.add(handler);
 
     return () => this.off(event, handler);
   }
@@ -80,44 +105,34 @@ export class RedisSwarmEventEmitter implements SwarmEventEmitter {
   once(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void {
     const wrapper: SwarmEventHandler = (e) => {
       this.off(event, wrapper);
-      void Promise.resolve(handler(e)).catch((error) => {
-        console.warn('[RedisSwarmEventEmitter] Once handler error:', error);
-      });
+      invokeSafely(handler, [e], '[RedisSwarmEventEmitter] Once handler error');
     };
     return this.on(event, wrapper);
   }
 
+  /**
+   * Emit an event: local handlers are notified synchronously, persistence and
+   * cross-node publication happen in the background.
+   */
   emit(event: SwarmEventType, data?: unknown, agentName?: string): void {
-    void this.emitAsync(event, data, agentName).catch((error) => {
+    const swarmEvent = this.createEvent(event, data, agentName);
+    this.recordLocally(swarmEvent);
+    this.notifyHandlers(swarmEvent);
+
+    void this.persistAndPublish(swarmEvent).catch((error: unknown) => {
       console.warn('[RedisSwarmEventEmitter] Emit error:', error);
     });
   }
 
+  /**
+   * Emit an event and wait until it is persisted in Redis and published to other nodes.
+   */
   async emitAsync(event: SwarmEventType, data?: unknown, agentName?: string): Promise<void> {
-    const swarmEvent: SwarmEvent = {
-      type: event,
-      timestamp: Date.now(),
-      agentName,
-      data,
-    };
+    const swarmEvent = this.createEvent(event, data, agentName);
+    this.recordLocally(swarmEvent);
+    this.notifyHandlers(swarmEvent);
 
-    this.localEvents.push(swarmEvent);
-    if (this.localEvents.length > this.maxEvents) {
-      this.localEvents = this.localEvents.slice(-this.maxEvents);
-    }
-
-    const eventJson = JSON.stringify(swarmEvent);
-
-    await this.redis.eval(
-      ATOMIC_PUSH_TRIM_SCRIPT,
-      1,
-      this.eventsKey(),
-      String(this.maxEvents),
-      eventJson
-    );
-
-    const envelope = JSON.stringify({ _sid: this.instanceId, e: swarmEvent });
-    await this.redis.publish(this.channelKey(), envelope);
+    await this.persistAndPublish(swarmEvent);
   }
 
   off(event: SwarmEventType | '*', handler: SwarmEventHandler): void {
@@ -144,7 +159,12 @@ export class RedisSwarmEventEmitter implements SwarmEventEmitter {
 
   async getEventsAsync(): Promise<SwarmEvent[]> {
     const raw = await this.redis.lrange(this.eventsKey(), 0, -1);
-    return raw.map((r) => JSON.parse(r) as SwarmEvent);
+    const events: SwarmEvent[] = [];
+    for (const entry of raw) {
+      const parsed = parseSwarmEvent(entry);
+      if (parsed) events.push(parsed);
+    }
+    return events;
   }
 
   getEventsByType(type: SwarmEventType): SwarmEvent[] {
@@ -165,28 +185,53 @@ export class RedisSwarmEventEmitter implements SwarmEventEmitter {
   }
 
   async close(): Promise<void> {
-    this.subscriber.removeAllListeners('message');
+    this.subscriber.off('message', this.handleRemoteEvent);
+    this.initialized = false;
+    if (this.subscriber.status === 'end') return;
+    if (this.subscriber.status === 'wait') {
+      this.subscriber.disconnect();
+      return;
+    }
     await this.subscriber.unsubscribe();
     await this.subscriber.quit();
   }
 
+  private createEvent(event: SwarmEventType, data?: unknown, agentName?: string): SwarmEvent {
+    return {
+      type: event,
+      timestamp: Date.now(),
+      agentName,
+      data,
+    };
+  }
+
+  private recordLocally(event: SwarmEvent): void {
+    this.localEvents.push(event);
+    if (this.localEvents.length > this.maxEvents) {
+      this.localEvents = this.localEvents.slice(-this.maxEvents);
+    }
+  }
+
+  private async persistAndPublish(event: SwarmEvent): Promise<void> {
+    await this.redis.eval(
+      ATOMIC_PUSH_TRIM_SCRIPT,
+      1,
+      this.eventsKey(),
+      String(this.maxEvents),
+      JSON.stringify(event)
+    );
+
+    const envelope: EventEnvelope = { _sid: this.instanceId, e: event };
+    await this.redis.publish(this.channelKey(), JSON.stringify(envelope));
+  }
+
   private notifyHandlers(event: SwarmEvent): void {
-    const handlers = this.handlers.get(event.type);
-    if (handlers) {
-      for (const handler of handlers) {
-        void Promise.resolve(handler(event)).catch((error) => {
-          console.warn('[RedisSwarmEventEmitter] Handler error:', error);
-        });
-      }
+    for (const handler of [...(this.handlers.get(event.type) ?? [])]) {
+      invokeSafely(handler, [event], '[RedisSwarmEventEmitter] Handler error');
     }
 
-    const wildcardHandlers = this.handlers.get('*');
-    if (wildcardHandlers) {
-      for (const handler of wildcardHandlers) {
-        void Promise.resolve(handler(event)).catch((error) => {
-          console.warn('[RedisSwarmEventEmitter] Wildcard handler error:', error);
-        });
-      }
+    for (const handler of [...(this.handlers.get('*') ?? [])]) {
+      invokeSafely(handler, [event], '[RedisSwarmEventEmitter] Wildcard handler error');
     }
   }
 }

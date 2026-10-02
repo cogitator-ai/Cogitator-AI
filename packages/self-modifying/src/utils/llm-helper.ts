@@ -8,6 +8,7 @@ export async function llmChat(
   if (llm.complete) {
     const response = await llm.complete({
       messages,
+      model: options?.model,
       temperature: options?.temperature,
       maxTokens: options?.maxTokens,
     });

@@ -54,6 +54,8 @@ import type { ConstraintProblem, SolverResult, ConstraintSolverConfig } from '@c
 import { solveSAT, type SimpleSATConfig } from './simple-sat-solver';
 import { solveWithZ3, isZ3Available } from './z3-wasm-solver';
 
+let warnedAboutZ3Fallback = false;
+
 export async function solve(
   problem: ConstraintProblem,
   config?: Partial<ConstraintSolverConfig>
@@ -61,14 +63,18 @@ export async function solve(
   const solverType = config?.solver ?? 'z3';
 
   if (solverType === 'z3') {
-    const z3Available = await isZ3Available();
-
-    if (z3Available) {
+    if (await isZ3Available()) {
       return solveWithZ3(problem, config);
     }
 
-    console.warn('Z3 not available, falling back to simple-sat solver');
+    if (!warnedAboutZ3Fallback) {
+      warnedAboutZ3Fallback = true;
+      console.warn('Z3 not available, falling back to simple-sat solver');
+    }
   }
 
-  return solveSAT(problem, config as Partial<SimpleSATConfig>);
+  const satConfig: Partial<SimpleSATConfig> = {};
+  if (config?.timeout !== undefined) satConfig.timeout = config.timeout;
+  if (config?.randomSeed !== undefined) satConfig.randomSeed = config.randomSeed;
+  return solveSAT(problem, satConfig);
 }

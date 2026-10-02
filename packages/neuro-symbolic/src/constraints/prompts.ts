@@ -1,5 +1,6 @@
 import type { ConstraintProblem, SolverResult } from '@cogitator-ai/types';
 import { constraintToString, problemToString, expressionToString } from './dsl';
+import { extractJSON } from '../utils/json';
 
 export interface NLToConstraintsContext {
   description: string;
@@ -149,34 +150,6 @@ export interface ParseNLConstraintsResult {
   };
 }
 
-function extractJSON(text: string): string | null {
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === '\\' && inString) {
-      escaped = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-    if (ch === '{') depth++;
-    else if (ch === '}') depth--;
-    if (depth === 0) return text.slice(start, i + 1);
-  }
-  return null;
-}
-
 const VALID_VAR_TYPES = new Set(['bool', 'int', 'real']);
 
 export function parseNLConstraintsResponse(response: string): ParseNLConstraintsResult | null {
@@ -184,28 +157,56 @@ export function parseNLConstraintsResponse(response: string): ParseNLConstraints
     const jsonStr = extractJSON(response);
     if (!jsonStr) return null;
 
-    const parsed = JSON.parse(jsonStr);
+    const parsed: unknown = JSON.parse(jsonStr);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const { variables, constraints, objective } = parsed as Record<string, unknown>;
 
     return {
-      variables: (parsed.variables || []).map((v: Record<string, unknown>) => ({
-        name: String(v.name || ''),
-        type: VALID_VAR_TYPES.has(String(v.type)) ? (v.type as 'bool' | 'int' | 'real') : 'int',
-        domain: v.domain as { min?: number; max?: number } | undefined,
-      })),
-      constraints: (parsed.constraints || []).map((c: Record<string, unknown>) => ({
-        description: String(c.description || ''),
-        expression: String(c.expression || ''),
-      })),
-      objective: parsed.objective
-        ? {
-            type: parsed.objective.type === 'maximize' ? 'maximize' : 'minimize',
-            expression: String(parsed.objective.expression),
-          }
-        : undefined,
+      variables: recordsOf(variables)
+        .map((v) => ({
+          name: typeof v.name === 'string' ? v.name.trim() : '',
+          type: VALID_VAR_TYPES.has(String(v.type)) ? (v.type as 'bool' | 'int' | 'real') : 'int',
+          domain: parseDomain(v.domain),
+        }))
+        .filter((v) => v.name.length > 0),
+      constraints: recordsOf(constraints)
+        .map((c) => ({
+          description: typeof c.description === 'string' ? c.description : '',
+          expression: typeof c.expression === 'string' ? c.expression : '',
+        }))
+        .filter((c) => c.expression.length > 0),
+      objective:
+        typeof objective === 'object' &&
+        objective !== null &&
+        typeof (objective as Record<string, unknown>).expression === 'string'
+          ? {
+              type:
+                (objective as Record<string, unknown>).type === 'maximize'
+                  ? 'maximize'
+                  : 'minimize',
+              expression: (objective as Record<string, unknown>).expression as string,
+            }
+          : undefined,
     };
   } catch {
     return null;
   }
+}
+
+function recordsOf(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is Record<string, unknown> => typeof item === 'object' && item !== null
+  );
+}
+
+function parseDomain(value: unknown): { min?: number; max?: number } | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const { min, max } = value as { min?: unknown; max?: unknown };
+  const domain: { min?: number; max?: number } = {};
+  if (typeof min === 'number' && Number.isFinite(min)) domain.min = min;
+  if (typeof max === 'number' && Number.isFinite(max)) domain.max = max;
+  return domain.min === undefined && domain.max === undefined ? undefined : domain;
 }
 
 export function formatSolverResultForLLM(result: SolverResult): string {

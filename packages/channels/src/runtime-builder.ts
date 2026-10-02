@@ -1,6 +1,15 @@
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { Tool, Channel, GatewayMiddleware, LLMProvidersConfig } from '@cogitator-ai/types';
+import type {
+  Tool,
+  Channel,
+  ChannelUser,
+  GatewayMiddleware,
+  GraphAdapter,
+  LLMProvidersConfig,
+  MemoryAdapter,
+} from '@cogitator-ai/types';
 import {
   Agent,
   Cogitator,
@@ -17,15 +26,19 @@ import {
 import {
   SQLiteAdapter,
   SQLiteGraphAdapter,
+  PostgresAdapter,
+  PostgresGraphAdapter,
   CoreFactsStore,
   LLMEntityExtractor,
   createEmbeddingService,
   InMemoryEmbeddingAdapter,
 } from '@cogitator-ai/memory';
-import type { LLMBackendMinimal } from '@cogitator-ai/memory';
+import type { LLMBackendMinimal, PostgresGraphAdapterConfig } from '@cogitator-ai/memory';
 import type { EmbeddingServiceConfig } from '@cogitator-ai/types';
 import { createSelfConfigTools } from './tools/self-config';
+import { restrictFileTools } from './tools/path-guard';
 import { Gateway } from './gateway';
+import { getNextCronMs } from './cron';
 import { HeartbeatScheduler } from './heartbeat';
 import { SimpleTimerStore } from './simple-timer-store';
 import { telegramChannel } from './channels/telegram';
@@ -35,7 +48,7 @@ import { terminalChannel } from './channels/terminal';
 import { ownerCommands } from './middleware/owner-commands';
 import { rateLimit } from './middleware/rate-limit';
 import { autoExtract } from './middleware/auto-extract';
-import { dmPolicy } from './middleware/dm-policy';
+import { DmPolicyMiddleware } from './middleware/dm-policy';
 import type { EntityExtractor } from './middleware/auto-extract';
 import { generateCapabilitiesDoc } from './capabilities';
 import { MediaProcessor } from './media/media-processor';
@@ -59,7 +72,16 @@ export interface BuiltRuntime {
 interface CleanupResources {
   browserSession?: { close(): Promise<void> };
   mcpClients: Array<{ close(): Promise<void> }>;
+  pgPool?: { end(): Promise<void> };
 }
+
+interface MemoryBackends {
+  memoryAdapter: MemoryAdapter & { disconnect(): Promise<unknown> };
+  graphAdapter: (GraphAdapter & { close?: () => Promise<void> }) | null;
+  coreFactsPath: string;
+}
+
+type PgPool = PostgresGraphAdapterConfig['pool'];
 
 export interface RuntimeBuilderOpts {
   configPath?: string;
@@ -68,6 +90,38 @@ export interface RuntimeBuilderOpts {
     stringifyYaml: (o: unknown) => string;
     validateConfig: (o: unknown) => unknown;
   };
+  /**
+   * Invoked when the assistant needs to restart (config change, `/restart`).
+   * Defaults to exiting the process with code 78, which `cogitator up` treats as a restart request.
+   */
+  onRestart?: () => void;
+}
+
+export const RESTART_EXIT_CODE = 78;
+
+const MODULE_NOT_FOUND_CODES = new Set(['ERR_MODULE_NOT_FOUND', 'MODULE_NOT_FOUND']);
+
+function isModuleNotFound(err: unknown, specifier: string): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as NodeJS.ErrnoException).code;
+  return !!code && MODULE_NOT_FOUND_CODES.has(code) && err.message.includes(specifier);
+}
+
+function expandHome(path: string): string {
+  return path.startsWith('~') ? path.replace(/^~/, homedir()) : path;
+}
+
+function localIsoDate(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function formatDuration(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
 export class RuntimeBuilder {
@@ -81,20 +135,11 @@ export class RuntimeBuilder {
     const cogitator = this.buildCogitator();
     const cleanupResources: CleanupResources = { mcpClients: [] };
 
-    const memoryPath = this.config.memory.path ?? '~/.cogitator/memory.db';
-    const resolvedPath = memoryPath.replace(/^~/, homedir());
-
-    const memoryAdapter = new SQLiteAdapter({ provider: 'sqlite', path: resolvedPath });
-    await memoryAdapter.connect();
+    const { memoryAdapter, graphAdapter, coreFactsPath } =
+      await this.buildMemoryBackends(cleanupResources);
     cogitator.memory = memoryAdapter;
 
-    let graphAdapter: SQLiteGraphAdapter | null = null;
-    if (this.config.memory.knowledgeGraph !== false) {
-      graphAdapter = new SQLiteGraphAdapter({ path: resolvedPath });
-      await graphAdapter.initialize();
-    }
-
-    const coreFacts = new CoreFactsStore({ path: resolvedPath });
+    const coreFacts = new CoreFactsStore({ path: coreFactsPath });
     await coreFacts.initialize();
 
     const tools: Tool[] = [];
@@ -108,8 +153,10 @@ export class RuntimeBuilder {
       }
     }
 
-    if (this.config.capabilities.fileSystem) {
-      tools.push(...builtinTools.filter((t) => t.name.startsWith('file_')));
+    const fsCfg = this.config.capabilities.fileSystem;
+    if (fsCfg) {
+      const fileTools = builtinTools.filter((t) => t.name.startsWith('file_'));
+      tools.push(...restrictFileTools(fileTools, this.resolveFileSystemRoots()));
     }
 
     if (this.config.capabilities.github) {
@@ -133,17 +180,16 @@ export class RuntimeBuilder {
     if (this.config.capabilities.scheduler) {
       timerStore = new SimpleTimerStore({
         persistPath: join(homedir(), '.cogitator', 'timers.json'),
+        resolveCronFiresAt: (cron, timezone) => getNextCronMs(cron, Date.now(), timezone),
       });
-      const channelEntries = Object.entries(this.config.channels ?? {});
-      const firstChannel = channelEntries[0];
-      const firstOwnerId = firstChannel
-        ? ((firstChannel[1] as Record<string, unknown>)?.ownerIds as string[])?.[0]
-        : undefined;
+      const [firstChannelName, firstChannel] = Object.entries(this.config.channels).find(
+        ([, value]) => value !== undefined
+      ) ?? [undefined, undefined];
       tools.push(
         ...createSchedulerTools({
           store: timerStore,
-          defaultChannel: firstChannel?.[0] ?? 'system',
-          defaultUserId: firstOwnerId,
+          defaultChannel: firstChannelName ?? 'system',
+          defaultUserId: firstChannel?.ownerIds?.[0],
         })
       );
     }
@@ -152,14 +198,20 @@ export class RuntimeBuilder {
       tools.push(...createDeviceTools());
     }
 
+    const ownerIds = this.collectOwnerIds();
+    const isOwner = (caller: { userId?: string; channelType?: string }): boolean =>
+      caller.channelType === 'terminal' ||
+      (!!caller.channelType && !!caller.userId && ownerIds[caller.channelType] === caller.userId);
+
     if (this.config.capabilities.selfConfig && this.opts?.configPath && this.opts.configHelpers) {
       tools.push(
         ...createSelfConfigTools({
           configPath: this.opts.configPath,
           ...this.opts.configHelpers,
+          authorize: isOwner,
           onConfigUpdated: () => {
             console.log(`[${this.config.name}] Config updated, restarting...`);
-            process.exit(78);
+            this.requestRestart();
           },
         })
       );
@@ -189,7 +241,6 @@ export class RuntimeBuilder {
     await this.wireRAG(tools);
     await this.wireMCPServers(tools, cleanupResources);
 
-    const coreFactsText = await coreFacts.formatForPrompt();
     const channels = this.buildChannels();
 
     const capDoc = generateCapabilitiesDoc({
@@ -198,40 +249,42 @@ export class RuntimeBuilder {
     });
     tools.push(createCapabilitiesTool(capDoc));
 
-    const instructions = this.buildInstructions(coreFactsText);
-
     const agent = new Agent({
       name: this.config.name,
       model: this.fullModelId,
-      instructions,
+      instructions: this.buildInstructions(await coreFacts.formatForPrompt(), new Date()),
       tools,
       maxIterations: 15,
     });
 
-    const middleware: GatewayMiddleware[] = [];
+    const modelOverrides = new Map<string, string>();
+    let globalModel = this.fullModelId;
 
-    const ownerIds: Record<string, string> = {};
-    if (this.config.channels.telegram?.ownerIds?.[0]) {
-      ownerIds.telegram = this.config.channels.telegram.ownerIds[0];
-    }
-    if (this.config.channels.discord?.ownerIds?.[0]) {
-      ownerIds.discord = this.config.channels.discord.ownerIds[0];
-    }
-    if (this.config.channels.slack?.ownerIds?.[0]) {
-      ownerIds.slack = this.config.channels.slack.ownerIds[0];
-    }
+    const agentForUser = async (user: ChannelUser): Promise<Agent> => {
+      const model =
+        modelOverrides.get(`${user.channelType}:${user.id}`) ??
+        modelOverrides.get(user.id) ??
+        globalModel;
+      const instructions = this.buildInstructions(await coreFacts.formatForPrompt(), new Date());
+      return new Agent({ ...agent.config, id: agent.id, model, instructions });
+    };
+
+    const middleware: GatewayMiddleware[] = [];
+    let gatewayRef: Gateway | null = null;
+    let dmPolicyMiddleware: DmPolicyMiddleware | null = null;
 
     if (this.config.security) {
-      middleware.push(
-        dmPolicy({
-          mode: this.config.security.dmPolicy,
-          allowlist: this.config.security.allowlist,
-          groupPolicy: this.config.security.groupPolicy,
-          groupAllowlist: this.config.security.groupAllowlist,
-          storePath: this.config.security.storePath,
-          ownerIds,
-        })
-      );
+      dmPolicyMiddleware = new DmPolicyMiddleware({
+        mode: this.config.security.dmPolicy,
+        allowlist: this.config.security.allowlist,
+        groupPolicy: this.config.security.groupPolicy,
+        groupAllowlist: this.config.security.groupAllowlist,
+        storePath: this.config.security.storePath
+          ? expandHome(this.config.security.storePath)
+          : undefined,
+        ownerIds,
+      });
+      middleware.push(dmPolicyMiddleware);
     }
 
     if (Object.keys(ownerIds).length > 0) {
@@ -240,6 +293,55 @@ export class RuntimeBuilder {
           ownerIds,
           authorizedUserIds: this.config.security?.commandAccess?.authorized,
           publicCommands: this.config.security?.commandAccess?.publicCommands,
+          onStatus: () => {
+            if (!gatewayRef) return 'Gateway is not running';
+            const stats = gatewayRef.stats;
+            return [
+              `Assistant: ${this.config.name}`,
+              `Model: ${globalModel}`,
+              `Uptime: ${formatDuration(stats.uptime)}`,
+              `Sessions: ${stats.activeSessions} active / ${stats.totalSessions} total`,
+              `Messages today: ${stats.messagesToday}`,
+              `Channels: ${stats.connectedChannels.join(', ')}`,
+            ].join('\n');
+          },
+          onSessions: () => {
+            const sessions = gatewayRef?.getSessions() ?? [];
+            if (sessions.length === 0) return 'No sessions yet';
+            return sessions
+              .slice(0, 20)
+              .map(
+                (s) =>
+                  `${s.active ? '●' : '○'} ${s.threadId}${s.userName ? ` (${s.userName})` : ''} — ${s.messageCount} msg, ${formatDuration(Date.now() - s.lastActiveAt)} ago`
+              )
+              .join('\n');
+          },
+          onUsers: () => {
+            const owners = Object.entries(ownerIds).map(([type, id]) => `${type}:${id} (owner)`);
+            const approved = dmPolicyMiddleware
+              ? dmPolicyMiddleware
+                  .getApprovedUsers()
+                  .filter((key) => !owners.some((o) => o.startsWith(`${key} `)))
+              : [];
+            return [...owners, ...approved].join('\n') || 'No users';
+          },
+          onCompact: async (target, threadId) => {
+            if (!gatewayRef) return 'Gateway is not running';
+            return gatewayRef.compactThread(target === 'current' ? threadId : target);
+          },
+          onModel: (model, forUser) => {
+            const fullModel = model.includes('/') ? model : `${this.config.llm.provider}/${model}`;
+            if (forUser) {
+              const key = forUser.replace(/^@/, '');
+              modelOverrides.set(key, fullModel);
+              return `Model for ${key} set to: ${fullModel}`;
+            }
+            globalModel = fullModel;
+            return `Model set to: ${fullModel}`;
+          },
+          onRestart: async () => {
+            setTimeout(() => this.requestRestart(), 500);
+          },
         })
       );
     }
@@ -280,15 +382,13 @@ export class RuntimeBuilder {
       );
     }
 
-    const streamConfig = this.config.stream
-      ? {
-          flushInterval: this.config.stream.flushInterval ?? 600,
-          minChunkSize: this.config.stream.minChunkSize ?? 30,
-        }
-      : { flushInterval: 600, minChunkSize: 30 };
+    const streamConfig = {
+      flushInterval: this.config.stream?.flushInterval ?? 600,
+      minChunkSize: this.config.stream?.minChunkSize ?? 30,
+    };
 
     const gateway = new Gateway({
-      agent,
+      agent: agentForUser,
       cogitator,
       channels,
       middleware,
@@ -308,6 +408,7 @@ export class RuntimeBuilder {
         console.error(`[${this.config.name}] Error for ${msg.userId}:`, err.message);
       },
     });
+    gatewayRef = gateway;
 
     const scheduler = this.buildScheduler(timerStore, gateway);
     if (scheduler) scheduler.start();
@@ -316,8 +417,9 @@ export class RuntimeBuilder {
       if (scheduler) scheduler.stop();
       await gateway.stop();
       await coreFacts.close();
-      if (graphAdapter) await graphAdapter.close();
+      if (graphAdapter?.close) await graphAdapter.close();
       await memoryAdapter.disconnect();
+      if (cleanupResources.pgPool) await cleanupResources.pgPool.end().catch(() => {});
       if (cleanupResources.browserSession) {
         await cleanupResources.browserSession.close().catch(() => {});
       }
@@ -328,6 +430,81 @@ export class RuntimeBuilder {
     };
 
     return { agent, cogitator, gateway, scheduler, cleanup };
+  }
+
+  private requestRestart(): void {
+    if (this.opts?.onRestart) {
+      this.opts.onRestart();
+      return;
+    }
+    process.exit(RESTART_EXIT_CODE);
+  }
+
+  private collectOwnerIds(): Record<string, string> {
+    const ownerIds: Record<string, string> = {};
+    for (const [channel, cfg] of Object.entries(this.config.channels)) {
+      const owner = cfg?.ownerIds?.[0];
+      if (owner) ownerIds[channel] = owner;
+    }
+    return ownerIds;
+  }
+
+  private resolveFileSystemRoots(): string[] {
+    const fsCfg = this.config.capabilities.fileSystem;
+    const paths = fsCfg?.paths.length ? fsCfg.paths : [homedir()];
+    return paths.map(expandHome);
+  }
+
+  private async buildMemoryBackends(resources: CleanupResources): Promise<MemoryBackends> {
+    const memory = this.config.memory;
+    const sqlitePath = expandHome(memory.path ?? '~/.cogitator/memory.db');
+    const useGraph = memory.knowledgeGraph !== false;
+
+    if (memory.adapter === 'postgres') {
+      const connectionString =
+        memory.connectionString ?? this.env.DATABASE_URL ?? this.env.POSTGRES_URL;
+      if (!connectionString) {
+        throw new Error(
+          'memory.adapter "postgres" requires memory.connectionString or DATABASE_URL in env'
+        );
+      }
+
+      const memoryAdapter = new PostgresAdapter({ provider: 'postgres', connectionString });
+      const connected = await memoryAdapter.connect();
+      if (!connected.success) {
+        throw new Error(`Failed to connect to Postgres: ${connected.error}`);
+      }
+
+      let graphAdapter: PostgresGraphAdapter | null = null;
+      if (useGraph) {
+        const pg = (await import('pg' as string)) as {
+          Pool?: new (config: { connectionString: string }) => PgPool;
+          default?: { Pool: new (config: { connectionString: string }) => PgPool };
+        };
+        const Pool = pg.Pool ?? pg.default?.Pool;
+        if (!Pool) throw new Error('The "pg" package does not export Pool');
+        const pool = new Pool({ connectionString });
+        resources.pgPool = pool;
+        graphAdapter = new PostgresGraphAdapter({ pool });
+        await graphAdapter.initialize();
+      }
+
+      return { memoryAdapter, graphAdapter, coreFactsPath: sqlitePath };
+    }
+
+    const memoryAdapter = new SQLiteAdapter({ provider: 'sqlite', path: sqlitePath });
+    const connected = await memoryAdapter.connect();
+    if (connected && !connected.success) {
+      throw new Error(`Failed to open SQLite memory at ${sqlitePath}: ${connected.error}`);
+    }
+
+    let graphAdapter: SQLiteGraphAdapter | null = null;
+    if (useGraph) {
+      graphAdapter = new SQLiteGraphAdapter({ path: sqlitePath });
+      await graphAdapter.initialize();
+    }
+
+    return { memoryAdapter, graphAdapter, coreFactsPath: sqlitePath };
   }
 
   private createExtractorBackend(cogitator: Cogitator): LLMBackendMinimal {
@@ -417,17 +594,26 @@ export class RuntimeBuilder {
   }
 
   private async ensurePlaywright(): Promise<void> {
-    const { existsSync } = await import('node:fs');
-    const { join } = await import('node:path');
-
-    const cacheDir =
-      process.env.PLAYWRIGHT_BROWSERS_PATH ?? join(homedir(), 'Library', 'Caches', 'ms-playwright');
-
-    if (existsSync(cacheDir)) return;
+    if (existsSync(this.playwrightCacheDir())) return;
 
     console.log('[RuntimeBuilder] Installing Playwright chromium...');
     const { execSync } = await import('node:child_process');
     execSync('npx playwright install chromium', { stdio: 'inherit' });
+  }
+
+  private playwrightCacheDir(): string {
+    if (process.env.PLAYWRIGHT_BROWSERS_PATH) return process.env.PLAYWRIGHT_BROWSERS_PATH;
+    switch (process.platform) {
+      case 'darwin':
+        return join(homedir(), 'Library', 'Caches', 'ms-playwright');
+      case 'win32':
+        return join(
+          process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'),
+          'ms-playwright'
+        );
+      default:
+        return join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'ms-playwright');
+    }
   }
 
   private async wireRAG(tools: Tool[]): Promise<void> {
@@ -478,8 +664,15 @@ export class RuntimeBuilder {
           execute: ingestTool.execute,
         })
       );
-    } catch {
-      console.warn('[RuntimeBuilder] RAG capability requires @cogitator-ai/rag package');
+    } catch (err) {
+      if (isModuleNotFound(err, '@cogitator-ai/rag')) {
+        console.warn('[RuntimeBuilder] RAG capability requires @cogitator-ai/rag package');
+        return;
+      }
+      console.warn(
+        '[RuntimeBuilder] RAG capability failed:',
+        err instanceof Error ? err.message : String(err)
+      );
     }
   }
 
@@ -507,8 +700,15 @@ export class RuntimeBuilder {
           );
         }
       }
-    } catch {
-      console.warn('[RuntimeBuilder] MCP servers require @cogitator-ai/mcp package');
+    } catch (err) {
+      if (isModuleNotFound(err, '@cogitator-ai/mcp')) {
+        console.warn('[RuntimeBuilder] MCP servers require @cogitator-ai/mcp package');
+        return;
+      }
+      console.warn(
+        '[RuntimeBuilder] MCP setup failed:',
+        err instanceof Error ? err.message : String(err)
+      );
     }
   }
 
@@ -627,13 +827,18 @@ export class RuntimeBuilder {
         await gateway.injectMessage(msg);
       },
       pollInterval: 30_000,
+      onError: (err, entry) => {
+        console.error(
+          `[${this.config.name}] Scheduler error${entry ? ` for ${entry.id}` : ''}:`,
+          err.message
+        );
+      },
     });
   }
 
-  private buildInstructions(coreFactsText: string): string {
+  private buildInstructions(coreFactsText: string, now: Date): string {
     let instructions = this.config.personality;
 
-    const now = new Date();
     const dateStr = now.toLocaleDateString('en-US', {
       weekday: 'long',
       year: 'numeric',
@@ -649,12 +854,8 @@ export class RuntimeBuilder {
 
     instructions += `\n\nIMPORTANT: Use your tools when relevant. Don't guess answers when tools can provide accurate data.`;
 
-    const fsCfg = this.config.capabilities.fileSystem;
-    if (fsCfg) {
-      const paths =
-        typeof fsCfg === 'object' && 'paths' in fsCfg
-          ? (fsCfg.paths as string[]).map((p) => p.replace(/^~/, homedir()))
-          : [homedir()];
+    if (this.config.capabilities.fileSystem) {
+      const paths = this.resolveFileSystemRoots();
       instructions += `\nYou have filesystem access. Allowed paths: ${paths.join(', ')}. Use file_read, file_write, file_list tools. Always use absolute paths.`;
     }
 
@@ -679,7 +880,7 @@ When to use — IMMEDIATELY call schedule_task when the user:
 Examples:
 - "Remind me to check Slack in 5 min" → schedule_task({description: "Check Slack", delay: "5m"})
 - "Every morning at 9" → schedule_task({description: "Morning briefing", cron: "0 9 * * *"})
-- "At 3pm today" → schedule_task({description: "...", at: "${new Date().toISOString().split('T')[0]}T15:00:00"})
+- "At 3pm today" → schedule_task({description: "...", at: "${localIsoDate(now)}T15:00:00"})
 
 The channel and userId are filled automatically from the current conversation — do NOT pass them manually.
 When the task fires, you will execute it — describe what to DO, not just what to say.

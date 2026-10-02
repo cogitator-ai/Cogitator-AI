@@ -1,7 +1,7 @@
 import { createCogitator, DEFAULT_MODEL, header, section } from '../_shared/setup.js';
 import { Agent } from '@cogitator-ai/core';
 import { Swarm } from '@cogitator-ai/swarms';
-import type { SwarmConfig } from '@cogitator-ai/types';
+import type { SwarmConfig } from '@cogitator-ai/swarms';
 
 async function main() {
   header('01 — Debate Swarm');
@@ -44,6 +44,10 @@ and provide a balanced conclusion. Be analytical, not partisan.`,
     name: 'AI Open Source Debate',
     strategy: 'debate',
     agents: [proOpenSource, proClosedSource],
+    agentMetadata: {
+      'pro-open-source': { role: 'advocate' },
+      'pro-closed-source': { role: 'critic' },
+    },
     moderator,
     debate: {
       rounds: 2,

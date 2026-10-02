@@ -1,4 +1,4 @@
-export type DeployTarget = 'docker' | 'fly' | 'railway' | 'k8s' | 'ssh';
+export type DeployTarget = 'docker' | 'fly';
 
 export type DeployServer = 'express' | 'fastify' | 'hono' | 'koa';
 

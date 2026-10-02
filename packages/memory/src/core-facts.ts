@@ -54,8 +54,12 @@ export class CoreFactsStore {
     if (!this.db) {
       if (!this.path) throw new Error('No database path configured');
       let DatabaseCtor: new (path: string) => Database;
-      const betterSqlite = await import('better-sqlite3');
-      DatabaseCtor = betterSqlite.default as unknown as new (path: string) => Database;
+      try {
+        const betterSqlite = await import('better-sqlite3');
+        DatabaseCtor = betterSqlite.default as unknown as new (path: string) => Database;
+      } catch {
+        throw new Error('better-sqlite3 not installed. Run: pnpm add better-sqlite3');
+      }
       this.db = new DatabaseCtor(this.path);
 
       if (this.path !== ':memory:') {
@@ -97,16 +101,23 @@ export class CoreFactsStore {
     const db = this.ensureDb();
     const now = new Date().toISOString();
 
-    db.prepare(
-      `INSERT INTO core_facts (key, value, updated_at) VALUES (?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-    ).run(key, value, now);
+    db.exec('BEGIN');
+    try {
+      db.prepare(
+        `INSERT INTO core_facts (key, value, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+      ).run(key, value, now);
 
-    db.prepare(`INSERT INTO core_facts_history (key, value, set_at) VALUES (?, ?, ?)`).run(
-      key,
-      value,
-      now
-    );
+      db.prepare(`INSERT INTO core_facts_history (key, value, set_at) VALUES (?, ?, ?)`).run(
+        key,
+        value,
+        now
+      );
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   async get(key: string): Promise<string | null> {

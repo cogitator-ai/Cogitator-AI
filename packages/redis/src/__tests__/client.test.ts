@@ -23,7 +23,7 @@ function createMockRawClient() {
     publish: vi.fn().mockResolvedValue(1),
     subscribe: vi.fn().mockResolvedValue(undefined),
     unsubscribe: vi.fn().mockResolvedValue(undefined),
-    keys: vi.fn().mockResolvedValue([]),
+    scan: vi.fn().mockResolvedValue(['0', []]),
     info: vi.fn().mockResolvedValue(''),
     on: vi.fn((event: string, cb: EventCallback) => {
       if (!listeners.has(event)) listeners.set(event, new Set());
@@ -216,12 +216,21 @@ describe('wrapClient (via createRedisClient)', () => {
     expect(rawClient.zrem).toHaveBeenCalledWith('zkey', 'm1', 'm2');
   });
 
-  it('delegates smembers and keys', async () => {
+  it('delegates smembers', async () => {
     await client.smembers('setkey');
     expect(rawClient.smembers).toHaveBeenCalledWith('setkey');
+  });
 
-    await client.keys('prefix:*');
-    expect(rawClient.keys).toHaveBeenCalledWith('prefix:*');
+  it('keys iterates SCAN until the cursor returns to 0', async () => {
+    rawClient.scan
+      .mockResolvedValueOnce(['17', ['a:1', 'a:2']])
+      .mockResolvedValueOnce(['0', ['a:2', 'a:3']]);
+
+    const keys = await client.keys('a:*');
+
+    expect(keys.sort()).toEqual(['a:1', 'a:2', 'a:3']);
+    expect(rawClient.scan).toHaveBeenNthCalledWith(1, '0', 'MATCH', 'a:*', 'COUNT', 500);
+    expect(rawClient.scan).toHaveBeenNthCalledWith(2, '17', 'MATCH', 'a:*', 'COUNT', 500);
   });
 
   it('delegates publish', async () => {
@@ -245,12 +254,32 @@ describe('wrapClient (via createRedisClient)', () => {
     expect(rawClient.subscribe).toHaveBeenCalledWith('my-channel');
   });
 
-  it('subscribe handles keyPrefix in channel name', async () => {
+  it('subscribe matches channel names exactly', async () => {
     const cb = vi.fn();
     await client.subscribe('events', cb);
 
     rawClient._emit('message', 'myapp:events', 'data');
+    expect(cb).not.toHaveBeenCalled();
+
+    rawClient._emit('message', 'events', 'data');
     expect(cb).toHaveBeenCalledWith('events', 'data');
+  });
+
+  it('keeps every callback subscribed to the same channel and removes all on unsubscribe', async () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    await client.subscribe('chan', first);
+    await client.subscribe('chan', second);
+
+    rawClient._emit('message', 'chan', 'one');
+    expect(first).toHaveBeenCalledWith('chan', 'one');
+    expect(second).toHaveBeenCalledWith('chan', 'one');
+
+    await client.unsubscribe('chan');
+    rawClient._emit('message', 'chan', 'two');
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(rawClient._listeners.get('message')?.size ?? 0).toBe(0);
   });
 
   it('subscribe ignores non-string messages', async () => {
@@ -351,5 +380,71 @@ describe('detectRedisMode', () => {
     const { detectRedisMode } = await import('../factory');
     await expect(detectRedisMode({ host: 'badhost' })).rejects.toThrow('connection refused');
     expect(rawClient.quit).toHaveBeenCalled();
+  });
+});
+
+describe('keys with prefixes and clusters', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('applies the key prefix to the pattern and strips it from results', async () => {
+    const rawClient = createMockRawClient();
+    rawClient.scan.mockResolvedValue(['0', ['app[1]:cache:a', 'app[1]:cache:b']]);
+    vi.doMock('ioredis', () => ({ default: createMockIoRedis(rawClient) }));
+
+    const { createRedisClient } = await import('../factory');
+    const client = await createRedisClient({ keyPrefix: 'app[1]:' });
+    const keys = await client.keys('cache:*');
+
+    expect(rawClient.scan).toHaveBeenCalledWith('0', 'MATCH', 'app\\[1\\]:cache:*', 'COUNT', 500);
+    expect(keys).toEqual(['cache:a', 'cache:b']);
+  });
+
+  it('scans every master node in cluster mode', async () => {
+    const rawClient = createMockRawClient();
+    const masterA = createMockRawClient();
+    const masterB = createMockRawClient();
+    masterA.scan.mockResolvedValue(['0', ['{app}:x']]);
+    masterB.scan.mockResolvedValue(['0', ['{app}:y']]);
+    const nodes = vi.fn().mockReturnValue([masterA, masterB]);
+    Object.assign(rawClient, { nodes });
+    vi.doMock('ioredis', () => ({ default: createMockIoRedis(rawClient) }));
+
+    const { createRedisClient } = await import('../factory');
+    const client = await createRedisClient({
+      mode: 'cluster',
+      nodes: [{ host: 'h', port: 7000 }],
+      keyPrefix: '{app}:',
+    });
+    const keys = await client.keys('*');
+
+    expect(nodes).toHaveBeenCalledWith('master');
+    expect(rawClient.scan).not.toHaveBeenCalled();
+    expect(keys.sort()).toEqual(['x', 'y']);
+  });
+});
+
+describe('createRedisClient validation', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('rejects a cluster configuration without nodes', async () => {
+    vi.doMock('ioredis', () => ({ default: createMockIoRedis(createMockRawClient()) }));
+    const { createRedisClient } = await import('../factory');
+
+    await expect(createRedisClient({ mode: 'cluster', nodes: [] })).rejects.toThrow(
+      'at least one node'
+    );
+  });
+
+  it('explains how to install ioredis when it is missing', async () => {
+    vi.doMock('ioredis', () => {
+      throw new Error("Cannot find package 'ioredis'");
+    });
+    const { createRedisClient } = await import('../factory');
+
+    await expect(createRedisClient({})).rejects.toThrow('pnpm add ioredis');
   });
 });

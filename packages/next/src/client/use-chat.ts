@@ -10,12 +10,42 @@ import type {
 } from '../types.js';
 import type { StreamEvent } from '../streaming/protocol.js';
 import { parseSSEStream } from './sse-parser.js';
-import { chatReducer, createInitialState, type ChatState } from './use-chat-state.js';
+import {
+  chatReducer,
+  createInitialState,
+  type ChatAction,
+  type ChatState,
+} from './use-chat-state.js';
 import { withRetry } from './retry.js';
+import { toHttpError } from './http-error.js';
 
 let idCounter = 0;
 function generateClientId(): string {
   return `msg_${Date.now().toString(36)}_${(idCounter++).toString(36)}`;
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError';
+}
+
+function parseToolArguments(raw: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {}
+  return {};
+}
+
+function pendingAssistantMessage(state: ChatState): ChatMessage | null {
+  if (!state.currentMessageId) return null;
+  return {
+    id: state.currentMessageId,
+    role: 'assistant',
+    content: state.currentContent,
+    toolCalls: state.currentToolCalls.length > 0 ? state.currentToolCalls : undefined,
+  };
 }
 
 export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
@@ -28,57 +58,62 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
   );
 
   const stateRef = useRef<ChatState>(state);
-  stateRef.current = state;
+  const activeRequestRef = useRef<AbortController | null>(null);
 
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const apply = useCallback((action: ChatAction) => {
+    stateRef.current = chatReducer(stateRef.current, action);
+    dispatch(action);
+  }, []);
 
   useEffect(() => {
     return () => {
-      abortControllerRef.current?.abort();
+      activeRequestRef.current?.abort();
+      activeRequestRef.current = null;
     };
   }, []);
 
+  const interrupt = useCallback(() => {
+    const active = activeRequestRef.current;
+    if (!active) return;
+    activeRequestRef.current = null;
+    active.abort();
+    apply({ type: 'FINISH_ASSISTANT_MESSAGE' });
+    apply({ type: 'STOP_LOADING' });
+  }, [apply]);
+
   const handleStreamEvent = useCallback(
-    (event: StreamEvent, toolCalls: Map<string, { name: string; args: string }>) => {
+    (event: StreamEvent, toolCalls: Map<string, { name: string; args: string }>): boolean => {
       switch (event.type) {
         case 'start':
-          dispatch({ type: 'START_ASSISTANT_MESSAGE', payload: event.messageId });
-          break;
+          apply({ type: 'START_ASSISTANT_MESSAGE', payload: event.messageId });
+          return false;
 
         case 'text-delta':
-          dispatch({ type: 'APPEND_CONTENT', payload: event.delta });
-          break;
+          apply({ type: 'APPEND_CONTENT', payload: event.delta });
+          return false;
 
         case 'tool-call-start':
           toolCalls.set(event.id, { name: event.toolName, args: '' });
-          break;
+          return false;
 
         case 'tool-call-delta': {
           const tc = toolCalls.get(event.id);
-          if (tc) {
-            tc.args += event.argsTextDelta;
-          }
-          break;
+          if (tc) tc.args += event.argsTextDelta;
+          return false;
         }
 
         case 'tool-call-end': {
           const tc = toolCalls.get(event.id);
-          if (tc) {
-            let args: Record<string, unknown> = {};
-            try {
-              args = JSON.parse(tc.args);
-            } catch {}
-
-            const toolCall: ToolCall = {
-              id: event.id,
-              name: tc.name,
-              arguments: args,
-            };
-
-            dispatch({ type: 'ADD_TOOL_CALL', payload: toolCall });
-            onToolCall?.(toolCall);
-          }
-          break;
+          if (!tc) return false;
+          toolCalls.delete(event.id);
+          const toolCall: ToolCall = {
+            id: event.id,
+            name: tc.name,
+            arguments: parseToolArguments(tc.args),
+          };
+          apply({ type: 'ADD_TOOL_CALL', payload: toolCall });
+          onToolCall?.(toolCall);
+          return false;
         }
 
         case 'tool-result': {
@@ -88,49 +123,60 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
             result: event.result,
           };
           onToolResult?.(toolResult);
-          break;
+          return false;
         }
 
-        case 'error':
-          dispatch({ type: 'SET_ERROR', payload: new Error(event.message) });
-          onError?.(new Error(event.message));
-          break;
+        case 'finish':
+          if (event.threadId && event.threadId !== stateRef.current.threadId) {
+            apply({ type: 'SET_THREAD_ID', payload: event.threadId });
+          }
+          return false;
+
+        case 'error': {
+          const error = new Error(event.message);
+          apply({ type: 'SET_ERROR', payload: error });
+          onError?.(error);
+          return true;
+        }
+
+        default:
+          return false;
       }
     },
-    [onError, onToolCall, onToolResult]
+    [apply, onError, onToolCall, onToolResult]
   );
 
   const processStream = useCallback(
-    async (response: Response) => {
+    async (response: Response, controller: AbortController) => {
       if (!response.body) {
         throw new Error('Response body is null');
       }
 
       const reader = response.body.getReader();
       const toolCalls = new Map<string, { name: string; args: string }>();
+      let errored = false;
 
       try {
         for await (const event of parseSSEStream(reader)) {
-          handleStreamEvent(event, toolCalls);
+          if (activeRequestRef.current !== controller) return;
+          if (handleStreamEvent(event, toolCalls)) errored = true;
         }
       } finally {
         reader.releaseLock();
       }
 
-      dispatch({ type: 'FINISH_ASSISTANT_MESSAGE' });
-      dispatch({ type: 'STOP_LOADING' });
+      if (activeRequestRef.current !== controller) return;
+      activeRequestRef.current = null;
 
-      const current = stateRef.current;
-      if (onFinish && current.currentMessageId) {
-        onFinish({
-          id: current.currentMessageId,
-          role: 'assistant',
-          content: current.currentContent,
-          toolCalls: current.currentToolCalls.length > 0 ? current.currentToolCalls : undefined,
-        });
+      const finished = pendingAssistantMessage(stateRef.current);
+      apply({ type: 'FINISH_ASSISTANT_MESSAGE' });
+      apply({ type: 'STOP_LOADING' });
+
+      if (finished && !errored) {
+        onFinish?.(finished);
       }
     },
-    [handleStreamEvent, onFinish]
+    [apply, handleStreamEvent, onFinish]
   );
 
   const sendWithMessages = useCallback(
@@ -139,10 +185,10 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
       threadId: string | undefined,
       metadata?: Record<string, unknown>
     ) => {
-      abortControllerRef.current?.abort();
-      abortControllerRef.current = new AbortController();
+      const controller = new AbortController();
+      activeRequestRef.current = controller;
 
-      dispatch({ type: 'START_LOADING' });
+      apply({ type: 'START_LOADING' });
 
       const doFetch = async () => {
         const response = await fetch(api, {
@@ -161,39 +207,44 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
             threadId,
             metadata,
           }),
-          signal: abortControllerRef.current!.signal,
+          signal: controller.signal,
         });
 
         if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(errorText || `HTTP ${response.status}`);
+          throw await toHttpError(response);
         }
 
         return response;
       };
 
       try {
-        const response = await withRetry(doFetch, retry);
-        await processStream(response);
+        const response = await withRetry(doFetch, retry, controller.signal);
+        await processStream(response, controller);
       } catch (err) {
-        if (err instanceof Error && err.name === 'AbortError') {
-          dispatch({ type: 'STOP_LOADING' });
+        if (activeRequestRef.current !== controller) return;
+        activeRequestRef.current = null;
+
+        apply({ type: 'FINISH_ASSISTANT_MESSAGE' });
+
+        if (isAbortError(err)) {
+          apply({ type: 'STOP_LOADING' });
           return;
         }
 
         const error = err instanceof Error ? err : new Error('Unknown error');
-        dispatch({ type: 'SET_ERROR', payload: error });
+        apply({ type: 'SET_ERROR', payload: error });
         onError?.(error);
       }
     },
-    [api, headers, onError, processStream, retry]
+    [api, apply, headers, onError, processStream, retry]
   );
 
   const send = useCallback(
     async (inputOverride?: string, metadata?: Record<string, unknown>) => {
-      const current = stateRef.current;
-      const messageContent = inputOverride ?? current.input;
+      const messageContent = inputOverride ?? stateRef.current.input;
       if (!messageContent.trim()) return;
+
+      interrupt();
 
       const userMessage: ChatMessage = {
         id: generateClientId(),
@@ -203,24 +254,23 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
         createdAt: new Date(),
       };
 
-      dispatch({ type: 'ADD_USER_MESSAGE', payload: userMessage });
-      dispatch({ type: 'SET_INPUT', payload: '' });
+      apply({ type: 'ADD_USER_MESSAGE', payload: userMessage });
+      apply({ type: 'SET_INPUT', payload: '' });
 
-      const allMessages = [...current.messages, userMessage];
-      await sendWithMessages(allMessages, current.threadId, metadata);
+      const current = stateRef.current;
+      await sendWithMessages(current.messages, current.threadId, metadata);
     },
-    [sendWithMessages]
+    [apply, interrupt, sendWithMessages]
   );
 
   const stop = useCallback(() => {
-    abortControllerRef.current?.abort();
-    dispatch({ type: 'STOP_LOADING' });
-  }, []);
+    interrupt();
+  }, [interrupt]);
 
   const reload = useCallback(async () => {
-    const current = stateRef.current;
-    if (current.messages.length === 0) return;
+    interrupt();
 
+    const current = stateRef.current;
     let lastUserIndex = -1;
     for (let i = current.messages.length - 1; i >= 0; i--) {
       if (current.messages[i].role === 'user') {
@@ -231,45 +281,46 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     if (lastUserIndex === -1) return;
 
     const lastUserMessage = current.messages[lastUserIndex];
-    const messagesBeforeReload = current.messages.slice(0, lastUserIndex);
+    const messages = current.messages.slice(0, lastUserIndex + 1);
 
-    dispatch({ type: 'SET_MESSAGES', payload: messagesBeforeReload });
+    apply({ type: 'SET_MESSAGES', payload: messages });
+    await sendWithMessages(messages, current.threadId, lastUserMessage.metadata);
+  }, [apply, interrupt, sendWithMessages]);
 
-    const allMessages = [...messagesBeforeReload, lastUserMessage];
-    await sendWithMessages(allMessages, current.threadId, lastUserMessage.metadata);
-  }, [sendWithMessages]);
+  const setInput = useCallback(
+    (value: string) => {
+      apply({ type: 'SET_INPUT', payload: value });
+    },
+    [apply]
+  );
 
-  const setInput = useCallback((value: string) => {
-    dispatch({ type: 'SET_INPUT', payload: value });
-  }, []);
+  const setThreadId = useCallback(
+    (id: string) => {
+      apply({ type: 'SET_THREAD_ID', payload: id });
+    },
+    [apply]
+  );
 
-  const setThreadId = useCallback((id: string) => {
-    dispatch({ type: 'SET_THREAD_ID', payload: id });
-  }, []);
-
-  const appendMessage = useCallback((message: ChatMessage) => {
-    dispatch({ type: 'APPEND_MESSAGE', payload: message });
-  }, []);
+  const appendMessage = useCallback(
+    (message: ChatMessage) => {
+      apply({ type: 'APPEND_MESSAGE', payload: message });
+    },
+    [apply]
+  );
 
   const clearMessages = useCallback(() => {
-    dispatch({ type: 'CLEAR_MESSAGES' });
-  }, []);
+    apply({ type: 'CLEAR_MESSAGES' });
+  }, [apply]);
 
-  const setMessages = useCallback((messages: ChatMessage[]) => {
-    dispatch({ type: 'SET_MESSAGES', payload: messages });
-  }, []);
+  const setMessages = useCallback(
+    (messages: ChatMessage[]) => {
+      apply({ type: 'SET_MESSAGES', payload: messages });
+    },
+    [apply]
+  );
 
-  const displayMessages = state.currentMessageId
-    ? [
-        ...state.messages,
-        {
-          id: state.currentMessageId,
-          role: 'assistant' as const,
-          content: state.currentContent,
-          toolCalls: state.currentToolCalls.length > 0 ? state.currentToolCalls : undefined,
-        },
-      ]
-    : state.messages;
+  const pending = pendingAssistantMessage(state);
+  const displayMessages = pending ? [...state.messages, pending] : state.messages;
 
   return {
     messages: displayMessages,

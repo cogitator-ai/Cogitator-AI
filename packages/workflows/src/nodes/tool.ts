@@ -5,6 +5,7 @@ import type {
   Tool,
   ToolContext,
 } from '@cogitator-ai/types';
+import type { ExtendedNodeContext } from './base';
 
 export interface ToolNodeOptions<S = WorkflowState, TArgs = unknown> {
   argsMapper: (state: S, input?: unknown) => TArgs;
@@ -24,7 +25,10 @@ export function toolNode<S extends WorkflowState = WorkflowState, TArgs = unknow
       const toolContext: ToolContext = {
         agentId: `workflow:${ctx.workflowId}:${ctx.nodeId}`,
         runId: ctx.workflowId,
-        signal: options.signal ?? new AbortController().signal,
+        signal:
+          options.signal ??
+          (ctx as Partial<ExtendedNodeContext<S>>).signal ??
+          new AbortController().signal,
       };
 
       const result = await tool.execute(args, toolContext);

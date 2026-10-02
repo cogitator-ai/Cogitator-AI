@@ -217,7 +217,12 @@ describe('PipelineSession', () => {
       vad._event = { type: 'speech_end', duration: 500 };
       session.pushAudio(Buffer.alloc(320));
 
-      await vi.waitFor(() => expect(agent.run).toHaveBeenCalledWith('Turn on the lights'));
+      await vi.waitFor(() =>
+        expect(agent.run).toHaveBeenCalledWith(
+          'Turn on the lights',
+          expect.objectContaining({ sessionId: session.id })
+        )
+      );
     });
   });
 
@@ -388,7 +393,10 @@ describe('PipelineSession', () => {
 
       await vi.waitFor(() => expect(handler).toHaveBeenCalledWith('Agent response'));
       expect(stream.close).toHaveBeenCalled();
-      expect(agent.run).toHaveBeenCalledWith('final transcript');
+      expect(agent.run).toHaveBeenCalledWith(
+        'final transcript',
+        expect.objectContaining({ sessionId: session.id })
+      );
     });
 
     it('is a no-op when state is idle', async () => {
@@ -419,11 +427,13 @@ describe('PipelineSession', () => {
   });
 
   describe('activeProcessing', () => {
-    it('close() waits for active processing to complete', async () => {
+    it('close() aborts the in-flight turn instead of waiting for a hung agent', async () => {
       let resolveAgent!: (value: { content: string }) => void;
+      let runSignal: AbortSignal | undefined;
       agent.run.mockImplementation(
-        () =>
+        (_input: string, ctx?: { signal?: AbortSignal }) =>
           new Promise((resolve) => {
+            runSignal = ctx?.signal;
             resolveAgent = resolve;
           })
       );
@@ -439,19 +449,14 @@ describe('PipelineSession', () => {
       session.pushAudio(Buffer.alloc(320));
 
       await vi.waitFor(() => expect(agent.run).toHaveBeenCalled());
+      expect(runSignal?.aborted).toBe(false);
 
-      let closeDone = false;
-      const closePromise = session.close().then(() => {
-        closeDone = true;
-      });
-
-      await new Promise((r) => setTimeout(r, 50));
-      expect(closeDone).toBe(false);
+      await session.close();
+      expect(runSignal?.aborted).toBe(true);
 
       resolveAgent({ content: 'late response' });
-      await closePromise;
-
-      expect(closeDone).toBe(true);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(handler).not.toHaveBeenCalled();
     });
   });
 });

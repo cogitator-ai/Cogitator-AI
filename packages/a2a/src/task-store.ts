@@ -1,4 +1,5 @@
 import type { A2ATask, TaskFilter, TaskStore } from './types.js';
+import { isTerminalState } from './types.js';
 
 export interface InMemoryTaskStoreConfig {
   maxSize?: number;
@@ -55,15 +56,24 @@ export class InMemoryTaskStore implements TaskStore {
     this.tasks.delete(taskId);
   }
 
+  /**
+   * Evict the oldest finished task; fall back to the oldest task overall only
+   * when every stored task is still active.
+   */
   private evictIfNeeded(): void {
-    if (this.tasks.size <= this.maxSize) return;
-    let oldest: { id: string; time: number } | null = null;
-    for (const [id, task] of this.tasks) {
-      const time = new Date(task.status.timestamp).getTime();
-      if (!oldest || time < oldest.time) {
-        oldest = { id, time };
+    while (this.tasks.size > this.maxSize) {
+      let oldestFinished: { id: string; time: number } | null = null;
+      let oldestAny: { id: string; time: number } | null = null;
+      for (const [id, task] of this.tasks) {
+        const time = new Date(task.status.timestamp).getTime();
+        if (!oldestAny || time < oldestAny.time) oldestAny = { id, time };
+        if (isTerminalState(task.status.state) && (!oldestFinished || time < oldestFinished.time)) {
+          oldestFinished = { id, time };
+        }
       }
+      const victim = oldestFinished ?? oldestAny;
+      if (!victim) return;
+      this.tasks.delete(victim.id);
     }
-    if (oldest) this.tasks.delete(oldest.id);
   }
 }

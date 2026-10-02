@@ -61,12 +61,19 @@ export async function streamChat(
             if (partial.arguments) {
               existing.arguments = { ...existing.arguments, ...partial.arguments };
             }
+            if (partial.thoughtSignature) {
+              existing.thoughtSignature = partial.thoughtSignature;
+            }
           } else {
-            toolCalls.push({
+            const toolCall: ToolCall = {
               id: partial.id,
               name: partial.name,
               arguments: partial.arguments ?? {},
-            });
+            };
+            if (partial.thoughtSignature) {
+              toolCall.thoughtSignature = partial.thoughtSignature;
+            }
+            toolCalls.push(toolCall);
           }
         } else if (toolCalls.length > 0 && partial.arguments) {
           const last = toolCalls[toolCalls.length - 1];

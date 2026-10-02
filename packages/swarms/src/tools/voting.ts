@@ -5,6 +5,7 @@
 import { z } from 'zod';
 import { tool } from '@cogitator-ai/core';
 import type { Blackboard, SwarmEventEmitter } from '@cogitator-ai/types';
+import { normalizeDecision } from '../shared/voting.js';
 
 interface Vote {
   agentName: string;
@@ -15,10 +16,8 @@ interface Vote {
   timestamp: number;
 }
 
-/**
- * Create voting tools for consensus strategies
- */
 function safeReadConsensus<T>(blackboard: Blackboard): T | null {
+  if (!blackboard.has('consensus')) return null;
   try {
     return blackboard.read<T>('consensus');
   } catch {
@@ -26,6 +25,9 @@ function safeReadConsensus<T>(blackboard: Blackboard): T | null {
   }
 }
 
+/**
+ * Create voting tools for consensus strategies
+ */
 export function createVotingTools(
   blackboard: Blackboard,
   events: SwarmEventEmitter,
@@ -75,8 +77,11 @@ export function createVotingTools(
         timestamp: Date.now(),
       };
 
-      consensusState.votes.push(vote);
-      blackboard.write('consensus', consensusState, currentAgent);
+      blackboard.write(
+        'consensus',
+        { ...consensusState, votes: [...consensusState.votes, vote] },
+        currentAgent
+      );
 
       events.emit(
         'consensus:vote',
@@ -133,7 +138,7 @@ export function createVotingTools(
 
       const voteCounts = new Map<string, { count: number; weighted: number; voters: string[] }>();
       for (const vote of votes) {
-        const key = vote.decision.toLowerCase().trim();
+        const key = normalizeDecision(vote.decision);
         const existing = voteCounts.get(key) ?? { count: 0, weighted: 0, voters: [] };
         existing.count++;
         existing.weighted += vote.weight;
@@ -191,10 +196,6 @@ export function createVotingTools(
       const previousDecision =
         previousVoteIndex >= 0 ? consensusState.votes[previousVoteIndex].decision : null;
 
-      if (previousVoteIndex >= 0) {
-        consensusState.votes.splice(previousVoteIndex, 1);
-      }
-
       const vote: Vote = {
         agentName: currentAgent,
         decision: newDecision,
@@ -203,8 +204,14 @@ export function createVotingTools(
         round: consensusState.currentRound,
         timestamp: Date.now(),
       };
-      consensusState.votes.push(vote);
-      blackboard.write('consensus', consensusState, currentAgent);
+      blackboard.write(
+        'consensus',
+        {
+          ...consensusState,
+          votes: [...consensusState.votes.filter((_, index) => index !== previousVoteIndex), vote],
+        },
+        currentAgent
+      );
 
       events.emit(
         'consensus:vote:changed',
@@ -256,7 +263,7 @@ export function createVotingTools(
       let totalWeight = 0;
 
       for (const vote of currentRoundVotes) {
-        const key = vote.decision.toLowerCase().trim();
+        const key = normalizeDecision(vote.decision);
         const existing = voteCounts.get(key) ?? { count: 0, weighted: 0 };
         existing.count++;
         existing.weighted += vote.weight;

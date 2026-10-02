@@ -5,8 +5,14 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { nanoid } from 'nanoid';
 import type { WebSocketTransportConfig } from '../types.js';
 
-export interface WebSocketTransportOptions extends WebSocketTransportConfig {
-  verifyClient?: (req: http.IncomingMessage) => true | { code: number; message: string };
+/** @deprecated Use `WebSocketTransportConfig`. */
+export type WebSocketTransportOptions = WebSocketTransportConfig;
+
+function rejectUpgrade(socket: Duplex, code: number, message: string): void {
+  const status = Number.isInteger(code) && code >= 400 && code <= 599 ? code : 403;
+  const reason = message.replace(/[^\x20-\x7e]/g, ' ').trim() || 'Forbidden';
+  socket.write(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+  socket.destroy();
 }
 
 const KEEPALIVE_INTERVAL_MS = 30_000;
@@ -82,6 +88,10 @@ export class VoiceClient extends EventEmitter<VoiceClientEvents> {
   close(code?: number, reason?: string): void {
     this.ws.close(code, reason);
   }
+
+  terminate(): void {
+    this.ws.terminate();
+  }
 }
 
 interface TransportEvents {
@@ -91,7 +101,7 @@ interface TransportEvents {
 export class WebSocketTransport extends EventEmitter<TransportEvents> {
   private readonly path: string;
   private readonly maxConnections: number;
-  private readonly verifyClient?: WebSocketTransportOptions['verifyClient'];
+  private readonly verifyClient?: WebSocketTransportConfig['verifyClient'];
   private wss: WebSocketServer | null = null;
   private server: http.Server | null = null;
   private ownsServer = false;
@@ -100,8 +110,9 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> {
     | ((req: http.IncomingMessage, socket: Duplex, head: Buffer) => void)
     | null = null;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
+  private pendingUpgrades = 0;
 
-  constructor(config?: WebSocketTransportOptions) {
+  constructor(config?: WebSocketTransportConfig) {
     super();
     this.path = config?.path ?? '/voice';
     this.maxConnections = config?.maxConnections ?? 100;
@@ -166,61 +177,89 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> {
     this.wss = new WebSocketServer({ noServer: true });
 
     this.upgradeHandler = (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
-      socket.on('error', () => socket.destroy());
-
-      if (!this.wss) {
-        socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
-        socket.destroy();
-        return;
+      let pathname: string;
+      try {
+        pathname = new URL(req.url || '/', 'http://localhost').pathname;
+      } catch {
+        pathname = '';
       }
-
-      const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-
-      if (url.pathname !== this.path) {
-        socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-
-      if (this.verifyClient) {
-        const result = this.verifyClient(req);
-        if (result !== true) {
-          socket.write(`HTTP/1.1 ${result.code} ${result.message}\r\n\r\n`);
-          socket.destroy();
-          return;
+      if (pathname !== this.path) {
+        if (this.ownsServer) {
+          socket.on('error', () => socket.destroy());
+          rejectUpgrade(socket, 404, 'Not Found');
         }
-      }
-
-      if (this.clients.size >= this.maxConnections) {
-        socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
-        socket.destroy();
         return;
       }
 
-      this.wss.handleUpgrade(req, socket, head, (ws) => {
-        const client = new VoiceClient(ws);
-        this.clients.add(client);
-        client.on('close', () => this.clients.delete(client));
-        this.emit('connection', client);
-      });
+      socket.on('error', () => socket.destroy());
+      void this.handleUpgrade(req, socket, head);
     };
 
     server.on('upgrade', this.upgradeHandler);
     this.startKeepalive();
   }
 
+  private async handleUpgrade(
+    req: http.IncomingMessage,
+    socket: Duplex,
+    head: Buffer
+  ): Promise<void> {
+    if (!this.wss) {
+      rejectUpgrade(socket, 503, 'Service Unavailable');
+      return;
+    }
+
+    if (this.clients.size + this.pendingUpgrades >= this.maxConnections) {
+      rejectUpgrade(socket, 503, 'Service Unavailable');
+      return;
+    }
+
+    this.pendingUpgrades++;
+    try {
+      if (this.verifyClient) {
+        let result: Awaited<ReturnType<NonNullable<WebSocketTransportConfig['verifyClient']>>>;
+        try {
+          result = await this.verifyClient(req);
+        } catch {
+          rejectUpgrade(socket, 500, 'Internal Server Error');
+          return;
+        }
+        if (result !== true) {
+          rejectUpgrade(socket, result.code, result.message);
+          return;
+        }
+      }
+
+      const wss = this.wss;
+      if (!wss || socket.destroyed) {
+        if (!socket.destroyed) rejectUpgrade(socket, 503, 'Service Unavailable');
+        return;
+      }
+
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        const client = new VoiceClient(ws);
+        this.clients.add(client);
+        client.on('close', () => this.clients.delete(client));
+        this.emit('connection', client);
+      });
+    } finally {
+      this.pendingUpgrades--;
+    }
+  }
+
   private startKeepalive(): void {
     this.pingInterval = setInterval(() => {
       for (const client of this.clients) {
         if (!client.isAlive) {
-          client.close(1001, 'pong timeout');
           this.clients.delete(client);
+          client.terminate();
           continue;
         }
         client.markDead();
         client.ping();
       }
     }, KEEPALIVE_INTERVAL_MS);
+    this.pingInterval.unref();
   }
 
   private stopKeepalive(): void {

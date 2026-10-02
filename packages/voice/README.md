@@ -33,31 +33,47 @@ pnpm add onnxruntime-node  # Silero VAD (neural network-based)
 ## Quick Start
 
 ```typescript
-import { VoiceAgent, OpenAISTT, OpenAITTS } from '@cogitator-ai/voice';
-import { Agent } from '@cogitator-ai/core';
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import {
+  VoiceAgent,
+  OpenAISTT,
+  OpenAITTS,
+  EnergyVAD,
+  createCogitatorRunner,
+} from '@cogitator-ai/voice';
 
-const agent = new Agent({ instructions: 'You are a helpful assistant' });
+const cogitator = new Cogitator({ memory: { adapter: 'memory' } });
+const agent = new Agent({
+  name: 'assistant',
+  model: 'openai/gpt-4o-mini',
+  instructions: 'You are a helpful voice assistant. Keep answers short.',
+});
 
 const voiceAgent = new VoiceAgent({
-  agent,
   mode: 'pipeline',
+  agent: createCogitatorRunner(cogitator, agent),
   stt: new OpenAISTT({ apiKey: process.env.OPENAI_API_KEY! }),
   tts: new OpenAITTS({ apiKey: process.env.OPENAI_API_KEY! }),
+  vad: new EnergyVAD(),
 });
 
 await voiceAgent.listen(8080);
 ```
 
-Connect from any WebSocket client at `ws://localhost:8080/voice` — send binary audio frames, receive binary audio + JSON control messages.
+Connect from any WebSocket client at `ws://localhost:8080/voice` — send binary PCM16 frames, receive binary audio + JSON events (see [WebSocket Protocol](#websocket-protocol)).
+
+`createCogitatorRunner()` adapts a `Cogitator` runtime + `Agent` to the `VoiceAgentRunner` interface (`run(input, { sessionId, signal })`). Each voice session gets its own memory thread (`voice:<sessionId>`), and interrupted turns abort the underlying run. Any object with a compatible `run()` works as well.
 
 ---
 
 ## STT Providers
 
-| Provider      | Default Model            | Streaming           | Word Timestamps | Notes                                          |
-| ------------- | ------------------------ | ------------------- | --------------- | ---------------------------------------------- |
-| `OpenAISTT`   | `gpt-4o-mini-transcribe` | Buffered            | Yes             | Also supports `gpt-4o-transcribe`, `whisper-1` |
-| `DeepgramSTT` | `nova-3`                 | Real-time WebSocket | Yes             | Interim results, endpointing, auto-punctuation |
+| Provider      | Default Model            | Streaming           | Word Timestamps  | Notes                                          |
+| ------------- | ------------------------ | ------------------- | ---------------- | ---------------------------------------------- |
+| `OpenAISTT`   | `gpt-4o-mini-transcribe` | Buffered            | `whisper-1` only | Also supports `gpt-4o-transcribe`, `whisper-1` |
+| `DeepgramSTT` | `nova-3`                 | Real-time WebSocket | Yes              | Interim results, endpointing, auto-punctuation |
+
+Both providers accept containerized audio (wav, mp3, ogg, flac, webm, mp4 — detected from magic bytes) or headerless PCM16 mono. Streams (`createStream()`) expect raw PCM16 at `sampleRate` (default 16kHz).
 
 ### OpenAI STT
 
@@ -71,13 +87,15 @@ const stt = new OpenAISTT({
 
 const result = await stt.transcribe(audioBuffer, { language: 'en' });
 console.log(result.text);
-console.log(result.words);
-console.log(result.duration);
+
+const whisper = new OpenAISTT({ apiKey: process.env.OPENAI_API_KEY!, model: 'whisper-1' });
+const detailed = await whisper.transcribe(audioBuffer);
+console.log(detailed.words, detailed.duration);
 ```
 
 ### Deepgram STT
 
-Real-time streaming with interim results:
+Real-time streaming with interim results. `close()` resolves with the full utterance (all final segments joined):
 
 ```typescript
 import { DeepgramSTT } from '@cogitator-ai/voice';
@@ -86,6 +104,7 @@ const stt = new DeepgramSTT({
   apiKey: process.env.DEEPGRAM_API_KEY!,
   model: 'nova-3',
   language: 'en',
+  sampleRate: 16000,
 });
 
 const stream = stt.createStream({ interimResults: true, endpointing: 500 });
@@ -98,9 +117,9 @@ stream.on('final', (result) => {
   console.log('final:', result.text);
 });
 
-stream.write(audioChunk1);
-stream.write(audioChunk2);
-await stream.close();
+stream.write(pcm16Chunk1);
+stream.write(pcm16Chunk2);
+const { text } = await stream.close();
 ```
 
 ---
@@ -111,6 +130,8 @@ await stream.close();
 | --------------- | ------------------- | --------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `OpenAITTS`     | `gpt-4o-mini-tts`   | Yes       | alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer, verse, marin, cedar | Also supports `tts-1`, `tts-1-hd`. Supports `instructions` for voice style control      |
 | `ElevenLabsTTS` | `eleven_flash_v2_5` | Yes       | By voice ID                                                                            | ~75ms latency. Also supports `eleven_turbo_v2_5`, `eleven_multilingual_v2`, `eleven_v3` |
+
+Default output is MP3. `format: 'pcm16'` returns raw PCM16 mono at **24kHz** for both providers. ElevenLabs supports `speed` (0.7–1.2) but not `wav`/`aac` output.
 
 ### OpenAI TTS
 
@@ -193,7 +214,7 @@ switch (event.type) {
 
 ### Silero VAD
 
-Neural network-based VAD using the Silero ONNX model:
+Neural network-based VAD using the Silero ONNX model. Both the v4 (`h`/`c`) and v5 (`state`) model signatures are supported. Chunks of any size are buffered into 32ms frames (512 samples @ 16kHz, 256 @ 8kHz):
 
 ```typescript
 import { SileroVAD } from '@cogitator-ai/voice';
@@ -265,18 +286,34 @@ session.on('audio', (chunk) => {
   playAudio(chunk);
 });
 
+session.on('turn_end', () => {
+  console.log('Agent finished speaking');
+});
+
 session.pushAudio(pcm16Chunk);
+session.endAudio();
+
+await session.sendText('Skip STT and answer this');
 
 session.interrupt();
 
 await session.close();
 ```
 
+Without a VAD, audio is buffered until `endAudio()`. `interrupt()` cancels the in-flight turn (the agent receives an aborted `signal`), and `close()` returns without waiting for hung providers. Empty transcripts never reach the agent.
+
 ---
 
 ## Realtime Mode
 
 Native speech-to-speech without the STT/TTS pipeline. The LLM directly processes and generates audio. Lower latency, more natural conversation flow.
+
+| Provider | Default model       | Input audio      | Output audio     | Notes                                          |
+| -------- | ------------------- | ---------------- | ---------------- | ---------------------------------------------- |
+| `openai` | `gpt-realtime-mini` | PCM16 24kHz mono | PCM16 24kHz mono | Realtime API (GA), server VAD, `marin` voice   |
+| `gemini` | `gemini-3.8-live`   | PCM16 16kHz mono | PCM16 24kHz mono | Gemini Live API, input + output transcriptions |
+
+Audio and text sent before `connect()` resolves are queued and flushed once the session is ready. Tools are executed by the session and their results sent back to the model automatically.
 
 ### OpenAI Realtime
 
@@ -286,8 +323,8 @@ import { RealtimeSession } from '@cogitator-ai/voice';
 const session = new RealtimeSession({
   provider: 'openai',
   apiKey: process.env.OPENAI_API_KEY!,
-  model: 'gpt-4o-mini-realtime-preview',
-  voice: 'coral',
+  model: 'gpt-realtime-mini',
+  voice: 'marin',
   instructions: 'You are a helpful assistant.',
   tools: [
     {
@@ -322,7 +359,7 @@ import { RealtimeSession } from '@cogitator-ai/voice';
 const session = new RealtimeSession({
   provider: 'gemini',
   apiKey: process.env.GOOGLE_API_KEY!,
-  model: 'gemini-live-2.5-flash-native-audio',
+  model: 'gemini-3.8-live',
   voice: 'Puck',
   instructions: 'You are a helpful assistant.',
 });
@@ -346,6 +383,8 @@ import { WebSocketTransport, VoiceClient } from '@cogitator-ai/voice';
 const transport = new WebSocketTransport({
   path: '/voice',
   maxConnections: 100,
+  verifyClient: async (req) =>
+    (await isValidToken(req.headers.authorization)) ? true : { code: 401, message: 'Unauthorized' },
 });
 
 transport.on('connection', (client: VoiceClient) => {
@@ -375,14 +414,18 @@ transport.attachToServer(httpServer);
 await transport.close();
 ```
 
+When attached to an existing server, upgrade requests for other paths are left untouched for other handlers; a standalone `listen()` server rejects them with `404`.
+
 ### WebSocket Protocol
 
-| Direction        | Format      | Content                                                                             |
-| ---------------- | ----------- | ----------------------------------------------------------------------------------- |
-| Client -> Server | Binary      | PCM16 audio frames (16kHz, mono, 16-bit LE)                                         |
-| Client -> Server | Text (JSON) | Control messages                                                                    |
-| Server -> Client | Binary      | PCM16 or encoded audio response                                                     |
-| Server -> Client | Text (JSON) | `{ type: 'transcript' \| 'agent_response' \| 'speech_start' \| 'speech_end', ... }` |
+| Direction        | Format      | Content                                                                                                |
+| ---------------- | ----------- | ------------------------------------------------------------------------------------------------------ |
+| Client -> Server | Binary      | PCM16 mono 16-bit LE (16kHz for pipeline and Gemini, 24kHz for OpenAI realtime)                        |
+| Client -> Server | Text (JSON) | `{ type: 'interrupt' }`, `{ type: 'end_of_speech' }`, `{ type: 'text', text }`                         |
+| Server -> Client | Binary      | Response audio (TTS output format in pipeline mode, PCM16 24kHz in realtime mode)                      |
+| Server -> Client | Text (JSON) | `transcript` (`text`, `isFinal` or `role`), `agent_response`, `speech_start`, `speech_end`, `turn_end` |
+
+`end_of_speech` commits buffered audio when no VAD is configured (pipeline mode). `interrupt` cancels the current turn. `text` runs a turn from text input in both modes. Unknown control message types are reported through the `error` event. If the realtime provider cannot be reached or disconnects, the client is closed with code `1011`.
 
 ---
 
@@ -409,23 +452,35 @@ voiceAgent.on('error', (err) => console.error(err));
 console.log(`Active sessions: ${voiceAgent.activeSessions}`);
 
 await voiceAgent.listen(8080);
+// or share an existing HTTP server: voiceAgent.attach(httpServer);
 await voiceAgent.close();
 ```
+
+Attach an `error` listener to observe provider and client errors; without one, errors are not thrown (a misbehaving client cannot crash the server).
 
 ### Realtime mode with VoiceAgent
 
 ```typescript
 const voiceAgent = new VoiceAgent({
-  agent: myAgent,
+  agent: createCogitatorRunner(cogitator, agent),
   mode: 'realtime',
-  realtimeProvider: 'openai',
-  realtimeApiKey: process.env.OPENAI_API_KEY!,
-  realtimeModel: 'gpt-4o-mini-realtime-preview',
-  voice: 'coral',
+  realtimeProvider: 'gemini',
+  realtimeApiKey: process.env.GOOGLE_API_KEY!,
+  voice: 'Puck',
+  tools: [
+    {
+      name: 'get_time',
+      description: 'Current server time',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => ({ time: new Date().toISOString() }),
+    },
+  ],
 });
 
 await voiceAgent.listen(8080);
 ```
+
+In realtime mode the agent's `instructions` are used as the session instructions unless `instructions` is set explicitly.
 
 ---
 
@@ -436,40 +491,21 @@ Give any Cogitator agent the ability to transcribe audio or synthesize speech:
 ```typescript
 import { Agent, tool } from '@cogitator-ai/core';
 import { voiceTools, OpenAISTT, OpenAITTS } from '@cogitator-ai/voice';
-import { z } from 'zod';
 
 const [transcribe, speak] = voiceTools({
   stt: new OpenAISTT({ apiKey: process.env.OPENAI_API_KEY! }),
   tts: new OpenAITTS({ apiKey: process.env.OPENAI_API_KEY! }),
 });
 
-const transcribeTool = tool({
-  name: transcribe.name,
-  description: transcribe.description,
-  parameters: z.object({
-    audioBase64: z.string().describe('Base64-encoded audio data'),
-    language: z.string().optional().describe('Language code'),
-  }),
-  execute: async (params) => transcribe.execute(params),
-});
-
-const speakTool = tool({
-  name: speak.name,
-  description: speak.description,
-  parameters: z.object({
-    text: z.string().describe('Text to convert to speech'),
-    voice: z.string().optional().describe('Voice to use'),
-  }),
-  execute: async (params) => speak.execute(params),
-});
-
 const agent = new Agent({
   name: 'voice-assistant',
-  model: 'gpt-4o',
+  model: 'openai/gpt-4o',
   instructions: 'You can transcribe audio and generate speech.',
-  tools: [transcribeTool, speakTool],
+  tools: [tool(transcribe), tool(speak)],
 });
 ```
+
+`VoiceTool` objects carry Zod parameter schemas, so they can be passed to `tool()` as-is.
 
 ---
 
@@ -485,6 +521,7 @@ import {
   wavToPcm,
   resample,
   calculateRMS,
+  detectAudioFormat,
 } from '@cogitator-ai/voice';
 
 const pcm = float32ToPcm16(float32Samples);
@@ -496,6 +533,8 @@ const { samples, sampleRate } = wavToPcm(wavBuffer);
 const resampled = resample(float32Samples, 44100, 16000);
 
 const rms = calculateRMS(float32Samples);
+
+detectAudioFormat(fileBuffer); // 'wav' | 'mp3' | 'ogg' | 'flac' | 'webm' | 'mp4' | null (raw PCM)
 ```
 
 ---
@@ -504,18 +543,20 @@ const rms = calculateRMS(float32Samples);
 
 ### `VoiceAgentConfig`
 
-| Field              | Type                                     | Required      | Description                          |
-| ------------------ | ---------------------------------------- | ------------- | ------------------------------------ |
-| `agent`            | `{ run(input) => Promise<{ content }> }` | Yes           | Cogitator agent or compatible object |
-| `mode`             | `'pipeline' \| 'realtime'`               | Yes           | Processing mode                      |
-| `stt`              | `STTProvider`                            | Pipeline only | Speech-to-text provider              |
-| `tts`              | `TTSProvider`                            | Pipeline only | Text-to-speech provider              |
-| `vad`              | `VADProvider`                            | No            | Voice activity detection             |
-| `realtimeProvider` | `'openai' \| 'gemini'`                   | Realtime only | Realtime API provider                |
-| `realtimeApiKey`   | `string`                                 | Realtime only | API key for realtime provider        |
-| `realtimeModel`    | `string`                                 | No            | Model override                       |
-| `voice`            | `string`                                 | No            | Voice for TTS or realtime            |
-| `transport`        | `WebSocketTransportConfig`               | No            | Transport options                    |
+| Field              | Type                       | Required      | Description                                               |
+| ------------------ | -------------------------- | ------------- | --------------------------------------------------------- |
+| `agent`            | `VoiceAgentRunner`         | Yes           | `createCogitatorRunner(...)` or any `{ run(input, ctx) }` |
+| `mode`             | `'pipeline' \| 'realtime'` | Yes           | Processing mode                                           |
+| `stt`              | `STTProvider`              | Pipeline only | Speech-to-text provider                                   |
+| `tts`              | `TTSProvider`              | Pipeline only | Text-to-speech provider                                   |
+| `vad`              | `VADProvider`              | No            | Voice activity detection                                  |
+| `realtimeProvider` | `'openai' \| 'gemini'`     | Realtime only | Realtime API provider                                     |
+| `realtimeApiKey`   | `string`                   | Realtime only | API key for realtime provider                             |
+| `realtimeModel`    | `string`                   | No            | Model override                                            |
+| `instructions`     | `string`                   | No            | Realtime instructions (defaults to `agent.instructions`)  |
+| `tools`            | `RealtimeTool[]`           | No            | Realtime tools executed by the session                    |
+| `voice`            | `string`                   | No            | Voice for realtime                                        |
+| `transport`        | `WebSocketTransportConfig` | No            | Transport options                                         |
 
 ### `OpenAISTTConfig`
 
@@ -527,11 +568,12 @@ const rms = calculateRMS(float32Samples);
 
 ### `DeepgramSTTConfig`
 
-| Field      | Type     | Default  | Description           |
-| ---------- | -------- | -------- | --------------------- |
-| `apiKey`   | `string` | —        | Deepgram API key      |
-| `model`    | `string` | `nova-3` | Model ID              |
-| `language` | `string` | —        | Default language code |
+| Field        | Type     | Default  | Description                                    |
+| ------------ | -------- | -------- | ---------------------------------------------- |
+| `apiKey`     | `string` | —        | Deepgram API key                               |
+| `model`      | `string` | `nova-3` | Model ID                                       |
+| `language`   | `string` | —        | Default language code                          |
+| `sampleRate` | `number` | `16000`  | Sample rate of raw PCM16 (streams, headerless) |
 
 ### `OpenAITTSConfig`
 
@@ -569,10 +611,11 @@ const rms = calculateRMS(float32Samples);
 
 ### `WebSocketTransportConfig`
 
-| Field            | Type     | Default  | Description                    |
-| ---------------- | -------- | -------- | ------------------------------ |
-| `path`           | `string` | `/voice` | WebSocket endpoint path        |
-| `maxConnections` | `number` | `100`    | Maximum concurrent connections |
+| Field            | Type                                                 | Default  | Description                                    |
+| ---------------- | ---------------------------------------------------- | -------- | ---------------------------------------------- |
+| `path`           | `string`                                             | `/voice` | WebSocket endpoint path                        |
+| `maxConnections` | `number`                                             | `100`    | Maximum concurrent connections                 |
+| `verifyClient`   | `(req) => true \| { code, message } \| Promise<...>` | —        | Authorize upgrades (throwing rejects with 500) |
 
 ---
 
@@ -580,9 +623,10 @@ const rms = calculateRMS(float32Samples);
 
 See [`examples/voice/`](../../examples/voice/) for runnable examples:
 
-- **01-pipeline-basic.ts** — Basic pipeline with OpenAI STT + TTS
-- **02-realtime-openai.ts** — OpenAI Realtime API voice agent
-- **03-realtime-gemini.ts** — Gemini Live voice agent
+- **01-pipeline.ts** — STT -> Cogitator agent -> TTS with `VoicePipeline` and `createCogitatorRunner`
+- **02-realtime.ts** — Realtime session with tool calling (Gemini Live or OpenAI Realtime)
+- **03-voice-agent.ts** — WebSocket `VoiceAgent` with Deepgram STT, ElevenLabs TTS and EnergyVAD
+- **04-realtime-voice-agent.ts** — Realtime `VoiceAgent` (Gemini Live) with a server-side tool and a WebSocket client
 
 ---
 

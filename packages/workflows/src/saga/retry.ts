@@ -93,6 +93,20 @@ function calculateDelay(attempt: number, config: DelayConfig): number {
   return Math.max(0, Math.round(baseDelay + jitter));
 }
 
+/**
+ * Delay before retry number `attempt` (1-based) for a retry policy, using the same defaults
+ * as `executeWithRetry`.
+ */
+export function computeRetryDelay(attempt: number, config: Partial<RetryConfig> = {}): number {
+  return calculateDelay(attempt, {
+    backoff: config.backoff ?? DEFAULT_BACKOFF,
+    initialDelay: config.initialDelay ?? DEFAULT_INITIAL_DELAY,
+    maxDelay: config.maxDelay ?? DEFAULT_MAX_DELAY,
+    multiplier: config.multiplier ?? DEFAULT_MULTIPLIER,
+    jitter: config.jitter ?? DEFAULT_JITTER,
+  });
+}
+
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.resolve();
   return new Promise((resolve) => {

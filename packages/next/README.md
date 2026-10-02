@@ -1,6 +1,6 @@
 # @cogitator-ai/next
 
-Next.js App Router integration for Cogitator AI runtime. Provides streaming chat handlers and React hooks compatible with the Vercel AI SDK protocol.
+Next.js App Router integration for Cogitator AI runtime. Provides streaming chat handlers, a batch agent handler, and React hooks that speak a typed SSE protocol modeled on the Vercel AI SDK event stream.
 
 ## Installation
 
@@ -19,11 +19,15 @@ import { createChatHandler } from '@cogitator-ai/next';
 import { z } from 'zod';
 
 const cogitator = new Cogitator({
-  backend: { type: 'openai', apiKey: process.env.OPENAI_API_KEY! },
+  llm: {
+    defaultModel: 'openai/gpt-4o-mini',
+    providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
+  },
 });
 
 const agent = new Agent({
   name: 'assistant',
+  model: 'openai/gpt-4o-mini',
   instructions: 'You are a helpful assistant.',
   tools: [
     tool({
@@ -83,7 +87,13 @@ export function Chat() {
 
 ### `createChatHandler`
 
-Creates a streaming chat handler compatible with AI SDK protocol.
+Creates a streaming chat handler. The handler:
+
+- runs the agent with token streaming enabled and forwards `text-*`, `tool-*` and `finish` events as they happen
+- uses the **last user message** as the run input; conversation history is carried by `threadId` (configure `memory` on the `Cogitator` instance) — the server returns the thread id in the `finish` event and `useCogitatorChat` adopts it automatically
+- passes request `metadata` to the run as `context`
+- aborts the run when the client disconnects (`req.signal`)
+- validates the body (JSON object, `messages` array, string `threadId`, object `metadata`), limits it to 1 MB (413 otherwise) and returns `400` when there is no user message
 
 ```typescript
 import { createChatHandler } from '@cogitator-ai/next';
@@ -99,13 +109,17 @@ export const POST = createChatHandler(cogitator, agent, {
     };
   },
 
-  // Pre-processing hook
+  // Pre-processing hook — the returned object is merged into the run options
+  // (e.g. userId, threadId, timeout). Streaming callbacks and the abort
+  // signal are always managed by the handler. Throw an error with a `status`
+  // property to reject the request with that status (default 401).
   beforeRun: async (req, input) => {
     console.log('Starting chat with', input.messages.length, 'messages');
-    return { userId: 'user-123' }; // Merged into context
+    return { userId: 'user-123' };
   },
 
-  // Post-processing hook
+  // Post-processing hook — runs before the `finish` event; if it throws,
+  // the client receives an `error` event instead of `finish`
   afterRun: async (result) => {
     console.log('Chat completed:', result.output);
   },
@@ -114,7 +128,7 @@ export const POST = createChatHandler(cogitator, agent, {
 
 ### `createAgentHandler`
 
-Creates a batch (non-streaming) handler for long-running tasks.
+Creates a batch (non-streaming) handler for long-running tasks. The default parser requires a non-blank string `input`, an optional object `context` and an optional string `threadId` (400 otherwise). The run is aborted if the client disconnects.
 
 ```typescript
 import { createAgentHandler } from '@cogitator-ai/next';
@@ -142,7 +156,8 @@ Response format:
     "outputTokens": 500,
     "totalTokens": 650
   },
-  "toolCalls": [...]
+  "toolCalls": [...],
+  "trace": { "traceId": "trace-xyz", "spans": [...] }
 }
 ```
 
@@ -199,7 +214,7 @@ const {
 // Basic send
 await send('Hello!');
 
-// Send with metadata (passed to server)
+// Send with metadata (passed to the run as `context` on the server)
 await send('Analyze this', {
   userId: 'user-123',
   priority: 'high',
@@ -266,7 +281,7 @@ console.log(result?.toolCalls);
 
 ## Streaming Protocol
 
-The package implements Vercel AI SDK v5 streaming protocol:
+The chat handler streams Server-Sent Events. The event names follow the Vercel AI SDK event-stream style, but the payloads are Cogitator's own (`tool-call-*`, `message` on errors, `usage`/`threadId` on finish), so use `useCogitatorChat` (or your own parser) on the client rather than the AI SDK's `useChat`:
 
 ```
 data: {"type":"start","messageId":"msg-1"}
@@ -287,9 +302,18 @@ data: {"type":"tool-call-end","id":"tool-1"}
 
 data: {"type":"tool-result","id":"tr-1","toolCallId":"tool-1","result":"72°F"}
 
-data: {"type":"finish","messageId":"msg-1","usage":{...}}
+data: {"type":"finish","messageId":"msg-1","usage":{...},"threadId":"thread-abc"}
 
 data: [DONE]
+```
+
+If the run fails, the open text block is closed and an `{"type":"error","message":"..."}` event is sent instead of `finish`.
+
+The server-side building blocks are exported for custom handlers:
+
+```typescript
+import { StreamWriter, encodeSSE, generateId } from '@cogitator-ai/next';
+import type { StreamEvent, Usage } from '@cogitator-ai/next';
 ```
 
 ## Types
@@ -319,6 +343,7 @@ interface AgentResponse {
     totalTokens: number;
   };
   toolCalls: ToolCall[];
+  trace?: { traceId: string; spans: unknown[] };
 }
 
 interface RetryConfig {
@@ -345,7 +370,9 @@ if (error) {
 }
 ```
 
-With retry enabled, transient errors (network, 502/503/504) are automatically retried:
+HTTP failures are thrown as `HttpError` (exported from `@cogitator-ai/next/client`) with a `status` property and a message like `Request failed: 400 - No user message provided`. Stream-level `error` events call `onError` and skip `onFinish`.
+
+With retry enabled, transient errors (network failures, 408/429/502/503/504) are automatically retried; the backoff wait is cancelled by `stop()`:
 
 ```typescript
 useCogitatorChat({
@@ -360,7 +387,7 @@ useCogitatorChat({
 
 ## Cancellation
 
-Stop ongoing requests with the `stop()` function:
+Stop ongoing requests with the `stop()` function. The partial assistant message is kept in `messages`, and the server aborts the agent run when the connection closes. Calling `send()` while a response is streaming interrupts it the same way. Pending requests are aborted when the component unmounts; `useCogitatorAgent` aborts a previous `run()` when a new one starts and on `reset()`.
 
 ```typescript
 const { send, stop, isLoading } = useCogitatorChat({ api: '/api/chat' });

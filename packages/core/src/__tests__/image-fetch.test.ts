@@ -81,6 +81,23 @@ describe('image-fetch utils', () => {
       expect(mockFetch).toHaveBeenCalledWith('https://example.com/image.png', expect.any(Object));
     });
 
+    it('rejects images whose declared size exceeds the limit before downloading', async () => {
+      const arrayBuffer = vi.fn();
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({
+          'content-type': 'image/png',
+          'content-length': String(25 * 1024 * 1024),
+        }),
+        arrayBuffer,
+      });
+
+      await expect(fetchImageAsBase64('https://example.com/huge.png')).rejects.toThrow(
+        'Image exceeds 20MB limit'
+      );
+      expect(arrayBuffer).not.toHaveBeenCalled();
+    });
+
     it('defaults to jpeg when content-type is missing', async () => {
       const imageData = new Uint8Array([255, 216, 255]);
       mockFetch.mockResolvedValueOnce({

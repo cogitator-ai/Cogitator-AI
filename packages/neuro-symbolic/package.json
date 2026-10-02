@@ -35,7 +35,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && tsx ../../scripts/fix-esm-imports.ts .",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
@@ -59,18 +59,10 @@
     "vitest": "^4.0.18"
   },
   "peerDependencies": {
-    "@cogitator-ai/core": "workspace:*",
-    "@cogitator-ai/memory": "workspace:*",
     "neo4j-driver": "^6.0.0",
     "pg": "^8.0.0"
   },
   "peerDependenciesMeta": {
-    "@cogitator-ai/core": {
-      "optional": true
-    },
-    "@cogitator-ai/memory": {
-      "optional": true
-    },
     "pg": {
       "optional": true
     },

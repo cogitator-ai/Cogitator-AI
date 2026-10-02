@@ -13,7 +13,7 @@
  */
 
 import { execSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -50,10 +50,10 @@ function buildPlugin(name) {
 
   try {
     // Bundle with esbuild
-    execSync(
-      `npx esbuild ${inputTs} --bundle --format=cjs --target=es2020 --outfile=${outputJs}`,
-      { stdio: 'inherit', cwd: rootDir }
-    );
+    execSync(`npx esbuild ${inputTs} --bundle --format=cjs --target=es2020 --outfile=${outputJs}`, {
+      stdio: 'inherit',
+      cwd: rootDir,
+    });
 
     // Compile to WASM with interface file
     const interfaceFlag = existsSync(inputDts) ? `-i ${inputDts}` : '';
@@ -102,6 +102,7 @@ function main() {
       createPlaceholder(plugin);
     }
 
+    rmSync(tempDir, { recursive: true, force: true });
     console.log('\nPlaceholders created. Run build again after installing extism-js.');
     return;
   }
@@ -117,7 +118,12 @@ function main() {
     }
   }
 
+  rmSync(tempDir, { recursive: true, force: true });
+
   console.log(`Build complete: ${success} succeeded, ${failed} failed`);
+  if (failed > 0) {
+    process.exitCode = 1;
+  }
 }
 
 main();

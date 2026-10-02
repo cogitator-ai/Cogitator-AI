@@ -79,25 +79,31 @@ expect(mock.calls).toHaveLength(2);
 Test workflow execution with deterministic node outputs:
 
 ```typescript
-import { WorkflowBuilder, WorkflowExecutor } from '@cogitator-ai/workflows';
+import { WorkflowBuilder, WorkflowExecutor, functionNode } from '@cogitator-ai/workflows';
 
-const workflow = new WorkflowBuilder()
+type PipelineState = { data?: string; processed?: boolean };
+
+const workflow = new WorkflowBuilder<PipelineState>('test-pipeline')
   .addNode(
     'fetch',
-    functionNode(async () => ({ data: 'test' }))
+    functionNode('fetch', async () => 'test', {
+      stateMapper: (data) => ({ data: data as string }),
+    })
   )
   .addNode(
     'process',
-    functionNode(async (input) => ({ processed: true, ...input }))
+    functionNode('process', async () => true, {
+      stateMapper: (processed) => ({ processed: processed as boolean }),
+    }),
+    { after: ['fetch'] }
   )
-  .addEdge('fetch', 'process')
   .build();
 
-const executor = new WorkflowExecutor(workflow);
-const result = await executor.execute({});
+const executor = new WorkflowExecutor(cogitator);
+const result = await executor.execute(workflow);
 
-expect(result.processed).toBe(true);
-expect(result.data).toBe('test');
+expect(result.state.processed).toBe(true);
+expect(result.state.data).toBe('test');
 ```
 
 ## Running Tests

@@ -7,6 +7,7 @@ export type {
   CogitatorState,
   RouteContext,
   WebSocketConfig,
+  WebSocketAuthFunction,
   AgentListResponse,
   AgentRunRequest,
   AgentRunResponse,
@@ -26,6 +27,7 @@ export type {
   SwaggerConfig,
   WebSocketMessage,
   WebSocketResponse,
+  WebSocketRunPayload,
 } from './types.js';
 
 export {
@@ -34,6 +36,8 @@ export {
   createBodyParser,
   createErrorHandler,
 } from './middleware/index.js';
+
+export type { BodyParserOptions } from './middleware/body-parser.js';
 
 export {
   createHealthRoutes,

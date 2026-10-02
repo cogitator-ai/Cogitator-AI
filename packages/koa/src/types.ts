@@ -1,3 +1,4 @@
+import type { IncomingMessage } from 'http';
 import type { Context } from 'koa';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 import type {
@@ -43,11 +44,16 @@ export type AuthFunction = (
   ctx: Context
 ) => Promise<AuthContext | undefined> | AuthContext | undefined;
 
+export type WebSocketAuthFunction = (
+  req: IncomingMessage
+) => Promise<AuthContext | undefined> | AuthContext | undefined;
+
 export interface WebSocketConfig {
   path?: string;
   pingInterval?: number;
   pingTimeout?: number;
   maxPayloadSize?: number;
+  auth?: WebSocketAuthFunction;
 }
 
 export type { SwaggerConfig } from '@cogitator-ai/server-shared';
@@ -61,8 +67,7 @@ export interface CogitatorAppOptions {
   auth?: AuthFunction;
   enableSwagger?: boolean;
   swagger?: SwaggerConfig;
-  enableWebSocket?: boolean;
-  websocket?: WebSocketConfig;
+  bodyLimit?: number;
 }
 
 export interface CogitatorState {
@@ -217,6 +222,14 @@ export interface WebSocketMessage {
   type: 'run' | 'stop' | 'ping';
   id?: string;
   payload?: unknown;
+}
+
+export interface WebSocketRunPayload {
+  type: 'agent' | 'workflow' | 'swarm';
+  name: string;
+  input: string;
+  context?: Record<string, unknown>;
+  threadId?: string;
 }
 
 export interface WebSocketResponse {

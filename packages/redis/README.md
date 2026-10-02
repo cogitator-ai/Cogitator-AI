@@ -11,13 +11,14 @@ pnpm add @cogitator-ai/redis ioredis
 ## Features
 
 - **Unified Interface** - Same API for standalone and cluster modes
-- **Auto-Detection** - Automatically detect standalone vs cluster
+- **Mode Detection** - `detectRedisMode()` checks whether a server runs in cluster mode
 - **Environment Config** - Configure via environment variables
 - **TLS Support** - Secure connections with TLS
 - **NAT Mapping** - Support for cluster nodes behind NAT
-- **Key Prefixing** - Automatic key prefixing with hash tags for cluster
-- **Retry Strategy** - Built-in exponential backoff
-- **Pub/Sub** - Publish/subscribe support
+- **Key Prefixing** - Transparent key prefixes (including `keys()` lookups); use hash tags in cluster mode
+- **Non-blocking Key Scans** - `keys()` uses SCAN and covers every master node of a cluster
+- **Reconnect Strategy** - Built-in capped reconnect backoff
+- **Pub/Sub** - Publish/subscribe with per-channel callbacks
 
 ---
 
@@ -207,6 +208,8 @@ const members = await redis.smembers('myset');
 
 ### Pub/Sub
 
+A connection in subscriber mode cannot run regular commands, so subscribe on a `duplicate()`. Channel names are exact (they are not prefixed with `keyPrefix`); several callbacks can subscribe to the same channel and `unsubscribe` removes all of them.
+
 ```typescript
 const subscriber = redis.duplicate();
 
@@ -238,7 +241,10 @@ await redis.ping();
 const info = await redis.info();
 const memoryInfo = await redis.info('memory');
 
-const allKeys = await redis.keys('myapp:*');
+// Relative to keyPrefix: with keyPrefix 'myapp:' this finds 'myapp:cache:*'
+// and returns ['cache:a', ...], ready to pass to get/del
+const cacheKeys = await redis.keys('cache:*');
+await redis.del(...cacheKeys);
 
 const sub = redis.duplicate();
 
@@ -249,14 +255,14 @@ await redis.quit();
 
 ## Environment Variables
 
-| Variable              | Description                     |
-| --------------------- | ------------------------------- |
-| `REDIS_URL`           | Redis connection URL            |
-| `REDIS_HOST`          | Redis host (default: localhost) |
-| `REDIS_PORT`          | Redis port (default: 6379)      |
-| `REDIS_PASSWORD`      | Redis password                  |
-| `REDIS_CLUSTER_NODES` | JSON array of cluster nodes     |
-| `REDIS_KEY_PREFIX`    | Key prefix                      |
+| Variable              | Description                                                                                 |
+| --------------------- | ------------------------------------------------------------------------------------------- |
+| `REDIS_URL`           | Redis connection URL                                                                        |
+| `REDIS_HOST`          | Redis host (default: localhost)                                                             |
+| `REDIS_PORT`          | Redis port (default: 6379)                                                                  |
+| `REDIS_PASSWORD`      | Redis password                                                                              |
+| `REDIS_CLUSTER_NODES` | JSON array of cluster nodes (a malformed value throws instead of falling back to localhost) |
+| `REDIS_KEY_PREFIX`    | Key prefix                                                                                  |
 
 ### Environment Examples
 
@@ -283,7 +289,7 @@ REDIS_KEY_PREFIX={myapp}:
 Automatically detect if Redis is running in cluster mode:
 
 ```typescript
-import { createRedisClient, detectRedisMode } from '@cogitator-ai/redis';
+import { createRedisClient, detectRedisMode, type RedisConfig } from '@cogitator-ai/redis';
 
 const mode = await detectRedisMode({
   host: 'localhost',
@@ -292,7 +298,7 @@ const mode = await detectRedisMode({
 
 console.log(`Redis mode: ${mode}`);
 
-const config =
+const config: RedisConfig =
   mode === 'cluster'
     ? { mode: 'cluster', nodes: [{ host: 'localhost', port: 6379 }] }
     : { host: 'localhost', port: 6379 };

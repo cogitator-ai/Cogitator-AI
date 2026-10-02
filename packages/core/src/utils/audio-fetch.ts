@@ -69,6 +69,13 @@ export async function fetchAudioAsBuffer(
       throw new Error(`Failed to fetch audio: HTTP ${response.status}`);
     }
 
+    const declaredLength = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_FILE_SIZE) {
+      throw new Error(
+        `Audio file exceeds 25MB limit (got ${(declaredLength / 1024 / 1024).toFixed(1)}MB)`
+      );
+    }
+
     const contentType = response.headers.get('content-type');
     const format = detectAudioFormat(contentType, url);
     const buffer = Buffer.from(await response.arrayBuffer());

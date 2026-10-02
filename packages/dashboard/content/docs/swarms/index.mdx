@@ -25,14 +25,16 @@ const devTeam = swarm('dev-team')
     })
   )
   .workers([
-    new Agent({ name: 'frontend-dev', instructions: 'Build React components.' }),
-    new Agent({ name: 'backend-dev', instructions: 'Build APIs and services.' }),
+    new Agent({ name: 'frontend-dev', model: 'openai/gpt-4o-mini', instructions: 'Build React components.' }),
+    new Agent({ name: 'backend-dev', model: 'openai/gpt-4o-mini', instructions: 'Build APIs and services.' }),
   ])
   .build(cogitator);
 
 const result = await devTeam.run({ input: 'Build a user authentication system' });
 console.log(result.output);
 ```
+
+The supervisor automatically receives the delegation tools (`delegate_task`, `check_progress`, `request_revision`, `list_workers`), so it can hand subtasks to the workers.
 
 ## Core Concepts
 
@@ -46,7 +48,7 @@ Every swarm has three fundamental pieces:
 
 ## Available Strategies
 
-Cogitator ships with 8 built-in coordination strategies:
+Cogitator ships with 7 built-in coordination strategies, each of which can also run in distributed mode:
 
 | Strategy       | Use Case                                                           |
 | -------------- | ------------------------------------------------------------------ |
@@ -57,7 +59,8 @@ Cogitator ships with 8 built-in coordination strategies:
 | `pipeline`     | Sequential stages with optional quality gates                      |
 | `debate`       | Agents argue opposing positions, moderator synthesizes             |
 | `negotiation`  | Multi-party negotiation with offers, counteroffers, and agreements |
-| `distributed`  | Redis-backed coordination across multiple machines                 |
+
+Any strategy can run in **distributed mode** (`.distributed({ enabled: true, ... })`) with Redis-backed state and worker nodes — see [Distributed Swarms](/docs/swarms/distributed).
 
 ## Swarms vs Workflows
 
@@ -82,7 +85,7 @@ Use **swarms** when agents need to discuss, delegate, or reach consensus. Use **
 5. Result    → Aggregated output with per-agent results
 ```
 
-When a swarm runs, the `SwarmCoordinator` manages agent execution, tracks resource usage, and handles errors according to your configuration. Each strategy implements its own execution flow on top of the coordinator.
+When a swarm runs, the coordinator manages agent execution, tracks resource usage per run, and handles errors according to your configuration (`SwarmCoordinator` in-process, `DistributedSwarmCoordinator` with Redis workers). Each strategy implements its own execution flow on top of the coordinator.
 
 ## Resource Management
 

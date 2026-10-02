@@ -232,7 +232,8 @@ async function queryPostgres(
   connectionString: string,
   query: string,
   params: unknown[],
-  maxRows: number
+  maxRows: number,
+  readOnly: boolean
 ): Promise<QueryResult> {
   let pg: typeof import('pg');
   try {
@@ -249,7 +250,17 @@ async function queryPostgres(
 
     const limitedQuery = withRowLimit(query, maxRows);
 
-    const result = await client.query(limitedQuery, params);
+    let result: { rows: unknown[] };
+    if (readOnly) {
+      await client.query('BEGIN TRANSACTION READ ONLY');
+      try {
+        result = await client.query(limitedQuery, params);
+      } finally {
+        await client.query('ROLLBACK');
+      }
+    } else {
+      result = await client.query(limitedQuery, params);
+    }
     const executionTime = Date.now() - start;
 
     const truncated = result.rows.length > maxRows;
@@ -290,6 +301,17 @@ async function querySqlite(
     const limitedQuery = withRowLimit(query, maxRows);
 
     const stmt = db.prepare(limitedQuery);
+    if (!stmt.reader) {
+      const info = stmt.run(...params);
+      return {
+        rows: [],
+        rowCount: info.changes,
+        truncated: false,
+        database: 'sqlite',
+        executionTime: Date.now() - start,
+      };
+    }
+
     const rows = stmt.all(...params) as Record<string, unknown>[];
     const executionTime = Date.now() - start;
 
@@ -361,7 +383,7 @@ export const sqlQuery = tool({
     try {
       switch (db) {
         case 'postgres':
-          return await queryPostgres(connStr, query, params, maxRows);
+          return await queryPostgres(connStr, query, params, maxRows, readOnly);
         case 'sqlite':
           return await querySqlite(connStr, query, params, maxRows, readOnly);
         default:

@@ -23,6 +23,7 @@ function createMockSession(stealthEnabled = false) {
     isVisible: vi.fn().mockResolvedValue(true),
     fill: vi.fn().mockResolvedValue(undefined),
     type: vi.fn().mockResolvedValue(undefined),
+    pressSequentially: vi.fn().mockResolvedValue(undefined),
     check: vi.fn().mockResolvedValue(undefined),
     uncheck: vi.fn().mockResolvedValue(undefined),
     selectOption: vi.fn().mockResolvedValue(undefined),
@@ -441,18 +442,20 @@ describe('interaction tools', () => {
       expect(result.filled).not.toContain('nonexistent');
     });
 
-    it('uses type instead of fill in stealth mode', async () => {
+    it('clears the field then types keystrokes in stealth mode', async () => {
       const stealthMock = createMockSession(true);
-      const stealthLocator = stealthMock.mockPage.locator();
-      stealthLocator.count.mockResolvedValue(1);
-      stealthMock.mockPage.locator.mockReturnValue(stealthLocator);
+      const field = stealthMock.mockLocatorFirst;
 
       const t = createFillFormTool(stealthMock.session);
       await t.execute({ fields: { username: 'john' } }, dummyContext);
 
-      expect(stealthLocator.first().type).toHaveBeenCalledWith(
+      expect(field.fill).toHaveBeenCalledWith('');
+      expect(field.pressSequentially).toHaveBeenCalledWith(
         'john',
         expect.objectContaining({ delay: expect.any(Number) })
+      );
+      expect(field.fill.mock.invocationCallOrder[0]).toBeLessThan(
+        field.pressSequentially.mock.invocationCallOrder[0]
       );
     });
   });

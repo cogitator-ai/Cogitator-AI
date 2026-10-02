@@ -3,66 +3,62 @@
 [![npm version](https://img.shields.io/npm/v/@cogitator-ai/workflows.svg)](https://www.npmjs.com/package/@cogitator-ai/workflows)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-DAG-based workflow engine for Cogitator agents. Build complex multi-step workflows with branching, loops, checkpoints, human-in-the-loop, timers, and more.
+DAG-based workflow engine for Cogitator agents. Build multi-step workflows with branching, loops, joins, checkpoints, human-in-the-loop steps, timers, sagas, subworkflows, map-reduce, triggers and observability.
 
 ## Installation
 
 ```bash
-pnpm add @cogitator-ai/workflows
+pnpm add @cogitator-ai/workflows @cogitator-ai/core
 ```
 
 ## Features
 
-- **DAG Builder** — Type-safe workflow construction with nodes, conditionals, loops
-- **Real-time Streaming** — Stream execution events via async generators
-- **Checkpoints** — Save and resume workflow state
-- **Pre-built Nodes** — Agent, tool, and function nodes
-- **Timer System** — Delays, cron schedules, wait-until patterns
-- **Saga Patterns** — Retries, circuit breakers, compensation, DLQ
-- **Subworkflows** — Nested, parallel, fan-out/fan-in patterns
-- **Human-in-the-Loop** — Approvals, choices, inputs, rating
-- **Map-Reduce** — Parallel processing with aggregation
-- **Triggers** — Cron, webhook, and event triggers
-- **Observability** — Tracing and metrics with multiple exporters
+- **DAG Builder** — nodes, conditionals, loops and parallel fan-out with validation and entry-point detection
+- **Correct joins** — a node with several upstream branches runs once, after all of them finished
+- **Node policies** — per-node `timeout`, `retries` and `retryDelay`
+- **Real-time Streaming** — async generator of execution events
+- **Checkpoints** — save and resume workflow state
+- **Pre-built Nodes** — agent, tool, function and custom nodes, plus adapters for timers, human approvals, map-reduce and subworkflows
+- **Saga Patterns** — retries, circuit breakers, compensation, dead-letter queue, idempotency
+- **Triggers** — cron, webhook and event triggers
+- **Observability** — tracing (console, OTLP, Zipkin) and metrics (Prometheus format)
+- **Workflow Management** — run store, scheduling, cancellation, retries, replay
 
 ## Quick Start
 
 ```typescript
-import { WorkflowBuilder, WorkflowExecutor, agentNode } from '@cogitator-ai/workflows';
 import { Cogitator, Agent } from '@cogitator-ai/core';
+import { WorkflowBuilder, WorkflowExecutor, agentNode } from '@cogitator-ai/workflows';
 
-const cogitator = new Cogitator({
-  /* config */
+type ReportState = {
+  topic: string;
+  analysis?: string;
+};
+
+const cogitator = new Cogitator({ llm: { defaultModel: 'ollama/llama3.2' } });
+const analyst = new Agent({
+  name: 'analyst',
+  model: 'ollama/llama3.2',
+  instructions: 'Analyze topics concisely.',
 });
-const analyst = new Agent({ name: 'analyst', model: 'openai/gpt-4o', instructions: '...' });
 
-const workflow = new WorkflowBuilder('data-pipeline')
-  .addNode('analyze', agentNode(analyst))
-  .addNode('report', async (ctx) => ({ output: `Report: ${ctx.state.analysis}` }))
+const workflow = new WorkflowBuilder<ReportState>('report')
+  .initialState({ topic: '' })
+  .addNode(
+    'analyze',
+    agentNode<ReportState>(analyst, {
+      inputMapper: (state) => `Analyze: ${state.topic}`,
+      stateMapper: (result) => ({ analysis: result.output }),
+    })
+  )
+  .addNode('report', async (ctx) => ({ output: `Report: ${ctx.state.analysis}` }), {
+    after: ['analyze'],
+  })
   .build();
 
-const executor = new WorkflowExecutor(cogitator);
-const result = await executor.execute(workflow, { input: 'Analyze this data...' });
+const result = await new WorkflowExecutor(cogitator).execute(workflow, { topic: 'Edge AI' });
+console.log(result.state.analysis, result.error);
 ```
-
----
-
-## Table of Contents
-
-- [Core Concepts](#core-concepts)
-- [Real-time Streaming](#real-time-streaming)
-- [Pre-built Nodes](#pre-built-nodes)
-- [Conditional Branching](#conditional-branching)
-- [Loops](#loops)
-- [Checkpoints](#checkpoints)
-- [Timer System](#timer-system)
-- [Saga Patterns](#saga-patterns)
-- [Subworkflows](#subworkflows)
-- [Human-in-the-Loop](#human-in-the-loop)
-- [Map-Reduce Patterns](#map-reduce-patterns)
-- [Triggers](#triggers)
-- [Observability](#observability)
-- [Workflow Management](#workflow-management)
 
 ---
 
@@ -71,931 +67,502 @@ const result = await executor.execute(workflow, { input: 'Analyze this data...' 
 ### WorkflowBuilder
 
 ```typescript
-import { WorkflowBuilder } from '@cogitator-ai/workflows';
-
-const workflow = new WorkflowBuilder<MyState>('my-workflow')
+const workflow = new WorkflowBuilder<{ count: number }>('counter')
   .initialState({ count: 0 })
-  .addNode('step1', async (ctx) => ({
-    state: { ...ctx.state, count: ctx.state.count + 1 },
-  }))
-  .addNode(
-    'step2',
-    async (ctx) => ({
-      output: `Count: ${ctx.state.count}`,
-    }),
-    { after: ['step1'] }
-  )
+  .addNode('increment', async (ctx) => ({ state: { count: ctx.state.count + 1 } }))
+  .addNode('print', async (ctx) => ({ output: `Count: ${ctx.state.count}` }), {
+    after: ['increment'],
+    config: { timeout: 5_000, retries: 2, retryDelay: 500 },
+  })
   .build();
 ```
+
+- State types must be assignable to `Record<string, unknown>` — declare them with `type` rather than `interface`.
+- `addNode(name, fnOrNode, { after, config })` accepts a node function or a node created by a factory.
+- The entry point is the single node (or conditional/parallel/loop construct) without `after`. Independent roots are rejected — add a parallel fan-out or call `.entryPoint(name)`.
+- Node functions receive `ctx.state` (a copy), `ctx.input` (outputs of upstream nodes), `ctx.nodeId`, `ctx.workflowId`, `ctx.step`, `ctx.reportProgress()` and — for built-in nodes — `cogitator`, `signal` (run cancellation) and `depth` (subworkflow nesting).
+- Return `{ state }` to merge into the workflow state, `{ output }` for downstream nodes and `{ next }` to route dynamically.
 
 ### WorkflowExecutor
 
 ```typescript
-import { WorkflowExecutor } from '@cogitator-ai/workflows';
-
 const executor = new WorkflowExecutor(cogitator);
-const result = await executor.execute(workflow, {
-  input: 'Start the workflow',
-  context: { userId: '123' },
-  timeout: 60000,
-});
 
-console.log(result.output);
-console.log(result.state);
-console.log(result.events);
+const result = await executor.execute(
+  workflow,
+  { count: 5 },
+  {
+    maxConcurrency: 4, // parallel nodes per step
+    maxIterations: 100, // guards loops
+    signal: abortController.signal,
+    onNodeStart: (node) => console.log('start', node),
+    onNodeComplete: (node, output, duration) => console.log('done', node, duration),
+    onNodeError: (node, error) => console.error(node, error.message),
+  }
+);
+
+console.log(result.state, result.nodeResults, result.duration, result.error);
+```
+
+`execute()` never throws for node failures: the failure is returned in `result.error` (`NodeTimeoutError` for node timeouts).
+
+Run-level policies apply to every node:
+
+```typescript
+await executor.execute(workflow, input, {
+  defaultRetry: { maxRetries: 3, backoff: 'exponential', initialDelay: 500 }, // nodes without config.retries
+  defaultCircuitBreaker: breakerConfig, // per-node breaker, shared across runs of this executor
+  deadLetterQueue: createInMemoryDLQ(), // entry for every node that finally failed
+  idempotencyStore, // reuse results of nodes that already completed for this workflowId
+  approvalStore, // default store for humanWorkflowNode
+  timerStore, // default store for persisted timers
+  tracer,
+  metricsCollector,
+});
 ```
 
 ---
 
 ## Real-time Streaming
 
-Stream workflow execution events in real-time using async generators:
-
 ```typescript
-import { WorkflowExecutor } from '@cogitator-ai/workflows';
-
-const executor = new WorkflowExecutor(cogitator);
-
-for await (const event of executor.stream(workflow)) {
+for await (const event of executor.stream(workflow, { count: 0 })) {
   switch (event.type) {
     case 'workflow_started':
-      console.log('Workflow started:', event.workflowId);
-      break;
-
     case 'node_started':
-      console.log(`Node ${event.nodeId} started`);
-      break;
-
     case 'node_progress':
-      console.log(`Node ${event.nodeId}: ${event.progress}%`);
-      break;
-
     case 'node_completed':
-      console.log(`Node ${event.nodeId} completed:`, event.result);
-      break;
-
     case 'node_error':
-      console.error(`Node ${event.nodeId} failed:`, event.error);
+      console.log(event.type);
       break;
-
     case 'workflow_completed':
-      console.log('Workflow completed:', event.result);
+      console.log('final state', event.result.state);
       break;
   }
 }
 ```
 
-### Event Types
-
-| Event                | Description                | Properties                     |
-| -------------------- | -------------------------- | ------------------------------ |
-| `workflow_started`   | Workflow execution begins  | `workflowId`, `timestamp`      |
-| `node_started`       | Node execution begins      | `nodeId`, `timestamp`          |
-| `node_progress`      | Progress update from node  | `nodeId`, `progress` (0-100)   |
-| `node_completed`     | Node finished successfully | `nodeId`, `result`, `duration` |
-| `node_error`         | Node execution failed      | `nodeId`, `error`              |
-| `workflow_completed` | Workflow finished          | `result`, `duration`           |
-
-### Reporting Progress from Nodes
-
-Use `ctx.reportProgress()` inside nodes to emit progress events:
-
-```typescript
-const workflow = new WorkflowBuilder('processing')
-  .addNode('process', async (ctx) => {
-    const items = ctx.state.items;
-
-    for (let i = 0; i < items.length; i++) {
-      await processItem(items[i]);
-      ctx.reportProgress?.(Math.round(((i + 1) / items.length) * 100));
-    }
-
-    return { output: 'Done' };
-  })
-  .build();
-```
-
-### Progress Callback
-
-For non-streaming execution, use the `onNodeProgress` callback:
-
-```typescript
-const result = await executor.execute(workflow, {
-  input: 'Start',
-  onNodeProgress: (nodeId, progress) => {
-    console.log(`${nodeId}: ${progress}%`);
-  },
-});
-```
+Nodes report progress with `ctx.reportProgress(0..100)`; `execute()` exposes it through `onNodeProgress`.
 
 ---
 
 ## Pre-built Nodes
 
-### agentNode
-
-Run an agent as a workflow node:
-
 ```typescript
-import { agentNode } from '@cogitator-ai/workflows';
+import { agentNode, toolNode, functionNode, customNode } from '@cogitator-ai/workflows';
 
-const workflow = new WorkflowBuilder('agent-flow')
+builder
   .addNode(
     'research',
-    agentNode(researchAgent, {
-      promptKey: 'researchPrompt', // State key for input
-      outputKey: 'researchResult', // State key for output
-      timeout: 30000,
-      onToolCall: (call) => console.log('Tool:', call.name),
+    agentNode<MyState>(researcher, {
+      inputMapper: (state) => state.question,
+      stateMapper: (result) => ({ findings: result.output }),
+      runOptions: { timeout: 60_000 },
     })
   )
-  .build();
-```
-
-### toolNode
-
-Execute a tool directly:
-
-```typescript
-import { toolNode } from '@cogitator-ai/workflows';
-
-const workflow = new WorkflowBuilder('tool-flow')
-  .addNode('calculate', toolNode('calculator', { expression: '2 + 2' }))
-  .build();
-```
-
-### functionNode
-
-Custom function as a node:
-
-```typescript
-import { functionNode } from '@cogitator-ai/workflows';
-
-const workflow = new WorkflowBuilder('func-flow')
   .addNode(
-    'transform',
-    functionNode(async (ctx) => {
-      const transformed = processData(ctx.state.data);
-      return { state: { ...ctx.state, transformed } };
-    })
+    'calculate',
+    toolNode<MyState, { expression: string }>(calculator, {
+      argsMapper: (state) => ({ expression: state.formula }),
+      stateMapper: (result) => ({ value: result }),
+    }),
+    { after: ['research'] }
   )
-  .build();
+  .addNode(
+    'normalize',
+    functionNode<MyState, string>('normalize', async (state) => state.findings!.trim(), {
+      stateMapper: (output) => ({ findings: output as string }),
+    }),
+    { after: ['calculate'] }
+  );
 ```
+
+Agent and tool nodes use the run's abort signal, so cancelling the workflow cancels in-flight LLM and tool calls.
 
 ---
 
-## Conditional Branching
+## Branching, Loops and Joins
 
 ```typescript
-const workflow = new WorkflowBuilder('approval-flow')
-  .addNode('review', reviewNode)
-  .addConditional('check', (state) => state.approved, {
+const workflow = new WorkflowBuilder<{ approved: boolean }>('review-flow')
+  .initialState({ approved: false })
+  .addNode('review', reviewFn)
+  .addConditional('check', (state) => (state.approved ? 'publish' : 'revise'), {
     after: ['review'],
   })
-  .addNode('approve', approveNode, { after: ['check:true'] })
-  .addNode('reject', rejectNode, { after: ['check:false'] })
-  .addNode('notify', notifyNode, { after: ['approve', 'reject'] })
+  .addNode('publish', publishFn, { after: ['check'] })
+  .addNode('revise', reviseFn, { after: ['check'] })
+  .addNode('notify', notifyFn, { after: ['publish', 'revise'] })
   .build();
 ```
 
----
-
-## Loops
+A conditional returns the name(s) of the branch(es) to take; every node (or construct) with `after: ['check']` is a candidate branch.
 
 ```typescript
-const workflow = new WorkflowBuilder('retry-flow')
-  .addNode('attempt', attemptNode)
-  .addLoop('retry-check', {
-    condition: (state) => !state.success && state.attempts < 3,
+const workflow = new WorkflowBuilder<{ attempts: number; done: boolean }>('retry-flow')
+  .initialState({ attempts: 0, done: false })
+  .addNode('attempt', async (ctx) => ({
+    state: { attempts: ctx.state.attempts + 1, done: await tryIt() },
+  }))
+  .addLoop('again', {
+    condition: (state) =>
+      !(state as { done: boolean }).done && (state as { attempts: number }).attempts < 3,
     back: 'attempt',
-    exit: 'done',
+    exit: 'finish',
     after: ['attempt'],
   })
-  .addNode('done', doneNode)
+  .addNode('finish', finishFn)
   .build();
 ```
+
+Only the loop's `back` and `exit` nodes may follow it; any other node with the loop in `after` makes `build()` throw. A root `addParallel` is the workflow's entry point:
+
+```typescript
+const workflow = new WorkflowBuilder('fan-out')
+  .addParallel('fan', ['fetch-a', 'fetch-b'])
+  .addNode('fetch-a', fetchA)
+  .addNode('fetch-b', fetchB)
+  .addNode('normalize-b', normalizeB, { after: ['fetch-b'] })
+  .addNode('merge', async (ctx) => ({ output: ctx.input }), { after: ['fetch-a', 'normalize-b'] })
+  .build();
+```
+
+`merge` runs once, after both branches finished, and receives both outputs as `ctx.input`.
 
 ---
 
 ## Checkpoints
 
-Save and resume workflow execution:
-
 ```typescript
-import { FileCheckpointStore, InMemoryCheckpointStore } from '@cogitator-ai/workflows';
+import { FileCheckpointStore } from '@cogitator-ai/workflows';
 
-// File-based persistence
-const store = new FileCheckpointStore('./checkpoints');
+const executor = new WorkflowExecutor(cogitator, new FileCheckpointStore('./checkpoints'));
 
-// Execute with checkpoints
-await executor.execute(workflow, {
-  checkpointStore: store,
-  checkpointInterval: 5000, // Save every 5 seconds
+const first = await executor.execute(workflow, input, {
+  checkpoint: true,
+  checkpointStrategy: 'per-node', // or 'per-iteration' (default)
 });
 
-// Resume from checkpoint
-const result = await executor.resume(checkpointId, store);
+if (first.error && first.checkpointId) {
+  const resumed = await executor.resume(workflow, first.checkpointId);
+}
 ```
 
 ---
 
-## Timer System
-
-### Delay Nodes
-
-```typescript
-import { delayNode, dynamicDelayNode, cronWaitNode, untilNode } from '@cogitator-ai/workflows';
-
-const workflow = new WorkflowBuilder('timer-flow')
-  // Fixed delay
-  .addNode('wait', delayNode(5000)) // 5 seconds
-
-  // Dynamic delay based on state
-  .addNode(
-    'dynamic-wait',
-    dynamicDelayNode((state) => state.retryCount * 1000)
-  )
-
-  // Wait for cron schedule
-  .addNode('cron-wait', cronWaitNode('0 9 * * *')) // Wait until 9 AM
-
-  // Wait until specific date
-  .addNode(
-    'until',
-    untilNode((state) => state.scheduledTime)
-  )
-  .build();
-```
-
-### Duration Parsing
-
-```typescript
-import { parseDuration, formatDuration } from '@cogitator-ai/workflows';
-
-const ms = parseDuration('1h30m'); // 5400000
-const str = formatDuration(5400000); // '1h 30m'
-```
-
-### Cron Utilities
+## Timers
 
 ```typescript
 import {
-  validateCronExpression,
-  getNextCronOccurrence,
-  getNextCronOccurrences,
-  describeCronExpression,
-  CRON_PRESETS,
+  delayNode,
+  dynamicDelayNode,
+  cronWaitNode,
+  untilNode,
+  timerWorkflowNode,
+  parseDuration,
+  formatDuration,
 } from '@cogitator-ai/workflows';
 
-// Validate
-const valid = validateCronExpression('0 9 * * 1-5'); // true
+builder
+  .addNode('cool-down', timerWorkflowNode(delayNode('cool-down', parseDuration('5m'))))
+  .addNode(
+    'backoff',
+    timerWorkflowNode(dynamicDelayNode<MyState>('backoff', (state) => state.retries * 1000)),
+    { after: ['cool-down'] }
+  )
+  .addNode('business-hours', timerWorkflowNode(cronWaitNode('business-hours', '0 9 * * 1-5')), {
+    after: ['backoff'],
+  })
+  .addNode('deadline', timerWorkflowNode(untilNode<MyState>('deadline', (state) => state.dueAt)), {
+    after: ['business-hours'],
+  });
 
-// Get next occurrence
-const next = getNextCronOccurrence('0 9 * * *');
-
-// Get multiple occurrences
-const nextFive = getNextCronOccurrences('0 9 * * *', 5);
-
-// Human-readable description
-const desc = describeCronExpression('0 9 * * 1-5'); // "At 09:00 on weekdays"
-
-// Presets
-CRON_PRESETS.EVERY_MINUTE; // '* * * * *'
-CRON_PRESETS.HOURLY; // '0 * * * *'
-CRON_PRESETS.DAILY; // '0 0 * * *'
-CRON_PRESETS.WEEKLY; // '0 0 * * 0'
-CRON_PRESETS.MONTHLY; // '0 0 1 * *'
+formatDuration(90_000); // '1.5m'
 ```
 
-### TimerManager
-
-Manage recurring timers:
-
-```typescript
-import { createTimerManager, createRecurringScheduler } from '@cogitator-ai/workflows';
-
-const manager = createTimerManager({
-  maxConcurrent: 10,
-  defaultTimeout: 60000,
-});
-
-// One-shot timer
-manager.schedule('task-1', 5000, async () => {
-  console.log('Executed after 5 seconds');
-});
-
-// Recurring timer
-const scheduler = createRecurringScheduler();
-scheduler.schedule('daily-report', '0 9 * * *', async () => {
-  await generateDailyReport();
-});
-```
+Waits are cancelled when the run is aborted. Pass `{ timerStore }` to `timerWorkflowNode` together with `persist: true` configs (or use `createTimerNodeHelpers(store)`) to persist timers; `createTimerManager(store)` and `createRecurringScheduler(manager)` process persisted and recurring timers. Cron helpers: `validateCronExpression`, `getNextCronOccurrence(s)`, `describeCronExpression`, `CRON_PRESETS`.
 
 ---
 
 ## Saga Patterns
 
-### Retry with Backoff
+### Retry
 
 ```typescript
-import { executeWithRetry, withRetry, Retryable } from '@cogitator-ai/workflows';
+import { executeWithRetry, withRetry } from '@cogitator-ai/workflows';
 
-// Function wrapper
-const result = await executeWithRetry(async () => await unreliableOperation(), {
-  maxAttempts: 5,
-  initialDelay: 1000,
-  maxDelay: 30000,
-  backoffMultiplier: 2,
+const outcome = await executeWithRetry((attempt) => callService(attempt), {
+  maxRetries: 4,
+  backoff: 'exponential', // 'constant' | 'linear' | 'exponential'
+  initialDelay: 500,
+  maxDelay: 10_000,
   jitter: 0.1,
-  shouldRetry: (error) => error.code !== 'FATAL',
-  onRetry: (attempt, error, delay) => console.log(`Retry ${attempt} in ${delay}ms`),
+  isRetryable: (error) => !error.message.includes('invalid'),
 });
+if (!outcome.success) console.error(outcome.error);
 
-// Decorator-style
-const retryableFetch = withRetry({ maxAttempts: 3 })(async (url: string) => await fetch(url));
-
-// Class decorator
-class ApiClient {
-  @Retryable({ maxAttempts: 3, initialDelay: 500 })
-  async request(endpoint: string) {
-    return fetch(endpoint);
-  }
-}
+const fetchWithRetry = withRetry((url: string) => fetch(url), { maxRetries: 3 });
 ```
 
 ### Circuit Breaker
 
 ```typescript
-import { CircuitBreaker, createCircuitBreaker, WithCircuitBreaker } from '@cogitator-ai/workflows';
+import { createCircuitBreaker, CircuitBreakerOpenError } from '@cogitator-ai/workflows';
 
-const breaker = createCircuitBreaker({
-  failureThreshold: 5,
-  successThreshold: 2,
-  timeout: 30000,
-  halfOpenMaxAttempts: 3,
-  onStateChange: (from, to) => console.log(`Circuit: ${from} -> ${to}`),
-});
+const breaker = createCircuitBreaker({ threshold: 5, resetTimeout: 30_000, successThreshold: 2 });
 
-// Use the breaker
 try {
-  const result = await breaker.execute(async () => {
-    return await externalService.call();
-  });
+  await breaker.execute('payments', () => payments.charge(order));
 } catch (error) {
   if (error instanceof CircuitBreakerOpenError) {
-    console.log('Circuit is open, using fallback');
+    // use a fallback
   }
 }
 
-// Get stats
-const stats = breaker.getStats();
-console.log(stats.failures, stats.successes, stats.state);
-
-// Decorator-style
-class ServiceClient {
-  @WithCircuitBreaker({ failureThreshold: 3 })
-  async call() {
-    return fetch('/api');
-  }
-}
+console.log(breaker.getStats('payments'));
 ```
 
-### Compensation (Saga)
+### Compensation
 
 ```typescript
-import { CompensationManager, compensationBuilder } from '@cogitator-ai/workflows';
+import { compensationBuilder } from '@cogitator-ai/workflows';
 
-const saga = compensationBuilder<{ orderId: string }>()
-  .step({
-    name: 'reserve-inventory',
-    execute: async (ctx) => {
-      ctx.state.inventoryReserved = await inventory.reserve(ctx.data.orderId);
-    },
-    compensate: async (ctx) => {
-      await inventory.release(ctx.data.orderId);
-    },
-  })
-  .step({
-    name: 'charge-payment',
-    execute: async (ctx) => {
-      ctx.state.paymentId = await payments.charge(ctx.data.orderId);
-    },
-    compensate: async (ctx) => {
-      await payments.refund(ctx.state.paymentId);
-    },
-  })
-  .step({
-    name: 'ship-order',
-    execute: async (ctx) => {
-      await shipping.ship(ctx.data.orderId);
-    },
-    compensate: async (ctx) => {
-      await shipping.cancel(ctx.data.orderId);
-    },
-  })
+const compensation = compensationBuilder<OrderState>()
+  .addStep('reserve', async (state) => inventory.release(state.orderId))
+  .addStep('charge', async (state) => payments.refund(state.paymentId!))
   .build();
 
-const manager = new CompensationManager();
-const result = await manager.execute(saga, { orderId: 'order-123' });
+compensation.markCompleted('reserve', reservation);
+compensation.markCompleted('charge', payment);
 
-if (!result.success) {
-  console.log('Saga failed at:', result.failedStep);
-  console.log('Compensated steps:', result.compensatedSteps);
-}
+const report = await compensation.compensate(state, 'ship', new Error('carrier down'));
 ```
 
-### Dead Letter Queue (DLQ)
+Compensations run in reverse completion order for the steps marked completed.
+
+### Dead Letter Queue and Idempotency
 
 ```typescript
-import { createFileDLQ, createInMemoryDLQ } from '@cogitator-ai/workflows';
+import {
+  createFileDLQ,
+  createDLQEntry,
+  createInMemoryIdempotencyStore,
+  idempotent,
+} from '@cogitator-ai/workflows';
 
 const dlq = createFileDLQ('./dlq');
+await dlq.add(createDLQEntry('charge', workflowId, 'checkout', state, error, { attempts: 3 }));
+const failed = await dlq.list({ workflowName: 'checkout' });
 
-// Add failed item
-await dlq.add({
-  id: 'job-123',
-  payload: { orderId: 'order-456' },
-  error: 'Payment failed',
-  source: 'checkout-workflow',
-  attemptCount: 3,
-});
-
-// Process DLQ
-const items = await dlq.list({ source: 'checkout-workflow' });
-for (const item of items) {
-  try {
-    await retryJob(item.payload);
-    await dlq.remove(item.id);
-  } catch {
-    await dlq.update(item.id, { attemptCount: item.attemptCount + 1 });
-  }
-}
-```
-
-### Idempotency
-
-```typescript
-import { idempotent, Idempotent, createFileIdempotencyStore } from '@cogitator-ai/workflows';
-
-const store = createFileIdempotencyStore('./idempotency');
-
-// Function wrapper
-const processOrder = idempotent(store, {
-  keyGenerator: (orderId: string) => `order:${orderId}`,
-  ttl: 24 * 60 * 60 * 1000, // 24 hours
-})(async (orderId: string) => {
-  return await processOrderInternal(orderId);
-});
-
-// Safe to call multiple times
-await processOrder('order-123'); // Executes
-await processOrder('order-123'); // Returns cached result
-
-// Decorator-style
-class OrderService {
-  @Idempotent({ keyGenerator: (id) => `order:${id}`, ttl: 86400000 })
-  async process(orderId: string) {
-    return processOrderInternal(orderId);
-  }
-}
+const store = createInMemoryIdempotencyStore();
+const receipt = await idempotent(store, `charge:${orderId}`, () => payments.charge(orderId));
 ```
 
 ---
 
 ## Subworkflows
 
-### Nested Subworkflows
-
 ```typescript
-import { subworkflowNode, executeSubworkflow } from '@cogitator-ai/workflows';
+import {
+  subworkflowNode,
+  subworkflowWorkflowNode,
+  fanOutFanIn,
+  parallelSubworkflowsNode,
+} from '@cogitator-ai/workflows';
 
-const mainWorkflow = new WorkflowBuilder('main')
-  .addNode('prepare', prepareNode)
+builder
   .addNode(
-    'process',
-    subworkflowNode(processingWorkflow, {
-      inputMapper: (state) => ({ items: state.items }),
-      outputMapper: (result) => ({ processedItems: result.output }),
-      maxDepth: 5,
-      errorStrategy: 'fail', // 'fail' | 'continue' | 'compensate'
-    })
-  )
-  .addNode('finalize', finalizeNode, { after: ['process'] })
-  .build();
-```
-
-### Parallel Subworkflows
-
-```typescript
-import { parallelSubworkflows, fanOutFanIn, scatterGather } from '@cogitator-ai/workflows';
-
-// Fan-out/Fan-in pattern
-const workflow = new WorkflowBuilder('parallel')
-  .addNode(
-    'distribute',
-    fanOutFanIn(
-      [
-        { workflow: workflowA, input: { type: 'a' } },
-        { workflow: workflowB, input: { type: 'b' } },
-        { workflow: workflowC, input: { type: 'c' } },
-      ],
-      {
-        concurrency: 3,
-        onProgress: (completed, total) => console.log(`${completed}/${total}`),
-      }
+    'enrich',
+    subworkflowWorkflowNode(
+      subworkflowNode<ParentState, ChildState>('enrich', {
+        workflow: enrichmentWorkflow,
+        inputMapper: (state) => ({ record: state.record }),
+        outputMapper: (result, state) => ({ ...state, enriched: result.state.record }),
+        timeout: 60_000,
+        onError: 'retry', // 'propagate' | 'ignore' | 'catch' | 'retry'
+        maxDepth: 5,
+      })
     )
   )
-  .build();
-
-// Scatter-Gather (collect all results)
-const results = await scatterGather(executor, workflows, inputs);
-
-// Race (first to complete wins)
-const winner = await raceSubworkflows(executor, [workflow1, workflow2]);
-
-// Fallback (try until one succeeds)
-const result = await fallbackSubworkflows(executor, [primary, secondary, tertiary]);
+  .addNode(
+    'per-region',
+    parallelSubworkflowsNode(
+      fanOutFanIn<ParentState, RegionState>('per-region', {
+        workflow: regionWorkflow,
+        getInputs: (state) => state.regions.map((region) => ({ id: region, input: { region } })),
+        aggregator: (results, state) => ({ ...state, regionCount: results.size }),
+        concurrency: 3,
+      })
+    ),
+    { after: ['enrich'] }
+  );
 ```
+
+Child failures propagate to the parent (or follow `onError`); timeouts cancel the child run. `scatterGather`, `raceSubworkflows` and `fallbackSubworkflows` cover the other common patterns.
 
 ---
 
 ## Human-in-the-Loop
 
-### Approval Node
-
 ```typescript
-import { approvalNode, InMemoryApprovalStore, WebhookNotifier } from '@cogitator-ai/workflows';
+import {
+  approvalNode,
+  humanWorkflowNode,
+  InMemoryApprovalStore,
+  WebhookNotifier,
+} from '@cogitator-ai/workflows';
 
-const store = new InMemoryApprovalStore();
-const notifier = new WebhookNotifier('https://slack.webhook.url');
+const approvalStore = new InMemoryApprovalStore();
+const approvalNotifier = new WebhookNotifier({ url: 'https://hooks.example.com/approvals' });
 
-const workflow = new WorkflowBuilder('approval-flow')
+builder
   .addNode(
-    'request',
-    approvalNode({
-      message: (state) => `Approve expense: $${state.amount}`,
-      approvers: ['manager@company.com'],
-      timeout: 24 * 60 * 60 * 1000, // 24 hours
-      store,
-      notifier,
-    })
+    'approve-expense',
+    humanWorkflowNode(
+      approvalNode<ExpenseState>('approve-expense', {
+        title: 'Approve expense',
+        description: (state) => `Amount: $${state.amount}`,
+        assignee: 'manager@company.com',
+        timeout: 24 * 60 * 60 * 1000,
+        timeoutAction: 'reject',
+      }),
+      { approvalStore, approvalNotifier, stateMapper: (result) => ({ approved: result.approved }) }
+    )
   )
-  .addConditional('check', (state) => state.approved, { after: ['request'] })
-  .addNode('process', processNode, { after: ['check:true'] })
-  .addNode('reject', rejectNode, { after: ['check:false'] })
-  .build();
+  .addConditional('route', (state) => (state.approved ? 'pay' : 'decline'), {
+    after: ['approve-expense'],
+  });
+
+// Elsewhere (API handler, UI, Slack action):
+await approvalStore.submitResponse({
+  requestId,
+  decision: true,
+  respondedBy: 'manager@company.com',
+  respondedAt: Date.now(),
+});
 ```
 
-### Choice Node
-
-```typescript
-import { choiceNode } from '@cogitator-ai/workflows';
-
-const workflow = new WorkflowBuilder('choice-flow')
-  .addNode(
-    'select',
-    choiceNode({
-      message: 'Select processing method:',
-      choices: [
-        { id: 'fast', label: 'Fast (less accurate)', value: 'fast' },
-        { id: 'accurate', label: 'Accurate (slower)', value: 'accurate' },
-      ],
-      store,
-      notifier,
-    })
-  )
-  .build();
-```
-
-### Input Node
-
-```typescript
-import { inputNode } from '@cogitator-ai/workflows';
-
-const workflow = new WorkflowBuilder('input-flow')
-  .addNode(
-    'get-details',
-    inputNode({
-      message: 'Please provide additional details:',
-      fields: [
-        { name: 'reason', type: 'text', required: true },
-        { name: 'priority', type: 'select', options: ['low', 'medium', 'high'] },
-      ],
-      store,
-      notifier,
-    })
-  )
-  .build();
-```
-
-### Approval Chains
-
-```typescript
-import { managementChain, chainNode } from '@cogitator-ai/workflows';
-
-const workflow = new WorkflowBuilder('chain-approval')
-  .addNode(
-    'approval',
-    managementChain({
-      steps: [
-        { approver: 'team-lead@co.com', requiredFor: (state) => state.amount > 100 },
-        { approver: 'manager@co.com', requiredFor: (state) => state.amount > 1000 },
-        { approver: 'director@co.com', requiredFor: (state) => state.amount > 10000 },
-      ],
-      store,
-      notifier,
-    })
-  )
-  .build();
-```
+Other configs: `choiceNode`, `inputNode`, `ratingNode`, `chainNode`, `managementChain`. Notifiers: `ConsoleNotifier`, `WebhookNotifier`, `slackNotifier`, `CompositeNotifier`, `filteredNotifier`, `priorityRouter`. `FileApprovalStore` persists requests.
 
 ---
 
-## Map-Reduce Patterns
-
-### Map (Parallel Processing)
+## Map-Reduce
 
 ```typescript
-import { mapNode, parallelMap, batchedMap } from '@cogitator-ai/workflows';
+import { mapReduceNode, mapReduceWorkflowNode } from '@cogitator-ai/workflows';
 
-const workflow = new WorkflowBuilder('map-flow')
-  .addNode(
-    'process-items',
-    mapNode({
-      items: (state) => state.items,
-      mapper: async (item, index, ctx) => {
-        return await processItem(item);
+builder.addNode(
+  'score-documents',
+  mapReduceWorkflowNode(
+    mapReduceNode<DocsState, number, number>('score-documents', {
+      map: {
+        items: (state) => state.documents,
+        mapper: async (doc) => scoreDocument(doc as string),
+        concurrency: 5,
+        continueOnError: true,
       },
-      concurrency: 5,
-      onProgress: ({ completed, total }) => console.log(`${completed}/${total}`),
-    })
+      reduce: {
+        initial: 0,
+        reducer: (sum, item) => sum + item.result,
+        finalize: (sum, state) => sum / state.documents.length,
+      },
+    }),
+    { stateMapper: (result) => ({ averageScore: result.reduced }) }
   )
-  .build();
-
-// Batched processing
-const results = await batchedMap(items, processItem, { batchSize: 10, concurrency: 3 });
+);
 ```
 
-### Reduce (Aggregation)
-
-```typescript
-import { reduceNode, collect, sum, groupBy, stats } from '@cogitator-ai/workflows';
-
-const workflow = new WorkflowBuilder('reduce-flow')
-  .addNode(
-    'aggregate',
-    reduceNode({
-      items: (state) => state.results,
-      reducer: (acc, item) => acc + item.value,
-      initialValue: 0,
-    })
-  )
-  .build();
-
-// Built-in aggregators
-const collected = collect(items); // Collect all
-const total = sum(items, (i) => i.value); // Sum values
-const grouped = groupBy(items, (i) => i.category); // Group by key
-const statistics = stats(items, (i) => i.score); // { min, max, avg, sum, count }
-```
-
-### Map-Reduce
-
-```typescript
-import { mapReduceNode, executeMapReduce } from '@cogitator-ai/workflows';
-
-const workflow = new WorkflowBuilder('mapreduce-flow')
-  .addNode(
-    'word-count',
-    mapReduceNode({
-      items: (state) => state.documents,
-      mapper: async (doc) => {
-        const words = doc.text.split(/\s+/);
-        return words.map((w) => ({ word: w, count: 1 }));
-      },
-      reducer: (results) => {
-        return results.flat().reduce((acc, { word, count }) => {
-          acc[word] = (acc[word] || 0) + count;
-          return acc;
-        }, {});
-      },
-      concurrency: 10,
-    })
-  )
-  .build();
-```
+`mapNode` + `mapWorkflowNode`, `parallelMap`, `batchedMap` and the reducer presets `collect`, `sum`, `count`, `groupBy`, `partition`, `flatMap` and `stats` cover other shapes.
 
 ---
 
 ## Triggers
 
-### Cron Trigger
-
 ```typescript
-import { createCronTrigger, CronTriggerExecutor } from '@cogitator-ai/workflows';
+import { createTriggerManager, cronTrigger, webhookTrigger } from '@cogitator-ai/workflows';
 
-const trigger = createCronTrigger({
-  expression: '0 9 * * 1-5', // 9 AM on weekdays
-  timezone: 'America/New_York',
-  workflow: dailyReportWorkflow,
-  executor,
-  onTrigger: (time) => console.log('Triggered at:', time),
+const triggers = createTriggerManager({
+  onTriggerFire: async (trigger, context) => {
+    const run = await manager.schedule(workflows[trigger.workflowName], { input: context.payload });
+    return run;
+  },
+});
+triggers.start();
+
+await triggers.register({
+  workflowName: 'daily-report',
+  type: 'cron',
+  config: cronTrigger('0 9 * * *', { timezone: 'Europe/Berlin' }),
+  enabled: true,
 });
 
-trigger.start();
-// Later: trigger.stop();
-```
-
-### Webhook Trigger
-
-```typescript
-import { createWebhookTrigger, WebhookTriggerExecutor } from '@cogitator-ai/workflows';
-
-const webhook = createWebhookTrigger({
-  path: '/webhooks/github',
-  workflow: githubEventWorkflow,
-  executor,
-  auth: {
-    type: 'hmac',
-    secret: process.env.WEBHOOK_SECRET!,
-    header: 'X-Hub-Signature-256',
-  },
-  rateLimit: {
-    maxRequests: 100,
-    windowMs: 60000,
-  },
-  inputMapper: (req) => ({ event: req.body.action, payload: req.body }),
+await triggers.register({
+  workflowName: 'github-sync',
+  type: 'webhook',
+  config: webhookTrigger('/hooks/github', 'POST', {
+    auth: { type: 'hmac', secret: process.env.GH_SECRET! },
+  }),
+  enabled: true,
 });
 
-// Handle incoming request
-const result = await webhook.handle(request);
-```
-
-### Trigger Manager
-
-```typescript
-import {
-  createTriggerManager,
-  cronTrigger,
-  webhookTrigger,
-  eventTrigger,
-} from '@cogitator-ai/workflows';
-
-const manager = createTriggerManager({ executor });
-
-manager.register(
-  'daily-report',
-  cronTrigger({
-    expression: '0 9 * * *',
-    workflow: reportWorkflow,
-  })
-);
-
-manager.register(
-  'github-webhook',
-  webhookTrigger({
-    path: '/hooks/github',
-    workflow: githubWorkflow,
-  })
-);
-
-manager.register(
-  'order-created',
-  eventTrigger({
-    event: 'order.created',
-    workflow: orderProcessingWorkflow,
-  })
-);
-
-await manager.startAll();
+// In your HTTP handler:
+const response = await triggers.handleWebhook({
+  path: req.path,
+  method: req.method,
+  headers,
+  body,
+});
 ```
 
 ---
 
 ## Observability
 
-### Tracing
-
 ```typescript
-import {
-  createTracer,
-  OTLPSpanExporter,
-  ZipkinSpanExporter,
-  CompositeSpanExporter,
-} from '@cogitator-ai/workflows';
-
-// OTLP exporter (Jaeger, Tempo, etc.)
-const otlpExporter = new OTLPSpanExporter({
-  endpoint: 'http://localhost:4318/v1/traces',
-  headers: { 'X-Api-Key': 'secret' },
-});
-
-// Zipkin exporter
-const zipkinExporter = new ZipkinSpanExporter({
-  endpoint: 'http://localhost:9411/api/v2/spans',
-});
-
-// Composite (multiple exporters)
-const exporter = new CompositeSpanExporter([otlpExporter, zipkinExporter]);
+import { createTracer, createMetricsCollector } from '@cogitator-ai/workflows';
 
 const tracer = createTracer({
-  serviceName: 'my-workflow-service',
-  exporter,
+  enabled: true,
+  serviceName: 'billing-workflows',
+  exporter: 'otlp', // 'console' | 'otlp' | 'jaeger' | 'zipkin'
+  exporterEndpoint: 'http://localhost:4318/v1/traces',
 });
+const metricsCollector = createMetricsCollector({ prefix: 'cogitator_workflow' });
 
-// Execute with tracing
-await executor.execute(workflow, { tracer });
+await executor.execute(workflow, input, { tracer, metricsCollector });
+await tracer.flush();
+
+console.log(metricsCollector.getWorkflowMetrics('report'));
+console.log(metricsCollector.toPrometheusFormat());
 ```
 
-### Metrics
-
-```typescript
-import { createMetricsCollector, WorkflowMetricsCollector } from '@cogitator-ai/workflows';
-
-const metrics = createMetricsCollector({
-  prefix: 'cogitator_workflow',
-  labels: { environment: 'production' },
-});
-
-// Execute with metrics
-await executor.execute(workflow, { metrics });
-
-// Get metrics
-const nodeMetrics = metrics.getNodeMetrics('my-node');
-console.log(nodeMetrics.executionCount);
-console.log(nodeMetrics.averageDuration);
-console.log(nodeMetrics.errorRate);
-
-const workflowMetrics = metrics.getWorkflowMetrics('my-workflow');
-console.log(workflowMetrics.completionRate);
-console.log(workflowMetrics.averageCompletionTime);
-```
+The executor creates one workflow span and a child span per node execution (parallel nodes keep correct parents) and records workflow/node counts, latencies and retries.
 
 ---
 
 ## Workflow Management
 
-### WorkflowManager
-
 ```typescript
 import { createWorkflowManager, createFileRunStore } from '@cogitator-ai/workflows';
 
-const runStore = createFileRunStore('./runs');
-
 const manager = createWorkflowManager({
-  executor,
-  runStore,
-  concurrency: 10,
-  defaultTimeout: 300000,
+  cogitator,
+  runStore: createFileRunStore({ directory: './runs' }),
+  maxConcurrency: 10,
+  defaultTimeout: 300_000, // runs exceeding it are cancelled and marked failed
+  tracer,
+  metrics: metricsCollector,
 });
+manager.start();
 
-// Schedule a workflow run
-const runId = await manager.schedule(workflow, {
-  input: 'Process this',
-  priority: 1,
-  scheduledAt: new Date(Date.now() + 60000), // 1 minute from now
-  tags: ['daily', 'report'],
-});
+const result = await manager.execute(workflow, input, { tags: ['nightly'] });
 
-// Get run status
-const run = await manager.getRun(runId);
-console.log(run.status); // 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
-
-// List runs
-const runs = await manager.listRuns({
-  status: 'running',
-  workflowId: 'daily-report',
-  fromDate: new Date('2024-01-01'),
-});
-
-// Cancel a run
+const runId = await manager.schedule(workflow, { at: Date.now() + 60_000, input, priority: 1 });
 await manager.cancel(runId);
 
-// Get stats
-const stats = await manager.getStats();
-console.log(stats.pending, stats.running, stats.completed, stats.failed);
-```
-
-### JobScheduler
-
-```typescript
-import { createJobScheduler, PriorityQueue } from '@cogitator-ai/workflows';
-
-const scheduler = createJobScheduler({
-  concurrency: 5,
-  maxQueueSize: 1000,
-});
-
-// Add jobs with priority
-scheduler.enqueue({ id: 'job-1', payload: data1, priority: 1 });
-scheduler.enqueue({ id: 'job-2', payload: data2, priority: 10 }); // Higher priority
-
-// Process jobs
-scheduler.process(async (job) => {
-  await processJob(job.payload);
-});
-
-scheduler.start();
+const runs = await manager.listRuns({ status: 'failed', workflowName: 'report', limit: 20 });
+const stats = await manager.getStats('report');
+await manager.retry(runs[0].id);
 ```
 
 ---

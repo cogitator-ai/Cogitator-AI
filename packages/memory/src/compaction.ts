@@ -25,7 +25,10 @@ export class CompactionService {
   }
 
   async compact(sessionId: string, config: CompactionConfig): Promise<CompactionResult> {
-    const entriesResult = await this.adapter.getEntries({ threadId: sessionId });
+    const entriesResult = await this.adapter.getEntries({
+      threadId: sessionId,
+      includeToolCalls: true,
+    });
     if (!entriesResult.success) {
       throw new Error(`Failed to load entries: ${entriesResult.error}`);
     }
@@ -62,10 +65,15 @@ export class CompactionService {
     return strategy(this, sessionId, sorted, config);
   }
 
+  /**
+   * Replace `entriesToRemove` with a summary entry placed before `entriesToKeep`: kept entries
+   * are re-appended after the summary so the conversation order stays summary → recent messages.
+   */
   async applySummary(
     sessionId: string,
     entriesToRemove: MemoryEntry[],
-    summary: string
+    summary: string,
+    entriesToKeep: MemoryEntry[] = []
   ): Promise<number> {
     const summaryMessage: Message = {
       role: 'system',
@@ -74,12 +82,30 @@ export class CompactionService {
 
     const summaryTokens = countMessagesTokens([summaryMessage]);
 
-    await this.adapter.addEntry({
+    const added = await this.adapter.addEntry({
       threadId: sessionId,
       message: summaryMessage,
       tokenCount: summaryTokens,
       metadata: { compactionSummary: true, compactedAt: new Date().toISOString() },
     });
+    if (!added.success) {
+      throw new Error(`Failed to store compaction summary: ${added.error}`);
+    }
+
+    for (const entry of entriesToKeep) {
+      const readded = await this.adapter.addEntry({
+        threadId: entry.threadId,
+        message: entry.message,
+        toolCalls: entry.toolCalls,
+        toolResults: entry.toolResults,
+        tokenCount: entry.tokenCount,
+        metadata: entry.metadata,
+      });
+      if (!readded.success) {
+        throw new Error(`Failed to reorder entries after compaction: ${readded.error}`);
+      }
+      await this.adapter.deleteEntry(entry.id);
+    }
 
     for (const entry of entriesToRemove) {
       await this.adapter.deleteEntry(entry.id);
@@ -107,10 +133,11 @@ type StrategyFn = (
 const summaryStrategy: StrategyFn = async (service, sessionId, entries, config) => {
   const splitAt = entries.length - config.keepRecent;
   const oldEntries = entries.slice(0, splitAt);
+  const recentEntries = entries.slice(splitAt);
   const oldMessages = oldEntries.map((e) => e.message);
 
   const summary = await service.getSummarizeFn()(oldMessages);
-  const summaryTokens = await service.applySummary(sessionId, oldEntries, summary);
+  const summaryTokens = await service.applySummary(sessionId, oldEntries, summary, recentEntries);
 
   return {
     sessionId,

@@ -1,5 +1,6 @@
-import { header, section } from '../_shared/setup.js';
-import { OpenAISTT, OpenAITTS, VoicePipeline, float32ToPcm16, pcmToWav } from '@cogitator-ai/voice';
+import { Agent } from '@cogitator-ai/core';
+import { createCogitator, DEFAULT_MODEL, header, section } from '../_shared/setup.js';
+import { OpenAISTT, OpenAITTS, VoicePipeline, createCogitatorRunner } from '@cogitator-ai/voice';
 
 async function main() {
   header('01 — Voice Pipeline');
@@ -13,35 +14,30 @@ async function main() {
   section('1. Configure STT & TTS');
   const stt = new OpenAISTT({ apiKey });
   const tts = new OpenAITTS({ apiKey, voice: 'coral' });
-  console.log('STT: OpenAI Whisper');
-  console.log('TTS: OpenAI (coral voice)');
+  console.log('STT: OpenAI gpt-4o-mini-transcribe');
+  console.log('TTS: OpenAI gpt-4o-mini-tts (coral voice)');
 
-  section('2. Create pipeline');
-  const mockAgent = {
-    run: async (input: string) => {
-      console.log(`  Agent received: "${input}"`);
-      return { content: `I heard you say: ${input}. How can I help?` };
-    },
-  };
+  section('2. Create pipeline with a Cogitator agent');
+  const cogitator = createCogitator();
+  const agent = new Agent({
+    name: 'voice-assistant',
+    model: process.env.GOOGLE_API_KEY ? DEFAULT_MODEL : 'openai/gpt-4o-mini',
+    instructions: 'You are a voice assistant. Answer in one short sentence.',
+  });
+  const pipeline = new VoicePipeline({ stt, tts, agent: createCogitatorRunner(cogitator, agent) });
 
-  const pipeline = new VoicePipeline({ stt, tts, agent: mockAgent });
-  console.log('Pipeline ready.');
-
-  section('3. Generate test audio');
-  const samples = new Float32Array(16000);
-  for (let i = 0; i < samples.length; i++) {
-    samples[i] = 0.3 * Math.sin((2 * Math.PI * 440 * i) / 16000);
-  }
-  const wav = pcmToWav(float32ToPcm16(samples), 16000);
-  console.log(`Test WAV: ${wav.length} bytes (1s of 440Hz tone)`);
+  section('3. Record a question (synthesized with TTS)');
+  const question = await tts.synthesize('What is the capital of France?', { format: 'wav' });
+  console.log(`Question audio: ${question.length} bytes (WAV)`);
 
   section('4. Process through pipeline');
-  const result = await pipeline.process(wav);
+  const result = await pipeline.process(question, { sessionId: 'example' });
   console.log(`Transcript: "${result.transcript}"`);
   console.log(`Response:   "${result.response}"`);
-  console.log(`Audio size: ${result.audio.length} bytes`);
+  console.log(`Audio size: ${result.audio.length} bytes (MP3)`);
 
+  await cogitator.close();
   console.log('\nDone.');
 }
 
-main();
+void main();

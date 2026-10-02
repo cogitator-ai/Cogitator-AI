@@ -188,6 +188,13 @@ export class MemoryGraphAdapter implements GraphAdapter {
   async addEdge(
     edge: Omit<GraphEdge, 'id' | 'createdAt' | 'updatedAt'>
   ): Promise<MemoryResult<GraphEdge>> {
+    if (!this.nodes.has(edge.sourceNodeId)) {
+      return { success: false, error: `Source node ${edge.sourceNodeId} not found` };
+    }
+    if (!this.nodes.has(edge.targetNodeId)) {
+      return { success: false, error: `Target node ${edge.targetNodeId} not found` };
+    }
+
     const id = nanoid();
     const now = new Date();
 
@@ -325,9 +332,14 @@ export class MemoryGraphAdapter implements GraphAdapter {
       },
     ];
 
+    if (startNodeResult.data.agentId !== options.agentId) {
+      return { success: false, error: 'Start node not found' };
+    }
+
     visitedNodes.set(options.startNodeId, startNodeResult.data);
 
     while (queue.length > 0) {
+      if (options.limit && paths.length >= options.limit) break;
       const current = queue.shift()!;
 
       if (current.depth >= options.maxDepth) {
@@ -341,6 +353,7 @@ export class MemoryGraphAdapter implements GraphAdapter {
       let hasChildren = false;
       for (const { node, edge } of neighbors.data) {
         if (visitedNodes.has(node.id)) continue;
+        if (node.agentId !== options.agentId || edge.agentId !== options.agentId) continue;
         if (options.edgeTypes && !options.edgeTypes.includes(edge.type)) continue;
         if (options.minEdgeWeight && edge.weight < options.minEdgeWeight) continue;
         if (options.minConfidence && edge.confidence < options.minConfidence) continue;
@@ -359,8 +372,6 @@ export class MemoryGraphAdapter implements GraphAdapter {
           },
           depth: current.depth + 1,
         });
-
-        if (options.limit && paths.length >= options.limit) break;
       }
 
       if (!hasChildren) {
@@ -371,7 +382,7 @@ export class MemoryGraphAdapter implements GraphAdapter {
     return {
       success: true,
       data: {
-        paths,
+        paths: options.limit ? paths.slice(0, options.limit) : paths,
         visitedNodes: Array.from(visitedNodes.values()),
         visitedEdges: Array.from(visitedEdges.values()),
         depth: options.maxDepth,
@@ -380,7 +391,7 @@ export class MemoryGraphAdapter implements GraphAdapter {
   }
 
   async findShortestPath(
-    _agentId: string,
+    agentId: string,
     startNodeId: string,
     endNodeId: string,
     maxDepth = 10
@@ -390,6 +401,9 @@ export class MemoryGraphAdapter implements GraphAdapter {
 
     const startNodeResult = await this.getNode(startNodeId);
     if (!startNodeResult.success || !startNodeResult.data) {
+      return { success: false, error: 'Start node not found' };
+    }
+    if (startNodeResult.data.agentId !== agentId) {
       return { success: false, error: 'Start node not found' };
     }
 
@@ -419,6 +433,7 @@ export class MemoryGraphAdapter implements GraphAdapter {
 
       for (const { node, edge } of neighbors.data) {
         if (visited.has(node.id)) continue;
+        if (node.agentId !== agentId || edge.agentId !== agentId) continue;
 
         visited.add(node.id);
         queue.push({
@@ -442,30 +457,20 @@ export class MemoryGraphAdapter implements GraphAdapter {
   ): Promise<MemoryResult<{ node: GraphNode; edge: GraphEdge }[]>> {
     const results: { node: GraphNode; edge: GraphEdge }[] = [];
 
-    if (direction === 'outgoing' || direction === 'both') {
-      const outEdges = this.edgesBySource.get(nodeId) ?? new Set();
-      for (const edgeId of outEdges) {
-        const edge = this.edges.get(edgeId);
-        if (edge) {
-          const node = this.nodes.get(edge.targetNodeId);
-          if (node) {
-            results.push({ node, edge });
-          }
-        }
-      }
+    for (const edgeId of this.edgesBySource.get(nodeId) ?? []) {
+      const edge = this.edges.get(edgeId);
+      if (!edge) continue;
+      if (direction === 'incoming' && !edge.bidirectional) continue;
+      const node = this.nodes.get(edge.targetNodeId);
+      if (node) results.push({ node, edge });
     }
 
-    if (direction === 'incoming' || direction === 'both') {
-      const inEdges = this.edgesByTarget.get(nodeId) ?? new Set();
-      for (const edgeId of inEdges) {
-        const edge = this.edges.get(edgeId);
-        if (edge) {
-          const node = this.nodes.get(edge.sourceNodeId);
-          if (node) {
-            results.push({ node, edge });
-          }
-        }
-      }
+    for (const edgeId of this.edgesByTarget.get(nodeId) ?? []) {
+      const edge = this.edges.get(edgeId);
+      if (!edge || edge.sourceNodeId === nodeId) continue;
+      if (direction === 'outgoing' && !edge.bidirectional) continue;
+      const node = this.nodes.get(edge.sourceNodeId);
+      if (node) results.push({ node, edge });
     }
 
     return { success: true, data: results };
@@ -484,8 +489,9 @@ export class MemoryGraphAdapter implements GraphAdapter {
     const allProperties = { ...targetNode.properties };
 
     for (const sourceId of sourceNodeIds) {
+      if (sourceId === targetNodeId) continue;
       const sourceNode = this.nodes.get(sourceId);
-      if (!sourceNode) continue;
+      if (sourceNode?.agentId !== targetNode.agentId) continue;
 
       allAliases.add(sourceNode.name);
       sourceNode.aliases.forEach((a) => allAliases.add(a));
@@ -570,7 +576,7 @@ export class MemoryGraphAdapter implements GraphAdapter {
       const node = this.nodes.get(nodeId);
       if (node) {
         nodeCount++;
-        nodesByType[node.type]++;
+        nodesByType[node.type] = (nodesByType[node.type] ?? 0) + 1;
       }
     }
 
@@ -579,7 +585,7 @@ export class MemoryGraphAdapter implements GraphAdapter {
       const edge = this.edges.get(edgeId);
       if (edge) {
         edgeCount++;
-        edgesByType[edge.type]++;
+        edgesByType[edge.type] = (edgesByType[edge.type] ?? 0) + 1;
       }
     }
 

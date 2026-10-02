@@ -1,6 +1,44 @@
 import type { Clause, CompoundTerm, Term, KnowledgeBaseStats } from '@cogitator-ai/types';
 import { parseProgram, parseClause } from './parser';
-import { termToString } from './unification';
+import { z } from 'zod';
+import { termToString, termsEqual } from './unification';
+
+const termSchema: z.ZodType<Term> = z.lazy(() =>
+  z.union([
+    z.object({ type: z.literal('atom'), value: z.string() }),
+    z.object({ type: z.literal('variable'), name: z.string() }),
+    z.object({ type: z.literal('number'), value: z.number() }),
+    z.object({ type: z.literal('string'), value: z.string() }),
+    z.object({ type: z.literal('compound'), functor: z.string(), args: z.array(termSchema) }),
+    z.object({
+      type: z.literal('list'),
+      elements: z.array(termSchema),
+      tail: termSchema.optional(),
+    }),
+  ])
+);
+
+const compoundSchema = z.object({
+  type: z.literal('compound'),
+  functor: z.string(),
+  args: z.array(termSchema),
+});
+
+const exportSchema = z.object({
+  clauses: z.array(
+    z.object({
+      head: compoundSchema,
+      body: z.array(compoundSchema),
+      metadata: z
+        .object({
+          source: z.string().optional(),
+          confidence: z.number().optional(),
+          timestamp: z.coerce.date().optional(),
+        })
+        .optional(),
+    })
+  ),
+});
 
 export interface KnowledgeBaseOptions {
   allowDuplicates?: boolean;
@@ -43,9 +81,9 @@ export class KnowledgeBase {
 
   private clausesEqual(c1: Clause, c2: Clause): boolean {
     return (
-      termToString(c1.head) === termToString(c2.head) &&
+      termsEqual(c1.head, c2.head) &&
       c1.body.length === c2.body.length &&
-      c1.body.every((g, i) => termToString(g) === termToString(c2.body[i]))
+      c1.body.every((g, i) => termsEqual(g, c2.body[i]))
     );
   }
 
@@ -232,11 +270,11 @@ export class KnowledgeBase {
   }
 
   static import(json: string, options?: KnowledgeBaseOptions): KnowledgeBase {
-    const data = JSON.parse(json) as {
-      clauses: Clause[];
-      factCount: number;
-      ruleCount: number;
-    };
+    const parsed = exportSchema.safeParse(JSON.parse(json));
+    if (!parsed.success) {
+      throw new Error(`Invalid knowledge base export: ${parsed.error.message}`);
+    }
+    const data = parsed.data;
 
     const kb = new KnowledgeBase(options);
     for (const clause of data.clauses) {
@@ -249,7 +287,10 @@ export class KnowledgeBase {
 export function createKnowledgeBase(program?: string): KnowledgeBase {
   const kb = new KnowledgeBase();
   if (program) {
-    kb.consult(program);
+    const result = kb.consult(program);
+    if (!result.success) {
+      throw new Error(`Failed to load logic program: ${result.errors.join('; ')}`);
+    }
   }
   return kb;
 }

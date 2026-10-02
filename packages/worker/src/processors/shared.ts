@@ -1,36 +1,63 @@
-import { tool } from '@cogitator-ai/core';
-import { z } from 'zod';
+import { Agent, Cogitator, parseModel } from '@cogitator-ai/core';
 import type { Tool, ToolSchema } from '@cogitator-ai/types';
+import type { WorkerRuntime } from '../types';
 
-export function jsonSchemaToZod(params: ToolSchema['parameters']): z.ZodType {
-  const properties = params.properties;
-  const required = params.required ?? [];
-
-  if (Object.keys(properties).length === 0) {
-    return z.object({});
-  }
-
-  const shape: Record<string, z.ZodType> = {};
-  for (const key of Object.keys(properties)) {
-    shape[key] = required.includes(key) ? z.unknown() : z.unknown().optional();
-  }
-
-  return z.object(shape).passthrough();
+/**
+ * Model string to run: models with a provider prefix are used as-is, otherwise the
+ * serialized provider is prepended.
+ */
+export function resolveModelString(model: string, provider: string): string {
+  return parseModel(model).provider ? model : `${provider}/${model}`;
 }
 
-export function recreateTools(schemas: ToolSchema[]): Tool[] {
-  return schemas.map((schema) =>
-    tool({
-      name: schema.name,
-      description: schema.description,
-      parameters: jsonSchemaToZod(schema.parameters),
-      execute: async (input) => {
-        console.warn(`[worker] Tool "${schema.name}" called with input:`, JSON.stringify(input));
-        return {
-          warning: 'Tool executed in worker with stub implementation',
-          input,
-        };
-      },
-    })
-  );
+/**
+ * Resolve serialized tool references against the worker's tool registry.
+ * Fails when the agent needs tools this worker does not provide, instead of silently
+ * running the agent with fake tools.
+ */
+export function resolveTools(schemas: readonly ToolSchema[], available: readonly Tool[]): Tool[] {
+  if (schemas.length === 0) return [];
+
+  const registry = new Map(available.map((t) => [t.name, t]));
+  const missing = schemas.map((s) => s.name).filter((name) => !registry.has(name));
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Tools not registered on this worker: ${missing.join(', ')}. ` +
+        'Pass their implementations via the worker `tools` option.'
+    );
+  }
+
+  return schemas.map((schema) => registry.get(schema.name)!);
+}
+
+export interface SerializedAgentLike {
+  name: string;
+  instructions: string;
+  model: string;
+  provider: string;
+  temperature?: number;
+  maxTokens?: number;
+  maxIterations?: number;
+  tools: readonly ToolSchema[];
+}
+
+export function createAgentFromConfig(config: SerializedAgentLike, runtime: WorkerRuntime): Agent {
+  return new Agent({
+    name: config.name,
+    model: resolveModelString(config.model, config.provider),
+    instructions: config.instructions,
+    temperature: config.temperature,
+    maxTokens: config.maxTokens,
+    maxIterations: config.maxIterations,
+    tools: resolveTools(config.tools, runtime.tools ?? []),
+  });
+}
+
+export function resolveCogitator(runtime: WorkerRuntime): Cogitator {
+  return runtime.cogitator ?? new Cogitator();
+}
+
+export function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

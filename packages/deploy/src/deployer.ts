@@ -8,12 +8,21 @@ import type {
 import type { DeployProvider } from './providers/base.js';
 import { DockerProvider } from './providers/docker.js';
 import { FlyProvider } from './providers/fly.js';
-import { ProjectAnalyzer } from './analyzer.js';
+import { ProjectAnalyzer, type AnalyzerResult } from './analyzer.js';
 import { ArtifactGenerator } from './generator.js';
+
+/** A built-in target, or the name of a provider registered via `registerProvider`. */
+export type DeployTargetName = DeployTarget | (string & {});
+
+const BUILTIN_TARGETS: readonly DeployTarget[] = ['docker', 'fly'];
+
+function isBuiltinTarget(target: string): target is DeployTarget {
+  return BUILTIN_TARGETS.some((t) => t === target);
+}
 
 export interface DeployOptions {
   projectDir: string;
-  target: DeployTarget;
+  target: DeployTargetName;
   dryRun?: boolean;
   noPush?: boolean;
   configOverrides?: Partial<DeployConfig>;
@@ -23,6 +32,8 @@ export interface DeployPlan {
   config: DeployConfig;
   preflight: PreflightResult;
   provider: DeployProvider;
+  warnings: string[];
+  analysis: AnalyzerResult;
 }
 
 export class Deployer {
@@ -39,40 +50,50 @@ export class Deployer {
     this.providers.set(provider.name, provider);
   }
 
-  getProvider(target: DeployTarget): DeployProvider {
+  /** Targets that have a registered provider. */
+  availableTargets(): string[] {
+    return [...this.providers.keys()];
+  }
+
+  getProvider(target: DeployTargetName): DeployProvider {
     const provider = this.providers.get(target);
     if (!provider) {
       throw new Error(
-        `Unknown deploy target: "${target}". Available: ${[...this.providers.keys()].join(', ')}`
+        `Unknown deploy target: "${target}". Available: ${this.availableTargets().join(', ')}`
       );
     }
     return provider;
   }
 
-  async plan(options: DeployOptions): Promise<DeployPlan> {
-    const analysis = this.analyzer.analyze(
-      options.projectDir,
-      options.configOverrides as DeployConfig
-    );
+  private resolveConfig(
+    projectDir: string,
+    target: DeployTargetName,
+    overrides: Partial<DeployConfig> | undefined
+  ): { config: DeployConfig; analysis: AnalyzerResult } {
+    const builtin = isBuiltinTarget(target) ? { target } : {};
+    const analysis = this.analyzer.analyze(projectDir, { ...overrides, ...builtin });
+    return { config: { ...analysis.deployConfig, ...builtin }, analysis };
+  }
 
-    const config: DeployConfig = {
-      ...analysis.deployConfig,
-      ...options.configOverrides,
-      target: options.target,
-    };
+  async plan(options: DeployOptions): Promise<DeployPlan> {
+    const provider = this.getProvider(options.target);
+    const { config, analysis } = this.resolveConfig(
+      options.projectDir,
+      options.target,
+      options.configOverrides
+    );
 
     if (options.noPush) {
       delete config.registry;
     }
 
-    const provider = this.getProvider(options.target);
     const preflight = await provider.preflight(config, options.projectDir);
 
-    return { config, preflight, provider };
+    return { config, preflight, provider, warnings: analysis.warnings, analysis };
   }
 
   async deploy(options: DeployOptions): Promise<DeployResult> {
-    const { config, preflight, provider } = await this.plan(options);
+    const { config, preflight, provider, analysis } = await this.plan(options);
 
     if (!preflight.passed) {
       const failures = preflight.checks.filter((c) => !c.passed);
@@ -82,9 +103,12 @@ export class Deployer {
       };
     }
 
-    const analysis = this.analyzer.analyze(options.projectDir);
     const artifacts = this.generator.generate(config, {
       hasTypeScript: analysis.hasTypeScript,
+      packageManager: analysis.packageManager,
+      hasLockfile: analysis.hasLockfile,
+      hasBuildScript: analysis.hasBuildScript,
+      startCommand: analysis.startCommand,
     });
 
     if (options.dryRun) {
@@ -95,16 +119,18 @@ export class Deployer {
   }
 
   async status(
-    target: DeployTarget,
+    target: DeployTargetName,
     config: DeployConfig,
     projectDir: string
   ): Promise<DeployStatus> {
     const provider = this.getProvider(target);
-    return provider.status(config, projectDir);
+    const resolved = this.resolveConfig(projectDir, target, config).config;
+    return provider.status(resolved, projectDir);
   }
 
-  async destroy(target: DeployTarget, config: DeployConfig, projectDir: string): Promise<void> {
+  async destroy(target: DeployTargetName, config: DeployConfig, projectDir: string): Promise<void> {
     const provider = this.getProvider(target);
-    return provider.destroy(config, projectDir);
+    const resolved = this.resolveConfig(projectDir, target, config).config;
+    return provider.destroy(resolved, projectDir);
   }
 }

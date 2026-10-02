@@ -34,6 +34,22 @@ type PoolClient = {
   release(): void;
 };
 
+const NEIGHBOR_COLUMNS = `
+  e.id as e_id, e.agent_id as e_agent_id, e.source_node_id, e.target_node_id,
+  e.type as e_type, e.label as e_label, e.weight as e_weight,
+  e.bidirectional as e_bidirectional, e.properties as e_properties,
+  e.confidence as e_confidence, e.source as e_source,
+  e.created_at as e_created_at, e.updated_at as e_updated_at,
+  e.valid_from as e_valid_from, e.valid_until as e_valid_until,
+  e.metadata as e_metadata,
+  n.id as n_id, n.agent_id as n_agent_id, n.type as n_type, n.name as n_name,
+  n.aliases as n_aliases, n.description as n_description, n.properties as n_properties,
+  n.embedding as n_embedding, n.confidence as n_confidence, n.source as n_source,
+  n.created_at as n_created_at, n.updated_at as n_updated_at,
+  n.last_accessed_at as n_last_accessed_at, n.access_count as n_access_count,
+  n.metadata as n_metadata
+`;
+
 export class PostgresGraphAdapter implements GraphAdapter {
   private pool: Pool | null = null;
   private config: PostgresGraphAdapterConfig;
@@ -44,6 +60,13 @@ export class PostgresGraphAdapter implements GraphAdapter {
     this.config = config;
     this.schema = config.schema ?? 'cogitator_graph';
     this.vectorDimensions = config.vectorDimensions ?? 1536;
+
+    if (!/^[a-z_][a-z0-9_]*$/i.test(this.schema)) {
+      throw new Error(`Invalid schema name: ${this.schema}`);
+    }
+    if (!Number.isInteger(this.vectorDimensions) || this.vectorDimensions <= 0) {
+      throw new Error(`Invalid vector dimensions: ${this.vectorDimensions}`);
+    }
   }
 
   async connect(): Promise<MemoryResult<void>> {
@@ -63,6 +86,10 @@ export class PostgresGraphAdapter implements GraphAdapter {
 
       return { success: true, data: undefined };
     } catch (error) {
+      if (this.pool) {
+        await this.pool.end().catch(() => undefined);
+        this.pool = null;
+      }
       return {
         success: false,
         error: `Postgres connection failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -72,14 +99,6 @@ export class PostgresGraphAdapter implements GraphAdapter {
 
   private async initSchema(): Promise<void> {
     if (!this.pool) return;
-
-    if (!/^[a-z_][a-z0-9_]*$/i.test(this.schema)) {
-      throw new Error(`Invalid schema name: ${this.schema}`);
-    }
-
-    if (!Number.isInteger(this.vectorDimensions) || this.vectorDimensions <= 0) {
-      throw new Error(`Invalid vector dimensions: ${this.vectorDimensions}`);
-    }
 
     await this.pool.query(`CREATE SCHEMA IF NOT EXISTS ${this.schema}`);
 
@@ -603,9 +622,14 @@ export class PostgresGraphAdapter implements GraphAdapter {
       },
     ];
 
+    if (startNodeResult.data.agentId !== options.agentId) {
+      return { success: false, error: 'Start node not found' };
+    }
+
     visitedNodes.set(options.startNodeId, startNodeResult.data);
 
     while (queue.length > 0) {
+      if (options.limit && paths.length >= options.limit) break;
       const current = queue.shift()!;
 
       if (current.depth >= options.maxDepth) {
@@ -619,6 +643,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
       let hasChildren = false;
       for (const { node, edge } of neighbors.data) {
         if (visitedNodes.has(node.id)) continue;
+        if (node.agentId !== options.agentId || edge.agentId !== options.agentId) continue;
         if (options.edgeTypes && !options.edgeTypes.includes(edge.type)) continue;
         if (options.minEdgeWeight && edge.weight < options.minEdgeWeight) continue;
         if (options.minConfidence && edge.confidence < options.minConfidence) continue;
@@ -637,8 +662,6 @@ export class PostgresGraphAdapter implements GraphAdapter {
           },
           depth: current.depth + 1,
         });
-
-        if (options.limit && paths.length >= options.limit) break;
       }
 
       if (!hasChildren) {
@@ -649,7 +672,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
     return {
       success: true,
       data: {
-        paths,
+        paths: options.limit ? paths.slice(0, options.limit) : paths,
         visitedNodes: Array.from(visitedNodes.values()),
         visitedEdges: Array.from(visitedEdges.values()),
         depth: options.maxDepth,
@@ -658,7 +681,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
   }
 
   async findShortestPath(
-    _agentId: string,
+    agentId: string,
     startNodeId: string,
     endNodeId: string,
     maxDepth = 10
@@ -668,6 +691,9 @@ export class PostgresGraphAdapter implements GraphAdapter {
 
     const startNodeResult = await this.getNode(startNodeId);
     if (!startNodeResult.success || !startNodeResult.data) {
+      return { success: false, error: 'Start node not found' };
+    }
+    if (startNodeResult.data.agentId !== agentId) {
       return { success: false, error: 'Start node not found' };
     }
 
@@ -697,6 +723,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
 
       for (const { node, edge } of neighbors.data) {
         if (visited.has(node.id)) continue;
+        if (node.agentId !== agentId || edge.agentId !== agentId) continue;
 
         visited.add(node.id);
         queue.push({
@@ -722,64 +749,37 @@ export class PostgresGraphAdapter implements GraphAdapter {
 
     const results: { node: GraphNode; edge: GraphEdge }[] = [];
 
-    if (direction === 'outgoing' || direction === 'both') {
-      const outResult = await this.pool.query(
-        `SELECT
-           e.id as e_id, e.agent_id as e_agent_id, e.source_node_id, e.target_node_id,
-           e.type as e_type, e.label as e_label, e.weight as e_weight,
-           e.bidirectional as e_bidirectional, e.properties as e_properties,
-           e.confidence as e_confidence, e.source as e_source,
-           e.created_at as e_created_at, e.updated_at as e_updated_at,
-           e.valid_from as e_valid_from, e.valid_until as e_valid_until,
-           e.metadata as e_metadata,
-           n.id as n_id, n.agent_id as n_agent_id, n.type as n_type, n.name as n_name,
-           n.aliases as n_aliases, n.description as n_description, n.properties as n_properties,
-           n.embedding as n_embedding, n.confidence as n_confidence, n.source as n_source,
-           n.created_at as n_created_at, n.updated_at as n_updated_at,
-           n.last_accessed_at as n_last_accessed_at, n.access_count as n_access_count,
-           n.metadata as n_metadata
-         FROM ${this.schema}.graph_edges e
-         JOIN ${this.schema}.graph_nodes n ON e.target_node_id = n.id
-         WHERE e.source_node_id = $1`,
-        [nodeId]
-      );
+    const outgoingFilter = direction === 'incoming' ? ' AND e.bidirectional = true' : '';
+    const incomingFilter = direction === 'outgoing' ? ' AND e.bidirectional = true' : '';
 
-      for (const row of outResult.rows) {
-        results.push({
-          edge: this.joinRowToEdge(row),
-          node: this.joinRowToNode(row),
-        });
-      }
+    const outResult = await this.pool.query(
+      `SELECT ${NEIGHBOR_COLUMNS}
+       FROM ${this.schema}.graph_edges e
+       JOIN ${this.schema}.graph_nodes n ON e.target_node_id = n.id
+       WHERE e.source_node_id = $1${outgoingFilter}`,
+      [nodeId]
+    );
+
+    for (const row of outResult.rows) {
+      results.push({
+        edge: this.joinRowToEdge(row),
+        node: this.joinRowToNode(row),
+      });
     }
 
-    if (direction === 'incoming' || direction === 'both') {
-      const inResult = await this.pool.query(
-        `SELECT
-           e.id as e_id, e.agent_id as e_agent_id, e.source_node_id, e.target_node_id,
-           e.type as e_type, e.label as e_label, e.weight as e_weight,
-           e.bidirectional as e_bidirectional, e.properties as e_properties,
-           e.confidence as e_confidence, e.source as e_source,
-           e.created_at as e_created_at, e.updated_at as e_updated_at,
-           e.valid_from as e_valid_from, e.valid_until as e_valid_until,
-           e.metadata as e_metadata,
-           n.id as n_id, n.agent_id as n_agent_id, n.type as n_type, n.name as n_name,
-           n.aliases as n_aliases, n.description as n_description, n.properties as n_properties,
-           n.embedding as n_embedding, n.confidence as n_confidence, n.source as n_source,
-           n.created_at as n_created_at, n.updated_at as n_updated_at,
-           n.last_accessed_at as n_last_accessed_at, n.access_count as n_access_count,
-           n.metadata as n_metadata
-         FROM ${this.schema}.graph_edges e
-         JOIN ${this.schema}.graph_nodes n ON e.source_node_id = n.id
-         WHERE e.target_node_id = $1`,
-        [nodeId]
-      );
+    const inResult = await this.pool.query(
+      `SELECT ${NEIGHBOR_COLUMNS}
+       FROM ${this.schema}.graph_edges e
+       JOIN ${this.schema}.graph_nodes n ON e.source_node_id = n.id
+       WHERE e.target_node_id = $1 AND e.source_node_id <> $1${incomingFilter}`,
+      [nodeId]
+    );
 
-      for (const row of inResult.rows) {
-        results.push({
-          edge: this.joinRowToEdge(row),
-          node: this.joinRowToNode(row),
-        });
-      }
+    for (const row of inResult.rows) {
+      results.push({
+        edge: this.joinRowToEdge(row),
+        node: this.joinRowToNode(row),
+      });
     }
 
     return { success: true, data: results };
@@ -799,12 +799,16 @@ export class PostgresGraphAdapter implements GraphAdapter {
     const targetNode = targetNodeResult.data;
     const allAliases = new Set(targetNode.aliases);
     const allProperties = { ...targetNode.properties };
+    const mergeIds: string[] = [];
 
     for (const sourceId of sourceNodeIds) {
+      if (sourceId === targetNodeId || mergeIds.includes(sourceId)) continue;
       const sourceNodeResult = await this.getNode(sourceId);
       if (!sourceNodeResult.success || !sourceNodeResult.data) continue;
 
       const sourceNode = sourceNodeResult.data;
+      if (sourceNode.agentId !== targetNode.agentId) continue;
+      mergeIds.push(sourceId);
       allAliases.add(sourceNode.name);
       sourceNode.aliases.forEach((a) => allAliases.add(a));
       Object.assign(allProperties, sourceNode.properties);
@@ -814,7 +818,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
     try {
       await client.query('BEGIN');
 
-      for (const sourceId of sourceNodeIds) {
+      for (const sourceId of mergeIds) {
         await client.query(
           `UPDATE ${this.schema}.graph_edges
            SET source_node_id = $1

@@ -34,6 +34,28 @@ end
 return 1
 `;
 
+const ARRAY_FIELDS = new Set(['history', 'artifacts', 'parts', 'referenceTaskIds']);
+
+/**
+ * Redis' Lua cjson encodes empty tables as `{}`, so an atomic update turns
+ * empty arrays (e.g. `artifacts: []`) into objects. Known array fields are
+ * restored while parsing.
+ */
+function parseTask(data: string): A2ATask {
+  return JSON.parse(data, (key, value: unknown) => {
+    if (
+      ARRAY_FIELDS.has(key) &&
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Object.keys(value).length === 0
+    ) {
+      return [];
+    }
+    return value;
+  }) as A2ATask;
+}
+
 export class RedisTaskStore implements TaskStore {
   private client: RedisClientLike;
   private prefix: string;
@@ -61,7 +83,7 @@ export class RedisTaskStore implements TaskStore {
   async get(taskId: string): Promise<A2ATask | null> {
     const data = await this.client.get(this.prefix + taskId);
     if (!data) return null;
-    return JSON.parse(data) as A2ATask;
+    return parseTask(data);
   }
 
   async update(taskId: string, update: Partial<A2ATask>): Promise<void> {
@@ -70,8 +92,7 @@ export class RedisTaskStore implements TaskStore {
     const ttlArg = String(this.ttl ?? 0);
 
     if (this.client.eval) {
-      const result = await this.client.eval(ATOMIC_UPDATE_SCRIPT, 1, key, updateJson, ttlArg);
-      if (result === 0) return;
+      await this.client.eval(ATOMIC_UPDATE_SCRIPT, 1, key, updateJson, ttlArg);
       return;
     }
 
@@ -94,12 +115,12 @@ export class RedisTaskStore implements TaskStore {
     if (this.client.mget) {
       const values = await this.client.mget(...keys);
       for (const data of values) {
-        if (data) tasks.push(JSON.parse(data) as A2ATask);
+        if (data) tasks.push(parseTask(data));
       }
     } else {
       const results = await Promise.all(keys.map((key) => this.client.get(key)));
       for (const data of results) {
-        if (data) tasks.push(JSON.parse(data) as A2ATask);
+        if (data) tasks.push(parseTask(data));
       }
     }
 

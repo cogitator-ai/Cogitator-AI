@@ -7,6 +7,7 @@ import type {
   ToolSelfGenerationConfig,
 } from '@cogitator-ai/types';
 import { buildGapAnalysisPrompt, parseGapAnalysisResponse } from './prompts';
+import { llmChat } from '../utils/llm-helper';
 
 export interface GapAnalyzerOptions {
   llm: LLMBackend;
@@ -34,7 +35,7 @@ export class GapAnalyzer {
       previousGaps?: CapabilityGap[];
     }
   ): Promise<GapAnalysisResult> {
-    const cacheKey = this.buildCacheKey(userIntent, availableTools);
+    const cacheKey = this.buildCacheKey(userIntent, availableTools, context);
     const cached = this.analysisCache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp.getTime() < 60000) {
       return cached;
@@ -47,7 +48,8 @@ export class GapAnalyzer {
 
     const prompt = buildGapAnalysisPrompt(userIntent, toolSummaries, context?.failedAttempts);
 
-    const response = await this.callLLM(
+    const content = await llmChat(
+      this.llm,
       [
         {
           role: 'system',
@@ -58,10 +60,10 @@ Consider tool composition before suggesting new tools.`,
         },
         { role: 'user', content: prompt },
       ],
-      0.3
+      { model: this.model, temperature: 0.3 }
     );
 
-    const parsed = parseGapAnalysisResponse(response.content);
+    const parsed = parseGapAnalysisResponse(content);
     const filteredGaps = this.filterAndPrioritizeGaps(
       parsed.gaps,
       availableTools,
@@ -217,26 +219,25 @@ Consider tool composition before suggesting new tools.`,
     return `Identified ${gaps.length} capability gap(s):\n${gapDescriptions}`;
   }
 
-  private buildCacheKey(userIntent: string, tools: Tool[]): string {
+  private buildCacheKey(
+    userIntent: string,
+    tools: Tool[],
+    context?: { failedAttempts?: string[]; previousGaps?: CapabilityGap[] }
+  ): string {
     const toolSignature = tools
-      .map((t) => t.name)
+      .map((t) => `${t.name}:${t.description}`)
       .sort()
-      .join(',');
-    const raw = `${userIntent}|${toolSignature}`;
+      .join('\n');
+    const raw = JSON.stringify([
+      userIntent,
+      toolSignature,
+      context?.failedAttempts ?? [],
+      (context?.previousGaps ?? []).map((g) => g.id).sort(),
+    ]);
     return createHash('sha256').update(raw).digest('hex');
   }
 
   clearCache(): void {
     this.analysisCache.clear();
-  }
-
-  private async callLLM(
-    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
-    temperature: number
-  ) {
-    if (this.llm.complete) {
-      return this.llm.complete({ messages, temperature });
-    }
-    return this.llm.chat({ model: this.model, messages, temperature });
   }
 }

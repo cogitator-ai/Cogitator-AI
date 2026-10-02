@@ -2,8 +2,19 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { generateId } from '@cogitator-ai/server-shared';
 import { HonoStreamWriter } from '../streaming/hono-stream-writer.js';
-import type { HonoEnv, AgentListResponse, AgentRunRequest, AgentRunResponse } from '../types.js';
-import { CogitatorError, type ToolCall } from '@cogitator-ai/types';
+import type { HonoEnv, AgentListResponse, AgentRunResponse } from '../types.js';
+import type { ToolCall, ToolResult } from '@cogitator-ai/types';
+import { getOwn } from '../utils/lookup.js';
+import { resolveError } from '../utils/errors.js';
+import {
+  createRequestAbortController,
+  errorResponse,
+  invalidInput,
+  invalidJson,
+  readJsonBody,
+  requestAborted,
+} from '../utils/request.js';
+import { parseAgentRunRequest } from '../utils/validation.js';
 
 export function createAgentRoutes(): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
@@ -12,8 +23,8 @@ export function createAgentRoutes(): Hono<HonoEnv> {
     const ctx = c.get('cogitator');
     const agentList = Object.entries(ctx.agents).map(([name, agent]) => ({
       name,
-      description: agent.config.instructions?.slice(0, 100),
-      tools: agent.config.tools?.map((t) => t.name) || [],
+      description: agent.config.description,
+      tools: agent.config.tools?.map((t) => t.name) ?? [],
     }));
 
     const response: AgentListResponse = { agents: agentList };
@@ -23,31 +34,23 @@ export function createAgentRoutes(): Hono<HonoEnv> {
   app.post('/agents/:name/run', async (c) => {
     const ctx = c.get('cogitator');
     const name = c.req.param('name');
-    const agent = Object.hasOwn(ctx.agents, name) ? ctx.agents[name] : undefined;
+    const agent = getOwn(ctx.agents, name);
 
     if (!agent) {
       return c.json({ error: { message: `Agent '${name}' not found`, code: 'NOT_FOUND' } }, 404);
     }
 
-    let body: AgentRunRequest;
-    try {
-      body = await c.req.json<AgentRunRequest>();
-    } catch {
-      return c.json({ error: { message: 'Invalid JSON body', code: 'INVALID_INPUT' } }, 400);
-    }
+    const body = await readJsonBody(c);
+    if (!body.ok) return invalidJson(c);
+    const parsed = parseAgentRunRequest(body.value);
+    if (!parsed.ok) return invalidInput(c, parsed.message);
 
-    if (!body?.input) {
-      return c.json(
-        { error: { message: 'Missing required field: input', code: 'INVALID_INPUT' } },
-        400
-      );
-    }
+    const abortController = createRequestAbortController(c);
 
     try {
       const result = await ctx.runtime.run(agent, {
-        input: body.input,
-        context: body.context,
-        threadId: body.threadId,
+        ...parsed.value,
+        signal: abortController.signal,
       });
 
       const response: AgentRunResponse = {
@@ -63,68 +66,55 @@ export function createAgentRoutes(): Hono<HonoEnv> {
 
       return c.json(response);
     } catch (error) {
-      if (CogitatorError.isCogitatorError(error)) {
-        return c.json({ error: { message: error.message, code: error.code } }, 500);
-      }
-      console.error('[CogitatorHono] Agent run error:', error);
-      return c.json({ error: { message: 'Internal server error', code: 'INTERNAL' } }, 500);
+      if (abortController.signal.aborted) return requestAborted(c);
+      return errorResponse(c, error, 'Agent run error');
     }
   });
 
   app.post('/agents/:name/stream', async (c) => {
     const ctx = c.get('cogitator');
     const name = c.req.param('name');
-    const agent = Object.hasOwn(ctx.agents, name) ? ctx.agents[name] : undefined;
+    const agent = getOwn(ctx.agents, name);
 
     if (!agent) {
       return c.json({ error: { message: `Agent '${name}' not found`, code: 'NOT_FOUND' } }, 404);
     }
 
-    let body: AgentRunRequest;
-    try {
-      body = await c.req.json<AgentRunRequest>();
-    } catch {
-      return c.json({ error: { message: 'Invalid JSON body', code: 'INVALID_INPUT' } }, 400);
-    }
+    const body = await readJsonBody(c);
+    if (!body.ok) return invalidJson(c);
+    const parsed = parseAgentRunRequest(body.value);
+    if (!parsed.ok) return invalidInput(c, parsed.message);
 
-    if (!body?.input) {
-      return c.json(
-        { error: { message: 'Missing required field: input', code: 'INVALID_INPUT' } },
-        400
-      );
-    }
+    const abortController = createRequestAbortController(c);
 
     return streamSSE(c, async (stream) => {
       const writer = new HonoStreamWriter(stream);
       const messageId = generateId('msg');
+      const textId = generateId('txt');
 
-      stream.onAbort(() => writer.close());
-
-      let textStarted = false;
-      let textId = '';
+      stream.onAbort(() => {
+        writer.close();
+        abortController.abort();
+      });
 
       try {
         await writer.start(messageId);
-        textId = generateId('txt');
-        textStarted = true;
         await writer.textStart(textId);
 
         const result = await ctx.runtime.run(agent, {
-          input: body.input,
-          context: body.context,
-          threadId: body.threadId,
+          ...parsed.value,
           stream: true,
+          signal: abortController.signal,
           onToken: (token: string) => {
             void writer.textDelta(textId, token);
           },
           onToolCall: (toolCall: ToolCall) => {
-            const toolId = generateId('tool');
-            void writer.toolCallStart(toolId, toolCall.name);
-            void writer.toolCallEnd(toolId);
+            void writer.toolCallStart(toolCall.id, toolCall.name);
+            void writer.toolCallDelta(toolCall.id, JSON.stringify(toolCall.arguments));
+            void writer.toolCallEnd(toolCall.id);
           },
-          onToolResult: (toolResult: { callId: string; result: unknown }) => {
-            const resultId = generateId('res');
-            void writer.toolResult(resultId, toolResult.callId, toolResult.result);
+          onToolResult: (toolResult: ToolResult) => {
+            void writer.toolResult(generateId('res'), toolResult.callId, toolResult.result);
           },
         });
 
@@ -135,15 +125,10 @@ export function createAgentRoutes(): Hono<HonoEnv> {
           totalTokens: result.usage.totalTokens,
         });
       } catch (error) {
-        if (textStarted) {
-          await writer.textEnd(textId);
-        }
-        if (CogitatorError.isCogitatorError(error)) {
-          await writer.error(error.message, error.code);
-        } else {
-          console.error('[CogitatorHono] Agent stream error:', error);
-          await writer.error('Internal server error', 'INTERNAL');
-        }
+        if (abortController.signal.aborted) return;
+        await writer.textEnd(textId);
+        const { body: errorBody } = resolveError(error, 'Agent stream error');
+        await writer.error(errorBody.error.message, errorBody.error.code);
       } finally {
         writer.close();
       }

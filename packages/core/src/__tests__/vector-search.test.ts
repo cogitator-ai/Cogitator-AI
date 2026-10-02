@@ -352,7 +352,7 @@ describe('vector-search tool', () => {
       process.env.DATABASE_URL = 'postgres://localhost/db';
     });
 
-    it('uses default model text-embedding-004', async () => {
+    it('uses default model gemini-embedding-001', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: () =>
@@ -367,7 +367,7 @@ describe('vector-search tool', () => {
 
       const result = await vectorSearch.execute({ query: 'test' });
 
-      expect((result as { model: string }).model).toBe('text-embedding-004');
+      expect((result as { model: string }).model).toBe('gemini-embedding-001');
     });
 
     it('constructs correct Google API URL', async () => {
@@ -385,14 +385,30 @@ describe('vector-search tool', () => {
 
       await vectorSearch.execute({ query: 'test' });
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('text-embedding-004:embedContent'),
-        expect.any(Object)
+      const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent'
       );
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('key=google-test-key'),
-        expect.any(Object)
-      );
+      expect(url).not.toContain('google-test-key');
+      expect(init.headers).toMatchObject({ 'x-goog-api-key': 'google-test-key' });
+    });
+
+    it('resolves the Ollama endpoint from OLLAMA_HOST when OLLAMA_BASE_URL is unset', async () => {
+      delete process.env.GOOGLE_API_KEY;
+      process.env.OLLAMA_HOST = 'gpu-box:11434';
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ embedding: Array(768).fill(0.1) }),
+      });
+
+      const { Client } = await import('pg');
+      const mockInstance = new Client();
+      (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+
+      const result = await vectorSearch.execute({ query: 'test' });
+
+      expect((result as { provider: string }).provider).toBe('ollama');
+      expect(mockFetch.mock.calls[0][0]).toBe('http://gpu-box:11434/api/embeddings');
     });
 
     it('handles Google API errors', async () => {

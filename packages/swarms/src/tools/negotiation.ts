@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { nanoid } from 'nanoid';
 import { tool } from '@cogitator-ai/core';
 import type {
   Blackboard,
@@ -10,11 +11,25 @@ import type {
   Coalition,
   NegotiationPhase,
 } from '@cogitator-ai/types';
+import {
+  MEDIATOR_ID,
+  NEGOTIATION_SECTION,
+  acceptanceAction,
+  getOfferAcceptances,
+  isFullyAccepted,
+  isOfferExpired,
+  offerRecipients,
+  readNegotiationRules,
+  readNegotiationState,
+  replaceOffer,
+} from '../shared/negotiation.js';
 
 const NegotiationTermSchema = z.object({
   termId: z.string().describe('Unique identifier for this term'),
   label: z.string().describe('Human-readable label for the term'),
-  value: z.unknown().describe('The proposed value for this term'),
+  value: z
+    .union([z.string(), z.number(), z.boolean()])
+    .describe('The proposed value for this term (string, number or boolean)'),
   negotiable: z.boolean().describe('Whether this term is open for negotiation'),
   priority: z.number().min(1).max(10).describe('Priority 1-10, higher = more important'),
   range: z
@@ -27,15 +42,11 @@ const NegotiationTermSchema = z.object({
 });
 
 function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  return `offer_${nanoid(12)}`;
 }
 
 function getNegotiationState(blackboard: Blackboard): NegotiationState | null {
-  try {
-    return blackboard.read<NegotiationState>('negotiation');
-  } catch {
-    return null;
-  }
+  return readNegotiationState(blackboard);
 }
 
 function writeNegotiationState(
@@ -43,7 +54,11 @@ function writeNegotiationState(
   state: NegotiationState,
   agent: string
 ): void {
-  blackboard.write('negotiation', state, agent);
+  blackboard.write(NEGOTIATION_SECTION, { ...state, lastActivityAt: Date.now() }, agent);
+}
+
+function offersThisRound(state: NegotiationState, agent: string): number {
+  return state.offers.filter((o) => o.from === agent && o.round === state.round).length;
 }
 
 export function createNegotiationTools(
@@ -52,6 +67,40 @@ export function createNegotiationTools(
   currentAgent: string,
   agentWeight = 1
 ) {
+  const checkTurn = (state: NegotiationState): string | null =>
+    state.currentTurn !== null && state.currentTurn !== currentAgent
+      ? `Not your turn. Current turn: ${state.currentTurn}`
+      : null;
+
+  const checkOfferQuota = (state: NegotiationState): string | null => {
+    const max = readNegotiationRules(blackboard)?.maxOffersPerRound;
+    if (max !== undefined && offersThisRound(state, currentAgent) >= max) {
+      return `Offer limit reached: at most ${max} offers per round`;
+    }
+    return null;
+  };
+
+  const defaultExpiry = (): number | undefined => {
+    const timeout = readNegotiationRules(blackboard)?.offerTimeout;
+    return timeout !== undefined && timeout > 0 ? Date.now() + timeout : undefined;
+  };
+
+  const findRespondableOffer = (
+    state: NegotiationState,
+    offerId: string
+  ): { offer: NegotiationOffer } | { error: string } => {
+    const offer = state.offers.find((o) => o.id === offerId);
+    if (!offer) return { error: `Offer not found: ${offerId}` };
+    if (offer.status !== 'pending') {
+      return { error: `Offer is not pending (status: ${offer.status})` };
+    }
+    if (isOfferExpired(offer)) return { error: 'Offer has expired' };
+    if (!offerRecipients(offer).includes(currentAgent)) {
+      return { error: 'This offer was not made to you' };
+    }
+    return { offer };
+  };
+
   const makeOffer = tool({
     name: 'make_offer',
     description:
@@ -73,11 +122,14 @@ export function createNegotiationTools(
         return { success: false, error: 'No active negotiation session' };
       }
 
-      if (state.currentTurn !== null && state.currentTurn !== currentAgent) {
-        return {
-          success: false,
-          error: `Not your turn. Current turn: ${state.currentTurn}`,
-        };
+      const refusal = checkTurn(state) ?? checkOfferQuota(state);
+      if (refusal) {
+        return { success: false, error: refusal };
+      }
+
+      const recipients = Array.isArray(to) ? to : [to];
+      if (recipients.length === 0 || recipients.includes(currentAgent)) {
+        return { success: false, error: 'Offers must be addressed to other agents' };
       }
 
       const offer: NegotiationOffer = {
@@ -88,14 +140,16 @@ export function createNegotiationTools(
         reasoning,
         timestamp: Date.now(),
         status: 'pending' as OfferStatus,
-        expiresAt: expiresInMs ? Date.now() + expiresInMs : undefined,
+        expiresAt: expiresInMs ? Date.now() + expiresInMs : defaultExpiry(),
         round: state.round,
         phase: state.phase,
       };
 
-      state.offers.push(offer);
-      state.lastActivityAt = Date.now();
-      writeNegotiationState(blackboard, state, currentAgent);
+      writeNegotiationState(
+        blackboard,
+        { ...state, offers: [...state.offers, offer] },
+        currentAgent
+      );
 
       events.emit('negotiation:offer-made', { offer, from: currentAgent }, currentAgent);
 
@@ -130,59 +184,49 @@ export function createNegotiationTools(
         return { success: false, error: 'No active negotiation session' };
       }
 
-      if (state.currentTurn !== null && state.currentTurn !== currentAgent) {
-        return {
-          success: false,
-          error: `Not your turn. Current turn: ${state.currentTurn}`,
-        };
+      const refusal = checkTurn(state) ?? checkOfferQuota(state);
+      if (refusal) {
+        return { success: false, error: refusal };
       }
 
-      const originalOffer = state.offers.find((o) => o.id === inResponseTo);
-      if (!originalOffer) {
-        return { success: false, error: `Original offer not found: ${inResponseTo}` };
+      const lookup = findRespondableOffer(state, inResponseTo);
+      if ('error' in lookup) {
+        return { success: false, error: lookup.error };
       }
+      const originalOffer = lookup.offer;
 
-      if (originalOffer.status !== 'pending') {
-        return {
-          success: false,
-          error: `Cannot counter offer with status: ${originalOffer.status}`,
-        };
-      }
-
-      if (originalOffer.expiresAt && Date.now() > originalOffer.expiresAt) {
-        return { success: false, error: 'Offer has expired' };
-      }
-
-      const recipients = Array.isArray(originalOffer.to) ? originalOffer.to : [originalOffer.to];
-      if (!recipients.includes(currentAgent)) {
-        return { success: false, error: 'You are not a party to this offer' };
-      }
-
-      originalOffer.status = 'countered';
-
+      const modifiedIds = new Set(modifiedTerms.map((t) => t.termId));
       const acceptedTerms = acceptedTermIds
-        ? originalOffer.terms.filter((t) => acceptedTermIds.includes(t.termId))
+        ? originalOffer.terms.filter(
+            (t) => acceptedTermIds.includes(t.termId) && !modifiedIds.has(t.termId)
+          )
         : [];
 
-      const allTerms = [...acceptedTerms, ...(modifiedTerms as NegotiationTerm[])];
+      const counterRecipients =
+        originalOffer.from === MEDIATOR_ID
+          ? offerRecipients(originalOffer).filter((r) => r !== currentAgent)
+          : [originalOffer.from];
 
       const counterOfferDoc: NegotiationOffer = {
         id: generateId(),
         from: currentAgent,
-        to: originalOffer.from,
-        terms: allTerms,
+        to: counterRecipients.length === 1 ? counterRecipients[0] : counterRecipients,
+        terms: [...acceptedTerms, ...(modifiedTerms as NegotiationTerm[])],
         reasoning,
         inResponseTo,
         timestamp: Date.now(),
         status: 'pending',
+        expiresAt: defaultExpiry(),
         round: state.round,
         phase: 'counter' as NegotiationPhase,
       };
 
-      state.offers.push(counterOfferDoc);
-      state.phase = 'counter';
-      state.lastActivityAt = Date.now();
-      writeNegotiationState(blackboard, state, currentAgent);
+      const updated = replaceOffer(state, inResponseTo, { status: 'countered' });
+      writeNegotiationState(
+        blackboard,
+        { ...updated, offers: [...updated.offers, counterOfferDoc] },
+        currentAgent
+      );
 
       events.emit(
         'negotiation:offer-countered',
@@ -218,34 +262,39 @@ export function createNegotiationTools(
         return { success: false, error: 'No active negotiation session' };
       }
 
-      if (state.currentTurn !== null && state.currentTurn !== currentAgent) {
-        return {
-          success: false,
-          error: `Not your turn. Current turn: ${state.currentTurn}`,
-        };
+      const refusal = checkTurn(state);
+      if (refusal) {
+        return { success: false, error: refusal };
       }
 
-      const offer = state.offers.find((o) => o.id === offerId);
-      if (!offer) {
-        return { success: false, error: `Offer not found: ${offerId}` };
+      const lookup = findRespondableOffer(state, offerId);
+      if ('error' in lookup) {
+        return { success: false, error: lookup.error };
+      }
+      const offer = lookup.offer;
+
+      if (getOfferAcceptances(state, offerId).includes(currentAgent)) {
+        return { success: false, error: 'You have already accepted this offer' };
       }
 
-      if (offer.status !== 'pending') {
-        return { success: false, error: `Cannot accept offer with status: ${offer.status}` };
-      }
+      const withAcceptance: NegotiationState = {
+        ...state,
+        turnHistory: [
+          ...state.turnHistory,
+          {
+            agent: currentAgent,
+            round: state.round,
+            action: acceptanceAction(offerId),
+            timestamp: Date.now(),
+          },
+        ],
+      };
+      const fullyAccepted = isFullyAccepted(withAcceptance, offer);
+      const updated = fullyAccepted
+        ? replaceOffer(withAcceptance, offerId, { status: 'accepted' })
+        : withAcceptance;
 
-      if (offer.expiresAt && Date.now() > offer.expiresAt) {
-        return { success: false, error: 'Offer has expired' };
-      }
-
-      const recipients = Array.isArray(offer.to) ? offer.to : [offer.to];
-      if (!recipients.includes(currentAgent)) {
-        return { success: false, error: 'This offer was not made to you' };
-      }
-
-      offer.status = 'accepted';
-      state.lastActivityAt = Date.now();
-      writeNegotiationState(blackboard, state, currentAgent);
+      writeNegotiationState(blackboard, updated, currentAgent);
 
       events.emit(
         'negotiation:offer-accepted',
@@ -254,8 +303,13 @@ export function createNegotiationTools(
           acceptedBy: currentAgent,
           offer,
           comment,
+          fullyAccepted,
         },
         currentAgent
+      );
+
+      const pendingRecipients = offerRecipients(offer).filter(
+        (r) => !getOfferAcceptances(updated, offerId).includes(r)
       );
 
       return {
@@ -264,6 +318,8 @@ export function createNegotiationTools(
         acceptedTerms: offer.terms.map((t) => t.termId),
         from: offer.from,
         round: state.round,
+        fullyAccepted,
+        awaitingAcceptanceFrom: pendingRecipients,
       };
     },
   });
@@ -286,34 +342,21 @@ export function createNegotiationTools(
         return { success: false, error: 'No active negotiation session' };
       }
 
-      if (state.currentTurn !== null && state.currentTurn !== currentAgent) {
-        return {
-          success: false,
-          error: `Not your turn. Current turn: ${state.currentTurn}`,
-        };
+      const refusal = checkTurn(state);
+      if (refusal) {
+        return { success: false, error: refusal };
       }
 
-      const offer = state.offers.find((o) => o.id === offerId);
-      if (!offer) {
-        return { success: false, error: `Offer not found: ${offerId}` };
+      const lookup = findRespondableOffer(state, offerId);
+      if ('error' in lookup) {
+        return { success: false, error: lookup.error };
       }
 
-      if (offer.status !== 'pending') {
-        return { success: false, error: `Cannot reject offer with status: ${offer.status}` };
-      }
-
-      if (offer.expiresAt && Date.now() > offer.expiresAt) {
-        return { success: false, error: 'Offer has expired' };
-      }
-
-      const recipients = Array.isArray(offer.to) ? offer.to : [offer.to];
-      if (!recipients.includes(currentAgent)) {
-        return { success: false, error: 'This offer was not made to you' };
-      }
-
-      offer.status = 'rejected';
-      state.lastActivityAt = Date.now();
-      writeNegotiationState(blackboard, state, currentAgent);
+      writeNegotiationState(
+        blackboard,
+        replaceOffer(state, offerId, { status: 'rejected' }),
+        currentAgent
+      );
 
       events.emit(
         'negotiation:offer-rejected',
@@ -446,6 +489,10 @@ export function createNegotiationTools(
         return { success: false, error: 'No active negotiation session' };
       }
 
+      if (readNegotiationRules(blackboard)?.allowCoalitions === false) {
+        return { success: false, error: 'Coalitions are not allowed in this negotiation' };
+      }
+
       const coalition: Coalition = {
         id: generateId(),
         name,
@@ -457,9 +504,11 @@ export function createNegotiationTools(
         status: 'forming',
       };
 
-      state.coalitions.push(coalition);
-      state.lastActivityAt = Date.now();
-      writeNegotiationState(blackboard, state, currentAgent);
+      writeNegotiationState(
+        blackboard,
+        { ...state, coalitions: [...state.coalitions, coalition] },
+        currentAgent
+      );
 
       events.emit(
         'negotiation:coalition-proposed',
@@ -511,32 +560,43 @@ export function createNegotiationTools(
         return { success: false, error: 'This coalition has been dissolved' };
       }
 
-      coalition.members.push(currentAgent);
-      coalition.combinedWeight += agentWeight;
+      const minSize = readNegotiationRules(blackboard)?.minCoalitionSize ?? 2;
+      const members = [...coalition.members, currentAgent];
+      const activated = coalition.status === 'forming' && members.length >= minSize;
+      const updatedCoalition: Coalition = {
+        ...coalition,
+        members,
+        combinedWeight: coalition.combinedWeight + agentWeight,
+        sharedInterests: additionalInterests
+          ? [...coalition.sharedInterests, ...additionalInterests]
+          : coalition.sharedInterests,
+        status: activated ? 'active' : coalition.status,
+      };
 
-      if (additionalInterests) {
-        coalition.sharedInterests.push(...additionalInterests);
-      }
+      writeNegotiationState(
+        blackboard,
+        {
+          ...state,
+          coalitions: state.coalitions.map((c) => (c.id === coalitionId ? updatedCoalition : c)),
+        },
+        currentAgent
+      );
 
-      if (coalition.status === 'forming' && coalition.members.length >= 2) {
-        coalition.status = 'active';
+      if (activated) {
         events.emit(
           'negotiation:coalition-formed',
-          { coalition, activatedBy: currentAgent },
+          { coalition: updatedCoalition, activatedBy: currentAgent },
           currentAgent
         );
       }
 
-      state.lastActivityAt = Date.now();
-      writeNegotiationState(blackboard, state, currentAgent);
-
       return {
         success: true,
         coalitionId,
-        name: coalition.name,
-        members: coalition.members,
-        combinedWeight: coalition.combinedWeight,
-        status: coalition.status,
+        name: updatedCoalition.name,
+        members: updatedCoalition.members,
+        combinedWeight: updatedCoalition.combinedWeight,
+        status: updatedCoalition.status,
       };
     },
   });
@@ -555,12 +615,17 @@ export function createNegotiationTools(
         return { success: false, error: 'No active negotiation session' };
       }
 
-      state.interests[currentAgent] = {
-        declared: interests as NegotiationTerm[],
-        redlines,
-      };
-      state.lastActivityAt = Date.now();
-      writeNegotiationState(blackboard, state, currentAgent);
+      writeNegotiationState(
+        blackboard,
+        {
+          ...state,
+          interests: {
+            ...state.interests,
+            [currentAgent]: { declared: interests as NegotiationTerm[], redlines },
+          },
+        },
+        currentAgent
+      );
 
       events.emit(
         'negotiation:interests-declared',

@@ -9,6 +9,21 @@ import type {
   CompactionResult,
   Thread,
 } from '@cogitator-ai/types';
+import type { CompactionService } from './compaction';
+
+const SESSION_INDEX_THREAD = '__cogitator_session_index__';
+const LEGACY_CHANNEL_TYPES = ['telegram', 'discord', 'slack', 'whatsapp', 'webchat'];
+
+interface SessionIndexMetadata {
+  _sessionIndex: true;
+  sessions: string[];
+  [key: string]: unknown;
+}
+
+export interface SessionManagerOptions {
+  /** Enables `compact()`; without it compaction must be done with CompactionService directly */
+  compaction?: CompactionService;
+}
 
 interface SessionMetadata {
   _session: true;
@@ -66,7 +81,47 @@ function isSessionThread(thread: Thread): boolean {
 }
 
 export class SessionManager implements ISessionManager {
-  constructor(private readonly adapter: MemoryAdapter) {}
+  private indexQueue: Promise<void> = Promise.resolve();
+
+  constructor(
+    private readonly adapter: MemoryAdapter,
+    private readonly options: SessionManagerOptions = {}
+  ) {}
+
+  /**
+   * Sessions are tracked in an index thread so they can be listed with any adapter.
+   * Updates are serialized within this manager.
+   */
+  private updateIndex(mutate: (sessions: Set<string>) => void): Promise<void> {
+    const run = async (): Promise<void> => {
+      const existing = await this.adapter.getThread(SESSION_INDEX_THREAD);
+      const meta = existing.success
+        ? (existing.data?.metadata as SessionIndexMetadata | undefined)
+        : undefined;
+      const sessions = new Set(meta?._sessionIndex ? meta.sessions : []);
+      mutate(sessions);
+
+      const metadata: SessionIndexMetadata = { _sessionIndex: true, sessions: [...sessions] };
+      const result =
+        existing.success && existing.data
+          ? await this.adapter.updateThread(SESSION_INDEX_THREAD, metadata)
+          : await this.adapter.createThread('system', metadata, SESSION_INDEX_THREAD);
+      if (!result.success) {
+        throw new Error(`Failed to update session index: ${result.error}`);
+      }
+    };
+
+    const next = this.indexQueue.then(run, run);
+    this.indexQueue = next.catch(() => {});
+    return next;
+  }
+
+  private async indexedSessionIds(): Promise<string[]> {
+    const index = await this.adapter.getThread(SESSION_INDEX_THREAD);
+    if (!index.success || !index.data) return [];
+    const meta = index.data.metadata as SessionIndexMetadata;
+    return meta._sessionIndex ? meta.sessions : [];
+  }
 
   async getOrCreate(params: {
     userId: string;
@@ -104,6 +159,7 @@ export class SessionManager implements ISessionManager {
     if (!result.success) {
       throw new Error(`Failed to create session: ${result.error}`);
     }
+    await this.updateIndex((sessions) => sessions.add(threadId));
 
     return threadToSession(result.data);
   }
@@ -156,30 +212,31 @@ export class SessionManager implements ISessionManager {
     await this.update(sessionId, { status: 'archived' });
   }
 
+  /**
+   * List sessions tracked by this manager's index (plus sessions created before the index
+   * existed, found by user id for the built-in channel types).
+   */
   async list(filter?: SessionFilter): Promise<Session[]> {
-    const allThreads: Thread[] = [];
-
-    const testIds = filter?.userId
-      ? [
-          `session_telegram_${filter.userId}`,
-          `session_discord_${filter.userId}`,
-          `session_slack_${filter.userId}`,
-          `session_whatsapp_${filter.userId}`,
-          `session_webchat_${filter.userId}`,
-        ]
-      : [];
-
-    if (testIds.length > 0) {
-      for (const id of testIds) {
-        const result = await this.adapter.getThread(id);
-        if (result.success && result.data && isSessionThread(result.data)) {
-          allThreads.push(result.data);
-        }
+    const ids = new Set(await this.indexedSessionIds());
+    if (filter?.userId) {
+      for (const channelType of LEGACY_CHANNEL_TYPES) {
+        ids.add(`session_${channelType}_${filter.userId}`);
       }
     }
 
-    let sessions = allThreads.map(threadToSession);
+    const threads: Thread[] = [];
+    for (const id of ids) {
+      const result = await this.adapter.getThread(id);
+      if (result.success && result.data && isSessionThread(result.data)) {
+        threads.push(result.data);
+      }
+    }
 
+    let sessions = threads.map(threadToSession);
+
+    if (filter?.userId) {
+      sessions = sessions.filter((s) => s.userId === filter.userId);
+    }
     if (filter?.channelType) {
       sessions = sessions.filter((s) => s.channelType === filter.channelType);
     }
@@ -196,14 +253,9 @@ export class SessionManager implements ISessionManager {
 
     sessions.sort((a, b) => b.lastActiveAt.getTime() - a.lastActiveAt.getTime());
 
-    if (filter?.offset) {
-      sessions = sessions.splice(filter.offset);
-    }
-    if (filter?.limit) {
-      sessions = sessions.slice(0, filter.limit);
-    }
-
-    return sessions;
+    const offset = filter?.offset ?? 0;
+    const end = filter?.limit !== undefined ? offset + filter.limit : undefined;
+    return sessions.slice(offset, end);
   }
 
   async delete(sessionId: string): Promise<void> {
@@ -211,6 +263,7 @@ export class SessionManager implements ISessionManager {
     if (!result.success) {
       throw new Error(`Failed to delete session: ${result.error}`);
     }
+    await this.updateIndex((sessions) => sessions.delete(sessionId));
   }
 
   async incrementMessageCount(sessionId: string): Promise<void> {
@@ -225,9 +278,15 @@ export class SessionManager implements ISessionManager {
     });
   }
 
-  async compact(_sessionId: string, _config: CompactionConfig): Promise<CompactionResult> {
-    throw new Error(
-      'Compaction requires LLM backend - use CompactionService from @cogitator-ai/memory'
-    );
+  /**
+   * Compact a session's history with the CompactionService passed in the options.
+   */
+  async compact(sessionId: string, config: CompactionConfig): Promise<CompactionResult> {
+    if (!this.options.compaction) {
+      throw new Error(
+        'Session compaction needs a summarizer: create the SessionManager with { compaction: new CompactionService(...) }'
+      );
+    }
+    return this.options.compaction.compact(sessionId, config);
   }
 }

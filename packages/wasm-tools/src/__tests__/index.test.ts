@@ -1,4 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('../runtime.js', () => ({
+  invokeWasm: vi.fn().mockResolvedValue({ ok: true }),
+}));
+
+import { invokeWasm } from '../runtime.js';
 import {
   defineWasmTool,
   getWasmPath,
@@ -69,16 +75,129 @@ describe('defineWasmTool', () => {
     expect(tool.sandbox!.timeout).toBe(5000);
   });
 
-  it('execute returns params as passthrough', async () => {
-    const tool = defineWasmTool({
-      name: 'test',
-      description: 'test',
-      wasmModule: '/path.wasm',
-      parameters: z.object({ a: z.string() }),
+  describe('execute', () => {
+    beforeEach(() => {
+      vi.mocked(invokeWasm).mockClear();
     });
 
-    const result = await tool.execute({ a: 'hello' }, {} as never);
-    expect(result).toEqual({ a: 'hello' });
+    it('runs the WASM module with validated params and returns its output', async () => {
+      const tool = defineWasmTool({
+        name: 'test',
+        description: 'test',
+        wasmModule: '/path.wasm',
+        wasmFunction: 'process',
+        parameters: z.object({ a: z.string(), n: z.number().default(3) }),
+        timeout: 1234,
+        wasi: true,
+      });
+      const controller = new AbortController();
+
+      const result = await tool.execute({ a: 'hello' } as never, {
+        agentId: 'a',
+        runId: 'r',
+        signal: controller.signal,
+      });
+
+      expect(result).toEqual({ ok: true });
+      expect(invokeWasm).toHaveBeenCalledWith({
+        toolName: 'test',
+        wasmModule: '/path.wasm',
+        wasmFunction: 'process',
+        wasi: true,
+        timeout: 1234,
+        input: JSON.stringify({ a: 'hello', n: 3 }),
+        signal: controller.signal,
+      });
+    });
+
+    it('rejects invalid params before touching WASM', async () => {
+      const tool = defineWasmTool({
+        name: 'test',
+        description: 'test',
+        wasmModule: '/path.wasm',
+        parameters: z.object({ a: z.string() }),
+      });
+
+      await expect(tool.execute({ a: 1 } as never, {} as never)).rejects.toThrow();
+      expect(invokeWasm).not.toHaveBeenCalled();
+    });
+
+    it('works without a tool context and exposes the timeout on the tool', async () => {
+      const tool = defineWasmTool({
+        name: 'test',
+        description: 'test',
+        wasmModule: '/path.wasm',
+        parameters: z.object({}),
+      });
+
+      await tool.execute({}, undefined as never);
+      expect(tool.timeout).toBe(5000);
+      expect(vi.mocked(invokeWasm).mock.calls[0][0]).toMatchObject({
+        wasi: false,
+        signal: undefined,
+      });
+    });
+  });
+
+  it('all pre-built tools enable WASI, which extism-js compiled plugins require', () => {
+    const tools = [
+      createCalcTool(),
+      createHashTool(),
+      createJsonTool(),
+      createBase64Tool(),
+      createSlugTool(),
+      createValidationTool(),
+      createDiffTool(),
+      createRegexTool(),
+      createCsvTool(),
+      createMarkdownTool(),
+      createXmlTool(),
+      createDatetimeTool(),
+      createCompressionTool(),
+      createSigningTool(),
+    ];
+    for (const tool of tools) {
+      expect(tool.sandbox?.wasi).toBe(true);
+      expect(tool.timeout).toBe(tool.sandbox?.timeout);
+    }
+  });
+
+  describe('signingToolSchema seed generation', () => {
+    it('adds a secure random hex seed for generateKeypair when none is given', () => {
+      const first = signingToolSchema.parse({ operation: 'generateKeypair', algorithm: 'ed25519' });
+      const second = signingToolSchema.parse({
+        operation: 'generateKeypair',
+        algorithm: 'ed25519',
+      });
+      expect(first.seed).toMatch(/^[0-9a-f]{64}$/);
+      expect(first.seed).not.toBe(second.seed);
+    });
+
+    it('encodes the generated seed as base64 when requested', () => {
+      const parsed = signingToolSchema.parse({
+        operation: 'generateKeypair',
+        algorithm: 'ed25519',
+        encoding: 'base64',
+      });
+      expect(Buffer.from(parsed.seed!, 'base64')).toHaveLength(32);
+    });
+
+    it('keeps a caller-provided seed and leaves other operations untouched', () => {
+      expect(
+        signingToolSchema.parse({ operation: 'generateKeypair', algorithm: 'ed25519', seed: 'ab' })
+          .seed
+      ).toBe('ab');
+      expect(
+        signingToolSchema.parse({ operation: 'sign', algorithm: 'ed25519', message: 'm' }).seed
+      ).toBeUndefined();
+    });
+
+    it('still exposes the input schema to the LLM', () => {
+      const json = createSigningTool().toJSON();
+      expect(json.parameters.properties).toHaveProperty('operation');
+      expect(json.parameters.properties).toHaveProperty('seed');
+      expect(json.parameters.required).toEqual(['operation', 'algorithm']);
+    });
   });
 
   it('toJSON returns OpenAPI-compatible schema', () => {

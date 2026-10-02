@@ -84,4 +84,14 @@ describe('WasmLoader', () => {
       expect.objectContaining({ useWasi: true })
     );
   });
+
+  it('runs plugins in a worker so they can be terminated', async () => {
+    await loader.initialize();
+    await loader.load('./test.wasm', false);
+
+    expect(mockCreatePlugin).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ runInWorker: true })
+    );
+  });
 });

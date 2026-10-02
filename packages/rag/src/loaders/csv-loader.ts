@@ -3,12 +3,17 @@ import { resolve } from 'node:path';
 import { nanoid } from 'nanoid';
 import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
 
-async function loadPapaparse() {
+type Papa = typeof import('papaparse');
+
+async function loadPapaparse(): Promise<Papa> {
+  let mod: Papa & { default?: Papa };
   try {
-    return await import('papaparse');
+    mod = (await import('papaparse')) as Papa & { default?: Papa };
   } catch {
     throw new Error('papaparse is required for CSVLoader. Install it: pnpm add papaparse');
   }
+  const interop = mod.default;
+  return interop && typeof interop.parse === 'function' ? interop : mod;
 }
 
 export interface CSVLoaderOptions {
@@ -42,6 +47,7 @@ export class CSVLoader implements DocumentLoader {
 
     const headers = result.meta.fields ?? [];
     const contentCol = this.contentColumn ?? headers[0];
+    if (contentCol === undefined) return [];
 
     if (this.contentColumn && !headers.includes(this.contentColumn)) {
       throw new Error(
@@ -49,16 +55,16 @@ export class CSVLoader implements DocumentLoader {
       );
     }
 
-    return result.data.map((row) => {
+    return result.data.map((row, index) => {
       const content = row[contentCol] ?? '';
-      const metadata = this.extractMetadata(row);
+      const metadata = { ...this.extractMetadata(row), row: index + 1 };
 
       return {
         id: nanoid(),
         content,
         source: filePath,
         sourceType: 'csv' as const,
-        ...(metadata && Object.keys(metadata).length > 0 && { metadata }),
+        metadata,
       };
     });
   }

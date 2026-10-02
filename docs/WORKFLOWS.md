@@ -96,7 +96,7 @@ console.log(result.state.summary);
 
 ### Parallel Execution
 
-Nodes without dependencies (or with the same dependencies) run in parallel automatically. Use `addParallel` for explicit fan-out:
+Nodes with the same dependencies run in parallel automatically. A workflow must have a single root: several nodes without `after` make `build()` throw, so start a workflow with `addParallel` (a root `addParallel` becomes the entry point) when its first steps are independent:
 
 ```typescript
 const parallelWorkflow = new WorkflowBuilder<MultiSearchState>('multi-source-research')

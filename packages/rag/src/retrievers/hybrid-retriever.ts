@@ -6,6 +6,7 @@ import type {
   SearchResult,
 } from '@cogitator-ai/types';
 import type { HybridSearch } from '@cogitator-ai/memory';
+import { resultSource, type ChunkIndexer, type IndexedChunk } from './chunk-indexer.js';
 
 export interface HybridRetrieverConfig {
   hybridSearch: HybridSearch;
@@ -17,17 +18,27 @@ export interface HybridRetrieverConfig {
 const DEFAULT_TOP_K = 10;
 const DEFAULT_THRESHOLD = 0.0;
 
-export class HybridRetriever implements Retriever {
+/**
+ * Vector + BM25 retrieval fused with reciprocal rank fusion. Chunks ingested through
+ * `RAGPipeline` are added to the HybridSearch keyword index automatically.
+ */
+export class HybridRetriever implements Retriever, ChunkIndexer {
   private readonly hybridSearch: HybridSearch;
   private readonly defaultWeights?: HybridSearchWeights;
   private readonly defaultTopK: number;
   private readonly defaultThreshold: number;
+  private readonly indexed = new Map<string, IndexedChunk>();
 
   constructor(config: HybridRetrieverConfig) {
     this.hybridSearch = config.hybridSearch;
     this.defaultWeights = config.defaultWeights;
     this.defaultTopK = config.defaultTopK ?? DEFAULT_TOP_K;
     this.defaultThreshold = config.defaultThreshold ?? DEFAULT_THRESHOLD;
+  }
+
+  indexChunk(chunk: IndexedChunk): void {
+    this.indexed.set(chunk.embeddingId, chunk);
+    this.hybridSearch.indexDocument(chunk.embeddingId, chunk.content);
   }
 
   async retrieve(query: string, options?: Partial<RetrievalConfig>): Promise<RetrievalResult[]> {
@@ -47,17 +58,20 @@ export class HybridRetriever implements Retriever {
   }
 
   private toRetrievalResult(entry: SearchResult): RetrievalResult {
-    const rawDocId = entry.metadata?.documentId;
-    const documentId = typeof rawDocId === 'string' ? rawDocId : entry.sourceId;
+    const known = this.indexed.get(entry.id);
+    const metadata = { ...known?.metadata, ...entry.metadata };
+    const rawDocId = metadata.documentId;
+    const chunkId = known?.chunkId ?? entry.sourceId;
+    const documentId = typeof rawDocId === 'string' ? rawDocId : chunkId;
 
     return {
-      chunkId: entry.sourceId,
+      chunkId,
       documentId,
       content: entry.content,
       score: entry.score,
-      source: entry.sourceType,
+      source: resultSource(metadata, entry.sourceType),
       metadata: {
-        ...entry.metadata,
+        ...metadata,
         vectorScore: entry.vectorScore,
         keywordScore: entry.keywordScore,
       },

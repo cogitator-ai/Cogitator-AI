@@ -3,19 +3,37 @@ import type { Channel, StreamConfig } from '@cogitator-ai/types';
 const DEFAULT_FLUSH_INTERVAL = 500;
 const DEFAULT_MIN_CHUNK_SIZE = 20;
 
+interface Segment {
+  messageId: string | null;
+  lastSentText: string;
+}
+
+function createSegment(): Segment {
+  return { messageId: null, lastSentText: '' };
+}
+
+function findSplitPoint(text: string, limit: number): number {
+  const newline = text.lastIndexOf('\n', limit);
+  if (newline >= Math.floor(limit / 2)) return newline + 1;
+  const space = text.lastIndexOf(' ', limit);
+  if (space > 0) return space + 1;
+  if (newline > 0) return newline + 1;
+  return limit;
+}
+
 export class StreamBuffer {
   private buffer = '';
-  private messageId: string | null = null;
+  private segment: Segment = createSegment();
   private readonly messageIds: string[] = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private flushPromise: Promise<void> | null = null;
+  private ops: Promise<void> = Promise.resolve();
+  private flushing = false;
   private readonly draftId: number | null = null;
   private draftFailed = false;
-  private initialSent = false;
-  private lastSentText = '';
-  private generation = 0;
+  private replySent = false;
   private lastFlushEnd = 0;
   private stopped = false;
+  private finalError: unknown = null;
 
   constructor(
     private readonly channel: Channel,
@@ -25,7 +43,8 @@ export class StreamBuffer {
       minChunkSize: DEFAULT_MIN_CHUNK_SIZE,
     },
     private readonly replyTo?: string,
-    useDraft = false
+    useDraft = false,
+    private readonly format: (text: string) => string = (text) => text
   ) {
     if (useDraft && channel.sendDraft) {
       this.draftId = Math.floor(Math.random() * 2_147_483_646) + 1;
@@ -41,20 +60,24 @@ export class StreamBuffer {
     this.buffer += token;
 
     const limit = this.config.maxMessageChars;
-    if (limit && this.buffer.length > limit) {
-      const overflow = this.buffer.slice(limit);
-      this.buffer = this.buffer.slice(0, limit);
-      this.forceNewMessage();
-      this.buffer = overflow;
+    if (!limit || limit <= 0 || !Number.isFinite(limit)) return;
+
+    while (this.buffer.length > limit) {
+      const splitAt = findSplitPoint(this.buffer, limit);
+      const head = this.buffer.slice(0, splitAt).trimEnd();
+      this.buffer = this.buffer.slice(splitAt);
+      if (!head) continue;
+      this.commit(this.segment, head, false);
+      this.segment = createSegment();
     }
   }
 
   forceNewMessage(): void {
-    this.generation++;
+    if (this.buffer) {
+      this.commit(this.segment, this.buffer, false);
+    }
     this.buffer = '';
-    this.messageId = null;
-    this.initialSent = false;
-    this.lastSentText = '';
+    this.segment = createSegment();
   }
 
   getMessageIds(): readonly string[] {
@@ -62,41 +85,26 @@ export class StreamBuffer {
   }
 
   async finish(): Promise<string> {
-    this.stopped = true;
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
+    this.stopTimer();
+
+    if (this.buffer) {
+      this.commit(this.segment, this.buffer, true);
     }
 
-    if (this.flushPromise) {
-      await this.flushPromise;
+    await this.ops;
+
+    if (this.finalError) {
+      const error = this.finalError;
+      this.finalError = null;
+      throw error;
     }
 
-    if (this.draftId && !this.draftFailed) {
-      const text = this.buffer;
-      if (!text) return '';
-      const msgId = await this.channel.sendText(this.channelId, text, {
-        replyTo: this.replyTo,
-        format: 'markdown',
-      });
-      this.trackMessageId(msgId);
-      return msgId;
-    }
-
-    await this.flush(true);
-    return this.messageId ?? '';
+    return this.messageIds[this.messageIds.length - 1] ?? '';
   }
 
   async abort(): Promise<void> {
-    this.stopped = true;
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
-
-    if (this.flushPromise) {
-      await this.flushPromise;
-    }
+    this.stopTimer();
+    await this.ops;
 
     if (this.config.deleteOnAbort && this.channel.deleteMessage) {
       for (const id of this.messageIds) {
@@ -105,6 +113,57 @@ export class StreamBuffer {
         } catch {}
       }
     }
+  }
+
+  private stopTimer(): void {
+    this.stopped = true;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+  }
+
+  private enqueue(op: () => Promise<void>): Promise<void> {
+    const next = this.ops.then(op);
+    this.ops = next.catch(() => {});
+    return next;
+  }
+
+  private get draftActive(): boolean {
+    return this.draftId !== null && !this.draftFailed;
+  }
+
+  private nextReplyTo(): string | undefined {
+    if (this.replySent) return undefined;
+    this.replySent = true;
+    return this.replyTo;
+  }
+
+  private async sendNew(segment: Segment, text: string): Promise<void> {
+    const msgId = await this.channel.sendText(this.channelId, this.format(text), {
+      replyTo: this.nextReplyTo(),
+      format: 'markdown',
+    });
+    segment.messageId = msgId;
+    segment.lastSentText = text;
+    this.trackMessageId(msgId);
+  }
+
+  private commit(segment: Segment, text: string, final: boolean): void {
+    void this.enqueue(async () => {
+      try {
+        if (this.draftActive) {
+          await this.sendNew(segment, text);
+        } else if (!segment.messageId) {
+          await this.sendNew(segment, text);
+        } else if (text !== segment.lastSentText) {
+          await this.channel.editText(this.channelId, segment.messageId, this.format(text));
+          segment.lastSentText = text;
+        }
+      } catch (error) {
+        if (final) this.finalError = error;
+      }
+    });
   }
 
   private trackMessageId(id: string): void {
@@ -118,62 +177,53 @@ export class StreamBuffer {
     const elapsed = this.lastFlushEnd ? Date.now() - this.lastFlushEnd : 0;
     const delay = Math.max(0, this.config.flushInterval - elapsed);
     this.timer = setTimeout(() => {
-      const p = this.flush();
-      void p.then(() => this.scheduleNext());
+      void this.flush().then(() => this.scheduleNext());
     }, delay);
   }
 
-  private async flush(force = false): Promise<void> {
-    if (this.flushPromise) return;
-    if (this.buffer.length === 0) return;
-
-    if (!force && !this.initialSent && this.config.minInitialChars) {
-      if (this.buffer.length < this.config.minInitialChars) return;
-    }
-
-    if (!force && this.buffer.length < this.config.minChunkSize) return;
+  private async flush(): Promise<void> {
+    if (this.flushing || this.stopped) return;
 
     const text = this.buffer;
+    const segment = this.segment;
+    if (text.length === 0) return;
 
-    if (!force && this.messageId && text === this.lastSentText) return;
+    const hasMessage = segment.messageId !== null || segment.lastSentText !== '';
+    if (!hasMessage && this.config.minInitialChars && text.length < this.config.minInitialChars) {
+      return;
+    }
+    if (text.length < this.config.minChunkSize) return;
+    if (text === segment.lastSentText) return;
 
-    const gen = this.generation;
-
-    const promise = this.doFlush(text, gen);
-    this.flushPromise = promise;
-
+    this.flushing = true;
     try {
-      await promise;
+      await this.enqueue(() => this.sendUpdate(segment, text));
     } finally {
-      this.flushPromise = null;
+      this.flushing = false;
       this.lastFlushEnd = Date.now();
     }
   }
 
-  private async doFlush(text: string, gen: number): Promise<void> {
-    try {
-      if (this.draftId && !this.draftFailed) {
-        await this.channel.sendDraft!(this.channelId, this.draftId, text);
-      } else if (!this.messageId) {
-        const msgId = await this.channel.sendText(this.channelId, text, {
-          replyTo: this.replyTo,
-          format: 'markdown',
-        });
-        if (gen !== this.generation) return;
-        this.messageId = msgId;
-        this.trackMessageId(msgId);
-        this.initialSent = true;
-        this.lastSentText = text;
-      } else {
-        if (gen !== this.generation) return;
-        await this.channel.editText(this.channelId, this.messageId, text);
-        if (gen !== this.generation) return;
-        this.lastSentText = text;
-      }
-    } catch {
-      if (this.draftId && !this.draftFailed) {
+  private async sendUpdate(segment: Segment, text: string): Promise<void> {
+    if (this.stopped && segment === this.segment) return;
+
+    if (this.draftActive) {
+      try {
+        await this.channel.sendDraft!(this.channelId, this.draftId!, this.format(text));
+        segment.lastSentText = text;
+      } catch {
         this.draftFailed = true;
       }
+      return;
     }
+
+    try {
+      if (!segment.messageId) {
+        await this.sendNew(segment, text);
+      } else {
+        await this.channel.editText(this.channelId, segment.messageId, this.format(text));
+        segment.lastSentText = text;
+      }
+    } catch {}
   }
 }

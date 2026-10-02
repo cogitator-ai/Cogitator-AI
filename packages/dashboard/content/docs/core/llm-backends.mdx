@@ -82,6 +82,8 @@ model: 'openai/gpt-4o-mini';
 model: 'openai/o1';
 ```
 
+Against the official endpoint (no `baseUrl`), `maxTokens` is sent as `max_completion_tokens`, which reasoning models require. With a custom `baseUrl` and for the other OpenAI-compatible providers it is sent as `max_tokens`.
+
 ### Anthropic
 
 ```typescript
@@ -110,7 +112,10 @@ providers: {
 ```typescript
 model: 'google/gemini-2.5-flash';
 model: 'google/gemini-2.5-pro';
+model: 'google/gemini-3-flash';
 ```
+
+Gemini attaches a thought signature to function calls; it is stored on `ToolCall.thoughtSignature` (also in memory) and sent back with the call on the next request, which Gemini 3 models require for multi-step tool use. Thought-summary parts are excluded from the response text.
 
 ### Azure OpenAI
 
@@ -158,6 +163,10 @@ model: 'together/meta-llama/Llama-3.3-70B-Instruct-Turbo';
 model: 'deepseek/deepseek-chat';
 model: 'vllm/mistral-7b';
 ```
+
+### Message Conversion
+
+All backends receive the same `Message[]`. Every `system` message (the agent instructions plus any later ones, such as reflection hints or context summaries) is combined into the provider's system prompt for Anthropic, Gemini and Bedrock, and consecutive tool results are sent together in a single turn, as those APIs expect for parallel tool calls.
 
 ## Custom Backends (Plugin System)
 

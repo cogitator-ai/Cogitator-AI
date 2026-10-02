@@ -109,6 +109,7 @@ interface ToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  thoughtSignature?: string; // provider reasoning signature, echoed back as-is (Gemini)
 }
 
 interface ToolResult {
@@ -264,10 +265,7 @@ interface MemoryConfig {
   contextBuilder?: Partial<ContextBuilderConfig>;
 }
 
-type EmbeddingServiceConfig =
-  | OpenAIEmbeddingConfig
-  | OllamaEmbeddingConfig
-  | GoogleEmbeddingConfig;
+type EmbeddingServiceConfig = OpenAIEmbeddingConfig | OllamaEmbeddingConfig | GoogleEmbeddingConfig;
 ```
 
 ## Error Types

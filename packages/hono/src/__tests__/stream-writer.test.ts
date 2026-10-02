@@ -99,14 +99,14 @@ describe('HonoStreamWriter', () => {
     expect(events).toHaveLength(countBefore);
   });
 
-  it('close() sets closed flag and calls stream.abort()', () => {
+  it('close() sets the closed flag without aborting the stream', () => {
     const { stream, isAborted } = mockStream();
     const writer = new HonoStreamWriter(stream);
     expect(writer.isClosed).toBe(false);
     writer.close();
     expect(writer.isClosed).toBe(true);
-    expect(isAborted()).toBe(true);
-    expect(stream.abort).toHaveBeenCalledOnce();
+    expect(isAborted()).toBe(false);
+    expect(stream.abort).not.toHaveBeenCalled();
   });
 
   it('close() is idempotent', () => {
@@ -114,8 +114,17 @@ describe('HonoStreamWriter', () => {
     const writer = new HonoStreamWriter(stream);
     writer.close();
     writer.close();
-    expect(isAborted()).toBe(true);
-    expect(stream.abort).toHaveBeenCalledOnce();
+    expect(writer.isClosed).toBe(true);
+    expect(isAborted()).toBe(false);
+  });
+
+  it('flushes the error event when closed after a failure', async () => {
+    const { stream, events, isAborted } = mockStream();
+    const writer = new HonoStreamWriter(stream);
+    await writer.error('failed', 'INTERNAL');
+    writer.close();
+    expect(parseEvent(events, 0)).toEqual({ type: 'error', message: 'failed', code: 'INTERNAL' });
+    expect(isAborted()).toBe(false);
   });
 
   it('textStart() writes text-start event', async () => {

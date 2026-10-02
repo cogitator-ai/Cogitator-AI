@@ -10,33 +10,33 @@ import type {
   SwarmCoordinatorInterface,
 } from '@cogitator-ai/types';
 import { BaseStrategy } from './base.js';
+import { HIERARCHY_SECTION, type HierarchyPolicy } from '../shared/hierarchy.js';
+
+type ResolvedHierarchicalConfig = Required<HierarchicalConfig>;
 
 export class HierarchicalStrategy extends BaseStrategy {
-  private config: HierarchicalConfig;
+  private config: ResolvedHierarchicalConfig;
 
   constructor(coordinator: SwarmCoordinatorInterface, config?: HierarchicalConfig) {
     super(coordinator);
     this.config = {
-      maxDelegationDepth: 3,
-      workerCommunication: false,
-      routeThrough: 'supervisor',
-      visibility: 'full',
-      ...config,
+      maxDelegationDepth: config?.maxDelegationDepth ?? 3,
+      workerCommunication: config?.workerCommunication ?? false,
+      routeThrough: config?.routeThrough ?? 'supervisor',
+      visibility: config?.visibility ?? 'full',
     };
   }
 
   async execute(options: SwarmRunOptions): Promise<StrategyResult> {
     const agentResults = new Map<string, RunResult>();
 
-    const supervisors = this.coordinator
-      .getAgents()
-      .filter((a) => a.metadata.role === 'supervisor');
+    const supervisors = this.coordinator.getAgentsByRole('supervisor');
     if (supervisors.length === 0) {
       throw new Error('Hierarchical strategy requires a supervisor agent');
     }
     const supervisor = supervisors[0];
 
-    const workers = this.coordinator.getAgents().filter((a) => a.metadata.role === 'worker');
+    const workers = this.coordinator.getAgentsByRole('worker');
 
     const workerInfo = workers.map((w) => ({
       name: w.agent.name,
@@ -50,12 +50,26 @@ export class HierarchicalStrategy extends BaseStrategy {
       hierarchyConfig: {
         maxDelegationDepth: this.config.maxDelegationDepth,
         workerCommunication: this.config.workerCommunication,
+        routeThrough: this.config.routeThrough,
+        visibility: this.config.visibility,
       },
       delegationInstructions: this.buildDelegationInstructions(workerInfo),
     };
 
+    const policy: HierarchyPolicy = {
+      supervisor: supervisor.agent.name,
+      maxDelegationDepth: this.config.maxDelegationDepth,
+      workerCommunication: this.config.workerCommunication,
+      routeThrough: this.config.routeThrough,
+      visibility: this.config.visibility,
+      depths: { [supervisor.agent.name]: 0 },
+    };
+
+    this.coordinator.blackboard.write(HIERARCHY_SECTION, policy, 'system');
     this.coordinator.blackboard.write('tasks', [], 'system');
     this.coordinator.blackboard.write('workerResults', {}, 'system');
+
+    const resultsBefore = new Map(workers.map((w) => [w.agent.name, w.lastResult]));
 
     const supervisorResult = await this.coordinator.runAgent(
       supervisor.agent.name,
@@ -64,12 +78,10 @@ export class HierarchicalStrategy extends BaseStrategy {
     );
     agentResults.set(supervisor.agent.name, supervisorResult);
 
-    const workerResults =
-      this.coordinator.blackboard.read<Record<string, RunResult>>('workerResults') ?? {};
     for (const worker of workers) {
-      const result = workerResults[worker.agent.name];
-      if (result) {
-        agentResults.set(worker.agent.name, result);
+      const latest = worker.lastResult;
+      if (latest && latest !== resultsBefore.get(worker.agent.name)) {
+        agentResults.set(worker.agent.name, latest);
       }
     }
 
@@ -90,6 +102,12 @@ export class HierarchicalStrategy extends BaseStrategy {
       })
       .join('\n');
 
+    const communication = this.config.workerCommunication
+      ? this.config.routeThrough === 'direct'
+        ? 'Workers may message each other directly.'
+        : 'Workers may only message you; relay information between them yourself.'
+      : "Workers cannot see each other's outputs unless you share them via your coordination.";
+
     return `
 You are a supervisor managing a team of workers. You can delegate tasks to workers and coordinate their work.
 
@@ -109,7 +127,8 @@ Your job is to:
 5. Provide a final response
 
 Important:
-- Workers cannot see each other's outputs unless you share them via your coordination
+- ${communication}
+- Delegation chains are limited to ${this.config.maxDelegationDepth} level(s)
 - You are responsible for quality control and final output
 - If a worker's output is insufficient, request a revision
 `.trim();

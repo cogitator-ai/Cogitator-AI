@@ -74,14 +74,15 @@ const config: SandboxConfig = {
 
 ### Native Sandbox (Development Only)
 
-Native execution runs tools directly in the Node.js process.
+Native execution spawns commands as child processes on the host. A single-element command runs through the system shell; longer commands run with their exact argv and no shell.
 
 **WARNING**: This mode provides NO isolation and should only be used for development and trusted code.
 
 **Security Properties:**
 
-- No isolation from host process
-- Full access to filesystem, network, and environment
+- No isolation from the host
+- Full access to the filesystem and network
+- Only `PATH`, `HOME`, temp-dir, locale and Windows system variables are inherited from `process.env`; anything else must be passed explicitly via `env`
 - No resource limits beyond OS-level controls
 
 ## Threat Model

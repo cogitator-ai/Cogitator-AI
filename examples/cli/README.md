@@ -9,28 +9,45 @@ pnpm add -g @cogitator-ai/cli
 # or: npx @cogitator-ai/cli <command>
 ```
 
-## Scaffold and run a new project
+## Personal assistant from YAML (no code)
 
 ```bash
-cogitator init my-agent
+mkdir jarvis && cd jarvis
+cogitator wizard          # writes cogitator.yml + .env
+cogitator up              # run in the foreground
+cogitator wizard --edit   # change settings later
+```
+
+## Scaffold a code-first project
+
+```bash
+cogitator init my-agent   # provider, model, channels, memory adapter
 cd my-agent
-cogitator up          # start Redis, PostgreSQL, Ollama
-pnpm dev              # run the generated agent
+pnpm dev                  # hot reload (src/agent.ts)
+cogitator assistant       # or run src/gateway.ts with the live dashboard
+```
+
+## Run in the background
+
+```bash
+cogitator build                 # optional: bundle src/gateway.ts → dist/cogitator.mjs (needs esbuild)
+cogitator daemon start          # auto-detects dist/cogitator.mjs, cogitator.yml or src/gateway.ts
+cogitator daemon status
+cogitator daemon logs -f
+cogitator daemon stop
+
+cogitator daemon install        # launchd (macOS) / systemd --user (Linux)
+cogitator daemon uninstall
 ```
 
 ## Run a quick message
 
 ```bash
-# auto-detects an Ollama model
+# uses COGITATOR_MODEL, llm.defaultModel from cogitator.yml, or an installed Ollama model
 cogitator run "What is the capital of France?"
 
-# specify a model
 cogitator run -m ollama/gemma3:4b "Write a haiku about TypeScript"
-
-# use OpenAI
 OPENAI_API_KEY=sk-... cogitator run -m openai/gpt-4o "Explain monads"
-
-# disable streaming
 cogitator run --no-stream "Hello"
 ```
 
@@ -43,14 +60,23 @@ cogitator run -i      # force interactive mode
 # inside the REPL:
 # > /model gemma3:4b    — switch model
 # > /clear              — new conversation
-# > exit                — quit
+# > exit                — quit (or Ctrl+D)
 ```
 
-## Service management
+## Skills
 
 ```bash
-cogitator up           # start services in background
-cogitator status       # check what's running
+cogitator skill create weather-api --template api
+WEATHER_API_API_KEY=... cogitator skill validate skills/weather-api
+cogitator skill list
+cogitator skill remove weather-api
+```
+
+## Docker Compose services
+
+```bash
+cogitator up           # in a directory with docker-compose.yml (and no cogitator.yml)
+cogitator status       # compose services + Ollama
 cogitator logs -f      # follow all service logs
 cogitator logs ollama  # logs for a specific service
 cogitator down         # stop services (keeps data)
@@ -60,15 +86,16 @@ cogitator down -v      # stop and delete all data
 ## Model management
 
 ```bash
-cogitator models                       # list installed Ollama models
-cogitator models --pull llama3.1:8b   # pull a model
-cogitator models --pull gemma3:4b
+cogitator models                        # list installed Ollama models
+cogitator models --pull qwen2.5:0.5b    # pull a model
+cogitator models --url http://gpu-box:11434
 ```
 
 ## Deploy
 
 ```bash
 cogitator deploy --dry-run             # preview deploy plan
+cogitator deploy                       # build + start with Docker Compose
 cogitator deploy --target fly          # deploy to Fly.io
 cogitator deploy status                # check deployment
 cogitator deploy destroy               # tear down

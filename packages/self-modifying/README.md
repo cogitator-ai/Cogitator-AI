@@ -11,18 +11,19 @@ pnpm add @cogitator-ai/self-modifying
 ## Quick Start
 
 ```typescript
-import { Cogitator, Agent } from '@cogitator-ai/core';
+import { Agent, OllamaBackend } from '@cogitator-ai/core';
 import { SelfModifyingAgent } from '@cogitator-ai/self-modifying';
 
-const cogitator = new Cogitator({ defaultModel: 'gpt-4o' });
+const llm = new OllamaBackend({ baseUrl: 'http://localhost:11434' });
 const agent = new Agent({
   name: 'adaptive-assistant',
+  model: 'ollama/llama3.2',
   instructions: 'Solve problems adaptively.',
 });
 
 const selfModifying = new SelfModifyingAgent({
   agent,
-  llm: cogitator.getDefaultBackend(),
+  llm,
   config: {
     toolGeneration: { enabled: true, autoGenerate: true },
     metaReasoning: { enabled: true },
@@ -37,6 +38,26 @@ console.log('Output:', result.output);
 console.log('Tools generated:', result.toolsGenerated.length);
 console.log('Adaptations made:', result.adaptationsMade.length);
 ```
+
+A provider prefix that matches the backend (`ollama/` for `OllamaBackend`) is stripped from the agent model before every call. All nested config sections are partial — omitted fields fall back to defaults.
+
+### Agent Options
+
+| Option                    | Description                                                                                       |
+| ------------------------- | ------------------------------------------------------------------------------------------------- |
+| `agent`                   | The agent to run (model, instructions, tools, `temperature`, `maxTokens`, `maxIterations`)        |
+| `llm`                     | LLM backend used for the agent and for every self-modification step                               |
+| `config`                  | Partial `SelfModifyingConfig`; `enabled: false` turns the wrapper into a plain tool-calling agent |
+| `modificationConstraints` | Extra safety / capability / resource / custom constraints merged with the defaults                |
+| `availableModels`         | Models architecture evolution may switch to; without it the model is never changed                |
+
+### Run Semantics
+
+- Runs are serialized: concurrent `run()` calls on one instance execute one after another.
+- The agent's own `temperature` and `maxTokens` form the baseline configuration.
+- Tool calls are validated against each tool's Zod schema before execution; `toolStrategy: 'parallel'` (or `'adaptive'` with distinct tools) runs them concurrently.
+- `reflectionDepth > 0` adds self-review passes over the final answer.
+- A step is complete when the model returns a non-empty answer that was not truncated. Meta-reasoning only intervenes (and the step is retried, up to `maxAdaptations` times) when a step is incomplete.
 
 ## Features
 
@@ -56,9 +77,10 @@ When the agent encounters a task requiring capabilities it doesn't have, it can 
 ### How It Works
 
 1. **Gap Analysis** — LLM compares user intent with available tools, identifies missing capabilities
-2. **Code Synthesis** — Generates safe TypeScript tool implementation
-3. **Validation** — Security scanning + correctness testing in sandbox
-4. **Registration** — Valid tools are added to the agent's toolkit
+2. **Code Synthesis** — Generates a plain JavaScript `execute(params)` implementation
+3. **Validation** — Static security scanning, generated test cases in the sandbox, optional LLM review
+4. **Constraint Check** — The tool must pass the modification constraints (sandboxing, size, depth)
+5. **Registration** — Accepted tools are stored as `active`, used in the current run and loaded into every later run (`getGeneratedTools()` lists them)
 
 ### Configuration
 
@@ -136,6 +158,36 @@ const tools = await store.list({ status: 'active' });
 const similar = await store.findSimilar('calculate interest');
 ```
 
+### Sandbox
+
+Generated code runs in a `worker_threads` worker inside a fresh `vm` context that contains no host objects: no `process`, `require`, timers or host constructors, and string code generation (`eval`, `Function`) is disabled. Parameters and results cross the boundary as JSON, the worker has an empty environment, and execution is bounded by `maxExecutionTime` and `maxMemory`.
+
+```typescript
+import { ToolSandbox } from '@cogitator-ai/self-modifying';
+
+const sandbox = new ToolSandbox({ maxExecutionTime: 2000 });
+
+const result = await sandbox.execute(tool, { a: 1, b: 2 });
+
+const report = await sandbox.testWithCases(tool, [
+  { input: { a: 1, b: 2 }, expectedOutput: 3 },
+  { input: {}, shouldThrow: true },
+  { input: { a: 0, b: 0 }, allowThrow: true },
+]);
+```
+
+`shouldThrow` passes only when the tool itself throws; `allowThrow` accepts either a result or a thrown error, but never a timeout or crash.
+
+### Quick Generation
+
+```typescript
+const tool = await toolGenerator.generateQuick('Double a number', 'double_number', {
+  value: { type: 'number' },
+});
+```
+
+The parameters are enforced in the generation prompt and during validation; `null` is returned when no valid tool could be produced.
+
 ---
 
 ## Meta-Reasoning
@@ -195,10 +247,11 @@ const selfModifying = new SelfModifyingAgent({
 
 ### Meta-Reasoning Process
 
-1. **Observation** — Collect metrics (progress, confidence, tokens, time)
-2. **Assessment** — LLM analyzes if reasoning is on-track
-3. **Adaptation** — Switch mode or adjust parameters if needed
-4. **Rollback** — Revert if metrics decline after adaptation
+1. **Observation** — After an incomplete step, collect metrics (tool success, confidence, tokens, time)
+2. **Trigger** — Only triggers listed in `triggers` fire (`confidence_drop` ≙ `on_low_confidence`, `progress_stall` ≙ `on_stagnation`, `tool_call_failed` ≙ `on_failure`); explicit requests always do
+3. **Assessment** — LLM analyzes if reasoning is on-track; its JSON is validated and invalid values are dropped
+4. **Adaptation** — Switch mode, adjust `temperature`/`depth`, or inject extra context; the next attempt uses it
+5. **Rollback** — With `rollbackOnDecline`, an adaptation that did not improve the next attempt is reverted
 
 ### Direct MetaReasoner Usage
 
@@ -224,7 +277,7 @@ const observation = metaReasoner.observe(
     tokensUsed: 1500,
     timeElapsed: 5000,
     iterationsRemaining: 7,
-    budgetRemaining: 8500,
+    budgetRemaining: 0.85, // fraction of the budget left
   },
   insights
 );
@@ -250,15 +303,15 @@ const rollback = metaReasoner.rollback(runId);
 
 ## Architecture Evolution
 
-Optimizes agent parameters (model, temperature, tool strategy) using multi-armed bandit algorithms.
+Optimizes agent parameters (temperature, max tokens, tool strategy, reflection depth and — when `availableModels` is set — the model) using multi-armed bandit algorithms. Every run records its outcome (success, latency, tokens, answer confidence) for the configuration that was actually used, so the bandit learns across runs. LLM-proposed candidates are sanitized (ranges clamped, unknown models dropped) and candidates the LLM marks as high-risk are discarded.
 
 ### Strategies
 
-| Strategy         | Description                                    |
-| ---------------- | ---------------------------------------------- |
-| `ucb`            | Upper Confidence Bound — balanced exploration  |
-| `thompson`       | Thompson Sampling — probabilistic selection    |
-| `epsilon_greedy` | Epsilon-Greedy — random exploration with decay |
+| Strategy            | Description                                   |
+| ------------------- | --------------------------------------------- |
+| `ucb`               | Upper Confidence Bound — balanced exploration |
+| `thompson_sampling` | Thompson Sampling — probabilistic selection   |
+| `epsilon_greedy`    | Epsilon-Greedy — random exploration           |
 
 ### Configuration
 
@@ -274,14 +327,14 @@ const selfModifying = new SelfModifyingAgent({
         explorationConstant: 2, // Higher = more exploration
       },
       // Or Thompson sampling:
-      // strategy: { type: 'thompson', priorAlpha: 1, priorBeta: 1 },
+      // strategy: { type: 'thompson_sampling' },
       // Or epsilon-greedy:
-      // strategy: { type: 'epsilon_greedy', epsilon: 0.1, decayRate: 0.99 },
+      // strategy: { type: 'epsilon_greedy', epsilon: 0.1 },
 
       maxCandidates: 10, // Max configs to track
-      evaluationWindow: 10, // Runs to consider for metrics
-      minEvaluationsBeforeEvolution: 3, // Min runs before switching
-      adaptationThreshold: 0.1, // Min improvement to switch
+      evaluationWindow: 10, // Evaluations per generation and for convergence metrics
+      minEvaluationsBeforeEvolution: 3, // Min evaluations per candidate before evolving
+      adaptationThreshold: 0.1, // Max score gap to the best candidate that is still adopted
     },
   },
 });
@@ -294,26 +347,33 @@ import { ParameterOptimizer } from '@cogitator-ai/self-modifying';
 
 const optimizer = new ParameterOptimizer({
   llm,
+  model: 'llama3.2',
   config: evolutionConfig,
   baseConfig: {
-    model: 'gpt-4o',
+    model: 'llama3.2',
     temperature: 0.7,
     maxTokens: 4096,
     toolStrategy: 'sequential',
-    reflectionDepth: 1,
+    reflectionDepth: 0,
   },
+  availableModels: ['llama3.2', 'qwen2.5:7b'],
 });
 
 // Optimize for a task
 const result = await optimizer.optimize('Complex reasoning task');
 
 console.log('Should adopt:', result.shouldAdopt);
-console.log('Confidence:', result.confidence);
+console.log('Confidence:', result.confidence); // mean reward of the candidate, 0.5 if unexplored
 console.log('Recommended config:', result.recommendedConfig);
-console.log('Reasoning:', result.reasoning);
+console.log('Task profile:', result.taskProfile);
 
 // Record outcome for learning
-optimizer.recordOutcome(result.candidate!.id, 0.85);
+await optimizer.recordOutcome(result.candidate!.id, result.taskProfile, {
+  successRate: 1,
+  latency: 1200,
+  tokenUsage: 850,
+  qualityScore: 0.9,
+});
 ```
 
 ### Capability Analyzer
@@ -326,7 +386,7 @@ const analyzer = new CapabilityAnalyzer({
   enableLLMAnalysis: true,
 });
 
-const profile = await analyzer.analyze('Build a REST API with authentication');
+const profile = await analyzer.analyzeTask('Build a REST API with authentication');
 
 console.log('Complexity:', profile.complexity); // 'complex'
 console.log('Domain:', profile.domain); // 'coding'
@@ -350,21 +410,19 @@ import {
   DEFAULT_RESOURCE_CONSTRAINTS,
 } from '@cogitator-ai/self-modifying';
 
-// Safety: prevent dangerous operations
-// - no_arbitrary_code: Sandbox execution required
-// - max_tool_complexity: Lines of code < 100
-// - no_self_modification_loop: Modification depth < 3
+// Safety (tool_generation / tool_creation requests only, via `appliesTo`):
+// - no_arbitrary_code: sandboxExecution = true
+// - max_tool_complexity: linesOfCode < 100
+// - no_self_modification_loop: modificationDepth < 3
 
-// Capability: prevent degradation
-// - min_tool_count: At least 1 tool
-// - max_tool_count: At most 20 tools
-// - required_capabilities: Core capabilities preserved
+// Capability (tool requests):
+// - allowed_tool_categories: math, text, utility, data allowed; system, network, file forbidden; complexity <= 100
 
-// Resource: prevent runaway costs
-// - max_tokens_per_run: Token budget
-// - max_time_per_run: Time limit
-// - max_cost_per_run: Cost limit
+// Resource:
+// - default_resource_limits: maxTokensPerRun 100000, maxCostPerRun 1.0, maxToolsActive 20
 ```
+
+Safety rules are expressions over the request `payload` (`=`, `!=`, `<`, `<=`, `>`, `>=`, `AND`, `OR`, numbers, `true`/`false`/`null` and quoted strings). Set `appliesTo` to restrict a constraint to specific modification types; without it the constraint applies to every request.
 
 ### Modification Validator
 
@@ -380,16 +438,15 @@ const validator = new ModificationValidator({
       {
         id: 'no-external-apis',
         name: 'No External APIs',
-        check: (mod) => !mod.changes?.usesExternalApi,
-        errorMessage: 'External API calls not allowed',
-        severity: 'error',
+        description: 'External API calls not allowed',
+        predicate: (request) => !JSON.stringify(request.changes).includes('fetch'),
       },
     ],
   },
 });
 
 const result = await validator.validate({
-  type: 'tool_addition',
+  type: 'tool_creation',
   target: 'tools',
   changes: { name: 'new-tool', code: '...' },
   reason: 'User requested capability',
@@ -428,14 +485,14 @@ if (restored) {
 }
 
 // List checkpoints
-const checkpoints = rollbackManager.listCheckpoints();
+const checkpoints = await rollbackManager.listCheckpoints(agentName);
 ```
 
 ---
 
 ## Events
 
-Subscribe to self-modification events for observability.
+Subscribe to self-modification events for observability. Handlers are typed per event (`SelfModifyingEventDataMap`) and `on()` returns an unsubscribe function.
 
 ```typescript
 const selfModifying = new SelfModifyingAgent({ agent, llm, config });
@@ -477,9 +534,11 @@ selfModifying.on('run_started', (e) => {
   console.log('Run started:', e.runId);
 });
 
-selfModifying.on('run_completed', (e) => {
+const unsubscribe = selfModifying.on('run_completed', (e) => {
   console.log('Run completed:', e.data.success);
 });
+
+unsubscribe();
 ```
 
 ### Event Types
@@ -641,6 +700,11 @@ import type {
   SelfModifyingEventType,
   SelfModifyingEventHandler,
 } from '@cogitator-ai/types';
+import type {
+  SelfModifyingAgentConfig,
+  SelfModifyingEventDataMap,
+  TypedSelfModifyingEvent,
+} from '@cogitator-ai/self-modifying';
 ```
 
 ---
@@ -705,7 +769,7 @@ const selfModifying = new SelfModifyingAgent({
     },
     architectureEvolution: {
       enabled: true,
-      strategy: { type: 'thompson' },
+      strategy: { type: 'thompson_sampling' },
     },
   },
 });

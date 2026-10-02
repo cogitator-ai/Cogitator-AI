@@ -2,7 +2,13 @@
  * Swarm tools exports
  */
 
-export { createMessagingTools, type MessagingTools } from './messaging';
+export {
+  createMessagingTools,
+  createHierarchyMessageAuthorizer,
+  type MessagingTools,
+  type MessagingToolsOptions,
+  type MessageAuthorizer,
+} from './messaging';
 export { createBlackboardTools, type BlackboardTools } from './blackboard';
 export { createDelegationTools, type DelegationTools } from './delegation';
 export { createVotingTools, type VotingTools } from './voting';
@@ -15,7 +21,7 @@ import type {
   MessageBus,
   SwarmEventEmitter,
 } from '@cogitator-ai/types';
-import { createMessagingTools } from './messaging';
+import { createMessagingTools, createHierarchyMessageAuthorizer } from './messaging';
 import { createBlackboardTools } from './blackboard';
 import { createDelegationTools } from './delegation';
 import { createVotingTools } from './voting';
@@ -28,13 +34,25 @@ export interface SwarmToolContext {
   events: SwarmEventEmitter;
   agentName: string;
   agentWeight?: number;
+  /** Swarm id stamped on messages sent by the agent */
+  swarmId?: string;
+}
+
+function createContextMessagingTools(context: SwarmToolContext) {
+  return createMessagingTools(context.messageBus, context.agentName, context.swarmId ?? '', {
+    authorize: createHierarchyMessageAuthorizer(
+      context.coordinator,
+      context.blackboard,
+      context.agentName
+    ),
+  });
 }
 
 /**
  * Create all swarm tools for an agent
  */
 export function createSwarmTools(context: SwarmToolContext): Tool<unknown, unknown>[] {
-  const messagingTools = createMessagingTools(context.messageBus, context.agentName);
+  const messagingTools = createContextMessagingTools(context);
   const blackboardTools = createBlackboardTools(context.blackboard, context.agentName);
   const delegationTools = createDelegationTools(
     context.coordinator,
@@ -99,7 +117,7 @@ export function createStrategyTools(
   context: SwarmToolContext
 ): Tool<unknown, unknown>[] {
   const baseTools = [
-    ...Object.values(createMessagingTools(context.messageBus, context.agentName)),
+    ...Object.values(createContextMessagingTools(context)),
     ...Object.values(createBlackboardTools(context.blackboard, context.agentName)),
   ] as Tool<unknown, unknown>[];
 

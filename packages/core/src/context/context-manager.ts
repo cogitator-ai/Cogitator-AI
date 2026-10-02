@@ -16,6 +16,7 @@ import {
   countMessagesTokens,
 } from './strategies/index';
 import { parseModel } from '../llm/index';
+import { sanitizeToolHistory } from '../utils/tool-history';
 
 export interface ContextManagerDeps {
   getBackend?: (model: string) => LLMBackend;
@@ -137,6 +138,19 @@ export class ContextManager {
       summaryModel: summaryModel ? parseModel(summaryModel).model : undefined,
     };
 
-    return this.strategy.compress(ctx);
+    const result = await this.strategy.compress(ctx);
+    const messagesWithValidToolPairs = sanitizeToolHistory(result.messages);
+    const unchanged =
+      messagesWithValidToolPairs.length === result.messages.length &&
+      messagesWithValidToolPairs.every((message, index) => message === result.messages[index]);
+    if (unchanged) {
+      return result;
+    }
+
+    return {
+      ...result,
+      messages: messagesWithValidToolPairs,
+      compressedTokens: countMessagesTokens(messagesWithValidToolPairs),
+    };
   }
 }

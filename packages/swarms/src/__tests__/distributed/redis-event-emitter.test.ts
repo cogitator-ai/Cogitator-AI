@@ -72,6 +72,16 @@ function createMockRedis() {
       eventHandlers.get(event)!.push(handler);
       return mock;
     },
+    off(event: string, handler: (...args: unknown[]) => void): typeof mock {
+      const handlers = eventHandlers.get(event);
+      if (handlers) {
+        eventHandlers.set(
+          event,
+          handlers.filter((h) => h !== handler)
+        );
+      }
+      return mock;
+    },
     removeAllListeners(event?: string): typeof mock {
       if (event) {
         eventHandlers.delete(event);

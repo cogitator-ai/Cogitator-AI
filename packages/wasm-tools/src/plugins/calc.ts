@@ -14,7 +14,7 @@ interface CalcInput {
 }
 
 interface CalcOutput {
-  result: number;
+  result: number | null;
   expression: string;
   error?: string;
 }
@@ -26,9 +26,12 @@ function safeEval(expression: string): number {
     throw new Error('Invalid characters in expression');
   }
 
-  const matched = sanitized.match(/(\d*\.?\d+|[+\-*/()%])/g);
+  const matched = sanitized.match(/(\d+\.?\d*|\.\d+|[+\-*/()%])/g);
   if (!matched) {
     throw new Error('No valid tokens in expression');
+  }
+  if (matched.join('') !== sanitized.replace(/\s+/g, '')) {
+    throw new Error('Invalid number format in expression');
   }
 
   const tokens: string[] = matched;
@@ -80,7 +83,8 @@ function safeEval(expression: string): number {
       pos++;
       return parseFactor();
     }
-    const num = parseFloat(tokens[pos++]);
+    if (pos >= tokens.length) throw new Error('Unexpected end of expression');
+    const num = Number(tokens[pos++]);
     if (isNaN(num)) throw new Error('Invalid expression');
     return num;
   }
@@ -89,13 +93,21 @@ function safeEval(expression: string): number {
   if (pos < tokens.length) {
     throw new Error(`Unexpected token: ${tokens[pos]}`);
   }
+  if (!Number.isFinite(result)) {
+    throw new Error('Result is not a finite number');
+  }
   return result;
 }
 
 export function calculate(): number {
+  let expression = '';
   try {
     const inputStr = Host.inputString();
     const input: CalcInput = JSON.parse(inputStr);
+    if (typeof input.expression !== 'string') {
+      throw new Error('expression must be a string');
+    }
+    expression = input.expression;
 
     const result = safeEval(input.expression);
 
@@ -108,8 +120,8 @@ export function calculate(): number {
     return 0;
   } catch (error) {
     const output: CalcOutput = {
-      result: NaN,
-      expression: '',
+      result: null,
+      expression,
       error: error instanceof Error ? error.message : String(error),
     };
     Host.outputString(JSON.stringify(output));

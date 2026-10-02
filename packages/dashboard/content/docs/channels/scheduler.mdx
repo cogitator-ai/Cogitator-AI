@@ -25,15 +25,20 @@ This adds three tools to the agent automatically:
 ## Programmatic Setup
 
 ```typescript
-import { HeartbeatScheduler, SimpleTimerStore } from '@cogitator-ai/channels';
+import { HeartbeatScheduler, SimpleTimerStore, getNextCronMs } from '@cogitator-ai/channels';
 
-const store = new SimpleTimerStore({ persistPath: '.cogitator/timers.json' });
+const store = new SimpleTimerStore({
+  persistPath: '.cogitator/timers.json',
+  // derive firesAt of cron entries from the expression (also validates it)
+  resolveCronFiresAt: (cron, timezone) => getNextCronMs(cron, Date.now(), timezone),
+});
 
 const scheduler = new HeartbeatScheduler(store, {
   onFire: (msg) => gateway.injectMessage(msg),
   pollInterval: 30_000,
   maxRetries: 5,
   staggerMs: 5000,
+  onError: (err, entry) => console.error(`[scheduler] ${entry?.id ?? 'poll'}: ${err.message}`),
   onRunComplete: (entry, status, error, durationMs) => {
     console.log(`[scheduler] ${entry.id}: ${status} (${durationMs}ms)`);
     if (error) console.error(`  error: ${error}`);
@@ -49,9 +54,11 @@ scheduler.start();
 interface HeartbeatConfig {
   onFire: (msg: ChannelMessage) => Promise<void> | void;
   pollInterval?: number;        // default: 30000 (30s)
-  getNextCronMs?: (cron: string) => number;
+  getNextCronMs?: (cron: string) => number; // default: cron-parser, honors entry.timezone
   maxRetries?: number;          // default: 5 — skip after N consecutive errors
   staggerMs?: number;           // random startup delay (0-N ms) to prevent thundering herd
+  retentionMs?: number;         // default: 7 days — fired/cancelled entries are cleaned up hourly
+  onError?: (error: Error, entry?: TimerEntry) => void; // store/onFire failures never stop the loop
   onRunComplete?: (
     entry: TimerEntry,
     status: 'ok' | 'error',
@@ -65,7 +72,7 @@ interface HeartbeatConfig {
 
 | Type | Field | Behavior |
 |------|-------|----------|
-| Cron | `cron: "0 12 * * *"` | Recurring via cron expression, reschedules after each fire |
+| Cron | `cron: "0 12 * * *"`, optional `timezone` | Recurring via cron expression (local time unless `timezone` is set), reschedules at the next occurrence |
 | Interval | `type: 'recurring', interval: 60000` | Reschedules at `now + interval` after each fire |
 | One-shot | `type: 'fixed'` | Fires once, not rescheduled |
 
@@ -129,7 +136,9 @@ interface TimerEntry {
 }
 ```
 
-After `maxRetries` consecutive errors (default: 5), the job is automatically skipped with status `'skipped'`. Re-enable it with `scheduler.enableJob(id)` to reset the error count.
+After `maxRetries` consecutive errors (default: 5), the job is automatically skipped with status `'skipped'`. The error count is carried over when cron/interval jobs are rescheduled (unless the task is `bestEffort`). Re-enable it with `scheduler.enableJob(id)` to reset the error count.
+
+Rescheduled cron/interval jobs get a new id; use `listJobs()` to find the current one.
 
 ## Persistence
 
@@ -155,8 +164,12 @@ scheduler.start()
     → mark fired + call onRunComplete
     → reschedule cron/interval entries
 
+    → clean up old fired entries (hourly)
+
 scheduler.stop()
-  → clear the poll interval
+  → cancel a pending stagger delay and clear the poll interval
+
+start() is idempotent; a failing entry never blocks the others.
 ```
 
 ## Cleanup

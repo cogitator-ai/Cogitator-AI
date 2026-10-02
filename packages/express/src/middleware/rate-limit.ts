@@ -10,11 +10,14 @@ function buildKeyGenerator(trustProxy: boolean) {
   return (req: Request): string => {
     if (trustProxy) {
       const forwarded = req.headers['x-forwarded-for'];
-      if (typeof forwarded === 'string') {
-        return forwarded.split(',')[0].trim();
-      }
+      const hops = (Array.isArray(forwarded) ? forwarded.join(',') : (forwarded ?? ''))
+        .split(',')
+        .map((hop) => hop.trim())
+        .filter(Boolean);
+      const nearest = hops.at(-1);
+      if (nearest) return nearest;
     }
-    return req.ip || req.socket.remoteAddress || `unknown-${Math.random()}`;
+    return req.ip || req.socket.remoteAddress || 'unknown';
   };
 }
 
@@ -26,6 +29,13 @@ export function createRateLimitMiddleware(config: RateLimitConfig) {
     keyGenerator = buildKeyGenerator(config.trustProxy ?? false),
     skip,
   } = config;
+
+  if (!Number.isFinite(windowMs) || windowMs <= 0) {
+    throw new Error('RateLimitConfig.windowMs must be a positive number');
+  }
+  if (!Number.isFinite(max) || max < 0) {
+    throw new Error('RateLimitConfig.max must be a non-negative number');
+  }
 
   const store = new Map<string, RateLimitEntry>();
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { readFileSync, writeFileSync, readdirSync, statSync } from 'fs';
+import { readFileSync, writeFileSync, readdirSync } from 'fs';
 import { join, extname } from 'path';
 
 function findFiles(dir: string, extensions: string[]): string[] {
@@ -27,148 +27,203 @@ function findFiles(dir: string, extensions: string[]): string[] {
 const DRY_RUN = process.argv.includes('--dry-run');
 const VERBOSE = process.argv.includes('--verbose');
 
-function canPrecedeRegex(char: string): boolean {
-  if (!char) return true;
-  if (/[a-zA-Z0-9_$)\]]/.test(char)) return false;
-  return true;
+const PRESERVED_DIRECTIVES = ['eslint-disable', '@ts-expect-error', '@ts-ignore', '@ts-nocheck'];
+
+const KEYWORDS_BEFORE_EXPRESSION = new Set([
+  'return',
+  'typeof',
+  'instanceof',
+  'in',
+  'of',
+  'new',
+  'delete',
+  'void',
+  'throw',
+  'case',
+  'do',
+  'else',
+  'yield',
+  'await',
+]);
+
+type Previous = { kind: 'none' | 'punct' | 'value' } | { kind: 'word'; word: string };
+
+function isIdentifierChar(char: string): boolean {
+  return /[a-zA-Z0-9_$]/.test(char);
 }
 
-function getPrevNonSpaceChar(line: string, pos: number): string {
-  for (let j = pos - 1; j >= 0; j--) {
-    if (line[j] !== ' ' && line[j] !== '\t') {
-      return line[j];
-    }
-  }
-  return '';
-}
-
+/**
+ * Removes `//` comments from TypeScript source while leaving strings, template
+ * literals (including nested `${}` expressions), regex literals and block
+ * comments untouched. Tooling directives such as `eslint-disable` are kept.
+ */
 function removeLineComments(content: string): string {
-  const lines = content.split('\n');
-  const result: string[] = [];
-  let inMultilineComment = false;
-  let inTemplateString = false;
+  let out = '';
+  let i = 0;
+  let previous: Previous = { kind: 'none' };
+  let braceDepth = 0;
+  const templateBraceStack: number[] = [];
 
-  for (const line of lines) {
-    let newLine = '';
-    let i = 0;
-    let inString = false;
-    let stringDelimiter = '';
-    let inRegex = false;
+  const regexAllowed = (): boolean => {
+    if (previous.kind === 'none' || previous.kind === 'punct') return true;
+    if (previous.kind === 'word') return KEYWORDS_BEFORE_EXPRESSION.has(previous.word);
+    return false;
+  };
 
-    while (i < line.length) {
-      const char = line[i];
-      const nextChar = line[i + 1];
-      const prevChar = i > 0 ? line[i - 1] : '';
+  const lastNonSpaceOnLine = (): string => {
+    for (let j = out.length - 1; j >= 0; j--) {
+      const c = out[j];
+      if (c === '\n') return '';
+      if (c !== ' ' && c !== '\t') return c;
+    }
+    return '';
+  };
 
-      if (inTemplateString) {
-        newLine += char;
-        if (char === '`' && prevChar !== '\\') {
-          inTemplateString = false;
-        }
-        i++;
-        continue;
-      }
+  const emitCodeNewline = () => {
+    let end = out.length;
+    while (end > 0 && (out[end - 1] === ' ' || out[end - 1] === '\t' || out[end - 1] === '\r')) {
+      end--;
+    }
+    if (end !== out.length) out = out.slice(0, end);
+    if (!out.endsWith('\n\n')) out += '\n';
+  };
 
-      if (!inMultilineComment && !inString && char === '`') {
-        inTemplateString = true;
-        newLine += char;
-        i++;
-        continue;
-      }
-
-      if (!inMultilineComment && !inString && (char === '"' || char === "'")) {
-        inString = true;
-        stringDelimiter = char;
-        newLine += char;
-        i++;
-        continue;
-      }
-
-      if (inString) {
-        newLine += char;
-        if (char === stringDelimiter && prevChar !== '\\') {
-          inString = false;
-        }
-        i++;
-        continue;
-      }
-
-      if (inRegex) {
-        newLine += char;
-        if (char === '/' && prevChar !== '\\') {
-          inRegex = false;
-        }
-        i++;
-        continue;
-      }
-
-      if (!inMultilineComment && char === '/' && nextChar !== '*' && nextChar !== '/') {
-        const prevNonSpace = getPrevNonSpaceChar(newLine, newLine.length);
-        if (canPrecedeRegex(prevNonSpace)) {
-          inRegex = true;
-          newLine += char;
-          i++;
-          continue;
-        }
-      }
-
-      if (!inMultilineComment && char === '/' && nextChar === '*') {
-        inMultilineComment = true;
-        newLine += '/*';
+  const readTemplateChunk = (opening: '`' | '}') => {
+    out += opening;
+    i++;
+    while (i < content.length) {
+      const c = content[i];
+      if (c === '\\') {
+        out += content.slice(i, i + 2);
         i += 2;
         continue;
       }
-
-      if (inMultilineComment && char === '*' && nextChar === '/') {
-        inMultilineComment = false;
-        newLine += '*/';
-        i += 2;
-        continue;
-      }
-
-      if (inMultilineComment) {
-        newLine += char;
+      if (c === '`') {
+        out += c;
         i++;
-        continue;
+        previous = { kind: 'value' };
+        return;
       }
-
-      if (char === '/' && nextChar === '/') {
-        const prevNonSpace = getPrevNonSpaceChar(newLine, newLine.length);
-        if (prevNonSpace === '>') {
-          newLine += char;
-          i++;
-          continue;
-        }
-        const restOfLine = line.slice(i + 2).trim();
-        if (
-          restOfLine.startsWith('eslint-disable') ||
-          restOfLine.startsWith('@ts-expect-error') ||
-          restOfLine.startsWith('@ts-ignore') ||
-          restOfLine.startsWith('@ts-nocheck')
-        ) {
-          newLine += line.slice(i);
-          break;
-        }
-        break;
+      if (c === '$' && content[i + 1] === '{') {
+        out += '${';
+        i += 2;
+        templateBraceStack.push(braceDepth);
+        braceDepth = 0;
+        previous = { kind: 'punct' };
+        return;
       }
-
-      newLine += char;
+      out += c;
       i++;
     }
+  };
 
-    const trimmed = newLine.trimEnd();
-    result.push(trimmed);
+  while (i < content.length) {
+    const char = content[i];
+    const next = content[i + 1];
+
+    if (char === '\n') {
+      emitCodeNewline();
+      i++;
+      continue;
+    }
+
+    if (char === ' ' || char === '\t' || char === '\r') {
+      out += char;
+      i++;
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      out += char;
+      i++;
+      while (i < content.length && content[i] !== char && content[i] !== '\n') {
+        if (content[i] === '\\') {
+          out += content.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        out += content[i];
+        i++;
+      }
+      if (content[i] === char) {
+        out += char;
+        i++;
+      }
+      previous = { kind: 'value' };
+      continue;
+    }
+
+    if (char === '`') {
+      readTemplateChunk('`');
+      continue;
+    }
+
+    if (char === '/' && next === '*') {
+      const end = content.indexOf('*/', i + 2);
+      const stop = end === -1 ? content.length : end + 2;
+      out += content.slice(i, stop);
+      i = stop;
+      continue;
+    }
+
+    if (char === '/' && next === '/') {
+      const lineEnd = content.indexOf('\n', i);
+      const stop = lineEnd === -1 ? content.length : lineEnd;
+      const comment = content.slice(i, stop);
+      const body = comment.slice(2).trim();
+      if (lastNonSpaceOnLine() === '>' || PRESERVED_DIRECTIVES.some((d) => body.startsWith(d))) {
+        out += comment;
+      }
+      i = stop;
+      continue;
+    }
+
+    if (char === '/' && regexAllowed()) {
+      out += char;
+      i++;
+      let inClass = false;
+      while (i < content.length && content[i] !== '\n') {
+        const c = content[i];
+        if (c === '\\') {
+          out += content.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        out += c;
+        i++;
+        if (c === '[') inClass = true;
+        else if (c === ']') inClass = false;
+        else if (c === '/' && !inClass) break;
+      }
+      previous = { kind: 'value' };
+      continue;
+    }
+
+    if (char === '}' && braceDepth === 0 && templateBraceStack.length > 0) {
+      braceDepth = templateBraceStack.pop() ?? 0;
+      readTemplateChunk('}');
+      continue;
+    }
+
+    if (isIdentifierChar(char)) {
+      let word = '';
+      while (i < content.length && isIdentifierChar(content[i])) {
+        word += content[i];
+        i++;
+      }
+      out += word;
+      previous = { kind: 'word', word };
+      continue;
+    }
+
+    if (char === '{') braceDepth++;
+    if (char === '}') braceDepth--;
+    out += char;
+    i++;
+    previous = char === ')' || char === ']' ? { kind: 'value' } : { kind: 'punct' };
   }
 
-  let finalResult = result.join('\n');
-  finalResult = finalResult
-    .split('\n')
-    .map((l) => l.trimEnd())
-    .join('\n');
-  finalResult = finalResult.replace(/\n{3,}/g, '\n\n');
-  finalResult = finalResult.trimEnd() + '\n';
-
-  return finalResult;
+  return out.trimEnd() + '\n';
 }
 
 function processFile(filePath: string): boolean {

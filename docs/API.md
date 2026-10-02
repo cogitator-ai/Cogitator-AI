@@ -455,12 +455,16 @@ const workflow = new WorkflowBuilder('my-workflow')
   .initialState({ result: '' })
   .addNode(
     'fetch',
-    functionNode(async (ctx) => {
-      const data = await fetch('...');
-      return { state: { result: await data.text() } };
-    })
+    functionNode(
+      'fetch',
+      async () => {
+        const data = await fetch('...');
+        return data.text();
+      },
+      { stateMapper: (text) => ({ result: text as string }) }
+    )
   )
-  .addNode('process', agentNode({ agent, input: (ctx) => ctx.state.result }), {
+  .addNode('process', agentNode(agent, { inputMapper: (state) => state.result }), {
     after: ['fetch'],
   })
   .build();
@@ -489,7 +493,11 @@ class WorkflowBuilder<S extends WorkflowState> {
   entryPoint(nodeName: string): this;
 
   // Add a computation node
-  addNode(name: string, fn: NodeFn<S>, options?: { after?: string[]; config?: NodeConfig }): this;
+  addNode(
+    name: string,
+    node: NodeFn<S> | WorkflowNode<S>,
+    options?: { after?: string[]; config?: NodeConfig }
+  ): this;
 
   // Add a conditional routing node (returns next node name(s))
   addConditional(
@@ -732,7 +740,7 @@ class Swarm {
   pause(): void;
   resume(): void;
   abort(): void;
-  reset(): void;
+  reset(): Promise<void>;
   close(): Promise<void>;
 
   // Accessors

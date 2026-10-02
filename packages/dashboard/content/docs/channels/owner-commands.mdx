@@ -23,7 +23,8 @@ const gateway = new Gateway({
       onStatus: () => `Up 2h, 5 sessions, 847 messages`,
       onSessions: () => `Active: @john (telegram), @jane (discord)`,
       onModel: (model, forUser) => `Model switched to ${model}`,
-      onCompact: async (target) => `Compacted ${target}`,
+      onCompact: (target, threadId) =>
+        gateway.compactThread(target === 'current' ? threadId : target),
     }),
   ],
 });
@@ -31,25 +32,29 @@ const gateway = new Gateway({
 
 ## Available Commands
 
-| Command | Description |
-|---------|-------------|
-| `/status` | Show uptime, sessions, message count |
-| `/sessions` | List active sessions |
-| `/users` | List approved/blocked users |
-| `/model <name> [@user]` | Switch model globally or for a specific user |
-| `/compact [target]` | Trigger conversation compaction |
-| `/restart` | Graceful restart |
-| `/help` | Show available commands |
+| Command | Level | Description |
+|---------|-------|-------------|
+| `/status` | authorized | Show uptime, sessions, message count |
+| `/sessions` | authorized | List recent sessions |
+| `/help` | authorized | Show available commands |
+| `/users` | owner | List owners and approved users |
+| `/model <name> [@user]` | owner | Switch model globally or for a specific user |
+| `/compact [target]` | owner | Compact the current conversation (or `target` thread) |
+| `/restart` | owner | Restart the assistant |
+
+Arguments may follow on the next line, and Telegram group syntax `/status@your_bot` is recognized.
 
 ## Configuration
 
 ```typescript
 interface OwnerCommandsConfig {
   ownerIds: Record<string, string>;
+  authorizedUserIds?: string[]; // 'telegram:42' or bare '42'
+  publicCommands?: string[]; // e.g. ['help'] — anyone may run these
   onStatus?: () => string;
   onSessions?: () => string;
   onUsers?: () => string;
-  onCompact?: (target: string) => Promise<string>;
+  onCompact?: (target: string, threadId: string) => Promise<string>; // target is 'current' when omitted
   onModel?: (model: string, forUser?: string) => string;
   onRestart?: () => Promise<void>;
 }
@@ -79,6 +84,7 @@ ownerCommands({
 
 ## Security
 
-- Commands are only processed from users matching `ownerIds` for the current channel type
+- Commands are only processed from users with the required level (`ownerIds` for owner commands, `authorizedUserIds` for authorized ones, `publicCommands` for everyone)
+- With `RuntimeBuilder` (`cogitator up`) every command is wired to the live runtime: stats, sessions, approved users, compaction, per-user model overrides and restart
 - Non-owners sending `/status` or other commands see them passed through to the agent as regular messages
 - Unknown slash commands (e.g., `/random`) pass through to the agent

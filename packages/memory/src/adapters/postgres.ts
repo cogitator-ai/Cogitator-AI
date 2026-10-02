@@ -21,6 +21,7 @@ import type {
   EmbeddingAdapter,
   KeywordSearchAdapter,
   KeywordSearchOptions,
+  SearchFilter,
   SearchResult,
 } from '@cogitator-ai/types';
 import { BaseMemoryAdapter } from './base';
@@ -265,7 +266,7 @@ export class PostgresAdapter
     if (!this.pool) return this.failure('Not connected');
 
     const id = this.generateId('entry');
-    const now = new Date();
+    const now = this.nextEntryTimestamp(entry.threadId);
 
     try {
       await this.pool.query(
@@ -591,15 +592,19 @@ export class PostgresAdapter
     const params: unknown[] = [vectorStr, threshold];
     let paramIndex = 3;
 
-    if (options.filter?.sourceType) {
-      query += ` AND source_type = $${paramIndex++}`;
-      params.push(options.filter.sourceType);
-    }
+    const filterClause = this.embeddingFilterClause(options.filter, params, paramIndex);
+    query += filterClause.sql;
+    paramIndex = filterClause.nextIndex;
 
     query += ` ORDER BY vector <=> $1 LIMIT $${paramIndex}`;
     params.push(limit);
 
-    const result = await this.pool.query(query, params);
+    let result: { rows: Record<string, unknown>[] };
+    try {
+      result = await this.pool.query(query, params);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
 
     return this.success(
       result.rows.map((row) => ({
@@ -650,24 +655,27 @@ export class PostgresAdapter
     const params: unknown[] = [options.query];
     let paramIndex = 2;
 
-    let filterClause = '';
-    if (options.filter?.sourceType) {
-      filterClause += ` AND source_type = $${paramIndex++}`;
-      params.push(options.filter.sourceType);
-    }
+    const filter = this.embeddingFilterClause(options.filter, params, paramIndex);
+    const filterClause = filter.sql;
+    paramIndex = filter.nextIndex;
 
     const limitParam = `$${paramIndex}`;
     params.push(limit);
 
-    const result = await this.pool.query(
-      `SELECT id, source_id, source_type, content, metadata, created_at,
+    let result: { rows: Record<string, unknown>[] };
+    try {
+      result = await this.pool.query(
+        `SELECT id, source_id, source_type, content, metadata, created_at,
               ts_rank(content_tsv, plainto_tsquery('english', $1)) as keyword_score
        FROM ${this.schema}.embeddings
        WHERE content_tsv @@ plainto_tsquery('english', $1)${filterClause}
        ORDER BY keyword_score DESC
        LIMIT ${limitParam}`,
-      params
-    );
+        params
+      );
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
 
     return this.success(
       result.rows.map((row) => ({
@@ -680,6 +688,32 @@ export class PostgresAdapter
         metadata: row.metadata as Record<string, unknown>,
       }))
     );
+  }
+
+  /**
+   * SQL conditions for a search filter; agent and thread scoping use `metadata.agentId` /
+   * `metadata.threadId`.
+   */
+  private embeddingFilterClause(
+    filter: SearchFilter | undefined,
+    params: unknown[],
+    startIndex: number
+  ): { sql: string; nextIndex: number } {
+    let sql = '';
+    let index = startIndex;
+    if (filter?.sourceType) {
+      sql += ` AND source_type = $${index++}`;
+      params.push(filter.sourceType);
+    }
+    if (filter?.agentId) {
+      sql += ` AND metadata->>'agentId' = $${index++}`;
+      params.push(filter.agentId);
+    }
+    if (filter?.threadId) {
+      sql += ` AND metadata->>'threadId' = $${index++}`;
+      params.push(filter.threadId);
+    }
+    return { sql, nextIndex: index };
   }
 
   setVectorDimensions(dimensions: number): void {

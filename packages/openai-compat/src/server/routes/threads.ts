@@ -12,19 +12,29 @@ import type {
   ListResponse,
   Message,
 } from '../../types/openai-types';
+import { parseLimit, parseOrder, sendInvalidRequest } from './shared';
+
+function validateMessage(message: Partial<CreateMessageRequest> | undefined): string | null {
+  if (!message || (message.role !== 'user' && message.role !== 'assistant')) {
+    return "role must be 'user' or 'assistant'";
+  }
+  if (typeof message.content !== 'string' && !Array.isArray(message.content)) {
+    return 'content must be a string or an array of content parts';
+  }
+  return null;
+}
 
 export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAdapter) {
   fastify.post<{ Body: CreateThreadRequest }>('/v1/threads', async (request, reply) => {
-    const thread = await adapter.createThread(request.body?.metadata);
+    const messages = request.body?.messages ?? [];
+    for (const msg of messages) {
+      const problem = validateMessage(msg);
+      if (problem) return sendInvalidRequest(reply, problem, 'messages');
+    }
 
-    if (request.body?.messages) {
-      for (const msg of request.body.messages) {
-        const content =
-          typeof msg.content === 'string'
-            ? msg.content
-            : msg.content.map((c) => (c.type === 'text' ? c.text : '')).join('');
-        await adapter.addMessage(thread.id, { role: msg.role, content, metadata: msg.metadata });
-      }
+    const thread = await adapter.createThread(request.body?.metadata);
+    for (const msg of messages) {
+      await adapter.addMessage(thread.id, msg);
     }
 
     return reply.status(201).send(thread);
@@ -108,15 +118,10 @@ export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAd
         });
       }
 
-      const content =
-        typeof request.body.content === 'string'
-          ? request.body.content
-          : request.body.content.map((c) => (c.type === 'text' ? c.text : '')).join('');
-      const message = await adapter.addMessage(request.params.thread_id, {
-        role: request.body.role,
-        content,
-        metadata: request.body.metadata,
-      });
+      const problem = validateMessage(request.body);
+      if (problem) return sendInvalidRequest(reply, problem);
+
+      const message = await adapter.addMessage(request.params.thread_id, request.body);
 
       if (!message) {
         return reply.status(500).send({
@@ -135,8 +140,8 @@ export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAd
   fastify.get<{
     Params: { thread_id: string };
     Querystring: {
-      limit?: number;
-      order?: 'asc' | 'desc';
+      limit?: string;
+      order?: string;
       after?: string;
       before?: string;
       run_id?: string;
@@ -154,7 +159,12 @@ export function registerThreadRoutes(fastify: FastifyInstance, adapter: OpenAIAd
       });
     }
 
-    const { limit = 20, order = 'desc', after, before, run_id } = request.query;
+    const limit = parseLimit(request.query.limit);
+    if (limit === null)
+      return sendInvalidRequest(reply, 'limit must be between 1 and 100', 'limit');
+    const order = parseOrder(request.query.order);
+    if (order === null) return sendInvalidRequest(reply, "order must be 'asc' or 'desc'", 'order');
+    const { after, before, run_id } = request.query;
     const messages = await adapter.listMessages(request.params.thread_id, {
       limit: limit + 1,
       order,

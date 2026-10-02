@@ -1,342 +1,181 @@
 import { Command } from 'commander';
-import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { execSync } from 'node:child_process';
+import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import * as p from '@clack/prompts';
 import chalk from 'chalk';
 import { printBanner } from '../utils/logger.js';
+import { formatEnvLine } from '../utils/env.js';
+import { DEFAULT_OLLAMA_URL, resolveOllamaUrl } from '../utils/ollama.js';
+import {
+  API_KEY_ENV,
+  fetchOllamaModelOptions,
+  fetchProviderModels,
+  isSetupProvider,
+  type SetupProvider,
+} from '../utils/provider-models.js';
 
-interface InitAnswers {
-  provider: string;
+export type InitChannel = 'telegram' | 'discord' | 'slack' | 'webchat';
+export type InitMemory = 'memory' | 'sqlite' | 'postgres';
+export type PackageManager = 'pnpm' | 'npm' | 'yarn' | 'bun';
+
+export interface InitAnswers {
+  projectName: string;
+  provider: SetupProvider;
   apiKey: string;
   model: string;
-  channels: string[];
+  channels: InitChannel[];
   telegramToken?: string;
   discordToken?: string;
   slackToken?: string;
   slackSigningSecret?: string;
-  memory: string;
-  projectName: string;
+  memory: InitMemory;
+  databaseUrl?: string;
 }
 
-const PROVIDER_MODELS: Record<string, { label: string; value: string }[]> = {
-  anthropic: [
-    { label: 'Claude Sonnet 4 (recommended)', value: 'anthropic/claude-sonnet-4-20250514' },
-    { label: 'Claude Opus 4', value: 'anthropic/claude-opus-4-20250514' },
-    { label: 'Claude Haiku 3.5', value: 'anthropic/claude-3-5-haiku-20241022' },
-  ],
-  openai: [
-    { label: 'GPT-4o (recommended)', value: 'openai/gpt-4o' },
-    { label: 'GPT-4o mini', value: 'openai/gpt-4o-mini' },
-    { label: 'o3-mini', value: 'openai/o3-mini' },
-  ],
-  google: [
-    { label: 'Gemini 2.5 Flash (recommended)', value: 'google/gemini-2.5-flash' },
-    { label: 'Gemini 2.5 Pro', value: 'google/gemini-2.5-pro' },
-  ],
-  ollama: [
-    { label: 'Llama 3.1 8B (recommended)', value: 'ollama/llama3.1:8b' },
-    { label: 'Gemma 3 4B', value: 'ollama/gemma3:4b' },
-    { label: 'Mistral 7B', value: 'ollama/mistral:7b' },
-  ],
-};
-
-const API_KEY_NAMES: Record<string, string> = {
-  anthropic: 'ANTHROPIC_API_KEY',
-  openai: 'OPENAI_API_KEY',
-  google: 'GOOGLE_API_KEY',
-};
-
-export const initCommand = new Command('init')
-  .description('Create a new Cogitator AI assistant project')
-  .argument('[name]', 'Project name')
-  .option('--no-install', 'Skip dependency installation')
-  .action(async (nameArg: string | undefined, options: { install: boolean }) => {
-    printBanner();
-    p.intro(chalk.bgCyan(chalk.black(' cogitator init ')));
-
-    const answers = await collectAnswers(nameArg);
-    if (!answers) return;
-
-    const projectPath = resolve(process.cwd(), answers.projectName);
-
-    if (existsSync(projectPath)) {
-      p.cancel(`Directory "${answers.projectName}" already exists`);
-      process.exit(1);
-    }
-
-    await p.tasks([
-      {
-        title: 'Creating project structure',
-        task: () => {
-          createProjectFiles(projectPath, answers);
-          return 'Project files created';
-        },
-      },
-      {
-        title: 'Installing dependencies',
-        enabled: options.install,
-        task: () => {
-          try {
-            execSync('pnpm install', { cwd: projectPath, stdio: 'pipe' });
-            return 'Dependencies installed';
-          } catch {
-            return 'Install failed — run pnpm install manually';
-          }
-        },
-      },
-    ]);
-
-    const channelNames = answers.channels.join(', ') || 'webchat';
-    p.note(
-      [`cd ${answers.projectName}`, !options.install ? 'pnpm install' : '', 'cogitator up']
-        .filter(Boolean)
-        .join('\n'),
-      'Next steps'
-    );
-
-    p.outro(`${chalk.green('Your assistant is ready!')} Channels: ${chalk.cyan(channelNames)}`);
-  });
-
-async function collectAnswers(nameArg?: string): Promise<InitAnswers | null> {
-  const projectName =
-    nameArg ??
-    ((await p.text({
-      message: 'Project name',
-      placeholder: 'my-assistant',
-      validate: (v) => (!v.trim() ? 'Name is required' : undefined),
-    })) as string);
-
-  if (p.isCancel(projectName)) {
-    p.cancel('Setup cancelled');
-    process.exit(0);
-  }
-
-  const provider = (await p.select({
-    message: 'Which LLM provider?',
-    options: [
-      { value: 'anthropic', label: 'Anthropic (Claude)', hint: 'recommended' },
-      { value: 'openai', label: 'OpenAI (GPT-4o)' },
-      { value: 'google', label: 'Google (Gemini)' },
-      { value: 'ollama', label: 'Ollama (local, free)', hint: 'no API key needed' },
-    ],
-  })) as string;
-
-  if (p.isCancel(provider)) {
-    p.cancel('Setup cancelled');
-    process.exit(0);
-  }
-
-  let apiKey = '';
-  if (provider !== 'ollama') {
-    const keyResult = await p.password({
-      message: `${API_KEY_NAMES[provider]}:`,
-      validate: (v) => (!v.trim() ? 'API key is required' : undefined),
-    });
-    if (p.isCancel(keyResult)) {
-      p.cancel('Setup cancelled');
-      process.exit(0);
-    }
-    apiKey = keyResult as string;
-  }
-
-  const model = (await p.select({
-    message: 'Default model',
-    options: PROVIDER_MODELS[provider],
-  })) as string;
-
-  if (p.isCancel(model)) {
-    p.cancel('Setup cancelled');
-    process.exit(0);
-  }
-
-  const channels = (await p.multiselect({
-    message: 'Which channels to connect?',
-    options: [
-      { value: 'telegram', label: 'Telegram' },
-      { value: 'discord', label: 'Discord' },
-      { value: 'slack', label: 'Slack' },
-      { value: 'webchat', label: 'WebChat (localhost)', hint: 'no setup needed' },
-    ],
-    required: false,
-  })) as string[];
-
-  if (p.isCancel(channels)) {
-    p.cancel('Setup cancelled');
-    process.exit(0);
-  }
-
-  let telegramToken: string | undefined;
-  let discordToken: string | undefined;
-  let slackToken: string | undefined;
-  let slackSigningSecret: string | undefined;
-
-  if (channels.includes('telegram')) {
-    const token = await p.password({
-      message: 'Telegram bot token (from @BotFather):',
-      validate: (v) => (!v.trim() ? 'Token is required' : undefined),
-    });
-    if (p.isCancel(token)) {
-      p.cancel('Setup cancelled');
-      process.exit(0);
-    }
-    telegramToken = token as string;
-  }
-
-  if (channels.includes('discord')) {
-    const token = await p.password({
-      message: 'Discord bot token:',
-      validate: (v) => (!v.trim() ? 'Token is required' : undefined),
-    });
-    if (p.isCancel(token)) {
-      p.cancel('Setup cancelled');
-      process.exit(0);
-    }
-    discordToken = token as string;
-  }
-
-  if (channels.includes('slack')) {
-    const token = await p.password({
-      message: 'Slack bot token (xoxb-...):',
-      validate: (v) => (!v.trim() ? 'Token is required' : undefined),
-    });
-    if (p.isCancel(token)) {
-      p.cancel('Setup cancelled');
-      process.exit(0);
-    }
-    slackToken = token as string;
-
-    const secret = await p.password({
-      message: 'Slack signing secret:',
-      validate: (v) => (!v.trim() ? 'Signing secret is required' : undefined),
-    });
-    if (p.isCancel(secret)) {
-      p.cancel('Setup cancelled');
-      process.exit(0);
-    }
-    slackSigningSecret = secret as string;
-  }
-
-  const memory = (await p.select({
-    message: 'Memory adapter',
-    options: [
-      { value: 'memory', label: 'In-memory (no persistence)', hint: 'simple, for testing' },
-      { value: 'sqlite', label: 'SQLite (recommended)', hint: 'zero config, file-based' },
-      { value: 'postgres', label: 'PostgreSQL', hint: 'production-grade' },
-    ],
-  })) as string;
-
-  if (p.isCancel(memory)) {
-    p.cancel('Setup cancelled');
-    process.exit(0);
-  }
-
-  return {
-    provider,
-    apiKey,
-    model,
-    channels: channels.length > 0 ? channels : ['webchat'],
-    telegramToken,
-    discordToken,
-    slackToken,
-    slackSigningSecret,
-    memory,
-    projectName: projectName as string,
-  };
+export interface ScaffoldOptions {
+  dependencyVersions: Record<string, string>;
 }
 
-function createProjectFiles(projectPath: string, answers: InitAnswers): void {
-  mkdirSync(join(projectPath, 'src'), { recursive: true });
+export const DEFAULT_POSTGRES_URL = 'postgresql://cogitator:cogitator@localhost:5432/cogitator';
+const PROJECT_NAME = /^[a-z0-9][a-z0-9._-]*$/;
+const COGITATOR_PACKAGES = ['@cogitator-ai/core', '@cogitator-ai/channels', '@cogitator-ai/memory'];
 
+export function validateProjectName(name: string): string | undefined {
+  const trimmed = name.trim();
+  if (!trimmed) return 'Name is required';
+  if (trimmed.length > 214) return 'Name must be 214 characters or fewer';
+  if (!PROJECT_NAME.test(trimmed)) {
+    return 'Use lowercase letters, digits, ".", "_" or "-" (must start with a letter or digit)';
+  }
+  return undefined;
+}
+
+export function resolveDependencyVersions(
+  cliPackageJson: string = join(dirname(fileURLToPath(import.meta.url)), '../../package.json')
+): Record<string, string> {
+  const versions: Record<string, string> = {};
+  let deps: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(cliPackageJson, 'utf-8'));
+    if (typeof parsed === 'object' && parsed !== null && 'dependencies' in parsed) {
+      const value = parsed.dependencies;
+      if (typeof value === 'object' && value !== null)
+        deps = Object.fromEntries(Object.entries(value));
+    }
+  } catch {
+    deps = {};
+  }
+
+  for (const name of COGITATOR_PACKAGES) {
+    const range = deps[name];
+    versions[name] =
+      typeof range === 'string' && /^\^?~?\d/.test(range)
+        ? `^${range.replace(/^[\^~]/, '')}`
+        : 'latest';
+  }
+  return versions;
+}
+
+export function detectPackageManager(
+  userAgent = process.env.npm_config_user_agent
+): PackageManager {
+  const name = userAgent?.split('/')[0];
+  if (name === 'npm' || name === 'yarn' || name === 'bun' || name === 'pnpm') return name;
+  return 'pnpm';
+}
+
+function runScript(pm: PackageManager, script: string): string {
+  return pm === 'npm' ? `npm run ${script}` : `${pm} ${script}`;
+}
+
+export function buildPackageJson(answers: InitAnswers, options: ScaffoldOptions): string {
   const deps: Record<string, string> = {
-    '@cogitator-ai/core': '^0.1.0',
-    '@cogitator-ai/channels': '^0.1.0',
-    '@cogitator-ai/memory': '^0.1.0',
-    zod: '^3.22.4',
+    ...options.dependencyVersions,
+    zod: '^4.0.0',
   };
 
   if (answers.channels.includes('telegram')) deps.grammy = '^1.20.0';
   if (answers.channels.includes('discord')) deps['discord.js'] = '^14.0.0';
-  if (answers.channels.includes('slack')) deps['@slack/bolt'] = '^3.0.0';
-  if (answers.channels.includes('webchat')) deps.ws = '^8.0.0';
+  if (answers.channels.includes('slack')) deps['@slack/bolt'] = '^4.0.0';
+  if (answers.channels.includes('webchat')) deps.ws = '^8.18.0';
+  if (answers.memory === 'sqlite') deps['better-sqlite3'] = '^11.6.0';
+  if (answers.memory === 'postgres') deps.pg = '^8.18.0';
 
-  writeFileSync(
-    join(projectPath, 'package.json'),
+  const sortedDeps = Object.fromEntries(
+    Object.entries(deps).sort(([a], [b]) => a.localeCompare(b))
+  );
+
+  return (
     JSON.stringify(
       {
         name: answers.projectName,
         version: '0.1.0',
+        private: true,
         type: 'module',
+        engines: { node: '>=20.12.0' },
         scripts: {
           dev: 'tsx watch src/agent.ts',
           start: 'tsx src/agent.ts',
           build: 'tsc',
         },
-        dependencies: deps,
+        dependencies: sortedDeps,
         devDependencies: {
-          '@types/node': '^20.10.0',
-          tsx: '^4.7.0',
+          '@types/node': '^22.0.0',
+          tsx: '^4.21.0',
           typescript: '^5.3.0',
         },
       },
       null,
       2
-    )
-  );
-
-  writeFileSync(
-    join(projectPath, 'tsconfig.json'),
-    JSON.stringify(
-      {
-        compilerOptions: {
-          target: 'ES2022',
-          module: 'NodeNext',
-          moduleResolution: 'NodeNext',
-          strict: true,
-          esModuleInterop: true,
-          skipLibCheck: true,
-          outDir: './dist',
-          rootDir: './src',
-        },
-        include: ['src/**/*'],
-      },
-      null,
-      2
-    )
-  );
-
-  writeEnvFile(projectPath, answers);
-  writeConfigFile(projectPath, answers);
-  writeAgentFile(projectPath, answers);
-
-  writeFileSync(
-    join(projectPath, '.gitignore'),
-    `node_modules/
-dist/
-.env
-*.log
-sessions.db
-`
+    ) + '\n'
   );
 }
 
-function writeEnvFile(projectPath: string, answers: InitAnswers): void {
+export function buildEnvFile(answers: InitAnswers): string | null {
   const lines: string[] = [];
 
-  if (answers.apiKey && API_KEY_NAMES[answers.provider]) {
-    lines.push(`${API_KEY_NAMES[answers.provider]}=${answers.apiKey}`);
+  if (answers.provider !== 'ollama' && answers.apiKey) {
+    lines.push(formatEnvLine(API_KEY_ENV[answers.provider], answers.apiKey));
   }
-  if (answers.telegramToken) lines.push(`TELEGRAM_BOT_TOKEN=${answers.telegramToken}`);
-  if (answers.discordToken) lines.push(`DISCORD_BOT_TOKEN=${answers.discordToken}`);
-  if (answers.slackToken) lines.push(`SLACK_BOT_TOKEN=${answers.slackToken}`);
-  if (answers.slackSigningSecret) lines.push(`SLACK_SIGNING_SECRET=${answers.slackSigningSecret}`);
+  if (answers.telegramToken) lines.push(formatEnvLine('TELEGRAM_BOT_TOKEN', answers.telegramToken));
+  if (answers.discordToken) lines.push(formatEnvLine('DISCORD_BOT_TOKEN', answers.discordToken));
+  if (answers.slackToken) lines.push(formatEnvLine('SLACK_BOT_TOKEN', answers.slackToken));
+  if (answers.slackSigningSecret) {
+    lines.push(formatEnvLine('SLACK_SIGNING_SECRET', answers.slackSigningSecret));
+  }
+  if (answers.memory === 'postgres') {
+    lines.push(formatEnvLine('DATABASE_URL', answers.databaseUrl ?? DEFAULT_POSTGRES_URL));
+  }
 
-  if (lines.length > 0) {
-    writeFileSync(join(projectPath, '.env'), lines.join('\n') + '\n');
+  return lines.length > 0 ? lines.join('\n') + '\n' : null;
+}
+
+function memorySetup(memory: InitMemory): { importName: string; code: string } {
+  switch (memory) {
+    case 'sqlite':
+      return {
+        importName: 'SQLiteAdapter',
+        code: `const memory = new SQLiteAdapter({ provider: 'sqlite', path: './data/memory.db' });`,
+      };
+    case 'postgres':
+      return {
+        importName: 'PostgresAdapter',
+        code: `const memory = new PostgresAdapter({
+  provider: 'postgres',
+  connectionString: requireEnv('DATABASE_URL'),
+});`,
+      };
+    case 'memory':
+      return {
+        importName: 'InMemoryAdapter',
+        code: `const memory = new InMemoryAdapter({ provider: 'memory' });`,
+      };
   }
 }
 
-function writeConfigFile(projectPath: string, answers: InitAnswers): void {
+export function buildGatewayFile(answers: InitAnswers): string {
   const channelImports: string[] = [];
   const channelSetup: string[] = [];
 
@@ -344,18 +183,18 @@ function writeConfigFile(projectPath: string, answers: InitAnswers): void {
     switch (ch) {
       case 'telegram':
         channelImports.push('telegramChannel');
-        channelSetup.push(`    telegramChannel({ token: process.env.TELEGRAM_BOT_TOKEN! }),`);
+        channelSetup.push(`    telegramChannel({ token: requireEnv('TELEGRAM_BOT_TOKEN') }),`);
         break;
       case 'discord':
         channelImports.push('discordChannel');
         channelSetup.push(
-          `    discordChannel({ token: process.env.DISCORD_BOT_TOKEN!, mentionOnly: true }),`
+          `    discordChannel({ token: requireEnv('DISCORD_BOT_TOKEN'), mentionOnly: true }),`
         );
         break;
       case 'slack':
         channelImports.push('slackChannel');
         channelSetup.push(
-          `    slackChannel({\n      token: process.env.SLACK_BOT_TOKEN!,\n      signingSecret: process.env.SLACK_SIGNING_SECRET!,\n    }),`
+          `    slackChannel({\n      token: requireEnv('SLACK_BOT_TOKEN'),\n      signingSecret: requireEnv('SLACK_SIGNING_SECRET'),\n    }),`
         );
         break;
       case 'webchat':
@@ -367,12 +206,25 @@ function writeConfigFile(projectPath: string, answers: InitAnswers): void {
 
   const providerConfig =
     answers.provider === 'ollama'
-      ? `    ollama: { baseUrl: 'http://localhost:11434' },`
-      : `    ${answers.provider}: { apiKey: process.env.${API_KEY_NAMES[answers.provider]} },`;
+      ? `      ollama: { baseUrl: process.env.OLLAMA_URL ?? '${DEFAULT_OLLAMA_URL}' },`
+      : `      ${answers.provider}: { apiKey: requireEnv('${API_KEY_ENV[answers.provider]}') },`;
 
-  const content = `import { Cogitator, Agent } from '@cogitator-ai/core';
+  const memory = memorySetup(answers.memory);
+
+  return `import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { Cogitator, Agent } from '@cogitator-ai/core';
 import { Gateway, ${channelImports.join(', ')} } from '@cogitator-ai/channels';
-import { InMemoryAdapter } from '@cogitator-ai/memory';
+import { ${memory.importName} } from '@cogitator-ai/memory';
+
+const envFile = fileURLToPath(new URL('../.env', import.meta.url));
+if (existsSync(envFile)) process.loadEnvFile(envFile);
+
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(\`Missing environment variable \${name} (see .env)\`);
+  return value;
+}
 
 const agent = new Agent({
   name: 'assistant',
@@ -383,13 +235,19 @@ Be concise and friendly. Use tools when available.\`,
 
 const cogitator = new Cogitator({
   llm: {
+    defaultProvider: '${answers.provider}',
     providers: {
 ${providerConfig}
     },
   },
 });
 
-const memory = new InMemoryAdapter();
+${memory.code}
+
+const connected = await memory.connect();
+if (!connected.success) {
+  throw new Error(\`Failed to connect memory: \${connected.error}\`);
+}
 
 export const gateway = new Gateway({
   agent,
@@ -407,28 +265,268 @@ ${channelSetup.join('\n')}
   },
 });
 `;
-
-  writeFileSync(join(projectPath, 'src', 'gateway.ts'), content);
 }
 
-function writeAgentFile(projectPath: string, answers: InitAnswers): void {
-  const content = `import { gateway } from './gateway.js';
+export function buildAgentFile(answers: InitAnswers): string {
+  const webchatLine = answers.channels.includes('webchat')
+    ? `  console.log('WebChat: ws://localhost:18789/ws');\n`
+    : '';
 
-async function main() {
-  await gateway.start();
+  return `import { gateway } from './gateway.js';
 
-  console.log('Assistant is running!');
-  console.log('Connected channels:', gateway.stats.connectedChannels.join(', '));
-${answers.channels.includes('webchat') ? `  console.log('WebChat: ws://localhost:18789/ws');\n` : ''}
-  process.on('SIGINT', async () => {
-    console.log('\\nShutting down...');
-    await gateway.stop();
-    process.exit(0);
+let stopping = false;
+
+async function shutdown(signal: string) {
+  if (stopping) return;
+  stopping = true;
+  console.log(\`\\nReceived \${signal}, shutting down...\`);
+  await gateway.stop();
+  process.exit(0);
+}
+
+process.once('SIGINT', () => void shutdown('SIGINT'));
+process.once('SIGTERM', () => void shutdown('SIGTERM'));
+
+await gateway.start();
+
+console.log('Assistant is running!');
+console.log('Connected channels:', gateway.stats.connectedChannels.join(', '));
+${webchatLine}`;
+}
+
+export function buildGitignore(answers: InitAnswers): string {
+  const lines = ['node_modules/', 'dist/', '.env', '*.log', '.cogitator/'];
+  if (answers.memory === 'sqlite') lines.push('data/');
+  return lines.join('\n') + '\n';
+}
+
+export const TSCONFIG = {
+  compilerOptions: {
+    target: 'ES2022',
+    module: 'NodeNext',
+    moduleResolution: 'NodeNext',
+    strict: true,
+    esModuleInterop: true,
+    skipLibCheck: true,
+    outDir: './dist',
+    rootDir: './src',
+  },
+  include: ['src/**/*'],
+};
+
+export function buildProjectFiles(
+  answers: InitAnswers,
+  options: ScaffoldOptions
+): Record<string, string> {
+  const files: Record<string, string> = {
+    'package.json': buildPackageJson(answers, options),
+    'tsconfig.json': JSON.stringify(TSCONFIG, null, 2) + '\n',
+    'src/gateway.ts': buildGatewayFile(answers),
+    'src/agent.ts': buildAgentFile(answers),
+    '.gitignore': buildGitignore(answers),
+  };
+  const env = buildEnvFile(answers);
+  if (env) files['.env'] = env;
+  return files;
+}
+
+export function writeProjectFiles(projectPath: string, files: Record<string, string>): void {
+  for (const [relativePath, content] of Object.entries(files)) {
+    const fullPath = join(projectPath, relativePath);
+    mkdirSync(dirname(fullPath), { recursive: true });
+    writeFileSync(fullPath, content, relativePath === '.env' ? { mode: 0o600 } : undefined);
+  }
+}
+
+function cancelled(): never {
+  p.cancel('Setup cancelled');
+  process.exit(0);
+}
+
+function answer<T>(result: T | symbol): T {
+  if (p.isCancel(result)) cancelled();
+  return result;
+}
+
+async function askSecret(message: string, emptyMessage: string): Promise<string> {
+  return answer(
+    await p.password({ message, validate: (v) => (!v.trim() ? emptyMessage : undefined) })
+  ).trim();
+}
+
+async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
+  const projectName =
+    nameArg ??
+    answer(
+      await p.text({
+        message: 'Project name',
+        placeholder: 'my-assistant',
+        validate: validateProjectName,
+      })
+    ).trim();
+
+  const providerChoice = answer(
+    await p.select({
+      message: 'Which LLM provider?',
+      options: [
+        { value: 'anthropic', label: 'Anthropic (Claude)', hint: 'recommended' },
+        { value: 'openai', label: 'OpenAI (GPT)' },
+        { value: 'google', label: 'Google (Gemini)' },
+        { value: 'ollama', label: 'Ollama (local, free)', hint: 'no API key needed' },
+      ],
+    })
+  );
+  if (!isSetupProvider(providerChoice)) cancelled();
+  const provider: SetupProvider = providerChoice;
+
+  const apiKey =
+    provider === 'ollama'
+      ? ''
+      : await askSecret(`${API_KEY_ENV[provider]}:`, 'API key is required');
+
+  const spinner = p.spinner();
+  spinner.start('Fetching available models...');
+  const modelOptions =
+    provider === 'ollama'
+      ? await fetchOllamaModelOptions(resolveOllamaUrl(), process.env.OLLAMA_API_KEY)
+      : await fetchProviderModels(provider);
+  spinner.stop(`Found ${modelOptions.length} models`);
+
+  const model = answer(await p.select({ message: 'Default model', options: modelOptions }));
+
+  const channelChoice = answer(
+    await p.multiselect({
+      message: 'Which channels to connect?',
+      options: [
+        { value: 'telegram', label: 'Telegram' },
+        { value: 'discord', label: 'Discord' },
+        { value: 'slack', label: 'Slack' },
+        { value: 'webchat', label: 'WebChat (localhost)', hint: 'no setup needed' },
+      ],
+      required: false,
+    })
+  );
+  const channels = channelChoice.filter(
+    (c): c is InitChannel => c === 'telegram' || c === 'discord' || c === 'slack' || c === 'webchat'
+  );
+
+  const telegramToken = channels.includes('telegram')
+    ? await askSecret('Telegram bot token (from @BotFather):', 'Token is required')
+    : undefined;
+  const discordToken = channels.includes('discord')
+    ? await askSecret('Discord bot token:', 'Token is required')
+    : undefined;
+  const slackToken = channels.includes('slack')
+    ? await askSecret('Slack bot token (xoxb-...):', 'Token is required')
+    : undefined;
+  const slackSigningSecret = channels.includes('slack')
+    ? await askSecret('Slack signing secret:', 'Signing secret is required')
+    : undefined;
+
+  const memoryChoice = answer(
+    await p.select({
+      message: 'Memory adapter',
+      options: [
+        { value: 'sqlite', label: 'SQLite (recommended)', hint: 'zero config, file-based' },
+        { value: 'memory', label: 'In-memory', hint: 'no persistence, for testing' },
+        { value: 'postgres', label: 'PostgreSQL', hint: 'production-grade' },
+      ],
+    })
+  );
+  const memory: InitMemory =
+    memoryChoice === 'memory' || memoryChoice === 'postgres' ? memoryChoice : 'sqlite';
+
+  const databaseUrl =
+    memory === 'postgres'
+      ? answer(
+          await p.text({
+            message: 'PostgreSQL connection string',
+            initialValue: DEFAULT_POSTGRES_URL,
+            validate: (v) =>
+              !/^postgres(ql)?:\/\//.test(v.trim()) ? 'Expected postgres://...' : undefined,
+          })
+        ).trim()
+      : undefined;
+
+  return {
+    projectName,
+    provider,
+    apiKey,
+    model,
+    channels: channels.length > 0 ? channels : ['webchat'],
+    telegramToken,
+    discordToken,
+    slackToken,
+    slackSigningSecret,
+    memory,
+    databaseUrl,
+  };
+}
+
+export const initCommand = new Command('init')
+  .description('Create a new Cogitator AI assistant project')
+  .argument('[name]', 'Project name')
+  .option('--no-install', 'Skip dependency installation')
+  .action(async (nameArg: string | undefined, options: { install: boolean }) => {
+    printBanner();
+    p.intro(chalk.bgCyan(chalk.black(' cogitator init ')));
+
+    if (nameArg !== undefined) {
+      const error = validateProjectName(nameArg);
+      if (error) {
+        p.cancel(`Invalid project name "${nameArg}": ${error}`);
+        process.exit(1);
+      }
+    }
+
+    const answers = await collectAnswers(nameArg?.trim());
+    const projectPath = resolve(process.cwd(), answers.projectName);
+
+    if (existsSync(projectPath)) {
+      p.cancel(`Directory "${answers.projectName}" already exists`);
+      process.exit(1);
+    }
+
+    const pm = detectPackageManager();
+    const files = buildProjectFiles(answers, { dependencyVersions: resolveDependencyVersions() });
+    let installed = false;
+
+    await p.tasks([
+      {
+        title: 'Creating project structure',
+        task: () => {
+          writeProjectFiles(projectPath, files);
+          return 'Project files created';
+        },
+      },
+      {
+        title: `Installing dependencies with ${pm}`,
+        enabled: options.install,
+        task: () => {
+          try {
+            execFileSync(pm, ['install'], { cwd: projectPath, stdio: 'pipe' });
+            installed = true;
+            return 'Dependencies installed';
+          } catch {
+            return `Install failed — run "${pm} install" manually`;
+          }
+        },
+      },
+    ]);
+
+    p.note(
+      [
+        `cd ${answers.projectName}`,
+        installed ? '' : `${pm} install`,
+        `${runScript(pm, 'dev')}        # start with hot reload`,
+        `cogitator assistant   # or run with the live dashboard`,
+      ]
+        .filter(Boolean)
+        .join('\n'),
+      'Next steps'
+    );
+
+    p.outro(
+      `${chalk.green('Your assistant is ready!')} Channels: ${chalk.cyan(answers.channels.join(', '))}`
+    );
   });
-}
-
-main().catch(console.error);
-`;
-
-  writeFileSync(join(projectPath, 'src', 'agent.ts'), content);
-}

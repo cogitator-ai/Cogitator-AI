@@ -54,15 +54,7 @@ export class LocalWhisper {
       await this.ensureLoaded();
     }
 
-    let pcmFloat32: Float32Array;
-
-    if (mimeType === 'audio/ogg' || mimeType === 'audio/opus') {
-      pcmFloat32 = await this.decodeOgg(audioBuffer);
-    } else if (mimeType === 'audio/wav' || mimeType === 'audio/wave') {
-      pcmFloat32 = this.decodeWav(audioBuffer);
-    } else {
-      pcmFloat32 = await this.decodeOgg(audioBuffer);
-    }
+    const pcmFloat32 = await this.decode(audioBuffer, mimeType);
 
     const pipe = this.pipeline as {
       model: {
@@ -81,30 +73,54 @@ export class LocalWhisper {
     return result.text.trim();
   }
 
+  private async decode(buffer: Buffer, mimeType: string): Promise<Float32Array> {
+    const mime = mimeType.split(';')[0]?.trim().toLowerCase() ?? '';
+    if (mime === 'audio/wav' || mime === 'audio/wave' || mime === 'audio/x-wav') {
+      return this.decodeWav(buffer);
+    }
+    if (
+      mime === 'audio/ogg' ||
+      mime === 'audio/opus' ||
+      buffer.subarray(0, 4).toString() === 'OggS'
+    ) {
+      return this.decodeOgg(buffer);
+    }
+    if (buffer.subarray(0, 4).toString() === 'RIFF') {
+      return this.decodeWav(buffer);
+    }
+    throw new Error(
+      `Local Whisper supports only OGG/Opus and WAV audio (got ${mimeType}). Configure a cloud STT provider for other formats.`
+    );
+  }
+
   private async ensureLoaded(): Promise<void> {
     if (this.pipeline) return;
-    if (this.loading) {
-      await this.loading;
-      return;
+    if (!this.loading) {
+      this.loading = (async () => {
+        const transformers = await this.loadTransformers();
+        const { env, pipeline } = transformers as {
+          env: { cacheDir: string; allowLocalModels: boolean };
+          pipeline: (
+            task: string,
+            model: string,
+            opts?: Record<string, unknown>
+          ) => Promise<unknown>;
+        };
+
+        env.cacheDir = this.modelDir;
+        env.allowLocalModels = true;
+
+        this.pipeline = await pipeline('automatic-speech-recognition', WHISPER_MODEL, {
+          dtype: 'q8',
+        });
+      })();
     }
 
-    this.loading = (async () => {
-      const transformers = await this.loadTransformers();
-      const { env, pipeline } = transformers as {
-        env: { cacheDir: string; allowLocalModels: boolean };
-        pipeline: (task: string, model: string, opts?: Record<string, unknown>) => Promise<unknown>;
-      };
-
-      env.cacheDir = this.modelDir;
-      env.allowLocalModels = true;
-
-      this.pipeline = await pipeline('automatic-speech-recognition', WHISPER_MODEL, {
-        dtype: 'q8',
-      });
-    })();
-
-    await this.loading;
-    this.loading = null;
+    try {
+      await this.loading;
+    } finally {
+      this.loading = null;
+    }
   }
 
   private async ensureDeps(): Promise<void> {
@@ -141,35 +157,82 @@ export class LocalWhisper {
     };
 
     const decoder = new OggOpusDecoder();
-    await decoder.ready;
-
-    const result = await decoder.decode(new Uint8Array(buffer));
-    decoder.free();
-
-    const samples = result.channelData[0];
-    if (result.sampleRate === SAMPLE_RATE) return samples;
-    return this.resample(samples, result.sampleRate, SAMPLE_RATE);
+    try {
+      await decoder.ready;
+      const result = await decoder.decode(new Uint8Array(buffer));
+      const samples = result.channelData[0];
+      if (!samples) throw new Error('OGG stream contains no audio');
+      if (result.sampleRate === SAMPLE_RATE) return samples;
+      return this.resample(samples, result.sampleRate, SAMPLE_RATE);
+    } finally {
+      decoder.free();
+    }
   }
 
   private decodeWav(buffer: Buffer): Float32Array {
-    const dataOffset = buffer.indexOf('data') + 8;
-    const bitsPerSample = buffer.readUInt16LE(34);
-    const sampleRate = buffer.readUInt32LE(24);
-    const numChannels = buffer.readUInt16LE(22);
-    const dataSize = buffer.readUInt32LE(dataOffset - 4);
-    const numSamples = dataSize / (bitsPerSample / 8) / numChannels;
+    if (buffer.length < 12 || buffer.toString('ascii', 0, 4) !== 'RIFF') {
+      throw new Error('Invalid WAV file: missing RIFF header');
+    }
 
-    const samples = new Float32Array(numSamples);
-    let offset = dataOffset;
+    let format: { audioFormat: number; channels: number; sampleRate: number; bits: number } | null =
+      null;
+    let dataOffset = -1;
+    let dataSize = 0;
 
-    for (let i = 0; i < numSamples; i++) {
-      if (bitsPerSample === 16) {
-        samples[i] = buffer.readInt16LE(offset) / 32768;
-        offset += 2 * numChannels;
-      } else if (bitsPerSample === 32) {
-        samples[i] = buffer.readFloatLE(offset);
-        offset += 4 * numChannels;
+    let offset = 12;
+    while (offset + 8 <= buffer.length) {
+      const id = buffer.toString('ascii', offset, offset + 4);
+      const size = buffer.readUInt32LE(offset + 4);
+      const body = offset + 8;
+      if (id === 'fmt ') {
+        format = {
+          audioFormat: buffer.readUInt16LE(body),
+          channels: buffer.readUInt16LE(body + 2),
+          sampleRate: buffer.readUInt32LE(body + 4),
+          bits: buffer.readUInt16LE(body + 14),
+        };
+      } else if (id === 'data') {
+        dataOffset = body;
+        dataSize = Math.min(size, buffer.length - body);
+        break;
       }
+      offset = body + size + (size % 2);
+    }
+
+    if (!format || dataOffset < 0) throw new Error('Invalid WAV file: missing fmt or data chunk');
+
+    const { audioFormat, channels, sampleRate, bits } = format;
+    const bytesPerSample = bits / 8;
+    const isFloat = audioFormat === 3;
+    if (![8, 16, 24, 32].includes(bits) || channels < 1) {
+      throw new Error(`Unsupported WAV format: ${bits}-bit, ${channels} channel(s)`);
+    }
+
+    const frameSize = bytesPerSample * channels;
+    const frames = Math.floor(dataSize / frameSize);
+    const samples = new Float32Array(frames);
+
+    const readSample = (pos: number): number => {
+      if (isFloat && bits === 32) return buffer.readFloatLE(pos);
+      switch (bits) {
+        case 8:
+          return (buffer.readUInt8(pos) - 128) / 128;
+        case 16:
+          return buffer.readInt16LE(pos) / 32768;
+        case 24:
+          return buffer.readIntLE(pos, 3) / 8388608;
+        default:
+          return buffer.readInt32LE(pos) / 2147483648;
+      }
+    };
+
+    for (let i = 0; i < frames; i++) {
+      const frameStart = dataOffset + i * frameSize;
+      let sum = 0;
+      for (let c = 0; c < channels; c++) {
+        sum += readSample(frameStart + c * bytesPerSample);
+      }
+      samples[i] = sum / channels;
     }
 
     if (sampleRate === SAMPLE_RATE) return samples;

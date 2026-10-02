@@ -2,13 +2,19 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { generateId } from '@cogitator-ai/server-shared';
 import { HonoStreamWriter } from '../streaming/hono-stream-writer.js';
-import type {
-  HonoEnv,
-  WorkflowListResponse,
-  WorkflowRunRequest,
-  WorkflowRunResponse,
-} from '../types.js';
-import { CogitatorError } from '@cogitator-ai/types';
+import type { HonoEnv, WorkflowListResponse } from '../types.js';
+import { getOwn } from '../utils/lookup.js';
+import { isModuleNotFoundError, resolveError } from '../utils/errors.js';
+import {
+  createRequestAbortController,
+  errorResponse,
+  invalidInput,
+  invalidJson,
+  readJsonBody,
+  requestAborted,
+} from '../utils/request.js';
+import { toWorkflowRunResponse } from '../utils/results.js';
+import { parseWorkflowRunRequest } from '../utils/validation.js';
 
 export function createWorkflowRoutes(): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
@@ -28,75 +34,67 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
   app.post('/workflows/:name/run', async (c) => {
     const ctx = c.get('cogitator');
     const name = c.req.param('name');
-    const workflow = Object.hasOwn(ctx.workflows, name) ? ctx.workflows[name] : undefined;
+    const workflow = getOwn(ctx.workflows, name);
 
     if (!workflow) {
       return c.json({ error: { message: `Workflow '${name}' not found`, code: 'NOT_FOUND' } }, 404);
     }
 
-    let body: WorkflowRunRequest | undefined;
-    try {
-      body = await c.req.json<WorkflowRunRequest>();
-    } catch {
-      return c.json({ error: { message: 'Invalid JSON body', code: 'INVALID_INPUT' } }, 400);
-    }
+    const body = await readJsonBody(c);
+    if (!body.ok) return invalidJson(c);
+    const parsed = parseWorkflowRunRequest(body.value);
+    if (!parsed.ok) return invalidInput(c, parsed.message);
+
+    const abortController = createRequestAbortController(c);
 
     try {
       const { WorkflowExecutor } = await import('@cogitator-ai/workflows');
       const executor = new WorkflowExecutor(ctx.runtime);
-      const result = await executor.execute(workflow, body?.input, body?.options);
+      const result = await executor.execute(workflow, parsed.value.input, {
+        ...parsed.value.options,
+        signal: abortController.signal,
+      });
 
-      const nodeResults: Record<string, { output: unknown; duration: number }> = {};
-      for (const [nodeName, nodeResult] of result.nodeResults.entries()) {
-        nodeResults[nodeName] = nodeResult;
-      }
+      if (abortController.signal.aborted) return requestAborted(c);
+      if (result.error) return errorResponse(c, result.error, 'Workflow run error');
 
-      const response: WorkflowRunResponse = {
-        workflowId: result.workflowId,
-        workflowName: result.workflowName,
-        state: result.state,
-        duration: result.duration,
-        nodeResults,
-      };
-
-      return c.json(response);
+      return c.json(toWorkflowRunResponse(result));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
+      if (abortController.signal.aborted) return requestAborted(c);
+      if (isModuleNotFoundError(error)) {
         return c.json(
           { error: { message: 'Workflows package not installed', code: 'UNIMPLEMENTED' } },
           501
         );
       }
-
-      if (CogitatorError.isCogitatorError(error)) {
-        return c.json({ error: { message: error.message, code: error.code } }, 500);
-      }
-      console.error('[CogitatorHono] Workflow run error:', error);
-      return c.json({ error: { message: 'Internal server error', code: 'INTERNAL' } }, 500);
+      return errorResponse(c, error, 'Workflow run error');
     }
   });
 
   app.post('/workflows/:name/stream', async (c) => {
     const ctx = c.get('cogitator');
     const name = c.req.param('name');
-    const workflow = Object.hasOwn(ctx.workflows, name) ? ctx.workflows[name] : undefined;
+    const workflow = getOwn(ctx.workflows, name);
 
     if (!workflow) {
       return c.json({ error: { message: `Workflow '${name}' not found`, code: 'NOT_FOUND' } }, 404);
     }
 
-    let body: WorkflowRunRequest | undefined;
-    try {
-      body = await c.req.json<WorkflowRunRequest>();
-    } catch {
-      return c.json({ error: { message: 'Invalid JSON body', code: 'INVALID_INPUT' } }, 400);
-    }
+    const body = await readJsonBody(c);
+    if (!body.ok) return invalidJson(c);
+    const parsed = parseWorkflowRunRequest(body.value);
+    if (!parsed.ok) return invalidInput(c, parsed.message);
+
+    const abortController = createRequestAbortController(c);
 
     return streamSSE(c, async (stream) => {
       const writer = new HonoStreamWriter(stream);
       const messageId = generateId('wf');
 
-      stream.onAbort(() => writer.close());
+      stream.onAbort(() => {
+        writer.close();
+        abortController.abort();
+      });
 
       try {
         const { WorkflowExecutor } = await import('@cogitator-ai/workflows');
@@ -104,8 +102,9 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
 
         await writer.start(messageId);
 
-        const result = await executor.execute(workflow, body?.input, {
-          ...body?.options,
+        const result = await executor.execute(workflow, parsed.value.input, {
+          ...parsed.value.options,
+          signal: abortController.signal,
           onNodeStart: (node: string) => {
             void writer.workflowEvent('node_started', { nodeName: node, timestamp: Date.now() });
           },
@@ -120,20 +119,26 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
           },
         });
 
+        if (abortController.signal.aborted) return;
+
+        if (result.error) {
+          const { body: errorBody } = resolveError(result.error, 'Workflow stream error');
+          await writer.error(errorBody.error.message, errorBody.error.code);
+          return;
+        }
+
         await writer.workflowEvent('workflow_completed', {
           workflowId: result.workflowId,
           duration: result.duration,
         });
-
         await writer.finish(messageId);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
+        if (abortController.signal.aborted) return;
+        if (isModuleNotFoundError(error)) {
           await writer.error('Workflows package not installed', 'UNIMPLEMENTED');
-        } else if (CogitatorError.isCogitatorError(error)) {
-          await writer.error(error.message, error.code);
         } else {
-          console.error('[CogitatorHono] Workflow stream error:', error);
-          await writer.error('Internal server error', 'INTERNAL');
+          const { body: errorBody } = resolveError(error, 'Workflow stream error');
+          await writer.error(errorBody.error.message, errorBody.error.code);
         }
       } finally {
         writer.close();

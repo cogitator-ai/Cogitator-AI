@@ -2,8 +2,14 @@
  * @cogitator-ai/swarms - Multi-agent swarm coordination
  */
 
-export { Swarm, SwarmBuilder, swarm } from './swarm';
+export { Swarm, SwarmBuilder, SwarmTimeoutError, swarm } from './swarm';
 export { SwarmCoordinator } from './coordinator';
+export {
+  BaseSwarmCoordinator,
+  type AgentRunRequest,
+  type SwarmRunScope,
+  type SwarmCommunication,
+} from './base-coordinator';
 
 export {
   BaseStrategy,
@@ -31,6 +37,14 @@ export {
   RedisMessageBus,
   RedisBlackboard,
   RedisSwarmEventEmitter,
+  isReadTrackingMessageBus,
+  isObservableBlackboard,
+  type ReadTrackingMessageBus,
+  type MessageListener,
+  type ObservableBlackboard,
+  type BlackboardWrite,
+  type BlackboardWriteListener,
+  type BlackboardSectionHandler,
   type RedisMessageBusOptions,
   type RedisBlackboardOptions,
   type RedisEventEmitterOptions,
@@ -38,6 +52,9 @@ export {
 
 export {
   DistributedSwarmCoordinator,
+  swarmJobQueueKey,
+  type DistributedCoordinatorOptions,
+  type SerializedSwarmAgentConfig,
   type SwarmAgentJobPayload,
   type SwarmAgentJobResult,
 } from './distributed/index';

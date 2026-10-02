@@ -33,6 +33,7 @@ declare module 'nodemailer' {
 
 declare module 'better-sqlite3' {
   interface Statement {
+    readonly reader: boolean;
     all(...params: unknown[]): unknown[];
     run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
     get(...params: unknown[]): unknown;

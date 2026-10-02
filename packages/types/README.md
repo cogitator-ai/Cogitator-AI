@@ -88,14 +88,14 @@ const toolResult: ToolResultMessage = {
 
 ### Message Interfaces
 
-| Type                | Description                                               |
-| ------------------- | --------------------------------------------------------- |
-| `MessageRole`       | `'system' \| 'user' \| 'assistant' \| 'tool'`             |
-| `Message`           | Base message with role, content, optional name/toolCallId |
-| `ToolCallMessage`   | Assistant message containing tool calls                   |
-| `ToolResultMessage` | Tool execution result                                     |
-| `ToolCall`          | Tool invocation with id, name, arguments                  |
-| `ToolResult`        | Tool execution result with callId, name, result, error    |
+| Type                | Description                                                |
+| ------------------- | ---------------------------------------------------------- |
+| `MessageRole`       | `'system' \| 'user' \| 'assistant' \| 'tool'`              |
+| `Message`           | Base message with role, content, optional name/toolCallId  |
+| `ToolCallMessage`   | Assistant message containing tool calls                    |
+| `ToolResultMessage` | Tool execution result                                      |
+| `ToolCall`          | Tool invocation with id, name, arguments, thoughtSignature |
+| `ToolResult`        | Tool execution result with callId, name, result, error     |
 
 ---
 

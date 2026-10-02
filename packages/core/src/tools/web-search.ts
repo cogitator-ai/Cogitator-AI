@@ -77,9 +77,9 @@ async function searchTavily(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        api_key: apiKey,
         query,
         max_results: maxResults,
         search_depth: searchDepth,
@@ -95,14 +95,14 @@ async function searchTavily(
   }
 
   const data = (await response.json()) as {
-    results: Array<{ title: string; url: string; content: string; score?: number }>;
+    results?: Array<{ title: string; url: string; content: string; score?: number }>;
     answer?: string;
   };
 
   return {
     query,
     provider: 'tavily',
-    results: data.results.map((r) => ({
+    results: (data.results ?? []).map((r) => ({
       title: r.title,
       url: r.url,
       snippet: r.content,
@@ -184,7 +184,7 @@ async function searchSerper(
   }
 
   const data = (await response.json()) as {
-    organic: Array<{ title: string; link: string; snippet: string; position?: number }>;
+    organic?: Array<{ title: string; link: string; snippet: string; position?: number }>;
     answerBox?: { answer?: string; snippet?: string };
   };
 

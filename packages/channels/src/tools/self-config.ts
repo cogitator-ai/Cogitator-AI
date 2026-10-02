@@ -2,7 +2,40 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { tool } from '@cogitator-ai/core';
-import type { Tool } from '@cogitator-ai/types';
+import type { Tool, ToolContext } from '@cogitator-ai/types';
+
+export interface SelfConfigCaller {
+  userId?: string;
+  channelType?: string;
+}
+
+export interface SelfConfigToolsOptions {
+  configPath: string;
+  parseYaml: (s: string) => unknown;
+  stringifyYaml: (o: unknown) => string;
+  validateConfig: (o: unknown) => unknown;
+  onConfigUpdated?: () => void;
+  /**
+   * Decides whether the user behind a tool call may read or change configuration.
+   * When omitted every caller is allowed.
+   */
+  authorize?: (caller: SelfConfigCaller) => boolean;
+}
+
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const UNAUTHORIZED = {
+  success: false,
+  error: 'Not authorized: only the assistant owner can manage configuration.',
+} as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function formatEnvValue(value: string): string {
+  if (/^[A-Za-z0-9_\-.:/@+,=]*$/.test(value)) return value;
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
 
 function deepMerge(
   target: Record<string, unknown>,
@@ -28,20 +61,18 @@ function deepMerge(
   return result;
 }
 
-export function createSelfConfigTools(opts: {
-  configPath: string;
-  parseYaml: (s: string) => unknown;
-  stringifyYaml: (o: unknown) => string;
-  validateConfig: (o: unknown) => unknown;
-  onConfigUpdated?: () => void;
-}): Tool[] {
-  const { configPath, parseYaml, stringifyYaml, validateConfig, onConfigUpdated } = opts;
+export function createSelfConfigTools(opts: SelfConfigToolsOptions): Tool[] {
+  const { configPath, parseYaml, stringifyYaml, validateConfig, onConfigUpdated, authorize } = opts;
+
+  const allowed = (context?: ToolContext): boolean =>
+    authorize ? authorize({ userId: context?.userId, channelType: context?.channelType }) : true;
 
   const configRead = tool({
     name: 'config_read',
     description: 'Read the current assistant configuration (cogitator.yml)',
     parameters: z.object({}),
-    execute: async () => {
+    execute: async (_params, context) => {
+      if (!allowed(context)) return UNAUTHORIZED;
       const raw = readFileSync(configPath, 'utf-8');
       return { config: parseYaml(raw) };
     },
@@ -56,10 +87,11 @@ export function createSelfConfigTools(opts: {
         .record(z.string(), z.unknown())
         .describe('Partial config to deep-merge with current config'),
     }),
-    execute: async ({ updates }) => {
+    execute: async ({ updates }, context) => {
+      if (!allowed(context)) return UNAUTHORIZED;
       const raw = readFileSync(configPath, 'utf-8');
-      const current = parseYaml(raw) as Record<string, unknown>;
-      const merged = deepMerge(current, updates);
+      const parsed = parseYaml(raw);
+      const merged = deepMerge(isRecord(parsed) ? parsed : {}, updates);
 
       try {
         validateConfig(merged);
@@ -104,7 +136,8 @@ export function createSelfConfigTools(opts: {
         .optional()
         .describe('Specific vars to check. If omitted, checks all known vars.'),
     }),
-    execute: async ({ vars }) => {
+    execute: async ({ vars }, context) => {
+      if (!allowed(context)) return UNAUTHORIZED;
       const toCheck = vars?.length ? vars : KNOWN_VARS;
       const result: Record<string, boolean> = {};
       for (const v of toCheck) {
@@ -121,20 +154,35 @@ export function createSelfConfigTools(opts: {
     parameters: z.object({
       vars: z.record(z.string(), z.string()).describe('Key-value pairs to write to .env'),
     }),
-    execute: async ({ vars }) => {
-      const existing = existsSync(envPath) ? readFileSync(envPath, 'utf-8') : '';
-      const map = new Map<string, string>();
-
-      for (const line of existing.split('\n')) {
-        const eq = line.indexOf('=');
-        if (eq > 0) map.set(line.slice(0, eq), line);
-      }
+    execute: async ({ vars }, context) => {
+      if (!allowed(context)) return UNAUTHORIZED;
 
       for (const [key, value] of Object.entries(vars)) {
-        map.set(key, `${key}=${value}`);
+        if (!ENV_KEY_RE.test(key)) {
+          return { success: false, error: `Invalid environment variable name: ${key}` };
+        }
+        if (/[\r\n\0]/.test(value)) {
+          return { success: false, error: `Value for ${key} must be a single line` };
+        }
       }
 
-      writeFileSync(envPath, [...map.values()].join('\n') + '\n');
+      const lines = existsSync(envPath) ? readFileSync(envPath, 'utf-8').split('\n') : [];
+      if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+
+      const pending = new Map(Object.entries(vars));
+      const updated = lines.map((line) => {
+        const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line);
+        if (!match) return line;
+        const value = pending.get(match[1]);
+        if (value === undefined) return line;
+        pending.delete(match[1]);
+        return `${match[1]}=${formatEnvValue(value)}`;
+      });
+      for (const [key, value] of pending) {
+        updated.push(`${key}=${formatEnvValue(value)}`);
+      }
+
+      writeFileSync(envPath, updated.join('\n') + '\n', { mode: 0o600 });
       onConfigUpdated?.();
       return {
         success: true,

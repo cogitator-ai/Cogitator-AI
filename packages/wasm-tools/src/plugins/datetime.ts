@@ -29,39 +29,70 @@ function parseOffset(tz?: string): number {
   const sign = match[1] === '+' ? 1 : -1;
   const hours = parseInt(match[2], 10);
   const minutes = parseInt(match[3], 10);
+  if (hours > 14 || minutes > 59) {
+    throw new Error(`Timezone offset out of range: "${tz}"`);
+  }
 
   return sign * (hours * 60 + minutes) * 60 * 1000;
 }
 
+const ISO_DATE =
+  /^(\d{4})-(\d{2})-(\d{2})(?:[Tt ](\d{2}):(\d{2})(?::(\d{2})(?:[.,](\d{1,9}))?)?)?\s*(Z|z|[+-]\d{2}(?::?\d{2})?)?$/;
+
+function daysInMonth(year: number, monthIndex: number): number {
+  return new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+}
+
+function utcDate(
+  year: number,
+  monthIndex: number,
+  day: number,
+  hour = 0,
+  minute = 0,
+  second = 0,
+  ms = 0
+): Date {
+  const date = new Date(Date.UTC(2000, monthIndex, day, hour, minute, second, ms));
+  date.setUTCFullYear(year);
+  return date;
+}
+
 function parseDate(dateStr: string): Date {
-  const isoMatch =
-    /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{3}))?(?:Z|([+-]\d{2}:?\d{2}))?)?$/.exec(
-      dateStr
-    );
+  const trimmed = dateStr.trim();
+  const iso = ISO_DATE.exec(trimmed);
 
-  if (isoMatch) {
-    const [, year, month, day, hour = '0', min = '0', sec = '0', ms = '0', tz] = isoMatch;
-    const date = new Date(
-      Date.UTC(
-        parseInt(year, 10),
-        parseInt(month, 10) - 1,
-        parseInt(day, 10),
-        parseInt(hour, 10),
-        parseInt(min, 10),
-        parseInt(sec, 10),
-        parseInt(ms, 10)
-      )
-    );
+  if (iso) {
+    const [, y, mo, d, h = '0', mi = '0', se = '0', fraction = '', tz] = iso;
+    const year = parseInt(y, 10);
+    const month = parseInt(mo, 10);
+    const day = parseInt(d, 10);
+    const hour = parseInt(h, 10);
+    const minute = parseInt(mi, 10);
+    const second = parseInt(se, 10);
+    const ms = fraction ? parseInt(fraction.slice(0, 3).padEnd(3, '0'), 10) : 0;
 
-    if (tz) {
-      const offset = parseOffset(tz);
-      date.setTime(date.getTime() - offset);
+    if (month < 1 || month > 12) throw new Error(`Invalid month in date: ${dateStr}`);
+    if (day < 1 || day > daysInMonth(year, month - 1)) {
+      throw new Error(`Invalid day in date: ${dateStr}`);
+    }
+    if (hour > 24 || minute > 59 || second > 59 || (hour === 24 && (minute || second || ms))) {
+      throw new Error(`Invalid time in date: ${dateStr}`);
     }
 
+    const date = utcDate(year, month - 1, day, hour, minute, second, ms);
+    if (tz && tz !== 'Z' && tz !== 'z') {
+      const normalizedTz = tz.length === 3 ? `${tz}:00` : tz;
+      date.setTime(date.getTime() - parseOffset(normalizedTz));
+    }
     return date;
   }
 
-  const timestamp = Date.parse(dateStr);
+  if (/^-?\d{10,13}$/.test(trimmed)) {
+    const value = parseInt(trimmed, 10);
+    return new Date(trimmed.replace('-', '').length <= 10 ? value * 1000 : value);
+  }
+
+  const timestamp = Date.parse(trimmed);
   if (!isNaN(timestamp)) {
     return new Date(timestamp);
   }
@@ -69,17 +100,10 @@ function parseDate(dateStr: string): Date {
   throw new Error(`Cannot parse date: ${dateStr}`);
 }
 
+const FORMAT_TOKENS = /\[([^\]]*)]|YYYY|SSS|MM|DD|HH|mm|ss|Z/g;
+
 function formatDate(date: Date, formatStr: string, offsetMs: number = 0): string {
   const adjusted = new Date(date.getTime() + offsetMs);
-
-  const year = adjusted.getUTCFullYear();
-  const month = adjusted.getUTCMonth() + 1;
-  const day = adjusted.getUTCDate();
-  const hours = adjusted.getUTCHours();
-  const minutes = adjusted.getUTCMinutes();
-  const seconds = adjusted.getUTCSeconds();
-  const ms = adjusted.getUTCMilliseconds();
-
   const pad = (n: number, len: number = 2) => String(n).padStart(len, '0');
 
   const offsetHours = Math.floor(Math.abs(offsetMs) / 3600000);
@@ -87,83 +111,110 @@ function formatDate(date: Date, formatStr: string, offsetMs: number = 0): string
   const offsetSign = offsetMs >= 0 ? '+' : '-';
   const offsetStr = offsetMs === 0 ? 'Z' : `${offsetSign}${pad(offsetHours)}:${pad(offsetMins)}`;
 
-  return formatStr
-    .replace('YYYY', String(year))
-    .replace('MM', pad(month))
-    .replace('DD', pad(day))
-    .replace('HH', pad(hours))
-    .replace('mm', pad(minutes))
-    .replace('ss', pad(seconds))
-    .replace('SSS', pad(ms, 3))
-    .replace('Z', offsetStr);
+  return formatStr.replace(FORMAT_TOKENS, (token: string, literal?: string) => {
+    if (literal !== undefined) return literal;
+    switch (token) {
+      case 'YYYY':
+        return pad(adjusted.getUTCFullYear(), 4);
+      case 'MM':
+        return pad(adjusted.getUTCMonth() + 1);
+      case 'DD':
+        return pad(adjusted.getUTCDate());
+      case 'HH':
+        return pad(adjusted.getUTCHours());
+      case 'mm':
+        return pad(adjusted.getUTCMinutes());
+      case 'ss':
+        return pad(adjusted.getUTCSeconds());
+      case 'SSS':
+        return pad(adjusted.getUTCMilliseconds(), 3);
+      default:
+        return offsetStr;
+    }
+  });
+}
+
+function addMonths(date: Date, months: number): Date {
+  const year = date.getUTCFullYear();
+  const totalMonths = date.getUTCMonth() + months;
+  const targetYear = year + Math.floor(totalMonths / 12);
+  const targetMonth = ((totalMonths % 12) + 12) % 12;
+  const day = Math.min(date.getUTCDate(), daysInMonth(targetYear, targetMonth));
+  return utcDate(
+    targetYear,
+    targetMonth,
+    day,
+    date.getUTCHours(),
+    date.getUTCMinutes(),
+    date.getUTCSeconds(),
+    date.getUTCMilliseconds()
+  );
 }
 
 function addToDate(date: Date, amount: number, unit: string): Date {
-  const result = new Date(date.getTime());
+  if (!Number.isFinite(amount)) {
+    throw new Error('amount must be a finite number');
+  }
+  const isCalendarUnit = unit === 'years' || unit === 'months' || unit === 'days';
+  if (isCalendarUnit && !Number.isInteger(amount)) {
+    throw new Error(`amount must be an integer for unit "${unit}"`);
+  }
 
   switch (unit) {
     case 'years':
-      result.setUTCFullYear(result.getUTCFullYear() + amount);
-      break;
+      return addMonths(date, amount * 12);
     case 'months':
-      result.setUTCMonth(result.getUTCMonth() + amount);
-      break;
-    case 'days':
+      return addMonths(date, amount);
+    case 'days': {
+      const result = new Date(date.getTime());
       result.setUTCDate(result.getUTCDate() + amount);
-      break;
+      return result;
+    }
     case 'hours':
-      result.setUTCHours(result.getUTCHours() + amount);
-      break;
+      return new Date(date.getTime() + amount * 3600000);
     case 'minutes':
-      result.setUTCMinutes(result.getUTCMinutes() + amount);
-      break;
+      return new Date(date.getTime() + amount * 60000);
     case 'seconds':
-      result.setUTCSeconds(result.getUTCSeconds() + amount);
-      break;
+      return new Date(date.getTime() + amount * 1000);
     case 'milliseconds':
-      result.setTime(result.getTime() + amount);
-      break;
+      return new Date(date.getTime() + amount);
     default:
       throw new Error(`Unknown unit: ${unit}`);
   }
+}
 
-  return result;
+function wholeMonthsBetween(start: Date, end: Date): number {
+  let months =
+    (end.getUTCFullYear() - start.getUTCFullYear()) * 12 +
+    (end.getUTCMonth() - start.getUTCMonth());
+  if (addMonths(start, months).getTime() > end.getTime()) {
+    months--;
+  }
+  return months;
 }
 
 function dateDiff(date1: Date, date2: Date, unit: string): number {
   const diffMs = date2.getTime() - date1.getTime();
 
   switch (unit) {
-    case 'years': {
-      let years = date2.getUTCFullYear() - date1.getUTCFullYear();
-      const m1 = date1.getUTCMonth();
-      const m2 = date2.getUTCMonth();
-      if (m2 < m1 || (m2 === m1 && date2.getUTCDate() < date1.getUTCDate())) {
-        years--;
-      }
-      return years;
-    }
+    case 'years':
     case 'months': {
-      let months =
-        (date2.getUTCFullYear() - date1.getUTCFullYear()) * 12 +
-        (date2.getUTCMonth() - date1.getUTCMonth());
-      if (date2.getUTCDate() < date1.getUTCDate()) {
-        months--;
-      }
-      return months;
+      const months =
+        diffMs >= 0 ? wholeMonthsBetween(date1, date2) : -wholeMonthsBetween(date2, date1);
+      return unit === 'years' ? Math.trunc(months / 12) : months;
     }
     case 'days':
-      return Math.floor(diffMs / (24 * 60 * 60 * 1000));
+      return Math.trunc(diffMs / 86400000);
     case 'hours':
-      return Math.floor(diffMs / (60 * 60 * 1000));
+      return Math.trunc(diffMs / 3600000);
     case 'minutes':
-      return Math.floor(diffMs / (60 * 1000));
+      return Math.trunc(diffMs / 60000);
     case 'seconds':
-      return Math.floor(diffMs / 1000);
+      return Math.trunc(diffMs / 1000);
     case 'milliseconds':
       return diffMs;
     default:
-      return diffMs;
+      throw new Error(`Unknown unit: ${unit}`);
   }
 }
 

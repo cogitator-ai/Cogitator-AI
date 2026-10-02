@@ -34,148 +34,82 @@ describe('getReadableText', () => {
     expect(result).toBe('');
   });
 
-  it('evaluate function strips scripts and styles', async () => {
+  class FakeHTMLElement {
+    constructor(
+      public innerText: string,
+      public textContent: string | null = innerText
+    ) {}
+  }
+
+  function withDom<T>(doc: unknown, run: () => T): T {
+    const g = globalThis as Record<string, unknown>;
+    const originalDocument = g.document;
+    const originalHTMLElement = g.HTMLElement;
+    g.document = doc;
+    g.HTMLElement = FakeHTMLElement;
+    try {
+      return run();
+    } finally {
+      g.document = originalDocument;
+      g.HTMLElement = originalHTMLElement;
+    }
+  }
+
+  async function captureEvaluateFn(selector?: string) {
     const page = createMockPage();
+    await getReadableText(page as never, selector);
+    return page.evaluate.mock.calls[0][0] as (sel?: string) => string;
+  }
 
-    await getReadableText(page as never);
+  it('evaluate function reads rendered innerText of the live body without cloning', async () => {
+    const evalFn = await captureEvaluateFn();
+    const body = new FakeHTMLElement('  Visible text  ', 'Visible text plus script source');
+    const doc = { body, querySelector: vi.fn() };
 
-    const evalFn = page.evaluate.mock.calls[0][0] as (sel?: string) => string;
+    const result = withDom(doc, () => evalFn());
 
+    expect(result).toBe('Visible text');
+    expect(doc.querySelector).not.toHaveBeenCalled();
+  });
+
+  it('evaluate function collapses runs of blank lines and trailing spaces', async () => {
+    const evalFn = await captureEvaluateFn();
     const doc = {
-      body: {
-        cloneNode: vi.fn().mockReturnValue({
-          querySelectorAll: vi.fn().mockReturnValue([{ remove: vi.fn() }, { remove: vi.fn() }]),
-          innerText: '  Clean text  ',
-        }),
-      },
+      body: new FakeHTMLElement('Title  \n\n\n\nParagraph\t\nEnd'),
       querySelector: vi.fn(),
     };
 
-    const originalDocument = globalThis.document;
-    Object.defineProperty(globalThis, 'document', {
-      value: doc,
-      writable: true,
-      configurable: true,
-    });
-
-    try {
-      const result = evalFn();
-      expect(result).toBe('Clean text');
-      expect(doc.body.cloneNode).toHaveBeenCalledWith(true);
-    } finally {
-      Object.defineProperty(globalThis, 'document', {
-        value: originalDocument,
-        writable: true,
-        configurable: true,
-      });
-    }
+    expect(withDom(doc, () => evalFn())).toBe('Title\n\nParagraph\nEnd');
   });
 
   it('evaluate function uses selector scope when provided', async () => {
-    const page = createMockPage();
-
-    await getReadableText(page as never, '.article');
-
-    const evalFn = page.evaluate.mock.calls[0][0] as (sel?: string) => string;
-
-    const scopeEl = {
-      cloneNode: vi.fn().mockReturnValue({
-        querySelectorAll: vi.fn().mockReturnValue([]),
-        innerText: 'Scoped content',
-      }),
-    };
-
+    const evalFn = await captureEvaluateFn('.article');
     const doc = {
-      body: { cloneNode: vi.fn() },
-      querySelector: vi.fn().mockReturnValue(scopeEl),
+      body: new FakeHTMLElement('Whole page'),
+      querySelector: vi.fn().mockReturnValue(new FakeHTMLElement('Scoped content')),
     };
 
-    const originalDocument = globalThis.document;
-    Object.defineProperty(globalThis, 'document', {
-      value: doc,
-      writable: true,
-      configurable: true,
-    });
+    const result = withDom(doc, () => evalFn('.article'));
 
-    try {
-      const result = evalFn('.article');
-      expect(doc.querySelector).toHaveBeenCalledWith('.article');
-      expect(result).toBe('Scoped content');
-    } finally {
-      Object.defineProperty(globalThis, 'document', {
-        value: originalDocument,
-        writable: true,
-        configurable: true,
-      });
-    }
+    expect(doc.querySelector).toHaveBeenCalledWith('.article');
+    expect(result).toBe('Scoped content');
   });
 
   it('evaluate function returns empty for missing scope', async () => {
-    const page = createMockPage();
+    const evalFn = await captureEvaluateFn('.missing');
+    const doc = { body: new FakeHTMLElement('x'), querySelector: vi.fn().mockReturnValue(null) };
 
-    await getReadableText(page as never, '.missing');
-
-    const evalFn = page.evaluate.mock.calls[0][0] as (sel?: string) => string;
-
-    const doc = {
-      body: { cloneNode: vi.fn() },
-      querySelector: vi.fn().mockReturnValue(null),
-    };
-
-    const originalDocument = globalThis.document;
-    Object.defineProperty(globalThis, 'document', {
-      value: doc,
-      writable: true,
-      configurable: true,
-    });
-
-    try {
-      const result = evalFn('.missing');
-      expect(result).toBe('');
-    } finally {
-      Object.defineProperty(globalThis, 'document', {
-        value: originalDocument,
-        writable: true,
-        configurable: true,
-      });
-    }
+    expect(withDom(doc, () => evalFn('.missing'))).toBe('');
   });
 
-  it('evaluate function falls back to textContent when innerText is undefined', async () => {
-    const page = createMockPage();
-
-    await getReadableText(page as never);
-
-    const evalFn = page.evaluate.mock.calls[0][0] as (sel?: string) => string;
-
+  it('evaluate function falls back to textContent for non-HTML elements', async () => {
+    const evalFn = await captureEvaluateFn('svg');
     const doc = {
-      body: {
-        cloneNode: vi.fn().mockReturnValue({
-          querySelectorAll: vi.fn().mockReturnValue([]),
-          innerText: undefined,
-          textContent: '  Fallback text  ',
-        }),
-      },
-      querySelector: vi.fn(),
+      body: new FakeHTMLElement('x'),
+      querySelector: vi.fn().mockReturnValue({ textContent: '  Svg label  ' }),
     };
 
-    const originalDocument = globalThis.document;
-    Object.defineProperty(globalThis, 'document', {
-      value: doc,
-      writable: true,
-      configurable: true,
-    });
-
-    try {
-      const result = evalFn();
-      expect(result).toBe('Fallback text');
-    } finally {
-      Object.defineProperty(globalThis, 'document', {
-        value: originalDocument,
-        writable: true,
-        configurable: true,
-      });
-    }
+    expect(withDom(doc, () => evalFn('svg'))).toBe('Svg label');
   });
 });
 
@@ -240,6 +174,57 @@ describe('getAccessibilityTree', () => {
     expect(node).toEqual({ role: 'textbox', name: 'Email' });
     expect(node).not.toHaveProperty('value');
     expect(node).not.toHaveProperty('focused');
+  });
+
+  it('keeps inline text of nodes such as paragraphs and list items', async () => {
+    const aria = [
+      '- document:',
+      '  - paragraph: Hello world para',
+      '  - list:',
+      '    - listitem: Item one',
+      '    - listitem:',
+      '      - text: plain text',
+    ].join('\n');
+    const result = await getAccessibilityTree(createMockPage('', aria) as never);
+
+    expect(result!.children![0]).toEqual({ role: 'paragraph', name: 'Hello world para' });
+    const list = result!.children![1];
+    expect(list.children![0]).toEqual({ role: 'listitem', name: 'Item one' });
+    expect(list.children![1].children![0]).toEqual({ role: 'text', name: 'plain text' });
+  });
+
+  it('parses YAML-quoted entries and escaped names', async () => {
+    const aria = [
+      '- document:',
+      `  - 'button "Sub: mit"'`,
+      '  - link "Link \\"q\\"":',
+      '    - /url: /x',
+      `  - paragraph: "quoted: value"`,
+      `  - 'heading "It''s here" [level=2]'`,
+    ].join('\n');
+    const result = await getAccessibilityTree(createMockPage('', aria) as never);
+
+    expect(result!.children).toEqual([
+      { role: 'button', name: 'Sub: mit' },
+      { role: 'link', name: 'Link "q"' },
+      { role: 'paragraph', name: 'quoted: value' },
+      { role: 'heading', name: "It's here" },
+    ]);
+  });
+
+  it('skips property lines and keeps attributes out of names', async () => {
+    const aria = [
+      '- document:',
+      '  - textbox "Email addr":',
+      '    - /placeholder: Email',
+      '  - checkbox "Agree" [checked] [disabled]',
+    ].join('\n');
+    const result = await getAccessibilityTree(createMockPage('', aria) as never);
+
+    expect(result!.children).toEqual([
+      { role: 'textbox', name: 'Email addr' },
+      { role: 'checkbox', name: 'Agree' },
+    ]);
   });
 
   it('handles nodes without names', async () => {

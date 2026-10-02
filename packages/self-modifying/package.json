@@ -17,7 +17,7 @@
     "src"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && tsx ../../scripts/fix-esm-imports.ts .",
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -28,15 +28,6 @@
     "@cogitator-ai/types": "workspace:*",
     "nanoid": "^5.0.4",
     "zod": "^4.3.6"
-  },
-  "peerDependencies": {
-    "@cogitator-ai/core": "workspace:*",
-    "@cogitator-ai/neuro-symbolic": "workspace:*"
-  },
-  "peerDependenciesMeta": {
-    "@cogitator-ai/neuro-symbolic": {
-      "optional": true
-    }
   },
   "devDependencies": {
     "@types/node": "^25.0.10",

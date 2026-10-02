@@ -211,3 +211,53 @@ describe('defineConfig', () => {
     ).toThrow('Invalid configuration');
   });
 });
+
+describe('loadConfig hardening', () => {
+  const path = 'test-hardening-config.yaml';
+  const saved = { ...process.env };
+
+  beforeEach(() => {
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('COGITATOR_') || key.startsWith('OLLAMA_')) delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    if (existsSync(path)) unlinkSync(path);
+    process.env = { ...saved };
+  });
+
+  it('keeps a YAML Ollama baseUrl when only OLLAMA_API_KEY is in the environment', () => {
+    writeFileSync(path, 'llm:\n  providers:\n    ollama:\n      baseUrl: http://gpu-box:11434\n');
+    process.env.OLLAMA_API_KEY = 'key';
+    expect(loadConfig({ configPath: path }).llm?.providers?.ollama).toEqual({
+      baseUrl: 'http://gpu-box:11434',
+      apiKey: 'key',
+    });
+  });
+
+  it('defaults the Ollama baseUrl to Ollama Cloud for key-only configs and localhost otherwise', () => {
+    process.env.OLLAMA_API_KEY = 'key';
+    expect(loadConfig({ skipYaml: true }).llm?.providers?.ollama?.baseUrl).toBe(
+      'https://ollama.com'
+    );
+
+    delete process.env.OLLAMA_API_KEY;
+    writeFileSync(path, 'llm:\n  providers:\n    ollama: {}\n');
+    expect(loadConfig({ configPath: path, skipEnv: true }).llm?.providers?.ollama?.baseUrl).toBe(
+      'http://localhost:11434'
+    );
+  });
+
+  it('formats validation errors with field paths', () => {
+    expect(() => defineConfig({ deploy: { port: 70000 } })).toThrow(/deploy\.port/);
+    expect(() => defineConfig({ deploy: { instances: 1.5 } })).toThrow(/Invalid configuration/);
+  });
+
+  it('ignores prototype-polluting keys during merge', () => {
+    writeFileSync(path, '__proto__:\n  polluted: true\nllm:\n  defaultModel: x\n');
+    const config = loadConfig({ configPath: path, skipEnv: true });
+    expect(config.llm?.defaultModel).toBe('x');
+    expect(Object.prototype).not.toHaveProperty('polluted');
+  });
+});

@@ -49,6 +49,7 @@ app.listen(3000);
 ```
 
 This exposes:
+
 - `GET /.well-known/agent.json` -- Agent Card discovery
 - `POST /a2a` -- JSON-RPC endpoint for messaging, streaming, and task management
 
@@ -106,7 +107,7 @@ const client = new A2AClient('https://remote-agent.example.com');
 
 const card = await client.agentCard();
 console.log(`Agent: ${card.name}`);
-console.log(`Skills: ${card.skills.map(s => s.name).join(', ')}`);
+console.log(`Skills: ${card.skills.map((s) => s.name).join(', ')}`);
 ```
 
 ### Sending Messages
@@ -141,10 +142,29 @@ for await (const event of client.sendMessageStream({
 }
 ```
 
+Artifact events arrive before the final status, and the stream ends on a terminal state or `input-required`. The client `timeout` is an idle timeout between events; pass `{ signal }` as the third argument to cancel (the server aborts the agent run when the client disconnects).
+
+### Send Configuration
+
+| Option                   | Effect                                                                  |
+| ------------------------ | ----------------------------------------------------------------------- |
+| `blocking: false`        | Return the task immediately in `working` state                          |
+| `historyLength`          | Return only the last N history messages (`0` = none); also on `getTask` |
+| `acceptedOutputModes`    | Only return artifacts with these MIME types                             |
+| `timeout`                | Maximum agent run time in ms                                            |
+| `pushNotificationConfig` | Register a webhook before the task starts executing                     |
+
+```typescript
+const task = await client.sendMessage(
+  { role: 'user', parts: [{ type: 'text', text: 'Long running analysis' }] },
+  { blocking: false, pushNotificationConfig: { webhookUrl: 'https://my-app.com/hooks/a2a' } }
+);
+```
+
 ### Task Management
 
 ```typescript
-const task = await client.getTask('task_abc123');
+const task = await client.getTask('task_abc123', 5);
 
 await client.cancelTask('task_abc123');
 ```
@@ -174,7 +194,7 @@ const result = await cogitator.run(orchestrator, {
 });
 ```
 
-The orchestrator agent calls the remote researcher via A2A protocol transparently -- it looks like a regular tool call.
+The orchestrator agent calls the remote researcher via A2A protocol transparently -- it looks like a regular tool call. The tool result is `{ output, success, error?, taskId?, state? }`; when the remote agent asks a question (`state: 'input-required'`), `output` holds the question and `taskId` lets you continue the task.
 
 ## Multi-Turn Conversations
 
@@ -192,17 +212,14 @@ const task = await client.sendMessage({
   parts: [{ type: 'text', text: 'Research quantum computing' }],
 });
 
-const followUp = await client.continueTask(
-  task.id,
-  'Now compare it with classical computing'
-);
+const followUp = await client.continueTask(task.id, 'Now compare it with classical computing');
 
 console.log(task.contextId === followUp.contextId); // true
 ```
 
 ### Server-Side
 
-On the server, multi-turn is handled automatically. When a message includes a `taskId`, the server appends the new message to the existing task history and re-runs the agent with the full conversation context. No additional configuration needed.
+On the server, multi-turn is handled automatically. When a message includes a `taskId`, the server appends the new message to the existing task history and re-runs the agent with the task transcript as context, so follow-ups work even without a memory adapter. Runs are threaded by `contextId`, artifacts accumulate across turns, and a task that is still running cannot be continued concurrently.
 
 ## Listing Tasks
 
@@ -226,12 +243,12 @@ const completedTasks = await client.listTasks({
 
 Tasks are returned sorted by timestamp (newest first). The `TaskFilter` supports:
 
-| Field       | Type        | Description                        |
-|-------------|-------------|------------------------------------|
-| `contextId` | `string`    | Filter by conversation context     |
-| `state`     | `TaskState` | Filter by task state               |
-| `limit`     | `number`    | Max number of tasks to return      |
-| `offset`    | `number`    | Number of tasks to skip            |
+| Field       | Type        | Description                    |
+| ----------- | ----------- | ------------------------------ |
+| `contextId` | `string`    | Filter by conversation context |
+| `state`     | `TaskState` | Filter by task state           |
+| `limit`     | `number`    | Max number of tasks to return  |
+| `offset`    | `number`    | Number of tasks to skip        |
 
 ## Token Streaming
 
@@ -258,11 +275,11 @@ for await (const event of client.sendMessageStream({
 
 The `A2AStreamEvent` union type includes three event types:
 
-| Event Type        | Description                              |
-|-------------------|------------------------------------------|
-| `status-update`   | Task state changed (working, completed)  |
-| `artifact-update` | New artifact produced by the agent       |
-| `token`           | Individual token from LLM output         |
+| Event Type        | Description                             |
+| ----------------- | --------------------------------------- |
+| `status-update`   | Task state changed (working, completed) |
+| `artifact-update` | New artifact produced by the agent      |
+| `token`           | Individual token from LLM output        |
 
 The server emits token events via the `onToken` callback passed to `Cogitator.run()`.
 
@@ -291,11 +308,11 @@ const a2aServer = new A2AServer({
 
 Configuration options:
 
-| Option      | Type             | Default       | Description                            |
-|-------------|------------------|---------------|----------------------------------------|
-| `client`    | `RedisClientLike`| required      | Redis client instance                  |
-| `keyPrefix` | `string`         | `a2a:task:`   | Key prefix for task storage            |
-| `ttl`       | `number`         | none          | TTL in seconds (uses `SETEX` if set)   |
+| Option      | Type              | Default     | Description                          |
+| ----------- | ----------------- | ----------- | ------------------------------------ |
+| `client`    | `RedisClientLike` | required    | Redis client instance                |
+| `keyPrefix` | `string`          | `a2a:task:` | Key prefix for task storage          |
+| `ttl`       | `number`          | none        | TTL in seconds (uses `SETEX` if set) |
 
 ## Push Notifications
 
@@ -344,7 +361,9 @@ const a2aServer = new A2AServer({
 });
 ```
 
-The server automatically sends `A2AStreamEvent` payloads to registered webhooks on status and artifact updates. Authentication schemes supported: `bearer`, `apiKey`, `basic`, `oauth2`.
+The server automatically sends `A2AStreamEvent` payloads to registered webhooks on status and artifact updates. Authentication schemes supported: `bearer` (`token`), `apiKey` (`key`, optional `headerName`), `basic` (`username`, `password`), `oauth2` (`accessToken`). Configs can only be created for existing tasks.
+
+Unless `allowPrivateUrls: true`, delivery refuses loopback, private, link-local, CGNAT, multicast and IPv4-mapped IPv6 targets, validates the address the socket actually connects to (no DNS rebinding) and does not follow redirects.
 
 ## Agent Card Signing
 
@@ -428,6 +447,8 @@ The Agent Card advertises this capability via `capabilities.extendedAgentCard: t
 
 ## Framework Adapters
 
+All adapters stream only for `message/stream` (an `Accept: text/event-stream` header alone does not switch `message/send` to SSE) and answer JSON-RPC notifications with HTTP `204` and no body. Structurally invalid JSON-RPC requests get `-32600 Invalid Request`; only unparseable JSON gets `-32700 Parse error`.
+
 ### Express
 
 ```typescript
@@ -439,7 +460,7 @@ app.use(a2aExpress(a2aServer));
 
 ```typescript
 import { a2aHono } from '@cogitator-ai/a2a/hono';
-app.route('/a2a', a2aHono(a2aServer));
+app.route('/', a2aHono(a2aServer));
 ```
 
 ### Fastify
@@ -492,6 +513,8 @@ const a2aServer = new A2AServer({
 });
 ```
 
+Every adapter extracts the credential (`Authorization: Bearer ...`, or the `x-api-key` header / `headerName` for `type: 'apiKey'`) and the public Agent Card advertises the scheme in `securitySchemes`.
+
 Clients include credentials via headers:
 
 ```typescript
@@ -504,26 +527,26 @@ const client = new A2AClient('https://remote-agent.example.com', {
 
 ## A2A Protocol Methods
 
-| Method | Description |
-|---|---|
-| `message/send` | Send a message and get a completed task |
-| `message/stream` | Send a message with SSE streaming (incl. token events) |
-| `tasks/get` | Retrieve a task by ID |
-| `tasks/cancel` | Cancel a running task |
-| `tasks/list` | List tasks with filtering and pagination |
-| `tasks/pushNotification/create` | Register a webhook for task events |
-| `tasks/pushNotification/get` | Get a push notification config |
-| `tasks/pushNotification/list` | List push notification configs for a task |
-| `tasks/pushNotification/delete` | Remove a push notification config |
-| `agent/extendedCard` | Fetch extended Agent Card (authenticated) |
+| Method                          | Description                                                     |
+| ------------------------------- | --------------------------------------------------------------- |
+| `message/send`                  | Send a message (blocking, or background with `blocking: false`) |
+| `message/stream`                | Send a message with SSE streaming (incl. token events)          |
+| `tasks/get`                     | Retrieve a task by ID                                           |
+| `tasks/cancel`                  | Cancel a running task                                           |
+| `tasks/list`                    | List tasks with filtering and pagination                        |
+| `tasks/pushNotification/create` | Register a webhook for task events                              |
+| `tasks/pushNotification/get`    | Get a push notification config                                  |
+| `tasks/pushNotification/list`   | List push notification configs for a task                       |
+| `tasks/pushNotification/delete` | Remove a push notification config                               |
+| `agent/extendedCard`            | Fetch extended Agent Card (authenticated)                       |
 
 ## Task States
 
-| State | Description |
-|---|---|
-| `working` | Agent is processing |
-| `completed` | Task finished successfully |
-| `failed` | Task encountered an error |
-| `input-required` | Agent needs more input |
-| `canceled` | Task was canceled |
-| `rejected` | Server rejected the task |
+| State            | Description                |
+| ---------------- | -------------------------- |
+| `working`        | Agent is processing        |
+| `completed`      | Task finished successfully |
+| `failed`         | Task encountered an error  |
+| `input-required` | Agent needs more input     |
+| `canceled`       | Task was canceled          |
+| `rejected`       | Server rejected the task   |

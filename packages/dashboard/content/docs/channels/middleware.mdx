@@ -18,7 +18,7 @@ interface GatewayMiddleware {
 }
 ```
 
-Middleware follows an Express-style chain: call `next()` to pass the message forward, or skip it to block the message.
+Middleware follows an Express-style chain: call `next()` to pass the message forward, or skip it to block the message. The whole chain completes before the agent runs, so code after `await next()` executes before the LLM call (use [lifecycle hooks](/docs/channels/gateway) such as `agent:after_run` to react to answers).
 
 ## Built-in Middleware
 
@@ -43,13 +43,55 @@ const gateway = new Gateway({
 
 **Flow:**
 1. Unknown user sends a message
-2. Bot responds with a pairing code: `"Pair code: A7X92K"`
-3. Owner types `/pair A7X92K` in their chat
+2. Bot responds: ``Hi! Ask the bot owner to approve you with: `/pair A7X92K` ``
+3. Owner types `/pair A7X92K` (or `/pair@your_bot A7X92K` in groups)
 4. User is now approved and can chat normally
+
+Only owners can approve codes — approved users cannot pair others. Codes use an unambiguous alphabet (no `0/O/1/I`) and expired codes are pruned automatically. For persistent approvals use `DmPolicyMiddleware` below.
+
+### DM Policy
+
+Controls who may talk to the bot in direct messages and groups, with approvals persisted to disk.
+
+```typescript
+import { DmPolicyMiddleware } from '@cogitator-ai/channels';
+
+new DmPolicyMiddleware({
+  mode: 'pairing', // 'open' | 'allowlist' | 'pairing' | 'disabled'
+  ownerIds: { telegram: '123456789' },
+  allowlist: ['telegram:42', '777'], // channel-scoped or bare user ids
+  storePath: '~/.cogitator/dm-allowlist.json',
+  groupPolicy: 'allowlist', // 'open' | 'allowlist' | 'disabled'
+  groupAllowlist: ['-1001234567890'],
+  onPairingRequest: (userId, code) => notifyOwner(userId, code),
+  onStoreError: (err) => log.error(err),
+});
+```
+
+Owners always pass. The allowlist file is written atomically; write failures go to `onStoreError` (default: `console.error`).
+
+### Auto-Extract
+
+Extracts entities and relations from every user message into a knowledge graph in the background.
+
+```typescript
+import { autoExtract } from '@cogitator-ai/channels';
+
+autoExtract({
+  extractor, // { extract(text) => { entities, relations } }
+  graphAdapter, // GraphAdapter from @cogitator-ai/memory
+  agentId: 'jarvis',
+  coreFacts, // optional { set(key, value) }
+  coreFactPatterns: { name: /my name is (\w+)/i },
+  onError: (err) => log.warn(err),
+});
+```
+
+Unknown entity/relation types are stored as `custom` (the original type is kept in `properties.originalType` / the edge `label`). Existing edges are not duplicated — their confidence is raised instead.
 
 ### Rate Limiting
 
-Per-user sliding window rate limiter.
+Per-user sliding window rate limiter. The limit notice is sent once per window, not for every blocked message; idle buckets are pruned.
 
 ```typescript
 import { rateLimit } from '@cogitator-ai/channels';

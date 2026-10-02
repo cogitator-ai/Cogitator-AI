@@ -12,7 +12,7 @@ The learning system captures execution traces, evaluates agent performance again
 The `AgentOptimizer` is the central class that coordinates trace capture, demo selection, and instruction optimization:
 
 ```typescript
-import { AgentOptimizer } from '@cogitator-ai/core/learning';
+import { AgentOptimizer } from '@cogitator-ai/core';
 
 const optimizer = new AgentOptimizer({
   llm: backend,
@@ -89,7 +89,7 @@ Only traces scoring above `minScoreForDemo` (default 0.8) are promoted to demos.
 Test instruction changes in production with statistical rigor using the `ABTestingFramework`:
 
 ```typescript
-import { ABTestingFramework } from '@cogitator-ai/core/learning';
+import { ABTestingFramework } from '@cogitator-ai/core';
 
 const abTesting = new ABTestingFramework({
   store: abTestStore,
@@ -132,7 +132,7 @@ The framework uses Welch's t-test for statistical significance with configurable
 Track prompt performance in real-time and detect degradation with the `PromptMonitor`:
 
 ```typescript
-import { PromptMonitor } from '@cogitator-ai/core/learning';
+import { PromptMonitor } from '@cogitator-ai/core';
 
 const monitor = new PromptMonitor({
   windowSize: 60 * 60 * 1000, // 1 hour window
@@ -164,7 +164,7 @@ The monitor tracks four alert types: `score_drop`, `latency_spike`, `error_rate_
 The `AutoOptimizer` ties everything together into a fully automated improvement loop:
 
 ```typescript
-import { AutoOptimizer } from '@cogitator-ai/core/learning';
+import { AutoOptimizer } from '@cogitator-ai/core';
 
 const autoOptimizer = new AutoOptimizer({
   enabled: true,

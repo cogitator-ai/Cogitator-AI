@@ -15,11 +15,11 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && tsx ../../scripts/fix-esm-imports.ts .",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "bash scripts/test.sh",
+    "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {

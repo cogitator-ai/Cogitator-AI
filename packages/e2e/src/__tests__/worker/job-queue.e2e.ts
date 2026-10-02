@@ -1,11 +1,22 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import {
   MetricsCollector,
   DurationHistogram,
   formatPrometheusMetrics,
   JobQueue,
+  WorkerPool,
+  DistributedSwarmWorker,
+  type JobResult,
   type QueueMetrics,
 } from '@cogitator-ai/worker';
+import { Swarm } from '@cogitator-ai/swarms';
+import {
+  createTestAgent,
+  createTestCogitator,
+  createTestTools,
+  getTestModel,
+  isOllamaRunning,
+} from '../../helpers/setup';
 
 const describeRedis = process.env.TEST_REDIS === 'true' ? describe : describe.skip;
 
@@ -211,5 +222,212 @@ describeRedis('Worker: JobQueue', () => {
     expect(typeof metrics.failed).toBe('number');
     expect(typeof metrics.delayed).toBe('number');
     expect(typeof metrics.depth).toBe('number');
+  });
+});
+
+const describeRedisOllama =
+  process.env.TEST_REDIS === 'true' && process.env.TEST_OLLAMA === 'true'
+    ? describe
+    : describe.skip;
+
+describeRedisOllama('Worker: job processing with Ollama', () => {
+  const model = `ollama/${getTestModel()}`;
+  const queueName = `e2e-processing-${Date.now()}`;
+  const redis = { host: 'localhost', port: 6379 };
+  let queue: JobQueue;
+  let pool: WorkerPool;
+  const completed = new Map<string, JobResult>();
+  const failed = new Map<string, Error>();
+
+  const waitForJob = async (jobId: string, timeoutMs = 90_000): Promise<JobResult> => {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const result = completed.get(jobId);
+      if (result) return result;
+      const error = failed.get(jobId);
+      if (error) throw error;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error(`Job ${jobId} did not finish within ${timeoutMs}ms`);
+  };
+
+  beforeAll(async () => {
+    if (!(await isOllamaRunning())) throw new Error('Ollama not running');
+    queue = new JobQueue({ name: queueName, redis, defaultJobOptions: { attempts: 1 } });
+    pool = new WorkerPool(
+      {
+        name: queueName,
+        redis,
+        concurrency: 2,
+        cogitator: createTestCogitator(),
+        tools: [createTestTools().multiply],
+      },
+      {
+        onJobCompleted: (jobId, result) => completed.set(jobId, result),
+        onJobFailed: (jobId, error) => failed.set(jobId, error),
+      }
+    );
+    await pool.start();
+  });
+
+  afterAll(async () => {
+    await pool?.stop(5_000);
+    if (queue) {
+      try {
+        await queue.getQueue().obliterate({ force: true });
+      } catch {}
+      await queue.close();
+    }
+  });
+
+  it('runs an agent job with tools registered on the worker', { timeout: 120_000 }, async () => {
+    const job = await queue.addAgentJob(
+      {
+        name: 'calculator',
+        instructions: 'Use the multiply tool to compute products. Report only the number.',
+        model,
+        provider: 'ollama',
+        maxIterations: 3,
+        tools: [createTestTools().multiply.toJSON()],
+      },
+      'What is 6 times 7?'
+    );
+
+    const result = await waitForJob(job.id!);
+    expect(result.type).toBe('agent');
+    if (result.type !== 'agent') return;
+    expect(result.output.length).toBeGreaterThan(0);
+    expect(result.tokenUsage?.total ?? 0).toBeGreaterThan(0);
+  });
+
+  it('fails jobs that need tools the worker does not provide', { timeout: 60_000 }, async () => {
+    const job = await queue.addAgentJob(
+      {
+        name: 'deployer',
+        instructions: 'Deploy things.',
+        model,
+        provider: 'ollama',
+        tools: [
+          {
+            name: 'deploy',
+            description: 'Deploy the app',
+            parameters: { type: 'object', properties: {} },
+          },
+        ],
+      },
+      'Deploy now'
+    );
+
+    await expect(waitForJob(job.id!)).rejects.toThrow(
+      'Tools not registered on this worker: deploy'
+    );
+  });
+
+  it('runs a workflow job through agent and transform nodes', { timeout: 120_000 }, async () => {
+    const job = await queue.addWorkflowJob(
+      {
+        id: 'wf-e2e',
+        name: 'shout',
+        nodes: [
+          {
+            id: 'reply',
+            type: 'agent',
+            config: {
+              agentConfig: {
+                name: 'echo',
+                instructions: 'Reply with one short sentence.',
+                model,
+                provider: 'ollama',
+                tools: [],
+              },
+              prompt: 'Say hello to {{name}}',
+              outputKey: 'greeting',
+            },
+          },
+          {
+            id: 'loud',
+            type: 'transform',
+            config: { transform: 'uppercase', inputKey: 'greeting' },
+          },
+        ],
+        edges: [{ from: 'reply', to: 'loud' }],
+      },
+      { name: 'Ada' }
+    );
+
+    const result = await waitForJob(job.id!);
+    expect(result.type).toBe('workflow');
+    if (result.type !== 'workflow') return;
+    const greeting = String(result.output.greeting);
+    expect(greeting.length).toBeGreaterThan(0);
+    expect(result.output.loud).toBe(greeting.toUpperCase());
+  });
+
+  it('runs a sequential swarm job', { timeout: 120_000 }, async () => {
+    const job = await queue.addSwarmJob(
+      {
+        topology: 'sequential',
+        agents: [
+          { name: 'first', instructions: 'Reply briefly.', model, provider: 'ollama', tools: [] },
+          { name: 'second', instructions: 'Reply briefly.', model, provider: 'ollama', tools: [] },
+        ],
+      },
+      'Hello'
+    );
+
+    const result = await waitForJob(job.id!);
+    expect(result.type).toBe('swarm');
+    if (result.type !== 'swarm') return;
+    expect(result.agentOutputs.map((o) => o.agent)).toEqual(['first', 'second']);
+  });
+});
+
+describeRedisOllama('Worker: distributed swarm execution', () => {
+  it('executes swarm agent turns on a DistributedSwarmWorker', { timeout: 180_000 }, async () => {
+    const keyPrefix = `e2e-swarm-${Date.now()}`;
+    const worker = new DistributedSwarmWorker({
+      redis: { host: 'localhost', port: 6379 },
+      keyPrefix,
+      concurrency: 2,
+      cogitator: createTestCogitator(),
+    });
+    await worker.start();
+
+    const swarm = new Swarm(createTestCogitator(), {
+      name: 'distributed-e2e',
+      strategy: 'pipeline',
+      pipeline: {
+        stages: [
+          {
+            name: 'draft',
+            agent: createTestAgent({ name: 'drafter', instructions: 'Reply briefly.' }),
+          },
+          {
+            name: 'review',
+            agent: createTestAgent({ name: 'reviewer', instructions: 'Reply briefly.' }),
+          },
+        ],
+      },
+      distributed: {
+        enabled: true,
+        timeout: 120_000,
+        redis: { host: 'localhost', port: 6379, keyPrefix },
+      },
+    });
+
+    const events: string[] = [];
+    swarm.on('agent:complete', (event) => events.push(event.agentName ?? ''));
+
+    try {
+      const result = await swarm.run({ input: 'Write one sentence about Redis.' });
+
+      expect(result.agentResults.size).toBe(2);
+      expect(String(result.output).length).toBeGreaterThan(0);
+      expect(events).toEqual(['drafter', 'reviewer']);
+      expect(worker.getActiveJobCount()).toBe(0);
+    } finally {
+      await swarm.close();
+      await worker.stop();
+    }
   });
 });

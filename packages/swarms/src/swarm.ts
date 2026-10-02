@@ -11,49 +11,82 @@ import type {
   SwarmEventEmitter,
   SwarmEventType,
   SwarmEventHandler,
+  SwarmResourceUsage,
   MessageBus,
   Blackboard,
   IStrategy,
   AssessorConfig,
   AssessmentResult,
   SwarmCoordinatorInterface,
+  RunResult,
 } from '@cogitator-ai/types';
-import { SwarmCoordinator } from './coordinator.js';
+import { SwarmCoordinator, type SwarmRunScope } from './coordinator.js';
 import { createStrategy } from './strategies/index.js';
 import { createAssessor } from './assessor/index.js';
 import { DistributedSwarmCoordinator } from './distributed/index.js';
+import { isReadTrackingMessageBus } from './communication/message-bus.js';
+
+const VALID_STRATEGIES: readonly SwarmConfig['strategy'][] = [
+  'hierarchical',
+  'round-robin',
+  'consensus',
+  'auction',
+  'pipeline',
+  'debate',
+  'negotiation',
+];
+
+/**
+ * Coordinator contract the Swarm facade relies on, shared by the local and distributed engines.
+ */
+interface ManagedCoordinator extends SwarmCoordinatorInterface {
+  getSwarmId(): string;
+  beginRun(scope: SwarmRunScope): void;
+  endRun(): void;
+  pause(): void;
+  resume(): void;
+  abort(): void;
+  isPaused(): boolean;
+  isAborted(): boolean;
+  reset(): void | Promise<void>;
+  getResourceUsage(): SwarmResourceUsage;
+  setSaveHistory(value: boolean): void;
+}
+
+interface EventSubscription {
+  event: SwarmEventType | '*';
+  handler: SwarmEventHandler;
+  once: boolean;
+  unsubscribe: () => void;
+}
+
+export class SwarmTimeoutError extends Error {
+  constructor(
+    readonly swarmName: string,
+    readonly timeoutMs: number
+  ) {
+    super(`Swarm '${swarmName}' timed out after ${timeoutMs}ms`);
+    this.name = 'SwarmTimeoutError';
+  }
+}
 
 export class Swarm {
   private config: SwarmConfig;
   private cogitator: Cogitator;
-  private coordinator: SwarmCoordinatorInterface;
-  private localCoordinator?: SwarmCoordinator;
-  private distributedCoordinator?: DistributedSwarmCoordinator;
+  private coordinator: ManagedCoordinator;
   private strategy: IStrategy;
   private assessorConfig?: AssessorConfig;
   private assessed = false;
   private lastAssessment?: AssessmentResult;
-  private isDistributed: boolean;
-  private subscriptions: { event: SwarmEventType | '*'; handler: SwarmEventHandler }[] = [];
+  private running = false;
+  private subscriptions = new Set<EventSubscription>();
 
   constructor(cogitator: Cogitator, config: SwarmConfig, assessorConfig?: AssessorConfig) {
     this.config = this.validateConfig(config);
     this.cogitator = cogitator;
     this.assessorConfig = assessorConfig;
-    this.isDistributed = config.distributed?.enabled ?? false;
-
-    if (this.isDistributed) {
-      this.distributedCoordinator = new DistributedSwarmCoordinator({
-        config,
-        distributed: config.distributed!,
-      });
-      this.coordinator = this.distributedCoordinator;
-    } else {
-      this.localCoordinator = new SwarmCoordinator(cogitator, config);
-      this.coordinator = this.localCoordinator;
-    }
-
-    this.strategy = createStrategy(this.coordinator, config);
+    this.coordinator = this.createCoordinator(this.config);
+    this.strategy = createStrategy(this.coordinator, this.config);
   }
 
   /**
@@ -67,13 +100,7 @@ export class Swarm {
    * Swarm ID
    */
   get id(): string {
-    if (this.localCoordinator) {
-      return this.localCoordinator.getSwarmId();
-    }
-    if (this.distributedCoordinator) {
-      return this.distributedCoordinator.getSwarmId();
-    }
-    return 'unknown';
+    return this.coordinator.getSwarmId();
   }
 
   /**
@@ -81,6 +108,13 @@ export class Swarm {
    */
   get strategyType(): string {
     return this.config.strategy;
+  }
+
+  /**
+   * Whether this swarm coordinates agents through Redis-backed workers
+   */
+  get isDistributed(): boolean {
+    return this.config.distributed?.enabled ?? false;
   }
 
   /**
@@ -108,26 +142,47 @@ export class Swarm {
    * Run the swarm with the configured strategy
    */
   async run(options: SwarmRunOptions): Promise<StrategyResult> {
-    if (this.assessorConfig && !this.assessed) {
-      await this.runAssessment(options.input);
+    if (this.running) {
+      throw new Error(
+        `Swarm '${this.config.name}' is already running; create a separate Swarm instance for concurrent runs`
+      );
     }
+    this.running = true;
 
-    if (this.isDistributed && this.distributedCoordinator) {
-      await this.distributedCoordinator.initialize();
-    }
-
-    if (options.saveHistory !== undefined && this.localCoordinator) {
-      this.localCoordinator.setSaveHistory(options.saveHistory);
-    }
-
-    this.coordinator.events.emit('swarm:start', {
-      swarmId: this.id,
-      strategy: this.config.strategy,
-      input: options.input.slice(0, 100),
-    });
+    const runController = new AbortController();
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    let detachCallbacks: (() => void) | undefined;
 
     try {
-      const result = await this.strategy.execute(options);
+      if (this.assessorConfig && !this.assessed) {
+        await this.runAssessment(options.input);
+      }
+
+      if (this.coordinator instanceof DistributedSwarmCoordinator) {
+        await this.coordinator.initialize();
+      }
+
+      if (options.saveHistory !== undefined) {
+        this.coordinator.setSaveHistory(options.saveHistory);
+      }
+
+      if (options.timeout !== undefined && options.timeout > 0) {
+        const timeoutMs = options.timeout;
+        timeoutHandle = setTimeout(() => {
+          runController.abort(new SwarmTimeoutError(this.config.name, timeoutMs));
+        }, timeoutMs);
+      }
+
+      this.coordinator.beginRun({ threadId: options.threadId, signal: runController.signal });
+      detachCallbacks = this.attachRunCallbacks(options);
+
+      this.coordinator.events.emit('swarm:start', {
+        swarmId: this.id,
+        strategy: this.config.strategy,
+        input: options.input.slice(0, 100),
+      });
+
+      const result = await raceWithAbort(this.strategy.execute(options), runController.signal);
 
       this.coordinator.events.emit('swarm:complete', {
         swarmId: this.id,
@@ -137,12 +192,19 @@ export class Swarm {
 
       return result;
     } catch (error) {
+      const failure = runController.signal.aborted ? abortReason(runController.signal) : error;
+
       this.coordinator.events.emit('swarm:error', {
         swarmId: this.id,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: failure instanceof Error ? failure.message : String(failure),
       });
 
-      throw error;
+      throw failure;
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      detachCallbacks?.();
+      this.coordinator.endRun();
+      this.running = false;
     }
   }
 
@@ -166,7 +228,7 @@ export class Swarm {
   }
 
   private async runAssessment(task: string): Promise<void> {
-    const assessor = createAssessor(this.assessorConfig!);
+    const assessor = createAssessor(this.assessorConfig);
     this.lastAssessment = await assessor.analyze(task, this.config);
 
     this.coordinator.events.emit('assessor:complete', {
@@ -181,23 +243,17 @@ export class Swarm {
 
     this.config = assessor.assignModels(this.config, this.lastAssessment);
 
-    if (this.isDistributed) {
-      if (this.distributedCoordinator) {
-        await this.distributedCoordinator.close();
-      }
-      this.distributedCoordinator = new DistributedSwarmCoordinator({
-        config: this.config,
-        distributed: this.config.distributed!,
-      });
-      this.coordinator = this.distributedCoordinator;
-    } else {
-      this.localCoordinator = new SwarmCoordinator(this.cogitator, this.config);
-      this.coordinator = this.localCoordinator;
-    }
+    const previous = this.coordinator;
+    this.coordinator = this.createCoordinator(this.config);
     this.strategy = createStrategy(this.coordinator, this.config);
 
-    for (const { event, handler } of this.subscriptions) {
-      this.coordinator.events.on(event, handler);
+    for (const subscription of this.subscriptions) {
+      subscription.unsubscribe();
+      this.register(subscription);
+    }
+
+    if (previous instanceof DistributedSwarmCoordinator) {
+      await previous.close();
     }
 
     this.assessed = true;
@@ -217,41 +273,109 @@ export class Swarm {
     return this.coordinator.getAgent(name);
   }
 
+  /**
+   * Subscribe to swarm events. Subscriptions survive coordinator re-creation after assessment.
+   */
   on(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void {
-    this.subscriptions.push({ event, handler });
-    return this.coordinator.events.on(event, handler);
+    return this.addSubscription(event, handler, false);
   }
 
   once(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void {
-    this.subscriptions.push({ event, handler });
-    return this.coordinator.events.once(event, handler);
+    return this.addSubscription(event, handler, true);
+  }
+
+  private addSubscription(
+    event: SwarmEventType | '*',
+    handler: SwarmEventHandler,
+    once: boolean
+  ): () => void {
+    const subscription: EventSubscription = { event, handler, once, unsubscribe: () => {} };
+    this.subscriptions.add(subscription);
+    this.register(subscription);
+
+    return () => {
+      subscription.unsubscribe();
+      this.subscriptions.delete(subscription);
+    };
+  }
+
+  private register(subscription: EventSubscription): void {
+    if (subscription.once) {
+      subscription.unsubscribe = this.coordinator.events.once(subscription.event, (event) => {
+        this.subscriptions.delete(subscription);
+        return subscription.handler(event);
+      });
+    } else {
+      subscription.unsubscribe = this.coordinator.events.on(
+        subscription.event,
+        subscription.handler
+      );
+    }
+  }
+
+  private attachRunCallbacks(options: SwarmRunOptions): () => void {
+    const events = this.coordinator.events;
+    const detachers: (() => void)[] = [];
+
+    if (options.onAgentStart) {
+      const callback = options.onAgentStart;
+      detachers.push(
+        events.on('agent:start', (event) => {
+          if (event.agentName) callback(event.agentName);
+        })
+      );
+    }
+
+    if (options.onAgentComplete) {
+      const callback = options.onAgentComplete;
+      detachers.push(
+        events.on('agent:complete', (event) => {
+          const data = event.data as { result?: RunResult } | undefined;
+          if (event.agentName && data?.result) callback(event.agentName, data.result);
+        })
+      );
+    }
+
+    if (options.onAgentError) {
+      const callback = options.onAgentError;
+      detachers.push(
+        events.on('agent:error', (event) => {
+          const data = event.data as { error?: unknown } | undefined;
+          if (!event.agentName) return;
+          const error = data?.error;
+          callback(event.agentName, error instanceof Error ? error : new Error(String(error)));
+        })
+      );
+    }
+
+    if (options.onEvent) {
+      detachers.push(events.on('*', options.onEvent));
+    }
+
+    if (options.onMessage) {
+      const bus = this.coordinator.messageBus;
+      if (isReadTrackingMessageBus(bus)) {
+        detachers.push(bus.onMessage(options.onMessage));
+      }
+    }
+
+    return () => {
+      for (const detach of detachers) detach();
+    };
   }
 
   /**
    * Get resource usage
    */
-  getResourceUsage() {
-    if (this.localCoordinator) {
-      return this.localCoordinator.getResourceUsage();
-    }
-    return {
-      totalTokens: 0,
-      totalCost: 0,
-      elapsedTime: 0,
-      agentUsage: new Map(),
-    };
+  getResourceUsage(): SwarmResourceUsage {
+    return this.coordinator.getResourceUsage();
   }
 
   /**
    * Pause swarm execution
    */
   pause(): void {
-    if (this.localCoordinator) {
-      this.localCoordinator.pause();
-    }
-    if (this.distributedCoordinator) {
-      this.distributedCoordinator.pause();
-    }
+    this.coordinator.pause();
     this.coordinator.events.emit('swarm:paused', { swarmId: this.id });
   }
 
@@ -259,12 +383,7 @@ export class Swarm {
    * Resume swarm execution
    */
   resume(): void {
-    if (this.localCoordinator) {
-      this.localCoordinator.resume();
-    }
-    if (this.distributedCoordinator) {
-      this.distributedCoordinator.resume();
-    }
+    this.coordinator.resume();
     this.coordinator.events.emit('swarm:resumed', { swarmId: this.id });
   }
 
@@ -272,12 +391,7 @@ export class Swarm {
    * Abort swarm execution
    */
   abort(): void {
-    if (this.localCoordinator) {
-      this.localCoordinator.abort();
-    }
-    if (this.distributedCoordinator) {
-      this.distributedCoordinator.abort();
-    }
+    this.coordinator.abort();
     this.coordinator.events.emit('swarm:aborted', { swarmId: this.id });
   }
 
@@ -285,38 +399,21 @@ export class Swarm {
    * Check if swarm is paused
    */
   isPaused(): boolean {
-    if (this.localCoordinator) {
-      return this.localCoordinator.isPaused();
-    }
-    if (this.distributedCoordinator) {
-      return this.distributedCoordinator.isPaused();
-    }
-    return false;
+    return this.coordinator.isPaused();
   }
 
   /**
    * Check if swarm is aborted
    */
   isAborted(): boolean {
-    if (this.localCoordinator) {
-      return this.localCoordinator.isAborted();
-    }
-    if (this.distributedCoordinator) {
-      return this.distributedCoordinator.isAborted();
-    }
-    return false;
+    return this.coordinator.isAborted();
   }
 
   /**
    * Reset swarm state for a new run
    */
-  reset(): void {
-    if (this.localCoordinator) {
-      this.localCoordinator.reset();
-    }
-    if (this.distributedCoordinator) {
-      void this.distributedCoordinator.reset();
-    }
+  async reset(): Promise<void> {
+    await this.coordinator.reset();
     this.coordinator.events.emit('swarm:reset', { swarmId: this.id });
   }
 
@@ -324,25 +421,22 @@ export class Swarm {
    * Close distributed coordinator connections (for distributed mode)
    */
   async close(): Promise<void> {
-    if (this.distributedCoordinator) {
-      await this.distributedCoordinator.close();
+    if (this.coordinator instanceof DistributedSwarmCoordinator) {
+      await this.coordinator.close();
     }
   }
 
-  private validateConfig(config: SwarmConfig): SwarmConfig {
-    const validStrategies = [
-      'hierarchical',
-      'round-robin',
-      'consensus',
-      'auction',
-      'pipeline',
-      'debate',
-      'negotiation',
-    ];
+  private createCoordinator(config: SwarmConfig): ManagedCoordinator {
+    if (config.distributed?.enabled) {
+      return new DistributedSwarmCoordinator({ config, distributed: config.distributed });
+    }
+    return new SwarmCoordinator(this.cogitator, config);
+  }
 
-    if (!validStrategies.includes(config.strategy)) {
+  private validateConfig(config: SwarmConfig): SwarmConfig {
+    if (!VALID_STRATEGIES.includes(config.strategy)) {
       throw new Error(
-        `Invalid swarm strategy: ${config.strategy}. Valid strategies: ${validStrategies.join(', ')}`
+        `Invalid swarm strategy: ${config.strategy}. Valid strategies: ${VALID_STRATEGIES.join(', ')}`
       );
     }
 
@@ -394,6 +488,34 @@ export class Swarm {
   }
 }
 
+function abortReason(signal: AbortSignal): Error {
+  const reason: unknown = signal.reason;
+  return reason instanceof Error ? reason : new Error('Swarm run aborted');
+}
+
+function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    promise.catch(() => {});
+    return Promise.reject(abortReason(signal));
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    );
+  });
+}
+
 /**
  * Create a swarm with fluent configuration
  */
@@ -432,6 +554,19 @@ export class SwarmBuilder {
 
   router(agent: SwarmConfig['router']): this {
     this.config.router = agent;
+    return this;
+  }
+
+  /**
+   * Attach swarm metadata (role, expertise, weight, locked) to agents by name
+   */
+  agentMetadata(metadata: NonNullable<SwarmConfig['agentMetadata']>): this {
+    this.config.agentMetadata = { ...this.config.agentMetadata, ...metadata };
+    return this;
+  }
+
+  observability(config: SwarmConfig['observability']): this {
+    this.config.observability = config;
     return this;
   }
 

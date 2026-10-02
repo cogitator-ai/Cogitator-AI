@@ -20,7 +20,7 @@ This builds a production Docker image with a multi-stage Dockerfile, health chec
 cogitator deploy --target fly
 ```
 
-Generates `fly.toml`, creates the app, sets secrets, and deploys. Your agent is live at `https://<app>.fly.dev` within minutes.
+Generates `.cogitator/fly.toml`, creates the app, sets secrets, and deploys. Your agent is live at `https://<app>.fly.dev` within minutes.
 
 ### Dry Run
 
@@ -79,30 +79,30 @@ deploy:
 
 ### Fields
 
-| Field               | Type                                     | Default         | Description                                                     |
-| ------------------- | ---------------------------------------- | --------------- | --------------------------------------------------------------- |
-| `target`            | `docker \| fly \| railway \| k8s \| ssh` | `docker`        | Deployment target platform                                      |
-| `server`            | `express \| fastify \| hono \| koa`      | auto-detected   | HTTP server framework                                           |
-| `port`              | `number`                                 | `3000`          | Application port                                                |
-| `registry`          | `string`                                 | none            | Container registry URL (e.g. `ghcr.io/myorg`, `docker.io/user`) |
-| `image`             | `string`                                 | `cogitator-app` | Docker image name                                               |
-| `region`            | `string`                                 | `iad`           | Deploy region (provider-specific)                               |
-| `instances`         | `number`                                 | `1`             | Number of running instances                                     |
-| `services.redis`    | `boolean`                                | auto-detected   | Include Redis service                                           |
-| `services.postgres` | `boolean`                                | auto-detected   | Include PostgreSQL service                                      |
-| `env`               | `Record<string, string>`                 | none            | Environment variables for production                            |
-| `secrets`           | `string[]`                               | auto-detected   | Provider-managed secrets (API keys)                             |
-| `health.path`       | `string`                                 | `/health`       | Health check endpoint path                                      |
-| `health.interval`   | `string`                                 | `30s`           | Health check interval                                           |
-| `health.timeout`    | `string`                                 | `5s`            | Health check timeout                                            |
-| `resources.memory`  | `string`                                 | `256mb`         | Memory allocation                                               |
-| `resources.cpu`     | `number`                                 | `1`             | CPU allocation (cores or shares)                                |
+| Field               | Type                                | Default             | Description                                                     |
+| ------------------- | ----------------------------------- | ------------------- | --------------------------------------------------------------- |
+| `target`            | `docker \| fly`                     | `docker`            | Deployment target platform                                      |
+| `server`            | `express \| fastify \| hono \| koa` | auto-detected       | HTTP server framework                                           |
+| `port`              | `number`                            | `3000`              | Application port                                                |
+| `registry`          | `string`                            | none                | Container registry URL (e.g. `ghcr.io/myorg`, `docker.io/user`) |
+| `image`             | `string`                            | `package.json` name | Docker image / Fly app name (falls back to `cogitator-app`)     |
+| `region`            | `string`                            | `iad`               | Deploy region (provider-specific)                               |
+| `instances`         | `number`                            | `1`                 | Number of running instances                                     |
+| `services.redis`    | `boolean`                           | auto-detected       | Include Redis service                                           |
+| `services.postgres` | `boolean`                           | auto-detected       | Include PostgreSQL service                                      |
+| `env`               | `Record<string, string>`            | none                | Environment variables for production                            |
+| `secrets`           | `string[]`                          | auto-detected       | Provider-managed secrets (API keys)                             |
+| `health.path`       | `string`                            | `/health`           | Health check endpoint path                                      |
+| `health.interval`   | `string`                            | `30s`               | Health check interval                                           |
+| `health.timeout`    | `string`                            | `5s`                | Health check timeout                                            |
+| `resources.memory`  | `string`                            | `256mb`             | Memory allocation                                               |
+| `resources.cpu`     | `number`                            | `1`                 | CPU allocation (cores or shares)                                |
 
 ---
 
 ## Docker Target
 
-The Docker target builds a production image locally and optionally pushes it to a container registry.
+The Docker target builds a production image, optionally pushes it to a container registry, and starts it together with the services it needs via Docker Compose.
 
 ### Build Only (no push)
 
@@ -114,10 +114,13 @@ Generated artifacts in `.cogitator/`:
 
 ```
 .cogitator/
-  Dockerfile              # multi-stage build
-  docker-compose.prod.yml # app + redis + postgres
+  Dockerfile               # multi-stage build
+  Dockerfile.dockerignore  # keeps .env and node_modules out of the build context
+  docker-compose.prod.yml  # app + redis + postgres
   .dockerignore
 ```
+
+A root `.dockerignore` with the same rules is created when the project has none.
 
 ### Build + Push to Registry
 
@@ -140,44 +143,48 @@ docker login ghcr.io
 
 ### Generated Dockerfile
 
-Multi-stage build for TypeScript projects:
+Multi-stage build for a TypeScript project using pnpm with `"start": "node dist/server.js"`:
 
 ```dockerfile
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 WORKDIR /app
 COPY package.json pnpm-lock.yaml* ./
 RUN corepack enable && pnpm install --frozen-lockfile
 COPY . .
-RUN pnpm build
+RUN pnpm run build
 
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 WORKDIR /app
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./
+COPY --from=builder /app ./
+ENV NODE_ENV=production PORT=3000
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s CMD wget -q --spider http://localhost:3000/health || exit 1
-CMD ["node", "dist/server.js"]
+CMD ["node","dist/server.js"]
 ```
+
+The install commands follow your lockfile (`pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`; plain `npm install` without one), the build step only runs when `package.json` has a `build` script, and `CMD` comes from `scripts.start` (or `main`). Health check settings come from `deploy.health`.
 
 For JavaScript projects (no `tsconfig.json`), a single-stage build is generated instead.
 
 ### Generated Docker Compose
 
-When services are detected, a `docker-compose.prod.yml` is generated with Redis and/or Postgres:
+`docker-compose.prod.yml` always contains the app; Redis and/or Postgres are added when detected:
 
 ```yaml
 services:
   app:
-    build: .
-    image: cogitator-app
+    build:
+      context: ..
+      dockerfile: .cogitator/Dockerfile
+    image: 'my-agent:latest'
     ports:
       - '3000:3000'
     environment:
-      - NODE_ENV=production
-      - PORT=3000
-      - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgresql://cogitator:cogitator@postgres:5432/cogitator
+      NODE_ENV: 'production'
+      PORT: '3000'
+      REDIS_URL: 'redis://redis:6379'
+      DATABASE_URL: 'postgresql://cogitator:cogitator@postgres:5432/cogitator'
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     restart: unless-stopped
     depends_on:
       redis:
@@ -187,6 +194,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     volumes:
       - redis-data:/data
     healthcheck:
@@ -197,6 +205,7 @@ services:
 
   postgres:
     image: pgvector/pgvector:pg16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: cogitator
       POSTGRES_PASSWORD: cogitator
@@ -214,11 +223,7 @@ volumes:
   postgres-data:
 ```
 
-Run with:
-
-```bash
-docker compose -f .cogitator/docker-compose.prod.yml up -d
-```
+`cogitator deploy` starts this stack for you (`docker compose -p <image> up -d`), passing secrets from your environment or `.env`. `cogitator deploy status` and `cogitator deploy destroy` (keeps volumes) manage it afterwards.
 
 ---
 
@@ -242,13 +247,17 @@ flyctl auth login
 cogitator deploy --target fly
 ```
 
-This generates `fly.toml` and deploys:
+This generates `.cogitator/fly.toml` (an existing `fly.toml` in your project is left untouched) and deploys:
 
 ```toml
 app = "my-agent-service"
 primary_region = "iad"
 
 [build]
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
 
 [http_service]
   internal_port = 3000
@@ -357,7 +366,7 @@ cogitator deploy --target fly
 
 ### Fly.io Secrets
 
-For Fly.io, secrets are automatically set via `flyctl secrets set` during deployment. They're stored encrypted and injected as env vars at runtime.
+For Fly.io, secrets listed in `deploy.secrets` are imported with `fly secrets import --stage` during deployment (values come from your environment or `.env`). They're stored encrypted and injected as env vars at runtime.
 
 ```bash
 # manually set a secret
@@ -366,12 +375,11 @@ flyctl secrets set OPENAI_API_KEY=sk-... --app my-agent-service
 
 ### Docker Secrets
 
-For Docker, pass secrets via environment variables in `docker-compose.prod.yml` or use Docker secrets:
+For Docker, secrets listed in `deploy.secrets` are passed through to the `app` container from your environment or the project's `.env` when `cogitator deploy` starts the stack:
 
 ```bash
-# via .env file
-echo "OPENAI_API_KEY=sk-..." > .env
-docker compose -f .cogitator/docker-compose.prod.yml --env-file .env up -d
+echo "OPENAI_API_KEY=sk-..." >> .env
+cogitator deploy --target docker
 ```
 
 ### cogitator.yml Secrets Reference
@@ -392,7 +400,7 @@ The preflight check will warn if any listed secret is not set in the environment
 
 ## Ollama Cloud
 
-By default, Ollama models (`ollama/llama3.2`, `qwen3.5`, etc.) require a local Ollama server. Cloud deployment targets (Fly.io, Railway) don't include one.
+By default, Ollama models (`ollama/llama3.2`, `qwen3.5`, etc.) require a local Ollama server. Cloud deployment targets (Fly.io) don't include one.
 
 ### Options for Cloud Deployment
 
@@ -665,7 +673,7 @@ for (const file of artifacts.files) {
 
 ### Custom Providers
 
-Register your own deploy provider:
+Register your own deploy provider. `target` accepts any registered provider name (`DeployTargetName`), not just the built-in `'docker' | 'fly'`:
 
 ```typescript
 import { Deployer } from '@cogitator-ai/deploy';
@@ -693,7 +701,7 @@ deployer.registerProvider(myProvider);
 
 await deployer.deploy({
   projectDir: process.cwd(),
-  target: 'my-cloud' as any,
+  target: 'my-cloud',
 });
 ```
 
@@ -703,7 +711,7 @@ await deployer.deploy({
 const status = await deployer.status('fly', config, projectDir);
 console.log('Running:', status.running);
 
-await deployer.destroy('fly', config, projectDir);
+await deployer.destroy('fly', config, projectDir); // throws if teardown fails
 ```
 
 ---
@@ -719,7 +727,7 @@ Actions:
   destroy    Tear down the deployment
 
 Options:
-  -t, --target <target>    Deploy target: docker, fly, railway, k8s, ssh
+  -t, --target <target>    Deploy target: docker, fly
   -c, --config <path>      Path to cogitator.yml
   --registry <url>         Container registry URL
   --no-push                Skip pushing image to registry

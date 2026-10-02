@@ -303,6 +303,8 @@ export interface SafetyConstraint {
   rule: string;
   severity: 'warning' | 'error' | 'critical';
   description: string;
+  /** Modification types this constraint is evaluated for. Applies to every type when omitted. */
+  appliesTo?: ModificationRequest['type'][];
 }
 
 export interface CapabilityConstraint {
@@ -463,17 +465,20 @@ export const DEFAULT_SAFETY_CONSTRAINTS: SafetyConstraint[] = [
     rule: 'sandboxExecution = true',
     severity: 'critical',
     description: 'Generated tools must run in sandbox',
+    appliesTo: ['tool_generation', 'tool_creation'],
   },
   {
     id: 'max_tool_complexity',
     rule: 'linesOfCode < 100',
     severity: 'error',
     description: 'Generated tools must be under 100 lines',
+    appliesTo: ['tool_generation', 'tool_creation'],
   },
   {
     id: 'no_self_modification_loop',
     rule: 'modificationDepth < 3',
     severity: 'critical',
     description: 'Prevent recursive self-modification',
+    appliesTo: ['tool_generation', 'tool_creation'],
   },
 ];

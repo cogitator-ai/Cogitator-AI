@@ -1,9 +1,8 @@
-import { header, section, requireEnv } from '../_shared/setup.js';
+import { createCogitator, header, section, requireEnv } from '../_shared/setup.js';
 import {
   JobQueue,
   WorkerPool,
   formatPrometheusMetrics,
-  MetricsCollector,
   type SerializedAgent,
 } from '@cogitator-ai/worker';
 
@@ -40,7 +39,7 @@ async function main() {
 
   section('2. Create worker pool');
 
-  const metrics = new MetricsCollector();
+  const finished = new Set<string>();
 
   const pool = new WorkerPool(
     {
@@ -48,17 +47,20 @@ async function main() {
       redis,
       workerCount: 2,
       concurrency: 3,
+      cogitator: createCogitator(),
     },
     {
       onJobStarted: (jobId, type) => {
         console.log(`  [worker] Job started: ${jobId} (${type})`);
       },
       onJobCompleted: (jobId, result) => {
-        console.log(`  [worker] Job completed: ${jobId} -> ${result.type}`);
-        metrics.recordJob(result.type, 500);
+        const output = result.type === 'agent' ? result.output.slice(0, 80) : result.type;
+        console.log(`  [worker] Job completed: ${jobId} -> ${output}`);
+        finished.add(jobId);
       },
       onJobFailed: (jobId, error) => {
         console.log(`  [worker] Job failed: ${jobId} -> ${error.message}`);
+        finished.add(jobId);
       },
       onWorkerError: (error) => {
         console.error('  [worker] Error:', error.message);
@@ -75,7 +77,7 @@ async function main() {
     name: 'summarizer',
     instructions: 'Summarize the given text in one sentence.',
     model: 'google/gemini-2.5-flash',
-    provider: 'openai',
+    provider: 'google',
     temperature: 0.3,
     tools: [],
   };
@@ -84,7 +86,7 @@ async function main() {
     name: 'translator',
     instructions: 'Translate the given text to French.',
     model: 'google/gemini-2.5-flash',
-    provider: 'openai',
+    provider: 'google',
     temperature: 0.2,
     tools: [],
   };
@@ -124,16 +126,17 @@ async function main() {
   const prometheus = formatPrometheusMetrics(queueMetrics, { queue: 'example-jobs' });
   console.log(prometheus);
 
-  section('6. Full metrics with histogram');
+  section('6. Wait for jobs');
 
-  metrics.recordJob('agent', 1200);
-  metrics.recordJob('agent', 800);
-  metrics.recordJob('agent', 3500);
+  const jobIds = [job1.id!, job2.id!, job3.id!];
+  const deadline = Date.now() + 60_000;
+  while (jobIds.some((id) => !finished.has(id)) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
 
-  const fullMetrics = metrics.format(queueMetrics, { queue: 'example-jobs' });
-  console.log(fullMetrics);
+  section('7. Job state tracking and worker metrics');
 
-  section('7. Job state tracking');
+  console.log(pool.metrics.format(await queue.getMetrics(), { queue: 'example-jobs' }));
 
   const state1 = await queue.getJobState(job1.id!);
   const state2 = await queue.getJobState(job2.id!);

@@ -8,6 +8,7 @@ export {
   createGraphTools,
   type NeuroSymbolicTools,
   type NeuroSymbolicToolsOptions,
+  type GraphToolsOptions,
 } from './tools';
 
 export {
@@ -48,6 +49,7 @@ export {
   isBuiltin,
   executeBuiltin,
   getBuiltinList,
+  isControlConstruct,
   SLDResolver,
   createResolver,
   queryKnowledgeBase,

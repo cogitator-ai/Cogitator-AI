@@ -5,6 +5,8 @@
  * other MCP clients (e.g., Claude Desktop, other AI assistants).
  */
 
+import { randomUUID } from 'node:crypto';
+import type { Server as HttpServer } from 'node:http';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Tool, ToolContext } from '@cogitator-ai/types';
@@ -13,15 +15,63 @@ import type {
   MCPResourceConfig,
   MCPResourceContent,
   MCPPromptConfig,
+  MCPPromptMessage,
+  MCPToolContent,
 } from '../types';
 import { resultToMCPContent } from '../adapter/tool-adapter';
 import { z } from 'zod';
 
+type MCPServerContent =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: string; mimeType: string }
+  | { type: 'audio'; data: string; mimeType: string }
+  | { type: 'resource'; resource: { uri: string; mimeType?: string; text: string } }
+  | { type: 'resource'; resource: { uri: string; mimeType?: string; blob: string } };
+
 interface MCPCallToolResult {
   [key: string]: unknown;
-  content: { type: 'text'; text: string }[];
+  content: MCPServerContent[];
   isError?: boolean;
 }
+
+type MCPPromptContent = MCPPromptMessage['content'];
+
+function toServerContent(item: MCPToolContent | MCPPromptContent): MCPServerContent {
+  switch (item.type) {
+    case 'text':
+      return { type: 'text', text: item.text ?? '' };
+    case 'image':
+    case 'audio':
+      if (typeof item.data === 'string' && typeof item.mimeType === 'string') {
+        return { type: item.type, data: item.data, mimeType: item.mimeType };
+      }
+      break;
+    case 'resource':
+    case 'resource_link': {
+      const resource = item.resource;
+      if (resource && typeof resource.blob === 'string') {
+        return {
+          type: 'resource',
+          resource: { uri: resource.uri, mimeType: resource.mimeType, blob: resource.blob },
+        };
+      }
+      if (resource && typeof resource.text === 'string') {
+        return {
+          type: 'resource',
+          resource: { uri: resource.uri, mimeType: resource.mimeType, text: resource.text },
+        };
+      }
+      break;
+    }
+  }
+  return { type: 'text', text: JSON.stringify(item) };
+}
+
+function errorMessageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+const PERMISSIVE_INPUT_SCHEMA = z.looseObject({});
 
 /**
  * MCP Server for exposing Cogitator tools
@@ -51,7 +101,7 @@ export class MCPServer {
   private resources = new Map<string, MCPResourceConfig>();
   private prompts = new Map<string, MCPPromptConfig>();
   private started = false;
-  private httpServer?: import('node:http').Server;
+  private httpServer?: HttpServer;
 
   constructor(config: MCPServerConfig) {
     this.config = config;
@@ -204,89 +254,71 @@ export class MCPServer {
    * Register a tool with the MCP server
    */
   private registerMCPTool(server: McpServer, tool: Tool): void {
-    const inputShape = this.buildInputShape(tool);
-
-    server.tool(
+    server.registerTool(
       tool.name,
-      tool.description,
-      inputShape,
-      async (args, extra): Promise<MCPCallToolResult> => {
-        return this.executeTool(tool, args as Record<string, unknown>, extra.signal);
+      {
+        description: tool.description,
+        inputSchema: this.buildInputSchema(tool),
+      },
+      async (args: unknown, extra: { signal: AbortSignal }): Promise<MCPCallToolResult> => {
+        return this.executeTool(tool, args, extra.signal);
       }
     );
   }
 
   /**
-   * Build the Zod raw shape the SDK expects for tool input schemas.
+   * Resolve the Zod schema the SDK uses to advertise and validate tool input.
    *
-   * The SDK validates inputs with Zod, so it needs the actual Zod schemas
-   * (a record of Zod types), not a converted JSON Schema. Passing JSON Schema
-   * objects makes the SDK silently drop the schema and skip validation.
+   * The full tool schema is handed to the SDK (not just its shape) so object
+   * modifiers, refinements and transforms are honoured, and the SDK passes
+   * already-parsed arguments to the handler. Tools without a schema accept
+   * any object.
    */
-  private buildInputShape(tool: Tool): Record<string, z.ZodTypeAny> {
-    const params = tool.parameters;
-    if (params instanceof z.ZodObject) {
-      return params.shape as Record<string, z.ZodTypeAny>;
-    }
-    return {};
+  private buildInputSchema(tool: Tool): z.ZodType {
+    const params: unknown = tool.parameters;
+    return params instanceof z.ZodType ? params : PERMISSIVE_INPUT_SCHEMA;
   }
 
   /**
-   * Execute a tool and return MCP-formatted result
+   * Execute a tool with SDK-validated arguments and return an MCP-formatted result
    */
   private async executeTool(
     tool: Tool,
-    args: Record<string, unknown>,
-    signal?: AbortSignal
+    args: unknown,
+    signal: AbortSignal
   ): Promise<MCPCallToolResult> {
     const context: ToolContext = {
       agentId: 'mcp-server',
-      runId: `mcp_${Date.now()}`,
-      signal: signal ?? new AbortController().signal,
+      runId: `mcp_${randomUUID()}`,
+      signal,
     };
 
     try {
-      let validatedArgs = args;
-      if (tool.parameters) {
-        const parseResult = tool.parameters.safeParse(args);
-        if (!parseResult.success) {
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `Validation error: ${parseResult.error.message}`,
-              },
-            ],
-            isError: true,
-          };
-        }
-        validatedArgs = parseResult.data as Record<string, unknown>;
-      }
-
-      const result = await tool.execute(validatedArgs, context);
-
-      const rawContent = resultToMCPContent(result);
-
-      const content: { type: 'text'; text: string }[] = rawContent.map((item) => {
-        if (item.type === 'text') {
-          return { type: 'text' as const, text: item.text };
-        }
-        return { type: 'text' as const, text: JSON.stringify(item) };
-      });
-
-      return { content };
+      const result = await tool.execute(args ?? {}, context);
+      return { content: resultToMCPContent(result).map(toServerContent) };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-
-      if (this.config.logging) {
-        console.error(`[MCPServer] Tool ${tool.name} error:`, errorMessage);
-      }
+      const errorMessage = errorMessageOf(error);
+      this.log('error', `Tool ${tool.name} error: ${errorMessage}`);
 
       return {
-        content: [{ type: 'text' as const, text: `Error: ${errorMessage}` }],
+        content: [{ type: 'text', text: `Error: ${errorMessage}` }],
         isError: true,
       };
     }
+  }
+
+  /**
+   * Write a diagnostic line to stderr when logging is enabled.
+   *
+   * stdout is reserved for JSON-RPC frames on the stdio transport, so every
+   * log line goes to stderr regardless of level.
+   */
+  private log(level: 'info' | 'error', message: string): void {
+    if (!this.config.logging) {
+      return;
+    }
+    const prefix = level === 'error' ? '[MCPServer] ERROR' : '[MCPServer]';
+    console.error(`${prefix} ${message}`);
   }
 
   /**
@@ -304,11 +336,20 @@ export class MCPServer {
         if (c.mimeType || config.mimeType) {
           base.mimeType = c.mimeType || config.mimeType;
         }
-        if (c.blob) {
+        if (typeof c.blob === 'string') {
           return { ...base, blob: c.blob };
         }
-        return { ...base, text: c.text || '' };
+        return { ...base, text: c.text ?? '' };
       });
+    };
+
+    const readResource = async (params: Record<string, string>) => {
+      try {
+        return await config.read(params);
+      } catch (error) {
+        this.log('error', `Resource ${config.name} error: ${errorMessageOf(error)}`);
+        throw error;
+      }
     };
 
     if (isTemplate) {
@@ -320,20 +361,11 @@ export class MCPServer {
           mimeType: config.mimeType,
         },
         async (uri: URL, variables: Record<string, string | string[]>) => {
-          try {
-            const params: Record<string, string> = {};
-            for (const [key, value] of Object.entries(variables)) {
-              params[key] = Array.isArray(value) ? value[0] || '' : value;
-            }
-            const result = await config.read(params);
-            return { contents: formatContents(result, uri.href) };
-          } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            if (this.config.logging) {
-              console.error(`[MCPServer] Resource ${config.name} error:`, errorMessage);
-            }
-            return { contents: [{ uri: uri.href, text: `Error: ${errorMessage}` }] };
+          const params: Record<string, string> = {};
+          for (const [key, value] of Object.entries(variables)) {
+            params[key] = Array.isArray(value) ? value.join(',') : value;
           }
+          return { contents: formatContents(await readResource(params), uri.href) };
         }
       );
     } else {
@@ -345,16 +377,7 @@ export class MCPServer {
           mimeType: config.mimeType,
         },
         async (uri: URL) => {
-          try {
-            const result = await config.read({});
-            return { contents: formatContents(result, uri.href) };
-          } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            if (this.config.logging) {
-              console.error(`[MCPServer] Resource ${config.name} error:`, errorMessage);
-            }
-            return { contents: [{ uri: uri.href, text: `Error: ${errorMessage}` }] };
-          }
+          return { contents: formatContents(await readResource({}), uri.href) };
         }
       );
     }
@@ -364,55 +387,49 @@ export class MCPServer {
    * Register a prompt with the MCP server
    */
   private registerMCPPrompt(server: McpServer, config: MCPPromptConfig): void {
-    const argsSchema: Record<string, z.ZodTypeAny> = {};
+    const render = async (args: Record<string, string>) => {
+      let result: Awaited<ReturnType<MCPPromptConfig['get']>>;
+      try {
+        result = await config.get(args);
+      } catch (error) {
+        this.log('error', `Prompt ${config.name} error: ${errorMessageOf(error)}`);
+        throw error;
+      }
+      return {
+        description: result.description,
+        messages: result.messages.map((m) => ({
+          role: m.role,
+          content:
+            typeof m.content === 'string'
+              ? { type: 'text' as const, text: m.content }
+              : toServerContent(m.content),
+        })),
+      };
+    };
 
-    for (const arg of config.arguments || []) {
-      let schema: z.ZodTypeAny = z.string();
-      if (arg.description) {
-        schema = schema.describe(arg.description);
-      }
-      if (!arg.required) {
-        schema = schema.optional();
-      }
-      argsSchema[arg.name] = schema;
+    const metadata = { title: config.title || config.name, description: config.description };
+    const promptArgs = config.arguments ?? [];
+
+    if (promptArgs.length === 0) {
+      server.registerPrompt(config.name, metadata, async () => render({}));
+      return;
     }
 
-    server.registerPrompt(
-      config.name,
-      {
-        title: config.title || config.name,
-        description: config.description,
-        argsSchema,
-      },
-      async (args) => {
-        try {
-          const result = await config.get(args as Record<string, string>);
-          return {
-            description: result.description,
-            messages: result.messages.map((m) => ({
-              role: m.role as 'user' | 'assistant',
-              content: {
-                type: 'text' as const,
-                text: typeof m.content === 'string' ? m.content : m.content.text || '',
-              },
-            })),
-          };
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          if (this.config.logging) {
-            console.error(`[MCPServer] Prompt ${config.name} error:`, errorMessage);
-          }
-          return {
-            messages: [
-              {
-                role: 'assistant' as const,
-                content: { type: 'text' as const, text: `Error: ${errorMessage}` },
-              },
-            ],
-          };
+    const argsSchema: Record<string, z.ZodType<string | undefined>> = {};
+    for (const arg of promptArgs) {
+      const base = arg.description ? z.string().describe(arg.description) : z.string();
+      argsSchema[arg.name] = arg.required ? base : base.optional();
+    }
+
+    server.registerPrompt(config.name, { ...metadata, argsSchema }, async (args) => {
+      const stringArgs: Record<string, string> = {};
+      for (const [key, value] of Object.entries(args ?? {})) {
+        if (typeof value === 'string') {
+          stringArgs[key] = value;
         }
       }
-    );
+      return render(stringArgs);
+    });
   }
 
   /**
@@ -423,18 +440,13 @@ export class MCPServer {
       throw new Error('Server already started');
     }
 
-    if (this.config.logging) {
-      console.log(`[MCPServer] Starting ${this.config.name} v${this.config.version}`);
-      console.log(
-        `[MCPServer] Registered tools: ${this.getRegisteredTools().join(', ') || '(none)'}`
-      );
-      console.log(
-        `[MCPServer] Registered resources: ${this.getRegisteredResources().join(', ') || '(none)'}`
-      );
-      console.log(
-        `[MCPServer] Registered prompts: ${this.getRegisteredPrompts().join(', ') || '(none)'}`
-      );
-    }
+    this.log('info', `Starting ${this.config.name} v${this.config.version}`);
+    this.log('info', `Registered tools: ${this.getRegisteredTools().join(', ') || '(none)'}`);
+    this.log(
+      'info',
+      `Registered resources: ${this.getRegisteredResources().join(', ') || '(none)'}`
+    );
+    this.log('info', `Registered prompts: ${this.getRegisteredPrompts().join(', ') || '(none)'}`);
 
     switch (this.config.transport) {
       case 'stdio': {
@@ -455,10 +467,7 @@ export class MCPServer {
     }
 
     this.started = true;
-
-    if (this.config.logging) {
-      console.log(`[MCPServer] Server started on ${this.config.transport} transport`);
-    }
+    this.log('info', `Server started on ${this.config.transport} transport`);
   }
 
   /**
@@ -486,7 +495,8 @@ export class MCPServer {
         return;
       }
 
-      if (req.url !== '/mcp') {
+      const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+      if (pathname !== '/mcp') {
         res.writeHead(404);
         res.end('Not Found');
         return;
@@ -529,8 +539,14 @@ export class MCPServer {
           try {
             body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
           } catch {
-            res.writeHead(400, { 'Content-Type': 'text/plain' });
-            res.end('Bad Request: invalid JSON');
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                jsonrpc: '2.0',
+                error: { code: -32700, message: 'Parse error: invalid JSON' },
+                id: null,
+              })
+            );
             return;
           }
 
@@ -542,12 +558,7 @@ export class MCPServer {
           res.end('Method Not Allowed');
         }
       } catch (error) {
-        if (this.config.logging) {
-          console.error(
-            '[MCPServer] HTTP request error:',
-            error instanceof Error ? error.message : String(error)
-          );
-        }
+        this.log('error', `HTTP request error: ${errorMessageOf(error)}`);
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'text/plain' });
           res.end('Internal Server Error');
@@ -555,14 +566,30 @@ export class MCPServer {
       }
     });
 
-    await new Promise<void>((resolve) => {
-      this.httpServer!.listen(port, host, () => {
-        if (this.config.logging) {
-          console.log(`[MCPServer] HTTP server listening on http://${host}:${port}/mcp`);
-        }
-        resolve();
+    const httpServer = this.httpServer;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        httpServer.once('error', reject);
+        httpServer.listen(port, host, () => {
+          httpServer.off('error', reject);
+          resolve();
+        });
       });
-    });
+    } catch (error) {
+      this.httpServer = undefined;
+      throw error;
+    }
+
+    this.log('info', `HTTP server listening on http://${host}:${this.getPort() ?? port}/mcp`);
+  }
+
+  /**
+   * Port the HTTP transport is listening on (useful with `port: 0`).
+   * Returns undefined for stdio or before the server has started.
+   */
+  getPort(): number | undefined {
+    const address = this.httpServer?.address();
+    return address && typeof address === 'object' ? address.port : undefined;
   }
 
   /**
@@ -573,22 +600,25 @@ export class MCPServer {
       return;
     }
 
-    if (this.httpServer) {
-      await new Promise<void>((resolve, reject) => {
-        this.httpServer!.close((err) => (err ? reject(err) : resolve()));
-      });
-      this.httpServer = undefined;
-    }
-
-    if (this.server) {
-      await this.server.close();
+    try {
+      const httpServer = this.httpServer;
+      if (httpServer) {
+        this.httpServer = undefined;
+        await new Promise<void>((resolve, reject) => {
+          httpServer.close((err) => (err ? reject(err) : resolve()));
+          httpServer.closeAllConnections();
+        });
+      }
+    } finally {
+      const server = this.server;
       this.server = undefined;
+      this.started = false;
+      if (server) {
+        await server.close();
+      }
     }
-    this.started = false;
 
-    if (this.config.logging) {
-      console.log('[MCPServer] Server stopped');
-    }
+    this.log('info', 'Server stopped');
   }
 
   /**

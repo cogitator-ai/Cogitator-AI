@@ -17,7 +17,8 @@ pnpm add @cogitator-ai/openai-compat
 - **SSE Streaming** - Real-time token streaming with OpenAI-compatible events
 - **File Operations** - Upload and manage files for assistants
 - **Full Assistants API** - Create, update, delete assistants
-- **Run Management** - Execute runs with tool support
+- **Run Management** - Execute, stream, cancel and list runs
+- **Function Calling** - Assistant `function` tools pause the run with `requires_action` until the client submits outputs
 - **Authentication** - Optional API key authentication
 - **CORS Support** - Configurable cross-origin requests
 
@@ -32,27 +33,26 @@ import { createOpenAIServer } from '@cogitator-ai/openai-compat';
 import { Cogitator, tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
-const calculator = tool({
-  name: 'calculator',
-  description: 'Perform calculations',
-  parameters: z.object({
-    expression: z.string(),
-  }),
-  execute: async ({ expression }) => eval(expression).toString(),
+const add = tool({
+  name: 'add',
+  description: 'Add two numbers',
+  parameters: z.object({ a: z.number(), b: z.number() }),
+  execute: async ({ a, b }) => ({ sum: a + b }),
 });
 
 const cogitator = new Cogitator({
-  defaultModel: 'openai/gpt-4o-mini',
+  llm: { defaultModel: 'openai/gpt-4o-mini' },
 });
 
 const server = createOpenAIServer(cogitator, {
   port: 8080,
-  tools: [calculator],
+  tools: [add],
   apiKeys: ['sk-my-secret-key'],
+  defaultModel: 'openai/gpt-4o-mini', // used for the advertised `cogitator` model id
 });
 
 await server.start();
-// Server is now available at http://localhost:8080
+console.log(server.getBaseUrl()); // http://localhost:8080/v1
 ```
 
 ### Client Mode
@@ -78,21 +78,21 @@ await openai.beta.threads.messages.create(thread.id, {
   content: 'What is 2 + 2?',
 });
 
-const run = await openai.beta.threads.runs.create(thread.id, {
+const run = await openai.beta.threads.runs.createAndPoll(thread.id, {
   assistant_id: assistant.id,
 });
 
-// Poll for completion
-let status = run.status;
-while (status === 'queued' || status === 'in_progress') {
-  await new Promise((r) => setTimeout(r, 1000));
-  const updated = await openai.beta.threads.runs.retrieve(thread.id, run.id);
-  status = updated.status;
-}
-
 const messages = await openai.beta.threads.messages.list(thread.id);
-console.log(messages.data[0].content);
+console.log(run.status, messages.data[0].content); // newest message first
+
+// Streaming
+const stream = openai.beta.threads.runs
+  .stream(thread.id, { assistant_id: assistant.id })
+  .on('textDelta', (delta) => process.stdout.write(delta.value ?? ''));
+await stream.finalRun();
 ```
+
+Assistant `model` values are Cogitator model strings (`openai/gpt-4o`, `ollama/llama3.2:latest`, ...). The id `cogitator` listed by `GET /v1/models` maps to the server's `defaultModel`.
 
 ---
 
@@ -129,8 +129,11 @@ const server = new OpenAIServer(cogitator, {
 | `port`         | `number`                        | `8080`                                 | Port to listen on                                |
 | `host`         | `string`                        | `'0.0.0.0'`                            | Host to bind to                                  |
 | `apiKeys`      | `string[]`                      | `[]`                                   | API keys for authentication. Empty disables auth |
-| `tools`        | `Tool[]`                        | `[]`                                   | Tools available to assistants                    |
-| `logging`      | `boolean`                       | `false`                                | Enable request logging                           |
+| `tools`        | `Tool[]`                        | `[]`                                   | Server-side tools available to every run         |
+| `defaultModel` | `string`                        | —                                      | Model used for the `cogitator` model id          |
+| `storage`      | `ThreadStorage`                 | in-memory                              | Persistence backend (connect before passing)     |
+| `maxFileSize`  | `number`                        | `512 MB`                               | Upload limit for `POST /v1/files`                |
+| `logging`      | `boolean`                       | `false`                                | Enable Fastify request logging (JSON logs)       |
 | `cors.origin`  | `string \| string[] \| boolean` | `true`                                 | CORS origin configuration                        |
 | `cors.methods` | `string[]`                      | `['GET', 'POST', 'DELETE', 'OPTIONS']` | Allowed HTTP methods                             |
 
@@ -139,7 +142,7 @@ const server = new OpenAIServer(cogitator, {
 ```typescript
 await server.start();
 
-console.log(server.getUrl());
+console.log(server.getUrl()); // uses the bound port, so `port: 0` works
 console.log(server.getBaseUrl());
 
 console.log(server.isRunning());
@@ -151,7 +154,7 @@ await server.stop();
 
 ### Health Check
 
-The server provides a health endpoint:
+The server provides a health endpoint (public even when `apiKeys` are configured):
 
 ```bash
 curl http://localhost:8080/health
@@ -236,10 +239,20 @@ const run = await adapter.createRun(thread.id, {
 
 const status = adapter.getRun(thread.id, run.id);
 
-const cancelled = adapter.cancelRun(thread.id, run.id);
+const runs = adapter.listRuns(thread.id);
+
+const cancelled = adapter.cancelRun(thread.id, run.id); // throws if the run already finished
+
+for await (const { event, data } of adapter.streamRunEvents(run.id)) {
+  console.log(event, data);
+}
 ```
 
+Runs use the whole thread as context (earlier messages are replayed to the agent), receive an abort signal on cancel, and honour `additional_instructions`, `response_format` (`json_object` / `json_schema`), `max_completion_tokens`, `top_p`, `tool_choice` (`none` or a specific function), `parallel_tool_calls` and `truncation_strategy` (`last_messages`). A thread can have only one active run at a time. Image parts (`image_url`, and `image_file` uploads with an image extension) are passed to the model.
+
 ### Tool Outputs
+
+Server-side `tools` run inside Cogitator. Assistant tools of type `function` are executed by the API client: when the model calls one, the run moves to `requires_action` with the pending calls, and continues after all outputs are submitted (runs waiting longer than 10 minutes expire). With the OpenAI SDK use `submitToolOutputsAndPoll` / `submitToolOutputsStream`.
 
 ```typescript
 const run = adapter.getRun(thread.id, runId);
@@ -452,13 +465,16 @@ import { Cogitator } from '@cogitator-ai/core';
 const storage = new RedisThreadStorage({ host: 'localhost' });
 await storage.connect();
 
-// Create ThreadManager with persistent storage
-const manager = new ThreadManager(storage);
+const cogitator = new Cogitator({ llm: { defaultModel: 'openai/gpt-4o' } });
 
-// Use the adapter in-process (for custom server integrations)
-const cogitator = new Cogitator({ defaultModel: 'openai/gpt-4o' });
-const adapter = new OpenAIAdapter(cogitator, { tools: [] });
+// In-process adapter backed by Redis
+const adapter = new OpenAIAdapter(cogitator, { tools: [], storage });
+
+// Or the REST server
+const server = createOpenAIServer(cogitator, { storage });
 ```
+
+Storage is the single source of truth (no in-process cache), so several server instances can share one Redis or PostgreSQL backend. Redis listings use `SCAN` + `MGET`; `ttl: 0` disables expiry. `ioredis` and `pg` are optional peer dependencies loaded on `connect()`.
 
 ### ThreadStorage Interface
 
@@ -527,11 +543,12 @@ const manager = new ThreadManager(new MyCustomStorage());
 
 ### Threads
 
-| Method | Endpoint          | Description   |
-| ------ | ----------------- | ------------- |
-| POST   | `/v1/threads`     | Create thread |
-| GET    | `/v1/threads/:id` | Get thread    |
-| DELETE | `/v1/threads/:id` | Delete thread |
+| Method | Endpoint          | Description            |
+| ------ | ----------------- | ---------------------- |
+| POST   | `/v1/threads`     | Create thread          |
+| GET    | `/v1/threads/:id` | Get thread             |
+| POST   | `/v1/threads/:id` | Update thread metadata |
+| DELETE | `/v1/threads/:id` | Delete thread          |
 
 ### Messages
 
@@ -545,7 +562,9 @@ const manager = new ThreadManager(new MyCustomStorage());
 
 | Method | Endpoint                                           | Description         |
 | ------ | -------------------------------------------------- | ------------------- |
+| POST   | `/v1/threads/runs`                                 | Create thread + run |
 | POST   | `/v1/threads/:id/runs`                             | Create run          |
+| GET    | `/v1/threads/:id/runs`                             | List runs           |
 | GET    | `/v1/threads/:id/runs/:run_id`                     | Get run status      |
 | POST   | `/v1/threads/:id/runs/:run_id/cancel`              | Cancel run          |
 | POST   | `/v1/threads/:id/runs/:run_id/submit_tool_outputs` | Submit tool outputs |
@@ -627,9 +646,12 @@ type RunStatus =
 queued → in_progress → completed
                      → failed
                      → requires_action → in_progress → ...
+                                       → expired (no outputs within 10 minutes)
 
-in_progress → cancelling → cancelled
+queued / in_progress / requires_action → cancelling → cancelled
 ```
+
+Streaming runs (`stream: true`) emit `thread.run.created`, `thread.run.queued`, `thread.run.in_progress`, `thread.message.created`, `thread.message.delta`, `thread.message.completed`, `thread.run.completed` (or `failed` / `cancelled` / `expired` / `requires_action`) and a final `done` event.
 
 ### Polling for Completion
 
@@ -638,7 +660,7 @@ async function waitForRun(openai: OpenAI, threadId: string, runId: string): Prom
   const terminalStates = ['completed', 'failed', 'cancelled', 'expired'];
 
   while (true) {
-    const run = await openai.beta.threads.runs.retrieve(threadId, runId);
+    const run = await openai.beta.threads.runs.retrieve(runId, { thread_id: threadId });
 
     if (terminalStates.includes(run.status)) {
       return run;
@@ -709,7 +731,9 @@ type StreamEvent =
   | { event: 'thread.run.requires_action'; data: Run }
   | { event: 'thread.run.completed'; data: Run }
   | { event: 'thread.run.failed'; data: Run }
+  | { event: 'thread.run.cancelling'; data: Run }
   | { event: 'thread.run.cancelled'; data: Run }
+  | { event: 'thread.run.expired'; data: Run }
   | { event: 'thread.message.created'; data: Message }
   | { event: 'thread.message.in_progress'; data: Message }
   | { event: 'thread.message.delta'; data: MessageDelta }
@@ -717,7 +741,11 @@ type StreamEvent =
   | { event: 'done'; data: '[DONE]' };
 ```
 
+A stream ends with `done` after the run finishes or pauses on `requires_action`; continue a paused run with `submit_tool_outputs` and `stream: true`.
+
 ### Message Delta Format
+
+All text deltas target content index `0`, so SDK helpers accumulate them into a single text part whose message id matches the stored message.
 
 ```typescript
 interface MessageDelta {
@@ -882,7 +910,7 @@ import { Cogitator } from '@cogitator-ai/core';
 import OpenAI from 'openai';
 
 const cogitator = new Cogitator({
-  defaultModel: 'ollama/llama3.2:latest',
+  llm: { defaultModel: 'ollama/llama3.2:latest' },
 });
 
 const server = createOpenAIServer(cogitator, { port: 8080 });
@@ -907,16 +935,10 @@ async function chat(message: string): Promise<string> {
     content: message,
   });
 
-  const run = await openai.beta.threads.runs.create(thread.id, {
+  const run = await openai.beta.threads.runs.createAndPoll(thread.id, {
     assistant_id: assistant.id,
   });
-
-  while (true) {
-    const status = await openai.beta.threads.runs.retrieve(thread.id, run.id);
-    if (status.status === 'completed') break;
-    if (status.status === 'failed') throw new Error(status.last_error?.message);
-    await new Promise((r) => setTimeout(r, 500));
-  }
+  if (run.status !== 'completed') throw new Error(run.last_error?.message ?? run.status);
 
   const messages = await openai.beta.threads.messages.list(thread.id, {
     limit: 1,
@@ -951,7 +973,7 @@ const runCode = tool({
 });
 
 const cogitator = new Cogitator({
-  defaultModel: 'openai/gpt-4o',
+  llm: { defaultModel: 'openai/gpt-4o' },
 });
 
 const server = createOpenAIServer(cogitator, {
@@ -970,8 +992,10 @@ const assistant = await openai.beta.assistants.create({
   name: 'Code Runner',
   instructions: 'You can run Python code using the run_code tool.',
   model: 'openai/gpt-4o',
-  tools: [{ type: 'function', function: { name: 'run_code' } }],
 });
+// Server-side tools (`tools` on the server) are available to every run without
+// being declared on the assistant. Declare `function` tools only for functions
+// your client executes (they surface as `requires_action`).
 ```
 
 ### File Upload
@@ -1001,7 +1025,7 @@ await openai.files.del(file.id);
 
 ```typescript
 const cogitator = new Cogitator({
-  defaultModel: 'ollama/llama3.2:latest',
+  llm: { defaultModel: 'ollama/llama3.2:latest' },
 });
 
 const server = createOpenAIServer(cogitator, { port: 8080 });

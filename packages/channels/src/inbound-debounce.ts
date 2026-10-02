@@ -24,9 +24,9 @@ export class InboundDebouncer {
     if (existing) {
       clearTimeout(existing.timer);
       existing.messages.push(msg);
-      existing.timer = setTimeout(() => void this.flush(key), delay);
+      existing.timer = setTimeout(() => void this.flush(key).catch(() => {}), delay);
     } else {
-      const timer = setTimeout(() => void this.flush(key), delay);
+      const timer = setTimeout(() => void this.flush(key).catch(() => {}), delay);
       this.buffers.set(key, { messages: [msg], timer });
     }
   }

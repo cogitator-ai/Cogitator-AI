@@ -167,4 +167,39 @@ describe('httpRequest tool', () => {
     expect(schema.parameters.properties).toHaveProperty('url');
     expect(schema.parameters.properties).toHaveProperty('method');
   });
+
+  it('handles HEAD requests to JSON endpoints without a body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(null, { status: 200, headers: { 'content-type': 'application/json' } })
+        )
+    );
+
+    const result = await httpRequest.execute(
+      { url: 'https://example.com/api', method: 'HEAD' },
+      mockContext
+    );
+
+    expect(result).toMatchObject({ status: 200, body: '' });
+    expect(result).not.toHaveProperty('error');
+  });
+
+  it('returns the raw body when a JSON content-type carries invalid JSON', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('<html>oops</html>', {
+          status: 502,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    );
+
+    const result = await httpRequest.execute({ url: 'https://example.com/api' }, mockContext);
+
+    expect(result).toMatchObject({ status: 502, body: '<html>oops</html>' });
+  });
 });

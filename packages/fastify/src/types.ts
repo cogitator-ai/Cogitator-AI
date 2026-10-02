@@ -281,10 +281,12 @@ export interface OpenAPISpec {
   tags?: Array<{ name: string; description?: string }>;
 }
 
+const NON_BLANK_STRING = { type: 'string', minLength: 1, pattern: '\\S' } as const;
+
 export const AgentRunRequestSchema = {
   type: 'object',
   properties: {
-    input: { type: 'string' },
+    input: NON_BLANK_STRING,
     context: { type: 'object', additionalProperties: true },
     threadId: { type: 'string' },
   },
@@ -312,7 +314,7 @@ export const AddMessageRequestSchema = {
   type: 'object',
   properties: {
     role: { type: 'string', enum: ['user', 'assistant', 'system'] },
-    content: { type: 'string' },
+    content: { type: 'string', minLength: 1 },
     metadata: { type: 'object', additionalProperties: true },
   },
   required: ['role', 'content'],
@@ -325,10 +327,11 @@ export const WorkflowRunRequestSchema = {
     options: {
       type: 'object',
       properties: {
-        maxConcurrency: { type: 'number' },
-        maxIterations: { type: 'number' },
+        maxConcurrency: { type: 'integer', minimum: 1 },
+        maxIterations: { type: 'integer', minimum: 1 },
         checkpoint: { type: 'boolean' },
       },
+      additionalProperties: false,
     },
   },
 } as const;
@@ -336,10 +339,10 @@ export const WorkflowRunRequestSchema = {
 export const SwarmRunRequestSchema = {
   type: 'object',
   properties: {
-    input: { type: 'string' },
+    input: NON_BLANK_STRING,
     context: { type: 'object', additionalProperties: true },
     threadId: { type: 'string' },
-    timeout: { type: 'number' },
+    timeout: { type: 'number', exclusiveMinimum: 0 },
   },
   required: ['input'],
 } as const;

@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { ThreadResponse, AddMessageRequest } from '../types.js';
 import { AddMessageRequestSchema } from '../types.js';
-import { CogitatorError } from '@cogitator-ai/types';
+import { sendError, sendRouteError } from './utils.js';
 
 interface ThreadParams {
   id: string;
@@ -24,9 +24,7 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const memory = getMemory();
       if (!memory) {
-        return reply.status(503).send({
-          error: { message: 'Memory not configured', code: 'UNAVAILABLE' },
-        });
+        return sendError(reply, 503, 'Memory not configured', 'UNAVAILABLE');
       }
 
       const { id } = request.params;
@@ -34,9 +32,7 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
       try {
         const result = await memory.getEntries({ threadId: id });
         if (!result.success) {
-          return reply.status(500).send({
-            error: { message: result.error ?? 'Unknown error', code: 'INTERNAL' },
-          });
+          return sendError(reply, 500, result.error ?? 'Unknown error', 'INTERNAL');
         }
 
         const entries = result.data;
@@ -50,13 +46,7 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
         };
         return response;
       } catch (error) {
-        if (CogitatorError.isCogitatorError(error)) {
-          return reply.status(500).send({ error: { message: error.message, code: error.code } });
-        }
-        request.log.error({ err: error }, 'thread get error');
-        return reply
-          .status(500)
-          .send({ error: { message: 'Internal server error', code: 'INTERNAL' } });
+        return sendRouteError(request, reply, error, 'thread get error');
       }
     }
   );
@@ -76,9 +66,7 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const memory = getMemory();
       if (!memory) {
-        return reply.status(503).send({
-          error: { message: 'Memory not configured', code: 'UNAVAILABLE' },
-        });
+        return sendError(reply, 503, 'Memory not configured', 'UNAVAILABLE');
       }
 
       const { id } = request.params;
@@ -92,23 +80,16 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
             content: body.content,
           },
           tokenCount: 0,
+          metadata: body.metadata,
         });
 
         if (!result.success) {
-          return reply.status(500).send({
-            error: { message: result.error ?? 'Unknown error', code: 'INTERNAL' },
-          });
+          return sendError(reply, 500, result.error ?? 'Unknown error', 'INTERNAL');
         }
 
         return reply.status(201).send({ success: true });
       } catch (error) {
-        if (CogitatorError.isCogitatorError(error)) {
-          return reply.status(500).send({ error: { message: error.message, code: error.code } });
-        }
-        request.log.error({ err: error }, 'thread add message error');
-        return reply
-          .status(500)
-          .send({ error: { message: 'Internal server error', code: 'INTERNAL' } });
+        return sendRouteError(request, reply, error, 'thread add message error');
       }
     }
   );
@@ -127,9 +108,7 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const memory = getMemory();
       if (!memory) {
-        return reply.status(503).send({
-          error: { message: 'Memory not configured', code: 'UNAVAILABLE' },
-        });
+        return sendError(reply, 503, 'Memory not configured', 'UNAVAILABLE');
       }
 
       const { id } = request.params;
@@ -137,19 +116,11 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
       try {
         const result = await memory.clearThread(id);
         if (!result.success) {
-          return reply.status(500).send({
-            error: { message: result.error ?? 'Unknown error', code: 'INTERNAL' },
-          });
+          return sendError(reply, 500, result.error ?? 'Unknown error', 'INTERNAL');
         }
         return reply.status(204).send();
       } catch (error) {
-        if (CogitatorError.isCogitatorError(error)) {
-          return reply.status(500).send({ error: { message: error.message, code: error.code } });
-        }
-        request.log.error({ err: error }, 'thread delete error');
-        return reply
-          .status(500)
-          .send({ error: { message: 'Internal server error', code: 'INTERNAL' } });
+        return sendRouteError(request, reply, error, 'thread delete error');
       }
     }
   );

@@ -132,12 +132,18 @@ importers:
       '@cogitator-ai/redis':
         specifier: workspace:*
         version: link:../packages/redis
+      '@cogitator-ai/sandbox':
+        specifier: workspace:*
+        version: link:../packages/sandbox
       '@cogitator-ai/self-modifying':
         specifier: workspace:*
         version: link:../packages/self-modifying
       '@cogitator-ai/swarms':
         specifier: workspace:*
         version: link:../packages/swarms
+      '@cogitator-ai/voice':
+        specifier: workspace:*
+        version: link:../packages/voice
       '@cogitator-ai/wasm-tools':
         specifier: workspace:*
         version: link:../packages/wasm-tools
@@ -186,10 +192,16 @@ importers:
       openai:
         specifier: ^6.22.0
         version: 6.22.0(ws@8.19.0)(zod@4.3.6)
+      ws:
+        specifier: ^8.18.0
+        version: 8.19.0
       zod:
         specifier: ^4.3.6
         version: 4.3.6
     devDependencies:
+      '@types/ws':
+        specifier: ^8.5.0
+        version: 8.18.1
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -289,9 +301,6 @@ importers:
       '@cogitator-ai/browser':
         specifier: workspace:*
         version: link:../browser
-      '@cogitator-ai/config':
-        specifier: workspace:*
-        version: link:../config
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
@@ -319,6 +328,9 @@ importers:
       '@whiskeysockets/baileys':
         specifier: '>=6.0.0'
         version: 6.7.21(sharp@0.34.5)
+      cron-parser:
+        specifier: ^4.9.0
+        version: 4.9.0
       discord.js:
         specifier: '>=14.0.0'
         version: 14.25.1
@@ -331,6 +343,15 @@ importers:
       ogg-opus-decoder:
         specifier: '>=1.0.0'
         version: 1.7.3
+      pg:
+        specifier: '>=8.0.0'
+        version: 8.18.0
+      qrcode-terminal:
+        specifier: '>=0.12.0'
+        version: 0.12.0
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
     devDependencies:
       '@types/node':
         specifier: ^25.0.10
@@ -777,12 +798,21 @@ importers:
       '@types/node':
         specifier: ^22.15.0
         version: 22.19.7
+      '@types/ws':
+        specifier: ^8.5.0
+        version: 8.18.1
+      openai:
+        specifier: ^6.22.0
+        version: 6.22.0(ws@8.19.0)(zod@4.3.6)
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@types/node@22.19.7)(tsx@4.21.0)(yaml@2.8.2)
+      ws:
+        specifier: ^8.18.0
+        version: 8.19.0
 
   packages/evals:
     dependencies:
@@ -906,6 +936,9 @@ importers:
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@cogitator-ai/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@cogitator-ai/server-shared':
         specifier: workspace:*
         version: link:../server-shared
@@ -938,6 +971,9 @@ importers:
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@cogitator-ai/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@cogitator-ai/server-shared':
         specifier: workspace:*
         version: link:../server-shared
@@ -1073,9 +1109,6 @@ importers:
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@cogitator-ai/memory':
-        specifier: workspace:*
-        version: link:../memory
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
@@ -1148,9 +1181,18 @@ importers:
       fastify:
         specifier: ^5.7.4
         version: 5.7.4
+      ioredis:
+        specifier: ^5.0.0
+        version: 5.9.3
       nanoid:
         specifier: ^5.1.5
         version: 5.1.6
+      pg:
+        specifier: ^8.0.0
+        version: 8.18.0
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
     devDependencies:
       '@types/busboy':
         specifier: ^1.5.4
@@ -1158,6 +1200,9 @@ importers:
       '@types/node':
         specifier: ^25.0.10
         version: 25.0.10
+      openai:
+        specifier: ^6.22.0
+        version: 6.22.0(ws@8.19.0)(zod@4.3.6)
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
@@ -1226,8 +1271,8 @@ importers:
         version: link:../types
     optionalDependencies:
       '@extism/extism':
-        specifier: ^1.0.3
-        version: 1.0.3
+        specifier: ^2.0.0-rc13
+        version: 2.0.0-rc13
       dockerode:
         specifier: ^4.0.2
         version: 4.0.9
@@ -1247,12 +1292,6 @@ importers:
 
   packages/self-modifying:
     dependencies:
-      '@cogitator-ai/core':
-        specifier: workspace:*
-        version: link:../core
-      '@cogitator-ai/neuro-symbolic':
-        specifier: workspace:*
-        version: link:../neuro-symbolic
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
@@ -1372,6 +1411,9 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
+      '@extism/extism':
+        specifier: ^2.0.0-rc13
+        version: 2.0.0-rc13
       chokidar:
         specifier: ^5.0.0
         version: 5.0.0
@@ -1379,12 +1421,6 @@ importers:
         specifier: ^4.3.6
         version: 4.3.6
     devDependencies:
-      '@extism/extism':
-        specifier: ^1.0.3
-        version: 1.0.3
-      '@extism/js-pdk':
-        specifier: ^1.0.0
-        version: 1.1.1
       esbuild:
         specifier: ^0.27.3
         version: 0.27.3
@@ -1409,9 +1445,6 @@ importers:
       bullmq:
         specifier: ^5.69.3
         version: 5.69.3
-      ioredis:
-        specifier: ^5.0.0
-        version: 5.8.2
       nanoid:
         specifier: ^5.0.9
         version: 5.1.6
@@ -1419,6 +1452,9 @@ importers:
         specifier: ^4.3.6
         version: 4.3.6
     devDependencies:
+      ioredis:
+        specifier: 5.9.2
+        version: 5.9.2
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
@@ -3028,15 +3064,9 @@ packages:
       levn: 0.4.1
     dev: true
 
-  /@extism/extism@1.0.3:
-    resolution: {integrity: sha512-kHwJwNP19c2q6tN2VYez/Bvv/mvx5J+UEyVbHJKAQ8+l9Z+MJ7TTjBw/GwDQcieXlLtPDNphugeH8ChKKfVtQg==}
-    requiresBuild: true
-
-  /@extism/js-pdk@1.1.1:
-    resolution: {integrity: sha512-VZLn/dX0ttA1uKk2PZeR/FL3N+nA1S5Vc7E5gdjkR60LuUIwCZT9cYON245V4HowHlBA7YOegh0TLjkx+wNbrA==}
-    dependencies:
-      urlpattern-polyfill: 8.0.2
-    dev: true
+  /@extism/extism@2.0.0-rc13:
+    resolution: {integrity: sha512-iQ3mrPKOC0WMZ94fuJrKbJmMyz4LQ9Abf8gd4F5ShxKWa+cRKcVzk0EqRQsp5xXsQ2dO3zJTiA6eTc4Ihf7k+A==}
+    dev: false
 
   /@fastify/accept-negotiator@2.0.1:
     resolution: {integrity: sha512-/c/TW2bO/v9JeEgoD/g1G5GxGeCF1Hafdf79WPmUlgYiBXummY0oX3VVq4yFkKKVBKDNlaDUYoab7g38RpPqCQ==}
@@ -3552,14 +3582,8 @@ packages:
       iconv-lite: 0.7.2
     dev: true
 
-  /@ioredis/commands@1.4.0:
-    resolution: {integrity: sha512-aFT2yemJJo+TZCmieA7qnYGQooOS7QfNmYrzGtsYd3g9j5iDP8AimYYAesf79ohjbLG12XxC4nG5DyEnC88AsQ==}
-    requiresBuild: true
-    dev: false
-
   /@ioredis/commands@1.5.0:
     resolution: {integrity: sha512-eUgLqrMf8nJkZxT24JvVRrQya1vZkQh8BBeYNwGDqa5I0VUi8ACx7uFvAaLxintokpTenkK6DASvo/bvNbBGow==}
-    dev: false
 
   /@isaacs/balanced-match@4.0.1:
     resolution: {integrity: sha512-yzMTt9lEb8Gv7zRioUilSglI0c0smZ9k5D65677DLWLtWJaXIS3CqcGyUFByYKlnUj6TkjLVs54fBl6+TiGQDQ==}
@@ -7295,7 +7319,6 @@ packages:
     resolution: {integrity: sha512-RMr0FhtfXemyinomL4hrWcYJxmX6deFdCxpJzhDttxgO1+bcCnkk+9drydLVDmAMG7NE6aN/fl4F7ucU/90gAA==}
     engines: {node: '>=0.10.0'}
     requiresBuild: true
-    dev: false
 
   /co@4.6.0:
     resolution: {integrity: sha512-QVb0dM5HvG+uaxitm8wONl7jltx8dqhfU33DcqtOZcLSVIKSDDLDi7+0LbAKiyI8hD9u42m2YxXSkMGWThaecQ==}
@@ -7691,7 +7714,6 @@ packages:
     resolution: {integrity: sha512-HVQE3AAb/pxF8fQAoiqpvg9i3evqug3hoiwakOyZAwJm+6vZehbkYXZ0l4JxS+I3QxM97v5aaRNhj8v5oBhekw==}
     engines: {node: '>=0.10'}
     requiresBuild: true
-    dev: false
 
   /depd@1.1.2:
     resolution: {integrity: sha512-7emPTl6Dpo6JRXOXjLRxck+FlLRX5847cLKEn00PLAgc3g2hTZZgr+e4c2v6QpSmLeFP3n5yUo7ft6avBK/5jQ==}
@@ -9337,24 +9359,6 @@ packages:
     engines: {node: '>=12'}
     dev: false
 
-  /ioredis@5.8.2:
-    resolution: {integrity: sha512-C6uC+kleiIMmjViJINWk80sOQw5lEzse1ZmvD+S/s8p8CWapftSaC+kocGTx6xrbrJ4WmYQGC08ffHLr6ToR6Q==}
-    engines: {node: '>=12.22.0'}
-    requiresBuild: true
-    dependencies:
-      '@ioredis/commands': 1.4.0
-      cluster-key-slot: 1.1.2
-      debug: 4.4.3
-      denque: 2.1.0
-      lodash.defaults: 4.2.0
-      lodash.isarguments: 3.1.0
-      redis-errors: 1.2.0
-      redis-parser: 3.0.0
-      standard-as-callback: 2.1.0
-    transitivePeerDependencies:
-      - supports-color
-    dev: false
-
   /ioredis@5.9.2:
     resolution: {integrity: sha512-tAAg/72/VxOUW7RQSX1pIxJVucYKcjFjfvj60L57jrZpYCHC3XN0WCQ3sNYL4Gmvv+7GPvTAjc+KSdeNuE8oWQ==}
     engines: {node: '>=12.22.0'}
@@ -9370,7 +9374,6 @@ packages:
       standard-as-callback: 2.1.0
     transitivePeerDependencies:
       - supports-color
-    dev: false
 
   /ioredis@5.9.3:
     resolution: {integrity: sha512-VI5tMCdeoxZWU5vjHWsiE/Su76JGhBvWF1MJnV9ZtGltHk9BmD48oDq8Tj8haZ85aceXZMxLNDQZRVo5QKNgXA==}
@@ -9938,7 +9941,6 @@ packages:
   /lodash.defaults@4.2.0:
     resolution: {integrity: sha512-qjxPLHd3r5DnsdGacqOMU6pb/avJzdh9tFX2ymgoZE27BmjXrNy/y4LoaiTeAb+O3gL8AfpJGtqfX/ae2leYYQ==}
     requiresBuild: true
-    dev: false
 
   /lodash.includes@4.3.0:
     resolution: {integrity: sha512-W3Bx6mdkRTGtlJISOvVD/lbqjTlPPUDTMnlXZFnVwi9NKJ6tiAk6LVdlhZMm17VZisqhKcgzpO5Wz91PCt5b0w==}
@@ -9947,7 +9949,6 @@ packages:
   /lodash.isarguments@3.1.0:
     resolution: {integrity: sha512-chi4NHZlZqZD18a0imDHnZPrDeBbTtVN7GXMwuGdRH9qotxAjYs3aVLKc7zNOG9eddR5Ksd8rvFEBc9SsggPpg==}
     requiresBuild: true
-    dev: false
 
   /lodash.isboolean@3.0.3:
     resolution: {integrity: sha512-Bz5mupy2SVbPHURB98VAcw+aHh4vRV5IPNhILUCsOzRmsTmSQ17jIuqopAentWoehktxGd9e/hbIXq980/1QJg==}
@@ -11291,7 +11292,6 @@ packages:
     dependencies:
       ws: 8.19.0
       zod: 4.3.6
-    dev: false
 
   /openapi-types@12.1.3:
     resolution: {integrity: sha512-N4YtSYJqghVu4iek2ZUvcN/0aqH1kRDuNqzcycDxhOUpg7GdvLa2F3DgS6yBNhInhv2r/6I0Flkn7CqL8+nIcw==}
@@ -11874,6 +11874,11 @@ packages:
       hookified: 1.15.1
     dev: false
 
+  /qrcode-terminal@0.12.0:
+    resolution: {integrity: sha512-EXtzRZmC+YGmGlDFbXKxQiMZNwCLEO6BANKXG4iCtSIM0yqc/pappSx3RIKr4r0uh5JsBckOXeKrB3Iz7mdQpQ==}
+    hasBin: true
+    dev: false
+
   /qs@6.14.1:
     resolution: {integrity: sha512-4EK3+xJl8Ts67nLYNwqw/dsFVnCf+qR7RgXSK9jEEm9unao3njwMDdmsdvoKBKHzxd7tCYz5e5M+SnMjdtXGQQ==}
     engines: {node: '>=0.6'}
@@ -12161,7 +12166,6 @@ packages:
     resolution: {integrity: sha512-1qny3OExCf0UvUV/5wpYKf2YwPcOqXzkwKKSmKHiE6ZMQs5heeE/c8eXK+PNllPvmjgAbfnsbpkGZWy8cBpn9w==}
     engines: {node: '>=4'}
     requiresBuild: true
-    dev: false
 
   /redis-parser@3.0.0:
     resolution: {integrity: sha512-DJnGAeenTdpMEH6uAJRK/uiyEIH9WVsUmoLwzudwGJUwZPp80PDBWPHXSAGNPwNvIXAbe7MSUB1zQFugFml66A==}
@@ -12169,7 +12173,6 @@ packages:
     requiresBuild: true
     dependencies:
       redis-errors: 1.2.0
-    dev: false
 
   /redux-thunk@3.1.0(redux@5.0.1):
     resolution: {integrity: sha512-NW2r5T6ksUKXCabzhL9z+h206HQw/NJkcLm1GPImRQ8IzfXwRGqjVhKJGauHirT0DAuyy6hjdnMZaRoAcy0Klw==}
@@ -12740,7 +12743,6 @@ packages:
   /standard-as-callback@2.1.0:
     resolution: {integrity: sha512-qoRRSyROncaz1z0mvYqIE4lCd9p2R90i6GxW3uZv5ucSu8tU7B5HXUP1gG8pVZsYNVaXjk8ClXHPttLyxAL48A==}
     requiresBuild: true
-    dev: false
 
   /state-local@1.0.7:
     resolution: {integrity: sha512-HTEHMNieakEnoe33shBYcZ7NX83ACUjCu8c40iOGEZsngj9zRnkqS9j1pqQPXwobB0ZcVTk27REb7COQ0UR59w==}
@@ -13478,10 +13480,6 @@ packages:
       punycode: 2.3.1
     dev: true
 
-  /urlpattern-polyfill@8.0.2:
-    resolution: {integrity: sha512-Qp95D4TPJl1kC9SKigDcqgyM2VDVO4RiJc2d4qe5GrYm+zbIQCWWKAFaJNQ4BhdFeDGwBmAxqJBwWSJDb9T3BQ==}
-    dev: true
-
   /use-callback-ref@1.3.3(@types/react@19.2.9)(react@19.2.3):
     resolution: {integrity: sha512-jQL3lRnocaFtu3V00JToYz/4QkNWswxijDaCVNZRiRTO3HQDLsdu1ZtmIUvV4yPp+rvWm5j0y0TG/S61cuijTg==}
     engines: {node: '>=10'}
@@ -14212,7 +14210,6 @@ packages:
 
   /zod@4.3.6:
     resolution: {integrity: sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==}
-    dev: false
 
   /zustand@4.5.7(@types/react@19.2.9)(react@19.2.3):
     resolution: {integrity: sha512-CHOUy7mu3lbD6o6LJLfllpjkzhHXSBlX8B9+qPddUsIfeF5S/UZ5q0kmCsnRqT1UHFQZchNFDDzMbQsuesHWlw==}

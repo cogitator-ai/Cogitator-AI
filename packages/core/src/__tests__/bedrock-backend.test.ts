@@ -416,4 +416,89 @@ describe('BedrockBackend', () => {
       expect(response.content).toBe('OK');
     });
   });
+
+  describe('audit regressions', () => {
+    const okResponse = {
+      output: { message: { content: [{ text: 'ok' }] } },
+      stopReason: 'end_turn',
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    };
+
+    it('merges parallel tool results into one user turn and joins system prompts', async () => {
+      mockSend.mockResolvedValueOnce(okResponse);
+
+      await backend.chat({
+        model: 'anthropic.claude-3-sonnet',
+        messages: [
+          { role: 'system', content: 'Base' },
+          { role: 'user', content: 'Weather?' },
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [
+              { id: 't1', name: 'weather', arguments: { city: 'Tokyo' } },
+              { id: 't2', name: 'weather', arguments: { city: 'Paris' } },
+            ],
+          } as never,
+          { role: 'tool', content: 'sunny', toolCallId: 't1', name: 'weather' },
+          { role: 'tool', content: 'rainy', toolCallId: 't2', name: 'weather' },
+          { role: 'system', content: 'Reflection' },
+        ],
+      });
+
+      const input = mockSend.mock.calls[0][0].input as {
+        system: Array<{ text: string }>;
+        messages: Array<{ role: string; content: unknown[] }>;
+      };
+      expect(input.system).toEqual([{ text: 'Base\n\nReflection' }]);
+      expect(input.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
+      expect(input.messages[2].content).toEqual([
+        { toolResult: { toolUseId: 't1', content: [{ text: 'sunny' }] } },
+        { toolResult: { toolUseId: 't2', content: [{ text: 'rainy' }] } },
+      ]);
+    });
+
+    it('wraps errors thrown while iterating the stream', async () => {
+      async function* failingStream() {
+        yield { contentBlockDelta: { contentBlockIndex: 0, delta: { text: 'Hi' } } };
+        throw new Error('ThrottlingException: Rate exceeded');
+      }
+      mockSend.mockResolvedValueOnce({ stream: failingStream() });
+
+      const consume = async () => {
+        for await (const _ of backend.chatStream({
+          model: 'anthropic.claude-3-sonnet',
+          messages: [{ role: 'user', content: 'x' }],
+        })) {
+          /* consume stream */
+        }
+      };
+
+      await expect(consume()).rejects.toMatchObject({ name: 'LLMError' });
+    });
+
+    it('treats empty streamed tool input as empty arguments', async () => {
+      async function* toolStream() {
+        yield {
+          contentBlockStart: {
+            contentBlockIndex: 0,
+            start: { toolUse: { toolUseId: 't1', name: 'now' } },
+          },
+        };
+        yield { contentBlockStop: { contentBlockIndex: 0 } };
+        yield { messageStop: { stopReason: 'tool_use' } };
+      }
+      mockSend.mockResolvedValueOnce({ stream: toolStream() });
+
+      const calls: unknown[] = [];
+      for await (const chunk of backend.chatStream({
+        model: 'anthropic.claude-3-sonnet',
+        messages: [{ role: 'user', content: 'x' }],
+      })) {
+        if (chunk.delta.toolCalls) calls.push(...chunk.delta.toolCalls);
+      }
+
+      expect(calls).toEqual([{ id: 't1', name: 'now', arguments: {} }]);
+    });
+  });
 });

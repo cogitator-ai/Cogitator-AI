@@ -7,6 +7,7 @@ description: Connect your AI agent to WhatsApp via Baileys.
 
 ```bash
 pnpm add @whiskeysockets/baileys
+pnpm add qrcode-terminal   # optional: print the pairing QR in the terminal
 ```
 
 ## How It Works
@@ -19,7 +20,7 @@ WhatsApp doesn't have a bot API like Telegram. Instead, Baileys connects as a "l
 
 ## First-Time Pairing
 
-1. Start the gateway — a QR code appears in the terminal
+1. Start the gateway — a QR code appears in the terminal (requires `qrcode-terminal`; otherwise pass `qrCallback`)
 2. On your phone: WhatsApp → Settings → Linked Devices → Link a Device
 3. Scan the QR code
 4. Session is saved to disk — next restart reconnects automatically
@@ -40,8 +41,8 @@ const whatsapp = whatsappChannel({
 ```typescript
 interface WhatsAppChannelConfig {
   sessionPath?: string;  // default: '.cogitator/whatsapp-session'
-  qrCallback?: (qr: string) => void;
-  printQr?: boolean;     // default: true
+  qrCallback?: (qr: string) => void; // takes precedence over printQr
+  printQr?: boolean;     // default: true, uses qrcode-terminal
 }
 ```
 
@@ -51,12 +52,14 @@ interface WhatsAppChannelConfig {
 |---------|---------|
 | 1-on-1 chats | ✅ |
 | Group chats | ✅ |
-| Streaming (edit) | ❌ (WhatsApp doesn't support editing) |
+| Streaming (edit) | ✅ via message edits |
 | Typing indicator | ✅ (presence update) |
 | Reactions | ❌ |
-| Files | ✅ |
+| Incoming media | ✅ images, voice, video, documents (+ captions) |
+| Sending files | ✅ image / audio / video / document by type, from buffers or URLs |
+| Quoted replies | ✅ for recent messages |
 | Markdown | ✅ WhatsApp-native formatting |
-| Auto-reconnect | ✅ |
+| Auto-reconnect | ✅ exponential backoff (1s → 60s), not after `stop()` or logout |
 | Session persistence | ✅ (filesystem) |
 
 ## WhatsApp Markdown
@@ -68,12 +71,13 @@ WhatsApp uses its own formatting syntax. Cogitator auto-converts standard markdo
 | `**bold**` | `*bold*` |
 | `__bold__` | `*bold*` |
 | `~~strike~~` | `~strike~` |
+| `# Heading` | `*Heading*` |
+| `[text](url)` | `text (url)` |
 | Code blocks | Preserved |
 | Inline code | Preserved |
 
 ## Limitations
 
-- No message editing — full response sent after generation (no streaming preview)
 - QR code expires after ~20 seconds, bot retries automatically
 - If you unlink the device from your phone, you need to re-pair
 - WhatsApp may temporarily ban automated accounts with high message volume

@@ -65,7 +65,7 @@ describe('VoicePipeline', () => {
       await pipeline.process(audio);
 
       expect(stt.transcribe).toHaveBeenCalledWith(audio);
-      expect(agent.run).toHaveBeenCalledWith('Hello');
+      expect(agent.run).toHaveBeenCalledWith('Hello', undefined);
       expect(tts.synthesize).toHaveBeenCalledWith('Hi there!');
     });
 
@@ -86,7 +86,7 @@ describe('VoicePipeline', () => {
 
       const result = await pipeline.process(Buffer.from('audio'));
 
-      expect(agent.run).toHaveBeenCalledWith('What is the weather?');
+      expect(agent.run).toHaveBeenCalledWith('What is the weather?', undefined);
       expect(result.transcript).toBe('What is the weather?');
       expect(result.response).toBe('It is sunny today.');
     });

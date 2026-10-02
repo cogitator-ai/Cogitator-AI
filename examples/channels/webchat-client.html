@@ -103,6 +103,12 @@
               messages[data.id].textContent = data.text;
             }
             break;
+          case 'delete':
+            if (messages[data.id]) {
+              messages[data.id].remove();
+              delete messages[data.id];
+            }
+            break;
           case 'typing':
             break;
           case 'error':

@@ -108,7 +108,9 @@ export class SimpleTriggerEventEmitter implements TriggerEventEmitter {
       for (const callback of callbacks) {
         try {
           callback(payload);
-        } catch {}
+        } catch (error) {
+          console.warn(`[TriggerEventEmitter] Listener for '${eventType}' failed:`, error);
+        }
       }
     }
   }
@@ -165,7 +167,9 @@ export class DefaultTriggerManager implements ITriggerManager {
       for (const callback of this.triggerCallbacks) {
         try {
           callback(trigger, context);
-        } catch {}
+        } catch (error) {
+          console.warn(`[TriggerManager] onTrigger callback failed for '${trigger.id}':`, error);
+        }
       }
 
       const fresh = await this.store.get(trigger.id);
@@ -370,7 +374,9 @@ export class DefaultTriggerManager implements ITriggerManager {
     for (const callback of this.triggerCallbacks) {
       try {
         callback(trigger, context);
-      } catch {}
+      } catch (error) {
+        console.warn(`[TriggerManager] onTrigger callback failed for '${trigger.id}':`, error);
+      }
     }
 
     const fresh = await this.store.get(id);
@@ -525,7 +531,9 @@ export class DefaultTriggerManager implements ITriggerManager {
         for (const callback of this.triggerCallbacks) {
           try {
             callback(trigger, context);
-          } catch {}
+          } catch (error) {
+            console.warn(`[TriggerManager] onTrigger callback failed for '${trigger.id}':`, error);
+          }
         }
 
         const fresh = await this.store.get(id);
@@ -537,7 +545,9 @@ export class DefaultTriggerManager implements ITriggerManager {
         if (this.config.onTriggerFire) {
           await this.config.onTriggerFire(trigger, context);
         }
-      })().catch(() => {});
+      })().catch((error: unknown) => {
+        console.warn(`[TriggerManager] Event trigger '${id}' failed to fire:`, error);
+      });
     });
 
     this.eventListeners.set(id, unsubscribe);

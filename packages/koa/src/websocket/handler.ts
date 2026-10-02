@@ -1,257 +1,379 @@
-import type { Server as HttpServer } from 'http';
+import { STATUS_CODES, type IncomingMessage, type Server as HttpServer } from 'http';
+import type { Duplex } from 'stream';
 import type {
-  WebSocketMessage,
-  WebSocketResponse,
   RouteContext,
+  WebSocketAuthFunction,
   WebSocketConfig,
+  WebSocketResponse,
+  WebSocketRunPayload,
 } from '../types.js';
-import { generateId } from '@cogitator-ai/server-shared';
-import type { ToolCall } from '@cogitator-ai/types';
+import type { ToolCall, ToolResult } from '@cogitator-ai/types';
+import { getOwn } from '../utils/lookup.js';
+import { isModuleNotFoundError, resolveError } from '../utils/errors.js';
+import { toSwarmRunResponse, toWorkflowRunResponse } from '../utils/results.js';
+import { isRecord } from '../utils/validation.js';
 
 type WebSocketType = import('ws').WebSocket;
 type WebSocketServerType = import('ws').WebSocketServer;
+type RawData = import('ws').RawData;
 
 interface ClientState {
-  id: string;
   abortController?: AbortController;
 }
 
+type ParsedMessage =
+  | { type: 'ping'; id?: string }
+  | { type: 'stop'; id?: string }
+  | { type: 'run'; id?: string; payload: unknown };
+
 const WS_OPEN = 1;
+const DEFAULT_PATH = '/ws';
+const DEFAULT_PING_INTERVAL = 30_000;
+const DEFAULT_MAX_PAYLOAD = 1024 * 1024;
+const RUN_TYPES: readonly WebSocketRunPayload['type'][] = ['agent', 'workflow', 'swarm'];
+
+function isRunType(value: unknown): value is WebSocketRunPayload['type'] {
+  return RUN_TYPES.some((runType) => runType === value);
+}
+
+class ClientFacingError extends Error {}
 
 export async function setupWebSocket(
   server: HttpServer,
   ctx: RouteContext,
   config: WebSocketConfig = {}
 ): Promise<WebSocketServerType | null> {
+  let wsModule: typeof import('ws');
   try {
-    const { WebSocketServer } = await import('ws');
-
-    const wss = new WebSocketServer({
-      server,
-      path: config.path ?? '/ws',
-      maxPayload: config.maxPayloadSize ?? 1024 * 1024,
-    });
-
-    const pingInterval = config.pingInterval ?? 30000;
-
-    wss.on('connection', (ws: WebSocketType) => {
-      const clientState: ClientState = {
-        id: generateId('ws'),
-      };
-
-      let alive = true;
-      const heartbeat = setInterval(() => {
-        if (!alive) {
-          clearInterval(heartbeat);
-          ws.terminate();
-          return;
-        }
-        alive = false;
-        ws.ping();
-      }, pingInterval);
-
-      ws.on('pong', () => {
-        alive = true;
-      });
-
-      ws.on('message', async (data: Buffer) => {
-        try {
-          const message = JSON.parse(data.toString()) as WebSocketMessage;
-          await handleMessage(ws, message, ctx, clientState);
-        } catch (error) {
-          sendResponse(ws, {
-            type: 'error',
-            error: error instanceof Error ? error.message : 'Invalid message',
-          });
-        }
-      });
-
-      ws.on('close', () => {
-        clearInterval(heartbeat);
-        clientState.abortController?.abort();
-      });
-
-      ws.on('error', () => {
-        clearInterval(heartbeat);
-        clientState.abortController?.abort();
-      });
-    });
-
-    console.log('[CogitatorKoa] WebSocket enabled');
-    return wss;
-  } catch {
-    console.warn('[CogitatorKoa] WebSocket setup failed (ws package not installed)');
+    wsModule = await import('ws');
+  } catch (error) {
+    if (!isModuleNotFoundError(error)) throw error;
+    console.warn('[CogitatorKoa] WebSocket setup skipped: the "ws" package is not installed');
     return null;
+  }
+
+  const path = config.path ?? DEFAULT_PATH;
+  const pingInterval = config.pingInterval ?? DEFAULT_PING_INTERVAL;
+  const pingTimeout = config.pingTimeout ?? pingInterval;
+  const wss = new wsModule.WebSocketServer({
+    noServer: true,
+    maxPayload: config.maxPayloadSize ?? DEFAULT_MAX_PAYLOAD,
+  });
+
+  const onUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    if (getPathname(req) !== path) {
+      if (server.listenerCount('upgrade') === 1) rejectUpgrade(socket, 404);
+      return;
+    }
+
+    const onSocketError = () => socket.destroy();
+    socket.on('error', onSocketError);
+
+    void authorize(config.auth, req).then((status) => {
+      if (status !== 200) {
+        rejectUpgrade(socket, status);
+        return;
+      }
+      if (socket.destroyed) return;
+      socket.off('error', onSocketError);
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit('connection', ws, req);
+      });
+    });
+  };
+
+  server.on('upgrade', onUpgrade);
+  wss.on('close', () => {
+    server.off('upgrade', onUpgrade);
+  });
+
+  wss.on('connection', (ws: WebSocketType) => {
+    handleConnection(ws, ctx, pingInterval, pingTimeout);
+  });
+
+  return wss;
+}
+
+function getPathname(req: IncomingMessage): string {
+  try {
+    return new URL(req.url ?? '/', 'http://localhost').pathname;
+  } catch {
+    return '';
   }
 }
 
-async function handleMessage(
+async function authorize(
+  auth: WebSocketAuthFunction | undefined,
+  req: IncomingMessage
+): Promise<number> {
+  if (!auth) return 200;
+  try {
+    await auth(req);
+    return 200;
+  } catch (error) {
+    const status = (error as { status?: number } | null)?.status;
+    if (status !== undefined && status >= 500) {
+      console.error('[CogitatorKoa] WebSocket auth error:', error);
+      return 500;
+    }
+    return 401;
+  }
+}
+
+function rejectUpgrade(socket: Duplex, status: number): void {
+  if (socket.writable) {
+    const message = STATUS_CODES[status] ?? 'Error';
+    socket.write(
+      `HTTP/1.1 ${status} ${message}\r\n` +
+        'Connection: close\r\n' +
+        'Content-Type: text/plain\r\n' +
+        `Content-Length: ${Buffer.byteLength(message)}\r\n` +
+        `\r\n${message}`
+    );
+  }
+  socket.destroy();
+}
+
+function handleConnection(
   ws: WebSocketType,
-  message: WebSocketMessage,
+  ctx: RouteContext,
+  pingInterval: number,
+  pingTimeout: number
+): void {
+  const state: ClientState = {};
+  let pongTimer: NodeJS.Timeout | undefined;
+
+  const heartbeat = setInterval(() => {
+    if (pongTimer) return;
+    ws.ping();
+    pongTimer = setTimeout(() => ws.terminate(), pingTimeout);
+  }, pingInterval);
+
+  const cleanup = () => {
+    clearInterval(heartbeat);
+    clearTimeout(pongTimer);
+    pongTimer = undefined;
+    state.abortController?.abort();
+  };
+
+  ws.on('pong', () => {
+    clearTimeout(pongTimer);
+    pongTimer = undefined;
+  });
+
+  ws.on('message', (data: RawData) => {
+    void handleRawMessage(ws, data, ctx, state);
+  });
+
+  ws.on('close', cleanup);
+  ws.on('error', cleanup);
+}
+
+async function handleRawMessage(
+  ws: WebSocketType,
+  data: RawData,
   ctx: RouteContext,
   state: ClientState
 ): Promise<void> {
-  switch (message.type) {
+  const message = parseMessage(data);
+  if (!message.ok) {
+    sendResponse(ws, { type: 'error', error: message.error });
+    return;
+  }
+
+  switch (message.value.type) {
     case 'ping':
-      sendResponse(ws, { type: 'pong' });
-      break;
-
-    case 'run':
-      await handleRun(ws, message, ctx, state);
-      break;
-
+      sendResponse(ws, { type: 'pong', id: message.value.id });
+      return;
     case 'stop':
       state.abortController?.abort();
-      state.abortController = undefined;
-      break;
+      return;
+    case 'run':
+      await handleRun(ws, message.value.id, message.value.payload, ctx, state);
+      return;
   }
+}
+
+function parseMessage(
+  data: RawData
+): { ok: true; value: ParsedMessage } | { ok: false; error: string } {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(rawDataToString(data));
+  } catch {
+    return { ok: false, error: 'Invalid JSON message' };
+  }
+
+  if (!isRecord(raw)) return { ok: false, error: 'Message must be a JSON object' };
+  if (raw.id !== undefined && typeof raw.id !== 'string') {
+    return { ok: false, error: 'Message "id" must be a string' };
+  }
+
+  const id = raw.id;
+  switch (raw.type) {
+    case 'ping':
+    case 'stop':
+      return { ok: true, value: { type: raw.type, id } };
+    case 'run':
+      return { ok: true, value: { type: 'run', id, payload: raw.payload } };
+    default:
+      return { ok: false, error: `Unsupported message type: ${String(raw.type)}` };
+  }
+}
+
+function rawDataToString(data: RawData): string {
+  if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
+  if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8');
+  return data.toString('utf8');
+}
+
+function parseRunPayload(payload: unknown): WebSocketRunPayload | string {
+  if (!isRecord(payload)) return 'Invalid run payload';
+  const { type, name, input, context, threadId } = payload;
+
+  if (!isRunType(type)) {
+    return `Unsupported run type: ${String(type)}`;
+  }
+  if (typeof name !== 'string' || !name) return 'Invalid run payload: "name" is required';
+  if (typeof input !== 'string' || !input) return 'Invalid run payload: "input" is required';
+  if (context !== undefined && !isRecord(context)) {
+    return 'Invalid run payload: "context" must be an object';
+  }
+  if (threadId !== undefined && (typeof threadId !== 'string' || !threadId)) {
+    return 'Invalid run payload: "threadId" must be a non-empty string';
+  }
+
+  return {
+    type,
+    name,
+    input,
+    ...(context !== undefined && { context }),
+    ...(threadId !== undefined && { threadId }),
+  };
 }
 
 async function handleRun(
   ws: WebSocketType,
-  message: WebSocketMessage,
+  id: string | undefined,
+  rawPayload: unknown,
   ctx: RouteContext,
   state: ClientState
 ): Promise<void> {
-  const payload = message.payload as {
-    type: 'agent' | 'workflow' | 'swarm';
-    name: string;
-    input: string;
-    context?: Record<string, unknown>;
-  };
-
-  if (!payload?.type || !payload?.name || !payload?.input) {
-    sendResponse(ws, { type: 'error', id: message.id, error: 'Invalid run payload' });
+  const payload = parseRunPayload(rawPayload);
+  if (typeof payload === 'string') {
+    sendResponse(ws, { type: 'error', id, error: payload });
     return;
   }
 
   if (state.abortController) {
-    sendResponse(ws, { type: 'error', id: message.id, error: 'A run is already in progress' });
+    sendResponse(ws, { type: 'error', id, error: 'A run is already in progress' });
     return;
   }
 
   const abortController = new AbortController();
   state.abortController = abortController;
+  const emit = (event: Record<string, unknown>) => {
+    sendResponse(ws, { type: 'event', id, payload: event });
+  };
 
   try {
-    if (payload.type === 'agent') {
-      const agent = ctx.agents[payload.name];
-      if (!agent) {
-        sendResponse(ws, {
-          type: 'error',
-          id: message.id,
-          error: `Agent '${payload.name}' not found`,
-        });
-        return;
-      }
+    const result = await executeRun(payload, ctx, abortController.signal, emit);
+    if (abortController.signal.aborted) {
+      emit({ type: 'cancelled' });
+    } else {
+      emit({ type: 'complete', result });
+    }
+  } catch (error) {
+    if (abortController.signal.aborted) {
+      emit({ type: 'cancelled' });
+    } else if (error instanceof ClientFacingError) {
+      sendResponse(ws, { type: 'error', id, error: error.message });
+    } else {
+      const { body } = resolveError(error, 'WebSocket run error');
+      sendResponse(ws, { type: 'error', id, error: body.error.message });
+    }
+  } finally {
+    if (state.abortController === abortController) {
+      state.abortController = undefined;
+    }
+  }
+}
 
-      const result = await ctx.runtime.run(agent, {
+async function executeRun(
+  payload: WebSocketRunPayload,
+  ctx: RouteContext,
+  signal: AbortSignal,
+  emit: (event: Record<string, unknown>) => void
+): Promise<unknown> {
+  switch (payload.type) {
+    case 'agent': {
+      const agent = getOwn(ctx.agents, payload.name);
+      if (!agent) throw new ClientFacingError(`Agent '${payload.name}' not found`);
+
+      return ctx.runtime.run(agent, {
         input: payload.input,
         context: payload.context,
+        threadId: payload.threadId,
         stream: true,
-        signal: abortController.signal,
-        onToken: (token: string) => {
-          sendResponse(ws, {
-            type: 'event',
-            id: message.id,
-            payload: { type: 'token', delta: token },
-          });
-        },
-        onToolCall: (toolCall: ToolCall) => {
-          sendResponse(ws, {
-            type: 'event',
-            id: message.id,
-            payload: { type: 'tool-call', ...toolCall },
-          });
-        },
-        onToolResult: (toolResult: { callId: string; result: unknown }) => {
-          sendResponse(ws, {
-            type: 'event',
-            id: message.id,
-            payload: { type: 'tool-result', ...toolResult },
-          });
-        },
+        signal,
+        onToken: (token: string) => emit({ type: 'token', delta: token }),
+        onToolCall: (toolCall: ToolCall) => emit({ type: 'tool-call', ...toolCall }),
+        onToolResult: (toolResult: ToolResult) => emit({ type: 'tool-result', ...toolResult }),
       });
+    }
 
-      sendResponse(ws, {
-        type: 'event',
-        id: message.id,
-        payload: { type: 'complete', result },
-      });
-    } else if (payload.type === 'workflow') {
-      const workflow = ctx.workflows[payload.name];
-      if (!workflow) {
-        sendResponse(ws, {
-          type: 'error',
-          id: message.id,
-          error: `Workflow '${payload.name}' not found`,
-        });
-        return;
-      }
+    case 'workflow': {
+      const workflow = getOwn(ctx.workflows, payload.name);
+      if (!workflow) throw new ClientFacingError(`Workflow '${payload.name}' not found`);
 
-      const { WorkflowExecutor } = await import('@cogitator-ai/workflows');
-      const executor = new WorkflowExecutor(ctx.runtime);
-      const result = await executor.execute(
-        workflow,
-        { input: payload.input },
-        { signal: abortController.signal }
+      const { WorkflowExecutor } = await importOptional(
+        () => import('@cogitator-ai/workflows'),
+        'Workflows'
       );
+      const executor = new WorkflowExecutor(ctx.runtime);
+      const result = await executor.execute(workflow, { input: payload.input }, { signal });
+      if (result.error) throw result.error;
+      return toWorkflowRunResponse(result);
+    }
 
-      sendResponse(ws, {
-        type: 'event',
-        id: message.id,
-        payload: { type: 'complete', result },
-      });
-    } else if (payload.type === 'swarm') {
-      const swarmConfig = ctx.swarms[payload.name];
-      if (!swarmConfig) {
-        sendResponse(ws, {
-          type: 'error',
-          id: message.id,
-          error: `Swarm '${payload.name}' not found`,
-        });
-        return;
-      }
+    case 'swarm': {
+      const swarmConfig = getOwn(ctx.swarms, payload.name);
+      if (!swarmConfig) throw new ClientFacingError(`Swarm '${payload.name}' not found`);
 
-      const { Swarm } = await import('@cogitator-ai/swarms');
+      const { Swarm } = await importOptional(() => import('@cogitator-ai/swarms'), 'Swarms');
       const swarm = new Swarm(ctx.runtime, swarmConfig);
-      const { signal } = abortController;
       const onAbort = () => swarm.abort();
-      signal.addEventListener('abort', onAbort);
+      signal.addEventListener('abort', onAbort, { once: true });
       try {
         const result = await swarm.run({
           input: payload.input,
           context: payload.context,
+          threadId: payload.threadId,
         });
-
-        sendResponse(ws, {
-          type: 'event',
-          id: message.id,
-          payload: { type: 'complete', result },
-        });
+        return toSwarmRunResponse(swarm, result);
       } finally {
         signal.removeEventListener('abort', onAbort);
       }
     }
+  }
+}
+
+async function importOptional<T>(load: () => Promise<T>, label: string): Promise<T> {
+  try {
+    return await load();
   } catch (error) {
-    if (state.abortController?.signal.aborted) {
-      sendResponse(ws, { type: 'event', id: message.id, payload: { type: 'cancelled' } });
-    } else {
-      sendResponse(ws, {
-        type: 'error',
-        id: message.id,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
+    if (isModuleNotFoundError(error)) {
+      throw new ClientFacingError(`${label} package not installed`);
     }
-  } finally {
-    state.abortController = undefined;
+    throw error;
   }
 }
 
 function sendResponse(ws: WebSocketType, response: WebSocketResponse): void {
+  if (ws.readyState !== WS_OPEN) return;
   try {
-    if (ws.readyState === WS_OPEN) {
-      ws.send(JSON.stringify(response));
-    }
-  } catch {}
+    ws.send(JSON.stringify(response));
+  } catch (error) {
+    console.error('[CogitatorKoa] WebSocket send error:', error);
+  }
 }

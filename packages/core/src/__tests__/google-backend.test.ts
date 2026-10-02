@@ -640,4 +640,142 @@ describe('GoogleBackend', () => {
       }).rejects.toThrow('[google] Authentication failed');
     });
   });
+
+  describe('audit regressions', () => {
+    const okJson = {
+      candidates: [{ content: { role: 'model', parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+      usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+    };
+
+    function sentBody(): Record<string, unknown> {
+      return JSON.parse(mockFetch.mock.calls[0][1].body as string) as Record<string, unknown>;
+    }
+
+    it('combines every system message into the system instruction', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => okJson });
+
+      await backend.chat({
+        model: 'gemini-2.5-flash',
+        messages: [
+          { role: 'system', content: 'Base prompt' },
+          { role: 'user', content: 'Hi' },
+          { role: 'system', content: '[Previous conversation summary] stuff' },
+        ],
+      });
+
+      expect(sentBody().systemInstruction).toEqual({
+        parts: [{ text: 'Base prompt\n\n[Previous conversation summary] stuff' }],
+      });
+    });
+
+    it('sends parallel function responses in one content turn', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => okJson });
+
+      await backend.chat({
+        model: 'gemini-2.5-flash',
+        messages: [
+          { role: 'user', content: 'Weather?' },
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [
+              { id: 'c1', name: 'weather', arguments: { city: 'Tokyo' } },
+              { id: 'c2', name: 'weather', arguments: { city: 'Paris' } },
+            ],
+          } as never,
+          { role: 'tool', content: '{"t":20}', toolCallId: 'c1', name: 'weather' },
+          { role: 'tool', content: '{"t":12}', toolCallId: 'c2', name: 'weather' },
+        ],
+      });
+
+      const contents = sentBody().contents as Array<{ role: string; parts: unknown[] }>;
+      expect(contents).toHaveLength(3);
+      expect(contents[2]).toEqual({
+        role: 'user',
+        parts: [
+          { functionResponse: { name: 'weather', response: { t: 20 } } },
+          { functionResponse: { name: 'weather', response: { t: 12 } } },
+        ],
+      });
+    });
+
+    it('round-trips Gemini thought signatures on function calls', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          candidates: [
+            {
+              content: {
+                role: 'model',
+                parts: [
+                  { functionCall: { name: 'lookup', args: { q: 'x' } }, thoughtSignature: 'sig-1' },
+                ],
+              },
+              finishReason: 'STOP',
+            },
+          ],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        }),
+      });
+
+      const first = await backend.chat({
+        model: 'gemini-3-flash',
+        messages: [{ role: 'user', content: 'Look up x' }],
+      });
+      expect(first.toolCalls?.[0].thoughtSignature).toBe('sig-1');
+
+      mockFetch.mockReset();
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => okJson });
+
+      await backend.chat({
+        model: 'gemini-3-flash',
+        messages: [
+          { role: 'user', content: 'Look up x' },
+          { role: 'assistant', content: '', toolCalls: first.toolCalls } as never,
+          { role: 'tool', content: '"found"', toolCallId: first.toolCalls![0].id, name: 'lookup' },
+        ],
+      });
+
+      const contents = sentBody().contents as Array<{ role: string; parts: unknown[] }>;
+      expect(contents[1].parts).toEqual([
+        { functionCall: { name: 'lookup', args: { q: 'x' } }, thoughtSignature: 'sig-1' },
+      ]);
+    });
+
+    it('skips thought summary parts in the visible content', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          candidates: [
+            {
+              content: {
+                role: 'model',
+                parts: [{ text: 'thinking...', thought: true }, { text: 'Answer' }],
+              },
+              finishReason: 'STOP',
+            },
+          ],
+        }),
+      });
+
+      const response = await backend.chat({
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'Q' }],
+      });
+
+      expect(response.content).toBe('Answer');
+      expect(response.usage).toEqual({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+    });
+
+    it('reports blocked prompts instead of crashing on missing candidates', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ promptFeedback: { blockReason: 'SAFETY' } }),
+      });
+
+      await expect(
+        backend.chat({ model: 'gemini-2.5-flash', messages: [{ role: 'user', content: 'x' }] })
+      ).rejects.toThrow('Gemini blocked the prompt: SAFETY');
+    });
+  });
 });

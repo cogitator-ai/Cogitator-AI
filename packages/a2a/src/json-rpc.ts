@@ -2,7 +2,7 @@ export interface JsonRpcRequest {
   jsonrpc: '2.0';
   method: string;
   params?: unknown;
-  id?: string | number;
+  id?: string | number | null;
 }
 
 export interface JsonRpcResponse {
@@ -39,23 +39,28 @@ export function isValidRequest(req: unknown): req is JsonRpcRequest {
     return false;
   }
 
-  if (obj.id === undefined) return true;
+  if (obj.id === undefined || obj.id === null) return true;
   return typeof obj.id === 'string' || typeof obj.id === 'number';
 }
 
+const INVALID_REQUEST_CODE = -32600;
+
 export function parseJsonRpcRequest(body: unknown): JsonRpcRequest | JsonRpcRequest[] {
   if (body === null || body === undefined || typeof body !== 'object') {
-    throw new JsonRpcParseError('Invalid JSON-RPC request: expected object or array');
+    throw new JsonRpcParseError(
+      'Invalid JSON-RPC request: expected object or array',
+      INVALID_REQUEST_CODE
+    );
   }
 
   if (Array.isArray(body)) {
     if (body.length === 0) {
-      throw new JsonRpcParseError('Invalid JSON-RPC batch: empty array');
+      throw new JsonRpcParseError('Invalid JSON-RPC batch: empty array', INVALID_REQUEST_CODE);
     }
 
     for (const item of body) {
       if (!isValidRequest(item)) {
-        throw new JsonRpcParseError('Invalid JSON-RPC request in batch');
+        throw new JsonRpcParseError('Invalid JSON-RPC request in batch', INVALID_REQUEST_CODE);
       }
     }
 
@@ -63,13 +68,16 @@ export function parseJsonRpcRequest(body: unknown): JsonRpcRequest | JsonRpcRequ
   }
 
   if (!isValidRequest(body)) {
-    throw new JsonRpcParseError('Invalid JSON-RPC request structure');
+    throw new JsonRpcParseError('Invalid JSON-RPC request structure', INVALID_REQUEST_CODE);
   }
 
   return body as JsonRpcRequest;
 }
 
-export function createSuccessResponse(id: string | number, result: unknown): JsonRpcResponse {
+export function createSuccessResponse(
+  id: string | number | null,
+  result: unknown
+): JsonRpcResponse {
   return { jsonrpc: '2.0', result, id };
 }
 

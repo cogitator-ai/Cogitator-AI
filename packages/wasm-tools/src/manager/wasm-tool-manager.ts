@@ -11,6 +11,7 @@ import type {
 } from './types.js';
 
 const DEFAULT_DEBOUNCE_MS = 100;
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
@@ -27,9 +28,14 @@ export class WasmToolManager {
   private options: Required<WasmToolManagerOptions>;
 
   constructor(options: WasmToolManagerOptions = {}) {
+    const timeout = options.timeout ?? DEFAULT_TIMEOUT_MS;
+    if (!Number.isFinite(timeout) || timeout <= 0) {
+      throw new Error(`timeout must be a positive number, got ${timeout}`);
+    }
     this.options = {
       debounceMs: options.debounceMs ?? DEFAULT_DEBOUNCE_MS,
       useWasi: options.useWasi ?? false,
+      timeout,
     };
   }
 
@@ -182,28 +188,62 @@ export class WasmToolManager {
     return tool;
   }
 
-  private callPlugin(
+  private async callPlugin(
     mod: LoadedModule,
     input: string,
-    signal: AbortSignal
+    signal?: AbortSignal
   ): Promise<PluginOutput | null> {
-    if (signal.aborted) {
-      return Promise.reject(new Error(`WASM tool ${mod.name} aborted`));
+    if (signal?.aborted) {
+      throw new Error(`WASM tool ${mod.name} aborted`);
     }
 
-    return new Promise((resolve, reject) => {
-      const onAbort = (): void => reject(new Error(`WASM tool ${mod.name} aborted`));
-      signal.addEventListener('abort', onAbort, { once: true });
-      mod.plugin.call('run', input).then(
-        (output) => {
-          signal.removeEventListener('abort', onAbort);
-          resolve(output);
-        },
-        (error) => {
-          signal.removeEventListener('abort', onAbort);
-          reject(error instanceof Error ? error : new Error(String(error)));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    let interrupted = false;
+
+    try {
+      return await new Promise<PluginOutput | null>((resolve, reject) => {
+        timer = setTimeout(() => {
+          interrupted = true;
+          reject(new Error(`WASM tool ${mod.name} timed out after ${this.options.timeout}ms`));
+        }, this.options.timeout);
+        if (signal) {
+          onAbort = () => {
+            interrupted = true;
+            reject(new Error(`WASM tool ${mod.name} aborted`));
+          };
+          signal.addEventListener('abort', onAbort, { once: true });
         }
-      );
+        mod.plugin
+          .call('run', input)
+          .then(resolve, (error: unknown) =>
+            reject(error instanceof Error ? error : new Error(String(error)))
+          );
+      });
+    } finally {
+      clearTimeout(timer);
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+      if (interrupted) {
+        void this.recycle(mod);
+      }
+    }
+  }
+
+  private recycle(mod: LoadedModule): Promise<void> {
+    return this.runSerialized(mod.name, async () => {
+      if (this.modules.get(mod.name) !== mod) return;
+      await mod.plugin.close?.().catch(() => undefined);
+      if (this.closed) {
+        this.modules.delete(mod.name);
+        return;
+      }
+      try {
+        mod.plugin = await this.loader.load(mod.path, this.options.useWasi);
+        mod.loadedAt = new Date();
+      } catch (error) {
+        this.modules.delete(mod.name);
+        this.callbacks.onError?.(mod.name, mod.path, toError(error));
+      }
     });
   }
 
@@ -214,13 +254,13 @@ export class WasmToolManager {
       name,
       description: `WASM tool: ${name}`,
       parameters,
-      execute: async (params: unknown, context: ToolContext) => {
+      execute: async (params: unknown, context?: Partial<ToolContext>) => {
         const mod = this.modules.get(name);
         if (!mod) {
           throw new Error(`Module ${name} not loaded`);
         }
         const input = JSON.stringify(params);
-        const output = await this.callPlugin(mod, input, context.signal);
+        const output = await this.callPlugin(mod, input, context?.signal);
         if (!output) {
           throw new Error(`WASM tool ${name} returned no output`);
         }

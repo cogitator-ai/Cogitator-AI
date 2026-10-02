@@ -1,7 +1,7 @@
 import { createCogitator, DEFAULT_MODEL, header, section } from '../_shared/setup.js';
 import { Agent } from '@cogitator-ai/core';
 import { Swarm } from '@cogitator-ai/swarms';
-import type { SwarmConfig } from '@cogitator-ai/types';
+import type { SwarmConfig } from '@cogitator-ai/swarms';
 
 async function main() {
   header('02 — Pipeline Swarm');

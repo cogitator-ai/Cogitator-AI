@@ -75,7 +75,7 @@ export function createPlanningTools(ns: NeuroSymbolic) {
       const plan = convertToPlan(planInput);
       const result = ns.repairPlan(plan);
 
-      if (!result.success || !result.data) {
+      if (!result.data) {
         return {
           success: false,
           error: result.error || 'Repair failed',

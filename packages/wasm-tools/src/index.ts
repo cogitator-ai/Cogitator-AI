@@ -32,8 +32,10 @@
 
 import { z, type ZodType } from 'zod';
 import type { Tool, SandboxConfig, ToolContext, ToolCategory } from '@cogitator-ai/types';
+import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { invokeWasm } from './runtime.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -45,7 +47,7 @@ export interface WasmToolConfig<TParams = unknown> {
   description: string;
   wasmModule: string;
   wasmFunction?: string;
-  parameters: ZodType<TParams>;
+  parameters: ZodType<TParams, unknown>;
   category?: ToolCategory;
   tags?: string[];
   timeout?: number;
@@ -83,11 +85,13 @@ export interface WasmToolConfig<TParams = unknown> {
  * ```
  */
 export function defineWasmTool<TParams>(config: WasmToolConfig<TParams>): Tool<TParams, unknown> {
+  const wasmFunction = config.wasmFunction ?? 'run';
+  const timeout = config.timeout ?? 5000;
   const sandboxConfig: SandboxConfig = {
     type: 'wasm',
     wasmModule: config.wasmModule,
-    wasmFunction: config.wasmFunction ?? 'run',
-    timeout: config.timeout ?? 5000,
+    wasmFunction,
+    timeout,
     wasi: config.wasi,
   };
 
@@ -96,10 +100,20 @@ export function defineWasmTool<TParams>(config: WasmToolConfig<TParams>): Tool<T
     description: config.description,
     category: config.category,
     tags: config.tags,
-    parameters: config.parameters,
+    parameters: config.parameters as ZodType<TParams>,
+    timeout,
     sandbox: sandboxConfig,
-    execute: async (params: TParams, _context: ToolContext) => {
-      return params;
+    execute: async (params: TParams, context?: Partial<ToolContext>) => {
+      const validated = config.parameters.parse(params);
+      return invokeWasm({
+        toolName: config.name,
+        wasmModule: config.wasmModule,
+        wasmFunction,
+        wasi: config.wasi ?? false,
+        timeout,
+        input: JSON.stringify(validated),
+        signal: context?.signal,
+      });
     },
     toJSON: () => wasmToolToSchema(tool),
   };
@@ -111,6 +125,7 @@ function wasmToolToSchema<TParams>(t: Tool<TParams, unknown>) {
   const jsonSchema = z.toJSONSchema(t.parameters as ZodType, {
     target: 'openapi-3.0',
     unrepresentable: 'any',
+    io: 'input',
   });
 
   const schema = jsonSchema as Record<string, unknown>;
@@ -141,7 +156,10 @@ export const calcToolSchema = z.object({
 
 export const jsonToolSchema = z.object({
   json: z.string().describe('JSON string to parse and process'),
-  query: z.string().optional().describe('Optional JSONPath query'),
+  query: z
+    .string()
+    .optional()
+    .describe('Optional JSONPath query, e.g. "$.items[*].id", "$..price", "$.a[0:2]"'),
 });
 
 export const hashToolSchema = z.object({
@@ -178,6 +196,7 @@ export function createCalcTool(options?: { timeout?: number }): Tool<CalcToolInp
     description:
       'Evaluate a mathematical expression safely. Supports +, -, *, /, %, and parentheses.',
     wasmModule: getWasmPath('calc'),
+    wasi: true,
     wasmFunction: 'calculate',
     parameters: calcToolSchema,
     category: 'math',
@@ -209,6 +228,7 @@ export function createJsonTool(options?: { timeout?: number }): Tool<JsonToolInp
     description:
       'Parse and query JSON data. Supports JSONPath queries for extracting nested values.',
     wasmModule: getWasmPath('json'),
+    wasi: true,
     wasmFunction: 'process',
     parameters: jsonToolSchema,
     category: 'utility',
@@ -239,6 +259,7 @@ export function createHashTool(options?: { timeout?: number }): Tool<HashToolInp
     name: 'hash_text',
     description: 'Compute cryptographic hash of text. Supports SHA-256, SHA-1, and MD5 algorithms.',
     wasmModule: getWasmPath('hash'),
+    wasi: true,
     wasmFunction: 'hash',
     parameters: hashToolSchema,
     category: 'utility',
@@ -269,6 +290,7 @@ export function createBase64Tool(options?: { timeout?: number }): Tool<Base64Too
     name: 'base64',
     description: 'Encode or decode Base64 text. Supports standard and URL-safe variants.',
     wasmModule: getWasmPath('base64'),
+    wasi: true,
     wasmFunction: 'base64',
     parameters: base64ToolSchema,
     category: 'utility',
@@ -280,6 +302,7 @@ export function createBase64Tool(options?: { timeout?: number }): Tool<Base64Too
 export const calcToolConfig: SandboxConfig = {
   type: 'wasm',
   wasmModule: getWasmPath('calc'),
+  wasi: true,
   wasmFunction: 'calculate',
   timeout: 5000,
 };
@@ -287,6 +310,7 @@ export const calcToolConfig: SandboxConfig = {
 export const jsonToolConfig: SandboxConfig = {
   type: 'wasm',
   wasmModule: getWasmPath('json'),
+  wasi: true,
   wasmFunction: 'process',
   timeout: 5000,
 };
@@ -294,6 +318,7 @@ export const jsonToolConfig: SandboxConfig = {
 export const hashToolConfig: SandboxConfig = {
   type: 'wasm',
   wasmModule: getWasmPath('hash'),
+  wasi: true,
   wasmFunction: 'hash',
   timeout: 5000,
 };
@@ -301,6 +326,7 @@ export const hashToolConfig: SandboxConfig = {
 export const base64ToolConfig: SandboxConfig = {
   type: 'wasm',
   wasmModule: getWasmPath('base64'),
+  wasi: true,
   wasmFunction: 'base64',
   timeout: 5000,
 };
@@ -314,7 +340,7 @@ export const slugToolSchema = z.object({
   text: z.string().describe('Text to convert to URL-safe slug'),
   separator: z.string().optional().describe('Separator character (default: "-")'),
   lowercase: z.boolean().optional().describe('Convert to lowercase (default: true)'),
-  maxLength: z.number().optional().describe('Maximum length of the slug'),
+  maxLength: z.number().int().min(1).optional().describe('Maximum length of the slug'),
 });
 
 export const validationToolSchema = z.object({
@@ -326,7 +352,12 @@ export const diffToolSchema = z.object({
   original: z.string().describe('Original text'),
   modified: z.string().describe('Modified text'),
   format: z.enum(['unified', 'inline', 'json']).optional().describe('Output format'),
-  context: z.number().optional().describe('Context lines for unified diff'),
+  context: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe('Context lines for unified diff (default 3)'),
 });
 
 export const regexToolSchema = z.object({
@@ -335,7 +366,7 @@ export const regexToolSchema = z.object({
   flags: z.string().optional().describe('Regex flags (g, i, m, etc.)'),
   operation: z.enum(['match', 'matchAll', 'test', 'replace', 'split']).describe('Operation'),
   replacement: z.string().optional().describe('Replacement text for replace operation'),
-  limit: z.number().optional().describe('Limit number of matches/splits'),
+  limit: z.number().int().min(0).optional().describe('Limit number of matches/splits'),
 });
 
 export const csvToolSchema = z.object({
@@ -361,13 +392,19 @@ export const markdownToolSchema = z.object({
 
 export const xmlToolSchema = z.object({
   xml: z.string().describe('XML string to parse'),
-  query: z.string().optional().describe('XPath-like query (e.g., "/root/child", "//element")'),
+  query: z
+    .string()
+    .optional()
+    .describe('XPath-like query, e.g. "/root/child", "//item[2]", "//item/@id", "//item/text()"'),
 });
 
 export const datetimeToolSchema = z.object({
   date: z.string().optional().describe('Date string to process'),
   operation: z.enum(['parse', 'format', 'add', 'subtract', 'diff', 'now']).describe('Operation'),
-  format: z.string().optional().describe('Date format (YYYY, MM, DD, HH, mm, ss, SSS, Z)'),
+  format: z
+    .string()
+    .optional()
+    .describe('Date format tokens: YYYY MM DD HH mm ss SSS Z; wrap literal text in [brackets]'),
   timezone: z.string().optional().describe('Timezone offset (e.g., "+04:00", "UTC")'),
   amount: z.number().optional().describe('Amount for add/subtract'),
   unit: z
@@ -379,26 +416,48 @@ export const datetimeToolSchema = z.object({
 export const compressionToolSchema = z.object({
   data: z.string().describe('Data to compress/decompress'),
   operation: z.enum(['compress', 'decompress']).describe('Operation'),
-  inputEncoding: z.enum(['base64', 'utf8']).optional().describe('Input encoding'),
-  outputEncoding: z.enum(['base64', 'utf8']).optional().describe('Output encoding'),
-  level: z.number().optional().describe('Compression level (0-9)'),
+  inputEncoding: z
+    .enum(['base64', 'utf8'])
+    .optional()
+    .describe('Input encoding (default: utf8 for compress, base64 for decompress)'),
+  outputEncoding: z
+    .enum(['base64', 'utf8'])
+    .optional()
+    .describe('Output encoding (default: base64 for compress, utf8 for decompress)'),
+  level: z.number().int().min(0).max(9).optional().describe('Compression level (0-9, default 6)'),
 });
 
-export const signingToolSchema = z.object({
-  operation: z.enum(['generateKeypair', 'sign', 'verify']).describe('Operation'),
-  algorithm: z.enum(['ed25519']).describe('Signing algorithm'),
-  message: z.string().optional().describe('Message to sign/verify'),
-  privateKey: z.string().optional().describe('Private key (hex or base64)'),
-  publicKey: z.string().optional().describe('Public key (hex or base64)'),
-  signature: z.string().optional().describe('Signature to verify'),
-  encoding: z.enum(['hex', 'base64']).optional().describe('Key/signature encoding'),
-});
+export const signingToolSchema = z
+  .object({
+    operation: z.enum(['generateKeypair', 'sign', 'verify']).describe('Operation'),
+    algorithm: z.enum(['ed25519']).describe('Signing algorithm'),
+    message: z.string().optional().describe('Message to sign/verify'),
+    privateKey: z.string().optional().describe('Private key (hex or base64)'),
+    publicKey: z.string().optional().describe('Public key (hex or base64)'),
+    signature: z.string().optional().describe('Signature to verify'),
+    encoding: z.enum(['hex', 'base64']).optional().describe('Key/signature encoding'),
+    seed: z
+      .string()
+      .optional()
+      .describe(
+        'Optional 32-byte seed for generateKeypair (hex or base64). A cryptographically secure seed is generated on the host when omitted.'
+      ),
+  })
+  .transform((input) => {
+    if (input.operation !== 'generateKeypair' || input.seed !== undefined) return input;
+    const seed = randomBytes(32);
+    return {
+      ...input,
+      seed: input.encoding === 'base64' ? seed.toString('base64') : seed.toString('hex'),
+    };
+  });
 
 export function createSlugTool(options?: { timeout?: number }): Tool<SlugToolInput, unknown> {
   return defineWasmTool({
     name: 'slug',
     description: 'Convert text to URL-safe slug with transliteration support',
     wasmModule: getWasmPath('slug'),
+    wasi: true,
     wasmFunction: 'slug',
     parameters: slugToolSchema,
     category: 'utility',
@@ -414,6 +473,7 @@ export function createValidationTool(options?: {
     name: 'validate',
     description: 'Validate email, URL, UUID, IPv4, or IPv6 addresses',
     wasmModule: getWasmPath('validation'),
+    wasi: true,
     wasmFunction: 'validate',
     parameters: validationToolSchema,
     category: 'utility',
@@ -427,6 +487,7 @@ export function createDiffTool(options?: { timeout?: number }): Tool<DiffToolInp
     name: 'diff',
     description: 'Generate diff between two texts using Myers algorithm',
     wasmModule: getWasmPath('diff'),
+    wasi: true,
     wasmFunction: 'diff',
     parameters: diffToolSchema,
     category: 'utility',
@@ -440,6 +501,7 @@ export function createRegexTool(options?: { timeout?: number }): Tool<RegexToolI
     name: 'regex',
     description: 'Execute regex operations with ReDoS protection',
     wasmModule: getWasmPath('regex'),
+    wasi: true,
     wasmFunction: 'regex',
     parameters: regexToolSchema,
     category: 'utility',
@@ -453,6 +515,7 @@ export function createCsvTool(options?: { timeout?: number }): Tool<CsvToolInput
     name: 'csv',
     description: 'Parse and generate CSV data (RFC 4180 compliant)',
     wasmModule: getWasmPath('csv'),
+    wasi: true,
     wasmFunction: 'csv',
     parameters: csvToolSchema,
     category: 'utility',
@@ -468,6 +531,7 @@ export function createMarkdownTool(options?: {
     name: 'markdown',
     description: 'Convert Markdown to HTML (GFM subset)',
     wasmModule: getWasmPath('markdown'),
+    wasi: true,
     wasmFunction: 'markdown',
     parameters: markdownToolSchema,
     category: 'utility',
@@ -481,6 +545,7 @@ export function createXmlTool(options?: { timeout?: number }): Tool<XmlToolInput
     name: 'xml',
     description: 'Parse XML to JSON with XPath-like query support',
     wasmModule: getWasmPath('xml'),
+    wasi: true,
     wasmFunction: 'xml',
     parameters: xmlToolSchema,
     category: 'utility',
@@ -496,6 +561,7 @@ export function createDatetimeTool(options?: {
     name: 'datetime',
     description: 'Parse, format, and manipulate dates (UTC + offset timezones)',
     wasmModule: getWasmPath('datetime'),
+    wasi: true,
     wasmFunction: 'datetime',
     parameters: datetimeToolSchema,
     category: 'utility',
@@ -511,6 +577,7 @@ export function createCompressionTool(options?: {
     name: 'compression',
     description: 'Compress and decompress data using gzip',
     wasmModule: getWasmPath('compression'),
+    wasi: true,
     wasmFunction: 'compression',
     parameters: compressionToolSchema,
     category: 'utility',
@@ -524,6 +591,7 @@ export function createSigningTool(options?: { timeout?: number }): Tool<SigningT
     name: 'signing',
     description: 'Digital signatures with Ed25519 (keypair generation, sign, verify)',
     wasmModule: getWasmPath('signing'),
+    wasi: true,
     wasmFunction: 'signing',
     parameters: signingToolSchema,
     category: 'utility',

@@ -1,37 +1,139 @@
-import { lookup } from 'node:dns/promises';
-import { isIP } from 'node:net';
+import { lookup as dnsLookup, type LookupAddress, type LookupOptions } from 'node:dns';
+import http, { type IncomingMessage } from 'node:http';
+import https from 'node:https';
+import { BlockList, isIP } from 'node:net';
+import type { Readable } from 'node:stream';
+import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
 import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
-import { HTMLLoader } from './html-loader';
-
-const BLOCKED_HOSTNAMES = new Set([
-  'localhost',
-  '127.0.0.1',
-  '::1',
-  '[::1]',
-  '0.0.0.0',
-  '169.254.169.254',
-  'metadata.google.internal',
-]);
+import { nanoid } from 'nanoid';
+import { HTMLLoader } from './html-loader.js';
 
 const MAX_REDIRECTS = 5;
+const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
 
-function isPrivateIP(ip: string): boolean {
-  if (ip.startsWith('10.')) return true;
-  if (ip.startsWith('192.168.')) return true;
-  if (ip === '0.0.0.0' || ip === '127.0.0.1' || ip === '::1') return true;
-  if (ip.startsWith('169.254.')) return true;
-  if (ip.startsWith('fc') || ip.startsWith('fd') || ip.startsWith('fe80')) return true;
+const BLOCKED_HOSTNAMES = new Set(['localhost', 'metadata.google.internal', 'metadata']);
 
-  const match172 = /^172\.(\d+)\./.exec(ip);
-  if (match172) {
-    const second = parseInt(match172[1], 10);
-    if (second >= 16 && second <= 31) return true;
+const PRIVATE_RANGES = new BlockList();
+for (const [network, prefix] of [
+  ['0.0.0.0', 8],
+  ['10.0.0.0', 8],
+  ['100.64.0.0', 10],
+  ['127.0.0.0', 8],
+  ['169.254.0.0', 16],
+  ['172.16.0.0', 12],
+  ['192.0.0.0', 24],
+  ['192.168.0.0', 16],
+  ['198.18.0.0', 15],
+  ['224.0.0.0', 4],
+  ['240.0.0.0', 4],
+] as const) {
+  PRIVATE_RANGES.addSubnet(network, prefix, 'ipv4');
+}
+for (const [network, prefix] of [
+  ['::', 128],
+  ['::1', 128],
+  ['fc00::', 7],
+  ['fe80::', 10],
+  ['ff00::', 8],
+] as const) {
+  PRIVATE_RANGES.addSubnet(network, prefix, 'ipv6');
+}
+
+function embeddedIPv4(ipv6: string): string | null {
+  const lower = ipv6.toLowerCase();
+  const prefixes = ['::ffff:', '64:ff9b::', '::'];
+  for (const prefix of prefixes) {
+    if (!lower.startsWith(prefix)) continue;
+    const rest = lower.slice(prefix.length);
+    if (isIP(rest) === 4) return rest;
+    const hex = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(rest);
+    if (hex) {
+      const high = parseInt(hex[1]!, 16);
+      const low = parseInt(hex[2]!, 16);
+      return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+    }
   }
+  return null;
+}
 
+/**
+ * Whether an IP address points to a loopback, private, link-local, CGNAT, multicast or
+ * otherwise non-public network (including IPv4-mapped / NAT64 IPv6 forms).
+ */
+export function isBlockedAddress(address: string): boolean {
+  const ip = address.replace(/^\[|\]$/g, '');
+  const family = isIP(ip);
+  if (family === 4) return PRIVATE_RANGES.check(ip, 'ipv4');
+  if (family === 6) {
+    const v4 = embeddedIPv4(ip);
+    if (v4) return PRIVATE_RANGES.check(v4, 'ipv4');
+    return PRIVATE_RANGES.check(ip, 'ipv6');
+  }
   return false;
 }
 
-async function validateUrl(urlString: string): Promise<URL> {
+type LookupCallback = (
+  err: NodeJS.ErrnoException | null,
+  address: string | LookupAddress[],
+  family?: number
+) => void;
+
+type Resolver = (
+  hostname: string,
+  callback: (err: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void
+) => void;
+
+const systemResolver: Resolver = (hostname, callback) => {
+  dnsLookup(hostname, { all: true, verbatim: true }, callback);
+};
+
+/**
+ * DNS lookup for `http.request` that rejects private addresses at connect time,
+ * which also defeats DNS-rebinding between validation and connection.
+ */
+export function createGuardedLookup(resolver: Resolver = systemResolver) {
+  return (hostname: string, options: LookupOptions, callback: LookupCallback): void => {
+    resolver(hostname, (err, addresses) => {
+      if (err) {
+        callback(err, []);
+        return;
+      }
+      const candidates = addresses.filter(
+        (entry) => !options.family || entry.family === options.family
+      );
+      const blocked = candidates.find((entry) => isBlockedAddress(entry.address));
+      if (blocked) {
+        callback(
+          Object.assign(
+            new Error(
+              `WebLoader: "${hostname}" resolves to private IP ${blocked.address} — blocked`
+            ),
+            { code: 'EBLOCKED' }
+          ),
+          []
+        );
+        return;
+      }
+      if (candidates.length === 0) {
+        callback(
+          Object.assign(new Error(`WebLoader: no addresses found for "${hostname}"`), {
+            code: 'ENOTFOUND',
+          }),
+          []
+        );
+        return;
+      }
+      if (options.all) {
+        callback(null, candidates);
+      } else {
+        callback(null, candidates[0]!.address, candidates[0]!.family);
+      }
+    });
+  };
+}
+
+function parseUrl(urlString: string, allowPrivateNetwork: boolean): URL {
   let url: URL;
   try {
     url = new URL(urlString);
@@ -45,27 +147,47 @@ async function validateUrl(urlString: string): Promise<URL> {
     );
   }
 
-  const hostname = url.hostname.toLowerCase();
-  if (BLOCKED_HOSTNAMES.has(hostname)) {
+  if (allowPrivateNetwork) return url;
+
+  const hostname = url.hostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '');
+  if (BLOCKED_HOSTNAMES.has(hostname) || hostname.endsWith('.localhost')) {
     throw new Error(`WebLoader: access to "${hostname}" is blocked (loopback / metadata endpoint)`);
   }
-
-  if (isIP(hostname) && isPrivateIP(hostname)) {
+  if (isIP(hostname) && isBlockedAddress(hostname)) {
     throw new Error(`WebLoader: access to private IP "${hostname}" is blocked`);
   }
 
-  if (!isIP(hostname)) {
+  return url;
+}
+
+function decodeBody(body: Buffer, contentType: string): string {
+  const charset = /charset\s*=\s*"?([\w.:-]+)"?/i.exec(contentType)?.[1];
+  if (charset) {
     try {
-      const { address } = await lookup(hostname);
-      if (isPrivateIP(address)) {
-        throw new Error(`WebLoader: "${hostname}" resolves to private IP ${address} — blocked`);
-      }
-    } catch (err) {
-      if (err instanceof Error && err.message.startsWith('WebLoader:')) throw err;
+      return new TextDecoder(charset).decode(body);
+    } catch {
+      return new TextDecoder('utf-8').decode(body);
     }
   }
+  return new TextDecoder('utf-8').decode(body);
+}
 
-  return url;
+function decompress(response: IncomingMessage): Readable {
+  const encoding = (response.headers['content-encoding'] ?? '').toLowerCase().trim();
+  switch (encoding) {
+    case 'gzip':
+    case 'x-gzip':
+      return response.pipe(createGunzip());
+    case 'deflate':
+      return response.pipe(createInflate());
+    case 'br':
+      return response.pipe(createBrotliDecompress());
+    default:
+      return response;
+  }
 }
 
 export interface WebLoaderOptions {
@@ -73,102 +195,155 @@ export interface WebLoaderOptions {
   headers?: Record<string, string>;
   timeoutMs?: number;
   maxResponseBytes?: number;
+  /**
+   * Allow fetching loopback / private-network hosts (e.g. an intranet wiki).
+   * Disabled by default to prevent SSRF when URLs come from untrusted input.
+   */
+  allowPrivateNetwork?: boolean;
 }
 
-const DEFAULT_TIMEOUT_MS = 30_000;
-const DEFAULT_MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
+interface FetchedPage {
+  url: string;
+  contentType: string;
+  body: string;
+}
 
+/**
+ * Loads a web page over http(s). HTML is converted to text (scripts and styles removed);
+ * plain-text and JSON responses are kept as-is. Redirects are followed (max 5) and every
+ * hop — including DNS resolution at connect time — is checked against private networks.
+ */
 export class WebLoader implements DocumentLoader {
   readonly supportedTypes = ['http', 'https'];
   private readonly htmlLoader: HTMLLoader;
   private readonly headers?: Record<string, string>;
   private readonly timeoutMs: number;
   private readonly maxResponseBytes: number;
+  private readonly allowPrivateNetwork: boolean;
+  private readonly lookup = createGuardedLookup();
 
   constructor(options?: WebLoaderOptions) {
     this.htmlLoader = new HTMLLoader({ selector: options?.selector });
     this.headers = options?.headers;
     this.timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxResponseBytes = options?.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+    this.allowPrivateNetwork = options?.allowPrivateNetwork ?? false;
   }
 
   async load(source: string): Promise<RAGDocument[]> {
-    let currentUrl = source;
+    const page = await this.fetchPage(source);
+    const mime = page.contentType.split(';')[0]!.trim().toLowerCase();
 
-    for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
-      await validateUrl(currentUrl);
+    if (mime === '' || mime.includes('html') || mime.endsWith('/xml') || mime.endsWith('+xml')) {
+      const doc = await this.htmlLoader.parseHTML(page.body, source, 'web');
+      return [
+        { ...doc, metadata: { ...doc.metadata, url: page.url, contentType: mime || 'text/html' } },
+      ];
+    }
 
-      const response = await fetch(currentUrl, {
-        headers: this.headers ?? {},
-        redirect: 'manual',
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
+    if (mime.startsWith('text/') || mime === 'application/json' || mime.endsWith('+json')) {
+      return [
+        {
+          id: nanoid(),
+          content: page.body,
+          source,
+          sourceType: 'web',
+          metadata: { url: page.url, contentType: mime },
+        },
+      ];
+    }
 
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get('location');
+    throw new Error(`WebLoader: unsupported content type "${mime}" from ${page.url}`);
+  }
+
+  private async fetchPage(source: string): Promise<FetchedPage> {
+    let current = parseUrl(source, this.allowPrivateNetwork);
+
+    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
+      const response = await this.request(current);
+      const status = response.statusCode ?? 0;
+
+      if (status >= 300 && status < 400) {
+        response.resume();
+        const location = response.headers.location;
         if (!location) {
           throw new Error(
-            `WebLoader: redirect ${response.status} without Location header from ${currentUrl}`
+            `WebLoader: redirect ${status} without Location header from ${current.href}`
           );
         }
-        currentUrl = new URL(location, currentUrl).href;
+        current = parseUrl(new URL(location, current).href, this.allowPrivateNetwork);
         continue;
       }
 
-      if (!response.ok) {
+      if (status < 200 || status >= 300) {
+        response.resume();
         throw new Error(
-          `WebLoader: failed to fetch ${currentUrl}: ${response.status} ${response.statusText}`
+          `WebLoader: failed to fetch ${current.href}: ${status} ${response.statusMessage ?? ''}`.trim()
         );
       }
 
-      const html = await this.readBodyWithLimit(response, currentUrl);
-      const doc = await this.htmlLoader.parseHTML(html, source, 'web');
-      return [doc];
+      const contentType = response.headers['content-type'] ?? '';
+      const body = await this.readBody(response, current.href);
+      return { url: current.href, contentType, body: decodeBody(body, contentType) };
     }
 
     throw new Error(`WebLoader: too many redirects (max ${MAX_REDIRECTS}) for ${source}`);
   }
 
-  private async readBodyWithLimit(response: Response, url: string): Promise<string> {
-    const body = response.body;
-    if (!body) {
-      const text = await response.text();
-      if (text.length > this.maxResponseBytes) {
-        throw new Error(
-          `WebLoader: response from ${url} exceeds ${this.maxResponseBytes} bytes limit`
-        );
-      }
-      return text;
-    }
-
-    const reader = body.getReader();
-    const chunks: Uint8Array[] = [];
-    let totalBytes = 0;
-
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        totalBytes += value.byteLength;
-        if (totalBytes > this.maxResponseBytes) {
-          throw new Error(
-            `WebLoader: response from ${url} exceeds ${this.maxResponseBytes} bytes limit`
+  private request(url: URL): Promise<IncomingMessage> {
+    const transport = url.protocol === 'https:' ? https : http;
+    return new Promise<IncomingMessage>((resolve, reject) => {
+      const req = transport.get(url, {
+        headers: {
+          'user-agent': 'cogitator-rag-webloader',
+          accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5',
+          'accept-encoding': 'gzip, deflate, br',
+          ...this.headers,
+        },
+        signal: AbortSignal.timeout(this.timeoutMs),
+        ...(!this.allowPrivateNetwork && { lookup: this.lookup }),
+      });
+      req.once('response', resolve);
+      req.once('error', (err: Error & { code?: string }) => {
+        if (err.message.startsWith('WebLoader:')) {
+          reject(err);
+        } else if (err.name === 'AbortError' || err.code === 'ABORT_ERR') {
+          reject(
+            new Error(`WebLoader: request to ${url.href} timed out after ${this.timeoutMs}ms`)
           );
+        } else {
+          reject(new Error(`WebLoader: request to ${url.href} failed: ${err.message}`));
         }
-        chunks.push(value);
-      }
-    } finally {
-      reader.releaseLock();
-    }
+      });
+    });
+  }
 
-    const merged = new Uint8Array(totalBytes);
-    let offset = 0;
-    for (const chunk of chunks) {
-      merged.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-
-    return new TextDecoder('utf-8').decode(merged);
+  private readBody(response: IncomingMessage, url: string): Promise<Buffer> {
+    const stream = decompress(response);
+    return new Promise<Buffer>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      let total = 0;
+      stream.on('data', (chunk: Buffer) => {
+        total += chunk.length;
+        if (total > this.maxResponseBytes) {
+          response.destroy();
+          stream.destroy();
+          reject(
+            new Error(
+              `WebLoader: response from ${url} exceeds ${this.maxResponseBytes} bytes limit`
+            )
+          );
+          return;
+        }
+        chunks.push(chunk);
+      });
+      stream.once('end', () => resolve(Buffer.concat(chunks)));
+      stream.once('error', (err: Error) => {
+        reject(new Error(`WebLoader: failed to read response from ${url}: ${err.message}`));
+      });
+      response.once('error', (err: Error) => {
+        reject(new Error(`WebLoader: failed to read response from ${url}: ${err.message}`));
+      });
+    });
   }
 }

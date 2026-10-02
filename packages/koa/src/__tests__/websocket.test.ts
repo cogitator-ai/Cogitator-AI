@@ -4,17 +4,42 @@ import WebSocket from 'ws';
 import { setupWebSocket } from '../websocket/handler.js';
 import type { RouteContext } from '../types.js';
 
+const workflowExecute = vi.fn();
+const swarmRun = vi.fn();
+const swarmAbort = vi.fn();
+
 vi.mock('@cogitator-ai/workflows', () => ({
   WorkflowExecutor: class {
-    execute = vi.fn().mockResolvedValue({ output: 'workflow-done' });
+    execute = workflowExecute;
   },
 }));
 
 vi.mock('@cogitator-ai/swarms', () => ({
   Swarm: class {
-    run = vi.fn().mockResolvedValue({ output: 'swarm-done' });
+    id = 'swarm_1';
+    name = 'team';
+    strategyType = 'round-robin';
+    run = swarmRun;
+    abort = swarmAbort;
+    getResourceUsage = () => ({
+      totalTokens: 42,
+      totalCost: 0.01,
+      elapsedTime: 100,
+      agentUsage: new Map(),
+    });
   },
 }));
+
+function workflowResult(overrides: Record<string, unknown> = {}) {
+  return {
+    workflowId: 'wf_1',
+    workflowName: 'pipeline',
+    state: { done: true },
+    nodeResults: new Map([['start', { output: 'workflow-done', duration: 5 }]]),
+    duration: 12,
+    ...overrides,
+  };
+}
 
 function mockRouteContext(overrides?: Partial<RouteContext>): RouteContext {
   return {
@@ -97,6 +122,11 @@ function createClient(port: number, path = '/ws'): WebSocket {
 describe('setupWebSocket', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    workflowExecute.mockResolvedValue(workflowResult());
+    swarmRun.mockResolvedValue({
+      output: 'swarm-done',
+      agentResults: new Map([['a1', { output: 'part', usage: { totalTokens: 5 } }]]),
+    });
     clients = [];
   });
 
@@ -173,7 +203,7 @@ describe('setupWebSocket', () => {
     expect(response).toEqual({
       type: 'error',
       id: 'r1',
-      error: 'Invalid run payload',
+      error: 'Invalid run payload: "name" is required',
     });
   });
 
@@ -434,7 +464,16 @@ describe('setupWebSocket', () => {
     expect(response).toEqual({
       type: 'event',
       id: 'w1',
-      payload: { type: 'complete', result: { output: 'workflow-done' } },
+      payload: {
+        type: 'complete',
+        result: {
+          workflowId: 'wf_1',
+          workflowName: 'pipeline',
+          state: { done: true },
+          duration: 12,
+          nodeResults: { start: { output: 'workflow-done', duration: 5 } },
+        },
+      },
     });
   });
 
@@ -475,7 +514,17 @@ describe('setupWebSocket', () => {
     expect(response).toEqual({
       type: 'event',
       id: 's1',
-      payload: { type: 'complete', result: { output: 'swarm-done' } },
+      payload: {
+        type: 'complete',
+        result: {
+          swarmId: 'swarm_1',
+          swarmName: 'team',
+          strategy: 'round-robin',
+          output: 'swarm-done',
+          agentResults: { a1: { output: 'part', usage: { totalTokens: 5 } } },
+          usage: { totalTokens: 42, totalCost: 0.01, elapsedTime: 100 },
+        },
+      },
     });
   });
 
@@ -498,7 +547,8 @@ describe('setupWebSocket', () => {
     });
   });
 
-  it('sends error event when runtime.run throws', async () => {
+  it('sends masked error event when runtime.run throws a non-Cogitator error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     const run = vi.fn().mockRejectedValue(new Error('boom'));
     const ctx = mockRouteContext({
       runtime: { run } as unknown as RouteContext['runtime'],
@@ -518,7 +568,7 @@ describe('setupWebSocket', () => {
     expect(response).toEqual({
       type: 'error',
       id: 'err1',
-      error: 'boom',
+      error: 'Internal server error',
     });
   });
 
@@ -566,5 +616,227 @@ describe('setupWebSocket', () => {
     resolveRun!();
 
     expect(run).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('setupWebSocket hardening', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    workflowExecute.mockResolvedValue(workflowResult());
+    clients = [];
+  });
+
+  afterEach(async () => {
+    for (const ws of clients) ws.terminate();
+    clients = [];
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  async function expectUpgradeStatus(port: number, path: string, status: number): Promise<void> {
+    const outcome = await new Promise<number | 'opened'>((resolve) => {
+      const ws = createClient(port, path);
+      ws.once('open', () => resolve('opened'));
+      ws.once('unexpected-response', (_req, res) => resolve(res.statusCode ?? 0));
+      ws.once('error', () => {});
+    });
+    expect(outcome).toBe(status);
+  }
+
+  it('rejects the upgrade with 401 when auth throws', async () => {
+    const { port } = await createTestServer(mockRouteContext(), {
+      auth: (req) => {
+        if (req.headers.authorization !== 'Bearer ok') throw new Error('nope');
+        return { userId: 'u1' };
+      },
+    });
+
+    await expectUpgradeStatus(port, '/ws', 401);
+  });
+
+  it('accepts the upgrade when auth succeeds', async () => {
+    const { port } = await createTestServer(mockRouteContext(), {
+      auth: (req) => {
+        if (req.headers.authorization !== 'Bearer ok') throw new Error('nope');
+        return { userId: 'u1' };
+      },
+    });
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+      headers: { authorization: 'Bearer ok' },
+    });
+    clients.push(ws);
+    await waitForOpen(ws);
+    expect(await sendAndWait(ws, { type: 'ping', id: 'p1' })).toEqual({ type: 'pong', id: 'p1' });
+  });
+
+  it('rejects upgrades on other paths when no other upgrade handler exists', async () => {
+    const { port } = await createTestServer(mockRouteContext());
+    await expectUpgradeStatus(port, '/elsewhere', 404);
+  });
+
+  it('leaves upgrades on other paths to other handlers', async () => {
+    const { port } = await createTestServer(mockRouteContext());
+    const foreign = vi.fn((_req: unknown, socket: { destroy: () => void }) => socket.destroy());
+    server.on('upgrade', foreign);
+
+    const ws = createClient(port, '/other');
+    await new Promise<void>((resolve) => {
+      ws.once('error', () => resolve());
+      ws.once('close', () => resolve());
+    });
+    expect(foreign).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers unsupported message types and non-object messages with errors', async () => {
+    const { port } = await createTestServer(mockRouteContext());
+    const ws = createClient(port);
+    await waitForOpen(ws);
+
+    expect(await sendAndWait(ws, { type: 'dance' })).toEqual({
+      type: 'error',
+      error: 'Unsupported message type: dance',
+    });
+    expect(await sendAndWait(ws, null)).toEqual({
+      type: 'error',
+      error: 'Message must be a JSON object',
+    });
+  });
+
+  it('answers unsupported run types with an error', async () => {
+    const { port } = await createTestServer(mockRouteContext());
+    const ws = createClient(port);
+    await waitForOpen(ws);
+
+    expect(
+      await sendAndWait(ws, {
+        type: 'run',
+        id: 'x1',
+        payload: { type: 'pipeline', name: 'p', input: 'hi' },
+      })
+    ).toEqual({ type: 'error', id: 'x1', error: 'Unsupported run type: pipeline' });
+  });
+
+  it('does not resolve prototype members as agents', async () => {
+    const ctx = mockRouteContext();
+    const { port } = await createTestServer(ctx);
+    const ws = createClient(port);
+    await waitForOpen(ws);
+
+    expect(
+      await sendAndWait(ws, {
+        type: 'run',
+        id: 'p1',
+        payload: { type: 'agent', name: 'constructor', input: 'hi' },
+      })
+    ).toEqual({ type: 'error', id: 'p1', error: "Agent 'constructor' not found" });
+    expect(ctx.runtime.run).not.toHaveBeenCalled();
+  });
+
+  it('reports cancelled after stop and accepts a new run right away', async () => {
+    const signals: AbortSignal[] = [];
+    const run = vi.fn((_agent: unknown, opts: { signal: AbortSignal }) => {
+      signals.push(opts.signal);
+      if (signals.length === 1) {
+        return new Promise((_resolve, reject) => {
+          opts.signal.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      }
+      return Promise.resolve({ output: 'second', usage: {}, toolCalls: [] });
+    });
+    const ctx = mockRouteContext({
+      runtime: { run } as unknown as RouteContext['runtime'],
+      agents: { bot: { name: 'bot' } as never },
+    });
+    const { port } = await createTestServer(ctx);
+    const ws = createClient(port);
+    await waitForOpen(ws);
+
+    const firstEvents = collectMessages(ws, 1);
+    ws.send(
+      JSON.stringify({ type: 'run', id: 'a', payload: { type: 'agent', name: 'bot', input: 'x' } })
+    );
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    ws.send(JSON.stringify({ type: 'stop' }));
+
+    expect(await firstEvents).toEqual([{ type: 'event', id: 'a', payload: { type: 'cancelled' } }]);
+    expect(signals[0].aborted).toBe(true);
+
+    const second = await sendAndWait(ws, {
+      type: 'run',
+      id: 'b',
+      payload: { type: 'agent', name: 'bot', input: 'y' },
+    });
+    expect(second).toMatchObject({ type: 'event', id: 'b', payload: { type: 'complete' } });
+  });
+
+  it('aborts the run signal when the connection closes', async () => {
+    let signal: AbortSignal | undefined;
+    const run = vi.fn((_agent: unknown, opts: { signal: AbortSignal }) => {
+      signal = opts.signal;
+      return new Promise(() => {});
+    });
+    const ctx = mockRouteContext({
+      runtime: { run } as unknown as RouteContext['runtime'],
+      agents: { bot: { name: 'bot' } as never },
+    });
+    const { port } = await createTestServer(ctx);
+    const ws = createClient(port);
+    await waitForOpen(ws);
+
+    ws.send(
+      JSON.stringify({ type: 'run', id: 'a', payload: { type: 'agent', name: 'bot', input: 'x' } })
+    );
+    await vi.waitFor(() => expect(run).toHaveBeenCalled());
+    ws.close();
+
+    await vi.waitFor(() => expect(signal?.aborted).toBe(true));
+  });
+
+  it('forwards threadId to agent runs', async () => {
+    const ctx = mockRouteContext({ agents: { bot: { name: 'bot' } as never } });
+    const { port } = await createTestServer(ctx);
+    const ws = createClient(port);
+    await waitForOpen(ws);
+
+    await sendAndWait(ws, {
+      type: 'run',
+      id: 't',
+      payload: { type: 'agent', name: 'bot', input: 'hi', threadId: 'thread-9' },
+    });
+    expect(ctx.runtime.run).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ threadId: 'thread-9' })
+    );
+  });
+
+  it('reports a failed workflow as an error instead of complete', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    workflowExecute.mockResolvedValue(workflowResult({ error: new Error('node failed') }));
+    const ctx = mockRouteContext({ workflows: { pipeline: { entryPoint: 'start' } as never } });
+    const { port } = await createTestServer(ctx);
+    const ws = createClient(port);
+    await waitForOpen(ws);
+
+    expect(
+      await sendAndWait(ws, {
+        type: 'run',
+        id: 'w',
+        payload: { type: 'workflow', name: 'pipeline', input: 'x' },
+      })
+    ).toEqual({ type: 'error', id: 'w', error: 'Internal server error' });
+  });
+
+  it('terminates clients that miss the pong deadline', async () => {
+    const { port } = await createTestServer(mockRouteContext(), {
+      pingInterval: 20,
+      pingTimeout: 20,
+    });
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { autoPong: false });
+    clients.push(ws);
+    await waitForOpen(ws);
+
+    await new Promise<void>((resolve) => ws.once('close', () => resolve()));
+    expect(ws.readyState).toBe(WebSocket.CLOSED);
   });
 });

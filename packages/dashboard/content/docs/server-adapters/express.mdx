@@ -23,9 +23,9 @@ const app = express();
 
 const cogitator = new Cogitator({
   llm: {
-    defaultProvider: 'openai',
+    defaultModel: 'openai/gpt-4o',
     providers: {
-      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' },
+      openai: { apiKey: process.env.OPENAI_API_KEY! },
     },
   },
 });
@@ -39,6 +39,8 @@ const search = tool({
 
 const assistant = new Agent({
   name: 'assistant',
+  description: 'Assistant with web search',
+  model: 'openai/gpt-4o',
   instructions: 'You are a helpful assistant with web search capabilities.',
   tools: [search],
 });
@@ -77,7 +79,6 @@ interface CogitatorServerConfig {
     basePath?: string; // default: '/cogitator'
     enableWebSocket?: boolean; // default: false
     enableSwagger?: boolean; // default: true
-    requestTimeout?: number; // default: 30000ms
     auth?: AuthFunction;
     rateLimit?: RateLimitConfig;
     cors?: CorsConfig;
@@ -86,6 +87,15 @@ interface CogitatorServerConfig {
   };
 }
 ```
+
+## Request Handling
+
+- Agent and swarm bodies are validated: `input` must be a non-empty string, `context` an object, `threadId` a string, swarm `timeout` a positive number. Invalid or malformed JSON bodies return `400 INVALID_INPUT`.
+- Workflow `options` are limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); other options are dropped and wrongly typed ones return `400`.
+- Thread messages need a `role` of `user`, `assistant` or `system` and a non-empty string `content`.
+- A workflow that fails returns `500 WORKFLOW_FAILED`, and its stream ends with an `error` event instead of `workflow_completed`.
+- `CogitatorError`s keep their code and mapped status (for example `LLM_RATE_LIMITED` → 429); other errors return a generic `500 INTERNAL` and are logged.
+- `GET /agents` exposes each agent's `config.description`, never its `instructions`.
 
 ## Authentication
 
@@ -108,7 +118,7 @@ const server = new CogitatorServer({
 });
 ```
 
-When `auth` returns `undefined`, the request proceeds as unauthenticated. The `AuthContext` is attached to `req.cogitator.auth` for downstream use.
+When `auth` returns `undefined`, the request proceeds as unauthenticated; throw to reject it with `401`. The `AuthContext` is attached to `req.cogitator.auth`, its `userId` is passed to agent runs, and the same function guards WebSocket upgrade requests.
 
 ## Rate Limiting
 
@@ -119,10 +129,12 @@ config: {
     max: 100,
     message: 'Too many requests',
     keyGenerator: (req) => req.ip ?? 'unknown',
-    trustProxy: false, // set true if behind a trusted reverse proxy to use X-Forwarded-For
+    trustProxy: false, // true: key by the nearest X-Forwarded-For hop (the address your proxy saw)
   },
 }
 ```
+
+The limiter is in-memory and per process; `windowMs` must be positive and `max` non-negative, otherwise creating the middleware throws. Requests without a client address share a single bucket.
 
 ## CORS
 
@@ -136,9 +148,11 @@ config: {
 }
 ```
 
+`credentials` defaults to `true` for explicit origins and to `false` for `origin: '*'` (plain `Access-Control-Allow-Origin: *`). Setting `credentials: true` together with `'*'` reflects every origin with credentials — only do that deliberately. Disallowed origins get no CORS grants, including on preflight.
+
 ## Streaming
 
-The `/agents/:name/stream` endpoint returns an SSE stream. Use any EventSource client to consume it:
+The `/agents/:name/stream` endpoint returns an SSE stream: `start`, `text-start`/`text-delta`/`text-end` blocks, `tool-call-start`/`tool-call-delta`/`tool-call-end` (the id is the model's tool call id, matching `tool-result.toolCallId`), `tool-result`, then `finish` and `[DONE]` — or an `error` event. Disconnecting aborts the run. Read it with `fetch` (EventSource cannot send a POST body):
 
 ```typescript
 const response = await fetch('http://localhost:3000/cogitator/agents/assistant/stream', {
@@ -159,28 +173,35 @@ while (true) {
 
 ## WebSocket
 
-WebSocket support requires the `ws` package. Call `setupWebSocket` with your HTTP server after initialization:
+WebSocket support requires the `ws` package. Enable it, then attach it to your HTTP server after `init()`:
 
 ```typescript
 import { createServer } from 'http';
-import { setupWebSocket } from '@cogitator-ai/express';
 
-const httpServer = createServer(app);
-
-setupWebSocket(httpServer, {
+const server = new CogitatorServer({
+  app,
   cogitator,
   agents: { assistant },
-  path: '/cogitator/ws',
+  config: { enableWebSocket: true },
 });
+await server.init();
 
+const httpServer = createServer(app);
+await server.attachWebSocket(httpServer); // ws://host/cogitator/ws
 httpServer.listen(3000);
 ```
 
-Clients can send JSON messages over the WebSocket connection:
+Run an agent (only agent runs are supported over WebSocket):
 
 ```json
-{ "type": "run", "id": "req_1", "channel": "assistant", "payload": { "input": "Hello" } }
+{
+  "type": "run",
+  "id": "req_1",
+  "payload": { "type": "agent", "name": "assistant", "input": "Hello" }
+}
 ```
+
+Events arrive as `{ "type": "event", "id": "req_1", "payload": { "type": "token" | "tool-call" | "tool-result" | "complete" | "cancelled", ... } }`. Send `{ "type": "stop" }` to abort the running agent. Subscribe to `agent:<name>` (`{ "type": "subscribe", "channel": "agent:assistant" }`) to observe runs started by other clients.
 
 ## Exported Utilities
 

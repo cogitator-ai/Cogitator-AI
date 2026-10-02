@@ -75,13 +75,28 @@ Standard provider env vars are also supported:
 ```bash
 OPENAI_API_KEY=sk-xxx
 ANTHROPIC_API_KEY=sk-ant-xxx
-GOOGLE_API_KEY=xxx
-OLLAMA_HOST=http://localhost:11434
+GOOGLE_API_KEY=xxx            # or GEMINI_API_KEY
+OLLAMA_URL=http://localhost:11434   # or OLLAMA_HOST (scheme optional)
+OLLAMA_API_KEY=xxx            # Ollama Cloud; URL defaults to https://ollama.com unless set in env or YAML
 MISTRAL_API_KEY=xxx
 GROQ_API_KEY=xxx
 TOGETHER_API_KEY=xxx
 DEEPSEEK_API_KEY=xxx
 ```
+
+### Referencing Environment Variables in YAML
+
+String values in `cogitator.yml` may reference environment variables. `${VAR}` becomes the value (or an empty string), `${VAR:-default}` falls back when the variable is unset or empty, `${VAR-default}` only when unset, and `$$` is a literal `$`:
+
+```yaml title="cogitator.yml"
+llm:
+  providers:
+    openai:
+      apiKey: ${OPENAI_API_KEY}
+      baseUrl: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+```
+
+Substituted values are always strings, so numeric fields (for example `deploy.port`) must be written literally.
 
 ## Programmatic Configuration
 

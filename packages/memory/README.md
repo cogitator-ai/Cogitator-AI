@@ -1,6 +1,6 @@
 # @cogitator-ai/memory
 
-Memory adapters for Cogitator AI agents. Supports in-memory, Redis (short-term), and PostgreSQL with pgvector (long-term semantic memory).
+Memory adapters for Cogitator AI agents. Supports in-memory, Redis (short-term), PostgreSQL with pgvector, SQLite and MongoDB (persistent), plus in-memory/pgvector/Qdrant embedding stores for semantic memory.
 
 ## Installation
 
@@ -10,14 +10,20 @@ pnpm add @cogitator-ai/memory
 # Optional peer dependencies
 pnpm add ioredis  # For Redis adapter
 pnpm add pg       # For PostgreSQL adapter
+pnpm add better-sqlite3  # For SQLite adapter and CoreFactsStore
+pnpm add mongodb  # For MongoDB adapter
+pnpm add @qdrant/js-client-rest  # For Qdrant embedding adapter
 ```
 
 ## Features
 
-- **Multiple Adapters** - In-memory, Redis, PostgreSQL with pgvector
-- **Thread Management** - Create, update, delete conversation threads
+- **Multiple Adapters** - In-memory, Redis (standalone + cluster), PostgreSQL with pgvector, SQLite, MongoDB, Qdrant
+- **Thread Management** - Create (idempotent upsert), update, delete conversation threads
+- **Stable Ordering** - Entries keep insertion order even when saved within the same millisecond
 - **Token Counting** - Estimate token usage without tiktoken dependency
-- **Context Builder** - Build token-aware conversation context
+- **Context Builder** - Token-aware context with `recent`, `relevant` (embedding-ranked) and `hybrid` strategies
+- **Scoped Semantic Memory** - Embeddings tagged with `metadata.agentId` / `metadata.threadId` never leak to other agents
+- **Sessions & Compaction** - `SessionManager` for channel sessions, `CompactionService` for summarizing long histories
 - **Embedding Services** - OpenAI and Ollama embedding integration
 - **Semantic Search** - Vector similarity search with pgvector
 - **Hybrid Search** - BM25 + Vector with Reciprocal Rank Fusion
@@ -74,6 +80,7 @@ Fast, non-persistent storage for development and testing.
 import { InMemoryAdapter } from '@cogitator-ai/memory';
 
 const memory = new InMemoryAdapter({
+  provider: 'memory',
   maxEntries: 1000,
 });
 
@@ -82,12 +89,13 @@ await memory.connect();
 
 ### Redis Adapter
 
-Persistent short-term memory with TTL support.
+Persistent short-term memory with TTL support. Every write refreshes the TTL of the thread and its entry index, so active conversations do not expire mid-way; expired entries are pruned from the index on read.
 
 ```typescript
 import { RedisAdapter } from '@cogitator-ai/memory';
 
 const memory = new RedisAdapter({
+  provider: 'redis',
   url: 'redis://localhost:6379',
   keyPrefix: 'cogitator:',
   ttl: 3600,
@@ -95,6 +103,8 @@ const memory = new RedisAdapter({
 
 await memory.connect();
 ```
+
+Redis Cluster is supported via `cluster: { nodes: [{ host, port }] }`. In cluster mode the key prefix is wrapped in a hash tag (`'{cogitator}:'` by default, `'myapp:'` becomes `'{myapp}:'`) so all keys of the adapter live in one slot.
 
 ### PostgreSQL Adapter
 
@@ -104,6 +114,7 @@ Long-term storage with vector search via pgvector.
 import { PostgresAdapter } from '@cogitator-ai/memory';
 
 const memory = new PostgresAdapter({
+  provider: 'postgres',
   connectionString: 'postgresql://localhost:5432/cogitator',
   schema: 'public',
   poolSize: 10,
@@ -205,6 +216,8 @@ interface MemoryAdapter {
 
 ### Thread Operations
 
+`createThread(agentId, metadata, threadId)` with an existing `threadId` is an upsert: entries and `createdAt` are kept and only the metadata is updated, so it is safe to call on every run.
+
 ```typescript
 const result = await memory.createThread('agent-1', {
   topic: 'support',
@@ -262,6 +275,12 @@ interface ContextBuilderConfig {
 }
 ```
 
+Strategies:
+
+- `recent` - newest messages that fit into the token budget
+- `relevant` - messages ranked by embedding similarity to `currentInput` (requires `embeddingService`; falls back to `recent` without input), returned in chronological order
+- `hybrid` - always keeps the latest messages and fills the remaining budget with the most relevant older ones
+
 ### Basic Usage
 
 ```typescript
@@ -317,6 +336,8 @@ console.log(context.facts);
 console.log(context.semanticResults);
 ```
 
+Semantic context is scoped by embedding metadata: entries with `metadata.agentId` set are only visible to that agent, entries without an `agentId` (shared documents, knowledge bases) are visible to everyone. Adapters filter `search`/`keywordSearch` by `filter.agentId` and `filter.threadId` through the same metadata fields.
+
 ### Built Context
 
 ```typescript
@@ -334,6 +355,37 @@ interface BuiltContext {
   };
 }
 ```
+
+---
+
+## Sessions and Compaction
+
+`SessionManager` maps channel conversations (user + channel + agent) onto memory threads. `CompactionService` replaces old history with an LLM summary placed before the most recent messages.
+
+```typescript
+import { InMemoryAdapter, SessionManager, CompactionService } from '@cogitator-ai/memory';
+
+const memory = new InMemoryAdapter();
+const compaction = new CompactionService({
+  adapter: memory,
+  summarize: async (messages) => `Summary of ${messages.length} messages`,
+});
+const sessions = new SessionManager(memory, { compaction });
+
+const session = await sessions.getOrCreate({
+  userId: 'user-1',
+  channelType: 'telegram',
+  channelId: 'chat-42',
+  agentId: 'assistant',
+});
+
+const all = await sessions.list();
+const mine = await sessions.list({ userId: 'user-1', status: 'active', limit: 20 });
+
+await sessions.compact(session.id, { strategy: 'summary', threshold: 8000, keepRecent: 10 });
+```
+
+`list()` works with or without a `userId` filter (sessions are tracked in an index thread). `compact()` requires the `compaction` option; without it use `CompactionService` directly.
 
 ---
 
@@ -658,6 +710,7 @@ console.log(
 import { PostgresAdapter, OpenAIEmbeddingService } from '@cogitator-ai/memory';
 
 const memory = new PostgresAdapter({
+  provider: 'postgres',
   connectionString: process.env.DATABASE_URL!,
 });
 

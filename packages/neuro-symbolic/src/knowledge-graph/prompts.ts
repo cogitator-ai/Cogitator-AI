@@ -228,25 +228,76 @@ export function parseEntityExtractionResponse(response: string): {
     const jsonStr = extractJSON(response);
     if (!jsonStr) return null;
 
-    const parsed = JSON.parse(jsonStr);
+    const parsed: unknown = JSON.parse(jsonStr);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const { entities, relations } = parsed as { entities?: unknown; relations?: unknown };
 
     return {
-      entities: (parsed.entities || []).map((e: Record<string, unknown>) => ({
-        name: String(e.name || ''),
-        type: (e.type as EntityType) || 'custom',
-        description: e.description ? String(e.description) : undefined,
-        confidence: typeof e.confidence === 'number' ? e.confidence : 0.5,
-      })),
-      relations: (parsed.relations || []).map((r: Record<string, unknown>) => ({
-        source: String(r.source || ''),
-        target: String(r.target || ''),
-        type: (r.type as RelationType) || 'related_to',
-        confidence: typeof r.confidence === 'number' ? r.confidence : 0.5,
-      })),
+      entities: recordsOf(entities)
+        .map((e) => ({
+          name: typeof e.name === 'string' ? e.name.trim() : '',
+          type: normalizeEnum(e.type, ENTITY_TYPES, 'custom'),
+          description: typeof e.description === 'string' ? e.description : undefined,
+          confidence: clampConfidence(e.confidence),
+        }))
+        .filter((e) => e.name.length > 0),
+      relations: recordsOf(relations)
+        .map((r) => ({
+          source: typeof r.source === 'string' ? r.source.trim() : '',
+          target: typeof r.target === 'string' ? r.target.trim() : '',
+          type: normalizeEnum(r.type, RELATION_TYPES, 'related_to'),
+          confidence: clampConfidence(r.confidence),
+        }))
+        .filter((r) => r.source.length > 0 && r.target.length > 0),
     };
   } catch {
     return null;
   }
+}
+
+const ENTITY_TYPES: readonly EntityType[] = [
+  'person',
+  'organization',
+  'location',
+  'concept',
+  'event',
+  'object',
+  'custom',
+];
+
+const RELATION_TYPES: readonly RelationType[] = [
+  'knows',
+  'works_at',
+  'located_in',
+  'part_of',
+  'related_to',
+  'created_by',
+  'belongs_to',
+  'associated_with',
+  'causes',
+  'precedes',
+  'custom',
+];
+
+function recordsOf(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is Record<string, unknown> => typeof item === 'object' && item !== null
+  );
+}
+
+function normalizeEnum<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  if (typeof value !== 'string') return fallback;
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  return (allowed as readonly string[]).includes(normalized) ? (normalized as T) : fallback;
+}
+
+function clampConfidence(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0.5;
+  return Math.min(1, Math.max(0, value));
 }
 
 export function formatNodeForPrompt(node: GraphNode): string {

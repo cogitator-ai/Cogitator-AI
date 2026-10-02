@@ -16,6 +16,7 @@ import {
   type ExtractTableInput,
   type ExtractStructuredInput,
 } from '../utils/schemas';
+import { getReadableText } from '../utils/page-helpers';
 
 export function createGetTextTool(session: BrowserSession) {
   return tool({
@@ -28,10 +29,13 @@ export function createGetTextTool(session: BrowserSession) {
     execute: async (params: GetTextInput) => {
       const page = session.page;
       if (params.selector) {
-        const text = await page.textContent(params.selector);
-        return { text: text ?? '' };
+        const text = await page
+          .locator(params.selector)
+          .first()
+          .evaluate((el) => (el instanceof HTMLElement ? el.innerText : (el.textContent ?? '')));
+        return { text };
       }
-      const text = await page.evaluate(() => document.body.innerText);
+      const text = await page.evaluate(() => document.body?.innerText ?? '');
       return { text };
     },
   });
@@ -134,8 +138,16 @@ export function createQuerySelectorAllTool(session: BrowserSession) {
           }> = [];
           const max = limit ?? nodes.length;
           for (let i = 0; i < Math.min(nodes.length, max); i++) {
-            const el = nodes[i] as HTMLElement;
+            const el = nodes[i];
             const rect = el.getBoundingClientRect();
+            const rendered =
+              typeof el.checkVisibility !== 'function' ||
+              el.checkVisibility({
+                checkOpacity: true,
+                checkVisibilityCSS: true,
+                opacityProperty: true,
+                visibilityProperty: true,
+              });
             const attrs: Record<string, string> = {};
             const attrNames = attributes ?? ['id', 'class', 'href', 'src', 'type', 'name'];
             for (const name of attrNames) {
@@ -146,7 +158,7 @@ export function createQuerySelectorAllTool(session: BrowserSession) {
               tag: el.tagName.toLowerCase(),
               text: el.textContent?.trim().slice(0, 200) ?? '',
               attributes: attrs,
-              visible: rect.width > 0 && rect.height > 0,
+              visible: rect.width > 0 && rect.height > 0 && rendered,
             });
           }
           return results;
@@ -168,34 +180,31 @@ export function createExtractTableTool(session: BrowserSession) {
     execute: async (params: ExtractTableInput) => {
       const page = session.page;
       const data = await page.evaluate((selector) => {
-        const table = selector ? document.querySelector(selector) : document.querySelector('table');
-        if (!table) return { headers: [] as string[], rows: [] as string[][] };
+        const empty = { headers: [] as string[], rows: [] as string[][] };
+        const target = selector
+          ? document.querySelector(selector)
+          : document.querySelector('table');
+        if (!target) return empty;
+        const table = target instanceof HTMLTableElement ? target : target.querySelector('table');
+        if (!table) return empty;
 
-        const cellsOf = (row: Element) =>
-          Array.from(row.querySelectorAll('th, td')).map((c) => c.textContent?.trim() ?? '');
+        const cellsOf = (row: HTMLTableRowElement) =>
+          Array.from(row.cells).map((cell) => cell.textContent?.trim() ?? '');
 
-        const theadRows = Array.from(table.querySelectorAll('thead tr'));
-        let headers: string[] = [];
-        let bodyRowNodes: Element[];
+        const allRows = Array.from(table.rows);
+        const headRows = table.tHead ? Array.from(table.tHead.rows) : [];
 
-        if (theadRows.length > 0) {
-          headers = cellsOf(theadRows[theadRows.length - 1]);
-          bodyRowNodes = Array.from(table.querySelectorAll('tbody tr'));
-          if (bodyRowNodes.length === 0) {
-            bodyRowNodes = Array.from(table.querySelectorAll('tr')).filter(
-              (tr) => !theadRows.includes(tr)
-            );
-          }
-        } else {
-          const allRows = Array.from(table.querySelectorAll('tr'));
-          headers = allRows.length > 0 ? cellsOf(allRows[0]) : [];
-          bodyRowNodes = allRows.slice(1);
+        if (headRows.length > 0) {
+          return {
+            headers: cellsOf(headRows[headRows.length - 1]),
+            rows: allRows.filter((row) => !headRows.includes(row)).map(cellsOf),
+          };
         }
 
-        const rows = bodyRowNodes.map((tr) =>
-          Array.from(tr.querySelectorAll('td, th')).map((c) => c.textContent?.trim() ?? '')
-        );
-        return { headers, rows };
+        return {
+          headers: allRows.length > 0 ? cellsOf(allRows[0]) : [],
+          rows: allRows.slice(1).map(cellsOf),
+        };
       }, params.selector);
       return data;
     },
@@ -212,21 +221,7 @@ export function createExtractStructuredTool(session: BrowserSession) {
     parameters: extractStructuredSchema,
     execute: async (params: ExtractStructuredInput) => {
       const page = session.page;
-      const text = await page.evaluate((selector) => {
-        const scope = selector ? document.querySelector(selector) : document.body;
-        if (!scope) return '';
-        const clone = scope.cloneNode(true) as HTMLElement;
-        clone.querySelectorAll('script, style, noscript, svg').forEach((el) => el.remove());
-        const holder = document.createElement('div');
-        holder.style.position = 'absolute';
-        holder.style.left = '-9999px';
-        holder.style.top = '0';
-        holder.appendChild(clone);
-        document.body.appendChild(holder);
-        const text = clone.innerText.trim();
-        holder.remove();
-        return text;
-      }, params.selector);
+      const text = await getReadableText(page, params.selector);
       return {
         instruction: params.instruction,
         text,

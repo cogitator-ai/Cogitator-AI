@@ -291,11 +291,19 @@ describe('A2AServer push notification methods', () => {
   });
 
   it('should create a push notification config via JSON-RPC', async () => {
+    const sent = await server.handleJsonRpc({
+      jsonrpc: '2.0',
+      method: 'message/send',
+      params: { message: userMessage('Hello') },
+      id: 0,
+    });
+    const taskId = (sent!.result as { id: string }).id;
+
     const response = await server.handleJsonRpc({
       jsonrpc: '2.0',
       method: 'tasks/pushNotification/create',
       params: {
-        taskId: 'task_1',
+        taskId,
         config: { webhookUrl: 'https://example.com/webhook' },
       },
       id: 1,
@@ -355,6 +363,17 @@ describe('A2AServer push notification methods', () => {
     expect(response.error).toBeUndefined();
     const remaining = await pushStore.list('task_1');
     expect(remaining).toHaveLength(0);
+  });
+
+  it('should reject push configs for unknown tasks', async () => {
+    const response = await server.handleJsonRpc({
+      jsonrpc: '2.0',
+      method: 'tasks/pushNotification/create',
+      params: { taskId: 'task_missing', config: { webhookUrl: 'https://example.com/webhook' } },
+      id: 1,
+    });
+
+    expect(response!.error!.code).toBe(-32001);
   });
 
   it('should return error when taskId is missing for create', async () => {
@@ -517,10 +536,12 @@ describe('Webhook receives events on task completion', () => {
     });
     expect(secondResponse.error).toBeUndefined();
 
-    await new Promise((r) => setTimeout(r, 100));
-
-    expect(receivedEvents.length).toBeGreaterThan(0);
-    const statusUpdates = receivedEvents.filter((e) => e.type === 'status-update');
-    expect(statusUpdates.length).toBeGreaterThan(0);
+    await vi.waitFor(
+      () => {
+        const statusUpdates = receivedEvents.filter((e) => e.type === 'status-update');
+        expect(statusUpdates.length).toBeGreaterThan(0);
+      },
+      { timeout: 5000, interval: 20 }
+    );
   });
 });

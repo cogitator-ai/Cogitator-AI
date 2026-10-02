@@ -1,7 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { cogitatorApp } from '../app.js';
 import type { CogitatorAppOptions } from '../types.js';
+
+beforeEach(() => {
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function mockTool(name: string) {
   const schema = {
@@ -108,13 +116,17 @@ describe('agentRoutes', () => {
     expect(body.agents[0].tools).toEqual(['search']);
   });
 
-  it('GET /agents truncates instructions to 100 chars', async () => {
-    const longInstructions = 'A'.repeat(200);
-    const agent = { config: { instructions: longInstructions, tools: [] } };
-    const app = buildApp({ agents: { long: agent as never } });
+  it('GET /agents exposes the agent description, never its instructions', async () => {
+    const agent = {
+      config: { instructions: 'secret system prompt', description: 'Public summary', tools: [] },
+    };
+    const bare = { config: { instructions: 'another secret', tools: [] } };
+    const app = buildApp({ agents: { described: agent as never, bare: bare as never } });
     const res = await app.request('/agents');
     const body = await res.json();
-    expect(body.agents[0].description).toHaveLength(100);
+    expect(body.agents[0].description).toBe('Public summary');
+    expect(body.agents[1].description).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain('secret');
   });
 
   it('GET /agents handles agent with no tools', async () => {
@@ -306,7 +318,7 @@ describe('threadRoutes', () => {
     const res = await app.request('/threads/t1');
     expect(res.status).toBe(500);
     const body = await res.json();
-    expect(body.error.message).toBe('disk full');
+    expect(body.error.message).toBe('Internal server error');
   });
 
   it('GET /threads/:id returns 500 on thrown exception', async () => {
@@ -391,7 +403,7 @@ describe('threadRoutes', () => {
       expect.objectContaining({
         threadId: 't1',
         message: { role: 'user', content: 'hello' },
-        tokenCount: 0,
+        tokenCount: expect.any(Number),
       })
     );
   });
@@ -409,7 +421,7 @@ describe('threadRoutes', () => {
     const res = await app.request('/threads/t1/messages', json({ role: 'user', content: 'test' }));
     expect(res.status).toBe(500);
     const body = await res.json();
-    expect(body.error.message).toBe('write failed');
+    expect(body.error.message).toBe('Internal server error');
   });
 
   it('POST /threads/:id/messages returns 500 on thrown exception', async () => {
@@ -461,7 +473,7 @@ describe('threadRoutes', () => {
     const res = await app.request('/threads/t1', { method: 'DELETE' });
     expect(res.status).toBe(500);
     const body = await res.json();
-    expect(body.error.message).toBe('locked');
+    expect(body.error.message).toBe('Internal server error');
   });
 
   it('DELETE /threads/:id returns 500 on thrown exception', async () => {

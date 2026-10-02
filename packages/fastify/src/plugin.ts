@@ -10,6 +10,7 @@ import {
   workflowRoutes,
   swarmRoutes,
 } from './routes/index.js';
+import { isModuleNotFound } from './routes/utils.js';
 
 const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (fastify, opts) => {
   const context: CogitatorContext = {
@@ -29,6 +30,21 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
 
   await fastify.register(
     async (instance) => {
+      let websocketEnabled = false;
+      if (opts.enableWebSocket) {
+        try {
+          const websocketModule = await import('@fastify/websocket');
+          await instance.register(websocketModule.default);
+          websocketEnabled = true;
+        } catch (err) {
+          if (isModuleNotFound(err)) {
+            fastify.log.warn('@fastify/websocket not installed, skipping WebSocket support');
+          } else {
+            throw err;
+          }
+        }
+      }
+
       instance.addHook('onRequest', createAuthHook(opts.auth));
 
       if (opts.rateLimit) {
@@ -41,7 +57,7 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
             errorResponseBuilder: opts.rateLimit.errorResponseBuilder,
           });
         } catch (err) {
-          if ((err as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
+          if (isModuleNotFound(err)) {
             instance.log.warn('@fastify/rate-limit not installed, skipping rate limiting');
           } else {
             throw err;
@@ -82,7 +98,7 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
             routePrefix: '/docs',
           });
         } catch (err) {
-          if ((err as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
+          if (isModuleNotFound(err)) {
             fastify.log.warn('@fastify/swagger not installed, skipping Swagger UI');
           } else {
             throw err;
@@ -97,20 +113,9 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
       await instance.register(workflowRoutes);
       await instance.register(swarmRoutes);
 
-      if (opts.enableWebSocket) {
-        try {
-          const websocketModule = await import('@fastify/websocket');
-          await instance.register(websocketModule.default);
-
-          const { websocketRoutes } = await import('./websocket/handler.js');
-          await instance.register(websocketRoutes, { path: opts.websocket?.path });
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
-            fastify.log.warn('@fastify/websocket not installed, skipping WebSocket support');
-          } else {
-            throw err;
-          }
-        }
+      if (websocketEnabled) {
+        const { websocketRoutes } = await import('./websocket/handler.js');
+        await instance.register(websocketRoutes, { path: opts.websocket?.path });
       }
     },
     { prefix }

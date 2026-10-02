@@ -42,17 +42,17 @@ All adapters implement the `MemoryAdapter` interface:
 
 ```typescript
 import {
-  OpenAIEmbeddingProvider,
-  OllamaEmbeddingProvider,
-  GoogleEmbeddingProvider,
+  OpenAIEmbeddingService,
+  OllamaEmbeddingService,
+  GoogleEmbeddingService,
 } from '@cogitator-ai/memory';
 ```
 
-| Provider                  | Models                                             | Dimensions  |
-| ------------------------- | -------------------------------------------------- | ----------- |
-| `OpenAIEmbeddingProvider` | `text-embedding-3-small`, `text-embedding-3-large` | 1536 / 3072 |
-| `OllamaEmbeddingProvider` | `nomic-embed-text`, `mxbai-embed-large`            | 768 / 1024  |
-| `GoogleEmbeddingProvider` | `text-embedding-004`                               | 768         |
+| Provider                 | Models                                             | Dimensions  |
+| ------------------------ | -------------------------------------------------- | ----------- |
+| `OpenAIEmbeddingService` | `text-embedding-3-small`, `text-embedding-3-large` | 1536 / 3072 |
+| `OllamaEmbeddingService` | `nomic-embed-text`, `mxbai-embed-large`            | 768 / 1024  |
+| `GoogleEmbeddingService` | `gemini-embedding-001`                             | 3072        |
 
 ## Search
 

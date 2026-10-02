@@ -6,6 +6,8 @@ import type {
 } from '@cogitator-ai/types';
 import { cosineSimilarity } from '../cache-key';
 
+const PRUNE_BATCH_SIZE = 100;
+
 export interface RedisToolCacheStorageConfig {
   client: RedisClientLike;
   keyPrefix?: string;
@@ -85,7 +87,11 @@ export class RedisToolCacheStorage implements ToolCacheStorage {
   }
 
   async set(key: string, entry: CacheEntry): Promise<void> {
-    const currentSize = await this.size();
+    let currentSize = await this.size();
+    if (currentSize >= this.maxSize) {
+      await this.pruneExpired();
+      currentSize = await this.size();
+    }
     if (currentSize >= this.maxSize) {
       await this.evictOldest();
     }
@@ -179,6 +185,19 @@ export class RedisToolCacheStorage implements ToolCacheStorage {
     } while (cursor !== 0);
 
     return results.sort((a, b) => b.score - a.score).slice(0, limit);
+  }
+
+  private async pruneExpired(): Promise<void> {
+    const members = await this.client.zrange(this.lruKey, 0, -1);
+    for (let start = 0; start < members.length; start += PRUNE_BATCH_SIZE) {
+      const batch = members.slice(start, start + PRUNE_BATCH_SIZE);
+      const values = await this.client.mget(...batch.map((member) => this.entryKey(member)));
+      const expired = batch.filter((_, index) => values[index] === null);
+      if (expired.length === 0) continue;
+
+      await this.client.zrem(this.lruKey, ...expired);
+      await Promise.all(expired.map(() => this.client.decr(this.counterKey)));
+    }
   }
 
   private async evictOldest(): Promise<void> {

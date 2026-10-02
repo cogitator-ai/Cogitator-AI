@@ -28,6 +28,7 @@ import {
   findByDescriptionSchema,
   clickByDescriptionSchema,
   interceptRequestSchema,
+  removeInterceptorSchema,
   waitForResponseSchema,
   blockResourcesSchema,
   captureHarSchema,
@@ -691,6 +692,51 @@ describe('Network schemas', () => {
       const result = getApiCallsSchema.parse({ urlPattern: '**/api/**', method: 'POST' });
       expect(result.urlPattern).toBe('**/api/**');
       expect(result.method).toBe('POST');
+    });
+  });
+
+  describe('numeric constraints', () => {
+    it('rejects negative or fractional timeouts', () => {
+      expect(() => waitForSelectorSchema.parse({ selector: 'a', timeout: -1 })).toThrow();
+      expect(() => waitForNavigationSchema.parse({ timeout: 1.5 })).toThrow();
+      expect(waitForSelectorSchema.parse({ selector: 'a', timeout: 0 }).timeout).toBe(0);
+    });
+
+    it('requires integer indices and counts', () => {
+      expect(() => clickSchema.parse({ selector: 'a', clickCount: 1.5 })).toThrow();
+      expect(() => selectOptionSchema.parse({ selector: 's', index: -1 })).toThrow();
+      expect(() => clickByDescriptionSchema.parse({ description: 'x', index: 0.5 })).toThrow();
+      expect(() => querySelectorAllSchema.parse({ selector: 'a', limit: -2 })).toThrow();
+    });
+
+    it('rejects negative scroll amounts and keystroke delays', () => {
+      expect(() => scrollSchema.parse({ direction: 'down', amount: -10 })).toThrow();
+      expect(() => typeSchema.parse({ selector: 'a', text: 'x', delay: -5 })).toThrow();
+    });
+
+    it('requires at least one upload path and blocked resource type', () => {
+      expect(() => uploadFileSchema.parse({ selector: 'input', filePaths: [] })).toThrow();
+      expect(() => blockResourcesSchema.parse({ types: [] })).toThrow();
+    });
+
+    it('rejects empty url patterns', () => {
+      expect(() => interceptRequestSchema.parse({ urlPattern: '', action: 'block' })).toThrow();
+      expect(() => waitForResponseSchema.parse({ urlPattern: '' })).toThrow();
+    });
+  });
+
+  describe('removeInterceptorSchema', () => {
+    it('accepts an optional interceptor id', () => {
+      expect(removeInterceptorSchema.parse({})).toEqual({});
+      expect(removeInterceptorSchema.parse({ interceptorId: 'interceptor_1' })).toEqual({
+        interceptorId: 'interceptor_1',
+      });
+    });
+  });
+
+  describe('getApiCallsSchema clear flag', () => {
+    it('accepts clear', () => {
+      expect(getApiCallsSchema.parse({ clear: true }).clear).toBe(true);
     });
   });
 });

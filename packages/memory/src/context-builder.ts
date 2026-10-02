@@ -20,6 +20,17 @@ import type {
 import type { GraphContextBuilder } from './knowledge-graph/graph-context-builder';
 import { countMessageTokens, countTokens } from './token-counter';
 
+const SEMANTIC_RESULTS = 5;
+
+/**
+ * Embeddings scoped to another agent (`metadata.agentId`) are never injected; unscoped
+ * embeddings (shared documents) are visible to every agent.
+ */
+function isVisibleToAgent(embedding: Embedding, agentId: string): boolean {
+  const owner = embedding.metadata?.agentId;
+  return owner === undefined || owner === null || owner === agentId;
+}
+
 export interface ContextBuilderDeps {
   memoryAdapter: MemoryAdapter;
   factAdapter?: FactAdapter;
@@ -114,11 +125,19 @@ export class ContextBuilder {
       options.currentInput
     ) {
       const vector = await this.deps.embeddingService.embed(options.currentInput);
-      const searchResult = await this.deps.embeddingAdapter.search({
+      const rawResult = await this.deps.embeddingAdapter.search({
         vector,
-        limit: 5,
+        limit: SEMANTIC_RESULTS * 4,
         threshold: 0.7,
       });
+      const searchResult = rawResult.success
+        ? {
+            ...rawResult,
+            data: rawResult.data
+              .filter((r) => isVisibleToAgent(r, options.agentId))
+              .slice(0, SEMANTIC_RESULTS),
+          }
+        : rawResult;
 
       if (searchResult.success) {
         const semanticTokenBudget = Math.floor(availableTokens * 0.1);
@@ -223,9 +242,18 @@ export class ContextBuilder {
           usedTokens += entry.tokenCount;
         }
       } else if (this.config.strategy === 'relevant') {
-        throw new Error(
-          'Strategy "relevant" is not yet implemented. Use "recent" or enable includeSemanticContext for semantic search.'
+        const selectedEntries = await this.selectRelevantEntries(
+          entries,
+          availableTokens - usedTokens,
+          options.currentInput
         );
+
+        truncated = selectedEntries.length < entries.length;
+
+        for (const entry of selectedEntries) {
+          messages.push(entry.message);
+          usedTokens += entry.tokenCount;
+        }
       } else if (this.config.strategy === 'hybrid') {
         const selectedEntries = await this.selectHybridEntries(
           entries,
@@ -277,71 +305,108 @@ export class ContextBuilder {
     return selected;
   }
 
+  /**
+   * Entries most similar to the current input that fit the budget, in conversation order.
+   * Falls back to the most recent entries when there is no input or embedding service.
+   */
+  private async selectRelevantEntries(
+    entries: MemoryEntry[],
+    availableTokens: number,
+    currentInput?: string
+  ): Promise<MemoryEntry[]> {
+    if (!currentInput || !this.deps.embeddingService) {
+      return this.selectRecentEntries(entries, availableTokens);
+    }
+
+    const scored = await this.scoreEntries(entries, currentInput, 0);
+    if (scored === null) {
+      return this.selectRecentEntries(entries, availableTokens);
+    }
+
+    const selectedIds = new Set<string>();
+    let usedTokens = 0;
+    for (const { entry } of scored) {
+      if (usedTokens + entry.tokenCount <= availableTokens) {
+        selectedIds.add(entry.id);
+        usedTokens += entry.tokenCount;
+      }
+    }
+
+    return entries.filter((e) => selectedIds.has(e.id));
+  }
+
+  /**
+   * Similarity of user/assistant text entries to the input, best first. Returns null when
+   * embedding fails.
+   */
+  private async scoreEntries(
+    entries: MemoryEntry[],
+    input: string,
+    minScore: number
+  ): Promise<{ entry: MemoryEntry; score: number }[] | null> {
+    const embeddingService = this.deps.embeddingService;
+    if (!embeddingService) return null;
+
+    const embeddable: { entry: MemoryEntry; text: string }[] = [];
+    for (const entry of entries) {
+      if (entry.message.role !== 'user' && entry.message.role !== 'assistant') continue;
+      const content = entry.message.content;
+      if (typeof content === 'string' && content.trim().length > 0) {
+        embeddable.push({ entry, text: content });
+      }
+    }
+    if (embeddable.length === 0) return [];
+
+    try {
+      const [inputVector, vectors] = await Promise.all([
+        embeddingService.embed(input),
+        embeddingService.embedBatch(embeddable.map((e) => e.text)),
+      ]);
+      return embeddable
+        .map(({ entry }, i) => ({ entry, score: this.cosineSimilarity(inputVector, vectors[i]) }))
+        .filter((s) => s.score > minScore)
+        .sort((a, b) => b.score - a.score);
+    } catch (err) {
+      console.warn(
+        'Embedding failed for context entries',
+        err instanceof Error ? err.message : err
+      );
+      return null;
+    }
+  }
+
   private async selectHybridEntries(
     entries: MemoryEntry[],
     availableTokens: number,
     currentInput?: string
   ): Promise<MemoryEntry[]> {
-    const semanticBudget = Math.floor(availableTokens * 0.3);
-    const recentBudget = availableTokens - semanticBudget;
+    if (!currentInput || !this.deps.embeddingService || entries.length <= 10) {
+      return this.selectRecentEntries(entries, availableTokens);
+    }
 
-    const selected: MemoryEntry[] = [];
+    const semanticBudget = Math.floor(availableTokens * 0.3);
     const usedIds = new Set<string>();
     let usedTokens = 0;
 
-    if (currentInput && this.deps.embeddingService && entries.length > 10) {
-      const inputVector = await this.deps.embeddingService.embed(currentInput);
+    const olderEntries = entries
+      .slice(0, -10)
+      .filter((e) => typeof e.message.content !== 'string' || e.message.content.length > 20);
+    const scoredEntries = (await this.scoreEntries(olderEntries, currentInput, 0.6)) ?? [];
 
-      const olderEntries = entries.slice(0, -10);
-      const scoredEntries: { entry: MemoryEntry; score: number }[] = [];
-
-      const embeddable: { entry: MemoryEntry; text: string }[] = [];
-      for (const entry of olderEntries) {
-        if (entry.message.role === 'user' || entry.message.role === 'assistant') {
-          const content = entry.message.content;
-          if (typeof content === 'string' && content.length > 20) {
-            embeddable.push({ entry, text: content });
-          }
-        }
-      }
-
-      if (embeddable.length > 0) {
-        try {
-          const vectors = await this.deps.embeddingService.embedBatch(
-            embeddable.map((e) => e.text)
-          );
-          for (let i = 0; i < embeddable.length; i++) {
-            const score = this.cosineSimilarity(inputVector, vectors[i]);
-            if (score > 0.6) {
-              scoredEntries.push({ entry: embeddable[i].entry, score });
-            }
-          }
-        } catch (err) {
-          console.warn(
-            'Embedding failed for context entry',
-            err instanceof Error ? err.message : err
-          );
-        }
-      }
-
-      scoredEntries.sort((a, b) => b.score - a.score);
-
-      for (const { entry } of scoredEntries) {
-        if (usedTokens + entry.tokenCount <= semanticBudget) {
-          selected.push(entry);
-          usedIds.add(entry.id);
-          usedTokens += entry.tokenCount;
-        }
+    for (const { entry } of scoredEntries) {
+      if (usedTokens + entry.tokenCount <= semanticBudget) {
+        usedIds.add(entry.id);
+        usedTokens += entry.tokenCount;
       }
     }
 
     const recentEntries = this.selectRecentEntries(
       entries.filter((e) => !usedIds.has(e.id)),
-      recentBudget
+      availableTokens - usedTokens
     );
+    for (const entry of recentEntries) usedIds.add(entry.id);
 
-    const semanticInOrder = entries.filter((e) => usedIds.has(e.id));
-    return [...semanticInOrder, ...recentEntries];
+    return entries.filter((e) => usedIds.has(e.id));
   }
 
   private cosineSimilarity(a: number[], b: number[]): number {

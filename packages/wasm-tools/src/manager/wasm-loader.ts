@@ -9,7 +9,14 @@ export class WasmLoader {
 
   async initialize(): Promise<void> {
     if (this.createPlugin) return;
-    const extism = await import('@extism/extism');
+    let extism: { createPlugin?: unknown; default?: unknown };
+    try {
+      extism = (await import('@extism/extism')) as { createPlugin?: unknown; default?: unknown };
+    } catch (error) {
+      throw new Error(
+        `@extism/extism is required to load WASM modules: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
     const factory = extism.createPlugin ?? extism.default;
     if (typeof factory !== 'function') {
       throw new Error('Unable to resolve createPlugin from @extism/extism');
@@ -23,7 +30,7 @@ export class WasmLoader {
     }
 
     const source = await this.loadSource(wasmPath);
-    return this.createPlugin(source, { useWasi });
+    return this.createPlugin(source, { useWasi, runInWorker: true });
   }
 
   private async loadSource(wasmPath: string): Promise<WasmSource> {
@@ -33,6 +40,9 @@ export class WasmLoader {
 
     const absolutePath = isAbsolute(wasmPath) ? wasmPath : resolve(process.cwd(), wasmPath);
     const wasm = await readFile(absolutePath);
+    if (wasm.length === 0) {
+      throw new Error(`WASM module is empty: ${absolutePath}`);
+    }
     this.assertWasmMagic(wasm, absolutePath);
     return { wasm: [{ data: wasm }] };
   }

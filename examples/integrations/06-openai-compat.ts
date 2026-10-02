@@ -1,21 +1,19 @@
 import { createCogitator, DEFAULT_MODEL, header } from '../_shared/setup.js';
-import { Agent, tool } from '@cogitator-ai/core';
+import { tool } from '@cogitator-ai/core';
 import { createOpenAIServer } from '@cogitator-ai/openai-compat';
 import OpenAI from 'openai';
 import { z } from 'zod';
 
 const PORT = 8080;
 
-const calculator = tool({
-  name: 'calculator',
-  description: 'Evaluate a math expression',
+const multiply = tool({
+  name: 'multiply',
+  description: 'Multiply two numbers',
   parameters: z.object({
-    expression: z.string().describe('Math expression to evaluate'),
+    a: z.number().describe('First factor'),
+    b: z.number().describe('Second factor'),
   }),
-  execute: async ({ expression }) => {
-    const result = new Function(`return (${expression})`)() as number;
-    return { expression, result };
-  },
+  execute: async ({ a, b }) => ({ a, b, product: a * b }),
 });
 
 async function main() {
@@ -23,22 +21,13 @@ async function main() {
 
   const cog = createCogitator();
 
-  new Agent({
-    name: 'assistant',
-    model: DEFAULT_MODEL,
-    instructions: 'You are a helpful assistant. Use tools when appropriate. Be concise.',
-    tools: [calculator],
-    temperature: 0.3,
-  });
-
   const server = createOpenAIServer(cog, {
     port: PORT,
-    tools: [calculator],
+    tools: [multiply],
+    defaultModel: DEFAULT_MODEL,
     logging: false,
   });
 
-  // let the internal setupServer() async chain complete before calling listen()
-  await new Promise((r) => setTimeout(r, 100));
   await server.start();
 
   console.log();
@@ -50,14 +39,12 @@ async function main() {
   console.log('Or use the OpenAI SDK (demo below):');
   console.log();
 
-  await demoOpenAIClient();
-
-  process.on('SIGINT', async () => {
-    console.log('\nShutting down...');
+  try {
+    await demoOpenAIClient();
+  } finally {
     await server.stop();
     await cog.close();
-    process.exit(0);
-  });
+  }
 }
 
 async function demoOpenAIClient() {
@@ -69,7 +56,22 @@ async function demoOpenAIClient() {
   const assistant = await client.beta.assistants.create({
     name: 'math-helper',
     model: 'cogitator',
-    instructions: 'You are a math helper. Be concise.',
+    instructions:
+      'You are a math helper. Use the multiply tool for products and get_unit_price for prices. Be concise.',
+    tools: [
+      {
+        type: 'function',
+        function: {
+          name: 'get_unit_price',
+          description: 'Get the unit price in USD of a product from the client catalog',
+          parameters: {
+            type: 'object',
+            properties: { product: { type: 'string' } },
+            required: ['product'],
+          },
+        },
+      },
+    ],
   });
   console.log('Created assistant:', assistant.id);
 
@@ -92,7 +94,39 @@ async function demoOpenAIClient() {
     console.log('Response:', lastMessage.content[0].text.value);
   }
 
-  console.log('\nServer still running — press Ctrl+C to stop');
+  console.log('\n--- Client-side function calling (requires_action) ---');
+  await client.beta.threads.messages.create(thread.id, {
+    role: 'user',
+    content: 'How much do 3 widgets cost? Look up the widget price first.',
+  });
+
+  let priced = await client.beta.threads.runs.createAndPoll(thread.id, {
+    assistant_id: assistant.id,
+  });
+  while (priced.status === 'requires_action') {
+    const calls = priced.required_action!.submit_tool_outputs.tool_calls;
+    for (const call of calls)
+      console.log(`Model asked for ${call.function.name}(${call.function.arguments})`);
+    priced = await client.beta.threads.runs.submitToolOutputsAndPoll(priced.id, {
+      thread_id: thread.id,
+      tool_outputs: calls.map((call) => ({
+        tool_call_id: call.id,
+        output: JSON.stringify({ currency: 'USD', unit_price: 19.99 }),
+      })),
+    });
+  }
+  console.log('Run status:', priced.status);
+
+  console.log('\n--- Streaming ---');
+  await client.beta.threads.messages.create(thread.id, {
+    role: 'user',
+    content: 'Summarize our conversation in one sentence.',
+  });
+  const stream = client.beta.threads.runs
+    .stream(thread.id, { assistant_id: assistant.id })
+    .on('textDelta', (delta) => process.stdout.write(delta.value ?? ''));
+  await stream.finalRun();
+  console.log();
 }
 
 main();

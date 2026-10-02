@@ -20,14 +20,17 @@ import { CogitatorServer } from '@cogitator-ai/express';
 const app = express();
 
 const cogitator = new Cogitator({
-  defaultBackend: 'openai',
-  backends: { openai: { apiKey: process.env.OPENAI_API_KEY } },
+  llm: {
+    defaultModel: 'openai/gpt-4o-mini',
+    providers: { openai: { apiKey: process.env.OPENAI_API_KEY } },
+  },
 });
 
 const chatAgent = new Agent({
   name: 'chat',
+  description: 'General-purpose chat assistant',
   instructions: 'You are a helpful assistant.',
-  model: 'gpt-4o-mini',
+  model: 'openai/gpt-4o-mini',
 });
 
 const server = new CogitatorServer({
@@ -54,6 +57,8 @@ POST   /api/agents/:name/run          - Run agent (JSON response)
 POST   /api/agents/:name/stream       - Run agent (SSE stream)
 ```
 
+Run/stream body: `{ input: string; context?: object; threadId?: string }` — `input` must be a non-empty string (400 otherwise). The agent list exposes `config.description`, never the agent instructions. The authenticated `userId` (from `auth`) is passed to the run, and the run is aborted when the client disconnects.
+
 ### Threads (Memory)
 
 ```
@@ -61,6 +66,8 @@ GET    /api/threads/:id               - Get thread messages
 POST   /api/threads/:id/messages      - Add message to thread
 DELETE /api/threads/:id               - Delete thread
 ```
+
+Requires `memory` on the `Cogitator` instance (503 otherwise). New messages need `role` (`user` | `assistant` | `system`) and a non-empty string `content`; optional `metadata` is stored on the memory entry.
 
 ### Workflows
 
@@ -70,14 +77,18 @@ POST   /api/workflows/:name/run       - Run workflow
 POST   /api/workflows/:name/stream    - Stream workflow events
 ```
 
+Body: `{ input?: object; options?: { maxConcurrency?: number; maxIterations?: number; checkpoint?: boolean } }`. `maxConcurrency`/`maxIterations` must be positive integers and `checkpoint` a boolean (400 otherwise); other options are dropped. A failed workflow returns `500` with code `WORKFLOW_FAILED` (the stream ends with an `error` event instead of `workflow_completed`). Disconnecting aborts the workflow.
+
 ### Swarms
 
 ```
 GET    /api/swarms                    - List all swarms
 POST   /api/swarms/:name/run          - Run swarm
 POST   /api/swarms/:name/stream       - Stream swarm events
-GET    /api/swarms/:name/blackboard   - Get shared state
+GET    /api/swarms/:name/blackboard   - Get configured blackboard sections
 ```
+
+Run/stream body: `{ input: string; context?: object; threadId?: string; timeout?: number }` (`timeout` must be positive). Disconnecting aborts the swarm. Each run creates a fresh swarm, so the blackboard endpoint returns the configured initial sections.
 
 ### Tools & Docs
 
@@ -102,20 +113,27 @@ const server = new CogitatorServer({
     enableWebSocket: true,
     enableSwagger: true,
 
-    // Authentication
+    // Authentication — throw to reject (401); the returned context is available
+    // as req.cogitator.auth and its userId is passed to agent runs.
+    // Also applied to WebSocket upgrade requests.
     auth: async (req) => {
       const token = req.headers.authorization?.replace('Bearer ', '');
       const user = await validateToken(token);
       return { userId: user.id, roles: user.roles };
     },
 
-    // Rate limiting
+    // Rate limiting (in-memory, per process). windowMs must be positive and max
+    // non-negative, otherwise the constructor throws. Requests without a client
+    // address share a single bucket.
     rateLimit: {
       windowMs: 60000, // 1 minute
       max: 100, // 100 requests per window
+      trustProxy: false, // true: key by the nearest X-Forwarded-For hop
     },
 
-    // CORS
+    // CORS — credentials default to true for explicit origins and to false for '*'.
+    // `origin: '*'` with `credentials: true` reflects any origin with credentials;
+    // only do that for trusted, non-cookie setups.
     cors: {
       origin: ['https://myapp.com'],
       credentials: true,
@@ -163,22 +181,39 @@ while (true) {
 
 ## WebSocket Support
 
-Enable real-time bidirectional communication:
+Enable real-time bidirectional communication (requires the optional `ws` package):
 
 ```typescript
-const server = new CogitatorServer({
-  // ...
-  config: { enableWebSocket: true },
-});
-
-// After init, setup WebSocket on HTTP server
-import { setupWebSocket } from '@cogitator-ai/express';
 import { createServer } from 'http';
 
+const server = new CogitatorServer({
+  // ...
+  config: {
+    enableWebSocket: true,
+    websocket: { path: '/api/ws', pingInterval: 30000, maxPayloadSize: 1024 * 1024 },
+  },
+});
+
+await server.init();
+
 const httpServer = createServer(app);
-await setupWebSocket(httpServer, routeContext, { path: '/api/ws' });
+await server.attachWebSocket(httpServer); // defaults to `${basePath}/ws`
 httpServer.listen(3000);
 ```
+
+`attachWebSocket` throws if `enableWebSocket` is off, `init()` has not run, or `ws` is not installed. The configured `auth` function runs on the upgrade request (rejected with 401 when it throws). For custom setups, `setupWebSocket(httpServer, routeContext, config)` is also exported.
+
+Protocol:
+
+| Message                                                                             | Direction     | Description                                                                                                                    |
+| ----------------------------------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `{ type: 'run', id, payload: { type: 'agent', name, input, context?, threadId? } }` | Client→Server | Run an agent; events arrive as `{ type: 'event', id, payload }` (`token`, `tool-call`, `tool-result`, `complete`, `cancelled`) |
+| `{ type: 'stop' }`                                                                  | Client→Server | Abort the client's running agent (emits `cancelled`)                                                                           |
+| `{ type: 'subscribe', channel: 'agent:<name>' }`                                    | Client→Server | Receive events of runs of that agent started by other clients                                                                  |
+| `{ type: 'unsubscribe', channel }`                                                  | Client→Server | Stop receiving channel events                                                                                                  |
+| `{ type: 'ping' }`                                                                  | Client→Server | Answered with `{ type: 'pong' }`                                                                                               |
+
+Only agent runs are supported over WebSocket; use the HTTP endpoints for workflows and swarms. A new `run` from the same connection aborts the previous one.
 
 Client usage:
 
@@ -249,15 +284,19 @@ router.post('/custom/stream', async (req, res) => {
   setupSSEHeaders(res);
   const writer = new ExpressStreamWriter(res);
   const messageId = generateId('msg');
+  const textId = generateId('txt');
+
+  // Use res.on('close') (not req.on('close'), which fires once the body is read)
+  res.on('close', () => writer.close());
 
   writer.start(messageId);
-  writer.textStart(generateId('txt'));
+  writer.textStart(textId);
 
   // Your streaming logic
-  writer.textDelta('txt-1', 'Hello ');
-  writer.textDelta('txt-1', 'World!');
+  writer.textDelta(textId, 'Hello ');
+  writer.textDelta(textId, 'World!');
 
-  writer.textEnd('txt-1');
+  writer.textEnd(textId);
   writer.finish(messageId);
   writer.close();
 });
@@ -271,6 +310,7 @@ router.post('/custom/stream', async (req, res) => {
 class CogitatorServer {
   constructor(options: CogitatorServerConfig);
   init(): Promise<void>;
+  attachWebSocket(server: http.Server): Promise<WebSocketServer>;
   readonly isInitialized: boolean;
 }
 ```
@@ -293,7 +333,6 @@ interface CogitatorServerConfig {
     cors?: CorsConfig;
     swagger?: SwaggerConfig;
     websocket?: WebSocketConfig;
-    requestTimeout?: number; // Default: 30000
   };
 }
 ```
@@ -316,8 +355,11 @@ class ExpressStreamWriter {
   error(message: string, code?: string): void;
   finish(messageId: string, usage?: Usage): void;
   close(): void;
+  readonly isClosed: boolean;
 }
 ```
+
+Writes after the response has ended (or the client disconnected) are ignored.
 
 ## Error Handling
 
@@ -334,13 +376,17 @@ All endpoints return consistent error responses:
 
 Error codes map to HTTP status codes:
 
-- `INVALID_INPUT` → 400
+- `INVALID_INPUT` → 400 (validation errors and malformed JSON bodies)
 - `UNAUTHORIZED` → 401
-- `PERMISSION_DENIED` → 403
 - `NOT_FOUND` → 404
+- `PAYLOAD_TOO_LARGE` → 413
 - `RATE_LIMIT_EXCEEDED` → 429
-- `INTERNAL` → 500
-- `UNAVAILABLE` → 503
+- `WORKFLOW_FAILED` → 500
+- `INTERNAL` → 500 (details are logged, not returned)
+- `UNIMPLEMENTED` → 501 (optional workflows/swarms package missing)
+- `UNAVAILABLE` → 503 (memory not configured)
+
+`CogitatorError`s thrown by runs keep their own code and use its mapped status (for example `LLM_RATE_LIMITED` → 429).
 
 ## License
 

@@ -8,7 +8,7 @@ description: Distributed job processing with BullMQ — background execution for
 The `@cogitator-ai/worker` package provides distributed job processing backed by BullMQ and Redis. It supports background execution of agents, workflows, and swarms with automatic retries, job priorities, and Prometheus metrics for autoscaling.
 
 ```bash
-pnpm add @cogitator-ai/worker
+pnpm add @cogitator-ai/worker @cogitator-ai/core ioredis
 ```
 
 ## JobQueue
@@ -48,14 +48,20 @@ Workflow and swarm jobs follow the same pattern:
 
 ```typescript
 await queue.addWorkflowJob(workflowConfig, { query: 'input' }, { priority: 2 });
-await queue.addSwarmJob(swarmConfig, 'Debate the pros and cons of microservices');
+await queue.addSwarmJob(
+  { topology: 'debate', agents: [proAgent, conAgent], coordinator: moderatorAgent, maxRounds: 2 },
+  'Debate the pros and cons of microservices'
+);
 ```
+
+Workflow jobs execute a serialized DAG (`agent`, `transform`, `condition` and `parallel` nodes over a shared state object); swarm topologies map to strategies (`sequential` → pipeline, `hierarchical` → hierarchical with the coordinator as supervisor, `collaborative` → round-robin, `debate` → debate, `voting` → consensus). See the package README for the full workflow node reference.
 
 ## WorkerPool
 
 `WorkerPool` spawns BullMQ workers that consume jobs from the queue. Built-in processors handle agent, workflow, swarm, and distributed swarm-agent job types.
 
 ```typescript
+import { Cogitator } from '@cogitator-ai/core';
 import { WorkerPool } from '@cogitator-ai/worker';
 
 const pool = new WorkerPool(
@@ -64,6 +70,8 @@ const pool = new WorkerPool(
     redis: { host: 'localhost', port: 6379 },
     workerCount: 4,
     concurrency: 5,
+    cogitator: new Cogitator({ llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY } } } }),
+    tools: [webSearch, calculator],
   },
   {
     onJobCompleted: (jobId, result) => console.log(`${jobId} done`),
@@ -74,14 +82,37 @@ const pool = new WorkerPool(
 await pool.start();
 
 process.on('SIGTERM', async () => {
-  await pool.stop(30_000);
+  await pool.stop(30_000); // graceful, force-closes after the timeout
   await queue.close();
 });
 ```
 
+Serialized agents carry tool **schemas** only. The pool resolves tools by name from its `tools` option; jobs that need tools the worker does not provide fail with a clear error instead of running with stubs.
+
+## Distributed Swarm Workers
+
+Swarms with `distributed.enabled` dispatch each agent turn to Redis. Run `DistributedSwarmWorker` on worker nodes to execute them:
+
+```typescript
+import { DistributedSwarmWorker } from '@cogitator-ai/worker';
+
+const worker = new DistributedSwarmWorker({
+  redis: { host: 'localhost', port: 6379 },
+  keyPrefix: 'swarm', // must match the swarm's distributed.redis.keyPrefix
+  queue: 'swarm-agent-jobs', // must match distributed.queue
+  concurrency: 4,
+  cogitator,
+  tools: [webSearch],
+});
+
+await worker.start();
+```
+
+See [Distributed Swarms](/docs/swarms/distributed) for the coordinator side.
+
 ## Redis Cluster
 
-Pass cluster nodes to both queue and workers. Cluster mode uses the `{cogitator}` hash tag prefix to keep keys on the same slot.
+Pass cluster nodes to both queue and workers. They connect to every listed node through an ioredis `Cluster`, and cluster mode uses the `{cogitator}` hash tag prefix to keep keys on the same slot.
 
 ```typescript
 const redisConfig = {
@@ -102,17 +133,17 @@ const pool = new WorkerPool({ redis: redisConfig, workerCount: 4, concurrency: 1
 
 Expose queue metrics for monitoring and Kubernetes HPA:
 
+`WorkerPool` records job durations and per-type counts in `pool.metrics` (a `MetricsCollector`):
+
 ```typescript
-import { MetricsCollector } from '@cogitator-ai/worker';
-
-const collector = new MetricsCollector();
-
 app.get('/metrics', async (req, res) => {
   const metrics = await queue.getMetrics();
   res.set('Content-Type', 'text/plain');
-  res.send(collector.format(metrics, { queue: 'cogitator-jobs' }));
+  res.send(pool.metrics.format(metrics, { queue: 'cogitator-jobs' }));
 });
 ```
+
+Label values are escaped per the Prometheus exposition format.
 
 | Metric                            | Type      | Description                  |
 | --------------------------------- | --------- | ---------------------------- |
@@ -120,7 +151,8 @@ app.get('/metrics', async (req, res) => {
 | `cogitator_queue_active`          | gauge     | Jobs currently processing    |
 | `cogitator_queue_completed_total` | counter   | Total completed jobs         |
 | `cogitator_queue_failed_total`    | counter   | Total failed jobs            |
-| `cogitator_workers_total`         | gauge     | Active worker count          |
+| `cogitator_workers_total`         | gauge     | Workers connected to the queue |
+| `cogitator_jobs_by_type_total`    | counter   | Jobs processed by type       |
 | `cogitator_job_duration_seconds`  | histogram | Processing time distribution |
 
 ### HPA Autoscaling

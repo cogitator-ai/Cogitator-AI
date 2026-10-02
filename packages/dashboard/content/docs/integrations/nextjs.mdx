@@ -13,7 +13,12 @@ pnpm add @cogitator-ai/next @cogitator-ai/core
 
 ## Server: Chat Handler
 
-`createChatHandler` turns a Cogitator agent into a streaming API route handler. It accepts a standard `Request`, runs the agent, and returns an SSE stream compatible with the Vercel AI UI protocol.
+`createChatHandler` turns a Cogitator agent into a streaming API route handler. It accepts a standard `Request`, runs the agent with token streaming enabled, and returns an SSE stream of typed events (`start`, `text-*`, `tool-call-*`, `tool-result`, `finish`, `error`). The event names follow the Vercel AI SDK style, but the payloads are Cogitator-specific — consume them with `useCogitatorChat`.
+
+- The **last user message** is the run input; history lives in the thread (configure `memory` on `Cogitator`). The `finish` event carries the `threadId`, and `useCogitatorChat` adopts it automatically.
+- Request `metadata` is passed to the run as `context`.
+- The run is aborted when the client disconnects.
+- Bodies over 1 MB get `413`; malformed bodies or a request without a user message get `400`.
 
 ```typescript title="app/api/chat/route.ts"
 import { Cogitator, Agent } from '@cogitator-ai/core';
@@ -56,15 +61,15 @@ const handler = createChatHandler(cog, agent, {
 });
 ```
 
-| Option        | Type                                                          | Description                                  |
-| ------------- | ------------------------------------------------------------- | -------------------------------------------- |
-| `parseInput`  | `(req: Request) => Promise<ChatInput>`                        | Custom request body parser                   |
-| `beforeRun`   | `(req: Request, input: ChatInput) => Promise<object \| void>` | Auth/context hook, runs before the agent     |
-| `afterRun`    | `(result: RunResult) => Promise<void>`                        | Post-processing hook (save to DB, log, etc.) |
+| Option       | Type                                                          | Description                                                                                                                                                                                                                                    |
+| ------------ | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `parseInput` | `(req: Request) => Promise<ChatInput>`                        | Custom request body parser                                                                                                                                                                                                                     |
+| `beforeRun`  | `(req: Request, input: ChatInput) => Promise<object \| void>` | Auth hook; the returned object is merged into the run options (`userId`, `threadId`, ...) but cannot replace `stream`, `signal` or the streaming callbacks. Throw an error with a `status` property to reject with that status (default `401`) |
+| `afterRun`   | `(result: RunResult) => Promise<void>`                        | Post-processing hook (save to DB, log, etc.). Runs before `finish`; a failure is reported as an `error` event                                                                                                                                  |
 
 ## Server: Agent Handler
 
-For non-streaming use cases, `createAgentHandler` returns a JSON response with the full result including tool calls, traces, and usage:
+For non-streaming use cases, `createAgentHandler` returns a JSON response with the full result including tool calls, traces, and usage. The default parser requires a non-blank string `input` (plus optional object `context` and string `threadId`) and answers `400` otherwise:
 
 ```typescript title="app/api/agent/route.ts"
 import { createAgentHandler } from '@cogitator-ai/next';
@@ -136,35 +141,37 @@ export function Chat() {
 
 ### UseChatOptions
 
-| Option            | Type                                | Description                                |
-| ----------------- | ----------------------------------- | ------------------------------------------ |
-| `api`             | `string`                            | API endpoint URL (required)                |
-| `threadId`        | `string`                            | Initial thread ID for conversation context |
-| `initialMessages` | `ChatMessage[]`                     | Pre-populate the message list              |
-| `headers`         | `Record<string, string>`            | Custom headers sent with each request      |
-| `onError`         | `(error: Error) => void`            | Error callback                             |
-| `onFinish`        | `(message: ChatMessage) => void`    | Called when assistant message is complete  |
-| `onToolCall`      | `(toolCall: ToolCall) => void`      | Called when a tool is invoked              |
-| `onToolResult`    | `(result: ToolResultEvent) => void` | Called when a tool returns a result        |
-| `retry`           | `RetryConfig`                       | Automatic retry on network failure         |
+| Option            | Type                                | Description                                                            |
+| ----------------- | ----------------------------------- | ---------------------------------------------------------------------- |
+| `api`             | `string`                            | API endpoint URL (required)                                            |
+| `threadId`        | `string`                            | Initial thread ID for conversation context                             |
+| `initialMessages` | `ChatMessage[]`                     | Pre-populate the message list                                          |
+| `headers`         | `Record<string, string>`            | Custom headers sent with each request                                  |
+| `onError`         | `(error: Error) => void`            | Error callback                                                         |
+| `onFinish`        | `(message: ChatMessage) => void`    | Called when assistant message is complete (not after an `error` event) |
+| `onToolCall`      | `(toolCall: ToolCall) => void`      | Called when a tool is invoked                                          |
+| `onToolResult`    | `(result: ToolResultEvent) => void` | Called when a tool returns a result                                    |
+| `retry`           | `RetryConfig`                       | Retry on network failures and 408/429/502/503/504                      |
 
 ### Return Values
 
-| Field           | Type                            | Description                           |
-| --------------- | ------------------------------- | ------------------------------------- |
-| `messages`      | `ChatMessage[]`                 | All messages including live streaming |
-| `input`         | `string`                        | Current input value                   |
-| `setInput`      | `(value: string) => void`       | Update input                          |
-| `send`          | `(input?, metadata?) => void`   | Send a message                        |
-| `isLoading`     | `boolean`                       | Whether agent is running              |
-| `error`         | `Error \| null`                 | Last error                            |
-| `stop`          | `() => void`                    | Abort the current stream              |
-| `reload`        | `() => Promise<void>`           | Re-send the last user message         |
-| `threadId`      | `string \| undefined`           | Current thread ID                     |
-| `setThreadId`   | `(id: string) => void`          | Switch conversation thread            |
-| `appendMessage` | `(msg: ChatMessage) => void`    | Add a message to the list             |
-| `clearMessages` | `() => void`                    | Reset conversation                    |
-| `setMessages`   | `(msgs: ChatMessage[]) => void` | Replace message list                  |
+| Field           | Type                            | Description                                          |
+| --------------- | ------------------------------- | ---------------------------------------------------- |
+| `messages`      | `ChatMessage[]`                 | All messages including live streaming                |
+| `input`         | `string`                        | Current input value                                  |
+| `setInput`      | `(value: string) => void`       | Update input                                         |
+| `send`          | `(input?, metadata?) => void`   | Send a message                                       |
+| `isLoading`     | `boolean`                       | Whether agent is running                             |
+| `error`         | `Error \| null`                 | Last error                                           |
+| `stop`          | `() => void`                    | Abort the current stream (the partial reply is kept) |
+| `reload`        | `() => Promise<void>`           | Re-send the last user message                        |
+| `threadId`      | `string \| undefined`           | Current thread ID                                    |
+| `setThreadId`   | `(id: string) => void`          | Switch conversation thread                           |
+| `appendMessage` | `(msg: ChatMessage) => void`    | Add a message to the list                            |
+| `clearMessages` | `() => void`                    | Reset conversation                                   |
+| `setMessages`   | `(msgs: ChatMessage[]) => void` | Replace message list                                 |
+
+HTTP failures surface as `HttpError` (exported from `@cogitator-ai/next/client`) with a `status` field and a message such as `Request failed: 400 - No user message provided`.
 
 ## Client: useCogitatorAgent
 
@@ -191,6 +198,8 @@ export function AgentRunner() {
   );
 }
 ```
+
+Starting a new `run()` aborts the previous request, and `reset()` cancels the in-flight one.
 
 ## Server Actions
 

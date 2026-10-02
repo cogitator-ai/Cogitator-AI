@@ -183,11 +183,35 @@ function resolveDomain(domainRef: string, state: PlanState): unknown[] {
   const value = state.variables[domainRef];
   if (Array.isArray(value)) return value;
   if (typeof value === 'object' && value !== null && 'min' in value && 'max' in value) {
-    const { min, max } = value as { min: number; max: number };
-    const size = Math.min(max - min + 1, MAX_DOMAIN_SIZE);
-    return Array.from({ length: size }, (_, i) => min + i);
+    const { min, max } = value as { min: unknown; max: unknown };
+    if (typeof min !== 'number' || typeof max !== 'number') return [];
+    if (!Number.isFinite(min) || !Number.isFinite(max) || max < min) return [];
+    const start = Math.ceil(min);
+    const size = Math.min(Math.floor(max) - start + 1, MAX_DOMAIN_SIZE);
+    return Array.from({ length: Math.max(0, size) }, (_, i) => start + i);
   }
   return [];
+}
+
+export function valuesEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b) || a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+
+  if (a instanceof Date || b instanceof Date) {
+    return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
+  }
+
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((item, i) => valuesEqual(item, b[i]));
+  }
+
+  const aRecord = a as Record<string, unknown>;
+  const bRecord = b as Record<string, unknown>;
+  const aKeys = Object.keys(aRecord);
+  const bKeys = Object.keys(bRecord);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((key) => key in bRecord && valuesEqual(aRecord[key], bRecord[key]));
 }
 
 export function evaluatePrecondition(
@@ -215,7 +239,7 @@ export function evaluatePrecondition(
     case 'simple': {
       const actual = resolveVariable(precondition.variable);
       const expected = resolveValue(precondition.value);
-      return actual === expected;
+      return valuesEqual(actual, expected);
     }
 
     case 'comparison': {
@@ -224,9 +248,9 @@ export function evaluatePrecondition(
 
       switch (precondition.operator) {
         case 'eq':
-          return actual === expected;
+          return valuesEqual(actual, expected);
         case 'neq':
-          return actual !== expected;
+          return !valuesEqual(actual, expected);
         case 'gt':
         case 'gte':
         case 'lt':
@@ -246,7 +270,7 @@ export function evaluatePrecondition(
           }
         }
         case 'in':
-          return Array.isArray(expected) && expected.includes(actual);
+          return Array.isArray(expected) && expected.some((item) => valuesEqual(item, actual));
         default:
           return false;
       }
@@ -291,7 +315,8 @@ export function evaluatePrecondition(
 export function applyEffect(
   effect: Effect,
   state: PlanState,
-  parameters: Record<string, unknown> = {}
+  parameters: Record<string, unknown> = {},
+  conditionState: PlanState = state
 ): PlanState {
   const newVariables = { ...state.variables };
 
@@ -342,30 +367,19 @@ export function applyEffect(
     }
 
     case 'conditional': {
-      if (evaluatePrecondition(effect.condition, state, parameters)) {
-        let currentState: PlanState = {
-          ...state,
-          id: nanoid(8),
-          variables: newVariables,
-          timestamp: new Date(),
-        };
-        for (const thenEffect of effect.thenEffects) {
-          currentState = applyEffect(thenEffect, currentState, parameters);
-        }
-        return currentState;
-      } else if (effect.elseEffects) {
-        let currentState: PlanState = {
-          ...state,
-          id: nanoid(8),
-          variables: newVariables,
-          timestamp: new Date(),
-        };
-        for (const elseEffect of effect.elseEffects) {
-          currentState = applyEffect(elseEffect, currentState, parameters);
-        }
-        return currentState;
+      const branch = evaluatePrecondition(effect.condition, conditionState, parameters)
+        ? effect.thenEffects
+        : (effect.elseEffects ?? []);
+      let currentState: PlanState = {
+        ...state,
+        id: nanoid(8),
+        variables: newVariables,
+        timestamp: new Date(),
+      };
+      for (const nested of branch) {
+        currentState = applyEffect(nested, currentState, parameters, conditionState);
       }
-      break;
+      return currentState;
     }
   }
 
@@ -381,7 +395,7 @@ export function applyAction(action: PlanAction, state: PlanState, schema: Action
   let currentState = state;
 
   for (const effect of schema.effects) {
-    currentState = applyEffect(effect, currentState, action.parameters);
+    currentState = applyEffect(effect, currentState, action.parameters, state);
   }
 
   return currentState;

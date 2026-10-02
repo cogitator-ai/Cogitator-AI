@@ -47,17 +47,19 @@ const chunks = chunker.chunk(documentText, 'doc-1');
 
 Default separators: `['\n\n', '\n', '. ', ' ', '']`
 
-| Option         | Type     | Description                                      |
-| -------------- | -------- | ------------------------------------------------ |
-| `chunkSize`    | number   | Maximum characters per chunk                     |
-| `chunkOverlap` | number   | Characters to overlap between consecutive chunks |
+Guarantees: `chunk.content === text.slice(startOffset, endOffset)` for every chunk (even with runs of repeated separators), no chunk exceeds `chunkSize`, chunks are trimmed, sentence punctuation stays with its sentence, every non-whitespace character is covered, and overlap never produces a chunk fully contained in the previous one.
+
+| Option         | Type     | Description                                                |
+| -------------- | -------- | ---------------------------------------------------------- |
+| `chunkSize`    | number   | Maximum characters per chunk                               |
+| `chunkOverlap` | number   | Characters to overlap between consecutive chunks           |
 | `separators`   | string[] | Ordered list of separators to try (most to least granular) |
 
 **When to use:** General-purpose documents (articles, documentation, books). This is the recommended default for most use cases.
 
 ## Semantic Chunking
 
-Groups sentences by semantic similarity using embeddings. Adjacent sentences are embedded, and a new chunk boundary is created when the cosine similarity between consecutive sentences drops below a threshold. This is an async chunker since it calls the embedding service.
+Groups sentences by semantic similarity using embeddings. Text is split into sentences (after `.`, `?`, `!`) and blank-line separated blocks (headings, list blocks), adjacent units are embedded, and a new chunk boundary is created when the cosine similarity between consecutive sentences drops below a threshold. This is an async chunker since it calls the embedding service.
 
 ```typescript
 import { SemanticChunker } from '@cogitator-ai/rag';
@@ -77,12 +79,12 @@ const chunker = new SemanticChunker({
 const chunks = await chunker.chunk(documentText, 'doc-1');
 ```
 
-| Option                | Type             | Default | Description                                                 |
-| --------------------- | ---------------- | ------- | ----------------------------------------------------------- |
-| `embeddingService`    | EmbeddingService | —       | Embedding service for computing sentence similarity         |
-| `breakpointThreshold` | number           | 0.5     | Similarity threshold — below this starts a new chunk        |
-| `minChunkSize`        | number           | 100     | Minimum chunk size in characters (small chunks get merged)  |
-| `maxChunkSize`        | number           | 2000    | Maximum chunk size in characters                            |
+| Option                | Type             | Default | Description                                                |
+| --------------------- | ---------------- | ------- | ---------------------------------------------------------- |
+| `embeddingService`    | EmbeddingService | —       | Embedding service for computing sentence similarity        |
+| `breakpointThreshold` | number           | 0.5     | Similarity threshold — below this starts a new chunk       |
+| `minChunkSize`        | number           | 100     | Minimum chunk size in characters (small chunks get merged) |
+| `maxChunkSize`        | number           | 2000    | Maximum chunk size in characters                           |
 
 **When to use:** Documents where topic boundaries don't align with formatting (transcripts, long-form prose, research papers). Produces the highest quality chunks but is slower due to embedding calls.
 

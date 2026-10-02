@@ -10,6 +10,27 @@
 
 import type { QueueMetrics } from './types';
 
+const LABEL_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+function escapeLabelValue(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+}
+
+/**
+ * Render Prometheus label pairs (without braces), escaping values per the exposition format.
+ */
+function renderLabels(labels: Record<string, string> | undefined): string {
+  if (!labels) return '';
+  return Object.entries(labels)
+    .map(([name, value]) => {
+      if (!LABEL_NAME.test(name)) {
+        throw new Error(`Invalid Prometheus label name: ${name}`);
+      }
+      return `${name}="${escapeLabelValue(value)}"`;
+    })
+    .join(',');
+}
+
 /**
  * Format queue metrics as Prometheus exposition format
  */
@@ -17,11 +38,7 @@ export function formatPrometheusMetrics(
   metrics: QueueMetrics,
   labels?: Record<string, string>
 ): string {
-  const labelStr = labels
-    ? Object.entries(labels)
-        .map(([k, v]) => `${k}="${v}"`)
-        .join(',')
-    : '';
+  const labelStr = renderLabels(labels);
   const labelSuffix = labelStr ? `{${labelStr}}` : '';
 
   const lines: string[] = [
@@ -99,11 +116,7 @@ export class DurationHistogram {
    * Format as Prometheus exposition format
    */
   format(labels?: Record<string, string>): string {
-    const labelStr = labels
-      ? Object.entries(labels)
-          .map(([k, v]) => `${k}="${v}"`)
-          .join(',')
-      : '';
+    const labelStr = renderLabels(labels);
 
     const lines: string[] = [`# HELP ${this.name} ${this.help}`, `# TYPE ${this.name} histogram`];
 
@@ -169,11 +182,7 @@ export class MetricsCollector {
       parts.push('# HELP cogitator_jobs_by_type_total Jobs processed by type');
       parts.push('# TYPE cogitator_jobs_by_type_total counter');
       for (const [type, count] of this.jobsByType) {
-        const typeLabels = labels
-          ? `${Object.entries(labels)
-              .map(([k, v]) => `${k}="${v}"`)
-              .join(',')},type="${type}"`
-          : `type="${type}"`;
+        const typeLabels = renderLabels({ ...labels, type });
         parts.push(`cogitator_jobs_by_type_total{${typeLabels}} ${count}`);
       }
       parts.push('');

@@ -71,6 +71,7 @@ export interface FinishEvent {
   type: 'finish';
   messageId: string;
   usage?: Usage;
+  threadId?: string;
 }
 
 export function createStartEvent(messageId: string): StartEvent {
@@ -113,6 +114,10 @@ export function createErrorEvent(message: string, code?: string): ErrorEvent {
   return { type: 'error', message, code };
 }
 
-export function createFinishEvent(messageId: string, usage?: Usage): FinishEvent {
-  return { type: 'finish', messageId, usage };
+export function createFinishEvent(
+  messageId: string,
+  usage?: Usage,
+  threadId?: string
+): FinishEvent {
+  return { type: 'finish', messageId, usage, threadId };
 }

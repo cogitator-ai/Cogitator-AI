@@ -12,7 +12,7 @@ Cost-aware routing analyzes incoming tasks, selects the optimal model based on c
 The `CostAwareRouter` orchestrates all cost-related decisions:
 
 ```typescript
-import { CostAwareRouter } from '@cogitator-ai/core/cost-routing';
+import { CostAwareRouter } from '@cogitator-ai/core';
 
 const router = new CostAwareRouter({
   config: {
@@ -121,7 +121,7 @@ console.log(`Remaining today: $${status.dailyRemaining?.toFixed(2)}`);
 The `TokenEstimator` predicts token usage before making any API calls:
 
 ```typescript
-import { TokenEstimator } from '@cogitator-ai/core/cost-routing';
+import { TokenEstimator } from '@cogitator-ai/core';
 
 const estimator = new TokenEstimator();
 
@@ -151,7 +151,7 @@ Each estimate returns `min`, `max`, and `expected` values accounting for system 
 The `CostEstimator` combines token estimation with model pricing for a full cost prediction:
 
 ```typescript
-import { CostEstimator } from '@cogitator-ai/core/cost-routing';
+import { CostEstimator } from '@cogitator-ai/core';
 
 const costEstimator = new CostEstimator();
 

@@ -2,13 +2,41 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { WorkflowListResponse, WorkflowRunRequest, WorkflowRunResponse } from '../types.js';
 import { WorkflowRunRequestSchema } from '../types.js';
 import { FastifyStreamWriter, generateId } from '../streaming/index.js';
-import { CogitatorError } from '@cogitator-ai/types';
+import {
+  isModuleNotFound,
+  onClientDisconnect,
+  resolveError,
+  sendError,
+  sendRouteError,
+} from './utils.js';
 
 interface WorkflowParams {
   name: string;
 }
 
+const paramsSchema = {
+  type: 'object',
+  properties: { name: { type: 'string' } },
+  required: ['name'],
+} as const;
+
+const WORKFLOWS_MISSING = 'Workflows package not installed';
+
+function executorOptions(body: WorkflowRunRequest | undefined) {
+  const options = body?.options ?? {};
+  return {
+    maxConcurrency: options.maxConcurrency,
+    maxIterations: options.maxIterations,
+    checkpoint: options.checkpoint,
+  };
+}
+
 export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
+  const findWorkflow = (name: string) =>
+    Object.hasOwn(fastify.cogitator.workflows, name)
+      ? fastify.cogitator.workflows[name]
+      : undefined;
+
   fastify.get('/workflows', async () => {
     const workflowList = Object.entries(fastify.cogitator.workflows).map(([name, workflow]) => ({
       name,
@@ -22,37 +50,34 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post<{ Params: WorkflowParams; Body: WorkflowRunRequest }>(
     '/workflows/:name/run',
-    {
-      schema: {
-        params: {
-          type: 'object',
-          properties: { name: { type: 'string' } },
-          required: ['name'],
-        },
-        body: WorkflowRunRequestSchema,
-      },
-    },
+    { schema: { params: paramsSchema, body: WorkflowRunRequestSchema } },
     async (request, reply) => {
       const { name } = request.params;
-      const workflow = Object.hasOwn(fastify.cogitator.workflows, name)
-        ? fastify.cogitator.workflows[name]
-        : undefined;
+      const workflow = findWorkflow(name);
 
       if (!workflow) {
-        return reply.status(404).send({
-          error: { message: `Workflow '${name}' not found`, code: 'NOT_FOUND' },
-        });
+        return sendError(reply, 404, `Workflow '${name}' not found`, 'NOT_FOUND');
       }
+
+      const abortController = new AbortController();
+      onClientDisconnect(reply, () => abortController.abort());
 
       try {
         const { WorkflowExecutor } = await import('@cogitator-ai/workflows');
         const executor = new WorkflowExecutor(fastify.cogitator.runtime);
 
-        const result = await executor.execute(workflow, request.body?.input, request.body?.options);
+        const result = await executor.execute(workflow, request.body?.input, {
+          ...executorOptions(request.body),
+          signal: abortController.signal,
+        });
 
-        const nodeResults: Record<string, { output: unknown; duration: number }> = {};
-        for (const [nodeName, nodeResult] of result.nodeResults.entries()) {
-          nodeResults[nodeName] = nodeResult;
+        if (result.error) {
+          return sendError(
+            reply,
+            500,
+            `Workflow failed: ${result.error.message}`,
+            'WORKFLOW_FAILED'
+          );
         }
 
         const response: WorkflowRunResponse = {
@@ -60,56 +85,36 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
           workflowName: result.workflowName,
           state: result.state,
           duration: result.duration,
-          nodeResults,
+          nodeResults: Object.fromEntries(result.nodeResults),
         };
 
         return response;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
-          return reply.status(501).send({
-            error: { message: 'Workflows package not installed', code: 'UNIMPLEMENTED' },
-          });
+        if (isModuleNotFound(error)) {
+          return sendError(reply, 501, WORKFLOWS_MISSING, 'UNIMPLEMENTED');
         }
-
-        if (CogitatorError.isCogitatorError(error)) {
-          return reply.status(500).send({ error: { message: error.message, code: error.code } });
-        }
-        request.log.error({ err: error }, 'workflow run error');
-        return reply
-          .status(500)
-          .send({ error: { message: 'Internal server error', code: 'INTERNAL' } });
+        return sendRouteError(request, reply, error, 'workflow run error');
       }
     }
   );
 
   fastify.post<{ Params: WorkflowParams; Body: WorkflowRunRequest }>(
     '/workflows/:name/stream',
-    {
-      schema: {
-        params: {
-          type: 'object',
-          properties: { name: { type: 'string' } },
-          required: ['name'],
-        },
-        body: WorkflowRunRequestSchema,
-      },
-    },
+    { schema: { params: paramsSchema, body: WorkflowRunRequestSchema } },
     async (request, reply) => {
       const { name } = request.params;
-      const workflow = Object.hasOwn(fastify.cogitator.workflows, name)
-        ? fastify.cogitator.workflows[name]
-        : undefined;
+      const workflow = findWorkflow(name);
 
       if (!workflow) {
-        return reply.status(404).send({
-          error: { message: `Workflow '${name}' not found`, code: 'NOT_FOUND' },
-        });
+        return sendError(reply, 404, `Workflow '${name}' not found`, 'NOT_FOUND');
       }
 
       const writer = new FastifyStreamWriter(reply);
       const messageId = generateId('wf');
+      const abortController = new AbortController();
 
-      request.raw.on('close', () => {
+      onClientDisconnect(reply, () => {
+        abortController.abort();
         writer.close();
       });
 
@@ -119,11 +124,9 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
 
         writer.start(messageId);
 
-        const userOptions = request.body?.options ?? {};
         const result = await executor.execute(workflow, request.body?.input, {
-          maxConcurrency: userOptions.maxConcurrency,
-          maxIterations: userOptions.maxIterations,
-          checkpoint: userOptions.checkpoint,
+          ...executorOptions(request.body),
+          signal: abortController.signal,
           onNodeStart: (node: string) => {
             writer.workflowEvent('node_started', { nodeName: node, timestamp: Date.now() });
           },
@@ -138,24 +141,28 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
           },
         });
 
-        writer.workflowEvent('workflow_completed', {
-          workflowId: result.workflowId,
-          duration: result.duration,
-        });
-
-        writer.finish(messageId);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
-          writer.error('Workflows package not installed', 'UNIMPLEMENTED');
-        } else if (CogitatorError.isCogitatorError(error)) {
-          writer.error(error.message, error.code);
+        if (result.error) {
+          writer.error(`Workflow failed: ${result.error.message}`, 'WORKFLOW_FAILED');
         } else {
-          request.log.error({ err: error }, 'workflow stream error');
-          writer.error('Internal server error', 'INTERNAL');
+          writer.workflowEvent('workflow_completed', {
+            workflowId: result.workflowId,
+            duration: result.duration,
+          });
+          writer.finish(messageId);
+        }
+      } catch (error) {
+        if (isModuleNotFound(error)) {
+          return sendError(reply, 501, WORKFLOWS_MISSING, 'UNIMPLEMENTED');
+        }
+        if (!abortController.signal.aborted) {
+          const resolved = resolveError(request, error, 'workflow stream error');
+          writer.error(resolved.message, resolved.code);
         }
       } finally {
         writer.close();
       }
+
+      return reply;
     }
   );
 };

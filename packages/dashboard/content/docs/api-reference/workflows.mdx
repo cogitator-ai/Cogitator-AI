@@ -10,22 +10,29 @@ description: Complete API reference for @cogitator-ai/workflows — DAG-based or
 Fluent API for constructing workflow DAGs:
 
 ```typescript
-import { WorkflowBuilder } from '@cogitator-ai/workflows';
+import { WorkflowBuilder, agentNode, toolNode } from '@cogitator-ai/workflows';
 
-const workflow = new WorkflowBuilder()
+const workflow = new WorkflowBuilder('pipeline')
   .addNode('step1', agentNode(agent))
-  .addNode('step2', toolNode(myTool))
-  .addEdge('step1', 'step2')
+  .addNode('step2', toolNode(myTool, { argsMapper: (state) => ({ query: state.query }) }), {
+    after: ['step1'],
+  })
   .build();
 ```
 
 **Methods:**
 
-| Method    | Signature                                       | Description           |
-| --------- | ----------------------------------------------- | --------------------- |
-| `addNode` | `addNode(id: string, node: WorkflowNode)`       | Add a node to the DAG |
-| `addEdge` | `addEdge(from: string, to: string, condition?)` | Connect two nodes     |
-| `build`   | `build(): Workflow`                             | Compile the workflow  |
+| Method           | Signature                                                          | Description                                   |
+| ---------------- | ------------------------------------------------------------------ | --------------------------------------------- |
+| `initialState`   | `initialState(state: S)`                                           | Default state merged with the execution input |
+| `addNode`        | `addNode(name, node: NodeFn \| WorkflowNode, { after?, config? })` | Add a node function or a factory-created node |
+| `addConditional` | `addConditional(name, condition, { after? })`                      | Route to the node(s) named by `condition`     |
+| `addLoop`        | `addLoop(name, { condition, back, exit, after? })`                 | Loop back while `condition` holds             |
+| `addParallel`    | `addParallel(name, targets, { after? })`                           | Fan out to several nodes                      |
+| `entryPoint`     | `entryPoint(name)`                                                 | Set the entry point explicitly                |
+| `build`          | `build(): Workflow`                                                | Validate and compile the workflow             |
+
+Dependencies are declared with `after`. `build()` throws when there is no single root node (several independent roots need a root `addParallel` or `.entryPoint()`) and when a node that follows a loop is neither its `back` nor its `exit` node.
 
 ### WorkflowExecutor
 
@@ -34,18 +41,21 @@ Execute compiled workflows:
 ```typescript
 import { WorkflowExecutor } from '@cogitator-ai/workflows';
 
-const executor = new WorkflowExecutor(workflow, options?);
-const result = await executor.execute(input);
+const executor = new WorkflowExecutor(cogitator, checkpointStore?);
+const result = await executor.execute(workflow, input?, options?);
+console.log(result.state, result.error);
 ```
 
-**ExecutorOptions:**
+**Execute options (selection):**
 
-| Property         | Type        | Description             |
-| ---------------- | ----------- | ----------------------- |
-| `cogitator`      | `Cogitator` | Runtime for agent nodes |
-| `checkpointing`  | `boolean`   | Enable checkpoints      |
-| `maxConcurrency` | `number`    | Max parallel nodes      |
-| `timeout`        | `number`    | Execution timeout (ms)  |
+| Property         | Type                               | Description                              |
+| ---------------- | ---------------------------------- | ---------------------------------------- |
+| `maxConcurrency` | `number`                           | Max parallel nodes                       |
+| `maxIterations`  | `number`                           | Safety limit for loops                   |
+| `checkpoint`     | `boolean`                          | Save checkpoints to the checkpoint store |
+| `signal`         | `AbortSignal`                      | Cancel the run                           |
+| `onNodeStart`    | `(node) => void`                   | Called before each node runs             |
+| `onNodeComplete` | `(node, result, duration) => void` | Called after each node runs              |
 
 ## Node Factories
 
@@ -53,13 +63,13 @@ const result = await executor.execute(input);
 import { agentNode, toolNode, functionNode, humanNode, customNode } from '@cogitator-ai/workflows';
 ```
 
-| Factory               | Description                      |
-| --------------------- | -------------------------------- |
-| `agentNode(agent)`    | Run an Agent, returns its output |
-| `toolNode(tool)`      | Execute a tool directly          |
-| `functionNode(fn)`    | Run arbitrary async function     |
-| `humanNode(options)`  | Pause for human input            |
-| `customNode(handler)` | Fully custom node logic          |
+| Factory                            | Description                      |
+| ---------------------------------- | -------------------------------- |
+| `agentNode(agent, options?)`       | Run an Agent, returns its output |
+| `toolNode(tool, { argsMapper })`   | Execute a tool directly          |
+| `functionNode(name, fn, options?)` | Run arbitrary async function     |
+| `humanNode(options)`               | Pause for human input            |
+| `customNode(name, fn)`             | Fully custom node logic          |
 
 ## Saga Support
 

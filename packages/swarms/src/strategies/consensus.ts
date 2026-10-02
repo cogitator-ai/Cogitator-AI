@@ -12,6 +12,7 @@ import type {
   SwarmCoordinatorInterface,
 } from '@cogitator-ai/types';
 import { BaseStrategy } from './base.js';
+import { normalizeDecision } from '../shared/voting.js';
 
 interface Vote {
   agentName: string;
@@ -19,6 +20,16 @@ interface Vote {
   reasoning?: string;
   weight: number;
   round: number;
+  timestamp: number;
+}
+
+interface ConsensusBoardState {
+  topic: string;
+  maxRounds: number;
+  currentRound: number;
+  votes: Vote[];
+  resolution: ConsensusConfig['resolution'];
+  threshold: number;
 }
 
 interface VoteCount {
@@ -52,18 +63,19 @@ export class ConsensusStrategy extends BaseStrategy {
     const supervisors = this.coordinator.getAgentsByRole('supervisor');
     const supervisor = supervisors.length > 0 ? supervisors[0] : null;
 
-    this.coordinator.blackboard.write(
-      'consensus',
-      {
-        topic: options.input,
-        maxRounds: this.config.maxRounds,
-        currentRound: 0,
-        votes: [],
-        resolution: this.config.resolution,
-        threshold: this.config.threshold,
-      },
-      'system'
-    );
+    const voters = agents.filter((a) => a.metadata.role !== 'supervisor');
+    if (voters.length < 2) {
+      throw new Error('Consensus strategy requires at least 2 voting agents');
+    }
+
+    this.writeBoard({
+      topic: options.input,
+      maxRounds: this.config.maxRounds,
+      currentRound: 0,
+      votes: [],
+      resolution: this.config.resolution,
+      threshold: this.config.threshold,
+    });
 
     let consensusReached = false;
     let winningDecision: string | null = null;
@@ -73,23 +85,13 @@ export class ConsensusStrategy extends BaseStrategy {
       finalRound = round;
       this.coordinator.events.emit('consensus:round', { round, total: this.config.maxRounds });
 
-      const consensusState = this.coordinator.blackboard.read<{ votes: Vote[] }>('consensus');
-      this.coordinator.blackboard.write(
-        'consensus',
-        {
-          ...consensusState,
-          currentRound: round,
-        },
-        'system'
-      );
+      this.writeBoard({ ...this.readBoard(), currentRound: round });
 
       const roundVotes: Vote[] = [];
 
       const previousDiscussion = this.getPreviousDiscussion(discussionTranscript, round);
 
-      for (const swarmAgent of agents) {
-        if (swarmAgent.metadata.role === 'supervisor') continue;
-
+      for (const swarmAgent of voters) {
         const agentContext = {
           ...options.context,
           consensusContext: {
@@ -120,7 +122,9 @@ export class ConsensusStrategy extends BaseStrategy {
         const result = await this.coordinator.runAgent(swarmAgent.agent.name, input, agentContext);
         agentResults.set(`${swarmAgent.agent.name}_round${round}`, result);
 
-        const vote = this.extractVote(result.output, swarmAgent, round);
+        const vote =
+          this.findToolVote(swarmAgent, round) ??
+          this.extractVote(result.output, swarmAgent, round);
         if (vote) {
           roundVotes.push(vote);
           allVotes.push(vote);
@@ -140,14 +144,9 @@ export class ConsensusStrategy extends BaseStrategy {
         discussionTranscript.push(message);
       }
 
-      const updatedState = this.coordinator.blackboard.read<{ votes: Vote[] }>('consensus');
-      updatedState.votes = allVotes;
-      this.coordinator.blackboard.write('consensus', updatedState, 'system');
+      this.writeBoard({ ...this.readBoard(), votes: [...allVotes] });
 
-      const consensusResult = this.checkConsensus(
-        roundVotes,
-        agents.filter((a) => a.metadata.role !== 'supervisor')
-      );
+      const consensusResult = this.checkConsensus(roundVotes, voters);
       if (consensusResult.reached) {
         consensusReached = true;
         winningDecision = consensusResult.decision;
@@ -218,6 +217,7 @@ export class ConsensusStrategy extends BaseStrategy {
         reasoning: output,
         weight: this.getAgentWeight(agent),
         round,
+        timestamp: Date.now(),
       };
     }
 
@@ -227,7 +227,40 @@ export class ConsensusStrategy extends BaseStrategy {
       reasoning: output.replace(voteMatch[0], '').trim(),
       weight: this.getAgentWeight(agent),
       round,
+      timestamp: Date.now(),
     };
+  }
+
+  /**
+   * Votes cast through the `cast_vote` / `change_vote` tools take precedence over votes
+   * parsed from the agent's text output.
+   */
+  private findToolVote(agent: SwarmAgent, round: number): Vote | null {
+    const board = this.readBoard();
+    const toolVotes = board.votes.filter(
+      (v) => v.agentName === agent.agent.name && v.round === round
+    );
+    const latest = toolVotes[toolVotes.length - 1];
+    if (!latest || typeof latest.decision !== 'string' || latest.decision.trim() === '') {
+      return null;
+    }
+
+    return {
+      agentName: latest.agentName,
+      decision: latest.decision.trim(),
+      reasoning: latest.reasoning,
+      weight: this.getAgentWeight(agent),
+      round,
+      timestamp: latest.timestamp ?? Date.now(),
+    };
+  }
+
+  private readBoard(): ConsensusBoardState {
+    return this.coordinator.blackboard.read<ConsensusBoardState>('consensus');
+  }
+
+  private writeBoard(state: ConsensusBoardState): void {
+    this.coordinator.blackboard.write('consensus', state, 'system');
   }
 
   private getAgentWeight(agent: SwarmAgent): number {
@@ -242,7 +275,7 @@ export class ConsensusStrategy extends BaseStrategy {
 
   private checkConsensus(
     votes: Vote[],
-    agents: SwarmAgent[]
+    voters: SwarmAgent[]
   ): { reached: boolean; decision: string | null; voteCounts: VoteCount[] } {
     if (votes.length === 0) {
       return { reached: false, decision: null, voteCounts: [] };
@@ -251,7 +284,7 @@ export class ConsensusStrategy extends BaseStrategy {
     const voteCounts = new Map<string, VoteCount>();
 
     for (const vote of votes) {
-      const normalized = vote.decision.toLowerCase().trim();
+      const normalized = normalizeDecision(vote.decision);
       const existing = voteCounts.get(normalized);
 
       if (existing) {
@@ -269,50 +302,58 @@ export class ConsensusStrategy extends BaseStrategy {
     }
 
     const countsArray = Array.from(voteCounts.values());
-    const totalVotes = votes.length;
-    const totalWeight = votes.reduce((sum, v) => sum + v.weight, 0);
+
+    if (votes.length < voters.length) {
+      this.coordinator.events.emit('consensus:vote', {
+        warning: 'missing-votes',
+        expected: voters.length,
+        received: votes.length,
+        missing: voters
+          .filter((a) => !votes.some((v) => v.agentName === a.agent.name))
+          .map((a) => a.agent.name),
+      });
+    }
 
     switch (this.config.resolution) {
       case 'unanimous': {
-        if (votes.length < agents.length) {
-          this.coordinator.events.emit('consensus:vote', {
-            warning: 'missing-votes',
-            expected: agents.length,
-            received: votes.length,
-            missing: agents
-              .filter((a) => !votes.some((v) => v.agentName === a.agent.name))
-              .map((a) => a.agent.name),
-          });
-        }
-        if (countsArray.length === 1 && countsArray[0].count === agents.length) {
+        if (countsArray.length === 1 && countsArray[0].count === voters.length) {
           return { reached: true, decision: countsArray[0].decision, voteCounts: countsArray };
         }
         return { reached: false, decision: null, voteCounts: countsArray };
       }
 
       case 'weighted': {
-        const sorted = countsArray.sort((a, b) => b.weightedCount - a.weightedCount);
-        const topOption = sorted[0];
-        const weightRatio = topOption.weightedCount / totalWeight;
-
-        if (weightRatio >= this.config.threshold) {
-          return { reached: true, decision: topOption.decision, voteCounts: countsArray };
-        }
-        return { reached: false, decision: null, voteCounts: countsArray };
+        const totalWeight = voters.reduce((sum, a) => sum + this.getAgentWeight(a), 0);
+        return this.resolveByScore(countsArray, (c) => c.weightedCount, totalWeight);
       }
 
       case 'majority':
-      default: {
-        const sorted = countsArray.sort((a, b) => b.count - a.count);
-        const topOption = sorted[0];
-        const voteRatio = topOption.count / totalVotes;
-
-        if (voteRatio >= this.config.threshold) {
-          return { reached: true, decision: topOption.decision, voteCounts: countsArray };
-        }
-        return { reached: false, decision: null, voteCounts: countsArray };
-      }
+      default:
+        return this.resolveByScore(countsArray, (c) => c.count, voters.length);
     }
+  }
+
+  /**
+   * The leading decision wins when its share of all eligible voters (abstentions count
+   * against it) reaches the threshold and it is not tied with another decision.
+   */
+  private resolveByScore(
+    counts: VoteCount[],
+    score: (count: VoteCount) => number,
+    total: number
+  ): { reached: boolean; decision: string | null; voteCounts: VoteCount[] } {
+    const sorted = [...counts].sort((a, b) => score(b) - score(a));
+    const [top, runnerUp] = sorted;
+
+    if (!top || total <= 0) {
+      return { reached: false, decision: null, voteCounts: counts };
+    }
+
+    const tied = runnerUp !== undefined && score(runnerUp) === score(top);
+    if (!tied && score(top) / total >= this.config.threshold) {
+      return { reached: true, decision: top.decision, voteCounts: counts };
+    }
+    return { reached: false, decision: null, voteCounts: counts };
   }
 
   private summarizeVotes(votes: Vote[]): string {
@@ -432,7 +473,7 @@ Provide your decision as: FINAL DECISION: [your decision]
     const finalVotes = votes.filter((v) => v.round === rounds);
     const voteCounts = new Map<string, number>();
     for (const vote of finalVotes) {
-      const key = vote.decision.toLowerCase().trim();
+      const key = normalizeDecision(vote.decision);
       voteCounts.set(key, (voteCounts.get(key) ?? 0) + 1);
     }
 

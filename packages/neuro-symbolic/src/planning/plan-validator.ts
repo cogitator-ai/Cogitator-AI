@@ -3,6 +3,7 @@ import type {
   PlanAction,
   PlanState,
   ActionSchema,
+  Effect,
   Precondition,
   PlanValidationResult,
   PlanValidationError,
@@ -32,6 +33,71 @@ const DEFAULT_VALIDATION_CONFIG: ValidationConfig = {
   detectOrdering: true,
   maxSteps: 1000,
 };
+
+function unique(values: string[]): string[] {
+  return Array.from(new Set(values));
+}
+
+function resolveEffectVariable(variable: string, parameters: Record<string, unknown>): string {
+  if (!variable.startsWith('?')) return variable;
+  const value = parameters[variable.substring(1)];
+  return typeof value === 'string' ? value : variable;
+}
+
+function collectEffectVariables(
+  effects: Effect[],
+  parameters: Record<string, unknown>
+): { written: string[]; deleted: string[] } {
+  const written: string[] = [];
+  const deleted: string[] = [];
+
+  for (const effect of effects) {
+    switch (effect.type) {
+      case 'assign':
+      case 'increment':
+      case 'decrement':
+        written.push(resolveEffectVariable(effect.variable, parameters));
+        break;
+      case 'delete':
+        deleted.push(resolveEffectVariable(effect.variable, parameters));
+        break;
+      case 'conditional': {
+        const branches = [effect.thenEffects, effect.elseEffects ?? []];
+        for (const branch of branches) {
+          const nested = collectEffectVariables(branch, parameters);
+          written.push(...nested.written);
+          deleted.push(...nested.deleted);
+        }
+        break;
+      }
+    }
+  }
+
+  return { written: unique(written), deleted: unique(deleted) };
+}
+
+function collectPreconditionVariables(precondition: Precondition, bound: Set<string>): string[] {
+  switch (precondition.type) {
+    case 'simple':
+    case 'comparison':
+      return precondition.variable.startsWith('?') || bound.has(precondition.variable)
+        ? []
+        : [precondition.variable];
+    case 'and':
+    case 'or':
+      return precondition.conditions.flatMap((c) => collectPreconditionVariables(c, bound));
+    case 'not':
+      return collectPreconditionVariables(precondition.condition, bound);
+    case 'exists':
+    case 'forall': {
+      const inner = new Set(bound);
+      inner.add(precondition.variable);
+      return [precondition.domain, ...collectPreconditionVariables(precondition.condition, inner)];
+    }
+    default:
+      return [];
+  }
+}
 
 export class PlanValidator {
   private registry: ActionRegistry;
@@ -225,105 +291,68 @@ export class PlanValidator {
   }
 
   private detectOrderingIssues(plan: Plan): PlanValidationWarning[] {
-    const warnings: PlanValidationWarning[] = [];
-
     const dependencies = this.analyzeDependencies(plan);
+    const indexById = new Map(plan.actions.map((action, index) => [action.id, index]));
 
-    const actionPositions = new Map<string, number>();
-    for (let i = 0; i < dependencies.actions.length; i++) {
-      if (!actionPositions.has(dependencies.actions[i])) {
-        actionPositions.set(dependencies.actions[i], i);
-      }
-    }
-
-    for (const edge of dependencies.edges) {
-      if (edge.type === 'threat') {
-        const fromIdx = actionPositions.get(edge.fromAction) ?? -1;
-        const toIdx = actionPositions.get(edge.toAction) ?? -1;
-
-        if (fromIdx > toIdx) {
-          warnings.push({
-            type: 'suboptimal_ordering',
-            actionIndex: fromIdx,
-            message: `Action ordering may cause issues: ${edge.description}`,
-          });
-        }
-      }
-    }
-
-    return warnings;
+    return dependencies.edges
+      .filter((edge) => edge.type === 'threat')
+      .map((edge) => ({
+        type: 'suboptimal_ordering' as const,
+        actionIndex: indexById.get(edge.fromAction),
+        message: `Action ordering may cause issues: ${edge.description}`,
+      }));
   }
 
   analyzeDependencies(plan: Plan): DependencyGraph {
     const actions = plan.actions.map((a) => a.id);
     const edges: DependencyEdge[] = [];
 
-    const producedBy = new Map<string, string[]>();
-    const consumedBy = new Map<string, string[]>();
-
-    for (const action of plan.actions) {
+    const footprints = plan.actions.map((action) => {
       const schema = this.registry.get(action.schemaName);
-      if (!schema) continue;
+      if (!schema) return null;
+      return {
+        ...collectEffectVariables(schema.effects, action.parameters),
+        reads: unique(
+          schema.preconditions.flatMap((pre) => collectPreconditionVariables(pre, new Set()))
+        ),
+      };
+    });
 
-      for (const effect of schema.effects) {
-        if (
-          effect.type === 'assign' ||
-          effect.type === 'increment' ||
-          effect.type === 'decrement'
-        ) {
-          if (!producedBy.has(effect.variable)) {
-            producedBy.set(effect.variable, []);
+    plan.actions.forEach((consumer, consumerIdx) => {
+      const footprint = footprints[consumerIdx];
+      if (!footprint) return;
+
+      for (const variable of footprint.reads) {
+        for (let i = consumerIdx - 1; i >= 0; i--) {
+          const candidate = footprints[i];
+          if (!candidate) continue;
+
+          if (candidate.written.includes(variable)) {
+            edges.push({
+              fromAction: plan.actions[i].id,
+              toAction: consumer.id,
+              type: 'causal',
+              variable,
+              description: `${plan.actions[i].id} produces ${variable} for ${consumer.id}`,
+            });
+            break;
           }
-          producedBy.get(effect.variable)!.push(action.id);
-        }
-      }
-    }
 
-    const actionIndex = new Map<string, number>();
-    for (let i = 0; i < plan.actions.length; i++) {
-      actionIndex.set(plan.actions[i].id, i);
-    }
-
-    for (const action of plan.actions) {
-      const schema = this.registry.get(action.schemaName);
-      if (!schema) continue;
-
-      const consumerIdx = actionIndex.get(action.id)!;
-
-      for (const pre of schema.preconditions) {
-        const variables = this.extractVariables(pre);
-        for (const variable of variables) {
-          if (!consumedBy.has(variable)) {
-            consumedBy.set(variable, []);
-          }
-          consumedBy.get(variable)!.push(action.id);
-
-          const producers = producedBy.get(variable);
-          if (producers) {
-            let bestProducer: string | undefined;
-            let bestIdx = -1;
-            for (const p of producers) {
-              if (p === action.id) continue;
-              const pIdx = actionIndex.get(p)!;
-              if (pIdx < consumerIdx && pIdx > bestIdx) {
-                bestProducer = p;
-                bestIdx = pIdx;
-              }
-            }
-
-            if (bestProducer) {
-              edges.push({
-                fromAction: bestProducer,
-                toAction: action.id,
-                type: 'causal',
-                variable,
-                description: `${bestProducer} produces ${variable} for ${action.id}`,
-              });
-            }
+          if (candidate.deleted.includes(variable)) {
+            edges.push({
+              fromAction: plan.actions[i].id,
+              toAction: consumer.id,
+              type: 'threat',
+              variable,
+              description:
+                `${plan.actions[i].schemaName} (action ${i}) deletes '${variable}' ` +
+                `required by ${consumer.schemaName} (action ${consumerIdx})`,
+            });
+            break;
           }
         }
       }
-    }
+    });
 
     const criticalPath = this.findCriticalPath(actions, edges);
     const parallelizable = this.findParallelizable(actions, edges);
@@ -334,24 +363,6 @@ export class PlanValidator {
       criticalPath,
       parallelizable,
     };
-  }
-
-  private extractVariables(precondition: Precondition): string[] {
-    switch (precondition.type) {
-      case 'simple':
-      case 'comparison':
-        return [precondition.variable];
-      case 'and':
-      case 'or':
-        return precondition.conditions.flatMap((c) => this.extractVariables(c));
-      case 'not':
-        return this.extractVariables(precondition.condition);
-      case 'exists':
-      case 'forall':
-        return this.extractVariables(precondition.condition);
-      default:
-        return [];
-    }
   }
 
   private findCriticalPath(actions: string[], edges: DependencyEdge[]): string[] {

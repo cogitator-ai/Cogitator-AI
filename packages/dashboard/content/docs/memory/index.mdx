@@ -133,6 +133,10 @@ Three context strategies are available:
 | `relevant` | Selects entries by semantic similarity to current input          |
 | `hybrid`   | Reserves 30% for semantically relevant older entries, 70% recent |
 
+`relevant` and `hybrid` need an `embeddingService` and a `currentInput`; without them they fall back to `recent`. Selected messages are always returned in chronological order.
+
+Semantic context (`includeSemanticContext`) is scoped per agent: embeddings whose `metadata.agentId` belongs to another agent are never injected, while embeddings without an `agentId` (shared documents) are visible to every agent.
+
 ## Choosing an Adapter
 
 | Adapter  | Persistence | Speed   | Embeddings | Facts | Best For                           |

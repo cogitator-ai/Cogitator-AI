@@ -1,13 +1,12 @@
 import Router from '@koa/router';
-import type {
-  CogitatorState,
-  AgentListResponse,
-  AgentRunRequest,
-  AgentRunResponse,
-} from '../types.js';
+import type { CogitatorState, AgentListResponse, AgentRunResponse } from '../types.js';
 import { KoaStreamWriter, setupSSEHeaders } from '../streaming/index.js';
 import { generateId } from '@cogitator-ai/server-shared';
-import type { ToolCall } from '@cogitator-ai/types';
+import type { ToolCall, ToolResult } from '@cogitator-ai/types';
+import { getOwn } from '../utils/lookup.js';
+import { resolveError } from '../utils/errors.js';
+import { getRequestBody, onClientDisconnect } from '../utils/request.js';
+import { parseAgentRunRequest } from '../utils/validation.js';
 
 export function createAgentRoutes(): Router<CogitatorState> {
   const router = new Router<CogitatorState>();
@@ -16,8 +15,8 @@ export function createAgentRoutes(): Router<CogitatorState> {
     const { agents } = ctx.state.cogitator;
     const agentList = Object.entries(agents).map(([name, agent]) => ({
       name,
-      description: agent.config.instructions?.slice(0, 100),
-      tools: agent.config.tools?.map((t) => t.name) || [],
+      description: agent.config.description,
+      tools: agent.config.tools?.map((t) => t.name) ?? [],
     }));
 
     const response: AgentListResponse = { agents: agentList };
@@ -27,7 +26,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
   router.post('/agents/:name/run', async (ctx) => {
     const { agents, runtime } = ctx.state.cogitator;
     const { name } = ctx.params;
-    const agent = agents[name];
+    const agent = getOwn(agents, name);
 
     if (!agent) {
       ctx.status = 404;
@@ -35,18 +34,20 @@ export function createAgentRoutes(): Router<CogitatorState> {
       return;
     }
 
-    const body = (ctx.request as unknown as { body: AgentRunRequest }).body;
-    if (!body?.input) {
+    const parsed = parseAgentRunRequest(getRequestBody(ctx));
+    if (!parsed.ok) {
       ctx.status = 400;
-      ctx.body = { error: { message: 'Missing required field: input', code: 'INVALID_INPUT' } };
+      ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
       return;
     }
 
+    const abortController = new AbortController();
+    onClientDisconnect(ctx, () => abortController.abort());
+
     try {
       const result = await runtime.run(agent, {
-        input: body.input,
-        context: body.context,
-        threadId: body.threadId,
+        ...parsed.value,
+        signal: abortController.signal,
       });
 
       const response: AgentRunResponse = {
@@ -62,16 +63,17 @@ export function createAgentRoutes(): Router<CogitatorState> {
 
       ctx.body = response;
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      ctx.status = 500;
-      ctx.body = { error: { message, code: 'INTERNAL' } };
+      if (abortController.signal.aborted) return;
+      const { status, body } = resolveError(error, 'Agent run error');
+      ctx.status = status;
+      ctx.body = body;
     }
   });
 
   router.post('/agents/:name/stream', async (ctx) => {
     const { agents, runtime } = ctx.state.cogitator;
     const { name } = ctx.params;
-    const agent = agents[name];
+    const agent = getOwn(agents, name);
 
     if (!agent) {
       ctx.status = 404;
@@ -79,46 +81,42 @@ export function createAgentRoutes(): Router<CogitatorState> {
       return;
     }
 
-    const body = (ctx.request as unknown as { body: AgentRunRequest }).body;
-    if (!body?.input) {
+    const parsed = parseAgentRunRequest(getRequestBody(ctx));
+    if (!parsed.ok) {
       ctx.status = 400;
-      ctx.body = { error: { message: 'Missing required field: input', code: 'INVALID_INPUT' } };
+      ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
       return;
     }
 
     setupSSEHeaders(ctx);
     const writer = new KoaStreamWriter(ctx);
     const messageId = generateId('msg');
+    const textId = generateId('txt');
+    const abortController = new AbortController();
 
-    ctx.req.on('close', () => {
+    onClientDisconnect(ctx, () => {
       writer.close();
+      abortController.abort();
     });
 
-    let textStarted = false;
-    let textId = '';
+    writer.start(messageId);
+    writer.textStart(textId);
 
     try {
-      writer.start(messageId);
-      textId = generateId('txt');
-      textStarted = true;
-      writer.textStart(textId);
-
       const result = await runtime.run(agent, {
-        input: body.input,
-        context: body.context,
-        threadId: body.threadId,
+        ...parsed.value,
         stream: true,
+        signal: abortController.signal,
         onToken: (token: string) => {
           writer.textDelta(textId, token);
         },
         onToolCall: (toolCall: ToolCall) => {
-          const toolId = generateId('tool');
-          writer.toolCallStart(toolId, toolCall.name);
-          writer.toolCallEnd(toolId);
+          writer.toolCallStart(toolCall.id, toolCall.name);
+          writer.toolCallDelta(toolCall.id, JSON.stringify(toolCall.arguments));
+          writer.toolCallEnd(toolCall.id);
         },
-        onToolResult: (toolResult: { callId: string; result: unknown }) => {
-          const resultId = generateId('res');
-          writer.toolResult(resultId, toolResult.callId, toolResult.result);
+        onToolResult: (toolResult: ToolResult) => {
+          writer.toolResult(generateId('res'), toolResult.callId, toolResult.result);
         },
       });
 
@@ -129,11 +127,11 @@ export function createAgentRoutes(): Router<CogitatorState> {
         totalTokens: result.usage.totalTokens,
       });
     } catch (error) {
-      if (textStarted) {
+      if (!abortController.signal.aborted) {
         writer.textEnd(textId);
+        const { body } = resolveError(error, 'Agent stream error');
+        writer.error(body.error.message, body.error.code);
       }
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      writer.error(message, 'INTERNAL');
     } finally {
       writer.close();
     }

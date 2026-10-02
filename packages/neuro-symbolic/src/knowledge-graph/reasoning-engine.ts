@@ -119,6 +119,10 @@ function calculatePathConfidence(path: GraphPath): number {
 
 const MAX_INTERMEDIATE_PATHS = 1000;
 
+function inferenceKey(edge: Pick<InferredEdge, 'sourceNodeId' | 'targetNodeId' | 'type'>): string {
+  return `${edge.sourceNodeId}->${edge.targetNodeId}:${edge.type}`;
+}
+
 export async function multiHopQuery(
   ctx: ReasoningContext,
   startNodeId: string,
@@ -208,6 +212,7 @@ export async function multiHopQuery(
 
 export async function inferTransitiveRelations(ctx: ReasoningContext): Promise<InferredEdge[]> {
   const inferred: InferredEdge[] = [];
+  const seen = new Set<string>();
 
   if (!ctx.config.enableTransitivity) {
     return inferred;
@@ -237,6 +242,13 @@ export async function inferTransitiveRelations(ctx: ReasoningContext): Promise<I
       for (const transEdge of transitiveEdges) {
         if (transEdge.targetNodeId === edge.sourceNodeId) continue;
 
+        const key = inferenceKey({
+          sourceNodeId: edge.sourceNodeId,
+          targetNodeId: transEdge.targetNodeId,
+          type: relationType,
+        });
+        if (seen.has(key)) continue;
+
         const existingResult = await ctx.adapter.getEdgesBetween(
           edge.sourceNodeId,
           transEdge.targetNodeId
@@ -251,6 +263,7 @@ export async function inferTransitiveRelations(ctx: ReasoningContext): Promise<I
 
         if (confidence < ctx.config.minConfidence) continue;
 
+        seen.add(key);
         inferred.push({
           agentId: ctx.agentId,
           sourceNodeId: edge.sourceNodeId,
@@ -299,9 +312,15 @@ export async function inferInverseRelations(ctx: ReasoningContext): Promise<Infe
         edge.sourceNodeId
       );
 
-      if (existingResult.success && existingResult.data && existingResult.data.length > 0) {
-        continue;
-      }
+      const inverseLabel = `Inferred: inverse of ${sourceRel}`;
+      const alreadyExists =
+        existingResult.success &&
+        existingResult.data.some(
+          (e) =>
+            e.type === targetRel &&
+            (targetRel !== 'custom' || e.label === inverseLabel || e.label === undefined)
+        );
+      if (alreadyExists) continue;
 
       const confidence = edge.confidence * 0.95;
 
@@ -312,7 +331,7 @@ export async function inferInverseRelations(ctx: ReasoningContext): Promise<Infe
         sourceNodeId: edge.targetNodeId,
         targetNodeId: edge.sourceNodeId,
         type: targetRel,
-        label: `Inferred: inverse of ${sourceRel}`,
+        label: inverseLabel,
         weight: edge.weight,
         bidirectional: false,
         properties: {},
@@ -347,6 +366,7 @@ const COMPOSITION_RULES: CompositionRule[] = [
 
 export async function inferComposedRelations(ctx: ReasoningContext): Promise<InferredEdge[]> {
   const inferred: InferredEdge[] = [];
+  const seen = new Set<string>();
 
   if (!ctx.config.enableComposition) {
     return inferred;
@@ -372,6 +392,13 @@ export async function inferComposedRelations(ctx: ReasoningContext): Promise<Inf
       for (const secondEdge of secondEdgesResult.data) {
         if (secondEdge.targetNodeId === firstEdge.sourceNodeId) continue;
 
+        const key = inferenceKey({
+          sourceNodeId: firstEdge.sourceNodeId,
+          targetNodeId: secondEdge.targetNodeId,
+          type: rule.result,
+        });
+        if (seen.has(key)) continue;
+
         const existingResult = await ctx.adapter.getEdgesBetween(
           firstEdge.sourceNodeId,
           secondEdge.targetNodeId
@@ -387,6 +414,7 @@ export async function inferComposedRelations(ctx: ReasoningContext): Promise<Inf
 
         if (confidence < ctx.config.minConfidence) continue;
 
+        seen.add(key);
         inferred.push({
           agentId: ctx.agentId,
           sourceNodeId: firstEdge.sourceNodeId,
@@ -416,29 +444,26 @@ export async function inferComposedRelations(ctx: ReasoningContext): Promise<Inf
 
 export async function runFullInference(ctx: ReasoningContext): Promise<InferredEdge[]> {
   const allInferred: InferredEdge[] = [];
-  const remainingBudget = () => ctx.config.maxInferences - allInferred.length;
+  const seen = new Set<string>();
+  const budget = ctx.config.maxInferences;
 
-  const transitiveCtx = { ...ctx, config: { ...ctx.config, maxInferences: remainingBudget() } };
-  const transitive = await inferTransitiveRelations(transitiveCtx);
-  allInferred.push(...transitive);
+  const stages = [inferTransitiveRelations, inferInverseRelations, inferComposedRelations];
 
-  if (allInferred.length >= ctx.config.maxInferences) {
-    return allInferred.slice(0, ctx.config.maxInferences);
+  for (const stage of stages) {
+    const remaining = budget - allInferred.length;
+    if (remaining <= 0) break;
+
+    const stageCtx = { ...ctx, config: { ...ctx.config, maxInferences: remaining } };
+    for (const edge of await stage(stageCtx)) {
+      const key = inferenceKey(edge);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      allInferred.push(edge);
+      if (allInferred.length >= budget) break;
+    }
   }
 
-  const inverseCtx = { ...ctx, config: { ...ctx.config, maxInferences: remainingBudget() } };
-  const inverse = await inferInverseRelations(inverseCtx);
-  allInferred.push(...inverse);
-
-  if (allInferred.length >= ctx.config.maxInferences) {
-    return allInferred.slice(0, ctx.config.maxInferences);
-  }
-
-  const composedCtx = { ...ctx, config: { ...ctx.config, maxInferences: remainingBudget() } };
-  const composed = await inferComposedRelations(composedCtx);
-  allInferred.push(...composed);
-
-  return allInferred.slice(0, ctx.config.maxInferences);
+  return allInferred;
 }
 
 export class ReasoningEngine {

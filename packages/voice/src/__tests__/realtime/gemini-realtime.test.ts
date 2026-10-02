@@ -11,6 +11,7 @@ type MockWebSocket = EventEmitter & {
 
 let mockWs: MockWebSocket;
 let capturedUrl: string;
+let capturedOptions: Record<string, unknown> | undefined;
 
 vi.mock('ws', async () => {
   const { EventEmitter: EE } = await import('node:events');
@@ -21,9 +22,10 @@ vi.mock('ws', async () => {
     readyState = 1;
     OPEN = 1;
 
-    constructor(url: string) {
+    constructor(url: string, options?: Record<string, unknown>) {
       super();
       capturedUrl = url;
+      capturedOptions = options;
       mockWs = this as unknown as MockWebSocket;
       setTimeout(() => {
         this.emit('open');
@@ -58,13 +60,45 @@ describe('GeminiRealtimeAdapter', () => {
   });
 
   describe('connect()', () => {
-    it('opens WebSocket with correct URL including API key', async () => {
+    it('opens WebSocket and authenticates via x-goog-api-key header (key not in URL)', async () => {
       adapter = new GeminiRealtimeAdapter(createConfig());
       await adapter.connect();
 
       expect(capturedUrl).toBe(
-        'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=test-gemini-key'
+        'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
       );
+      expect(capturedOptions).toEqual({ headers: { 'x-goog-api-key': 'test-gemini-key' } });
+    });
+
+    it('enables input and output audio transcription in setup', async () => {
+      adapter = new GeminiRealtimeAdapter(createConfig());
+      await adapter.connect();
+
+      const sent = JSON.parse(mockWs.send.mock.calls[0]![0] as string);
+      expect(sent.setup.inputAudioTranscription).toEqual({});
+      expect(sent.setup.outputAudioTranscription).toEqual({});
+    });
+
+    it('rejects connect() on server error before setupComplete without emitting error', async () => {
+      adapter = new GeminiRealtimeAdapter(createConfig());
+      const errorHandler = vi.fn();
+      adapter.on('error', errorHandler);
+      const promise = adapter.connect();
+      mockWs.emit('message', JSON.stringify({ error: { code: 400, message: 'bad model' } }));
+      await expect(promise).rejects.toThrow('bad model');
+      expect(errorHandler).not.toHaveBeenCalled();
+    });
+
+    it('emits disconnected only after a successful connection', async () => {
+      adapter = new GeminiRealtimeAdapter(createConfig());
+      const disconnected = vi.fn();
+      adapter.on('disconnected', disconnected);
+      await adapter.connect();
+      expect(adapter.isConnected).toBe(true);
+
+      mockWs.emit('close', 1011, Buffer.from('internal'));
+      expect(disconnected).toHaveBeenCalledWith(1011, 'internal');
+      expect(adapter.isConnected).toBe(false);
     });
 
     it('sends setup message with model, voice, and response modalities', async () => {
@@ -74,7 +108,7 @@ describe('GeminiRealtimeAdapter', () => {
       const setupCall = mockWs.send.mock.calls[0]![0] as string;
       const sent = JSON.parse(setupCall);
 
-      expect(sent.setup.model).toBe('models/gemini-live-2.5-flash-native-audio');
+      expect(sent.setup.model).toBe('models/gemini-3.8-live');
       expect(sent.setup.generationConfig.responseModalities).toEqual(['AUDIO']);
       expect(
         sent.setup.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName
@@ -183,17 +217,14 @@ describe('GeminiRealtimeAdapter', () => {
 
       expect(mockWs.send).toHaveBeenCalledOnce();
       const sent = JSON.parse(mockWs.send.mock.calls[0]![0] as string);
-      expect(sent.realtimeInput.mediaChunks).toEqual([
-        {
-          mimeType: 'audio/pcm;rate=16000',
-          data: audio.toString('base64'),
-        },
-      ]);
+      expect(sent.realtimeInput).toEqual({
+        audio: { mimeType: 'audio/pcm;rate=16000', data: audio.toString('base64') },
+      });
     });
   });
 
   describe('sendText()', () => {
-    it('sends clientContent with user turn', async () => {
+    it('sends realtimeInput text', async () => {
       adapter = new GeminiRealtimeAdapter(createConfig());
       await adapter.connect();
       mockWs.send.mockClear();
@@ -202,20 +233,41 @@ describe('GeminiRealtimeAdapter', () => {
 
       expect(mockWs.send).toHaveBeenCalledOnce();
       const sent = JSON.parse(mockWs.send.mock.calls[0]![0] as string);
-      expect(sent.clientContent).toEqual({
-        turns: [{ role: 'user', parts: [{ text: 'Hello Gemini' }] }],
-        turnComplete: true,
-      });
+      expect(sent).toEqual({ realtimeInput: { text: 'Hello Gemini' } });
     });
   });
 
   describe('interrupt()', () => {
+    const audioMessage = JSON.stringify({
+      serverContent: {
+        modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm', data: 'AAAA' } }] },
+      },
+    });
+
+    it('is a no-op when no model turn is in progress (does not drop the next turn)', async () => {
+      adapter = new GeminiRealtimeAdapter(createConfig());
+      await adapter.connect();
+
+      const audioChunks: Buffer[] = [];
+      adapter.on('audio', (chunk) => audioChunks.push(chunk));
+
+      adapter.interrupt();
+      mockWs.emit('message', audioMessage);
+      mockWs.emit('message', audioMessage);
+
+      expect(audioChunks).toHaveLength(2);
+    });
+
     it('drops inbound audio until turnComplete', async () => {
       adapter = new GeminiRealtimeAdapter(createConfig());
       await adapter.connect();
 
       const audioChunks: Buffer[] = [];
       adapter.on('audio', (chunk) => audioChunks.push(chunk));
+
+      mockWs.emit('message', audioMessage);
+      expect(audioChunks).toHaveLength(1);
+      audioChunks.length = 0;
 
       adapter.interrupt();
 
@@ -269,7 +321,7 @@ describe('GeminiRealtimeAdapter', () => {
       expect(received.toString()).toBe('gemini-audio');
     });
 
-    it('emits transcript when serverContent contains text', async () => {
+    it('emits assistant text parts as a transcript on turnComplete', async () => {
       adapter = new GeminiRealtimeAdapter(createConfig());
       await adapter.connect();
 
@@ -286,8 +338,79 @@ describe('GeminiRealtimeAdapter', () => {
           },
         })
       );
+      expect(handler).not.toHaveBeenCalled();
 
+      mockWs.emit('message', JSON.stringify({ serverContent: { turnComplete: true } }));
       expect(handler).toHaveBeenCalledWith('The weather is sunny.', 'assistant');
+    });
+
+    it('ignores thought parts (native-audio thinking is not a transcript)', async () => {
+      adapter = new GeminiRealtimeAdapter(createConfig());
+      await adapter.connect();
+
+      const handler = vi.fn();
+      adapter.on('transcript', handler);
+
+      mockWs.emit(
+        'message',
+        JSON.stringify({
+          serverContent: {
+            modelTurn: { parts: [{ text: '**Thinking about it**', thought: true }] },
+          },
+        })
+      );
+      mockWs.emit(
+        'message',
+        JSON.stringify({ serverContent: { outputTranscription: { text: 'Four.' } } })
+      );
+      mockWs.emit('message', JSON.stringify({ serverContent: { turnComplete: true } }));
+
+      expect(handler).toHaveBeenCalledOnce();
+      expect(handler).toHaveBeenCalledWith('Four.', 'assistant');
+    });
+
+    it('accumulates streamed transcriptions and emits user before assistant', async () => {
+      adapter = new GeminiRealtimeAdapter(createConfig());
+      await adapter.connect();
+
+      const handler = vi.fn();
+      const turnEnd = vi.fn();
+      adapter.on('transcript', handler);
+      adapter.on('turn_end', turnEnd);
+
+      const send = (serverContent: Record<string, unknown>) =>
+        mockWs.emit('message', JSON.stringify({ serverContent }));
+
+      send({ inputTranscription: { text: 'What is' } });
+      send({ inputTranscription: { text: ' two plus two?' } });
+      send({ outputTranscription: { text: 'Two plus' } });
+      send({ outputTranscription: { text: ' two is four.' } });
+      send({ turnComplete: true });
+
+      expect(handler.mock.calls).toEqual([
+        ['What is two plus two?', 'user'],
+        ['Two plus two is four.', 'assistant'],
+      ]);
+      expect(turnEnd).toHaveBeenCalledOnce();
+    });
+
+    it('emits speech_start and flushes the partial transcript when interrupted', async () => {
+      adapter = new GeminiRealtimeAdapter(createConfig());
+      await adapter.connect();
+
+      const transcripts = vi.fn();
+      const speechStart = vi.fn();
+      adapter.on('transcript', transcripts);
+      adapter.on('speech_start', speechStart);
+
+      mockWs.emit(
+        'message',
+        JSON.stringify({ serverContent: { outputTranscription: { text: 'Once upon' } } })
+      );
+      mockWs.emit('message', JSON.stringify({ serverContent: { interrupted: true } }));
+
+      expect(speechStart).toHaveBeenCalledOnce();
+      expect(transcripts).toHaveBeenCalledWith('Once upon', 'assistant');
     });
 
     it('emits error on WebSocket error', async () => {
@@ -351,7 +474,7 @@ describe('GeminiRealtimeAdapter', () => {
         {
           id: 'call_gem_123',
           name: 'get_weather',
-          response: { result: JSON.stringify({ temperature: 22, unit: 'celsius' }) },
+          response: { result: { temperature: 22, unit: 'celsius' } },
         },
       ]);
     });
@@ -388,7 +511,41 @@ describe('GeminiRealtimeAdapter', () => {
       await vi.waitFor(() => expect(mockWs.send).toHaveBeenCalledTimes(1));
 
       const sent = JSON.parse(mockWs.send.mock.calls[0]![0] as string);
-      expect(sent.toolResponse.functionResponses[0].response.result).toContain('Tool exploded');
+      expect(sent.toolResponse.functionResponses[0].response).toEqual({ error: 'Tool exploded' });
+    });
+
+    it('responds with an error for unknown tools and null for undefined results', async () => {
+      const tools = [
+        {
+          name: 'void_tool',
+          description: 'Returns nothing',
+          parameters: {},
+          execute: vi.fn().mockResolvedValue(undefined),
+        },
+      ];
+
+      adapter = new GeminiRealtimeAdapter(createConfig({ tools }));
+      await adapter.connect();
+      mockWs.send.mockClear();
+
+      mockWs.emit(
+        'message',
+        JSON.stringify({
+          toolCall: {
+            functionCalls: [
+              { id: 'a', name: 'void_tool', args: {} },
+              { id: 'b', name: 'missing_tool' },
+            ],
+          },
+        })
+      );
+
+      await vi.waitFor(() => expect(mockWs.send).toHaveBeenCalledTimes(1));
+      const sent = JSON.parse(mockWs.send.mock.calls[0]![0] as string);
+      expect(sent.toolResponse.functionResponses).toEqual([
+        { id: 'a', name: 'void_tool', response: { result: null } },
+        { id: 'b', name: 'missing_tool', response: { error: 'Unknown tool: missing_tool' } },
+      ]);
     });
   });
 

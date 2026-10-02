@@ -19,6 +19,11 @@ vi.mock('openai', () => {
 });
 
 import { OpenAISTT } from '../../stt/openai-stt';
+import { pcmToWav } from '../../audio';
+
+async function fileBytes(file: File): Promise<Buffer> {
+  return Buffer.from(await file.arrayBuffer());
+}
 
 describe('OpenAISTT', () => {
   let stt: OpenAISTT;
@@ -88,6 +93,7 @@ describe('OpenAISTT', () => {
   });
 
   it('returns TranscribeResult from API response', async () => {
+    stt = new OpenAISTT({ apiKey: 'test-key', model: 'whisper-1' });
     mockCreate.mockResolvedValue({
       text: 'the quick brown fox',
       language: 'en',
@@ -132,6 +138,7 @@ describe('OpenAISTT', () => {
   });
 
   it('includes duration when it is 0', async () => {
+    stt = new OpenAISTT({ apiKey: 'test-key', model: 'whisper-1' });
     mockCreate.mockResolvedValue({
       text: 'zero duration',
       duration: 0,
@@ -141,13 +148,52 @@ describe('OpenAISTT', () => {
     expect(result.duration).toBe(0);
   });
 
-  it('requests verbose_json format for word timestamps', async () => {
-    const audio = Buffer.from('fake-audio');
-    await stt.transcribe(audio);
+  it('requests verbose_json format with word timestamps for whisper models', async () => {
+    stt = new OpenAISTT({ apiKey: 'test-key', model: 'whisper-1' });
+    await stt.transcribe(Buffer.from('fake-audio'));
 
     const args = mockCreate.mock.calls[0][0];
     expect(args.response_format).toBe('verbose_json');
     expect(args.timestamp_granularities).toContain('word');
+  });
+
+  it('requests plain json for gpt-4o transcribe models (verbose_json is unsupported)', async () => {
+    await stt.transcribe(Buffer.from('fake-audio'), { language: 'de' });
+
+    const args = mockCreate.mock.calls[0][0];
+    expect(args.response_format).toBe('json');
+    expect(args.timestamp_granularities).toBeUndefined();
+  });
+
+  it('reports the requested language for json responses', async () => {
+    mockCreate.mockResolvedValue({ text: 'hallo' });
+    const result = await stt.transcribe(Buffer.from('fake-audio'), { language: 'de' });
+    expect(result).toEqual({ text: 'hallo', language: 'de' });
+  });
+
+  it('wraps headerless raw PCM16 into a 16kHz WAV upload', async () => {
+    const pcm = Buffer.alloc(320, 1);
+    await stt.transcribe(pcm);
+
+    const file: File = mockCreate.mock.calls[0][0].file;
+    expect(file.name).toBe('audio.wav');
+    expect(await fileBytes(file)).toEqual(pcmToWav(pcm, 16000));
+  });
+
+  it('uploads containerized audio as-is with a matching file name', async () => {
+    const mp3 = Buffer.concat([Buffer.from('ID3'), Buffer.alloc(32)]);
+    await stt.transcribe(mp3);
+
+    const file: File = mockCreate.mock.calls[0][0].file;
+    expect(file.name).toBe('audio.mp3');
+    expect(file.type).toBe('audio/mpeg');
+    expect(await fileBytes(file)).toEqual(mp3);
+
+    const wav = pcmToWav(Buffer.alloc(64), 16000);
+    await stt.transcribe(wav);
+    const wavFile: File = mockCreate.mock.calls[1][0].file;
+    expect(wavFile.name).toBe('audio.wav');
+    expect(await fileBytes(wavFile)).toEqual(wav);
   });
 
   it('passes baseURL to OpenAI client', async () => {
@@ -182,10 +228,37 @@ describe('OpenAISTT', () => {
       expect(result.text).toBe('streamed result');
 
       const args = mockCreate.mock.calls[0][0];
-      const file: File = args.file;
-      const arrayBuffer = await file.arrayBuffer();
-      const combined = Buffer.from(arrayBuffer);
-      expect(combined).toEqual(Buffer.concat([Buffer.from('chunk1'), Buffer.from('chunk2')]));
+      const combined = await fileBytes(args.file);
+      expect(combined).toEqual(
+        pcmToWav(Buffer.concat([Buffer.from('chunk1'), Buffer.from('chunk2')]), 16000)
+      );
+    });
+
+    it('uses the stream sampleRate for the WAV header', async () => {
+      const stream = stt.createStream({ sampleRate: 24000 });
+      stream.write(Buffer.alloc(48));
+      await stream.close();
+
+      const combined = await fileBytes(mockCreate.mock.calls[0][0].file);
+      expect(combined).toEqual(pcmToWav(Buffer.alloc(48), 24000));
+    });
+
+    it('returns the same result when close() is called twice', async () => {
+      const stream = stt.createStream();
+      stream.write(Buffer.alloc(32));
+      mockCreate.mockResolvedValue({ text: 'once' });
+
+      const [a, b] = await Promise.all([stream.close(), stream.close()]);
+      expect(a).toEqual({ text: 'once' });
+      expect(b).toBe(a);
+      expect(mockCreate).toHaveBeenCalledOnce();
+    });
+
+    it('does not call the API for an empty stream', async () => {
+      const stream = stt.createStream();
+      const result = await stream.close();
+      expect(result).toEqual({ text: '' });
+      expect(mockCreate).not.toHaveBeenCalled();
     });
 
     it('clears chunks after close', async () => {
@@ -201,9 +274,9 @@ describe('OpenAISTT', () => {
 
       expect(result.text).toBe('second');
       const secondArgs = mockCreate.mock.calls[1][0];
-      const file: File = secondArgs.file;
-      const arrayBuffer = await file.arrayBuffer();
-      expect(Buffer.from(arrayBuffer)).toEqual(Buffer.from('second-batch'));
+      expect(await fileBytes(secondArgs.file)).toEqual(
+        pcmToWav(Buffer.from('second-batch'), 16000)
+      );
     });
 
     it('emits final event on close', async () => {

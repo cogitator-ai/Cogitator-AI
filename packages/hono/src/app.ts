@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { HonoEnv, CogitatorAppOptions } from './types.js';
 import { createContextMiddleware } from './middleware/context.js';
 import { createAuthMiddleware } from './middleware/auth.js';
+import { createBodyLimitMiddleware } from './middleware/body-limit.js';
 import { errorHandler } from './middleware/error-handler.js';
 import {
   createHealthRoutes,
@@ -18,6 +19,7 @@ export function cogitatorApp(opts: CogitatorAppOptions): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
 
   app.use('*', createContextMiddleware(opts));
+  app.use('*', createBodyLimitMiddleware(opts.bodyLimit));
 
   if (opts.auth) {
     app.use('*', createAuthMiddleware(opts.auth));
@@ -35,7 +37,7 @@ export function cogitatorApp(opts: CogitatorAppOptions): Hono<HonoEnv> {
   }
 
   if (opts.enableWebSocket) {
-    app.route('/', createWebSocketRoutes(opts.websocket?.path));
+    app.route('/', createWebSocketRoutes(opts.websocket));
   }
 
   app.onError(errorHandler);

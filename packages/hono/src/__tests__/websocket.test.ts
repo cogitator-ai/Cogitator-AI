@@ -6,17 +6,42 @@ import {
 } from '../websocket/handler.js';
 import type { CogitatorContext } from '../types.js';
 
+const workflowExecute = vi.fn();
+const swarmRun = vi.fn();
+const swarmAbort = vi.fn();
+
 vi.mock('@cogitator-ai/workflows', () => ({
   WorkflowExecutor: class {
-    execute = vi.fn().mockResolvedValue({ output: 'workflow-done' });
+    execute = workflowExecute;
   },
 }));
 
 vi.mock('@cogitator-ai/swarms', () => ({
   Swarm: class {
-    run = vi.fn().mockResolvedValue({ output: 'swarm-done' });
+    id = 'swarm_1';
+    name = 'team';
+    strategyType = 'round-robin';
+    run = swarmRun;
+    abort = swarmAbort;
+    getResourceUsage = () => ({
+      totalTokens: 42,
+      totalCost: 0.01,
+      elapsedTime: 100,
+      agentUsage: new Map(),
+    });
   },
 }));
+
+function workflowResult(overrides: Record<string, unknown> = {}) {
+  return {
+    workflowId: 'wf_1',
+    workflowName: 'pipeline',
+    state: { done: true },
+    nodeResults: new Map([['start', { output: 'workflow-done', duration: 5 }]]),
+    duration: 12,
+    ...overrides,
+  };
+}
 
 function mockSocket() {
   const messages: string[] = [];
@@ -59,6 +84,11 @@ describe('handleWebSocketMessage', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    workflowExecute.mockResolvedValue(workflowResult());
+    swarmRun.mockResolvedValue({
+      output: 'swarm-done',
+      agentResults: new Map([['a1', { output: 'part', usage: { totalTokens: 5 } }]]),
+    });
     ctx = mockContext();
   });
 
@@ -95,7 +125,7 @@ describe('handleWebSocketMessage', () => {
     expect(responses).toHaveLength(1);
     expect(responses[0].type).toBe('error');
     expect(responses[0].id).toBe('r1');
-    expect(responses[0].error).toBe('Invalid run payload');
+    expect(responses[0].error).toBe('Invalid run payload: "name" is required');
   });
 
   it('responds with error when agent not found', async () => {
@@ -251,7 +281,13 @@ describe('handleWebSocketMessage', () => {
     expect(responses).toHaveLength(1);
     expect(responses[0].type).toBe('event');
     expect(responses[0].payload.type).toBe('complete');
-    expect(responses[0].payload.result).toEqual({ output: 'workflow-done' });
+    expect(responses[0].payload.result).toEqual({
+      workflowId: 'wf_1',
+      workflowName: 'pipeline',
+      state: { done: true },
+      duration: 12,
+      nodeResults: { start: { output: 'workflow-done', duration: 5 } },
+    });
   });
 
   it('responds with error when swarm not found', async () => {
@@ -298,7 +334,14 @@ describe('handleWebSocketMessage', () => {
     expect(responses).toHaveLength(1);
     expect(responses[0].type).toBe('event');
     expect(responses[0].payload.type).toBe('complete');
-    expect(responses[0].payload.result).toEqual({ output: 'swarm-done' });
+    expect(responses[0].payload.result).toEqual({
+      swarmId: 'swarm_1',
+      swarmName: 'team',
+      strategy: 'round-robin',
+      output: 'swarm-done',
+      agentResults: { a1: { output: 'part', usage: { totalTokens: 5 } } },
+      usage: { totalTokens: 42, totalCost: 0.01, elapsedTime: 100 },
+    });
   });
 
   it('rejects concurrent runs', async () => {
@@ -323,7 +366,7 @@ describe('handleWebSocketMessage', () => {
     expect(responses[0].error).toBe('A run is already in progress');
   });
 
-  it('stop aborts the controller', async () => {
+  it('stop aborts the controller and leaves cleanup to the finishing run', async () => {
     const { socket } = mockSocket();
     const state = createClientState();
     const controller = new AbortController();
@@ -332,7 +375,7 @@ describe('handleWebSocketMessage', () => {
     await handleWebSocketMessage(socket, JSON.stringify({ type: 'stop' }), ctx, state);
 
     expect(controller.signal.aborted).toBe(true);
-    expect(state.abortController).toBeUndefined();
+    expect(state.abortController).toBe(controller);
   });
 
   it('clears abortController after run completes', async () => {

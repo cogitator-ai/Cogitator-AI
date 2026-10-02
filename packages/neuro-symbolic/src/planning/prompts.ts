@@ -10,6 +10,7 @@ import type {
 import { schemaToString, actionToString, preconditionToString } from './action-schema';
 import { formatValidationResult } from './plan-validator';
 import { formatInvariantResults } from './invariant-checker';
+import { extractJSON } from '../utils/json';
 
 export interface PlanGenerationContext {
   goal: string;
@@ -182,33 +183,6 @@ export interface ParsePlanResult {
   explanation?: string;
 }
 
-function extractJSON(text: string): string | null {
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-  let depth = 0;
-  let inString = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (inString) {
-      if (ch === '\\') {
-        i++;
-      } else if (ch === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-    } else if (ch === '{') {
-      depth++;
-    } else if (ch === '}') {
-      depth--;
-      if (depth === 0) return text.slice(start, i + 1);
-    }
-  }
-  return null;
-}
-
 export function parsePlanResponse(response: string): ParsePlanResult | null {
   try {
     const jsonStr = extractJSON(response);
@@ -225,11 +199,13 @@ export function parsePlanResponse(response: string): ParsePlanResult | null {
         .map((item: Record<string, unknown>) => ({
           action: String(item.action || ''),
           parameters:
-            item.parameters && typeof item.parameters === 'object'
+            item.parameters &&
+            typeof item.parameters === 'object' &&
+            !Array.isArray(item.parameters)
               ? (item.parameters as Record<string, unknown>)
               : {},
         })),
-      explanation: parsed.explanation,
+      explanation: typeof parsed.explanation === 'string' ? parsed.explanation : undefined,
     };
   } catch {
     return null;
@@ -253,7 +229,12 @@ export function parseActionSuggestionResponse(
 
     return {
       action: String(parsed.action || ''),
-      parameters: (parsed.parameters as Record<string, unknown>) || {},
+      parameters:
+        parsed.parameters &&
+        typeof parsed.parameters === 'object' &&
+        !Array.isArray(parsed.parameters)
+          ? (parsed.parameters as Record<string, unknown>)
+          : {},
       reasoning: String(parsed.reasoning || ''),
     };
   } catch {

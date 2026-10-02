@@ -112,4 +112,17 @@ describe('createConfigFromEnv', () => {
     });
     expect(config.password).toBe('secret123');
   });
+
+  it('throws instead of falling back to localhost when REDIS_CLUSTER_NODES is invalid', () => {
+    expect(() => createConfigFromEnv({ REDIS_CLUSTER_NODES: '10.0.0.1:6379' })).toThrow(
+      'REDIS_CLUSTER_NODES'
+    );
+    expect(() => createConfigFromEnv({ REDIS_CLUSTER_NODES: '[{"host":"a"}]' })).toThrow(
+      'REDIS_CLUSTER_NODES'
+    );
+  });
+
+  it('ignores an empty REDIS_CLUSTER_NODES value', () => {
+    expect(createConfigFromEnv({ REDIS_CLUSTER_NODES: '  ' }).mode).toBe('standalone');
+  });
 });

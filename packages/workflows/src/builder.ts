@@ -81,14 +81,20 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
   }
 
   /**
-   * Add a node to the workflow
+   * Add a node to the workflow. Accepts a node function or a node created by a factory
+   * (`agentNode`, `toolNode`, `functionNode`, `customNode`, ...).
    */
-  addNode(name: string, fn: NodeFn<S>, options?: AddNodeOptions): this {
+  addNode(name: string, node: NodeFn<S> | WorkflowNode<S>, options?: AddNodeOptions): this {
     this.registerName(name);
+    const fn = typeof node === 'function' ? node : node.fn;
+    const nodeConfig = typeof node === 'function' ? undefined : node.config;
+    const config =
+      nodeConfig || options?.config ? { ...nodeConfig, ...options?.config } : undefined;
+
     this.nodes.push({
       name,
       fn,
-      config: options?.config,
+      config,
       after: options?.after ?? [],
     });
     return this;
@@ -174,41 +180,53 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
       });
     }
 
-    const edges: Edge[] = [];
-
     const conditionalNames = new Set(this.conditionals.map((c) => c.name));
-    const loopNames = new Set(this.loops.map((l) => l.name));
-    const parallelNames = new Set(this.parallels.map((p) => p.name));
+    const loopsByName = new Map(this.loops.map((l) => [l.name, l]));
 
-    for (const node of this.nodes) {
-      for (const dep of node.after) {
-        if (conditionalNames.has(dep) || loopNames.has(dep) || parallelNames.has(dep)) {
+    const entries: { name: string; after: string[] }[] = [
+      ...this.nodes,
+      ...this.conditionals,
+      ...this.loops,
+      ...this.parallels,
+    ];
+
+    const edges: Edge[] = [];
+    const conditionalTargets = new Map<string, string[]>();
+    const parallelTargets = new Map(this.parallels.map((p) => [p.name, [...p.targets]]));
+
+    for (const entry of entries) {
+      for (const dep of entry.after) {
+        if (conditionalNames.has(dep)) {
+          const targets = conditionalTargets.get(dep) ?? [];
+          targets.push(entry.name);
+          conditionalTargets.set(dep, targets);
           continue;
         }
-        edges.push({
-          type: 'sequential',
-          from: dep,
-          to: node.name,
-        });
+
+        const loop = loopsByName.get(dep);
+        if (loop) {
+          if (entry.name !== loop.back && entry.name !== loop.exit) {
+            throw new Error(
+              `'${entry.name}' runs after loop '${dep}' but is neither its back ('${loop.back}') nor exit ('${loop.exit}') node`
+            );
+          }
+          continue;
+        }
+
+        const parallelTargetList = parallelTargets.get(dep);
+        if (parallelTargetList) {
+          if (!parallelTargetList.includes(entry.name)) {
+            parallelTargetList.push(entry.name);
+          }
+          continue;
+        }
+
+        edges.push({ type: 'sequential', from: dep, to: entry.name });
       }
     }
 
     for (const cond of this.conditionals) {
-      for (const dep of cond.after) {
-        edges.push({
-          type: 'sequential',
-          from: dep,
-          to: cond.name,
-        });
-      }
-
-      const targets: string[] = [];
-      for (const node of this.nodes) {
-        if (node.after.includes(cond.name)) {
-          targets.push(node.name);
-        }
-      }
-
+      const targets = conditionalTargets.get(cond.name) ?? [];
       if (targets.length > 0) {
         edges.push({
           type: 'conditional',
@@ -220,14 +238,6 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
     }
 
     for (const loop of this.loops) {
-      for (const dep of loop.after) {
-        edges.push({
-          type: 'sequential',
-          from: dep,
-          to: loop.name,
-        });
-      }
-
       edges.push({
         type: 'loop',
         from: loop.name,
@@ -238,68 +248,54 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
     }
 
     for (const parallel of this.parallels) {
-      for (const dep of parallel.after) {
-        edges.push({
-          type: 'sequential',
-          from: dep,
-          to: parallel.name,
-        });
-      }
-
       edges.push({
         type: 'parallel',
         from: parallel.name,
-        to: parallel.targets,
+        to: parallelTargets.get(parallel.name) ?? [],
       });
     }
+
+    this.validateEdges(nodesMap, edges);
 
     let entryPoint = this.entryPointName;
 
     if (!entryPoint) {
-      const allDeps = new Set<string>();
-      for (const node of this.nodes) {
-        for (const dep of node.after) {
-          allDeps.add(dep);
-        }
+      const routedTargets = new Set<string>();
+      for (const targets of parallelTargets.values()) {
+        for (const target of targets) routedTargets.add(target);
       }
-      for (const cond of this.conditionals) {
-        for (const dep of cond.after) {
-          allDeps.add(dep);
-        }
-      }
-      for (const parallel of this.parallels) {
-        for (const dep of parallel.after) {
-          allDeps.add(dep);
-        }
-        for (const target of parallel.targets) {
-          allDeps.add(target);
-        }
+      for (const loop of this.loops) {
+        routedTargets.add(loop.exit);
       }
 
-      const roots: string[] = [];
-      for (const node of this.nodes) {
-        if (node.after.length === 0 && !allDeps.has(node.name)) {
-          roots.push(node.name);
-        }
+      const roots = entries
+        .filter((e) => e.after.length === 0 && !routedTargets.has(e.name))
+        .map((e) => e.name);
+
+      if (entries.length === 0) {
+        throw new Error('Workflow has no nodes');
       }
 
       if (roots.length === 0) {
-        entryPoint = this.nodes[0]?.name;
-      } else if (roots.length === 1) {
-        entryPoint = roots[0];
-      } else {
+        throw new Error(
+          'Workflow has no root node (every node depends on another). ' +
+            'Use .entryPoint() to specify where execution starts.'
+        );
+      }
+
+      if (roots.length > 1) {
         throw new Error(
           `Workflow has multiple root nodes: ${roots.join(', ')}. ` +
             'Use .entryPoint() to specify which one should be the entry point.'
         );
       }
+
+      entryPoint = roots[0];
     }
 
-    if (!entryPoint) {
-      throw new Error('Workflow has no nodes');
+    if (!nodesMap.has(entryPoint)) {
+      throw new Error(`Entry point '${entryPoint}' not found in nodes`);
     }
-
-    this.validate(nodesMap, edges, entryPoint);
 
     return {
       name: this.name,
@@ -310,11 +306,7 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
     };
   }
 
-  private validate(nodes: Map<string, WorkflowNode<S>>, edges: Edge[], entryPoint: string): void {
-    if (!nodes.has(entryPoint)) {
-      throw new Error(`Entry point '${entryPoint}' not found in nodes`);
-    }
-
+  private validateEdges(nodes: Map<string, WorkflowNode<S>>, edges: Edge[]): void {
     for (const edge of edges) {
       if (!nodes.has(edge.from)) {
         throw new Error(`Edge references unknown node '${edge.from}'`);

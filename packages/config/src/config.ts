@@ -2,6 +2,7 @@
  * Configuration loading and merging
  */
 
+import { z } from 'zod';
 import type { CogitatorConfig } from '@cogitator-ai/types';
 import { CogitatorConfigSchema, type CogitatorConfigInput } from './schema';
 import { loadYamlConfig } from './loaders/yaml';
@@ -50,7 +51,7 @@ export function loadConfig(options: LoadConfigOptions = {}): CogitatorConfig {
 
   const result = CogitatorConfigSchema.safeParse(merged);
   if (!result.success) {
-    throw new Error(`Invalid configuration: ${result.error.message}`);
+    throw new Error(`Invalid configuration:\n${z.prettifyError(result.error)}`);
   }
 
   return result.data;
@@ -69,8 +70,11 @@ function mergeConfigs(configs: CogitatorConfigInput[]): CogitatorConfigInput {
   return result;
 }
 
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): void {
   for (const key of Object.keys(source)) {
+    if (UNSAFE_KEYS.has(key)) continue;
     const sourceValue = source[key];
     const targetValue = target[key];
 
@@ -96,7 +100,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 export function defineConfig(config: CogitatorConfigInput): CogitatorConfig {
   const result = CogitatorConfigSchema.safeParse(config);
   if (!result.success) {
-    throw new Error(`Invalid configuration: ${result.error.message}`);
+    throw new Error(`Invalid configuration:\n${z.prettifyError(result.error)}`);
   }
   return result.data;
 }

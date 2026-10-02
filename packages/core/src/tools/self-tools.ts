@@ -1,5 +1,5 @@
-import { mkdirSync, writeFileSync, readdirSync, unlinkSync, existsSync } from 'node:fs';
-import { join, basename, resolve } from 'node:path';
+import { mkdirSync, writeFileSync, readdirSync, unlinkSync, existsSync, renameSync } from 'node:fs';
+import { join, basename, resolve, relative, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { tool } from '../tool';
@@ -8,6 +8,19 @@ import type { Tool } from '@cogitator-ai/types';
 async function importFresh(filePath: string): Promise<unknown> {
   const url = pathToFileURL(filePath).href + `?t=${Date.now()}`;
   return import(/* webpackIgnore: true */ url);
+}
+
+function resolveToolFile(toolsDir: string, name: string): string | null {
+  const filePath = resolve(toolsDir, `${name}.mjs`);
+  const rel = relative(resolve(toolsDir), filePath);
+  if (!rel || name.startsWith('.') || isAbsolute(rel) || basename(rel) !== rel) {
+    return null;
+  }
+  return filePath;
+}
+
+function isToolModuleFile(file: string): boolean {
+  return file.endsWith('.mjs') && !file.startsWith('.');
 }
 
 function validateToolShape(mod: unknown): { valid: boolean; error?: string } {
@@ -25,7 +38,7 @@ function validateToolShape(mod: unknown): { valid: boolean; error?: string } {
 export async function loadCustomTools(toolsDir: string): Promise<Tool[]> {
   if (!existsSync(toolsDir)) return [];
 
-  const files = readdirSync(toolsDir).filter((f) => f.endsWith('.mjs'));
+  const files = readdirSync(toolsDir).filter(isToolModuleFile);
   const tools: Tool[] = [];
 
   for (const file of files) {
@@ -75,25 +88,27 @@ export default {
     requiresApproval: true,
     sideEffects: ['process', 'filesystem', 'network'],
     execute: async ({ name, code }) => {
-      mkdirSync(toolsDir, { recursive: true });
-      const filePath = join(toolsDir, `${name}.mjs`);
-      if (!resolve(filePath).startsWith(resolve(toolsDir) + '/')) {
+      const filePath = resolveToolFile(toolsDir, name);
+      if (!filePath) {
         return { success: false, error: 'Invalid tool name' };
       }
-      writeFileSync(filePath, code);
+      mkdirSync(toolsDir, { recursive: true });
+      const stagingPath = join(toolsDir, `.${name}.staging-${Date.now()}.mjs`);
+      writeFileSync(stagingPath, code);
 
       try {
-        const mod = await importFresh(filePath);
+        const mod = await importFresh(stagingPath);
         const check = validateToolShape(mod);
         if (!check.valid) {
-          unlinkSync(filePath);
+          unlinkSync(stagingPath);
           return { success: false, error: check.error };
         }
+        renameSync(stagingPath, filePath);
         onToolsChanged?.();
         return { success: true, path: filePath, message: `Tool "${name}" created and validated` };
       } catch (err) {
         const errorMsg = err instanceof Error ? (err.stack ?? err.message) : String(err);
-        unlinkSync(filePath);
+        if (existsSync(stagingPath)) unlinkSync(stagingPath);
         return { success: false, error: errorMsg };
       }
     },
@@ -108,8 +123,8 @@ export default {
       params: z.record(z.string(), z.unknown()).describe('Parameters to pass to execute()'),
     }),
     execute: async ({ name: toolName, params }) => {
-      const filePath = join(toolsDir, `${toolName}.mjs`);
-      if (!resolve(filePath).startsWith(resolve(toolsDir) + '/')) {
+      const filePath = resolveToolFile(toolsDir, toolName);
+      if (!filePath) {
         return { success: false, error: 'Invalid tool name' };
       }
       if (!existsSync(filePath)) {
@@ -141,7 +156,7 @@ export default {
     execute: async () => {
       if (!existsSync(toolsDir)) return { tools: [] };
 
-      const files = readdirSync(toolsDir).filter((f) => f.endsWith('.mjs'));
+      const files = readdirSync(toolsDir).filter(isToolModuleFile);
       const tools: Array<{ name: string; description: string; file: string }> = [];
 
       for (const file of files) {
@@ -169,8 +184,8 @@ export default {
       name: z.string().describe('Tool name to delete'),
     }),
     execute: async ({ name: toolName }) => {
-      const filePath = join(toolsDir, `${toolName}.mjs`);
-      if (!resolve(filePath).startsWith(resolve(toolsDir) + '/')) {
+      const filePath = resolveToolFile(toolsDir, toolName);
+      if (!filePath) {
         return { success: false, error: 'Invalid tool name' };
       }
       if (!existsSync(filePath)) {

@@ -5,13 +5,15 @@ Distributed job queue for Cogitator agent execution. Built on BullMQ for reliabl
 ## Installation
 
 ```bash
-pnpm add @cogitator-ai/worker ioredis
+pnpm add @cogitator-ai/worker @cogitator-ai/core ioredis
 ```
 
 ## Features
 
 - **BullMQ-Based** - Reliable job processing with Redis
-- **Job Types** - Agents, workflows, and swarms
+- **Job Types** - Agents, workflow graphs, swarms and distributed swarm turns
+- **Worker Runtime** - Run jobs with your own `Cogitator` (provider keys, memory) and tool implementations
+- **Distributed Swarms** - `DistributedSwarmWorker` executes agent turns for `@cogitator-ai/swarms`
 - **Auto-Retry** - Exponential backoff for failed jobs
 - **Priority Queue** - Process important jobs first
 - **Delayed Jobs** - Schedule jobs for later execution
@@ -35,7 +37,7 @@ const queue = new JobQueue({
 const agentConfig = {
   name: 'Assistant',
   instructions: 'You are a helpful assistant.',
-  model: 'openai/gpt-4',
+  model: 'openai/gpt-4o',
   provider: 'openai' as const,
   tools: [],
 };
@@ -51,16 +53,23 @@ console.log(`Job added: ${job.id}`);
 ### Consumer: Process Jobs
 
 ```typescript
+import { Cogitator } from '@cogitator-ai/core';
 import { WorkerPool } from '@cogitator-ai/worker';
 
 const pool = new WorkerPool({
   redis: { host: 'localhost', port: 6379 },
   concurrency: 5,
   workerCount: 2,
+  cogitator: new Cogitator({
+    llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY } } },
+  }),
+  tools: [searchTool], // implementations for tools referenced by serialized agents
 });
 
 await pool.start();
 ```
+
+Serialized agents reference tools by name. The worker resolves them from its `tools`; a job whose agent needs a tool the worker does not provide fails with `Tools not registered on this worker: <names>`.
 
 ---
 
@@ -122,10 +131,11 @@ interface QueueConfig {
 const agentConfig: SerializedAgent = {
   name: 'Researcher',
   instructions: 'Research and summarize topics.',
-  model: 'openai/gpt-4',
+  model: 'openai/gpt-4o', // or 'gpt-4o' — the provider is prepended when missing
   provider: 'openai',
   temperature: 0.7,
   maxTokens: 2048,
+  maxIterations: 5,
   tools: [
     {
       name: 'search',
@@ -145,38 +155,60 @@ const job = await queue.addAgentJob(agentConfig, 'Research quantum computing', {
 
 **Workflow Jobs:**
 
+Workflow jobs run a DAG over a shared state object initialised from the job input. Nodes run as soon as their predecessors settle; independent branches run concurrently.
+
 ```typescript
 const workflowConfig: SerializedWorkflow = {
-  id: 'data-pipeline',
-  name: 'Data Pipeline',
+  id: 'triage',
+  name: 'Ticket triage',
   nodes: [
-    { id: 'fetch', type: 'agent', config: { agentConfig: fetchAgent } },
-    { id: 'process', type: 'transform', config: { transform: 'uppercase' } },
-    { id: 'store', type: 'agent', config: { agentConfig: storeAgent } },
+    {
+      id: 'classify',
+      type: 'agent',
+      config: {
+        agentConfig: classifierAgent, // SerializedAgent
+        prompt: 'Classify this ticket as BUG or QUESTION: {{ticket}}',
+        outputKey: 'category',
+      },
+    },
+    { id: 'normalize', type: 'transform', config: { transform: 'trim', inputKey: 'category' } },
+    {
+      id: 'is-bug',
+      type: 'condition',
+      config: { key: 'normalize', operator: 'contains', value: 'BUG' },
+    },
+    {
+      id: 'summary',
+      type: 'transform',
+      config: { transform: 'template', template: 'Bug report: {{ticket}}' },
+    },
   ],
   edges: [
-    { from: 'fetch', to: 'process' },
-    { from: 'process', to: 'store' },
+    { from: 'classify', to: 'normalize' },
+    { from: 'normalize', to: 'is-bug' },
+    { from: 'is-bug', to: 'summary', condition: 'true' },
   ],
 };
 
-await queue.addWorkflowJob(
-  workflowConfig,
-  { source: 'api' },
-  {
-    runId: 'run-789',
-    priority: 2,
-  }
-);
+await queue.addWorkflowJob(workflowConfig, { ticket: 'App crashes on login' });
 ```
+
+| Node type   | Config                                                                                                                                    |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent`     | `{ agentConfig, prompt?, outputKey? }` — `prompt` supports `{{path}}` placeholders; default prompt is the state as JSON                   |
+| `transform` | `{ transform, inputKey?, outputKey?, template? }` — `uppercase`, `lowercase`, `trim`, `json-parse`, `json-stringify`, `template`          |
+| `condition` | `{ key, operator, value? }` — `equals`, `not-equals`, `contains`, `exists`, `gt`, `lt`; outgoing edges use `condition: 'true' \| 'false'` |
+| `parallel`  | `{}` — fan-out marker; successors run concurrently                                                                                        |
+
+Node outputs are stored in the state under `outputKey` (default: node id). Nodes reachable only through untaken condition branches are skipped (`{ skipped: true }` in `nodeResults`). Graphs are validated before execution (unknown nodes, invalid configs, cycles).
 
 **Swarm Jobs:**
 
 ```typescript
 const swarmConfig: SerializedSwarm = {
-  topology: 'collaborative',
+  topology: 'voting',
   agents: [researcherConfig, writerConfig, editorConfig],
-  coordinator: coordinatorConfig,
+  coordinator: coordinatorConfig, // decides when no consensus is reached
   maxRounds: 3,
   consensusThreshold: 0.8,
 };
@@ -186,6 +218,14 @@ await queue.addSwarmJob(swarmConfig, 'Write an article about AI', {
   metadata: { project: 'blog' },
 });
 ```
+
+| Topology        | Swarm strategy | Notes                                                        |
+| --------------- | -------------- | ------------------------------------------------------------ |
+| `sequential`    | `pipeline`     | One stage per agent, in order                                |
+| `hierarchical`  | `hierarchical` | `coordinator` is required and becomes the supervisor         |
+| `collaborative` | `round-robin`  |                                                              |
+| `debate`        | `debate`       | `maxRounds` rounds, `coordinator` moderates                  |
+| `voting`        | `consensus`    | `consensusThreshold`, `maxRounds`; `coordinator` breaks ties |
 
 ### Queue Methods
 
@@ -254,6 +294,8 @@ interface WorkerConfig extends QueueConfig {
   concurrency?: number; // Default: 5
   lockDuration?: number; // Default: 30000ms
   stalledInterval?: number; // Default: 30000ms
+  cogitator?: Cogitator; // Default: new Cogitator()
+  tools?: Tool[]; // Tool implementations, resolved by name
 }
 ```
 
@@ -268,7 +310,7 @@ interface WorkerConfig extends QueueConfig {
 
 ```typescript
 interface WorkerPoolEvents {
-  onJobStarted?: (jobId: string, type: 'agent' | 'workflow' | 'swarm') => void;
+  onJobStarted?: (jobId: string, type: 'agent' | 'workflow' | 'swarm' | 'swarm-agent') => void;
   onJobCompleted?: (jobId: string, result: JobResult) => void;
   onJobFailed?: (jobId: string, error: Error) => void;
   onWorkerError?: (error: Error) => void;
@@ -286,7 +328,10 @@ pool.getWorkerCount();
 
 const metrics = await pool.getMetrics(await queue.getMetrics());
 
-// Graceful shutdown (waits up to 30s for active jobs)
+// Job duration histogram and per-type counters
+pool.metrics.format(await pool.getMetrics(await queue.getMetrics()));
+
+// Graceful shutdown (waits up to 30s for active jobs, then force-closes)
 await pool.stop(30000);
 
 // Force shutdown
@@ -301,26 +346,62 @@ Built-in processors handle each job type.
 
 ### Using Processors Directly
 
+Processors take the job payload and an optional runtime (`{ cogitator, tools }`):
+
 ```typescript
-import { processAgentJob, processSwarmJob, processSwarmAgentJob } from '@cogitator-ai/worker';
+import { processAgentJob, processWorkflowJob, processSwarmJob } from '@cogitator-ai/worker';
 
-const agentResult = await processAgentJob({
-  type: 'agent',
-  jobId: 'job-1',
-  agentConfig: myAgentConfig,
-  input: 'Hello!',
-  threadId: 'thread-1',
-});
+const runtime = { cogitator, tools: [searchTool] };
 
-const swarmResult = await processSwarmJob({
-  type: 'swarm',
-  jobId: 'job-3',
-  swarmConfig: mySwarmConfig,
-  input: 'Solve this problem',
-});
+const agentResult = await processAgentJob(
+  { type: 'agent', jobId: 'job-1', agentConfig: myAgentConfig, input: 'Hello!', threadId: 't-1' },
+  runtime
+);
+
+const workflowResult = await processWorkflowJob(
+  { type: 'workflow', jobId: 'job-2', runId: 'run-1', workflowConfig, input: { ticket: '...' } },
+  runtime
+);
+
+const swarmResult = await processSwarmJob(
+  { type: 'swarm', jobId: 'job-3', swarmConfig: mySwarmConfig, input: 'Solve this problem' },
+  runtime
+);
 ```
 
-> **Note:** `processWorkflowJob` is not yet implemented — it throws an error. Workflows should be executed directly via `WorkflowExecutor` from `@cogitator-ai/workflows`.
+`processSwarmAgentJob(payload, { publisher, isFinalAttempt, ...runtime })` executes one distributed swarm turn and publishes the result (tagged with the job id) to `payload.stateKeys.results`; `executeSwarmAgentJob` returns the result without publishing.
+
+---
+
+## Distributed Swarm Workers
+
+Swarms created with `distributed.enabled` (see `@cogitator-ai/swarms`) dispatch every agent turn to a Redis queue. `DistributedSwarmWorker` consumes those turns:
+
+```typescript
+import { Cogitator } from '@cogitator-ai/core';
+import { DistributedSwarmWorker } from '@cogitator-ai/worker';
+
+const worker = new DistributedSwarmWorker(
+  {
+    redis: { host: 'localhost', port: 6379 },
+    keyPrefix: 'swarm', // must match the swarm's distributed.redis.keyPrefix
+    queue: 'swarm-agent-jobs', // must match distributed.queue
+    concurrency: 4,
+    cogitator: new Cogitator({ llm: { defaultModel: 'ollama/llama3.2' } }),
+    tools: [searchTool],
+  },
+  {
+    onJobCompleted: (job) => console.log('done', job.agentName),
+    onJobFailed: (job, error) => console.error(job.agentName, error.message),
+    onError: (error) => console.error(error),
+  }
+);
+
+await worker.start();
+process.on('SIGTERM', () => void worker.stop()); // waits for in-flight turns
+```
+
+Failed turns are reported back to the swarm as errors, so the swarm's own `errorHandling` (retry, failover, skip) applies.
 
 ---
 
@@ -381,24 +462,18 @@ Built-in metrics for monitoring and Kubernetes HPA.
 ### Exposing Metrics
 
 ```typescript
-import {
-  JobQueue,
-  WorkerPool,
-  MetricsCollector,
-  formatPrometheusMetrics,
-} from '@cogitator-ai/worker';
+import { JobQueue, WorkerPool } from '@cogitator-ai/worker';
 import express from 'express';
 
 const queue = new JobQueue({ redis: { host: 'localhost', port: 6379 } });
 const pool = new WorkerPool({ redis: { host: 'localhost', port: 6379 } });
-const metrics = new MetricsCollector();
+await pool.start();
 
 const app = express();
 
 app.get('/metrics', async (req, res) => {
-  const queueMetrics = await queue.getMetrics();
-  const fullMetrics = await pool.getMetrics(queueMetrics);
-  res.type('text/plain').send(metrics.format(fullMetrics));
+  const queueMetrics = await queue.getMetrics(); // workerCount = workers connected to the queue
+  res.type('text/plain').send(pool.metrics.format(queueMetrics));
 });
 
 app.listen(9090);
@@ -414,7 +489,7 @@ app.listen(9090);
 | `cogitator_queue_completed_total` | counter   | Total completed jobs           |
 | `cogitator_queue_failed_total`    | counter   | Total failed jobs              |
 | `cogitator_queue_delayed`         | gauge     | Scheduled/delayed jobs         |
-| `cogitator_workers_total`         | gauge     | Active workers                 |
+| `cogitator_workers_total`         | gauge     | Workers connected to the queue |
 | `cogitator_job_duration_seconds`  | histogram | Job processing time            |
 | `cogitator_jobs_by_type_total`    | counter   | Jobs by type                   |
 
@@ -489,6 +564,8 @@ const queue = new JobQueue({
 
 ### Redis Cluster
 
+Queues and workers connect to all cluster nodes (keys use the `{cogitator}` hash tag so they live in one slot):
+
 ```typescript
 const queue = new JobQueue({
   redis: {
@@ -516,11 +593,12 @@ Jobs use serialized configurations that can be stored in Redis.
 interface SerializedAgent {
   name: string;
   instructions: string;
-  model: string;
-  provider: 'ollama' | 'openai' | 'anthropic';
+  model: string; // may include the provider prefix
+  provider: LLMProvider; // used when model has no prefix
   temperature?: number;
   maxTokens?: number;
-  tools: ToolSchema[];
+  maxIterations?: number;
+  tools: ToolSchema[]; // resolved by name against the worker's tools
 }
 ```
 
@@ -543,9 +621,11 @@ interface SerializedWorkflowNode {
 interface SerializedWorkflowEdge {
   from: string;
   to: string;
-  condition?: string;
+  condition?: string; // 'true' | 'false' for edges leaving condition nodes
 }
 ```
+
+Node configs are typed as `AgentNodeConfig`, `TransformNodeConfig` and `ConditionNodeConfig`.
 
 ### SerializedSwarm
 
@@ -578,7 +658,7 @@ async function main() {
   const agentConfig = {
     name: 'Summarizer',
     instructions: 'Summarize the given text concisely.',
-    model: 'openai/gpt-4',
+    model: 'openai/gpt-4o',
     provider: 'openai' as const,
     tools: [],
   };
@@ -694,6 +774,9 @@ import type {
   SerializedWorkflow,
   SerializedWorkflowNode,
   SerializedWorkflowEdge,
+  AgentNodeConfig,
+  TransformNodeConfig,
+  ConditionNodeConfig,
   SerializedSwarm,
 
   // Job payloads
@@ -713,7 +796,10 @@ import type {
   // Configuration
   QueueConfig,
   WorkerConfig,
+  WorkerRuntime,
   QueueMetrics,
+  DistributedSwarmWorkerConfig,
+  DistributedSwarmWorkerEvents,
 } from '@cogitator-ai/worker';
 ```
 

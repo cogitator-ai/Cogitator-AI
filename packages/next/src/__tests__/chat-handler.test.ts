@@ -178,14 +178,15 @@ describe('createChatHandler', () => {
     );
   });
 
-  it('defaults to empty string when no user messages', async () => {
+  it('rejects requests without a user message with 400', async () => {
     const cog = mockCogitator();
     const handler = createChatHandler(cog, mockAgent());
 
     const res = await handler(jsonRequest({ messages: [] }));
-    await readStream(res);
 
-    expect(cog.run).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ input: '' }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('No user message provided');
+    expect(cog.run).not.toHaveBeenCalled();
   });
 
   it('handles tool calls in stream', async () => {

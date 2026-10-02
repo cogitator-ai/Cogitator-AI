@@ -1,6 +1,10 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SandboxManager, NativeSandboxExecutor } from '@cogitator-ai/sandbox';
 import type { SandboxConfig, SandboxExecutionRequest } from '@cogitator-ai/sandbox';
+import { buildExtismTestModule } from '../../helpers/extism-module';
 
 const describeDocker = process.env.TEST_DOCKER === 'true' ? describe : describe.skip;
 
@@ -71,7 +75,7 @@ describe('Sandbox: Native Executor', () => {
 
   it('NativeSandboxExecutor passes env vars', async () => {
     const request: SandboxExecutionRequest = {
-      command: ['echo', '$SANDBOX_E2E_VAR'],
+      command: ['echo $SANDBOX_E2E_VAR'],
       env: { SANDBOX_E2E_VAR: 'sandbox_value' },
     };
     const config: SandboxConfig = { type: 'native' };
@@ -80,6 +84,98 @@ describe('Sandbox: Native Executor', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.stdout).toContain('sandbox_value');
+    }
+  });
+});
+
+describe('Sandbox: Native argv execution', () => {
+  const executor = new NativeSandboxExecutor();
+
+  it('keeps argument boundaries and never interprets shell syntax in argv commands', async () => {
+    const result = await executor.execute(
+      {
+        command: [
+          'node',
+          '-e',
+          'console.log(JSON.stringify(process.argv.slice(1)))',
+          '$(id)',
+          'a b',
+        ],
+      },
+      { type: 'native' }
+    );
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(JSON.parse(result.data.stdout)).toEqual(['$(id)', 'a b']);
+    }
+  });
+
+  it('pipes stdin and isolates the host environment', async () => {
+    process.env.SANDBOX_E2E_HOST_SECRET = 'leak';
+    try {
+      const result = await executor.execute(
+        {
+          command: [
+            'node',
+            '-e',
+            'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(d, process.env.SANDBOX_E2E_HOST_SECRET ?? "hidden"))',
+          ],
+          stdin: 'piped',
+        },
+        { type: 'native' }
+      );
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.stdout.trim()).toBe('piped hidden');
+      }
+    } finally {
+      delete process.env.SANDBOX_E2E_HOST_SECRET;
+    }
+  });
+});
+
+describe('Sandbox: WASM execution', () => {
+  let dir: string;
+  let modulePath: string;
+  let manager: SandboxManager;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'cogitator-e2e-wasm-'));
+    modulePath = join(dir, 'echo.wasm');
+    await writeFile(modulePath, buildExtismTestModule());
+    manager = new SandboxManager();
+  });
+
+  afterAll(async () => {
+    await manager.shutdown();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('runs a local WASM module through SandboxManager', async () => {
+    expect(await manager.isWasmAvailable()).toBe(true);
+
+    const result = await manager.execute(
+      { command: [], stdin: 'hello from wasm' },
+      { type: 'wasm', wasmModule: modulePath, wasmFunction: 'echo' }
+    );
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.stdout).toBe('hello from wasm');
+    }
+  });
+
+  it('terminates a runaway WASM module on timeout', async () => {
+    const result = await manager.execute(
+      { command: [], stdin: 'x', timeout: 500 },
+      { type: 'wasm', wasmModule: modulePath, wasmFunction: 'spin' }
+    );
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.timedOut).toBe(true);
     }
   });
 });
@@ -128,16 +224,13 @@ describe('Sandbox: SandboxManager', () => {
 });
 
 describeDocker('Sandbox: Docker Executor', () => {
-  let manager: SandboxManager;
+  const manager = new SandboxManager();
 
   afterAll(async () => {
-    if (manager) await manager.shutdown();
+    await manager.shutdown();
   });
 
   it('DockerSandboxExecutor runs simple command', async () => {
-    manager = new SandboxManager();
-    await manager.initialize();
-
     const dockerAvailable = await manager.isDockerAvailable();
     if (!dockerAvailable) return;
 
@@ -148,6 +241,65 @@ describeDocker('Sandbox: Docker Executor', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.stdout).toContain('docker-hello');
+    }
+  });
+
+  it('DockerSandboxExecutor streams large output split across frames', async () => {
+    if (!(await manager.isDockerAvailable())) return;
+
+    const result = await manager.execute(
+      { command: ['sh', '-c', 'i=0; while [ $i -lt 2000 ]; do echo line-$i; i=$((i+1)); done'] },
+      { type: 'docker', image: 'alpine:3.19' }
+    );
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const lines = result.data.stdout.trim().split('\n');
+      expect(lines).toHaveLength(2000);
+      expect(lines[1999]).toBe('line-1999');
+    }
+  });
+
+  it('DockerSandboxExecutor pipes stdin and isolates the network by default', async () => {
+    if (!(await manager.isDockerAvailable())) return;
+
+    const stdinResult = await manager.execute(
+      { command: ['cat'], stdin: 'docker-stdin' },
+      { type: 'docker', image: 'alpine:3.19' }
+    );
+    expect(stdinResult.success).toBe(true);
+    if (stdinResult.success) {
+      expect(stdinResult.data.stdout).toBe('docker-stdin');
+    }
+
+    const networkResult = await manager.execute(
+      {
+        command: [
+          'sh',
+          '-c',
+          'wget -q -T 2 -O - http://example.com >/dev/null && echo online || echo offline',
+        ],
+      },
+      { type: 'docker', image: 'alpine:3.19' }
+    );
+    expect(networkResult.success).toBe(true);
+    if (networkResult.success) {
+      expect(networkResult.data.stdout.trim()).toBe('offline');
+    }
+  });
+
+  it('DockerSandboxExecutor kills commands that exceed the timeout', async () => {
+    if (!(await manager.isDockerAvailable())) return;
+
+    const result = await manager.execute(
+      { command: ['sleep', '30'], timeout: 1000 },
+      { type: 'docker', image: 'alpine:3.19' }
+    );
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.timedOut).toBe(true);
+      expect(result.data.exitCode).toBe(124);
     }
   });
 });

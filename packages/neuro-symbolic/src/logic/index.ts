@@ -27,7 +27,13 @@ export {
 
 export { KnowledgeBase, createKnowledgeBase, type KnowledgeBaseOptions } from './knowledge-base';
 
-export { isBuiltin, executeBuiltin, getBuiltinList, type BuiltinResult } from './builtins';
+export {
+  isBuiltin,
+  isControlConstruct,
+  executeBuiltin,
+  getBuiltinList,
+  type BuiltinResult,
+} from './builtins';
 
 export { SLDResolver, createResolver, queryKnowledgeBase, formatSolutions } from './resolver';
 

@@ -13,6 +13,7 @@ import type {
 import { BaseSandboxExecutor } from './base';
 import { ContainerPool } from '../pool/container-pool';
 import { parseMemory } from '../utils/parse-resources';
+import { OutputCollector } from '../utils/output-collector';
 import type { Docker, DockerExec, DockerStream } from '../docker-types';
 
 export interface DockerExecutorOptions {
@@ -38,12 +39,14 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
   async connect(): Promise<SandboxResult<void>> {
     try {
       const Dockerode = (await import('dockerode')).default;
+      const connection = this.options.docker ?? {};
+      const dockerOptions = connection.socketPath
+        ? { socketPath: connection.socketPath }
+        : connection.host
+          ? { host: connection.host, port: connection.port }
+          : undefined;
 
-      this.docker = new Dockerode({
-        socketPath: this.options.docker?.socketPath ?? '/var/run/docker.sock',
-        host: this.options.docker?.host,
-        port: this.options.docker?.port,
-      }) as unknown as Docker;
+      this.docker = new Dockerode(dockerOptions) as unknown as Docker;
 
       await this.docker.ping();
 
@@ -91,19 +94,40 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
       return this.failure('Command array is empty');
     }
 
+    if (config.network?.allowedHosts?.length) {
+      return this.failure(
+        'network.allowedHosts is not supported by the Docker executor; use network.mode instead'
+      );
+    }
+
     const startTime = Date.now();
     const timeout = request.timeout ?? config.timeout ?? DEFAULT_TIMEOUT;
     const image = config.image ?? DEFAULT_IMAGE;
+
+    let memory: number | undefined;
+    try {
+      memory = config.resources?.memory ? parseMemory(config.resources.memory) : undefined;
+    } catch (error) {
+      return this.failure(error instanceof Error ? error.message : String(error));
+    }
+    if (memory !== undefined && memory <= 0) {
+      return this.failure(`Memory limit must be positive: ${config.resources?.memory}`);
+    }
+    const cpus = config.resources?.cpus;
+    if (cpus !== undefined && (!Number.isFinite(cpus) || cpus <= 0)) {
+      return this.failure(`CPU limit must be a positive number: ${cpus}`);
+    }
 
     let containerCorrupted = true;
 
     try {
       const container = await this.pool.acquire(image, {
-        memory: config.resources?.memory ? parseMemory(config.resources.memory) : undefined,
-        cpus: config.resources?.cpus,
+        memory,
+        cpus,
         cpuShares: config.resources?.cpuShares,
         pidsLimit: config.resources?.pidsLimit,
         networkMode: config.network?.mode ?? 'none',
+        dns: config.network?.dns,
         mounts: config.mounts,
         user: config.user,
       });
@@ -149,8 +173,12 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
     timedOut: boolean;
     containerCorrupted: boolean;
   }> {
-    let stdout = '';
-    let stderr = '';
+    const stdout = new OutputCollector(MAX_OUTPUT_SIZE);
+    const stderr = new OutputCollector(MAX_OUTPUT_SIZE);
+    const demuxer = new DockerStreamDemuxer(
+      (data) => stdout.push(data),
+      (data) => stderr.push(data)
+    );
     let stream: DockerStream | null = null;
 
     const executionPromise = (async () => {
@@ -158,39 +186,24 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
         hijack: true,
         stdin: !!stdin,
       });
+      const active = stream;
 
-      stream.on('data', (chunk: Buffer) => {
-        let offset = 0;
-        while (offset < chunk.length) {
-          if (offset + 8 > chunk.length) break;
-
-          const type = chunk[offset];
-          const size =
-            (chunk[offset + 4] << 24) |
-            (chunk[offset + 5] << 16) |
-            (chunk[offset + 6] << 8) |
-            chunk[offset + 7];
-
-          if (offset + 8 + size > chunk.length) break;
-
-          const data = chunk.slice(offset + 8, offset + 8 + size).toString('utf-8');
-
-          if (type === 1) {
-            stdout += data;
-          } else if (type === 2) {
-            stderr += data;
-          }
-
-          offset += 8 + size;
-        }
+      const finished = new Promise<void>((resolve, reject) => {
+        active.on('end', () => resolve());
+        active.on('close', () => resolve());
+        active.on('error', (error: unknown) =>
+          reject(error instanceof Error ? error : new Error(String(error)))
+        );
       });
 
+      active.on('data', (chunk: Buffer) => demuxer.push(chunk));
+
       if (stdin) {
-        stream.write(stdin);
-        stream.end();
+        active.write(stdin);
+        active.end();
       }
 
-      await new Promise<void>((res) => stream!.on('end', res));
+      await finished;
       const inspection = await exec.inspect();
       return inspection.ExitCode ?? 1;
     })();
@@ -206,26 +219,55 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
 
     try {
       const exitCode = await Promise.race([executionPromise, timeoutPromise]);
-      if (timer) clearTimeout(timer);
       return {
-        stdout: stdout.slice(0, MAX_OUTPUT_SIZE),
-        stderr: stderr.slice(0, MAX_OUTPUT_SIZE),
+        stdout: stdout.toString(),
+        stderr: stderr.toString(),
         exitCode,
         timedOut: false,
         containerCorrupted: false,
       };
     } catch (error) {
       if (error instanceof Error && error.message === 'TIMEOUT') {
+        executionPromise.catch(() => undefined);
         return {
-          stdout: stdout.slice(0, MAX_OUTPUT_SIZE),
-          stderr: stderr.slice(0, MAX_OUTPUT_SIZE),
+          stdout: stdout.toString(),
+          stderr: stderr.toString(),
           exitCode: 124,
           timedOut: true,
           containerCorrupted: true,
         };
       }
-      if (timer) clearTimeout(timer);
       throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+}
+
+/**
+ * Decodes Docker's multiplexed attach stream, buffering frames split across chunks.
+ */
+export class DockerStreamDemuxer {
+  private buffer: Buffer = Buffer.alloc(0);
+
+  constructor(
+    private readonly onStdout: (data: Buffer) => void,
+    private readonly onStderr: (data: Buffer) => void
+  ) {}
+
+  push(chunk: Buffer): void {
+    this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk]);
+
+    while (this.buffer.length >= 8) {
+      const type = this.buffer[0];
+      const size = this.buffer.readUInt32BE(4);
+      if (this.buffer.length < 8 + size) break;
+
+      const payload = this.buffer.subarray(8, 8 + size);
+      if (type === 1) this.onStdout(payload);
+      else if (type === 2) this.onStderr(payload);
+
+      this.buffer = this.buffer.subarray(8 + size);
     }
   }
 }

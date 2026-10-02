@@ -6,29 +6,21 @@ export function createToolRoutes(): Router<CogitatorState> {
 
   router.get('/tools', (ctx) => {
     const { agents } = ctx.state.cogitator;
-    const toolsSet = new Map<string, { name: string; description?: string; parameters: unknown }>();
+    const tools = new Map<string, ToolListResponse['tools'][number]>();
 
     for (const agent of Object.values(agents)) {
-      const tools = agent.config.tools || [];
-      for (const tool of tools) {
-        if (!toolsSet.has(tool.name)) {
-          toolsSet.set(tool.name, {
-            name: tool.name,
-            description: tool.description,
-            parameters: tool.parameters,
-          });
-        }
+      for (const tool of agent.config.tools ?? []) {
+        if (tools.has(tool.name)) continue;
+        const schema = tool.toJSON();
+        tools.set(tool.name, {
+          name: schema.name,
+          description: schema.description,
+          parameters: schema.parameters,
+        });
       }
     }
 
-    const response: ToolListResponse = {
-      tools: Array.from(toolsSet.values()).map((t) => ({
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters as Record<string, unknown>,
-      })),
-    };
-
+    const response: ToolListResponse = { tools: Array.from(tools.values()) };
     ctx.body = response;
   });
 

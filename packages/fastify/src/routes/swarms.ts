@@ -7,18 +7,31 @@ import type {
 } from '../types.js';
 import { SwarmRunRequestSchema } from '../types.js';
 import { FastifyStreamWriter, generateId } from '../streaming/index.js';
+import type { RunResult, SwarmMessage, SwarmEvent } from '@cogitator-ai/types';
 import {
-  CogitatorError,
-  type RunResult,
-  type SwarmMessage,
-  type SwarmEvent,
-} from '@cogitator-ai/types';
+  isModuleNotFound,
+  onClientDisconnect,
+  resolveError,
+  sendError,
+  sendRouteError,
+} from './utils.js';
 
 interface SwarmParams {
   name: string;
 }
 
+const paramsSchema = {
+  type: 'object',
+  properties: { name: { type: 'string' } },
+  required: ['name'],
+} as const;
+
+const SWARMS_MISSING = 'Swarms package not installed';
+
 export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
+  const findSwarm = (name: string) =>
+    Object.hasOwn(fastify.cogitator.swarms, name) ? fastify.cogitator.swarms[name] : undefined;
+
   fastify.get('/swarms', async () => {
     const swarmList = Object.entries(fastify.cogitator.swarms).map(([name, config]) => {
       const agents: string[] = [];
@@ -40,31 +53,27 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post<{ Params: SwarmParams; Body: SwarmRunRequest }>(
     '/swarms/:name/run',
-    {
-      schema: {
-        params: {
-          type: 'object',
-          properties: { name: { type: 'string' } },
-          required: ['name'],
-        },
-        body: SwarmRunRequestSchema,
-      },
-    },
+    { schema: { params: paramsSchema, body: SwarmRunRequestSchema } },
     async (request, reply) => {
       const { name } = request.params;
-      const swarmConfig = Object.hasOwn(fastify.cogitator.swarms, name)
-        ? fastify.cogitator.swarms[name]
-        : undefined;
+      const swarmConfig = findSwarm(name);
 
       if (!swarmConfig) {
-        return reply.status(404).send({
-          error: { message: `Swarm '${name}' not found`, code: 'NOT_FOUND' },
-        });
+        return sendError(reply, 404, `Swarm '${name}' not found`, 'NOT_FOUND');
       }
+
+      let disconnected = false;
+      let abortSwarm: (() => void) | undefined;
+      onClientDisconnect(reply, () => {
+        disconnected = true;
+        abortSwarm?.();
+      });
 
       try {
         const { Swarm } = await import('@cogitator-ai/swarms');
         const swarm = new Swarm(fastify.cogitator.runtime, swarmConfig);
+        abortSwarm = () => swarm.abort();
+        if (disconnected) swarm.abort();
 
         const result = await swarm.run({
           input: request.body.input,
@@ -97,57 +106,41 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
 
         return response;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
-          return reply.status(501).send({
-            error: { message: 'Swarms package not installed', code: 'UNIMPLEMENTED' },
-          });
+        if (isModuleNotFound(error)) {
+          return sendError(reply, 501, SWARMS_MISSING, 'UNIMPLEMENTED');
         }
-
-        if (CogitatorError.isCogitatorError(error)) {
-          return reply.status(500).send({ error: { message: error.message, code: error.code } });
-        }
-        request.log.error({ err: error }, 'swarm run error');
-        return reply
-          .status(500)
-          .send({ error: { message: 'Internal server error', code: 'INTERNAL' } });
+        return sendRouteError(request, reply, error, 'swarm run error');
       }
     }
   );
 
   fastify.post<{ Params: SwarmParams; Body: SwarmRunRequest }>(
     '/swarms/:name/stream',
-    {
-      schema: {
-        params: {
-          type: 'object',
-          properties: { name: { type: 'string' } },
-          required: ['name'],
-        },
-        body: SwarmRunRequestSchema,
-      },
-    },
+    { schema: { params: paramsSchema, body: SwarmRunRequestSchema } },
     async (request, reply) => {
       const { name } = request.params;
-      const swarmConfig = Object.hasOwn(fastify.cogitator.swarms, name)
-        ? fastify.cogitator.swarms[name]
-        : undefined;
+      const swarmConfig = findSwarm(name);
 
       if (!swarmConfig) {
-        return reply.status(404).send({
-          error: { message: `Swarm '${name}' not found`, code: 'NOT_FOUND' },
-        });
+        return sendError(reply, 404, `Swarm '${name}' not found`, 'NOT_FOUND');
       }
 
       const writer = new FastifyStreamWriter(reply);
       const messageId = generateId('swarm');
 
-      request.raw.on('close', () => {
+      let disconnected = false;
+      let abortSwarm: (() => void) | undefined;
+      onClientDisconnect(reply, () => {
+        disconnected = true;
+        abortSwarm?.();
         writer.close();
       });
 
       try {
         const { Swarm } = await import('@cogitator-ai/swarms');
         const swarm = new Swarm(fastify.cogitator.runtime, swarmConfig);
+        abortSwarm = () => swarm.abort();
+        if (disconnected) swarm.abort();
 
         writer.start(messageId);
 
@@ -181,52 +174,43 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
         writer.swarmEvent('swarm_completed', {
           swarmId: swarm.id,
           output: result.output,
-          usage: resourceUsage,
+          usage: {
+            totalTokens: resourceUsage.totalTokens,
+            totalCost: resourceUsage.totalCost,
+            elapsedTime: resourceUsage.elapsedTime,
+          },
         });
 
         writer.finish(messageId);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
-          writer.error('Swarms package not installed', 'UNIMPLEMENTED');
-        } else if (CogitatorError.isCogitatorError(error)) {
-          writer.error(error.message, error.code);
-        } else {
-          request.log.error({ err: error }, 'swarm stream error');
-          writer.error('Internal server error', 'INTERNAL');
+        if (isModuleNotFound(error)) {
+          return sendError(reply, 501, SWARMS_MISSING, 'UNIMPLEMENTED');
+        }
+        if (!disconnected) {
+          const resolved = resolveError(request, error, 'swarm stream error');
+          writer.error(resolved.message, resolved.code);
         }
       } finally {
         writer.close();
       }
+
+      return reply;
     }
   );
 
   fastify.get<{ Params: SwarmParams }>(
     '/swarms/:name/blackboard',
-    {
-      schema: {
-        params: {
-          type: 'object',
-          properties: { name: { type: 'string' } },
-          required: ['name'],
-        },
-      },
-    },
+    { schema: { params: paramsSchema } },
     async (request, reply) => {
       const { name } = request.params;
-      const swarmConfig = Object.hasOwn(fastify.cogitator.swarms, name)
-        ? fastify.cogitator.swarms[name]
-        : undefined;
+      const swarmConfig = findSwarm(name);
 
       if (!swarmConfig) {
-        return reply.status(404).send({
-          error: { message: `Swarm '${name}' not found`, code: 'NOT_FOUND' },
-        });
+        return sendError(reply, 404, `Swarm '${name}' not found`, 'NOT_FOUND');
       }
 
       if (!swarmConfig.blackboard?.enabled) {
-        return reply.status(400).send({
-          error: { message: 'Blackboard not enabled for this swarm', code: 'INVALID_INPUT' },
-        });
+        return sendError(reply, 400, 'Blackboard not enabled for this swarm', 'INVALID_INPUT');
       }
 
       const response: BlackboardResponse = {

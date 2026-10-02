@@ -112,9 +112,13 @@ export class FileCheckpointStore implements CheckpointStore {
 
   async delete(id: string): Promise<void> {
     try {
-      const filePath = this.getFilePath(id);
-      await fs.unlink(filePath);
-    } catch {}
+      await fs.unlink(this.getFilePath(id));
+    } catch (e: unknown) {
+      if (e instanceof Error && 'code' in e && (e as NodeJS.ErrnoException).code === 'ENOENT') {
+        return;
+      }
+      throw e;
+    }
   }
 }
 

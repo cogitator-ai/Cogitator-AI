@@ -666,4 +666,109 @@ describe('OllamaBackend', () => {
       }).rejects.toThrow(/No response body/);
     });
   });
+
+  describe('audit regressions', () => {
+    function streamOf(lines: object[]) {
+      const encoder = new TextEncoder();
+      let index = 0;
+      return {
+        ok: true,
+        body: {
+          getReader: () => ({
+            read: async () =>
+              index < lines.length
+                ? { done: false, value: encoder.encode(JSON.stringify(lines[index++]) + '\n') }
+                : { done: true, value: undefined },
+          }),
+        },
+      };
+    }
+
+    it('reports tool_calls when tool calls arrive before the final chunk', async () => {
+      mockFetch.mockResolvedValueOnce(
+        streamOf([
+          {
+            model: 'm',
+            message: {
+              role: 'assistant',
+              content: '',
+              tool_calls: [{ function: { name: 'now', arguments: {} } }],
+            },
+            done: false,
+          },
+          { model: 'm', message: { role: 'assistant', content: '' }, done: true },
+        ])
+      );
+
+      const finishReasons: string[] = [];
+      for await (const chunk of backend.chatStream({
+        model: 'm',
+        messages: [{ role: 'user', content: 'time?' }],
+      })) {
+        if (chunk.finishReason) finishReasons.push(chunk.finishReason);
+      }
+
+      expect(finishReasons).toEqual(['tool_calls']);
+    });
+
+    it('surfaces error lines from the stream as LLM errors', async () => {
+      mockFetch.mockResolvedValueOnce(
+        streamOf([
+          { model: 'm', message: { role: 'assistant', content: 'Hi' }, done: false },
+          { error: 'model runner has unexpectedly stopped' },
+        ])
+      );
+
+      const consume = async () => {
+        for await (const _ of backend.chatStream({
+          model: 'm',
+          messages: [{ role: 'user', content: 'x' }],
+        })) {
+          /* consume stream */
+        }
+      };
+
+      await expect(consume()).rejects.toThrow('model runner has unexpectedly stopped');
+    });
+
+    it('surfaces error payloads from non-streaming chat', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ error: 'model not found' }),
+      });
+
+      await expect(
+        backend.chat({ model: 'm', messages: [{ role: 'user', content: 'x' }] })
+      ).rejects.toThrow('model not found');
+    });
+
+    it('sends tool_name with tool result messages', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          model: 'm',
+          message: { role: 'assistant', content: 'done' },
+          done: true,
+        }),
+      });
+
+      await backend.chat({
+        model: 'm',
+        messages: [
+          { role: 'user', content: 'time?' },
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [{ id: 'c1', name: 'now', arguments: {} }],
+          } as never,
+          { role: 'tool', content: '"12:00"', toolCallId: 'c1', name: 'now' },
+        ],
+      });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string) as {
+        messages: Array<{ role: string; tool_name?: string }>;
+      };
+      expect(body.messages[2]).toMatchObject({ role: 'tool', tool_name: 'now' });
+    });
+  });
 });

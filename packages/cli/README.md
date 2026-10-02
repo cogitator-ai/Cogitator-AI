@@ -1,6 +1,6 @@
 # @cogitator-ai/cli
 
-Command-line interface for the Cogitator AI agent runtime. Scaffold projects, manage Docker services, and run agents from the terminal.
+Command-line interface for the Cogitator AI agent runtime. Scaffold assistant projects, run them in the foreground or as a background service, chat with agents from the terminal, manage Ollama models and Docker services, and deploy.
 
 ## Installation
 
@@ -12,83 +12,111 @@ pnpm add -g @cogitator-ai/cli
 npx @cogitator-ai/cli <command>
 ```
 
-## Features
-
-- **Project Scaffolding** - Create new Cogitator projects with sensible defaults
-- **Docker Services** - Start/stop Redis, PostgreSQL, and Ollama with one command
-- **Agent Runner** - Run agents from the command line with streaming output
-- **Interactive Mode** - Chat with agents in a REPL environment
-- **Model Management** - List and pull Ollama models
-- **Service Status** - Monitor running Docker services
-- **Log Viewer** - View logs from all services
-
----
+Requires Node.js 20+.
 
 ## Quick Start
 
+There are two ways to build an assistant:
+
 ```bash
-# Create a new project
-cogitator init my-project
-cd my-project
+# A) Config-driven personal assistant (no code)
+cogitator wizard        # answers → cogitator.yml + .env
+cogitator up            # run it
 
-# Start Docker services (Redis, Postgres, Ollama)
-cogitator up
+# B) Code-first project
+cogitator init my-assistant
+cd my-assistant
+pnpm dev                # or: cogitator assistant
+```
 
-# Run the example agent
-pnpm dev
+Quick one-off chat with any model:
 
-# Or run a quick chat
-cogitator run "What is the capital of France?"
+```bash
+cogitator run -m ollama/llama3.1:8b "What is the capital of France?"
 ```
 
 ---
 
 ## Commands
 
-### cogitator init
+| Command                  | Description                                                            |
+| ------------------------ | ---------------------------------------------------------------------- |
+| `cogitator init [name]`  | Scaffold a code-first assistant project                                |
+| `cogitator wizard`       | Interactive setup that writes `cogitator.yml` + `.env`                 |
+| `cogitator up`           | Run the assistant from `cogitator.yml`, or start Docker services       |
+| `cogitator down`         | Stop Docker Compose services                                           |
+| `cogitator assistant`    | Run a gateway module (`src/gateway.ts`) with a live dashboard          |
+| `cogitator run [msg]`    | Chat with an agent (one-shot or interactive REPL)                      |
+| `cogitator build`        | Bundle a gateway into a self-starting `dist/cogitator.mjs`             |
+| `cogitator daemon <cmd>` | Run in the background / install as a launchd or systemd service        |
+| `cogitator skill <cmd>`  | Create, validate, install and remove skills                            |
+| `cogitator models`       | List or pull Ollama models                                             |
+| `cogitator status`       | Show Docker Compose and Ollama status (alias: `ps`)                    |
+| `cogitator logs`         | View Docker Compose service logs                                       |
+| `cogitator deploy`       | Deploy with Docker or Fly.io (see [`@cogitator-ai/deploy`](../deploy)) |
 
-Create a new Cogitator project with all necessary files.
-
-```bash
-cogitator init <name> [options]
-```
-
-| Option         | Description                            |
-| -------------- | -------------------------------------- |
-| `--no-install` | Skip automatic dependency installation |
-
-**Generated Project Structure:**
-
-```
-my-project/
-├── package.json         # Dependencies and scripts
-├── tsconfig.json        # TypeScript configuration
-├── cogitator.yml        # Cogitator configuration
-├── docker-compose.yml   # Docker services
-├── .gitignore           # Git ignore rules
-└── src/
-    └── agent.ts         # Example agent with tools
-```
-
-**Example:**
-
-```bash
-# Create project and install dependencies
-cogitator init my-ai-app
-
-# Create project without installing
-cogitator init my-ai-app --no-install
-```
+Set `COGITATOR_DEBUG=1` to print stack traces for unexpected errors.
 
 ---
 
-### cogitator up
+### cogitator init
 
-Start Docker services for local development.
+Creates a TypeScript project with a [`Gateway`](../channels) wired to your chosen LLM provider, channels and memory adapter.
 
 ```bash
-cogitator up [options]
+cogitator init my-assistant            # prompts for provider, model, channels, memory
+cogitator init my-assistant --no-install
 ```
+
+The project name must be a valid npm package name (lowercase, `-`, `_`, `.`). The package manager used for installation is detected from how you invoked the CLI (`pnpm`, `npm`, `yarn` or `bun`).
+
+```
+my-assistant/
+├── package.json     # @cogitator-ai/* pinned to the versions this CLI ships with
+├── tsconfig.json
+├── .env             # API keys and channel tokens (mode 0600)
+├── .gitignore
+└── src/
+    ├── gateway.ts   # exports `gateway` — agent, channels, memory adapter
+    └── agent.ts     # starts the gateway (pnpm dev / pnpm start)
+```
+
+| Memory choice | Generated adapter | Extra dependency | Notes                               |
+| ------------- | ----------------- | ---------------- | ----------------------------------- |
+| SQLite        | `SQLiteAdapter`   | `better-sqlite3` | Stored in `./data/memory.db`        |
+| In-memory     | `InMemoryAdapter` | —                | Lost on restart                     |
+| PostgreSQL    | `PostgresAdapter` | `pg`             | Connection string in `DATABASE_URL` |
+
+`src/gateway.ts` loads `.env` itself (`process.loadEnvFile`, Node ≥ 20.12), so it works with `pnpm dev`, `cogitator assistant`, `cogitator build` and the daemon alike.
+
+---
+
+### cogitator wizard
+
+Interactive setup for the config-driven personal assistant run by `cogitator up`.
+
+```bash
+cogitator wizard          # create cogitator.yml (+ .env)
+cogitator wizard --edit   # edit an existing cogitator.yml, pre-filling current values
+```
+
+The wizard asks for the LLM provider and model (models are fetched live from the provider registry or your Ollama server), channels (Telegram, Discord, Slack with owner IDs), capabilities (web search, file system, GitHub, device tools, browser, scheduler, RAG, self-config, self-tools), MCP servers (quoted arguments are supported) and the SQLite memory path.
+
+Secrets are merged into `.env` without touching your other variables or comments. In `--edit` mode, leaving a secret blank keeps the current value, and existing MCP servers and advanced settings (security, rate limits, …) are preserved.
+
+---
+
+### cogitator up / down
+
+```bash
+cogitator up                       # ./cogitator.yml (or .yaml) → run the assistant
+cogitator up -c path/to/assistant.yml
+cogitator up --no-restart-loop     # do not supervise self-config restarts
+```
+
+When a `cogitator.yml` exists, `up` validates it (errors list the offending fields), loads `.env` from the config's directory (existing environment variables win) and starts the assistant. With the `selfConfig` capability enabled, `up` supervises the assistant and restarts it whenever the agent rewrites its own config; `SIGINT`/`SIGTERM` are forwarded for a graceful shutdown.
+
+Without an assistant config, `up` manages the Docker Compose project found in the current or a parent directory (`docker-compose.yml`, `compose.yml`, …):
 
 | Option         | Default | Description                        |
 | -------------- | ------- | ---------------------------------- |
@@ -96,551 +124,172 @@ cogitator up [options]
 | `--no-detach`  | -       | Run services in foreground         |
 | `--pull`       | `false` | Pull latest images before starting |
 
-**Services Started:**
-
-| Service    | Port  | Description                       |
-| ---------- | ----- | --------------------------------- |
-| Redis      | 6379  | In-memory cache and queue backend |
-| PostgreSQL | 5432  | Vector database with pgvector     |
-| Ollama     | 11434 | Local LLM inference server        |
-
-**Connection Strings:**
-
-```
-Redis:    redis://localhost:6379
-Postgres: postgresql://cogitator:cogitator@localhost:5432/cogitator
-Ollama:   http://localhost:11434
-```
-
-**Examples:**
+After starting, the published ports of every service are printed.
 
 ```bash
-# Start in background (default)
-cogitator up
-
-# Pull latest images and start
-cogitator up --pull
-
-# Run in foreground (see all logs)
-cogitator up --no-detach
+cogitator down             # stop services (keep data)
+cogitator down --volumes   # stop and delete volumes
 ```
 
 ---
 
-### cogitator down
+### cogitator assistant
 
-Stop Docker services.
-
-```bash
-cogitator down [options]
-```
-
-| Option          | Description                       |
-| --------------- | --------------------------------- |
-| `-v, --volumes` | Remove volumes (deletes all data) |
-
-**Examples:**
+Runs a module that exports a `gateway` (as generated by `init`) with a live dashboard.
 
 ```bash
-# Stop services (keep data)
-cogitator down
-
-# Stop services and delete all data
-cogitator down --volumes
+cogitator assistant                    # src/gateway.ts
+cogitator assistant -c src/my-gw.ts
+cogitator assistant --quiet            # no banner, status line or hotkeys (used by the daemon)
 ```
+
+TypeScript modules are loaded through [`tsx`](https://tsx.is), resolved from your project first. `.env` in the working directory is loaded before the module. Hotkeys (interactive terminals only): `s` sessions, `c` channels, `h` help, `q` quit.
 
 ---
 
 ### cogitator run
 
-Run an agent with a message or start interactive mode.
+Run an agent with a message, or start an interactive REPL when no message is given.
 
 ```bash
-cogitator run [message] [options]
-```
-
-| Option                | Default         | Description                             |
-| --------------------- | --------------- | --------------------------------------- |
-| `-c, --config <path>` | `cogitator.yml` | Config file path                        |
-| `-m, --model <model>` | auto-detect     | Model to use (e.g., `ollama/gemma3:4b`) |
-| `-i, --interactive`   | `false`         | Force interactive mode                  |
-| `-s, --stream`        | `true`          | Stream response tokens                  |
-| `--no-stream`         | -               | Disable streaming                       |
-
-**Model Auto-Detection:**
-
-If no model is specified, the CLI will:
-
-1. Check `COGITATOR_MODEL` environment variable
-2. Query Ollama for available models
-3. Select from preferred models: llama3.1:8b, llama3:8b, gemma3:4b, gemma2:9b, mistral:7b
-4. Fall back to first available model
-
-**Examples:**
-
-```bash
-# Single message with auto-detected model
 cogitator run "Explain quantum computing in simple terms"
-
-# Specify a model
-cogitator run -m ollama/gemma3:4b "Write a haiku about AI"
-
-# Use OpenAI
 cogitator run -m openai/gpt-4o "Analyze this code..."
-
-# Disable streaming
 cogitator run --no-stream "Hello"
-
-# Interactive mode (starts automatically if no message)
-cogitator run
-cogitator run -i
+cogitator run            # interactive
 ```
+
+| Option                | Default     | Description                         |
+| --------------------- | ----------- | ----------------------------------- |
+| `-c, --config <path>` | auto        | Config file (must exist when given) |
+| `-m, --model <model>` | auto-detect | Model, e.g. `ollama/gemma3:4b`      |
+| `-i, --interactive`   | `false`     | Force interactive mode              |
+| `-s, --stream`        | `true`      | Stream response tokens              |
+| `--no-stream`         | -           | Disable streaming                   |
+
+**Config resolution:** `-c` → `COGITATOR_CONFIG` → `cogitator.yml`, `cogitator.yaml`, `cogitator.json`, `.cogitator.yml`, `.cogitator.yaml`. The file is loaded with [`@cogitator-ai/config`](../config), so `${ENV}` references and `COGITATOR_*` / provider environment variables apply even without a file.
+
+**Model resolution:** `-m` → `COGITATOR_MODEL` → `llm.defaultModel` from the config → first installed Ollama model (preferring llama3.1:8b, llama3:8b, gemma3:4b, gemma2:9b, mistral:7b). Ollama is reached at `llm.providers.ollama.baseUrl`, `OLLAMA_URL` or `OLLAMA_HOST`.
+
+Interactive commands: `/model [name]`, `/clear`, `/help`, `exit` / `quit` (Ctrl+D also exits).
 
 ---
 
-### Interactive Mode
+### cogitator build
 
-When running without a message or with `-i`, you enter interactive mode:
+Bundles a gateway module with [esbuild](https://esbuild.github.io) into a single self-starting ES module. The bundle starts the exported `gateway` and stops it gracefully on `SIGINT`/`SIGTERM`.
 
-```
-   ___            _ _        _
-  / __\___   __ _(_) |_ __ _| |_ ___  _ __
- / /  / _ \ / _` | | __/ _` | __/ _ \| '__|
-/ /__| (_) | (_| | | || (_| | || (_) | |
-\____/\___/ \__, |_|\__\__,_|\__\___/|_|
-            |___/
-
-  AI Agent Runtime v0.1.0
-
-Model: llama3.1:8b
-Commands: /model <name>, /clear, /help, exit
-
-> Hello!
-→ Hi there! How can I help you today?
-
-[1] > What's 2 + 2?
-→ 2 + 2 equals 4.
-
-[2] >
+```bash
+pnpm add -D esbuild
+cogitator build                     # src/gateway.ts → dist/cogitator.mjs
+cogitator build -c src/gw.ts -o out/bot.mjs --minify --no-sourcemap
+node dist/cogitator.mjs
 ```
 
-**Interactive Commands:**
+| Option                 | Default              |
+| ---------------------- | -------------------- |
+| `-c, --config <path>`  | `src/gateway.ts`     |
+| `-o, --outfile <path>` | `dist/cogitator.mjs` |
+| `--target <version>`   | `node20`             |
+| `--sourcemap`          | `true`               |
+| `--minify`             | `false`              |
 
-| Command          | Description                               |
-| ---------------- | ----------------------------------------- |
-| `/model [name]`  | Show current model or switch to a new one |
-| `/clear`         | Clear conversation history (start fresh)  |
-| `/help`          | Show available commands                   |
-| `exit` or `quit` | Exit interactive mode                     |
-
-**Examples:**
-
-```
-> /model
-Current model: ollama/llama3.1:8b
-
-> /model gemma3:4b
-✓ Switched to model: ollama/gemma3:4b
-
-> /clear
-Conversation cleared
-
-> exit
-Goodbye!
-```
+Native and optional channel dependencies (`better-sqlite3`, `pg`, `grammy`, `discord.js`, `@slack/bolt`, `playwright`, …) stay external.
 
 ---
 
-### cogitator status
+### cogitator daemon
 
-Show status of all Cogitator services.
+Runs your assistant in the background. The entry is auto-detected in this order: `dist/cogitator.mjs` (from `cogitator build`), `cogitator.yml` / `cogitator.yaml` (via `cogitator up`), `src/gateway.ts` (via `cogitator assistant --quiet`). Use `-c` to choose explicitly.
 
 ```bash
-cogitator status
-# or
-cogitator ps
+cogitator daemon start [-c <entry>]
+cogitator daemon status          # PID, uptime, memory
+cogitator daemon logs -f -n 100  # .cogitator/daemon.log
+cogitator daemon restart
+cogitator daemon stop            # SIGTERM, then SIGKILL after 10s
+
+cogitator daemon install [-c <entry>]   # launchd (macOS) or systemd --user (Linux)
+cogitator daemon uninstall
 ```
 
-**Output Example:**
-
-```
-ℹ Cogitator Services Status
-
-  Docker Compose Services:
-
-  ● my-project-redis-1      running  Up 2 minutes
-  ● my-project-postgres-1   running  Up 2 minutes
-  ● my-project-ollama-1     running  Up 2 minutes
-
-  External Services:
-
-  ● Ollama               running  localhost:11434
-```
+The PID file (`.cogitator/daemon.pid`) records the launched script, so `stop` never signals an unrelated process that reused the PID. Service definitions use absolute paths, the current `PATH`, and start on login (`loginctl enable-linger` keeps a systemd user service running after logout).
 
 ---
 
-### cogitator logs
-
-View logs from Docker services.
+### cogitator skill
 
 ```bash
-cogitator logs [service] [options]
+cogitator skill create weather-api --template api   # basic | device | api
+cogitator skill validate skills/weather-api
+cogitator skill list
+cogitator skill add ./path/to/skill [--global]
+cogitator skill remove weather-api [--global]
 ```
 
-| Option               | Default | Description                        |
-| -------------------- | ------- | ---------------------------------- |
-| `-f, --follow`       | `false` | Follow log output (like `tail -f`) |
-| `-n, --tail <lines>` | `100`   | Number of lines to show            |
-| `-t, --timestamps`   | `false` | Show timestamps                    |
-
-**Available Services:**
-
-- `redis` - Redis cache/queue logs
-- `postgres` - PostgreSQL database logs
-- `ollama` - Ollama LLM server logs
-
-**Examples:**
-
-```bash
-# View last 100 lines from all services
-cogitator logs
-
-# Follow logs in real-time
-cogitator logs -f
-
-# View only Ollama logs
-cogitator logs ollama
-
-# Follow Ollama logs with timestamps
-cogitator logs ollama -f -t
-
-# Show last 50 lines
-cogitator logs -n 50
-```
+Local skills live in `./skills`, global ones in `~/.cogitator/skills`. Skill names must be kebab-case. `validate` loads `skill.ts`/`skill.js`/`skill.mjs`, checks the `defineSkill` shape and every tool, required environment variables (`env`) and that `dependencies` resolve from the skill's location; it exits non-zero on problems.
 
 ---
 
 ### cogitator models
 
-List and manage Ollama models.
+```bash
+cogitator models                       # list installed models
+cogitator models --pull qwen2.5:0.5b   # pull with progress
+cogitator models --url http://gpu-box:11434
+```
+
+The Ollama URL defaults to `OLLAMA_URL`, then `OLLAMA_HOST`, then `http://localhost:11434`; `OLLAMA_API_KEY` is sent as a bearer token. Pull errors reported by Ollama (e.g. unknown model) fail the command.
+
+---
+
+### cogitator status / logs
 
 ```bash
-cogitator models [options]
+cogitator status          # compose services (state, health) + Ollama reachability
+cogitator logs ollama -f -t -n 50
+cogitator logs -n all
 ```
 
-| Option           | Description                       |
-| ---------------- | --------------------------------- |
-| `--pull <model>` | Pull a model from Ollama registry |
-
-**Output Example:**
-
-```
-✓ Found 3 model(s)
-
-  llama3.1:8b               4.7 GB  2 days ago
-  gemma3:4b                 2.8 GB  1 week ago
-  mistral:7b                4.1 GB  3 weeks ago
-
-Use with: cogitator run -m ollama/<model> "message"
-```
-
-**Examples:**
-
-```bash
-# List installed models
-cogitator models
-
-# Pull a new model
-cogitator models --pull llama3.1:8b
-cogitator models --pull gemma3:4b
-cogitator models --pull mistral:7b
-```
+`status` still reports Ollama when Docker is not running.
 
 ---
 
 ### cogitator deploy
 
-Deploy your Cogitator project to various targets.
-
 ```bash
-cogitator deploy [action] [options]
-```
-
-**Actions:**
-
-| Action    | Description                         |
-| --------- | ----------------------------------- |
-| _(none)_  | Deploy to target (shows plan first) |
-| `status`  | Check deployment status             |
-| `destroy` | Tear down deployment                |
-
-**Options:**
-
-| Option                  | Description                                             |
-| ----------------------- | ------------------------------------------------------- |
-| `-t, --target <target>` | Deploy target: `docker`, `fly`, `railway`, `k8s`, `ssh` |
-| `-c, --config <path>`   | Config file path                                        |
-| `--registry <url>`      | Container registry URL                                  |
-| `--no-push`             | Skip pushing image to registry                          |
-| `--dry-run`             | Show deploy plan without executing                      |
-| `--region <region>`     | Deploy region                                           |
-
-**Examples:**
-
-```bash
-# Deploy with dry-run preview
-cogitator deploy --dry-run
-
-# Deploy to Fly.io
+cogitator deploy --dry-run          # analyze + preflight only
+cogitator deploy                    # docker: build image, start compose stack
 cogitator deploy --target fly --region ord
-
-# Check deployment status
+cogitator deploy --registry ghcr.io/acme   # build + push (use --no-push to skip)
 cogitator deploy status
-
-# Tear down deployment
 cogitator deploy destroy
 ```
 
----
+| Option                  | Description                              |
+| ----------------------- | ---------------------------------------- |
+| `-t, --target <target>` | `docker` (default) or `fly`              |
+| `-c, --config <path>`   | Config file with a `deploy:` section     |
+| `--registry <url>`      | Container registry to push to            |
+| `--no-push`             | Skip pushing even when a registry is set |
+| `--dry-run`             | Show the plan without executing          |
+| `--region <region>`     | Deploy region (Fly.io)                   |
 
-## Configuration
-
-### cogitator.yml
-
-The main configuration file for your Cogitator project:
-
-```yaml
-# cogitator.yml
-
-llm:
-  defaultProvider: ollama
-  providers:
-    ollama:
-      baseUrl: http://localhost:11434
-    openai:
-      apiKey: ${OPENAI_API_KEY}
-
-memory:
-  adapter: memory
-  # Or use Redis:
-  # adapter: redis
-  # redis:
-  #   url: redis://localhost:6379
-```
-
-### Environment Variables
-
-| Variable            | Description                                    |
-| ------------------- | ---------------------------------------------- |
-| `COGITATOR_CONFIG`  | Path to config file (overrides auto-detection) |
-| `COGITATOR_MODEL`   | Default model to use                           |
-| `OPENAI_API_KEY`    | OpenAI API key                                 |
-| `ANTHROPIC_API_KEY` | Anthropic API key                              |
-
-**Example .env:**
-
-```bash
-COGITATOR_MODEL=ollama/llama3.1:8b
-OPENAI_API_KEY=sk-...
-```
+The plan lists detected services, required secrets (read from the environment or the project's `.env`), warnings and preflight checks. See [`@cogitator-ai/deploy`](../deploy) for details.
 
 ---
 
-## Project Templates
+## Environment Variables
 
-### Basic Agent (Generated by `init`)
+| Variable                                                | Used by                   | Description                         |
+| ------------------------------------------------------- | ------------------------- | ----------------------------------- |
+| `COGITATOR_CONFIG`                                      | `run`                     | Config file path                    |
+| `COGITATOR_MODEL`                                       | `run`                     | Default model                       |
+| `OLLAMA_URL` / `OLLAMA_HOST`                            | `run`, `models`, `status` | Ollama endpoint                     |
+| `OLLAMA_API_KEY`                                        | `run`, `models`, `wizard` | Ollama Cloud / authenticated Ollama |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | `run`, `init`, `wizard`   | Provider keys                       |
+| `COGITATOR_DEBUG`                                       | all                       | Print stack traces                  |
 
-```typescript
-// src/agent.ts
-import { Cogitator, Agent, tool } from '@cogitator-ai/core';
-import { z } from 'zod';
-
-const greet = tool({
-  name: 'greet',
-  description: 'Greet someone by name',
-  parameters: z.object({
-    name: z.string().describe('Name to greet'),
-  }),
-  execute: async ({ name }) => `Hello, ${name}! 👋`,
-});
-
-const agent = new Agent({
-  id: 'my-agent',
-  name: 'My Agent',
-  model: 'ollama/llama3.1:8b',
-  instructions: 'You are a helpful assistant. Use the greet tool when asked to greet someone.',
-  tools: [greet],
-});
-
-const cog = new Cogitator();
-
-const result = await cog.run(agent, {
-  input: 'Hello! Can you greet Alex?',
-});
-
-console.log('Agent:', result.output);
-
-await cog.close();
-```
-
-### Agent with Multiple Tools
-
-```typescript
-import { Cogitator, Agent, tool } from '@cogitator-ai/core';
-import { z } from 'zod';
-
-const calculator = tool({
-  name: 'calculator',
-  description: 'Perform mathematical calculations',
-  parameters: z.object({
-    expression: z.string().describe('Math expression to evaluate'),
-  }),
-  execute: async ({ expression }) => {
-    const result = Function(`return ${expression}`)();
-    return String(result);
-  },
-});
-
-const datetime = tool({
-  name: 'datetime',
-  description: 'Get current date and time',
-  parameters: z.object({}),
-  execute: async () => new Date().toISOString(),
-});
-
-const agent = new Agent({
-  name: 'Assistant',
-  model: 'ollama/llama3.1:8b',
-  instructions: 'You are a helpful assistant with calculator and datetime tools.',
-  tools: [calculator, datetime],
-});
-
-const cog = new Cogitator();
-const result = await cog.run(agent, {
-  input: 'What is 15 * 23 + 42? Also, what time is it?',
-});
-
-console.log(result.output);
-await cog.close();
-```
-
----
-
-## Docker Compose
-
-The generated `docker-compose.yml`:
-
-```yaml
-name: my-project
-
-services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - '6379:6379'
-    volumes:
-      - redis-data:/data
-
-  postgres:
-    image: pgvector/pgvector:pg16
-    ports:
-      - '5432:5432'
-    environment:
-      POSTGRES_USER: cogitator
-      POSTGRES_PASSWORD: cogitator
-      POSTGRES_DB: cogitator
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - '11434:11434'
-    volumes:
-      - ollama-data:/root/.ollama
-
-volumes:
-  redis-data:
-  postgres-data:
-  ollama-data:
-```
-
----
-
-## Troubleshooting
-
-### Ollama Not Running
-
-```
-✗ Cannot connect to Ollama
-Start Ollama with: ollama serve
-```
-
-**Solutions:**
-
-1. Start Ollama: `ollama serve`
-2. Or use Docker: `cogitator up`
-3. Install Ollama: https://ollama.ai
-
-### No Models Found
-
-```
-⚠ No models installed
-Pull a model with: cogitator models --pull llama3.1:8b
-```
-
-**Solution:**
-
-```bash
-cogitator models --pull llama3.1:8b
-# or
-ollama pull llama3.1:8b
-```
-
-### Docker Not Running
-
-```
-✗ Docker is not installed or not running
-Install Docker: https://docs.docker.com/get-docker/
-```
-
-**Solutions:**
-
-1. Start Docker Desktop
-2. Or: `sudo systemctl start docker`
-
-### Config File Not Found
-
-```
-No config file found
-```
-
-The CLI searches for config in this order:
-
-1. `COGITATOR_CONFIG` environment variable
-2. `-c` option value
-3. `cogitator.yml` in current directory
-4. `cogitator.yaml` in current directory
-5. `cogitator.json` in current directory
-
----
-
-## NPM Scripts
-
-After `cogitator init`, these scripts are available:
-
-```bash
-# Run agent in watch mode (auto-reload on changes)
-pnpm dev
-
-# Run agent once
-pnpm start
-
-# Build TypeScript
-pnpm build
-```
-
----
+See [`@cogitator-ai/config`](../config) for every `COGITATOR_*` variable.
 
 ## License
 

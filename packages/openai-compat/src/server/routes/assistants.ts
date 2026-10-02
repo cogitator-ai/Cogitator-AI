@@ -12,50 +12,36 @@ import type {
   ListResponse,
   Assistant,
 } from '../../types/openai-types';
+import { paginate, parseLimit, parseOrder, sendInvalidRequest } from './shared';
 
 export function registerAssistantRoutes(fastify: FastifyInstance, adapter: OpenAIAdapter) {
   fastify.post<{ Body: CreateAssistantRequest }>('/v1/assistants', async (request, reply) => {
+    if (!request.body || typeof request.body.model !== 'string' || !request.body.model) {
+      return sendInvalidRequest(reply, 'model is required', 'model');
+    }
     const assistant = await adapter.createAssistant(request.body);
     return reply.status(201).send(assistant);
   });
 
   fastify.get<{
-    Querystring: { limit?: number; order?: 'asc' | 'desc'; after?: string; before?: string };
+    Querystring: { limit?: string; order?: string; after?: string; before?: string };
   }>('/v1/assistants', async (request, reply) => {
+    const limit = parseLimit(request.query.limit);
+    if (limit === null)
+      return sendInvalidRequest(reply, 'limit must be between 1 and 100', 'limit');
+    const order = parseOrder(request.query.order);
+    if (order === null) return sendInvalidRequest(reply, "order must be 'asc' or 'desc'", 'order');
+
     const assistants = await adapter.listAssistants();
-
-    let data = assistants;
-    const { limit = 20, order = 'desc', after, before } = request.query;
-
-    if (order === 'asc') {
-      data.sort((a, b) => a.created_at - b.created_at);
-    } else {
-      data.sort((a, b) => b.created_at - a.created_at);
-    }
-
-    if (after) {
-      const idx = data.findIndex((a) => a.id === after);
-      if (idx !== -1) {
-        data = data.slice(idx + 1);
-      }
-    }
-
-    if (before) {
-      const idx = data.findIndex((a) => a.id === before);
-      if (idx !== -1) {
-        data = data.slice(0, idx);
-      }
-    }
-
-    const hasMore = data.length > limit;
-    data = data.slice(0, limit);
+    const sorted = assistants
+      .map((assistant, index) => ({ assistant, index }))
+      .sort((a, b) => a.assistant.created_at - b.assistant.created_at || a.index - b.index)
+      .map(({ assistant }) => assistant);
+    const ordered = order === 'asc' ? sorted : sorted.reverse();
 
     const response: ListResponse<Assistant> = {
       object: 'list',
-      data,
-      first_id: data[0]?.id,
-      last_id: data[data.length - 1]?.id,
-      has_more: hasMore,
+      ...paginate(ordered, { limit, after: request.query.after, before: request.query.before }),
     };
 
     return reply.send(response);

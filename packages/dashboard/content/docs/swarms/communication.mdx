@@ -126,9 +126,12 @@ await bus.broadcast('agent-a', 'I found something important', 'announcements');
 ```typescript
 const myMessages = bus.getMessages('agent-b');
 const unread = bus.getUnreadMessages('agent-b');
+bus.markAsRead('agent-b', unread.map((m) => m.id));
 const thread = bus.getConversation('agent-a', 'agent-b');
 const all = bus.getAllMessages();
 ```
+
+Read tracking is per agent. Inside a swarm, unread messages are injected into the recipient's next turn exactly once (emitting `message:received`), and the `read_messages` tool marks the messages it returns as read.
 
 ### Subscribing to Incoming Messages
 
@@ -143,7 +146,7 @@ const unsubscribe = bus.subscribe('agent-b', (message) => {
 The `InMemoryMessageBus` enforces the limits you set in the configuration:
 
 - `maxMessageLength` — rejects messages that exceed the character limit
-- `maxMessagesPerTurn` — per-agent message cap, reset between turns via `bus.resetTurnCounts()`
+- `maxMessagesPerTurn` — per-agent message cap per turn; the coordinator resets it at the start of every agent turn (`bus.resetTurnCounts(agentName)`)
 - `maxTotalMessages` — hard cap on total messages to prevent infinite loops
 
 ## EventEmitter
@@ -187,6 +190,9 @@ Events emitted by the core coordinator:
 | `agent:start`    | `{ agentName, input }`                  |
 | `agent:complete` | `{ agentName, result }`                 |
 | `agent:error`    | `{ agentName, error }`                  |
+| `message:sent`   | `{ id, from, to, type, channel, content }` |
+| `message:received` | `{ agentName, count, messageIds }`    |
+| `blackboard:write` | `{ section, version, writtenBy, deleted }` |
 
 Strategy-specific events:
 

@@ -298,7 +298,7 @@ describe('QdrantAdapter', () => {
         limit: 10,
         score_threshold: undefined,
         filter: {
-          must: [{ key: 'threadId', match: { value: 'thread_123' } }],
+          must: [{ key: 'metadata.threadId', match: { value: 'thread_123' } }],
         },
       });
     });
@@ -316,7 +316,7 @@ describe('QdrantAdapter', () => {
         limit: 10,
         score_threshold: undefined,
         filter: {
-          must: [{ key: 'agentId', match: { value: 'agent_123' } }],
+          must: [{ key: 'metadata.agentId', match: { value: 'agent_123' } }],
         },
       });
     });
@@ -340,8 +340,8 @@ describe('QdrantAdapter', () => {
         filter: {
           must: [
             { key: 'sourceType', match: { value: 'entry' } },
-            { key: 'threadId', match: { value: 'thread_123' } },
-            { key: 'agentId', match: { value: 'agent_456' } },
+            { key: 'metadata.threadId', match: { value: 'thread_123' } },
+            { key: 'metadata.agentId', match: { value: 'agent_456' } },
           ],
         },
       });

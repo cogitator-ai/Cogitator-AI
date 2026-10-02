@@ -9,11 +9,12 @@ export interface ElevenLabsTTSConfig {
 const BASE_URL = 'https://api.elevenlabs.io';
 const DEFAULT_VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
 const DEFAULT_MODEL = 'eleven_flash_v2_5';
+const RESPONSE_TIMEOUT_MS = 60_000;
 
 function mapFormat(format?: VoiceAudioFormat): string {
   switch (format) {
     case 'pcm16':
-      return 'pcm_16000';
+      return 'pcm_24000';
     case 'opus':
       return 'opus_48000_32';
     case 'flac':
@@ -76,22 +77,35 @@ export class ElevenLabsTTS implements TTSProvider {
     const outputFormat = mapFormat(options?.format);
     const url = `${BASE_URL}/v1/text-to-speech/${voiceId}${suffix}?output_format=${outputFormat}`;
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'xi-api-key': this.apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        text,
-        model_id: this.model,
-        voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.75,
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () =>
+        controller.abort(new Error(`ElevenLabs request timed out after ${RESPONSE_TIMEOUT_MS}ms`)),
+      RESPONSE_TIMEOUT_MS
+    );
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'xi-api-key': this.apiKey,
+          'Content-Type': 'application/json',
         },
-      }),
-      signal: AbortSignal.timeout(60_000),
-    });
+        body: JSON.stringify({
+          text,
+          model_id: this.model,
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.75,
+            ...(options?.speed !== undefined && { speed: options.speed }),
+          },
+        }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!response.ok) {
       const body = await response.text();

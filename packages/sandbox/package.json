@@ -15,7 +15,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && tsx ../../scripts/fix-esm-imports.ts .",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
@@ -26,7 +26,7 @@
     "@cogitator-ai/types": "workspace:*"
   },
   "optionalDependencies": {
-    "@extism/extism": "^1.0.3",
+    "@extism/extism": "^2.0.0-rc13",
     "dockerode": "^4.0.2"
   },
   "devDependencies": {
@@ -36,7 +36,7 @@
     "vitest": "^4.0.18"
   },
   "peerDependencies": {
-    "@extism/extism": "^1.0.0",
+    "@extism/extism": "^2.0.0-rc13",
     "dockerode": "^4.0.0"
   },
   "peerDependenciesMeta": {

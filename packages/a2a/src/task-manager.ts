@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type {
   A2ATask,
   A2AMessage,
+  Part,
   TaskStore,
   TaskFilter,
   TaskStatus,
@@ -20,9 +21,19 @@ export interface TaskManagerConfig {
   taskStore?: TaskStore;
 }
 
+export interface ExecuteTaskOptions {
+  /** Called for every streamed token */
+  onToken?: (token: string) => void;
+  /** Maximum agent run time in ms */
+  timeout?: number;
+}
+
+const CONTINUABLE_STATES: readonly string[] = ['input-required', 'completed'];
+
 export class TaskManager extends EventEmitter {
   private store: TaskStore;
   private activeTasks = new Map<string, AbortController>();
+  private continuing = new Set<string>();
 
   constructor(config?: TaskManagerConfig) {
     super();
@@ -48,18 +59,25 @@ export class TaskManager extends EventEmitter {
     cogitator: CogitatorLike,
     agent: unknown,
     message: A2AMessage,
-    onToken?: (token: string) => void
+    onTokenOrOptions?: ((token: string) => void) | ExecuteTaskOptions
   ): Promise<A2ATask> {
+    const options: ExecuteTaskOptions =
+      typeof onTokenOrOptions === 'function'
+        ? { onToken: onTokenOrOptions }
+        : (onTokenOrOptions ?? {});
     const abortController = new AbortController();
     this.activeTasks.set(task.id, abortController);
 
     try {
-      const input = this.extractTextFromMessage(message);
+      const priorHistory = this.historyBefore(task.history, message);
       const result = await cogitator.run(agent, {
-        input,
+        input: this.buildInput(priorHistory, message),
         signal: abortController.signal,
-        stream: !!onToken,
-        onToken,
+        stream: !!options.onToken,
+        onToken: options.onToken,
+        threadId: task.contextId,
+        timeout: options.timeout,
+        ...(priorHistory.length > 0 && { loadHistory: false }),
       });
 
       if (result.requiresInput) {
@@ -109,18 +127,7 @@ export class TaskManager extends EventEmitter {
       timestamp: new Date().toISOString(),
     };
 
-    const history = [...existing.history, agentMessage];
-    await this.store.update(taskId, { status, artifacts, history });
-
-    const updatedTask = await this.store.get(taskId);
-    if (!updatedTask) throw new A2AError(errors.taskNotFound(taskId));
-
-    this.emitStatusUpdate(updatedTask);
-    for (const artifact of artifacts) {
-      this.emitArtifactUpdate(updatedTask.id, artifact);
-    }
-
-    return updatedTask;
+    return this.finishTurn(existing, status, agentMessage, artifacts);
   }
 
   async failTask(taskId: string, errorMessage: string): Promise<A2ATask> {
@@ -167,26 +174,34 @@ export class TaskManager extends EventEmitter {
   }
 
   async continueTask(taskId: string, message: A2AMessage): Promise<A2ATask> {
-    const task = await this.store.get(taskId);
-    if (!task) throw new A2AError(errors.taskNotFound(taskId));
-
-    const continuableStates = ['input-required', 'completed'];
-    if (!continuableStates.includes(task.status.state)) {
-      throw new A2AError(errors.taskNotContinuable(taskId, task.status.state));
+    if (this.continuing.has(taskId) || this.activeTasks.has(taskId)) {
+      throw new A2AError(errors.taskNotContinuable(taskId, 'working'));
     }
+    this.continuing.add(taskId);
 
-    const history = [...task.history, message];
-    const status: TaskStatus = {
-      state: 'working',
-      timestamp: new Date().toISOString(),
-    };
+    try {
+      const task = await this.store.get(taskId);
+      if (!task) throw new A2AError(errors.taskNotFound(taskId));
 
-    await this.store.update(taskId, { history, status });
-    const updated = await this.store.get(taskId);
-    if (!updated) throw new A2AError(errors.taskNotFound(taskId));
+      if (!CONTINUABLE_STATES.includes(task.status.state)) {
+        throw new A2AError(errors.taskNotContinuable(taskId, task.status.state));
+      }
 
-    this.emitStatusUpdate(updated);
-    return updated;
+      const history = [...task.history, { ...message, taskId, contextId: task.contextId }];
+      const status: TaskStatus = {
+        state: 'working',
+        timestamp: new Date().toISOString(),
+      };
+
+      await this.store.update(taskId, { history, status });
+      const updated = await this.store.get(taskId);
+      if (!updated) throw new A2AError(errors.taskNotFound(taskId));
+
+      this.emitStatusUpdate(updated);
+      return updated;
+    } finally {
+      this.continuing.delete(taskId);
+    }
   }
 
   abortExecution(taskId: string): void {
@@ -204,10 +219,45 @@ export class TaskManager extends EventEmitter {
     return task;
   }
 
-  private extractTextFromMessage(message: A2AMessage): string {
-    return message.parts
-      .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
-      .map((p) => p.text)
+  /**
+   * History preceding the message being executed (the message itself is the
+   * last history entry for both new and continued tasks).
+   */
+  private historyBefore(history: A2AMessage[], message: A2AMessage): A2AMessage[] {
+    const last = history.at(-1);
+    return last?.role === message.role ? history.slice(0, -1) : history;
+  }
+
+  /**
+   * Build the agent input. Continuations replay the task transcript so the
+   * agent keeps the conversation context even without a memory adapter.
+   */
+  private buildInput(priorHistory: A2AMessage[], message: A2AMessage): string {
+    const current = this.renderParts(message.parts);
+    if (priorHistory.length === 0) {
+      return current;
+    }
+
+    const transcript = priorHistory
+      .map((m) => `${m.role === 'agent' ? 'Agent' : 'User'}: ${this.renderParts(m.parts)}`)
+      .join('\n\n');
+
+    return `Conversation so far:\n\n${transcript}\n\nUser: ${current}`;
+  }
+
+  private renderParts(parts: Part[]): string {
+    return parts
+      .map((part) => {
+        switch (part.type) {
+          case 'text':
+            return part.text;
+          case 'data':
+            return `\`\`\`json\n${JSON.stringify(part.data, null, 2)}\n\`\`\``;
+          case 'file':
+            return `[file${part.name ? ` ${part.name}` : ''} (${part.mimeType}): ${part.uri}]`;
+        }
+      })
+      .filter((text) => text.length > 0)
       .join('\n');
   }
 
@@ -260,16 +310,33 @@ export class TaskManager extends EventEmitter {
       message: result.output || undefined,
     };
 
-    const history = [...existing.history, agentMessage];
-    await this.store.update(taskId, { status, artifacts, history });
+    return this.finishTurn(existing, status, agentMessage, artifacts);
+  }
 
-    const updatedTask = await this.store.get(taskId);
-    if (!updatedTask) throw new A2AError(errors.taskNotFound(taskId));
+  /**
+   * Persist the outcome of an agent turn. Artifacts accumulate across turns,
+   * and artifact events are emitted before the status event so streaming
+   * consumers (which stop at the final status) never miss them.
+   */
+  private async finishTurn(
+    existing: A2ATask,
+    status: TaskStatus,
+    agentMessage: A2AMessage,
+    newArtifacts: Artifact[]
+  ): Promise<A2ATask> {
+    await this.store.update(existing.id, {
+      status,
+      artifacts: [...(existing.artifacts ?? []), ...newArtifacts],
+      history: [...existing.history, agentMessage],
+    });
 
-    this.emitStatusUpdate(updatedTask);
-    for (const artifact of artifacts) {
+    const updatedTask = await this.store.get(existing.id);
+    if (!updatedTask) throw new A2AError(errors.taskNotFound(existing.id));
+
+    for (const artifact of newArtifacts) {
       this.emitArtifactUpdate(updatedTask.id, artifact);
     }
+    this.emitStatusUpdate(updatedTask);
 
     return updatedTask;
   }

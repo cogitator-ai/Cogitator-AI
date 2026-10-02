@@ -89,12 +89,51 @@ describe('ElevenLabsTTS', () => {
     expect(parsed.searchParams.get('output_format')).toBe('mp3_44100_128');
   });
 
-  it('maps pcm16 format to pcm_16000', async () => {
+  it('maps pcm16 format to pcm_24000 (same rate as OpenAI pcm output)', async () => {
     await tts.synthesize('test', { format: 'pcm16' });
 
     const [url] = mockFetch.mock.calls[0] as [string];
     const parsed = new URL(url);
-    expect(parsed.searchParams.get('output_format')).toBe('pcm_16000');
+    expect(parsed.searchParams.get('output_format')).toBe('pcm_24000');
+  });
+
+  it('passes speed through voice_settings', async () => {
+    await tts.synthesize('test', { speed: 1.1 });
+
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.voice_settings.speed).toBe(1.1);
+  });
+
+  it('applies the timeout only until response headers arrive', async () => {
+    vi.useFakeTimers();
+    try {
+      await tts.synthesize('test');
+      const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+      const signal = init.signal!;
+      vi.advanceTimersByTime(120_000);
+      expect(signal.aborted).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('aborts the request when headers do not arrive within 60s', async () => {
+    vi.useFakeTimers();
+    try {
+      mockFetch.mockImplementationOnce(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal!.addEventListener('abort', () => reject(init.signal!.reason as Error));
+          })
+      );
+      const pending = tts.synthesize('test');
+      const assertion = expect(pending).rejects.toThrow('timed out after 60000ms');
+      await vi.advanceTimersByTimeAsync(60_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('uses mp3_44100_128 when no format specified', async () => {

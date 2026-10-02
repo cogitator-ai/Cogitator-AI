@@ -3,176 +3,141 @@
  */
 
 import { Command } from 'commander';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import chalk from 'chalk';
 import { log, printBanner } from '../utils/logger.js';
 import { Cogitator, Agent } from '@cogitator-ai/core';
 import { loadConfig } from '@cogitator-ai/config';
+import type { CogitatorConfig } from '@cogitator-ai/types';
+import { listOllamaModels, resolveOllamaUrl } from '../utils/ollama.js';
 
 interface RunOptions {
-  config: string;
+  config?: string;
   model?: string;
-  interactive: boolean;
+  interactive?: boolean;
   stream: boolean;
 }
 
-interface OllamaModel {
-  name: string;
-  size: number;
+const CONFIG_FILE_NAMES = [
+  'cogitator.yml',
+  'cogitator.yaml',
+  'cogitator.json',
+  '.cogitator.yml',
+  '.cogitator.yaml',
+];
+
+const PREFERRED_OLLAMA_MODELS = [
+  'llama3.1:8b',
+  'llama3:8b',
+  'gemma3:4b',
+  'gemma2:9b',
+  'mistral:7b',
+];
+
+const AGENT_INSTRUCTIONS = 'You are a helpful AI assistant. Respond concisely and accurately.';
+
+function createCliAgent(model: string): Agent {
+  return new Agent({
+    id: 'cli-agent',
+    name: 'CLI Agent',
+    model,
+    instructions: AGENT_INSTRUCTIONS,
+  });
 }
 
-async function getOllamaModels(): Promise<string[]> {
+export function pickOllamaModel(available: readonly string[]): string | null {
+  if (available.length === 0) return null;
+  const preferred = PREFERRED_OLLAMA_MODELS.find((m) => available.includes(m));
+  return `ollama/${preferred ?? available[0]}`;
+}
+
+async function detectOllamaModel(baseUrl: string, apiKey?: string): Promise<string | null> {
   try {
-    const res = await fetch('http://localhost:11434/api/tags');
-    if (!res.ok) return [];
-    const data = (await res.json()) as { models: OllamaModel[] };
-    return data.models.map((m) => m.name);
+    const models = await listOllamaModels(baseUrl, { apiKey, timeoutMs: 3000 });
+    return pickOllamaModel(models.map((m) => m.name));
   } catch {
-    return [];
+    return null;
   }
 }
 
-async function detectModel(): Promise<string | null> {
-  const models = await getOllamaModels();
-  if (models.length === 0) return null;
-  const preferred = ['llama3.1:8b', 'llama3:8b', 'gemma3:4b', 'gemma2:9b', 'mistral:7b'];
-  for (const p of preferred) {
-    if (models.includes(p)) return `ollama/${p}`;
-  }
-  return `ollama/${models[0]}`;
-}
-
-export function findConfig(configPath: string): string | null {
-  const envConfig = process.env.COGITATOR_CONFIG;
-  if (envConfig && existsSync(envConfig)) {
-    return resolve(envConfig);
+export function findConfig(
+  explicitPath?: string,
+  env: Record<string, string | undefined> = process.env,
+  cwd: string = process.cwd()
+): string | null {
+  if (explicitPath) {
+    const full = resolve(cwd, explicitPath);
+    return existsSync(full) ? full : null;
   }
 
-  if (existsSync(configPath)) {
-    return resolve(configPath);
+  const envConfig = env.COGITATOR_CONFIG;
+  if (envConfig) {
+    const full = resolve(cwd, envConfig);
+    return existsSync(full) ? full : null;
   }
 
-  const names = ['cogitator.yml', 'cogitator.yaml', 'cogitator.json'];
-  for (const name of names) {
-    if (existsSync(name)) {
-      return resolve(name);
-    }
+  for (const name of CONFIG_FILE_NAMES) {
+    const full = resolve(cwd, name);
+    if (existsSync(full)) return full;
   }
   return null;
 }
 
-interface InteractiveState {
-  model: string;
-  threadId: string;
-  messageCount: number;
+export function resolveRunModel(
+  flagModel: string | undefined,
+  env: Record<string, string | undefined>,
+  config: CogitatorConfig
+): string | undefined {
+  return flagModel || env.COGITATOR_MODEL || config.llm?.defaultModel || undefined;
 }
 
-async function runInteractive(
-  cog: Cogitator,
-  initialModel: string,
-  stream: boolean
-): Promise<void> {
-  const rl = createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
+async function runInteractive(cog: Cogitator, initialModel: string, stream: boolean) {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
 
-  const state: InteractiveState = {
-    model: initialModel,
-    threadId: `thread_${Date.now()}`,
-    messageCount: 0,
+  let model = initialModel;
+  let agent = createCliAgent(model);
+  let threadId = `thread_${Date.now()}`;
+  let messageCount = 0;
+  let closing = false;
+
+  const close = async (code: number) => {
+    if (closing) return;
+    closing = true;
+    rl.close();
+    await cog.close().catch(() => {});
+    process.exit(code);
   };
 
-  let agent = new Agent({
-    id: 'cli-agent',
-    name: 'CLI Agent',
-    model: state.model,
-    instructions: 'You are a helpful AI assistant. Respond concisely and accurately.',
+  rl.on('close', () => {
+    if (!closing) {
+      console.log(chalk.dim('\nGoodbye!'));
+      void close(0);
+    }
   });
 
-  const modelShort = state.model.replace('ollama/', '');
-  console.log(chalk.dim(`Model: ${modelShort}`));
+  console.log(chalk.dim(`Model: ${model}`));
   console.log(chalk.dim('Commands: /model <name>, /clear, /help, exit\n'));
 
-  const showPrompt = () => {
-    const prefix = state.messageCount > 0 ? `[${state.messageCount}] ` : '';
-    rl.question(chalk.cyan(`${prefix}> `), async (input) => {
-      await handleInput(input);
-    });
-  };
-
-  const handleInput = async (input: string) => {
-    const trimmed = input.trim();
-
-    if (!trimmed) {
-      showPrompt();
-      return;
-    }
-
-    if (trimmed.toLowerCase() === 'exit' || trimmed.toLowerCase() === 'quit') {
-      console.log(chalk.dim('\nGoodbye!'));
-      rl.close();
-      await cog.close();
-      process.exit(0);
-    }
-
-    if (trimmed.startsWith('/')) {
-      await handleCommand(trimmed);
-      showPrompt();
-      return;
-    }
-
-    try {
-      state.messageCount++;
-
-      if (stream) {
-        process.stdout.write(chalk.green('→ '));
-        await cog.run(agent, {
-          input: trimmed,
-          threadId: state.threadId,
-          stream: true,
-          onToken: (token) => process.stdout.write(token),
-        });
-        console.log('\n');
-      } else {
-        const result = await cog.run(agent, { input: trimmed, threadId: state.threadId });
-        console.log(chalk.green('→'), result.output);
-        console.log();
-      }
-    } catch (error) {
-      log.error(error instanceof Error ? error.message : String(error));
-    }
-
-    showPrompt();
-  };
-
-  const handleCommand = async (cmd: string) => {
-    const parts = cmd.slice(1).split(/\s+/);
-    const command = parts[0].toLowerCase();
-    const args = parts.slice(1);
+  const handleCommand = (cmd: string) => {
+    const [rawCommand = '', ...args] = cmd.slice(1).split(/\s+/);
+    const command = rawCommand.toLowerCase();
 
     switch (command) {
       case 'model':
         if (args.length === 0) {
-          console.log(chalk.dim(`Current model: ${state.model}`));
+          console.log(chalk.dim(`Current model: ${model}`));
         } else {
-          const newModel = args[0].includes('/') ? args[0] : `ollama/${args[0]}`;
-          state.model = newModel;
-          agent = new Agent({
-            id: 'cli-agent',
-            name: 'CLI Agent',
-            model: state.model,
-            instructions: 'You are a helpful AI assistant. Respond concisely and accurately.',
-          });
-          log.success(`Switched to model: ${newModel}`);
+          model = args[0];
+          agent = createCliAgent(model);
+          log.success(`Switched to model: ${model}`);
         }
         break;
 
       case 'clear':
-        state.threadId = `thread_${Date.now()}`;
-        state.messageCount = 0;
+        threadId = `thread_${Date.now()}`;
+        messageCount = 0;
         console.log(chalk.dim('Conversation cleared'));
         break;
 
@@ -190,42 +155,99 @@ async function runInteractive(
     }
   };
 
-  showPrompt();
+  const handleInput = async (input: string) => {
+    const trimmed = input.trim();
+    if (!trimmed) return;
+
+    const lowered = trimmed.toLowerCase();
+    if (lowered === 'exit' || lowered === 'quit') {
+      console.log(chalk.dim('\nGoodbye!'));
+      await close(0);
+      return;
+    }
+
+    if (trimmed.startsWith('/')) {
+      handleCommand(trimmed);
+      return;
+    }
+
+    messageCount++;
+    try {
+      if (stream) {
+        process.stdout.write(chalk.green('→ '));
+        await cog.run(agent, {
+          input: trimmed,
+          threadId,
+          stream: true,
+          onToken: (token) => process.stdout.write(token),
+        });
+        console.log('\n');
+      } else {
+        const result = await cog.run(agent, { input: trimmed, threadId });
+        console.log(chalk.green('→'), result.output);
+        console.log();
+      }
+    } catch (error) {
+      if (stream) console.log();
+      log.error(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  while (!closing) {
+    const prefix = messageCount > 0 ? `[${messageCount}] ` : '';
+    const input = await new Promise<string | null>((resolveInput) => {
+      const onClose = () => resolveInput(null);
+      rl.once('close', onClose);
+      rl.question(chalk.cyan(`${prefix}> `), (answer) => {
+        rl.off('close', onClose);
+        resolveInput(answer);
+      });
+    });
+    if (input === null) return;
+    await handleInput(input);
+  }
 }
 
 export const runCommand = new Command('run')
   .description('Run agent with a message')
   .argument('[message]', 'Message to send to agent')
-  .option('-c, --config <path>', 'Config file path', 'cogitator.yml')
+  .option('-c, --config <path>', 'Config file path (default: ./cogitator.yml)')
   .option('-m, --model <model>', 'Model to use (e.g. ollama/gemma3:4b)')
   .option('-i, --interactive', 'Interactive mode')
   .option('-s, --stream', 'Stream response tokens', true)
   .option('--no-stream', 'Disable streaming')
   .action(async (message: string | undefined, options: RunOptions) => {
-    let config = {};
     const configPath = findConfig(options.config);
-    if (configPath) {
-      log.dim(`Using config: ${configPath}`);
-      try {
-        const raw = readFileSync(configPath, 'utf-8');
-        if (configPath.endsWith('.json')) {
-          config = JSON.parse(raw);
-        } else {
-          config = loadConfig({ configPath });
-        }
-      } catch (err) {
-        log.warn(`Failed to load config: ${err instanceof Error ? err.message : String(err)}`);
-      }
+    if (options.config && !configPath) {
+      log.error(`Config file not found: ${resolve(options.config)}`);
+      process.exit(1);
+    }
+    if (!options.config && process.env.COGITATOR_CONFIG && !configPath) {
+      log.error(`COGITATOR_CONFIG points to a missing file: ${process.env.COGITATOR_CONFIG}`);
+      process.exit(1);
     }
 
-    let model: string | undefined = options.model || process.env.COGITATOR_MODEL;
+    let config: CogitatorConfig;
+    try {
+      config = loadConfig(configPath ? { configPath } : { skipYaml: true });
+    } catch (error) {
+      log.error(`Failed to load config: ${error instanceof Error ? error.message : error}`);
+      process.exit(1);
+    }
+    if (configPath) log.dim(`Using config: ${configPath}`);
+
+    let model = resolveRunModel(options.model, process.env, config);
 
     if (!model) {
-      model = (await detectModel()) ?? undefined;
+      const ollama = config.llm?.providers?.ollama;
+      const baseUrl = resolveOllamaUrl(process.env, ollama?.baseUrl);
+      model =
+        (await detectOllamaModel(baseUrl, ollama?.apiKey ?? process.env.OLLAMA_API_KEY)) ??
+        undefined;
       if (!model) {
         log.error('No model specified and no Ollama models found');
         log.dim('Use -m to specify a model, e.g.: cogitator run -m ollama/gemma3:4b "Hello"');
-        log.dim('Or set COGITATOR_MODEL environment variable');
+        log.dim('Or set COGITATOR_MODEL / llm.defaultModel in cogitator.yml');
         log.dim('Or start Ollama and pull a model: ollama pull gemma3:4b');
         process.exit(1);
       }
@@ -240,12 +262,7 @@ export const runCommand = new Command('run')
       return;
     }
 
-    const agent = new Agent({
-      id: 'cli-agent',
-      name: 'CLI Agent',
-      model,
-      instructions: 'You are a helpful AI assistant. Respond concisely and accurately.',
-    });
+    const agent = createCliAgent(model);
 
     try {
       if (options.stream) {
@@ -261,8 +278,8 @@ export const runCommand = new Command('run')
       }
     } catch (error) {
       log.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      process.exitCode = 1;
     } finally {
-      await cog.close();
+      await cog.close().catch(() => {});
     }
   });

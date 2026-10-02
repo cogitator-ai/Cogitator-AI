@@ -1,6 +1,9 @@
+import { base64Decode, base64Encode, hexDecode, hexEncode, utf8Encode } from './shared/encoding';
+
 interface SigningInput {
   operation: 'generateKeypair' | 'sign' | 'verify';
   algorithm: 'ed25519';
+  seed?: string;
   message?: string;
   privateKey?: string;
   publicKey?: string;
@@ -17,69 +20,12 @@ interface SigningOutput {
   error?: string;
 }
 
-function hexToBytes(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) {
-    throw new Error('Hex string must have even length');
-  }
-  if (!/^[0-9a-fA-F]*$/.test(hex)) {
-    throw new Error('Invalid hex characters');
-  }
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
-  }
-  return bytes;
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-
-function base64ToBytes(b64: string): Uint8Array {
-  const clean = b64.replace(/[^A-Za-z0-9+/]/g, '');
-  const len = clean.length;
-  const outLen = Math.floor((len * 3) / 4) - (b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0);
-  const out = new Uint8Array(outLen);
-  const lookup: Record<string, number> = {};
-  for (let i = 0; i < B64.length; i++) lookup[B64[i]] = i;
-
-  let j = 0;
-  for (let i = 0; i < len; i += 4) {
-    const a = lookup[clean[i]] ?? 0;
-    const b = lookup[clean[i + 1]] ?? 0;
-    const c = lookup[clean[i + 2]] ?? 0;
-    const d = lookup[clean[i + 3]] ?? 0;
-    out[j++] = (a << 2) | (b >> 4);
-    if (j < outLen) out[j++] = ((b & 15) << 4) | (c >> 2);
-    if (j < outLen) out[j++] = ((c & 3) << 6) | d;
-  }
-  return out;
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let r = '';
-  for (let i = 0; i < bytes.length; i += 3) {
-    const b1 = bytes[i],
-      b2 = bytes[i + 1] ?? 0,
-      b3 = bytes[i + 2] ?? 0;
-    r += B64[b1 >> 2];
-    r += B64[((b1 & 3) << 4) | (b2 >> 4)];
-    r += i + 1 < bytes.length ? B64[((b2 & 15) << 2) | (b3 >> 6)] : '=';
-    r += i + 2 < bytes.length ? B64[b3 & 63] : '=';
-  }
-  return r;
-}
-
 function decodeKey(key: string, encoding: string): Uint8Array {
-  return encoding === 'base64' ? base64ToBytes(key) : hexToBytes(key);
+  return encoding === 'base64' ? base64Decode(key) : hexDecode(key);
 }
 
 function encodeKey(bytes: Uint8Array, encoding: string): string {
-  return encoding === 'base64' ? bytesToBase64(bytes) : bytesToHex(bytes);
+  return encoding === 'base64' ? base64Encode(bytes) : hexEncode(bytes);
 }
 
 function sha512(message: Uint8Array): Uint8Array {
@@ -421,6 +367,9 @@ function bytesToPoint(bytes: Uint8Array): Point {
     y |= BigInt(bytes[i] & (i === 31 ? 0x7f : 0xff)) << BigInt(i * 8);
   }
   const xSign = (bytes[31] >> 7) & 1;
+  if (y >= ED25519_P) {
+    throw new Error('Invalid point encoding: non-canonical y');
+  }
 
   const y2 = mod(y * y, ED25519_P);
   const x2 = mod((y2 - 1n) * modInv(ED25519_D * y2 + 1n, ED25519_P), ED25519_P);
@@ -428,6 +377,13 @@ function bytesToPoint(bytes: Uint8Array): Point {
 
   if (mod(x * x - x2, ED25519_P) !== 0n) {
     x = mod(x * modPow(2n, (ED25519_P - 1n) / 4n, ED25519_P), ED25519_P);
+  }
+
+  if (mod(x * x - x2, ED25519_P) !== 0n) {
+    throw new Error('Invalid point encoding: not on curve');
+  }
+  if (x === 0n && xSign === 1) {
+    throw new Error('Invalid point encoding: negative zero');
   }
 
   if (Number(x & 1n) !== xSign) {
@@ -550,25 +506,17 @@ function ed25519Verify(message: Uint8Array, signature: Uint8Array, publicKey: Ui
   }
 }
 
-function getRandomBytes(len: number): Uint8Array {
-  const bytes = new Uint8Array(len);
-  if (globalThis.crypto?.getRandomValues) {
-    globalThis.crypto.getRandomValues(bytes);
-  } else {
-    throw new Error(
-      'Cryptographically secure RNG not available. Provide a seed via generateKeypair input instead.'
-    );
-  }
-  return bytes;
-}
-
 export function signing(): number {
+  let algorithm = 'unknown';
   try {
     const inputStr = Host.inputString();
     const input: SigningInput = JSON.parse(inputStr);
 
     const encoding = input.encoding ?? 'hex';
-    const algorithm = input.algorithm;
+    if (encoding !== 'hex' && encoding !== 'base64') {
+      throw new Error(`Unsupported encoding: ${String(encoding)}`);
+    }
+    algorithm = String(input.algorithm);
 
     if (algorithm !== 'ed25519') {
       throw new Error('Only ed25519 is currently supported');
@@ -578,7 +526,15 @@ export function signing(): number {
 
     switch (input.operation) {
       case 'generateKeypair': {
-        const seed = getRandomBytes(32);
+        if (!input.seed) {
+          throw new Error(
+            'seed (32 random bytes, hex or base64 per encoding) is required: WASM has no secure RNG'
+          );
+        }
+        const seed = decodeKey(input.seed, encoding);
+        if (seed.length !== 32) {
+          throw new Error(`Invalid seed length: expected 32 bytes, got ${seed.length}`);
+        }
         const { privateKey, publicKey } = ed25519GenerateKeypair(seed);
         output = {
           privateKey: encodeKey(privateKey, encoding),
@@ -590,7 +546,7 @@ export function signing(): number {
 
       case 'sign': {
         if (!input.privateKey) throw new Error('privateKey required for signing');
-        if (!input.message) throw new Error('message required for signing');
+        if (input.message === undefined) throw new Error('message required for signing');
 
         const privateKey = decodeKey(input.privateKey, encoding);
         if (privateKey.length !== 32) {
@@ -598,7 +554,7 @@ export function signing(): number {
             `Invalid private key length: expected 32 bytes, got ${privateKey.length}`
           );
         }
-        const message = new TextEncoder().encode(input.message);
+        const message = utf8Encode(input.message);
         const signature = ed25519Sign(message, privateKey);
 
         output = {
@@ -611,7 +567,9 @@ export function signing(): number {
       case 'verify': {
         if (!input.publicKey) throw new Error('publicKey required for verification');
         if (!input.signature) throw new Error('signature required for verification');
-        if (!input.message) throw new Error('message required for verification');
+        if (input.message === undefined) {
+          throw new Error('message required for verification');
+        }
 
         const publicKey = decodeKey(input.publicKey, encoding);
         if (publicKey.length !== 32) {
@@ -621,7 +579,7 @@ export function signing(): number {
         if (signature.length !== 64) {
           throw new Error(`Invalid signature length: expected 64 bytes, got ${signature.length}`);
         }
-        const message = new TextEncoder().encode(input.message);
+        const message = utf8Encode(input.message);
         const valid = ed25519Verify(message, signature, publicKey);
 
         output = {
@@ -639,7 +597,7 @@ export function signing(): number {
     return 0;
   } catch (error) {
     const output: SigningOutput = {
-      algorithm: 'unknown',
+      algorithm,
       error: error instanceof Error ? error.message : String(error),
     };
     Host.outputString(JSON.stringify(output));
@@ -651,29 +609,3 @@ declare const Host: {
   inputString(): string;
   outputString(s: string): void;
 };
-
-class TextEncoder {
-  encode(str: string): Uint8Array {
-    const bytes: number[] = [];
-    for (let i = 0; i < str.length; i++) {
-      let c = str.charCodeAt(i);
-      if (c < 0x80) {
-        bytes.push(c);
-      } else if (c < 0x800) {
-        bytes.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f));
-      } else if (c >= 0xd800 && c < 0xdc00 && i + 1 < str.length) {
-        const c2 = str.charCodeAt(++i);
-        c = 0x10000 + ((c & 0x3ff) << 10) + (c2 & 0x3ff);
-        bytes.push(
-          0xf0 | (c >> 18),
-          0x80 | ((c >> 12) & 0x3f),
-          0x80 | ((c >> 6) & 0x3f),
-          0x80 | (c & 0x3f)
-        );
-      } else {
-        bytes.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
-      }
-    }
-    return new Uint8Array(bytes);
-  }
-}

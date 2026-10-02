@@ -39,38 +39,48 @@ pnpm add onnxruntime-node   # Silero VAD (neural network)
 ## Quick Start — Pipeline
 
 ```typescript
-import { VoiceAgent, OpenAISTT, OpenAITTS } from '@cogitator-ai/voice';
-import { Agent } from '@cogitator-ai/core';
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import {
+  VoiceAgent,
+  OpenAISTT,
+  OpenAITTS,
+  EnergyVAD,
+  createCogitatorRunner,
+} from '@cogitator-ai/voice';
 
-const agent = new Agent({ instructions: 'You are a helpful assistant' });
+const cogitator = new Cogitator({ memory: { adapter: 'memory' } });
+const agent = new Agent({
+  name: 'assistant',
+  model: 'openai/gpt-4o-mini',
+  instructions: 'You are a helpful voice assistant. Keep answers short.',
+});
 
 const voiceAgent = new VoiceAgent({
-  agent,
   mode: 'pipeline',
+  agent: createCogitatorRunner(cogitator, agent),
   stt: new OpenAISTT({ apiKey: process.env.OPENAI_API_KEY! }),
   tts: new OpenAITTS({ apiKey: process.env.OPENAI_API_KEY! }),
+  vad: new EnergyVAD(),
 });
 
 await voiceAgent.listen(8080);
 ```
 
-Connect from any WebSocket client at `ws://localhost:8080/voice` — send binary PCM16 audio frames, receive audio and JSON control messages back.
+Connect from any WebSocket client at `ws://localhost:8080/voice` — send binary PCM16 audio frames, receive audio and JSON events back (see [WebSocket protocol](/docs/voice/pipeline#websocket-protocol)).
+
+`createCogitatorRunner()` adapts a `Cogitator` runtime and `Agent` to the `VoiceAgentRunner` interface (`run(input, { sessionId, signal })`): each voice session gets its own memory thread and interrupted turns abort the run.
 
 ## Quick Start — Realtime
 
 ```typescript
-import { VoiceAgent } from '@cogitator-ai/voice';
-import { Agent } from '@cogitator-ai/core';
-
-const agent = new Agent({ instructions: 'You are a helpful assistant' });
+import { VoiceAgent, createCogitatorRunner } from '@cogitator-ai/voice';
 
 const voiceAgent = new VoiceAgent({
-  agent,
+  agent: createCogitatorRunner(cogitator, agent),
   mode: 'realtime',
-  realtimeProvider: 'openai',
-  realtimeApiKey: process.env.OPENAI_API_KEY!,
-  realtimeModel: 'gpt-4o-mini-realtime-preview',
-  voice: 'coral',
+  realtimeProvider: 'gemini',
+  realtimeApiKey: process.env.GOOGLE_API_KEY!,
+  voice: 'Puck',
 });
 
 await voiceAgent.listen(8080);
@@ -78,17 +88,25 @@ await voiceAgent.listen(8080);
 
 ## Components
 
-| Component | Description |
-| --- | --- |
-| [STT Providers](/docs/voice/stt-providers) | OpenAI and Deepgram speech-to-text |
-| [TTS Providers](/docs/voice/tts-providers) | OpenAI and ElevenLabs text-to-speech |
-| [VAD](/docs/voice/vad) | Energy-based and Silero neural voice activity detection |
-| [Pipeline](/docs/voice/pipeline) | Batch and streaming STT -> Agent -> TTS processing |
-| [Realtime](/docs/voice/realtime) | Native speech-to-speech with OpenAI and Gemini |
+| Component                                  | Description                                             |
+| ------------------------------------------ | ------------------------------------------------------- |
+| [STT Providers](/docs/voice/stt-providers) | OpenAI and Deepgram speech-to-text                      |
+| [TTS Providers](/docs/voice/tts-providers) | OpenAI and ElevenLabs text-to-speech                    |
+| [VAD](/docs/voice/vad)                     | Energy-based and Silero neural voice activity detection |
+| [Pipeline](/docs/voice/pipeline)           | Batch and streaming STT -> Agent -> TTS processing      |
+| [Realtime](/docs/voice/realtime)           | Native speech-to-speech with OpenAI and Gemini          |
 
 ## Audio Format
 
-All audio in the voice package uses **PCM16** format by default: 16-bit signed integers, little-endian, mono, 16kHz sample rate. This is the standard format for WebSocket audio transport and matches what the realtime APIs expect.
+All raw audio in the voice package is **PCM16**: 16-bit signed integers, little-endian, mono.
+
+| Path                        | Input                             | Output                                       |
+| --------------------------- | --------------------------------- | -------------------------------------------- |
+| Pipeline (STT streams, VAD) | 16kHz (configurable `sampleRate`) | TTS format (MP3 by default, `pcm16` = 24kHz) |
+| OpenAI Realtime             | 24kHz                             | 24kHz                                        |
+| Gemini Live                 | 16kHz                             | 24kHz                                        |
+
+STT providers also accept containerized files (wav, mp3, ogg, flac, webm, mp4); the container is detected from magic bytes.
 
 The package includes audio conversion utilities:
 
@@ -100,6 +118,7 @@ import {
   wavToPcm,
   resample,
   calculateRMS,
+  detectAudioFormat,
 } from '@cogitator-ai/voice';
 ```
 

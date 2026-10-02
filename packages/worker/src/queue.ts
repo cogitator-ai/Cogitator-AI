@@ -22,28 +22,22 @@ import type {
   SerializedWorkflow,
   SerializedSwarm,
 } from './types';
-
-const DEFAULT_QUEUE_NAME = 'cogitator-jobs';
+import {
+  DEFAULT_QUEUE_NAME,
+  createBullConnection,
+  queuePrefix,
+  type BullConnection,
+} from './connection.js';
 
 export class JobQueue {
   private queue: Queue<JobPayload>;
+  private connection: BullConnection;
 
   constructor(config: QueueConfig) {
-    const connection = config.redis.cluster
-      ? {
-          host: config.redis.cluster.nodes[0]?.host ?? 'localhost',
-          port: config.redis.cluster.nodes[0]?.port ?? 6379,
-          password: config.redis.password,
-        }
-      : {
-          host: config.redis.host ?? 'localhost',
-          port: config.redis.port ?? 6379,
-          password: config.redis.password,
-        };
-
+    this.connection = createBullConnection(config.redis);
     this.queue = new Queue(config.name ?? DEFAULT_QUEUE_NAME, {
-      connection,
-      prefix: config.redis.cluster ? '{cogitator}' : 'cogitator',
+      connection: this.connection.connection,
+      prefix: queuePrefix(config.redis),
       defaultJobOptions: {
         attempts: config.defaultJobOptions?.attempts ?? 3,
         backoff: config.defaultJobOptions?.backoff ?? {
@@ -160,17 +154,18 @@ export class JobQueue {
     input: string,
     options?: {
       context?: Record<string, unknown>;
-      stateKeys?: {
-        blackboard: string;
-        messages: string;
-        results: string;
-      };
+      stateKeys?: SwarmAgentJobPayload['stateKeys'];
+      runOptions?: SwarmAgentJobPayload['runOptions'];
+      /** Key prefix used by the swarm's Redis state (default: 'swarm') */
+      keyPrefix?: string;
       priority?: number;
       delay?: number;
+      /** Agent run timeout in ms (shorthand for `runOptions.timeout`) */
       timeout?: number;
     }
   ): Promise<Job<SwarmAgentJobPayload>> {
     const jobId = nanoid();
+    const keyPrefix = options?.keyPrefix ?? 'swarm';
 
     const payload: SwarmAgentJobPayload = {
       type: 'swarm-agent',
@@ -180,10 +175,14 @@ export class JobQueue {
       agentConfig,
       input,
       context: options?.context,
+      runOptions:
+        options?.timeout !== undefined
+          ? { ...options.runOptions, timeout: options.timeout }
+          : options?.runOptions,
       stateKeys: options?.stateKeys ?? {
-        blackboard: `swarm:${swarmId}:blackboard`,
-        messages: `swarm:${swarmId}:messages`,
-        results: `swarm:${swarmId}:results`,
+        blackboard: `${keyPrefix}:${swarmId}:blackboard`,
+        messages: `${keyPrefix}:${swarmId}:messages`,
+        results: `${keyPrefix}:${swarmId}:results`,
       },
     };
 
@@ -214,12 +213,13 @@ export class JobQueue {
    * Get queue metrics for monitoring and HPA
    */
   async getMetrics(): Promise<QueueMetrics> {
-    const [waiting, active, completed, failed, delayed] = await Promise.all([
+    const [waiting, active, completed, failed, delayed, workerCount] = await Promise.all([
       this.queue.getWaitingCount(),
       this.queue.getActiveCount(),
       this.queue.getCompletedCount(),
       this.queue.getFailedCount(),
       this.queue.getDelayedCount(),
+      this.queue.getWorkersCount(),
     ]);
 
     return {
@@ -229,7 +229,7 @@ export class JobQueue {
       failed,
       delayed,
       depth: waiting + delayed,
-      workerCount: 0,
+      workerCount,
     };
   }
 
@@ -270,5 +270,6 @@ export class JobQueue {
    */
   async close(): Promise<void> {
     await this.queue.close();
+    await this.connection.dispose();
   }
 }

@@ -50,77 +50,44 @@ export function createConstraintTools(ns: NeuroSymbolic) {
       _context: ToolContext
     ) => {
       const builder = ConstraintBuilder.create(problemName);
-      const varExprs = new Map<string, Expr>();
 
-      for (const v of varDefs) {
-        let expr: Expr;
-        if (v.type === 'bool') {
-          expr = builder.bool(v.name);
-        } else if (v.type === 'int') {
-          expr = builder.int(v.name, v.min ?? 0, v.max ?? 100);
-        } else {
-          expr = builder.real(v.name, v.min ?? 0, v.max ?? 100);
-        }
-        varExprs.set(v.name, expr);
-      }
+      try {
+        const varExprs = new Map<string, Expr>();
 
-      for (const c of constraintDefs) {
-        let leftExpr: Expr;
-        let rightExpr: Expr;
-        try {
-          leftExpr = parseOperand(c.left, varExprs);
-          rightExpr = parseOperand(c.right, varExprs);
-        } catch (err) {
-          return {
-            status: 'error',
-            error: err instanceof Error ? err.message : String(err),
-          };
+        for (const v of varDefs) {
+          const expr =
+            v.type === 'bool'
+              ? builder.bool(v.name)
+              : v.type === 'int'
+                ? builder.int(v.name, v.min ?? 0, v.max ?? 100)
+                : builder.real(v.name, v.min ?? 0, v.max ?? 100);
+          varExprs.set(v.name, expr);
         }
 
-        switch (c.op) {
-          case 'eq':
-            builder.assert(leftExpr.eq(rightExpr));
-            break;
-          case 'neq':
-            builder.assert(leftExpr.neq(rightExpr));
-            break;
-          case 'gt':
-            builder.assert(leftExpr.gt(rightExpr));
-            break;
-          case 'gte':
-            builder.assert(leftExpr.gte(rightExpr));
-            break;
-          case 'lt':
-            builder.assert(leftExpr.lt(rightExpr));
-            break;
-          case 'lte':
-            builder.assert(leftExpr.lte(rightExpr));
-            break;
-          case 'and':
-            builder.assert(leftExpr.and(rightExpr));
-            break;
-          case 'or':
-            builder.assert(leftExpr.or(rightExpr));
-            break;
-          case 'implies':
-            builder.assert(leftExpr.implies(rightExpr));
-            break;
+        for (const c of constraintDefs) {
+          builder.assert(
+            applyOperator(c.op, parseOperand(c.left, varExprs), parseOperand(c.right, varExprs))
+          );
         }
-      }
 
-      if (objective) {
-        const objExpr = varExprs.get(objective.variable);
-        if (!objExpr) {
-          return {
-            content: `Objective variable '${objective.variable}' not found in declared variables`,
-            isError: true,
-          };
+        if (objective) {
+          const objExpr = varExprs.get(objective.variable);
+          if (!objExpr) {
+            throw new Error(
+              `Objective variable '${objective.variable}' not found in declared variables`
+            );
+          }
+          if (objective.type === 'minimize') {
+            builder.minimize(objExpr);
+          } else {
+            builder.maximize(objExpr);
+          }
         }
-        if (objective.type === 'minimize') {
-          builder.minimize(objExpr);
-        } else {
-          builder.maximize(objExpr);
-        }
+      } catch (err) {
+        return {
+          status: 'error',
+          error: err instanceof Error ? err.message : String(err),
+        };
       }
 
       const problem = builder.build();
@@ -187,6 +154,31 @@ export function createConstraintTools(ns: NeuroSymbolic) {
   });
 
   return { solveConstraints };
+}
+
+type ConstraintOp = z.infer<typeof constraintExprSchema>['op'];
+
+function applyOperator(op: ConstraintOp, left: Expr, right: Expr): Expr {
+  switch (op) {
+    case 'eq':
+      return left.eq(right);
+    case 'neq':
+      return left.neq(right);
+    case 'gt':
+      return left.gt(right);
+    case 'gte':
+      return left.gte(right);
+    case 'lt':
+      return left.lt(right);
+    case 'lte':
+      return left.lte(right);
+    case 'and':
+      return left.and(right);
+    case 'or':
+      return left.or(right);
+    case 'implies':
+      return left.implies(right);
+  }
 }
 
 function parseOperand(operand: string, varExprs: Map<string, Expr>): Expr {

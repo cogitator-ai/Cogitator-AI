@@ -12,16 +12,22 @@ Cogitator uses a **send-then-edit** pattern for streaming responses in chat. Ins
 1. LLM generates tokens via `cogitator.run()` with `stream: true`
 2. Tokens accumulate in a `StreamBuffer`
 3. Every ~500ms, the buffer flushes:
-   - **First flush** → `channel.sendText()` creates a new message
+   - **First flush** → `channel.sendText()` creates a new message (or a Telegram draft via `sendDraft`)
    - **Subsequent flushes** → `channel.editText()` updates the message
-4. After generation completes → final edit with formatted response
+4. When the text reaches `maxMessageChars` (platform limit by default) the current message is finalized at a line/word boundary and a new one is started — no text is lost
+5. After generation completes → final edit (or final message in draft mode)
+
+All channel calls are serialized, so a slow `sendText` never races with an edit and every created message is tracked (for `deleteOnAbort`).
 
 ## Configuration
 
 ```typescript
 interface StreamConfig {
-  flushInterval: number;  // ms between edits, default: 500
-  minChunkSize: number;   // don't edit for <N chars, default: 20
+  flushInterval: number;    // ms between edits, default: 500
+  minChunkSize: number;     // don't send before N chars, default: 20
+  minInitialChars?: number; // hold back the first message until N chars
+  maxMessageChars?: number; // split threshold, default: platform limit
+  deleteOnAbort?: boolean;  // delete partial messages when the run fails
 }
 ```
 
@@ -42,10 +48,10 @@ const gateway = new Gateway({
 | Telegram | Yes (`editMessageText`) | ~30 edits/sec | 4,096 chars |
 | Discord | Yes (`message.edit`) | ~5 edits/sec | 2,000 chars |
 | Slack | Yes (`chat.update`) | ~20 edits/sec | No hard limit |
-| WhatsApp | No | N/A | N/A |
+| WhatsApp | Yes (message edit) | — | 65,536 chars |
 | WebChat | Yes (WebSocket `edit` event) | No limit | No limit |
 
-For platforms without edit support (WhatsApp), the Gateway falls back to showing a typing indicator and sending the complete response.
+If the model produced no tokens (e.g. a provider without streaming), the Gateway sends the complete response as regular chunked messages.
 
 ## StreamBuffer API
 
@@ -54,17 +60,14 @@ The `StreamBuffer` class is used internally by Gateway, but can be used standalo
 ```typescript
 import { StreamBuffer } from '@cogitator-ai/channels';
 
-const buffer = new StreamBuffer({
-  flushInterval: 500,
-  minChunkSize: 20,
-  onFlush: async (text, messageId) => {
-    if (!messageId) {
-      return await channel.sendText(chatId, text);
-    }
-    await channel.editText(chatId, messageId, text);
-    return messageId;
-  },
-});
+const buffer = new StreamBuffer(
+  channel, // any Channel implementation
+  chatId,
+  { flushInterval: 500, minChunkSize: 20, maxMessageChars: 4096 },
+  replyToMessageId, // optional, used for the first message only
+  true, // use channel.sendDraft when available
+  (text) => adaptMarkdown(text, 'telegram') // optional formatter applied to every send/edit
+);
 
 buffer.start();
 
@@ -73,16 +76,23 @@ buffer.append('Hello');
 buffer.append(' world');
 buffer.append('!');
 
-// when generation is done
-await buffer.finish();
+// when generation is done — rethrows if the final delivery failed
+const lastMessageId = await buffer.finish();
+buffer.getMessageIds(); // every message created for this answer
+
+// or, on failure
+await buffer.abort(); // deletes partial messages when deleteOnAbort is set
 ```
+
+`forceNewMessage()` finalizes the current message with the buffered text and continues in a new one.
 
 ## Markdown Formatting
 
-Each flush passes through platform-specific markdown adaptation before being sent:
+The Gateway passes `adaptMarkdown(text, channelType)` as the formatter, so every flush is converted for the platform (code spans and fences are never touched):
 
-- **Telegram**: Converts `# Heading` to `**Heading**`, preserves code blocks
+- **Telegram**: `# Heading` and `**bold**` → `*bold*`, `* item` → `• item`
 - **Discord**: Standard markdown passes through
-- **Slack**: Converts `**bold**` to `*bold*`, `~~strike~~` to `~strike~`
+- **Slack**: `**bold**` → `*bold*`, `~~strike~~` → `~strike~`, links → `<url|text>`, `&<>` escaped
+- **WhatsApp**: `**bold**` → `*bold*`, headings → bold, links → `text (url)`
 
-Long messages are automatically chunked at paragraph boundaries.
+Non-streamed answers are chunked with `chunkMessage()` at paragraph → line → word boundaries, closing and reopening code fences across chunks.

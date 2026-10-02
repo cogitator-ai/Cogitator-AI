@@ -10,6 +10,7 @@ export {
   ParameterOptimizer,
   type ParameterOptimizerOptions,
   type OptimizationResult,
+  type HistoricalRecord,
 } from './parameter-optimizer';
 
 export {
@@ -19,5 +20,6 @@ export {
   parseTaskProfileResponse,
   parseCandidateGenerationResponse,
   parsePerformanceAnalysisResponse,
+  sanitizeCandidateConfig,
   ARCHITECTURE_ANALYSIS_SYSTEM_PROMPT,
 } from './prompts';

@@ -40,6 +40,21 @@ describe('web_search tool', () => {
       );
     });
 
+    it('sends the Tavily key as a bearer token, not in the request body', async () => {
+      vi.stubEnv('TAVILY_API_KEY', 'test-tavily-key');
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({}),
+      });
+
+      const result = await webSearch.execute({ query: 'test' }, ctx);
+
+      const init = mockFetch.mock.calls[0][1] as RequestInit;
+      expect(init.headers).toMatchObject({ Authorization: 'Bearer test-tavily-key' });
+      expect(String(init.body)).not.toContain('test-tavily-key');
+      expect(result).toMatchObject({ provider: 'tavily', results: [] });
+    });
+
     it('auto-detects Brave when BRAVE_API_KEY is set', async () => {
       vi.stubEnv('BRAVE_API_KEY', 'test-brave-key');
       mockFetch.mockResolvedValueOnce({

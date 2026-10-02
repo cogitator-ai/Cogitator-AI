@@ -270,7 +270,7 @@ describe('sql-query tool', () => {
 
       await sqlQuery.execute({ query: 'SELECT * FROM users' });
 
-      const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[1][0];
       expect(calledQuery).toContain('LIMIT');
     });
 
@@ -283,7 +283,7 @@ describe('sql-query tool', () => {
 
       await sqlQuery.execute({ query: "SELECT * FROM songs WHERE title = 'LIMIT'" });
 
-      const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[1][0];
       expect(calledQuery).toBe("SELECT * FROM songs WHERE title = 'LIMIT'\nLIMIT 101");
     });
 
@@ -296,7 +296,7 @@ describe('sql-query tool', () => {
 
       await sqlQuery.execute({ query: 'SELECT * FROM users -- LIMIT 1' });
 
-      const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[1][0];
       expect(calledQuery).toBe('SELECT * FROM users -- LIMIT 1\nLIMIT 101');
     });
 
@@ -309,7 +309,7 @@ describe('sql-query tool', () => {
 
       await sqlQuery.execute({ query: 'SELECT * FROM users; -- keep this comment' });
 
-      const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[1][0];
       expect(calledQuery).toBe('SELECT * FROM users -- keep this comment\nLIMIT 101');
     });
 
@@ -322,7 +322,7 @@ describe('sql-query tool', () => {
 
       await sqlQuery.execute({ query: 'SELECT * FROM users LIMIT 5' });
 
-      const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[1][0];
       expect(calledQuery).toBe('SELECT * FROM users LIMIT 5');
     });
 
@@ -335,7 +335,7 @@ describe('sql-query tool', () => {
 
       await sqlQuery.execute({ query: 'SHOW server_version' });
 
-      const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[1][0];
       expect(calledQuery).toBe('SHOW server_version');
     });
 
@@ -353,6 +353,38 @@ describe('sql-query tool', () => {
       });
 
       expect(mockInstance.query).toHaveBeenCalledWith('DELETE FROM users WHERE id = $1', [1]);
+    });
+
+    it('executes read-only queries inside a READ ONLY transaction', async () => {
+      const { Client } = await import('pg');
+      const mockInstance = new Client();
+      const query = mockInstance.query as ReturnType<typeof vi.fn>;
+      query.mockResolvedValue({ rows: [{ n: 1 }] });
+
+      await sqlQuery.execute({ query: 'SELECT nextval($1) AS n', params: ['seq'] });
+
+      expect(query.mock.calls.map((call) => call[0])).toEqual([
+        'BEGIN TRANSACTION READ ONLY',
+        'SELECT nextval($1) AS n\nLIMIT 101',
+        'ROLLBACK',
+      ]);
+    });
+
+    it('rolls back the read-only transaction when the query fails', async () => {
+      const { Client } = await import('pg');
+      const mockInstance = new Client();
+      const query = mockInstance.query as ReturnType<typeof vi.fn>;
+      query.mockImplementation(async (sql: string) => {
+        if (sql.startsWith('SELECT')) {
+          throw new Error('cannot execute nextval() in a read-only transaction');
+        }
+        return { rows: [] };
+      });
+
+      const result = await sqlQuery.execute({ query: 'SELECT nextval($1)', params: ['seq'] });
+
+      expect(result).toMatchObject({ error: expect.stringContaining('read-only transaction') });
+      expect(query.mock.calls.at(-1)?.[0]).toBe('ROLLBACK');
     });
 
     it('handles query errors gracefully', async () => {
@@ -394,7 +426,7 @@ describe('sql-query tool', () => {
     it('detects SQLite from .db extension', async () => {
       const Database = (await import('better-sqlite3')).default;
       const mockDb = new Database('test.db');
-      const mockStmt = { all: vi.fn().mockReturnValue([{ id: 1 }]) };
+      const mockStmt = { reader: true, all: vi.fn().mockReturnValue([{ id: 1 }]) };
       (mockDb.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
 
       const result = await sqlQuery.execute({
@@ -408,7 +440,7 @@ describe('sql-query tool', () => {
     it('detects SQLite from .sqlite extension', async () => {
       const Database = (await import('better-sqlite3')).default;
       const mockDb = new Database('test.sqlite');
-      const mockStmt = { all: vi.fn().mockReturnValue([]) };
+      const mockStmt = { reader: true, all: vi.fn().mockReturnValue([]) };
       (mockDb.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
 
       const result = await sqlQuery.execute({
@@ -422,7 +454,7 @@ describe('sql-query tool', () => {
     it('detects SQLite from :memory:', async () => {
       const Database = (await import('better-sqlite3')).default;
       const mockDb = new Database(':memory:');
-      const mockStmt = { all: vi.fn().mockReturnValue([]) };
+      const mockStmt = { reader: true, all: vi.fn().mockReturnValue([]) };
       (mockDb.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
 
       const result = await sqlQuery.execute({
@@ -437,6 +469,7 @@ describe('sql-query tool', () => {
       const Database = (await import('better-sqlite3')).default;
       const mockDb = new Database('test.db');
       const mockStmt = {
+        reader: true,
         all: vi.fn().mockReturnValue([
           { id: 1, name: 'Alice' },
           { id: 2, name: 'Bob' },
@@ -463,7 +496,7 @@ describe('sql-query tool', () => {
     it('passes parameters to SQLite query', async () => {
       const Database = (await import('better-sqlite3')).default;
       const mockDb = new Database('test.db');
-      const mockStmt = { all: vi.fn().mockReturnValue([{ id: 1 }]) };
+      const mockStmt = { reader: true, all: vi.fn().mockReturnValue([{ id: 1 }]) };
       (mockDb.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
 
       await sqlQuery.execute({
@@ -478,7 +511,7 @@ describe('sql-query tool', () => {
     it('closes SQLite connection after query', async () => {
       const Database = (await import('better-sqlite3')).default;
       const mockDb = new Database('test.db');
-      const mockStmt = { all: vi.fn().mockReturnValue([]) };
+      const mockStmt = { reader: true, all: vi.fn().mockReturnValue([]) };
       (mockDb.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
 
       await sqlQuery.execute({
@@ -487,6 +520,30 @@ describe('sql-query tool', () => {
       });
 
       expect(mockDb.close).toHaveBeenCalled();
+    });
+
+    it('runs SQLite mutations through run() when readOnly is false', async () => {
+      const Database = (await import('better-sqlite3')).default;
+      const mockDb = new Database('test.db');
+      const mockStmt = {
+        reader: false,
+        all: vi.fn(() => {
+          throw new TypeError('This statement does not return data. Use run() instead');
+        }),
+        run: vi.fn().mockReturnValue({ changes: 3, lastInsertRowid: 0 }),
+      };
+      (mockDb.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
+
+      const result = await sqlQuery.execute({
+        query: 'UPDATE users SET active = ? WHERE team = ?',
+        connectionString: 'test.db',
+        params: [1, 'core'],
+        readOnly: false,
+      });
+
+      expect(mockStmt.run).toHaveBeenCalledWith(1, 'core');
+      expect(mockStmt.all).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ rows: [], rowCount: 3, database: 'sqlite' });
     });
   });
 
@@ -589,7 +646,7 @@ describe('sql-query tool', () => {
     it('allows explicit database override', async () => {
       const Database = (await import('better-sqlite3')).default;
       const mockDb = new Database(':memory:');
-      const mockStmt = { all: vi.fn().mockReturnValue([]) };
+      const mockStmt = { reader: true, all: vi.fn().mockReturnValue([]) };
       (mockDb.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
 
       const result = await sqlQuery.execute({

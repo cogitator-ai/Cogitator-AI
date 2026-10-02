@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { Agent } from '@cogitator-ai/core';
 import { TaskAnalyzer } from '../assessor/task-analyzer';
 import { ModelScorer, type ScoredModel as _ScoredModel } from '../assessor/scoring';
 import { RoleMatcher } from '../assessor/role-matcher';
@@ -427,12 +428,11 @@ describe('SwarmAssessor', () => {
       const config: SwarmConfig = {
         name: 'test-swarm',
         strategy: 'hierarchical',
-        supervisor: {
-          name: 'supervisor',
-          model: 'gpt-4o',
-          metadata: { locked: true },
-        } as SwarmConfig['supervisor'],
-        workers: [{ name: 'worker1', model: 'gpt-3.5-turbo' }] as SwarmConfig['workers'],
+        supervisor: new Agent({ name: 'supervisor', model: 'openai/gpt-4o', instructions: 'Lead' }),
+        workers: [
+          new Agent({ name: 'worker1', model: 'openai/gpt-3.5-turbo', instructions: 'Work' }),
+        ],
+        agentMetadata: { supervisor: { locked: true } },
       };
 
       const result = {
@@ -452,7 +452,7 @@ describe('SwarmAssessor', () => {
           {
             agentName: 'worker1',
             originalModel: 'gpt-3.5-turbo',
-            assignedModel: 'llama3.3',
+            assignedModel: 'ollama/llama3.3',
             provider: 'ollama' as const,
             score: 80,
             reasons: [],
@@ -467,8 +467,15 @@ describe('SwarmAssessor', () => {
 
       const updatedConfig = assessor.assignModels(config, result);
 
-      expect(updatedConfig.supervisor?.model).toBe('gpt-4o');
-      expect(updatedConfig.workers?.[0]?.model).toBe('llama3.3');
+      expect(updatedConfig.supervisor?.model).toBe('openai/gpt-4o');
+      expect(updatedConfig.supervisor).toBe(config.supervisor);
+
+      const worker = updatedConfig.workers?.[0];
+      expect(worker?.model).toBe('ollama/llama3.3');
+      expect(worker).toBeInstanceOf(Agent);
+      expect(worker?.instructions).toBe('Work');
+      expect(worker?.tools).toEqual([]);
+      expect(config.workers?.[0]?.model).toBe('openai/gpt-3.5-turbo');
     });
   });
 });

@@ -4,9 +4,92 @@
 
 import { z } from 'zod';
 import { tool } from '@cogitator-ai/core';
-import type { MessageBus } from '@cogitator-ai/types';
+import type {
+  Blackboard,
+  MessageBus,
+  SwarmCoordinatorInterface,
+  SwarmMessage,
+} from '@cogitator-ai/types';
+import { isMessageForAgent, isReadTrackingMessageBus } from '../communication/message-bus.js';
+import { readHierarchyPolicy } from '../shared/hierarchy.js';
 
-export function createMessagingTools(messageBus: MessageBus, currentAgent: string, swarmId = '') {
+/**
+ * Returns a refusal reason when `from` may not message `to`, or null when allowed.
+ */
+export type MessageAuthorizer = (to: string | 'broadcast') => string | null;
+
+export interface MessagingToolsOptions {
+  /** Restrict who the agent may message (e.g. hierarchical worker isolation) */
+  authorize?: MessageAuthorizer;
+  /** How long `waitForReply` waits for a correlated response (default: 30000ms) */
+  replyTimeout?: number;
+}
+
+/**
+ * Enforce the hierarchical communication policy published by the hierarchical strategy:
+ * workers may only talk to each other when `workerCommunication` is enabled and
+ * `routeThrough` is `'direct'`.
+ */
+export function createHierarchyMessageAuthorizer(
+  coordinator: SwarmCoordinatorInterface,
+  blackboard: Blackboard,
+  currentAgent: string
+): MessageAuthorizer {
+  return (to) => {
+    const policy = readHierarchyPolicy(blackboard);
+    if (!policy) return null;
+
+    const isWorker = (name: string) => coordinator.getAgent(name)?.metadata.role === 'worker';
+    if (!isWorker(currentAgent)) return null;
+
+    if (to === 'broadcast') {
+      return policy.workerCommunication && policy.routeThrough === 'direct'
+        ? null
+        : `Workers cannot broadcast; send your message to ${policy.supervisor}`;
+    }
+
+    if (!isWorker(to)) return null;
+
+    if (!policy.workerCommunication) {
+      return `Workers cannot message each other; send your message to ${policy.supervisor}`;
+    }
+    if (policy.routeThrough !== 'direct') {
+      return `Worker messages must be routed through ${policy.supervisor}`;
+    }
+    return null;
+  };
+}
+
+function toMessageView(m: SwarmMessage) {
+  return {
+    id: m.id,
+    from: m.from,
+    content: m.content,
+    channel: m.channel,
+    timestamp: m.timestamp,
+    type: m.type,
+  };
+}
+
+export function createMessagingTools(
+  messageBus: MessageBus,
+  currentAgent: string,
+  swarmId = '',
+  options: MessagingToolsOptions = {}
+) {
+  const replyTimeout = options.replyTimeout ?? 30000;
+
+  const markRead = (messages: SwarmMessage[]): void => {
+    if (!isReadTrackingMessageBus(messageBus)) return;
+    const incoming = messages.filter((m) => isMessageForAgent(m, currentAgent));
+    if (incoming.length > 0) {
+      messageBus.markAsRead(
+        currentAgent,
+        incoming.map((m) => m.id)
+      );
+    }
+  };
+
   const sendMessage = tool({
     name: 'send_message',
     description: 'Send a message to another agent in the swarm',
@@ -20,6 +103,15 @@ export function createMessagingTools(messageBus: MessageBus, currentAgent: strin
         .describe('Whether to wait for a response (default: false)'),
     }),
     execute: async ({ to, message, channel, waitForReply }) => {
+      if (to === currentAgent) {
+        return { sent: false, error: 'You cannot send a message to yourself' };
+      }
+
+      const refusal = options.authorize?.(to);
+      if (refusal) {
+        return { sent: false, error: refusal };
+      }
+
       const msg = await messageBus.send({
         swarmId,
         from: currentAgent,
@@ -29,42 +121,23 @@ export function createMessagingTools(messageBus: MessageBus, currentAgent: strin
         channel,
       });
 
-      if (waitForReply) {
-        const maxWait = 30000;
-        const pollInterval = 500;
-        let waited = 0;
-
-        while (waited < maxWait) {
-          const messages = messageBus.getMessages(currentAgent);
-          const reply = messages.find(
-            (m) => m.from === to && m.type === 'response' && m.metadata?.correlationId === msg.id
-          );
-
-          if (reply) {
-            return {
-              sent: true,
-              messageId: msg.id,
-              reply: reply.content,
-              replyId: reply.id,
-            };
-          }
-
-          await new Promise((r) => setTimeout(r, pollInterval));
-          waited += pollInterval;
-        }
-
-        return {
-          sent: true,
-          messageId: msg.id,
-          reply: null,
-          timeout: true,
-        };
+      if (!waitForReply) {
+        return { sent: true, messageId: msg.id };
       }
 
-      return {
-        sent: true,
-        messageId: msg.id,
-      };
+      const reply = await waitForCorrelatedReply(
+        messageBus,
+        currentAgent,
+        to,
+        msg.id,
+        replyTimeout
+      );
+      if (!reply) {
+        return { sent: true, messageId: msg.id, reply: null, timeout: true };
+      }
+
+      markRead([reply]);
+      return { sent: true, messageId: msg.id, reply: reply.content, replyId: reply.id };
     },
   });
 
@@ -89,18 +162,14 @@ export function createMessagingTools(messageBus: MessageBus, currentAgent: strin
         messages = messages.filter((m) => m.channel === channel);
       }
 
-      messages = messages.slice(0, limit);
+      const count = Math.max(0, Math.floor(limit));
+      messages = unreadOnly ? messages.slice(0, count) : count > 0 ? messages.slice(-count) : [];
+
+      markRead(messages);
 
       return {
         count: messages.length,
-        messages: messages.map((m) => ({
-          id: m.id,
-          from: m.from,
-          content: m.content,
-          channel: m.channel,
-          timestamp: m.timestamp,
-          type: m.type,
-        })),
+        messages: messages.map(toMessageView),
       };
     },
   });
@@ -113,7 +182,19 @@ export function createMessagingTools(messageBus: MessageBus, currentAgent: strin
       channel: z.string().optional().describe('Optional channel for message categorization'),
     }),
     execute: async ({ message, channel }) => {
-      await messageBus.broadcast(currentAgent, message, channel);
+      const refusal = options.authorize?.('broadcast');
+      if (refusal) {
+        return { broadcasted: false, error: refusal };
+      }
+
+      await messageBus.send({
+        swarmId,
+        from: currentAgent,
+        to: 'broadcast',
+        type: 'notification',
+        content: message,
+        channel,
+      });
 
       return {
         broadcasted: true,
@@ -131,8 +212,7 @@ export function createMessagingTools(messageBus: MessageBus, currentAgent: strin
       message: z.string().describe('The reply content'),
     }),
     execute: async ({ originalMessageId, message }) => {
-      const allMessages = messageBus.getMessages(currentAgent);
-      const original = allMessages.find((m) => m.id === originalMessageId);
+      const original = messageBus.getMessages(currentAgent).find((m) => m.id === originalMessageId);
 
       if (!original) {
         return {
@@ -141,14 +221,27 @@ export function createMessagingTools(messageBus: MessageBus, currentAgent: strin
         };
       }
 
+      if (original.from === currentAgent) {
+        return { success: false, error: 'You cannot reply to your own message' };
+      }
+
+      const refusal = options.authorize?.(original.from);
+      if (refusal) {
+        return { success: false, error: refusal };
+      }
+
       const reply = await messageBus.send({
         swarmId,
         from: currentAgent,
         to: original.from,
         type: 'response',
         content: message,
+        replyTo: originalMessageId,
+        correlationId: originalMessageId,
         metadata: { correlationId: originalMessageId },
       });
+
+      markRead([original]);
 
       return {
         success: true,
@@ -164,6 +257,40 @@ export function createMessagingTools(messageBus: MessageBus, currentAgent: strin
     broadcastMessage,
     replyToMessage,
   };
+}
+
+function isReplyTo(message: SwarmMessage, from: string, requestId: string): boolean {
+  if (message.from !== from || message.type !== 'response') return false;
+  return (
+    message.correlationId === requestId ||
+    message.replyTo === requestId ||
+    message.metadata?.correlationId === requestId
+  );
+}
+
+function waitForCorrelatedReply(
+  messageBus: MessageBus,
+  currentAgent: string,
+  from: string,
+  requestId: string,
+  timeoutMs: number
+): Promise<SwarmMessage | null> {
+  const existing = messageBus.getMessages(currentAgent).find((m) => isReplyTo(m, from, requestId));
+  if (existing) return Promise.resolve(existing);
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      unsubscribe();
+      resolve(null);
+    }, timeoutMs);
+
+    const unsubscribe = messageBus.subscribe(currentAgent, (message) => {
+      if (!isReplyTo(message, from, requestId)) return;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(message);
+    });
+  });
 }
 
 export type MessagingTools = ReturnType<typeof createMessagingTools>;

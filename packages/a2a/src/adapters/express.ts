@@ -2,7 +2,7 @@ import { Router, json, type Request, type Response, type NextFunction } from 'ex
 import type { A2AServer } from '../server.js';
 import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
-import { buildSseErrorEvent } from './sse-error-event.js';
+import { isStreamRequest, pipeJsonRpcStream, SSE_HEADERS } from './shared.js';
 
 export function a2aExpress(server: A2AServer): Router {
   const router = Router();
@@ -19,35 +19,27 @@ export function a2aExpress(server: A2AServer): Router {
       return;
     }
 
-    const body = req.body;
-    const isStreaming =
-      req.headers.accept?.includes('text/event-stream') || body?.method === 'message/stream';
+    const body: unknown = req.body;
+    const authToken = server.getAuthToken((name) => req.get(name));
 
-    if (isStreaming) {
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-        'X-Accel-Buffering': 'no',
+    if (isStreamRequest(body)) {
+      const controller = new AbortController();
+      res.on('close', () => controller.abort());
+      res.writeHead(200, SSE_HEADERS);
+
+      await pipeJsonRpcStream(server, body, authToken, controller.signal, (frame) => {
+        if (!res.writableEnded && !res.destroyed) res.write(frame);
       });
-
-      try {
-        for await (const event of server.handleJsonRpcStream(body)) {
-          if (res.writableEnded) break;
-          res.write(`data: ${JSON.stringify(event)}\n\n`);
-        }
-        if (!res.writableEnded) res.write('data: [DONE]\n\n');
-      } catch (error) {
-        if (!res.writableEnded) {
-          res.write(`data: ${JSON.stringify(buildSseErrorEvent(error))}\n\n`);
-        }
-      }
       if (!res.writableEnded) res.end();
       return;
     }
 
     try {
-      const response = await server.handleJsonRpc(body);
+      const response = await server.handleJsonRpc(body, authToken);
+      if (response === null) {
+        res.status(204).end();
+        return;
+      }
       res.json(response);
     } catch (error) {
       res.json(createErrorResponse(null, errors.internalError(String(error))));

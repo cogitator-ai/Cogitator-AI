@@ -1,4 +1,5 @@
 import type {
+  CogitatorConfig,
   DeployConfig,
   DeployServer,
   DeployServicesConfig,
@@ -7,6 +8,7 @@ import type {
 import { loadConfig } from '@cogitator-ai/config';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { sanitizeName } from './utils/env.js';
 
 const SERVER_PACKAGES: Record<string, DeployServer> = {
   '@cogitator-ai/express': 'express',
@@ -15,16 +17,27 @@ const SERVER_PACKAGES: Record<string, DeployServer> = {
   '@cogitator-ai/koa': 'koa',
 };
 
-const MODEL_SECRET_MAP: Record<string, string> = {
-  openai: 'OPENAI_API_KEY',
-  anthropic: 'ANTHROPIC_API_KEY',
-  google: 'GOOGLE_API_KEY',
-  azure: 'AZURE_OPENAI_API_KEY',
-  bedrock: 'AWS_ACCESS_KEY_ID',
-  ollama: 'OLLAMA_API_KEY',
+const PROVIDER_SECRETS: Record<string, string[]> = {
+  openai: ['OPENAI_API_KEY'],
+  anthropic: ['ANTHROPIC_API_KEY'],
+  google: ['GOOGLE_API_KEY'],
+  azure: ['AZURE_OPENAI_API_KEY'],
+  bedrock: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'],
+  mistral: ['MISTRAL_API_KEY'],
+  groq: ['GROQ_API_KEY'],
+  together: ['TOGETHER_API_KEY'],
+  deepseek: ['DEEPSEEK_API_KEY'],
+  ollama: ['OLLAMA_API_KEY'],
 };
 
+const CONFIG_FILES = ['cogitator.yml', 'cogitator.yaml'];
+
+export type PackageManager = 'pnpm' | 'npm' | 'yarn';
+
 interface PackageJson {
+  name?: string;
+  main?: string;
+  scripts?: Record<string, string>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
 }
@@ -35,7 +48,51 @@ export interface AnalyzerResult {
   secrets: string[];
   warnings: string[];
   hasTypeScript: boolean;
+  packageManager: PackageManager;
+  hasLockfile: boolean;
+  hasBuildScript: boolean;
+  startCommand: string[];
   deployConfig: DeployConfig;
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((v) => typeof v === 'string')
+  );
+}
+
+function readPackageJson(projectDir: string, warnings: string[]): PackageJson {
+  const pkgPath = join(projectDir, 'package.json');
+  if (!existsSync(pkgPath)) return {};
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+  } catch (error) {
+    warnings.push(
+      `Could not parse package.json: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return {};
+  }
+  if (typeof raw !== 'object' || raw === null) return {};
+
+  const get = (key: string): unknown => Reflect.get(raw, key);
+  const name = get('name');
+  const main = get('main');
+  const scripts = get('scripts');
+  const dependencies = get('dependencies');
+  const devDependencies = get('devDependencies');
+
+  return {
+    name: typeof name === 'string' ? name : undefined,
+    main: typeof main === 'string' ? main : undefined,
+    scripts: isStringRecord(scripts) ? scripts : undefined,
+    dependencies: isStringRecord(dependencies) ? dependencies : undefined,
+    devDependencies: isStringRecord(devDependencies) ? devDependencies : undefined,
+  };
 }
 
 export class ProjectAnalyzer {
@@ -55,29 +112,21 @@ export class ProjectAnalyzer {
     };
   }
 
-  detectSecrets(model: string): string[] {
-    const secrets: string[] = [];
-    const provider = model.split('/')[0];
-
-    if (provider && provider in MODEL_SECRET_MAP) {
-      if (provider === 'ollama' && this.isOllamaCloud(model)) {
-        secrets.push(MODEL_SECRET_MAP[provider]);
-      } else if (provider !== 'ollama') {
-        secrets.push(MODEL_SECRET_MAP[provider]);
-      }
-    }
-
-    return secrets;
+  detectSecrets(model: string, defaultProvider?: string): string[] {
+    const provider = model.includes('/') ? model.split('/')[0] : defaultProvider;
+    if (!provider || !(provider in PROVIDER_SECRETS)) return [];
+    if (provider === 'ollama' && !this.isOllamaCloud(model)) return [];
+    return [...PROVIDER_SECRETS[provider]];
   }
 
   isOllamaCloud(model: string): boolean {
-    const modelName = model.includes('/') ? model.split('/')[1] : model;
-    return modelName?.includes(':cloud') ?? false;
+    const modelName = model.includes('/') ? model.slice(model.indexOf('/') + 1) : model;
+    return /(?::|-)cloud$/.test(modelName);
   }
 
-  getDeployWarnings(model: string, target: DeployTarget): string[] {
+  getDeployWarnings(model: string, target: DeployTarget, defaultProvider?: string): string[] {
     const warnings: string[] = [];
-    const provider = model.split('/')[0];
+    const provider = model.includes('/') ? model.split('/')[0] : defaultProvider;
 
     if (provider === 'ollama' && !this.isOllamaCloud(model) && target !== 'docker') {
       warnings.push(
@@ -90,28 +139,85 @@ export class ProjectAnalyzer {
     return warnings;
   }
 
-  analyze(projectDir: string, configOverrides?: DeployConfig): AnalyzerResult {
-    const pkgPath = join(projectDir, 'package.json');
-    const pkg: PackageJson = existsSync(pkgPath) ? JSON.parse(readFileSync(pkgPath, 'utf-8')) : {};
+  detectPackageManager(projectDir: string): {
+    packageManager: PackageManager;
+    hasLockfile: boolean;
+  } {
+    if (existsSync(join(projectDir, 'pnpm-lock.yaml'))) {
+      return { packageManager: 'pnpm', hasLockfile: true };
+    }
+    if (existsSync(join(projectDir, 'yarn.lock'))) {
+      return { packageManager: 'yarn', hasLockfile: true };
+    }
+    if (existsSync(join(projectDir, 'package-lock.json'))) {
+      return { packageManager: 'npm', hasLockfile: true };
+    }
+    return { packageManager: 'npm', hasLockfile: false };
+  }
+
+  detectStartCommand(pkg: PackageJson, hasTypeScript: boolean): string[] {
+    const start = pkg.scripts?.start?.trim();
+    if (start) {
+      const nodeScript = /^node\s+([^\s&|;<>$`"']+)$/.exec(start);
+      return nodeScript ? ['node', nodeScript[1]] : ['npm', 'start'];
+    }
+    if (pkg.main) return ['node', pkg.main];
+    return ['node', hasTypeScript ? 'dist/server.js' : 'src/server.js'];
+  }
+
+  private loadProjectConfig(projectDir: string, warnings: string[]): CogitatorConfig | undefined {
+    const configPath = CONFIG_FILES.map((name) => join(projectDir, name)).find((p) =>
+      existsSync(p)
+    );
+    if (!configPath) return undefined;
+    try {
+      return loadConfig({ configPath, skipEnv: true });
+    } catch (error) {
+      warnings.push(
+        `Ignoring invalid ${configPath}: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return undefined;
+    }
+  }
+
+  analyze(projectDir: string, configOverrides?: Partial<DeployConfig>): AnalyzerResult {
+    const warnings: string[] = [];
+    const pkg = readPackageJson(projectDir, warnings);
 
     const server = configOverrides?.server ?? this.detectServer(pkg);
     const hasTypeScript = existsSync(join(projectDir, 'tsconfig.json'));
     const target = configOverrides?.target ?? 'docker';
+    const { packageManager, hasLockfile } = this.detectPackageManager(projectDir);
+    const startCommand = this.detectStartCommand(pkg, hasTypeScript);
+    const hasBuildScript = typeof pkg.scripts?.build === 'string';
 
-    let fullConfig: ReturnType<typeof loadConfig> | undefined;
-    try {
-      fullConfig = loadConfig({
-        configPath: join(projectDir, 'cogitator.yml'),
-        skipEnv: true,
-      });
-    } catch {}
+    if (!pkg.scripts?.start && !pkg.main) {
+      warnings.push(
+        `No "start" script or "main" in package.json — the container will run "${startCommand.join(' ')}"`
+      );
+    }
+    if (hasTypeScript && !hasBuildScript) {
+      warnings.push(
+        'tsconfig.json found but package.json has no "build" script — skipping build step'
+      );
+    }
 
+    const fullConfig = this.loadProjectConfig(projectDir, warnings);
     const model = fullConfig?.llm?.defaultModel ?? '';
+    const defaultProvider = fullConfig?.llm?.defaultProvider;
+
     const services =
       configOverrides?.services ??
       (fullConfig ? this.detectServices(fullConfig) : { redis: false, postgres: false });
-    const secrets = configOverrides?.secrets ?? (model ? this.detectSecrets(model) : []);
-    const warnings = model ? this.getDeployWarnings(model, target) : [];
+    const secrets =
+      configOverrides?.secrets ?? (model ? this.detectSecrets(model, defaultProvider) : []);
+    if (model) warnings.push(...this.getDeployWarnings(model, target, defaultProvider));
+
+    if (target === 'docker' && (configOverrides?.instances ?? 1) > 1) {
+      warnings.push('instances > 1 is not supported for the docker target; running one container');
+    }
+
+    const image = configOverrides?.image ?? sanitizeName(pkg.name ?? '');
 
     return {
       server,
@@ -119,9 +225,16 @@ export class ProjectAnalyzer {
       secrets,
       warnings,
       hasTypeScript,
+      packageManager,
+      hasLockfile,
+      hasBuildScript,
+      startCommand,
       deployConfig: {
         ...configOverrides,
         server,
+        image,
+        services,
+        secrets,
         port: configOverrides?.port ?? 3000,
       },
     };

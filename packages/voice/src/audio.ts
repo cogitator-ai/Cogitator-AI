@@ -1,6 +1,6 @@
 export function float32ToPcm16(samples: Float32Array): Buffer {
   const buffer = Buffer.alloc(samples.length * 2);
-  const view = new DataView(buffer.buffer, buffer.byteOffset);
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
   for (let i = 0; i < samples.length; i++) {
     const clamped = Math.max(-1, Math.min(1, samples[i]!));
     view.setInt16(i * 2, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
@@ -9,8 +9,8 @@ export function float32ToPcm16(samples: Float32Array): Buffer {
 }
 
 export function pcm16ToFloat32(buffer: Buffer): Float32Array {
-  const view = new DataView(buffer.buffer, buffer.byteOffset);
-  const samples = new Float32Array(buffer.length / 2);
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const samples = new Float32Array(Math.floor(buffer.length / 2));
   for (let i = 0; i < samples.length; i++) {
     const val = view.getInt16(i * 2, true);
     samples[i] = val < 0 ? val / 0x8000 : val / 0x7fff;
@@ -102,4 +102,40 @@ export function calculateRMS(samples: Float32Array): number {
   let sum = 0;
   for (const s of samples) sum += s * s;
   return Math.sqrt(sum / samples.length);
+}
+
+export type DetectedAudioFormat = 'wav' | 'mp3' | 'ogg' | 'flac' | 'webm' | 'mp4';
+
+const AUDIO_MIME_TYPES: Record<DetectedAudioFormat, string> = {
+  wav: 'audio/wav',
+  mp3: 'audio/mpeg',
+  ogg: 'audio/ogg',
+  flac: 'audio/flac',
+  webm: 'audio/webm',
+  mp4: 'audio/mp4',
+};
+
+/**
+ * Detect a containerized audio format from its magic bytes.
+ * Returns `null` for headerless data such as raw PCM16.
+ */
+export function detectAudioFormat(audio: Buffer): DetectedAudioFormat | null {
+  if (audio.length < 4) return null;
+  const ascii4 = audio.toString('ascii', 0, 4);
+  if (ascii4 === 'RIFF' && audio.length >= 12 && audio.toString('ascii', 8, 12) === 'WAVE') {
+    return 'wav';
+  }
+  if (ascii4 === 'OggS') return 'ogg';
+  if (ascii4 === 'fLaC') return 'flac';
+  if (audio.toString('ascii', 0, 3) === 'ID3') return 'mp3';
+  if (audio[0] === 0xff && (audio[1]! & 0xe0) === 0xe0 && (audio[1]! & 0x06) !== 0) return 'mp3';
+  if (audio[0] === 0x1a && audio[1] === 0x45 && audio[2] === 0xdf && audio[3] === 0xa3) {
+    return 'webm';
+  }
+  if (audio.length >= 8 && audio.toString('ascii', 4, 8) === 'ftyp') return 'mp4';
+  return null;
+}
+
+export function audioMimeType(format: DetectedAudioFormat): string {
+  return AUDIO_MIME_TYPES[format];
 }

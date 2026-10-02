@@ -24,11 +24,11 @@ const prompt = await coreFacts.formatForPrompt();
 // "user_name: Alex\ntimezone: Europe/Berlin"
 ```
 
-Core facts are injected into the agent instructions automatically by `RuntimeBuilder`.
+Core facts are injected into the agent instructions automatically by `RuntimeBuilder` — re-read for every message, so facts saved during a conversation are visible immediately.
 
 ## Level 2: Knowledge Graph
 
-SQLite-backed knowledge graph with nodes and relationships. The agent uses `remember`, `recall`, and `forget` tools to interact with it.
+Knowledge graph with nodes and relationships, stored in SQLite (or Postgres when `memory.adapter: postgres`). The agent uses `remember`, `recall`, and `forget` tools to interact with it.
 
 ```yaml title="cogitator.yml"
 memory:
@@ -61,7 +61,7 @@ Agent calls: forget({ query: "address" })
 
 ### Auto-extraction
 
-When `autoExtract` is enabled, the `AutoExtractMiddleware` runs after each conversation turn and automatically extracts entities and relationships into the knowledge graph — without the agent needing to call `remember` explicitly.
+When `autoExtract` is enabled, the `AutoExtractMiddleware` runs in the background for each user message and automatically extracts entities and relationships into the knowledge graph — without the agent needing to call `remember` explicitly.
 
 ```yaml
 memory:
@@ -82,17 +82,20 @@ memory:
     threshold: 50
 ```
 
-When a session exceeds `threshold` messages, the gateway triggers compaction:
-1. Older messages are summarized into a single summary message
-2. The most recent messages are kept intact
-3. The summary replaces the old messages in the session
+When a conversation holds at least `threshold` messages, the gateway triggers compaction:
+1. Older messages are summarized into a single summary message by the assistant's LLM
+2. The 10 most recent messages are kept intact
+3. The summary replaces the old messages in the conversation history
+
+Owners can also compact on demand with `/compact`.
 
 ## Full Configuration
 
 ```yaml title="cogitator.yml"
 memory:
   adapter: sqlite              # sqlite | postgres
-  path: ~/.cogitator/memory.db # path for sqlite
+  path: ~/.cogitator/memory.db # sqlite file (also holds core facts in postgres mode)
+  connectionString: postgres://user:pass@host/db # postgres (or DATABASE_URL env), needs `pg`
   knowledgeGraph: true         # enable knowledge graph + memory tools
   autoExtract: true            # auto-extract entities from conversations
   compaction:

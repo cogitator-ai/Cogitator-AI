@@ -39,11 +39,12 @@ import { swarm } from '@cogitator-ai/swarms';
 
 const team = swarm('dev-team')
   .strategy('hierarchical')
-  .supervisor(new Agent({ name: 'lead', instructions: 'Coordinate the team.' }))
+  .supervisor(new Agent({ name: 'lead', model: 'ollama/llama3.2', instructions: 'Coordinate.' }))
   .workers([
-    new Agent({ name: 'coder', instructions: 'Write code.', metadata: { expertise: ['code'] } }),
-    new Agent({ name: 'reviewer', instructions: 'Review code quality.' }),
+    new Agent({ name: 'coder', model: 'ollama/llama3.2', instructions: 'Write code.' }),
+    new Agent({ name: 'reviewer', model: 'ollama/llama3.2', instructions: 'Review code quality.' }),
   ])
+  .agentMetadata({ coder: { expertise: ['code'] } })
   .withAssessor({
     preferLocal: true,
     minCapabilityMatch: 0.3,
@@ -205,15 +206,21 @@ const team = swarm('budget-team')
 
 ## Locked Models
 
-If an agent should always use a specific model regardless of assessment, set `locked: true` in the agent metadata:
+If an agent should always use a specific model regardless of assessment, set `locked: true` in its swarm metadata:
 
 ```typescript
-const criticalAgent = new Agent({
+const auditor = new Agent({
   name: 'auditor',
   model: 'openai/gpt-4o',
   instructions: 'Perform security audit.',
-  metadata: { locked: true },
 });
+
+const team = swarm('audit-team')
+  .strategy('round-robin')
+  .agents([auditor, helper])
+  .agentMetadata({ auditor: { locked: true } })
+  .withAssessor({ preferLocal: true })
+  .build(cogitator);
 ```
 
-Locked agents are skipped during assessment and keep their original model assignment.
+Locked agents are skipped during assessment and keep their original model assignment. Unlocked agents are replaced by clones of themselves running the assigned, provider-qualified model (for example `ollama/llama3.2:3b`) — name, instructions and tools are preserved. Pipeline stages are reassigned as well.

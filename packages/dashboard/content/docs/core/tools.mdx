@@ -46,6 +46,8 @@ function tool<TParams, TResult>(config: ToolConfig<TParams, TResult>): Tool<TPar
 | `timeout`          | `number`                                 | Per-call timeout in milliseconds                                 |
 | `sandbox`          | `SandboxConfig`                          | Run in isolated environment                                      |
 
+When `timeout` is set, the runtime aborts `context.signal` once the limit is reached and reports `Tool "<name>" timed out after <ms>ms` to the model as the tool error. Long-running tools should pass `context.signal` to `fetch` and other cancellable APIs so the work actually stops.
+
 ## Parameter Schemas
 
 The `parameters` field accepts any Zod schema. Cogitator converts it to JSON Schema (OpenAPI 3.0 format) before sending it to the LLM.

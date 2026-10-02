@@ -97,11 +97,11 @@ export interface MCPPromptArgument {
 export interface MCPPromptMessage {
   role: 'user' | 'assistant';
   content: {
-    type: 'text' | 'image' | 'resource';
+    type: 'text' | 'image' | 'audio' | 'resource' | 'resource_link';
     text?: string;
     data?: string;
     mimeType?: string;
-    resource?: { uri: string; text?: string; blob?: string };
+    resource?: { uri: string; mimeType?: string; text?: string; blob?: string };
   };
 }
 
@@ -176,7 +176,16 @@ export interface MCPToolCallResult {
 export type MCPToolContent =
   | { type: 'text'; text: string }
   | { type: 'image'; data: string; mimeType: string }
+  | { type: 'audio'; data: string; mimeType: string }
   | { type: 'resource'; resource: MCPResourceContent };
+
+export interface MCPCallToolOptions {
+  /** Abort signal that cancels the in-flight tool call */
+  signal?: AbortSignal;
+
+  /** Per-call request timeout in ms (defaults to the MCP SDK timeout) */
+  timeout?: number;
+}
 
 export interface ToolAdapterOptions {
   /** Prefix to add to converted tool names */

@@ -60,8 +60,18 @@ export function buildCandidateGenerationPrompt(
     config: Partial<ArchitectureConfig>;
     score: number;
     metrics: Record<string, number>;
-  }>
+  }>,
+  options: { availableModels?: string[] } = {}
 ): string {
+  const availableModels = options.availableModels ?? [];
+  const modelLine =
+    availableModels.length > 0
+      ? `\n      "model": ${availableModels.map((m) => JSON.stringify(m)).join(' | ')} | null,`
+      : '';
+  const modelRule =
+    availableModels.length > 0
+      ? `Only use models from this list: ${availableModels.join(', ')}.`
+      : 'Do not change the model.';
   const historySection = historicalPerformance?.length
     ? `
 HISTORICAL PERFORMANCE:
@@ -85,18 +95,17 @@ ${historySection}
 
 Generate 3-5 candidate configurations that might improve performance.
 Each candidate should modify 1-3 parameters from current config.
+${modelRule}
 
 Respond with a JSON array:
 [
   {
     "id": "candidate_1",
-    "config": {
-      "model": "model name or null to keep current",
-      "temperature": number or null,
+    "config": {${modelLine}
+      "temperature": number between 0 and 2 or null,
       "maxTokens": number or null,
-      "systemPromptAdditions": "additional instructions or null",
       "toolStrategy": "sequential" | "parallel" | "adaptive" | null,
-      "reflectionDepth": number or null
+      "reflectionDepth": integer between 0 and 5 or null
     },
     "reasoning": "Why this configuration might help",
     "expectedImprovement": 0.0-1.0,
@@ -142,58 +151,187 @@ Respond with:
 }`;
 }
 
+const COMPLEXITIES: readonly TaskProfile['complexity'][] = [
+  'trivial',
+  'simple',
+  'moderate',
+  'complex',
+  'expert',
+  'extreme',
+];
+const DOMAINS: readonly TaskProfile['domain'][] = [
+  'general',
+  'coding',
+  'reasoning',
+  'creative',
+  'factual',
+  'conversational',
+];
+const TOOL_INTENSITIES: readonly TaskProfile['toolIntensity'][] = [
+  'none',
+  'light',
+  'moderate',
+  'heavy',
+];
+const REASONING_DEPTHS: readonly TaskProfile['reasoningDepth'][] = [
+  'shallow',
+  'moderate',
+  'deep',
+  'exhaustive',
+];
+const CREATIVITY_LEVELS: readonly TaskProfile['creativityLevel'][] = ['low', 'moderate', 'high'];
+const ACCURACY_LEVELS: readonly TaskProfile['accuracyRequirement'][] = [
+  'approximate',
+  'moderate',
+  'high',
+  'critical',
+];
+const TIME_CONSTRAINTS: readonly TaskProfile['timeConstraint'][] = [
+  'none',
+  'relaxed',
+  'moderate',
+  'strict',
+];
+const TOOL_STRATEGIES: readonly ArchitectureConfig['toolStrategy'][] = [
+  'sequential',
+  'parallel',
+  'adaptive',
+];
+const RISKS: readonly EvolutionCandidate['risk'][] = ['low', 'medium', 'high'];
+
+export const MAX_TOKENS_RANGE = { min: 100, max: 32000 } as const;
+export const REFLECTION_DEPTH_RANGE = { min: 0, max: 5 } as const;
+export const TEMPERATURE_RANGE = { min: 0, max: 2 } as const;
+
+function pickEnum<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return typeof value === 'string' && (allowed as readonly string[]).includes(value)
+    ? (value as T)
+    : fallback;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function clamp(value: number, range: { min: number; max: number }): number {
+  return Math.min(range.max, Math.max(range.min, value));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 export function parseTaskProfileResponse(response: string): TaskProfile | null {
   const json = extractJson(response);
   if (!json) return null;
 
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(json);
-
-    return {
-      complexity: parsed.complexity || 'moderate',
-      domain: parsed.domain || 'general',
-      estimatedTokens: parsed.estimatedTokens || 1000,
-      requiresTools: Boolean(parsed.requiresTools),
-      requiresReasoning: Boolean(parsed.requiresReasoning),
-      requiresCreativity: Boolean(parsed.requiresCreativity),
-      toolIntensity: parsed.toolIntensity || 'none',
-      reasoningDepth: parsed.reasoningDepth || 'moderate',
-      creativityLevel: parsed.creativityLevel || 'moderate',
-      accuracyRequirement: parsed.accuracyRequirement || 'moderate',
-      timeConstraint: parsed.timeConstraint || 'none',
-    };
+    parsed = JSON.parse(json);
   } catch {
     return null;
   }
+  if (!isRecord(parsed)) return null;
+
+  const estimatedTokens = finiteNumber(parsed.estimatedTokens);
+
+  return {
+    complexity: pickEnum(parsed.complexity, COMPLEXITIES, 'moderate'),
+    domain: pickEnum(parsed.domain, DOMAINS, 'general'),
+    estimatedTokens:
+      estimatedTokens !== undefined && estimatedTokens > 0 ? Math.round(estimatedTokens) : 1000,
+    requiresTools: Boolean(parsed.requiresTools),
+    requiresReasoning: Boolean(parsed.requiresReasoning),
+    requiresCreativity: Boolean(parsed.requiresCreativity),
+    toolIntensity: pickEnum(parsed.toolIntensity, TOOL_INTENSITIES, 'none'),
+    reasoningDepth: pickEnum(parsed.reasoningDepth, REASONING_DEPTHS, 'moderate'),
+    creativityLevel: pickEnum(parsed.creativityLevel, CREATIVITY_LEVELS, 'moderate'),
+    accuracyRequirement: pickEnum(parsed.accuracyRequirement, ACCURACY_LEVELS, 'moderate'),
+    timeConstraint: pickEnum(parsed.timeConstraint, TIME_CONSTRAINTS, 'none'),
+  };
 }
 
-export function parseCandidateGenerationResponse(response: string): EvolutionCandidate[] {
+export function sanitizeCandidateConfig(
+  raw: unknown,
+  options: { availableModels?: string[] } = {}
+): Partial<ArchitectureConfig> {
+  if (!isRecord(raw)) return {};
+  const config: Partial<ArchitectureConfig> = {};
+
+  if (typeof raw.model === 'string' && options.availableModels?.includes(raw.model)) {
+    config.model = raw.model;
+  }
+
+  const temperature = finiteNumber(raw.temperature);
+  if (temperature !== undefined) {
+    config.temperature = clamp(temperature, TEMPERATURE_RANGE);
+  }
+
+  const maxTokens = finiteNumber(raw.maxTokens);
+  if (maxTokens !== undefined) {
+    config.maxTokens = clamp(Math.round(maxTokens), MAX_TOKENS_RANGE);
+  }
+
+  if (
+    typeof raw.toolStrategy === 'string' &&
+    (TOOL_STRATEGIES as readonly string[]).includes(raw.toolStrategy)
+  ) {
+    config.toolStrategy = raw.toolStrategy as ArchitectureConfig['toolStrategy'];
+  }
+
+  const reflectionDepth = finiteNumber(raw.reflectionDepth);
+  if (reflectionDepth !== undefined) {
+    config.reflectionDepth = clamp(Math.round(reflectionDepth), REFLECTION_DEPTH_RANGE);
+  }
+
+  return config;
+}
+
+export function parseCandidateGenerationResponse(
+  response: string,
+  options: { availableModels?: string[] } = {}
+): EvolutionCandidate[] {
   const json = extractJsonArray(response);
   if (!json) return [];
 
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(json);
-    if (!Array.isArray(parsed)) return [];
-
-    return parsed
-      .filter((c: Record<string, unknown>) => c && typeof c === 'object' && c.config)
-      .map((c: Record<string, unknown>, idx: number) => ({
-        id: String(c.id || `candidate_${idx}`),
-        config: c.config as Partial<ArchitectureConfig>,
-        reasoning: String(c.reasoning || ''),
-        expectedImprovement:
-          typeof c.expectedImprovement === 'number' ? c.expectedImprovement : 0.5,
-        risk: (['low', 'medium', 'high'].includes(String(c.risk)) ? c.risk : 'medium') as
-          | 'low'
-          | 'medium'
-          | 'high',
-        generation: 0,
-        score: 0,
-        evaluationCount: 0,
-      }));
+    parsed = JSON.parse(json);
   } catch {
     return [];
   }
+  if (!Array.isArray(parsed)) return [];
+
+  const usedIds = new Set<string>(['baseline']);
+  const candidates: EvolutionCandidate[] = [];
+
+  parsed.forEach((raw: unknown, idx: number) => {
+    if (!isRecord(raw)) return;
+    const config = sanitizeCandidateConfig(raw.config, options);
+    if (Object.keys(config).length === 0) return;
+
+    let id = typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : `candidate_${idx}`;
+    while (usedIds.has(id)) {
+      id = `${id}_${idx}`;
+    }
+    usedIds.add(id);
+
+    const expectedImprovement = finiteNumber(raw.expectedImprovement);
+
+    candidates.push({
+      id,
+      config,
+      reasoning: typeof raw.reasoning === 'string' ? raw.reasoning : '',
+      expectedImprovement:
+        expectedImprovement !== undefined ? clamp(expectedImprovement, { min: 0, max: 1 }) : 0.5,
+      risk: pickEnum(raw.risk, RISKS, 'medium'),
+      generation: 0,
+      score: 0,
+      evaluationCount: 0,
+    });
+  });
+
+  return candidates;
 }
 
 export function parsePerformanceAnalysisResponse(response: string): {

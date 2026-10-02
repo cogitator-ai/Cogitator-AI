@@ -2,6 +2,7 @@
 
 export { useCogitatorChat } from './use-chat.js';
 export { useCogitatorAgent } from './use-agent.js';
+export { HttpError } from './http-error.js';
 
 export type {
   ChatMessage,

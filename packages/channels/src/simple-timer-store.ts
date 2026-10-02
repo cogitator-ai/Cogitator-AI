@@ -3,21 +3,29 @@ import { dirname, join } from 'node:path';
 import type { TimerEntry, TimerStore } from '@cogitator-ai/types';
 
 let counter = 0;
+let tmpCounter = 0;
 function nextId(): string {
   return `timer_${++counter}_${Date.now()}`;
 }
 
 export interface TimerStoreOptions {
   persistPath?: string;
+  /**
+   * Computes the next fire time for cron entries. When set, `schedule()` derives
+   * `firesAt` of every cron entry from its expression (and validates it).
+   */
+  resolveCronFiresAt?: (cron: string, timezone?: string) => number;
 }
 
 export class SimpleTimerStore implements TimerStore {
   private timers = new Map<string, TimerEntry>();
   private callbacks: ((entry: TimerEntry) => void)[] = [];
   private readonly persistPath: string | null;
+  private readonly resolveCronFiresAt: TimerStoreOptions['resolveCronFiresAt'];
 
   constructor(opts?: TimerStoreOptions) {
     this.persistPath = opts?.persistPath ?? null;
+    this.resolveCronFiresAt = opts?.resolveCronFiresAt;
     if (this.persistPath) {
       this.loadFromDisk();
     }
@@ -27,8 +35,13 @@ export class SimpleTimerStore implements TimerStore {
     entry: Omit<TimerEntry, 'id' | 'cancelled' | 'fired' | 'createdAt'>
   ): Promise<string> {
     const id = nextId();
+    const firesAt =
+      entry.cron && this.resolveCronFiresAt
+        ? this.resolveCronFiresAt(entry.cron, entry.timezone)
+        : entry.firesAt;
     const full: TimerEntry = {
       ...entry,
+      firesAt,
       id,
       cancelled: false,
       fired: false,
@@ -121,7 +134,7 @@ export class SimpleTimerStore implements TimerStore {
       const dir = dirname(this.persistPath);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
       const data = [...this.timers.values()];
-      const tmpPath = join(dir, `.timer-store-${Date.now()}.tmp`);
+      const tmpPath = join(dir, `.timer-store-${process.pid}-${++tmpCounter}.tmp`);
       writeFileSync(tmpPath, JSON.stringify(data));
       renameSync(tmpPath, this.persistPath);
     } catch {}

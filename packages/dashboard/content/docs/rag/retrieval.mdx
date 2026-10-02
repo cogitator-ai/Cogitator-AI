@@ -13,7 +13,7 @@ interface Retriever {
 }
 ```
 
-Each result contains the chunk content, a relevance score, and metadata linking back to the source document.
+Each result contains the chunk content, a relevance score, `source` (the document path or URL) and metadata linking back to the source document (document metadata, `documentId`, offsets).
 
 ## Similarity Retriever
 
@@ -58,7 +58,10 @@ const retriever = new MMRRetriever({
 const results = await retriever.retrieve('What tools are available?');
 ```
 
+Some vector stores (for example Qdrant) do not return stored vectors from a search; in that case the candidates are re-embedded with the embedding service so diversity can still be computed.
+
 The `lambda` parameter controls the relevance/diversity tradeoff:
+
 - `lambda = 1.0` — pure relevance (same as similarity search)
 - `lambda = 0.5` — balanced
 - `lambda = 0.0` — maximum diversity
@@ -79,7 +82,7 @@ Combines vector similarity search with BM25 keyword search using Reciprocal Rank
 
 ```typescript
 import { HybridRetriever } from '@cogitator-ai/rag';
-import { PostgresAdapter } from '@cogitator-ai/memory';
+import { HybridSearch, PostgresAdapter } from '@cogitator-ai/memory';
 
 const db = new PostgresAdapter({
   provider: 'postgres',
@@ -87,8 +90,14 @@ const db = new PostgresAdapter({
 });
 await db.connect();
 
+const hybridSearch = new HybridSearch({
+  embeddingAdapter: db,
+  embeddingService: embeddings,
+  keywordAdapter: db, // full-text search in Postgres; omit to use the in-process BM25 index
+});
+
 const retriever = new HybridRetriever({
-  hybridSearch: db,
+  hybridSearch,
   defaultWeights: { bm25: 0.3, vector: 0.7 },
   defaultTopK: 10,
 });
@@ -96,11 +105,13 @@ const retriever = new HybridRetriever({
 const results = await retriever.retrieve('error handling in tool execution');
 ```
 
+When used inside a `RAGPipeline` (via `withHybridSearch()` or `withRetriever()`), every ingested chunk is also added to the HybridSearch in-process BM25 index, and keyword-only hits are mapped back to their chunk id, document id and metadata. Custom retrievers can receive the same notifications by implementing `ChunkIndexer.indexChunk()`.
+
 Each result includes `vectorScore` and `keywordScore` in its metadata, so you can inspect how each signal contributed.
 
 | Option             | Type         | Default | Description                                |
 | ------------------ | ------------ | ------- | ------------------------------------------ |
-| `hybridSearch`     | HybridSearch | —       | Store implementing hybrid search           |
+| `hybridSearch`     | HybridSearch | —       | `HybridSearch` from `@cogitator-ai/memory` |
 | `defaultWeights`   | object       | —       | `{ bm25: number, vector: number }` weights |
 | `defaultTopK`      | number       | 10      | Default number of results                  |
 | `defaultThreshold` | number       | 0.0     | Minimum score                              |
@@ -109,7 +120,7 @@ Each result includes `vectorScore` and `keywordScore` in its metadata, so you ca
 
 ## MultiQuery Retriever
 
-Expands a single query into multiple variants, retrieves results for each, and merges them by taking the highest score per chunk. You provide the query expansion function — typically an LLM call.
+Expands a single query into multiple variants, retrieves results for each in parallel, and merges them by taking the highest score per chunk. You provide the query expansion function — typically an LLM call. The original query is always searched; generated variants are trimmed, de-duplicated (case-insensitive) and capped by `defaultMaxQueries` or the per-query `multiQueryCount`. If expansion throws, the original query is used alone; if every retrieval fails, the first error is thrown.
 
 ```typescript
 import { MultiQueryRetriever, SimilarityRetriever } from '@cogitator-ai/rag';
@@ -124,7 +135,7 @@ const retriever = new MultiQueryRetriever({
   expandQuery: async (query) => {
     const response = await llm.generate(
       `Generate 3 alternative search queries for: "${query}"\n` +
-      'Return one query per line, no numbering.'
+        'Return one query per line, no numbering.'
     );
     return response.split('\n').filter(Boolean);
   },
@@ -133,10 +144,12 @@ const retriever = new MultiQueryRetriever({
 const results = await retriever.retrieve('How do I configure memory?');
 ```
 
-| Option          | Type                                      | Default | Description                            |
-| --------------- | ----------------------------------------- | ------- | -------------------------------------- |
-| `baseRetriever` | Retriever                                 | —       | Underlying retriever for each query    |
-| `expandQuery`   | (query: string) => Promise\<string[]\>    | —       | Function that generates query variants |
+| Option              | Type                                   | Default | Description                            |
+| ------------------- | -------------------------------------- | ------- | -------------------------------------- |
+| `baseRetriever`     | Retriever                              | —       | Underlying retriever for each query    |
+| `expandQuery`       | (query: string) => Promise\<string[]\> | —       | Function that generates query variants |
+| `defaultTopK`       | number                                 | 10      | Results returned after merging         |
+| `defaultMaxQueries` | number                                 | all     | Max generated variants used            |
 
 **When to use:** When user queries are ambiguous or under-specified. The LLM generates variations that cover different angles of the question.
 
@@ -174,7 +187,7 @@ createRetriever({
 
 createRetriever({
   strategy: 'hybrid',
-  hybridSearch: postgresAdapter,
+  hybridSearch,
   weights: { bm25: 0.3, vector: 0.7 },
 });
 
@@ -182,6 +195,7 @@ createRetriever({
   strategy: 'multi-query',
   baseRetriever: similarityRetriever,
   expandQuery: queryExpansionFn,
+  maxQueries: 3,
 });
 ```
 

@@ -99,7 +99,7 @@ async function getEmbedding(
       }
 
       case 'ollama': {
-        const baseUrl = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
+        const baseUrl = resolveOllamaBaseUrl();
         const response = await fetchEmbedding(`${baseUrl}/api/embeddings`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -122,12 +122,12 @@ async function getEmbedding(
         const apiKey = process.env.GOOGLE_API_KEY;
         if (!apiKey) throw new Error('GOOGLE_API_KEY not set');
 
-        const modelId = model ?? 'text-embedding-004';
+        const modelId = model ?? DEFAULT_GOOGLE_EMBEDDING_MODEL;
         const response = await fetchEmbedding(
-          `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:embedContent?key=${apiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:embedContent`,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
             body: JSON.stringify({
               model: `models/${modelId}`,
               content: { parts: [{ text }] },
@@ -147,6 +147,15 @@ async function getEmbedding(
   } finally {
     abort.cleanup();
   }
+}
+
+const DEFAULT_GOOGLE_EMBEDDING_MODEL = 'gemini-embedding-001';
+
+function resolveOllamaBaseUrl(): string {
+  const configured = process.env.OLLAMA_BASE_URL ?? process.env.OLLAMA_HOST;
+  if (!configured) return 'http://localhost:11434';
+  const withScheme = /^https?:\/\//i.test(configured) ? configured : `http://${configured}`;
+  return withScheme.replace(/\/+$/, '');
 }
 
 function detectEmbeddingProvider(): 'openai' | 'ollama' | 'google' | null {
@@ -290,6 +299,6 @@ function getDefaultModel(provider: 'openai' | 'ollama' | 'google'): string {
     case 'ollama':
       return 'nomic-embed-text';
     case 'google':
-      return 'text-embedding-004';
+      return DEFAULT_GOOGLE_EMBEDDING_MODEL;
   }
 }

@@ -337,7 +337,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
 
       let cypher = `MATCH (n:GraphNode) WHERE ${whereClauses.join(' AND ')} RETURN n`;
       if (query.limit) {
-        cypher += ` LIMIT $queryLimit`;
+        cypher += ` LIMIT toInteger($queryLimit)`;
         params.queryLimit = query.limit;
       }
 
@@ -386,7 +386,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
          WHERE score >= $threshold
          RETURN n, score
          ORDER BY score DESC
-         LIMIT $queryLimit`,
+         LIMIT toInteger($queryLimit)`,
         params
       );
 
@@ -479,6 +479,13 @@ export class Neo4jGraphAdapter implements GraphAdapter {
           updatedAt: now,
         }
       );
+
+      if (result.records.length === 0) {
+        return {
+          success: false,
+          error: `Source node ${edge.sourceNodeId} or target node ${edge.targetNodeId} not found`,
+        };
+      }
 
       const createdEdge = this.recordToEdge(
         result.records[0].get('r') as Neo4jRelationship,
@@ -681,7 +688,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
 
       let cypher = `MATCH ${matchClause} WHERE ${whereClauses.join(' AND ')} RETURN r, s.id as sourceId, t.id as targetId`;
       if (query.limit) {
-        cypher += ` LIMIT $queryLimit`;
+        cypher += ` LIMIT toInteger($queryLimit)`;
         params.queryLimit = query.limit;
       }
 
@@ -724,9 +731,14 @@ export class Neo4jGraphAdapter implements GraphAdapter {
       },
     ];
 
+    if (startNodeResult.data.agentId !== options.agentId) {
+      return { success: false, error: 'Start node not found' };
+    }
+
     visitedNodes.set(options.startNodeId, startNodeResult.data);
 
     while (queue.length > 0) {
+      if (options.limit && paths.length >= options.limit) break;
       const current = queue.shift()!;
 
       if (current.depth >= options.maxDepth) {
@@ -740,6 +752,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
       let hasChildren = false;
       for (const { node, edge } of neighbors.data) {
         if (visitedNodes.has(node.id)) continue;
+        if (node.agentId !== options.agentId || edge.agentId !== options.agentId) continue;
         if (options.edgeTypes && !options.edgeTypes.includes(edge.type)) continue;
         if (options.minEdgeWeight && edge.weight < options.minEdgeWeight) continue;
         if (options.minConfidence && edge.confidence < options.minConfidence) continue;
@@ -758,8 +771,6 @@ export class Neo4jGraphAdapter implements GraphAdapter {
           },
           depth: current.depth + 1,
         });
-
-        if (options.limit && paths.length >= options.limit) break;
       }
 
       if (!hasChildren) {
@@ -770,7 +781,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
     return {
       success: true,
       data: {
-        paths,
+        paths: options.limit ? paths.slice(0, options.limit) : paths,
         visitedNodes: Array.from(visitedNodes.values()),
         visitedEdges: Array.from(visitedEdges.values()),
         depth: options.maxDepth,
@@ -779,22 +790,33 @@ export class Neo4jGraphAdapter implements GraphAdapter {
   }
 
   async findShortestPath(
-    _agentId: string,
+    agentId: string,
     startNodeId: string,
     endNodeId: string,
     maxDepth = 10
   ): Promise<MemoryResult<GraphPath | null>> {
     if (!this.driver) return { success: false, error: 'Not connected' };
 
+    if (startNodeId === endNodeId) {
+      const node = await this.getNode(startNodeId);
+      if (!node.success || node.data?.agentId !== agentId) {
+        return { success: false, error: 'Start node not found' };
+      }
+      return { success: true, data: { nodes: [node.data], edges: [], totalWeight: 0, length: 0 } };
+    }
+
     const safeDepth = Math.max(1, Math.min(20, Math.floor(Number(maxDepth) || 3)));
 
     const session = this.driver.session({ database: this.database });
     try {
       const result = await session.run(
-        `MATCH (start:GraphNode {id: $startNodeId}), (end:GraphNode {id: $endNodeId}),
-               path = shortestPath((start)-[*..${safeDepth}]-(end))
+        `MATCH (start:GraphNode {id: $startNodeId, agentId: $agentId}),
+               (end:GraphNode {id: $endNodeId, agentId: $agentId}),
+               path = shortestPath((start)-[:RELATION*..${safeDepth}]-(end))
+         WHERE all(n IN nodes(path) WHERE n.agentId = $agentId)
+           AND all(r IN relationships(path) WHERE r.agentId = $agentId)
          RETURN path`,
-        { startNodeId, endNodeId }
+        { startNodeId, endNodeId, agentId }
       );
 
       if (result.records.length === 0) {
@@ -846,7 +868,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
           error.message.includes('Unknown function') ||
           error.message.includes('shortestPath'))
       ) {
-        return this.findShortestPathBFS(startNodeId, endNodeId, maxDepth);
+        return this.findShortestPathBFS(agentId, startNodeId, endNodeId, safeDepth);
       }
       throw error;
     } finally {
@@ -855,6 +877,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
   }
 
   private async findShortestPathBFS(
+    agentId: string,
     startNodeId: string,
     endNodeId: string,
     maxDepth: number
@@ -864,6 +887,9 @@ export class Neo4jGraphAdapter implements GraphAdapter {
 
     const startNodeResult = await this.getNode(startNodeId);
     if (!startNodeResult.success || !startNodeResult.data) {
+      return { success: false, error: 'Start node not found' };
+    }
+    if (startNodeResult.data.agentId !== agentId) {
       return { success: false, error: 'Start node not found' };
     }
 
@@ -893,6 +919,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
 
       for (const { node, edge } of neighbors.data) {
         if (visited.has(node.id)) continue;
+        if (node.agentId !== agentId || edge.agentId !== agentId) continue;
 
         visited.add(node.id);
         queue.push({
@@ -920,42 +947,43 @@ export class Neo4jGraphAdapter implements GraphAdapter {
     try {
       const results: { node: GraphNode; edge: GraphEdge }[] = [];
 
-      if (direction === 'outgoing' || direction === 'both') {
-        const outResult = await session.run(
-          `MATCH (s:GraphNode {id: $nodeId})-[r:RELATION]->(t:GraphNode)
-           RETURN r, t, s.id as sourceId, t.id as targetId`,
-          { nodeId }
-        );
+      const outgoingFilter = direction === 'incoming' ? 'WHERE r.bidirectional = true' : '';
+      const incomingFilter = direction === 'outgoing' ? 'AND r.bidirectional = true' : '';
 
-        for (const record of outResult.records) {
-          results.push({
-            node: this.recordToNode(record.get('t') as Neo4jNode),
-            edge: this.recordToEdge(
-              record.get('r') as Neo4jRelationship,
-              record.get('sourceId') as string,
-              record.get('targetId') as string
-            ),
-          });
-        }
+      const outResult = await session.run(
+        `MATCH (s:GraphNode {id: $nodeId})-[r:RELATION]->(t:GraphNode)
+         ${outgoingFilter}
+         RETURN r, t, s.id as sourceId, t.id as targetId`,
+        { nodeId }
+      );
+
+      for (const record of outResult.records) {
+        results.push({
+          node: this.recordToNode(record.get('t') as Neo4jNode),
+          edge: this.recordToEdge(
+            record.get('r') as Neo4jRelationship,
+            record.get('sourceId') as string,
+            record.get('targetId') as string
+          ),
+        });
       }
 
-      if (direction === 'incoming' || direction === 'both') {
-        const inResult = await session.run(
-          `MATCH (s:GraphNode)-[r:RELATION]->(t:GraphNode {id: $nodeId})
-           RETURN r, s, s.id as sourceId, t.id as targetId`,
-          { nodeId }
-        );
+      const inResult = await session.run(
+        `MATCH (s:GraphNode)-[r:RELATION]->(t:GraphNode {id: $nodeId})
+         WHERE s.id <> $nodeId ${incomingFilter}
+         RETURN r, s, s.id as sourceId, t.id as targetId`,
+        { nodeId }
+      );
 
-        for (const record of inResult.records) {
-          results.push({
-            node: this.recordToNode(record.get('s') as Neo4jNode),
-            edge: this.recordToEdge(
-              record.get('r') as Neo4jRelationship,
-              record.get('sourceId') as string,
-              record.get('targetId') as string
-            ),
-          });
-        }
+      for (const record of inResult.records) {
+        results.push({
+          node: this.recordToNode(record.get('s') as Neo4jNode),
+          edge: this.recordToEdge(
+            record.get('r') as Neo4jRelationship,
+            record.get('sourceId') as string,
+            record.get('targetId') as string
+          ),
+        });
       }
 
       return { success: true, data: results };
@@ -978,12 +1006,16 @@ export class Neo4jGraphAdapter implements GraphAdapter {
     const targetNode = targetNodeResult.data;
     const allAliases = new Set(targetNode.aliases);
     const allProperties = { ...targetNode.properties };
+    const mergeIds: string[] = [];
 
     for (const sourceId of sourceNodeIds) {
+      if (sourceId === targetNodeId || mergeIds.includes(sourceId)) continue;
       const sourceNodeResult = await this.getNode(sourceId);
       if (!sourceNodeResult.success || !sourceNodeResult.data) continue;
 
       const sourceNode = sourceNodeResult.data;
+      if (sourceNode.agentId !== targetNode.agentId) continue;
+      mergeIds.push(sourceId);
       allAliases.add(sourceNode.name);
       sourceNode.aliases.forEach((a) => allAliases.add(a));
       Object.assign(allProperties, sourceNode.properties);
@@ -992,7 +1024,7 @@ export class Neo4jGraphAdapter implements GraphAdapter {
     const session = this.driver.session({ database: this.database });
     try {
       await session.executeWrite(async (tx) => {
-        for (const sourceId of sourceNodeIds) {
+        for (const sourceId of mergeIds) {
           await tx.run(
             `MATCH (s:GraphNode {id: $sourceId})-[r:RELATION]->(t:GraphNode)
              WHERE t.id <> $targetId

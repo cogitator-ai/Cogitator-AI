@@ -6,7 +6,7 @@
 
 export { WorkflowBuilder } from './builder';
 
-export { WorkflowExecutor, NodeExecutionError } from './executor';
+export { WorkflowExecutor, NodeExecutionError, NodeTimeoutError } from './executor';
 
 export type { ExecutorExecuteOptions } from './executor';
 
@@ -14,7 +14,21 @@ export { WorkflowScheduler } from './scheduler';
 
 export { InMemoryCheckpointStore, FileCheckpointStore, createCheckpointId } from './checkpoint';
 
-export { agentNode, toolNode, functionNode, customNode } from './nodes/index';
+export {
+  agentNode,
+  toolNode,
+  functionNode,
+  customNode,
+  timerWorkflowNode,
+  humanWorkflowNode,
+  mapWorkflowNode,
+  mapReduceWorkflowNode,
+  subworkflowWorkflowNode,
+  parallelSubworkflowsNode,
+  type TimerWorkflowNodeOptions,
+  type HumanWorkflowNodeOptions,
+  type SubworkflowNodeOptions,
+} from './nodes/index';
 
 export type { AgentNodeOptions } from './nodes/agent';
 

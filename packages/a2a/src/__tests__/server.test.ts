@@ -212,10 +212,15 @@ describe('A2AServer', () => {
       expect(response.error!.code).toBe(-32601);
     });
 
-    it('should return parseError for invalid JSON-RPC', async () => {
+    it('should return invalidRequest for a body that is not a JSON-RPC object', async () => {
       const response = await server.handleJsonRpc('not an object');
       expect(response.error).toBeDefined();
-      expect(response.error!.code).toBe(-32700);
+      expect(response.error!.code).toBe(-32600);
+    });
+
+    it('should return invalidRequest for a malformed request object', async () => {
+      const response = await server.handleJsonRpc({ jsonrpc: '1.0', method: 5 });
+      expect(response.error!.code).toBe(-32600);
     });
 
     it('should return parseError for null body', async () => {
@@ -378,13 +383,20 @@ describe('A2AServer', () => {
         cogitator,
         allowPrivateUrls: true,
       });
+      const sent = await permissiveServer.handleJsonRpc({
+        jsonrpc: '2.0',
+        method: 'message/send',
+        params: { message: userMessage('hi') },
+        id: 0,
+      });
+      const taskId = (sent!.result as { id: string }).id;
       const response = await permissiveServer.handleJsonRpc({
         jsonrpc: '2.0',
         method: 'tasks/pushNotification/create',
-        params: { taskId: 'task_1', config: { webhookUrl: 'http://localhost:8080/hook' } },
+        params: { taskId, config: { webhookUrl: 'http://localhost:8080/hook' } },
         id: 1,
       });
-      expect(response.error).toBeUndefined();
+      expect(response!.error).toBeUndefined();
     });
   });
 

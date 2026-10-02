@@ -128,11 +128,13 @@ describe('createAgentHandler', () => {
     expect(data.error).toBe('LLM failed');
   });
 
-  it('defaults to empty string when input is not a string', async () => {
+  it('rejects non-string input with 400 without running the agent', async () => {
     const cog = mockCogitator();
     const handler = createAgentHandler(cog, mockAgent());
 
-    await handler(jsonRequest({ input: 123 }));
-    expect(cog.run).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ input: '' }));
+    const res = await handler(jsonRequest({ input: 123 }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('input must be a non-empty string');
+    expect(cog.run).not.toHaveBeenCalled();
   });
 });

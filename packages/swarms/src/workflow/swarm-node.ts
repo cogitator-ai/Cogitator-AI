@@ -38,6 +38,53 @@ export interface SwarmNodeOptions<S = WorkflowState> {
   runOptions?: Partial<SwarmRunOptions>;
 }
 
+function resolveSwarmInput<S extends WorkflowState>(
+  ctx: NodeContext<S>,
+  options?: SwarmNodeOptions<S>
+): string {
+  if (options?.inputMapper) return options.inputMapper(ctx.state, ctx.input);
+  if (typeof ctx.input === 'string') return ctx.input;
+  if (ctx.input !== undefined) return JSON.stringify(ctx.input);
+  return JSON.stringify(ctx.state);
+}
+
+function requireCogitator<S extends WorkflowState>(ctx: NodeContext<S>): Cogitator {
+  if (!('cogitator' in ctx)) {
+    throw new Error('SwarmNode requires cogitator in context');
+  }
+  return (ctx as SwarmNodeContext<S>).cogitator;
+}
+
+async function runSwarmForNode<S extends WorkflowState>(
+  swarmOrConfig: Swarm | SwarmConfig,
+  ctx: NodeContext<S>,
+  options?: SwarmNodeOptions<S>
+): Promise<StrategyResult> {
+  const cogitator = requireCogitator(ctx);
+  const isOwned = !(swarmOrConfig instanceof Swarm);
+  const swarm =
+    swarmOrConfig instanceof Swarm ? swarmOrConfig : new Swarm(cogitator, swarmOrConfig);
+
+  try {
+    return await swarm.run({
+      input: resolveSwarmInput(ctx, options),
+      ...options?.runOptions,
+      context: {
+        ...options?.runOptions?.context,
+        workflowContext: {
+          nodeId: ctx.nodeId,
+          step: ctx.step,
+          workflowState: ctx.state,
+        },
+      },
+    });
+  } finally {
+    if (isOwned) {
+      await swarm.close();
+    }
+  }
+}
+
 /**
  * Create a workflow node that runs a swarm
  */
@@ -45,55 +92,14 @@ export function swarmNode<S extends WorkflowState = WorkflowState>(
   swarmOrConfig: Swarm | SwarmConfig,
   options?: SwarmNodeOptions<S>
 ): WorkflowNode<S> {
-  const name = swarmOrConfig instanceof Swarm ? swarmOrConfig.name : swarmOrConfig.name;
-
   return {
-    name: `swarm:${name}`,
+    name: `swarm:${swarmOrConfig.name}`,
     fn: async (ctx): Promise<NodeResult<S>> => {
-      if (!('cogitator' in ctx)) {
-        throw new Error('SwarmNode requires cogitator in context');
-      }
-      const extCtx = ctx as SwarmNodeContext<S>;
-
-      const isOwned = !(swarmOrConfig instanceof Swarm);
-      const swarm =
-        swarmOrConfig instanceof Swarm ? swarmOrConfig : new Swarm(extCtx.cogitator, swarmOrConfig);
-
-      try {
-        let input: string;
-        if (options?.inputMapper) {
-          input = options.inputMapper(ctx.state, ctx.input);
-        } else if (typeof ctx.input === 'string') {
-          input = ctx.input;
-        } else if (ctx.input !== undefined) {
-          input = JSON.stringify(ctx.input);
-        } else {
-          input = JSON.stringify(ctx.state);
-        }
-
-        const result = await swarm.run({
-          input,
-          context: {
-            workflowContext: {
-              nodeId: ctx.nodeId,
-              step: ctx.step,
-              workflowState: ctx.state,
-            },
-          },
-          ...options?.runOptions,
-        });
-
-        const stateUpdate = options?.stateMapper?.(result);
-
-        return {
-          state: stateUpdate,
-          output: result.output,
-        };
-      } finally {
-        if (isOwned) {
-          await swarm.close();
-        }
-      }
+      const result = await runSwarmForNode(swarmOrConfig, ctx, options);
+      return {
+        state: options?.stateMapper?.(result),
+        output: result.output,
+      };
     },
   };
 }
@@ -133,79 +139,35 @@ export function parallelSwarmsNode<S extends WorkflowState = WorkflowState>(
   mergeResults?: (results: Record<string, StrategyResult>) => Partial<S>
 ): WorkflowNode<S> {
   return {
-    name: `parallel-swarms:${swarms
-      .map((s) => {
-        return s.swarm instanceof Swarm ? s.swarm.name : s.swarm.name;
-      })
-      .join(',')}`,
+    name: `parallel-swarms:${swarms.map((s) => s.swarm.name).join(',')}`,
     fn: async (ctx): Promise<NodeResult<S>> => {
-      if (!('cogitator' in ctx)) {
-        throw new Error('SwarmNode requires cogitator in context');
-      }
-      const extCtx = ctx as SwarmNodeContext<S>;
+      requireCogitator(ctx);
+
+      const settled = await Promise.allSettled(
+        swarms.map(({ swarm, options }) => runSwarmForNode(swarm, ctx, options))
+      );
+
       const results: Record<string, StrategyResult> = {};
       const errors: { key: string; error: unknown }[] = [];
 
-      const settled = await Promise.allSettled(
-        swarms.map(async ({ swarm: swarmOrConfig, key, options }) => {
-          const isOwned = !(swarmOrConfig instanceof Swarm);
-          const swarm =
-            swarmOrConfig instanceof Swarm
-              ? swarmOrConfig
-              : new Swarm(extCtx.cogitator, swarmOrConfig);
-
-          try {
-            let input: string;
-            if (options?.inputMapper) {
-              input = options.inputMapper(ctx.state, ctx.input);
-            } else if (typeof ctx.input === 'string') {
-              input = ctx.input;
-            } else if (ctx.input !== undefined) {
-              input = JSON.stringify(ctx.input);
-            } else {
-              input = JSON.stringify(ctx.state);
-            }
-
-            const result = await swarm.run({
-              input,
-              context: {
-                workflowContext: {
-                  nodeId: ctx.nodeId,
-                  step: ctx.step,
-                  workflowState: ctx.state,
-                },
-              },
-              ...options?.runOptions,
-            });
-
-            return { key, result };
-          } finally {
-            if (isOwned) {
-              await swarm.close();
-            }
-          }
-        })
-      );
-
-      for (const outcome of settled) {
+      settled.forEach((outcome, index) => {
+        const { key } = swarms[index];
         if (outcome.status === 'fulfilled') {
-          results[outcome.value.key] = outcome.value.result;
+          results[key] = outcome.value;
         } else {
-          errors.push({ key: 'unknown', error: outcome.reason });
+          errors.push({ key, error: outcome.reason });
         }
-      }
+      });
 
       if (errors.length > 0 && Object.keys(results).length === 0) {
         throw new AggregateError(
           errors.map((e) => e.error),
-          'All parallel swarms failed'
+          `All parallel swarms failed: ${errors.map((e) => e.key).join(', ')}`
         );
       }
 
-      const stateUpdate = mergeResults?.(results);
-
       return {
-        state: stateUpdate,
+        state: mergeResults?.(results),
         output: results,
       };
     },

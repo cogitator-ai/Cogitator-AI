@@ -61,7 +61,7 @@ export class AnthropicBackend extends BaseLLMBackend {
     try {
       const params = {
         model: request.model,
-        system: systemSuffix ? `${system}\n\n${systemSuffix}` : system,
+        system: this.buildSystemPrompt(system, systemSuffix),
         messages,
         tools: allTools.length > 0 ? allTools : undefined,
         tool_choice: toolChoice,
@@ -106,7 +106,10 @@ export class AnthropicBackend extends BaseLLMBackend {
       id: response.id,
       content,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      finishReason: this.mapStopReason(response.stop_reason),
+      finishReason:
+        jsonSchemaResponse && toolCalls.length === 0
+          ? 'stop'
+          : this.mapStopReason(response.stop_reason),
       usage: {
         inputTokens: response.usage.input_tokens,
         outputTokens: response.usage.output_tokens,
@@ -137,7 +140,7 @@ export class AnthropicBackend extends BaseLLMBackend {
     try {
       const params = {
         model: request.model,
-        system: systemSuffix ? `${system}\n\n${systemSuffix}` : system,
+        system: this.buildSystemPrompt(system, systemSuffix),
         messages,
         tools: allTools.length > 0 ? allTools : undefined,
         tool_choice: toolChoice,
@@ -164,93 +167,120 @@ export class AnthropicBackend extends BaseLLMBackend {
     let jsonSchemaContent = '';
     let streamStopReason: string | null = null;
 
-    for await (const event of stream) {
-      if (event.type === 'message_start') {
-        inputTokens = event.message.usage.input_tokens;
-      } else if (event.type === 'content_block_start') {
-        const block = event.content_block;
-        if (block.type === 'tool_use') {
-          currentToolCall = {
-            id: block.id,
-            name: block.name,
-            arguments: {},
-          };
-          currentToolName = block.name;
-          inputJson = '';
-        }
-      } else if (event.type === 'content_block_delta') {
-        const delta = event.delta;
-        if (delta.type === 'text_delta') {
-          yield {
-            id,
-            delta: { content: delta.text },
-          };
-        } else if (delta.type === 'input_json_delta') {
-          inputJson += delta.partial_json;
-        }
-      } else if (event.type === 'content_block_stop') {
-        if (currentToolCall) {
-          try {
-            currentToolCall.arguments = JSON.parse(inputJson) as Record<string, unknown>;
-          } catch (e) {
-            getLogger().warn('Failed to parse tool call arguments in Anthropic stream', {
-              toolName: currentToolName,
-              inputJson: inputJson.slice(0, 200),
-              error: e instanceof Error ? e.message : String(e),
-            });
-            currentToolCall.arguments = {};
+    try {
+      for await (const event of stream) {
+        if (event.type === 'message_start') {
+          inputTokens = event.message.usage.input_tokens;
+        } else if (event.type === 'content_block_start') {
+          const block = event.content_block;
+          if (block.type === 'tool_use') {
+            currentToolCall = {
+              id: block.id,
+              name: block.name,
+              arguments: {},
+            };
+            currentToolName = block.name;
+            inputJson = '';
+          }
+        } else if (event.type === 'content_block_delta') {
+          const delta = event.delta;
+          if (delta.type === 'text_delta') {
+            yield {
+              id,
+              delta: { content: delta.text },
+            };
+          } else if (delta.type === 'input_json_delta') {
+            inputJson += delta.partial_json;
+          }
+        } else if (event.type === 'content_block_stop') {
+          if (currentToolCall) {
+            currentToolCall.arguments = this.parseToolInput(inputJson, currentToolName);
+
+            if (currentToolName === '__json_response') {
+              jsonSchemaContent = JSON.stringify(currentToolCall.arguments);
+            } else {
+              toolCalls.push(currentToolCall as ToolCall);
+            }
+            currentToolCall = null;
+            currentToolName = '';
+          }
+        } else if (event.type === 'message_delta') {
+          outputTokens = event.usage.output_tokens;
+          const stopReason = (event as { delta?: { stop_reason?: string | null } }).delta
+            ?.stop_reason;
+          if (stopReason) {
+            streamStopReason = stopReason;
+          }
+        } else if (event.type === 'message_stop') {
+          if (jsonSchemaContent) {
+            yield {
+              id,
+              delta: { content: jsonSchemaContent },
+            };
           }
 
-          if (currentToolName === '__json_response') {
-            jsonSchemaContent = JSON.stringify(currentToolCall.arguments);
-          } else {
-            toolCalls.push(currentToolCall as ToolCall);
-          }
-          currentToolCall = null;
-          currentToolName = '';
-        }
-      } else if (event.type === 'message_delta') {
-        outputTokens = event.usage.output_tokens;
-        const delta = (event as { delta?: { stop_reason?: string | null } }).delta;
-        if (delta?.stop_reason) {
-          streamStopReason = delta.stop_reason;
-        }
-      } else if (event.type === 'message_stop') {
-        if (jsonSchemaContent) {
           yield {
             id,
-            delta: { content: jsonSchemaContent },
+            delta: {
+              toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+            },
+            finishReason:
+              toolCalls.length > 0
+                ? 'tool_calls'
+                : jsonSchemaContent
+                  ? 'stop'
+                  : this.mapStopReason(streamStopReason),
+            usage: {
+              inputTokens,
+              outputTokens,
+              totalTokens: inputTokens + outputTokens,
+            },
           };
         }
-
-        yield {
-          id,
-          delta: {
-            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-          },
-          finishReason: toolCalls.length > 0 ? 'tool_calls' : this.mapStopReason(streamStopReason),
-          usage: {
-            inputTokens,
-            outputTokens,
-            totalTokens: inputTokens + outputTokens,
-          },
-        };
       }
+    } catch (e) {
+      throw this.wrapAnthropicError(e, ctx);
     }
+  }
+
+  private parseToolInput(inputJson: string, toolName: string): Record<string, unknown> {
+    if (!inputJson.trim()) {
+      return {};
+    }
+    try {
+      const parsed = JSON.parse(inputJson) as unknown;
+      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {};
+    } catch (e) {
+      getLogger().warn('Failed to parse tool call arguments in Anthropic stream', {
+        toolName,
+        inputJson: inputJson.slice(0, 200),
+        error: e instanceof Error ? e.message : String(e),
+      });
+      return {};
+    }
+  }
+
+  private buildSystemPrompt(system: string, suffix: string): string | undefined {
+    const combined = [system, suffix].filter((part) => part.length > 0).join('\n\n');
+    return combined.length > 0 ? combined : undefined;
   }
 
   private convertMessages(messages: Message[]): {
     system: string;
     messages: Anthropic.MessageParam[];
   } {
-    let system = '';
+    const systemParts: string[] = [];
     const anthropicMessages: Anthropic.MessageParam[] = [];
 
     for (const m of messages) {
       switch (m.role) {
-        case 'system':
-          system = this.getTextContent(m.content);
+        case 'system': {
+          const text = this.getTextContent(m.content);
+          if (text) systemParts.push(text);
           break;
+        }
         case 'user':
           anthropicMessages.push({
             role: 'user',
@@ -263,22 +293,29 @@ export class AnthropicBackend extends BaseLLMBackend {
             content: this.convertAssistantContent(m),
           });
           break;
-        case 'tool':
-          anthropicMessages.push({
-            role: 'user',
-            content: [
-              {
-                type: 'tool_result',
-                tool_use_id: m.toolCallId ?? '',
-                content: this.getTextContent(m.content),
-              },
-            ],
-          });
+        case 'tool': {
+          const toolResult: Anthropic.ToolResultBlockParam = {
+            type: 'tool_result',
+            tool_use_id: m.toolCallId ?? '',
+            content: this.getTextContent(m.content),
+          };
+          const previous = anthropicMessages[anthropicMessages.length - 1];
+          if (
+            previous?.role === 'user' &&
+            Array.isArray(previous.content) &&
+            previous.content.length > 0 &&
+            previous.content.every((block) => block.type === 'tool_result')
+          ) {
+            previous.content.push(toolResult);
+          } else {
+            anthropicMessages.push({ role: 'user', content: [toolResult] });
+          }
           break;
+        }
       }
     }
 
-    return { system, messages: anthropicMessages };
+    return { system: systemParts.join('\n\n'), messages: anthropicMessages };
   }
 
   private convertContent(content: MessageContent): string | Anthropic.ContentBlockParam[] {
@@ -413,7 +450,7 @@ export class AnthropicBackend extends BaseLLMBackend {
         case 'auto':
           return { type: 'auto' };
         case 'none':
-          return undefined;
+          return { type: 'none' };
         case 'required':
           return { type: 'any' };
       }

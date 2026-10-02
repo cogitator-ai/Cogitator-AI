@@ -171,11 +171,13 @@ interface MCPRetryConfig {
 
 #### Automatic Retry Behavior
 
-All MCP operations (`callTool`, `listResources`, `readResource`, `listPrompts`, `getPrompt`) automatically retry on:
+All MCP operations (`callTool`, `listResources`, `readResource`, `listPrompts`, `getPrompt`) automatically retry on transient failures:
 
-- Connection errors (ECONNREFUSED, ECONNRESET, etc.)
-- Timeout errors
+- Connection errors (ECONNREFUSED, ECONNRESET, closed connections)
+- Request timeouts
 - Network failures
+
+Deterministic failures are **not** retried: JSON-RPC protocol errors from the server (invalid params, unknown tool, internal handler errors), tool results with `isError: true`, and calls whose `signal` was aborted fail immediately.
 
 When a connection error is detected with `autoReconnect: true`, the client will:
 
@@ -183,6 +185,8 @@ When a connection error is detected with `autoReconnect: true`, the client will:
 2. Create a new transport and client
 3. Reconnect with exponential backoff
 4. Continue the operation on the new connection
+
+Concurrent operations that lose the connection at the same time share a single reconnection.
 
 #### Manual Reconnection
 
@@ -219,15 +223,38 @@ const tools = await client.getTools();
 
 const result = await client.callTool('tool_name', { arg: 'value' });
 
+const controller = new AbortController();
+await client.callTool('slow_tool', {}, { signal: controller.signal, timeout: 10_000 });
+
 const resources = await client.listResources();
 
 const content = await client.readResource('file://path/to/file');
+
+const allParts = await client.readResourceContents('file://path/to/dir');
 
 const prompts = await client.listPrompts();
 
 const messages = await client.getPrompt('prompt_name', { arg: 'value' });
 
 await client.close();
+```
+
+### Tool Results and Errors
+
+`callTool` returns the server's `structuredContent` when present; otherwise the content blocks are unwrapped — text blocks are JSON-parsed when possible, a single block is returned as-is, multiple blocks are returned as an array, and an empty result is `null`.
+
+When the server reports a tool failure (`isError: true`), `callTool` throws an `MCPToolError` carrying the tool name and the original content blocks. Tools produced by `getTools()` / `wrapMCPTools()` therefore surface MCP tool failures as regular Cogitator tool errors, and they forward the run's abort signal to the server.
+
+```typescript
+import { MCPToolError } from '@cogitator-ai/mcp';
+
+try {
+  await client.callTool('delete_file', { path: '/protected' });
+} catch (error) {
+  if (error instanceof MCPToolError) {
+    console.error(error.toolName, error.message, error.content);
+  }
+}
 ```
 
 ### Helper Function
@@ -287,12 +314,16 @@ interface MCPServerConfig {
   transport: 'stdio' | 'http' | 'sse';
 
   // For HTTP transport
-  port?: number; // Default: 3000
+  port?: number; // Default: 3000 (use 0 for a random free port)
   host?: string; // Default: 'localhost'
+  maxBodySize?: number; // Default: 10 MB, larger bodies get 413
+  corsOrigin?: string; // Default: '*'
 
-  logging?: boolean; // Enable console logging
+  logging?: boolean; // Diagnostic logging to stderr (stdout stays clean for stdio JSON-RPC)
 }
 ```
+
+Tool arguments are validated by the MCP SDK against the tool's full Zod schema (including refinements, transforms and object modifiers such as `z.looseObject`). Invalid arguments and thrown errors are returned to the client as `isError` tool results. Errors thrown by resource `read` and prompt `get` handlers are returned as JSON-RPC errors.
 
 ### Server Methods
 
@@ -318,9 +349,10 @@ server.unregisterPrompt('summarize'); // only before start()
 server.getRegisteredPrompts();
 
 // Lifecycle
-await server.start();
+await server.start(); // rejects if the HTTP port cannot be bound
 server.isRunning();
-await server.stop();
+server.getPort(); // bound HTTP port, useful with port: 0
+await server.stop(); // also closes open HTTP connections
 ```
 
 ### Registering Resources
@@ -632,21 +664,30 @@ const result = zodSchema.parse({
 
 ### Supported Conversions
 
-| JSON Schema                      | Zod                      |
-| -------------------------------- | ------------------------ |
-| `string`                         | `z.string()`             |
-| `string` + `minLength/maxLength` | `z.string().min().max()` |
-| `string` + `pattern`             | `z.string().regex()`     |
-| `string` + `format: email`       | `z.string().email()`     |
-| `string` + `format: uri`         | `z.string().url()`       |
-| `number`                         | `z.number()`             |
-| `integer`                        | `z.number().int()`       |
-| `number` + `minimum/maximum`     | `z.number().min().max()` |
-| `boolean`                        | `z.boolean()`            |
-| `array`                          | `z.array()`              |
-| `object`                         | `z.object()`             |
-| `null`                           | `z.null()`               |
-| `enum`                           | `z.enum()`               |
+| JSON Schema                      | Zod                              |
+| -------------------------------- | -------------------------------- |
+| `string`                         | `z.string()`                     |
+| `string` + `minLength/maxLength` | `z.string().min().max()`         |
+| `string` + `pattern`             | `z.string().regex()`             |
+| `string` + `format: email`       | `z.string().email()`             |
+| `string` + `format: uri`         | `z.string().url()`               |
+| `number`                         | `z.number()`                     |
+| `integer`                        | `z.number().int()`               |
+| `number` + `minimum/maximum`     | `z.number().min().max()`         |
+| `boolean`                        | `z.boolean()`                    |
+| `array`                          | `z.array()`                      |
+| `object`                         | `z.object()`                     |
+| `object` without `properties`    | `z.looseObject({})`              |
+| `additionalProperties: true`     | `z.looseObject()`                |
+| `additionalProperties: {schema}` | `.catchall()` / `z.record()`     |
+| `null`                           | `z.null()`                       |
+| `enum`                           | `z.enum()` / literal union       |
+| `const`                          | `z.literal()`                    |
+| `type: ['string', 'null']`       | `z.union()`                      |
+| `nullable: true` (OpenAPI)       | `.nullable()`                    |
+| `oneOf` / `anyOf` / `allOf`      | `z.union()` / `z.intersection()` |
+
+Patterns that are not valid ECMAScript regular expressions are ignored instead of failing the whole conversion.
 
 ---
 

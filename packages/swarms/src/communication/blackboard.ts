@@ -8,11 +8,78 @@ import type {
   BlackboardSection,
   BlackboardHistoryEntry,
 } from '@cogitator-ai/types';
+import { invokeSafely } from '../utils/invoke.js';
 
-export class InMemoryBlackboard implements Blackboard {
+export type BlackboardSectionHandler = (data: unknown, agentName: string) => void;
+
+export interface BlackboardWrite {
+  section: string;
+  data: unknown;
+  agentName: string;
+  version: number;
+  deleted?: boolean;
+}
+
+export type BlackboardWriteListener = (write: BlackboardWrite) => void;
+
+/**
+ * Blackboard that exposes a bus-wide write listener (used for swarm observability).
+ */
+export interface ObservableBlackboard extends Blackboard {
+  onWrite(listener: BlackboardWriteListener): () => void;
+}
+
+export function isObservableBlackboard(blackboard: Blackboard): blackboard is ObservableBlackboard {
+  return typeof (blackboard as Partial<ObservableBlackboard>).onWrite === 'function';
+}
+
+export class BlackboardListeners {
+  private sectionHandlers = new Map<string, Set<BlackboardSectionHandler>>();
+  private writeListeners = new Set<BlackboardWriteListener>();
+
+  constructor(private readonly label: string) {}
+
+  subscribe(section: string, handler: BlackboardSectionHandler): () => void {
+    let handlers = this.sectionHandlers.get(section);
+    if (!handlers) {
+      handlers = new Set();
+      this.sectionHandlers.set(section, handlers);
+    }
+    handlers.add(handler);
+
+    return () => {
+      const current = this.sectionHandlers.get(section);
+      if (!current) return;
+      current.delete(handler);
+      if (current.size === 0) {
+        this.sectionHandlers.delete(section);
+      }
+    };
+  }
+
+  onWrite(listener: BlackboardWriteListener): () => void {
+    this.writeListeners.add(listener);
+    return () => {
+      this.writeListeners.delete(listener);
+    };
+  }
+
+  notify(write: BlackboardWrite): void {
+    if (!write.deleted) {
+      for (const handler of [...(this.sectionHandlers.get(write.section) ?? [])]) {
+        invokeSafely(handler, [write.data, write.agentName], `${this.label} Handler error`);
+      }
+    }
+    for (const listener of [...this.writeListeners]) {
+      invokeSafely(listener, [write], `${this.label} Write listener error`);
+    }
+  }
+}
+
+export class InMemoryBlackboard implements ObservableBlackboard {
   private sections = new Map<string, BlackboardSection>();
   private history = new Map<string, BlackboardHistoryEntry[]>();
-  private subscriptions = new Map<string, Set<(data: unknown, agentName: string) => void>>();
+  private listeners = new BlackboardListeners('[Blackboard]');
   private config: BlackboardConfig;
 
   constructor(config: BlackboardConfig) {
@@ -41,9 +108,7 @@ export class InMemoryBlackboard implements Blackboard {
   }
 
   read<T = unknown>(section: string): T {
-    if (!this.config.enabled) {
-      throw new Error('Blackboard is not enabled');
-    }
+    this.assertEnabled();
     const sec = this.sections.get(section);
     if (!sec) {
       throw new Error(`Blackboard section '${section}' not found`);
@@ -52,40 +117,34 @@ export class InMemoryBlackboard implements Blackboard {
   }
 
   write<T>(section: string, data: T, agentName: string): void {
-    if (!this.config.enabled) {
-      throw new Error('Blackboard is not enabled');
-    }
+    this.assertEnabled();
 
     const existing = this.sections.get(section);
     const version = existing ? existing.version + 1 : 1;
     const timestamp = Date.now();
 
-    const newSection: BlackboardSection<T> = {
+    this.sections.set(section, {
       name: section,
       data,
       lastModified: timestamp,
       modifiedBy: agentName,
       version,
-    };
-
-    this.sections.set(section, newSection as BlackboardSection);
+    });
 
     if (this.config.trackHistory) {
-      if (!this.history.has(section)) {
-        this.history.set(section, []);
+      let entries = this.history.get(section);
+      if (!entries) {
+        entries = [];
+        this.history.set(section, entries);
       }
-      this.history.get(section)!.push({
-        value: data,
-        writtenBy: agentName,
-        timestamp,
-        version,
-      });
+      entries.push({ value: data, writtenBy: agentName, timestamp, version });
     }
 
-    this.notifySubscribers(section, data, agentName);
+    this.listeners.notify({ section, data, agentName, version });
   }
 
   append<T>(section: string, item: T, agentName: string): void {
+    this.assertEnabled();
     const current = this.sections.get(section);
 
     if (!current) {
@@ -97,8 +156,7 @@ export class InMemoryBlackboard implements Blackboard {
       throw new Error(`Section '${section}' is not an array, cannot append`);
     }
 
-    const newData = [...current.data, item];
-    this.write(section, newData, agentName);
+    this.write(section, [...current.data, item], agentName);
   }
 
   has(section: string): boolean {
@@ -106,26 +164,26 @@ export class InMemoryBlackboard implements Blackboard {
   }
 
   delete(section: string): void {
+    const existing = this.sections.get(section);
     this.sections.delete(section);
     this.history.delete(section);
-    this.subscriptions.delete(section);
+    if (existing) {
+      this.listeners.notify({
+        section,
+        data: undefined,
+        agentName: 'system',
+        version: existing.version,
+        deleted: true,
+      });
+    }
   }
 
-  subscribe(section: string, handler: (data: unknown, agentName: string) => void): () => void {
-    if (!this.subscriptions.has(section)) {
-      this.subscriptions.set(section, new Set());
-    }
-    this.subscriptions.get(section)!.add(handler);
+  subscribe(section: string, handler: BlackboardSectionHandler): () => void {
+    return this.listeners.subscribe(section, handler);
+  }
 
-    return () => {
-      const handlers = this.subscriptions.get(section);
-      if (handlers) {
-        handlers.delete(handler);
-        if (handlers.size === 0) {
-          this.subscriptions.delete(section);
-        }
-      }
-    };
+  onWrite(listener: BlackboardWriteListener): () => void {
+    return this.listeners.onWrite(listener);
   }
 
   getSections(): string[] {
@@ -137,23 +195,21 @@ export class InMemoryBlackboard implements Blackboard {
   }
 
   getHistory(section: string): BlackboardHistoryEntry[] {
-    return this.history.get(section) ?? [];
+    return [...(this.history.get(section) ?? [])];
   }
 
+  /**
+   * Remove all sections and history. Subscriptions are preserved so listeners
+   * keep working across swarm resets.
+   */
   clear(): void {
     this.sections.clear();
     this.history.clear();
-    this.subscriptions.clear();
   }
 
-  private notifySubscribers(section: string, data: unknown, agentName: string): void {
-    const handlers = this.subscriptions.get(section);
-    if (handlers) {
-      for (const handler of handlers) {
-        void Promise.resolve(handler(data, agentName)).catch((error) => {
-          console.warn('[Blackboard] Handler error:', error);
-        });
-      }
+  private assertEnabled(): void {
+    if (!this.config.enabled) {
+      throw new Error('Blackboard is not enabled');
     }
   }
 }

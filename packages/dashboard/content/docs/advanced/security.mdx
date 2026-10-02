@@ -90,6 +90,8 @@ const detector = new PromptInjectionDetector({
 });
 ```
 
+When the detector is configured through `new Cogitator({ security: { promptInjection: { classifier: 'llm' } } })` without an `llmBackend`, the runtime creates the backend from `llmModel` (a `provider/model` id such as `openai/gpt-4o-mini`) and falls back to the running agent's model when `llmModel` is omitted.
+
 ### Custom Patterns and Allowlists
 
 Add domain-specific detection patterns and safe phrases:

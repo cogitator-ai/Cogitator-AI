@@ -1,37 +1,44 @@
 import 'dotenv/config';
-import { RuntimeBuilder } from '@cogitator-ai/channels';
+import { AssistantConfigSchema, RuntimeBuilder } from '@cogitator-ai/channels';
 
-const config = {
+const OWNER_TG_ID = process.env.OWNER_TG_ID;
+
+const config = AssistantConfigSchema.parse({
   name: 'jarvis',
   personality: `You are Jarvis, a personal AI assistant.
 Be concise, friendly, and proactive.
 Remember important things using memory tools.`,
   llm: {
-    provider: 'google' as const,
+    provider: 'google',
     model: 'google/gemini-2.5-flash',
   },
-  channels: {
-    telegram: { ownerIds: [process.env.OWNER_TG_ID ?? ''] },
-  },
+  channels: process.env.TG_TOKEN
+    ? { telegram: { ownerIds: OWNER_TG_ID ? [OWNER_TG_ID] : [] } }
+    : {},
   capabilities: {
     webSearch: true,
     scheduler: true,
   },
   memory: {
-    adapter: 'sqlite' as const,
+    adapter: 'sqlite',
     path: '~/.cogitator/memory.db',
     knowledgeGraph: true,
     autoExtract: true,
+    compaction: { threshold: 50 },
   },
-};
+  security: {
+    dmPolicy: OWNER_TG_ID ? 'pairing' : 'open',
+  },
+});
 
-const builder = new RuntimeBuilder(config, process.env as Record<string, string>);
+const builder = new RuntimeBuilder(config, process.env);
 const runtime = await builder.build();
 
 await runtime.gateway.start();
-if (runtime.scheduler) runtime.scheduler.start();
 
 console.log(`\n  ${config.name} is running!`);
+console.log('  Chat here in the terminal, or on Telegram if TG_TOKEN is set.');
+console.log('  Owners can use /status, /sessions, /model, /compact, /help.');
 console.log('  Press Ctrl+C to stop\n');
 
 process.on('SIGINT', async () => {

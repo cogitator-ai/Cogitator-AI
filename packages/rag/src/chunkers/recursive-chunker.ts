@@ -32,128 +32,124 @@ export class RecursiveChunker implements Chunker {
   chunk(text: string, documentId: string): DocumentChunk[] {
     if (text.length === 0) return [];
 
-    const pieces = this.splitText(text, 0);
-
-    const piecePositions = this.mapPiecePositions(pieces, text);
-
-    return this.mergePieces(pieces, piecePositions, text, documentId);
+    const pieces = this.splitSpan(text, { start: 0, end: text.length }, 0);
+    return this.mergePieces(pieces, text, documentId);
   }
 
-  private mapPiecePositions(
-    pieces: string[],
-    originalText: string
-  ): Array<{ start: number; end: number }> {
-    const positions: Array<{ start: number; end: number }> = [];
-    let searchFrom = 0;
-
-    for (const piece of pieces) {
-      const idx = originalText.indexOf(piece, searchFrom);
-      const start = idx >= 0 ? idx : searchFrom;
-      positions.push({ start, end: start + piece.length });
-      searchFrom = start + piece.length;
-    }
-
-    return positions;
-  }
-
-  private mergePieces(
-    pieces: string[],
-    positions: Array<{ start: number; end: number }>,
-    originalText: string,
-    documentId: string
-  ): DocumentChunk[] {
+  private mergePieces(pieces: Span[], text: string, documentId: string): DocumentChunk[] {
     const chunks: DocumentChunk[] = [];
-    let order = 0;
     let i = 0;
 
     while (i < pieces.length) {
-      const chunkStart = positions[i].start;
+      const chunkStart = pieces[i]!.start;
 
       let j = i + 1;
-      while (j < pieces.length && positions[j].end - chunkStart <= this.chunkSize) {
+      while (j < pieces.length && pieces[j]!.end - chunkStart <= this.chunkSize) {
         j++;
       }
 
-      const chunkEnd = positions[j - 1].end;
-
+      const chunkEnd = pieces[j - 1]!.end;
       chunks.push({
         id: nanoid(),
         documentId,
-        content: originalText.slice(chunkStart, chunkEnd),
+        content: text.slice(chunkStart, chunkEnd),
         startOffset: chunkStart,
         endOffset: chunkEnd,
-        order: order++,
+        order: chunks.length,
       });
 
       if (j >= pieces.length) break;
 
+      let next = j;
       if (this.chunkOverlap > 0) {
         const overlapTarget = chunkEnd - this.chunkOverlap;
-        let k = j;
-        while (k > i + 1 && positions[k - 1].start >= overlapTarget) {
-          k--;
+        while (next > i + 1 && pieces[next - 1]!.start >= overlapTarget) {
+          next--;
         }
-        i = Math.max(k, i + 1);
-      } else {
-        i = j;
+        while (next < j && pieces[j]!.end - pieces[next]!.start > this.chunkSize) {
+          next++;
+        }
       }
+      i = next;
     }
 
     return chunks;
   }
 
-  private splitText(text: string, separatorIndex: number): string[] {
-    if (text.length <= this.chunkSize) return [text];
+  private splitSpan(text: string, span: Span, separatorIndex: number): Span[] {
+    const trimmed = trimSpan(text, span);
+    if (!trimmed) return [];
+    if (trimmed.end - trimmed.start <= this.chunkSize) return [trimmed];
 
-    if (separatorIndex >= this.separators.length) {
-      return this.charSplit(text);
+    let index = separatorIndex;
+    while (index < this.separators.length) {
+      const separator = this.separators[index]!;
+      if (separator === '') break;
+      if (text.slice(trimmed.start, trimmed.end).includes(separator)) break;
+      index++;
     }
 
-    const separator = this.separators[separatorIndex];
-
-    if (separator === '') {
-      return this.charSplit(text);
+    const separator = this.separators[index];
+    if (separator === undefined || separator === '') {
+      return this.charSplit(trimmed);
     }
 
-    const parts = text.split(separator);
-
-    if (parts.length === 1) {
-      return this.splitText(text, separatorIndex + 1);
+    const kept = /^\S*/.exec(separator)![0].length;
+    const segments: Span[] = [];
+    let cursor = trimmed.start;
+    for (;;) {
+      const at = text.indexOf(separator, cursor);
+      if (at === -1 || at >= trimmed.end) {
+        segments.push({ start: cursor, end: trimmed.end });
+        break;
+      }
+      segments.push({ start: cursor, end: Math.min(at + kept, trimmed.end) });
+      cursor = at + separator.length;
     }
 
-    const merged: string[] = [];
-    let current = '';
+    const merged: Span[] = [];
+    let current: Span | null = null;
 
-    for (const part of parts) {
-      if (part.length === 0) continue;
+    for (const raw of segments) {
+      const segment = trimSpan(text, raw);
+      if (!segment) continue;
 
-      const candidate = current ? current + separator + part : part;
+      if (current && segment.end - current.start <= this.chunkSize) {
+        current = { start: current.start, end: segment.end };
+        continue;
+      }
 
-      if (candidate.length <= this.chunkSize) {
-        current = candidate;
+      if (current) merged.push(current);
+
+      if (segment.end - segment.start > this.chunkSize) {
+        merged.push(...this.splitSpan(text, segment, index + 1));
+        current = null;
       } else {
-        if (current) merged.push(current);
-
-        if (part.length > this.chunkSize) {
-          const subParts = this.splitText(part, separatorIndex + 1);
-          merged.push(...subParts);
-          current = '';
-        } else {
-          current = part;
-        }
+        current = segment;
       }
     }
 
     if (current) merged.push(current);
-
     return merged;
   }
 
-  private charSplit(text: string): string[] {
-    const result: string[] = [];
-    for (let i = 0; i < text.length; i += this.chunkSize) {
-      result.push(text.slice(i, i + this.chunkSize));
+  private charSplit(span: Span): Span[] {
+    const result: Span[] = [];
+    for (let start = span.start; start < span.end; start += this.chunkSize) {
+      result.push({ start, end: Math.min(start + this.chunkSize, span.end) });
     }
     return result;
   }
+}
+
+interface Span {
+  start: number;
+  end: number;
+}
+
+function trimSpan(text: string, span: Span): Span | null {
+  let { start, end } = span;
+  while (start < end && /\s/.test(text[start]!)) start++;
+  while (end > start && /\s/.test(text[end - 1]!)) end--;
+  return start < end ? { start, end } : null;
 }

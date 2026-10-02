@@ -36,7 +36,9 @@ const ENV_PREFIX = 'COGITATOR_';
  * Also supports standard env vars:
  * - OPENAI_API_KEY -> llm.providers.openai.apiKey
  * - ANTHROPIC_API_KEY -> llm.providers.anthropic.apiKey
- * - OLLAMA_HOST -> llm.providers.ollama.baseUrl
+ * - OLLAMA_URL / OLLAMA_HOST -> llm.providers.ollama.baseUrl (scheme added when missing)
+ * - OLLAMA_API_KEY -> llm.providers.ollama.apiKey (baseUrl defaults to https://ollama.com)
+ * - GEMINI_API_KEY -> llm.providers.google.apiKey (alias of GOOGLE_API_KEY)
  * - AZURE_OPENAI_API_KEY -> llm.providers.azure.apiKey
  * - AZURE_OPENAI_ENDPOINT -> llm.providers.azure.endpoint
  * - AWS_REGION -> llm.providers.bedrock.region
@@ -99,11 +101,13 @@ type LimitsConfig = NonNullable<CogitatorConfigInput['limits']>;
 function loadProviderConfigs(): ProvidersConfig {
   const providers: ProvidersConfig = {};
 
-  const ollamaBaseUrl = getEnv('OLLAMA_BASE_URL') ?? process.env.OLLAMA_HOST;
-  const ollamaApiKey = getEnv('OLLAMA_API_KEY') ?? process.env.OLLAMA_API_KEY;
+  const ollamaBaseUrl = normalizeHttpUrl(
+    getEnv('OLLAMA_BASE_URL') || process.env.OLLAMA_URL || process.env.OLLAMA_HOST
+  );
+  const ollamaApiKey = getEnv('OLLAMA_API_KEY') || process.env.OLLAMA_API_KEY;
   if (ollamaBaseUrl || ollamaApiKey) {
     providers.ollama = {
-      baseUrl: ollamaBaseUrl ?? (ollamaApiKey ? 'https://ollama.com' : 'http://localhost:11434'),
+      ...(ollamaBaseUrl ? { baseUrl: ollamaBaseUrl } : {}),
       ...(ollamaApiKey ? { apiKey: ollamaApiKey } : {}),
     };
   }
@@ -119,7 +123,8 @@ function loadProviderConfigs(): ProvidersConfig {
     providers.anthropic = { apiKey: anthropicApiKey };
   }
 
-  const googleApiKey = getEnv('GOOGLE_API_KEY') ?? process.env.GOOGLE_API_KEY;
+  const googleApiKey =
+    getEnv('GOOGLE_API_KEY') ?? process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY;
   if (googleApiKey) {
     providers.google = { apiKey: googleApiKey };
   }
@@ -189,6 +194,13 @@ function loadLimitsConfig(): LimitsConfig {
   if (maxTokensPerRun !== undefined) limits.maxTokensPerRun = maxTokensPerRun;
 
   return limits;
+}
+
+function normalizeHttpUrl(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  return withScheme.replace(/\/+$/, '');
 }
 
 function getEnv(key: string): string | undefined {

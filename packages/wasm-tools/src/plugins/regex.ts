@@ -22,30 +22,97 @@ interface RegexOutput {
 type RegexResult = boolean | string | string[] | MatchResult | MatchResult[] | null;
 
 const MAX_ITERATIONS = 100000;
-const DANGEROUS_PATTERNS = [
-  /\(\?[^)]*\)\+\+/,
-  /\(\.\*\)\+/,
-  /\(\.\+\)\+/,
-  /\([^)]+\+\)\+/,
-  /\([^)]+\*\)\*/,
-];
+const MAX_PATTERN_LENGTH = 1000;
+const MAX_FINITE_REPEAT = 100;
+
+interface GroupFrame {
+  hasQuantifier: boolean;
+}
+
+function readQuantifier(
+  pattern: string,
+  index: number
+): { length: number; unbounded: boolean } | null {
+  const char = pattern[index];
+  if (char === '*' || char === '+') return { length: 1, unbounded: true };
+  if (char === '?') return { length: 1, unbounded: false };
+  if (char === '{') {
+    const match = /^\{(\d+)(,(\d*))?\}/.exec(pattern.slice(index));
+    if (!match) return null;
+    const max =
+      match[2] === undefined ? Number(match[1]) : match[3] === '' ? Infinity : Number(match[3]);
+    return { length: match[0].length, unbounded: max > MAX_FINITE_REPEAT };
+  }
+  return null;
+}
 
 function isDangerousPattern(pattern: string): boolean {
-  for (const dangerous of DANGEROUS_PATTERNS) {
-    if (dangerous.test(pattern)) {
-      return true;
+  if (pattern.length > MAX_PATTERN_LENGTH) return true;
+
+  const stack: GroupFrame[] = [{ hasQuantifier: false }];
+  let inClass = false;
+
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i];
+
+    if (char === '\\') {
+      i++;
+      const quantifier = readQuantifier(pattern, i + 1);
+      if (quantifier) {
+        if (quantifier.unbounded) stack[stack.length - 1].hasQuantifier = true;
+        i += quantifier.length;
+      }
+      continue;
+    }
+
+    if (inClass) {
+      if (char === ']') {
+        inClass = false;
+        const quantifier = readQuantifier(pattern, i + 1);
+        if (quantifier) {
+          if (quantifier.unbounded) stack[stack.length - 1].hasQuantifier = true;
+          i += quantifier.length;
+        }
+      }
+      continue;
+    }
+
+    if (char === '[') {
+      inClass = true;
+      if (pattern[i + 1] === '^') i++;
+      if (pattern[i + 1] === ']') i++;
+      continue;
+    }
+
+    if (char === '(') {
+      stack.push({ hasQuantifier: false });
+      continue;
+    }
+
+    if (char === ')') {
+      if (stack.length === 1) continue;
+      const group = stack.pop()!;
+      const parent = stack[stack.length - 1];
+      const quantifier = readQuantifier(pattern, i + 1);
+      if (quantifier) {
+        if (quantifier.unbounded && group.hasQuantifier) {
+          return true;
+        }
+        i += quantifier.length;
+        if (quantifier.unbounded) parent.hasQuantifier = true;
+      }
+      if (group.hasQuantifier) parent.hasQuantifier = true;
+      continue;
+    }
+
+    const quantifier = readQuantifier(pattern, i + 1);
+    if (quantifier) {
+      if (quantifier.unbounded) stack[stack.length - 1].hasQuantifier = true;
+      i += quantifier.length;
     }
   }
 
-  let depth = 0;
-  let quantifiers = 0;
-  for (const char of pattern) {
-    if (char === '(') depth++;
-    if (char === ')') depth--;
-    if ((char === '+' || char === '*') && depth > 0) quantifiers++;
-  }
-
-  return quantifiers > 3;
+  return false;
 }
 
 function safeMatch(text: string, regex: RegExp): MatchResult | null {
@@ -62,6 +129,7 @@ function safeMatch(text: string, regex: RegExp): MatchResult | null {
 function safeMatchAll(text: string, regex: RegExp, limit: number): MatchResult[] {
   const results: MatchResult[] = [];
   let iterations = 0;
+  if (limit <= 0) return results;
 
   const globalRegex = new RegExp(
     regex.source,
@@ -105,7 +173,9 @@ export function regex(): number {
     const input: RegexInput = JSON.parse(inputStr);
 
     if (isDangerousPattern(input.pattern)) {
-      throw new Error('Pattern may cause ReDoS - nested quantifiers detected');
+      throw new Error(
+        'Pattern may cause catastrophic backtracking (ReDoS): nested unbounded quantifiers detected'
+      );
     }
 
     const flags = input.flags ?? '';

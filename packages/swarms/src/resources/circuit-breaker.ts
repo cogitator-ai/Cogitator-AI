@@ -1,3 +1,5 @@
+import { invokeSafely } from '../utils/invoke.js';
+
 export type CircuitState = 'closed' | 'open' | 'half-open';
 
 export interface CircuitBreakerConfig {
@@ -89,10 +91,8 @@ export class CircuitBreaker {
   private setState(newState: CircuitState): void {
     if (this.state !== newState) {
       this.state = newState;
-      for (const listener of this.stateChangeListeners) {
-        void Promise.resolve(listener(newState)).catch((error) => {
-          console.warn('[CircuitBreaker] State change listener error:', error);
-        });
+      for (const listener of [...this.stateChangeListeners]) {
+        invokeSafely(listener, [newState], '[CircuitBreaker] State change listener error');
       }
     }
   }

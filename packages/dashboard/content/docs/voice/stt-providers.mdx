@@ -19,15 +19,15 @@ Both providers support batch transcription via `transcribe()` and streaming via 
 
 ## Provider Comparison
 
-| Feature | OpenAI STT | Deepgram STT |
-| --- | --- | --- |
-| Default model | `gpt-4o-mini-transcribe` | `nova-3` |
-| Streaming | Buffered (transcribes on close) | Real-time WebSocket |
-| Interim results | No | Yes |
-| Word timestamps | Yes | Yes |
-| Endpointing | No | Configurable |
-| Auto-punctuation | Yes | Yes |
-| Other models | `gpt-4o-transcribe`, `whisper-1` | `nova-2`, `enhanced`, `base` |
+| Feature          | OpenAI STT                       | Deepgram STT                 |
+| ---------------- | -------------------------------- | ---------------------------- |
+| Default model    | `gpt-4o-mini-transcribe`         | `nova-3`                     |
+| Streaming        | Buffered (transcribes on close)  | Real-time WebSocket          |
+| Interim results  | No                               | Yes                          |
+| Word timestamps  | `whisper-1` only                 | Yes                          |
+| Endpointing      | No                               | Configurable                 |
+| Auto-punctuation | Yes                              | Yes                          |
+| Other models     | `gpt-4o-transcribe`, `whisper-1` | `nova-2`, `enhanced`, `base` |
 
 ## OpenAI STT
 
@@ -46,16 +46,19 @@ const stt = new OpenAISTT({
 
 ```typescript
 const result = await stt.transcribe(audioBuffer, { language: 'en' });
-
 console.log(result.text);
-console.log(result.duration);
-console.log(result.words);
+
+const whisper = new OpenAISTT({ apiKey: process.env.OPENAI_API_KEY!, model: 'whisper-1' });
+const detailed = await whisper.transcribe(audioBuffer);
+console.log(detailed.duration, detailed.words);
 // [{ word: 'Hello', start: 0.0, end: 0.32, confidence: 1 }, ...]
 ```
 
+`gpt-4o(-mini)-transcribe` models only support the `json` response format, so word timestamps and duration are returned for `whisper-1` only. Input can be a containerized file (wav, mp3, ogg, flac, webm, mp4 — detected from magic bytes) or headerless PCM16 mono 16kHz, which is wrapped into WAV automatically.
+
 ### Streaming
 
-OpenAI STT streaming collects audio chunks and transcribes the complete buffer when `close()` is called.
+OpenAI STT streaming collects raw PCM16 chunks (at `sampleRate`, default 16kHz) and transcribes the complete buffer as WAV when `close()` is called. Calling `close()` twice returns the same result; empty streams do not hit the API.
 
 ```typescript
 const stream = stt.createStream({ language: 'en' });
@@ -71,11 +74,11 @@ const result = await stream.close();
 
 ### Configuration
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `apiKey` | `string` | required | OpenAI API key |
-| `model` | `string` | `gpt-4o-mini-transcribe` | Model ID |
-| `baseURL` | `string` | — | Custom API base URL |
+| Field     | Type     | Default                  | Description         |
+| --------- | -------- | ------------------------ | ------------------- |
+| `apiKey`  | `string` | required                 | OpenAI API key      |
+| `model`   | `string` | `gpt-4o-mini-transcribe` | Model ID            |
+| `baseURL` | `string` | —                        | Custom API base URL |
 
 ## Deepgram STT
 
@@ -132,27 +135,28 @@ await stream.close();
 
 ### Configuration
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `apiKey` | `string` | required | Deepgram API key |
-| `model` | `string` | `nova-3` | Model ID |
-| `language` | `string` | — | Default language code |
+| Field      | Type     | Default  | Description           |
+| ---------- | -------- | -------- | --------------------- |
+| `apiKey`   | `string` | required | Deepgram API key      |
+| `model`    | `string` | `nova-3` | Model ID              |
+| `language` | `string` | —        | Default language code |
 
 ## STT Options
 
 Options shared by both providers when calling `transcribe()`:
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `language` | `string` | Language code (e.g. `"en"`, `"es"`, `"ja"`) |
-| `prompt` | `string` | Context hint to improve transcription accuracy |
+| Field      | Type     | Description                                    |
+| ---------- | -------- | ---------------------------------------------- |
+| `language` | `string` | Language code (e.g. `"en"`, `"es"`, `"ja"`)    |
+| `prompt`   | `string` | Context hint to improve transcription accuracy |
 
 Additional options for `createStream()`:
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `interimResults` | `boolean` | Enable partial/interim transcription results |
-| `endpointing` | `number` | Silence duration (ms) for Deepgram endpointing |
+| Field            | Type      | Description                                                        |
+| ---------------- | --------- | ------------------------------------------------------------------ |
+| `interimResults` | `boolean` | Enable partial/interim transcription results                       |
+| `endpointing`    | `number`  | Silence duration (ms) for Deepgram endpointing                     |
+| `sampleRate`     | `number`  | Sample rate of the raw PCM16 written to the stream (default 16000) |
 
 ## TranscribeResult
 

@@ -58,10 +58,12 @@ interface DiscordConfig {
 | Feature | Support |
 |---------|---------|
 | Server messages | Supported |
-| Direct messages | Supported |
+| Direct messages | Supported (`Partials.Channel` is enabled automatically) |
+| Attachments | Images → vision, audio → STT (downloaded from the CDN URL), files announced |
 | Mention-only mode | Supported (respond only when @mentioned) |
 | Streaming (edit) | Supported |
-| Reactions | Supported |
+| Reactions | Supported (status reactions) |
+| Replies | `replyTo` is set from the message reference |
 | Typing indicator | Supported |
 | Auto-chunking | Supported (2000 char limit, code-block aware) |
 | Markdown | Supported (native Discord markdown) |
@@ -70,7 +72,7 @@ interface DiscordConfig {
 
 When `mentionOnly: true`, the bot only responds to messages that @mention it in server channels. DMs always get a response regardless of this setting.
 
-The bot mention (`<@BOT_ID>`) is automatically stripped from the message text before it reaches your agent, so instructions like `@MyBot what is 2+2?` arrive as `what is 2+2?`.
+Both `<@BOT_ID>` and nickname mentions `<@!BOT_ID>` are recognized. The mention is automatically stripped from the message text before it reaches your agent, so instructions like `@MyBot what is 2+2?` arrive as `what is 2+2?`.
 
 ## Message Chunking
 
@@ -79,6 +81,8 @@ Discord enforces a 2000-character limit per message. Long responses are automati
 - **Code block integrity** -- fenced blocks are properly closed and reopened across chunks
 - **Line-count splitting** -- ~17 lines max per message to keep things readable
 - **Word-boundary awareness** -- splits at whitespace when possible, never mid-word
+
+`sendText` returns the id of the **first** message. When a streamed answer grows past one Discord message, the extra chunks are tracked as continuation messages: later edits update them in place (no duplicate posts) and `deleteMessage` removes them together with the first one.
 
 ## Tips
 

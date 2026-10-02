@@ -1022,4 +1022,245 @@ describe('Cogitator', () => {
       await cog.close();
     });
   });
+
+  describe('audit regressions', () => {
+    it('links child spans to the emitted root span', async () => {
+      const cog = new Cogitator();
+      const echo = tool({
+        name: 'echo',
+        description: 'Echo',
+        parameters: z.object({ text: z.string() }),
+        execute: async ({ text }) => text,
+      });
+      mockBackendHelper.setResponses([
+        {
+          id: 'r1',
+          content: '',
+          finishReason: 'tool_calls',
+          toolCalls: [{ id: 'c1', name: 'echo', arguments: { text: 'hi' } }],
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        },
+        {
+          id: 'r2',
+          content: 'done',
+          finishReason: 'stop',
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        },
+      ]);
+
+      const result = await cog.run(createTestAgent({ tools: [echo] }), { input: 'echo hi' });
+
+      const [root, ...children] = result.trace.spans;
+      expect(root.name).toBe('agent.run');
+      expect(root.parentId).toBeUndefined();
+      expect(children.length).toBeGreaterThanOrEqual(3);
+      for (const child of children) {
+        expect(child.parentId).toBe(root.id);
+      }
+
+      await cog.close();
+    });
+
+    it('persists duplicate-call errors so stored history keeps tool pairs intact', async () => {
+      const cog = new Cogitator({ memory: { adapter: 'memory' } });
+      const echo = tool({
+        name: 'echo',
+        description: 'Echo',
+        parameters: z.object({ text: z.string() }),
+        execute: async ({ text }) => text,
+      });
+      const repeated: ChatResponse = {
+        id: 'r',
+        content: '',
+        finishReason: 'tool_calls',
+        toolCalls: [{ id: 'c1', name: 'echo', arguments: { text: 'hi' } }],
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      };
+      mockBackendHelper.setResponses([
+        repeated,
+        { ...repeated, toolCalls: [{ id: 'c2', name: 'echo', arguments: { text: 'hi' } }] },
+        {
+          id: 'r3',
+          content: 'done',
+          finishReason: 'stop',
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        },
+      ]);
+
+      await cog.run(createTestAgent({ tools: [echo] }), {
+        input: 'echo hi twice',
+        threadId: 'thread_dup',
+      });
+
+      const entries = await cog.memory!.getEntries({ threadId: 'thread_dup' });
+      expect(entries.success).toBe(true);
+      const toolMessages = entries.success
+        ? entries.data.map((e) => e.message).filter((m) => m.role === 'tool')
+        : [];
+      expect(toolMessages.map((m) => m.toolCallId)).toEqual(['c1', 'c2']);
+      expect(toolMessages[1].content).toContain('Duplicate tool call detected');
+
+      await cog.close();
+    });
+
+    it('does not send orphaned tool results from loaded history', async () => {
+      const cog = new Cogitator({ memory: { adapter: 'memory' } });
+      const agent = createTestAgent();
+      await cog.run(agent, { input: 'warm up', threadId: 'thread_orphan' });
+      await cog.memory!.addEntry({
+        threadId: 'thread_orphan',
+        message: { role: 'tool', content: '"stale"', toolCallId: 'missing', name: 'echo' },
+        tokenCount: 3,
+      });
+      vi.mocked(mockBackendHelper.backend.chat).mockClear();
+
+      await cog.run(agent, { input: 'again', threadId: 'thread_orphan' });
+
+      const sent = vi.mocked(mockBackendHelper.backend.chat).mock.calls[0][0].messages;
+      expect(sent.some((m) => m.role === 'tool')).toBe(false);
+      expect(sent.filter((m) => m.role === 'user').pop()).toEqual({
+        role: 'user',
+        content: 'again',
+      });
+
+      await cog.close();
+    });
+
+    it('sends provider-stripped model ids to reflection and defaults to the agent model', async () => {
+      const reflectionCalls = () =>
+        vi
+          .mocked(mockBackendHelper.backend.chat)
+          .mock.calls.map(([request]) => request)
+          .filter((request) => {
+            const system = request.messages[0];
+            return (
+              system?.role === 'system' &&
+              typeof system.content === 'string' &&
+              system.content.startsWith('You are a reflection assistant')
+            );
+          });
+
+      const explicit = new Cogitator({
+        reflection: { enabled: true, reflectAtEnd: true, reflectionModel: 'openai/gpt-4o-mini' },
+      });
+      await explicit.run(createTestAgent(), { input: 'Hi' });
+      expect(reflectionCalls().map((r) => r.model)).toEqual(['gpt-4o-mini']);
+      await explicit.close();
+
+      vi.mocked(mockBackendHelper.backend.chat).mockClear();
+
+      const inherited = new Cogitator({ reflection: { enabled: true, reflectAtEnd: true } });
+      await inherited.run(createTestAgent({ model: 'openai/gpt-4.1' }), { input: 'Hi' });
+      expect(reflectionCalls().map((r) => r.model)).toEqual(['gpt-4.1']);
+      await inherited.close();
+    });
+
+    it('runs the LLM injection classifier with the agent model when llmModel is unset', async () => {
+      const cog = new Cogitator({
+        security: {
+          promptInjection: {
+            detectInjection: true,
+            detectJailbreak: true,
+            detectRoleplay: true,
+            detectEncoding: true,
+            detectContextManipulation: true,
+            classifier: 'llm',
+            action: 'block',
+            threshold: 0.7,
+          },
+        },
+      });
+      vi.mocked(mockBackendHelper.backend.chat).mockImplementationOnce(async () => ({
+        id: 'sec',
+        content: '{"threats": []}',
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      }));
+
+      const result = await cog.run(createTestAgent({ model: 'openai/gpt-4.1-mini' }), {
+        input: 'What is the capital of France?',
+      });
+
+      const classifierRequest = vi.mocked(mockBackendHelper.backend.chat).mock.calls[0][0];
+      expect(classifierRequest.model).toBe('gpt-4.1-mini');
+      expect(result.output).toBe('Hello!');
+
+      await cog.close();
+    });
+
+    it('sends the routed model id to the routed provider even when the agent pins a provider', async () => {
+      const { createLLMBackend } = await import('../llm/index');
+      const cog = new Cogitator({ costRouting: { enabled: true, autoSelectModel: true } });
+
+      const result = await cog.run(
+        createTestAgent({ model: 'meta-llama/llama-3-70b', provider: 'openai' }),
+        { input: 'Say hello' }
+      );
+
+      const [routedProvider, ...rest] = result.modelUsed!.split('/');
+      const routedModelId = rest.join('/');
+      const chatRequest = vi.mocked(mockBackendHelper.backend.chat).mock.calls[0][0];
+      expect(chatRequest.model).toBe(routedModelId);
+      expect(vi.mocked(createLLMBackend).mock.calls.at(-1)?.[0]).toBe(routedProvider);
+
+      await cog.close();
+    });
+
+    describe('audio inputs', () => {
+      const originalFetch = globalThis.fetch;
+      const originalKey = process.env.OPENAI_API_KEY;
+
+      afterEach(() => {
+        globalThis.fetch = originalFetch;
+        if (originalKey === undefined) {
+          delete process.env.OPENAI_API_KEY;
+        } else {
+          process.env.OPENAI_API_KEY = originalKey;
+        }
+      });
+
+      it('transcribes audio and prepends the transcript to the input', async () => {
+        const fetchMock = vi.fn(
+          async () => new Response(JSON.stringify({ text: 'meeting notes' }))
+        );
+        globalThis.fetch = fetchMock as typeof fetch;
+        const cog = new Cogitator({ llm: { providers: { openai: { apiKey: 'sk-test' } } } });
+
+        await cog.run(createTestAgent(), {
+          input: 'Summarize this',
+          audio: [{ data: Buffer.from('fake audio').toString('base64'), format: 'wav' }],
+        });
+
+        expect(fetchMock).toHaveBeenCalledWith(
+          'https://api.openai.com/v1/audio/transcriptions',
+          expect.objectContaining({
+            method: 'POST',
+            headers: { Authorization: 'Bearer sk-test' },
+          })
+        );
+        const sent = vi.mocked(mockBackendHelper.backend.chat).mock.calls[0][0].messages;
+        expect(sent.filter((m) => m.role === 'user').pop()).toEqual({
+          role: 'user',
+          content: '[Audio transcription]: meeting notes\n\nSummarize this',
+        });
+
+        await cog.close();
+      });
+
+      it('fails clearly when audio is passed without an OpenAI key', async () => {
+        delete process.env.OPENAI_API_KEY;
+        const cog = new Cogitator();
+
+        await expect(
+          cog.run(createTestAgent(), {
+            input: 'Summarize this',
+            audio: [{ data: 'AAAA', format: 'mp3' }],
+          })
+        ).rejects.toThrow('Audio inputs require an OpenAI API key');
+        expect(mockBackendHelper.backend.chat).not.toHaveBeenCalled();
+
+        await cog.close();
+      });
+    });
+  });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createSelfTools, loadCustomTools } from '../tools/self-tools';
@@ -63,6 +63,39 @@ describe('createSelfTools', () => {
     })) as Record<string, unknown>;
     expect(result.success).toBe(false);
     expect(existsSync(join(testDir, 'broken.mjs'))).toBe(false);
+  });
+
+  it('create_tool keeps the previous version when an update fails validation', async () => {
+    const tools = createSelfTools({ toolsDir: testDir });
+    const createTool = tools.find((t) => t.name === 'create_tool')!;
+    const good = `export default {
+  name: 'stable',
+  description: 'Stable tool',
+  parameters: { type: 'object', properties: {} },
+  execute: async () => ({ ok: true })
+};`;
+
+    await createTool.execute({ name: 'stable', code: good });
+    const failed = (await createTool.execute({
+      name: 'stable',
+      code: 'export default {{{',
+    })) as Record<string, unknown>;
+
+    expect(failed.success).toBe(false);
+    expect(readFileSync(join(testDir, 'stable.mjs'), 'utf8')).toBe(good);
+    expect(readdirSync(testDir)).toEqual(['stable.mjs']);
+  });
+
+  it('create_tool rejects names that escape the tools directory or hide files', async () => {
+    const tools = createSelfTools({ toolsDir: testDir });
+    const createTool = tools.find((t) => t.name === 'create_tool')!;
+    const code = 'export default { name: "x", description: "x", execute: async () => 1 };';
+
+    for (const name of ['../escape', 'nested/tool', '.hidden']) {
+      const result = (await createTool.execute({ name, code })) as Record<string, unknown>;
+      expect(result).toEqual({ success: false, error: 'Invalid tool name' });
+    }
+    expect(readdirSync(testDir)).toEqual([]);
   });
 
   it('test_tool runs a tool and returns result', async () => {

@@ -89,6 +89,7 @@ export {
 
 export {
   createInterceptRequestTool,
+  createRemoveInterceptorTool,
   createWaitForResponseTool,
   createBlockResourcesTool,
   createCaptureHarTool,

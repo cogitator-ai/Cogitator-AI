@@ -4,6 +4,9 @@ import type {
   NodeConfig,
   NodeContext,
   NodeResult,
+  ApprovalStore,
+  ApprovalNotifier,
+  TimerStore,
 } from '@cogitator-ai/types';
 import type { Cogitator } from '@cogitator-ai/core';
 
@@ -11,4 +14,12 @@ export type { WorkflowNode, NodeConfig, NodeContext, NodeResult };
 
 export interface ExtendedNodeContext<S = WorkflowState> extends NodeContext<S> {
   cogitator: Cogitator;
+  /** Abort signal of the workflow run, when the run can be cancelled */
+  signal?: AbortSignal;
+  /** Subworkflow nesting depth (0 for top-level runs) */
+  depth?: number;
+  /** Run-level defaults for human-in-the-loop and timer nodes */
+  approvalStore?: ApprovalStore;
+  approvalNotifier?: ApprovalNotifier;
+  timerStore?: TimerStore;
 }

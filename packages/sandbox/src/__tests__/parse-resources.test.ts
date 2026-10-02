@@ -71,3 +71,18 @@ describe('cpusToNanoCpus', () => {
     expect(cpusToNanoCpus(0.333)).toBe(Math.floor(0.333 * 1e9));
   });
 });
+
+describe('parseMemory Docker-style suffixes', () => {
+  it('accepts short and binary suffixes', () => {
+    expect(parseMemory('512m')).toBe(512 * 1024 * 1024);
+    expect(parseMemory('2g')).toBe(2 * 1024 * 1024 * 1024);
+    expect(parseMemory('64k')).toBe(64 * 1024);
+    expect(parseMemory('1GiB')).toBe(1024 * 1024 * 1024);
+    expect(parseMemory(' 128MiB ')).toBe(128 * 1024 * 1024);
+  });
+
+  it('still rejects unknown units', () => {
+    expect(() => parseMemory('5PB')).toThrow('Invalid memory format');
+    expect(() => parseMemory('5MiBs')).toThrow('Invalid memory format');
+  });
+});

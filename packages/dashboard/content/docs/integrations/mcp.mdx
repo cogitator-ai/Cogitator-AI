@@ -111,7 +111,9 @@ await cleanup();
 | `command`       | `string`                     | Command for stdio transport                       |
 | `args`          | `string[]`                   | Command arguments for stdio                       |
 | `env`           | `Record<string, string>`     | Environment variables for stdio                   |
+| `cwd`           | `string`                     | Working directory for the stdio process           |
 | `url`           | `string`                     | Server URL for HTTP/SSE transport                 |
+| `headers`       | `Record<string, string>`     | Extra HTTP headers (e.g. `Authorization`)         |
 | `timeout`       | `number`                     | Connection timeout in ms                          |
 | `clientName`    | `string`                     | Client identification name                        |
 | `clientVersion` | `string`                     | Client version string                             |
@@ -137,6 +139,24 @@ const client = await MCPClient.connect({
   onReconnected: () => console.log('Reconnected'),
   onReconnectFailed: (err) => console.error('Reconnection failed:', err),
 });
+```
+
+Only transient failures are retried (connection loss, request timeouts, network errors). Protocol errors returned by the server, tool failures and aborted calls fail immediately, and concurrent calls that lose the connection share a single reconnect.
+
+### Tool Results and Errors
+
+`callTool` returns `structuredContent` when the server provides it, otherwise the unwrapped content (text blocks are JSON-parsed when possible, a single block is returned on its own, an empty result is `null`). A tool result with `isError: true` throws `MCPToolError`, so MCP failures show up as ordinary tool errors inside agent runs. Pass an `AbortSignal` to cancel a call; tools created by `getTools()` forward the run's signal automatically.
+
+```typescript
+import { MCPToolError } from '@cogitator-ai/mcp';
+
+try {
+  await client.callTool('write_file', { path: '/etc/passwd', content: '' }, { timeout: 5_000 });
+} catch (error) {
+  if (error instanceof MCPToolError) {
+    console.error(`${error.toolName} failed: ${error.message}`);
+  }
+}
 ```
 
 ### Resources and Prompts
@@ -169,10 +189,10 @@ import { tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
 const calculator = tool({
-  name: 'calculate',
-  description: 'Evaluate a math expression',
-  parameters: z.object({ expression: z.string() }),
-  execute: async ({ expression }) => eval(expression),
+  name: 'add',
+  description: 'Add two numbers',
+  parameters: z.object({ a: z.number(), b: z.number() }),
+  execute: async ({ a, b }) => ({ sum: a + b }),
 });
 
 const server = new MCPServer({
@@ -203,7 +223,9 @@ server.registerTools([calculator, webSearch, fileReader]);
 await server.start();
 ```
 
-Clients connect to `http://localhost:3000/mcp`.
+Clients connect to `http://localhost:3000/mcp`. Use `port: 0` to bind a random free port and read it back with `server.getPort()`. `maxBodySize` (default 10 MB) and `corsOrigin` (default `'*'`) tune the HTTP endpoint; `start()` rejects if the port cannot be bound and `stop()` closes open connections.
+
+Tool arguments are validated against the tool's full Zod schema before `execute` runs; invalid arguments and thrown errors come back to the client as `isError` tool results, while errors thrown by resource `read` and prompt `get` handlers are returned as JSON-RPC errors. With `logging: true`, diagnostics go to stderr so the stdio transport's stdout stays reserved for JSON-RPC.
 
 ### Registering Resources
 

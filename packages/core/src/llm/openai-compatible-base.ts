@@ -17,6 +17,20 @@ import { LLMError, wrapSDKError, llmInvalidResponse, type LLMErrorContext } from
 export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
   protected abstract client: OpenAI;
 
+  /**
+   * The official OpenAI API rejects `max_tokens` for reasoning models and expects
+   * `max_completion_tokens`; most OpenAI-compatible servers only understand `max_tokens`.
+   */
+  protected readonly maxTokensField: 'max_tokens' | 'max_completion_tokens' = 'max_tokens';
+
+  private maxTokensParams(
+    maxTokens: number | undefined
+  ): { max_tokens?: number } | { max_completion_tokens?: number } {
+    return this.maxTokensField === 'max_completion_tokens'
+      ? { max_completion_tokens: maxTokens }
+      : { max_tokens: maxTokens };
+  }
+
   protected resolveModel(request: ChatRequest): string {
     return request.model;
   }
@@ -47,7 +61,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         tool_choice: this.convertToolChoice(request.toolChoice),
         temperature: request.temperature,
         top_p: request.topP,
-        max_tokens: request.maxTokens,
+        ...this.maxTokensParams(request.maxTokens),
         stop: request.stop,
         response_format: this.convertResponseFormat(request.responseFormat),
       };
@@ -112,7 +126,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         tool_choice: this.convertToolChoice(request.toolChoice),
         temperature: request.temperature,
         top_p: request.topP,
-        max_tokens: request.maxTokens,
+        ...this.maxTokensParams(request.maxTokens),
         stop: request.stop,
         stream: true as const,
         stream_options: { include_usage: true },
@@ -148,6 +162,13 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
       if (!choice) continue;
 
       const delta = choice.delta;
+      const usage = chunk.usage
+        ? {
+            inputTokens: chunk.usage.prompt_tokens,
+            outputTokens: chunk.usage.completion_tokens,
+            totalTokens: chunk.usage.total_tokens,
+          }
+        : undefined;
 
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
@@ -192,6 +213,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
             ? 'tool_calls'
             : this.mapFinishReason(choice.finish_reason)
           : undefined,
+        ...(usage ? { usage } : {}),
       };
     }
   }
@@ -293,8 +315,12 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
   }
 
   protected tryParseJson(str: string, ctx: LLMErrorContext): Record<string, unknown> {
+    if (!str.trim()) {
+      return {};
+    }
+    let parsed: unknown;
     try {
-      return JSON.parse(str) as Record<string, unknown>;
+      parsed = JSON.parse(str);
     } catch (e) {
       throw new LLMError(
         `Failed to parse tool call arguments: ${str.slice(0, 100)}`,
@@ -303,6 +329,17 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         { cause: e instanceof Error ? e : undefined }
       );
     }
+    if (parsed === null) {
+      return {};
+    }
+    if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new LLMError(
+        `Tool call arguments must be a JSON object: ${str.slice(0, 100)}`,
+        ErrorCode.LLM_INVALID_RESPONSE,
+        ctx
+      );
+    }
+    return parsed as Record<string, unknown>;
   }
 
   protected wrapAPIError(error: unknown, ctx: LLMErrorContext): LLMError {

@@ -11,7 +11,7 @@ Tree-of-Thought (ToT) reasoning allows agents to explore multiple approaches to 
 
 ```typescript
 import { Cogitator, Agent } from '@cogitator-ai/core';
-import { ThoughtTreeExecutor } from '@cogitator-ai/core/reasoning';
+import { ThoughtTreeExecutor } from '@cogitator-ai/core';
 
 const cogitator = new Cogitator({
   llm: {
@@ -77,7 +77,7 @@ Higher `branchFactor` explores more possibilities but costs more tokens. Lower `
 The `BranchGenerator` asks the LLM to propose diverse approaches for a given node:
 
 ```typescript
-import { BranchGenerator } from '@cogitator-ai/core/reasoning';
+import { BranchGenerator } from '@cogitator-ai/core';
 
 const generator = new BranchGenerator(llmBackend, 'gpt-4o');
 
@@ -101,7 +101,7 @@ The `BranchEvaluator` scores branches on three dimensions:
 - **Novelty** — how different is it from sibling branches?
 
 ```typescript
-import { BranchEvaluator } from '@cogitator-ai/core/reasoning';
+import { BranchEvaluator } from '@cogitator-ai/core';
 
 const evaluator = new BranchEvaluator({
   llm: llmBackend,

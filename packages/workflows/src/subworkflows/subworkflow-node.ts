@@ -102,8 +102,10 @@ export async function executeSubworkflow<PS extends WorkflowState, CS extends Wo
     config.shareCheckpoints !== false ? context.checkpointStore : undefined
   );
 
-  const executeOptions: WorkflowExecuteOptionsV2 = {
+  const executeOptions: WorkflowExecuteOptionsV2 & { signal?: AbortSignal } = {
     checkpoint: config.shareCheckpoints !== false && !!context.checkpointStore,
+    depth: context.depth,
+    signal: context.signal,
     metadata: {
       ...context.metadata,
       parentWorkflowId: context.parentWorkflowId,
@@ -126,24 +128,35 @@ export async function executeSubworkflow<PS extends WorkflowState, CS extends Wo
       break;
     }
 
+    const attemptController = new AbortController();
+    const abortAttempt = () => attemptController.abort();
+    context.signal?.addEventListener('abort', abortAttempt, { once: true });
+
     try {
-      const executePromise = executor.execute(config.workflow, childInput, executeOptions);
+      const executePromise = executor.execute(config.workflow, childInput, {
+        ...executeOptions,
+        signal: attemptController.signal,
+      });
 
       if (config.timeout) {
-        let timer: ReturnType<typeof setTimeout>;
+        let timer: ReturnType<typeof setTimeout> | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error('Subworkflow timeout exceeded')),
-            config.timeout
-          );
+          timer = setTimeout(() => {
+            attemptController.abort();
+            reject(new Error('Subworkflow timeout exceeded'));
+          }, config.timeout);
         });
         try {
           childResult = await Promise.race([executePromise, timeoutPromise]);
         } finally {
-          clearTimeout(timer!);
+          clearTimeout(timer);
         }
       } else {
         childResult = await executePromise;
+      }
+
+      if (childResult.error) {
+        throw childResult.error;
       }
 
       config.onComplete?.(childResult, context);
@@ -161,15 +174,17 @@ export async function executeSubworkflow<PS extends WorkflowState, CS extends Wo
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       config.onChildError?.(lastError, context);
+    } finally {
+      context.signal?.removeEventListener('abort', abortAttempt);
+    }
 
-      if (attempt < maxAttempts - 1 && retryConfig) {
-        const delay = retryConfig.delay ?? 1000;
-        const actualDelay =
-          retryConfig.backoff === 'exponential'
-            ? delay * Math.pow(2, attempt)
-            : delay * (attempt + 1);
-        await new Promise((resolve) => setTimeout(resolve, actualDelay));
-      }
+    if (attempt < maxAttempts - 1 && retryConfig) {
+      const delay = retryConfig.delay ?? 1000;
+      const actualDelay =
+        retryConfig.backoff === 'exponential'
+          ? delay * Math.pow(2, attempt)
+          : delay * (attempt + 1);
+      await new Promise((resolve) => setTimeout(resolve, actualDelay));
     }
   }
 

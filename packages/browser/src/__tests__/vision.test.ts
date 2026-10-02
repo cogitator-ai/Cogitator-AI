@@ -24,7 +24,9 @@ function createMockSession(ariaSnapshot: string | null = DEFAULT_ARIA) {
       click: vi.fn().mockResolvedValue(undefined),
     }),
     ariaSnapshot: vi.fn().mockResolvedValue(ariaSnapshot),
+    first: vi.fn(),
   };
+  defaultLocator.first.mockReturnValue(defaultLocator);
 
   const mockPage = {
     screenshot: vi.fn().mockResolvedValue(Buffer.from('fake-png-data')),
@@ -79,9 +81,35 @@ describe('vision tools', () => {
       expect(mockPage.screenshot).toHaveBeenCalledWith({ type: 'png' });
       expect(result).toEqual({
         image: Buffer.from('fake-png-data').toString('base64'),
+        mimeType: 'image/png',
         width: 1280,
         height: 720,
       });
+    });
+
+    it('reports jpeg mime type and does not pass fullPage to element screenshots', async () => {
+      const mock = createMockSession();
+      const t = createScreenshotTool(mock.session);
+      const result = await t.execute(
+        { selector: '#hero', fullPage: true, quality: 50 },
+        dummyContext
+      );
+
+      expect(mock.defaultLocator.first).toHaveBeenCalled();
+      expect(mock.defaultLocator.screenshot).toHaveBeenCalledWith({ type: 'jpeg', quality: 50 });
+      expect(result.mimeType).toBe('image/jpeg');
+    });
+
+    it('reads real PNG dimensions from the image header', async () => {
+      const png = Buffer.alloc(24);
+      png.writeUInt32BE(0x89504e47, 0);
+      png.writeUInt32BE(640, 16);
+      png.writeUInt32BE(480, 20);
+      mockPage.screenshot.mockResolvedValueOnce(png);
+
+      const result = await createScreenshotTool(session).execute({ fullPage: true }, dummyContext);
+      expect(result.width).toBe(640);
+      expect(result.height).toBe(480);
     });
 
     it('takes full page screenshot', async () => {
@@ -105,8 +133,9 @@ describe('vision tools', () => {
       expect(mockPage.locator).toHaveBeenCalledWith('#hero');
       expect(result).toEqual({
         image: Buffer.from('fake-element-data').toString('base64'),
-        width: 1280,
-        height: 720,
+        mimeType: 'image/png',
+        width: 100,
+        height: 50,
       });
     });
 
@@ -139,10 +168,13 @@ describe('vision tools', () => {
     });
 
     it('returns null bounding box when element has no box', async () => {
-      mockPage.locator.mockReturnValueOnce({
+      const hidden = {
         screenshot: vi.fn().mockResolvedValue(Buffer.from('data')),
         boundingBox: vi.fn().mockResolvedValue(null),
-      });
+        first: vi.fn(),
+      };
+      hidden.first.mockReturnValue(hidden);
+      mockPage.locator.mockReturnValueOnce(hidden);
 
       const t = createScreenshotElementTool(session);
       const result = await t.execute({ selector: '.hidden' }, dummyContext);
@@ -170,6 +202,28 @@ describe('vision tools', () => {
         name: 'Submit',
         description: 'button: "Submit"',
       });
+    });
+
+    it('finds inline-text nodes and YAML-quoted names from real snapshots', async () => {
+      const aria = [
+        '- document:',
+        '  - paragraph: Shipping is free over $50',
+        `  - 'button "Checkout: 2 items"'`,
+      ].join('\n');
+      const mock = createMockSession(aria);
+      const t = createFindByDescriptionTool(mock.session);
+
+      const shipping = await t.execute({ description: 'shipping is free' }, dummyContext);
+      expect(shipping.elements).toEqual([
+        {
+          role: 'paragraph',
+          name: 'Shipping is free over $50',
+          description: 'paragraph: "Shipping is free over $50"',
+        },
+      ]);
+
+      const checkout = await t.execute({ description: 'checkout' }, dummyContext);
+      expect(checkout.elements[0]).toMatchObject({ role: 'button', name: 'Checkout: 2 items' });
     });
 
     it('matches by role', async () => {

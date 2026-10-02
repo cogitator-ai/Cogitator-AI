@@ -124,18 +124,18 @@ For models not in this list, the service defaults to 768 dimensions. You can use
 
 ## Google
 
-Uses the Gemini `text-embedding-004` model via the Google AI API.
+Uses the Gemini `gemini-embedding-001` model via the Google AI API.
 
 ```typescript
 import { GoogleEmbeddingService } from '@cogitator-ai/memory';
 
 const embeddings = new GoogleEmbeddingService({
   apiKey: process.env.GOOGLE_API_KEY!,
-  model: 'text-embedding-004',
+  model: 'gemini-embedding-001',
 });
 
 const vector = await embeddings.embed('Google embedding example');
-console.log(embeddings.dimensions); // 768
+console.log(embeddings.dimensions); // 3072
 ```
 
 Batch embedding uses Google's `batchEmbedContents` endpoint:
@@ -144,12 +144,13 @@ Batch embedding uses Google's `batchEmbedContents` endpoint:
 const vectors = await embeddings.embedBatch(['First passage', 'Second passage']);
 ```
 
-| Option   | Type   | Default              | Description          |
-| -------- | ------ | -------------------- | -------------------- |
-| `apiKey` | string | —                    | Google AI API key    |
-| `model`  | string | `text-embedding-004` | Embedding model name |
+| Option       | Type   | Default                | Description                                           |
+| ------------ | ------ | ---------------------- | ----------------------------------------------------- |
+| `apiKey`     | string | —                      | Google AI API key                                     |
+| `model`      | string | `gemini-embedding-001` | Embedding model name                                  |
+| `dimensions` | number | `3072`                 | Output size; when set, sent as `outputDimensionality` |
 
-**Dimensions:** `text-embedding-004` produces 768-dimensional vectors.
+**Dimensions:** `gemini-embedding-001` produces 3072-dimensional vectors by default. Pass `dimensions` (for example `768` or `1536`) to request smaller vectors, and make sure your vector column size matches.
 
 ## Using with Memory Adapters
 

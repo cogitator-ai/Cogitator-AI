@@ -5,8 +5,11 @@ import { GeminiRealtimeAdapter } from './gemini-realtime.js';
 
 type RealtimeAdapter = OpenAIRealtimeAdapter | GeminiRealtimeAdapter;
 
+const MAX_PENDING_AUDIO_BYTES = 1024 * 1024;
+
+type PendingInput = { kind: 'audio'; chunk: Buffer } | { kind: 'text'; text: string };
+
 const FORWARDED_EVENTS = [
-  'connected',
   'disconnected',
   'speech_start',
   'transcript',
@@ -32,6 +35,8 @@ export class RealtimeSession extends EventEmitter<RealtimeSessionEvents> {
   private readonly _provider: RealtimeSessionConfig['provider'];
   private readonly forwarders = new Map<string, (...args: unknown[]) => void>();
   private _closed = false;
+  private pending: PendingInput[] = [];
+  private pendingAudioBytes = 0;
 
   constructor(config: RealtimeSessionConfig) {
     super();
@@ -48,28 +53,61 @@ export class RealtimeSession extends EventEmitter<RealtimeSessionEvents> {
     }
 
     for (const event of FORWARDED_EVENTS) {
-      const forwarder = (...args: unknown[]) => {
+      this.addForwarder(event, (...args: unknown[]) => {
         this.emit(event, ...(args as never));
-      };
-      this.forwarders.set(event, forwarder);
-      this.adapter.on(event, forwarder);
+      });
     }
+
+    this.addForwarder('connected', () => {
+      this.flushPending();
+      this.emit('connected');
+    });
   }
 
   get provider(): RealtimeSessionConfig['provider'] {
     return this._provider;
   }
 
+  get isConnected(): boolean {
+    return this.adapter.isConnected;
+  }
+
   async connect(): Promise<void> {
+    if (this._closed) {
+      throw new Error('RealtimeSession is closed');
+    }
     return this.adapter.connect();
   }
 
+  /**
+   * Send audio to the model. Audio pushed before the connection is established is
+   * buffered (up to 1MB, oldest audio dropped first) and flushed once connected.
+   */
   pushAudio(chunk: Buffer): void {
-    this.adapter.pushAudio(chunk);
+    if (this._closed) return;
+    if (this.adapter.isConnected) {
+      this.adapter.pushAudio(chunk);
+      return;
+    }
+
+    this.pending.push({ kind: 'audio', chunk });
+    this.pendingAudioBytes += chunk.length;
+    while (this.pendingAudioBytes > MAX_PENDING_AUDIO_BYTES) {
+      const index = this.pending.findIndex((input) => input.kind === 'audio');
+      if (index === -1) break;
+      const [dropped] = this.pending.splice(index, 1);
+      if (dropped?.kind === 'audio') this.pendingAudioBytes -= dropped.chunk.length;
+    }
   }
 
+  /** Send a user text turn. Text sent before the connection is established is queued. */
   sendText(text: string): void {
-    this.adapter.sendText(text);
+    if (this._closed) return;
+    if (this.adapter.isConnected) {
+      this.adapter.sendText(text);
+      return;
+    }
+    this.pending.push({ kind: 'text', text });
   }
 
   interrupt(): void {
@@ -79,10 +117,30 @@ export class RealtimeSession extends EventEmitter<RealtimeSessionEvents> {
   close(): void {
     if (this._closed) return;
     this._closed = true;
+    this.pending = [];
+    this.pendingAudioBytes = 0;
     for (const [event, forwarder] of this.forwarders) {
-      this.adapter.off(event, forwarder);
+      this.adapter.off(event as keyof RealtimeSessionEvents, forwarder);
     }
     this.forwarders.clear();
     this.adapter.close();
+  }
+
+  private addForwarder(
+    event: keyof RealtimeSessionEvents,
+    forwarder: (...args: unknown[]) => void
+  ): void {
+    this.forwarders.set(event, forwarder);
+    this.adapter.on(event, forwarder);
+  }
+
+  private flushPending(): void {
+    const pending = this.pending;
+    this.pending = [];
+    this.pendingAudioBytes = 0;
+    for (const input of pending) {
+      if (input.kind === 'audio') this.adapter.pushAudio(input.chunk);
+      else this.adapter.sendText(input.text);
+    }
   }
 }

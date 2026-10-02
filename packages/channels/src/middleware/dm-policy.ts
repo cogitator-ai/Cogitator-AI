@@ -1,9 +1,15 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { GatewayMiddleware, ChannelMessage, MiddlewareContext } from '@cogitator-ai/types';
-import { customAlphabet } from 'nanoid';
+import {
+  findPendingByUser,
+  generatePairingCode,
+  isPairCommand,
+  parsePairCommand,
+  prunePending,
+  type PendingPairing,
+} from './pairing-codes';
 
 export type DmPolicyMode = 'open' | 'allowlist' | 'pairing' | 'disabled';
 
@@ -17,13 +23,7 @@ export interface DmPolicyConfig {
   groupAllowlist?: string[];
   ownerIds?: Record<string, string>;
   onPairingRequest?: (userId: string, code: string) => void;
-}
-
-interface PendingPairing {
-  code: string;
-  userId: string;
-  channelType: string;
-  expiresAt: number;
+  onStoreError?: (error: Error) => void;
 }
 
 interface AllowStore {
@@ -47,6 +47,7 @@ export class DmPolicyMiddleware implements GatewayMiddleware {
   private readonly groupAllowlist: Set<string>;
   private readonly ownerKeys = new Set<string>();
   private readonly onPairingRequest?: (userId: string, code: string) => void;
+  private readonly onStoreError?: (error: Error) => void;
 
   constructor(config: DmPolicyConfig) {
     this.mode = config.mode;
@@ -56,6 +57,7 @@ export class DmPolicyMiddleware implements GatewayMiddleware {
     this.groupPolicy = config.groupPolicy ?? 'open';
     this.groupAllowlist = new Set(config.groupAllowlist ?? []);
     this.onPairingRequest = config.onPairingRequest;
+    this.onStoreError = config.onStoreError;
 
     if (config.ownerIds) {
       for (const [channelType, ownerId] of Object.entries(config.ownerIds)) {
@@ -89,7 +91,7 @@ export class DmPolicyMiddleware implements GatewayMiddleware {
     }
 
     if (isOwner) {
-      if (this.mode === 'pairing' && msg.text.startsWith('/pair ')) {
+      if (this.mode === 'pairing' && isPairCommand(msg.text)) {
         await this.handleApproval(msg, ctx);
         return;
       }
@@ -152,8 +154,11 @@ export class DmPolicyMiddleware implements GatewayMiddleware {
     ctx: MiddlewareContext,
     userKey: string
   ): Promise<void> {
-    const existing = this.findPendingByUser(userKey);
-    if (existing && existing.expiresAt > Date.now()) {
+    const now = Date.now();
+    prunePending(this.pending, now);
+
+    const existing = findPendingByUser(this.pending, userKey);
+    if (existing) {
       await ctx.channel.sendText(
         msg.channelId,
         `Waiting for approval. Your code: \`${existing.code}\``
@@ -161,13 +166,12 @@ export class DmPolicyMiddleware implements GatewayMiddleware {
       return;
     }
 
-    const genCode = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789');
-    const code = genCode(this.codeLength);
+    const code = generatePairingCode(this.codeLength);
     this.pending.set(code, {
       code,
       userId: msg.userId,
       channelType: msg.channelType,
-      expiresAt: Date.now() + this.expiresMs,
+      expiresAt: now + this.expiresMs,
     });
 
     this.onPairingRequest?.(msg.userId, code);
@@ -179,17 +183,12 @@ export class DmPolicyMiddleware implements GatewayMiddleware {
   }
 
   private async handleApproval(msg: ChannelMessage, ctx: MiddlewareContext): Promise<void> {
-    const code = msg.text.replace('/pair ', '').trim().toUpperCase();
-    const pairing = this.pending.get(code);
+    prunePending(this.pending, Date.now());
+    const code = parsePairCommand(msg.text);
+    const pairing = code ? this.pending.get(code) : undefined;
 
-    if (!pairing) {
+    if (!code || !pairing) {
       await ctx.channel.sendText(msg.channelId, 'Invalid or expired pairing code.');
-      return;
-    }
-
-    if (pairing.expiresAt < Date.now()) {
-      this.pending.delete(code);
-      await ctx.channel.sendText(msg.channelId, 'Pairing code expired.');
       return;
     }
 
@@ -199,13 +198,6 @@ export class DmPolicyMiddleware implements GatewayMiddleware {
     this.saveStore();
 
     await ctx.channel.sendText(msg.channelId, `User approved (${userKey}).`);
-  }
-
-  private findPendingByUser(userKey: string): PendingPairing | undefined {
-    for (const p of this.pending.values()) {
-      if (`${p.channelType}:${p.userId}` === userKey) return p;
-    }
-    return undefined;
   }
 
   private loadStore(): void {
@@ -231,8 +223,14 @@ export class DmPolicyMiddleware implements GatewayMiddleware {
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true });
       }
-      writeFileSync(this.storePath, JSON.stringify(store, null, 2));
-    } catch {}
+      const tmpPath = `${this.storePath}.${process.pid}.tmp`;
+      writeFileSync(tmpPath, JSON.stringify(store, null, 2));
+      renameSync(tmpPath, this.storePath);
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      if (this.onStoreError) this.onStoreError(error);
+      else console.error('[dm-policy] Failed to persist allowlist:', error.message);
+    }
   }
 }
 

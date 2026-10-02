@@ -5,7 +5,7 @@ description: Intercept HTTP requests, block resources, capture HAR logs, and mon
 
 ## Overview
 
-The network module provides 5 tools for controlling and monitoring HTTP traffic. These tools share a `NetworkState` instance internally that tracks interceptors and records API calls.
+The network module provides 6 tools for controlling and monitoring HTTP traffic. All network tools created for the same `BrowserSession` share one internal state: interceptors are registered on the browser context (so they apply to every tab, including tabs opened later), and API calls are recorded from the moment the session starts.
 
 ```typescript
 import { browserTools } from '@cogitator-ai/browser';
@@ -18,6 +18,7 @@ Or import individual tools:
 ```typescript
 import {
   createInterceptRequestTool,
+  createRemoveInterceptorTool,
   createWaitForResponseTool,
   createBlockResourcesTool,
   createCaptureHarTool,
@@ -29,11 +30,13 @@ import {
 
 ### `browser_intercept_request`
 
-Intercept HTTP requests matching a URL pattern. Three actions are available:
+Intercept HTTP requests matching a URL pattern. `urlPattern` is a Playwright glob (`**/api/**`) or a regular expression literal (`/\.(png|jpe?g)$/i`). Three actions are available:
 
 - **block** — abort the request entirely
-- **modify** — continue with modified headers, body, or URL
-- **continue** — let the request through (useful for logging)
+- **modify** — pass the request on with modified headers, body, or URL. `headers` are merged into the original request headers
+- **continue** — let the request through unchanged
+
+`modify` and `continue` hand the request to the next matching interceptor (`route.fallback()`), so overlapping rules such as `browser_block_resources` keep working.
 
 ```typescript
 // block all analytics
@@ -56,11 +59,23 @@ Intercept HTTP requests matching a URL pattern. Three actions are available:
 }
 ```
 
-Returns an `interceptorId` that identifies this interceptor in the internal state.
+Returns an `interceptorId` that can be passed to `browser_remove_interceptor`.
+
+### `browser_remove_interceptor`
+
+Remove an interceptor created by `browser_intercept_request` or `browser_block_resources`. Omit `interceptorId` to remove all of them.
+
+```typescript
+{ "interceptorId": "interceptor_1" }
+// returns: { removed: ["interceptor_1"] }
+
+{}
+// returns: { removed: ["interceptor_1", "interceptor_2"] }
+```
 
 ### `browser_block_resources`
 
-Block specific resource types from loading. This is a convenience wrapper over request interception. Useful for speeding up page loads.
+Block specific resource types from loading in every tab. This is a convenience wrapper over request interception and also returns an `interceptorId`. Useful for speeding up page loads.
 
 ```typescript
 // block images, fonts, and stylesheets for faster scraping
@@ -73,7 +88,7 @@ Supported types: `image`, `stylesheet`, `font`, `media`, `script`.
 
 ### `browser_wait_for_response`
 
-Wait for an HTTP response matching a URL pattern. Returns the response status, headers, and body.
+Wait for an HTTP response whose URL contains `urlPattern` as a substring, or matches it when it is a `/regex/flags` literal. Returns the response status, headers, and body.
 
 ```typescript
 // wait for the search API to respond
@@ -83,7 +98,7 @@ Wait for an HTTP response matching a URL pattern. Returns the response status, h
 
 ### `browser_get_api_calls`
 
-Get captured XHR and fetch API calls. The tool automatically starts listening for API calls on first use. Filter by URL pattern or HTTP method.
+Get XHR and fetch calls recorded since the session started (the latest 1000 are kept). Filter by URL substring or `/regex/flags` literal and by HTTP method; pass `clear: true` to empty the history after reading it. Failed calls are recorded with `status: 0` and an `error` message.
 
 ```typescript
 // get all captured API calls
@@ -95,8 +110,8 @@ Get captured XHR and fetch API calls. The tool automatically starts listening fo
 // filter by method
 { "method": "POST" }
 
-// both
-{ "urlPattern": "/api/", "method": "GET" }
+// both, then clear the history
+{ "urlPattern": "/api/", "method": "GET", "clear": true }
 ```
 
 Returns an array of call records:
@@ -108,7 +123,7 @@ Returns an array of call records:
       url: 'https://example.com/api/users',
       method: 'GET',
       status: 200,
-      timing: 0,
+      timing: 84.2, // ms from request start to response end
       requestHeaders: { ... },
       responseHeaders: { ... },
     }
@@ -120,7 +135,7 @@ Returns an array of call records:
 
 ### `browser_capture_har`
 
-Start or stop capturing all HTTP traffic in HAR format. On stop, returns all captured entries with full request/response details including bodies.
+Start or stop capturing the HTTP traffic of all tabs. Entries are ordered by request start; on stop the tool waits up to 2 seconds for requests that are still in flight. With `path`, a [HAR 1.2](http://www.softwareishard.com/blog/har-12-spec/) document is written that opens in browser devtools and HAR viewers. The path must be inside the working directory.
 
 ```typescript
 // start capturing
@@ -130,8 +145,8 @@ Start or stop capturing all HTTP traffic in HAR format. On stop, returns all cap
 // ... navigate, interact with pages ...
 
 // stop and save to file
-{ "action": "stop", "path": "./traffic.har.json" }
-// returns: { capturing: false, entries: 47, har: [...] }
+{ "action": "stop", "path": "./traffic.har" }
+// returns: { capturing: false, entries: 47, truncated: false, har: [...], path: "/abs/traffic.har" }
 
 // stop without saving to file
 { "action": "stop" }
@@ -148,9 +163,12 @@ Each HAR entry contains:
   timing: number;
   requestHeaders: Record<string, string>;
   responseHeaders: Record<string, string>;
-  responseBody: string;
+  requestBody?: string;   // request post data, when present
+  responseBody?: string;  // textual responses up to 1 MB
 }
 ```
+
+A capture keeps at most 5000 entries; `truncated: true` means more requests happened than were recorded.
 
 ## Network Monitoring Example
 
@@ -205,6 +223,6 @@ stylesheets, and media. This speeds up page loads significantly.`,
 
 ## Next Steps
 
-- [Tools Reference](/docs/browser/tools) — full parameter reference for all 32 tools
+- [Tools Reference](/docs/browser/tools) — full parameter reference for all 33 tools
 - [Stealth](/docs/browser/stealth) — anti-detection for network-monitored sites
 - [BrowserSession](/docs/browser/session) — proxy configuration for network routing

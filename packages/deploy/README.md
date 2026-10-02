@@ -1,6 +1,6 @@
 # @cogitator-ai/deploy
 
-One-command deployment engine for Cogitator agents. Supports Docker and Fly.io targets with auto-detection of project configuration.
+One-command deployment engine for Cogitator agents. Analyzes your project, generates a Dockerfile and target-specific artifacts, runs preflight checks and deploys to Docker or Fly.io.
 
 ## Installation
 
@@ -13,19 +13,10 @@ pnpm add @cogitator-ai/deploy
 ### Via CLI
 
 ```bash
-# Deploy to Docker (default)
-cogitator deploy
-
-# Deploy to Fly.io
-cogitator deploy --target fly
-
-# Dry run — see what would happen
-cogitator deploy --dry-run
-
-# Check status
+cogitator deploy --dry-run            # analyze + preflight, change nothing
+cogitator deploy                      # Docker: build image, start the compose stack
+cogitator deploy --target fly         # Fly.io
 cogitator deploy status
-
-# Tear down
 cogitator deploy destroy
 ```
 
@@ -36,72 +27,119 @@ import { Deployer } from '@cogitator-ai/deploy';
 
 const deployer = new Deployer();
 
-// Plan deployment (preflight checks, no execution)
 const plan = await deployer.plan({
   projectDir: process.cwd(),
   target: 'docker',
   noPush: true,
 });
 
-// Execute deployment
-const result = await deployer.deploy({
-  projectDir: process.cwd(),
-  target: 'fly',
-});
+console.log(plan.config); // resolved DeployConfig (image, port, services, secrets, ...)
+console.log(plan.warnings); // e.g. missing start script, local Ollama on a cloud target
+console.log(plan.preflight.passed, plan.preflight.checks);
 
+const result = await deployer.deploy({ projectDir: process.cwd(), target: 'fly' });
+if (!result.success) throw new Error(result.error);
 console.log(result.url); // https://my-app.fly.dev
 ```
 
+| Method                                | Description                                                                                  |
+| ------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `plan(options)`                       | Analyze + preflight. Returns `config`, `preflight`, `warnings`, `analysis`, `provider`       |
+| `deploy(options)`                     | `plan`, generate artifacts, deploy. Returns `DeployResult` (`dryRun` stops before deploying) |
+| `status(target, config, projectDir)`  | `DeployStatus` (`running`, `url`, `instances`)                                               |
+| `destroy(target, config, projectDir)` | Tears down the deployment; throws when it fails                                              |
+| `availableTargets()`                  | Names of registered providers (`['docker', 'fly']` by default)                               |
+| `registerProvider(provider)`          | Add a custom `DeployProvider`                                                                |
+
 ## Configuration
 
-Add a `deploy` section to `cogitator.yml`:
+Add a `deploy` section to `cogitator.yml` (or pass `configOverrides`):
 
 ```yaml
 deploy:
-  target: fly
+  target: fly # docker | fly
   port: 3000
+  image: my-agent # Docker image / Fly app name (default: package.json name)
   region: iad
-  instances: 2
-  registry: ghcr.io/myorg/myapp
+  instances: 2 # Fly.io only
+  registry: ghcr.io/myorg
   services:
     redis: true
     postgres: true
+  env:
+    LOG_LEVEL: info
   secrets:
     - OPENAI_API_KEY
-    - DATABASE_URL
+  health:
+    path: /health
+    interval: 30s
+    timeout: 5s
+  resources:
+    memory: 512mb
+    cpu: 1
 ```
+
+Secrets are read from the current environment or the project's `.env` file. They are checked during preflight, passed through to the Docker Compose stack, and imported into Fly.io with `fly secrets import --stage`.
 
 ## Auto-Detection
 
-The deploy engine automatically detects:
+| What             | Source                                   | Example                                                                             |
+| ---------------- | ---------------------------------------- | ----------------------------------------------------------------------------------- |
+| Server adapter   | `package.json` dependencies              | `@cogitator-ai/express` → Express                                                   |
+| Image / app name | `package.json` `name`                    | `@acme/My Agent` → `my-agent`                                                       |
+| Package manager  | Lockfile                                 | `pnpm-lock.yaml` → `pnpm install --frozen-lockfile`, `package-lock.json` → `npm ci` |
+| Start command    | `scripts.start`, then `main`             | `node dist/index.js` → `CMD ["node","dist/index.js"]`, otherwise `npm start`        |
+| Build step       | `tsconfig.json` + `scripts.build`        | Multi-stage build running `<pm> run build`                                          |
+| Services         | `cogitator.yml` / `.yaml` memory adapter | `adapter: postgres` → PostgreSQL service                                            |
+| Required secrets | `llm.defaultModel` (+ `defaultProvider`) | `openai/gpt-4o` → `OPENAI_API_KEY`; Bedrock → both AWS keys                         |
+| Ollama Cloud     | Model tag `:cloud` / `-cloud`            | `gpt-oss:120b-cloud` → `OLLAMA_API_KEY`                                             |
 
-| What             | Source                        | Example                            |
-| ---------------- | ----------------------------- | ---------------------------------- |
-| Server adapter   | `package.json` dependencies   | `@cogitator-ai/express` → Express  |
-| Services         | `cogitator.yml` memory config | `adapter: redis` → Redis service   |
-| Required secrets | LLM provider configs          | `openai` → `OPENAI_API_KEY`        |
-| Ollama Cloud     | Model suffix or API key       | `:cloud` suffix → `OLLAMA_API_KEY` |
+Problems found during analysis (invalid config, unparsable `package.json`, missing start script, local Ollama models on cloud targets) are returned as `plan.warnings` instead of being ignored.
 
 ## Deploy Targets
 
 ### Docker
 
-Generates a multi-stage `Dockerfile` and optional `docker-compose.prod.yml`:
+Artifacts are written to `.cogitator/`: `Dockerfile`, `Dockerfile.dockerignore` and `docker-compose.prod.yml`. A root `.dockerignore` is created when the project has none, so `.env` and `node_modules` never enter the image.
 
-```bash
-cogitator deploy --target docker           # Build only
-cogitator deploy --target docker --push    # Build + push to registry
-```
+`deploy` builds and tags the image (`<registry>/<image>:latest`), pushes it when a registry is configured, then runs `docker compose up -d` for the app plus the Redis/PostgreSQL services it needs (health-gated, data in named volumes). `status` reports whether the `app` service is running; `destroy` runs `docker compose down` and keeps volumes.
+
+Preflight checks: Docker installed, daemon running, Compose v2 available, registry credentials (read from the Docker config, credential helpers and stores), secrets.
 
 ### Fly.io
 
-Generates `fly.toml` and deploys via `flyctl`:
+Generates `.cogitator/fly.toml` (your own `fly.toml` is never overwritten) with `[env]`, HTTP checks from `health`, VM size from `resources`, and `min_machines_running` from `instances`. `deploy` creates the app when needed, stages secrets, runs `fly deploy --config .cogitator/fly.toml --dockerfile .cogitator/Dockerfile`, and scales to `instances`. Works with either `flyctl` or `fly` on `PATH`.
 
-```bash
-cogitator deploy --target fly --region iad
+## Custom Providers
+
+```typescript
+import { Deployer, type DeployProvider } from '@cogitator-ai/deploy';
+
+class KubernetesProvider implements DeployProvider {
+  readonly name = 'kubernetes';
+  async preflight(config, projectDir) {
+    /* ... */
+  }
+  async generate(config, projectDir) {
+    /* ... */
+  }
+  async deploy(config, artifacts, projectDir) {
+    /* ... */
+  }
+  async status(config, projectDir) {
+    /* ... */
+  }
+  async destroy(config, projectDir) {
+    /* ... */
+  }
+}
+
+const deployer = new Deployer();
+deployer.registerProvider(new KubernetesProvider());
+await deployer.deploy({ projectDir: process.cwd(), target: 'kubernetes' });
 ```
 
-Requires `flyctl` installed and authenticated.
+All external commands are executed without a shell, so paths with spaces and user-supplied values are passed verbatim.
 
 ## Architecture
 
@@ -110,12 +148,11 @@ ProjectAnalyzer  →  ArtifactGenerator  →  DeployProvider  →  Result
 (detect config)     (Dockerfile, etc.)     (docker/fly)       (url, status)
 ```
 
-- **ProjectAnalyzer** — reads `package.json` and `cogitator.yml` to detect server, services, secrets
-- **ArtifactGenerator** — generates Dockerfile, docker-compose, fly.toml from templates
-- **DeployProvider** — executes preflight checks, builds, deploys (Docker or Fly.io)
-- **Deployer** — orchestrator that ties it all together
-
 ## See Also
 
-- [Deployment Guide](../../docs/DEPLOY.md) — full documentation with CI/CD examples
-- [CLI Reference](../cli/README.md) — all CLI commands
+- [Deployment Guide](../../docs/DEPLOY.md) — CI/CD examples
+- [CLI Reference](../cli/README.md#cogitator-deploy)
+
+## License
+
+MIT

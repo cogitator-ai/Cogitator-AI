@@ -88,6 +88,7 @@ export interface RedisClient {
   smembers(key: string): Promise<string[]>;
 
   publish(channel: string, message: string): Promise<number>;
+  /** Channels are not prefixed with `keyPrefix`. A subscribed connection can only run pub/sub commands, use `duplicate()`. */
   subscribe(channel: string, callback?: (channel: string, message: string) => void): Promise<void>;
   unsubscribe(channel: string): Promise<void>;
 
@@ -97,6 +98,11 @@ export interface RedisClient {
   on(event: string, callback: (...args: unknown[]) => void): void;
   off(event: string, callback: (...args: unknown[]) => void): void;
 
+  /**
+   * Keys matching a glob pattern, relative to `keyPrefix` (the prefix is applied to the
+   * pattern and stripped from results, so they can be passed to `get`/`del`). Uses SCAN
+   * instead of the blocking KEYS command and covers every master node in cluster mode.
+   */
   keys(pattern: string): Promise<string[]>;
 
   duplicate(): RedisClient;

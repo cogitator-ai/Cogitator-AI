@@ -136,12 +136,12 @@ function transliterate(str: string): string {
     const lower = char.toLowerCase();
     if (CHAR_MAP[lower]) {
       const mapped = CHAR_MAP[lower];
-      result += char === lower ? mapped : mapped.toUpperCase();
+      result += char === lower ? mapped : mapped.charAt(0).toUpperCase() + mapped.slice(1);
     } else {
       result += char;
     }
   }
-  return result;
+  return result.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
 }
 
 function generateSlug(
@@ -156,11 +156,12 @@ function generateSlug(
     slug = slug.toLowerCase();
   }
 
+  const sep = escapeRegex(separator);
   slug = slug
-    .replace(/[^a-zA-Z0-9\s-]/g, '')
-    .replace(/\s+/g, separator)
-    .replace(new RegExp(`${escapeRegex(separator)}+`, 'g'), separator)
-    .replace(new RegExp(`^${escapeRegex(separator)}|${escapeRegex(separator)}$`, 'g'), '');
+    .replace(/['\u2019`]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, separator)
+    .replace(new RegExp(`(?:${sep})+`, 'g'), separator)
+    .replace(new RegExp(`^(?:${sep})+|(?:${sep})+$`, 'g'), '');
 
   if (maxLength !== undefined && maxLength > 0 && slug.length > maxLength) {
     slug = slug.substring(0, maxLength);
@@ -168,7 +169,7 @@ function generateSlug(
     if (lastSep > maxLength * 0.5) {
       slug = slug.substring(0, lastSep);
     }
-    slug = slug.replace(new RegExp(`${escapeRegex(separator)}$`), '');
+    slug = slug.replace(new RegExp(`(?:${sep})+$`), '');
   }
 
   return slug;
@@ -188,6 +189,15 @@ export function slug(): number {
       throw new Error('Separator must not be empty');
     }
     const lowercase = input.lowercase ?? true;
+    if (typeof input.text !== 'string') {
+      throw new Error('text must be a string');
+    }
+    if (
+      input.maxLength !== undefined &&
+      (!Number.isInteger(input.maxLength) || input.maxLength < 1)
+    ) {
+      throw new Error('maxLength must be a positive integer');
+    }
 
     const result = generateSlug(input.text, separator, lowercase, input.maxLength);
 

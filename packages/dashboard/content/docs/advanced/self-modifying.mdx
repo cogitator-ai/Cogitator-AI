@@ -45,6 +45,8 @@ console.log('Tools generated:', result.toolsGenerated.length);
 console.log('Adaptations:', result.adaptationsMade.length);
 ```
 
+The backend's provider prefix (`openai/` here) is stripped from the agent model, the agent's `temperature` and `maxTokens` form the baseline configuration, and concurrent `run()` calls on one instance are serialized. Set `config.enabled: false` to run as a plain tool-calling agent. Pass `modificationConstraints` to add constraints and `availableModels` to let architecture evolution switch models.
+
 ## Tool Self-Generation
 
 When the agent encounters a task requiring capabilities it doesn't have, it generates new tools at runtime.
@@ -52,9 +54,12 @@ When the agent encounters a task requiring capabilities it doesn't have, it gene
 ### How It Works
 
 1. **Gap Analysis** — LLM compares user intent with available tools, identifies missing capabilities
-2. **Code Synthesis** — Generates safe TypeScript tool implementation
-3. **Validation** — Security scanning + correctness testing in sandbox
-4. **Registration** — Valid tools are added to the agent's toolkit
+2. **Code Synthesis** — Generates a plain JavaScript `execute(params)` implementation
+3. **Validation** — Static security scanning, generated test cases in the sandbox, optional LLM review
+4. **Constraint Check** — The tool must satisfy the modification constraints (sandboxing, size, depth)
+5. **Registration** — Accepted tools are stored as `active`, used immediately and loaded into later runs
+
+Generated code runs in a worker thread inside a fresh `vm` context without host objects (`process`, `require`, timers, host constructors) and with string code generation disabled. Parameters and results cross the boundary as JSON.
 
 ### Configuration
 
@@ -156,12 +161,14 @@ config: {
 }
 ```
 
+Inside `SelfModifyingAgent`, meta-reasoning only intervenes when a step is incomplete (empty or truncated answer). Only triggers listed in `triggers` fire, and the next attempt uses the adapted mode temperature, parameters or injected context. LLM assessments are validated; recommendations without a valid confidence are ignored.
+
 ### Direct MetaReasoner Usage
 
 ```typescript
 import { MetaReasoner } from '@cogitator-ai/self-modifying';
 
-const metaReasoner = new MetaReasoner({ llm, config: metaReasoningConfig });
+const metaReasoner = new MetaReasoner({ llm, model: 'gpt-4o', config: metaReasoningConfig });
 
 const modeConfig = metaReasoner.initializeRun(runId);
 
@@ -172,6 +179,8 @@ const observation = metaReasoner.observe({
   currentMode: 'analytical',
   tokensUsed: 1500,
   timeElapsed: 5000,
+  iterationsRemaining: 2,
+  budgetRemaining: 0.6,
 }, insights);
 
 const assessment = await metaReasoner.assess(observation);
@@ -184,15 +193,15 @@ if (assessment.requiresAdaptation) {
 
 ## Architecture Evolution
 
-Optimizes agent parameters (model, temperature, tool strategy) using multi-armed bandit algorithms.
+Optimizes agent parameters (temperature, max tokens, tool strategy, reflection depth and — with `availableModels` — the model) using multi-armed bandit algorithms. Every run records its outcome for the configuration that was actually used, LLM-proposed candidates are sanitized, and high-risk candidates are discarded.
 
 ### Strategies
 
-| Strategy         | Description                                    |
-| ---------------- | ---------------------------------------------- |
-| `ucb`            | Upper Confidence Bound — balanced exploration  |
-| `thompson`       | Thompson Sampling — probabilistic selection    |
-| `epsilon_greedy` | Epsilon-Greedy — random exploration with decay |
+| Strategy            | Description                                   |
+| ------------------- | --------------------------------------------- |
+| `ucb`               | Upper Confidence Bound — balanced exploration |
+| `thompson_sampling` | Thompson Sampling — probabilistic selection   |
+| `epsilon_greedy`    | Epsilon-Greedy — random exploration           |
 
 ### Parameter Optimizer
 
@@ -201,13 +210,16 @@ import { ParameterOptimizer } from '@cogitator-ai/self-modifying';
 
 const optimizer = new ParameterOptimizer({
   llm,
+  model: 'gpt-4o',
   config: evolutionConfig,
   baseConfig: {
     model: 'gpt-4o',
     temperature: 0.7,
     maxTokens: 4096,
     toolStrategy: 'sequential',
+    reflectionDepth: 0,
   },
+  availableModels: ['gpt-4o', 'gpt-4o-mini'],
 });
 
 const result = await optimizer.optimize('Complex reasoning task');
@@ -215,7 +227,12 @@ const result = await optimizer.optimize('Complex reasoning task');
 console.log('Should adopt:', result.shouldAdopt);
 console.log('Recommended config:', result.recommendedConfig);
 
-optimizer.recordOutcome(result.candidate!.id, 0.85);
+await optimizer.recordOutcome(result.candidate!.id, result.taskProfile, {
+  successRate: 1,
+  latency: 1200,
+  tokenUsage: 850,
+  qualityScore: 0.9,
+});
 ```
 
 ### Capability Analyzer
@@ -225,7 +242,7 @@ import { CapabilityAnalyzer } from '@cogitator-ai/self-modifying';
 
 const analyzer = new CapabilityAnalyzer({ llm, enableLLMAnalysis: true });
 
-const profile = await analyzer.analyze('Build a REST API with authentication');
+const profile = await analyzer.analyzeTask('Build a REST API with authentication');
 
 console.log('Complexity:', profile.complexity);
 console.log('Domain:', profile.domain);
@@ -252,20 +269,21 @@ const validator = new ModificationValidator({
     custom: [{
       id: 'no-external-apis',
       name: 'No External APIs',
-      check: (mod) => !mod.changes?.usesExternalApi,
-      errorMessage: 'External API calls not allowed',
-      severity: 'error',
+      description: 'External API calls not allowed',
+      predicate: (request) => !JSON.stringify(request.changes).includes('fetch'),
     }],
   },
 });
 
 const result = await validator.validate({
-  type: 'tool_addition',
+  type: 'tool_creation',
   target: 'tools',
   changes: { name: 'new-tool', code: '...' },
   reason: 'User requested capability',
 });
 ```
+
+The default safety constraints carry `appliesTo: ['tool_generation', 'tool_creation']`, so configuration changes are not checked against tool-only rules. Rules support `=`, `!=`, `<`, `<=`, `>`, `>=`, `AND`, `OR`, numbers, booleans, `null` and quoted strings.
 
 ### Rollback Manager
 
@@ -283,7 +301,7 @@ const restored = await rollbackManager.rollbackTo(checkpoint.id);
 
 ## Events
 
-Subscribe to self-modification events for observability.
+Subscribe to self-modification events for observability. Handlers receive typed event data and `on()` returns an unsubscribe function.
 
 ```typescript
 selfModifying.on('tool_generation_started', (e) => {

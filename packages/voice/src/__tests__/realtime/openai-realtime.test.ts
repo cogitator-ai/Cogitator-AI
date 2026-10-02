@@ -43,6 +43,21 @@ function createConfig(overrides?: Partial<RealtimeSessionConfig>): RealtimeSessi
   };
 }
 
+function functionCallsDone(calls: Array<[name: string, callId: string, args: string]>): string {
+  return JSON.stringify({
+    type: 'response.done',
+    response: {
+      status: 'completed',
+      output: calls.map(([name, call_id, args]) => ({
+        type: 'function_call',
+        name,
+        call_id,
+        arguments: args,
+      })),
+    },
+  });
+}
+
 describe('OpenAIRealtimeAdapter', () => {
   let adapter: OpenAIRealtimeAdapter;
 
@@ -59,7 +74,7 @@ describe('OpenAIRealtimeAdapter', () => {
       adapter = new OpenAIRealtimeAdapter(createConfig());
       await adapter.connect();
 
-      expect(capturedUrl).toBe('wss://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime');
+      expect(capturedUrl).toBe('wss://api.openai.com/v1/realtime?model=gpt-realtime-mini');
     });
 
     it('uses custom model in WebSocket URL', async () => {
@@ -77,7 +92,6 @@ describe('OpenAIRealtimeAdapter', () => {
         expect.objectContaining({
           headers: {
             Authorization: 'Bearer test-key-123',
-            'OpenAI-Beta': 'realtime=v1',
           },
         })
       );
@@ -95,19 +109,47 @@ describe('OpenAIRealtimeAdapter', () => {
       expect(mockWs.send).toHaveBeenCalledTimes(1);
       const sent = JSON.parse(mockWs.send.mock.calls[0]![0] as string);
       expect(sent.type).toBe('session.update');
-      expect(sent.session.instructions).toBe('You are a helpful assistant');
-      expect(sent.session.voice).toBe('alloy');
-      expect(sent.session.input_audio_format).toBe('pcm16');
-      expect(sent.session.output_audio_format).toBe('pcm16');
-      expect(sent.session.turn_detection).toEqual({ type: 'server_vad' });
+      expect(sent.session).toEqual({
+        type: 'realtime',
+        instructions: 'You are a helpful assistant',
+        output_modalities: ['audio'],
+        audio: {
+          input: {
+            format: { type: 'audio/pcm', rate: 24000 },
+            transcription: { model: 'gpt-4o-mini-transcribe' },
+            turn_detection: { type: 'server_vad' },
+          },
+          output: {
+            format: { type: 'audio/pcm', rate: 24000 },
+            voice: 'alloy',
+          },
+        },
+      });
     });
 
-    it('uses default voice "coral" when none specified', async () => {
+    it('uses default voice "marin" when none specified', async () => {
       adapter = new OpenAIRealtimeAdapter(createConfig());
       await adapter.connect();
 
       const sent = JSON.parse(mockWs.send.mock.calls[0]![0] as string);
-      expect(sent.session.voice).toBe('coral');
+      expect(sent.session.audio.output.voice).toBe('marin');
+    });
+
+    it('URL-encodes the model name', async () => {
+      adapter = new OpenAIRealtimeAdapter(createConfig({ model: 'a&b=c' }));
+      await adapter.connect();
+      expect(capturedUrl).toBe('wss://api.openai.com/v1/realtime?model=a%26b%3Dc');
+    });
+
+    it('emits disconnected only after a successful connection', async () => {
+      adapter = new OpenAIRealtimeAdapter(createConfig());
+      const disconnected = vi.fn();
+      adapter.on('disconnected', disconnected);
+      await adapter.connect();
+
+      mockWs.emit('close', 1006, Buffer.from(''));
+      expect(disconnected).toHaveBeenCalledWith(1006, 'connection closed');
+      expect(adapter.isConnected).toBe(false);
     });
 
     it('maps tools to OpenAI function format in session.update', async () => {
@@ -183,21 +225,38 @@ describe('OpenAIRealtimeAdapter', () => {
   });
 
   describe('interrupt()', () => {
-    it('sends response.cancel', async () => {
+    it('sends response.cancel while a response is active', async () => {
       adapter = new OpenAIRealtimeAdapter(createConfig());
       await adapter.connect();
       mockWs.send.mockClear();
 
+      mockWs.emit('message', JSON.stringify({ type: 'response.created', response: {} }));
       adapter.interrupt();
 
       expect(mockWs.send).toHaveBeenCalledOnce();
       const sent = JSON.parse(mockWs.send.mock.calls[0]![0] as string);
       expect(sent.type).toBe('response.cancel');
     });
+
+    it('does not send response.cancel when no response is active', async () => {
+      adapter = new OpenAIRealtimeAdapter(createConfig());
+      await adapter.connect();
+      mockWs.send.mockClear();
+
+      adapter.interrupt();
+      mockWs.emit('message', JSON.stringify({ type: 'response.created', response: {} }));
+      mockWs.emit(
+        'message',
+        JSON.stringify({ type: 'response.done', response: { status: 'completed', output: [] } })
+      );
+      adapter.interrupt();
+
+      expect(mockWs.send).not.toHaveBeenCalled();
+    });
   });
 
   describe('incoming events', () => {
-    it('emits audio on response.audio.delta', async () => {
+    it('emits audio on response.output_audio.delta', async () => {
       adapter = new OpenAIRealtimeAdapter(createConfig());
       await adapter.connect();
 
@@ -208,7 +267,7 @@ describe('OpenAIRealtimeAdapter', () => {
       mockWs.emit(
         'message',
         JSON.stringify({
-          type: 'response.audio.delta',
+          type: 'response.output_audio.delta',
           delta: audioData,
         })
       );
@@ -237,7 +296,7 @@ describe('OpenAIRealtimeAdapter', () => {
       expect(handler).toHaveBeenCalledWith('What is the weather?', 'user');
     });
 
-    it('emits transcript for assistant when response.audio_transcript.done', async () => {
+    it('emits transcript for assistant on response.output_audio_transcript.done', async () => {
       adapter = new OpenAIRealtimeAdapter(createConfig());
       await adapter.connect();
 
@@ -247,7 +306,7 @@ describe('OpenAIRealtimeAdapter', () => {
       mockWs.emit(
         'message',
         JSON.stringify({
-          type: 'response.audio_transcript.done',
+          type: 'response.output_audio_transcript.done',
           transcript: 'The weather is sunny.',
         })
       );
@@ -315,12 +374,7 @@ describe('OpenAIRealtimeAdapter', () => {
 
       mockWs.emit(
         'message',
-        JSON.stringify({
-          type: 'response.function_call_arguments.done',
-          name: 'get_weather',
-          call_id: 'call_abc123',
-          arguments: '{"city":"London"}',
-        })
+        functionCallsDone([['get_weather', 'call_abc123', '{"city":"London"}']])
       );
 
       await vi.waitFor(() => expect(executeFn).toHaveBeenCalledWith({ city: 'London' }));
@@ -353,15 +407,7 @@ describe('OpenAIRealtimeAdapter', () => {
       await adapter.connect();
       mockWs.send.mockClear();
 
-      mockWs.emit(
-        'message',
-        JSON.stringify({
-          type: 'response.function_call_arguments.done',
-          name: 'failing_tool',
-          call_id: 'call_fail',
-          arguments: '{}',
-        })
-      );
+      mockWs.emit('message', functionCallsDone([['failing_tool', 'call_fail', '{}']]));
 
       await vi.waitFor(() => expect(mockWs.send).toHaveBeenCalledTimes(2));
 
@@ -370,6 +416,84 @@ describe('OpenAIRealtimeAdapter', () => {
 
       const responseCreate = JSON.parse(mockWs.send.mock.calls[1]![0] as string);
       expect(responseCreate.type).toBe('response.create');
+    });
+
+    it('answers all calls of a response before a single response.create', async () => {
+      const tools = [
+        {
+          name: 'echo',
+          description: 'Echo',
+          parameters: {},
+          execute: vi.fn().mockImplementation(async (args: unknown) => args),
+        },
+      ];
+      adapter = new OpenAIRealtimeAdapter(createConfig({ tools }));
+      await adapter.connect();
+      mockWs.send.mockClear();
+      const turnEnd = vi.fn();
+      adapter.on('turn_end', turnEnd);
+
+      mockWs.emit(
+        'message',
+        functionCallsDone([
+          ['echo', 'c1', '{"n":1}'],
+          ['unknown_tool', 'c2', '{}'],
+          ['echo', 'c3', 'not json'],
+        ])
+      );
+
+      await vi.waitFor(() => expect(mockWs.send).toHaveBeenCalledTimes(4));
+      const sent = mockWs.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+      expect(sent.slice(0, 3).map((m) => [m.item.call_id, JSON.parse(m.item.output)])).toEqual([
+        ['c1', { n: 1 }],
+        ['c2', { error: 'Unknown tool: unknown_tool' }],
+        ['c3', { error: 'Invalid JSON arguments for tool echo' }],
+      ]);
+      expect(sent[3].type).toBe('response.create');
+      expect(turnEnd).not.toHaveBeenCalled();
+    });
+
+    it('serializes undefined tool results as null', async () => {
+      const tools = [
+        {
+          name: 'noop',
+          description: 'Noop',
+          parameters: {},
+          execute: vi.fn().mockResolvedValue(undefined),
+        },
+      ];
+      adapter = new OpenAIRealtimeAdapter(createConfig({ tools }));
+      await adapter.connect();
+      mockWs.send.mockClear();
+
+      mockWs.emit('message', functionCallsDone([['noop', 'c1', '{}']]));
+
+      await vi.waitFor(() => expect(mockWs.send).toHaveBeenCalledTimes(2));
+      expect(JSON.parse(mockWs.send.mock.calls[0]![0] as string).item.output).toBe('null');
+    });
+
+    it('does not execute tools from cancelled responses and emits turn_end', async () => {
+      const execute = vi.fn();
+      adapter = new OpenAIRealtimeAdapter(
+        createConfig({ tools: [{ name: 'x', description: 'x', parameters: {}, execute }] })
+      );
+      await adapter.connect();
+      const turnEnd = vi.fn();
+      adapter.on('turn_end', turnEnd);
+
+      mockWs.emit(
+        'message',
+        JSON.stringify({
+          type: 'response.done',
+          response: {
+            status: 'cancelled',
+            output: [{ type: 'function_call', name: 'x', call_id: 'c', arguments: '{}' }],
+          },
+        })
+      );
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(turnEnd).toHaveBeenCalledOnce();
     });
   });
 

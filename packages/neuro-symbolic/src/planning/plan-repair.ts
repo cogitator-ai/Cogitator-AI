@@ -11,7 +11,7 @@ import type {
   PlanRepairResult,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
-import { ActionRegistry, applyAction, createAction } from './action-schema';
+import { ActionRegistry, applyAction, createAction, evaluatePrecondition } from './action-schema';
 import { PlanValidator } from './plan-validator';
 
 export interface RepairConfig {
@@ -30,10 +30,28 @@ const DEFAULT_REPAIR_CONFIG: RepairConfig = {
   useHeuristics: true,
 };
 
+function conditionVariables(precondition: Precondition): string[] {
+  switch (precondition.type) {
+    case 'simple':
+    case 'comparison':
+      return [precondition.variable];
+    case 'and':
+    case 'or':
+      return precondition.conditions.flatMap(conditionVariables);
+    case 'not':
+    case 'exists':
+    case 'forall':
+      return conditionVariables(precondition.condition);
+    default:
+      return [];
+  }
+}
+
 export class PlanRepairer {
   private registry: ActionRegistry;
   private validator: PlanValidator;
   private config: RepairConfig;
+  private swapTargets = new WeakMap<PlanRepairSuggestion, number>();
 
   constructor(registry: ActionRegistry, config: Partial<RepairConfig> = {}) {
     this.registry = registry;
@@ -104,7 +122,8 @@ export class PlanRepairer {
         const insertSuggestions = this.suggestInsertions(
           plan,
           error.actionIndex!,
-          error.details?.precondition as Precondition
+          error.details?.precondition as Precondition,
+          plan.actions[error.actionIndex!]?.parameters ?? {}
         );
         suggestions.push(...insertSuggestions);
 
@@ -132,11 +151,13 @@ export class PlanRepairer {
 
       case 'missing_parameter':
       case 'invalid_parameter': {
+        const fixed = this.fixParameters(plan, error.actionIndex!);
         suggestions.push({
           type: 'modify',
           position: error.actionIndex,
+          action: fixed ?? undefined,
           reason: error.message,
-          confidence: 0.5,
+          confidence: fixed ? 0.6 : 0.3,
         });
         break;
       }
@@ -157,31 +178,68 @@ export class PlanRepairer {
   private suggestInsertions(
     plan: Plan,
     position: number,
-    precondition: Precondition
+    precondition: Precondition,
+    parameters: Record<string, unknown>
   ): PlanRepairSuggestion[] {
-    const suggestions: PlanRepairSuggestion[] = [];
-
     const stateBeforeAction = this.getStateAtPosition(plan, position);
 
+    return this.establishingActions(stateBeforeAction, precondition, parameters).map(
+      ({ action, applicable }) => ({
+        type: 'insert' as const,
+        position,
+        action,
+        reason: `Insert ${action.schemaName} to establish precondition`,
+        confidence: applicable ? 0.8 : 0.5,
+      })
+    );
+  }
+
+  private establishingActions(
+    state: PlanState,
+    condition: Precondition,
+    parameters: Record<string, unknown>
+  ): { action: PlanAction; applicable: boolean }[] {
+    const results: { action: PlanAction; applicable: boolean }[] = [];
+
     for (const schema of this.registry.getAll()) {
-      const wouldHelp = this.schemaCouldEstablish(schema, precondition);
+      if (!this.schemaCouldEstablish(schema, condition)) continue;
 
-      if (wouldHelp) {
-        const action = this.createActionFromSchema(schema, stateBeforeAction);
+      const action = this.createActionFromSchema(schema, state);
+      if (!action) continue;
 
-        if (action) {
-          suggestions.push({
-            type: 'insert',
-            position,
-            action,
-            reason: `Insert ${schema.name} to establish precondition`,
-            confidence: 0.7,
-          });
-        }
+      const nextState = applyAction(action, state, schema);
+      if (!evaluatePrecondition(condition, nextState, parameters)) continue;
+
+      const applicable = schema.preconditions.every((pre) =>
+        evaluatePrecondition(pre, state, action.parameters)
+      );
+      results.push({ action, applicable });
+    }
+
+    return results;
+  }
+
+  private fixParameters(plan: Plan, position: number): PlanAction | null {
+    const action = plan.actions[position];
+    const schema = action ? this.registry.get(action.schemaName) : undefined;
+    if (!action || !schema) return null;
+
+    const state = this.getStateAtPosition(plan, position);
+    const parameters: Record<string, unknown> = {};
+
+    for (const param of schema.parameters) {
+      if (param.name in action.parameters) {
+        parameters[param.name] = action.parameters[param.name];
+      } else if (param.default !== undefined) {
+        parameters[param.name] = param.default;
+      } else if (param.required) {
+        const value = this.inferParameterValue(param, state);
+        if (value === undefined) return null;
+        parameters[param.name] = value;
       }
     }
 
-    return suggestions;
+    return { ...action, parameters };
   }
 
   private suggestReorders(plan: Plan, problemPosition: number): PlanRepairSuggestion[] {
@@ -195,12 +253,14 @@ export class PlanRepairer {
       const validation = this.validator.validate(swappedPlan);
 
       if (validation.errors.length < originalErrorCount) {
-        suggestions.push({
+        const suggestion: PlanRepairSuggestion = {
           type: 'reorder',
           position: problemPosition,
           reason: `Swap action ${problemPosition} with action ${i}`,
           confidence: 0.5,
-        });
+        };
+        this.swapTargets.set(suggestion, i);
+        suggestions.push(suggestion);
       }
     }
 
@@ -208,40 +268,23 @@ export class PlanRepairer {
   }
 
   private suggestActionsForGoal(plan: Plan, goal?: Precondition): PlanRepairSuggestion[] {
-    const suggestions: PlanRepairSuggestion[] = [];
-
-    if (!goal) return suggestions;
+    if (!goal) return [];
 
     const finalState = this.getFinalState(plan);
 
-    for (const schema of this.registry.getAll()) {
-      if (this.schemaCouldEstablish(schema, goal)) {
-        const action = this.createActionFromSchema(schema, finalState);
-
-        if (action) {
-          suggestions.push({
-            type: 'insert',
-            position: plan.actions.length,
-            action,
-            reason: `Append ${schema.name} to achieve goal`,
-            confidence: 0.6,
-          });
-        }
-      }
-    }
-
-    return suggestions;
+    return this.establishingActions(finalState, goal, {}).map(({ action, applicable }) => ({
+      type: 'insert' as const,
+      position: plan.actions.length,
+      action,
+      reason: `Append ${action.schemaName} to achieve goal`,
+      confidence: applicable ? 0.75 : 0.45,
+    }));
   }
 
   private schemaCouldEstablish(schema: ActionSchema, precondition: Precondition): boolean {
-    const varName =
-      precondition.type === 'simple' || precondition.type === 'comparison'
-        ? precondition.variable
-        : undefined;
-
-    if (!varName) return false;
-
-    return this.effectsTouchVariable(schema.effects, varName);
+    const variables = conditionVariables(precondition);
+    if (variables.length === 0) return false;
+    return variables.some((variable) => this.effectsTouchVariable(schema.effects, variable));
   }
 
   private effectsTouchVariable(effects: Effect[], varName: string): boolean {
@@ -250,7 +293,7 @@ export class PlanRepairer {
         if (this.effectsTouchVariable(effect.thenEffects, varName)) return true;
         if (effect.elseEffects && this.effectsTouchVariable(effect.elseEffects, varName))
           return true;
-      } else if (effect.variable === varName) {
+      } else if (effect.variable === varName || effect.variable.startsWith('?')) {
         return true;
       }
     }
@@ -315,6 +358,7 @@ export class PlanRepairer {
     let currentSuggestions = suggestions;
     let insertions = 0;
     let removals = 0;
+    let reorders = 0;
     let iterations = 0;
 
     while (iterations < this.config.maxIterations) {
@@ -332,7 +376,6 @@ export class PlanRepairer {
             if (insertions < this.config.maxInsertions && suggestion.action) {
               const pos = Math.min(suggestion.position!, currentPlan.actions.length);
               newPlan = this.insertAction(currentPlan, pos, suggestion.action);
-              insertions++;
             }
             break;
 
@@ -342,23 +385,37 @@ export class PlanRepairer {
               suggestion.position! < currentPlan.actions.length
             ) {
               newPlan = this.removeAction(currentPlan, suggestion.position!);
-              removals++;
             }
             break;
 
           case 'reorder':
-            newPlan = this.reorderActions(currentPlan, suggestion);
+            if (reorders < this.config.maxReorders) {
+              newPlan = this.reorderActions(currentPlan, suggestion);
+            }
+            break;
+
+          case 'modify':
+            if (suggestion.action && suggestion.position! < currentPlan.actions.length) {
+              newPlan = this.replaceAction(currentPlan, suggestion.position!, suggestion.action);
+            }
             break;
         }
 
         if (newPlan) {
           const newValidation = this.validator.validate(newPlan);
+          const improved = newValidation.errors.length < currentValidation.errors.length;
+
+          if (newValidation.valid || improved) {
+            if (suggestion.type === 'insert') insertions++;
+            if (suggestion.type === 'remove') removals++;
+            if (suggestion.type === 'reorder') reorders++;
+          }
 
           if (newValidation.valid) {
             return newPlan;
           }
 
-          if (newValidation.errors.length < currentValidation.errors.length) {
+          if (improved) {
             currentPlan = newPlan;
             currentValidation = newValidation;
             currentSuggestions = this.generateSuggestions(currentPlan, currentValidation);
@@ -378,6 +435,17 @@ export class PlanRepairer {
   private insertAction(plan: Plan, position: number, action: PlanAction): Plan {
     const newActions = [...plan.actions];
     newActions.splice(position, 0, action);
+
+    return {
+      ...plan,
+      id: nanoid(8),
+      actions: newActions,
+    };
+  }
+
+  private replaceAction(plan: Plan, position: number, action: PlanAction): Plan {
+    const newActions = [...plan.actions];
+    newActions[position] = action;
 
     return {
       ...plan,
@@ -412,12 +480,7 @@ export class PlanRepairer {
     const targetIndex = suggestion.position;
     if (targetIndex === undefined) return null;
 
-    const swapMatch = /Swap action \d+ with action (\d+)/.exec(suggestion.reason);
-    const swapWith = swapMatch
-      ? parseInt(swapMatch[1], 10)
-      : targetIndex > 0
-        ? targetIndex - 1
-        : null;
+    const swapWith = this.swapTargets.get(suggestion) ?? (targetIndex > 0 ? targetIndex - 1 : null);
 
     if (swapWith === null || swapWith === targetIndex) return null;
     if (swapWith < 0 || swapWith >= plan.actions.length) return null;

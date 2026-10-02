@@ -2,3 +2,4 @@ export * from './base';
 export * from './agent';
 export * from './tool';
 export * from './function';
+export * from './adapters';

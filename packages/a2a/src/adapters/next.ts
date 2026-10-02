@@ -1,7 +1,7 @@
 import type { A2AServer } from '../server.js';
 import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
-import { buildSseErrorEvent } from './sse-error-event.js';
+import { isStreamRequest, pipeJsonRpcStream, SSE_HEADERS } from './shared.js';
 
 export function a2aNext(server: A2AServer) {
   return {
@@ -25,58 +25,39 @@ export function a2aNext(server: A2AServer) {
         return Response.json(createErrorResponse(null, errors.parseError('Invalid JSON body')));
       }
 
-      const isStreaming =
-        request.headers.get('accept')?.includes('text/event-stream') ||
-        (body as Record<string, unknown>)?.method === 'message/stream';
+      const authToken = server.getAuthToken((name) => request.headers.get(name));
 
-      if (isStreaming) {
+      if (isStreamRequest(body)) {
         const encoder = new TextEncoder();
-        let cancelled = false;
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        request.signal?.addEventListener('abort', abort, { once: true });
 
-        const stream = new ReadableStream({
-          async start(controller) {
+        const stream = new ReadableStream<Uint8Array>({
+          async start(streamController) {
+            await pipeJsonRpcStream(server, body, authToken, controller.signal, (frame) => {
+              streamController.enqueue(encoder.encode(frame));
+            });
+            request.signal?.removeEventListener('abort', abort);
             try {
-              for await (const event of server.handleJsonRpcStream(body)) {
-                if (cancelled) break;
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-              }
-              if (!cancelled) {
-                controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-              }
-            } catch (error) {
-              try {
-                if (!cancelled) {
-                  controller.enqueue(
-                    encoder.encode(`data: ${JSON.stringify(buildSseErrorEvent(error))}\n\n`)
-                  );
-                }
-              } catch {
-                /* stream already closed */
-              }
-            }
-            try {
-              controller.close();
+              streamController.close();
             } catch {
-              /* already closed */
+              return;
             }
           },
           cancel() {
-            cancelled = true;
+            controller.abort();
           },
         });
 
-        return new Response(stream, {
-          headers: {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            Connection: 'keep-alive',
-            'X-Accel-Buffering': 'no',
-          },
-        });
+        return new Response(stream, { headers: SSE_HEADERS });
       }
 
       try {
-        const response = await server.handleJsonRpc(body);
+        const response = await server.handleJsonRpc(body, authToken);
+        if (response === null) {
+          return new Response(null, { status: 204 });
+        }
         return Response.json(response);
       } catch (error) {
         return Response.json(createErrorResponse(null, errors.internalError(String(error))));

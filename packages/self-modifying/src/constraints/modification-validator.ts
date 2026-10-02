@@ -74,6 +74,9 @@ export class ModificationValidator {
     const results: ConstraintCheckResult[] = [];
 
     for (const constraint of this.constraints.safety) {
+      if (constraint.appliesTo && !constraint.appliesTo.includes(request.type)) {
+        continue;
+      }
       const satisfied = this.evaluateSafetyRule(constraint.rule, request);
       results.push({
         constraintId: constraint.id,
@@ -88,11 +91,12 @@ export class ModificationValidator {
   }
 
   private evaluateSafetyRule(rule: ConstraintRule, request: ModificationRequest): boolean {
+    const context = this.payloadOf(request);
+
     if (typeof rule === 'string') {
-      return this.evaluateExpression(rule, request.payload as Record<string, unknown>);
+      return this.evaluateExpression(rule, context);
     }
 
-    const context = request.payload as Record<string, unknown>;
     const checks: boolean[] = [];
 
     if (rule.expression) {
@@ -170,10 +174,20 @@ export class ModificationValidator {
     return Boolean(value);
   }
 
+  private payloadOf(request: ModificationRequest): Record<string, unknown> {
+    const payload = request.payload;
+    return payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : {};
+  }
+
   private resolveValue(expr: string, context: Record<string, unknown>): unknown {
     if (expr === 'true') return true;
     if (expr === 'false') return false;
-    if (/^\d+(\.\d+)?$/.test(expr)) return parseFloat(expr);
+    if (expr === 'null') return null;
+    if (/^-?\d+(\.\d+)?$/.test(expr)) return parseFloat(expr);
+    const quoted = /^(['"])(.*)\1$/.exec(expr);
+    if (quoted) return quoted[2];
 
     const keys = expr.split('.');
     let current: unknown = context;
@@ -196,30 +210,32 @@ export class ModificationValidator {
       return results;
     }
 
-    const payload = request.payload as { category?: string; complexity?: number };
+    const payload = this.payloadOf(request) as { category?: unknown; complexity?: unknown };
+    const category = typeof payload.category === 'string' ? payload.category : undefined;
+    const complexity = typeof payload.complexity === 'number' ? payload.complexity : undefined;
 
     for (const constraint of this.constraints.capability) {
       let satisfied = true;
       let message: string | undefined;
 
-      if (payload.category) {
-        if (constraint.forbidden?.includes(payload.category)) {
+      if (category) {
+        if (constraint.forbidden?.includes(category)) {
           satisfied = false;
-          message = `Category '${payload.category}' is forbidden`;
-        } else if (constraint.allowed?.length && !constraint.allowed.includes(payload.category)) {
+          message = `Category '${category}' is forbidden`;
+        } else if (constraint.allowed?.length && !constraint.allowed.includes(category)) {
           satisfied = false;
-          message = `Category '${payload.category}' is not in allowed list`;
+          message = `Category '${category}' is not in allowed list`;
         }
       }
 
       if (
         satisfied &&
-        constraint.maxComplexity &&
-        payload.complexity &&
-        payload.complexity > constraint.maxComplexity
+        constraint.maxComplexity !== undefined &&
+        complexity !== undefined &&
+        complexity > constraint.maxComplexity
       ) {
         satisfied = false;
-        message = `Complexity ${payload.complexity} exceeds max ${constraint.maxComplexity}`;
+        message = `Complexity ${complexity} exceeds max ${constraint.maxComplexity}`;
       }
 
       results.push({
@@ -238,7 +254,7 @@ export class ModificationValidator {
     request: ModificationRequest
   ): Promise<ConstraintCheckResult[]> {
     const results: ConstraintCheckResult[] = [];
-    const payload = (request.payload ?? {}) as {
+    const payload = this.payloadOf(request) as {
       tokensUsed?: number;
       cost?: number;
       activeTools?: number;

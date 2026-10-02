@@ -7,11 +7,15 @@ export interface RateLimitConfig {
 
 interface UserBucket {
   timestamps: number[];
+  notified: boolean;
 }
+
+const WINDOW_MS = 60_000;
 
 export class RateLimitMiddleware implements GatewayMiddleware {
   readonly name = 'rate-limit';
-  private buckets = new Map<string, UserBucket>();
+  private readonly buckets = new Map<string, UserBucket>();
+  private lastSweep = 0;
 
   constructor(private readonly config: RateLimitConfig) {}
 
@@ -22,26 +26,41 @@ export class RateLimitMiddleware implements GatewayMiddleware {
   ): Promise<void> {
     const userKey = `${msg.channelType}:${msg.userId}`;
     const now = Date.now();
-    const windowMs = 60_000;
+    this.sweep(now);
 
     let bucket = this.buckets.get(userKey);
     if (!bucket) {
-      bucket = { timestamps: [] };
+      bucket = { timestamps: [], notified: false };
       this.buckets.set(userKey, bucket);
     }
 
-    bucket.timestamps = bucket.timestamps.filter((t) => now - t < windowMs);
+    bucket.timestamps = bucket.timestamps.filter((t) => now - t < WINDOW_MS);
 
     if (bucket.timestamps.length >= this.config.maxPerMinute) {
-      const replyText =
-        this.config.message ??
-        `Rate limit exceeded. Please wait a moment before sending another message.`;
-      await ctx.channel.sendText(msg.channelId, replyText);
+      if (!bucket.notified) {
+        bucket.notified = true;
+        await ctx.channel.sendText(
+          msg.channelId,
+          this.config.message ??
+            'Rate limit exceeded. Please wait a moment before sending another message.'
+        );
+      }
       return;
     }
 
+    bucket.notified = false;
     bucket.timestamps.push(now);
     await next();
+  }
+
+  private sweep(now: number): void {
+    if (now - this.lastSweep < WINDOW_MS) return;
+    this.lastSweep = now;
+    for (const [key, bucket] of this.buckets) {
+      if (bucket.timestamps.every((t) => now - t >= WINDOW_MS)) {
+        this.buckets.delete(key);
+      }
+    }
   }
 }
 

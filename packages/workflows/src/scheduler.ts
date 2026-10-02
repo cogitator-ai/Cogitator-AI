@@ -38,6 +38,77 @@ export class WorkflowScheduler {
   }
 
   /**
+   * Transitive successors of every node, following all edge types (sequential, parallel,
+   * conditional targets and loop back/exit edges).
+   */
+  buildReachability<S extends WorkflowState>(workflow: Workflow<S>): Map<string, Set<string>> {
+    const successors = new Map<string, Set<string>>();
+    for (const name of workflow.nodes.keys()) {
+      successors.set(name, new Set());
+    }
+
+    for (const edge of workflow.edges) {
+      const out = successors.get(edge.from);
+      if (!out) continue;
+      switch (edge.type) {
+        case 'sequential':
+          out.add(edge.to);
+          break;
+        case 'parallel':
+          for (const to of edge.to) out.add(to);
+          break;
+        case 'conditional':
+          for (const to of edge.targets) out.add(to);
+          break;
+        case 'loop':
+          out.add(edge.back);
+          out.add(edge.exit);
+          break;
+      }
+    }
+
+    const reachability = new Map<string, Set<string>>();
+    for (const start of successors.keys()) {
+      const reached = new Set<string>();
+      const queue = [...(successors.get(start) ?? [])];
+      while (queue.length > 0) {
+        const next = queue.shift()!;
+        if (reached.has(next)) continue;
+        reached.add(next);
+        queue.push(...(successors.get(next) ?? []));
+      }
+      reachability.set(start, reached);
+    }
+
+    return reachability;
+  }
+
+  /**
+   * Split a frontier into nodes that can run now and nodes that must wait because another
+   * frontier node still leads to them (join barrier). Nodes on a common cycle never block
+   * each other.
+   */
+  splitFrontier(
+    frontier: readonly string[],
+    reachability: Map<string, Set<string>>
+  ): { runnable: string[]; deferred: string[] } {
+    const runnable: string[] = [];
+    const deferred: string[] = [];
+
+    for (const node of frontier) {
+      const waitsForUpstream = frontier.some(
+        (other) =>
+          other !== node &&
+          (reachability.get(other)?.has(node) ?? false) &&
+          !(reachability.get(node)?.has(other) ?? false)
+      );
+      (waitsForUpstream ? deferred : runnable).push(node);
+    }
+
+    return { runnable, deferred };
+  }
+
+  /**
    * Get nodes ready to execute (all dependencies completed)
    */
   getReadyNodes(graph: DependencyGraph, completed: Set<string>, pending: Set<string>): string[] {
@@ -171,17 +242,31 @@ export class WorkflowScheduler {
   }
 
   /**
-   * Simpler parallel execution with Promise.all and concurrency via chunking
+   * Run tasks with at most `maxConcurrency` in flight; results keep the task order.
+   * Rejects with the first failure after in-flight tasks settle.
    */
   async runParallel<T>(tasks: (() => Promise<T>)[], maxConcurrency: number): Promise<T[]> {
-    const results: T[] = [];
+    const results: T[] = new Array<T>(tasks.length);
+    let nextIndex = 0;
+    let failure: { error: unknown } | undefined;
 
-    for (let i = 0; i < tasks.length; i += maxConcurrency) {
-      const chunk = tasks.slice(i, i + maxConcurrency);
-      const chunkResults = await Promise.all(chunk.map((t) => t()));
-      results.push(...chunkResults);
+    const worker = async (): Promise<void> => {
+      while (nextIndex < tasks.length && !failure) {
+        const index = nextIndex++;
+        try {
+          results[index] = await tasks[index]();
+        } catch (error) {
+          failure ??= { error };
+        }
+      }
+    };
+
+    const workers = Math.min(Math.max(1, maxConcurrency), tasks.length);
+    await Promise.all(Array.from({ length: workers }, () => worker()));
+
+    if (failure) {
+      throw failure.error;
     }
-
     return results;
   }
 

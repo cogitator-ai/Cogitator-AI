@@ -202,6 +202,39 @@ describe('WasmSandboxExecutor', () => {
       expect(mockCreatePlugin).toHaveBeenCalledTimes(1);
     });
 
+    it('passes the default memory limit to the plugin manifest', async () => {
+      await executor.connect();
+
+      const { mockCall, mockCreatePlugin } = await getMocks();
+      mockCall.mockResolvedValue(new TextEncoder().encode('ok'));
+
+      await executor.execute({ command: ['test'] }, defaultConfig);
+
+      expect(mockCreatePlugin).toHaveBeenCalledWith(
+        expect.objectContaining({ memory: { maxPages: 256 } }),
+        expect.any(Object)
+      );
+    });
+
+    it('passes configured memoryPages to the plugin manifest', async () => {
+      await executor.disconnect();
+      executor = new WasmSandboxExecutor({ wasm: { memoryPages: 64 } });
+      await executor.connect();
+
+      const { mockCall, mockCreatePlugin } = await getMocks();
+      mockCall.mockResolvedValue(new TextEncoder().encode('ok'));
+
+      await executor.execute({ command: ['test'] }, defaultConfig);
+
+      expect(mockCreatePlugin).toHaveBeenCalledWith(
+        expect.objectContaining({
+          wasm: [{ url: 'https://example.com/module.wasm' }],
+          memory: { maxPages: 64 },
+        }),
+        expect.any(Object)
+      );
+    });
+
     it('handles timeout', async () => {
       await executor.connect();
 

@@ -29,6 +29,7 @@ interface OllamaMessage {
   content: string;
   images?: string[];
   tool_calls?: OllamaToolCall[];
+  tool_name?: string;
 }
 
 interface OllamaToolCall {
@@ -51,7 +52,8 @@ interface OllamaTool {
 interface OllamaChatResponse {
   model: string;
   created_at: string;
-  message: OllamaMessage;
+  message?: OllamaMessage;
+  error?: string;
   done: boolean;
   done_reason?: string;
   total_duration?: number;
@@ -122,7 +124,13 @@ export class OllamaBackend extends BaseLLMBackend {
     }
 
     const data = (await response.json()) as OllamaChatResponse;
-    return this.convertResponse(data);
+    if (data.error) {
+      throw llmUnavailable(ctx, `Ollama error: ${data.error}`);
+    }
+    if (!data.message) {
+      throw llmInvalidResponse(ctx, 'Ollama response did not include a message');
+    }
+    return this.convertResponse(data, data.message);
   }
 
   async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
@@ -173,6 +181,7 @@ export class OllamaBackend extends BaseLLMBackend {
     const id = this.generateId();
     let validChunks = 0;
     let parseErrors = 0;
+    let sawToolCalls = false;
 
     try {
       for (;;) {
@@ -195,11 +204,19 @@ export class OllamaBackend extends BaseLLMBackend {
             });
             continue;
           }
+          if (data.error) {
+            throw llmUnavailable(ctx, `Ollama stream error: ${data.error}`);
+          }
           validChunks++;
+
+          const toolCalls = data.message?.tool_calls;
+          if (toolCalls?.length) {
+            sawToolCalls = true;
+          }
 
           let finishReason: ChatStreamChunk['finishReason'];
           if (data.done) {
-            if (data.message.tool_calls) {
+            if (sawToolCalls) {
               finishReason = 'tool_calls';
             } else if (data.done_reason === 'length') {
               finishReason = 'length';
@@ -211,8 +228,8 @@ export class OllamaBackend extends BaseLLMBackend {
           const chunk: ChatStreamChunk = {
             id,
             delta: {
-              content: data.message.content,
-              toolCalls: data.message.tool_calls?.map((tc) => ({
+              content: data.message?.content || undefined,
+              toolCalls: toolCalls?.map((tc) => ({
                 id: tc.id ?? `call_${nanoid(12)}`,
                 name: tc.function.name,
                 arguments: tc.function.arguments,
@@ -256,6 +273,10 @@ export class OllamaBackend extends BaseLLMBackend {
           content: text,
           images: images.length > 0 ? images : undefined,
         };
+
+        if (m.role === 'tool' && m.name) {
+          base.tool_name = m.name;
+        }
 
         if (m.role === 'assistant' && 'toolCalls' in m && Array.isArray(m.toolCalls)) {
           base.tool_calls = m.toolCalls.map((tc: ToolCall) => ({
@@ -318,15 +339,15 @@ export class OllamaBackend extends BaseLLMBackend {
     }));
   }
 
-  private convertResponse(data: OllamaChatResponse): ChatResponse {
-    const toolCalls: ToolCall[] | undefined = data.message.tool_calls?.map((tc) => ({
+  private convertResponse(data: OllamaChatResponse, message: OllamaMessage): ChatResponse {
+    const toolCalls: ToolCall[] | undefined = message.tool_calls?.map((tc) => ({
       id: tc.id ?? `call_${nanoid(12)}`,
       name: tc.function.name,
       arguments: tc.function.arguments,
     }));
 
     let finishReason: ChatResponse['finishReason'];
-    if (toolCalls) {
+    if (toolCalls?.length) {
       finishReason = 'tool_calls';
     } else if (data.done_reason === 'length') {
       finishReason = 'length';
@@ -336,8 +357,8 @@ export class OllamaBackend extends BaseLLMBackend {
 
     return {
       id: this.generateId(),
-      content: data.message.content,
-      toolCalls,
+      content: message.content ?? '',
+      toolCalls: toolCalls?.length ? toolCalls : undefined,
       finishReason,
       usage: {
         inputTokens: data.prompt_eval_count ?? 0,

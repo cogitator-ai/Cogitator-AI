@@ -28,24 +28,26 @@ const fastify = Fastify({ logger: true });
 
 const cogitator = new Cogitator({
   llm: {
-    defaultProvider: 'openai',
+    defaultModel: 'openai/gpt-4o',
     providers: {
-      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' },
+      openai: { apiKey: process.env.OPENAI_API_KEY! },
     },
   },
 });
 
-const calculator = tool({
-  name: 'calculate',
-  description: 'Evaluate a math expression',
-  parameters: z.object({ expression: z.string() }),
-  execute: async ({ expression }) => ({ result: eval(expression) }),
+const multiply = tool({
+  name: 'multiply',
+  description: 'Multiply two numbers',
+  parameters: z.object({ a: z.number(), b: z.number() }),
+  execute: async ({ a, b }) => ({ result: a * b }),
 });
 
 const mathAgent = new Agent({
   name: 'math',
-  instructions: 'You are a math assistant. Use the calculate tool for arithmetic.',
-  tools: [calculator],
+  description: 'Math assistant',
+  model: 'openai/gpt-4o',
+  instructions: 'You are a math assistant. Use the multiply tool for multiplication.',
+  tools: [multiply],
 });
 
 await fastify.register(cogitatorPlugin, {
@@ -97,7 +99,7 @@ await fastify.register(cogitatorPlugin, {
 });
 ```
 
-The auth context is available on `request.cogitatorAuth` inside route handlers.
+Returning `undefined` lets the request through unauthenticated; throwing rejects it with `401`. The auth context is available on `request.cogitatorAuth`, its `userId` is passed to agent runs, and — because it is an `onRequest` hook — it also guards the WebSocket upgrade.
 
 ## Rate Limiting
 
@@ -114,7 +116,7 @@ await fastify.register(cogitatorPlugin, {
 });
 ```
 
-If `@fastify/rate-limit` is not installed, the plugin logs a warning and continues without throttling.
+If `@fastify/rate-limit` is not installed, the plugin logs a warning and continues without throttling. Limited requests receive `429` with code `RATE_LIMIT_EXCEEDED`.
 
 ## Swagger & OpenAPI
 
@@ -147,14 +149,16 @@ await fastify.register(cogitatorPlugin, {
   agents: { math: mathAgent },
   enableWebSocket: true,
   websocket: {
-    path: '/ws',
+    path: '/ws', // relative to the prefix: ws://host/cogitator/ws
   },
 });
 ```
 
+Run an agent with `{ "type": "run", "id": "r1", "payload": { "type": "agent", "name": "math", "input": "6 * 7?" } }`. Events arrive as `{ "type": "event", "id": "r1", "payload": { "type": "token" | "tool-call" | "tool-result" | "complete" | "cancelled" } }`; send `{ "type": "stop" }` to abort the run. Subscribing to `agent:<name>` delivers events of runs started by other clients. One run per connection at a time; only agent runs are supported over WebSocket.
+
 ## Streaming
 
-The streaming endpoints use SSE, identical to other adapters. The `FastifyStreamWriter` handles response flushing:
+The streaming endpoints use SSE, identical to other adapters: `text-*` blocks closed around tool calls, `tool-call-*` events whose `id` matches `tool-result.toolCallId`, then `finish` and `[DONE]` (or an `error` event). `FastifyStreamWriter` hijacks the reply and keeps headers set by your hooks (CORS, rate limit). Disconnecting aborts the run:
 
 ```typescript
 const response = await fetch('http://localhost:3000/cogitator/agents/math/stream', {
@@ -185,6 +189,10 @@ fastify.get('/custom', async (request, reply) => {
 });
 ```
 
+## Errors
+
+Schema validation failures and malformed JSON return `400 INVALID_INPUT`, a failed workflow returns `500 WORKFLOW_FAILED`, and `CogitatorError`s keep their code and mapped status (for example `LLM_RATE_LIMITED` → 429). Unexpected errors return a generic `500 INTERNAL` and are logged.
+
 ## Exported Schemas
 
 The package exports JSON Schema objects for request/response validation:
@@ -199,4 +207,4 @@ import {
 } from '@cogitator-ai/fastify';
 ```
 
-These can be used in custom Fastify route schemas for native validation.
+`AgentRunRequestSchema` and `SwarmRunRequestSchema` require a non-blank `input` (the swarm `timeout` must be greater than 0), `AddMessageRequestSchema` requires a non-empty `content` and a `user`/`assistant`/`system` role, and `WorkflowRunRequestSchema.options` only allows `maxConcurrency`/`maxIterations` (integers ≥ 1) and `checkpoint` (`additionalProperties: false`). These can be used in custom Fastify route schemas for native validation.

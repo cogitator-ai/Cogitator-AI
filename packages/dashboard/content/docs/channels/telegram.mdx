@@ -59,8 +59,13 @@ await gateway.start();
 ```typescript
 interface TelegramConfig {
   token: string;
-  allowedUpdates?: string[];
-  webhook?: { url: string; port: number };
+  allowedUpdates?: string[]; // forwarded to getUpdates / setWebhook
+  webhook?: {
+    url: string; // public HTTPS URL registered with Telegram
+    port: number; // local port of the built-in HTTP server
+    path?: string; // defaults to the pathname of `url`
+    secretToken?: string; // checked against X-Telegram-Bot-Api-Secret-Token
+  };
 }
 ```
 
@@ -70,9 +75,12 @@ interface TelegramConfig {
 |---|---|
 | Text messages | Supported |
 | Photos | Supported (passed to LLM as vision) |
-| Voice messages | Supported (transcribed via STT) |
-| Documents | Supported |
-| Streaming (edit) | Supported via `editMessageText` |
+| Voice / audio messages | Supported (transcribed via STT) |
+| Video | Supported (announced to the model) |
+| Documents | Supported (text files are inlined) |
+| Replies | `replyTo` is set from `reply_to_message` |
+| Sending files | Buffers (via `InputFile`) or URLs; photo/audio/video/document by type |
+| Streaming | Drafts (`sendMessageDraft`) with fallback to `editMessageText` |
 | Reactions | Supported via `setMessageReaction` |
 | Typing indicator | Supported |
 | Max message length | 4096 chars (auto-chunked) |
@@ -90,11 +98,12 @@ telegramChannel({
   webhook: {
     url: 'https://example.com/telegram',
     port: 8443,
+    secretToken: process.env.TG_WEBHOOK_SECRET,
   },
 });
 ```
 
-Telegram supports webhook ports 443, 80, 88, and 8443.
+On `start()` the channel initializes the bot, starts an HTTP server on `port` that accepts `POST` requests on the webhook path (other paths return 404), and calls `setWebhook`. `stop()` closes the server. Put a reverse proxy with TLS in front of it, or expose the port directly — Telegram supports webhook ports 443, 80, 88, and 8443.
 
 ## Media Support
 
@@ -102,7 +111,9 @@ Telegram supports webhook ports 443, 80, 88, and 8443.
 
 **Voice messages** are downloaded as OGG audio and passed through the configured STT pipeline (Whisper local or API). The transcribed text is sent to the LLM as the user's message. See the [Gateway docs](/docs/channels/gateway) for STT configuration.
 
-**Documents** are downloaded and attached to the message. Image documents (PNG, JPEG, etc.) are treated as image attachments; everything else is passed as a file.
+**Documents** are downloaded and attached to the message. Image documents (PNG, JPEG, etc.) are treated as image attachments; text-like files are inlined into the prompt and other files are announced to the model.
+
+**Formatting:** answers are sent with legacy `Markdown` parse mode — `**bold**` is converted to `*bold*`, headings to bold and `* item` bullets to `•`. If Telegram still rejects the entities the message is re-sent as plain text. `message is not modified` errors during streaming are ignored.
 
 ## Tips
 

@@ -2,9 +2,12 @@ import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
 import type { RealtimeSessionConfig } from '../types.js';
 
-const DEFAULT_MODEL = 'gpt-4o-mini-realtime';
+const DEFAULT_MODEL = 'gpt-realtime-mini';
+const DEFAULT_VOICE = 'marin';
+const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-4o-mini-transcribe';
 const BASE_URL = 'wss://api.openai.com/v1/realtime';
 const CONNECT_TIMEOUT_MS = 30_000;
+const PCM_FORMAT = { type: 'audio/pcm', rate: 24000 } as const;
 
 interface OpenAIRealtimeEvents {
   connected: [];
@@ -17,10 +20,32 @@ interface OpenAIRealtimeEvents {
   error: [error: Error];
 }
 
+interface FunctionCallItem {
+  name: string;
+  callId: string;
+  arguments: string;
+}
+
+function rawDataToString(data: WebSocket.RawData): string {
+  if (Array.isArray(data)) return Buffer.concat(data).toString();
+  if (data instanceof ArrayBuffer) return Buffer.from(new Uint8Array(data)).toString();
+  return data.toString();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * OpenAI Realtime API (GA interface) adapter. Audio in both directions is
+ * PCM16 mono at 24kHz.
+ */
 export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
   private readonly config: RealtimeSessionConfig;
   private readonly model: string;
   private ws: WebSocket | null = null;
+  private connected = false;
+  private responseActive = false;
 
   constructor(config: RealtimeSessionConfig) {
     super();
@@ -28,68 +53,67 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
     this.model = config.model ?? DEFAULT_MODEL;
   }
 
+  get isConnected(): boolean {
+    return this.connected;
+  }
+
   async connect(): Promise<void> {
     if (this.ws) {
       throw new Error('Already connected or connecting — call close() first');
     }
 
-    const url = `${BASE_URL}?model=${this.model}`;
+    const url = `${BASE_URL}?model=${encodeURIComponent(this.model)}`;
 
     return new Promise<void>((resolve, reject) => {
       let settled = false;
-      const settleResolve = () => {
+      const settle = (err?: Error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve();
-      };
-      const settleReject = (err: Error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        reject(err);
+        if (err) reject(err);
+        else resolve();
       };
 
       const ws = new WebSocket(url, {
-        headers: {
-          Authorization: `Bearer ${this.config.apiKey}`,
-          'OpenAI-Beta': 'realtime=v1',
-        },
+        headers: { Authorization: `Bearer ${this.config.apiKey}` },
       });
       this.ws = ws;
 
       const timer = setTimeout(() => {
-        this.ws = null;
+        if (this.ws === ws) this.ws = null;
         ws.removeAllListeners();
-        ws.close();
-        settleReject(new Error(`Connect timed out after ${CONNECT_TIMEOUT_MS}ms`));
+        ws.on('error', () => {});
+        ws.terminate();
+        settle(new Error(`Connect timed out after ${CONNECT_TIMEOUT_MS}ms`));
       }, CONNECT_TIMEOUT_MS);
 
       ws.on('open', () => {
+        this.connected = true;
         this.sendSessionUpdate();
         this.emit('connected');
-        settleResolve();
+        settle();
       });
 
       ws.on('message', (data: WebSocket.RawData) => {
-        const buf = Array.isArray(data)
-          ? Buffer.concat(data)
-          : data instanceof ArrayBuffer
-            ? Buffer.from(new Uint8Array(data))
-            : data;
-        this.handleMessage(buf.toString());
+        this.handleMessage(rawDataToString(data));
       });
 
       ws.on('error', (err: Error) => {
-        this.emit('error', err);
-        settleReject(err);
+        if (settled) {
+          this.emit('error', err);
+        } else {
+          settle(err);
+        }
       });
 
       ws.on('close', (code: number, reason: Buffer) => {
         const reasonStr = reason.toString() || 'connection closed';
-        this.ws = null;
-        this.emit('disconnected', code, reasonStr);
-        settleReject(new Error(`WebSocket closed before connect (code ${code}): ${reasonStr}`));
+        if (this.ws === ws) this.ws = null;
+        const wasConnected = this.connected;
+        this.connected = false;
+        this.responseActive = false;
+        settle(new Error(`WebSocket closed before connect (code ${code}): ${reasonStr}`));
+        if (wasConnected) this.emit('disconnected', code, reasonStr);
       });
     });
   }
@@ -114,24 +138,36 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
   }
 
   interrupt(): void {
+    if (!this.responseActive) return;
     this.send({ type: 'response.cancel' });
   }
 
   close(): void {
     const ws = this.ws;
+    this.connected = false;
+    this.responseActive = false;
     if (!ws) return;
     this.ws = null;
     ws.removeAllListeners();
+    ws.on('error', () => {});
     ws.close();
   }
 
   private sendSessionUpdate(): void {
     const session: Record<string, unknown> = {
-      voice: this.config.voice ?? 'coral',
-      input_audio_format: 'pcm16',
-      output_audio_format: 'pcm16',
-      input_audio_transcription: { model: 'whisper-1' },
-      turn_detection: { type: 'server_vad' },
+      type: 'realtime',
+      output_modalities: ['audio'],
+      audio: {
+        input: {
+          format: PCM_FORMAT,
+          transcription: { model: DEFAULT_TRANSCRIPTION_MODEL },
+          turn_detection: { type: 'server_vad' },
+        },
+        output: {
+          format: PCM_FORMAT,
+          voice: this.config.voice ?? DEFAULT_VOICE,
+        },
+      },
     };
 
     if (this.config.instructions) {
@@ -145,26 +181,31 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
         description: t.description,
         parameters: t.parameters,
       }));
+      session.tool_choice = 'auto';
     }
 
     this.send({ type: 'session.update', session });
   }
 
   private handleMessage(raw: string): void {
-    let event: Record<string, unknown>;
+    let parsed: unknown;
     try {
-      event = JSON.parse(raw) as Record<string, unknown>;
+      parsed = JSON.parse(raw);
     } catch {
       this.emit('error', new Error('Failed to parse WebSocket message'));
       return;
     }
-    const type = event.type as string;
+    if (!isRecord(parsed)) return;
+    const event = parsed;
 
-    switch (type) {
-      case 'response.audio.delta': {
+    switch (event.type) {
+      case 'response.output_audio.delta': {
         const delta = event.delta;
         if (typeof delta !== 'string') {
-          this.emit('error', new Error('Malformed response.audio.delta: missing or invalid delta'));
+          this.emit(
+            'error',
+            new Error('Malformed response.output_audio.delta: missing or invalid delta')
+          );
           break;
         }
         this.emit('audio', Buffer.from(delta, 'base64'));
@@ -177,7 +218,7 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
         }
         break;
 
-      case 'response.audio_transcript.done':
+      case 'response.output_audio_transcript.done':
         if (typeof event.transcript === 'string') {
           this.emit('transcript', event.transcript, 'assistant');
         }
@@ -187,19 +228,20 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
         this.emit('speech_start');
         break;
 
-      case 'response.function_call_arguments.done':
-        void this.handleToolCall(event);
+      case 'response.created':
+        this.responseActive = true;
         break;
 
       case 'response.done':
-        this.emit('turn_end');
+        this.responseActive = false;
+        this.handleResponseDone(event.response);
         break;
 
       case 'error': {
         const errObj = event.error;
         const message =
-          errObj && typeof errObj === 'object' && 'message' in errObj
-            ? String((errObj as Record<string, unknown>).message)
+          isRecord(errObj) && typeof errObj.message === 'string'
+            ? errObj.message
             : 'Unknown server error';
         this.emit('error', new Error(message));
         break;
@@ -207,39 +249,79 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
     }
   }
 
-  private async handleToolCall(event: Record<string, unknown>): Promise<void> {
-    const name = event.name as string;
-    const callId = event.call_id as string;
-    let args: unknown;
-    try {
-      args = JSON.parse(event.arguments as string);
-    } catch {
-      this.emit('error', new Error(`Failed to parse tool call arguments for ${name}`));
+  private handleResponseDone(response: unknown): void {
+    const calls: FunctionCallItem[] = [];
+    if (isRecord(response) && response.status === 'completed' && Array.isArray(response.output)) {
+      for (const item of response.output) {
+        if (
+          isRecord(item) &&
+          item.type === 'function_call' &&
+          typeof item.name === 'string' &&
+          typeof item.call_id === 'string'
+        ) {
+          calls.push({
+            name: item.name,
+            callId: item.call_id,
+            arguments: typeof item.arguments === 'string' ? item.arguments : '{}',
+          });
+        }
+      }
+    }
+
+    if (calls.length === 0) {
+      this.emit('turn_end');
       return;
     }
 
-    this.emit('tool_call', name, args);
+    void this.handleToolCalls(calls);
+  }
 
-    const tool = this.config.tools?.find((t) => t.name === name);
-    if (!tool) return;
+  private async handleToolCalls(calls: FunctionCallItem[]): Promise<void> {
+    const ws = this.ws;
+    const outputs = await Promise.all(calls.map((call) => this.executeToolCall(call)));
+    if (this.ws !== ws) return;
 
-    let output: string;
+    for (const { callId, output } of outputs) {
+      this.send({
+        type: 'conversation.item.create',
+        item: { type: 'function_call_output', call_id: callId, output },
+      });
+    }
+    this.send({ type: 'response.create' });
+  }
+
+  private async executeToolCall(
+    call: FunctionCallItem
+  ): Promise<{ callId: string; output: string }> {
+    let args: unknown;
     try {
-      const result = await tool.execute(args);
-      output = JSON.stringify(result);
-    } catch (err) {
-      output = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+      args = JSON.parse(call.arguments || '{}');
+    } catch {
+      return {
+        callId: call.callId,
+        output: JSON.stringify({ error: `Invalid JSON arguments for tool ${call.name}` }),
+      };
     }
 
-    this.send({
-      type: 'conversation.item.create',
-      item: {
-        type: 'function_call_output',
-        call_id: callId,
-        output,
-      },
-    });
-    this.send({ type: 'response.create' });
+    this.emit('tool_call', call.name, args);
+
+    const tool = this.config.tools?.find((t) => t.name === call.name);
+    if (!tool) {
+      return {
+        callId: call.callId,
+        output: JSON.stringify({ error: `Unknown tool: ${call.name}` }),
+      };
+    }
+
+    try {
+      const result = await tool.execute(args);
+      return { callId: call.callId, output: JSON.stringify(result ?? null) };
+    } catch (err) {
+      return {
+        callId: call.callId,
+        output: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+      };
+    }
   }
 
   private send(data: Record<string, unknown>): void {

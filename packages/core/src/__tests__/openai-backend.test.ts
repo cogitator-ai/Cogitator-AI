@@ -269,10 +269,86 @@ describe('OpenAIBackend', () => {
         expect.objectContaining({
           temperature: 0.7,
           top_p: 0.9,
-          max_tokens: 1000,
+          max_completion_tokens: 1000,
           stop: ['END'],
         })
       );
+      expect(mockCreate.mock.calls[0][0]).not.toHaveProperty('max_tokens');
+    });
+
+    it('uses max_tokens for OpenAI-compatible endpoints', async () => {
+      const compatible = new OpenAIBackend({
+        apiKey: 'test-api-key',
+        baseUrl: 'https://openrouter.example/v1',
+      });
+      mockCreate.mockResolvedValueOnce({
+        id: 'chatcmpl-123',
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+
+      await compatible.chat({
+        model: 'some-model',
+        messages: [{ role: 'user', content: 'Test' }],
+        maxTokens: 50,
+      });
+
+      expect(mockCreate.mock.calls[0][0]).toMatchObject({ max_tokens: 50 });
+      expect(mockCreate.mock.calls[0][0]).not.toHaveProperty('max_completion_tokens');
+    });
+
+    it('treats empty tool call arguments as an empty object', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'chatcmpl-123',
+        choices: [
+          {
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                { id: 'call_1', type: 'function', function: { name: 'get_time', arguments: '' } },
+                {
+                  id: 'call_2',
+                  type: 'function',
+                  function: { name: 'get_date', arguments: 'null' },
+                },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+
+      const response = await backend.chat({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'Time?' }],
+      });
+
+      expect(response.toolCalls?.map((tc) => tc.arguments)).toEqual([{}, {}]);
+    });
+
+    it('rejects non-object tool call arguments', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'chatcmpl-123',
+        choices: [
+          {
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                { id: 'call_1', type: 'function', function: { name: 'x', arguments: '[1,2]' } },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+
+      await expect(
+        backend.chat({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'x' }] })
+      ).rejects.toThrow('must be a JSON object');
     });
 
     it('handles tool results in messages', async () => {
@@ -684,6 +760,28 @@ describe('OpenAIBackend', () => {
         outputTokens: 1,
         totalTokens: 11,
       });
+    });
+
+    it('keeps usage reported on the finishing choice chunk', async () => {
+      const mockStream = (async function* () {
+        yield {
+          id: 'chatcmpl-123',
+          choices: [{ delta: { content: 'Hi' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 7, completion_tokens: 2, total_tokens: 9 },
+        };
+      })();
+
+      mockCreate.mockResolvedValueOnce(mockStream);
+
+      const chunks = [];
+      for await (const chunk of backend.chatStream({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'Test' }],
+      })) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks[0].usage).toEqual({ inputTokens: 7, outputTokens: 2, totalTokens: 9 });
     });
   });
 });

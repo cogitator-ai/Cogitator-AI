@@ -794,4 +794,159 @@ describe('AnthropicBackend', () => {
       expect(contents).toContain('{"name":"John"}');
     });
   });
+
+  describe('audit regressions', () => {
+    const okResponse = {
+      id: 'msg_1',
+      content: [{ type: 'text', text: 'ok' }],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 1, output_tokens: 1 },
+    };
+
+    it('keeps the base system prompt when later system messages are present', async () => {
+      mockCreate.mockResolvedValueOnce(okResponse);
+
+      await backend.chat({
+        model: 'claude-sonnet-4-20250514',
+        messages: [
+          { role: 'system', content: 'You are helpful.' },
+          { role: 'user', content: 'Hi' },
+          { role: 'system', content: 'Reflection: be concise.' },
+        ],
+      });
+
+      expect(mockCreate.mock.calls[0][0].system).toBe(
+        'You are helpful.\n\nReflection: be concise.'
+      );
+    });
+
+    it('omits the system field when there is no system prompt', async () => {
+      mockCreate.mockResolvedValueOnce(okResponse);
+
+      await backend.chat({
+        model: 'claude-sonnet-4-20250514',
+        messages: [{ role: 'user', content: 'Hi' }],
+      });
+
+      expect(mockCreate.mock.calls[0][0].system).toBeUndefined();
+    });
+
+    it('groups parallel tool results into a single user message', async () => {
+      mockCreate.mockResolvedValueOnce(okResponse);
+
+      await backend.chat({
+        model: 'claude-sonnet-4-20250514',
+        messages: [
+          { role: 'user', content: 'Weather in Tokyo and Paris?' },
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [
+              { id: 'toolu_1', name: 'weather', arguments: { city: 'Tokyo' } },
+              { id: 'toolu_2', name: 'weather', arguments: { city: 'Paris' } },
+            ],
+          } as never,
+          { role: 'tool', content: '"sunny"', toolCallId: 'toolu_1', name: 'weather' },
+          { role: 'tool', content: '"rainy"', toolCallId: 'toolu_2', name: 'weather' },
+        ],
+      });
+
+      const sent = mockCreate.mock.calls[0][0].messages;
+      expect(sent).toHaveLength(3);
+      expect(sent[2]).toEqual({
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_1', content: '"sunny"' },
+          { type: 'tool_result', tool_use_id: 'toolu_2', content: '"rainy"' },
+        ],
+      });
+    });
+
+    it('maps tool choice none to the none tool choice', async () => {
+      mockCreate.mockResolvedValueOnce(okResponse);
+
+      await backend.chat({
+        model: 'claude-sonnet-4-20250514',
+        messages: [{ role: 'user', content: 'Hi' }],
+        tools: [{ name: 't', description: 'd', parameters: { type: 'object', properties: {} } }],
+        toolChoice: 'none',
+      });
+
+      expect(mockCreate.mock.calls[0][0].tool_choice).toEqual({ type: 'none' });
+    });
+
+    it('reports stop (not tool_calls) for json_schema responses', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'msg_1',
+        content: [{ type: 'tool_use', id: 'toolu_1', name: '__json_response', input: { a: 1 } }],
+        stop_reason: 'tool_use',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+
+      const response = await backend.chat({
+        model: 'claude-sonnet-4-20250514',
+        messages: [{ role: 'user', content: 'Hi' }],
+        responseFormat: {
+          type: 'json_schema',
+          jsonSchema: { name: 'x', schema: { type: 'object', properties: {} } },
+        },
+      });
+
+      expect(response.content).toBe('{"a":1}');
+      expect(response.finishReason).toBe('stop');
+      expect(response.toolCalls).toBeUndefined();
+    });
+
+    it('wraps errors raised while iterating the stream', async () => {
+      mockStream.mockReturnValueOnce(
+        (async function* () {
+          yield { type: 'message_start', message: { usage: { input_tokens: 1 } } };
+          throw new MockAPIError('Overloaded', 529);
+        })()
+      );
+
+      const consume = async () => {
+        for await (const _ of backend.chatStream({
+          model: 'claude-sonnet-4-20250514',
+          messages: [{ role: 'user', content: 'Hi' }],
+        })) {
+          /* consume stream */
+        }
+      };
+
+      await expect(consume()).rejects.toMatchObject({
+        name: 'LLMError',
+        message: expect.stringContaining('Overloaded'),
+      });
+    });
+
+    it('parses empty streamed tool input as an empty object', async () => {
+      mockStream.mockReturnValueOnce(
+        (async function* () {
+          yield { type: 'message_start', message: { usage: { input_tokens: 1 } } };
+          yield {
+            type: 'content_block_start',
+            content_block: { type: 'tool_use', id: 'toolu_1', name: 'now' },
+          };
+          yield { type: 'content_block_stop' };
+          yield {
+            type: 'message_delta',
+            delta: { stop_reason: 'tool_use' },
+            usage: { output_tokens: 1 },
+          };
+          yield { type: 'message_stop' };
+        })()
+      );
+
+      const toolCalls: unknown[] = [];
+      for await (const chunk of backend.chatStream({
+        model: 'claude-sonnet-4-20250514',
+        messages: [{ role: 'user', content: 'Time?' }],
+      })) {
+        if (chunk.delta.toolCalls) toolCalls.push(...chunk.delta.toolCalls);
+      }
+
+      expect(toolCalls).toEqual([{ id: 'toolu_1', name: 'now', arguments: {} }]);
+    });
+  });
 });

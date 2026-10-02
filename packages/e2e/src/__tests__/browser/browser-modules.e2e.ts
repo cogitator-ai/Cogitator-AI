@@ -6,6 +6,7 @@ import {
   createScreenshotTool,
   createClickTool,
 } from '@cogitator-ai/browser';
+import type { Tool } from '@cogitator-ai/types';
 
 const describeIfBrowser = process.env.TEST_BROWSER ? describe : describe.skip;
 
@@ -33,10 +34,10 @@ describeIfBrowser('Browser Module Selection E2E', () => {
     expect(names).not.toContain('browser_screenshot');
   });
 
-  it('returns all 32 tools when no modules option is given', () => {
+  it('returns all 33 tools when no modules option is given', () => {
     const tools = browserTools(session);
 
-    expect(tools).toHaveLength(32);
+    expect(tools).toHaveLength(33);
 
     const names = tools.map((t) => t.name);
     expect(names).toContain('browser_navigate');
@@ -44,6 +45,7 @@ describeIfBrowser('Browser Module Selection E2E', () => {
     expect(names).toContain('browser_click');
     expect(names).toContain('browser_screenshot');
     expect(names).toContain('browser_intercept_request');
+    expect(names).toContain('browser_remove_interceptor');
   });
 
   it('individual factory functions return correct tools', () => {

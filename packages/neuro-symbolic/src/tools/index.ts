@@ -28,7 +28,10 @@ export function createNeuroSymbolicTools(options: NeuroSymbolicToolsOptions = {}
   const constraintTools = createConstraintTools(ns);
   const planningTools = createPlanningTools(ns);
 
-  const graphTools = options.graphAdapter ? createGraphTools(options.graphAdapter) : undefined;
+  const graphAdapter = options.graphAdapter ?? ns.getGraphAdapter();
+  const graphTools = graphAdapter
+    ? createGraphTools(graphAdapter, { agentId: options.agentId })
+    : undefined;
 
   const baseTools = [
     logicTools.queryLogic,
@@ -64,4 +67,4 @@ export type NeuroSymbolicTools = ReturnType<typeof createNeuroSymbolicTools>;
 export { createLogicTools } from './logic-tools';
 export { createConstraintTools } from './constraint-tools';
 export { createPlanningTools } from './planning-tools';
-export { createGraphTools } from './graph-tools';
+export { createGraphTools, type GraphToolsOptions } from './graph-tools';

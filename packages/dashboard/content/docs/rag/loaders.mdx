@@ -119,7 +119,7 @@ console.log(docs[0].metadata);
 // { title: 'About Us' }
 ```
 
-The `<title>` tag is automatically extracted as metadata if present.
+The `<title>` tag is automatically extracted as metadata if present. Scripts, styles, `noscript`, `template`, `svg` and `iframe` content is removed, block elements (paragraphs, headings, list items, table rows…) become line breaks, `<br>` becomes a newline and whitespace is normalized — so `<p>One</p><p>Two</p>` yields `One\n\nTwo` rather than `OneTwo`.
 
 | Option     | Type   | Default | Description                         |
 | ---------- | ------ | ------- | ----------------------------------- |
@@ -153,7 +153,7 @@ console.log(pageDocs[0].metadata);
 
 ## WebLoader
 
-Fetches a URL and extracts text content. Uses `HTMLLoader` internally, so it requires `cheerio`.
+Fetches a URL and extracts text content. HTML is processed by `HTMLLoader` (requires `cheerio`); `text/*` and JSON responses are kept as raw text; other content types are rejected. Redirects are followed (max 5), responses are decompressed (gzip/deflate/br), decoded with the declared charset and capped at `maxResponseBytes`. Documents get `metadata.url` (final URL after redirects) and `metadata.contentType`.
 
 ```bash
 pnpm add cheerio
@@ -170,10 +170,17 @@ const loader = new WebLoader({
 const docs = await loader.load('https://example.com/docs/getting-started');
 ```
 
-| Option    | Type                       | Default | Description                         |
-| --------- | -------------------------- | ------- | ----------------------------------- |
-| `selector`| string                     | `body`  | CSS selector for content extraction |
-| `headers` | Record\<string, string\>   | —       | Custom HTTP headers for the request |
+| Option                | Type                     | Default | Description                                        |
+| --------------------- | ------------------------ | ------- | -------------------------------------------------- |
+| `selector`            | string                   | `body`  | CSS selector for content extraction                |
+| `headers`             | Record\<string, string\> | —       | Custom HTTP headers for the request                |
+| `timeoutMs`           | number                   | `30000` | Per-request timeout                                |
+| `maxResponseBytes`    | number                   | 50MB    | Maximum (decompressed) response size               |
+| `allowPrivateNetwork` | boolean                  | `false` | Allow loopback/private hosts (e.g. intranet wikis) |
+
+### SSRF protection
+
+By default `WebLoader` refuses loopback, private (RFC 1918), link-local, CGNAT, multicast and cloud-metadata targets — including IPv4-mapped / NAT64 IPv6 literals, numeric host forms such as `http://2130706433/`, and hostnames that **resolve** to such addresses. Resolution is checked at connect time for every redirect hop, so DNS rebinding cannot bypass the check. Set `allowPrivateNetwork: true` only for trusted URLs.
 
 ## Custom Loaders
 
@@ -195,12 +202,14 @@ class NotionLoader implements DocumentLoader {
     const pageId = source;
     const content = await this.fetchNotionPage(pageId);
 
-    return [{
-      id: nanoid(),
-      content,
-      source: `notion://${pageId}`,
-      sourceType: 'text',
-    }];
+    return [
+      {
+        id: nanoid(),
+        content,
+        source: `notion://${pageId}`,
+        sourceType: 'text',
+      },
+    ];
   }
 
   private async fetchNotionPage(pageId: string): Promise<string> {

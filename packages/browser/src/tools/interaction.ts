@@ -1,5 +1,7 @@
 import { tool } from '@cogitator-ai/core';
 import type { BrowserSession } from '../session';
+import { humanLikeClick, humanLikeHover, humanLikeScroll } from '../stealth/human-like';
+import { humanTypingDelay, usesHumanLikeMouse, usesHumanLikeTyping } from '../utils/human-mode';
 import {
   clickSchema,
   typeSchema,
@@ -30,11 +32,16 @@ export function createClickTool(session: BrowserSession) {
     parameters: clickSchema,
     execute: async (params: ClickInput) => {
       const page = session.page;
-      await page.click(params.selector, {
+      const options = {
         button: params.button,
         clickCount: params.clickCount,
         position: params.position,
-      });
+      };
+      if (usesHumanLikeMouse(session)) {
+        await humanLikeClick(page, params.selector, options);
+      } else {
+        await page.click(params.selector, options);
+      }
       return { clicked: true };
     },
   });
@@ -50,18 +57,16 @@ export function createTypeTool(session: BrowserSession) {
     parameters: typeSchema,
     execute: async (params: TypeInput) => {
       const page = session.page;
-      const useStealthDelay =
-        !params.delay && session.stealthEnabled && session.stealthConfig?.humanLikeTyping;
+      const useStealthDelay = !params.delay && usesHumanLikeTyping(session);
 
-      if (params.clearFirst && (params.delay || useStealthDelay)) {
+      if (useStealthDelay || (params.clearFirst && params.delay)) {
         await page.fill(params.selector, '');
       }
 
       if (params.delay) {
         await page.type(params.selector, params.text, { delay: params.delay });
       } else if (useStealthDelay) {
-        const delay = Math.floor(Math.random() * 101) + 50;
-        await page.type(params.selector, params.text, { delay });
+        await page.type(params.selector, params.text, { delay: humanTypingDelay() });
       } else {
         await page.fill(params.selector, params.text);
       }
@@ -97,7 +102,12 @@ export function createHoverTool(session: BrowserSession) {
     tags: ['browser', 'interaction'],
     parameters: hoverSchema,
     execute: async (params: HoverInput) => {
-      await session.page.hover(params.selector, { position: params.position });
+      const page = session.page;
+      if (usesHumanLikeMouse(session)) {
+        await humanLikeHover(page, params.selector, { position: params.position });
+      } else {
+        await page.hover(params.selector, { position: params.position });
+      }
       return { hovered: true };
     },
   });
@@ -121,7 +131,12 @@ export function createScrollTool(session: BrowserSession) {
       };
       const { x, y } = deltas[params.direction];
 
-      if (params.selector) {
+      if (usesHumanLikeMouse(session)) {
+        if (params.selector) {
+          await humanLikeHover(page, params.selector);
+        }
+        await humanLikeScroll(page, params.direction, amount);
+      } else if (params.selector) {
         await page
           .locator(params.selector)
           .evaluate((el: Element, d: { x: number; y: number }) => el.scrollBy(d.x, d.y), { x, y });
@@ -209,9 +224,9 @@ export function createFillFormTool(session: BrowserSession) {
             const el = loc.first();
 
             if (typeof value === 'string') {
-              if (session.stealthEnabled && session.stealthConfig?.humanLikeTyping) {
-                const delay = Math.floor(Math.random() * 101) + 50;
-                await el.type(value, { delay });
+              if (usesHumanLikeTyping(session)) {
+                await el.fill('');
+                await el.pressSequentially(value, { delay: humanTypingDelay() });
               } else {
                 await el.fill(value);
               }

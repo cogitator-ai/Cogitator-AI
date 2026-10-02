@@ -10,8 +10,6 @@ import type {
   ReasoningModeConfig,
   Insight,
   LLMBackend,
-  MetaIssue,
-  MetaOpportunity,
 } from '@cogitator-ai/types';
 import { DEFAULT_META_REASONING_CONFIG } from '@cogitator-ai/types';
 import {
@@ -27,6 +25,17 @@ import {
 } from './prompts';
 
 export { DEFAULT_META_REASONING_CONFIG };
+
+const TRIGGER_ALIASES: Partial<Record<MetaTrigger, MetaTrigger>> = {
+  confidence_drop: 'on_low_confidence',
+  progress_stall: 'on_stagnation',
+  tool_call_failed: 'on_failure',
+  explicit_request: 'on_request',
+};
+
+function canonicalTrigger(trigger: MetaTrigger): MetaTrigger {
+  return TRIGGER_ALIASES[trigger] ?? trigger;
+}
 
 export interface MetaReasonerOptions {
   llm: LLMBackend;
@@ -44,6 +53,8 @@ export class MetaReasoner {
   private assessments = new Map<string, MetaAssessment[]>();
   private adaptations = new Map<string, MetaAdaptation[]>();
   private currentMode = new Map<string, ReasoningMode>();
+  private parameterOverrides = new Map<string, Partial<ReasoningModeConfig>>();
+  private overridesBefore = new Map<string, Partial<ReasoningModeConfig>>();
 
   private lastAssessmentTime = new Map<string, number>();
   private lastAdaptationTime = new Map<string, number>();
@@ -51,7 +62,14 @@ export class MetaReasoner {
   constructor(options: MetaReasonerOptions) {
     this.llm = options.llm;
     this.model = options.model;
-    this.config = { ...DEFAULT_META_REASONING_CONFIG, ...options.config } as MetaReasoningConfig;
+    this.config = {
+      ...DEFAULT_META_REASONING_CONFIG,
+      ...options.config,
+      modeProfiles: {
+        ...DEFAULT_META_REASONING_CONFIG.modeProfiles,
+        ...options.config?.modeProfiles,
+      },
+    };
 
     this.collector = new ObservationCollector();
     this.selector = new StrategySelector({
@@ -65,8 +83,15 @@ export class MetaReasoner {
     this.assessments.set(runId, []);
     this.adaptations.set(runId, []);
     this.currentMode.set(runId, this.config.defaultMode);
+    this.parameterOverrides.delete(runId);
 
     return this.getModeConfig(this.config.defaultMode);
+  }
+
+  isTriggerEnabled(trigger: MetaTrigger): boolean {
+    const canonical = canonicalTrigger(trigger);
+    if (canonical === 'on_request') return true;
+    return this.config.triggers.some((t) => canonicalTrigger(t) === canonical);
   }
 
   recordAction(runId: string, action: ActionRecord): void {
@@ -88,6 +113,7 @@ export class MetaReasoner {
     }
   ): boolean {
     if (!this.config.enabled) return false;
+    if (!this.isTriggerEnabled(trigger)) return false;
 
     const lastAssessment = this.lastAssessmentTime.get(runId) ?? 0;
     if (Date.now() - lastAssessment < this.config.metaAssessmentCooldown) {
@@ -155,6 +181,7 @@ export class MetaReasoner {
     });
 
     const parsed = parseMetaAssessmentResponse(response.content);
+    const recommendation = this.buildRecommendation(parsed, observation);
 
     const assessment: MetaAssessment = {
       id: `meta_${nanoid(10)}`,
@@ -165,18 +192,16 @@ export class MetaReasoner {
       confidence: parsed?.confidence ?? 0.5,
       reasoning: parsed?.reasoning ?? 'Assessment unavailable',
 
-      issues: (parsed?.issues ?? []) as MetaIssue[],
+      issues: parsed?.issues ?? [],
       opportunities: (parsed?.opportunities ?? []).map((o) => ({
-        type: o.type as MetaOpportunity['type'],
-        confidence: o.expectedImprovement ?? 0.5,
+        type: o.type,
+        confidence: o.expectedImprovement,
         description: o.description,
-      })) as MetaOpportunity[],
+      })),
 
-      recommendation: this.buildRecommendation(parsed, observation),
+      recommendation,
 
-      requiresAdaptation:
-        parsed?.recommendation?.action !== undefined &&
-        parsed?.recommendation?.action !== 'continue',
+      requiresAdaptation: recommendation.action !== 'continue',
 
       assessmentDuration: Date.now() - startTime,
       assessmentCost: (response.usage?.outputTokens ?? 0) * 0.00001,
@@ -211,16 +236,7 @@ export class MetaReasoner {
       };
     }
 
-    return {
-      action: parsed.recommendation.action as MetaRecommendation['action'],
-      newMode: parsed.recommendation.newMode as ReasoningMode | undefined,
-      parameterChanges: parsed.recommendation.parameterChanges as
-        | Partial<ReasoningModeConfig>
-        | undefined,
-      contextAddition: parsed.recommendation.contextAddition,
-      confidence: parsed.recommendation.confidence,
-      reasoning: parsed.recommendation.reasoning,
-    };
+    return { ...parsed.recommendation };
   }
 
   async adapt(runId: string, assessment: MetaAssessment): Promise<MetaAdaptation | null> {
@@ -239,38 +255,62 @@ export class MetaReasoner {
       return null;
     }
 
-    const adaptationCount = this.adaptations.get(runId)?.length ?? 0;
+    const adaptationCount = (this.adaptations.get(runId) ?? []).filter(
+      (a) => a.type !== 'rollback'
+    ).length;
     if (adaptationCount >= this.config.maxAdaptations) {
       return null;
     }
 
     const currentMode = this.currentMode.get(runId) ?? this.config.defaultMode;
-    const currentConfig = this.getModeConfig(currentMode);
+    const currentConfig = this.getCurrentConfig(runId);
 
-    let newConfig: Partial<ReasoningModeConfig> = {};
-    let adaptationType: MetaAdaptation['type'] = 'parameter_change';
+    let newConfig: Partial<ReasoningModeConfig>;
+    let adaptationType: MetaAdaptation['type'];
+    let newMode = currentMode;
+    const previousOverrides = this.parameterOverrides.get(runId);
 
     switch (recommendation.action) {
-      case 'switch_mode':
-        if (recommendation.newMode && this.config.allowedModes.includes(recommendation.newMode)) {
-          newConfig = this.getModeConfig(recommendation.newMode);
-          adaptationType = 'mode_switch';
-          this.currentMode.set(runId, recommendation.newMode);
+      case 'switch_mode': {
+        const target = recommendation.newMode;
+        if (!target || target === currentMode || !this.config.allowedModes.includes(target)) {
+          return null;
         }
+        newConfig = this.getModeConfig(target);
+        adaptationType = 'mode_switch';
+        newMode = target;
+        this.currentMode.set(runId, target);
+        this.parameterOverrides.delete(runId);
         break;
+      }
 
-      case 'adjust_parameters':
-        if (recommendation.parameterChanges) {
-          newConfig = { ...currentConfig, ...recommendation.parameterChanges };
-          adaptationType = 'parameter_change';
+      case 'adjust_parameters': {
+        const changes = recommendation.parameterChanges;
+        if (!changes) return null;
+        const effective: Partial<ReasoningModeConfig> = {};
+        if (
+          changes.temperature !== undefined &&
+          changes.temperature !== currentConfig.temperature
+        ) {
+          effective.temperature = changes.temperature;
         }
+        if (changes.depth !== undefined && changes.depth !== currentConfig.depth) {
+          effective.depth = changes.depth;
+        }
+        if (Object.keys(effective).length === 0) return null;
+        newConfig = { ...currentConfig, ...effective };
+        adaptationType = 'parameter_change';
+        this.parameterOverrides.set(runId, { ...previousOverrides, ...effective });
         break;
+      }
 
       case 'inject_context':
+        if (!recommendation.contextAddition) return null;
+        newConfig = { ...currentConfig };
         adaptationType = 'context_injection';
         break;
 
-      case 'abort':
+      default:
         return null;
     }
 
@@ -282,12 +322,19 @@ export class MetaReasoner {
       type: adaptationType,
       before: currentConfig,
       after: newConfig,
+      previousMode: currentMode,
+      newMode,
+      reason: recommendation.reasoning || undefined,
 
       rollbackable: this.config.enableRollback,
       rollbackDeadline: this.config.enableRollback
         ? Date.now() + this.config.rollbackWindow
         : undefined,
     };
+
+    if (previousOverrides) {
+      this.overridesBefore.set(adaptation.id, previousOverrides);
+    }
 
     const runAdaptations = this.adaptations.get(runId) ?? [];
     runAdaptations.push(adaptation);
@@ -301,7 +348,7 @@ export class MetaReasoner {
     const runAdaptations = this.adaptations.get(runId) ?? [];
     const target = adaptationId
       ? runAdaptations.find((a) => a.id === adaptationId)
-      : runAdaptations[runAdaptations.length - 1];
+      : [...runAdaptations].reverse().find((a) => a.type !== 'rollback');
 
     if (!target?.rollbackable) {
       return null;
@@ -319,15 +366,29 @@ export class MetaReasoner {
       type: 'rollback',
       before: target.after,
       after: target.before,
+      previousMode: target.newMode,
+      newMode: target.previousMode,
+      reason: `Rollback of ${target.id}`,
+      isRollback: true,
 
       rollbackable: false,
     };
 
-    if (target.type === 'mode_switch' && target.before.mode) {
-      this.currentMode.set(runId, target.before.mode);
+    if (target.type === 'mode_switch' || target.type === 'parameter_change') {
+      const restoredMode = target.previousMode ?? target.before.mode;
+      if (restoredMode) {
+        this.currentMode.set(runId, restoredMode);
+      }
+      const restoredOverrides = this.overridesBefore.get(target.id);
+      if (restoredOverrides) {
+        this.parameterOverrides.set(runId, restoredOverrides);
+      } else {
+        this.parameterOverrides.delete(runId);
+      }
     }
 
     target.rollbackable = false;
+    this.overridesBefore.delete(target.id);
     runAdaptations.push(rollback);
     return rollback;
   }
@@ -351,7 +412,7 @@ export class MetaReasoner {
 
   getCurrentConfig(runId: string): ReasoningModeConfig {
     const mode = this.currentMode.get(runId) ?? this.config.defaultMode;
-    return this.getModeConfig(mode);
+    return { ...this.getModeConfig(mode), ...this.parameterOverrides.get(runId) };
   }
 
   getCurrentMode(runId: string): ReasoningMode {
@@ -384,9 +445,13 @@ export class MetaReasoner {
     this.collector.cleanupRun(runId);
     this.selector.cleanupRun(runId);
     this.assessments.delete(runId);
-    this.adaptations.delete(runId);
     this.currentMode.delete(runId);
+    this.parameterOverrides.delete(runId);
     this.lastAssessmentTime.delete(runId);
     this.lastAdaptationTime.delete(runId);
+    for (const adaptation of this.adaptations.get(runId) ?? []) {
+      this.overridesBefore.delete(adaptation.id);
+    }
+    this.adaptations.delete(runId);
   }
 }

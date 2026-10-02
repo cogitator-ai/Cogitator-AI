@@ -19,15 +19,15 @@ Both providers support batch synthesis via `synthesize()` and streaming via `str
 
 ## Provider Comparison
 
-| Feature | OpenAI TTS | ElevenLabs TTS |
-| --- | --- | --- |
-| Default model | `gpt-4o-mini-tts` | `eleven_flash_v2_5` |
-| Streaming | Yes | Yes |
-| Voice selection | By name (13 built-in) | By voice ID |
-| Voice instructions | Yes (style, tone, etc.) | No |
-| Speed control | 0.25x - 4.0x | No |
-| Output formats | mp3, opus, aac, flac, wav, pcm | mp3, pcm |
-| Other models | `tts-1`, `tts-1-hd` | `eleven_turbo_v2_5`, `eleven_multilingual_v2`, `eleven_v3` |
+| Feature            | OpenAI TTS                       | ElevenLabs TTS                                             |
+| ------------------ | -------------------------------- | ---------------------------------------------------------- |
+| Default model      | `gpt-4o-mini-tts`                | `eleven_flash_v2_5`                                        |
+| Streaming          | Yes                              | Yes                                                        |
+| Voice selection    | By name (13 built-in)            | By voice ID                                                |
+| Voice instructions | Yes (style, tone, etc.)          | No                                                         |
+| Speed control      | 0.25x - 4.0x                     | 0.7x - 1.2x                                                |
+| Output formats     | mp3, opus, aac, flac, wav, pcm16 | mp3, opus, flac, pcm16                                     |
+| Other models       | `tts-1`, `tts-1-hd`              | `eleven_turbo_v2_5`, `eleven_multilingual_v2`, `eleven_v3` |
 
 ## OpenAI TTS
 
@@ -83,12 +83,12 @@ await tts.synthesize('I am sorry for the inconvenience.', {
 
 ### Configuration
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `apiKey` | `string` | required | OpenAI API key |
-| `model` | `string` | `gpt-4o-mini-tts` | Model ID |
-| `voice` | `string` | `alloy` | Default voice name |
-| `baseURL` | `string` | — | Custom API base URL |
+| Field     | Type     | Default           | Description         |
+| --------- | -------- | ----------------- | ------------------- |
+| `apiKey`  | `string` | required          | OpenAI API key      |
+| `model`   | `string` | `gpt-4o-mini-tts` | Model ID            |
+| `voice`   | `string` | `alloy`           | Default voice name  |
+| `baseURL` | `string` | —                 | Custom API base URL |
 
 ## ElevenLabs TTS
 
@@ -121,22 +121,22 @@ for await (const chunk of tts.streamSynthesize('Streaming audio...')) {
 
 ### Configuration
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `apiKey` | `string` | required | ElevenLabs API key |
-| `voiceId` | `string` | `21m00Tcm4TlvDq8ikWAM` | Default voice ID |
-| `model` | `string` | `eleven_flash_v2_5` | Model ID |
+| Field     | Type     | Default                | Description        |
+| --------- | -------- | ---------------------- | ------------------ |
+| `apiKey`  | `string` | required               | ElevenLabs API key |
+| `voiceId` | `string` | `21m00Tcm4TlvDq8ikWAM` | Default voice ID   |
+| `model`   | `string` | `eleven_flash_v2_5`    | Model ID           |
 
 ## TTS Options
 
 Options shared by both providers:
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `voice` | `string` | Override the default voice |
-| `speed` | `number` | Playback speed (OpenAI only, 0.25 - 4.0) |
-| `format` | `VoiceAudioFormat` | Output format: `"mp3"`, `"pcm16"`, etc. |
-| `instructions` | `string` | Voice style instructions (OpenAI `gpt-4o-mini-tts` only) |
+| Field          | Type               | Description                                                                                     |
+| -------------- | ------------------ | ----------------------------------------------------------------------------------------------- |
+| `voice`        | `string`           | Override the default voice                                                                      |
+| `speed`        | `number`           | Playback speed (OpenAI 0.25 - 4.0, ElevenLabs 0.7 - 1.2)                                        |
+| `format`       | `VoiceAudioFormat` | Output format: `"mp3"` (default), `"pcm16"` (raw PCM16 mono **24kHz** for both providers), etc. |
+| `instructions` | `string`           | Voice style instructions (OpenAI `gpt-4o-mini-tts` only)                                        |
 
 ## Custom TTS Provider
 

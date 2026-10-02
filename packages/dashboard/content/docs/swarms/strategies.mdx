@@ -1,6 +1,6 @@
 ---
 title: Coordination Strategies
-description: All 8 built-in strategies for multi-agent coordination — hierarchical, round-robin, consensus, auction, pipeline, debate, negotiation, and distributed.
+description: All 7 built-in strategies for multi-agent coordination — hierarchical, round-robin, consensus, auction, pipeline, debate and negotiation.
 ---
 
 ## Overview
@@ -39,12 +39,14 @@ const team = swarm('dev-team')
   .build(cogitator);
 ```
 
-| Option                | Default        | Description                                     |
-| --------------------- | -------------- | ----------------------------------------------- |
-| `maxDelegationDepth`  | `3`            | How many levels deep delegation can go          |
-| `workerCommunication` | `false`        | Whether workers can message each other directly |
-| `routeThrough`        | `'supervisor'` | All communication routes through the supervisor |
-| `visibility`          | `'full'`       | Supervisor can see all worker outputs           |
+| Option                | Default        | Description                                                               |
+| --------------------- | -------------- | ------------------------------------------------------------------------- |
+| `maxDelegationDepth`  | `3`            | How many levels deep delegation can go (enforced by `delegate_task`)      |
+| `workerCommunication` | `false`        | Whether workers can message each other (enforced by the messaging tools)  |
+| `routeThrough`        | `'supervisor'` | `'direct'` lets workers talk to each other when communication is enabled  |
+| `visibility`          | `'full'`       | Worker output returned to the supervisor: `'full'`, `'summary'`, `'none'` |
+
+The supervisor automatically receives the delegation tools (`delegate_task`, `check_progress`, `request_revision`, `list_workers`). Workers that ran during the supervisor turn appear in `result.agentResults`.
 
 **Best for:** Complex projects, team-style delegation, coordinated multi-step work.
 
@@ -101,13 +103,13 @@ const result = await reviewBoard.run({ input: 'Should we merge this PR?' });
 
 | Option          | Default      | Description                                       |
 | --------------- | ------------ | ------------------------------------------------- |
-| `threshold`     | `0.5`        | Proportion of votes needed (0.0 - 1.0)            |
+| `threshold`     | `0.5`        | Share of all eligible voters needed (0.0 - 1.0)   |
 | `maxRounds`     | `3`          | Maximum discussion rounds before giving up        |
 | `resolution`    | `'majority'` | `'majority'`, `'unanimous'`, or `'weighted'`      |
 | `onNoConsensus` | `'fail'`     | `'fail'`, `'escalate'`, or `'supervisor-decides'` |
 | `weights`       | `undefined`  | Per-agent vote weights for weighted resolution    |
 
-Agents vote by including `VOTE: <decision>` in their output. Across multiple rounds, agents see previous votes and can change their position. The result includes the full vote history.
+Agents vote by including `VOTE: <decision>` in their output or by calling the `cast_vote` tool (tool votes win). Decisions are compared case-, punctuation- and markdown-insensitively. A decision wins when its share of **all eligible voters** reaches the threshold and it is not tied — abstentions count against it. Across multiple rounds, agents see previous votes and can change their position. The result includes the full vote history.
 
 **Best for:** Critical decisions, code reviews, risk assessments.
 
@@ -121,15 +123,19 @@ const expertPool = swarm('expert-pool')
   .agents([
     new Agent({
       name: 'python-expert',
+      model: 'ollama/llama3.2',
       instructions: 'Python and data science specialist.',
-      metadata: { expertise: ['python', 'pandas', 'ml'] },
     }),
     new Agent({
       name: 'typescript-expert',
+      model: 'ollama/llama3.2',
       instructions: 'TypeScript and Node.js specialist.',
-      metadata: { expertise: ['typescript', 'node', 'react'] },
     }),
   ])
+  .agentMetadata({
+    'python-expert': { expertise: ['python', 'pandas', 'ml'] },
+    'typescript-expert': { expertise: ['typescript', 'node', 'react'] },
+  })
   .auction({
     bidding: 'capability-match',
     selection: 'highest-bid',
@@ -196,13 +202,10 @@ Agents argue opposing positions across multiple rounds. An optional moderator sy
 const debateTeam = swarm('risk-assessment')
   .strategy('debate')
   .agents([
-    new Agent({
-      name: 'advocate',
-      instructions: 'Argue IN FAVOR.',
-      metadata: { role: 'advocate' },
-    }),
-    new Agent({ name: 'critic', instructions: 'Argue AGAINST.', metadata: { role: 'critic' } }),
+    new Agent({ name: 'advocate', model: 'ollama/llama3.2', instructions: 'Argue IN FAVOR.' }),
+    new Agent({ name: 'critic', model: 'ollama/llama3.2', instructions: 'Argue AGAINST.' }),
   ])
+  .agentMetadata({ advocate: { role: 'advocate' }, critic: { role: 'critic' } })
   .moderator(
     new Agent({
       name: 'moderator',
@@ -210,14 +213,17 @@ const debateTeam = swarm('risk-assessment')
       instructions: 'Synthesize both sides into a balanced recommendation.',
     })
   )
-  .debate({ rounds: 3, format: 'structured' })
+  .debate({ rounds: 3, format: 'structured', maxTokensPerTurn: 400 })
   .build(cogitator);
 ```
 
-| Option   | Default        | Description                            |
-| -------- | -------------- | -------------------------------------- |
-| `rounds` | `3`            | Number of back-and-forth debate rounds |
-| `format` | `'structured'` | `'structured'` or `'freeform'`         |
+| Option             | Default        | Description                                   |
+| ------------------ | -------------- | --------------------------------------------- |
+| `rounds`           | `3`            | Number of back-and-forth debate rounds        |
+| `format`           | `'structured'` | `'structured'` or `'freeform'`                |
+| `maxTokensPerTurn` | `undefined`    | Caps the response length of every debate turn |
+
+Roles come from `agentMetadata` (`advocate` / `critic`). Without roles, all non-moderator agents debate.
 
 Each round, debaters see previous arguments and refine their positions. The moderator (if present) produces the final output; otherwise a summary of all arguments is generated.
 
@@ -231,23 +237,44 @@ Multi-party negotiation with structured terms, offers, counteroffers, convergenc
 const dealTeam = swarm('contract-negotiation')
   .strategy('negotiation')
   .agents([
-    new Agent({ name: 'buyer', instructions: 'Negotiate the best deal for the buyer.' }),
-    new Agent({ name: 'seller', instructions: 'Negotiate the best deal for the seller.' }),
+    new Agent({
+      name: 'buyer',
+      model: 'ollama/llama3.2',
+      instructions: 'Get the best deal for the buyer.',
+    }),
+    new Agent({
+      name: 'seller',
+      model: 'ollama/llama3.2',
+      instructions: 'Get the best deal for the seller.',
+    }),
   ])
+  .negotiation({ maxRounds: 6, onDeadlock: 'arbitrate', maxOffersPerRound: 2 })
   .build(cogitator);
+
+const result = await dealTeam.run({ input: 'Agree on price and delivery date' });
+console.log(result.negotiationResult?.outcome, result.negotiationResult?.agreement);
 ```
 
-The negotiation proceeds through phases: **initialization** (declare interests) -> **proposal** (make offers) -> **counter** (accept/reject/counter) -> **refinement** (break deadlocks) -> **agreement** or **escalation**.
+The negotiation proceeds through phases: **initialization** (declare interests) -> **proposal** (make offers) -> **counter** (accept/reject/counter) -> **refinement** (mediated compromise when stagnating) -> **agreement**, **deadlock** or **escalation**. Negotiating agents automatically receive the negotiation tools (`make_offer`, `counter_offer`, `accept_offer`, `reject_offer`, `get_negotiation_status`, `get_current_offers`, `propose_coalition`, `join_coalition`, `declare_interests`).
 
-| Option                | Default         | Description                                                                       |
-| --------------------- | --------------- | --------------------------------------------------------------------------------- |
-| `maxRounds`           | `10`            | Maximum negotiation rounds                                                        |
-| `turnOrder`           | `'round-robin'` | `'round-robin'`, `'random'`, or `'dynamic'`                                       |
-| `onDeadlock`          | `'fail'`        | `'fail'`, `'escalate'`, `'supervisor-decides'`, `'majority-rules'`, `'arbitrate'` |
-| `stagnationThreshold` | `0.05`          | Convergence delta below which negotiation is considered stagnant                  |
-| `approvalGates`       | `[]`            | Human-in-the-loop approval gates for agreements                                   |
+An offer becomes an agreement once **every recipient** has accepted it with `accept_offer` (and the agreement satisfies `quorum`). When progress stalls, the strategy publishes a weighted-average compromise as an offer from `mediator`; agents accept or counter it like any other offer. If the negotiation still stagnates in a later round, it is declared deadlocked and `onDeadlock` decides the outcome.
 
-Includes convergence tracking, coalition formation, and automatic mediation suggestions when negotiations stall.
+| Option                     | Default         | Description                                                                            |
+| -------------------------- | --------------- | -------------------------------------------------------------------------------------- |
+| `maxRounds`                | `10`            | Maximum negotiation rounds                                                             |
+| `turnOrder`                | `'round-robin'` | `'round-robin'`, `'priority'` (by `weights`) or `'dynamic'` (most pending offers)      |
+| `onDeadlock`               | `'escalate'`    | `'fail'`, `'escalate'`, `'supervisor-decides'`, `'majority-rules'`, `'arbitrate'`      |
+| `maxOffersPerRound`        | `3`             | Offers (including counters) an agent may make per round                                |
+| `offerTimeout`             | `60000`         | Default offer expiry in ms; expired offers are marked `expired`                        |
+| `turnTimeout`              | `30000`         | Per-turn time limit; a timed-out turn is skipped instead of failing the negotiation    |
+| `allowCoalitions`          | `true`          | Whether `propose_coalition` is allowed                                                 |
+| `minCoalitionSize`         | `2`             | Members needed for a coalition to become active                                        |
+| `quorum`                   | `0.5`           | Share (≤ 1) or count (> 1) of negotiating agents an agreement must include             |
+| `stagnationThreshold`      | `0.05`          | Convergence delta below which a round counts as no progress                            |
+| `maxRoundsWithoutProgress` | `3`             | Rounds without progress before mediation / deadlock                                    |
+| `approvalGates`            | `[]`            | Approval gates: `agreement-reached`, `high-value-term`, `coalition-formed`, `deadlock` |
+
+Approval requests are announced with the `negotiation:approval-required` event; resolve them through the gate's `timeout`/`timeoutAction`, or with `respondToApproval()` when you drive a `NegotiationStrategy` instance directly.
 
 **Best for:** Contract negotiations, resource allocation, multi-stakeholder decisions.
 

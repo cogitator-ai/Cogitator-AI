@@ -5,7 +5,6 @@ import { InMemoryEmbeddingAdapter, GoogleEmbeddingService } from '@cogitator-ai/
 import { writeFile, mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { z } from 'zod';
 
 const KNOWLEDGE_BASE = [
   {
@@ -69,16 +68,7 @@ async function main() {
 
   const ragSearch = createSearchTool(pipeline);
 
-  const searchKnowledgeBase = tool({
-    name: ragSearch.name,
-    description: ragSearch.description,
-    parameters: z.object({
-      query: z.string().describe('Search query for the knowledge base'),
-      limit: z.number().int().positive().optional().describe('Max results to return'),
-      threshold: z.number().min(0).max(1).optional().describe('Minimum similarity score'),
-    }),
-    execute: async (params) => ragSearch.execute(params),
-  });
+  const searchKnowledgeBase = tool(ragSearch);
 
   const cog = createCogitator();
 
@@ -117,4 +107,4 @@ Be concise — 2-3 sentences max.`,
   console.log('\nDone.');
 }
 
-main();
+void main();

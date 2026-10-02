@@ -3,11 +3,11 @@ interface CsvParseInput {
   operation: 'parse';
   delimiter?: string;
   quote?: string;
-  headers?: boolean;
+  headers?: boolean | string[];
 }
 
 interface CsvStringifyInput {
-  data: (string | number | boolean | null)[][];
+  data: unknown[][];
   operation: 'stringify';
   delimiter?: string;
   quote?: string;
@@ -28,13 +28,14 @@ function parseCsv(
   data: string,
   delimiter: string,
   quote: string,
-  hasHeaders: boolean
+  headers: boolean | string[]
 ): { rows: string[][]; headers?: string[] } {
   const rows: string[][] = [];
   let currentRow: string[] = [];
   let currentField = '';
   let inQuotes = false;
-  let i = 0;
+  let fieldStarted = false;
+  let i = data.charCodeAt(0) === 0xfeff ? 1 : 0;
 
   while (i < data.length) {
     const char = data[i];
@@ -49,6 +50,9 @@ function parseCsv(
         } else {
           inQuotes = false;
           i++;
+          if (i < data.length && data[i] !== delimiter && data[i] !== '\n' && data[i] !== '\r') {
+            throw new Error(`Unexpected character after closing quote at position ${i}`);
+          }
           continue;
         }
       } else {
@@ -58,8 +62,9 @@ function parseCsv(
       }
     }
 
-    if (char === quote) {
+    if (char === quote && !fieldStarted) {
       inQuotes = true;
+      fieldStarted = true;
       i++;
       continue;
     }
@@ -67,16 +72,8 @@ function parseCsv(
     if (char === delimiter) {
       currentRow.push(currentField);
       currentField = '';
+      fieldStarted = false;
       i++;
-      continue;
-    }
-
-    if (char === '\r' && nextChar === '\n') {
-      currentRow.push(currentField);
-      rows.push(currentRow);
-      currentRow = [];
-      currentField = '';
-      i += 2;
       continue;
     }
 
@@ -85,41 +82,50 @@ function parseCsv(
       rows.push(currentRow);
       currentRow = [];
       currentField = '';
-      i++;
+      fieldStarted = false;
+      i += char === '\r' && nextChar === '\n' ? 2 : 1;
       continue;
     }
 
     currentField += char;
+    fieldStarted = true;
     i++;
   }
 
-  if (currentField || currentRow.length > 0) {
+  if (inQuotes) {
+    throw new Error('Unterminated quoted field');
+  }
+
+  if (fieldStarted || currentRow.length > 0) {
     currentRow.push(currentField);
     rows.push(currentRow);
   }
 
   const filteredRows = rows.filter((row) => row.length > 0 && !(row.length === 1 && row[0] === ''));
 
-  if (hasHeaders && filteredRows.length > 0) {
-    const headers = filteredRows[0];
-    return { rows: filteredRows.slice(1), headers };
+  if (Array.isArray(headers)) {
+    return { rows: filteredRows, headers };
+  }
+
+  if (headers && filteredRows.length > 0) {
+    return { rows: filteredRows.slice(1), headers: filteredRows[0] };
   }
 
   return { rows: filteredRows };
 }
 
 function stringifyCsv(
-  data: (string | number | boolean | null)[][],
+  data: unknown[][],
   delimiter: string,
   quote: string,
   headers?: string[]
 ): string {
   const rows: string[] = [];
 
-  const escapeField = (field: string | number | boolean | null): string => {
+  const escapeField = (field: unknown): string => {
     if (field === null || field === undefined) return '';
 
-    const str = String(field);
+    const str = typeof field === 'object' ? JSON.stringify(field) : String(field);
     const needsQuotes =
       str.includes(delimiter) || str.includes(quote) || str.includes('\n') || str.includes('\r');
 
@@ -163,18 +169,35 @@ export function csv(): number {
     let columnCount: number;
     let headers: string[] | undefined;
 
+    if (delimiter === quote) {
+      throw new Error('Delimiter and quote must be different characters');
+    }
+    if (delimiter === '\n' || delimiter === '\r' || quote === '\n' || quote === '\r') {
+      throw new Error('Delimiter and quote cannot be line breaks');
+    }
+
     if (input.operation === 'parse') {
-      const hasHeaders = input.headers ?? false;
-      const parsed = parseCsv(input.data, delimiter, quote, hasHeaders);
+      if (typeof input.data !== 'string') {
+        throw new Error('data must be a CSV string for the parse operation');
+      }
+      const parsed = parseCsv(input.data, delimiter, quote, input.headers ?? false);
       result = parsed.rows;
       headers = parsed.headers;
       rowCount = parsed.rows.length;
       columnCount = parsed.rows[0]?.length ?? 0;
-    } else {
+    } else if (input.operation === 'stringify') {
+      if (!Array.isArray(input.data) || !input.data.every((row) => Array.isArray(row))) {
+        throw new Error('data must be an array of rows (arrays) for the stringify operation');
+      }
+      if (input.headers !== undefined && !Array.isArray(input.headers)) {
+        throw new Error('headers must be an array of column names for the stringify operation');
+      }
       headers = input.headers;
       result = stringifyCsv(input.data, delimiter, quote, headers);
       rowCount = input.data.length;
       columnCount = input.data[0]?.length ?? 0;
+    } else {
+      throw new Error(`Unknown operation: ${String((input as { operation: unknown }).operation)}`);
     }
 
     const output: CsvOutput = {

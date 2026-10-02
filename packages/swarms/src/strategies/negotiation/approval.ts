@@ -80,25 +80,28 @@ export class ApprovalIntegration {
     }
 
     if (condition.startsWith('term:')) {
-      const termMatch = /term:(\w+)(>|<|>=|<=|==)(\d+)/.exec(condition);
-      if (termMatch) {
-        const [, termId, op, valueStr] = termMatch;
-        const value = parseFloat(valueStr);
-        const term = details?.offer?.terms.find((t) => t.termId === termId);
-        if (term && typeof term.value === 'number') {
-          switch (op) {
-            case '>':
-              return term.value > value;
-            case '<':
-              return term.value < value;
-            case '>=':
-              return term.value >= value;
-            case '<=':
-              return term.value <= value;
-            case '==':
-              return term.value === value;
-          }
-        }
+      const termMatch = /^term:([\w-]+)(>=|<=|==|>|<)(-?\d+(?:\.\d+)?)$/.exec(condition);
+      if (!termMatch) return false;
+
+      const [, termId, op, valueStr] = termMatch;
+      const threshold = parseFloat(valueStr);
+      const terms = details?.offer?.terms ?? details?.agreement?.terms ?? [];
+      const term = terms.find((t) => t.termId === termId);
+      if (!term || typeof term.value !== 'number') return false;
+
+      switch (op) {
+        case '>':
+          return term.value > threshold;
+        case '<':
+          return term.value < threshold;
+        case '>=':
+          return term.value >= threshold;
+        case '<=':
+          return term.value <= threshold;
+        case '==':
+          return term.value === threshold;
+        default:
+          return false;
       }
     }
 

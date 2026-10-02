@@ -76,15 +76,19 @@ function fixFile(filePath: string): boolean {
   return false;
 }
 
-const packages = readdirSync(PACKAGES_DIR, { withFileTypes: true })
-  .filter((d) => d.isDirectory())
-  .map((d) => d.name);
+const requestedDirs = process.argv.slice(2);
+const packageDirs =
+  requestedDirs.length > 0
+    ? requestedDirs.map((dir) => resolve(process.cwd(), dir))
+    : readdirSync(PACKAGES_DIR, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => join(PACKAGES_DIR, d.name));
 
 let totalFixed = 0;
 let totalFiles = 0;
 
-for (const pkg of packages) {
-  const distDir = join(PACKAGES_DIR, pkg, 'dist');
+for (const packageDir of packageDirs) {
+  const distDir = join(packageDir, 'dist');
   if (!existsSync(distDir)) continue;
 
   const jsFiles = walkDir(distDir, '.js');
@@ -99,4 +103,4 @@ for (const pkg of packages) {
   }
 }
 
-console.log(`Fixed ${totalFixed}/${totalFiles} files across ${packages.length} packages`);
+console.log(`Fixed ${totalFixed}/${totalFiles} files across ${packageDirs.length} packages`);

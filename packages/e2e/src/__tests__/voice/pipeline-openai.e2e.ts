@@ -29,7 +29,13 @@ describe('Voice Pipeline E2E (OpenAI)', () => {
       expect(result).toHaveProperty('audio');
       expect(typeof result.transcript).toBe('string');
       expect(typeof result.response).toBe('string');
-      expect(result.audio.length).toBeGreaterThan(0);
+      if (result.transcript.trim().length === 0) {
+        expect(result.response).toBe('');
+        expect(result.audio.length).toBe(0);
+      } else {
+        expect(result.response).toBe(`You said: ${result.transcript}`);
+        expect(result.audio.length).toBeGreaterThan(0);
+      }
     },
     30000
   );

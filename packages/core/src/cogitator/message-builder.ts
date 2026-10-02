@@ -6,12 +6,47 @@ import type {
   ToolResult,
   ContentPart,
   ImageInput,
+  AudioInput,
 } from '@cogitator-ai/types';
 import { ContextBuilder, countMessageTokens } from '@cogitator-ai/memory';
 import { getLogger } from '../logger';
 import type { Agent } from '../agent';
 import type { ReflectionEngine } from '../reflection/index';
 import type { AgentContext } from '@cogitator-ai/types';
+import { sanitizeToolHistory } from '../utils/tool-history';
+import { transcribeAudio } from '../tools/audio-transcribe';
+
+/**
+ * Transcribe run audio inputs and prepend the transcripts to the user's text input.
+ */
+export async function buildInputWithAudio(
+  input: string,
+  audio: AudioInput[] | undefined,
+  options: { apiKey?: string; signal?: AbortSignal }
+): Promise<string> {
+  if (!audio || audio.length === 0) {
+    return input;
+  }
+
+  if (!options.apiKey) {
+    throw new Error(
+      'Audio inputs require an OpenAI API key for transcription. Set llm.providers.openai.apiKey or OPENAI_API_KEY.'
+    );
+  }
+
+  const transcripts: string[] = [];
+  for (const item of audio) {
+    const result = await transcribeAudio(item, { apiKey: options.apiKey, signal: options.signal });
+    transcripts.push(result.text);
+  }
+
+  const block =
+    transcripts.length === 1
+      ? `[Audio transcription]: ${transcripts[0]}`
+      : transcripts.map((text, i) => `[Audio ${i + 1} transcription]: ${text}`).join('\n');
+
+  return input ? `${block}\n\n${input}` : block;
+}
 
 function buildUserContent(input: string, images?: ImageInput[]): string | ContentPart[] {
   if (!images || images.length === 0) {
@@ -67,14 +102,14 @@ export async function buildInitialMessages(
       agentId: agent.id,
       systemPrompt: agent.instructions,
     });
-    return [...ctx.messages, { role: 'user', content: userContent }];
+    return [...sanitizeToolHistory(ctx.messages), { role: 'user', content: userContent }];
   }
 
   if (options.loadHistory !== false) {
     const entries = await memoryAdapter.getEntries({ threadId, limit: 20 });
     const messages: Message[] = [{ role: 'system', content: agent.instructions }];
     if (entries.success) {
-      messages.push(...entries.data.map((e) => e.message));
+      messages.push(...sanitizeToolHistory(entries.data.map((e) => e.message)));
     }
     messages.push({ role: 'user', content: userContent });
     return messages;

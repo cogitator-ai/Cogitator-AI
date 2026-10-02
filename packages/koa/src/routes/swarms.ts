@@ -1,19 +1,13 @@
 import Router from '@koa/router';
-import type {
-  CogitatorState,
-  SwarmListResponse,
-  SwarmRunRequest,
-  SwarmRunResponse,
-  BlackboardResponse,
-} from '../types.js';
+import type { CogitatorState, SwarmListResponse, BlackboardResponse } from '../types.js';
 import { KoaStreamWriter, setupSSEHeaders } from '../streaming/index.js';
 import { generateId } from '@cogitator-ai/server-shared';
 import type { RunResult, SwarmMessage, SwarmEvent } from '@cogitator-ai/types';
-
-function isModuleNotFoundError(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException).code;
-  return code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND';
-}
+import { getOwn } from '../utils/lookup.js';
+import { isModuleNotFoundError, resolveError } from '../utils/errors.js';
+import { getRequestBody, onClientDisconnect } from '../utils/request.js';
+import { serializeSwarmUsage, toSwarmRunResponse } from '../utils/results.js';
+import { parseSwarmRunRequest } from '../utils/validation.js';
 
 export function createSwarmRoutes(): Router<CogitatorState> {
   const router = new Router<CogitatorState>();
@@ -41,7 +35,7 @@ export function createSwarmRoutes(): Router<CogitatorState> {
   router.post('/swarms/:name/run', async (ctx) => {
     const { swarms, runtime } = ctx.state.cogitator;
     const { name } = ctx.params;
-    const swarmConfig = swarms[name];
+    const swarmConfig = getOwn(swarms, name);
 
     if (!swarmConfig) {
       ctx.status = 404;
@@ -49,64 +43,48 @@ export function createSwarmRoutes(): Router<CogitatorState> {
       return;
     }
 
-    const body = (ctx.request as unknown as { body: SwarmRunRequest }).body;
-    if (!body?.input) {
+    const parsed = parseSwarmRunRequest(getRequestBody(ctx));
+    if (!parsed.ok) {
       ctx.status = 400;
-      ctx.body = { error: { message: 'Missing required field: input', code: 'INVALID_INPUT' } };
+      ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
       return;
     }
+
+    let aborted = false;
+    let abortSwarm: (() => void) | undefined;
+    onClientDisconnect(ctx, () => {
+      aborted = true;
+      abortSwarm?.();
+    });
 
     try {
       const { Swarm } = await import('@cogitator-ai/swarms');
       const swarm = new Swarm(runtime, swarmConfig);
+      abortSwarm = () => swarm.abort();
+      if (aborted) return;
 
-      const result = await swarm.run({
-        input: body.input,
-        context: body.context,
-        threadId: body.threadId,
-        timeout: body.timeout,
-      });
+      const result = await swarm.run(parsed.value);
+      if (aborted) return;
 
-      const agentResults: Record<string, unknown> = {};
-      for (const [agentName, agentResult] of result.agentResults.entries()) {
-        agentResults[agentName] = {
-          output: agentResult.output,
-          usage: agentResult.usage,
-        };
-      }
-
-      const resourceUsage = swarm.getResourceUsage();
-      const response: SwarmRunResponse = {
-        swarmId: swarm.id,
-        swarmName: swarm.name,
-        strategy: swarm.strategyType,
-        output: result.output,
-        agentResults,
-        usage: {
-          totalTokens: resourceUsage.totalTokens,
-          totalCost: resourceUsage.totalCost,
-          elapsedTime: resourceUsage.elapsedTime,
-        },
-      };
-
-      ctx.body = response;
+      ctx.body = toSwarmRunResponse(swarm, result);
     } catch (error) {
+      if (aborted) return;
       if (isModuleNotFoundError(error)) {
         ctx.status = 501;
         ctx.body = { error: { message: 'Swarms package not installed', code: 'UNIMPLEMENTED' } };
         return;
       }
 
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      ctx.status = 500;
-      ctx.body = { error: { message, code: 'INTERNAL' } };
+      const { status, body } = resolveError(error, 'Swarm run error');
+      ctx.status = status;
+      ctx.body = body;
     }
   });
 
   router.post('/swarms/:name/stream', async (ctx) => {
     const { swarms, runtime } = ctx.state.cogitator;
     const { name } = ctx.params;
-    const swarmConfig = swarms[name];
+    const swarmConfig = getOwn(swarms, name);
 
     if (!swarmConfig) {
       ctx.status = 404;
@@ -114,10 +92,10 @@ export function createSwarmRoutes(): Router<CogitatorState> {
       return;
     }
 
-    const body = (ctx.request as unknown as { body: SwarmRunRequest }).body;
-    if (!body?.input) {
+    const parsed = parseSwarmRunRequest(getRequestBody(ctx));
+    if (!parsed.ok) {
       ctx.status = 400;
-      ctx.body = { error: { message: 'Missing required field: input', code: 'INVALID_INPUT' } };
+      ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
       return;
     }
 
@@ -125,21 +103,24 @@ export function createSwarmRoutes(): Router<CogitatorState> {
     const writer = new KoaStreamWriter(ctx);
     const messageId = generateId('swarm');
 
-    ctx.req.on('close', () => {
+    let aborted = false;
+    let abortSwarm: (() => void) | undefined;
+    onClientDisconnect(ctx, () => {
+      aborted = true;
       writer.close();
+      abortSwarm?.();
     });
 
     try {
       const { Swarm } = await import('@cogitator-ai/swarms');
       const swarm = new Swarm(runtime, swarmConfig);
+      abortSwarm = () => swarm.abort();
+      if (aborted) return;
 
       writer.start(messageId);
 
       const result = await swarm.run({
-        input: body.input,
-        context: body.context,
-        threadId: body.threadId,
-        timeout: body.timeout,
+        ...parsed.value,
         onAgentStart: (agentName: string) => {
           writer.swarmEvent('agent_start', { agentName, timestamp: Date.now() });
         },
@@ -161,20 +142,21 @@ export function createSwarmRoutes(): Router<CogitatorState> {
         },
       });
 
-      const resourceUsage = swarm.getResourceUsage();
+      if (aborted) return;
+
       writer.swarmEvent('swarm_completed', {
         swarmId: swarm.id,
         output: result.output,
-        usage: resourceUsage,
+        usage: serializeSwarmUsage(swarm.getResourceUsage()),
       });
-
       writer.finish(messageId);
     } catch (error) {
+      if (aborted) return;
       if (isModuleNotFoundError(error)) {
         writer.error('Swarms package not installed', 'UNIMPLEMENTED');
       } else {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        writer.error(message, 'INTERNAL');
+        const { body } = resolveError(error, 'Swarm stream error');
+        writer.error(body.error.message, body.error.code);
       }
     } finally {
       writer.close();
@@ -184,7 +166,7 @@ export function createSwarmRoutes(): Router<CogitatorState> {
   router.get('/swarms/:name/blackboard', (ctx) => {
     const { swarms } = ctx.state.cogitator;
     const { name } = ctx.params;
-    const swarmConfig = swarms[name];
+    const swarmConfig = getOwn(swarms, name);
 
     if (!swarmConfig) {
       ctx.status = 404;
@@ -201,7 +183,7 @@ export function createSwarmRoutes(): Router<CogitatorState> {
     }
 
     const response: BlackboardResponse = {
-      sections: swarmConfig.blackboard.sections || {},
+      sections: swarmConfig.blackboard.sections ?? {},
     };
 
     ctx.body = response;

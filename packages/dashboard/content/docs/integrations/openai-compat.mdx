@@ -58,10 +58,14 @@ await openai.beta.threads.messages.create(thread.id, {
   content: 'What is the square root of 144?',
 });
 
-const run = await openai.beta.threads.runs.create(thread.id, {
+const run = await openai.beta.threads.runs.createAndPoll(thread.id, {
   assistant_id: assistant.id,
 });
+
+const messages = await openai.beta.threads.messages.list(thread.id); // newest first
 ```
+
+Assistant `model` values are Cogitator model strings (`gpt-4o` uses the default provider, `ollama/llama3.2` selects one explicitly). The `cogitator` id listed by `GET /v1/models` maps to the server's `defaultModel`.
 
 ## OpenAIServer
 
@@ -79,40 +83,50 @@ await server.stop();
 
 ### OpenAIServerConfig
 
-| Option    | Type                  | Default            | Description                                 |
-| --------- | --------------------- | ------------------ | ------------------------------------------- |
-| `port`    | `number`              | `8080`             | Port to listen on                           |
-| `host`    | `string`              | `'0.0.0.0'`        | Host to bind to                             |
-| `apiKeys` | `string[]`            | `[]`               | API keys for auth (empty = no auth)         |
-| `tools`   | `Tool[]`              | `[]`               | Cogitator tools available to all assistants |
-| `logging` | `boolean`             | `false`            | Enable request logging via pino             |
-| `cors`    | `{ origin, methods }` | `{ origin: true }` | CORS configuration                          |
+| Option         | Type                  | Default            | Description                                 |
+| -------------- | --------------------- | ------------------ | ------------------------------------------- |
+| `port`         | `number`              | `8080`             | Port to listen on                           |
+| `host`         | `string`              | `'0.0.0.0'`        | Host to bind to                             |
+| `apiKeys`      | `string[]`            | `[]`               | API keys for auth (empty = no auth)         |
+| `tools`        | `Tool[]`              | `[]`               | Cogitator tools available to all assistants |
+| `defaultModel` | `string`              | —                  | Model used for the `cogitator` model id     |
+| `storage`      | `ThreadStorage`       | in-memory          | Persistence backend (connect it first)      |
+| `maxFileSize`  | `number`              | 512 MB             | Upload limit for `POST /v1/files`           |
+| `logging`      | `boolean`             | `false`            | Enable request logging via pino (JSON)      |
+| `cors`         | `{ origin, methods }` | `{ origin: true }` | CORS configuration                          |
+
+`start()` waits for plugin registration, so it can be called right after construction. With `port: 0` the OS picks a port and `getUrl()` / `getBaseUrl()` report the bound one. `/health` stays public when `apiKeys` are set.
 
 ## Supported Endpoints
 
 The server implements these OpenAI API routes:
 
-| Method   | Endpoint                                        | Description           |
-| -------- | ----------------------------------------------- | --------------------- |
-| `GET`    | `/v1/models`                                    | List available models |
-| `POST`   | `/v1/assistants`                                | Create assistant      |
-| `GET`    | `/v1/assistants`                                | List assistants       |
-| `GET`    | `/v1/assistants/:id`                            | Get assistant         |
-| `POST`   | `/v1/assistants/:id`                            | Update assistant      |
-| `DELETE` | `/v1/assistants/:id`                            | Delete assistant      |
-| `POST`   | `/v1/threads`                                   | Create thread         |
-| `GET`    | `/v1/threads/:id`                               | Get thread            |
-| `DELETE` | `/v1/threads/:id`                               | Delete thread         |
-| `POST`   | `/v1/threads/:id/messages`                      | Add message           |
-| `GET`    | `/v1/threads/:id/messages`                      | List messages         |
-| `GET`    | `/v1/threads/:id/messages/:mid`                 | Get message           |
-| `POST`   | `/v1/threads/:id/runs`                          | Create run            |
-| `GET`    | `/v1/threads/:id/runs/:rid`                     | Get run status        |
-| `POST`   | `/v1/threads/:id/runs/:rid/cancel`              | Cancel run            |
-| `POST`   | `/v1/threads/:id/runs/:rid/submit_tool_outputs` | Submit tool outputs   |
-| `POST`   | `/v1/files`                                     | Upload file           |
-| `GET`    | `/v1/files`                                     | List files            |
-| `DELETE` | `/v1/files/:id`                                 | Delete file           |
+| Method   | Endpoint                                        | Description              |
+| -------- | ----------------------------------------------- | ------------------------ |
+| `GET`    | `/v1/models`                                    | List available models    |
+| `POST`   | `/v1/assistants`                                | Create assistant         |
+| `GET`    | `/v1/assistants`                                | List assistants          |
+| `GET`    | `/v1/assistants/:id`                            | Get assistant            |
+| `POST`   | `/v1/assistants/:id`                            | Update assistant         |
+| `DELETE` | `/v1/assistants/:id`                            | Delete assistant         |
+| `POST`   | `/v1/threads`                                   | Create thread            |
+| `POST`   | `/v1/threads/runs`                              | Create thread and run    |
+| `GET`    | `/v1/threads/:id`                               | Get thread               |
+| `POST`   | `/v1/threads/:id`                               | Update thread metadata   |
+| `DELETE` | `/v1/threads/:id`                               | Delete thread            |
+| `POST`   | `/v1/threads/:id/messages`                      | Add message              |
+| `GET`    | `/v1/threads/:id/messages`                      | List messages            |
+| `GET`    | `/v1/threads/:id/messages/:mid`                 | Get message              |
+| `POST`   | `/v1/threads/:id/runs`                          | Create run               |
+| `GET`    | `/v1/threads/:id/runs`                          | List runs                |
+| `GET`    | `/v1/threads/:id/runs/:rid`                     | Get run status           |
+| `POST`   | `/v1/threads/:id/runs/:rid/cancel`              | Cancel run               |
+| `POST`   | `/v1/threads/:id/runs/:rid/submit_tool_outputs` | Submit tool outputs      |
+| `POST`   | `/v1/files`                                     | Upload file              |
+| `GET`    | `/v1/files`                                     | List files (`?purpose=`) |
+| `GET`    | `/v1/files/:id`                                 | Get file metadata        |
+| `GET`    | `/v1/files/:id/content`                         | Download file            |
+| `DELETE` | `/v1/files/:id`                                 | Delete file              |
 
 ## OpenAIAdapter
 
@@ -141,9 +155,30 @@ const run = await adapter.createRun(thread.id, {
 });
 ```
 
+Runs see the whole thread (earlier messages are replayed to the agent), are aborted on cancel, and honour `additional_instructions`, `response_format`, `max_completion_tokens`, `top_p`, `tool_choice` (`none` or a specific function), `parallel_tool_calls` and `truncation_strategy`. A thread can have one active run at a time (a second `createRun` returns HTTP 400), and cancelling a run that has already finished returns HTTP 400. Messages are listed in insertion order (`order: 'desc'`, the default, returns the newest first). Image parts are passed to the model.
+
+### Function Calling
+
+Assistant tools of type `function` are executed by the API client. When the model calls one, the run moves to `requires_action`; submit the outputs to resume (runs expire after 10 minutes without outputs). Server-side `tools` run inside Cogitator and do not need to be declared on the assistant.
+
+```typescript
+let run = await openai.beta.threads.runs.createAndPoll(thread.id, { assistant_id });
+
+if (run.status === 'requires_action') {
+  const calls = run.required_action!.submit_tool_outputs.tool_calls;
+  run = await openai.beta.threads.runs.submitToolOutputsAndPoll(run.id, {
+    thread_id: thread.id,
+    tool_outputs: calls.map((call) => ({
+      tool_call_id: call.id,
+      output: JSON.stringify(myFunctions[call.function.name](JSON.parse(call.function.arguments))),
+    })),
+  });
+}
+```
+
 ### Streaming Runs
 
-Pass `stream: true` in the run request to get real-time events:
+Pass `stream: true` to stream OpenAI-style events (`thread.run.*`, `thread.message.created|delta|completed`, `done`). With the SDK use `runs.stream(...)` / `submitToolOutputsStream(...)`. In-process, iterate the run's event log:
 
 ```typescript
 const run = await adapter.createRun(thread.id, {
@@ -151,31 +186,21 @@ const run = await adapter.createRun(thread.id, {
   stream: true,
 });
 
-const emitter = adapter.getStreamEmitter(run.id);
-
-emitter?.on('event', (type, data) => {
-  switch (type) {
-    case 'thread.message.delta':
-      process.stdout.write(data.delta.content[0].text.value);
-      break;
-    case 'thread.run.completed':
-      console.log('\nRun finished, tokens:', data.usage);
-      break;
+for await (const { event, data } of adapter.streamRunEvents(run.id)) {
+  if (event === 'thread.message.delta' && typeof data !== 'string' && 'delta' in data) {
+    process.stdout.write(data.delta.content?.[0]?.text?.value ?? '');
   }
-});
+}
 ```
+
+A stream ends with `done` when the run finishes or pauses on `requires_action`.
 
 ## Thread Storage
 
 By default, threads and messages are stored in memory. For production, plug in Redis or PostgreSQL:
 
 ```typescript
-import {
-  RedisThreadStorage,
-  PostgresThreadStorage,
-  ThreadManager,
-  createOpenAIAdapter,
-} from '@cogitator-ai/openai-compat';
+import { RedisThreadStorage, createOpenAIServer } from '@cogitator-ai/openai-compat';
 
 const storage = new RedisThreadStorage({
   url: 'redis://localhost:6379',
@@ -184,8 +209,11 @@ const storage = new RedisThreadStorage({
 });
 await storage.connect();
 
-const manager = new ThreadManager(storage);
+const server = createOpenAIServer(cog, { storage, defaultModel: 'openai/gpt-4o' });
+// or in-process: createOpenAIAdapter(cog, { storage })
 ```
+
+Storage is the single source of truth (no per-process cache), so several server instances can share it. `ioredis` and `pg` are optional peer dependencies loaded on `connect()`; Redis `ttl: 0` disables expiry.
 
 Or use the factory function:
 

@@ -1,4 +1,6 @@
+import { parseModel } from '@cogitator-ai/core';
 import type {
+  Agent,
   SwarmConfig,
   AssessorConfig,
   AssessmentResult,
@@ -36,6 +38,20 @@ const TOKEN_ESTIMATES: Record<TaskComplexity, number> = {
   moderate: 1500,
   complex: 4000,
 };
+
+/**
+ * Model string an agent can run with: `${provider}/${id}`.
+ */
+export function qualifiedModelId(model: Pick<DiscoveredModel, 'id' | 'provider'>): string {
+  return model.id.startsWith(`${model.provider}/`) ? model.id : `${model.provider}/${model.id}`;
+}
+
+function findDiscoveredModel(
+  models: DiscoveredModel[],
+  modelString: string
+): DiscoveredModel | undefined {
+  return models.find((m) => m.id === modelString || qualifiedModelId(m) === modelString);
+}
 
 export class SwarmAssessor implements Assessor {
   private config: ResolvedAssessorConfig;
@@ -123,11 +139,14 @@ export class SwarmAssessor implements Assessor {
       assignments.push({
         agentName: agent.agent.name,
         originalModel: agent.agent.model,
-        assignedModel: selectedModel.model.id,
+        assignedModel: qualifiedModelId(selectedModel.model),
         provider: selectedModel.model.provider,
         score: selectedModel.score,
         reasons: selectedModel.reasons,
-        fallbackModels: validModels.slice(1, 4).map((s) => s.model.id),
+        fallbackModels: validModels
+          .filter((s) => s !== selectedModel)
+          .slice(0, 3)
+          .map((s) => qualifiedModelId(s.model)),
         locked: false,
       });
     }
@@ -162,46 +181,44 @@ export class SwarmAssessor implements Assessor {
     return result;
   }
 
+  /**
+   * Apply assessment results: every unlocked agent is replaced by a clone running the
+   * assigned model. Agents keep their name, instructions and tools.
+   */
   assignModels(config: SwarmConfig, result: AssessmentResult): SwarmConfig {
-    const updatedConfig = { ...config };
+    const assignments = new Map(
+      result.assignments.filter((a) => !a.locked).map((a) => [a.agentName, a.assignedModel])
+    );
+    const clones = new Map<Agent, Agent>();
 
-    for (const assignment of result.assignments) {
-      if (assignment.locked) continue;
+    const updateAgent = (agent: Agent): Agent => {
+      const assignedModel = assignments.get(agent.name);
+      if (!assignedModel || assignedModel === agent.model) return agent;
 
-      const updateAgent = <T extends { name: string }>(agent: T): T => {
-        if (agent.name !== assignment.agentName) return agent;
-        return { ...agent, model: assignment.assignedModel };
-      };
-
-      if (updatedConfig.supervisor) {
-        updatedConfig.supervisor = updateAgent(updatedConfig.supervisor);
+      let clone = clones.get(agent);
+      if (!clone) {
+        clone = agent.clone({ model: assignedModel, provider: undefined });
+        clones.set(agent, clone);
       }
+      return clone;
+    };
 
-      if (updatedConfig.moderator) {
-        updatedConfig.moderator = updateAgent(updatedConfig.moderator);
-      }
-
-      if (updatedConfig.router) {
-        updatedConfig.router = updateAgent(updatedConfig.router);
-      }
-
-      if (updatedConfig.workers) {
-        updatedConfig.workers = updatedConfig.workers.map((w) => updateAgent(w));
-      }
-
-      if (updatedConfig.agents) {
-        updatedConfig.agents = updatedConfig.agents.map((a) => updateAgent(a));
-      }
-
-      if (updatedConfig.stages) {
-        updatedConfig.stages = updatedConfig.stages.map((stage) => ({
+    return {
+      ...config,
+      supervisor: config.supervisor && updateAgent(config.supervisor),
+      workers: config.workers?.map(updateAgent),
+      agents: config.agents?.map(updateAgent),
+      moderator: config.moderator && updateAgent(config.moderator),
+      router: config.router && updateAgent(config.router),
+      stages: config.stages?.map((stage) => ({ ...stage, agent: updateAgent(stage.agent) })),
+      pipeline: config.pipeline && {
+        ...config.pipeline,
+        stages: config.pipeline.stages.map((stage) => ({
           ...stage,
           agent: updateAgent(stage.agent),
-        }));
-      }
-    }
-
-    return updatedConfig;
+        })),
+      },
+    };
   }
 
   async suggestModels(requirements: TaskRequirements): Promise<ModelCandidate[]> {
@@ -231,7 +248,9 @@ export class SwarmAssessor implements Assessor {
       JSON.stringify({
         name: config.name,
         strategy: config.strategy,
-        agents: this.getAgentNames(config),
+        agents: this.roleMatcher
+          .extractAgentsFromConfig(config)
+          .map((a) => [a.agent.name, a.agent.model, a.metadata.role, a.metadata.locked ?? false]),
       })
     );
     return `${taskHash}-${configHash}`;
@@ -247,20 +266,12 @@ export class SwarmAssessor implements Assessor {
     return Math.abs(hash).toString(36);
   }
 
-  private getAgentNames(config: SwarmConfig): string[] {
-    const names: string[] = [];
-    if (config.supervisor) names.push(config.supervisor.name);
-    if (config.workers) names.push(...config.workers.map((w) => w.name));
-    if (config.agents) names.push(...config.agents.map((a) => a.name));
-    if (config.moderator) names.push(config.moderator.name);
-    if (config.router) names.push(config.router.name);
-    if (config.stages) names.push(...config.stages.map((s) => s.agent.name));
-    return names;
-  }
-
   private detectProvider(modelId: string): ModelProvider {
+    const prefixed = parseModel(modelId).provider;
+    if (prefixed && isModelProvider(prefixed)) return prefixed;
+
     const lower = modelId.toLowerCase();
-    if (lower.includes('gpt') || lower.includes('o1') || lower.includes('o3')) return 'openai';
+    if (lower.startsWith('gpt') || /^o\d/.test(lower)) return 'openai';
     if (lower.includes('claude')) return 'anthropic';
     if (lower.includes('gemini')) return 'google';
     if (lower.includes('mistral') || lower.includes('mixtral')) return 'mistral';
@@ -275,7 +286,7 @@ export class SwarmAssessor implements Assessor {
     const estimatedTokens = TOKEN_ESTIMATES[complexity];
     let total = 0;
     for (const assignment of assignments) {
-      const model = discoveredModels.find((m) => m.id === assignment.assignedModel);
+      const model = findDiscoveredModel(discoveredModels, assignment.assignedModel);
       if (model && !model.isLocal) {
         total +=
           (model.pricing.input * estimatedTokens + model.pricing.output * estimatedTokens) /
@@ -309,7 +320,7 @@ export class SwarmAssessor implements Assessor {
     const byExpense = [...assignments]
       .filter((a) => !a.locked)
       .map((a) => {
-        const model = discoveredModels.find((m) => m.id === a.assignedModel);
+        const model = findDiscoveredModel(discoveredModels, a.assignedModel);
         return {
           assignment: a,
           model,
@@ -322,7 +333,7 @@ export class SwarmAssessor implements Assessor {
       if (currentCost <= budget) break;
 
       for (const fallbackId of item.assignment.fallbackModels) {
-        const fallbackModel = discoveredModels.find((m) => m.id === fallbackId);
+        const fallbackModel = findDiscoveredModel(discoveredModels, fallbackId);
         if (!fallbackModel) continue;
 
         const oldCost = item.model ? this.estimateModelCost(item.model, complexity) : 0;
@@ -330,9 +341,16 @@ export class SwarmAssessor implements Assessor {
 
         if (newCost >= oldCost) continue;
 
+        item.assignment.fallbackModels = item.assignment.fallbackModels.filter(
+          (id) => id !== fallbackId
+        );
+        if (item.model) {
+          item.assignment.fallbackModels.unshift(qualifiedModelId(item.model));
+        }
         item.assignment.assignedModel = fallbackId;
         item.assignment.provider = fallbackModel.provider;
         item.assignment.reasons.push('Downgraded for cost optimization');
+        item.model = fallbackModel;
 
         const reqs = roleAnalyses?.get(item.assignment.agentName);
         if (reqs) {
@@ -345,6 +363,19 @@ export class SwarmAssessor implements Assessor {
       }
     }
   }
+}
+
+const MODEL_PROVIDERS: readonly ModelProvider[] = [
+  'ollama',
+  'openai',
+  'anthropic',
+  'google',
+  'azure',
+  'mistral',
+];
+
+function isModelProvider(value: string): value is ModelProvider {
+  return (MODEL_PROVIDERS as readonly string[]).includes(value);
 }
 
 export function createAssessor(config?: AssessorConfig): SwarmAssessor {

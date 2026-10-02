@@ -1,6 +1,14 @@
 import { nanoid } from 'nanoid';
-import type { MessageBus, MessageBusConfig, SwarmMessage } from '@cogitator-ai/types';
+import type { MessageBusConfig, SwarmMessage } from '@cogitator-ai/types';
 import type { Redis } from 'ioredis';
+import {
+  MessageBusState,
+  addSubscription,
+  isMessageForAgent,
+  notifyMessageSubscribers,
+  type MessageListener,
+  type ReadTrackingMessageBus,
+} from './message-bus.js';
 
 export interface RedisMessageBusOptions {
   redis: Redis;
@@ -8,16 +16,32 @@ export interface RedisMessageBusOptions {
   keyPrefix?: string;
 }
 
-export class RedisMessageBus implements MessageBus {
+interface MessageEnvelope {
+  _sid: string;
+  m: SwarmMessage;
+}
+
+function parseSwarmMessage(raw: string): SwarmMessage | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<SwarmMessage>;
+    if (typeof parsed.id !== 'string' || typeof parsed.from !== 'string') return null;
+    return parsed as SwarmMessage;
+  } catch {
+    return null;
+  }
+}
+
+export class RedisMessageBus implements ReadTrackingMessageBus {
   private redis: Redis;
   private subscriber: Redis;
   private swarmId: string;
   private keyPrefix: string;
   private config: MessageBusConfig;
-  private subscriptions = new Map<string, Set<(msg: SwarmMessage) => void>>();
-  private agentMessageCounts = new Map<string, number>();
+  private subscriptions = new Map<string, Set<MessageListener>>();
+  private state = new MessageBusState('[RedisMessageBus]');
   private localCache: SwarmMessage[] = [];
   private readonly instanceId = nanoid(12);
+  private initialized = false;
 
   constructor(config: MessageBusConfig, options: RedisMessageBusOptions) {
     this.config = config;
@@ -35,22 +59,35 @@ export class RedisMessageBus implements MessageBus {
     return `${this.keyPrefix}:${this.swarmId}:channel:${target}`;
   }
 
+  private readonly handleRemoteMessage = (
+    _pattern: string,
+    _channel: string,
+    messageJson: string
+  ): void => {
+    try {
+      const envelope = JSON.parse(messageJson) as MessageEnvelope;
+      if (envelope._sid === this.instanceId) return;
+
+      this.appendToCache(envelope.m);
+      notifyMessageSubscribers(this.subscriptions, envelope.m, '[RedisMessageBus]');
+      this.state.notifyListeners(envelope.m);
+    } catch (error) {
+      console.warn('[RedisMessageBus] Failed to parse message:', error);
+    }
+  };
+
   async initialize(): Promise<void> {
-    await this.subscriber.psubscribe(`${this.keyPrefix}:${this.swarmId}:channel:*`);
+    if (this.initialized) return;
+    this.initialized = true;
 
-    this.subscriber.on('pmessage', (_pattern: string, _channel: string, messageJson: string) => {
-      try {
-        const envelope = JSON.parse(messageJson) as { _sid: string; m: SwarmMessage };
-        if (envelope._sid === this.instanceId) return;
-
-        const message = envelope.m;
-        this.localCache.push(message);
-        this.trimLocalCache();
-        this.notifySubscribers(message);
-      } catch (error) {
-        console.warn('[RedisMessageBus] Failed to parse message:', error);
-      }
-    });
+    this.subscriber.on('pmessage', this.handleRemoteMessage);
+    try {
+      await this.subscriber.psubscribe(`${this.keyPrefix}:${this.swarmId}:channel:*`);
+    } catch (error) {
+      this.subscriber.off('pmessage', this.handleRemoteMessage);
+      this.initialized = false;
+      throw error;
+    }
   }
 
   async send(message: Omit<SwarmMessage, 'id' | 'timestamp'>): Promise<SwarmMessage> {
@@ -62,19 +99,11 @@ export class RedisMessageBus implements MessageBus {
       throw new Error(`Message exceeds max length of ${this.config.maxMessageLength} characters`);
     }
 
-    if (this.config.maxMessagesPerTurn) {
-      const count = this.agentMessageCounts.get(message.from) ?? 0;
-      if (count >= this.config.maxMessagesPerTurn) {
-        throw new Error(
-          `Agent ${message.from} exceeded max messages per turn (${this.config.maxMessagesPerTurn})`
-        );
-      }
-      this.agentMessageCounts.set(message.from, count + 1);
-    }
-
     if (this.config.maxTotalMessages && this.localCache.length >= this.config.maxTotalMessages) {
       throw new Error(`Max total messages (${this.config.maxTotalMessages}) reached`);
     }
+
+    this.state.consumeTurnQuota(this.config, message.from);
 
     const fullMessage: SwarmMessage = {
       ...message,
@@ -83,21 +112,15 @@ export class RedisMessageBus implements MessageBus {
       timestamp: Date.now(),
     };
 
-    const messageJson = JSON.stringify(fullMessage);
-    this.localCache.push(fullMessage);
-    this.trimLocalCache();
-
-    this.notifySubscribers(fullMessage);
-
-    void this.redis.rpush(this.messagesKey(), messageJson).catch((error: unknown) => {
-      console.warn('[RedisMessageBus] RPUSH error:', error);
-    });
+    this.appendToCache(fullMessage);
+    notifyMessageSubscribers(this.subscriptions, fullMessage, '[RedisMessageBus]');
+    this.state.notifyListeners(fullMessage);
 
     const target = fullMessage.to === 'broadcast' ? 'broadcast' : fullMessage.to;
-    const envelope = JSON.stringify({ _sid: this.instanceId, m: fullMessage });
-    void this.redis.publish(this.channelKey(target), envelope).catch((error: unknown) => {
-      console.warn('[RedisMessageBus] Publish error:', error);
-    });
+    const envelope: MessageEnvelope = { _sid: this.instanceId, m: fullMessage };
+
+    await this.redis.rpush(this.messagesKey(), JSON.stringify(fullMessage));
+    await this.redis.publish(this.channelKey(target), JSON.stringify(envelope));
 
     return fullMessage;
   }
@@ -113,21 +136,12 @@ export class RedisMessageBus implements MessageBus {
     });
   }
 
-  subscribe(agentName: string, handler: (msg: SwarmMessage) => void): () => void {
-    if (!this.subscriptions.has(agentName)) {
-      this.subscriptions.set(agentName, new Set());
-    }
-    this.subscriptions.get(agentName)!.add(handler);
+  subscribe(agentName: string, handler: MessageListener): () => void {
+    return addSubscription(this.subscriptions, agentName, handler);
+  }
 
-    return () => {
-      const handlers = this.subscriptions.get(agentName);
-      if (handlers) {
-        handlers.delete(handler);
-        if (handlers.size === 0) {
-          this.subscriptions.delete(agentName);
-        }
-      }
-    };
+  onMessage(listener: MessageListener): () => void {
+    return this.state.onMessage(listener);
   }
 
   getMessages(agentName: string, limit?: number): SwarmMessage[] {
@@ -153,58 +167,65 @@ export class RedisMessageBus implements MessageBus {
 
   getUnreadMessages(agentName: string): SwarmMessage[] {
     return this.localCache.filter(
-      (m) => (m.to === agentName || m.to === 'broadcast') && m.from !== agentName
+      (m) => isMessageForAgent(m, agentName) && !this.state.isRead(agentName, m.id)
     );
+  }
+
+  markAsRead(agentName: string, messageIds: readonly string[]): void {
+    this.state.markAsRead(agentName, messageIds);
   }
 
   clear(): void {
     this.localCache = [];
-    this.agentMessageCounts.clear();
+    this.state.clear();
     void this.redis.del(this.messagesKey()).catch((error: unknown) => {
       console.warn('[RedisMessageBus] Clear error:', error);
     });
   }
 
-  resetTurnCounts(): void {
-    this.agentMessageCounts.clear();
+  resetTurnCounts(agentName?: string): void {
+    this.state.resetTurnCounts(agentName);
   }
 
   async close(): Promise<void> {
+    this.subscriber.off('pmessage', this.handleRemoteMessage);
+    this.initialized = false;
+    if (this.subscriber.status === 'end') return;
+    if (this.subscriber.status === 'wait') {
+      this.subscriber.disconnect();
+      return;
+    }
     await this.subscriber.punsubscribe();
     await this.subscriber.quit();
   }
 
   async syncFromRedis(): Promise<void> {
     const rawMessages = await this.redis.lrange(this.messagesKey(), 0, -1);
-    this.localCache = rawMessages.map((raw) => JSON.parse(raw) as SwarmMessage);
+    const messages: SwarmMessage[] = [];
+    for (const raw of rawMessages) {
+      const parsed = parseSwarmMessage(raw);
+      if (parsed) {
+        messages.push(parsed);
+      } else {
+        console.warn('[RedisMessageBus] Skipping malformed message in Redis history');
+      }
+    }
+    this.localCache = messages;
+    this.trimLocalCache();
+  }
+
+  private appendToCache(message: SwarmMessage): void {
+    if (this.localCache.some((m) => m.id === message.id)) return;
+    this.localCache.push(message);
+    this.trimLocalCache();
   }
 
   private trimLocalCache(): void {
-    if (this.config.maxTotalMessages && this.localCache.length > this.config.maxTotalMessages) {
-      this.localCache = this.localCache.slice(-this.config.maxTotalMessages);
-    }
-  }
+    const max = this.config.maxTotalMessages;
+    if (!max || this.localCache.length <= max) return;
 
-  private notifySubscribers(message: SwarmMessage): void {
-    if (message.to !== 'broadcast') {
-      const handlers = this.subscriptions.get(message.to);
-      if (handlers) {
-        for (const handler of handlers) {
-          void Promise.resolve(handler(message)).catch((error) => {
-            console.warn('[RedisMessageBus] Handler error:', error);
-          });
-        }
-      }
-    } else {
-      for (const [agentName, handlers] of this.subscriptions) {
-        if (agentName !== message.from) {
-          for (const handler of handlers) {
-            void Promise.resolve(handler(message)).catch((error) => {
-              console.warn('[RedisMessageBus] Broadcast handler error:', error);
-            });
-          }
-        }
-      }
-    }
+    const dropped = this.localCache.slice(0, this.localCache.length - max);
+    this.localCache = this.localCache.slice(-max);
+    this.state.forgetMessages(dropped.map((m) => m.id));
   }
 }

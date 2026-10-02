@@ -1,15 +1,40 @@
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 import type { AgentHandlerOptions, AgentInput, AgentResponse } from '../types.js';
+import {
+  exceedsDeclaredSize,
+  hookErrorResponse,
+  isPlainObject,
+  jsonError,
+  jsonResponse,
+  readJsonBody,
+} from './http.js';
 
-const MAX_BODY_SIZE = 1024 * 1024;
+type ParseResult = { ok: true; input: AgentInput } | { ok: false; error: string };
 
-function parseDefaultInput(body: unknown): AgentInput {
-  const data = body as { input?: string; context?: Record<string, unknown>; threadId?: string };
+function parseDefaultInput(body: unknown): ParseResult {
+  if (!isPlainObject(body)) {
+    return { ok: false, error: 'Request body must be a JSON object' };
+  }
+
+  if (typeof body.input !== 'string' || body.input.trim() === '') {
+    return { ok: false, error: 'input must be a non-empty string' };
+  }
+
+  if (body.context !== undefined && !isPlainObject(body.context)) {
+    return { ok: false, error: 'context must be an object' };
+  }
+
+  if (body.threadId !== undefined && typeof body.threadId !== 'string') {
+    return { ok: false, error: 'threadId must be a string' };
+  }
 
   return {
-    input: typeof data.input === 'string' ? data.input : '',
-    context: data.context,
-    threadId: typeof data.threadId === 'string' ? data.threadId : undefined,
+    ok: true,
+    input: {
+      input: body.input,
+      context: body.context,
+      threadId: body.threadId,
+    },
   };
 }
 
@@ -19,12 +44,8 @@ export function createAgentHandler(
   options?: AgentHandlerOptions
 ) {
   return async (req: Request): Promise<Response> => {
-    const contentLength = Number(req.headers.get('content-length'));
-    if (Number.isFinite(contentLength) && contentLength > MAX_BODY_SIZE) {
-      return new Response(JSON.stringify({ error: 'Payload too large' }), {
-        status: 413,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    if (exceedsDeclaredSize(req)) {
+      return jsonError('Payload too large', 413);
     }
 
     let input: AgentInput;
@@ -32,22 +53,14 @@ export function createAgentHandler(
       try {
         input = await options.parseInput(req);
       } catch (err) {
-        return new Response(
-          JSON.stringify({ error: err instanceof Error ? err.message : 'Parse error' }),
-          { status: 400, headers: { 'Content-Type': 'application/json' } }
-        );
+        return jsonError(err instanceof Error ? err.message : 'Parse error', 400);
       }
     } else {
-      let body: unknown;
-      try {
-        body = await req.json();
-      } catch {
-        return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      input = parseDefaultInput(body);
+      const body = await readJsonBody(req);
+      if (!body.ok) return body.response;
+      const parsed = parseDefaultInput(body.body);
+      if (!parsed.ok) return jsonError(parsed.error, 400);
+      input = parsed.input;
     }
 
     let runContext: Record<string, unknown> = {};
@@ -56,14 +69,7 @@ export function createAgentHandler(
         const ctx = await options.beforeRun(req, input);
         if (ctx) runContext = ctx;
       } catch (err) {
-        const status = (err as { status?: number }).status;
-        return new Response(
-          JSON.stringify({ error: err instanceof Error ? err.message : 'Unauthorized' }),
-          {
-            status: status && status >= 400 && status < 600 ? status : 401,
-            headers: { 'Content-Type': 'application/json' },
-          }
-        );
+        return hookErrorResponse(err, 'Unauthorized');
       }
     }
 
@@ -72,6 +78,7 @@ export function createAgentHandler(
         input: input.input,
         threadId: input.threadId,
         context: input.context,
+        signal: req.signal,
         ...runContext,
       });
 
@@ -94,15 +101,10 @@ export function createAgentHandler(
         },
       };
 
-      return new Response(JSON.stringify(response), {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse(response);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal server error';
-      return new Response(JSON.stringify({ error: message }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonError(message, 500);
     }
   };
 }

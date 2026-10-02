@@ -36,10 +36,10 @@ interface GeminiContent {
 }
 
 type GeminiPart =
-  | { text: string }
+  | { text: string; thought?: boolean; thoughtSignature?: string }
   | { inlineData: { mimeType: string; data: string } }
   | { fileData: { mimeType: string; fileUri: string } }
-  | { functionCall: GeminiFunctionCall }
+  | { functionCall: GeminiFunctionCall; thoughtSignature?: string }
   | { functionResponse: GeminiFunctionResponse };
 
 interface GeminiFunctionCall {
@@ -103,14 +103,21 @@ interface GeminiUsageMetadata {
   totalTokenCount: number;
 }
 
+interface GeminiPromptFeedback {
+  blockReason?: string;
+  blockReasonMessage?: string;
+}
+
 interface GeminiResponse {
-  candidates: GeminiCandidate[];
-  usageMetadata: GeminiUsageMetadata;
+  candidates?: GeminiCandidate[];
+  usageMetadata?: GeminiUsageMetadata;
+  promptFeedback?: GeminiPromptFeedback;
 }
 
 interface GeminiStreamChunk {
   candidates?: GeminiCandidate[];
   usageMetadata?: GeminiUsageMetadata;
+  promptFeedback?: GeminiPromptFeedback;
 }
 
 export class GoogleBackend extends BaseLLMBackend {
@@ -198,6 +205,8 @@ export class GoogleBackend extends BaseLLMBackend {
     let buffer = '';
     const accumulatedToolCalls: ToolCall[] = [];
     const mapFinish = this.mapFinishReason.bind(this);
+    const promptBlockedError = (feedback: GeminiPromptFeedback) =>
+      this.promptBlockedError(ctx, feedback);
 
     function* processLine(line: string) {
       if (!line.startsWith('data: ')) return;
@@ -215,23 +224,23 @@ export class GoogleBackend extends BaseLLMBackend {
         return;
       }
 
+      if (!chunk.candidates?.length && chunk.promptFeedback?.blockReason) {
+        throw promptBlockedError(chunk.promptFeedback);
+      }
+
       if (chunk.candidates?.[0]) {
         const candidate = chunk.candidates[0];
         const parts = candidate.content?.parts ?? [];
 
         for (const part of parts) {
           if ('text' in part) {
+            if (part.thought) continue;
             yield {
               id,
               delta: { content: part.text },
             } as ChatStreamChunk;
           } else if ('functionCall' in part) {
-            const toolCall: ToolCall = {
-              id: `call_${nanoid(12)}`,
-              name: part.functionCall.name,
-              arguments: part.functionCall.args,
-            };
-            accumulatedToolCalls.push(toolCall);
+            accumulatedToolCalls.push(toToolCall(part));
           }
         }
 
@@ -375,14 +384,16 @@ export class GoogleBackend extends BaseLLMBackend {
     systemInstruction: string | null;
     contents: GeminiContent[];
   } {
-    let systemInstruction: string | null = null;
+    const systemParts: string[] = [];
     const contents: GeminiContent[] = [];
 
     for (const msg of messages) {
       switch (msg.role) {
-        case 'system':
-          systemInstruction = this.getTextContent(msg.content);
+        case 'system': {
+          const text = this.getTextContent(msg.content);
+          if (text) systemParts.push(text);
           break;
+        }
 
         case 'user':
           contents.push({
@@ -396,12 +407,15 @@ export class GoogleBackend extends BaseLLMBackend {
           const toolCalls = (msg as Message & { toolCalls?: ToolCall[] }).toolCalls;
           if (toolCalls && toolCalls.length > 0) {
             parts.push(
-              ...toolCalls.map((tc) => ({
-                functionCall: {
-                  name: tc.name,
-                  args: tc.arguments,
-                },
-              }))
+              ...toolCalls.map(
+                (tc): GeminiPart => ({
+                  functionCall: {
+                    name: tc.name,
+                    args: tc.arguments,
+                  },
+                  ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {}),
+                })
+              )
             );
           }
           contents.push({
@@ -417,16 +431,28 @@ export class GoogleBackend extends BaseLLMBackend {
             response: this.parseToolResult(this.getTextContent(msg.content)),
           };
 
-          contents.push({
-            role: 'user',
-            parts: [{ functionResponse }],
-          });
+          const previous = contents[contents.length - 1];
+          if (
+            previous?.role === 'user' &&
+            previous.parts.length > 0 &&
+            previous.parts.every((part) => 'functionResponse' in part)
+          ) {
+            previous.parts.push({ functionResponse });
+          } else {
+            contents.push({
+              role: 'user',
+              parts: [{ functionResponse }],
+            });
+          }
           break;
         }
       }
     }
 
-    return { systemInstruction, contents };
+    return {
+      systemInstruction: systemParts.length > 0 ? systemParts.join('\n\n') : null,
+      contents,
+    };
   }
 
   private convertContentToParts(content: MessageContent): GeminiPart[] {
@@ -542,8 +568,11 @@ export class GoogleBackend extends BaseLLMBackend {
   }
 
   private parseResponse(data: GeminiResponse, ctx: LLMErrorContext): ChatResponse {
-    const candidate = data.candidates[0];
+    const candidate = data.candidates?.[0];
     if (!candidate) {
+      if (data.promptFeedback?.blockReason) {
+        throw this.promptBlockedError(ctx, data.promptFeedback);
+      }
       throw llmInvalidResponse(ctx, 'No candidates in Gemini response');
     }
 
@@ -553,13 +582,10 @@ export class GoogleBackend extends BaseLLMBackend {
 
     for (const part of parts) {
       if ('text' in part) {
+        if (part.thought) continue;
         content += part.text;
       } else if ('functionCall' in part) {
-        toolCalls.push({
-          id: `call_${nanoid(12)}`,
-          name: part.functionCall.name,
-          arguments: part.functionCall.args,
-        });
+        toolCalls.push(toToolCall(part));
       }
     }
 
@@ -575,6 +601,11 @@ export class GoogleBackend extends BaseLLMBackend {
         totalTokens: data.usageMetadata?.totalTokenCount ?? 0,
       },
     };
+  }
+
+  private promptBlockedError(ctx: LLMErrorContext, feedback: GeminiPromptFeedback) {
+    const reason = feedback.blockReasonMessage ?? feedback.blockReason ?? 'unknown reason';
+    return llmInvalidResponse(ctx, `Gemini blocked the prompt: ${reason}`);
   }
 
   private mapFinishReason(reason: string): 'stop' | 'tool_calls' | 'length' | 'error' {
@@ -630,4 +661,19 @@ export class GoogleBackend extends BaseLLMBackend {
       },
     };
   }
+}
+
+function toToolCall(part: {
+  functionCall: GeminiFunctionCall;
+  thoughtSignature?: string;
+}): ToolCall {
+  const toolCall: ToolCall = {
+    id: `call_${nanoid(12)}`,
+    name: part.functionCall.name,
+    arguments: part.functionCall.args ?? {},
+  };
+  if (part.thoughtSignature) {
+    toolCall.thoughtSignature = part.thoughtSignature;
+  }
+  return toolCall;
 }

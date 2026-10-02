@@ -10,7 +10,7 @@ describe('ArtifactGenerator', () => {
     const artifacts = generator.generate(config, { hasTypeScript: true });
     const dockerfile = artifacts.files.find((f) => f.path === 'Dockerfile');
     expect(dockerfile).toBeDefined();
-    expect(dockerfile!.content).toContain('FROM node:20-alpine');
+    expect(dockerfile!.content).toContain('FROM node:22-alpine');
     expect(dockerfile!.content).toContain('EXPOSE 3000');
   });
 
@@ -108,5 +108,17 @@ describe('ArtifactGenerator', () => {
     const config: DeployConfig = { target: 'docker', port: 3000 };
     const artifacts = generator.generate(config, { hasTypeScript: true });
     expect(artifacts.outputDir).toBe('.cogitator');
+  });
+});
+
+describe('ArtifactGenerator dockerignore', () => {
+  it('emits a Dockerfile-specific ignore file so .env never enters the build context', () => {
+    const artifacts = new ArtifactGenerator().generate(
+      { target: 'docker' },
+      { hasTypeScript: true }
+    );
+    const ignore = artifacts.files.find((f) => f.path === 'Dockerfile.dockerignore');
+    expect(ignore?.content).toContain('.env');
+    expect(ignore?.content).toContain('node_modules');
   });
 });

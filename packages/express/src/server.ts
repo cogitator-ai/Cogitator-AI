@@ -1,4 +1,5 @@
 import { Router, json } from 'express';
+import type { Server as HttpServer } from 'http';
 import type { CogitatorServerConfig, RouteContext } from './types.js';
 import {
   createAuthMiddleware,
@@ -15,6 +16,8 @@ import {
   createWorkflowRoutes,
   createSwarmRoutes,
 } from './routes/index.js';
+import { generateOpenAPISpec, serveSwaggerUI } from './swagger/index.js';
+import { setupWebSocket } from './websocket/index.js';
 
 const DEFAULT_CONFIG = {
   basePath: '/cogitator',
@@ -25,10 +28,11 @@ const DEFAULT_CONFIG = {
 export class CogitatorServer {
   private app: Router;
   private cogitator: CogitatorServerConfig['cogitator'];
-  private agents: CogitatorServerConfig['agents'];
-  private workflows: CogitatorServerConfig['workflows'];
-  private swarms: CogitatorServerConfig['swarms'];
+  private agents: NonNullable<CogitatorServerConfig['agents']>;
+  private workflows: NonNullable<CogitatorServerConfig['workflows']>;
+  private swarms: NonNullable<CogitatorServerConfig['swarms']>;
   private config: Required<NonNullable<CogitatorServerConfig['config']>>;
+  private routeContext: RouteContext | null = null;
   private initialized = false;
 
   constructor(options: CogitatorServerConfig) {
@@ -72,11 +76,12 @@ export class CogitatorServer {
 
     const ctx: RouteContext = {
       cogitator: this.cogitator,
-      agents: this.agents!,
-      workflows: this.workflows!,
-      swarms: this.swarms!,
+      agents: this.agents,
+      workflows: this.workflows,
+      swarms: this.swarms,
       config: this.config,
     };
+    this.routeContext = ctx;
 
     router.use(createHealthRoutes(ctx));
     router.use(createAgentRoutes(ctx));
@@ -86,11 +91,7 @@ export class CogitatorServer {
     router.use(createSwarmRoutes(ctx));
 
     if (this.config.enableSwagger) {
-      await this.setupSwagger(router, ctx);
-    }
-
-    if (this.config.enableWebSocket) {
-      console.log('[CogitatorServer] WebSocket support enabled but requires separate setup');
+      this.setupSwagger(router, ctx);
     }
 
     router.use(notFoundHandler);
@@ -102,19 +103,33 @@ export class CogitatorServer {
     console.log(`[CogitatorServer] Initialized at ${basePath}`);
   }
 
-  private async setupSwagger(router: Router, ctx: RouteContext): Promise<void> {
-    try {
-      const { generateOpenAPISpec, serveSwaggerUI } = await import('./swagger/index.js');
-      const spec = generateOpenAPISpec(ctx, this.config.swagger || {});
+  private setupSwagger(router: Router, ctx: RouteContext): void {
+    const spec = generateOpenAPISpec(ctx, this.config.swagger);
 
-      router.get('/openapi.json', (_req, res) => {
-        res.json(spec);
-      });
+    router.get('/openapi.json', (_req, res) => {
+      res.json(spec);
+    });
 
-      router.get('/docs', serveSwaggerUI(spec));
-    } catch {
-      console.warn('[CogitatorServer] Swagger setup failed, continuing without docs');
+    router.get('/docs', serveSwaggerUI(spec));
+  }
+
+  /**
+   * Attach the WebSocket endpoint (`<basePath>/ws` by default) to an HTTP server.
+   * Requires `config.enableWebSocket: true` and a prior `init()` call.
+   * The configured `auth` function is applied to the upgrade request.
+   */
+  async attachWebSocket(server: HttpServer): Promise<import('ws').WebSocketServer> {
+    if (!this.config.enableWebSocket) {
+      throw new Error('WebSocket support is disabled; set config.enableWebSocket to true');
     }
+    if (!this.routeContext) {
+      throw new Error('CogitatorServer.init() must be called before attachWebSocket()');
+    }
+    const wss = await setupWebSocket(server, this.routeContext, this.config.websocket);
+    if (!wss) {
+      throw new Error("WebSocket support requires the 'ws' package: pnpm add ws");
+    }
+    return wss;
   }
 
   get isInitialized(): boolean {

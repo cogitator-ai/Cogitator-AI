@@ -20,14 +20,17 @@ import { cogitatorPlugin } from '@cogitator-ai/fastify';
 const fastify = Fastify({ logger: true });
 
 const cogitator = new Cogitator({
-  defaultBackend: 'openai',
-  backends: { openai: { apiKey: process.env.OPENAI_API_KEY } },
+  llm: {
+    defaultModel: 'openai/gpt-4o-mini',
+    providers: { openai: { apiKey: process.env.OPENAI_API_KEY } },
+  },
 });
 
 const chatAgent = new Agent({
   name: 'chat',
+  description: 'General-purpose chat assistant',
   instructions: 'You are a helpful assistant.',
-  model: 'gpt-4o-mini',
+  model: 'openai/gpt-4o-mini',
 });
 
 await fastify.register(cogitatorPlugin, {
@@ -51,6 +54,8 @@ POST   /api/agents/:name/run          - Run agent (JSON response)
 POST   /api/agents/:name/stream       - Run agent (SSE stream)
 ```
 
+Bodies are validated with JSON Schema (`input` must be a non-blank string); validation failures return `400 INVALID_INPUT`. The agent list exposes `config.description`, never the instructions. The authenticated `userId` is passed to the run, and runs are aborted when the client disconnects.
+
 ### Threads (Memory)
 
 ```
@@ -58,6 +63,8 @@ GET    /api/threads/:id               - Get thread messages
 POST   /api/threads/:id/messages      - Add message to thread
 DELETE /api/threads/:id               - Delete thread
 ```
+
+Requires `memory` on the `Cogitator` instance (503 otherwise). Message `metadata` is stored on the memory entry.
 
 ### Workflows
 
@@ -67,14 +74,18 @@ POST   /api/workflows/:name/run       - Run workflow
 POST   /api/workflows/:name/stream    - Stream workflow events
 ```
 
+Options are limited to `maxConcurrency`/`maxIterations` (positive integers) and `checkpoint`. A failed workflow returns `500 WORKFLOW_FAILED` (the stream ends with an `error` event instead of `workflow_completed`). Disconnecting aborts the workflow.
+
 ### Swarms
 
 ```
 GET    /api/swarms                    - List all swarms
 POST   /api/swarms/:name/run          - Run swarm
 POST   /api/swarms/:name/stream       - Stream swarm events
-GET    /api/swarms/:name/blackboard   - Get shared state
+GET    /api/swarms/:name/blackboard   - Get configured blackboard sections
 ```
+
+`timeout` must be positive. Disconnecting aborts the swarm. Each run creates a fresh swarm, so the blackboard endpoint returns the configured initial sections.
 
 ### Tools & Docs
 
@@ -96,7 +107,8 @@ await fastify.register(cogitatorPlugin, {
   enableWebSocket: true,
   enableSwagger: true,
 
-  // Authentication
+  // Authentication — throw to reject with 401. Runs as an onRequest hook, so it
+  // also guards WebSocket upgrades; the returned userId is passed to agent runs.
   auth: async (request) => {
     const token = request.headers.authorization?.replace('Bearer ', '');
     const user = await validateToken(token);
@@ -116,7 +128,7 @@ await fastify.register(cogitatorPlugin, {
     version: '1.0.0',
   },
 
-  // WebSocket options
+  // WebSocket options (path is relative to the prefix)
   websocket: {
     path: '/ws',
   },
@@ -154,19 +166,22 @@ while (true) {
 
 ### Stream Events
 
-| Event Type        | Description                             |
-| ----------------- | --------------------------------------- |
-| `start`           | Stream started, includes message ID     |
-| `text-start`      | Text generation started                 |
-| `text-delta`      | Text chunk received                     |
-| `text-end`        | Text generation finished                |
-| `tool-call-start` | Tool execution started                  |
-| `tool-call-end`   | Tool execution finished                 |
-| `tool-result`     | Tool returned result                    |
-| `workflow`        | Workflow event (node started/completed) |
-| `swarm`           | Swarm event (agent started/completed)   |
-| `error`           | Error occurred                          |
-| `finish`          | Stream finished, includes usage stats   |
+| Event Type        | Description                              |
+| ----------------- | ---------------------------------------- |
+| `start`           | Stream started, includes message ID      |
+| `text-start`      | Text generation started                  |
+| `text-delta`      | Text chunk received                      |
+| `text-end`        | Text generation finished                 |
+| `tool-call-start` | Tool call started (`id` = model call id) |
+| `tool-call-delta` | Tool call arguments (JSON text)          |
+| `tool-call-end`   | Tool call finished                       |
+| `tool-result`     | Tool result (`toolCallId` = call id)     |
+| `workflow`        | Workflow event (node started/completed)  |
+| `swarm`           | Swarm event (agent started/completed)    |
+| `error`           | Error occurred                           |
+| `finish`          | Stream finished, includes usage stats    |
+
+Text is emitted in `text-start`/`text-delta`/`text-end` blocks that are closed around tool calls; the stream ends with `data: [DONE]` after `finish`. Headers set by your hooks (CORS, rate-limit) are kept on SSE responses.
 
 ## WebSocket Support
 
@@ -202,8 +217,11 @@ ws.send(
   })
 );
 
-// Subscribe to channel
-ws.send(JSON.stringify({ type: 'subscribe', channel: 'updates' }));
+// Observe runs of an agent started by other clients
+ws.send(JSON.stringify({ type: 'subscribe', channel: 'agent:chat' }));
+
+// Abort the running agent (emits { type: 'event', payload: { type: 'cancelled' } })
+ws.send(JSON.stringify({ type: 'stop' }));
 
 // Ping/pong
 ws.send(JSON.stringify({ type: 'ping' }));
@@ -211,17 +229,19 @@ ws.send(JSON.stringify({ type: 'ping' }));
 
 ### WebSocket Message Types
 
-| Type          | Direction     | Description              |
-| ------------- | ------------- | ------------------------ |
-| `ping`        | Client→Server | Heartbeat                |
-| `pong`        | Server→Client | Heartbeat response       |
-| `subscribe`   | Client→Server | Subscribe to channel     |
-| `subscribed`  | Server→Client | Subscription confirmed   |
-| `unsubscribe` | Client→Server | Unsubscribe from channel |
-| `run`         | Client→Server | Run agent/workflow/swarm |
-| `stop`        | Client→Server | Cancel running operation |
-| `event`       | Server→Client | Stream event             |
-| `error`       | Server→Client | Error message            |
+| Type          | Direction     | Description                                                                                                     |
+| ------------- | ------------- | --------------------------------------------------------------------------------------------------------------- |
+| `ping`        | Client→Server | Heartbeat                                                                                                       |
+| `pong`        | Server→Client | Heartbeat response                                                                                              |
+| `subscribe`   | Client→Server | Subscribe to `agent:<name>`: receive events of runs started by other clients                                    |
+| `subscribed`  | Server→Client | Subscription confirmed                                                                                          |
+| `unsubscribe` | Client→Server | Unsubscribe from channel                                                                                        |
+| `run`         | Client→Server | Run an agent (`payload: { type: 'agent', name, input, context?, threadId? }`); one run per connection at a time |
+| `stop`        | Client→Server | Abort the running agent                                                                                         |
+| `event`       | Server→Client | Run event: `token`, `tool-call`, `tool-result`, `complete`, `cancelled`                                         |
+| `error`       | Server→Client | Error message                                                                                                   |
+
+Only agent runs are supported over WebSocket; use the HTTP endpoints for workflows and swarms.
 
 ## Custom Streaming
 
@@ -231,8 +251,9 @@ Use `FastifyStreamWriter` for custom streaming routes:
 import { FastifyStreamWriter, generateId } from '@cogitator-ai/fastify';
 
 fastify.post('/custom/stream', async (request, reply) => {
-  const writer = new FastifyStreamWriter(reply);
+  const writer = new FastifyStreamWriter(reply); // start() hijacks the reply
   const messageId = generateId('msg');
+  reply.raw.on('close', () => writer.close());
 
   writer.start(messageId);
   const textId = generateId('txt');
@@ -245,6 +266,7 @@ fastify.post('/custom/stream', async (request, reply) => {
   writer.textEnd(textId);
   writer.finish(messageId);
   writer.close();
+  return reply;
 });
 ```
 
@@ -314,7 +336,8 @@ class FastifyStreamWriter {
   swarmEvent(event: string, data: unknown): void;
   error(message: string, code?: string): void;
   finish(messageId: string, usage?: Usage): void;
-  close(): void;
+  close(): void; // no-op before start(); ignores writes after the response ended
+  readonly isClosed: boolean;
 }
 ```
 
@@ -350,14 +373,17 @@ All endpoints return consistent error responses:
 
 Error codes map to HTTP status codes:
 
-- `INVALID_INPUT` → 400
+- `INVALID_INPUT` → 400 (schema validation and malformed JSON; `details` carries the validation errors)
 - `UNAUTHORIZED` → 401
-- `PERMISSION_DENIED` → 403
 - `NOT_FOUND` → 404
+- `PAYLOAD_TOO_LARGE` → 413
 - `RATE_LIMIT_EXCEEDED` → 429
-- `INTERNAL` → 500
-- `UNAVAILABLE` → 503
+- `WORKFLOW_FAILED` → 500
+- `INTERNAL` → 500 (details are logged, not returned)
 - `UNIMPLEMENTED` → 501
+- `UNAVAILABLE` → 503
+
+`CogitatorError`s thrown by runs keep their code and its mapped status (for example `LLM_RATE_LIMITED` → 429).
 
 ## JSON Schema Validation
 
@@ -372,6 +398,8 @@ import {
   SwarmRunRequestSchema,
 } from '@cogitator-ai/fastify';
 ```
+
+`AgentRunRequestSchema` and `SwarmRunRequestSchema` require a non-blank `input` (the swarm `timeout` must be greater than 0), `AddMessageRequestSchema` requires a non-empty `content` and a `user`/`assistant`/`system` role, and `WorkflowRunRequestSchema.options` only allows `maxConcurrency`/`maxIterations` (integers ≥ 1) and `checkpoint` (`additionalProperties: false`).
 
 ## License
 

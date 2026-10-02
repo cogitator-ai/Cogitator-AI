@@ -53,6 +53,11 @@ export interface ToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /**
+   * Opaque reasoning signature attached by the provider to this call.
+   * Must be sent back unchanged with the call in follow-up requests (Gemini thought signatures).
+   */
+  thoughtSignature?: string;
 }
 
 export interface ToolResult {

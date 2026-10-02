@@ -23,9 +23,9 @@ const app = new Koa();
 
 const cogitator = new Cogitator({
   llm: {
-    defaultProvider: 'openai',
+    defaultModel: 'openai/gpt-4o',
     providers: {
-      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' },
+      openai: { apiKey: process.env.OPENAI_API_KEY! },
     },
   },
 });
@@ -44,6 +44,8 @@ const translator = tool({
 
 const agent = new Agent({
   name: 'translator',
+  description: 'Translates text between languages',
+  model: 'openai/gpt-4o',
   instructions: 'You translate text between languages. Use the translate tool.',
   tools: [translator],
 });
@@ -74,17 +76,27 @@ interface CogitatorAppOptions {
   auth?: AuthFunction;
   enableSwagger?: boolean;
   swagger?: SwaggerConfig;
-  enableWebSocket?: boolean;
-  websocket?: WebSocketConfig;
+  bodyLimit?: number; // max JSON body size in bytes, default 1 MiB
 }
 ```
+
+WebSocket support is attached to the HTTP server with [`setupWebSocket`](#websocket), not through router options.
+
+## Request Handling
+
+- Bodies are validated before anything reaches the runtime: `input` must be a non-empty string, `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number. Invalid bodies return `400 INVALID_INPUT`.
+- Workflow `options` are limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); other options are dropped and wrongly typed ones return `400 INVALID_INPUT`. The body itself is optional.
+- Thread messages accept the roles `user`, `assistant` and `system`; `metadata` is stored with the entry.
+- `CogitatorError`s keep their HTTP status and code (for example `429 LLM_RATE_LIMITED`); other errors are logged and returned as `500 Internal server error`. A workflow that ends with an error is reported as a failure.
+- Disconnecting clients abort the running agent, workflow or swarm.
+- `GET /agents` exposes each agent's `description`, never its `instructions`; `GET /tools` returns parameters as JSON Schema.
 
 ## Middleware Chain
 
 The returned router applies middleware in this order:
 
 1. **Error handler** — catches errors and returns structured JSON responses
-2. **Body parser** — parses JSON request bodies
+2. **Body parser** — parses JSON request bodies up to `bodyLimit` (`413` above it) and reuses a body already parsed by upstream middleware such as `koa-bodyparser`
 3. **Context middleware** — injects `CogitatorState` into `ctx.state`
 4. **Auth middleware** — optional, runs your auth function
 5. **Route handlers** — health, agents, threads, tools, workflows, swarms
@@ -92,7 +104,7 @@ The returned router applies middleware in this order:
 
 ## Authentication
 
-The auth function receives a Koa `Context` and returns an `AuthContext`:
+The auth function receives a Koa `Context` and returns an `AuthContext`. Throwing rejects the request with `401 UNAUTHORIZED` (errors with a `status >= 500` are treated as server errors instead); returning `undefined` lets the request through anonymously.
 
 ```typescript
 const cogitatorRouter = cogitatorApp({
@@ -100,7 +112,7 @@ const cogitatorRouter = cogitatorApp({
   agents: { translator: agent },
   auth: async (ctx) => {
     const token = ctx.headers.authorization?.replace('Bearer ', '');
-    if (!token) return undefined;
+    if (!token) throw new Error('Missing token');
 
     const user = await verifyToken(token);
     return { userId: user.id, roles: user.roles, permissions: user.permissions };
@@ -108,7 +120,7 @@ const cogitatorRouter = cogitatorApp({
 });
 ```
 
-The auth result is stored in `ctx.state.auth` for use in downstream middleware.
+The auth result is stored in `ctx.state.auth` for use in downstream middleware. Errors thrown by routes after a successful auth check are handled by the error handler, never reported as `401`.
 
 ## Mounting Under a Prefix
 
@@ -165,7 +177,7 @@ while (true) {
 
 ## WebSocket
 
-WebSocket support requires the `ws` package. After creating your Koa app, call `setupWebSocket` with the HTTP server:
+WebSocket support requires the `ws` package. After creating your Koa app, call `setupWebSocket` with the HTTP server, the route context and the WebSocket options:
 
 ```typescript
 import { createServer } from 'http';
@@ -173,15 +185,27 @@ import { setupWebSocket } from '@cogitator-ai/koa';
 
 const httpServer = createServer(app.callback());
 
-setupWebSocket(httpServer, {
-  cogitator,
-  agents: { translator: agent },
-  path: '/ws',
-  pingInterval: 30_000,
-});
+await setupWebSocket(
+  httpServer,
+  { runtime: cogitator, agents: { translator: agent }, workflows: {}, swarms: {} },
+  {
+    path: '/ws',
+    pingInterval: 30_000,
+    pingTimeout: 10_000,
+    maxPayloadSize: 1024 * 1024,
+    auth: (req) => {
+      if (req.headers.authorization !== `Bearer ${process.env.API_TOKEN}`) {
+        throw new Error('Unauthorized');
+      }
+      return { userId: 'api' };
+    },
+  }
+);
 
 httpServer.listen(3000);
 ```
+
+The router's `auth` option does not apply to WebSocket connections; the `auth` option of `setupWebSocket` receives the upgrade request and rejects the handshake with `401` when it throws. Upgrades on other paths are left to other `upgrade` listeners, or rejected with `404` when there are none. Clients send `run` (`{ type: 'agent' | 'workflow' | 'swarm', name, input, context?, threadId? }`), `stop` and `ping`; the server answers with `event` (`token`, `tool-call`, `tool-result`, `complete`, `cancelled`), `error` and `pong`. Closing the connection aborts its active run.
 
 ## State Type
 

@@ -67,8 +67,7 @@ describe('MongoDBAdapter', () => {
       expect(result.success).toBe(true);
       expect(mockClient.connect).toHaveBeenCalled();
       expect(mockCollection.createIndex).toHaveBeenCalledWith({ agentId: 1 });
-      expect(mockCollection.createIndex).toHaveBeenCalledWith({ threadId: 1 });
-      expect(mockCollection.createIndex).toHaveBeenCalledWith({ createdAt: 1 });
+      expect(mockCollection.createIndex).toHaveBeenCalledWith({ threadId: 1, createdAt: 1 });
     });
 
     it('uses default database name', async () => {
@@ -133,7 +132,13 @@ describe('MongoDBAdapter', () => {
         expect(result.data.metadata).toEqual({ foo: 'bar' });
         expect(result.data.createdAt).toBeInstanceOf(Date);
       }
-      expect(mockCollection.insertOne).toHaveBeenCalled();
+      expect(mockCollection.updateOne).toHaveBeenCalledWith(
+        { _id: expect.stringMatching(/^thread_/) },
+        expect.objectContaining({
+          $setOnInsert: expect.objectContaining({ createdAt: expect.any(Date) }),
+        }),
+        { upsert: true }
+      );
     });
 
     it('creates thread with custom id', async () => {
@@ -455,14 +460,14 @@ describe('MongoDBAdapter', () => {
       }
     });
 
-    it('handles insert errors', async () => {
-      mockCollection.insertOne.mockRejectedValueOnce(new Error('Duplicate key'));
+    it('handles upsert errors', async () => {
+      mockCollection.updateOne.mockRejectedValueOnce(new Error('Write conflict'));
 
       const result = await adapter.createThread('agent1');
 
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.error).toContain('Duplicate key');
+        expect(result.error).toContain('Write conflict');
       }
     });
 

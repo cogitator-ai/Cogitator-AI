@@ -78,6 +78,7 @@ export function buildToolGenerationPrompt(
     maxLines?: number;
     allowedModules?: string[];
     securityLevel?: 'strict' | 'moderate' | 'permissive';
+    parameters?: Record<string, unknown>;
   }
 ): string {
   const toolName = sanitizeToolName(gap.suggestedToolName);
@@ -112,12 +113,19 @@ export function buildToolGenerationPrompt(
   const constraintsText =
     constraintsSection.length > 0 ? `\nCONSTRAINTS:\n${constraintsSection.join('\n')}\n` : '';
 
+  const parametersJson = constraints?.parameters
+    ? JSON.stringify(constraints.parameters)
+    : '{"type":"object","properties":{/* DEFINE PARAMS */},"required":[/* REQUIRED PARAMS */]}';
+  const parametersText = constraints?.parameters
+    ? `\nThe tool MUST accept exactly this parameters JSON Schema: ${parametersJson}\n`
+    : '';
+
   return `Create a tool named "${toolName}".
 Task: ${description}
 Formula/Logic: ${capability}
-${existingToolsSection}${constraintsText}
+${existingToolsSection}${constraintsText}${parametersText}
 Respond with ONLY this JSON (no other text):
-{"name":"${toolName}","description":"${description}","implementation":"async function execute(params) { /* YOUR CODE HERE — throw on invalid input */ }","parameters":{"type":"object","properties":{/* DEFINE PARAMS */},"required":[/* REQUIRED PARAMS */]},"reasoning":"explanation"}`;
+{"name":"${toolName}","description":"${description}","implementation":"async function execute(params) { /* YOUR CODE HERE — throw on invalid input */ }","parameters":${parametersJson},"reasoning":"explanation"}`;
 }
 
 export function buildToolValidationPrompt(
@@ -224,7 +232,10 @@ export function parseGapAnalysisResponse(response: string): {
             complexity: (['simple', 'moderate', 'complex'].includes(String(g.complexity))
               ? g.complexity
               : 'moderate') as 'simple' | 'moderate' | 'complex',
-            confidence: typeof g.confidence === 'number' ? g.confidence : 0.5,
+            confidence:
+              typeof g.confidence === 'number' && Number.isFinite(g.confidence)
+                ? Math.min(1, Math.max(0, g.confidence))
+                : 0.5,
             reasoning: String(g.reasoning || ''),
           }))
         : [],
@@ -279,16 +290,38 @@ export function parseToolGenerationResponse(response: string): GeneratedTool | n
   return null;
 }
 
+function normalizeParameters(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { type: 'object', properties: {} };
+  }
+
+  const schema = value as Record<string, unknown>;
+  const properties =
+    schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
+      ? (schema.properties as Record<string, unknown>)
+      : {};
+  const required = Array.isArray(schema.required)
+    ? schema.required.filter(
+        (key): key is string => typeof key === 'string' && Object.hasOwn(properties, key)
+      )
+    : [];
+
+  const normalized: Record<string, unknown> = { ...schema, type: 'object', properties };
+  if (required.length > 0) {
+    normalized.required = required;
+  } else {
+    delete normalized.required;
+  }
+  return normalized;
+}
+
 function buildToolFromParsed(parsed: Record<string, unknown>): GeneratedTool {
   return {
     id: `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    name: String(parsed.name),
+    name: sanitizeToolName(String(parsed.name)),
     description: String(parsed.description || ''),
     implementation: String(parsed.implementation),
-    parameters: (parsed.parameters as GeneratedTool['parameters']) || {
-      type: 'object',
-      properties: {},
-    },
+    parameters: normalizeParameters(parsed.parameters),
     createdAt: new Date(),
     version: 1,
     status: 'pending_validation',

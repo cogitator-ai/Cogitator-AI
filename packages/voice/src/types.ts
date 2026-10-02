@@ -1,3 +1,4 @@
+import type { IncomingMessage } from 'node:http';
 import type { TranscribeResult, VoiceAudioFormat } from '@cogitator-ai/types';
 
 export type { TranscribeResult, VoiceAudioFormat };
@@ -10,6 +11,8 @@ export interface STTOptions {
 export interface STTStreamOptions extends STTOptions {
   interimResults?: boolean;
   endpointing?: number;
+  /** Sample rate of the raw PCM16 audio written to the stream. Defaults to 16000. */
+  sampleRate?: number;
 }
 
 export interface STTProvider {
@@ -53,13 +56,33 @@ export interface VADProvider {
   reset(): void;
 }
 
+export interface VoiceRunContext {
+  /** Identifier of the voice session (one per connected client / pipeline session). */
+  sessionId: string;
+  /** Aborted when the turn is interrupted or the session closes. */
+  signal?: AbortSignal;
+}
+
+export interface VoiceAgentRunner {
+  run(input: string, context?: VoiceRunContext): Promise<{ content: string }>;
+  /** Used as realtime-mode instructions when `VoiceAgentConfig.instructions` is not set. */
+  readonly instructions?: string;
+}
+
 export interface VoicePipelineConfig {
   stt: STTProvider;
   tts: TTSProvider;
   vad?: VADProvider;
-  agent: { run: (input: string) => Promise<{ content: string }> };
+  agent: VoiceAgentRunner;
   /** @deprecated Not used by the pipeline. Audio is processed at provider-native rates. */
   sampleRate?: number;
+}
+
+export interface RealtimeTool {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  execute: (args: unknown) => Promise<unknown>;
 }
 
 export interface RealtimeSessionConfig {
@@ -67,22 +90,24 @@ export interface RealtimeSessionConfig {
   model?: string;
   apiKey: string;
   instructions?: string;
-  tools?: Array<{
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-    execute: (args: unknown) => Promise<unknown>;
-  }>;
+  tools?: RealtimeTool[];
   voice?: string;
 }
+
+export type VerifyClientResult = true | { code: number; message: string };
 
 export interface WebSocketTransportConfig {
   path?: string;
   maxConnections?: number;
+  /**
+   * Authorize an incoming upgrade request. Return `true` to accept or
+   * `{ code, message }` to reject with that HTTP status.
+   */
+  verifyClient?: (req: IncomingMessage) => VerifyClientResult | Promise<VerifyClientResult>;
 }
 
 export interface VoiceAgentConfig {
-  agent: { run: (input: string) => Promise<{ content: string }> };
+  agent: VoiceAgentRunner;
   mode: 'pipeline' | 'realtime';
   stt?: STTProvider;
   tts?: TTSProvider;
@@ -90,6 +115,10 @@ export interface VoiceAgentConfig {
   realtimeProvider?: 'openai' | 'gemini';
   realtimeApiKey?: string;
   realtimeModel?: string;
+  /** Realtime-mode system instructions. Falls back to `agent.instructions`. */
+  instructions?: string;
+  /** Realtime-mode tools executed by the session on behalf of the model. */
+  tools?: RealtimeTool[];
   voice?: string;
   transport?: WebSocketTransportConfig;
 }

@@ -193,123 +193,136 @@ function checkAllConstraints(
   };
 }
 
-function generateInitialAssignment(variables: ConstraintVariable[]): Assignment {
-  const assignment = new Map<string, boolean | number>();
+const MAX_EXHAUSTIVE_ASSIGNMENTS = 1 << 20;
+const MAX_EXHAUSTIVE_BITVEC_WIDTH = 20;
+const DEFAULT_UNBOUNDED_RANGE = 1000;
+const HARD_VIOLATION_COST = 1_000_000;
 
-  for (const v of variables) {
-    switch (v.type) {
-      case 'bool':
-        assignment.set(v.name, false);
-        break;
+interface Candidate {
+  model: ConstraintModel;
+  softScore: number;
+}
 
-      case 'int':
-        if (v.domain) {
-          const min = v.domain.min ?? 0;
-          assignment.set(v.name, min);
-        } else {
-          assignment.set(v.name, 0);
-        }
-        break;
+function clamp(value: number, min: number | undefined, max: number | undefined): number {
+  let result = value;
+  if (min !== undefined && result < min) result = min;
+  if (max !== undefined && result > max) result = max;
+  return result;
+}
 
-      case 'real':
-        if (v.domain) {
-          const min = v.domain.min ?? 0;
-          assignment.set(v.name, min);
-        } else {
-          assignment.set(v.name, 0);
-        }
-        break;
-
-      case 'bitvec':
-        assignment.set(v.name, 0);
-        break;
+function initialValue(variable: ConstraintVariable): boolean | number {
+  switch (variable.type) {
+    case 'bool':
+      return false;
+    case 'int': {
+      const min = variable.domain?.min;
+      const max = variable.domain?.max;
+      const value = clamp(0, min, max);
+      return Number.isInteger(value) ? value : Math.ceil(value);
     }
+    case 'real':
+      return clamp(0, variable.domain?.min, variable.domain?.max);
+    case 'bitvec':
+      return 0;
   }
+}
 
+function generateInitialAssignment(variables: ConstraintVariable[]): Assignment {
+  const assignment: Assignment = new Map();
+  for (const v of variables) assignment.set(v.name, initialValue(v));
   return assignment;
 }
 
-function flipVariable(
-  assignment: Assignment,
-  variable: ConstraintVariable
-): Map<string, boolean | number>[] {
-  const neighbors: Map<string, boolean | number>[] = [];
+function integerBounds(variable: ConstraintVariable): { min: number; max: number } {
+  const min = variable.domain?.min;
+  const max = variable.domain?.max;
+  if (min !== undefined && max !== undefined) return { min: Math.ceil(min), max: Math.floor(max) };
+  if (min !== undefined)
+    return { min: Math.ceil(min), max: Math.ceil(min) + DEFAULT_UNBOUNDED_RANGE };
+  if (max !== undefined)
+    return { min: Math.floor(max) - DEFAULT_UNBOUNDED_RANGE, max: Math.floor(max) };
+  return { min: -DEFAULT_UNBOUNDED_RANGE, max: DEFAULT_UNBOUNDED_RANGE };
+}
 
+function realBounds(variable: ConstraintVariable): { min: number; max: number } {
+  return {
+    min: variable.domain?.min ?? -DEFAULT_UNBOUNDED_RANGE,
+    max: variable.domain?.max ?? DEFAULT_UNBOUNDED_RANGE,
+  };
+}
+
+function finiteDomain(variable: ConstraintVariable): (boolean | number)[] | null {
+  switch (variable.type) {
+    case 'bool':
+      return [false, true];
+    case 'int': {
+      if (variable.domain?.min === undefined || variable.domain?.max === undefined) return null;
+      const min = Math.ceil(variable.domain.min);
+      const max = Math.floor(variable.domain.max);
+      if (max < min) return [];
+      if (max - min + 1 > MAX_EXHAUSTIVE_ASSIGNMENTS) return null;
+      return Array.from({ length: max - min + 1 }, (_, i) => min + i);
+    }
+    case 'bitvec': {
+      const width = variable.bitWidth ?? 8;
+      if (width > MAX_EXHAUSTIVE_BITVEC_WIDTH) return null;
+      const min = Math.max(0, Math.ceil(variable.domain?.min ?? 0));
+      const max = Math.min(2 ** width - 1, Math.floor(variable.domain?.max ?? 2 ** width - 1));
+      if (max < min) return [];
+      return Array.from({ length: max - min + 1 }, (_, i) => min + i);
+    }
+    case 'real':
+      return null;
+  }
+}
+
+function flipVariable(assignment: Assignment, variable: ConstraintVariable): Assignment[] {
+  const neighbors: Assignment[] = [];
   const current = assignment.get(variable.name);
   if (current === undefined) return neighbors;
 
+  const withValue = (value: boolean | number): void => {
+    const neighbor = new Map(assignment);
+    neighbor.set(variable.name, value);
+    neighbors.push(neighbor);
+  };
+
   switch (variable.type) {
-    case 'bool': {
-      const neighbor = new Map(assignment);
-      neighbor.set(variable.name, !current);
-      neighbors.push(neighbor);
+    case 'bool':
+      withValue(!current);
       break;
-    }
 
     case 'int': {
-      const min = variable.domain?.min ?? -1000;
-      const max = variable.domain?.max ?? 1000;
+      const { min, max } = integerBounds(variable);
       const val = current as number;
-
-      if (val > min) {
-        const neighbor = new Map(assignment);
-        neighbor.set(variable.name, val - 1);
-        neighbors.push(neighbor);
-      }
-      if (val < max) {
-        const neighbor = new Map(assignment);
-        neighbor.set(variable.name, val + 1);
-        neighbors.push(neighbor);
-      }
-
-      for (const delta of [-10, -5, 5, 10]) {
-        const newVal = val + delta;
-        if (newVal >= min && newVal <= max) {
-          const neighbor = new Map(assignment);
-          neighbor.set(variable.name, newVal);
-          neighbors.push(neighbor);
-        }
+      for (const delta of [-1, 1, -5, 5, -10, 10]) {
+        const next = val + delta;
+        if (next >= min && next <= max) withValue(next);
       }
       break;
     }
 
     case 'real': {
-      const min = variable.domain?.min ?? -1000;
-      const max = variable.domain?.max ?? 1000;
+      const { min, max } = realBounds(variable);
       const val = current as number;
-
       for (const delta of [-1, -0.1, 0.1, 1]) {
-        const newVal = val + delta;
-        if (newVal >= min && newVal <= max) {
-          const neighbor = new Map(assignment);
-          neighbor.set(variable.name, newVal);
-          neighbors.push(neighbor);
-        }
+        const next = val + delta;
+        if (next >= min && next <= max) withValue(next);
       }
       break;
     }
 
     case 'bitvec': {
       const bitWidth = variable.bitWidth || 8;
-      const maxVal = Math.pow(2, bitWidth) - 1;
+      const maxVal = 2 ** bitWidth - 1;
       const val = current as number;
-
-      for (let bit = 0; bit < bitWidth; bit++) {
+      for (let bit = 0; bit < Math.min(bitWidth, 31); bit++) {
         const flipped = val ^ (1 << bit);
-        if (flipped >= 0 && flipped <= maxVal) {
-          const neighbor = new Map(assignment);
-          neighbor.set(variable.name, flipped);
-          neighbors.push(neighbor);
-        }
+        if (flipped >= 0 && flipped <= maxVal) withValue(flipped);
       }
-
       for (const delta of [-1, 1]) {
-        const newVal = val + delta;
-        if (newVal >= 0 && newVal <= maxVal) {
-          const neighbor = new Map(assignment);
-          neighbor.set(variable.name, newVal);
-          neighbors.push(neighbor);
-        }
+        const next = val + delta;
+        if (next >= 0 && next <= maxVal) withValue(next);
       }
       break;
     }
@@ -318,14 +331,114 @@ function flipVariable(
   return neighbors;
 }
 
-function countViolations(constraints: Constraint[], assignment: Assignment): number {
-  let count = 0;
-  for (const constraint of constraints) {
-    if (constraint.isHard && !checkConstraint(constraint, assignment)) {
-      count++;
+function generateRandomAssignment(variables: ConstraintVariable[], random: RandomFn): Assignment {
+  const assignment: Assignment = new Map();
+
+  for (const v of variables) {
+    switch (v.type) {
+      case 'bool':
+        assignment.set(v.name, random() < 0.5);
+        break;
+      case 'int': {
+        const { min, max } = integerBounds(v);
+        assignment.set(v.name, Math.floor(random() * (max - min + 1)) + min);
+        break;
+      }
+      case 'real': {
+        const { min, max } = realBounds(v);
+        assignment.set(v.name, random() * (max - min) + min);
+        break;
+      }
+      case 'bitvec': {
+        const maxVal = 2 ** (v.bitWidth || 8) - 1;
+        assignment.set(v.name, Math.floor(random() * (maxVal + 1)));
+        break;
+      }
     }
   }
-  return count;
+
+  return assignment;
+}
+
+function objectiveOf(problem: ConstraintProblem, assignment: Assignment): number | undefined {
+  if (!problem.objective) return undefined;
+  const value = evaluateExpression(problem.objective.expression, assignment);
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function toCandidate(
+  problem: ConstraintProblem,
+  assignment: Assignment,
+  softScore: number
+): Candidate {
+  const model: ConstraintModel = { assignments: Object.fromEntries(assignment) };
+  const objectiveValue = objectiveOf(problem, assignment);
+  if (objectiveValue !== undefined) model.objectiveValue = objectiveValue;
+  return { model, softScore };
+}
+
+function isBetterCandidate(
+  candidate: Candidate,
+  best: Candidate | null,
+  problem: ConstraintProblem
+): boolean {
+  if (!best) return true;
+  if (candidate.softScore !== best.softScore) return candidate.softScore < best.softScore;
+  if (!problem.objective) return false;
+  const value = candidate.model.objectiveValue;
+  const bestValue = best.model.objectiveValue;
+  if (value === undefined) return false;
+  if (bestValue === undefined) return true;
+  return isBetterObjective(value, bestValue, problem.objective.type);
+}
+
+function needsOptimization(problem: ConstraintProblem): boolean {
+  return problem.objective !== undefined || problem.constraints.some((c) => !c.isHard);
+}
+
+function solveExhaustively(
+  problem: ConstraintProblem,
+  domains: (boolean | number)[][],
+  config: SimpleSATConfig
+): SolverResult {
+  const startTime = Date.now();
+  const optimize = needsOptimization(problem);
+  const indices = new Array<number>(domains.length).fill(0);
+  let best: Candidate | null = null;
+
+  if (domains.some((d) => d.length === 0)) return { status: 'unsat' };
+
+  for (let iteration = 0; ; iteration++) {
+    if ((iteration & 1023) === 0 && Date.now() - startTime > config.timeout) {
+      return best ? { status: 'sat', model: best.model } : { status: 'timeout' };
+    }
+
+    const assignment: Assignment = new Map();
+    problem.variables.forEach((v, i) => assignment.set(v.name, domains[i][indices[i]]));
+
+    const check = checkAllConstraints(problem.constraints, assignment);
+    if (check.satisfied) {
+      const candidate = toCandidate(problem, assignment, check.softScore);
+      if (!optimize) return { status: 'sat', model: candidate.model };
+      if (isBetterCandidate(candidate, best, problem)) best = candidate;
+    }
+
+    let position = 0;
+    while (position < indices.length) {
+      indices[position]++;
+      if (indices[position] < domains[position].length) break;
+      indices[position] = 0;
+      position++;
+    }
+    if (position === indices.length) break;
+  }
+
+  return best ? { status: 'sat', model: best.model } : { status: 'unsat' };
+}
+
+function cost(constraints: Constraint[], assignment: Assignment): number {
+  const check = checkAllConstraints(constraints, assignment);
+  return check.violatedHard.length * HARD_VIOLATION_COST + check.softScore;
 }
 
 function solveWithLocalSearch(
@@ -334,143 +447,78 @@ function solveWithLocalSearch(
   random: RandomFn
 ): SolverResult {
   const startTime = Date.now();
+  const optimize = needsOptimization(problem);
   let assignment = generateInitialAssignment(problem.variables);
-  let bestAssignment = assignment;
-  let bestViolations = countViolations(problem.constraints, assignment);
-
-  let bestSatModel: ConstraintModel | null = null;
-
+  let currentCost = cost(problem.constraints, assignment);
+  let best: Candidate | null = null;
+  let fewestViolations = Infinity;
+  let stagnation = 0;
   let iteration = 0;
-  let noImprovementCount = 0;
 
-  while (iteration < config.maxIterations) {
+  for (; iteration < config.maxIterations; iteration++) {
     if (Date.now() - startTime > config.timeout) {
-      if (bestSatModel) {
-        return { status: 'sat', model: bestSatModel };
-      }
-      return { status: 'timeout' };
+      return best ? { status: 'sat', model: best.model } : { status: 'timeout' };
     }
 
     const check = checkAllConstraints(problem.constraints, assignment);
+    fewestViolations = Math.min(fewestViolations, check.violatedHard.length);
 
     if (check.satisfied) {
-      const model: ConstraintModel = {
-        assignments: Object.fromEntries(assignment),
-      };
-
-      if (problem.objective) {
-        const objValue = evaluateExpression(problem.objective.expression, assignment);
-        if (typeof objValue === 'number') {
-          model.objectiveValue = objValue;
-          if (
-            !bestSatModel ||
-            isBetterObjective(objValue, bestSatModel.objectiveValue!, problem.objective.type)
-          ) {
-            bestSatModel = model;
-          }
-        }
-      } else {
-        return { status: 'sat', model };
+      const candidate = toCandidate(problem, assignment, check.softScore);
+      if (!optimize) return { status: 'sat', model: candidate.model };
+      if (isBetterCandidate(candidate, best, problem)) {
+        best = candidate;
+        stagnation = 0;
       }
     }
 
-    const violations = check.violatedHard.length;
-    if (violations < bestViolations) {
-      bestViolations = violations;
-      bestAssignment = new Map(assignment);
-      noImprovementCount = 0;
-    } else {
-      noImprovementCount++;
-    }
-
-    if (noImprovementCount > 100) {
-      assignment = generateRandomAssignment(problem.variables, random);
-      noImprovementCount = 0;
-    }
-
-    let improved = false;
-
+    let moved = false;
     for (const variable of problem.variables) {
-      const neighbors = flipVariable(assignment, variable);
+      for (const neighbor of flipVariable(assignment, variable)) {
+        const neighborCost = cost(problem.constraints, neighbor);
+        const improvesCost = neighborCost < currentCost;
+        const improvesObjective =
+          neighborCost === currentCost &&
+          check.satisfied &&
+          problem.objective !== undefined &&
+          isBetterCandidate(
+            toCandidate(problem, neighbor, check.softScore),
+            toCandidate(problem, assignment, check.softScore),
+            problem
+          );
 
-      for (const neighbor of neighbors) {
-        const neighborViolations = countViolations(problem.constraints, neighbor);
-
-        if (neighborViolations < violations) {
+        if (improvesCost || improvesObjective) {
           assignment = neighbor;
-          improved = true;
+          currentCost = neighborCost;
+          moved = true;
           break;
         }
       }
-
-      if (improved) break;
+      if (moved) break;
     }
 
-    if (!improved) {
+    if (!moved) stagnation++;
+
+    if (stagnation > 100) {
+      assignment = generateRandomAssignment(problem.variables, random);
+      currentCost = cost(problem.constraints, assignment);
+      stagnation = 0;
+    } else if (!moved) {
       const randomVar = problem.variables[Math.floor(random() * problem.variables.length)];
       const neighbors = flipVariable(assignment, randomVar);
       if (neighbors.length > 0) {
         assignment = neighbors[Math.floor(random() * neighbors.length)];
+        currentCost = cost(problem.constraints, assignment);
       }
     }
-
-    iteration++;
   }
 
-  if (bestSatModel) {
-    return { status: 'sat', model: bestSatModel };
-  }
-
-  const finalCheck = checkAllConstraints(problem.constraints, bestAssignment);
-
-  if (finalCheck.satisfied) {
-    const model: ConstraintModel = {
-      assignments: Object.fromEntries(bestAssignment),
-    };
-    return { status: 'sat', model };
-  }
+  if (best) return { status: 'sat', model: best.model };
 
   return {
     status: 'unknown',
-    reason: `Could not find satisfying assignment after ${iteration} iterations. Best had ${bestViolations} violations.`,
+    reason: `Could not find satisfying assignment after ${iteration} iterations. Best had ${fewestViolations} violations.`,
   };
-}
-
-function generateRandomAssignment(
-  variables: ConstraintVariable[],
-  random: RandomFn = Math.random
-): Assignment {
-  const assignment = new Map<string, boolean | number>();
-
-  for (const v of variables) {
-    switch (v.type) {
-      case 'bool':
-        assignment.set(v.name, random() < 0.5);
-        break;
-
-      case 'int': {
-        const min = v.domain?.min ?? -100;
-        const max = v.domain?.max ?? 100;
-        assignment.set(v.name, Math.floor(random() * (max - min + 1)) + min);
-        break;
-      }
-
-      case 'real': {
-        const min = v.domain?.min ?? -100;
-        const max = v.domain?.max ?? 100;
-        assignment.set(v.name, random() * (max - min) + min);
-        break;
-      }
-
-      case 'bitvec': {
-        const maxVal = Math.pow(2, v.bitWidth || 8) - 1;
-        assignment.set(v.name, Math.floor(random() * (maxVal + 1)));
-        break;
-      }
-    }
-  }
-
-  return assignment;
 }
 
 export function solveSAT(
@@ -483,79 +531,24 @@ export function solveSAT(
       ? createSeededRandom(mergedConfig.randomSeed)
       : Math.random;
 
-  if (problem.variables.length === 0) {
-    return {
-      status: 'sat',
-      model: { assignments: {} },
-    };
+  const seen = new Set<string>();
+  for (const variable of problem.variables) {
+    if (seen.has(variable.name)) {
+      return { status: 'error', message: `Duplicate variable declaration: ${variable.name}` };
+    }
+    seen.add(variable.name);
   }
 
-  if (problem.constraints.length === 0) {
-    const assignment = generateInitialAssignment(problem.variables);
-    const model: ConstraintModel = {
-      assignments: Object.fromEntries(assignment),
-    };
-    return { status: 'sat', model };
-  }
-
-  const isBooleanOnly = problem.variables.every((v) => v.type === 'bool');
-
-  if (isBooleanOnly && problem.variables.length <= 20) {
-    return solveWithBruteForce(problem, mergedConfig, random);
+  const domains = problem.variables.map(finiteDomain);
+  const finite = domains.every((d): d is (boolean | number)[] => d !== null);
+  if (finite) {
+    const size = domains.reduce((acc, d) => acc * Math.max(d.length, 1), 1);
+    if (size <= MAX_EXHAUSTIVE_ASSIGNMENTS) {
+      return solveExhaustively(problem, domains, mergedConfig);
+    }
   }
 
   return solveWithLocalSearch(problem, mergedConfig, random);
-}
-
-function solveWithBruteForce(
-  problem: ConstraintProblem,
-  config: SimpleSATConfig,
-  _random: RandomFn
-): SolverResult {
-  const startTime = Date.now();
-  const n = problem.variables.length;
-  const total = Math.pow(2, n);
-
-  let bestModel: ConstraintModel | null = null;
-
-  for (let i = 0; i < total; i++) {
-    if (Date.now() - startTime > config.timeout) {
-      if (bestModel) return { status: 'sat', model: bestModel };
-      return { status: 'timeout' };
-    }
-
-    const assignment = new Map<string, boolean | number>();
-
-    for (let j = 0; j < n; j++) {
-      assignment.set(problem.variables[j].name, ((i >> j) & 1) === 1);
-    }
-
-    const check = checkAllConstraints(problem.constraints, assignment);
-
-    if (check.satisfied) {
-      const model: ConstraintModel = {
-        assignments: Object.fromEntries(assignment),
-      };
-
-      if (problem.objective) {
-        const objValue = evaluateExpression(problem.objective.expression, assignment);
-        if (typeof objValue === 'number') {
-          model.objectiveValue = objValue;
-          if (
-            !bestModel ||
-            isBetterObjective(objValue, bestModel.objectiveValue!, problem.objective.type)
-          ) {
-            bestModel = model;
-          }
-        }
-      } else {
-        return { status: 'sat', model };
-      }
-    }
-  }
-
-  if (bestModel) return { status: 'sat', model: bestModel };
-  return { status: 'unsat' };
 }
 
 export class SimpleSATSolver {

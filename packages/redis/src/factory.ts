@@ -26,12 +26,20 @@ interface RawRedisClient {
   publish(channel: string, message: string): Promise<number>;
   subscribe(channel: string): Promise<void>;
   unsubscribe(channel: string): Promise<void>;
-  keys(pattern: string): Promise<string[]>;
+  scan(cursor: string, ...args: (string | number)[]): Promise<[string, string[]]>;
   on(event: string, callback: EventCallback): void;
   off(event: string, callback: EventCallback): void;
   duplicate(): RawRedisClient;
   info(section?: string): Promise<string>;
+  nodes?(role: 'master'): RawRedisClient[];
 }
+
+interface WrapOptions {
+  keyPrefix: string;
+  cluster: boolean;
+}
+
+const SCAN_BATCH_SIZE = 500;
 
 /**
  * Create a Redis client from configuration
@@ -58,14 +66,11 @@ interface RawRedisClient {
  * ```
  */
 export async function createRedisClient(config: RedisConfig): Promise<RedisClient> {
-  const ioredisModule = await import('ioredis');
-  const ioredis = (ioredisModule.default ?? ioredisModule) as unknown as {
-    new (url: string, options?: Record<string, unknown>): RawRedisClient;
-    Cluster: new (
-      nodes: { host: string; port: number }[],
-      options?: Record<string, unknown>
-    ) => RawRedisClient;
-  };
+  if (isClusterConfig(config) && config.nodes.length === 0) {
+    throw new Error('Redis cluster configuration requires at least one node');
+  }
+
+  const ioredis = await loadIoRedis();
 
   if (isClusterConfig(config)) {
     return createClusterClient(ioredis, config);
@@ -80,6 +85,20 @@ interface IoRedis {
     nodes: { host: string; port: number }[],
     options?: Record<string, unknown>
   ) => RawRedisClient;
+}
+
+async function loadIoRedis(): Promise<IoRedis> {
+  try {
+    const ioredisModule = await import('ioredis');
+    return (ioredisModule.default ?? ioredisModule) as unknown as IoRedis;
+  } catch (error) {
+    throw new Error(
+      '@cogitator-ai/redis requires the "ioredis" package. Install it: pnpm add ioredis',
+      {
+        cause: error,
+      }
+    );
+  }
 }
 
 /**
@@ -98,7 +117,7 @@ function createStandaloneClient(ioredis: IoRedis, config: RedisStandaloneConfig)
     retryStrategy: (times: number) => Math.min(times * 50, 2000),
   });
 
-  return wrapClient(client);
+  return wrapClient(client, { keyPrefix: config.keyPrefix ?? '', cluster: false });
 }
 
 /**
@@ -118,7 +137,7 @@ function createClusterClient(ioredis: IoRedis, config: RedisClusterConfig): Redi
     keyPrefix: config.keyPrefix,
   });
 
-  return wrapClient(cluster);
+  return wrapClient(cluster, { keyPrefix: config.keyPrefix ?? '', cluster: true });
 }
 
 /**
@@ -128,11 +147,42 @@ function buildUrl(host?: string, port?: number): string {
   return `redis://${host ?? 'localhost'}:${port ?? 6379}`;
 }
 
+function escapeGlob(value: string): string {
+  return value.replace(/[*?[\]\\]/g, '\\$&');
+}
+
+/**
+ * KEYS-compatible lookup built on SCAN: non-blocking, covers every master of a cluster,
+ * and applies/strips the key prefix (ioredis does not prefix patterns).
+ */
+async function scanKeys(
+  client: RawRedisClient,
+  pattern: string,
+  options: WrapOptions
+): Promise<string[]> {
+  const nodes = options.cluster && client.nodes ? client.nodes('master') : [client];
+  const match = escapeGlob(options.keyPrefix) + pattern;
+  const found = new Set<string>();
+
+  for (const node of nodes) {
+    let cursor = '0';
+    do {
+      const [next, batch] = await node.scan(cursor, 'MATCH', match, 'COUNT', SCAN_BATCH_SIZE);
+      for (const key of batch) {
+        found.add(key.startsWith(options.keyPrefix) ? key.slice(options.keyPrefix.length) : key);
+      }
+      cursor = next;
+    } while (cursor !== '0');
+  }
+
+  return [...found];
+}
+
 /**
  * Wrap raw Redis client as unified RedisClient interface
  */
-function wrapClient(client: RawRedisClient): RedisClient {
-  const subscriptionHandlers = new Map<string, EventCallback>();
+function wrapClient(client: RawRedisClient, options: WrapOptions): RedisClient {
+  const subscriptionHandlers = new Map<string, Set<EventCallback>>();
 
   return {
     ping: () => client.ping(),
@@ -152,22 +202,24 @@ function wrapClient(client: RawRedisClient): RedisClient {
     subscribe: async (channel, callback) => {
       if (callback) {
         const handler: EventCallback = (ch: unknown, msg: unknown) => {
-          if (typeof msg === 'string') {
-            const chStr = String(ch);
-            if (chStr === channel || chStr.endsWith(channel)) {
-              callback(channel, msg);
-            }
+          if (typeof msg === 'string' && ch === channel) {
+            callback(channel, msg);
           }
         };
-        subscriptionHandlers.set(channel, handler);
+        let handlers = subscriptionHandlers.get(channel);
+        if (!handlers) {
+          handlers = new Set();
+          subscriptionHandlers.set(channel, handlers);
+        }
+        handlers.add(handler);
         client.on('message', handler);
       }
       await client.subscribe(channel);
     },
     unsubscribe: async (channel) => {
-      const handler = subscriptionHandlers.get(channel);
-      if (handler) {
-        client.off('message', handler);
+      const handlers = subscriptionHandlers.get(channel);
+      if (handlers) {
+        for (const handler of handlers) client.off('message', handler);
         subscriptionHandlers.delete(channel);
       }
       await client.unsubscribe(channel);
@@ -178,8 +230,8 @@ function wrapClient(client: RawRedisClient): RedisClient {
     off: (event, callback) => {
       client.off(event, callback as EventCallback);
     },
-    keys: (pattern) => client.keys(pattern),
-    duplicate: () => wrapClient(client.duplicate()),
+    keys: (pattern) => scanKeys(client, pattern, options),
+    duplicate: () => wrapClient(client.duplicate(), options),
     info: (section) => (section ? client.info(section) : client.info()),
   };
 }
@@ -238,9 +290,19 @@ export function parseClusterNodesEnv(env?: string): { host: string; port: number
  * - REDIS_CLUSTER_NODES - JSON array of cluster nodes
  * - REDIS_PASSWORD - authentication password
  * - REDIS_KEY_PREFIX - key prefix (default: 'cogitator:' or '{cogitator}:' for cluster)
+ *
+ * @throws when REDIS_CLUSTER_NODES is set but contains no valid node, instead of silently
+ * falling back to a standalone localhost connection
  */
 export function createConfigFromEnv(env: NodeJS.ProcessEnv = process.env): RedisConfig {
-  const clusterNodes = parseClusterNodesEnv(env.REDIS_CLUSTER_NODES);
+  const rawClusterNodes = env.REDIS_CLUSTER_NODES?.trim();
+  const clusterNodes = parseClusterNodesEnv(rawClusterNodes);
+
+  if (rawClusterNodes && (!clusterNodes || clusterNodes.length === 0)) {
+    throw new Error(
+      'REDIS_CLUSTER_NODES must be a JSON array of {"host": string, "port": number} objects'
+    );
+  }
 
   if (clusterNodes && clusterNodes.length > 0) {
     return {

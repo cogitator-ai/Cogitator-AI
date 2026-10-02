@@ -6,6 +6,7 @@ import type {
   RetrievalConfig,
   RetrievalResult,
 } from '@cogitator-ai/types';
+import { resultSource } from './chunk-indexer.js';
 
 export interface SimilarityRetrieverConfig {
   embeddingAdapter: EmbeddingAdapter;
@@ -56,7 +57,7 @@ export class SimilarityRetriever implements Retriever {
       documentId,
       content: entry.content,
       score: entry.score,
-      source: entry.sourceType,
+      source: resultSource(entry.metadata, entry.sourceType),
       metadata: entry.metadata,
     };
   }

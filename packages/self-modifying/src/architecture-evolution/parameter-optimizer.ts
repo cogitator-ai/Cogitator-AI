@@ -13,17 +13,23 @@ import {
   buildPerformanceAnalysisPrompt,
   parseCandidateGenerationResponse,
   parsePerformanceAnalysisResponse,
+  MAX_TOKENS_RANGE,
+  REFLECTION_DEPTH_RANGE,
+  TEMPERATURE_RANGE,
 } from './prompts';
+import { llmChat } from '../utils/llm-helper';
 
 export interface ParameterOptimizerOptions {
   llm: LLMBackend;
   config: ArchitectureEvolutionConfig;
   baseConfig: ArchitectureConfig;
   model?: string;
+  availableModels?: string[];
 }
 
 export interface OptimizationResult {
   recommendedConfig: ArchitectureConfig;
+  taskProfile: TaskProfile;
   candidate: EvolutionCandidate | null;
   metrics: EvolutionMetrics;
   shouldAdopt: boolean;
@@ -31,7 +37,7 @@ export interface OptimizationResult {
   reasoning: string;
 }
 
-interface HistoricalRecord {
+export interface HistoricalRecord {
   taskProfile: TaskProfile;
   config: Partial<ArchitectureConfig>;
   score: number;
@@ -44,6 +50,7 @@ export class ParameterOptimizer {
   private readonly config: ArchitectureEvolutionConfig;
   private readonly model: string;
   private readonly baseConfig: ArchitectureConfig;
+  private readonly availableModels: string[];
   private readonly capabilityAnalyzer: CapabilityAnalyzer;
   private readonly evolutionStrategy: EvolutionStrategy;
 
@@ -58,6 +65,7 @@ export class ParameterOptimizer {
     this.config = options.config;
     this.model = options.model ?? 'default';
     this.baseConfig = options.baseConfig;
+    this.availableModels = options.availableModels ?? [];
 
     this.capabilityAnalyzer = new CapabilityAnalyzer({
       llm: options.llm,
@@ -79,24 +87,28 @@ export class ParameterOptimizer {
     }
 
     const selection = this.evolutionStrategy.select(this.candidates);
+    const candidate = selection.candidate;
 
-    const mergedConfig = this.mergeConfigs(this.baseConfig, selection.candidate.config);
+    const mergedConfig = this.mergeConfigs(this.baseConfig, candidate.config);
 
     const bestEvaluated = this.candidates
       .filter((c) => c.evaluationCount > 0)
       .sort((a, b) => b.score - a.score)[0];
 
+    const threshold = this.config.adaptationThreshold ?? 0.1;
     const shouldAdopt =
+      candidate.evaluationCount === 0 ||
       !bestEvaluated ||
-      selection.candidate.id === bestEvaluated.id ||
-      selection.score >= bestEvaluated.score * 0.9;
+      candidate.id === bestEvaluated.id ||
+      candidate.score >= bestEvaluated.score - threshold;
 
     return {
       recommendedConfig: mergedConfig,
-      candidate: selection.candidate,
+      taskProfile: profile,
+      candidate,
       metrics: this.calculateMetrics(),
       shouldAdopt,
-      confidence: selection.score,
+      confidence: candidate.evaluationCount > 0 ? candidate.score : 0.5,
       reasoning: selection.reasoning,
     };
   }
@@ -143,11 +155,13 @@ export class ParameterOptimizer {
     const prompt = buildCandidateGenerationPrompt(
       profile,
       this.baseConfig,
-      this.getRelevantHistory(profile)
+      this.getRelevantHistory(profile),
+      { availableModels: this.availableModels }
     );
 
     try {
-      const response = await this.callLLM(
+      const content = await llmChat(
+        this.llm,
         [
           {
             role: 'system',
@@ -155,14 +169,17 @@ export class ParameterOptimizer {
           },
           { role: 'user', content: prompt },
         ],
-        0.5
+        { model: this.model, temperature: 0.5 }
       );
 
-      const generated = parseCandidateGenerationResponse(response.content);
+      const generated = parseCandidateGenerationResponse(content, {
+        availableModels: this.availableModels,
+      }).filter((c) => c.risk !== 'high');
 
+      const maxCandidates = this.config.maxCandidates ?? 10;
       this.candidates = [
         this.createBaselineCandidate(),
-        ...generated.map((c) => ({
+        ...generated.slice(0, Math.max(0, maxCandidates - 1)).map((c) => ({
           ...c,
           generation: this.currentGeneration,
         })),
@@ -258,18 +275,27 @@ export class ParameterOptimizer {
 
     if (Math.random() < mutationRate) {
       const base = mutated.temperature ?? this.baseConfig.temperature;
-      mutated.temperature = Math.max(0, Math.min(2, base + (Math.random() - 0.5) * 0.3));
+      mutated.temperature = Math.max(
+        TEMPERATURE_RANGE.min,
+        Math.min(TEMPERATURE_RANGE.max, base + (Math.random() - 0.5) * 0.3)
+      );
     }
 
     if (Math.random() < mutationRate) {
       const base = mutated.maxTokens ?? this.baseConfig.maxTokens;
       const delta = Math.floor((Math.random() - 0.5) * 1000);
-      mutated.maxTokens = Math.max(100, Math.min(32000, base + delta));
+      mutated.maxTokens = Math.max(
+        MAX_TOKENS_RANGE.min,
+        Math.min(MAX_TOKENS_RANGE.max, base + delta)
+      );
     }
 
     if (Math.random() < mutationRate) {
       const base = mutated.reflectionDepth ?? this.baseConfig.reflectionDepth;
-      mutated.reflectionDepth = Math.max(0, Math.min(5, base + Math.round(Math.random() * 2 - 1)));
+      mutated.reflectionDepth = Math.max(
+        REFLECTION_DEPTH_RANGE.min,
+        Math.min(REFLECTION_DEPTH_RANGE.max, base + Math.round(Math.random() * 2 - 1))
+      );
     }
 
     return mutated;
@@ -334,14 +360,14 @@ export class ParameterOptimizer {
     if (minEvaluations < minRequired) return false;
 
     const evaluationsSinceEvolution = this.history.filter(
-      (h) => h.timestamp > this.getLastEvolutionTime()
+      (h) => h.timestamp > this.lastEvolutionTimestamp
     ).length;
 
-    return evaluationsSinceEvolution >= 5;
+    return evaluationsSinceEvolution >= this.getEvaluationWindow();
   }
 
-  private getLastEvolutionTime(): number {
-    return this.lastEvolutionTimestamp;
+  private getEvaluationWindow(): number {
+    return Math.max(1, this.config.evaluationWindow ?? 10);
   }
 
   private getRelevantHistory(profile: TaskProfile): HistoricalRecord[] {
@@ -350,7 +376,7 @@ export class ParameterOptimizer {
         (h) =>
           h.taskProfile.domain === profile.domain || h.taskProfile.complexity === profile.complexity
       )
-      .slice(-10);
+      .slice(-this.getEvaluationWindow());
   }
 
   private mergeConfigs(
@@ -446,9 +472,10 @@ export class ParameterOptimizer {
   }
 
   private calculateConvergenceRate(): number {
-    if (this.history.length < 10) return 0;
+    const window = this.getEvaluationWindow();
+    if (this.history.length < window) return 0;
 
-    const recentScores = this.history.slice(-10).map((h) => h.score);
+    const recentScores = this.history.slice(-window).map((h) => h.score);
     const variance = this.calculateVariance(recentScores);
 
     return Math.max(0, 1 - variance * 4);
@@ -495,28 +522,19 @@ export class ParameterOptimizer {
     const prompt = buildPerformanceAnalysisPrompt(evaluatedCandidates, results);
 
     try {
-      const response = await this.callLLM(
+      const content = await llmChat(
+        this.llm,
         [
           { role: 'system', content: 'You are an AI performance analyst.' },
           { role: 'user', content: prompt },
         ],
-        0.2
+        { model: this.model, temperature: 0.2 }
       );
 
-      return parsePerformanceAnalysisResponse(response.content);
+      return parsePerformanceAnalysisResponse(content);
     } catch {
       return null;
     }
-  }
-
-  private async callLLM(
-    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
-    temperature: number
-  ) {
-    if (this.llm.complete) {
-      return this.llm.complete({ messages, temperature });
-    }
-    return this.llm.chat({ model: this.model, messages, temperature });
   }
 
   getCandidates(): EvolutionCandidate[] {

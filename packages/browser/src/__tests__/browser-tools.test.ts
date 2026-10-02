@@ -54,17 +54,19 @@ function createMockSession(): BrowserSession {
 
   return {
     page: mockPage,
+    context: null,
     stealthEnabled: false,
     stealthConfig: null,
+    onStart: vi.fn().mockReturnValue(() => undefined),
   } as unknown as BrowserSession;
 }
 
 describe('browserTools', () => {
   const session = createMockSession();
 
-  it('returns all 32 tools with no options', () => {
+  it('returns all 33 tools with no options', () => {
     const tools = browserTools(session);
-    expect(tools).toHaveLength(32);
+    expect(tools).toHaveLength(33);
   });
 
   it('all tools have unique names', () => {
@@ -100,9 +102,9 @@ describe('browserTools', () => {
     expect(tools).toHaveLength(4);
   });
 
-  it('returns 5 network tools', () => {
+  it('returns 6 network tools', () => {
     const tools = browserTools(session, { modules: ['network'] });
-    expect(tools).toHaveLength(5);
+    expect(tools).toHaveLength(6);
   });
 
   it('combines modules correctly', () => {

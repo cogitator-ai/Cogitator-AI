@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import type { A2AServer } from '../server.js';
 import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
-import { buildSseErrorEvent } from './sse-error-event.js';
+import { firstHeader, isStreamRequest, pipeJsonRpcStream, SSE_HEADERS } from './shared.js';
 
 export function a2aFastify(server: A2AServer): FastifyPluginAsync {
   return async (fastify: FastifyInstance) => {
@@ -24,36 +24,30 @@ export function a2aFastify(server: A2AServer): FastifyPluginAsync {
         return reply.send(createErrorResponse(null, errors.contentTypeNotSupported(contentType)));
       }
 
-      const body = request.body as Record<string, unknown> | undefined;
-      const isStreaming =
-        request.headers.accept?.includes('text/event-stream') || body?.method === 'message/stream';
+      const body: unknown = request.body;
+      const authToken = server.getAuthToken((name) =>
+        firstHeader(request.headers[name.toLowerCase()])
+      );
 
-      if (isStreaming) {
+      if (isStreamRequest(body)) {
         void reply.hijack();
-        reply.raw.writeHead(200, {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          Connection: 'keep-alive',
-          'X-Accel-Buffering': 'no',
-        });
+        const raw = reply.raw;
+        const controller = new AbortController();
+        raw.on('close', () => controller.abort());
+        raw.writeHead(200, SSE_HEADERS);
 
-        try {
-          for await (const event of server.handleJsonRpcStream(body)) {
-            if (reply.raw.writableEnded) break;
-            reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
-          }
-          if (!reply.raw.writableEnded) reply.raw.write('data: [DONE]\n\n');
-        } catch (error) {
-          if (!reply.raw.writableEnded) {
-            reply.raw.write(`data: ${JSON.stringify(buildSseErrorEvent(error))}\n\n`);
-          }
-        }
-        if (!reply.raw.writableEnded) reply.raw.end();
+        await pipeJsonRpcStream(server, body, authToken, controller.signal, (frame) => {
+          if (!raw.writableEnded && !raw.destroyed) raw.write(frame);
+        });
+        if (!raw.writableEnded) raw.end();
         return;
       }
 
       try {
-        const response = await server.handleJsonRpc(body);
+        const response = await server.handleJsonRpc(body, authToken);
+        if (response === null) {
+          return reply.code(204).send();
+        }
         return reply.send(response);
       } catch (error) {
         return reply.send(createErrorResponse(null, errors.internalError(String(error))));

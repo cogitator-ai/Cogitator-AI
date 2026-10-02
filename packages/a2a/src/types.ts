@@ -14,6 +14,14 @@ export function isTerminalState(state: TaskState): boolean {
   return (TERMINAL_STATES as readonly string[]).includes(state);
 }
 
+/**
+ * States after which a streaming response is closed: terminal states plus
+ * `input-required`, where the task pauses until the client sends a follow-up.
+ */
+export function isStreamFinalState(state: TaskState): boolean {
+  return state === 'input-required' || isTerminalState(state);
+}
+
 export interface TextPart {
   type: 'text';
   text: string;
@@ -113,10 +121,16 @@ export interface AgentCard {
 }
 
 export interface SendMessageConfiguration {
+  /** Only return artifacts whose MIME type is in this list */
   acceptedOutputModes?: string[];
+  /** Trim the returned task history to the last N messages (0 = no history) */
   historyLength?: number;
+  /** Wait for the task to finish (default: true). When false the task is returned while still working. */
   blocking?: boolean;
+  /** Maximum agent run time in ms */
   timeout?: number;
+  /** Register a push notification webhook before the task starts executing */
+  pushNotificationConfig?: PushNotificationConfig;
 }
 
 export interface TaskFilter {
@@ -182,6 +196,9 @@ export interface CogitatorLike {
       signal?: AbortSignal;
       stream?: boolean;
       onToken?: (token: string) => void;
+      threadId?: string;
+      timeout?: number;
+      loadHistory?: boolean;
     }
   ): Promise<AgentRunResult>;
 }
@@ -189,6 +206,8 @@ export interface CogitatorLike {
 export interface A2AAuthConfig {
   type: 'bearer' | 'apiKey';
   validate: (credentials: string) => Promise<boolean>;
+  /** Header carrying the API key when `type` is 'apiKey' (default: 'x-api-key') */
+  headerName?: string;
 }
 
 export interface A2AServerConfig {

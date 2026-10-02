@@ -19,18 +19,130 @@ const DEFAULT_Z3_CONFIG: Required<Z3SolverConfig> = {
   logLevel: 'off',
 };
 
-let z3Module: unknown = null;
+interface Z3Expr {
+  sexpr(): string;
+}
 
-async function loadZ3(): Promise<unknown> {
-  if (z3Module) return z3Module;
+interface Z3Bool extends Z3Expr {
+  eq(other: Z3Bool): Z3Bool;
+  neq(other: Z3Bool): Z3Bool;
+}
 
-  try {
-    const z3 = await import('z3-solver');
-    z3Module = z3;
-    return z3Module;
-  } catch {
-    throw new Error('Z3 solver not available. Install z3-solver package: npm install z3-solver');
-  }
+interface Z3Arith extends Z3Expr {
+  add(other: Z3Arith): Z3Arith;
+  sub(other: Z3Arith): Z3Arith;
+  mul(other: Z3Arith): Z3Arith;
+  div(other: Z3Arith): Z3Arith;
+  mod(other: Z3Arith): Z3Arith;
+  pow(other: Z3Arith): Z3Arith;
+  neg(): Z3Arith;
+  eq(other: Z3Arith): Z3Bool;
+  neq(other: Z3Arith): Z3Bool;
+  gt(other: Z3Arith): Z3Bool;
+  ge(other: Z3Arith): Z3Bool;
+  lt(other: Z3Arith): Z3Bool;
+  le(other: Z3Arith): Z3Bool;
+}
+
+interface Z3BitVec extends Z3Expr {
+  add(other: Z3BitVec): Z3BitVec;
+  sub(other: Z3BitVec): Z3BitVec;
+  mul(other: Z3BitVec): Z3BitVec;
+  udiv(other: Z3BitVec): Z3BitVec;
+  urem(other: Z3BitVec): Z3BitVec;
+  eq(other: Z3BitVec): Z3Bool;
+  neq(other: Z3BitVec): Z3Bool;
+  ugt(other: Z3BitVec): Z3Bool;
+  uge(other: Z3BitVec): Z3Bool;
+  ult(other: Z3BitVec): Z3Bool;
+  ule(other: Z3BitVec): Z3Bool;
+}
+
+interface Z3IntNum extends Z3Arith {
+  value(): bigint;
+}
+
+interface Z3RatNum extends Z3Arith {
+  asNumber(): number;
+}
+
+interface Z3BitVecNum extends Z3BitVec {
+  value(): bigint;
+}
+
+interface Z3Model {
+  eval(expr: Z3Expr, modelCompletion?: boolean): Z3Expr;
+}
+
+interface Z3Solver {
+  set(key: string, value: unknown): void;
+  add(...exprs: Z3Bool[]): void;
+  check(): Promise<'sat' | 'unsat' | 'unknown'>;
+  model(): Z3Model;
+  reasonUnknown?(): string;
+}
+
+interface Z3Optimize extends Z3Solver {
+  addSoft(expr: Z3Bool, weight: number): void;
+  minimize(expr: Z3Arith): void;
+  maximize(expr: Z3Arith): void;
+}
+
+interface Z3Context {
+  Bool: { val(value: boolean): Z3Bool; const(name: string): Z3Bool };
+  Int: { val(value: number | bigint): Z3Arith; const(name: string): Z3Arith };
+  Real: { val(value: number): Z3Arith; const(name: string): Z3Arith };
+  BitVec: {
+    val(value: number | bigint, bits: number): Z3BitVec;
+    const(name: string, bits: number): Z3BitVec;
+  };
+  Solver: new () => Z3Solver;
+  Optimize: new () => Z3Optimize;
+  And(...args: Z3Bool[]): Z3Bool;
+  Or(...args: Z3Bool[]): Z3Bool;
+  Not(arg: Z3Bool): Z3Bool;
+  Implies(a: Z3Bool, b: Z3Bool): Z3Bool;
+  If<T extends Z3Expr>(condition: Z3Bool, onTrue: T, onFalse: T): T;
+  Distinct(...args: Z3Expr[]): Z3Bool;
+  ToReal(expr: Z3Arith): Z3Arith;
+  isTrue(expr: Z3Expr): boolean;
+  isFalse(expr: Z3Expr): boolean;
+  isIntVal(expr: Z3Expr): expr is Z3IntNum;
+  isRealVal(expr: Z3Expr): expr is Z3RatNum;
+  isBitVecVal(expr: Z3Expr): expr is Z3BitVecNum;
+}
+
+interface Z3Module {
+  init(): Promise<{ Context: new (name: string) => Z3Context }>;
+}
+
+let z3ModulePromise: Promise<Z3Module> | null = null;
+let z3ContextPromise: Promise<Z3Context> | null = null;
+
+function loadZ3(): Promise<Z3Module> {
+  z3ModulePromise ??= import('z3-solver')
+    .then((module) => module as unknown as Z3Module)
+    .catch((error: unknown) => {
+      z3ModulePromise = null;
+      throw new Error(
+        `Z3 solver not available (${error instanceof Error ? error.message : String(error)}). ` +
+          'Install it with: npm install z3-solver'
+      );
+    });
+  return z3ModulePromise;
+}
+
+function getZ3Context(): Promise<Z3Context> {
+  z3ContextPromise ??= loadZ3()
+    .then(async (z3) => {
+      const { Context } = await z3.init();
+      return new Context('cogitator');
+    })
+    .catch((error: unknown) => {
+      z3ContextPromise = null;
+      throw error;
+    });
+  return z3ContextPromise;
 }
 
 export async function isZ3Available(): Promise<boolean> {
@@ -42,386 +154,534 @@ export async function isZ3Available(): Promise<boolean> {
   }
 }
 
-interface Z3Context {
-  Context: new (name: string) => Z3ContextInstance;
+type Translated =
+  | { kind: 'bool'; expr: Z3Bool }
+  | { kind: 'int'; expr: Z3Arith }
+  | { kind: 'real'; expr: Z3Arith }
+  | { kind: 'bitvec'; expr: Z3BitVec; bits: number }
+  | { kind: 'literal'; value: number };
+
+type NumericKind = 'int' | 'real' | { bits: number };
+
+type CoercedNumbers =
+  | { kind: 'arith'; real: boolean; exprs: Z3Arith[] }
+  | { kind: 'bitvec'; bits: number; exprs: Z3BitVec[] };
+
+class UnsupportedModelValueError extends Error {}
+
+class Z3Translator {
+  constructor(
+    private readonly ctx: Z3Context,
+    private readonly variables: Map<string, Translated>
+  ) {}
+
+  translate(expr: ConstraintExpression): Translated {
+    switch (expr.type) {
+      case 'variable': {
+        const variable = this.variables.get(expr.name);
+        if (!variable) throw new Error(`Unknown variable: ${expr.name}`);
+        return variable;
+      }
+      case 'constant':
+        return typeof expr.value === 'boolean'
+          ? { kind: 'bool', expr: this.ctx.Bool.val(expr.value) }
+          : { kind: 'literal', value: expr.value };
+      case 'operation':
+        return this.translateOperation(expr.operator, expr.operands);
+    }
+  }
+
+  toBool(value: Translated, context: string): Z3Bool {
+    if (value.kind !== 'bool') throw new Error(`${context} expects a boolean operand`);
+    return value.expr;
+  }
+
+  toArith(value: Translated, context: string): Z3Arith {
+    const coerced = this.coerce([value], context);
+    if (coerced.kind !== 'arith') throw new Error(`${context} expects an arithmetic operand`);
+    return coerced.exprs[0];
+  }
+
+  private targetKind(values: Translated[], context: string): NumericKind {
+    let target: NumericKind = 'int';
+    for (const value of values) {
+      switch (value.kind) {
+        case 'bool':
+          throw new Error(`${context} expects numeric operands`);
+        case 'bitvec':
+          if (typeof target === 'object' && target.bits !== value.bits) {
+            throw new Error(`${context} mixes bit-vectors of different widths`);
+          }
+          target = { bits: value.bits };
+          break;
+        case 'real':
+          if (typeof target === 'object') {
+            throw new Error(`${context} cannot mix bit-vectors and real numbers`);
+          }
+          target = 'real';
+          break;
+        case 'literal':
+          if (!Number.isInteger(value.value) && target === 'int') target = 'real';
+          break;
+        case 'int':
+          if (typeof target === 'object') {
+            throw new Error(`${context} cannot mix bit-vectors and integer variables`);
+          }
+          break;
+      }
+    }
+    return target;
+  }
+
+  coerce(values: Translated[], context: string): CoercedNumbers {
+    const target = this.targetKind(values, context);
+
+    if (typeof target === 'object') {
+      const exprs = values.map((value) => {
+        if (value.kind === 'bitvec') return value.expr;
+        if (value.kind === 'literal' && Number.isInteger(value.value) && value.value >= 0) {
+          return this.ctx.BitVec.val(BigInt(value.value), target.bits);
+        }
+        throw new Error(`${context} expects non-negative integer literals for bit-vectors`);
+      });
+      return { kind: 'bitvec', bits: target.bits, exprs };
+    }
+
+    const real = target === 'real';
+    const exprs = values.map((value): Z3Arith => {
+      switch (value.kind) {
+        case 'literal':
+          return real ? this.ctx.Real.val(value.value) : this.ctx.Int.val(BigInt(value.value));
+        case 'int':
+          return real ? this.ctx.ToReal(value.expr) : value.expr;
+        case 'real':
+          return value.expr;
+        default:
+          throw new Error(`${context} expects numeric operands`);
+      }
+    });
+    return { kind: 'arith', real, exprs };
+  }
+
+  private numeric(coerced: CoercedNumbers, exprs: Z3Arith[] | Z3BitVec[]): Translated {
+    if (coerced.kind === 'bitvec') {
+      return { kind: 'bitvec', bits: coerced.bits, expr: exprs[0] as Z3BitVec };
+    }
+    return { kind: coerced.real ? 'real' : 'int', expr: exprs[0] as Z3Arith };
+  }
+
+  private fold(
+    operands: Translated[],
+    context: string,
+    arith: (a: Z3Arith, b: Z3Arith) => Z3Arith,
+    bitvec: (a: Z3BitVec, b: Z3BitVec) => Z3BitVec
+  ): Translated {
+    if (operands.length === 0) throw new Error(`${context} requires operands`);
+    const coerced = this.coerce(operands, context);
+    if (coerced.kind === 'bitvec') {
+      return {
+        kind: 'bitvec',
+        bits: coerced.bits,
+        expr: coerced.exprs.reduce((a, b) => bitvec(a, b)),
+      };
+    }
+    return this.numeric(coerced, [coerced.exprs.reduce((a, b) => arith(a, b))]);
+  }
+
+  private compare(
+    operands: Translated[],
+    context: string,
+    arith: (a: Z3Arith, b: Z3Arith) => Z3Bool,
+    bitvec: (a: Z3BitVec, b: Z3BitVec) => Z3Bool
+  ): Translated {
+    this.requireArity(operands, 2, context);
+    const coerced = this.coerce(operands, context);
+    const expr =
+      coerced.kind === 'bitvec'
+        ? bitvec(coerced.exprs[0], coerced.exprs[1])
+        : arith(coerced.exprs[0], coerced.exprs[1]);
+    return { kind: 'bool', expr };
+  }
+
+  private requireArity(operands: Translated[], arity: number, context: string): void {
+    if (operands.length !== arity) {
+      throw new Error(`${context} expects ${arity} operand(s), got ${operands.length}`);
+    }
+  }
+
+  private equality(operands: Translated[], negate: boolean): Translated {
+    const context = negate ? 'neq' : 'eq';
+    this.requireArity(operands, 2, context);
+    const [a, b] = operands;
+
+    if (a.kind === 'bool' || b.kind === 'bool') {
+      const left = this.toBool(a, context);
+      const right = this.toBool(b, context);
+      return { kind: 'bool', expr: negate ? left.neq(right) : left.eq(right) };
+    }
+
+    return this.compare(
+      operands,
+      context,
+      (x, y) => (negate ? x.neq(y) : x.eq(y)),
+      (x, y) => (negate ? x.neq(y) : x.eq(y))
+    );
+  }
+
+  private cardinality(
+    operator: 'atMost' | 'atLeast' | 'exactly',
+    operands: ConstraintExpression[]
+  ): Translated {
+    const [k, ...items] = operands;
+    if (k?.type !== 'constant' || typeof k.value !== 'number' || !Number.isInteger(k.value)) {
+      throw new Error(`${operator} requires a constant integer bound`);
+    }
+
+    const one = this.ctx.Int.val(1n);
+    const zero = this.ctx.Int.val(0n);
+    const count = items
+      .map((item) => this.ctx.If(this.toBool(this.translate(item), operator), one, zero))
+      .reduce((acc, term) => acc.add(term), this.ctx.Int.val(0n));
+    const bound = this.ctx.Int.val(BigInt(k.value));
+
+    const expr =
+      operator === 'atMost'
+        ? count.le(bound)
+        : operator === 'atLeast'
+          ? count.ge(bound)
+          : count.eq(bound);
+    return { kind: 'bool', expr };
+  }
+
+  private extremum(operands: Translated[], operator: 'min' | 'max'): Translated {
+    if (operands.length === 0) throw new Error(`${operator} requires operands`);
+    const coerced = this.coerce(operands, operator);
+
+    if (coerced.kind === 'bitvec') {
+      const expr = coerced.exprs.reduce((a, b) =>
+        this.ctx.If(operator === 'min' ? a.ule(b) : a.uge(b), a, b)
+      );
+      return { kind: 'bitvec', bits: coerced.bits, expr };
+    }
+
+    const expr = coerced.exprs.reduce((a, b) =>
+      this.ctx.If(operator === 'min' ? a.le(b) : a.ge(b), a, b)
+    );
+    return this.numeric(coerced, [expr]);
+  }
+
+  private translateOperation(operator: string, rawOperands: ConstraintExpression[]): Translated {
+    if (operator === 'atMost' || operator === 'atLeast' || operator === 'exactly') {
+      return this.cardinality(operator, rawOperands);
+    }
+
+    const operands = rawOperands.map((operand) => this.translate(operand));
+    const bools = (context: string) => operands.map((o) => this.toBool(o, context));
+
+    switch (operator) {
+      case 'not':
+        this.requireArity(operands, 1, 'not');
+        return { kind: 'bool', expr: this.ctx.Not(bools('not')[0]) };
+      case 'and':
+        return { kind: 'bool', expr: this.ctx.And(...bools('and')) };
+      case 'or':
+        return { kind: 'bool', expr: this.ctx.Or(...bools('or')) };
+      case 'implies': {
+        this.requireArity(operands, 2, 'implies');
+        const [a, b] = bools('implies');
+        return { kind: 'bool', expr: this.ctx.Implies(a, b) };
+      }
+      case 'iff': {
+        this.requireArity(operands, 2, 'iff');
+        const [a, b] = bools('iff');
+        return { kind: 'bool', expr: a.eq(b) };
+      }
+      case 'eq':
+        return this.equality(operands, false);
+      case 'neq':
+        return this.equality(operands, true);
+      case 'gt':
+        return this.compare(
+          operands,
+          'gt',
+          (a, b) => a.gt(b),
+          (a, b) => a.ugt(b)
+        );
+      case 'gte':
+        return this.compare(
+          operands,
+          'gte',
+          (a, b) => a.ge(b),
+          (a, b) => a.uge(b)
+        );
+      case 'lt':
+        return this.compare(
+          operands,
+          'lt',
+          (a, b) => a.lt(b),
+          (a, b) => a.ult(b)
+        );
+      case 'lte':
+        return this.compare(
+          operands,
+          'lte',
+          (a, b) => a.le(b),
+          (a, b) => a.ule(b)
+        );
+      case 'add':
+        return this.fold(
+          operands,
+          'add',
+          (a, b) => a.add(b),
+          (a, b) => a.add(b)
+        );
+      case 'mul':
+        return this.fold(
+          operands,
+          'mul',
+          (a, b) => a.mul(b),
+          (a, b) => a.mul(b)
+        );
+      case 'sub':
+        this.requireArity(operands, 2, 'sub');
+        return this.fold(
+          operands,
+          'sub',
+          (a, b) => a.sub(b),
+          (a, b) => a.sub(b)
+        );
+      case 'div':
+        this.requireArity(operands, 2, 'div');
+        return this.fold(
+          operands,
+          'div',
+          (a, b) => a.div(b),
+          (a, b) => a.udiv(b)
+        );
+      case 'mod': {
+        this.requireArity(operands, 2, 'mod');
+        const coerced = this.coerce(operands, 'mod');
+        if (coerced.kind === 'arith' && coerced.real) {
+          throw new Error('mod requires integer operands');
+        }
+        return this.fold(
+          operands,
+          'mod',
+          (a, b) => a.mod(b),
+          (a, b) => a.urem(b)
+        );
+      }
+      case 'pow': {
+        this.requireArity(operands, 2, 'pow');
+        const coerced = this.coerce(operands, 'pow');
+        if (coerced.kind === 'bitvec') throw new Error('pow is not supported for bit-vectors');
+        return this.numeric(coerced, [coerced.exprs[0].pow(coerced.exprs[1])]);
+      }
+      case 'abs': {
+        this.requireArity(operands, 1, 'abs');
+        const coerced = this.coerce(operands, 'abs');
+        if (coerced.kind === 'bitvec') return operands[0];
+        const [x] = coerced.exprs;
+        const zero = coerced.real ? this.ctx.Real.val(0) : this.ctx.Int.val(0n);
+        return this.numeric(coerced, [this.ctx.If(x.ge(zero), x, x.neg())]);
+      }
+      case 'min':
+      case 'max':
+        return this.extremum(operands, operator);
+      case 'ite': {
+        this.requireArity(operands, 3, 'ite');
+        const condition = this.toBool(operands[0], 'ite');
+        const branches = operands.slice(1);
+        if (branches.some((b) => b.kind === 'bool')) {
+          const [onTrue, onFalse] = branches.map((b) => this.toBool(b, 'ite'));
+          return { kind: 'bool', expr: this.ctx.If(condition, onTrue, onFalse) };
+        }
+        const coerced = this.coerce(branches, 'ite');
+        if (coerced.kind === 'bitvec') {
+          return {
+            kind: 'bitvec',
+            bits: coerced.bits,
+            expr: this.ctx.If(condition, coerced.exprs[0], coerced.exprs[1]),
+          };
+        }
+        return this.numeric(coerced, [this.ctx.If(condition, coerced.exprs[0], coerced.exprs[1])]);
+      }
+      case 'allDifferent': {
+        if (operands.length < 2) return { kind: 'bool', expr: this.ctx.Bool.val(true) };
+        if (operands.every((o) => o.kind === 'bool')) {
+          return { kind: 'bool', expr: this.ctx.Distinct(...bools('allDifferent')) };
+        }
+        const coerced = this.coerce(operands, 'allDifferent');
+        return { kind: 'bool', expr: this.ctx.Distinct(...coerced.exprs) };
+      }
+      default:
+        throw new Error(`Unsupported operator: ${operator}`);
+    }
+  }
 }
 
-interface Z3ContextInstance {
-  Bool: {
-    val: (value: boolean) => Z3Expr;
-    const: (name: string) => Z3Expr;
+function declareVariable(ctx: Z3Context, variable: ConstraintVariable): Translated {
+  switch (variable.type) {
+    case 'bool':
+      return { kind: 'bool', expr: ctx.Bool.const(variable.name) };
+    case 'int':
+      return { kind: 'int', expr: ctx.Int.const(variable.name) };
+    case 'real':
+      return { kind: 'real', expr: ctx.Real.const(variable.name) };
+    case 'bitvec': {
+      const bits = variable.bitWidth ?? 32;
+      return { kind: 'bitvec', bits, expr: ctx.BitVec.const(variable.name, bits) };
+    }
+    default:
+      throw new Error(`Unknown variable type: ${String(variable.type)}`);
+  }
+}
+
+function domainConstraints(
+  translator: Z3Translator,
+  variable: ConstraintVariable,
+  declared: Translated
+): Z3Bool[] {
+  if (!variable.domain || declared.kind === 'bool') return [];
+
+  const bounds: Z3Bool[] = [];
+  const { min, max } = variable.domain;
+
+  const bound = (value: number, kind: 'min' | 'max'): Z3Bool => {
+    const coerced = translator.coerce([declared, { kind: 'literal', value }], `domain ${kind}`);
+    if (coerced.kind === 'bitvec') {
+      const [v, b] = coerced.exprs;
+      return kind === 'min' ? v.uge(b) : v.ule(b);
+    }
+    const [v, b] = coerced.exprs;
+    return kind === 'min' ? v.ge(b) : v.le(b);
   };
-  Int: {
-    val: (value: number) => Z3Expr;
-    const: (name: string) => Z3Expr;
-  };
-  Real: {
-    val: (value: number) => Z3Expr;
-    const: (name: string) => Z3Expr;
-  };
-  BitVec: {
-    val: (value: number, bits: number) => Z3Expr;
-    const: (name: string, bits: number) => Z3Expr;
-  };
-  Solver: new () => Z3Solver;
-  Optimize: new () => Z3Optimizer;
-  And: (...args: Z3Expr[]) => Z3Expr;
-  Or: (...args: Z3Expr[]) => Z3Expr;
-  Not: (expr: Z3Expr) => Z3Expr;
-  Implies: (a: Z3Expr, b: Z3Expr) => Z3Expr;
-  If: (cond: Z3Expr, then: Z3Expr, else_: Z3Expr) => Z3Expr;
-  Distinct: (...args: Z3Expr[]) => Z3Expr;
+
+  if (min !== undefined) bounds.push(bound(min, 'min'));
+  if (max !== undefined) bounds.push(bound(max, 'max'));
+  return bounds;
 }
 
-interface Z3Expr {
-  add: (other: Z3Expr | number) => Z3Expr;
-  sub: (other: Z3Expr | number) => Z3Expr;
-  mul: (other: Z3Expr | number) => Z3Expr;
-  div: (other: Z3Expr | number) => Z3Expr;
-  mod: (other: Z3Expr | number) => Z3Expr;
-  pow: (other: Z3Expr | number) => Z3Expr;
-  eq: (other: Z3Expr | number | boolean) => Z3Expr;
-  neq: (other: Z3Expr | number | boolean) => Z3Expr;
-  gt: (other: Z3Expr | number) => Z3Expr;
-  ge: (other: Z3Expr | number) => Z3Expr;
-  lt: (other: Z3Expr | number) => Z3Expr;
-  le: (other: Z3Expr | number) => Z3Expr;
-  and: (other: Z3Expr) => Z3Expr;
-  or: (other: Z3Expr) => Z3Expr;
-  not: () => Z3Expr;
-  implies: (other: Z3Expr) => Z3Expr;
-  toString: () => string;
-  value: () => unknown;
+function toModelNumber(ctx: Z3Context, name: string, value: Z3Expr): number {
+  if (ctx.isIntVal(value) || ctx.isBitVecVal(value)) {
+    const raw = value.value();
+    const number = Number(raw);
+    if (!Number.isSafeInteger(number)) {
+      throw new UnsupportedModelValueError(`Value of ${name} (${raw}) exceeds safe integer range`);
+    }
+    return number;
+  }
+  if (ctx.isRealVal(value)) return value.asNumber();
+  throw new UnsupportedModelValueError(
+    `Value of ${name} is not representable as a JavaScript number: ${value.sexpr()}`
+  );
 }
 
-interface Z3Solver {
-  add: (expr: Z3Expr) => void;
-  check: () => Promise<'sat' | 'unsat' | 'unknown'>;
-  model: () => Z3Model;
-  push: () => void;
-  pop: () => void;
-  setTimeout: (ms: number) => void;
-}
-
-interface Z3Optimizer extends Z3Solver {
-  minimize: (expr: Z3Expr) => void;
-  maximize: (expr: Z3Expr) => void;
-  add_soft: (expr: Z3Expr, weight: number) => void;
-}
-
-interface Z3Model {
-  eval: (expr: Z3Expr, modelCompletion?: boolean) => Z3Expr;
-  entries: () => Array<[{ name: () => string }, Z3Expr]>;
+function isTimeoutReason(reason: string | undefined): boolean {
+  return reason !== undefined && /timeout|canceled|cancelled|resource/i.test(reason);
 }
 
 export class Z3WASMSolver {
   private config: Required<Z3SolverConfig>;
-  private ctx: Z3ContextInstance | null = null;
+  private ctx: Z3Context | null = null;
 
   constructor(config: Partial<Z3SolverConfig> = {}) {
     this.config = { ...DEFAULT_Z3_CONFIG, ...config };
   }
 
   async initialize(): Promise<void> {
-    const z3 = (await loadZ3()) as { init: () => Promise<Z3Context> };
-    const { Context } = await z3.init();
-    this.ctx = new Context('cogitator');
-  }
-
-  private async ensureInitialized(): Promise<void> {
-    if (!this.ctx) {
-      await this.initialize();
-    }
-  }
-
-  private createVariable(variable: ConstraintVariable, variables: Map<string, Z3Expr>): Z3Expr {
-    if (!this.ctx) throw new Error('Z3 not initialized');
-
-    let z3Var: Z3Expr;
-
-    switch (variable.type) {
-      case 'bool':
-        z3Var = this.ctx.Bool.const(variable.name);
-        break;
-
-      case 'int':
-        z3Var = this.ctx.Int.const(variable.name);
-        break;
-
-      case 'real':
-        z3Var = this.ctx.Real.const(variable.name);
-        break;
-
-      case 'bitvec':
-        z3Var = this.ctx.BitVec.const(variable.name, variable.bitWidth || 32);
-        break;
-
-      default:
-        throw new Error(`Unknown variable type: ${variable.type}`);
-    }
-
-    variables.set(variable.name, z3Var);
-    return z3Var;
-  }
-
-  private translateExpression(expr: ConstraintExpression, variables: Map<string, Z3Expr>): Z3Expr {
-    if (!this.ctx) throw new Error('Z3 not initialized');
-
-    switch (expr.type) {
-      case 'variable': {
-        const z3Var = variables.get(expr.name);
-        if (!z3Var) throw new Error(`Unknown variable: ${expr.name}`);
-        return z3Var;
-      }
-
-      case 'constant': {
-        if (typeof expr.value === 'boolean') {
-          return this.ctx.Bool.val(expr.value);
-        }
-        const numVal = expr.value as number;
-        if (Number.isInteger(numVal)) {
-          return this.ctx.Int.val(numVal);
-        }
-        return this.ctx.Real.val(numVal);
-      }
-
-      case 'operation': {
-        const operands = expr.operands.map((op) => this.translateExpression(op, variables));
-
-        switch (expr.operator) {
-          case 'not':
-            return this.ctx.Not(operands[0]);
-
-          case 'and':
-            return this.ctx.And(...operands);
-
-          case 'or':
-            return this.ctx.Or(...operands);
-
-          case 'implies':
-            return this.ctx.Implies(operands[0], operands[1]);
-
-          case 'iff':
-            return this.ctx.And(
-              this.ctx.Implies(operands[0], operands[1]),
-              this.ctx.Implies(operands[1], operands[0])
-            );
-
-          case 'eq':
-            return operands[0].eq(operands[1]);
-
-          case 'neq':
-            return operands[0].neq(operands[1]);
-
-          case 'gt':
-            return operands[0].gt(operands[1]);
-
-          case 'gte':
-            return operands[0].ge(operands[1]);
-
-          case 'lt':
-            return operands[0].lt(operands[1]);
-
-          case 'lte':
-            return operands[0].le(operands[1]);
-
-          case 'add':
-            return operands.reduce((a, b) => a.add(b));
-
-          case 'sub':
-            return operands[0].sub(operands[1]);
-
-          case 'mul':
-            return operands.reduce((a, b) => a.mul(b));
-
-          case 'div':
-            return operands[0].div(operands[1]);
-
-          case 'mod':
-            return operands[0].mod(operands[1]);
-
-          case 'pow':
-            return operands[0].pow(operands[1]);
-
-          case 'ite':
-            return this.ctx.If(operands[0], operands[1], operands[2]);
-
-          case 'abs': {
-            const zero = this.ctx.Int.val(0);
-            return this.ctx.If(operands[0].ge(zero), operands[0], zero.sub(operands[0]));
-          }
-
-          case 'min':
-            return this.ctx.If(operands[0].le(operands[1]), operands[0], operands[1]);
-
-          case 'max':
-            return this.ctx.If(operands[0].ge(operands[1]), operands[0], operands[1]);
-
-          case 'allDifferent':
-            return this.ctx.Distinct(...operands);
-
-          case 'atMost': {
-            const k = expr.operands[0];
-            if (k.type !== 'constant') throw new Error('atMost requires constant k');
-            const boolVars = operands.slice(1);
-            const sumExpr = boolVars.reduce((acc, v) => {
-              const one = this.ctx!.Int.val(1);
-              const zero = this.ctx!.Int.val(0);
-              return acc.add(this.ctx!.If(v, one, zero));
-            }, this.ctx.Int.val(0));
-            return sumExpr.le(k.value as number);
-          }
-
-          case 'atLeast': {
-            const k = expr.operands[0];
-            if (k.type !== 'constant') throw new Error('atLeast requires constant k');
-            const boolVars = operands.slice(1);
-            const sumExpr = boolVars.reduce((acc, v) => {
-              const one = this.ctx!.Int.val(1);
-              const zero = this.ctx!.Int.val(0);
-              return acc.add(this.ctx!.If(v, one, zero));
-            }, this.ctx.Int.val(0));
-            return sumExpr.ge(k.value as number);
-          }
-
-          case 'exactly': {
-            const k = expr.operands[0];
-            if (k.type !== 'constant') throw new Error('exactly requires constant k');
-            const boolVars = operands.slice(1);
-            const sumExpr = boolVars.reduce((acc, v) => {
-              const one = this.ctx!.Int.val(1);
-              const zero = this.ctx!.Int.val(0);
-              return acc.add(this.ctx!.If(v, one, zero));
-            }, this.ctx.Int.val(0));
-            return sumExpr.eq(k.value as number);
-          }
-
-          default:
-            throw new Error(`Unsupported operator: ${expr.operator}`);
-        }
-      }
-    }
-  }
-
-  private addDomainConstraints(
-    solver: Z3Solver,
-    problemVariables: ConstraintVariable[],
-    variables: Map<string, Z3Expr>
-  ): void {
-    if (!this.ctx) return;
-
-    for (const variable of problemVariables) {
-      const z3Var = variables.get(variable.name);
-      if (!z3Var || !variable.domain) continue;
-
-      if (variable.domain.min !== undefined) {
-        solver.add(z3Var.ge(variable.domain.min));
-      }
-
-      if (variable.domain.max !== undefined) {
-        solver.add(z3Var.le(variable.domain.max));
-      }
-    }
+    this.ctx = await getZ3Context();
   }
 
   async solve(problem: ConstraintProblem): Promise<SolverResult> {
-    try {
-      await this.ensureInitialized();
+    const startTime = Date.now();
 
-      if (!this.ctx) {
-        return { status: 'error', message: 'Failed to initialize Z3' };
+    try {
+      if (!this.ctx) await this.initialize();
+      const ctx = this.ctx!;
+
+      const variables = new Map<string, Translated>();
+      for (const variable of problem.variables) {
+        if (variables.has(variable.name)) {
+          throw new Error(`Duplicate variable declaration: ${variable.name}`);
+        }
+        variables.set(variable.name, declareVariable(ctx, variable));
       }
 
-      const variables = new Map<string, Z3Expr>();
+      const translator = new Z3Translator(ctx, variables);
+      const softConstraints = problem.constraints.filter((c) => !c.isHard);
+      const optimizeObjective = Boolean(problem.objective && this.config.enableOptimization);
+      const useOptimizer = optimizeObjective || softConstraints.length > 0;
+
+      const solver: Z3Solver = useOptimizer ? new ctx.Optimize() : new ctx.Solver();
+      solver.set('timeout', this.config.timeout);
+      solver.set('random_seed', this.config.randomSeed);
 
       for (const variable of problem.variables) {
-        this.createVariable(variable, variables);
+        const bounds = domainConstraints(translator, variable, variables.get(variable.name)!);
+        if (bounds.length > 0) solver.add(...bounds);
       }
-
-      let solver: Z3Solver;
-      let isOptimizing = false;
-
-      if (problem.objective && this.config.enableOptimization) {
-        solver = new this.ctx.Optimize();
-        isOptimizing = true;
-      } else {
-        solver = new this.ctx.Solver();
-      }
-
-      solver.setTimeout(this.config.timeout);
-
-      this.addDomainConstraints(solver, problem.variables, variables);
 
       for (const constraint of problem.constraints) {
-        const z3Expr = this.translateExpression(constraint.expression, variables);
+        const expr = translator.toBool(
+          translator.translate(constraint.expression),
+          `constraint ${constraint.name ?? constraint.id}`
+        );
         if (constraint.isHard) {
-          solver.add(z3Expr);
-        } else if (isOptimizing) {
-          (solver as Z3Optimizer).add_soft(z3Expr, constraint.weight || 1);
+          solver.add(expr);
         } else {
-          solver.add(z3Expr);
+          (solver as Z3Optimize).addSoft(expr, constraint.weight ?? 1);
         }
       }
 
-      if (isOptimizing && problem.objective) {
-        const objExpr = this.translateExpression(problem.objective.expression, variables);
-        const optimizer = solver as Z3Optimizer;
+      const objective = problem.objective
+        ? translator.toArith(translator.translate(problem.objective.expression), 'objective')
+        : undefined;
 
+      if (optimizeObjective && objective && problem.objective) {
+        const optimizer = solver as Z3Optimize;
         if (problem.objective.type === 'minimize') {
-          optimizer.minimize(objExpr);
+          optimizer.minimize(objective);
         } else {
-          optimizer.maximize(objExpr);
+          optimizer.maximize(objective);
         }
       }
 
       const status = await solver.check();
 
-      if (status === 'sat') {
-        const model = solver.model();
-        const assignments: Record<string, boolean | number> = {};
+      if (status === 'unsat') return { status: 'unsat' };
 
-        for (const [name, z3Var] of variables) {
-          const value = model.eval(z3Var, true);
-          const rawValue = value.value();
-
-          if (typeof rawValue === 'boolean') {
-            assignments[name] = rawValue;
-          } else if (typeof rawValue === 'number') {
-            assignments[name] = rawValue;
-          } else if (typeof rawValue === 'bigint') {
-            assignments[name] = Number(rawValue);
-          } else if (typeof rawValue === 'string') {
-            if (rawValue === 'true') {
-              assignments[name] = true;
-            } else if (rawValue === 'false') {
-              assignments[name] = false;
-            } else {
-              assignments[name] = parseFloat(rawValue);
-            }
-          }
+      if (status === 'unknown') {
+        const reason = solver.reasonUnknown?.();
+        if (isTimeoutReason(reason) || Date.now() - startTime >= this.config.timeout) {
+          return { status: 'timeout' };
         }
-
-        const result: ConstraintModel = { assignments };
-
-        if (problem.objective) {
-          const objExpr = this.translateExpression(problem.objective.expression, variables);
-          const objValue = model.eval(objExpr, true).value();
-          if (typeof objValue === 'number') {
-            result.objectiveValue = objValue;
-          } else if (typeof objValue === 'bigint') {
-            result.objectiveValue = Number(objValue);
-          }
-        }
-
-        return { status: 'sat', model: result };
+        return { status: 'unknown', reason: reason || 'Solver returned unknown' };
       }
 
-      if (status === 'unsat') {
-        return { status: 'unsat' };
+      const model = solver.model();
+      const assignments: Record<string, boolean | number> = {};
+
+      for (const [name, declared] of variables) {
+        if (declared.kind === 'literal') continue;
+        const value = model.eval(declared.expr, true);
+        if (declared.kind === 'bool') {
+          assignments[name] = ctx.isTrue(value);
+        } else {
+          assignments[name] = toModelNumber(ctx, name, value);
+        }
       }
 
-      return { status: 'unknown', reason: 'Solver returned unknown' };
+      const result: ConstraintModel = { assignments };
+      if (objective) {
+        result.objectiveValue = toModelNumber(ctx, 'objective', model.eval(objective, true));
+      }
+
+      return { status: 'sat', model: result };
     } catch (error) {
+      if (error instanceof UnsupportedModelValueError) {
+        return { status: 'unknown', reason: error.message };
+      }
       return {
         status: 'error',
         message: error instanceof Error ? error.message : String(error),

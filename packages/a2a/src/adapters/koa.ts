@@ -2,7 +2,7 @@ import type { Middleware, Context } from 'koa';
 import type { A2AServer } from '../server.js';
 import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
-import { buildSseErrorEvent } from './sse-error-event.js';
+import { isStreamRequest, pipeJsonRpcStream, SSE_HEADERS } from './shared.js';
 
 export function a2aKoa(server: A2AServer): Middleware {
   return async (ctx: Context, next: () => Promise<void>) => {
@@ -19,44 +19,36 @@ export function a2aKoa(server: A2AServer): Middleware {
         return;
       }
 
-      const body = (ctx.request as unknown as { body?: Record<string, unknown> }).body;
-      if (!body) {
+      const body = (ctx.request as unknown as { body?: unknown }).body;
+      if (body === undefined) {
         ctx.body = createErrorResponse(
           null,
           errors.parseError('Request body not parsed. Ensure body-parsing middleware is applied.')
         );
         return;
       }
-      const isStreaming =
-        ctx.headers.accept?.includes('text/event-stream') || body.method === 'message/stream';
+      const authToken = server.getAuthToken((name) => ctx.get(name) || undefined);
 
-      if (isStreaming) {
+      if (isStreamRequest(body)) {
         ctx.respond = false;
         const res = ctx.res;
-        res.writeHead(200, {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          Connection: 'keep-alive',
-          'X-Accel-Buffering': 'no',
-        });
+        const controller = new AbortController();
+        res.on('close', () => controller.abort());
+        res.writeHead(200, SSE_HEADERS);
 
-        try {
-          for await (const event of server.handleJsonRpcStream(body)) {
-            if (res.writableEnded) break;
-            res.write(`data: ${JSON.stringify(event)}\n\n`);
-          }
-          if (!res.writableEnded) res.write('data: [DONE]\n\n');
-        } catch (error) {
-          if (!res.writableEnded) {
-            res.write(`data: ${JSON.stringify(buildSseErrorEvent(error))}\n\n`);
-          }
-        }
+        await pipeJsonRpcStream(server, body, authToken, controller.signal, (frame) => {
+          if (!res.writableEnded && !res.destroyed) res.write(frame);
+        });
         if (!res.writableEnded) res.end();
         return;
       }
 
       try {
-        const response = await server.handleJsonRpc(body);
+        const response = await server.handleJsonRpc(body, authToken);
+        if (response === null) {
+          ctx.status = 204;
+          return;
+        }
         ctx.body = response;
       } catch (error) {
         ctx.body = createErrorResponse(null, errors.internalError(String(error)));

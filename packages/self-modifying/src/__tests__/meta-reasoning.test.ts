@@ -408,7 +408,10 @@ describe('Meta-reasoning prompts', () => {
     {
       "onTrack": true,
       "confidence": 0.85,
-      "issues": [{"type": "minor", "severity": "low", "description": "Minor formatting issues"}],
+      "issues": [
+        {"type": "repetition", "severity": "low", "description": "Repeated tool call"},
+        {"type": "minor", "severity": "low", "description": "Unknown issue type is dropped"}
+      ],
       "opportunities": [],
       "reasoning": "Good progress",
       "recommendation": {
@@ -425,6 +428,7 @@ describe('Meta-reasoning prompts', () => {
     expect(parsed?.onTrack).toBe(true);
     expect(parsed?.confidence).toBe(0.85);
     expect(parsed?.issues).toHaveLength(1);
+    expect(parsed?.issues[0].type).toBe('repetition');
   });
 
   it('handles malformed response', () => {

@@ -52,5 +52,6 @@ export {
   type CogitatorConfigInput,
   type CogitatorConfigOutput,
 } from './schema';
-export { loadYamlConfig } from './loaders/yaml';
+export { loadYamlConfig, interpolateEnv, interpolateEnvString } from './loaders/yaml';
 export { loadEnvConfig } from './loaders/env';
+export { parseDotenv, loadDotenvFile } from './loaders/dotenv';

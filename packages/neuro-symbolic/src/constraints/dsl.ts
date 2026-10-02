@@ -291,32 +291,51 @@ export class ConstraintBuilder {
     return new ConstraintBuilder(name);
   }
 
+  private declare(declaration: ConstraintVariable): Expr {
+    if (this.variables.some((v) => v.name === declaration.name)) {
+      throw new Error(`Variable '${declaration.name}' is already declared`);
+    }
+    const { domain } = declaration;
+    if (
+      domain?.min !== undefined &&
+      domain.max !== undefined &&
+      Number.isFinite(domain.min) &&
+      Number.isFinite(domain.max) &&
+      domain.min > domain.max
+    ) {
+      throw new Error(
+        `Variable '${declaration.name}' has an empty domain [${domain.min}, ${domain.max}]`
+      );
+    }
+    this.variables.push(declaration);
+    return variable(declaration.name);
+  }
+
   bool(name: string): Expr {
-    this.variables.push({ name, type: 'bool' });
-    return variable(name);
+    return this.declare({ name, type: 'bool' });
   }
 
   int(name: string, min?: number, max?: number): Expr {
-    this.variables.push({
+    return this.declare({
       name,
       type: 'int',
       domain: min !== undefined || max !== undefined ? { min, max } : undefined,
     });
-    return variable(name);
   }
 
   real(name: string, min?: number, max?: number): Expr {
-    this.variables.push({
+    return this.declare({
       name,
       type: 'real',
       domain: min !== undefined || max !== undefined ? { min, max } : undefined,
     });
-    return variable(name);
   }
 
   bitvec(name: string, bitWidth: number): Expr {
-    this.variables.push({ name, type: 'bitvec', bitWidth });
-    return variable(name);
+    if (!Number.isInteger(bitWidth) || bitWidth <= 0) {
+      throw new Error(`Bit-vector '${name}' needs a positive integer width, got ${bitWidth}`);
+    }
+    return this.declare({ name, type: 'bitvec', bitWidth });
   }
 
   boolArray(prefix: string, count: number): Expr[] {

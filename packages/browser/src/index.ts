@@ -1,4 +1,5 @@
 export { BrowserSession } from './session';
+export type { BrowserStartListener } from './session';
 export { browserTools } from './tools/index';
 
 export {
@@ -35,6 +36,7 @@ export {
   createClickByDescriptionTool,
   createNetworkTools,
   createInterceptRequestTool,
+  createRemoveInterceptorTool,
   createWaitForResponseTool,
   createBlockResourcesTool,
   createCaptureHarTool,
@@ -70,6 +72,7 @@ export {
   findByDescriptionSchema,
   clickByDescriptionSchema,
   interceptRequestSchema,
+  removeInterceptorSchema,
   waitForResponseSchema,
   blockResourcesSchema,
   captureHarSchema,
@@ -105,6 +108,7 @@ export type {
   FindByDescriptionInput,
   ClickByDescriptionInput,
   InterceptRequestInput,
+  RemoveInterceptorInput,
   WaitForResponseInput,
   BlockResourcesInput,
   CaptureHarInput,
@@ -117,12 +121,18 @@ export {
   getEvasionScripts,
   humanLikeType,
   humanLikeClick,
+  humanLikeHover,
   humanLikeScroll,
   getRandomUserAgent,
   getAllUserAgents,
 } from './stealth';
 
-export type { EvasionScriptsOptions, HumanLikeClickOptions } from './stealth';
+export type {
+  EvasionScriptsOptions,
+  HumanLikeClickOptions,
+  HumanLikeHoverOptions,
+  StealthContextOptions,
+} from './stealth';
 
 export { smartSelect, findFormField } from './utils/selectors';
 export { getReadableText, getAccessibilityTree, elementToInfo } from './utils/page-helpers';

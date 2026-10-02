@@ -15,7 +15,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && tsx ../../scripts/fix-esm-imports.ts .",
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@cogitator-ai/core": "workspace:*",
+    "@cogitator-ai/memory": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "@cogitator-ai/server-shared": "workspace:*"
   },

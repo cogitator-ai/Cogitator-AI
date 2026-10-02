@@ -340,4 +340,24 @@ describe('streamChat', () => {
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].arguments).toEqual({});
   });
+
+  it('preserves provider thought signatures on streamed tool calls', async () => {
+    const backend = createMockBackend([
+      {
+        id: 'chunk_1',
+        delta: {
+          toolCalls: [
+            { id: 'tc_1', name: 'lookup', arguments: { q: 'x' }, thoughtSignature: 'sig' },
+          ],
+        },
+        finishReason: 'tool_calls',
+      },
+    ]);
+
+    const result = await streamChat(backend, 'model', messages, registry, agent, onToken);
+
+    expect(result.toolCalls).toEqual([
+      { id: 'tc_1', name: 'lookup', arguments: { q: 'x' }, thoughtSignature: 'sig' },
+    ]);
+  });
 });

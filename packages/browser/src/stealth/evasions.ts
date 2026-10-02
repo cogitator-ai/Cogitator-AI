@@ -1,11 +1,14 @@
 export interface EvasionScriptsOptions {
   blockWebDriver?: boolean;
   fingerprintRandomization?: boolean;
+  userAgent?: string;
+  locale?: string;
 }
 
-const WEBDRIVER_EVASION = `Object.defineProperty(navigator, 'webdriver', { get: () => false });`;
+const WEBDRIVER_EVASION = `Object.defineProperty(Navigator.prototype, 'webdriver', { get: () => false, configurable: true });`;
 
-const PLUGINS_EVASION = `Object.defineProperty(navigator, 'plugins', {
+const PLUGINS_EVASION = `Object.defineProperty(Navigator.prototype, 'plugins', {
+  configurable: true,
   get: () => {
     const pluginData = [
       { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
@@ -28,7 +31,45 @@ const PLUGINS_EVASION = `Object.defineProperty(navigator, 'plugins', {
   }
 });`;
 
-const LANGUAGES_EVASION = `Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });`;
+function languagesForLocale(locale?: string): string[] {
+  if (!locale) return ['en-US', 'en'];
+  const base = locale.split('-')[0];
+  return base && base !== locale ? [locale, base] : [locale];
+}
+
+function createLanguagesEvasion(locale?: string): string {
+  return `{
+  const languages = Object.freeze(${JSON.stringify(languagesForLocale(locale))});
+  Object.defineProperty(Navigator.prototype, 'languages', { get: () => languages, configurable: true });
+}`;
+}
+
+function platformForUserAgent(userAgent: string): { platform: string; uaPlatform: string } | null {
+  if (userAgent.includes('iPhone')) return { platform: 'iPhone', uaPlatform: 'iOS' };
+  if (userAgent.includes('iPad')) return { platform: 'iPad', uaPlatform: 'iOS' };
+  if (userAgent.includes('Windows')) return { platform: 'Win32', uaPlatform: 'Windows' };
+  if (userAgent.includes('Android')) return { platform: 'Linux armv8l', uaPlatform: 'Android' };
+  if (/Macintosh|Mac OS X/.test(userAgent)) return { platform: 'MacIntel', uaPlatform: 'macOS' };
+  if (/Linux|X11/.test(userAgent)) return { platform: 'Linux x86_64', uaPlatform: 'Linux' };
+  return null;
+}
+
+function createPlatformEvasion(userAgent: string): string | null {
+  const target = platformForUserAgent(userAgent);
+  if (!target) return null;
+  return `{
+  const platform = ${JSON.stringify(target.platform)};
+  const uaPlatform = ${JSON.stringify(target.uaPlatform)};
+  Object.defineProperty(Navigator.prototype, 'platform', { get: () => platform, configurable: true });
+  if (typeof NavigatorUAData !== 'undefined') {
+    Object.defineProperty(NavigatorUAData.prototype, 'platform', { get: () => uaPlatform, configurable: true });
+    const getHighEntropyValues = NavigatorUAData.prototype.getHighEntropyValues;
+    NavigatorUAData.prototype.getHighEntropyValues = function(hints) {
+      return getHighEntropyValues.call(this, hints).then((values) => ({ ...values, platform: uaPlatform }));
+    };
+  }
+}`;
+}
 
 const WEBGL_EVASION = `{
   const getParameter = WebGLRenderingContext.prototype.getParameter;
@@ -132,12 +173,17 @@ export function getEvasionScripts(options: EvasionScriptsOptions = {}): string[]
   const evasions: Array<{ kind: EvasionKind; script: string }> = [
     { kind: 'webdriver', script: WEBDRIVER_EVASION },
     { kind: 'fingerprint', script: PLUGINS_EVASION },
-    { kind: 'fingerprint', script: LANGUAGES_EVASION },
+    { kind: 'fingerprint', script: createLanguagesEvasion(options.locale) },
     { kind: 'fingerprint', script: createCanvasEvasion() },
     { kind: 'fingerprint', script: WEBGL_EVASION },
     { kind: 'fingerprint', script: CHROME_EVASION },
     { kind: 'webdriver', script: PERMISSIONS_EVASION },
   ];
+
+  const platformEvasion = options.userAgent ? createPlatformEvasion(options.userAgent) : null;
+  if (platformEvasion) {
+    evasions.push({ kind: 'fingerprint', script: platformEvasion });
+  }
 
   return evasions
     .filter((evasion) => (evasion.kind === 'webdriver' ? includeWebdriver : includeFingerprint))

@@ -394,7 +394,11 @@ describe('mcpToCogitator', () => {
 
     const result = await tool.execute({ city: 'Tokyo' }, context);
 
-    expect(mockClient.callTool).toHaveBeenCalledWith('get_weather', { city: 'Tokyo' });
+    expect(mockClient.callTool).toHaveBeenCalledWith(
+      'get_weather',
+      { city: 'Tokyo' },
+      { signal: context.signal }
+    );
     expect(result).toEqual({ temperature: 25 });
   });
 
@@ -524,5 +528,132 @@ describe('mcpContentToResult', () => {
     const result = mcpContentToResult(content);
 
     expect(result).toEqual([{ a: 1 }, 'plain text']);
+  });
+});
+
+describe('jsonSchemaToZod edge cases', () => {
+  it('keeps arbitrary keys for object schemas without properties', () => {
+    const schema = jsonSchemaToZod({ type: 'object' });
+    expect(schema.parse({ path: '/tmp', recursive: true })).toEqual({
+      path: '/tmp',
+      recursive: true,
+    });
+  });
+
+  it('strips keys when additionalProperties is false', () => {
+    const schema = jsonSchemaToZod({ type: 'object', additionalProperties: false });
+    expect(schema.parse({ extra: 1 })).toEqual({});
+  });
+
+  it('keeps extra keys when additionalProperties is true', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+      additionalProperties: true,
+    });
+    expect(schema.parse({ id: 'a', note: 'b' })).toEqual({ id: 'a', note: 'b' });
+  });
+
+  it('validates extra keys against an additionalProperties schema', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: {
+        tags: { type: 'object', additionalProperties: { type: 'number' } },
+      },
+    });
+    expect(schema.safeParse({ tags: { a: 1 } }).success).toBe(true);
+    expect(schema.safeParse({ tags: { a: 'x' } }).success).toBe(false);
+  });
+
+  it('supports type arrays such as ["string", "null"]', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: { cursor: { type: ['string', 'null'] } },
+      required: ['cursor'],
+    });
+    expect(schema.safeParse({ cursor: 'abc' }).success).toBe(true);
+    expect(schema.safeParse({ cursor: null }).success).toBe(true);
+    expect(schema.safeParse({ cursor: 5 }).success).toBe(false);
+  });
+
+  it('supports OpenAPI nullable', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: { limit: { type: 'integer', nullable: true } },
+      required: ['limit'],
+    });
+    expect(schema.safeParse({ limit: null }).success).toBe(true);
+    expect(schema.safeParse({ limit: 1.5 }).success).toBe(false);
+  });
+
+  it('supports const', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: { kind: { const: 'search' } },
+      required: ['kind'],
+    });
+    expect(schema.safeParse({ kind: 'search' }).success).toBe(true);
+    expect(schema.safeParse({ kind: 'other' }).success).toBe(false);
+  });
+
+  it('supports enums containing null', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: { order: { enum: ['asc', 'desc', null] } },
+      required: ['order'],
+    });
+    expect(schema.safeParse({ order: null }).success).toBe(true);
+    expect(schema.safeParse({ order: 'up' }).success).toBe(false);
+  });
+
+  it('ignores patterns that are not valid ECMAScript regexes instead of throwing', () => {
+    const schema = jsonSchemaToZod({
+      type: 'object',
+      properties: { id: { type: 'string', pattern: '(?P<name>\\w+)' } },
+    });
+    expect(schema.safeParse({ id: 'anything' }).success).toBe(true);
+  });
+
+  it('round-trips nullable fields produced by zodToJsonSchema', () => {
+    const json = zodToJsonSchema(z.object({ note: z.string().nullable() }));
+    const schema = jsonSchemaToZod(json);
+    expect(schema.safeParse({ note: null }).success).toBe(true);
+    expect(schema.safeParse({ note: 'x' }).success).toBe(true);
+  });
+});
+
+describe('resultToMCPContent content detection', () => {
+  it('serializes arrays of domain objects that merely have a "type" key', () => {
+    const rows = [
+      { type: 'user', name: 'alice' },
+      { type: 'admin', name: 'bob' },
+    ];
+    const content = resultToMCPContent(rows);
+
+    expect(content).toHaveLength(1);
+    expect(content[0].type).toBe('text');
+    expect(JSON.parse((content[0] as { text: string }).text)).toEqual(rows);
+  });
+
+  it('passes through well-formed MCP content blocks', () => {
+    const blocks = [
+      { type: 'text', text: 'caption' },
+      { type: 'image', data: 'AAAA', mimeType: 'image/png' },
+      { type: 'resource', resource: { uri: 'file:///a', text: 'body' } },
+    ];
+    expect(resultToMCPContent(blocks)).toEqual(blocks);
+  });
+
+  it('rejects malformed content blocks', () => {
+    const content = resultToMCPContent([{ type: 'image', data: 'AAAA' }]);
+    expect(content[0].type).toBe('text');
+  });
+});
+
+describe('mcpContentToResult single blocks', () => {
+  it('unwraps a single non-text block', () => {
+    const image = { type: 'image' as const, data: 'AAAA', mimeType: 'image/png' };
+    expect(mcpContentToResult([image])).toEqual(image);
   });
 });

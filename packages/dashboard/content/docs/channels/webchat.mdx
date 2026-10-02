@@ -28,6 +28,7 @@ interface WebChatConfig {
   port: number;
   path?: string;       // default: '/ws'
   auth?: (token: string) => boolean;
+  maxPayload?: number; // max incoming frame size in bytes, default 1 MiB
 }
 ```
 
@@ -67,11 +68,14 @@ ws.onopen = () => ws.send(JSON.stringify({ text: 'Hi!' }));
 | Type | Fields | Description |
 |------|--------|-------------|
 | `connected` | `clientId` | Connection established |
-| `message` | `id`, `text` | New message |
+| `message` | `id`, `text`, `replyTo?` | New message |
 | `edit` | `id`, `text` | Updated message (streaming) |
+| `delete` | `id` | Message removed (e.g. aborted stream) |
 | `typing` | — | Agent is thinking |
-| `file` | `filename`, `mimeType`, `url` | File attachment |
-| `error` | `message` | Error |
+| `file` | `filename`, `mimeType`, `url?`, `data?` (base64) | File attachment |
+| `error` | `message` | Sent before closing an unauthorized socket (close code 1008) |
+
+Frames that are not JSON or have no non-empty `text` string are ignored.
 
 ## Features
 
@@ -89,4 +93,5 @@ ws.onopen = () => ws.send(JSON.stringify({ text: 'Hi!' }));
 - Perfect for building custom chat UIs
 - Auth is optional but recommended for production
 - Each WebSocket connection is treated as a separate user
+- `start()` rejects if the port is already in use; `stop()` closes all client connections (code 1001)
 - Use with reverse proxy (nginx) for TLS in production

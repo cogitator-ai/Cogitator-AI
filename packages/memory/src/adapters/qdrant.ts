@@ -158,10 +158,10 @@ export class QdrantAdapter implements EmbeddingAdapter {
           filter.must.push({ key: 'sourceType', match: { value: options.filter.sourceType } });
         }
         if (options.filter.threadId) {
-          filter.must.push({ key: 'threadId', match: { value: options.filter.threadId } });
+          filter.must.push({ key: 'metadata.threadId', match: { value: options.filter.threadId } });
         }
         if (options.filter.agentId) {
-          filter.must.push({ key: 'agentId', match: { value: options.filter.agentId } });
+          filter.must.push({ key: 'metadata.agentId', match: { value: options.filter.agentId } });
         }
       }
 

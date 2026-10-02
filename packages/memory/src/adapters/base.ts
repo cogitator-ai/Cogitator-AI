@@ -12,6 +12,8 @@ import type {
   MemoryQueryOptions,
 } from '@cogitator-ai/types';
 
+const MAX_TRACKED_THREADS = 10_000;
+
 export abstract class BaseMemoryAdapter implements MemoryAdapter {
   abstract readonly provider: MemoryProvider;
 
@@ -46,8 +48,29 @@ export abstract class BaseMemoryAdapter implements MemoryAdapter {
 
   abstract disconnect(): Promise<MemoryResult<void>>;
 
+  private lastEntryTimes = new Map<string, number>();
+
   protected generateId(prefix: string): string {
     return `${prefix}_${nanoid(12)}`;
+  }
+
+  /**
+   * Creation time for a new entry, strictly increasing per thread within this process so
+   * entries saved in the same millisecond (e.g. a user message and its reply) keep their order.
+   */
+  protected nextEntryTimestamp(threadId: string): Date {
+    const now = Date.now();
+    const last = this.lastEntryTimes.get(threadId) ?? 0;
+    const timestamp = now > last ? now : last + 1;
+
+    this.lastEntryTimes.delete(threadId);
+    this.lastEntryTimes.set(threadId, timestamp);
+    if (this.lastEntryTimes.size > MAX_TRACKED_THREADS) {
+      const oldest = this.lastEntryTimes.keys().next().value;
+      if (oldest !== undefined) this.lastEntryTimes.delete(oldest);
+    }
+
+    return new Date(timestamp);
   }
 
   protected success<T>(data: T): MemoryResult<T> {

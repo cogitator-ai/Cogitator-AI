@@ -1,16 +1,18 @@
 import type { Page, ElementHandle } from 'playwright';
 import type { ElementInfo } from '@cogitator-ai/types';
 
+function readableTextInPage(selector: string | undefined): string {
+  const scope = selector ? document.querySelector(selector) : document.body;
+  if (!scope) return '';
+  const text = scope instanceof HTMLElement ? scope.innerText : (scope.textContent ?? '');
+  return text
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export async function getReadableText(page: Page, selector?: string): Promise<string> {
-  return page.evaluate((sel) => {
-    const scope = sel ? document.querySelector(sel) : document.body;
-    if (!scope) return '';
-    const clone = scope.cloneNode(true) as HTMLElement;
-    clone
-      .querySelectorAll('script, style, noscript, svg, link[rel="stylesheet"]')
-      .forEach((el) => el.remove());
-    return clone.textContent?.trim() || clone.innerText?.trim() || '';
-  }, selector);
+  return page.evaluate(readableTextInPage, selector);
 }
 
 export interface AccessibilityNode {
@@ -25,23 +27,72 @@ export async function getAccessibilityTree(page: Page): Promise<AccessibilityNod
   return parseAriaSnapshot(raw);
 }
 
-function parseAriaSnapshot(snapshot: string): AccessibilityNode {
-  const lines = snapshot.split('\n');
+const ARIA_KEY_PATTERN = /^([A-Za-z][\w-]*)(?:\s+"((?:[^"\\]|\\.)*)")?(?:\s+\[[^\]]*\])*$/;
+
+function unescapeDoubleQuoted(value: string): string {
+  return value.replace(/\\(.)/g, '$1');
+}
+
+function unquoteYamlScalar(value: string): string {
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    return unescapeDoubleQuoted(value.slice(1, -1));
+  }
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replace(/''/g, "'");
+  }
+  return value;
+}
+
+function splitAriaEntry(entry: string): { key: string; value: string } {
+  if (entry.startsWith("'")) {
+    let i = 1;
+    while (i < entry.length) {
+      if (entry[i] === "'") {
+        if (entry[i + 1] === "'") {
+          i += 2;
+          continue;
+        }
+        break;
+      }
+      i++;
+    }
+    const key = entry.slice(1, i).replace(/''/g, "'");
+    const rest = entry.slice(i + 1).trim();
+    return { key, value: rest.startsWith(':') ? rest.slice(1).trim() : '' };
+  }
+
+  let inQuotes = false;
+  for (let i = 0; i < entry.length; i++) {
+    const ch = entry[i];
+    if (ch === '\\' && inQuotes) {
+      i++;
+      continue;
+    }
+    if (ch === '"') inQuotes = !inQuotes;
+    if (ch === ':' && !inQuotes && (i === entry.length - 1 || entry[i + 1] === ' ')) {
+      return { key: entry.slice(0, i).trim(), value: entry.slice(i + 1).trim() };
+    }
+  }
+  return { key: entry.trim(), value: '' };
+}
+
+export function parseAriaSnapshot(snapshot: string): AccessibilityNode {
   const root: AccessibilityNode = { role: 'WebArea', name: '', children: [] };
   const stack: Array<{ node: AccessibilityNode; indent: number }> = [{ node: root, indent: -1 }];
 
-  for (const line of lines) {
-    if (!line.trim() || line.trim().startsWith('/')) continue;
+  for (const line of snapshot.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('- ')) continue;
 
     const indent = line.search(/\S/);
-    const content = line.trim().replace(/^- /, '');
+    const { key, value } = splitAriaEntry(trimmed.slice(2).trim());
+    if (key.startsWith('/')) continue;
 
-    const match = /^(\w[\w\s]*?)(?:\s+"(.*)")?(?:\s+\[.*])?:?$/.exec(content);
+    const match = ARIA_KEY_PATTERN.exec(key);
     if (!match) continue;
 
-    const role = match[1].trim();
-    const name = match[2] ?? '';
-
+    const role = match[1];
+    const name = match[2] !== undefined ? unescapeDoubleQuoted(match[2]) : unquoteYamlScalar(value);
     const node: AccessibilityNode = { role, name };
 
     while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {

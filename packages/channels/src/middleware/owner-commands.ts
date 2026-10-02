@@ -9,7 +9,7 @@ export interface OwnerCommandsConfig {
   onStatus?: () => string;
   onSessions?: () => string;
   onUsers?: () => string;
-  onCompact?: (target: string) => Promise<string>;
+  onCompact?: (target: string, threadId: string) => Promise<string>;
   onModel?: (model: string, forUser?: string) => string;
   onRestart?: () => Promise<void>;
 }
@@ -50,9 +50,9 @@ const COMMANDS: Record<string, CommandDef> = {
 
   '/compact': {
     level: 'owner',
-    handler: async (args, _msg, _ctx, config) => {
+    handler: async (args, _msg, ctx, config) => {
       if (config.onCompact) {
-        return config.onCompact(args.trim() || 'current');
+        return config.onCompact(args.trim() || 'current', ctx.threadId);
       }
       return 'No compact handler configured';
     },
@@ -133,16 +133,17 @@ export class OwnerCommandsMiddleware implements GatewayMiddleware {
     ctx: MiddlewareContext,
     next: () => Promise<void>
   ): Promise<void> {
-    if (!msg.text.startsWith('/')) {
+    const text = msg.text.trim();
+    if (!text.startsWith('/')) {
       await next();
       return;
     }
 
-    const spaceIndex = msg.text.indexOf(' ');
-    const command = spaceIndex === -1 ? msg.text : msg.text.slice(0, spaceIndex);
-    const args = spaceIndex === -1 ? '' : msg.text.slice(spaceIndex + 1);
+    const match = /^(\/[^\s@]+)(?:@\S+)?(?:\s+([\s\S]*))?$/.exec(text);
+    const command = match ? match[1].toLowerCase() : text;
+    const args = match?.[2] ?? '';
 
-    const def = COMMANDS[command];
+    const def = Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;
     if (!def) {
       await next();
       return;

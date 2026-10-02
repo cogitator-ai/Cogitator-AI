@@ -18,15 +18,18 @@ import { WasmSandboxExecutor } from './executors/wasm';
 export class SandboxManager {
   private executors = new Map<SandboxType, BaseSandboxExecutor>();
   private config: SandboxManagerConfig;
-  private initialized = false;
+  private initPromise?: Promise<void>;
 
   constructor(config: SandboxManagerConfig = {}) {
     this.config = config;
   }
 
-  async initialize(): Promise<void> {
-    if (this.initialized) return;
+  initialize(): Promise<void> {
+    this.initPromise ??= this.initializeExecutors();
+    return this.initPromise;
+  }
 
+  private async initializeExecutors(): Promise<void> {
     const native = new NativeSandboxExecutor();
     await native.connect();
     this.executors.set('native', native);
@@ -61,8 +64,6 @@ export class SandboxManager {
         error instanceof Error ? error.message : String(error)
       );
     }
-
-    this.initialized = true;
   }
 
   async execute(
@@ -70,32 +71,6 @@ export class SandboxManager {
     config: SandboxConfig
   ): Promise<SandboxResult<SandboxExecutionResult>> {
     await this.initialize();
-
-    const type = config.type;
-    const executor = this.executors.get(type);
-
-    if (!executor) {
-      if (type === 'wasm') {
-        console.warn('[sandbox] WASM unavailable, falling back to Docker');
-        const dockerExecutor = this.executors.get('docker');
-        if (dockerExecutor) {
-          return dockerExecutor.execute(request, { ...config, type: 'docker' });
-        }
-        console.warn('[sandbox] Docker also unavailable, falling back to native execution');
-        const nativeExecutor = this.executors.get('native');
-        if (nativeExecutor) {
-          return nativeExecutor.execute(request, { ...config, type: 'native' });
-        }
-      }
-      if (type === 'docker') {
-        console.warn('[sandbox] Docker unavailable, falling back to native execution');
-        const nativeExecutor = this.executors.get('native');
-        if (nativeExecutor) {
-          return nativeExecutor.execute(request, { ...config, type: 'native' });
-        }
-      }
-      return { success: false, error: `Sandbox type '${type}' not available` };
-    }
 
     const mergedConfig: SandboxConfig = {
       ...this.config.defaults,
@@ -105,7 +80,24 @@ export class SandboxManager {
       env: { ...this.config.defaults?.env, ...config.env },
     };
 
-    return executor.execute(request, mergedConfig);
+    const type = mergedConfig.type;
+    const executor = this.executors.get(type);
+    if (executor) {
+      return executor.execute(request, mergedConfig);
+    }
+
+    const fallbackChain: SandboxType[] =
+      type === 'wasm' ? ['docker', 'native'] : type === 'docker' ? ['native'] : [];
+
+    for (const fallback of fallbackChain) {
+      const fallbackExecutor = this.executors.get(fallback);
+      if (fallbackExecutor) {
+        console.warn(`[sandbox] ${type} unavailable, falling back to ${fallback} execution`);
+        return fallbackExecutor.execute(request, { ...mergedConfig, type: fallback });
+      }
+    }
+
+    return { success: false, error: `Sandbox type '${type}' not available` };
   }
 
   async isDockerAvailable(): Promise<boolean> {
@@ -121,10 +113,13 @@ export class SandboxManager {
   }
 
   async shutdown(): Promise<void> {
+    const pending = this.initPromise;
+    this.initPromise = undefined;
+    if (pending) await pending.catch(() => undefined);
+
     for (const executor of this.executors.values()) {
       await executor.disconnect();
     }
     this.executors.clear();
-    this.initialized = false;
   }
 }

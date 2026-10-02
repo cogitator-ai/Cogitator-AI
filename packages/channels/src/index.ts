@@ -1,5 +1,5 @@
 export { Gateway } from './gateway';
-export type { GatewayFullConfig } from './gateway';
+export type { GatewayFullConfig, GatewaySessionInfo } from './gateway';
 
 export { StreamBuffer } from './stream-buffer';
 
@@ -10,6 +10,7 @@ export { StatusReactionTracker } from './status-reactions';
 export { InboundDebouncer } from './inbound-debounce';
 export { MessageQueue } from './message-queue';
 export { formatEnvelope, formatElapsed } from './envelope';
+export { getNextCronMs } from './cron';
 
 export { TerminalChannel, terminalChannel } from './channels/terminal';
 export type { TerminalConfig } from './channels/terminal';
@@ -54,13 +55,18 @@ export type {
 export { generateCapabilitiesDoc } from './capabilities';
 export type { CapabilitiesInput } from './capabilities';
 
-export { RuntimeBuilder } from './runtime-builder';
+export { RuntimeBuilder, RESTART_EXIT_CODE } from './runtime-builder';
 export type { AssistantConfig, BuiltRuntime, RuntimeBuilderOpts } from './runtime-builder';
 
 export { SimpleTimerStore } from './simple-timer-store';
+export type { TimerStoreOptions } from './simple-timer-store';
 
 export { MediaProcessor } from './media/media-processor';
-export type { MediaProcessResult, SttProvider } from './media/media-processor';
+export type {
+  MediaProcessResult,
+  MediaProcessorOptions,
+  SttProvider,
+} from './media/media-processor';
 export { LocalWhisper } from './media/whisper-local';
 export { createWhisperDownloadTool } from './media/whisper-tool';
 export { GroqSttProvider, OpenAISttProvider } from './media/whisper-api';
@@ -69,6 +75,7 @@ export { DeepgramSttProvider } from './media/deepgram-stt';
 export type { DeepgramSttConfig } from './media/deepgram-stt';
 
 export { createSelfConfigTools } from './tools/self-config';
+export type { SelfConfigToolsOptions, SelfConfigCaller } from './tools/self-config';
 
 export {
   AssistantConfigSchema,

@@ -8,6 +8,7 @@ import type {
   SwarmEvent,
   SwarmEventHandler,
 } from '@cogitator-ai/types';
+import { invokeSafely } from '../utils/invoke.js';
 
 export class SwarmEventEmitterImpl implements SwarmEventEmitter {
   private handlers = new Map<SwarmEventType | '*', Set<SwarmEventHandler>>();
@@ -30,9 +31,7 @@ export class SwarmEventEmitterImpl implements SwarmEventEmitter {
   once(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void {
     const wrapper: SwarmEventHandler = (e) => {
       this.off(event, wrapper);
-      void Promise.resolve(handler(e)).catch((error) => {
-        console.warn('[SwarmEventEmitter] Once handler error:', error);
-      });
+      invokeSafely(handler, [e], '[SwarmEventEmitter] Once handler error');
     };
     return this.on(event, wrapper);
   }
@@ -51,22 +50,12 @@ export class SwarmEventEmitterImpl implements SwarmEventEmitter {
       this.events = this.events.slice(-this.maxEvents);
     }
 
-    const handlers = this.handlers.get(event);
-    if (handlers) {
-      for (const handler of handlers) {
-        void Promise.resolve(handler(swarmEvent)).catch((error) => {
-          console.warn('[SwarmEventEmitter] Handler error:', error);
-        });
-      }
+    for (const handler of [...(this.handlers.get(event) ?? [])]) {
+      invokeSafely(handler, [swarmEvent], '[SwarmEventEmitter] Handler error');
     }
 
-    const wildcardHandlers = this.handlers.get('*');
-    if (wildcardHandlers) {
-      for (const handler of wildcardHandlers) {
-        void Promise.resolve(handler(swarmEvent)).catch((error) => {
-          console.warn('[SwarmEventEmitter] Wildcard handler error:', error);
-        });
-      }
+    for (const handler of [...(this.handlers.get('*') ?? [])]) {
+      invokeSafely(handler, [swarmEvent], '[SwarmEventEmitter] Wildcard handler error');
     }
   }
 

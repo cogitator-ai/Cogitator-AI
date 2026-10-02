@@ -44,9 +44,14 @@ export function jsonSchemaToZod(schema: {
   type: string;
   properties?: Record<string, JsonSchemaProperty>;
   required?: string[];
-}): ZodObject<Record<string, ZodTypeAny>> {
-  if (schema.type !== 'object' || !schema.properties) {
+  additionalProperties?: boolean | JsonSchemaProperty;
+}): ZodObject<Record<string, ZodTypeAny>, z.core.$ZodObjectConfig> {
+  if (schema.type !== 'object') {
     return z.object({});
+  }
+
+  if (!schema.properties) {
+    return schema.additionalProperties === false ? z.object({}) : z.looseObject({});
   }
 
   const shape: Record<string, ZodTypeAny> = {};
@@ -68,11 +73,19 @@ export function jsonSchemaToZod(schema: {
     shape[key] = zodType;
   }
 
+  if (schema.additionalProperties === true) {
+    return z.looseObject(shape);
+  }
+  if (typeof schema.additionalProperties === 'object' && schema.additionalProperties !== null) {
+    return z.object(shape).catchall(jsonSchemaPropertyToZod(schema.additionalProperties));
+  }
   return z.object(shape);
 }
 
 interface JsonSchemaProperty {
-  type?: string;
+  type?: string | string[];
+  const?: unknown;
+  nullable?: boolean;
   description?: string;
   enum?: unknown[];
   items?: JsonSchemaProperty;
@@ -85,12 +98,44 @@ interface JsonSchemaProperty {
   maxLength?: number;
   pattern?: string;
   format?: string;
+  additionalProperties?: boolean | JsonSchemaProperty;
   oneOf?: JsonSchemaProperty[];
   anyOf?: JsonSchemaProperty[];
   allOf?: JsonSchemaProperty[];
 }
 
+type JsonLiteral = string | number | boolean | null;
+
+function isJsonLiteral(value: unknown): value is JsonLiteral {
+  return (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  );
+}
+
 function jsonSchemaPropertyToZod(prop: JsonSchemaProperty): ZodTypeAny {
+  const schema = jsonSchemaPropertyToZodInner(prop);
+  return prop.nullable === true ? schema.nullable() : schema;
+}
+
+function jsonSchemaPropertyToZodInner(prop: JsonSchemaProperty): ZodTypeAny {
+  if (Array.isArray(prop.type)) {
+    const variants = prop.type.map((type) => jsonSchemaPropertyToZodInner({ ...prop, type }));
+    if (variants.length === 0) {
+      return z.unknown();
+    }
+    if (variants.length === 1) {
+      return variants[0];
+    }
+    return z.union(variants as [ZodTypeAny, ZodTypeAny, ...ZodTypeAny[]]);
+  }
+
+  if (prop.const !== undefined && isJsonLiteral(prop.const)) {
+    return z.literal(prop.const);
+  }
+
   if (prop.allOf && prop.allOf.length > 0) {
     const schemas = prop.allOf.map((variant) => jsonSchemaPropertyToZod(variant));
     return schemas.reduce((acc, schema) => z.intersection(acc, schema));
@@ -105,17 +150,16 @@ function jsonSchemaPropertyToZod(prop: JsonSchemaProperty): ZodTypeAny {
     return z.union(schemas as [ZodTypeAny, ZodTypeAny, ...ZodTypeAny[]]);
   }
 
-  if (prop.enum && Array.isArray(prop.enum)) {
-    if (prop.enum.length >= 2 && prop.enum.every((v) => typeof v === 'string')) {
-      return z.enum(prop.enum as [string, ...string[]]);
+  if (Array.isArray(prop.enum) && prop.enum.length > 0 && prop.enum.every(isJsonLiteral)) {
+    const values = prop.enum;
+    if (values.length >= 2 && values.every((v): v is string => typeof v === 'string')) {
+      return z.enum(values as [string, ...string[]]);
     }
-    if (prop.enum.length >= 2) {
-      const literals = prop.enum.map((v) => z.literal(v as string | number | boolean));
-      return z.union([literals[0], literals[1], ...literals.slice(2)]);
+    const literals = values.map((v) => z.literal(v));
+    if (literals.length === 1) {
+      return literals[0];
     }
-    if (prop.enum.length === 1) {
-      return z.literal(prop.enum[0] as string | number | boolean);
-    }
+    return z.union([literals[0], literals[1], ...literals.slice(2)]);
   }
 
   switch (prop.type) {
@@ -128,7 +172,10 @@ function jsonSchemaPropertyToZod(prop: JsonSchemaProperty): ZodTypeAny {
         schema = schema.max(prop.maxLength);
       }
       if (prop.pattern) {
-        schema = schema.regex(new RegExp(prop.pattern));
+        const pattern = compilePattern(prop.pattern);
+        if (pattern) {
+          schema = schema.regex(pattern);
+        }
       }
       if (prop.format === 'email') {
         schema = schema.email();
@@ -165,7 +212,11 @@ function jsonSchemaPropertyToZod(prop: JsonSchemaProperty): ZodTypeAny {
           type: 'object',
           properties: prop.properties,
           required: prop.required,
+          additionalProperties: prop.additionalProperties,
         });
+      }
+      if (typeof prop.additionalProperties === 'object' && prop.additionalProperties !== null) {
+        return z.record(z.string(), jsonSchemaPropertyToZod(prop.additionalProperties));
       }
       return z.record(z.string(), z.unknown());
     }
@@ -175,6 +226,18 @@ function jsonSchemaPropertyToZod(prop: JsonSchemaProperty): ZodTypeAny {
 
     default:
       return z.unknown();
+  }
+}
+
+function compilePattern(pattern: string): RegExp | undefined {
+  try {
+    return new RegExp(pattern, 'u');
+  } catch {
+    try {
+      return new RegExp(pattern);
+    } catch {
+      return undefined;
+    }
   }
 }
 
@@ -226,10 +289,14 @@ export function mcpToCogitator(
     ? options.descriptionTransform(mcpTool.description)
     : mcpTool.description;
 
+  const rawInputSchema = mcpTool.inputSchema as MCPToolDefinition['inputSchema'] & {
+    additionalProperties?: boolean | JsonSchemaProperty;
+  };
   const inputSchema = {
     type: 'object',
-    properties: mcpTool.inputSchema.properties as Record<string, JsonSchemaProperty>,
-    required: mcpTool.inputSchema.required,
+    properties: rawInputSchema.properties as Record<string, JsonSchemaProperty> | undefined,
+    required: rawInputSchema.required,
+    additionalProperties: rawInputSchema.additionalProperties,
   };
   const parameters = jsonSchemaToZod(inputSchema);
 
@@ -238,8 +305,10 @@ export function mcpToCogitator(
     description,
     parameters,
 
-    execute: async (params: unknown, _context: ToolContext): Promise<unknown> => {
-      return client.callTool(mcpTool.name, params as Record<string, unknown>);
+    execute: async (params: unknown, context: ToolContext): Promise<unknown> => {
+      return client.callTool(mcpTool.name, (params ?? {}) as Record<string, unknown>, {
+        signal: context?.signal,
+      });
     },
 
     toJSON: (): ToolSchema => ({
@@ -247,7 +316,7 @@ export function mcpToCogitator(
       description,
       parameters: {
         type: 'object',
-        properties: mcpTool.inputSchema.properties,
+        properties: mcpTool.inputSchema.properties ?? {},
         required: mcpTool.inputSchema.required,
       },
     }),
@@ -290,18 +359,42 @@ export function resultToMCPContent(result: unknown): MCPToolContent[] {
   }
 
   if (typeof result === 'object') {
-    if (
-      Array.isArray(result) &&
-      result.length > 0 &&
-      result.every((item) => typeof item === 'object' && item !== null && 'type' in item)
-    ) {
-      return result as MCPToolContent[];
+    if (Array.isArray(result) && result.length > 0 && result.every(isMCPToolContent)) {
+      return result;
     }
 
     return [{ type: 'text', text: JSON.stringify(result, null, 2) }];
   }
 
   return [{ type: 'text', text: String(result) }];
+}
+
+/**
+ * Check whether a value is a well-formed MCP tool content block
+ */
+function isMCPToolContent(value: unknown): value is MCPToolContent {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const item = value as Record<string, unknown>;
+  switch (item.type) {
+    case 'text':
+      return typeof item.text === 'string';
+    case 'image':
+    case 'audio':
+      return typeof item.data === 'string' && typeof item.mimeType === 'string';
+    case 'resource': {
+      const resource = item.resource as Record<string, unknown> | null | undefined;
+      return (
+        typeof resource === 'object' &&
+        resource !== null &&
+        typeof resource.uri === 'string' &&
+        (typeof resource.text === 'string' || typeof resource.blob === 'string')
+      );
+    }
+    default:
+      return false;
+  }
 }
 
 /**
@@ -312,23 +405,16 @@ export function mcpContentToResult(content: MCPToolContent[]): unknown {
     return null;
   }
 
-  if (content.length === 1 && content[0].type === 'text') {
-    const text = content[0].text;
-    try {
-      return JSON.parse(text);
-    } catch {
-      return text;
-    }
-  }
-
-  return content.map((item) => {
+  const values = content.map((item) => {
     if (item.type === 'text') {
       try {
-        return JSON.parse(item.text);
+        return JSON.parse(item.text) as unknown;
       } catch {
         return item.text;
       }
     }
     return item;
   });
+
+  return values.length === 1 ? values[0] : values;
 }

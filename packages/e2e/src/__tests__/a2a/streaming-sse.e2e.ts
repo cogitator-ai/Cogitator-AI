@@ -67,17 +67,21 @@ describeE2E('A2A: Streaming SSE', () => {
       events.push(event);
     }
 
+    const last = events.at(-1);
+    expect(last?.type).toBe('status-update');
+    if (last?.type !== 'status-update' || last.status.state !== 'completed') return;
+
     const artifactEvents = events.filter((e) => e.type === 'artifact-update');
-    if (artifactEvents.length > 0) {
-      const art = artifactEvents[0];
-      if (art.type === 'artifact-update') {
-        const textPart = art.artifact.parts.find((p) => p.type === 'text');
-        if (textPart?.type === 'text') {
-          await expectJudge(textPart.text, {
-            question: 'What is the capital of France?',
-            criteria: 'Answer mentions Paris',
-          });
-        }
+    expect(artifactEvents.length).toBeGreaterThan(0);
+    const art = artifactEvents[0];
+    if (art.type === 'artifact-update') {
+      const textPart = art.artifact.parts.find((p) => p.type === 'text');
+      expect(textPart?.type).toBe('text');
+      if (textPart?.type === 'text') {
+        await expectJudge(textPart.text, {
+          question: 'What is the capital of France?',
+          criteria: 'Answer mentions Paris',
+        });
       }
     }
   });

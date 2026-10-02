@@ -36,7 +36,7 @@ Cogitator is a monorepo with 31 packages covering the full stack of agent infras
 | **Infrastructure** | `@cogitator-ai/redis`          | Redis client (standalone + cluster)                                  |
 |                    | `@cogitator-ai/deploy`         | Docker & Fly.io deployment utilities                                 |
 |                    | `@cogitator-ai/cli`            | CLI (init/up/run/deploy)                                             |
-| **Support**        | `@cogitator-ai/dashboard`      | Next.js landing + docs (Fumadocs) + dashboard                        |
+| **Support**        | `@cogitator-ai/dashboard`      | Next.js landing + docs (Fumadocs); admin dashboard deprecated        |
 |                    | `@cogitator-ai/test-utils`     | Testing utilities                                                    |
 |                    | `@cogitator-ai/e2e`            | End-to-end test suite                                                |
 |                    | `create-cogitator-app`         | Interactive project scaffolder                                       |
@@ -102,10 +102,10 @@ Cogitator integrates with any Node.js HTTP framework via thin adapters. Each ada
 
 ```typescript
 // Express
-import { createCogitatorRouter } from '@cogitator-ai/express';
+import { CogitatorServer } from '@cogitator-ai/express';
 
 const app = express();
-app.use('/api', createCogitatorRouter(cogitator));
+await new CogitatorServer({ app, cogitator, config: { basePath: '/api' } }).init();
 
 // Fastify
 import { cogitatorPlugin } from '@cogitator-ai/fastify';
@@ -113,9 +113,9 @@ import { cogitatorPlugin } from '@cogitator-ai/fastify';
 await fastify.register(cogitatorPlugin, { cogitator, prefix: '/api' });
 
 // Hono
-import { createCogitatorMiddleware } from '@cogitator-ai/hono';
+import { cogitatorApp } from '@cogitator-ai/hono';
 
-app.use('/api/*', createCogitatorMiddleware(cogitator));
+app.route('/api', cogitatorApp({ cogitator }));
 ```
 
 For OpenAI-compatible endpoints (drop-in replacement):
@@ -167,8 +167,8 @@ const queue = new JobQueue({
   },
 });
 
-// Add an agent job
-const job = await queue.addAgentJob(agent.serialize(), 'Analyze this data', {
+// Add an agent job (SerializedAgent: name, model, provider, instructions, tool schemas)
+const job = await queue.addAgentJob(serializedAgent, 'Analyze this data', {
   threadId: 'thread-123',
   priority: 10,
   metadata: { userId: 'user-abc' },
@@ -182,12 +182,17 @@ await queue.addSwarmJob(swarmConfig, 'Process batch');
 
 // Consumer side: process jobs
 const pool = new WorkerPool({
-  queue: { name: 'cogitator-jobs', redis: { host: 'localhost', port: 6379 } },
+  name: 'cogitator-jobs',
+  redis: { host: 'localhost', port: 6379 },
   cogitator: cogitatorInstance,
+  tools: [webSearch, calculator], // implementations for tools referenced by serialized agents
+  workerCount: 2,
   concurrency: 10,
-  limiter: { max: 100, duration: 1000 },
 });
+await pool.start();
 ```
+
+Serialized agents carry tool schemas only; a job whose agent references a tool missing from the worker's `tools` fails instead of running with a stub.
 
 #### Queue Metrics (for HPA)
 

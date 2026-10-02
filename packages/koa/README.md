@@ -41,17 +41,28 @@ Creates a Koa Router with all Cogitator endpoints.
 
 **Options:**
 
-| Option            | Type                            | Description                                    |
-| ----------------- | ------------------------------- | ---------------------------------------------- |
-| `cogitator`       | `Cogitator`                     | **Required.** Cogitator runtime instance       |
-| `agents`          | `Record<string, Agent>`         | Named agents to expose                         |
-| `workflows`       | `Record<string, Workflow>`      | Named workflows                                |
-| `swarms`          | `Record<string, SwarmConfig>`   | Named swarms                                   |
-| `auth`            | `(ctx: Context) => AuthContext` | Authentication function (receives Koa Context) |
-| `enableSwagger`   | `boolean`                       | Enable Swagger/OpenAPI docs                    |
-| `swagger`         | `SwaggerConfig`                 | Swagger configuration                          |
-| `enableWebSocket` | `boolean`                       | Enable WebSocket support                       |
-| `websocket`       | `WebSocketConfig`               | WebSocket configuration                        |
+| Option          | Type                            | Description                                    |
+| --------------- | ------------------------------- | ---------------------------------------------- |
+| `cogitator`     | `Cogitator`                     | **Required.** Cogitator runtime instance       |
+| `agents`        | `Record<string, Agent>`         | Named agents to expose                         |
+| `workflows`     | `Record<string, Workflow>`      | Named workflows                                |
+| `swarms`        | `Record<string, SwarmConfig>`   | Named swarms                                   |
+| `auth`          | `(ctx: Context) => AuthContext` | Authentication function (receives Koa Context) |
+| `enableSwagger` | `boolean`                       | Enable Swagger/OpenAPI docs                    |
+| `swagger`       | `SwaggerConfig`                 | Swagger configuration                          |
+| `bodyLimit`     | `number`                        | Max JSON body size in bytes (default 1 MiB)    |
+
+WebSocket support is attached to the HTTP server with [`setupWebSocket`](#websocket), not through router options.
+
+## Request Handling
+
+- Request bodies are validated before anything reaches the runtime: `input` must be a non-empty string, `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number. Invalid bodies return `400 INVALID_INPUT` with the offending field in the message.
+- Workflow runs accept an optional body. `options` is limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); any other option is dropped, and a wrongly typed one returns `400 INVALID_INPUT`.
+- Thread messages accept `role` of `user`, `assistant` or `system`; `metadata` is stored with the entry and a token estimate is recorded.
+- `CogitatorError`s are returned with their HTTP status and code (for example `429 LLM_RATE_LIMITED`). Any other error is logged and returned as `500 Internal server error` without internal details. A workflow that finishes with an error is reported as an error, never as a successful result.
+- When the client disconnects, the running agent, workflow or swarm is aborted, for both JSON and SSE endpoints.
+- `GET /agents` returns each agent's `description` and never exposes its `instructions`.
+- `GET /tools` returns tool parameters as JSON Schema.
 
 ## Endpoints
 
@@ -127,14 +138,14 @@ app.use(main.routes());
 
 ## WebSocket
 
-Requires the optional `ws` peer dependency. Supports agent, workflow, and swarm runs over a persistent connection.
+Requires the optional `ws` dependency. Supports agent, workflow, and swarm runs over a persistent connection.
 
 ```typescript
 import { createServer } from 'http';
 import { cogitatorApp, setupWebSocket } from '@cogitator-ai/koa';
 
 const app = new Koa();
-const router = cogitatorApp({ cogitator, agents, enableWebSocket: true });
+const router = cogitatorApp({ cogitator, agents });
 app.use(router.routes());
 app.use(router.allowedMethods());
 
@@ -145,29 +156,39 @@ await setupWebSocket(
   {
     path: '/ws',
     pingInterval: 30000,
+    pingTimeout: 10000,
+    maxPayloadSize: 1024 * 1024,
+    auth: (req) => {
+      if (req.headers.authorization !== `Bearer ${process.env.API_TOKEN}`) {
+        throw new Error('Unauthorized');
+      }
+      return { userId: 'api' };
+    },
   }
 );
 
 server.listen(3000);
 ```
 
+The router's `auth` option does not cover WebSocket connections, so pass `auth` to `setupWebSocket` to protect them: it receives the upgrade `IncomingMessage`, and throwing rejects the handshake with `401` (or `500` when the error carries a `status >= 500`). Upgrades on other paths are left to other `upgrade` listeners (or rejected with `404` when there are none), so the socket can share the HTTP server with other WebSocket servers. A client that does not answer a ping within `pingTimeout` (defaults to `pingInterval`) is terminated, and closing a connection aborts its active run.
+
 **Message types:**
 
-| Client sends | Description                       |
-| ------------ | --------------------------------- |
-| `run`        | Start an agent/workflow/swarm run |
-| `stop`       | Cancel the current run            |
-| `ping`       | Heartbeat ping                    |
+| Client sends | Payload                                                                        |
+| ------------ | ------------------------------------------------------------------------------ |
+| `run`        | `{ type: 'agent' \| 'workflow' \| 'swarm', name, input, context?, threadId? }` |
+| `stop`       | Cancels the current run                                                        |
+| `ping`       | Answered with `pong` (echoes `id`)                                             |
 
-| Server sends | Description                                     |
-| ------------ | ----------------------------------------------- |
-| `event`      | Stream event (token, tool-call, complete, etc.) |
-| `error`      | Error response                                  |
-| `pong`       | Heartbeat pong                                  |
+| Server sends | Description                                                                               |
+| ------------ | ----------------------------------------------------------------------------------------- |
+| `event`      | `token`, `tool-call`, `tool-result`, `complete` (with the serialized result), `cancelled` |
+| `error`      | Invalid message, unknown resource, run already in progress, or a masked run failure       |
+| `pong`       | Heartbeat reply                                                                           |
 
 ## SSE Streaming
 
-The adapter includes `KoaStreamWriter` for Server-Sent Events with structured event types (text deltas, tool calls, workflow/swarm events).
+The adapter includes `KoaStreamWriter` for Server-Sent Events with structured event types (text deltas, tool calls, workflow/swarm events). Agent streams emit `tool-call-start`, `tool-call-delta` (the JSON arguments) and `tool-call-end` with the provider's tool call id, so `tool-result.toolCallId` always matches the call it belongs to.
 
 ## Event Factories
 
@@ -205,7 +226,7 @@ import {
 Built-in middleware stack (applied automatically by `cogitatorApp`):
 
 - **Error handler** — catches errors and returns structured `ErrorResponse`
-- **Body parser** — parses JSON for POST, PUT, PATCH requests (1 MB limit)
+- **Body parser** — parses JSON for POST, PUT, PATCH requests (`bodyLimit`, 1 MiB by default, returns `413` above it). A body already parsed by upstream middleware such as `koa-bodyparser` is reused
 - **Context** — injects `RouteContext` with `runtime`, `agents`, `workflows`, `swarms` into Koa state
 - **Auth** — optional authentication via the `auth` callback
 
@@ -218,6 +239,9 @@ import type {
   AuthContext,
   AuthFunction,
   WebSocketConfig,
+  WebSocketAuthFunction,
+  WebSocketRunPayload,
+  BodyParserOptions,
   WorkflowStatusResponse,
   AgentRunRequest,
   AgentRunResponse,

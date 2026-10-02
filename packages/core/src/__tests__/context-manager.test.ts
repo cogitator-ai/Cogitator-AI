@@ -462,4 +462,35 @@ describe('ContextManager', () => {
       }
     });
   });
+
+  describe('tool call integrity after compression', () => {
+    it('never leaves a tool result without its assistant call', async () => {
+      const manager = new ContextManager({
+        strategy: 'sliding-window',
+        compressionThreshold: 0.01,
+        windowSize: 2,
+      });
+      const messages: Message[] = [
+        { role: 'system', content: 'sys' },
+        ...createMessages(30, 50),
+        { role: 'user', content: 'weather in Tokyo and Paris?' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [
+            { id: 'a', name: 'weather', arguments: { city: 'Tokyo' } },
+            { id: 'b', name: 'weather', arguments: { city: 'Paris' } },
+          ],
+        } as Message,
+        { role: 'tool', content: '"sunny"', toolCallId: 'a', name: 'weather' },
+        { role: 'tool', content: '"rainy"', toolCallId: 'b', name: 'weather' },
+      ];
+
+      const result = await manager.compress(messages, 'openai/gpt-4');
+
+      const firstNonSystem = result.messages.find((m) => m.role !== 'system');
+      expect(firstNonSystem?.role).not.toBe('tool');
+      expect(result.messages.some((m) => m.role === 'tool')).toBe(false);
+    });
+  });
 });

@@ -47,6 +47,7 @@ describe('WorkflowBuilder', () => {
         .addNode('merge', async () => ({ output: 'merged' }), {
           after: ['a', 'b'],
         })
+        .entryPoint('a')
         .build();
 
       expect(workflow.nodes.size).toBe(3);
@@ -178,7 +179,7 @@ describe('WorkflowBuilder', () => {
         .addNode('b', async () => ({}))
         .build();
 
-      expect(workflow.entryPoint).toBe('a');
+      expect(workflow.entryPoint).toBe('fanout');
       const parallelEdge = workflow.edges.find((e) => e.type === 'parallel');
       expect(parallelEdge).toBeDefined();
     });

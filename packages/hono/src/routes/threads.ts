@@ -1,115 +1,90 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
-import type { HonoEnv, ThreadResponse, AddMessageRequest } from '../types.js';
-import { CogitatorError } from '@cogitator-ai/types';
+import { countMessageTokens } from '@cogitator-ai/memory';
+import type { Message } from '@cogitator-ai/types';
+import type { HonoEnv, ThreadResponse } from '../types.js';
+import { errorResponse, invalidInput, invalidJson, readJsonBody } from '../utils/request.js';
+import { parseAddMessageRequest } from '../utils/validation.js';
+
+function memoryUnavailable(c: Context<HonoEnv>): Response {
+  return c.json({ error: { message: 'Memory not configured', code: 'UNAVAILABLE' } }, 503);
+}
 
 export function createThreadRoutes(): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
 
-  function getMemory(c: Context<HonoEnv>) {
-    const ctx = c.get('cogitator');
-    return ctx.runtime.memory;
-  }
-
   app.get('/threads/:id', async (c) => {
-    const memory = getMemory(c);
-    if (!memory) {
-      return c.json({ error: { message: 'Memory not configured', code: 'UNAVAILABLE' } }, 503);
-    }
+    const memory = c.get('cogitator').runtime.memory;
+    if (!memory) return memoryUnavailable(c);
 
     const id = c.req.param('id');
 
     try {
       const result = await memory.getEntries({ threadId: id });
       if (!result.success) {
-        return c.json({ error: { message: result.error, code: 'INTERNAL' } }, 500);
+        return errorResponse(c, new Error(result.error), 'Thread get error');
       }
 
       const entries = result.data;
-      const messages = entries.map((entry) => entry.message);
-      const createdAt = entries.length > 0 ? entries[0].createdAt.getTime() : Date.now();
-      const updatedAt =
-        entries.length > 0 ? entries[entries.length - 1].createdAt.getTime() : Date.now();
+      const now = Date.now();
       const response: ThreadResponse = {
         id,
-        messages,
-        createdAt,
-        updatedAt,
+        messages: entries.map((entry) => entry.message),
+        createdAt: entries.length > 0 ? entries[0].createdAt.getTime() : now,
+        updatedAt: entries.length > 0 ? entries[entries.length - 1].createdAt.getTime() : now,
       };
       return c.json(response);
     } catch (error) {
-      if (CogitatorError.isCogitatorError(error)) {
-        return c.json({ error: { message: error.message, code: error.code } }, 500);
-      }
-      console.error('[CogitatorHono] Thread get error:', error);
-      return c.json({ error: { message: 'Internal server error', code: 'INTERNAL' } }, 500);
+      return errorResponse(c, error, 'Thread get error');
     }
   });
 
   app.post('/threads/:id/messages', async (c) => {
-    const memory = getMemory(c);
-    if (!memory) {
-      return c.json({ error: { message: 'Memory not configured', code: 'UNAVAILABLE' } }, 503);
-    }
+    const memory = c.get('cogitator').runtime.memory;
+    if (!memory) return memoryUnavailable(c);
 
     const id = c.req.param('id');
 
-    let body: AddMessageRequest;
-    try {
-      body = await c.req.json<AddMessageRequest>();
-    } catch {
-      return c.json({ error: { message: 'Invalid JSON body', code: 'INVALID_INPUT' } }, 400);
-    }
+    const body = await readJsonBody(c);
+    if (!body.ok) return invalidJson(c);
+    const parsed = parseAddMessageRequest(body.value);
+    if (!parsed.ok) return invalidInput(c, parsed.message);
 
-    if (!body?.role || !body?.content) {
-      return c.json(
-        { error: { message: 'Missing required fields: role, content', code: 'INVALID_INPUT' } },
-        400
-      );
-    }
+    const message: Message = { role: parsed.value.role, content: parsed.value.content };
 
     try {
       const result = await memory.addEntry({
         threadId: id,
-        message: { role: body.role, content: body.content },
-        tokenCount: 0,
+        message,
+        tokenCount: countMessageTokens(message),
+        ...(parsed.value.metadata && { metadata: parsed.value.metadata }),
       });
 
       if (!result.success) {
-        return c.json({ error: { message: result.error, code: 'INTERNAL' } }, 500);
+        return errorResponse(c, new Error(result.error), 'Thread add message error');
       }
 
       return c.json({ success: true }, 201);
     } catch (error) {
-      if (CogitatorError.isCogitatorError(error)) {
-        return c.json({ error: { message: error.message, code: error.code } }, 500);
-      }
-      console.error('[CogitatorHono] Thread add message error:', error);
-      return c.json({ error: { message: 'Internal server error', code: 'INTERNAL' } }, 500);
+      return errorResponse(c, error, 'Thread add message error');
     }
   });
 
   app.delete('/threads/:id', async (c) => {
-    const memory = getMemory(c);
-    if (!memory) {
-      return c.json({ error: { message: 'Memory not configured', code: 'UNAVAILABLE' } }, 503);
-    }
+    const memory = c.get('cogitator').runtime.memory;
+    if (!memory) return memoryUnavailable(c);
 
     const id = c.req.param('id');
 
     try {
       const result = await memory.clearThread(id);
       if (!result.success) {
-        return c.json({ error: { message: result.error, code: 'INTERNAL' } }, 500);
+        return errorResponse(c, new Error(result.error), 'Thread delete error');
       }
 
       return c.body(null, 204);
     } catch (error) {
-      if (CogitatorError.isCogitatorError(error)) {
-        return c.json({ error: { message: error.message, code: error.code } }, 500);
-      }
-      console.error('[CogitatorHono] Thread delete error:', error);
-      return c.json({ error: { message: 'Internal server error', code: 'INTERNAL' } }, 500);
+      return errorResponse(c, error, 'Thread delete error');
     }
   });
 

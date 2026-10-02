@@ -9,41 +9,140 @@ export const DEFAULT_SANDBOX_CONFIG: ToolSandboxConfig = {
   isolationLevel: 'strict',
 };
 
-const WORKER_SOURCE = [
-  'const { parentPort, workerData } = require("worker_threads");',
-  'const vm = require("vm");',
-  'const { code, params } = workerData;',
-  'const logs = [];',
-  'const sandbox = Object.create(null);',
-  'Object.assign(sandbox, {',
-  '  console: {',
-  '    log: (...a) => { logs.push("[LOG] " + a.map(String).join(" ")); },',
-  '    warn: (...a) => { logs.push("[WARN] " + a.map(String).join(" ")); },',
-  '    error: (...a) => { logs.push("[ERROR] " + a.map(String).join(" ")); },',
-  '  },',
-  '  Math, JSON, Date, Array, Object, String, Number, Boolean, RegExp, Map, Set,',
-  '  Promise, Error, TypeError, RangeError,',
-  '  parseInt, parseFloat, isNaN, isFinite,',
-  '  encodeURIComponent, decodeURIComponent, encodeURI, decodeURI,',
-  '  undefined, NaN, Infinity,',
-  '  params,',
-  '});',
-  'const context = vm.createContext(sandbox);',
-  'try {',
-  '  const wrapped = "(async function sandboxedExecution() {\\n" +',
-  '    code + "\\n" +',
-  '    "if (typeof execute === \\"function\\") { return await execute(params); }\\n" +',
-  '    "throw new Error(\\"Implementation must define an execute function\\");\\n" +',
-  '    "})()";',
-  '  const promise = vm.runInContext(wrapped, context);',
-  '  Promise.resolve(promise).then(',
-  '    (result) => { parentPort.postMessage({ success: true, result, logs }); },',
-  '    (err) => { parentPort.postMessage({ success: false, error: err instanceof Error ? err.message : String(err), logs }); }',
-  '  );',
-  '} catch (err) {',
-  '  parentPort.postMessage({ success: false, error: err instanceof Error ? err.message : String(err), logs });',
-  '}',
+const WORKER_SOURCE = String.raw`
+const { parentPort, workerData } = require('node:worker_threads');
+const vm = require('node:vm');
+const { code, paramsJson, timeout } = workerData;
+
+const BOOTSTRAP = [
+  '(function () {',
+  '  "use strict";',
+  '  const logs = [];',
+  '  const format = (args) => args.map((v) => {',
+  '    if (typeof v === "string") return v;',
+  '    try { const s = JSON.stringify(v); return s === undefined ? String(v) : s; } catch (e) { return String(v); }',
+  '  }).join(" ");',
+  '  const logger = (level) => (...args) => { if (logs.length < 1000) logs.push("[" + level + "] " + format(args)); };',
+  '  Object.defineProperty(globalThis, "console", { value: Object.freeze({',
+  '    log: logger("LOG"), info: logger("INFO"), debug: logger("DEBUG"), warn: logger("WARN"), error: logger("ERROR"),',
+  '  }) });',
+  '  Object.defineProperty(globalThis, "__sandboxState", { value: { status: "pending", payload: "", hasValue: false, logs } });',
+  '})();',
 ].join('\n');
+
+const runner = [
+  '(async function sandboxedExecution(params) {',
+  code,
+  '  if (typeof execute !== "function") { throw new Error("Implementation must define an execute function"); }',
+  '  return await execute(params);',
+  '})(JSON.parse(' + JSON.stringify(paramsJson) + ')).then(',
+  '  (value) => {',
+  '    const state = globalThis.__sandboxState;',
+  '    try {',
+  '      const json = JSON.stringify(value);',
+  '      state.hasValue = json !== undefined;',
+  '      state.payload = json === undefined ? "" : json;',
+  '      state.status = "fulfilled";',
+  '    } catch (e) {',
+  '      state.payload = "Tool returned a non-serializable value: " + (e && e.message);',
+  '      state.status = "failed";',
+  '    }',
+  '  },',
+  '  (err) => {',
+  '    const state = globalThis.__sandboxState;',
+  '    state.payload = err && typeof err.message === "string" ? err.message : String(err);',
+  '    state.status = "rejected";',
+  '  }',
+  ');',
+].join('\n');
+
+const asString = (value) => (typeof value === 'string' ? value : '');
+const readState = (context, expression) => {
+  try {
+    return vm.runInContext(expression, context);
+  } catch {
+    return undefined;
+  }
+};
+const readLogs = (context) => {
+  const raw = readState(context, 'JSON.stringify(__sandboxState.logs)');
+  if (typeof raw !== 'string') return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((l) => typeof l === 'string') : [];
+  } catch {
+    return [];
+  }
+};
+
+const context = vm.createContext(Object.create(null), {
+  codeGeneration: { strings: false, wasm: false },
+});
+
+let started = false;
+try {
+  vm.runInContext(BOOTSTRAP, context);
+  vm.runInContext(runner, context, { timeout });
+  started = true;
+} catch (err) {
+  parentPort.postMessage({
+    success: false,
+    thrown: true,
+    error: err && typeof err.message === 'string' ? err.message : String(err),
+    logs: readLogs(context),
+  });
+}
+
+if (started) setImmediate(() => {
+  const status = asString(readState(context, '__sandboxState.status'));
+  const payload = asString(readState(context, '__sandboxState.payload'));
+  const logs = readLogs(context);
+
+  if (status === 'fulfilled') {
+    let result;
+    if (readState(context, '__sandboxState.hasValue') === true) {
+      try {
+        result = JSON.parse(payload);
+      } catch {
+        parentPort.postMessage({ success: false, thrown: false, error: 'Tool returned an unreadable value', logs });
+        return;
+      }
+    }
+    parentPort.postMessage({ success: true, result, logs });
+  } else if (status === 'rejected') {
+    parentPort.postMessage({ success: false, thrown: true, error: payload, logs });
+  } else if (status === 'failed') {
+    parentPort.postMessage({ success: false, thrown: false, error: payload, logs });
+  } else {
+    parentPort.postMessage({
+      success: false,
+      thrown: false,
+      error: 'Tool execution never settled: execute() returned a promise that cannot resolve inside the sandbox',
+      logs,
+    });
+  }
+});
+`;
+
+interface WorkerMessage {
+  success: boolean;
+  result?: unknown;
+  error?: string;
+  thrown?: boolean;
+  logs?: string[];
+}
+
+interface SandboxRun {
+  result: ToolSandboxResult;
+  thrownByTool: boolean;
+}
+
+export interface SandboxTestCase {
+  input: unknown;
+  expectedOutput?: unknown;
+  shouldThrow?: boolean;
+  allowThrow?: boolean;
+}
 
 export class ToolSandbox {
   private readonly config: ToolSandboxConfig;
@@ -53,30 +152,13 @@ export class ToolSandbox {
   }
 
   async execute(tool: GeneratedTool, params: unknown): Promise<ToolSandboxResult> {
-    const startTime = Date.now();
-
-    try {
-      this.validateImplementation(tool.implementation);
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-        executionTime: Date.now() - startTime,
-        memoryUsed: 0,
-        logs: [],
-      };
-    }
-
-    if (!this.config.enabled) {
-      return this.executeUnsandboxed(tool, params, startTime);
-    }
-
-    return this.executeInWorker(tool.implementation, params, startTime);
+    const run = await this.run(tool, params);
+    return run.result;
   }
 
   async testWithCases(
     tool: GeneratedTool,
-    testCases: Array<{ input: unknown; expectedOutput?: unknown; shouldThrow?: boolean }>
+    testCases: SandboxTestCase[]
   ): Promise<{
     passed: number;
     failed: number;
@@ -97,13 +179,15 @@ export class ToolSandbox {
     }> = [];
 
     for (const testCase of testCases) {
-      const execResult = await this.execute(tool, testCase.input);
+      const { result: execResult, thrownByTool } = await this.run(tool, testCase.input);
 
-      let passed = false;
+      let passed: boolean;
       if (testCase.shouldThrow) {
-        passed = !execResult.success;
+        passed = !execResult.success && thrownByTool;
       } else if (testCase.expectedOutput !== undefined) {
         passed = execResult.success && deepEqual(execResult.result, testCase.expectedOutput);
+      } else if (testCase.allowThrow) {
+        passed = execResult.success || thrownByTool;
       } else {
         passed = execResult.success;
       }
@@ -122,6 +206,38 @@ export class ToolSandbox {
       failed: results.filter((r) => !r.passed).length,
       results,
     };
+  }
+
+  private async run(tool: GeneratedTool, params: unknown): Promise<SandboxRun> {
+    const startTime = Date.now();
+
+    try {
+      this.validateImplementation(tool.implementation);
+    } catch (error) {
+      return {
+        result: failure(error instanceof Error ? error.message : String(error), startTime),
+        thrownByTool: false,
+      };
+    }
+
+    let paramsJson: string;
+    try {
+      paramsJson = JSON.stringify(params ?? null);
+    } catch (error) {
+      return {
+        result: failure(
+          `Parameters must be JSON-serializable: ${error instanceof Error ? error.message : String(error)}`,
+          startTime
+        ),
+        thrownByTool: false,
+      };
+    }
+
+    if (!this.config.enabled) {
+      return this.executeUnsandboxed(tool, JSON.parse(paramsJson) as unknown, startTime);
+    }
+
+    return this.executeInWorker(tool.implementation, paramsJson, startTime);
   }
 
   private validateImplementation(code: string): void {
@@ -196,102 +312,84 @@ export class ToolSandbox {
     }
   }
 
-  private async executeInWorker(
+  private executeInWorker(
     code: string,
-    params: unknown,
+    paramsJson: string,
     startTime: number
-  ): Promise<ToolSandboxResult> {
-    let serializableParams: unknown;
-    try {
-      serializableParams = JSON.parse(JSON.stringify(params ?? null));
-    } catch {
-      serializableParams = null;
-    }
-
-    return new Promise<ToolSandboxResult>((resolve) => {
+  ): Promise<SandboxRun> {
+    return new Promise<SandboxRun>((resolve) => {
       let settled = false;
+      let worker: Worker | undefined;
 
-      const settle = (result: ToolSandboxResult) => {
-        if (!settled) {
-          settled = true;
-          resolve(result);
-        }
+      const settle = (result: ToolSandboxResult, thrownByTool = false) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (worker) void worker.terminate();
+        resolve({ result, thrownByTool });
       };
+
+      const timer = setTimeout(() => {
+        settle(failure(`Execution timeout: exceeded ${this.config.maxExecutionTime}ms`, startTime));
+      }, this.config.maxExecutionTime);
 
       const maxMemoryMb = Math.max(4, Math.ceil(this.config.maxMemory / (1024 * 1024)));
 
-      let worker: Worker;
       try {
         worker = new Worker(WORKER_SOURCE, {
           eval: true,
-          workerData: { code, params: serializableParams },
+          env: {},
+          workerData: { code, paramsJson, timeout: this.config.maxExecutionTime },
           resourceLimits: {
             maxOldGenerationSizeMb: maxMemoryMb,
             maxYoungGenerationSizeMb: Math.max(2, Math.ceil(maxMemoryMb / 4)),
           },
         });
       } catch (error) {
-        settle({
-          success: false,
-          error: `Failed to create sandbox worker: ${error instanceof Error ? error.message : String(error)}`,
-          executionTime: Date.now() - startTime,
-          memoryUsed: 0,
-          logs: [],
-        });
+        settle(
+          failure(
+            `Failed to create sandbox worker: ${error instanceof Error ? error.message : String(error)}`,
+            startTime
+          )
+        );
         return;
       }
 
-      const timer = setTimeout(() => {
-        void worker.terminate();
-        settle({
-          success: false,
-          error: `Execution timeout: exceeded ${this.config.maxExecutionTime}ms`,
-          executionTime: Date.now() - startTime,
-          memoryUsed: 0,
-          logs: [],
-        });
-      }, this.config.maxExecutionTime);
-
-      worker.on(
-        'message',
-        (msg: { success: boolean; result?: unknown; error?: string; logs?: string[] }) => {
-          clearTimeout(timer);
+      worker.on('message', (msg: WorkerMessage) => {
+        const logs = msg.logs ?? [];
+        if (msg.success) {
           settle({
-            success: msg.success,
+            success: true,
             result: msg.result,
-            error: msg.error,
             executionTime: Date.now() - startTime,
             memoryUsed: estimateMemoryUsage(msg.result),
-            logs: msg.logs ?? [],
+            logs,
           });
+        } else {
+          settle({ ...failure(msg.error ?? 'Tool execution failed', startTime), logs }, msg.thrown);
         }
-      );
+      });
 
-      worker.on('error', (error: Error) => {
-        clearTimeout(timer);
-        settle({
-          success: false,
-          error: `Sandbox worker error: ${error.message}`,
-          executionTime: Date.now() - startTime,
-          memoryUsed: 0,
-          logs: [],
-        });
+      worker.on('error', (error: Error & { code?: string }) => {
+        settle(
+          failure(
+            error.code === 'ERR_WORKER_OUT_OF_MEMORY'
+              ? `Execution exceeded memory limit (${this.config.maxMemory} bytes)`
+              : `Sandbox worker error: ${error.message}`,
+            startTime
+          )
+        );
       });
 
       worker.on('exit', (exitCode: number) => {
-        clearTimeout(timer);
-        if (exitCode !== 0) {
-          settle({
-            success: false,
-            error:
-              exitCode === 134 || exitCode === 137
-                ? `Execution exceeded memory limit (${this.config.maxMemory} bytes)`
-                : `Sandbox worker exited with code ${exitCode}`,
-            executionTime: Date.now() - startTime,
-            memoryUsed: 0,
-            logs: [],
-          });
-        }
+        settle(
+          failure(
+            exitCode === 134 || exitCode === 137
+              ? `Execution exceeded memory limit (${this.config.maxMemory} bytes)`
+              : `Sandbox worker exited with code ${exitCode} before reporting a result`,
+            startTime
+          )
+        );
       });
     });
   }
@@ -300,44 +398,70 @@ export class ToolSandbox {
     tool: GeneratedTool,
     params: unknown,
     startTime: number
-  ): Promise<ToolSandboxResult> {
+  ): Promise<SandboxRun> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       // eslint-disable-next-line @typescript-eslint/no-implied-eval
       const factory = new Function(`
         "use strict";
         ${tool.implementation}
         return execute;
-      `);
+      `) as () => unknown;
       const execute = factory();
+      if (typeof execute !== 'function') {
+        return {
+          result: failure('Implementation must define an execute function', startTime),
+          thrownByTool: false,
+        };
+      }
 
-      const result = await Promise.race([
-        execute(params),
-        new Promise((_, reject) =>
-          setTimeout(
-            () =>
-              reject(new Error(`Execution timeout: exceeded ${this.config.maxExecutionTime}ms`)),
-            this.config.maxExecutionTime
-          )
-        ),
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new SandboxTimeoutError(this.config.maxExecutionTime)),
+          this.config.maxExecutionTime
+        );
+      });
+      const result: unknown = await Promise.race([
+        (execute as (p: unknown) => unknown)(params),
+        timeout,
       ]);
 
       return {
-        success: true,
-        result,
-        executionTime: Date.now() - startTime,
-        memoryUsed: estimateMemoryUsage(result),
-        logs: [],
+        result: {
+          success: true,
+          result,
+          executionTime: Date.now() - startTime,
+          memoryUsed: estimateMemoryUsage(result),
+          logs: [],
+        },
+        thrownByTool: false,
       };
     } catch (error) {
       return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-        executionTime: Date.now() - startTime,
-        memoryUsed: 0,
-        logs: [],
+        result: failure(error instanceof Error ? error.message : String(error), startTime),
+        thrownByTool: !(error instanceof SandboxTimeoutError),
       };
+    } finally {
+      clearTimeout(timer);
     }
   }
+}
+
+class SandboxTimeoutError extends Error {
+  constructor(limit: number) {
+    super(`Execution timeout: exceeded ${limit}ms`);
+    this.name = 'SandboxTimeoutError';
+  }
+}
+
+function failure(error: string, startTime: number): ToolSandboxResult {
+  return {
+    success: false,
+    error,
+    executionTime: Date.now() - startTime,
+    memoryUsed: 0,
+    logs: [],
+  };
 }
 
 function estimateMemoryUsage(value: unknown): number {
@@ -349,55 +473,62 @@ function estimateMemoryUsage(value: unknown): number {
   }
 }
 
-export function deepEqual(a: unknown, b: unknown, seen = new WeakSet<object>()): boolean {
+export function deepEqual(a: unknown, b: unknown): boolean {
+  return deepEqualInner(a, b, new Map<object, Set<object>>());
+}
+
+function deepEqualInner(a: unknown, b: unknown, visited: Map<object, Set<object>>): boolean {
   if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
 
-  if (typeof a !== typeof b) return false;
-  if (a === null || b === null) return a === b;
+  const pairs = visited.get(a);
+  if (pairs?.has(b)) return true;
+  if (pairs) pairs.add(b);
+  else visited.set(a, new Set([b]));
 
-  if (a instanceof Date && b instanceof Date) {
-    return a.getTime() === b.getTime();
+  if (a instanceof Date || b instanceof Date) {
+    return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
   }
 
-  if (a instanceof RegExp && b instanceof RegExp) {
-    return a.source === b.source && a.flags === b.flags;
+  if (a instanceof RegExp || b instanceof RegExp) {
+    return (
+      a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags
+    );
   }
 
-  if (a instanceof Map && b instanceof Map) {
-    if (a.size !== b.size) return false;
+  if (a instanceof Map || b instanceof Map) {
+    if (!(a instanceof Map && b instanceof Map) || a.size !== b.size) return false;
     for (const [key, val] of a) {
-      if (!b.has(key) || !deepEqual(val, b.get(key), seen)) return false;
+      if (!b.has(key) || !deepEqualInner(val, b.get(key), visited)) return false;
     }
     return true;
   }
 
-  if (a instanceof Set && b instanceof Set) {
-    if (a.size !== b.size) return false;
+  if (a instanceof Set || b instanceof Set) {
+    if (!(a instanceof Set && b instanceof Set) || a.size !== b.size) return false;
+    const unmatched = [...b];
     for (const val of a) {
-      if (!b.has(val)) return false;
+      const idx = unmatched.findIndex((candidate) => deepEqualInner(val, candidate, visited));
+      if (idx === -1) return false;
+      unmatched.splice(idx, 1);
     }
     return true;
   }
 
-  if (Array.isArray(a) && Array.isArray(b)) {
-    if (a.length !== b.length) return false;
-    return a.every((val, i) => deepEqual(val, b[i], seen));
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!(Array.isArray(a) && Array.isArray(b)) || a.length !== b.length) return false;
+    return a.every((val, i) => deepEqualInner(val, b[i], visited));
   }
 
-  if (typeof a === 'object' && typeof b === 'object') {
-    const aObj = a as Record<string, unknown>;
-    const bObj = b as Record<string, unknown>;
+  const aObj = a as Record<string, unknown>;
+  const bObj = b as Record<string, unknown>;
+  const keysA = Object.keys(aObj).filter((k) => aObj[k] !== undefined);
+  const keysB = Object.keys(bObj).filter((k) => bObj[k] !== undefined);
 
-    if (seen.has(aObj) || seen.has(bObj)) return false;
-    seen.add(aObj);
-    seen.add(bObj);
-
-    const keysA = Object.keys(aObj).filter((k) => aObj[k] !== undefined);
-    const keysB = Object.keys(bObj).filter((k) => bObj[k] !== undefined);
-
-    if (keysA.length !== keysB.length) return false;
-    return keysA.every((key) => deepEqual(aObj[key], bObj[key], seen));
-  }
-
-  return false;
+  if (keysA.length !== keysB.length) return false;
+  return keysA.every(
+    (key) =>
+      Object.prototype.hasOwnProperty.call(bObj, key) &&
+      deepEqualInner(aObj[key], bObj[key], visited)
+  );
 }

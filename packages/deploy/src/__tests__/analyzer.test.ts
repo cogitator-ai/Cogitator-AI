@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { ProjectAnalyzer } from '../analyzer';
 
 describe('ProjectAnalyzer', () => {
@@ -67,5 +70,106 @@ describe('ProjectAnalyzer', () => {
     const analyzer = new ProjectAnalyzer();
     const warnings = analyzer.getDeployWarnings('ollama/qwen3.5:cloud', 'fly');
     expect(warnings.length).toBe(0);
+  });
+});
+
+describe('ProjectAnalyzer.analyze', () => {
+  let dir: string;
+  const analyzer = new ProjectAnalyzer();
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'deploy-analyze-'));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  function write(file: string, content: string) {
+    writeFileSync(join(dir, file), content);
+  }
+
+  it('carries detected services and secrets into the deploy config', () => {
+    write('package.json', JSON.stringify({ name: '@acme/My Agent' }));
+    write('cogitator.yaml', 'llm:\n  defaultModel: openai/gpt-4o\nmemory:\n  adapter: postgres\n');
+    const result = analyzer.analyze(dir);
+    expect(result.deployConfig.services).toEqual({ redis: false, postgres: true });
+    expect(result.deployConfig.secrets).toEqual(['OPENAI_API_KEY']);
+    expect(result.deployConfig.image).toBe('my-agent');
+  });
+
+  it('uses defaultProvider for unprefixed models', () => {
+    write(
+      'cogitator.yml',
+      'llm:\n  defaultProvider: anthropic\n  defaultModel: claude-sonnet-4-6\n'
+    );
+    expect(analyzer.analyze(dir).secrets).toEqual(['ANTHROPIC_API_KEY']);
+  });
+
+  it('reports invalid config files as warnings instead of silently ignoring them', () => {
+    write('cogitator.yml', 'llm:\n  defaultProvider: not-a-provider\n');
+    const result = analyzer.analyze(dir);
+    expect(result.warnings.some((w) => w.includes('Ignoring invalid'))).toBe(true);
+  });
+
+  it('reports malformed package.json', () => {
+    write('package.json', '{ nope');
+    expect(analyzer.analyze(dir).warnings.some((w) => w.includes('package.json'))).toBe(true);
+  });
+
+  it('lets overrides win over detection', () => {
+    write('cogitator.yml', 'llm:\n  defaultModel: openai/gpt-4o\nmemory:\n  adapter: redis\n');
+    const result = analyzer.analyze(dir, {
+      services: { postgres: true },
+      secrets: ['CUSTOM'],
+      image: 'explicit',
+    });
+    expect(result.deployConfig).toMatchObject({
+      services: { postgres: true },
+      secrets: ['CUSTOM'],
+      image: 'explicit',
+    });
+  });
+
+  it('detects the package manager from lockfiles', () => {
+    expect(analyzer.detectPackageManager(dir)).toEqual({
+      packageManager: 'npm',
+      hasLockfile: false,
+    });
+    write('package-lock.json', '{}');
+    expect(analyzer.detectPackageManager(dir)).toEqual({
+      packageManager: 'npm',
+      hasLockfile: true,
+    });
+    write('yarn.lock', '');
+    expect(analyzer.detectPackageManager(dir).packageManager).toBe('yarn');
+    write('pnpm-lock.yaml', '');
+    expect(analyzer.detectPackageManager(dir).packageManager).toBe('pnpm');
+  });
+
+  it('derives the start command from package.json', () => {
+    expect(analyzer.detectStartCommand({ scripts: { start: 'node dist/index.js' } }, true)).toEqual(
+      ['node', 'dist/index.js']
+    );
+    expect(analyzer.detectStartCommand({ scripts: { start: 'tsx src/agent.ts' } }, true)).toEqual([
+      'npm',
+      'start',
+    ]);
+    expect(analyzer.detectStartCommand({ main: 'lib/main.js' }, false)).toEqual([
+      'node',
+      'lib/main.js',
+    ]);
+    expect(analyzer.detectStartCommand({}, true)).toEqual(['node', 'dist/server.js']);
+  });
+
+  it('warns when instances > 1 is requested for docker', () => {
+    const result = analyzer.analyze(dir, { target: 'docker', instances: 3 });
+    expect(result.warnings.some((w) => w.includes('instances'))).toBe(true);
+  });
+
+  it('requires both AWS secrets for bedrock and recognises -cloud Ollama tags', () => {
+    expect(analyzer.detectSecrets('bedrock/claude')).toEqual([
+      'AWS_ACCESS_KEY_ID',
+      'AWS_SECRET_ACCESS_KEY',
+    ]);
+    expect(analyzer.isOllamaCloud('ollama/gpt-oss:120b-cloud')).toBe(true);
+    expect(analyzer.detectSecrets('ollama/gpt-oss:120b-cloud')).toEqual(['OLLAMA_API_KEY']);
   });
 });

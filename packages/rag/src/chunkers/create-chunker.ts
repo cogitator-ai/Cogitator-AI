@@ -1,7 +1,7 @@
 import type { ChunkingConfig, Chunker, AsyncChunker, EmbeddingService } from '@cogitator-ai/types';
-import { FixedSizeChunker } from './fixed-chunker';
-import { RecursiveChunker } from './recursive-chunker';
-import { SemanticChunker } from './semantic-chunker';
+import { FixedSizeChunker } from './fixed-chunker.js';
+import { RecursiveChunker } from './recursive-chunker.js';
+import { SemanticChunker } from './semantic-chunker.js';
 
 export function createChunker(
   config: ChunkingConfig,

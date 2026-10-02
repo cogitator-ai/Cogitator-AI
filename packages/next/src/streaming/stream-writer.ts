@@ -21,9 +21,18 @@ export class StreamWriter {
     this.writer = writer;
   }
 
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
   private async write(data: unknown): Promise<void> {
     if (this.closed) return;
-    await this.writer.write(encodeSSE(data));
+    try {
+      await this.writer.write(encodeSSE(data));
+    } catch (error) {
+      this.closed = true;
+      throw error;
+    }
   }
 
   async start(messageId: string): Promise<void> {
@@ -63,9 +72,9 @@ export class StreamWriter {
     await this.write(createErrorEvent(message, code));
   }
 
-  async finish(messageId: string, usage?: Usage): Promise<void> {
+  async finish(messageId: string, usage?: Usage, threadId?: string): Promise<void> {
     if (this.closed) return;
-    await this.write(createFinishEvent(messageId, usage));
+    await this.write(createFinishEvent(messageId, usage, threadId));
     if (this.closed) return;
     try {
       await this.writer.write(encodeDone());

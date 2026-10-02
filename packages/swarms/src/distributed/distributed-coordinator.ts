@@ -1,25 +1,39 @@
 import { nanoid } from 'nanoid';
 import Redis from 'ioredis';
+import { parseModel } from '@cogitator-ai/core';
 import type {
   SwarmConfig,
   SwarmAgent,
-  SwarmAgentMetadata,
-  SwarmAgentState,
   RunResult,
-  MessageBus,
-  Blackboard,
-  SwarmEventEmitter,
-  SwarmCoordinatorInterface,
-  Agent,
+  Tool,
+  ToolSchema,
   DistributedSwarmConfig,
 } from '@cogitator-ai/types';
 import { RedisMessageBus } from '../communication/redis-message-bus.js';
 import { RedisBlackboard } from '../communication/redis-blackboard.js';
 import { RedisSwarmEventEmitter } from '../communication/redis-event-emitter.js';
+import { BaseSwarmCoordinator, type AgentRunRequest } from '../base-coordinator.js';
 
 export interface DistributedCoordinatorOptions {
   config: SwarmConfig;
   distributed: DistributedSwarmConfig;
+}
+
+/**
+ * Agent configuration as it travels to worker nodes. Tools travel as schemas and are
+ * resolved by name against the worker's own tool registry.
+ */
+export interface SerializedSwarmAgentConfig {
+  name: string;
+  instructions: string;
+  /** Model string exactly as configured on the agent (may include a provider prefix) */
+  model: string;
+  /** Provider resolved on the coordinator side */
+  provider: string;
+  temperature?: number;
+  maxTokens?: number;
+  maxIterations?: number;
+  tools: ToolSchema[];
 }
 
 export interface SwarmAgentJobPayload {
@@ -27,9 +41,14 @@ export interface SwarmAgentJobPayload {
   jobId: string;
   swarmId: string;
   agentName: string;
-  agentConfig: SerializedAgentConfig;
+  agentConfig: SerializedSwarmAgentConfig;
   input: string;
   context?: Record<string, unknown>;
+  runOptions?: {
+    threadId?: string;
+    timeout?: number;
+    saveHistory?: boolean;
+  };
   stateKeys: {
     blackboard: string;
     messages: string;
@@ -48,347 +67,217 @@ export interface SwarmAgentJobResult {
   error?: string;
 }
 
-interface SerializedAgentConfig {
-  name: string;
-  instructions: string;
-  model: string;
-  provider: string;
-  temperature?: number;
-  maxTokens?: number;
-  tools: unknown[];
+/**
+ * Redis list key that distributed swarm workers consume jobs from.
+ */
+export function swarmJobQueueKey(keyPrefix = 'swarm', queue = 'swarm-agent-jobs'): string {
+  return `${keyPrefix}:jobs:${queue}`;
 }
 
-export class DistributedSwarmCoordinator implements SwarmCoordinatorInterface {
-  private config: SwarmConfig;
-  private distributed: DistributedSwarmConfig;
-  private redis!: Redis;
-  private subscriber!: Redis;
-  private redisConfig: { host: string; port: number; password?: string; db: number };
-  private agents = new Map<string, SwarmAgent>();
-  private _messageBus!: RedisMessageBus;
-  private _blackboard!: RedisBlackboard;
-  private _events!: RedisSwarmEventEmitter;
-  private swarmId: string;
-  private keyPrefix: string;
-  private resultHandlers = new Map<string, (result: SwarmAgentJobResult) => void>();
-  private pendingTimers = new Set<ReturnType<typeof setTimeout>>();
-  private initialized = false;
-  private aborted = false;
-  private paused = false;
+function isJobResult(value: unknown): value is SwarmAgentJobResult {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Partial<SwarmAgentJobResult>;
+  return typeof candidate.jobId === 'string' && typeof candidate.agentName === 'string';
+}
+
+interface PendingJob {
+  resolve: (result: SwarmAgentJobResult) => void;
+  reject: (error: Error) => void;
+}
+
+export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
+  RedisMessageBus,
+  RedisBlackboard,
+  RedisSwarmEventEmitter
+> {
+  private readonly distributed: DistributedSwarmConfig;
+  private readonly redis: Redis;
+  private readonly subscriber: Redis;
+  private readonly keyPrefix: string;
+  private readonly pendingJobs = new Map<string, PendingJob>();
+  private initialization?: Promise<void>;
+  private closed = false;
 
   constructor(options: DistributedCoordinatorOptions) {
-    this.config = options.config;
-    this.distributed = options.distributed;
-    this.swarmId = `swarm_${nanoid(12)}`;
-    this.keyPrefix = options.distributed.redis?.keyPrefix ?? 'swarm';
-
-    this.redisConfig = {
+    const keyPrefix = options.distributed.redis?.keyPrefix ?? 'swarm';
+    const swarmId = `swarm_${nanoid(12)}`;
+    const redisOptions = {
       host: options.distributed.redis?.host ?? 'localhost',
       port: options.distributed.redis?.port ?? 6379,
       password: options.distributed.redis?.password,
       db: options.distributed.redis?.db ?? 0,
+      lazyConnect: true,
     };
+    const redis = new Redis(redisOptions);
 
-    this.initializeAgents();
-  }
-
-  private initializeAgents(): void {
-    const agentEntries: { agent: Agent; metadata: SwarmAgentMetadata }[] = [];
-
-    if (this.config.supervisor) {
-      agentEntries.push({
-        agent: this.config.supervisor,
-        metadata: { role: 'supervisor', priority: 100 },
-      });
-    }
-
-    if (this.config.workers) {
-      for (const worker of this.config.workers) {
-        agentEntries.push({
-          agent: worker,
-          metadata: { role: 'worker', priority: 50 },
-        });
-      }
-    }
-
-    if (this.config.agents) {
-      for (const agent of this.config.agents) {
-        agentEntries.push({ agent, metadata: {} });
-      }
-    }
-
-    if (this.config.moderator) {
-      agentEntries.push({
-        agent: this.config.moderator,
-        metadata: { role: 'moderator', priority: 90 },
-      });
-    }
-
-    if (this.config.router) {
-      agentEntries.push({
-        agent: this.config.router,
-        metadata: { role: 'router', priority: 95 },
-      });
-    }
-
-    if (this.config.stages) {
-      for (const stage of this.config.stages) {
-        agentEntries.push({
-          agent: stage.agent,
-          metadata: { custom: { stageName: stage.name, isGate: stage.gate } },
-        });
-      }
-    }
-
-    if (this.config.pipeline?.stages) {
-      for (const stage of this.config.pipeline.stages) {
-        agentEntries.push({
-          agent: stage.agent,
-          metadata: { custom: { stageName: stage.name, isGate: stage.gate } },
-        });
-      }
-    }
-
-    for (const { agent, metadata } of agentEntries) {
-      this.agents.set(agent.name, {
-        agent,
-        metadata,
-        state: 'idle',
-        messageCount: 0,
-        tokenCount: 0,
-      });
-    }
-  }
-
-  async initialize(): Promise<void> {
-    if (this.initialized) return;
-
-    this.redis = new Redis(this.redisConfig);
-    this.subscriber = new Redis(this.redisConfig);
-
-    this._messageBus = new RedisMessageBus(
-      this.config.messaging ?? { enabled: true, protocol: 'direct' },
-      { redis: this.redis, swarmId: this.swarmId, keyPrefix: this.keyPrefix }
-    );
-
-    this._blackboard = new RedisBlackboard(
-      this.config.blackboard ?? { enabled: true, sections: {}, trackHistory: true },
-      { redis: this.redis, swarmId: this.swarmId, keyPrefix: this.keyPrefix }
-    );
-
-    this._events = new RedisSwarmEventEmitter({
-      redis: this.redis,
-      swarmId: this.swarmId,
-      keyPrefix: this.keyPrefix,
+    super(options.config, swarmId, {
+      messageBus: new RedisMessageBus(
+        options.config.messaging ?? { enabled: true, protocol: 'direct' },
+        { redis, swarmId, keyPrefix }
+      ),
+      blackboard: new RedisBlackboard(
+        options.config.blackboard ?? { enabled: true, sections: {}, trackHistory: true },
+        { redis, swarmId, keyPrefix }
+      ),
+      events: new RedisSwarmEventEmitter({ redis, swarmId, keyPrefix }),
     });
 
-    await this._messageBus.initialize();
-    await this._blackboard.initialize();
-    await this._events.initialize();
-
-    await this.subscribeToResults();
-
-    this.initialized = true;
+    this.distributed = options.distributed;
+    this.keyPrefix = keyPrefix;
+    this.redis = redis;
+    this.subscriber = new Redis(redisOptions);
   }
 
-  private async subscribeToResults(): Promise<void> {
-    const resultsChannel = `${this.keyPrefix}:${this.swarmId}:results`;
-    await this.subscriber.subscribe(resultsChannel);
-
-    this.subscriber.on('message', (_channel, messageJson) => {
-      try {
-        const result = JSON.parse(messageJson) as SwarmAgentJobResult;
-        const handler = this.resultHandlers.get(result.jobId);
-        if (handler) {
-          handler(result);
-          this.resultHandlers.delete(result.jobId);
-        }
-      } catch (error) {
-        console.warn('[DistributedSwarmCoordinator] Failed to process result message:', error);
-      }
-    });
-  }
-
-  get messageBus(): MessageBus {
-    return this._messageBus;
-  }
-
-  get blackboard(): Blackboard {
-    return this._blackboard;
-  }
-
-  get events(): SwarmEventEmitter {
-    return this._events;
-  }
-
-  getSwarmId(): string {
-    return this.swarmId;
-  }
-
-  getAgent(name: string): SwarmAgent | undefined {
-    return this.agents.get(name);
-  }
-
-  getAgents(): SwarmAgent[] {
-    return Array.from(this.agents.values());
-  }
-
-  getAgentsByRole(role: SwarmAgentMetadata['role']): SwarmAgent[] {
-    return this.getAgents().filter((a) => a.metadata.role === role);
-  }
-
-  async runAgent(
-    agentName: string,
-    input: string,
-    context?: Record<string, unknown>
-  ): Promise<RunResult> {
-    if (!this.initialized) {
-      await this.initialize();
+  /**
+   * Connect to Redis and subscribe to shared state and job results. Safe to call repeatedly.
+   */
+  initialize(): Promise<void> {
+    if (this.closed) {
+      return Promise.reject(new Error('Distributed swarm coordinator has been closed'));
     }
-
-    const swarmAgent = this.agents.get(agentName);
-    if (!swarmAgent) {
-      throw new Error(`Agent '${agentName}' not found in swarm`);
-    }
-
-    while (this.paused && !this.aborted) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-
-    if (this.aborted) {
-      throw new Error('Swarm execution aborted');
-    }
-
-    this.setAgentState(agentName, 'running');
-    await this._events.emitAsync('agent:start', { agentName, input }, agentName);
-
-    const jobPayload = this.createJobPayload(swarmAgent, input, context);
-
-    try {
-      const result = await this.dispatchJobAndWait(jobPayload);
-
-      this.setAgentState(agentName, 'completed');
-      swarmAgent.tokenCount += result.tokenUsage.total;
-
-      const runResult = this.toRunResult(swarmAgent, result);
-      swarmAgent.lastResult = runResult;
-
-      await this._events.emitAsync('agent:complete', { agentName, result: runResult }, agentName);
-
-      return runResult;
-    } catch (error) {
-      this.setAgentState(agentName, 'failed');
-      await this._events.emitAsync('agent:error', { agentName, error }, agentName);
+    this.initialization ??= this.connect().catch((error: unknown) => {
+      this.initialization = undefined;
       throw error;
-    }
+    });
+    return this.initialization;
   }
 
-  async runAgentsParallel(
-    agents: { name: string; input: string; context?: Record<string, unknown> }[],
-    maxConcurrency?: number
-  ): Promise<Map<string, RunResult>> {
-    const concurrency = maxConcurrency ?? this.config.resources?.maxConcurrency ?? 4;
-    const results = new Map<string, RunResult>();
-
-    for (let i = 0; i < agents.length; i += concurrency) {
-      const chunk = agents.slice(i, i + concurrency);
-      const chunkResults = await Promise.allSettled(
-        chunk.map(async ({ name, input, context }) => {
-          const result = await this.runAgent(name, input, context);
-          return { name, result };
-        })
-      );
-
-      for (const settled of chunkResults) {
-        if (settled.status === 'fulfilled') {
-          results.set(settled.value.name, settled.value.result);
-        } else {
-          if (this.config.errorHandling?.onAgentFailure === 'skip') {
-            continue;
-          } else if (this.config.errorHandling?.onAgentFailure === 'abort') {
-            throw settled.reason;
-          } else {
-            throw settled.reason;
-          }
-        }
-      }
-    }
-
-    return results;
+  protected prepare(): Promise<void> {
+    return this.initialize();
   }
 
-  private createJobPayload(
-    swarmAgent: SwarmAgent,
-    input: string,
-    context?: Record<string, unknown>
-  ): SwarmAgentJobPayload {
-    const agent = swarmAgent.agent;
+  private async connect(): Promise<void> {
+    await this.messageBus.initialize();
+    await this.blackboard.initialize();
+    await this.events.initialize();
 
-    const agentConfig: SerializedAgentConfig = {
-      name: agent.name,
-      instructions: agent.instructions,
-      model: agent.model,
-      provider: this.extractProvider(agent.model),
-      temperature: agent.config.temperature,
-      maxTokens: agent.config.maxTokens,
-      tools: agent.tools.map((t) => t.toJSON()),
-    };
+    this.subscriber.on('message', this.handleResultMessage);
+    await this.subscriber.subscribe(this.resultsChannel());
+  }
+
+  private resultsChannel(): string {
+    return `${this.keyPrefix}:${this.swarmId}:results`;
+  }
+
+  private readonly handleResultMessage = (_channel: string, messageJson: string): void => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(messageJson);
+    } catch (error) {
+      console.warn('[DistributedSwarmCoordinator] Failed to parse result message:', error);
+      return;
+    }
+
+    if (!isJobResult(parsed)) {
+      console.warn('[DistributedSwarmCoordinator] Ignoring malformed job result');
+      return;
+    }
+
+    const pending = this.pendingJobs.get(parsed.jobId);
+    if (!pending) return;
+    this.pendingJobs.delete(parsed.jobId);
+
+    if (parsed.error !== undefined) {
+      pending.reject(new Error(parsed.error));
+    } else {
+      pending.resolve(parsed);
+    }
+  };
+
+  /**
+   * Strategy tools are bound to this process (they call back into the coordinator and the
+   * local blackboard), so they cannot run on remote workers. Worker agents use the tools
+   * registered on the worker instead.
+   */
+  protected strategyTools(): Tool[] {
+    return [];
+  }
+
+  protected async executeRun(request: AgentRunRequest): Promise<RunResult> {
+    const payload = this.createJobPayload(request);
+    const jobResult = await this.dispatchJobAndWait(payload, request);
+    return this.toRunResult(request.swarmAgent, jobResult);
+  }
+
+  private createJobPayload(request: AgentRunRequest): SwarmAgentJobPayload {
+    const { agent, input, context } = request;
+    const parsed = parseModel(agent.model);
 
     return {
       type: 'swarm-agent',
       jobId: `job_${nanoid(12)}`,
       swarmId: this.swarmId,
-      agentName: agent.name,
-      agentConfig,
+      agentName: request.swarmAgent.agent.name,
+      agentConfig: {
+        name: agent.name,
+        instructions: agent.instructions,
+        model: agent.model,
+        provider: agent.config.provider ?? parsed.provider ?? 'ollama',
+        temperature: agent.config.temperature,
+        maxTokens: agent.config.maxTokens,
+        maxIterations: agent.config.maxIterations,
+        tools: agent.tools.map((t) => t.toJSON()),
+      },
       input,
-      context: {
-        ...context,
-        swarmContext: {
-          swarmId: this.swarmId,
-          swarmName: this.config.name,
-          agentRole: swarmAgent.metadata.role,
-          availableAgents: Array.from(this.agents.keys()).filter((n) => n !== agent.name),
-        },
+      context,
+      runOptions: {
+        threadId: request.threadId,
+        timeout: request.timeout,
+        saveHistory: request.saveHistory,
       },
       stateKeys: {
         blackboard: `${this.keyPrefix}:${this.swarmId}:blackboard`,
         messages: `${this.keyPrefix}:${this.swarmId}:messages`,
-        results: `${this.keyPrefix}:${this.swarmId}:results`,
+        results: this.resultsChannel(),
       },
     };
   }
 
-  private extractProvider(model: string): string {
-    if (model.includes('/')) {
-      return model.split('/')[0];
-    }
-    return 'openai';
-  }
-
-  private async dispatchJobAndWait(payload: SwarmAgentJobPayload): Promise<SwarmAgentJobResult> {
+  private dispatchJobAndWait(
+    payload: SwarmAgentJobPayload,
+    request: AgentRunRequest
+  ): Promise<SwarmAgentJobResult> {
     const timeout = this.distributed.timeout ?? 300000;
-    const queueName = this.distributed.queue ?? 'swarm-agent-jobs';
-
-    const jobKey = `${this.keyPrefix}:jobs:${queueName}`;
-    await this.redis.rpush(jobKey, JSON.stringify(payload));
+    const queueKey = swarmJobQueueKey(this.keyPrefix, this.distributed.queue);
 
     return new Promise<SwarmAgentJobResult>((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        request.signal.removeEventListener('abort', onAbort);
+        this.pendingJobs.delete(payload.jobId);
+      };
+
+      const onAbort = () => {
+        cleanup();
+        const reason: unknown = request.signal.reason;
+        reject(reason instanceof Error ? reason : new Error('Swarm execution aborted'));
+      };
+
       const timeoutId = setTimeout(() => {
-        this.pendingTimers.delete(timeoutId);
-        this.resultHandlers.delete(payload.jobId);
+        cleanup();
         reject(new Error(`Job timeout for agent '${payload.agentName}' after ${timeout}ms`));
       }, timeout);
 
-      this.pendingTimers.add(timeoutId);
+      if (request.signal.aborted) {
+        onAbort();
+        return;
+      }
+      request.signal.addEventListener('abort', onAbort, { once: true });
 
-      this.resultHandlers.set(payload.jobId, (result) => {
-        clearTimeout(timeoutId);
-        this.pendingTimers.delete(timeoutId);
-        if (result.error) {
-          reject(new Error(result.error));
-        } else {
+      this.pendingJobs.set(payload.jobId, {
+        resolve: (result) => {
+          cleanup();
           resolve(result);
-        }
+        },
+        reject: (error) => {
+          cleanup();
+          reject(error);
+        },
+      });
+
+      this.redis.rpush(queueKey, JSON.stringify(payload)).catch((error: unknown) => {
+        cleanup();
+        reject(error instanceof Error ? error : new Error(String(error)));
       });
     });
   }
@@ -410,82 +299,50 @@ export class DistributedSwarmCoordinator implements SwarmCoordinatorInterface {
       toolCalls: jobResult.toolCalls.map((tc) => ({
         id: nanoid(8),
         name: tc.name,
-        arguments: (tc.input ?? {}) as Record<string, unknown>,
-        result: tc.output,
+        arguments: isRecord(tc.input) ? tc.input : {},
       })),
       messages: [],
       trace: { traceId: `trace_${nanoid(12)}`, spans: [] },
     };
   }
 
-  private setAgentState(agentName: string, state: SwarmAgentState): void {
-    const agent = this.agents.get(agentName);
-    if (agent) {
-      agent.state = state;
-    }
-  }
-
-  pause(): void {
-    this.paused = true;
-  }
-
-  resume(): void {
-    this.paused = false;
-  }
-
-  abort(): void {
-    this.aborted = true;
-  }
-
-  isAborted(): boolean {
-    return this.aborted;
-  }
-
-  isPaused(): boolean {
-    return this.paused;
-  }
-
   async reset(): Promise<void> {
-    this.aborted = false;
-    this.paused = false;
-
-    for (const agent of this.agents.values()) {
-      agent.state = 'idle';
-      agent.lastResult = undefined;
-      agent.messageCount = 0;
-      agent.tokenCount = 0;
-    }
-
-    if (this._messageBus) {
-      this._messageBus.clear();
-    }
-    if (this._blackboard) {
-      this._blackboard.clear();
-    }
+    this.rejectPendingJobs(new Error('Swarm was reset'));
+    super.reset();
   }
 
   async close(): Promise<void> {
-    for (const timer of this.pendingTimers) {
-      clearTimeout(timer);
-    }
-    this.pendingTimers.clear();
-    this.resultHandlers.clear();
+    if (this.closed) return;
+    this.closed = true;
 
-    if (this._messageBus) {
-      await this._messageBus.close();
-    }
-    if (this._blackboard) {
-      await this._blackboard.close();
-    }
-    if (this._events) {
-      await this._events.close();
-    }
-    if (this.subscriber) {
-      await this.subscriber.unsubscribe();
-      await this.subscriber.quit();
-    }
-    if (this.redis) {
-      await this.redis.quit();
+    this.rejectPendingJobs(new Error('Distributed swarm coordinator closed'));
+    this.subscriber.off('message', this.handleResultMessage);
+
+    await this.messageBus.close();
+    await this.blackboard.close();
+    await this.events.close();
+    await closeRedis(this.subscriber);
+    await closeRedis(this.redis);
+  }
+
+  private rejectPendingJobs(error: Error): void {
+    const pending = Array.from(this.pendingJobs.values());
+    this.pendingJobs.clear();
+    for (const job of pending) {
+      job.reject(error);
     }
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function closeRedis(client: Redis): Promise<void> {
+  if (client.status === 'end') return;
+  if (client.status === 'wait') {
+    client.disconnect();
+    return;
+  }
+  await client.quit();
 }

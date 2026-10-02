@@ -29,7 +29,17 @@ function createPlaywrightMock() {
 
   const firstPage = makePage();
 
+  const contextListeners = new Map<string, Array<(arg?: unknown) => void>>();
   const mockContext = {
+    pages: vi.fn().mockReturnValue([]),
+    on: vi.fn().mockImplementation((event: string, listener: (arg?: unknown) => void) => {
+      const list = contextListeners.get(event) ?? [];
+      list.push(listener);
+      contextListeners.set(event, list);
+    }),
+    emit: (event: string, arg?: unknown) => {
+      for (const listener of contextListeners.get(event) ?? []) listener(arg);
+    },
     newPage: vi.fn().mockImplementation(async () => makePage()),
     addCookies: vi.fn().mockImplementation(async (cookies: Array<Record<string, unknown>>) => {
       cookieStore.push(...cookies);
@@ -50,6 +60,7 @@ function createPlaywrightMock() {
 
   const mockChromium = {
     launch: vi.fn().mockResolvedValue(mockBrowser),
+    launchPersistentContext: vi.fn().mockResolvedValue(mockContext),
   };
 
   const mockFirefox = {
@@ -310,6 +321,19 @@ describe('BrowserSession', () => {
       expect(session.stealthEnabled).toBe(true);
       expect(session.stealthConfig).toEqual(stealthCfg);
     });
+
+    it('fills omitted stealth options with documented defaults', async () => {
+      const { BrowserSession } = await import('../session');
+      const session = new BrowserSession({ stealth: { humanLikeMouse: false } });
+
+      expect(session.stealthConfig).toEqual({
+        humanLikeTyping: true,
+        humanLikeMouse: false,
+        fingerprintRandomization: true,
+        blockWebDriver: true,
+        evasionScripts: [],
+      });
+    });
   });
 
   describe('proxy', () => {
@@ -469,6 +493,191 @@ describe('BrowserSession', () => {
           expect.objectContaining({ name: 'valid', value: 'cookie' }),
           expect.objectContaining({ name: 'also-valid', value: 'v2' }),
         ]);
+      } finally {
+        await rm(tmpDir, { recursive: true });
+      }
+    });
+  });
+
+  describe('lifecycle hardening', () => {
+    it('launches a single browser when ensureStarted is called concurrently', async () => {
+      const { BrowserSession } = await import('../session');
+      const session = new BrowserSession();
+
+      await Promise.all([
+        session.ensureStarted(),
+        session.ensureStarted(),
+        session.ensureStarted(),
+      ]);
+
+      expect(pw.module.chromium.launch).toHaveBeenCalledTimes(1);
+      expect(session.started).toBe(true);
+    });
+
+    it('closes the launched browser and resets state when context creation fails', async () => {
+      const { BrowserSession } = await import('../session');
+      const session = new BrowserSession();
+      pw.mockBrowser.newContext.mockRejectedValueOnce(new Error('context boom'));
+
+      await expect(session.start()).rejects.toThrow('context boom');
+
+      expect(pw.mockBrowser.close).toHaveBeenCalledTimes(1);
+      expect(session.started).toBe(false);
+      expect(session.browser).toBeNull();
+
+      await session.start();
+      expect(session.started).toBe(true);
+    });
+
+    it('resets when the context closes unexpectedly so ensureStarted relaunches', async () => {
+      const session = await createAndStart();
+
+      pw.mockContext.emit('close');
+      expect(session.started).toBe(false);
+      expect(() => session.page).toThrow('BrowserSession not started');
+
+      await session.ensureStarted();
+      expect(pw.module.chromium.launch).toHaveBeenCalledTimes(2);
+    });
+
+    it('notifies onStart listeners on start and immediately when already started', async () => {
+      const { BrowserSession } = await import('../session');
+      const session = new BrowserSession();
+      const before = vi.fn();
+      const unsubscribe = session.onStart(before);
+
+      await session.start();
+      expect(before).toHaveBeenCalledWith(pw.mockContext);
+
+      const after = vi.fn();
+      session.onStart(after);
+      expect(after).toHaveBeenCalledWith(pw.mockContext);
+
+      unsubscribe();
+      await session.close();
+      await session.start();
+      expect(before).toHaveBeenCalledTimes(1);
+      expect(after).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('persistentContext', () => {
+    it('launches a persistent context and reuses its initial page', async () => {
+      const existingPage = pw.makePage();
+      pw.mockContext.pages.mockReturnValue([existingPage]);
+
+      const { BrowserSession } = await import('../session');
+      const session = new BrowserSession({
+        persistentContext: '/tmp/profile',
+        locale: 'de-DE',
+        proxy: 'http://proxy:8080',
+      });
+      await session.start();
+
+      expect(pw.module.chromium.launch).not.toHaveBeenCalled();
+      expect(pw.module.chromium.launchPersistentContext).toHaveBeenCalledWith(
+        '/tmp/profile',
+        expect.objectContaining({
+          headless: true,
+          locale: 'de-DE',
+          proxy: { server: 'http://proxy:8080' },
+          viewport: { width: 1280, height: 720 },
+        })
+      );
+      expect(session.browser).toBeNull();
+      expect(session.page).toBe(existingPage);
+      expect(pw.mockContext.newPage).not.toHaveBeenCalled();
+
+      await session.close();
+      expect(pw.mockContext.close).toHaveBeenCalledTimes(1);
+      expect(session.started).toBe(false);
+    });
+  });
+
+  describe('pool.maxPages', () => {
+    it('rejects invalid maxPages', async () => {
+      const { BrowserSession } = await import('../session');
+      expect(() => new BrowserSession({ pool: { maxPages: 0 } })).toThrow('pool.maxPages');
+      expect(() => new BrowserSession({ pool: { maxPages: 1.5 } })).toThrow('pool.maxPages');
+    });
+
+    it('refuses to open more tabs than maxPages', async () => {
+      const session = await createAndStart({ pool: { maxPages: 2 } });
+      await session.newTab();
+
+      await expect(session.newTab()).rejects.toThrow('Tab limit reached: pool.maxPages is 2');
+      expect(session.tabs).toHaveLength(2);
+    });
+  });
+
+  describe('tab tracking', () => {
+    it('tracks pages opened by the site (popups, target=_blank)', async () => {
+      const session = await createAndStart();
+      const popup = pw.makePage();
+
+      pw.mockContext.emit('page', popup);
+
+      expect(session.tabs).toHaveLength(2);
+      expect(session.tabs[1]).toBe(popup);
+      expect(session.activeTabIndex).toBe(0);
+    });
+
+    it('does not duplicate pages created through newTab', async () => {
+      const session = await createAndStart();
+      const page = pw.makePage();
+      pw.mockContext.newPage.mockImplementationOnce(async () => {
+        pw.mockContext.emit('page', page);
+        return page;
+      });
+
+      await session.newTab();
+      expect(session.tabs).toHaveLength(2);
+      expect(session.page).toBe(page);
+    });
+
+    it('switchTab indexes the pruned tab list after a tab closed externally', async () => {
+      const session = await createAndStart();
+      const second = await session.newTab();
+      const third = await session.newTab();
+
+      await second.close();
+      session.switchTab(1);
+
+      expect(session.page).toBe(third);
+    });
+
+    it('closeTab keeps the active page when closing a tab before it', async () => {
+      const session = await createAndStart();
+      await session.newTab();
+      const third = await session.newTab();
+
+      await session.closeTab(0);
+      expect(session.page).toBe(third);
+      expect(session.activeTabIndex).toBe(1);
+    });
+  });
+
+  describe('cookie normalization', () => {
+    it('defaults path to / for domain cookies without a path', async () => {
+      const session = await createAndStart();
+      await session.setCookies([{ name: 'a', value: 'b', domain: '.example.com' }]);
+
+      expect(pw.mockContext.addCookies).toHaveBeenLastCalledWith([
+        { name: 'a', value: 'b', domain: '.example.com', path: '/' },
+      ]);
+    });
+
+    it('rejects cookie files that do not contain an array', async () => {
+      const { join } = await import('node:path');
+      const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const tmpDir = await mkdtemp(join(tmpdir(), 'cogitator-test-'));
+      const filePath = join(tmpDir, 'cookies.json');
+
+      try {
+        const session = await createAndStart();
+        await writeFile(filePath, JSON.stringify({ name: 'x', value: 'y' }), 'utf-8');
+        await expect(session.loadCookies(filePath)).rejects.toThrow('must contain a JSON array');
       } finally {
         await rm(tmpDir, { recursive: true });
       }

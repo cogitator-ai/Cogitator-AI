@@ -236,4 +236,48 @@ describe('WasmToolManager', () => {
       expect(manager.getTools()).toHaveLength(0);
     });
   });
+
+  describe('timeouts and aborts', () => {
+    it('rejects invalid timeout options', () => {
+      expect(() => new WasmToolManager({ timeout: 0 })).toThrow('timeout');
+    });
+
+    it('times out a hung call and replaces the plugin so the tool keeps working', async () => {
+      const timed = new WasmToolManager({ timeout: 20 });
+      try {
+        const tool = await timed.load('./hang.wasm');
+        const original = timed.getModule('hang')!.plugin;
+        (original.call as ReturnType<typeof vi.fn>).mockImplementationOnce(
+          () => new Promise(() => undefined)
+        );
+
+        await expect(tool.execute({}, undefined as never)).rejects.toThrow(
+          'WASM tool hang timed out after 20ms'
+        );
+        await vi.waitFor(() => expect(timed.getModule('hang')!.plugin).not.toBe(original));
+        expect(original.close).toHaveBeenCalled();
+
+        await expect(tool.execute({}, undefined as never)).resolves.toEqual({
+          result: 'executed-./hang.wasm',
+        });
+      } finally {
+        await timed.close();
+      }
+    });
+
+    it('aborts a running call via the tool context signal and recycles the plugin', async () => {
+      const tool = await manager.load('./slow.wasm');
+      const original = manager.getModule('slow')!.plugin;
+      (original.call as ReturnType<typeof vi.fn>).mockImplementationOnce(
+        () => new Promise(() => undefined)
+      );
+      const controller = new AbortController();
+
+      const pending = tool.execute({}, { agentId: 'a', runId: 'r', signal: controller.signal });
+      controller.abort();
+
+      await expect(pending).rejects.toThrow('WASM tool slow aborted');
+      await vi.waitFor(() => expect(manager.getModule('slow')!.plugin).not.toBe(original));
+    });
+  });
 });

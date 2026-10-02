@@ -1,7 +1,7 @@
 /**
  * @cogitator-ai/sandbox
  *
- * Docker-based sandbox execution for Cogitator agents
+ * Docker, WASM and native sandbox execution for Cogitator agents
  */
 
 export { SandboxManager } from './sandbox-manager';
@@ -15,6 +15,7 @@ export {
 } from './executors/index';
 export {
   ContainerPool,
+  SANDBOX_CONTAINER_LABEL,
   type ContainerPoolOptions,
   type ContainerCreateOptions,
 } from './pool/index';
@@ -31,5 +32,6 @@ export type {
   SandboxManagerConfig,
   SandboxPoolConfig,
   SandboxDockerConfig,
+  SandboxWasmConfig,
   SandboxResult,
 } from '@cogitator-ai/types';

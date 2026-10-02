@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { ToolRegistry } from '../registry';
 import { tool } from '../tool';
 import { createToolMessage, executeTool } from '../cogitator/tool-executor';
+import type { SandboxManager } from '../cogitator/initializers';
 
 const toolCall: ToolCall = {
   id: 'tc_1',
@@ -101,7 +102,7 @@ describe('executeTool', () => {
     let capturedContext: ToolContext | undefined;
     const registry = new ToolRegistry();
     const signal = new AbortController().signal;
-    const initializeSandbox = vi.fn(async () => {});
+    const initializeSandbox = vi.fn(async () => undefined);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     try {
@@ -150,5 +151,107 @@ describe('executeTool', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it('uses the sandbox manager created on first sandboxed call', async () => {
+    const registry = new ToolRegistry();
+    const nativeExecute = vi.fn(async () => ({ native: true }));
+    registry.register(
+      tool({
+        name: 'shell',
+        description: 'Run shell',
+        parameters: z.object({ command: z.string() }),
+        sandbox: { type: 'docker', image: 'alpine:latest' },
+        execute: nativeExecute,
+      })
+    );
+
+    const execute = vi.fn(async () => ({
+      success: true,
+      data: { stdout: 'hi\n', stderr: '', exitCode: 0, timedOut: false, duration: 5 },
+    }));
+    const manager: SandboxManager = {
+      initialize: async () => undefined,
+      execute,
+      isDockerAvailable: async () => true,
+      shutdown: async () => undefined,
+    };
+    const initializeSandbox = vi.fn(async () => manager);
+
+    const result = await executeTool(
+      registry,
+      { id: 'tc_1', name: 'shell', arguments: { command: 'echo hi' } },
+      'run_1',
+      'agent_1',
+      undefined,
+      undefined,
+      false,
+      initializeSandbox
+    );
+
+    expect(initializeSandbox).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(nativeExecute).not.toHaveBeenCalled();
+    expect(result.result).toMatchObject({ stdout: 'hi\n', exitCode: 0, command: 'echo hi' });
+  });
+
+  it('enforces the per-tool timeout and aborts the tool signal', async () => {
+    const registry = new ToolRegistry();
+    let observedSignal: AbortSignal | undefined;
+    registry.register(
+      tool({
+        name: 'slow',
+        description: 'Never resolves on its own',
+        parameters: z.object({}),
+        timeout: 20,
+        execute: (_args, context) => {
+          observedSignal = context.signal;
+          return new Promise(() => undefined);
+        },
+      })
+    );
+
+    const result = await executeTool(
+      registry,
+      { id: 'tc_1', name: 'slow', arguments: {} },
+      'run_1',
+      'agent_1',
+      undefined,
+      undefined,
+      false,
+      async () => undefined
+    );
+
+    expect(result.error).toBe('Tool "slow" timed out after 20ms');
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it('propagates parent cancellation through a tool with a timeout', async () => {
+    const registry = new ToolRegistry();
+    registry.register(
+      tool({
+        name: 'slow',
+        description: 'Never resolves on its own',
+        parameters: z.object({}),
+        timeout: 10_000,
+        execute: () => new Promise(() => undefined),
+      })
+    );
+    const parent = new AbortController();
+    setTimeout(() => parent.abort(new Error('Run aborted by user')), 10);
+
+    const result = await executeTool(
+      registry,
+      { id: 'tc_1', name: 'slow', arguments: {} },
+      'run_1',
+      'agent_1',
+      undefined,
+      undefined,
+      false,
+      async () => undefined,
+      parent.signal
+    );
+
+    expect(result.error).toBe('Run aborted by user');
   });
 });

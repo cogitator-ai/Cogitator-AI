@@ -5,7 +5,7 @@ import type { Tool, ToolSchema } from '@cogitator-ai/types';
 
 vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => {
   class McpServer {
-    tool = vi.fn();
+    registerTool = vi.fn();
     registerResource = vi.fn();
     registerPrompt = vi.fn();
     connect = vi.fn().mockResolvedValue(undefined);
@@ -213,8 +213,9 @@ describe('MCPServer', () => {
   });
 
   describe('logging', () => {
-    it('logs when enabled', async () => {
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    it('logs to stderr when enabled so stdio JSON-RPC frames stay clean', async () => {
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const stdoutSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
       const server = new MCPServer({
         name: 'test',
@@ -227,9 +228,11 @@ describe('MCPServer', () => {
       await server.start();
 
       expect(consoleSpy).toHaveBeenCalled();
+      expect(stdoutSpy).not.toHaveBeenCalled();
 
       await server.stop();
       consoleSpy.mockRestore();
+      stdoutSpy.mockRestore();
     });
   });
 });

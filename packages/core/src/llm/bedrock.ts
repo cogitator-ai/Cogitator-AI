@@ -213,7 +213,7 @@ export class BedrockBackend extends BaseLLMBackend {
     const moduleName = '@aws-sdk/client-bedrock-runtime';
     const { ConverseCommand } = await import(/* webpackIgnore: true */ moduleName);
 
-    const { system, messages } = await this.convertMessages(request.messages);
+    const { system, messages } = await this.convertMessages(request.messages, request.signal);
     const input: ConverseCommandInput = {
       modelId: request.model,
       messages,
@@ -267,7 +267,7 @@ export class BedrockBackend extends BaseLLMBackend {
     const moduleName = '@aws-sdk/client-bedrock-runtime';
     const { ConverseStreamCommand } = await import(/* webpackIgnore: true */ moduleName);
 
-    const { system, messages } = await this.convertMessages(request.messages);
+    const { system, messages } = await this.convertMessages(request.messages, request.signal);
     const input: ConverseStreamCommandInput = {
       modelId: request.model,
       messages,
@@ -316,94 +316,112 @@ export class BedrockBackend extends BaseLLMBackend {
       return;
     }
 
-    for await (const event of response.stream) {
-      if (event.contentBlockStart?.start?.toolUse) {
-        const idx = event.contentBlockStart.contentBlockIndex ?? 0;
-        toolCallInputs.set(idx, {
-          id: event.contentBlockStart.start.toolUse.toolUseId ?? '',
-          name: event.contentBlockStart.start.toolUse.name ?? '',
-          input: '',
-        });
+    try {
+      for await (const event of response.stream) {
+        yield* this.processStreamEvent(event, id, toolCalls, toolCallInputs);
       }
-
-      if (event.contentBlockDelta) {
-        const idx = event.contentBlockDelta.contentBlockIndex ?? 0;
-        const delta = event.contentBlockDelta.delta;
-
-        if (delta?.text) {
-          yield {
-            id,
-            delta: { content: delta.text },
-          };
-        }
-
-        if (delta?.toolUse?.input) {
-          const existing = toolCallInputs.get(idx);
-          if (existing) {
-            existing.input += delta.toolUse.input;
-          }
-        }
-      }
-
-      if (event.contentBlockStop) {
-        const idx = event.contentBlockStop.contentBlockIndex ?? 0;
-        const toolCall = toolCallInputs.get(idx);
-        if (toolCall) {
-          toolCalls.push({
-            id: toolCall.id,
-            name: toolCall.name,
-            arguments: this.tryParseJson(toolCall.input),
-          });
-        }
-      }
-
-      if (event.messageStop) {
-        const finishReason = this.mapStopReason(event.messageStop.stopReason);
-        yield {
-          id,
-          delta: {
-            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-          },
-          finishReason,
-        };
-      }
-
-      if (event.metadata?.usage) {
-        yield {
-          id,
-          delta: {},
-          usage: {
-            inputTokens: event.metadata.usage.inputTokens ?? 0,
-            outputTokens: event.metadata.usage.outputTokens ?? 0,
-            totalTokens: event.metadata.usage.totalTokens ?? 0,
-          },
-        };
-      }
+    } catch (e) {
+      throw this.wrapBedrockError(e, ctx);
     }
   }
 
-  private async convertMessages(messages: Message[]): Promise<{
+  private *processStreamEvent(
+    event: StreamEvent,
+    id: string,
+    toolCalls: ToolCall[],
+    toolCallInputs: Map<number, { id: string; name: string; input: string }>
+  ): Generator<ChatStreamChunk> {
+    if (event.contentBlockStart?.start?.toolUse) {
+      const idx = event.contentBlockStart.contentBlockIndex ?? 0;
+      toolCallInputs.set(idx, {
+        id: event.contentBlockStart.start.toolUse.toolUseId ?? '',
+        name: event.contentBlockStart.start.toolUse.name ?? '',
+        input: '',
+      });
+    }
+
+    if (event.contentBlockDelta) {
+      const idx = event.contentBlockDelta.contentBlockIndex ?? 0;
+      const delta = event.contentBlockDelta.delta;
+
+      if (delta?.text) {
+        yield {
+          id,
+          delta: { content: delta.text },
+        };
+      }
+
+      if (delta?.toolUse?.input) {
+        const existing = toolCallInputs.get(idx);
+        if (existing) {
+          existing.input += delta.toolUse.input;
+        }
+      }
+    }
+
+    if (event.contentBlockStop) {
+      const idx = event.contentBlockStop.contentBlockIndex ?? 0;
+      const toolCall = toolCallInputs.get(idx);
+      if (toolCall) {
+        toolCalls.push({
+          id: toolCall.id,
+          name: toolCall.name,
+          arguments: this.tryParseJson(toolCall.input),
+        });
+      }
+    }
+
+    if (event.messageStop) {
+      const finishReason = this.mapStopReason(event.messageStop.stopReason);
+      yield {
+        id,
+        delta: {
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        },
+        finishReason,
+      };
+    }
+
+    if (event.metadata?.usage) {
+      yield {
+        id,
+        delta: {},
+        usage: {
+          inputTokens: event.metadata.usage.inputTokens ?? 0,
+          outputTokens: event.metadata.usage.outputTokens ?? 0,
+          totalTokens: event.metadata.usage.totalTokens ?? 0,
+        },
+      };
+    }
+  }
+
+  private async convertMessages(
+    messages: Message[],
+    signal?: AbortSignal
+  ): Promise<{
     system: string | null;
     messages: BedrockMessage[];
   }> {
-    let system: string | null = null;
+    const systemParts: string[] = [];
     const bedrockMessages: BedrockMessage[] = [];
 
     for (const msg of messages) {
       switch (msg.role) {
-        case 'system':
-          system = this.getTextContent(msg.content);
+        case 'system': {
+          const text = this.getTextContent(msg.content);
+          if (text) systemParts.push(text);
           break;
+        }
 
         case 'user':
           bedrockMessages.push({
             role: 'user',
-            content: await this.convertContentToBlocks(msg.content),
+            content: await this.convertContentToBlocks(msg.content, signal),
           });
           break;
 
         case 'assistant': {
-          const blocks = await this.convertContentToBlocks(msg.content);
+          const blocks = await this.convertContentToBlocks(msg.content, signal);
           const toolCalls = (msg as Message & { toolCalls?: ToolCall[] }).toolCalls;
           if (toolCalls && toolCalls.length > 0) {
             blocks.push(
@@ -423,35 +441,50 @@ export class BedrockBackend extends BaseLLMBackend {
           break;
         }
 
-        case 'tool':
-          bedrockMessages.push({
-            role: 'user',
-            content: [
-              {
-                toolResult: {
-                  toolUseId: msg.toolCallId ?? '',
-                  content: [{ text: this.getTextContent(msg.content) }],
-                },
-              },
-            ],
-          });
+        case 'tool': {
+          const toolResultBlock: ContentBlock = {
+            toolResult: {
+              toolUseId: msg.toolCallId ?? '',
+              content: [{ text: this.getTextContent(msg.content) }],
+            },
+          };
+          const previous = bedrockMessages[bedrockMessages.length - 1];
+          if (
+            previous?.role === 'user' &&
+            previous.content.length > 0 &&
+            previous.content.every((block) => block.toolResult !== undefined)
+          ) {
+            previous.content.push(toolResultBlock);
+          } else {
+            bedrockMessages.push({ role: 'user', content: [toolResultBlock] });
+          }
           break;
+        }
       }
     }
 
-    return { system, messages: bedrockMessages };
+    return {
+      system: systemParts.length > 0 ? systemParts.join('\n\n') : null,
+      messages: bedrockMessages,
+    };
   }
 
-  private async convertContentToBlocks(content: MessageContent): Promise<ContentBlock[]> {
+  private async convertContentToBlocks(
+    content: MessageContent,
+    signal?: AbortSignal
+  ): Promise<ContentBlock[]> {
     if (typeof content === 'string') {
       return content ? [{ text: content }] : [];
     }
 
-    const blocks = await Promise.all(content.map((part) => this.convertContentPart(part)));
+    const blocks = await Promise.all(content.map((part) => this.convertContentPart(part, signal)));
     return blocks.filter((b): b is ContentBlock => b !== null);
   }
 
-  private async convertContentPart(part: ContentPart): Promise<ContentBlock | null> {
+  private async convertContentPart(
+    part: ContentPart,
+    signal?: AbortSignal
+  ): Promise<ContentBlock | null> {
     switch (part.type) {
       case 'text':
         return { text: part.text };
@@ -469,7 +502,7 @@ export class BedrockBackend extends BaseLLMBackend {
           },
         };
       case 'image_url': {
-        const fetched = await fetchImageAsBase64(part.image_url.url);
+        const fetched = await fetchImageAsBase64(part.image_url.url, { signal });
         const format = (fetched.mediaType.split('/')[1] || 'png') as
           | 'png'
           | 'jpeg'
@@ -574,8 +607,14 @@ export class BedrockBackend extends BaseLLMBackend {
   }
 
   private tryParseJson(str: string): Record<string, unknown> {
+    if (!str.trim()) {
+      return {};
+    }
     try {
-      return JSON.parse(str) as Record<string, unknown>;
+      const parsed = JSON.parse(str) as unknown;
+      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {};
     } catch (e) {
       getLogger().warn('Failed to parse tool call JSON in Bedrock stream', {
         input: str.slice(0, 200),

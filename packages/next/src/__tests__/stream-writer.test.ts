@@ -174,3 +174,26 @@ describe('StreamWriter', () => {
     expect(chunks.length).toBeGreaterThan(0);
   });
 });
+
+describe('StreamWriter failure handling', () => {
+  it('marks itself closed when the underlying write fails', async () => {
+    const { readable, writable } = new TransformStream<Uint8Array>();
+    const sw = new StreamWriter(writable.getWriter());
+    await readable.cancel(new Error('client gone'));
+
+    await expect(sw.start('m')).rejects.toThrow('client gone');
+    expect(sw.isClosed).toBe(true);
+    await expect(sw.textDelta('t', 'ignored')).resolves.toBeUndefined();
+  });
+
+  it('includes the thread id in the finish event', async () => {
+    const { writer, readAll } = createTestStream();
+    const sw = new StreamWriter(writer);
+    const done = readAll();
+    await sw.finish('m', undefined, 'thread_1');
+    await sw.close();
+
+    const events = parseSSEChunks(await done);
+    expect(events).toEqual([{ type: 'finish', messageId: 'm', threadId: 'thread_1' }]);
+  });
+});

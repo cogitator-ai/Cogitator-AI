@@ -76,4 +76,4 @@ async function main() {
   console.log('\nDone.');
 }
 
-main();
+void main();

@@ -14,12 +14,13 @@ export type WasmSource = { wasm: Array<{ data: Uint8Array }> } | { wasm: Array<{
 
 export type CreatePluginFn = (
   source: WasmSource,
-  options: { useWasi: boolean }
+  options: { useWasi: boolean; runInWorker?: boolean }
 ) => Promise<ExtismPlugin>;
 
 export interface WasmToolManagerOptions {
   debounceMs?: number;
   useWasi?: boolean;
+  timeout?: number;
 }
 
 export interface WasmToolCallbacks {

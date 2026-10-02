@@ -5,10 +5,10 @@ import type {
   HybridSearchWeights,
 } from '@cogitator-ai/types';
 import type { HybridSearch } from '@cogitator-ai/memory';
-import { SimilarityRetriever } from './similarity-retriever';
-import { MMRRetriever } from './mmr-retriever';
-import { HybridRetriever } from './hybrid-retriever';
-import { MultiQueryRetriever } from './multi-query-retriever';
+import { SimilarityRetriever } from './similarity-retriever.js';
+import { MMRRetriever } from './mmr-retriever.js';
+import { HybridRetriever } from './hybrid-retriever.js';
+import { MultiQueryRetriever } from './multi-query-retriever.js';
 
 interface BaseRetrieverDeps {
   embeddingAdapter: EmbeddingAdapter;
@@ -41,6 +41,7 @@ interface MultiQueryDeps {
   baseRetriever: Retriever;
   expandQuery: (query: string) => Promise<string[]>;
   topK?: number;
+  maxQueries?: number;
 }
 
 export type CreateRetrieverConfig = SimilarityDeps | MMRDeps | HybridDeps | MultiQueryDeps;
@@ -77,6 +78,7 @@ export function createRetriever(config: CreateRetrieverConfig): Retriever {
         baseRetriever: config.baseRetriever,
         expandQuery: config.expandQuery,
         defaultTopK: config.topK,
+        defaultMaxQueries: config.maxQueries,
       });
 
     default: {

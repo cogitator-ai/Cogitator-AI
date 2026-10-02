@@ -7,31 +7,53 @@ vi.stubGlobal('fetch', mockFetch);
 interface MockWS extends EventEmitter {
   send: Mock;
   close: Mock;
+  terminate: Mock;
   readyState: number;
-  OPEN: number;
 }
 
 let wsInstances: MockWS[] = [];
-let wsConstructorCalls: Array<[string, string[]]> = [];
+let wsConstructorCalls: Array<[string, { headers: Record<string, string> }]> = [];
 
 vi.mock('ws', () => {
-  const MockWebSocket = vi.fn(function (this: MockWS, url: string, protocols: string[]) {
-    wsConstructorCalls.push([url, protocols]);
+  const MockWebSocket = vi.fn(function (
+    this: MockWS,
+    url: string,
+    options: { headers: Record<string, string> }
+  ) {
+    wsConstructorCalls.push([url, options]);
     EventEmitter.call(this);
     this.send = vi.fn();
     this.close = vi.fn(() => {
       this.readyState = 3;
-      this.emit('close');
+      this.emit('close', 1000, Buffer.from(''));
     });
-    this.readyState = 1;
-    this.OPEN = 1;
+    this.terminate = vi.fn(() => {
+      this.readyState = 3;
+      this.emit('close', 1006, Buffer.from(''));
+    });
+    this.readyState = 0;
+    this.on('open', () => {
+      this.readyState = 1;
+    });
     wsInstances.push(this);
   });
+  Object.assign(MockWebSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
   Object.setPrototypeOf(MockWebSocket.prototype, EventEmitter.prototype);
   return { WebSocket: MockWebSocket };
 });
 
 import { DeepgramSTT } from '../../stt/deepgram-stt.js';
+import { pcmToWav } from '../../audio.js';
+
+function finalResult(transcript: string, start: number, duration: number, words?: unknown[]) {
+  return JSON.stringify({
+    type: 'Results',
+    is_final: true,
+    start,
+    duration,
+    channel: { alternatives: [{ transcript, confidence: 0.9, ...(words && { words }) }] },
+  });
+}
 
 describe('DeepgramSTT', () => {
   let stt: DeepgramSTT;
@@ -81,10 +103,27 @@ describe('DeepgramSTT', () => {
     expect(init.headers).toEqual(
       expect.objectContaining({
         Authorization: 'Token dg-test-key',
-        'Content-Type': 'audio/wav',
+        'Content-Type': 'application/octet-stream',
       })
     );
     expect(Buffer.from(init.body as ArrayBuffer)).toEqual(audio);
+  });
+
+  it('transcribe() declares linear16 encoding for headerless PCM', async () => {
+    await stt.transcribe(Buffer.alloc(64));
+    const [url] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const params = new URL(url).searchParams;
+    expect(params.get('encoding')).toBe('linear16');
+    expect(params.get('sample_rate')).toBe('16000');
+    expect(params.get('channels')).toBe('1');
+  });
+
+  it('transcribe() sends containerized audio with its mime type and no encoding params', async () => {
+    const wav = pcmToWav(Buffer.alloc(64), 16000);
+    await stt.transcribe(wav);
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(new URL(url).searchParams.get('encoding')).toBeNull();
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('audio/wav');
   });
 
   it('uses nova-3 model by default', async () => {
@@ -159,7 +198,7 @@ describe('DeepgramSTT', () => {
       stt.createStream();
 
       expect(wsConstructorCalls).toHaveLength(1);
-      const [url, protocols] = wsConstructorCalls[0]!;
+      const [url, options] = wsConstructorCalls[0]!;
       const parsed = new URL(url);
       expect(parsed.protocol).toBe('wss:');
       expect(parsed.hostname).toBe('api.deepgram.com');
@@ -167,7 +206,81 @@ describe('DeepgramSTT', () => {
       expect(parsed.searchParams.get('model')).toBe('nova-3');
       expect(parsed.searchParams.get('punctuate')).toBe('true');
       expect(parsed.searchParams.get('interim_results')).toBe('true');
-      expect(protocols).toContain('token:dg-test-key');
+      expect(parsed.searchParams.get('encoding')).toBe('linear16');
+      expect(parsed.searchParams.get('sample_rate')).toBe('16000');
+      expect(parsed.searchParams.get('channels')).toBe('1');
+      expect(options.headers).toEqual({ Authorization: 'Token dg-test-key' });
+    });
+
+    it('uses configured / per-stream sample rate', () => {
+      new DeepgramSTT({ apiKey: 'k', sampleRate: 8000 }).createStream();
+      stt.createStream({ sampleRate: 24000 });
+      expect(new URL(wsConstructorCalls[0]![0]).searchParams.get('sample_rate')).toBe('8000');
+      expect(new URL(wsConstructorCalls[1]![0]).searchParams.get('sample_rate')).toBe('24000');
+    });
+
+    it('close() returns all final segments joined, not only the last one', async () => {
+      const stream = stt.createStream();
+      const ws = wsInstances[0]!;
+      ws.emit('open');
+      ws.emit(
+        'message',
+        finalResult('turn on', 0, 0.8, [{ word: 'turn', start: 0, end: 0.3, confidence: 0.9 }])
+      );
+      ws.emit(
+        'message',
+        finalResult('the lights', 0.8, 0.7, [
+          { word: 'lights', start: 1, end: 1.4, confidence: 0.8 },
+        ])
+      );
+      ws.emit('message', JSON.stringify({ type: 'UtteranceEnd', last_word_end: 1.4 }));
+      (ws.send as Mock).mockImplementation((data: unknown) => {
+        if (typeof data === 'string' && data.includes('CloseStream')) ws.close();
+      });
+
+      const result = await stream.close();
+      expect(result.text).toBe('turn on the lights');
+      expect(result.duration).toBeCloseTo(1.5);
+      expect(result.words?.map((w) => w.word)).toEqual(['turn', 'lights']);
+    });
+
+    it('reports an unexpected remote close as an error and drops later writes', () => {
+      const stream = stt.createStream();
+      const errorCb = vi.fn();
+      stream.on('error', errorCb);
+      const ws = wsInstances[0]!;
+      ws.emit('open');
+
+      ws.emit('close', 1011, Buffer.from('NET-0001'));
+      expect(errorCb).toHaveBeenCalledOnce();
+      expect((errorCb.mock.calls[0]![0] as Error).message).toContain('1011');
+
+      stream.write(Buffer.from('late'));
+      expect(ws.send).not.toHaveBeenCalled();
+    });
+
+    it('flushes buffered audio before CloseStream when closed while connecting', async () => {
+      const stream = stt.createStream();
+      const ws = wsInstances[0]!;
+      stream.write(Buffer.from('early'));
+      const closing = stream.close();
+
+      (ws.send as Mock).mockImplementation((data: unknown) => {
+        if (typeof data === 'string' && data.includes('CloseStream')) ws.close();
+      });
+      ws.emit('open');
+
+      await closing;
+      expect((ws.send as Mock).mock.calls.map((c) => c[0])).toEqual([
+        Buffer.from('early'),
+        JSON.stringify({ type: 'CloseStream' }),
+      ]);
+    });
+
+    it('throws when writing after close', async () => {
+      const stream = stt.createStream();
+      await stream.close();
+      expect(() => stream.write(Buffer.from('x'))).toThrow('cannot write after close');
     });
 
     it('emits partial on interim results', () => {
@@ -264,7 +377,7 @@ describe('DeepgramSTT', () => {
           try {
             const parsed = JSON.parse(data);
             if (parsed.type === 'CloseStream') {
-              setTimeout(() => ws.emit('close'), 0);
+              setTimeout(() => ws.close(), 0);
             }
           } catch {}
         }
@@ -303,10 +416,11 @@ describe('DeepgramSTT', () => {
       expect(parsed.searchParams.get('language')).toBe('ja');
     });
 
-    it('stream.close() before WebSocket ready returns lastResult immediately', async () => {
+    it('stream.close() before WebSocket ready resolves immediately and terminates', async () => {
       const stream = stt.createStream();
       const result = await stream.close();
       expect(result.text).toBe('');
+      expect(wsInstances[0]!.terminate).toHaveBeenCalledOnce();
     });
 
     it('ignores malformed JSON from WebSocket', () => {

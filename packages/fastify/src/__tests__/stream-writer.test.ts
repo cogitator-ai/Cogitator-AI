@@ -7,6 +7,13 @@ function mockReply() {
   let ended = false;
   let headersWritten = false;
   const rawStream = {
+    get headersSent() {
+      return headersWritten;
+    },
+    get writableEnded() {
+      return ended;
+    },
+    destroyed: false,
     writeHead: vi.fn((_status: number, _headers: Record<string, string>) => {
       headersWritten = true;
     }),
@@ -17,7 +24,11 @@ function mockReply() {
       ended = true;
     }),
   };
-  const reply = { raw: rawStream } as unknown as FastifyReply;
+  const reply = {
+    raw: rawStream,
+    hijack: vi.fn(),
+    getHeaders: vi.fn(() => ({ 'access-control-allow-origin': 'https://app.example' })),
+  } as unknown as FastifyReply;
   return {
     reply,
     raw: rawStream,
@@ -139,5 +150,37 @@ describe('FastifyStreamWriter', () => {
     expect(output).toContain('"type":"text-end"');
     expect(output).toContain('"type":"finish"');
     expect(output).toContain('[DONE]');
+  });
+});
+
+describe('FastifyStreamWriter reply integration', () => {
+  it('hijacks the reply and keeps headers set by hooks', () => {
+    const { reply, raw } = mockReply();
+    new FastifyStreamWriter(reply).start('msg-1');
+
+    expect(reply.hijack).toHaveBeenCalledOnce();
+    expect(raw.writeHead).toHaveBeenCalledWith(
+      200,
+      expect.objectContaining({
+        'access-control-allow-origin': 'https://app.example',
+        'Content-Type': 'text/event-stream',
+      })
+    );
+  });
+
+  it('ignores writes once the raw response has ended', () => {
+    const { reply, raw } = mockReply();
+    const writer = new FastifyStreamWriter(reply);
+    writer.start('msg-1');
+    raw.end();
+    const before = raw.write.mock.calls.length;
+
+    writer.textDelta('t', 'late');
+    writer.finish('msg-1');
+    writer.close();
+
+    expect(raw.write.mock.calls.length).toBe(before);
+    expect(raw.end).toHaveBeenCalledOnce();
+    expect(writer.isClosed).toBe(true);
   });
 });
