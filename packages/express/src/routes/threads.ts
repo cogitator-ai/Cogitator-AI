@@ -26,7 +26,7 @@ export function createThreadRoutes(ctx: RouteContext): Router {
     return ctx.cogitator.memory;
   };
 
-  router.get('/threads/:id', async (req: CogitatorRequest, res: Response) => {
+  router.get('/threads/:id', async (req: CogitatorRequest<{ id: string }>, res: Response) => {
     const memory = getMemory();
     if (!memory) {
       sendError(res, 503, 'Memory not configured', 'UNAVAILABLE');
@@ -59,49 +59,52 @@ export function createThreadRoutes(ctx: RouteContext): Router {
     }
   });
 
-  router.post('/threads/:id/messages', async (req: CogitatorRequest, res: Response) => {
-    const memory = getMemory();
-    if (!memory) {
-      sendError(res, 503, 'Memory not configured', 'UNAVAILABLE');
-      return;
-    }
-
-    const { id } = req.params;
-    const body = parseMessageBody(req.body);
-
-    if (!body) {
-      sendError(
-        res,
-        400,
-        'Invalid message: role must be user, assistant or system and content a non-empty string',
-        'INVALID_INPUT'
-      );
-      return;
-    }
-
-    try {
-      const result = await memory.addEntry({
-        threadId: id,
-        message: {
-          role: body.role,
-          content: body.content,
-        },
-        tokenCount: 0,
-        metadata: body.metadata,
-      });
-
-      if (!result.success) {
-        sendError(res, 500, result.error, 'INTERNAL');
+  router.post(
+    '/threads/:id/messages',
+    async (req: CogitatorRequest<{ id: string }>, res: Response) => {
+      const memory = getMemory();
+      if (!memory) {
+        sendError(res, 503, 'Memory not configured', 'UNAVAILABLE');
         return;
       }
 
-      res.status(201).json({ success: true });
-    } catch (error) {
-      handleRouteError(res, error, 'Thread add message error');
-    }
-  });
+      const { id } = req.params;
+      const body = parseMessageBody(req.body);
 
-  router.delete('/threads/:id', async (req: CogitatorRequest, res: Response) => {
+      if (!body) {
+        sendError(
+          res,
+          400,
+          'Invalid message: role must be user, assistant or system and content a non-empty string',
+          'INVALID_INPUT'
+        );
+        return;
+      }
+
+      try {
+        const result = await memory.addEntry({
+          threadId: id,
+          message: {
+            role: body.role,
+            content: body.content,
+          },
+          tokenCount: 0,
+          metadata: body.metadata,
+        });
+
+        if (!result.success) {
+          sendError(res, 500, result.error, 'INTERNAL');
+          return;
+        }
+
+        res.status(201).json({ success: true });
+      } catch (error) {
+        handleRouteError(res, error, 'Thread add message error');
+      }
+    }
+  );
+
+  router.delete('/threads/:id', async (req: CogitatorRequest<{ id: string }>, res: Response) => {
     const memory = getMemory();
     if (!memory) {
       sendError(res, 503, 'Memory not configured', 'UNAVAILABLE');

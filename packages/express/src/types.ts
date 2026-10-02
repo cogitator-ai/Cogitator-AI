@@ -40,7 +40,7 @@ export interface AuthContext {
   metadata?: Record<string, unknown>;
 }
 
-export interface CogitatorRequest extends Request {
+export interface CogitatorRequest<P = Request['params']> extends Request<P> {
   cogitator?: {
     auth?: AuthContext;
     requestId: string;
