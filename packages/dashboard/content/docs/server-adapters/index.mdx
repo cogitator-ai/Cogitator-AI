@@ -3,16 +3,17 @@ title: Server Adapters
 description: Expose your Cogitator agents, workflows, and swarms as REST APIs with built-in streaming, WebSocket, and OpenAPI support.
 ---
 
-Cogitator ships four server adapters that turn your agent runtime into a production-ready HTTP API. Every adapter provides the same set of endpoints, streaming protocol, and OpenAPI generation — pick the one that matches your stack.
+Cogitator ships five server adapters that turn your agent runtime into a production-ready HTTP API. Every adapter provides the same set of endpoints, streaming protocol, and OpenAPI generation — pick the one that matches your stack.
 
 ## Available Adapters
 
-| Package                 | Framework | Min Version | Style                         |
-| ----------------------- | --------- | ----------- | ----------------------------- |
-| `@cogitator-ai/express` | Express   | 4.18+       | Class-based `CogitatorServer` |
-| `@cogitator-ai/fastify` | Fastify   | 5.x         | Plugin `cogitatorPlugin`      |
-| `@cogitator-ai/hono`    | Hono      | 4.x         | Factory `cogitatorApp`        |
-| `@cogitator-ai/koa`     | Koa       | 2.15+       | Factory `cogitatorApp`        |
+| Package                 | Framework | Min Version | Style                            |
+| ----------------------- | --------- | ----------- | -------------------------------- |
+| `@cogitator-ai/express` | Express   | 4.18+       | Class-based `CogitatorServer`    |
+| `@cogitator-ai/fastify` | Fastify   | 5.x         | Plugin `cogitatorPlugin`         |
+| `@cogitator-ai/hono`    | Hono      | 4.x         | Factory `cogitatorApp`           |
+| `@cogitator-ai/koa`     | Koa       | 2.15+       | Factory `cogitatorApp`           |
+| `@cogitator-ai/tetsu`   | Tetsu     | 0.6+ (Bun)  | Controller `cogitatorController` |
 
 ## Common Endpoints
 
@@ -39,38 +40,35 @@ All adapters register the same route structure under a configurable base path (d
 | `GET`    | `/openapi.json`            | OpenAPI 3.0 spec             |
 | `GET`    | `/docs`                    | Swagger UI                   |
 
+With Tetsu the base path is the `group()` you mount the controller in, and `/openapi.json` and `/docs` come from `docs()` of `@tetsujs/openapi`.
+
 ## Streaming Protocol
 
-Every adapter implements the same SSE streaming protocol. Events are sent as `text/event-stream` with the following event types:
+Every adapter implements the same SSE streaming protocol. The response is `text/event-stream` with one JSON event per `data:` line, ending with `data: [DONE]`:
 
 ```
-event: start
-data: {"id":"msg_abc123","type":"start"}
+data: {"type":"start","messageId":"msg_abc123"}
 
-event: text_start
-data: {"id":"txt_def456","type":"text_start"}
+data: {"type":"text-start","id":"txt_def456"}
 
-event: text_delta
-data: {"id":"txt_def456","type":"text_delta","delta":"Hello"}
+data: {"type":"text-delta","id":"txt_def456","delta":"Hello"}
 
-event: text_end
-data: {"id":"txt_def456","type":"text_end"}
+data: {"type":"tool-call-start","id":"call_ghi789","toolName":"get_weather"}
 
-event: tool_call_start
-data: {"id":"tool_ghi789","type":"tool_call_start","name":"get_weather"}
+data: {"type":"tool-call-delta","id":"call_ghi789","argsTextDelta":"{\"city\":\"Paris\"}"}
 
-event: tool_call_end
-data: {"id":"tool_ghi789","type":"tool_call_end"}
+data: {"type":"tool-call-end","id":"call_ghi789"}
 
-event: tool_result
-data: {"id":"res_jkl012","type":"tool_result","callId":"tool_ghi789","result":{...}}
+data: {"type":"tool-result","id":"res_jkl012","toolCallId":"call_ghi789","result":"Sunny"}
 
-event: finish
-data: {"id":"msg_abc123","type":"finish","usage":{"inputTokens":50,"outputTokens":120,"totalTokens":170}}
+data: {"type":"text-end","id":"txt_def456"}
 
-event: done
+data: {"type":"finish","messageId":"msg_abc123","usage":{"inputTokens":50,"outputTokens":120,"totalTokens":170}}
+
 data: [DONE]
 ```
+
+A failed run ends with `{"type":"error","message":"...","code":"..."}` instead of `finish`. Workflow and swarm streams send `{"type":"workflow" | "swarm","event":"...","data":{...}}` events.
 
 ## Shared Features
 
@@ -89,6 +87,7 @@ All adapters support:
 | High-performance, schema validation       | `@cogitator-ai/fastify` |
 | Edge / multi-runtime (Workers, Bun, Deno) | `@cogitator-ai/hono`    |
 | Koa-based middleware stack                | `@cogitator-ai/koa`     |
+| Bun app built on Tetsu controllers        | `@cogitator-ai/tetsu`   |
 
 ## Quick Install
 
@@ -98,6 +97,7 @@ pnpm add @cogitator-ai/express express
 pnpm add @cogitator-ai/fastify fastify
 pnpm add @cogitator-ai/hono hono
 pnpm add @cogitator-ai/koa koa @koa/router
+bun add @cogitator-ai/tetsu @tetsujs/core @tetsujs/sse
 ```
 
 ## Next Steps
@@ -106,4 +106,5 @@ pnpm add @cogitator-ai/koa koa @koa/router
 - [Fastify Adapter](/docs/server-adapters/fastify) — native Fastify plugin with schema validation
 - [Hono Adapter](/docs/server-adapters/hono) — multi-runtime edge deployment
 - [Koa Adapter](/docs/server-adapters/koa) — middleware-chain pattern
+- [Tetsu Adapter](/docs/server-adapters/tetsu) — a Tetsu controller on Bun
 - [OpenAPI Generation](/docs/server-adapters/openapi) — customizing the generated spec

@@ -51,7 +51,7 @@ const features = [
   {
     title: 'Server Adapters',
     description:
-      'Express, Fastify, Hono, Koa — mount agents as REST APIs with SSE streaming, WebSocket, and auto-generated Swagger docs.',
+      'Express, Fastify, Hono, Koa, Tetsu — mount agents as REST APIs with SSE streaming, WebSocket, and auto-generated OpenAPI docs.',
     icon: <Server className="w-6 h-6" />,
     glowColor: '#00aaff',
     className: 'md:col-span-2',

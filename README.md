@@ -211,6 +211,7 @@ Install only what you need. Everything is a separate npm package.
 [`fastify`](https://www.npmjs.com/package/@cogitator-ai/fastify) ·
 [`hono`](https://www.npmjs.com/package/@cogitator-ai/hono) ·
 [`koa`](https://www.npmjs.com/package/@cogitator-ai/koa) ·
+[`tetsu`](https://www.npmjs.com/package/@cogitator-ai/tetsu) ·
 [`next`](https://www.npmjs.com/package/@cogitator-ai/next) ·
 [`ai-sdk`](https://www.npmjs.com/package/@cogitator-ai/ai-sdk) ·
 [`openai-compat`](https://www.npmjs.com/package/@cogitator-ai/openai-compat)
@@ -335,7 +336,7 @@ npx tsx examples/core/01-basic-agent.ts
 | [`evals/`](./examples/evals/)                               | 3     | Basic evaluation, LLM judge, A/B comparison                                                                                                                    |
 | [`voice/`](./examples/voice/)                               | 4     | Voice pipeline, realtime sessions, voice agents                                                                                                                |
 | [`browser/`](./examples/browser/)                           | 4     | Web scraping, form automation, stealth agents, crypto price scraper                                                                                            |
-| [`integrations/`](./examples/integrations/)                 | 7     | Express, Fastify, Hono, Koa, Next.js, OpenAI compat, AI SDK                                                                                                    |
+| [`integrations/`](./examples/integrations/)                 | 8     | Express, Fastify, Hono, Koa, Next.js, OpenAI compat, AI SDK, Tetsu on Bun                                                                                      |
 | [`infrastructure/`](./examples/infrastructure/)             | 5     | Redis, PostgreSQL, job queues, Docker deploy, sandbox execution                                                                                                |
 | [`channels/`](./examples/channels/)                         | 3     | Telegram assistant, multi-channel super-assistant, WebChat bot                                                                                                 |
 | [`device-tools/`](./examples/device-tools/)                 | 6     | Local screenshots, clipboard, notifications, URL opening, shell execution, device skill setup                                                                  |
@@ -392,6 +393,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 | [@cogitator-ai/fastify](https://www.npmjs.com/package/@cogitator-ai/fastify)               | Fastify REST API server                                      | [![npm](https://img.shields.io/npm/v/@cogitator-ai/fastify.svg)](https://www.npmjs.com/package/@cogitator-ai/fastify)               |
 | [@cogitator-ai/hono](https://www.npmjs.com/package/@cogitator-ai/hono)                     | Hono multi-runtime server (Edge, Bun, Deno, Node.js)         | [![npm](https://img.shields.io/npm/v/@cogitator-ai/hono.svg)](https://www.npmjs.com/package/@cogitator-ai/hono)                     |
 | [@cogitator-ai/koa](https://www.npmjs.com/package/@cogitator-ai/koa)                       | Koa middleware-based server                                  | [![npm](https://img.shields.io/npm/v/@cogitator-ai/koa.svg)](https://www.npmjs.com/package/@cogitator-ai/koa)                       |
+| [@cogitator-ai/tetsu](https://www.npmjs.com/package/@cogitator-ai/tetsu)                   | Tetsu controller on Bun (SSE, WebSocket, OpenAPI)            | [![npm](https://img.shields.io/npm/v/@cogitator-ai/tetsu.svg)](https://www.npmjs.com/package/@cogitator-ai/tetsu)                   |
 | [@cogitator-ai/deploy](https://www.npmjs.com/package/@cogitator-ai/deploy)                 | Deployment engine (Docker, Fly.io)                           | [![npm](https://img.shields.io/npm/v/@cogitator-ai/deploy.svg)](https://www.npmjs.com/package/@cogitator-ai/deploy)                 |
 
 </details>

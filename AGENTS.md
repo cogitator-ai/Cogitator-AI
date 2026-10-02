@@ -132,6 +132,7 @@ packages/
 ├── fastify/        # @cogitator-ai/fastify - Fastify integration
 ├── hono/           # @cogitator-ai/hono - Hono integration
 ├── koa/            # @cogitator-ai/koa - Koa middleware
+├── tetsu/          # @cogitator-ai/tetsu - Tetsu controller on Bun (SSE, WebSocket, OpenAPI)
 ├── next/           # @cogitator-ai/next - Next.js App Router
 ├── server-shared/  # @cogitator-ai/server-shared - Shared REST/SSE/WebSocket utils
 ├── channels/       # @cogitator-ai/channels - Messaging channels (Telegram, Discord, Slack, WhatsApp, WebChat)

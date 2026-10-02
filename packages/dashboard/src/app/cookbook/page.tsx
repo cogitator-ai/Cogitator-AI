@@ -205,6 +205,7 @@ const sections: Section[] = [
       { id: 'budget-enforcement', title: 'Budget Enforcement', difficulty: 'easy', time: '10 min' },
       { id: 'otel-tracing', title: 'OpenTelemetry Tracing', difficulty: 'medium', time: '15 min' },
       { id: 'error-handling', title: 'Error Handling', difficulty: 'medium', time: '15 min' },
+      { id: 'tetsu-api', title: 'Agent API on Tetsu', difficulty: 'medium', time: '15 min' },
     ],
   },
 ];
@@ -4818,6 +4819,101 @@ const result = await agent.run({
   input: 'Process this...',
   errorHandler,
 });`}</CodeBlock>
+      </>
+    ),
+    'tetsu-api': (
+      <>
+        <h2 className="text-3xl font-bold text-[#fafafa] mb-2">Agent API on Tetsu</h2>
+        <div className="flex items-center gap-3 mb-6">
+          <DifficultyBadge level="medium" />
+          <span className="text-[#666] text-sm">15 min</span>
+        </div>
+
+        <h3 className="text-xl font-bold text-[#fafafa] mt-6 mb-3">What You&apos;ll Learn</h3>
+        <ul className="list-disc list-inside text-[#a1a1a1] space-y-1 mb-6">
+          <li>Mount the Cogitator API as a Tetsu controller on Bun</li>
+          <li>Authenticate users with a hook shared by your own routes</li>
+          <li>Give the agent your app&apos;s MCP tools, acting for the signed-in user</li>
+          <li>Keep each user&apos;s memory threads private</li>
+        </ul>
+
+        <h3 className="text-xl font-bold text-[#fafafa] mt-8 mb-3">The Code</h3>
+        <CodeBlock>{`import { Agent, Cogitator, tool } from '@cogitator-ai/core';
+import { MCPClient } from '@cogitator-ai/mcp';
+import { callerHook, cogitatorController } from '@cogitator-ai/tetsu';
+import { createApp, group } from '@tetsujs/core';
+import { docs, secured } from '@tetsujs/openapi';
+import { z } from 'zod';
+
+const tasks = await MCPClient.connect({ transport: 'http', url: 'http://tasks.internal/mcp' });
+
+const listMyTasks = tool({
+  name: 'list_my_tasks',
+  description: "List the signed-in user's tasks",
+  parameters: z.object({}),
+  execute: async (_args, context) => tasks.callTool('list_tasks', { owner: context.userId }),
+});
+
+const assistant = new Agent({
+  name: 'assistant',
+  model: 'google/gemini-3.5-flash-lite',
+  instructions: 'You help the user with their tasks.',
+  tools: [listMyTasks],
+});
+
+const signedIn = secured(
+  callerHook((ctx) => {
+    const token = ctx.req.headers.get('authorization')?.replace(/^Bearer /, '');
+    const user = token ? sessions.find(token) : undefined;
+    return user && { userId: user.id };
+  }),
+  { name: 'bearerAuth', scheme: { type: 'http', scheme: 'bearer' }, error: 'UNAUTHORIZED' }
+);
+
+const app = createApp({
+  routes: [
+    group('/agent', {
+      children: [
+        cogitatorController({
+          cogitator: new Cogitator({
+            llm: { providers: { google: { apiKey: process.env.GOOGLE_API_KEY } } },
+            memory: { adapter: 'memory' },
+          }),
+          agents: { assistant },
+          auth: signedIn,
+          authorizeThread: (auth, threadId) => threadId.startsWith(\`\${auth?.userId}:\`),
+          websocket: true,
+        }),
+      ],
+    }),
+    docs({ info: { title: 'Tasks app', version: '1.0.0' } }),
+  ],
+});
+
+Bun.serve({ ...app, port: 3000 });`}</CodeBlock>
+
+        <Callout type="tip">
+          The caller&apos;s <code>userId</code> reaches every tool as <code>context.userId</code>,
+          so the agent can only act on the signed-in user&apos;s data. Requests without a token get{' '}
+          <code>401</code> before the body is read, and a foreign <code>threadId</code> gets{' '}
+          <code>403 THREAD_FORBIDDEN</code> before the model is called.
+        </Callout>
+
+        <h3 className="text-xl font-bold text-[#fafafa] mt-8 mb-3">Try It</h3>
+        <CodeBlock language="bash">{`curl -X POST http://localhost:3000/agent/agents/assistant/run \\
+  -H 'Authorization: Bearer <token>' -H 'Content-Type: application/json' \\
+  -d '{"input": "What is on my list?", "threadId": "ada:1"}'
+
+# token by token over SSE
+curl -N -X POST http://localhost:3000/agent/agents/assistant/stream \\
+  -H 'Authorization: Bearer <token>' -H 'Content-Type: application/json' \\
+  -d '{"input": "Add: call Charles"}'`}</CodeBlock>
+
+        <p className="text-[#a1a1a1] mt-4">
+          The OpenAPI document is at <code>/openapi.json</code> and the docs page at{' '}
+          <code>/docs</code>. The full runnable version, with its own MCP server, is{' '}
+          <code>examples/integrations/08-tetsu-server.ts</code>.
+        </p>
       </>
     ),
   };
