@@ -41,7 +41,7 @@
   "devDependencies": {
     "@cogitator-ai/workflows": "workspace:*",
     "@cogitator-ai/swarms": "workspace:*",
-    "@types/node": "^22.0.0",
+    "@types/node": "^22.20.5",
     "hono": "^4.11.9",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"

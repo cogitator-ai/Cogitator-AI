@@ -12,3 +12,17 @@ allowBuilds:
   ssh2: false
   protobufjs: false
   '@whiskeysockets/baileys': false
+
+# @whiskeysockets/baileys 6.x pulls libsignal from a git repository. Re-enable once the
+# WhatsApp channel moves to baileys 7, which resolves libsignal from the registry.
+blockExoticSubdeps: false
+
+minimumReleaseAgeExclude:
+  - '@turbo/darwin-64@2.11.7'
+  - '@turbo/darwin-arm64@2.11.7'
+  - '@turbo/linux-64@2.11.7'
+  - '@turbo/linux-arm64@2.11.7'
+  - '@turbo/windows-64@2.11.7'
+  - '@turbo/windows-arm64@2.11.7'
+  - '@types/node@22.20.5'
+  - turbo@2.11.7
