@@ -10,27 +10,15 @@ export type NegotiationPhase =
   | 'escalation';
 
 export type OfferStatus =
-  | 'pending'
-  | 'accepted'
-  | 'rejected'
-  | 'countered'
-  | 'withdrawn'
-  | 'expired';
+  'pending' | 'accepted' | 'rejected' | 'countered' | 'withdrawn' | 'expired';
 
 export type NegotiationTurnOrder = 'round-robin' | 'priority' | 'dynamic';
 
 export type NegotiationDeadlockAction =
-  | 'escalate'
-  | 'supervisor-decides'
-  | 'majority-rules'
-  | 'arbitrate'
-  | 'fail';
+  'escalate' | 'supervisor-decides' | 'majority-rules' | 'arbitrate' | 'fail';
 
 export type ApprovalTrigger =
-  | 'agreement-reached'
-  | 'high-value-term'
-  | 'coalition-formed'
-  | 'deadlock';
+  'agreement-reached' | 'high-value-term' | 'coalition-formed' | 'deadlock';
 
 export type ApprovalTimeoutAction = 'approve' | 'reject' | 'escalate';
 

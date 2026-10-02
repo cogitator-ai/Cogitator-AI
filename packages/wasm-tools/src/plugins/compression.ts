@@ -107,8 +107,7 @@ function deflateRaw(data: Uint8Array, level: number = 6): Uint8Array {
   ];
 
   type LzToken =
-    | { type: 'literal'; value: number }
-    | { type: 'match'; length: number; distance: number };
+    { type: 'literal'; value: number } | { type: 'match'; length: number; distance: number };
   const tokens: LzToken[] = [];
 
   let pos = 0;

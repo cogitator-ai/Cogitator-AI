@@ -347,21 +347,13 @@ const result: RunResult = {
     duration: 1500,
   },
   toolCalls: [{ id: 'call_1', name: 'calculator', arguments: { expression: '2+2' } }],
-  messages: [
-    /* conversation history */
-  ],
+  messages: [/* conversation history */],
   trace: {
     traceId: 'trace_abc',
-    spans: [
-      /* execution spans */
-    ],
+    spans: [/* execution spans */],
   },
-  reflections: [
-    /* if reflection enabled */
-  ],
-  reflectionSummary: {
-    /* summary stats */
-  },
+  reflections: [/* if reflection enabled */],
+  reflectionSummary: {/* summary stats */},
 };
 ```
 
@@ -531,9 +523,7 @@ const branch: ThoughtBranch = {
   thought: 'I should search for the latest information first',
   proposedAction: { type: 'tool_call', toolName: 'search', arguments: { query: 'AI news 2024' } },
   score: { confidence: 0.8, progress: 0.3, novelty: 0.6, composite: 0.57, reasoning: '...' },
-  messagesSnapshot: [
-    /* ... */
-  ],
+  messagesSnapshot: [/* ... */],
 };
 ```
 
@@ -628,9 +618,7 @@ const checkpoint: ExecutionCheckpoint = {
   runId: 'run_789',
   agentId: 'agent_abc',
   stepIndex: 5,
-  messages: [
-    /* conversation at this point */
-  ],
+  messages: [/* conversation at this point */],
   toolResults: { call_1: 42, call_2: 'result' },
   pendingToolCalls: [],
   label: 'before-critical-decision',
@@ -666,12 +654,8 @@ const diff: TraceDiff = {
     {
       index: 2,
       status: 'different',
-      step1: {
-        /* ... */
-      },
-      step2: {
-        /* ... */
-      },
+      step1: {/* ... */},
+      step2: {/* ... */},
     },
   ],
   divergencePoint: 2,

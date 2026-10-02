@@ -8,12 +8,7 @@
  */
 
 export type CausalRelationType =
-  | 'causes'
-  | 'enables'
-  | 'prevents'
-  | 'mediates'
-  | 'confounds'
-  | 'moderates';
+  'causes' | 'enables' | 'prevents' | 'mediates' | 'confounds' | 'moderates';
 
 export type VariableType =
   | 'treatment'

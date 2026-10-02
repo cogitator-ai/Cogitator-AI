@@ -36,15 +36,13 @@ let containerId = 0;
 function createMockDocker(): Docker & { createContainer: ReturnType<typeof vi.fn> } {
   return {
     ping: vi.fn().mockResolvedValue('OK'),
-    createContainer: vi.fn().mockImplementation(
-      async (): Promise<DockerContainer> => ({
-        id: `container-${++containerId}`,
-        start: vi.fn().mockResolvedValue(undefined),
-        stop: vi.fn().mockResolvedValue(undefined),
-        remove: vi.fn().mockResolvedValue(undefined),
-        exec: vi.fn(),
-      })
-    ),
+    createContainer: vi.fn().mockImplementation(async (): Promise<DockerContainer> => ({
+      id: `container-${++containerId}`,
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      remove: vi.fn().mockResolvedValue(undefined),
+      exec: vi.fn(),
+    })),
     getImage: vi.fn().mockReturnValue({ inspect: vi.fn().mockResolvedValue({}) }),
     pull: vi.fn(),
     modem: { followProgress: vi.fn() },

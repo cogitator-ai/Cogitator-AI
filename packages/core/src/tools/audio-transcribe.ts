@@ -7,10 +7,7 @@ import type { AudioInput } from '@cogitator-ai/types';
 const TRANSCRIPTION_TIMEOUT_MS = 60_000;
 
 export type TranscriptionModel =
-  | 'gpt-transcribe'
-  | 'whisper-1'
-  | 'gpt-4o-transcribe'
-  | 'gpt-4o-mini-transcribe';
+  'gpt-transcribe' | 'whisper-1' | 'gpt-4o-transcribe' | 'gpt-4o-mini-transcribe';
 
 const TRANSCRIPTION_MODELS = [
   'gpt-transcribe',

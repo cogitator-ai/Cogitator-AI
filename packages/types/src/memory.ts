@@ -235,9 +235,7 @@ export interface GoogleEmbeddingConfig {
 }
 
 export type EmbeddingServiceConfig =
-  | OpenAIEmbeddingConfig
-  | OllamaEmbeddingConfig
-  | GoogleEmbeddingConfig;
+  OpenAIEmbeddingConfig | OllamaEmbeddingConfig | GoogleEmbeddingConfig;
 
 export type ContextStrategy = 'recent' | 'relevant' | 'hybrid';
 

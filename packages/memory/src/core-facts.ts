@@ -123,8 +123,7 @@ export class CoreFactsStore {
   async get(key: string): Promise<string | null> {
     const db = this.ensureDb();
     const row = db.prepare(`SELECT value FROM core_facts WHERE key = ?`).get(key) as
-      | Pick<FactRow, 'value'>
-      | undefined;
+      Pick<FactRow, 'value'> | undefined;
     return row?.value ?? null;
   }
 

@@ -156,8 +156,7 @@ interface RunOptions {
 
   // Images to include (URLs or base64 data)
   images?: (
-    | string
-    | { data: string; mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' }
+    string | { data: string; mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' }
   )[];
 
   // Audio to transcribe and include
@@ -286,9 +285,7 @@ interface AgentConfig {
 
 ```typescript
 type ResponseFormat =
-  | { type: 'text' }
-  | { type: 'json' }
-  | { type: 'json_schema'; schema: ZodType };
+  { type: 'text' } | { type: 'json' } | { type: 'json_schema'; schema: ZodType };
 ```
 
 Note: `json_schema` only accepts Zod schemas, not raw JSON Schema objects.

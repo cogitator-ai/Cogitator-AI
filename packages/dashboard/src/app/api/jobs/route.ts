@@ -14,11 +14,7 @@ export const GET = withAuth(async (request: AuthenticatedRequest) => {
   try {
     const searchParams = request.nextUrl.searchParams;
     const status = searchParams.get('status') as
-      | 'pending'
-      | 'running'
-      | 'completed'
-      | 'failed'
-      | null;
+      'pending' | 'running' | 'completed' | 'failed' | null;
     const type = searchParams.get('type') as 'agent' | 'workflow' | 'swarm' | null;
     const limit = parseInt(searchParams.get('limit') || '50');
     const offset = parseInt(searchParams.get('offset') || '0');

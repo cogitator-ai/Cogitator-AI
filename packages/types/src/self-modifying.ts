@@ -1,12 +1,7 @@
 import type { Tool } from './tool';
 
 export type ReasoningMode =
-  | 'analytical'
-  | 'creative'
-  | 'systematic'
-  | 'intuitive'
-  | 'reflective'
-  | 'exploratory';
+  'analytical' | 'creative' | 'systematic' | 'intuitive' | 'reflective' | 'exploratory';
 
 export interface ReasoningModeConfig {
   mode: ReasoningMode;

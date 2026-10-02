@@ -258,10 +258,7 @@ export interface TruncationStrategy {
 }
 
 export type ToolChoice =
-  | 'none'
-  | 'auto'
-  | 'required'
-  | { type: 'function'; function: { name: string } };
+  'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } };
 
 export interface CreateRunRequest {
   assistant_id: string;
@@ -326,8 +323,7 @@ export interface CodeInterpreterCall {
 }
 
 export type CodeInterpreterOutput =
-  | { type: 'logs'; logs: string }
-  | { type: 'image'; image: { file_id: string } };
+  { type: 'logs'; logs: string } | { type: 'image'; image: { file_id: string } };
 
 export interface FileSearchCall {
   ranking_options?: {

@@ -1,12 +1,7 @@
 import type { Agent } from '@cogitator-ai/types';
 
 export type TaskState =
-  | 'working'
-  | 'input-required'
-  | 'completed'
-  | 'failed'
-  | 'canceled'
-  | 'rejected';
+  'working' | 'input-required' | 'completed' | 'failed' | 'canceled' | 'rejected';
 
 export const TERMINAL_STATES = ['completed', 'failed', 'canceled', 'rejected'] as const;
 

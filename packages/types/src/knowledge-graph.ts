@@ -1,13 +1,7 @@
 import type { MemoryResult } from './memory';
 
 export type EntityType =
-  | 'person'
-  | 'organization'
-  | 'location'
-  | 'concept'
-  | 'event'
-  | 'object'
-  | 'custom';
+  'person' | 'organization' | 'location' | 'concept' | 'event' | 'object' | 'custom';
 
 export type RelationType =
   | 'knows'

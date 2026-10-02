@@ -268,8 +268,7 @@ describe('createCogitatorProvider', () => {
     }
 
     const errorChunk = chunks.find((c: unknown) => (c as { type: string }).type === 'error') as
-      | { type: string; error: Error }
-      | undefined;
+      { type: string; error: Error } | undefined;
     expect(errorChunk).toBeDefined();
     expect(errorChunk!.error.message).toBe('LLM timeout');
   });
@@ -320,8 +319,7 @@ describe('createCogitatorProvider', () => {
     expect(toolCallChunk!.toolName).toBe('search');
 
     const finishChunk = chunks.find((c: unknown) => (c as { type: string }).type === 'finish') as
-      | { finishReason: string }
-      | undefined;
+      { finishReason: string } | undefined;
     expect(finishChunk!.finishReason).toBe('tool-calls');
   });
 

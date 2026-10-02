@@ -318,8 +318,7 @@ export class SQLiteGraphAdapter implements GraphAdapter {
     ).run(new Date().toISOString(), nodeId);
 
     const row = db.prepare(`SELECT * FROM graph_nodes WHERE id = ?`).get(nodeId) as
-      | NodeRow
-      | undefined;
+      NodeRow | undefined;
 
     if (!row) return this.success(null);
     return this.success(this.rowToNode(row));
@@ -530,8 +529,7 @@ export class SQLiteGraphAdapter implements GraphAdapter {
     const db = this.ensureDb();
 
     const row = db.prepare(`SELECT * FROM graph_edges WHERE id = ?`).get(edgeId) as
-      | EdgeRow
-      | undefined;
+      EdgeRow | undefined;
 
     if (!row) return this.success(null);
     return this.success(this.rowToEdge(row));

@@ -68,10 +68,7 @@ export interface UntilDateConfig<S> extends TimerNodeConfig {
  * Union of all timer node configs
  */
 export type AnyTimerNodeConfig<S> =
-  | FixedDelayConfig
-  | DynamicDelayConfig<S>
-  | CronWaitConfig
-  | UntilDateConfig<S>;
+  FixedDelayConfig | DynamicDelayConfig<S> | CronWaitConfig | UntilDateConfig<S>;
 
 /**
  * Timer node result

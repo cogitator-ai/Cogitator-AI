@@ -161,13 +161,11 @@ export function createPlanningTools(ns: NeuroSymbolic) {
           type: p.type,
           required: p.required ?? true,
         })),
-        preconditions: preconditions.map(
-          (p): Precondition => ({
-            type: 'simple' as const,
-            variable: p.variable,
-            value: p.value,
-          })
-        ),
+        preconditions: preconditions.map((p): Precondition => ({
+          type: 'simple' as const,
+          variable: p.variable,
+          value: p.value,
+        })),
         effects: effects.map((e) => ({
           type: 'assign' as const,
           variable: e.variable,

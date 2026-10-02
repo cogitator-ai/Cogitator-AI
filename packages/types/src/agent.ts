@@ -26,9 +26,7 @@ export interface AgentConfig {
 }
 
 export type ResponseFormat =
-  | { type: 'text' }
-  | { type: 'json' }
-  | { type: 'json_schema'; schema: ZodType };
+  { type: 'text' } | { type: 'json' } | { type: 'json_schema'; schema: ZodType };
 
 export interface Agent {
   readonly id: string;
@@ -69,9 +67,7 @@ export interface SerializedAgentConfig {
   maxTokens?: number;
   stopSequences?: string[];
   responseFormat?:
-    | { type: 'text' }
-    | { type: 'json' }
-    | { type: 'json_schema'; schemaName: string };
+    { type: 'text' } | { type: 'json' } | { type: 'json_schema'; schemaName: string };
   maxIterations?: number;
   timeout?: number;
 }

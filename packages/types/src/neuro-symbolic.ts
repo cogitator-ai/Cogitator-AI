@@ -427,11 +427,7 @@ export interface ConditionalEffect {
 }
 
 export type Effect =
-  | AssignEffect
-  | IncrementEffect
-  | DecrementEffect
-  | DeleteEffect
-  | ConditionalEffect;
+  AssignEffect | IncrementEffect | DecrementEffect | DeleteEffect | ConditionalEffect;
 
 export interface ActionParameter {
   name: string;

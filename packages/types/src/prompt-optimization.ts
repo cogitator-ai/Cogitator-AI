@@ -200,13 +200,7 @@ export interface InstructionVersionStore {
 }
 
 export type OptimizationRunStatus =
-  | 'pending'
-  | 'optimizing'
-  | 'testing'
-  | 'deploying'
-  | 'completed'
-  | 'failed'
-  | 'rolled_back';
+  'pending' | 'optimizing' | 'testing' | 'deploying' | 'completed' | 'failed' | 'rolled_back';
 
 export interface OptimizationRun {
   id: string;

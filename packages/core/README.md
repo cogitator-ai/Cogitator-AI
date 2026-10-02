@@ -475,9 +475,7 @@ const agent = new Agent({
 import { Cogitator, Agent } from '@cogitator-ai/core';
 
 const cog = new Cogitator();
-const agent = new Agent({
-  /* ... */
-});
+const agent = new Agent({/* ... */});
 
 const result = await cog.run(agent, {
   input: 'Analyze this data...',

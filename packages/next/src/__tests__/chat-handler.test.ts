@@ -236,8 +236,7 @@ describe('createChatHandler', () => {
     const raw = await readStream(res);
     const events = parseSSEEvents(raw);
     const finish = events.find((e) => (e as { type: string }).type === 'finish') as
-      | { usage: { inputTokens: number } }
-      | undefined;
+      { usage: { inputTokens: number } } | undefined;
 
     expect(finish).toBeDefined();
     expect(finish!.usage).toEqual({

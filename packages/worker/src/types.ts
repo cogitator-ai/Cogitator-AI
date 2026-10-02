@@ -66,12 +66,7 @@ export interface AgentNodeConfig {
 }
 
 export type TransformOperation =
-  | 'uppercase'
-  | 'lowercase'
-  | 'trim'
-  | 'json-parse'
-  | 'json-stringify'
-  | 'template';
+  'uppercase' | 'lowercase' | 'trim' | 'json-parse' | 'json-stringify' | 'template';
 
 export interface TransformNodeConfig {
   transform: TransformOperation;
@@ -135,10 +130,7 @@ export interface SwarmJobPayload {
 export type SwarmAgentJobPayload = SwarmAgentJobContract;
 
 export type JobPayload =
-  | AgentJobPayload
-  | WorkflowJobPayload
-  | SwarmJobPayload
-  | SwarmAgentJobPayload;
+  AgentJobPayload | WorkflowJobPayload | SwarmJobPayload | SwarmAgentJobPayload;
 
 export interface AgentJobResult {
   type: 'agent';

@@ -15,9 +15,7 @@ import { Hono } from 'hono';
 import { Cogitator, Agent } from '@cogitator-ai/core';
 import { cogitatorApp } from '@cogitator-ai/hono';
 
-const cogitator = new Cogitator({
-  /* ... */
-});
+const cogitator = new Cogitator({/* ... */});
 const chatAgent = new Agent({ name: 'chat', instructions: 'You are a helpful assistant.' });
 
 const app = new Hono();

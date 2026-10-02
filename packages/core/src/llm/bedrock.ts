@@ -32,12 +32,7 @@ import { fetchImageAsBase64 } from '../utils/image-fetch';
 import { getLogger } from '../logger';
 
 type DocumentType =
-  | null
-  | boolean
-  | number
-  | string
-  | DocumentType[]
-  | { [key: string]: DocumentType };
+  null | boolean | number | string | DocumentType[] | { [key: string]: DocumentType };
 
 interface BedrockRuntimeClientType {
   send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<unknown>;
@@ -459,10 +454,7 @@ export class BedrockBackend extends BaseLLMBackend {
         return {
           image: {
             format: (part.image_base64.media_type.split('/')[1] || 'png') as
-              | 'png'
-              | 'jpeg'
-              | 'gif'
-              | 'webp',
+              'png' | 'jpeg' | 'gif' | 'webp',
             source: {
               bytes: Uint8Array.from(atob(part.image_base64.data), (c) => c.charCodeAt(0)),
             },
@@ -471,10 +463,7 @@ export class BedrockBackend extends BaseLLMBackend {
       case 'image_url': {
         const fetched = await fetchImageAsBase64(part.image_url.url, { signal });
         const format = (fetched.mediaType.split('/')[1] || 'png') as
-          | 'png'
-          | 'jpeg'
-          | 'gif'
-          | 'webp';
+          'png' | 'jpeg' | 'gif' | 'webp';
         return {
           image: {
             format,

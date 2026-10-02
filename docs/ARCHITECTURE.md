@@ -552,9 +552,7 @@ The `CostRouter` in `@cogitator-ai/core` automatically selects the cheapest mode
 const cog = new Cogitator({
   llm: {
     defaultModel: 'anthropic/claude-sonnet-5-5',
-    providers: {
-      /* ... */
-    },
+    providers: {/* ... */},
   },
   costRouting: {
     enabled: true,

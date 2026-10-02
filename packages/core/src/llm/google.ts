@@ -405,15 +405,13 @@ export class GoogleBackend extends BaseLLMBackend {
           const toolCalls = (msg as Message & { toolCalls?: ToolCall[] }).toolCalls;
           if (toolCalls && toolCalls.length > 0) {
             parts.push(
-              ...toolCalls.map(
-                (tc): GeminiPart => ({
-                  functionCall: {
-                    name: tc.name,
-                    args: tc.arguments,
-                  },
-                  ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {}),
-                })
-              )
+              ...toolCalls.map((tc): GeminiPart => ({
+                functionCall: {
+                  name: tc.name,
+                  args: tc.arguments,
+                },
+                ...(tc.thoughtSignature ? { thoughtSignature: tc.thoughtSignature } : {}),
+              }))
             );
           }
           contents.push({

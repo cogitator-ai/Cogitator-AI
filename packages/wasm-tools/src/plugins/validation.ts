@@ -88,7 +88,7 @@ function formatIpv6(groups: number[]): string {
   }
   let bestStart = -1;
   let bestLength = 0;
-  for (let i = 0; i < groups.length; ) {
+  for (let i = 0; i < groups.length;) {
     if (groups[i] !== 0) {
       i++;
       continue;

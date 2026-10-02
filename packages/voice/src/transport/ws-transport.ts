@@ -107,8 +107,7 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> {
   private ownsServer = false;
   private clients = new Set<VoiceClient>();
   private upgradeHandler:
-    | ((req: http.IncomingMessage, socket: Duplex, head: Buffer) => void)
-    | null = null;
+    ((req: http.IncomingMessage, socket: Duplex, head: Buffer) => void) | null = null;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
   private pendingUpgrades = 0;
 

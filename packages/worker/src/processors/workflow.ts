@@ -77,8 +77,7 @@ const conditionNodeSchema = z.object({
 });
 
 type NodeOutcome =
-  | { status: 'completed'; output: unknown; branch?: 'true' | 'false' }
-  | { status: 'skipped' };
+  { status: 'completed'; output: unknown; branch?: 'true' | 'false' } | { status: 'skipped' };
 
 /**
  * Read a dot-separated path from the workflow state.

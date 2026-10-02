@@ -7,13 +7,7 @@ import type { RunResult, Span } from './runtime';
 import type { NegotiationConfig, NegotiationResult } from './negotiation';
 
 export type SwarmStrategy =
-  | 'hierarchical'
-  | 'round-robin'
-  | 'consensus'
-  | 'auction'
-  | 'pipeline'
-  | 'debate'
-  | 'negotiation';
+  'hierarchical' | 'round-robin' | 'consensus' | 'auction' | 'pipeline' | 'debate' | 'negotiation';
 
 export interface SwarmAgentMetadata {
   /** Agent's areas of expertise */

@@ -51,8 +51,7 @@ export interface CogitatorConfig {
 }
 
 export type ImageInput =
-  | string
-  | { data: string; mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' };
+  string | { data: string; mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' };
 
 export type AudioFormat = 'mp3' | 'mp4' | 'mpeg' | 'mpga' | 'm4a' | 'wav' | 'webm' | 'ogg' | 'flac';
 

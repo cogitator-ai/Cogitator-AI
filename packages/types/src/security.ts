@@ -1,12 +1,7 @@
 import type { LLMBackend } from './llm';
 
 export type InjectionThreatType =
-  | 'direct_injection'
-  | 'jailbreak'
-  | 'roleplay'
-  | 'encoding'
-  | 'context_manipulation'
-  | 'custom';
+  'direct_injection' | 'jailbreak' | 'roleplay' | 'encoding' | 'context_manipulation' | 'custom';
 
 export type InjectionAction = 'block' | 'warn' | 'log';
 

@@ -40,10 +40,7 @@ export interface JsonSchemaFormat {
 }
 
 export type ToolChoice =
-  | 'auto'
-  | 'none'
-  | 'required'
-  | { type: 'function'; function: { name: string } };
+  'auto' | 'none' | 'required' | { type: 'function'; function: { name: string } };
 
 export interface ChatRequest {
   model: string;

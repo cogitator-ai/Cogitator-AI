@@ -12,8 +12,7 @@ const state = vi.hoisted(() => ({
     init: ReturnType<typeof import('vitest').vi.fn>;
   }>,
   webhookHandler: null as
-    | null
-    | ((req: unknown, res: { end(): void; statusCode: number }) => Promise<void>),
+    null | ((req: unknown, res: { end(): void; statusCode: number }) => Promise<void>),
 }));
 
 vi.mock('grammy', () => {
