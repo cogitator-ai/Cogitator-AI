@@ -500,10 +500,7 @@ export class GoogleBackend extends BaseLLMBackend {
   private parseToolResult(content: string): Record<string, unknown> {
     try {
       const parsed = JSON.parse(content) as unknown;
-      if (typeof parsed === 'object' && parsed !== null) {
-        return parsed as Record<string, unknown>;
-      }
-      return { result: parsed };
+      return isJsonObject(parsed) ? parsed : { result: parsed };
     } catch {
       return { result: content };
     }
@@ -657,6 +654,10 @@ export class GoogleBackend extends BaseLLMBackend {
       },
     };
   }
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function toToolCall(part: {

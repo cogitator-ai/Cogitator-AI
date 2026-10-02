@@ -725,6 +725,36 @@ describe('GoogleBackend', () => {
       });
     });
 
+    it('wraps tool results that are not JSON objects, since Gemini expects a Struct', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => okJson });
+
+      await backend.chat({
+        model: 'gemini-2.5-flash',
+        messages: [
+          { role: 'user', content: 'Tasks?' },
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [
+              { id: 'c1', name: 'list', arguments: {} },
+              { id: 'c2', name: 'count', arguments: {} },
+              { id: 'c3', name: 'note', arguments: {} },
+            ],
+          } as never,
+          { role: 'tool', content: '[{"id":1},{"id":2}]', toolCallId: 'c1', name: 'list' },
+          { role: 'tool', content: '42', toolCallId: 'c2', name: 'count' },
+          { role: 'tool', content: 'plain text', toolCallId: 'c3', name: 'note' },
+        ],
+      });
+
+      const contents = sentBody().contents as Array<{ role: string; parts: unknown[] }>;
+      expect(contents[2].parts).toEqual([
+        { functionResponse: { name: 'list', response: { result: [{ id: 1 }, { id: 2 }] } } },
+        { functionResponse: { name: 'count', response: { result: 42 } } },
+        { functionResponse: { name: 'note', response: { result: 'plain text' } } },
+      ]);
+    });
+
     it('round-trips Gemini thought signatures on function calls', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,

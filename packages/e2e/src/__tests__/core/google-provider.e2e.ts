@@ -74,6 +74,46 @@ describeGoogle('Core: Google Provider E2E', () => {
     expect(result!.output).toContain('132');
   });
 
+  it('accepts tool results that are arrays or plain values', { timeout: 120_000 }, async () => {
+    const listOrders = tool({
+      name: 'list_orders',
+      description: 'List the open orders with their totals in dollars',
+      parameters: z.object({}),
+      execute: async () => [
+        { id: 'A-1', total: 120 },
+        { id: 'A-2', total: 80 },
+      ],
+    });
+    const countRefunds = tool({
+      name: 'count_refunds',
+      description: 'Count the refunds issued today',
+      parameters: z.object({}),
+      execute: async () => 3,
+    });
+
+    const agent = new Agent({
+      name: 'google-array-results',
+      instructions:
+        'You are an operations assistant. Always use the tools, then answer with the numbers they returned.',
+      model: 'google/gemini-3.5-flash-lite',
+      tools: [listOrders, countRefunds],
+    });
+
+    let result: RunResult | undefined;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      result = await cogitator.run(agent, {
+        input: 'What is the total of all open orders, and how many refunds were issued today?',
+      });
+      if (result.toolCalls.length >= 2) break;
+    }
+
+    const called = result!.toolCalls.map((tc) => tc.name);
+    expect(called).toContain('list_orders');
+    expect(called).toContain('count_refunds');
+    expect(result!.output).toContain('200');
+    expect(result!.output).toContain('3');
+  });
+
   it('returns structured JSON output', { timeout: 120_000 }, async () => {
     const agent = new Agent({
       name: 'google-json',
