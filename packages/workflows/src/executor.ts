@@ -9,7 +9,6 @@ import type {
   WorkflowExecuteOptions,
   StreamingWorkflowEvent,
   CheckpointStore,
-  NodeContext,
   NodeConfig,
   CheckpointStrategy,
   NodeResult,
@@ -97,27 +96,44 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Run a node function once, enforcing `config.timeout` when set.
+ * Run a node function once, enforcing `config.timeout` when set. A timed-out attempt
+ * aborts `ctx.signal` so in-flight work (LLM requests, tool calls) is cancelled
+ * instead of running on in the background.
  */
 async function runNodeAttempt<S extends WorkflowState>(
   node: WorkflowNode<S>,
-  ctx: NodeContext<S>,
+  ctx: ExtendedNodeContext<S>,
   timeout: number | undefined
 ): Promise<NodeResult<S>> {
   if (timeout === undefined || timeout <= 0) {
     return node.fn(ctx);
   }
 
+  const runSignal = ctx.signal;
+  const attempt = new AbortController();
+  const forwardRunAbort = () => attempt.abort(runSignal?.reason);
+  if (runSignal?.aborted) {
+    forwardRunAbort();
+  } else {
+    runSignal?.addEventListener('abort', forwardRunAbort, { once: true });
+  }
+
+  const attemptCtx: ExtendedNodeContext<S> = { ...ctx, signal: attempt.signal };
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      node.fn(ctx),
+      node.fn(attemptCtx),
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new NodeTimeoutError(node.name, timeout)), timeout);
+        timer = setTimeout(() => {
+          const error = new NodeTimeoutError(node.name, timeout);
+          attempt.abort(error);
+          reject(error);
+        }, timeout);
       }),
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+    runSignal?.removeEventListener('abort', forwardRunAbort);
   }
 }
 
@@ -143,7 +159,7 @@ function retryDelay(policy: NodeRunPolicy, attempt: number): number {
 async function runNodeWithPolicy<S extends WorkflowState>(
   node: WorkflowNode<S>,
   nodeName: string,
-  makeContext: () => NodeContext<S>,
+  makeContext: () => ExtendedNodeContext<S>,
   policy: NodeRunPolicy
 ): Promise<{ result: NodeResult<S>; retries: number }> {
   const maxRetries = Math.max(0, policy.config?.retries ?? policy.defaultRetry?.maxRetries ?? 0);
@@ -267,7 +283,7 @@ export class WorkflowExecutor {
           input = inputs.length === 1 ? inputs[0] : inputs;
         }
 
-        const makeContext = (): NodeContext<S> => {
+        const makeContext = (): ExtendedNodeContext<S> => {
           const ctx: ExtendedNodeContext<S> = {
             state: { ...state },
             nodeId: nodeName,

@@ -7,6 +7,7 @@ import { functionNode, customNode } from '../nodes';
 import { createTracer } from '../observability/tracer';
 import { createMetricsCollector } from '../observability/metrics';
 import { DefaultWorkflowManager } from '../manager/workflow-manager';
+import type { ExtendedNodeContext } from '../nodes/base';
 
 const cogitator = {} as Cogitator;
 
@@ -120,6 +121,70 @@ describe('WorkflowExecutor node config', () => {
 
     expect(result.error).toBeInstanceOf(NodeTimeoutError);
     expect(result.error?.message).toBe("Node 'slow' timed out after 20ms");
+  });
+
+  it('aborts the node signal when the attempt times out', async () => {
+    let seen: AbortSignal | undefined;
+    const workflow = new WorkflowBuilder('timeout-abort')
+      .addNode(
+        'slow',
+        (ctx) => {
+          seen = (ctx as ExtendedNodeContext).signal;
+          return new Promise(() => {});
+        },
+        { config: { timeout: 20 } }
+      )
+      .build();
+
+    const result = await new WorkflowExecutor(cogitator).execute(workflow);
+
+    expect(result.error).toBeInstanceOf(NodeTimeoutError);
+    expect(seen?.aborted).toBe(true);
+    expect(seen?.reason).toBe(result.error);
+  });
+
+  it('forwards a run abort to a node that has a timeout', async () => {
+    const controller = new AbortController();
+    let abortedAfter: number | undefined;
+    const workflow = new WorkflowBuilder('run-abort')
+      .addNode(
+        'waiting',
+        (ctx) =>
+          new Promise((_resolve, reject) => {
+            const started = Date.now();
+            (ctx as ExtendedNodeContext).signal?.addEventListener('abort', () => {
+              abortedAfter = Date.now() - started;
+              reject(new Error('cancelled'));
+            });
+          }),
+        { config: { timeout: 5_000 } }
+      )
+      .build();
+
+    setTimeout(() => controller.abort(), 20);
+    await new WorkflowExecutor(cogitator).execute(workflow, undefined, {
+      signal: controller.signal,
+    });
+
+    expect(abortedAfter).toBeDefined();
+    expect(abortedAfter!).toBeLessThan(1_000);
+  });
+
+  it('passes the run signal itself to nodes without a timeout', async () => {
+    const controller = new AbortController();
+    let seen: AbortSignal | undefined;
+    const workflow = new WorkflowBuilder('run-signal')
+      .addNode('plain', async (ctx) => {
+        seen = (ctx as ExtendedNodeContext).signal;
+        return { output: 'ok' };
+      })
+      .build();
+
+    await new WorkflowExecutor(cogitator).execute(workflow, undefined, {
+      signal: controller.signal,
+    });
+
+    expect(seen).toBe(controller.signal);
   });
 
   it('keeps config from node factories', async () => {
