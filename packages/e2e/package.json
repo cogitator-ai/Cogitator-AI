@@ -46,20 +46,20 @@
     "@koa/router": "^15.7.0",
     "create-cogitator-app": "workspace:*",
     "express": "^5.2.1",
-    "fastify": "^5.0.0",
-    "hono": "^4.0.0",
+    "fastify": "^5.12.5",
+    "hono": "^4.13.12",
     "koa": "^3.2.1",
-    "zod": "^4.3.6"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/koa": "^3.0.3",
     "@types/node": "^22.20.4",
-    "@types/ws": "^8.5.0",
+    "@types/ws": "^8.18.2",
     "openai": "^7.25.0",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3",
-    "ws": "^8.18.0"
+    "ws": "^8.22.0"
   },
   "engines": {
     "node": ">=22.12.0"

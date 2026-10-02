@@ -28,8 +28,8 @@
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
     "nanoid": "^6.0.1",
-    "ws": "^8.18.0",
-    "zod": "^4.3.6"
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
   },
   "peerDependencies": {
     "@cogitator-ai/core": "workspace:>=0.20.0",
@@ -44,7 +44,7 @@
     }
   },
   "devDependencies": {
-    "@types/ws": "^8.5.0",
+    "@types/ws": "^8.18.2",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3"
   },

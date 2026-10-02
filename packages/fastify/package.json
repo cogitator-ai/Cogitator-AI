@@ -37,10 +37,10 @@
   "optionalDependencies": {
     "@cogitator-ai/workflows": "workspace:*",
     "@cogitator-ai/swarms": "workspace:*",
-    "@fastify/swagger": "^9.0.0",
+    "@fastify/swagger": "^9.9.1",
     "@fastify/swagger-ui": "^5.0.0 || ^6.0.0",
     "@fastify/rate-limit": "^10.0.0 || ^11.0.0",
-    "@fastify/websocket": "^11.0.0"
+    "@fastify/websocket": "^11.3.1"
   },
   "devDependencies": {
     "@cogitator-ai/workflows": "workspace:*",
@@ -48,10 +48,10 @@
     "@fastify/swagger": "^9.9.1",
     "@fastify/swagger-ui": "^6.1.1",
     "@fastify/rate-limit": "^11.2.0",
-    "@fastify/websocket": "^11.0.2",
+    "@fastify/websocket": "^11.3.1",
     "@types/node": "^22.20.4",
-    "@types/ws": "^8.5.0",
-    "fastify": "^5.7.4",
+    "@types/ws": "^8.18.2",
+    "fastify": "^5.12.5",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3"
   },

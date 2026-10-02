@@ -45,7 +45,7 @@
   },
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
-    "zod": "^4.3.6"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

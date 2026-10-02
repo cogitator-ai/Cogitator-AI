@@ -29,19 +29,19 @@
     "@cogitator-ai/redis": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "nanoid": "^6.0.1",
-    "zod": "^4.3.6"
+    "zod": "^4.6.5"
   },
   "optionalDependencies": {
-    "@qdrant/js-client-rest": "^1.13.0",
+    "@qdrant/js-client-rest": "^1.19.0",
     "better-sqlite3": "^13.0.3",
     "ioredis": "^6.0.0",
     "mongodb": "^7.7.0",
-    "pg": "^8.18.0"
+    "pg": "^8.23.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.20.4",
-    "@types/pg": "^8.10.9",
+    "@types/pg": "^8.23.1",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3"
   },

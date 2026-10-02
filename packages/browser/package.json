@@ -28,8 +28,8 @@
   "dependencies": {
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "playwright": "^1.50.0",
-    "zod": "^4.3.6"
+    "playwright": "^1.63.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "typescript": "^6.0.3",

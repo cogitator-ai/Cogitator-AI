@@ -49,15 +49,15 @@
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "nanoid": "^6.0.1",
-    "zod": "^4.3.6"
+    "zod": "^4.6.5"
   },
   "optionalDependencies": {
-    "neo4j-driver": "^6.0.1",
-    "pg": "^8.18.0",
+    "neo4j-driver": "^6.2.0",
+    "pg": "^8.23.1",
     "z3-solver": "^4.13.0 || ^5.0.0"
   },
   "devDependencies": {
-    "@types/pg": "^8.16.0",
+    "@types/pg": "^8.23.1",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3"
   },

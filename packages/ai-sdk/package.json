@@ -39,7 +39,7 @@
     "ai-v5": "npm:ai@^5.0.271",
     "ai-v6": "npm:ai@^6.0.300",
     "typescript": "^6.0.3",
-    "zod": "^4.3.6"
+    "zod": "^4.6.5"
   },
   "repository": {
     "type": "git",
