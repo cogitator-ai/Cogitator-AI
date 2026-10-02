@@ -5,6 +5,10 @@ import { homedir } from 'node:os';
 
 const WHISPER_MODEL = 'Xenova/whisper-tiny';
 const SAMPLE_RATE = 16000;
+const RUNTIME_DEPS: Record<string, string> = {
+  '@huggingface/transformers': '^4.3.0',
+  'ogg-opus-decoder': '^1.7.3',
+};
 
 export class LocalWhisper {
   private pipeline: unknown = null;
@@ -56,20 +60,12 @@ export class LocalWhisper {
 
     const pcmFloat32 = await this.decode(audioBuffer, mimeType);
 
-    const pipe = this.pipeline as {
-      model: {
-        config: { decoder_start_token_id: number };
-        generation_config: { no_timestamps_token_id: number };
-      };
-      (input: Float32Array, opts?: Record<string, unknown>): Promise<{ text: string }>;
-    };
+    const pipe = this.pipeline as (
+      input: Float32Array,
+      opts?: Record<string, unknown>
+    ) => Promise<{ text: string }>;
 
-    const startToken = pipe.model.config.decoder_start_token_id;
-    const noTsToken = pipe.model.generation_config.no_timestamps_token_id;
-
-    const result = await pipe(pcmFloat32, {
-      decoder_input_ids: [startToken, noTsToken],
-    });
+    const result = await pipe(pcmFloat32, { return_timestamps: false });
     return result.text.trim();
   }
 
@@ -138,7 +134,8 @@ export class LocalWhisper {
     if (missing.length === 0) return;
 
     console.log(`[whisper] Installing dependencies: ${missing.join(', ')}...`);
-    const cmd = `npm install --no-save ${missing.join(' ')}`;
+    const specs = missing.map((name) => `${name}@${RUNTIME_DEPS[name]}`);
+    const cmd = `npm install --no-save ${specs.map((spec) => JSON.stringify(spec)).join(' ')}`;
     execSync(cmd, { stdio: 'pipe', timeout: 120_000 });
     console.log('[whisper] Dependencies installed');
   }

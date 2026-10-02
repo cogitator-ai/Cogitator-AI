@@ -233,6 +233,20 @@ describe('LocalWhisper WAV decoding', () => {
     expect(() => decode(Buffer.from('not a wav file at all'))).toThrow('RIFF');
   });
 
+  it('transcribes through the public pipeline options and trims the text', async () => {
+    const whisper = new LocalWhisper('/nonexistent');
+    const pipe = vi.fn().mockResolvedValue({ text: '  Hello world  ' });
+    (whisper as unknown as { pipeline: unknown }).pipeline = pipe;
+
+    const text = await whisper.transcribe(
+      wav({ bits: 16, channels: 1, rate: 16000, frames: [[1000], [2000]] }),
+      'audio/wav'
+    );
+
+    expect(text).toBe('Hello world');
+    expect(pipe).toHaveBeenCalledWith(expect.any(Float32Array), { return_timestamps: false });
+  });
+
   it('rejects unsupported formats with a clear error', async () => {
     const whisper = new LocalWhisper('/nonexistent');
     (whisper as unknown as { pipeline: unknown }).pipeline = {};
