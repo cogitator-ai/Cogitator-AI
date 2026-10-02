@@ -53,7 +53,6 @@
     "directory": "packages/self-modifying"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com",
     "access": "public"
   }
 }

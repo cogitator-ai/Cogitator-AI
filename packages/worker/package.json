@@ -47,8 +47,7 @@
     "directory": "packages/worker"
   },
   "publishConfig": {
-    "access": "public",
-    "registry": "https://npm.pkg.github.com"
+    "access": "public"
   },
   "license": "MIT"
 }
