@@ -33,7 +33,7 @@
   },
   "peerDependencies": {
     "@cogitator-ai/core": "workspace:>=0.20.0",
-    "openai": "^6.0.0"
+    "openai": "^6.0.0 || ^7.0.0"
   },
   "peerDependenciesMeta": {
     "@cogitator-ai/core": {

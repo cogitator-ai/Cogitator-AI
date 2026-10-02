@@ -26,3 +26,4 @@ minimumReleaseAgeExclude:
   - '@turbo/windows-arm64@2.11.7'
   - '@types/node@22.20.5'
   - turbo@2.11.7
+  - openai@7.27.0
