@@ -181,8 +181,6 @@ export class AISDKBackend implements LLMBackend {
 
     const reader = stream.getReader();
     const chunkId = `aisdk-stream-${Date.now()}`;
-    let totalInputTokens = 0;
-    let totalOutputTokens = 0;
     const pendingToolCalls: ToolCall[] = [];
 
     try {
@@ -207,17 +205,17 @@ export class AISDKBackend implements LLMBackend {
             delta: { toolCalls: [toolCall] },
           };
         } else if (value.type === 'finish') {
-          totalInputTokens = value.usage?.promptTokens ?? 0;
-          totalOutputTokens = value.usage?.completionTokens ?? 0;
+          const inputTokens = value.usage?.promptTokens ?? 0;
+          const outputTokens = value.usage?.completionTokens ?? 0;
 
           yield {
             id: chunkId,
             delta: {},
             finishReason: mapFinishReason(value.finishReason),
             usage: {
-              inputTokens: totalInputTokens,
-              outputTokens: totalOutputTokens,
-              totalTokens: totalInputTokens + totalOutputTokens,
+              inputTokens,
+              outputTokens,
+              totalTokens: inputTokens + outputTokens,
             },
           };
         }

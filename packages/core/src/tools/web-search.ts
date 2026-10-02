@@ -54,7 +54,9 @@ async function fetchSearch(
   } catch (err) {
     const error = err as Error;
     if (error.name === 'AbortError') {
-      throw new Error(getAbortErrorMessage(`${provider} search`, abort, SEARCH_TIMEOUT_MS));
+      throw new Error(getAbortErrorMessage(`${provider} search`, abort, SEARCH_TIMEOUT_MS), {
+        cause: err,
+      });
     }
     throw err;
   } finally {

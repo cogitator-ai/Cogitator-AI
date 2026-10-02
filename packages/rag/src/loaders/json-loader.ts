@@ -29,7 +29,7 @@ export class JSONLoader implements DocumentLoader {
       data = JSON.parse(raw);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`JSONLoader: failed to parse "${filePath}": ${message}`);
+      throw new Error(`JSONLoader: failed to parse "${filePath}": ${message}`, { cause: err });
     }
 
     const items = Array.isArray(data) ? data : [data];

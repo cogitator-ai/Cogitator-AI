@@ -360,7 +360,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
     }
 
     if (query.limit) {
-      sql += ` LIMIT $${paramIndex++}`;
+      sql += ` LIMIT $${paramIndex}`;
       params.push(query.limit);
     }
 
@@ -590,7 +590,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
     }
 
     if (query.limit) {
-      sql += ` LIMIT $${paramIndex++}`;
+      sql += ` LIMIT $${paramIndex}`;
       params.push(query.limit);
     }
 

@@ -331,7 +331,7 @@ function applyOrdering(
         bField = bValue;
       }
 
-      let comparison = 0;
+      let comparison: number;
       if (aField === bField) {
         comparison = 0;
       } else if (aField === undefined || aField === null) {

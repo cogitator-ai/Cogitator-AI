@@ -114,7 +114,7 @@ export class PDFLoader implements DocumentLoader {
       return await pdfParse(buffer, options);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`PDFLoader: failed to parse "${source}": ${message}`);
+      throw new Error(`PDFLoader: failed to parse "${source}": ${message}`, { cause: err });
     }
   }
 

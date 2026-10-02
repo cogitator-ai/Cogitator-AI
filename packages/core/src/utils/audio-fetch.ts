@@ -90,7 +90,7 @@ export async function fetchAudioAsBuffer(
   } catch (err) {
     const error = err as Error;
     if (error.name === 'AbortError') {
-      throw new Error(getAbortErrorMessage('Audio fetch', abort, timeout));
+      throw new Error(getAbortErrorMessage('Audio fetch', abort, timeout), { cause: err });
     }
     throw err;
   } finally {

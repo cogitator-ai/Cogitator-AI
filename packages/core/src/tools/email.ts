@@ -85,7 +85,9 @@ async function sendViaResend(params: {
   } catch (err) {
     const error = err as Error;
     if (error.name === 'AbortError') {
-      throw new Error(getAbortErrorMessage('Resend email request', abort, EMAIL_TIMEOUT_MS));
+      throw new Error(getAbortErrorMessage('Resend email request', abort, EMAIL_TIMEOUT_MS), {
+        cause: err,
+      });
     }
     throw err;
   } finally {

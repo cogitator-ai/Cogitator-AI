@@ -14,7 +14,8 @@ export class WasmLoader {
       extism = (await import('@extism/extism')) as { createPlugin?: unknown; default?: unknown };
     } catch (error) {
       throw new Error(
-        `@extism/extism is required to load WASM modules: ${error instanceof Error ? error.message : String(error)}`
+        `@extism/extism is required to load WASM modules: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
       );
     }
     const factory = extism.createPlugin ?? extism.default;

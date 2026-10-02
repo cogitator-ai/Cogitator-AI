@@ -256,7 +256,7 @@ export class SemanticChunker implements AsyncChunker {
 
     if (currentSentences.length > 0) {
       chunks.push(
-        this.emitSentenceGroup(currentSentences, originalText, documentId, offset, order++)
+        this.emitSentenceGroup(currentSentences, originalText, documentId, offset, order)
       );
     }
 

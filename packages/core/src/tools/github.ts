@@ -73,7 +73,7 @@ async function githubFetch(
   } catch (err) {
     const error = err as Error;
     if (error.name === 'AbortError') {
-      throw new Error(getAbortErrorMessage('GitHub API request', abort, 30_000));
+      throw new Error(getAbortErrorMessage('GitHub API request', abort, 30_000), { cause: err });
     }
     throw err;
   } finally {

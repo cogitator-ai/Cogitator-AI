@@ -85,7 +85,8 @@ function parseYamlFile(path: string, env: Env): CogitatorConfigInput | null {
     parsed = parse(readFileSync(path, 'utf-8'));
   } catch (error) {
     throw new Error(
-      `Failed to parse config file ${path}: ${error instanceof Error ? error.message : String(error)}`
+      `Failed to parse config file ${path}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error }
     );
   }
 

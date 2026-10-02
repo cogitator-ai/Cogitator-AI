@@ -198,7 +198,8 @@ export function createGenerateImageTool(config: GenerateImageConfig = {}) {
         const error = err as Error;
         if (error.name === 'AbortError') {
           throw new Error(
-            getAbortErrorMessage('Image generation request', abort, IMAGE_GENERATION_TIMEOUT_MS)
+            getAbortErrorMessage('Image generation request', abort, IMAGE_GENERATION_TIMEOUT_MS),
+            { cause: err }
           );
         }
         throw err;

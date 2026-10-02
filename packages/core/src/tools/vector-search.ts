@@ -64,7 +64,8 @@ async function getEmbedding(
       const error = err as Error;
       if (error.name === 'AbortError') {
         throw new Error(
-          getAbortErrorMessage(`${provider} embedding request`, abort, EMBEDDING_TIMEOUT_MS)
+          getAbortErrorMessage(`${provider} embedding request`, abort, EMBEDDING_TIMEOUT_MS),
+          { cause: err }
         );
       }
       throw err;

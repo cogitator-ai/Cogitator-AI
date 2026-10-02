@@ -38,7 +38,8 @@ async function loadFactory(): Promise<RuntimeCreatePlugin> {
     extism = (await import('@extism/extism')) as { createPlugin?: unknown; default?: unknown };
   } catch (error) {
     throw new Error(
-      `@extism/extism is required to execute WASM tools: ${error instanceof Error ? error.message : String(error)}`
+      `@extism/extism is required to execute WASM tools: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error }
     );
   }
   const createPlugin = extism.createPlugin ?? extism.default;

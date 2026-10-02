@@ -119,7 +119,8 @@ export function createGenerateSpeechTool(config: GenerateSpeechConfig = {}) {
         const error = err as Error;
         if (error.name === 'AbortError') {
           throw new Error(
-            getAbortErrorMessage('Speech generation request', abort, SPEECH_GENERATION_TIMEOUT_MS)
+            getAbortErrorMessage('Speech generation request', abort, SPEECH_GENERATION_TIMEOUT_MS),
+            { cause: err }
           );
         }
         throw err;

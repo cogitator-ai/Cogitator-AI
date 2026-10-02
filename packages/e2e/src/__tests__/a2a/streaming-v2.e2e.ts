@@ -137,7 +137,6 @@ describe('A2A v2: Token Streaming', () => {
 
   it('stream terminates after completion', async () => {
     const events: A2AStreamEvent[] = [];
-    let streamEnded = false;
 
     for await (const event of client.sendMessageStream({
       role: 'user',
@@ -145,9 +144,7 @@ describe('A2A v2: Token Streaming', () => {
     })) {
       events.push(event);
     }
-    streamEnded = true;
 
-    expect(streamEnded).toBe(true);
     expect(events.length).toBeGreaterThan(0);
 
     const lastEvent = events[events.length - 1];

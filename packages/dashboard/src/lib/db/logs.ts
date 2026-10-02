@@ -62,7 +62,7 @@ export async function getAllLogs(options?: {
     params.push(options.limit);
   }
   if (options?.offset) {
-    sql += ` OFFSET $${paramIndex++}`;
+    sql += ` OFFSET $${paramIndex}`;
     params.push(options.offset);
   }
 

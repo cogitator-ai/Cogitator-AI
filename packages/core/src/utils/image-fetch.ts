@@ -68,7 +68,7 @@ export async function fetchImageAsBase64(
   } catch (err) {
     const error = err as Error;
     if (error.name === 'AbortError') {
-      throw new Error(getAbortErrorMessage('Image fetch', abort, timeout));
+      throw new Error(getAbortErrorMessage('Image fetch', abort, timeout), { cause: err });
     }
     throw err;
   } finally {

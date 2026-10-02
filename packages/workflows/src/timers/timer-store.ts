@@ -235,7 +235,8 @@ export class FileTimerStore implements TimerStore {
         (error as NodeJS.ErrnoException).code === 'ENOENT';
       if (!isNotFound) {
         throw new Error(
-          `Failed to load timer store from ${this.indexFile}: ${error instanceof Error ? error.message : String(error)}`
+          `Failed to load timer store from ${this.indexFile}: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error }
         );
       }
     }

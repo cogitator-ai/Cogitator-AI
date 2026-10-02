@@ -37,7 +37,7 @@ async function importOptional(specifier: string, installHint: string): Promise<u
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
-      throw new Error(installHint);
+      throw new Error(installHint, { cause: error });
     }
     throw error;
   }

@@ -189,7 +189,7 @@ export async function getAuditLogCount(options?: {
     params.push(options.userId);
   }
   if (options?.resourceType) {
-    conditions.push(`resource_type = $${idx++}`);
+    conditions.push(`resource_type = $${idx}`);
     params.push(options.resourceType);
   }
 

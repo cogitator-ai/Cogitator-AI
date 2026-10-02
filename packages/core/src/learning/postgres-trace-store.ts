@@ -335,7 +335,7 @@ export class PostgresTraceStore implements CombinedPersistentStore {
     sql += ' ORDER BY created_at DESC';
 
     if (query.limit) {
-      sql += ` LIMIT $${paramIndex++}`;
+      sql += ` LIMIT $${paramIndex}`;
       params.push(query.limit);
     }
 
@@ -549,7 +549,7 @@ export class PostgresTraceStore implements CombinedPersistentStore {
       params.push(query.limit);
     }
     if (query.offset) {
-      sql += ` OFFSET $${paramIndex++}`;
+      sql += ` OFFSET $${paramIndex}`;
       params.push(query.offset);
     }
 
@@ -776,7 +776,7 @@ export class PostgresTraceStore implements CombinedPersistentStore {
       params.push(agentId);
     }
     if (status) {
-      sql += ` AND status = $${paramIndex++}`;
+      sql += ` AND status = $${paramIndex}`;
       params.push(status);
     }
 

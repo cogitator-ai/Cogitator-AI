@@ -113,7 +113,8 @@ export async function transcribeAudio(
     const error = err as Error;
     if (error.name === 'AbortError') {
       throw new Error(
-        getAbortErrorMessage('Transcription request', abort, TRANSCRIPTION_TIMEOUT_MS)
+        getAbortErrorMessage('Transcription request', abort, TRANSCRIPTION_TIMEOUT_MS),
+        { cause: err }
       );
     }
     throw err;
