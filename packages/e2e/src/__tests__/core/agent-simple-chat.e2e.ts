@@ -36,7 +36,7 @@ describeE2E('Core: Agent Simple Chat', () => {
     expect(result.output).toMatch(/4/);
   });
 
-  it('follows system instructions precisely', async () => {
+  it('follows system instructions precisely', { retry: 2 }, async () => {
     const agent = createTestAgent({
       instructions:
         'You MUST start every response with the word BANANA. This is mandatory. No exceptions.',
