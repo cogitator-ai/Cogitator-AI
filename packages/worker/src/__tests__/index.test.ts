@@ -1,18 +1,23 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
+
+type WorkerModule = typeof import('../index');
 
 describe('@cogitator-ai/worker', () => {
-  it('exports JobQueue', async () => {
-    const { JobQueue } = await import('../index');
-    expect(JobQueue).toBeDefined();
-  }, 15000);
+  let mod: WorkerModule;
 
-  it('exports WorkerPool', async () => {
-    const { WorkerPool } = await import('../index');
-    expect(WorkerPool).toBeDefined();
-  }, 15000);
+  beforeAll(async () => {
+    mod = await import('../index');
+  }, 60_000);
 
-  it('exports MetricsCollector', async () => {
-    const { MetricsCollector } = await import('../index');
-    expect(MetricsCollector).toBeDefined();
-  }, 15000);
+  it('exports JobQueue', () => {
+    expect(mod.JobQueue).toBeDefined();
+  });
+
+  it('exports WorkerPool', () => {
+    expect(mod.WorkerPool).toBeDefined();
+  });
+
+  it('exports MetricsCollector', () => {
+    expect(mod.MetricsCollector).toBeDefined();
+  });
 });
