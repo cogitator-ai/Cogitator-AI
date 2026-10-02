@@ -310,7 +310,30 @@ describe('EvalSuite', () => {
       const result = await suite.run();
 
       expect(result.results[0].output).toBe('');
+      expect(result.results[0].error).toBe('Timed out after 1000ms');
       expect(result.results[0].duration).toBeGreaterThanOrEqual(900);
+    });
+
+    it('retries a timed-out attempt', async () => {
+      let attempts = 0;
+      const fn = async () => {
+        attempts++;
+        if (attempts === 1) await new Promise((r) => setTimeout(r, 5000));
+        return 'second try';
+      };
+
+      const suite = new EvalSuite({
+        dataset: Dataset.from([{ input: 'slow-then-fast' }]),
+        target: { fn },
+        timeout: 1000,
+        retries: 1,
+      });
+
+      const result = await suite.run();
+
+      expect(result.results[0].output).toBe('second try');
+      expect(result.results[0].error).toBeUndefined();
+      expect(attempts).toBe(2);
     });
   });
 
@@ -332,6 +355,7 @@ describe('EvalSuite', () => {
       const result = await suite.run();
 
       expect(result.results[0].output).toBe('success');
+      expect(result.results[0].error).toBeUndefined();
       expect(attempts).toBe(2);
     });
 
@@ -349,6 +373,7 @@ describe('EvalSuite', () => {
       const result = await suite.run();
 
       expect(result.results[0].output).toBe('');
+      expect(result.results[0].error).toBe('persistent failure');
     });
 
     it('returns non-zero duration when all retries fail', async () => {

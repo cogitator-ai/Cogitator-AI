@@ -67,12 +67,14 @@ describeIf('Evals E2E', () => {
       metrics: [exactMatch(), contains()],
       concurrency: 2,
       timeout: 30_000,
+      retries: 2,
     });
 
     const result = await suite.run();
 
     expect(result.results).toHaveLength(5);
     for (const r of result.results) {
+      expect(r.error, `case "${r.case.input}" failed`).toBeUndefined();
       expect(r.output.length).toBeGreaterThan(0);
       expect(r.scores).toHaveLength(2);
 
@@ -144,6 +146,7 @@ describeIf('Evals E2E', () => {
       metrics: [boundFaithfulness],
       concurrency: 1,
       timeout: 30_000,
+      retries: 2,
     });
 
     const result = await suite.run();
@@ -152,6 +155,7 @@ describeIf('Evals E2E', () => {
 
     expect(result.results).toHaveLength(3);
     for (const r of result.results) {
+      expect(r.error, `case "${r.case.input}" failed`).toBeUndefined();
       expect(r.output.length).toBeGreaterThan(0);
       const score = r.scores.find((s) => s.name === 'faithfulness');
       expect(score).toBeDefined();
@@ -196,6 +200,7 @@ describeIf('Evals E2E', () => {
       metrics: [exactMatch()],
       concurrency: 1,
       timeout: 30_000,
+      retries: 2,
     });
 
     const result = await comparison.run();

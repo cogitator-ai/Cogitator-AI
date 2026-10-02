@@ -11,6 +11,8 @@ export interface EvalCaseResult {
   case: EvalCase;
   output: string;
   duration: number;
+  /** Set when every attempt failed or timed out; `output` is empty in that case */
+  error?: string;
   usage?: {
     inputTokens: number;
     outputTokens: number;

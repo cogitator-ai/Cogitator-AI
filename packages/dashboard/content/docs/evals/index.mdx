@@ -80,6 +80,8 @@ const suite = new EvalSuite({
 });
 ```
 
+Errors and timeouts are retried up to `retries` times. If every attempt fails, the case result has an empty `output` and an `error` message (for example `Timed out after 30000ms`), so a failed run is never mistaken for an empty answer.
+
 ### Target
 
 The target defines what you're evaluating. Use `fn` for a simple function, or `agent` + `cogitator` for a full Cogitator agent:
@@ -110,10 +112,10 @@ const target = {
 ```typescript
 const result = await suite.run();
 
-result.results;     // per-case outputs and scores
-result.aggregated;  // { exactMatch: { mean, median, p95, ... }, ... }
-result.assertions;  // [{ name, passed, message }, ...]
-result.stats;       // { total, duration, cost }
+result.results; // per-case outputs and scores
+result.aggregated; // { exactMatch: { mean, median, p95, ... }, ... }
+result.assertions; // [{ name, passed, message }, ...]
+result.stats; // { total, duration, cost }
 
 result.report('console');
 result.report(['json', 'csv'], { path: './eval-report' });
@@ -125,7 +127,14 @@ result.saveBaseline('./baseline.json');
 Fluent builder API as an alternative to direct `EvalSuite` construction:
 
 ```typescript
-import { EvalBuilder, Dataset, exactMatch, contains, latency, threshold } from '@cogitator-ai/evals';
+import {
+  EvalBuilder,
+  Dataset,
+  exactMatch,
+  contains,
+  latency,
+  threshold,
+} from '@cogitator-ai/evals';
 
 const suite = new EvalBuilder()
   .withDataset(dataset)

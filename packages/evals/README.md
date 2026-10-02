@@ -59,6 +59,8 @@ result.report('console');
 result.saveBaseline('./baseline.json');
 ```
 
+A case that throws or exceeds `timeout` is retried up to `retries` times (default `0`). If every attempt fails, its result has an empty `output` and an `error` message describing the last failure.
+
 ---
 
 ## Datasets

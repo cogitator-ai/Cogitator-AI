@@ -214,11 +214,12 @@ export class EvalSuite {
 
   private async executeCase(evalCase: EvalCase): Promise<EvalCaseResult> {
     const start = Date.now();
+    let lastError: unknown;
     for (let attempt = 0; attempt <= this.retries; attempt++) {
       try {
         return await this.executeCaseAttempt(evalCase);
-      } catch {
-        if (attempt < this.retries) continue;
+      } catch (err) {
+        lastError = err;
       }
     }
 
@@ -226,31 +227,27 @@ export class EvalSuite {
       case: evalCase,
       output: '',
       duration: Date.now() - start,
+      error: lastError instanceof Error ? lastError.message : String(lastError),
     };
   }
 
   private async executeCaseAttempt(evalCase: EvalCase): Promise<EvalCaseResult> {
-    const start = Date.now();
-
     const work = this.target.fn
       ? this.executeFnTarget(evalCase)
       : this.executeAgentTarget(evalCase);
 
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('__timeout__')), this.timeout);
+      timer = setTimeout(
+        () => reject(new Error(`Timed out after ${this.timeout}ms`)),
+        this.timeout
+      );
     });
 
     try {
       return await Promise.race([work, timeoutPromise]);
-    } catch (err) {
-      if ((err as Error).message === '__timeout__') {
-        return {
-          case: evalCase,
-          output: '',
-          duration: Date.now() - start,
-        };
-      }
-      throw err;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
