@@ -36,7 +36,7 @@
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "ai": "^4.0.0",
-    "typescript": "^5.6.0",
+    "typescript": "^6.0.3",
     "zod": "^3.23.8"
   },
   "repository": {

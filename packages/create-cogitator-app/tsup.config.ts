@@ -14,7 +14,7 @@ export default defineConfig([
   {
     entry: ['src/lib.ts'],
     format: ['esm'],
-    dts: true,
+    dts: { compilerOptions: { ignoreDeprecations: '6.0' } },
     sourcemap: true,
   },
 ]);

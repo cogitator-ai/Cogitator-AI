@@ -18,8 +18,8 @@ importers:
         specifier: ^6.22.0
         version: 6.22.0(ws@8.19.0)(zod@4.3.6)
       typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       zod:
         specifier: ^4.3.6
         version: 4.3.6
@@ -65,7 +65,7 @@ importers:
         version: 2.11.7
       typescript-eslint:
         specifier: ^8.53.1
-        version: 8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3)
+        version: 8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3)
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.8.2)
@@ -243,8 +243,8 @@ importers:
         specifier: ^22.20.5
         version: 22.20.5
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -268,8 +268,8 @@ importers:
         specifier: ^4.0.0
         version: 4.3.19(react@19.2.4)(zod@3.25.76)
       typescript:
-        specifier: ^5.6.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -290,8 +290,8 @@ importers:
         version: 4.3.6
     devDependencies:
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@25.0.10)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -360,8 +360,8 @@ importers:
         specifier: ^8.18.1
         version: 8.18.1
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -412,8 +412,8 @@ importers:
         specifier: ^22.20.5
         version: 22.20.5
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.8.2)
@@ -434,8 +434,8 @@ importers:
         specifier: ^22.20.5
         version: 22.20.5
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.8.2)
@@ -486,8 +486,8 @@ importers:
         specifier: ^8.10.9
         version: 8.16.0
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -510,10 +510,10 @@ importers:
         version: 22.20.5
       tsup:
         specifier: ^8.4.0
-        version: 8.5.1(jiti@2.6.1)(postcss@8.5.6)(supports-color@10.2.2)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.8.2)
+        version: 8.5.1(jiti@2.6.1)(postcss@8.5.6)(supports-color@10.2.2)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.8.2)
       typescript:
-        specifier: ^5.8.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -644,8 +644,8 @@ importers:
         specifier: ^4.0.0
         version: 4.1.18
       typescript:
-        specifier: ^5.7.2
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       zod:
         specifier: ^4.3.6
         version: 4.3.6
@@ -666,8 +666,8 @@ importers:
         specifier: ^22.20.5
         version: 22.20.5
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -805,8 +805,8 @@ importers:
         specifier: ^6.22.0
         version: 6.22.0(ws@8.19.0)(zod@4.3.6)
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -827,8 +827,8 @@ importers:
         specifier: ^5.3.15
         version: 5.5.2
       typescript:
-        specifier: ^5.7.2
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@25.0.10)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -865,8 +865,8 @@ importers:
         specifier: ^7.0.0
         version: 7.2.2(supports-color@10.2.2)
       typescript:
-        specifier: ^5.6.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@25.0.10)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -906,8 +906,8 @@ importers:
         specifier: ^5.7.4
         version: 5.7.4
       typescript:
-        specifier: ^5.6.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -953,8 +953,8 @@ importers:
         specifier: ^4.11.9
         version: 4.11.9
       typescript:
-        specifier: ^5.6.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^3.0.0
         version: 3.2.4(@types/debug@4.1.12)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(supports-color@10.2.2)(tsx@4.23.15)(yaml@2.8.2)
@@ -1003,8 +1003,8 @@ importers:
         specifier: ^7.0.0
         version: 7.2.2(supports-color@10.2.2)
       typescript:
-        specifier: ^5.6.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^3.0.0
         version: 3.2.4(@types/debug@4.1.12)(@types/node@25.0.10)(jiti@2.6.1)(lightningcss@1.30.2)(supports-color@10.2.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -1035,8 +1035,8 @@ importers:
         specifier: ^22.20.5
         version: 22.20.5
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -1066,15 +1066,15 @@ importers:
         specifier: ^8.10.9
         version: 8.16.0
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
     optionalDependencies:
       '@qdrant/js-client-rest':
         specifier: ^1.13.0
-        version: 1.17.0(typescript@5.9.3)
+        version: 1.17.0(typescript@6.0.3)
       better-sqlite3:
         specifier: ^11.6.0
         version: 11.10.0
@@ -1098,8 +1098,8 @@ importers:
         specifier: ^22.20.5
         version: 22.20.5
       typescript:
-        specifier: ^5.7.2
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -1123,8 +1123,8 @@ importers:
         specifier: ^8.16.0
         version: 8.16.0
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@25.0.10)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -1158,8 +1158,8 @@ importers:
         specifier: ^18.0.0
         version: 18.3.1
       typescript:
-        specifier: ^5.0.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@25.0.10)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -1204,8 +1204,8 @@ importers:
         specifier: ^6.22.0
         version: 6.22.0(ws@8.19.0)(zod@4.3.6)
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -1232,8 +1232,8 @@ importers:
         specifier: ^1.1.5
         version: 1.1.5
       typescript:
-        specifier: ^5.7.2
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@25.0.10)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -1254,8 +1254,8 @@ importers:
         specifier: ^22.20.5
         version: 22.20.5
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -1277,8 +1277,8 @@ importers:
         specifier: ^22.20.5
         version: 22.20.5
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -1306,8 +1306,8 @@ importers:
         specifier: ^22.20.5
         version: 22.20.5
       typescript:
-        specifier: ^5.3.2
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -1315,8 +1315,8 @@ importers:
   packages/server-shared:
     devDependencies:
       typescript:
-        specifier: ^5.6.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
 
   packages/swarms:
     dependencies:
@@ -1343,8 +1343,8 @@ importers:
         version: 4.3.6
     devDependencies:
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -1359,8 +1359,8 @@ importers:
         version: 5.1.6
     devDependencies:
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@25.0.10)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -1372,8 +1372,8 @@ importers:
         version: 4.3.6
     devDependencies:
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
 
   packages/voice:
     dependencies:
@@ -1400,8 +1400,8 @@ importers:
         specifier: ^8.5.0
         version: 8.18.1
       typescript:
-        specifier: ^5.7.2
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@25.0.10)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -1425,8 +1425,8 @@ importers:
         specifier: ^0.28.2
         version: 0.28.2
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@25.0.10)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -1456,8 +1456,8 @@ importers:
         specifier: 5.9.2
         version: 5.9.2(supports-color@10.2.2)
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@25.0.10)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -1481,8 +1481,8 @@ importers:
         specifier: ^22.20.5
         version: 22.20.5
       typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.0.18
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -7504,8 +7504,8 @@ packages:
       eslint: ^8.57.0 || ^9.0.0
       typescript: '>=4.8.4 <6.0.0'
 
-  typescript@5.9.3:
-    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+  typescript@6.0.3:
+    resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
     engines: {node: '>=14.17'}
     hasBin: true
 
@@ -9515,10 +9515,10 @@ snapshots:
 
   '@protobufjs/utf8@1.1.2': {}
 
-  '@qdrant/js-client-rest@1.17.0(typescript@5.9.3)':
+  '@qdrant/js-client-rest@1.17.0(typescript@6.0.3)':
     dependencies:
       '@qdrant/openapi-typescript-fetch': 1.2.6
-      typescript: 5.9.3
+      typescript: 6.0.3
       undici: 6.23.0
     optional: true
 
@@ -10832,40 +10832,40 @@ snapshots:
     dependencies:
       '@types/node': 25.0.10
 
-  '@typescript-eslint/eslint-plugin@8.53.1(@typescript-eslint/parser@8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3))(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3)':
+  '@typescript-eslint/eslint-plugin@8.53.1(@typescript-eslint/parser@8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3))(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3)':
     dependencies:
       '@eslint-community/regexpp': 4.12.2
-      '@typescript-eslint/parser': 8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3)
+      '@typescript-eslint/parser': 8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3)
       '@typescript-eslint/scope-manager': 8.53.1
-      '@typescript-eslint/type-utils': 8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3)
-      '@typescript-eslint/utils': 8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3)
+      '@typescript-eslint/type-utils': 8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3)
+      '@typescript-eslint/utils': 8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3)
       '@typescript-eslint/visitor-keys': 8.53.1
       eslint: 9.39.2(jiti@2.6.1)(supports-color@10.2.2)
       ignore: 7.0.5
       natural-compare: 1.4.0
-      ts-api-utils: 2.4.0(typescript@5.9.3)
-      typescript: 5.9.3
+      ts-api-utils: 2.4.0(typescript@6.0.3)
+      typescript: 6.0.3
     transitivePeerDependencies:
       - supports-color
 
-  '@typescript-eslint/parser@8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3)':
+  '@typescript-eslint/parser@8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3)':
     dependencies:
       '@typescript-eslint/scope-manager': 8.53.1
       '@typescript-eslint/types': 8.53.1
-      '@typescript-eslint/typescript-estree': 8.53.1(supports-color@10.2.2)(typescript@5.9.3)
+      '@typescript-eslint/typescript-estree': 8.53.1(supports-color@10.2.2)(typescript@6.0.3)
       '@typescript-eslint/visitor-keys': 8.53.1
       debug: 4.4.3(supports-color@10.2.2)
       eslint: 9.39.2(jiti@2.6.1)(supports-color@10.2.2)
-      typescript: 5.9.3
+      typescript: 6.0.3
     transitivePeerDependencies:
       - supports-color
 
-  '@typescript-eslint/project-service@8.53.1(supports-color@10.2.2)(typescript@5.9.3)':
+  '@typescript-eslint/project-service@8.53.1(supports-color@10.2.2)(typescript@6.0.3)':
     dependencies:
-      '@typescript-eslint/tsconfig-utils': 8.53.1(typescript@5.9.3)
+      '@typescript-eslint/tsconfig-utils': 8.53.1(typescript@6.0.3)
       '@typescript-eslint/types': 8.53.1
       debug: 4.4.3(supports-color@10.2.2)
-      typescript: 5.9.3
+      typescript: 6.0.3
     transitivePeerDependencies:
       - supports-color
 
@@ -10874,47 +10874,47 @@ snapshots:
       '@typescript-eslint/types': 8.53.1
       '@typescript-eslint/visitor-keys': 8.53.1
 
-  '@typescript-eslint/tsconfig-utils@8.53.1(typescript@5.9.3)':
+  '@typescript-eslint/tsconfig-utils@8.53.1(typescript@6.0.3)':
     dependencies:
-      typescript: 5.9.3
+      typescript: 6.0.3
 
-  '@typescript-eslint/type-utils@8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3)':
+  '@typescript-eslint/type-utils@8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3)':
     dependencies:
       '@typescript-eslint/types': 8.53.1
-      '@typescript-eslint/typescript-estree': 8.53.1(supports-color@10.2.2)(typescript@5.9.3)
-      '@typescript-eslint/utils': 8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3)
+      '@typescript-eslint/typescript-estree': 8.53.1(supports-color@10.2.2)(typescript@6.0.3)
+      '@typescript-eslint/utils': 8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3)
       debug: 4.4.3(supports-color@10.2.2)
       eslint: 9.39.2(jiti@2.6.1)(supports-color@10.2.2)
-      ts-api-utils: 2.4.0(typescript@5.9.3)
-      typescript: 5.9.3
+      ts-api-utils: 2.4.0(typescript@6.0.3)
+      typescript: 6.0.3
     transitivePeerDependencies:
       - supports-color
 
   '@typescript-eslint/types@8.53.1': {}
 
-  '@typescript-eslint/typescript-estree@8.53.1(supports-color@10.2.2)(typescript@5.9.3)':
+  '@typescript-eslint/typescript-estree@8.53.1(supports-color@10.2.2)(typescript@6.0.3)':
     dependencies:
-      '@typescript-eslint/project-service': 8.53.1(supports-color@10.2.2)(typescript@5.9.3)
-      '@typescript-eslint/tsconfig-utils': 8.53.1(typescript@5.9.3)
+      '@typescript-eslint/project-service': 8.53.1(supports-color@10.2.2)(typescript@6.0.3)
+      '@typescript-eslint/tsconfig-utils': 8.53.1(typescript@6.0.3)
       '@typescript-eslint/types': 8.53.1
       '@typescript-eslint/visitor-keys': 8.53.1
       debug: 4.4.3(supports-color@10.2.2)
       minimatch: 9.0.5
       semver: 7.7.4
       tinyglobby: 0.2.15
-      ts-api-utils: 2.4.0(typescript@5.9.3)
-      typescript: 5.9.3
+      ts-api-utils: 2.4.0(typescript@6.0.3)
+      typescript: 6.0.3
     transitivePeerDependencies:
       - supports-color
 
-  '@typescript-eslint/utils@8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3)':
+  '@typescript-eslint/utils@8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3)':
     dependencies:
       '@eslint-community/eslint-utils': 4.9.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))
       '@typescript-eslint/scope-manager': 8.53.1
       '@typescript-eslint/types': 8.53.1
-      '@typescript-eslint/typescript-estree': 8.53.1(supports-color@10.2.2)(typescript@5.9.3)
+      '@typescript-eslint/typescript-estree': 8.53.1(supports-color@10.2.2)(typescript@6.0.3)
       eslint: 9.39.2(jiti@2.6.1)(supports-color@10.2.2)
-      typescript: 5.9.3
+      typescript: 6.0.3
     transitivePeerDependencies:
       - supports-color
 
@@ -14974,9 +14974,9 @@ snapshots:
 
   ts-algebra@2.0.0: {}
 
-  ts-api-utils@2.4.0(typescript@5.9.3):
+  ts-api-utils@2.4.0(typescript@6.0.3):
     dependencies:
-      typescript: 5.9.3
+      typescript: 6.0.3
 
   ts-interface-checker@0.1.13: {}
 
@@ -14986,7 +14986,7 @@ snapshots:
 
   tsscmp@1.0.6: {}
 
-  tsup@8.5.1(jiti@2.6.1)(postcss@8.5.6)(supports-color@10.2.2)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.8.2):
+  tsup@8.5.1(jiti@2.6.1)(postcss@8.5.6)(supports-color@10.2.2)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.8.2):
     dependencies:
       bundle-require: 5.1.0(esbuild@0.27.2)
       cac: 6.7.14
@@ -15007,7 +15007,7 @@ snapshots:
       tree-kill: 1.2.2
     optionalDependencies:
       postcss: 8.5.6
-      typescript: 5.9.3
+      typescript: 6.0.3
     transitivePeerDependencies:
       - jiti
       - supports-color
@@ -15053,18 +15053,18 @@ snapshots:
       media-typer: 1.1.0
       mime-types: 3.0.2
 
-  typescript-eslint@8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3):
+  typescript-eslint@8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3):
     dependencies:
-      '@typescript-eslint/eslint-plugin': 8.53.1(@typescript-eslint/parser@8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3))(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3)
-      '@typescript-eslint/parser': 8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3)
-      '@typescript-eslint/typescript-estree': 8.53.1(supports-color@10.2.2)(typescript@5.9.3)
-      '@typescript-eslint/utils': 8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3)
+      '@typescript-eslint/eslint-plugin': 8.53.1(@typescript-eslint/parser@8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3))(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3)
+      '@typescript-eslint/parser': 8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3)
+      '@typescript-eslint/typescript-estree': 8.53.1(supports-color@10.2.2)(typescript@6.0.3)
+      '@typescript-eslint/utils': 8.53.1(eslint@9.39.2(jiti@2.6.1)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3)
       eslint: 9.39.2(jiti@2.6.1)(supports-color@10.2.2)
-      typescript: 5.9.3
+      typescript: 6.0.3
     transitivePeerDependencies:
       - supports-color
 
-  typescript@5.9.3: {}
+  typescript@6.0.3: {}
 
   ufo@1.6.3: {}
 
