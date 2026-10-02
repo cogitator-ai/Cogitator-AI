@@ -1,398 +1,515 @@
 import { describe, it, expect, vi } from 'vitest';
+import type {
+  LanguageModelV2,
+  LanguageModelV2CallOptions,
+  LanguageModelV2StreamPart,
+  LanguageModelV3,
+  LanguageModelV3CallOptions,
+  LanguageModelV3StreamPart,
+  LanguageModelV4,
+  LanguageModelV4CallOptions,
+  LanguageModelV4StreamPart,
+} from '@ai-sdk/provider';
+import type { ChatRequest, ChatStreamChunk, Message } from '@cogitator-ai/types';
 import { fromAISDK, AISDKBackend } from '../model-wrapper';
-import type { LanguageModelV1 } from '@ai-sdk/provider';
-import type { ChatRequest } from '@cogitator-ai/types';
+import type {
+  LanguageModelV1,
+  LanguageModelV1CallOptions,
+  LanguageModelV1StreamPart,
+} from '../v1-types';
+import { collectAsync } from './helpers';
 
-function makeMockModel(overrides: Partial<LanguageModelV1> = {}): LanguageModelV1 {
-  return {
-    specificationVersion: 'v1',
-    provider: 'mock-provider',
-    modelId: 'mock-model',
-    defaultObjectGenerationMode: 'json',
-    doGenerate: vi.fn().mockResolvedValue({
-      text: 'mock response',
-      finishReason: 'stop',
-      usage: { promptTokens: 5, completionTokens: 10 },
-      rawCall: { rawPrompt: '', rawSettings: {} },
-    }),
-    doStream: vi.fn().mockResolvedValue({
-      stream: new ReadableStream({
-        start(controller) {
-          controller.enqueue({ type: 'text-delta', textDelta: 'hello' });
-          controller.enqueue({
-            type: 'finish',
-            finishReason: 'stop',
-            usage: { promptTokens: 3, completionTokens: 7 },
-          });
-          controller.close();
-        },
-      }),
-      rawCall: { rawPrompt: '', rawSettings: {} },
-    }),
-    ...overrides,
-  };
+function streamOf<T>(parts: T[]): ReadableStream<T> {
+  return new ReadableStream<T>({
+    start(controller) {
+      for (const part of parts) controller.enqueue(part);
+      controller.close();
+    },
+  });
 }
 
 function req(overrides: Partial<ChatRequest> = {}): ChatRequest {
-  return {
-    model: 'test-model',
-    messages: [{ role: 'user', content: 'test' }],
-    ...overrides,
-  };
+  return { model: 'test-model', messages: [{ role: 'user', content: 'test' }], ...overrides };
 }
 
+function v1Model(overrides: Partial<LanguageModelV1> = {}) {
+  const doGenerate = vi.fn(async (_options: LanguageModelV1CallOptions) => ({
+    text: 'v1 response',
+    finishReason: 'stop' as const,
+    usage: { promptTokens: 5, completionTokens: 10 },
+    rawCall: { rawPrompt: '', rawSettings: {} },
+  }));
+  const doStream = vi.fn(async (_options: LanguageModelV1CallOptions) => ({
+    stream: streamOf<LanguageModelV1StreamPart>([
+      { type: 'text-delta', textDelta: 'hel' },
+      { type: 'text-delta', textDelta: 'lo' },
+      { type: 'finish', finishReason: 'stop', usage: { promptTokens: 3, completionTokens: 7 } },
+    ]),
+    rawCall: { rawPrompt: '', rawSettings: {} },
+  }));
+  const model: LanguageModelV1 = {
+    specificationVersion: 'v1',
+    provider: 'mock.v1',
+    modelId: 'mock-v1',
+    defaultObjectGenerationMode: 'json',
+    doGenerate,
+    doStream,
+    ...overrides,
+  };
+  return { model, doGenerate, doStream };
+}
+
+function v2Model(
+  content: Awaited<ReturnType<LanguageModelV2['doGenerate']>>['content'] = [
+    { type: 'text', text: 'v2 response' },
+  ]
+) {
+  const doGenerate = vi.fn(async (_options: LanguageModelV2CallOptions) => ({
+    content,
+    finishReason: 'stop' as const,
+    usage: {
+      inputTokens: 5,
+      outputTokens: 10,
+      totalTokens: 15,
+      cachedInputTokens: 2,
+      reasoningTokens: 1,
+    },
+    response: { id: 'resp_v2' },
+    warnings: [],
+  }));
+  const doStream = vi.fn(async (_options: LanguageModelV2CallOptions) => ({
+    stream: streamOf<LanguageModelV2StreamPart>([
+      { type: 'stream-start', warnings: [] },
+      { type: 'text-start', id: 't1' },
+      { type: 'text-delta', id: 't1', delta: 'hi' },
+      { type: 'text-end', id: 't1' },
+      { type: 'tool-call', toolCallId: 'tc1', toolName: 'search', input: '{"q":"x"}' },
+      {
+        type: 'tool-call',
+        toolCallId: 'tc2',
+        toolName: 'web_search',
+        input: '{}',
+        providerExecuted: true,
+      },
+      {
+        type: 'finish',
+        finishReason: 'tool-calls',
+        usage: { inputTokens: 3, outputTokens: 7, totalTokens: 10 },
+      },
+    ]),
+  }));
+  const model: LanguageModelV2 = {
+    specificationVersion: 'v2',
+    provider: 'mock.v2',
+    modelId: 'mock-v2',
+    supportedUrls: {},
+    doGenerate,
+    doStream,
+  };
+  return { model, doGenerate, doStream };
+}
+
+const v3Usage = {
+  inputTokens: { total: 5, noCache: 3, cacheRead: 2, cacheWrite: undefined },
+  outputTokens: { total: 10, text: 9, reasoning: 1 },
+};
+
+function v3Model() {
+  const doGenerate = vi.fn(async (_options: LanguageModelV3CallOptions) => ({
+    content: [
+      { type: 'text' as const, text: 'v3 response' },
+      {
+        type: 'tool-call' as const,
+        toolCallId: 'tc1',
+        toolName: 'search',
+        input: '{"q":"x"}',
+        providerMetadata: { google: { thoughtSignature: 'sig-1' } },
+      },
+    ],
+    finishReason: { unified: 'tool-calls' as const, raw: 'TOOL_USE' },
+    usage: v3Usage,
+    warnings: [],
+  }));
+  const doStream = vi.fn(async (_options: LanguageModelV3CallOptions) => ({
+    stream: streamOf<LanguageModelV3StreamPart>([
+      { type: 'text-delta', id: 't1', delta: 'v3' },
+      { type: 'finish', finishReason: { unified: 'stop', raw: 'STOP' }, usage: v3Usage },
+    ]),
+  }));
+  const model: LanguageModelV3 = {
+    specificationVersion: 'v3',
+    provider: 'google.generative-ai',
+    modelId: 'mock-v3',
+    supportedUrls: {},
+    doGenerate,
+    doStream,
+  };
+  return { model, doGenerate, doStream };
+}
+
+function v4Model() {
+  const doGenerate = vi.fn(async (_options: LanguageModelV4CallOptions) => ({
+    content: [{ type: 'text' as const, text: 'v4 response' }],
+    finishReason: { unified: 'length' as const, raw: 'max_tokens' },
+    usage: v3Usage,
+    warnings: [],
+  }));
+  const doStream = vi.fn(async (_options: LanguageModelV4CallOptions) => ({
+    stream: streamOf<LanguageModelV4StreamPart>([
+      { type: 'text-delta', id: 't1', delta: 'v4' },
+      { type: 'error', error: new Error('stream broke') },
+    ]),
+  }));
+  const model: LanguageModelV4 = {
+    specificationVersion: 'v4',
+    provider: 'mock.v4',
+    modelId: 'mock-v4',
+    supportedUrls: {},
+    doGenerate,
+    doStream,
+  };
+  return { model, doGenerate, doStream };
+}
+
+const conversation: Message[] = [
+  { role: 'system', content: 'Be brief' },
+  {
+    role: 'user',
+    content: [
+      { type: 'text', text: 'Look' },
+      { type: 'image_url', image_url: { url: 'https://example.com/cat.png' } },
+      { type: 'image_base64', image_base64: { data: 'aGVsbG8=', media_type: 'image/png' } },
+    ],
+  },
+  {
+    role: 'assistant',
+    content: '',
+    toolCalls: [{ id: 'tc1', name: 'search', arguments: { q: 'cats' }, thoughtSignature: 'sig-1' }],
+  } as Message,
+  { role: 'tool', content: '{"hits":3}', toolCallId: 'tc1', name: 'search' },
+  { role: 'tool', content: 'plain text', toolCallId: 'tc2', name: 'search' },
+];
+
+const searchSchema = {
+  name: 'search',
+  description: 'Search',
+  parameters: { type: 'object' as const, properties: { q: { type: 'string' } }, required: ['q'] },
+};
+
 describe('AISDKBackend', () => {
-  it('derives provider from model', () => {
-    const model = makeMockModel({ provider: 'anthropic' });
-    const backend = new AISDKBackend(model);
-    expect(backend.provider).toBe('anthropic');
+  it('derives the provider from the model', () => {
+    expect(new AISDKBackend(v2Model().model).provider).toBe('mock.v2');
+    expect(fromAISDK(v1Model().model)).toBeInstanceOf(AISDKBackend);
   });
 
-  it('defaults provider to ai-sdk when model has no provider', () => {
-    const model = makeMockModel({ provider: undefined as unknown as string });
-    const backend = new AISDKBackend(model);
-    expect(backend.provider).toBe('ai-sdk');
-  });
+  describe('LanguageModelV1 (ai@4)', () => {
+    it('maps the request to v1 call options', async () => {
+      const { model, doGenerate } = v1Model();
+      const signal = new AbortController().signal;
 
-  describe('chat', () => {
-    it('sends messages and returns response', async () => {
-      const model = makeMockModel();
-      const backend = new AISDKBackend(model);
-
-      const response = await backend.chat(
+      await new AISDKBackend(model).chat(
         req({
-          messages: [{ role: 'user', content: 'Hello' }],
+          messages: conversation,
+          tools: [searchSchema],
+          toolChoice: 'required',
+          temperature: 0.5,
+          maxTokens: 100,
+          topP: 0.9,
+          stop: ['END'],
+          responseFormat: { type: 'json_object' },
+          signal,
         })
       );
 
-      expect(response.content).toBe('mock response');
-      expect(response.finishReason).toBe('stop');
-      expect(response.usage.inputTokens).toBe(5);
-      expect(response.usage.outputTokens).toBe(10);
-      expect(response.usage.totalTokens).toBe(15);
-      expect(response.id).toMatch(/^aisdk-/);
-    });
-
-    it('handles system messages', async () => {
-      const model = makeMockModel();
-      const backend = new AISDKBackend(model);
-
-      await backend.chat(
-        req({
-          messages: [
-            { role: 'system', content: 'Be brief' },
-            { role: 'user', content: 'Hi' },
+      const options = doGenerate.mock.calls[0][0];
+      expect(options).toMatchObject({
+        inputFormat: 'messages',
+        mode: {
+          type: 'regular',
+          tools: [{ type: 'function', name: 'search', parameters: searchSchema.parameters }],
+          toolChoice: { type: 'required' },
+        },
+        temperature: 0.5,
+        maxTokens: 100,
+        topP: 0.9,
+        stopSequences: ['END'],
+        responseFormat: { type: 'json' },
+        abortSignal: signal,
+      });
+      expect(options.prompt).toEqual([
+        { role: 'system', content: 'Be brief' },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Look' },
+            { type: 'image', image: new URL('https://example.com/cat.png') },
+            { type: 'image', image: Uint8Array.from(Buffer.from('hello')), mimeType: 'image/png' },
           ],
-        })
-      );
-
-      const call = (model.doGenerate as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      expect(call.prompt[0]).toEqual({ role: 'system', content: 'Be brief' });
-    });
-
-    it('handles tool messages by converting to user role', async () => {
-      const model = makeMockModel();
-      const backend = new AISDKBackend(model);
-
-      await backend.chat(
-        req({
-          messages: [
-            { role: 'user', content: 'Search for cats' },
-            { role: 'tool', content: 'Found 5 cats', name: 'search' },
+        },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'tool-call', toolCallId: 'tc1', toolName: 'search', args: { q: 'cats' } },
           ],
-        })
-      );
-
-      const call = (model.doGenerate as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      const userMessages = call.prompt.filter((m: { role: string }) => m.role === 'user');
-      expect(userMessages[1].content[0].text).toContain('[Tool result for search]');
-    });
-
-    it('handles multipart content messages', async () => {
-      const model = makeMockModel();
-      const backend = new AISDKBackend(model);
-
-      await backend.chat(
-        req({
-          messages: [
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: 'part1' },
-                { type: 'image_url', image_url: { url: 'http://example.com/img.png' } },
-                { type: 'text', text: 'part2' },
-              ],
-            },
+        },
+        {
+          role: 'tool',
+          content: [
+            { type: 'tool-result', toolCallId: 'tc1', toolName: 'search', result: { hits: 3 } },
+            { type: 'tool-result', toolCallId: 'tc2', toolName: 'search', result: 'plain text' },
           ],
-        })
-      );
-
-      const call = (model.doGenerate as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      expect(call.prompt[0].content[0].text).toBe('part1\npart2');
+        },
+      ]);
     });
 
-    it('passes tools configuration', async () => {
-      const model = makeMockModel();
-      const backend = new AISDKBackend(model);
-
-      await backend.chat(
-        req({
-          messages: [{ role: 'user', content: 'test' }],
-          tools: [
-            {
-              name: 'search',
-              description: 'Search the web',
-              parameters: { type: 'object', properties: { q: { type: 'string' } } },
-            },
-          ],
-        })
-      );
-
-      const call = (model.doGenerate as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      expect(call.mode.type).toBe('regular');
-      expect(call.mode.tools).toHaveLength(1);
-      expect(call.mode.tools[0].name).toBe('search');
-    });
-
-    it('parses tool calls from response', async () => {
-      const model = makeMockModel({
-        doGenerate: vi.fn().mockResolvedValue({
+    it('parses text, tool calls and usage', async () => {
+      const { model } = v1Model({
+        doGenerate: async () => ({
           text: '',
           toolCalls: [
             { toolCallType: 'function', toolCallId: 'tc1', toolName: 'calc', args: '{"x":1}' },
           ],
           finishReason: 'tool-calls',
-          usage: { promptTokens: 5, completionTokens: 10 },
+          usage: { promptTokens: 5, completionTokens: Number.NaN },
           rawCall: { rawPrompt: '', rawSettings: {} },
         }),
       });
 
-      const backend = new AISDKBackend(model);
-      const response = await backend.chat(
+      const response = await new AISDKBackend(model).chat(req());
+
+      expect(response.finishReason).toBe('tool_calls');
+      expect(response.toolCalls).toEqual([{ id: 'tc1', name: 'calc', arguments: { x: 1 } }]);
+      expect(response.usage).toEqual({ inputTokens: 5, outputTokens: 0, totalTokens: 5 });
+    });
+
+    it('streams text and finish chunks', async () => {
+      const chunks = await collectAsync(new AISDKBackend(v1Model().model).chatStream(req()));
+
+      expect(chunks.map((chunk) => chunk.delta.content).filter(Boolean)).toEqual(['hel', 'lo']);
+      expect(chunks.at(-1)).toMatchObject({
+        finishReason: 'stop',
+        usage: { inputTokens: 3, outputTokens: 7, totalTokens: 10 },
+      });
+    });
+
+    it('rejects tool arguments that are not a JSON object', async () => {
+      const { model } = v1Model({
+        doGenerate: async () => ({
+          toolCalls: [
+            { toolCallType: 'function', toolCallId: 'tc1', toolName: 'calc', args: '[1]' },
+          ],
+          finishReason: 'tool-calls',
+          usage: { promptTokens: 1, completionTokens: 1 },
+          rawCall: { rawPrompt: '', rawSettings: {} },
+        }),
+      });
+
+      await expect(new AISDKBackend(model).chat(req())).rejects.toThrow('must be a JSON object');
+    });
+  });
+
+  describe('LanguageModelV2 (ai@5)', () => {
+    it('maps the request to v2 call options', async () => {
+      const { model, doGenerate } = v2Model();
+
+      await new AISDKBackend(model).chat(
         req({
-          messages: [{ role: 'user', content: 'calc' }],
+          messages: conversation,
+          tools: [searchSchema],
+          toolChoice: { type: 'function', function: { name: 'search' } },
+          maxTokens: 50,
+          responseFormat: {
+            type: 'json_schema',
+            jsonSchema: { name: 'out', schema: { type: 'object' } },
+          },
         })
       );
 
-      expect(response.finishReason).toBe('tool_calls');
-      expect(response.toolCalls).toHaveLength(1);
-      expect(response.toolCalls![0].id).toBe('tc1');
-      expect(response.toolCalls![0].name).toBe('calc');
-      expect(response.toolCalls![0].arguments).toEqual({ x: 1 });
+      const options = doGenerate.mock.calls[0][0];
+      expect(options).toMatchObject({
+        maxOutputTokens: 50,
+        tools: [{ type: 'function', name: 'search', inputSchema: searchSchema.parameters }],
+        toolChoice: { type: 'tool', toolName: 'search' },
+        responseFormat: { type: 'json', name: 'out', schema: { type: 'object' } },
+      });
+      expect(options.prompt.slice(1)).toEqual([
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Look' },
+            { type: 'file', data: new URL('https://example.com/cat.png'), mediaType: 'image/*' },
+            { type: 'file', data: 'aGVsbG8=', mediaType: 'image/png' },
+          ],
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'tc1',
+              toolName: 'search',
+              input: { q: 'cats' },
+              providerOptions: { mock: { thoughtSignature: 'sig-1' } },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'tc1',
+              toolName: 'search',
+              output: { type: 'json', value: { hits: 3 } },
+            },
+            {
+              type: 'tool-result',
+              toolCallId: 'tc2',
+              toolName: 'search',
+              output: { type: 'text', value: 'plain text' },
+            },
+          ],
+        },
+      ]);
     });
 
-    it('passes temperature and other params', async () => {
-      const model = makeMockModel();
+    it('parses content, skipping provider-executed tool calls', async () => {
+      const { model } = v2Model([
+        { type: 'text', text: 'Hello ' },
+        { type: 'reasoning', text: 'thinking' },
+        { type: 'text', text: 'world' },
+        { type: 'tool-call', toolCallId: 'tc1', toolName: 'search', input: '' },
+        {
+          type: 'tool-call',
+          toolCallId: 'tc2',
+          toolName: 'web',
+          input: '{}',
+          providerExecuted: true,
+        },
+      ]);
+
+      const response = await new AISDKBackend(model).chat(req());
+
+      expect(response).toEqual({
+        id: 'resp_v2',
+        content: 'Hello world',
+        toolCalls: [{ id: 'tc1', name: 'search', arguments: {} }],
+        finishReason: 'tool_calls',
+        usage: {
+          inputTokens: 5,
+          outputTokens: 10,
+          totalTokens: 15,
+          cachedInputTokens: 2,
+          reasoningTokens: 1,
+        },
+      });
+    });
+
+    it('streams text and client tool calls', async () => {
+      const chunks: ChatStreamChunk[] = await collectAsync(
+        new AISDKBackend(v2Model().model).chatStream(req())
+      );
+
+      expect(chunks.map((chunk) => chunk.delta)).toEqual([
+        { content: 'hi' },
+        { toolCalls: [{ id: 'tc1', name: 'search', arguments: { q: 'x' } }] },
+        {},
+      ]);
+      expect(chunks.at(-1)).toMatchObject({
+        finishReason: 'tool_calls',
+        usage: { inputTokens: 3, outputTokens: 7, totalTokens: 10 },
+      });
+    });
+  });
+
+  describe('LanguageModelV3 (ai@6)', () => {
+    it('parses structured finish reason, usage and thought signatures', async () => {
+      const { model } = v3Model();
+
+      const response = await new AISDKBackend(model).chat(req());
+
+      expect(response.content).toBe('v3 response');
+      expect(response.finishReason).toBe('tool_calls');
+      expect(response.toolCalls).toEqual([
+        { id: 'tc1', name: 'search', arguments: { q: 'x' }, thoughtSignature: 'sig-1' },
+      ]);
+      expect(response.usage).toEqual({
+        inputTokens: 5,
+        outputTokens: 10,
+        totalTokens: 15,
+        cachedInputTokens: 2,
+        reasoningTokens: 1,
+      });
+    });
+
+    it('replays thought signatures under the provider metadata key', async () => {
+      const { model, doGenerate } = v3Model();
       const backend = new AISDKBackend(model);
+      const first = await backend.chat(req());
 
       await backend.chat(
         req({
-          messages: [{ role: 'user', content: 'test' }],
-          temperature: 0.5,
-          maxTokens: 100,
-          topP: 0.9,
-          stop: ['END'],
+          messages: [
+            { role: 'user', content: 'go' },
+            { role: 'assistant', content: '', toolCalls: first.toolCalls } as Message,
+          ],
         })
       );
 
-      const call = (model.doGenerate as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      expect(call.temperature).toBe(0.5);
-      expect(call.maxTokens).toBe(100);
-      expect(call.topP).toBe(0.9);
-      expect(call.stopSequences).toEqual(['END']);
+      expect(doGenerate.mock.calls[1][0].prompt[1]).toEqual({
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'tc1',
+            toolName: 'search',
+            input: { q: 'x' },
+            providerOptions: { google: { thoughtSignature: 'sig-1' } },
+          },
+        ],
+      });
+    });
+
+    it('streams with v3 finish parts', async () => {
+      const chunks = await collectAsync(new AISDKBackend(v3Model().model).chatStream(req()));
+
+      expect(chunks[0].delta.content).toBe('v3');
+      expect(chunks.at(-1)).toMatchObject({ finishReason: 'stop', usage: { totalTokens: 15 } });
     });
   });
 
-  describe('chatStream', () => {
-    it('yields text deltas', async () => {
-      const model = makeMockModel();
-      const backend = new AISDKBackend(model);
+  describe('LanguageModelV4 (ai@7)', () => {
+    it('sends v4 file data and maps the finish reason', async () => {
+      const { model, doGenerate } = v4Model();
 
-      const chunks: unknown[] = [];
-      for await (const chunk of backend.chatStream(
-        req({
-          messages: [{ role: 'user', content: 'stream test' }],
-        })
-      )) {
-        chunks.push(chunk);
-      }
-
-      expect(chunks.length).toBeGreaterThan(0);
-      const textChunk = chunks.find(
-        (c: unknown) => (c as { delta: { content?: string } }).delta?.content !== undefined
+      const response = await new AISDKBackend(model).chat(
+        req({ messages: conversation.slice(0, 2) })
       );
-      expect(textChunk).toBeDefined();
-    });
 
-    it('yields tool call chunks', async () => {
-      const model = makeMockModel({
-        doStream: vi.fn().mockResolvedValue({
-          stream: new ReadableStream({
-            start(controller) {
-              controller.enqueue({
-                type: 'tool-call',
-                toolCallType: 'function',
-                toolCallId: 'tc1',
-                toolName: 'search',
-                args: '{"q":"test"}',
-              });
-              controller.enqueue({
-                type: 'finish',
-                finishReason: 'tool-calls',
-                usage: { promptTokens: 5, completionTokens: 10 },
-              });
-              controller.close();
-            },
-          }),
-          rawCall: { rawPrompt: '', rawSettings: {} },
-        }),
-      });
-
-      const backend = new AISDKBackend(model);
-      const chunks: unknown[] = [];
-      for await (const chunk of backend.chatStream(
-        req({
-          messages: [{ role: 'user', content: 'search' }],
-        })
-      )) {
-        chunks.push(chunk);
-      }
-
-      const toolChunk = chunks.find(
-        (c: unknown) => (c as { delta: { toolCalls?: unknown[] } }).delta?.toolCalls !== undefined
-      );
-      expect(toolChunk).toBeDefined();
-
-      const finishChunk = chunks.find(
-        (c: unknown) => (c as { finishReason?: string }).finishReason === 'tool_calls'
-      );
-      expect(finishChunk).toBeDefined();
-    });
-
-    it('yields finish with usage', async () => {
-      const model = makeMockModel();
-      const backend = new AISDKBackend(model);
-
-      const chunks: unknown[] = [];
-      for await (const chunk of backend.chatStream(
-        req({
-          messages: [{ role: 'user', content: 'test' }],
-        })
-      )) {
-        chunks.push(chunk);
-      }
-
-      const finishChunk = chunks.find(
-        (c: unknown) => (c as { usage?: unknown }).usage !== undefined
-      ) as { usage: { inputTokens: number; outputTokens: number; totalTokens: number } };
-      expect(finishChunk).toBeDefined();
-      expect(finishChunk.usage.inputTokens).toBe(3);
-      expect(finishChunk.usage.outputTokens).toBe(7);
-      expect(finishChunk.usage.totalTokens).toBe(10);
-    });
-  });
-
-  describe('chatStream error handling', () => {
-    it('handles finish with no usage gracefully', async () => {
-      const model = makeMockModel({
-        doStream: vi.fn().mockResolvedValue({
-          stream: new ReadableStream({
-            start(controller) {
-              controller.enqueue({
-                type: 'finish',
-                finishReason: 'length',
-                usage: undefined,
-              });
-              controller.close();
-            },
-          }),
-          rawCall: { rawPrompt: '', rawSettings: {} },
-        }),
-      });
-
-      const backend = new AISDKBackend(model);
-      const chunks: unknown[] = [];
-      for await (const chunk of backend.chatStream(
-        req({
-          messages: [{ role: 'user', content: 'test' }],
-        })
-      )) {
-        chunks.push(chunk);
-      }
-
-      const finishChunk = chunks.find(
-        (c: unknown) => (c as { finishReason?: string }).finishReason === 'length'
-      ) as { usage: { inputTokens: number; outputTokens: number } };
-      expect(finishChunk).toBeDefined();
-      expect(finishChunk.usage.inputTokens).toBe(0);
-      expect(finishChunk.usage.outputTokens).toBe(0);
-    });
-  });
-
-  describe('finish reason mapping', () => {
-    it('maps error finish reason', async () => {
-      const model = makeMockModel({
-        doGenerate: vi.fn().mockResolvedValue({
-          text: '',
-          finishReason: 'error',
-          usage: { promptTokens: 0, completionTokens: 0 },
-          rawCall: { rawPrompt: '', rawSettings: {} },
-        }),
-      });
-
-      const backend = new AISDKBackend(model);
-      const response = await backend.chat(
-        req({
-          messages: [{ role: 'user', content: 'test' }],
-        })
-      );
-      expect(response.finishReason).toBe('error');
-    });
-
-    it('maps length finish reason', async () => {
-      const model = makeMockModel({
-        doGenerate: vi.fn().mockResolvedValue({
-          text: 'truncated',
-          finishReason: 'length',
-          usage: { promptTokens: 100, completionTokens: 4096 },
-          rawCall: { rawPrompt: '', rawSettings: {} },
-        }),
-      });
-
-      const backend = new AISDKBackend(model);
-      const response = await backend.chat(
-        req({
-          messages: [{ role: 'user', content: 'test' }],
-        })
-      );
       expect(response.finishReason).toBe('length');
-    });
-
-    it('maps unknown finish reason to stop', async () => {
-      const model = makeMockModel({
-        doGenerate: vi.fn().mockResolvedValue({
-          text: '',
-          finishReason: 'content-filter',
-          usage: { promptTokens: 0, completionTokens: 0 },
-          rawCall: { rawPrompt: '', rawSettings: {} },
-        }),
+      expect(response.content).toBe('v4 response');
+      expect(doGenerate.mock.calls[0][0].prompt[1]).toEqual({
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Look' },
+          {
+            type: 'file',
+            data: { type: 'url', url: new URL('https://example.com/cat.png') },
+            mediaType: 'image/*',
+          },
+          { type: 'file', data: { type: 'data', data: 'aGVsbG8=' }, mediaType: 'image/png' },
+        ],
       });
-
-      const backend = new AISDKBackend(model);
-      const response = await backend.chat(
-        req({
-          messages: [{ role: 'user', content: 'test' }],
-        })
-      );
-      expect(response.finishReason).toBe('stop');
     });
-  });
-});
 
-describe('fromAISDK', () => {
-  it('returns an AISDKBackend instance', () => {
-    const model = makeMockModel();
-    const backend = fromAISDK(model);
-    expect(backend).toBeInstanceOf(AISDKBackend);
+    it('throws stream error parts', async () => {
+      const chunks: ChatStreamChunk[] = [];
+      await expect(async () => {
+        for await (const chunk of new AISDKBackend(v4Model().model).chatStream(req())) {
+          chunks.push(chunk);
+        }
+      }).rejects.toThrow('stream broke');
+      expect(chunks).toEqual([{ id: expect.any(String), delta: { content: 'v4' } }]);
+    });
   });
 });

@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "..",
+    "paths": { "ai": ["../node_modules/ai-v5/dist/index.d.ts"] }
+  },
+  "include": [],
+  "files": ["./ai-v5.ts"]
+}

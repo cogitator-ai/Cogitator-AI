@@ -1,7 +1,7 @@
 import { createCogitator, DEFAULT_MODEL, header, section } from '../_shared/setup.js';
 import { Agent, tool } from '@cogitator-ai/core';
-import { cogitatorModel, fromAISDK, toAISDKTool, fromAISDKTool } from '@cogitator-ai/ai-sdk';
-import { generateText } from 'ai';
+import { cogitatorModel, fromAISDK, fromAISDKTool, toAISDKTool } from '@cogitator-ai/ai-sdk';
+import { generateText, streamText, tool as aiTool } from 'ai';
 import { z } from 'zod';
 
 const calculator = tool({
@@ -37,39 +37,66 @@ async function main() {
     prompt: 'What is the capital of France?',
   });
 
+  console.log('Model spec:', model.specificationVersion);
   console.log('Result:', text);
-  console.log('Tokens:', usage);
+  console.log('Tokens:', { input: usage.inputTokens, output: usage.outputTokens });
 
-  section('2. Tool conversion: Cogitator -> AI SDK');
+  section('2. Agent with tools (streamText)');
 
-  const aiTool = toAISDKTool(calculator);
-  console.log('AI SDK tool description:', aiTool.description);
-  console.log('Has execute:', typeof aiTool.execute === 'function');
+  const mathAgent = new Agent({
+    name: 'math',
+    model: DEFAULT_MODEL,
+    instructions: 'Use the calculator tool for arithmetic, then answer in one sentence.',
+    tools: [calculator],
+    temperature: 0,
+  });
 
-  section('3. Tool conversion: AI SDK -> Cogitator');
+  const stream = streamText({
+    model: cogitatorModel(cog, mathAgent),
+    prompt: 'What is 1234 * 5678?',
+  });
 
-  const aiStyleTool = {
-    name: 'greet',
+  process.stdout.write('Streamed: ');
+  for await (const chunk of stream.textStream) {
+    process.stdout.write(chunk);
+  }
+  process.stdout.write('\n');
+  for (const call of await stream.toolCalls) {
+    console.log(`Agent called ${call.toolName}(${JSON.stringify(call.input)})`);
+  }
+
+  section('3. Tool conversion: Cogitator -> AI SDK');
+
+  const aiCalculator = toAISDKTool(calculator);
+  console.log('AI SDK tool description:', aiCalculator.description);
+
+  const calculation = await aiCalculator.execute(
+    { expression: '6 * 7' },
+    { toolCallId: 'demo', messages: [] }
+  );
+  console.log('AI SDK tool result:', calculation);
+
+  section('4. Tool conversion: AI SDK -> Cogitator');
+
+  const greet = aiTool({
     description: 'Generate a greeting',
-    parameters: z.object({
-      name: z.string(),
-    }),
-    execute: async (params: { name: string }) => {
-      return `Hello, ${params.name}!`;
-    },
-  };
+    inputSchema: z.object({ name: z.string() }),
+    execute: async ({ name }) => `Hello, ${name}!`,
+  });
 
-  const cogTool = fromAISDKTool(aiStyleTool, 'greet');
+  const cogTool = fromAISDKTool(greet, 'greet');
   console.log('Cogitator tool name:', cogTool.name);
-  console.log('Cogitator tool description:', cogTool.description);
+  console.log('Cogitator tool schema:', JSON.stringify(cogTool.toJSON().parameters));
 
-  section('4. fromAISDK — wrap AI SDK model for Cogitator');
+  section('5. fromAISDK — wrap AI SDK model for Cogitator');
 
   const wrappedBackend = fromAISDK(model);
+  const response = await wrappedBackend.chat({
+    model: 'chat',
+    messages: [{ role: 'user', content: 'Name one primary color.' }],
+  });
   console.log('Backend provider:', wrappedBackend.provider);
-  console.log(
-    '(Use this backend with new Agent({ backend: wrappedBackend }) for nested providers)'
-  );
+  console.log('Backend response:', response.content);
 
   await cog.close();
   console.log('\nDone.');

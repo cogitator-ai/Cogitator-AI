@@ -24,20 +24,22 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
-    "@ai-sdk/provider": "^1.0.0"
+    "@ai-sdk/provider": "^4.0.21"
   },
   "peerDependencies": {
     "@cogitator-ai/core": "workspace:>=0.20.0",
     "@cogitator-ai/types": "workspace:>=0.23.0",
-    "ai": ">=4.0.0"
+    "ai": "^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0"
   },
   "devDependencies": {
-    "@ai-sdk/openai": "^1.0.0",
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "ai": "^4.0.0",
+    "ai": "^7.0.127",
+    "ai-v4": "npm:ai@^4.3.19",
+    "ai-v5": "npm:ai@^5.0.271",
+    "ai-v6": "npm:ai@^6.0.300",
     "typescript": "^6.0.3",
-    "zod": "^3.23.8"
+    "zod": "^4.3.6"
   },
   "repository": {
     "type": "git",

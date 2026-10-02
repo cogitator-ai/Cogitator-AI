@@ -1,24 +1,45 @@
 ---
 title: Vercel AI SDK
-description: Bidirectional bridge between Cogitator and the Vercel AI SDK -- use Cogitator agents as AI SDK providers or use AI SDK models inside Cogitator.
+description: Bidirectional bridge between Cogitator and the Vercel AI SDK 4, 5, 6 and 7 -- use Cogitator agents as AI SDK models or use AI SDK models inside Cogitator.
 ---
 
 ## Overview
 
 The `@cogitator-ai/ai-sdk` package connects the two ecosystems in both directions:
 
-- **Cogitator as provider** -- expose Cogitator agents as `LanguageModelV1` instances, so you can use them with `generateText`, `streamText`, and other AI SDK functions.
-- **AI SDK as backend** -- wrap any AI SDK model as a Cogitator `LLMBackend`, so your agents can run on AI SDK providers like Google, Mistral, or Cohere.
+- **Cogitator as model** -- expose Cogitator agents as AI SDK language models, so you can use them with `generateText`, `streamText` and structured output.
+- **AI SDK as backend** -- wrap any AI SDK model as a Cogitator `LLMBackend`.
+- **Tools** -- convert tools in both directions.
 
 ```bash
-pnpm add @cogitator-ai/ai-sdk @cogitator-ai/core ai @ai-sdk/provider
+pnpm add @cogitator-ai/ai-sdk @cogitator-ai/core ai
 ```
 
-## Cogitator as AI SDK Provider
+## Supported AI SDK Versions
+
+`ai` is a peer dependency: `^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0`.
+
+| AI SDK | Accepted model specs | Default `cogitatorModel()` spec | `fromAISDK()` input |
+| ------ | -------------------- | ------------------------------- | ------------------- |
+| `ai@4` | `v1`                 | `v1`                            | `LanguageModelV1`   |
+| `ai@5` | `v2`                 | `v2`                            | `LanguageModelV2`   |
+| `ai@6` | `v2`, `v3`           | `v3`                            | `LanguageModelV3`   |
+| `ai@7` | `v2`, `v3`, `v4`     | `v4`                            | `LanguageModelV4`   |
+
+### Specification Auto-Detection
+
+Without a `specificationVersion` option, the model spec follows the installed `ai` package:
+
+- **At runtime** `ai/package.json` is resolved from `process.cwd()`, then from `@cogitator-ai/ai-sdk` itself (ESM-only installs that hide `package.json` behind `exports` are handled). The result is cached. If `ai` cannot be resolved, `'v2'` is used -- ai@5, ai@6 and ai@7 accept it.
+- **In TypeScript** the default return type is derived from the installed `ai` package's `LanguageModel` type with the same mapping, so code written for any major type-checks unchanged.
+
+Pass `specificationVersion: 'v1' | 'v2' | 'v3' | 'v4'` to override it, e.g. when several `ai` majors are installed. AI SDK 6 and 7 accept `v2` models only in a compatibility mode that logs a warning on every call, which the detected `v3` / `v4` defaults avoid.
+
+## Cogitator as AI SDK Model
 
 ### cogitatorModel
 
-The simplest way to use a Cogitator agent inside the AI SDK. Pass a `Cogitator` instance, an `Agent`, and get back a `LanguageModelV1`:
+Pass a `Cogitator` instance and an `Agent` to get an AI SDK language model:
 
 ```typescript
 import { generateText, streamText } from 'ai';
@@ -39,19 +60,49 @@ const agent = new Agent({
   tools: [webSearch, readUrl],
 });
 
-const model = cogitatorModel(cog, agent, { temperature: 0.7 });
-
 const { text } = await generateText({
-  model,
+  model: cogitatorModel(cog, agent, { temperature: 0.7 }),
   prompt: 'What are the latest advances in quantum computing?',
+});
+
+const result = streamText({
+  model: cogitatorModel(cog, agent, { specificationVersion: 'v2' }),
+  prompt: 'Summarize them in three bullet points',
+});
+
+for await (const chunk of result.textStream) {
+  process.stdout.write(chunk);
+}
+```
+
+The first model uses the auto-detected spec; the second overrides it. On **ai@4** the default is a `LanguageModelV1`.
+
+### How an Agent Behaves as a Model
+
+- One model call runs the whole agent loop, including the agent's own tool calls, and finishes with `finishReason: 'stop'`.
+- The agent's tool calls are reported as **provider-executed** tool calls with results, so the AI SDK never runs them a second time:
+  - `v3` / `v4` models always report them in `toolCalls` / `toolResults` and as `tool-call` / `tool-result` stream parts.
+  - `v2` models report them only for tools that you also pass in `tools`, because ai@5 cannot handle provider-executed calls of undeclared tools.
+  - All models list them in `providerMetadata.cogitator.toolCalls` next to `runId`, `threadId`, `agentId`, `model`, `cost` and `duration`.
+- The text of user and assistant messages becomes the agent input; multi-turn prompts are sent as a `User:` / `Assistant:` transcript. System messages, images and files are not forwarded (the agent `instructions` are the system prompt) and produce a warning.
+- `temperature`, `topP`, `maxOutputTokens` (`maxTokens` on ai@4) and `stopSequences` override the agent configuration for that call. `abortSignal` and cancelling a stream abort the run.
+- Structured output (`Output.object`, `generateObject`, ai@4 object modes) switches the agent to JSON mode and adds the JSON schema to the input.
+- AI SDK `tools` that the agent does not own cannot be called by the agent and produce a warning.
+
+```typescript
+import { Output, generateText } from 'ai';
+import { z } from 'zod';
+
+const { output } = await generateText({
+  model: cogitatorModel(cog, agent),
+  output: Output.object({ schema: z.object({ title: z.string(), year: z.number() }) }),
+  prompt: 'Name a landmark quantum computing paper',
 });
 ```
 
-The model supports both `doGenerate` (full response) and `doStream` (streaming), so it works with all AI SDK functions.
-
 ### createCogitatorProvider
 
-When you have multiple agents, use `createCogitatorProvider` to create a provider function that resolves agents by name:
+When you have multiple agents, `createCogitatorProvider` resolves them by name:
 
 ```typescript
 import { generateText } from 'ai';
@@ -59,6 +110,7 @@ import { createCogitatorProvider } from '@cogitator-ai/ai-sdk';
 
 const provider = createCogitatorProvider(cog, {
   agents: [researcher, summarizer],
+  specificationVersion: 'v2',
 });
 
 const { text } = await generateText({
@@ -67,58 +119,54 @@ const { text } = await generateText({
 });
 
 const { text: summary } = await generateText({
-  model: provider('summarizer'),
+  model: provider.languageModel('summarizer', { maxTokens: 2048 }),
   prompt: text,
 });
 ```
 
-The provider also exposes a `.languageModel()` method for explicit usage:
+### Options
 
-```typescript
-const model = provider.languageModel('researcher', { maxTokens: 2048 });
-```
-
-### CogitatorProviderOptions
-
-| Option        | Type     | Description                      |
-| ------------- | -------- | -------------------------------- |
-| `temperature` | `number` | Override the agent's temperature |
-| `maxTokens`   | `number` | Override the agent's max tokens  |
-| `topP`        | `number` | Override top-p sampling          |
+| Option                 | Type                           | Description                                                                                                                            |
+| ---------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `temperature`          | `number`                       | Default temperature for the agent                                                                                                      |
+| `maxTokens`            | `number`                       | Default max output tokens                                                                                                              |
+| `topP`                 | `number`                       | Default top-p sampling                                                                                                                 |
+| `specificationVersion` | `'v1' \| 'v2' \| 'v3' \| 'v4'` | Model spec to implement (`cogitatorModel` and `createCogitatorProvider` config), detected from the installed `ai` package when omitted |
 
 ## AI SDK Models in Cogitator
 
 ### fromAISDK
 
-Wrap any AI SDK `LanguageModelV1` as a Cogitator `LLMBackend`. This lets you use providers that Cogitator doesn't natively support -- Google Gemini, Mistral, Cohere, or any custom provider.
+Wrap any AI SDK language model -- `LanguageModelV1` (ai@4 providers) through `LanguageModelV4` (ai@7 providers) -- as a Cogitator `LLMBackend`:
 
 ```typescript
 import { google } from '@ai-sdk/google';
-import { Cogitator, Agent } from '@cogitator-ai/core';
 import { fromAISDK } from '@cogitator-ai/ai-sdk';
 
-const geminiBackend = fromAISDK(google('gemini-3.5-flash-lite'));
+const backend = fromAISDK(google('gemini-3.5-flash-lite'));
 
-const cog = new Cogitator();
-
-const agent = new Agent({
-  name: 'gemini-agent',
-  instructions: 'You are a creative writing assistant.',
-  backend: geminiBackend,
+const response = await backend.chat({
+  model: 'gemini-3.5-flash-lite',
+  messages: [
+    { role: 'system', content: 'You are a creative writing assistant.' },
+    { role: 'user', content: 'Write a haiku about TypeScript' },
+  ],
 });
 
-const result = await cog.run(agent, { input: 'Write a haiku about TypeScript' });
+for await (const chunk of backend.chatStream({
+  model: 'gemini-3.5-flash-lite',
+  messages: [{ role: 'user', content: 'Tell me a story' }],
+})) {
+  process.stdout.write(chunk.delta.content ?? '');
+}
 ```
 
-The `AISDKBackend` class implements both `chat()` and `chatStream()`, so streaming works out of the box:
+The backend branches on the model's `specificationVersion` and converts:
 
-```typescript
-const result = await cog.run(agent, {
-  input: 'Tell me a story',
-  stream: true,
-  onToken: (token) => process.stdout.write(token),
-});
-```
+- messages -- text, images (URL or base64), assistant tool calls and tool results as structured prompt parts
+- `tools`, `toolChoice`, `responseFormat`, `temperature`, `topP`, `maxTokens`, `stop` and the abort signal
+- responses -- text, client tool calls (provider-executed calls are skipped), finish reasons and usage including cached and reasoning tokens
+- Gemini thought signatures on tool calls, which are replayed on the next turn
 
 ## Tool Conversion
 
@@ -127,18 +175,25 @@ Tools can be converted between the two systems, so you never need to rewrite too
 ### Cogitator to AI SDK
 
 ```typescript
+import { generateText, stepCountIs } from 'ai';
+import { openai } from '@ai-sdk/openai';
 import { toAISDKTool, convertToolsToAISDK } from '@cogitator-ai/ai-sdk';
 
-const aiTool = toAISDKTool(cogitatorCalculator);
+const aiTool = toAISDKTool(calculator);
 
-const allTools = convertToolsToAISDK([calculator, webSearch, fileReader]);
-
-const { text, toolCalls } = await generateText({
-  model: provider('assistant'),
+const { text } = await generateText({
+  model: openai('gpt-6.1-sol'),
+  tools: convertToolsToAISDK([calculator, webSearch]),
+  stopWhen: stepCountIs(5),
   prompt: 'What is 42 * 17?',
-  tools: allTools,
 });
 ```
+
+Converted tools work with the `tools` option of every AI SDK major:
+
+- `inputSchema` (ai@5 – ai@7) is the Cogitator tool's zod schema.
+- `parameters` (ai@4) is an AI SDK `Schema` with draft-07 JSON Schema and validation.
+- `execute(input, options)` builds a Cogitator `ToolContext`: `toolCallId` becomes `runId`, `abortSignal` becomes `signal`, and the string fields `agentId`, `runId`, `threadId`, `userId`, `channelType` and `channelId` of the AI SDK tool context (`context` on ai@7, `experimental_context` on ai@5 / ai@6) are copied.
 
 ### AI SDK to Cogitator
 
@@ -149,7 +204,7 @@ import { fromAISDKTool, convertToolsFromAISDK } from '@cogitator-ai/ai-sdk';
 
 const weatherTool = tool({
   description: 'Get current weather for a location',
-  parameters: z.object({
+  inputSchema: z.object({
     location: z.string().describe('City name'),
     unit: z.enum(['celsius', 'fahrenheit']).optional(),
   }),
@@ -168,29 +223,20 @@ const agent = new Agent({
 });
 ```
 
+`fromAISDKTool` reads `inputSchema` (ai@5+) or `parameters` (ai@4) and accepts zod 4 schemas, Standard JSON Schemas, `jsonSchema()` / `zodSchema()` from any AI SDK major and plain JSON Schema objects. Non-zod schemas are converted to JSON Schema and validated before `execute` runs. It resolves ai@7 dynamic descriptions, returns the last value of streaming (`async function*`) tools, and passes the Cogitator context as `context` / `experimental_context`. Wrap zod 3 schemas with `zodSchema()` from `ai`.
+
 Convert multiple tools at once with `convertToolsFromAISDK`:
 
 ```typescript
-import { convertToolsFromAISDK } from '@cogitator-ai/ai-sdk';
-
-const aiTools = { weather: weatherTool, search: searchTool, calc: calcTool };
-const cogTools = convertToolsFromAISDK(aiTools);
-
-const agent = new Agent({
-  name: 'multi-tool',
-  model: 'openai/gpt-6.1-sol',
-  tools: cogTools,
-});
+const cogTools = convertToolsFromAISDK({ weather: weatherTool, search: searchTool });
 ```
 
-## Full Example: AI SDK + Cogitator in Next.js
-
-Combining both packages for a Next.js app that uses Cogitator agents through the AI SDK's `streamText`:
+## Full Example: Next.js Route with AI SDK 7
 
 ```typescript title="app/api/chat/route.ts"
-import { streamText } from 'ai';
+import { convertToModelMessages, streamText, type UIMessage } from 'ai';
 import { Cogitator, Agent, tool } from '@cogitator-ai/core';
-import { cogitatorModel, convertToolsToAISDK } from '@cogitator-ai/ai-sdk';
+import { cogitatorModel } from '@cogitator-ai/ai-sdk';
 import { z } from 'zod';
 
 const cog = new Cogitator({
@@ -206,10 +252,10 @@ const agent = new Agent({
   instructions: 'You are a helpful coding assistant.',
   tools: [
     tool({
-      name: 'run_code',
-      description: 'Execute a JavaScript expression',
-      parameters: z.object({ code: z.string() }),
-      execute: async ({ code }) => eval(code),
+      name: 'lookup_docs',
+      description: 'Look up a documentation page',
+      parameters: z.object({ topic: z.string() }),
+      execute: async ({ topic }) => ({ url: `https://docs.example.com/${topic}` }),
     }),
   ],
 });
@@ -217,14 +263,15 @@ const agent = new Agent({
 const model = cogitatorModel(cog, agent);
 
 export async function POST(req: Request) {
-  const { messages } = await req.json();
+  const { messages }: { messages: UIMessage[] } = await req.json();
 
   const result = streamText({
     model,
-    messages,
-    tools: convertToolsToAISDK(agent.tools),
+    messages: await convertToModelMessages(messages),
   });
 
-  return result.toDataStreamResponse();
+  return result.toUIMessageStreamResponse();
 }
 ```
+
+The agent executes `lookup_docs` itself; the UI stream shows the call and its result as provider-executed tool parts.
