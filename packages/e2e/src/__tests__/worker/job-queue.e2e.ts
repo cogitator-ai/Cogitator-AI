@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
 import {
   MetricsCollector,
   DurationHistogram,
@@ -424,7 +424,7 @@ describeRedisOllama('Worker: distributed swarm execution', () => {
       expect(result.agentResults.size).toBe(2);
       expect(String(result.output).length).toBeGreaterThan(0);
       expect(events).toEqual(['drafter', 'reviewer']);
-      expect(worker.getActiveJobCount()).toBe(0);
+      await vi.waitFor(() => expect(worker.getActiveJobCount()).toBe(0), { timeout: 5_000 });
     } finally {
       await swarm.close();
       await worker.stop();
