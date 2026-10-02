@@ -360,4 +360,24 @@ describe('streamChat', () => {
       { id: 'tc_1', name: 'lookup', arguments: { q: 'x' }, thoughtSignature: 'sig' },
     ]);
   });
+
+  it('preserves provider replay state on streamed tool calls', async () => {
+    const replay = {
+      itemId: 'fc_1',
+      precedingItems: [{ type: 'reasoning', id: 'rs_1', summary: [], encrypted_content: 'enc' }],
+    };
+    const backend = createMockBackend([
+      {
+        id: 'chunk_1',
+        delta: { toolCalls: [{ id: 'call_1', name: 'lookup', arguments: { q: 'x' }, replay }] },
+        finishReason: 'tool_calls',
+      },
+    ]);
+
+    const result = await streamChat(backend, 'model', messages, registry, agent, onToken);
+
+    expect(result.toolCalls).toEqual([
+      { id: 'call_1', name: 'lookup', arguments: { q: 'x' }, replay },
+    ]);
+  });
 });

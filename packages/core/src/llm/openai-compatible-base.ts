@@ -315,31 +315,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
   }
 
   protected tryParseJson(str: string, ctx: LLMErrorContext): Record<string, unknown> {
-    if (!str.trim()) {
-      return {};
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(str);
-    } catch (e) {
-      throw new LLMError(
-        `Failed to parse tool call arguments: ${str.slice(0, 100)}`,
-        ErrorCode.LLM_INVALID_RESPONSE,
-        ctx,
-        { cause: e instanceof Error ? e : undefined }
-      );
-    }
-    if (parsed === null) {
-      return {};
-    }
-    if (typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new LLMError(
-        `Tool call arguments must be a JSON object: ${str.slice(0, 100)}`,
-        ErrorCode.LLM_INVALID_RESPONSE,
-        ctx
-      );
-    }
-    return parsed as Record<string, unknown>;
+    return parseToolCallArguments(str, ctx);
   }
 
   protected wrapAPIError(error: unknown, ctx: LLMErrorContext): LLMError {
@@ -383,4 +359,36 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
       function: { name: choice.function.name },
     };
   }
+}
+
+/**
+ * Parse the JSON arguments string of an OpenAI-style function call into an object.
+ * Empty strings and `null` become `{}`; anything that is not a JSON object is rejected.
+ */
+export function parseToolCallArguments(str: string, ctx: LLMErrorContext): Record<string, unknown> {
+  if (!str.trim()) {
+    return {};
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(str);
+  } catch (e) {
+    throw new LLMError(
+      `Failed to parse tool call arguments: ${str.slice(0, 100)}`,
+      ErrorCode.LLM_INVALID_RESPONSE,
+      ctx,
+      { cause: e instanceof Error ? e : undefined }
+    );
+  }
+  if (parsed === null) {
+    return {};
+  }
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new LLMError(
+      `Tool call arguments must be a JSON object: ${str.slice(0, 100)}`,
+      ErrorCode.LLM_INVALID_RESPONSE,
+      ctx
+    );
+  }
+  return parsed as Record<string, unknown>;
 }

@@ -71,6 +71,19 @@ describe('CogitatorConfigSchema', () => {
     expect(result.limits?.maxConcurrentRuns).toBe(10);
   });
 
+  it('keeps the OpenAI wire api option and rejects unknown values', () => {
+    const parsed = CogitatorConfigSchema.parse({
+      llm: { providers: { openai: { apiKey: 'sk-xxx', api: 'chat-completions' } } },
+    });
+    expect(parsed.llm?.providers?.openai?.api).toBe('chat-completions');
+
+    expect(() =>
+      CogitatorConfigSchema.parse({
+        llm: { providers: { openai: { apiKey: 'sk-xxx', api: 'assistants' } } },
+      })
+    ).toThrow();
+  });
+
   it('accepts partial config', () => {
     const config = {
       llm: {

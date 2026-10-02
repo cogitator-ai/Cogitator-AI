@@ -64,6 +64,9 @@ export async function streamChat(
             if (partial.thoughtSignature) {
               existing.thoughtSignature = partial.thoughtSignature;
             }
+            if (partial.replay) {
+              existing.replay = partial.replay;
+            }
           } else {
             const toolCall: ToolCall = {
               id: partial.id,
@@ -72,6 +75,9 @@ export async function streamChat(
             };
             if (partial.thoughtSignature) {
               toolCall.thoughtSignature = partial.thoughtSignature;
+            }
+            if (partial.replay) {
+              toolCall.replay = partial.replay;
             }
             toolCalls.push(toolCall);
           }

@@ -39,11 +39,11 @@ vi.mock('openai', () => {
   };
 });
 
-describe('OpenAIBackend', () => {
+describe('OpenAIBackend (Chat Completions wire API)', () => {
   let backend: OpenAIBackend;
 
   beforeEach(() => {
-    backend = new OpenAIBackend({ apiKey: 'test-api-key' });
+    backend = new OpenAIBackend({ apiKey: 'test-api-key', api: 'chat-completions' });
     mockCreate.mockReset();
   });
 

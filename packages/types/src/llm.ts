@@ -65,11 +65,17 @@ export interface ChatResponse {
   content: string;
   toolCalls?: ToolCall[];
   finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-  };
+  usage: ChatUsage;
+}
+
+export interface ChatUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  /** Input tokens served from the provider prompt cache; already counted in `inputTokens`. */
+  cachedInputTokens?: number;
+  /** Hidden reasoning tokens; already counted in `outputTokens`. */
+  reasoningTokens?: number;
 }
 
 export interface ChatStreamChunk {
@@ -80,11 +86,7 @@ export interface ChatStreamChunk {
   };
   finishReason?: 'stop' | 'tool_calls' | 'length' | 'error';
   /** Usage data, typically included only in the final chunk */
-  usage?: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-  };
+  usage?: ChatUsage;
 }
 
 export interface LLMBackend {
@@ -106,7 +108,14 @@ export interface OllamaProviderConfig {
 export interface OpenAIProviderConfig {
   apiKey: string;
   baseUrl?: string;
+  /**
+   * Wire API used for the official OpenAI provider. Defaults to `'responses'` for api.openai.com
+   * and to `'chat-completions'` when `baseUrl` points at another OpenAI-compatible server.
+   */
+  api?: OpenAIWireApi;
 }
+
+export type OpenAIWireApi = 'responses' | 'chat-completions';
 
 export interface AnthropicProviderConfig {
   apiKey: string;

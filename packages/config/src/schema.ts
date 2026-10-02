@@ -25,7 +25,13 @@ export const ProvidersConfigSchema = z.object({
       ...(apiKey ? { apiKey } : {}),
     }))
     .optional(),
-  openai: z.object({ apiKey: z.string(), baseUrl: z.string().optional() }).optional(),
+  openai: z
+    .object({
+      apiKey: z.string(),
+      baseUrl: z.string().optional(),
+      api: z.enum(['responses', 'chat-completions']).optional(),
+    })
+    .optional(),
   anthropic: z.object({ apiKey: z.string() }).optional(),
   google: z.object({ apiKey: z.string() }).optional(),
   azure: z

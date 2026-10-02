@@ -6,6 +6,7 @@ export { BaseLLMBackend } from './base';
 export { OpenAICompatibleBackend } from './openai-compatible-base';
 export { OllamaBackend } from './ollama';
 export { OpenAIBackend } from './openai';
+export { DEFAULT_OPENAI_MODEL, isOpenAIReasoningModel } from './openai-responses';
 export { AnthropicBackend } from './anthropic';
 export { GoogleBackend } from './google';
 export { AzureOpenAIBackend } from './azure';
@@ -84,6 +85,7 @@ export function createLLMBackend(
       return new OpenAIBackend({
         apiKey: providers.openai.apiKey,
         baseUrl: providers.openai.baseUrl,
+        api: providers.openai.api,
       });
 
     case 'anthropic':

@@ -176,6 +176,8 @@ export {
   OpenAICompatibleBackend,
   OllamaBackend,
   OpenAIBackend,
+  DEFAULT_OPENAI_MODEL,
+  isOpenAIReasoningModel,
   AnthropicBackend,
   GoogleBackend,
   AzureOpenAIBackend,

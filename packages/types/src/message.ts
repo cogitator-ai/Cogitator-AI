@@ -58,6 +58,27 @@ export interface ToolCall {
    * Must be sent back unchanged with the call in follow-up requests (Gemini thought signatures).
    */
   thoughtSignature?: string;
+  /**
+   * Opaque provider state needed to replay this call unchanged in follow-up requests
+   * (OpenAI Responses reasoning items). JSON-serializable so it survives memory persistence;
+   * backends that did not produce it ignore it.
+   */
+  replay?: ToolCallReplayState;
+}
+
+/**
+ * Provider output that has to travel with a tool call so stateless reasoning models can
+ * continue their chain of thought on the next turn.
+ */
+export interface ToolCallReplayState {
+  /** Provider id of the output item that carried the call (e.g. OpenAI Responses `fc_...`). */
+  itemId?: string;
+  /**
+   * Output items the provider emitted right before the call, in order — e.g. OpenAI Responses
+   * `reasoning` items with `encrypted_content` and preamble `message` items. They are sent back
+   * verbatim immediately ahead of the call.
+   */
+  precedingItems?: Record<string, unknown>[];
 }
 
 export interface ToolResult {
