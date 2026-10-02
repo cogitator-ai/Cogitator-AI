@@ -29,17 +29,17 @@
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/swarms": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "bullmq": "^5.69.3",
+    "bullmq": "^6.3.11",
     "nanoid": "^5.0.9",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "ioredis": "5.9.2",
+    "ioredis": "^6.0.0",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3"
   },
   "peerDependencies": {
-    "ioredis": "^5.0.0"
+    "ioredis": "^5.0.0 || ^6.0.0"
   },
   "repository": {
     "type": "git",

@@ -33,22 +33,22 @@
   },
   "optionalDependencies": {
     "@qdrant/js-client-rest": "^1.13.0",
-    "better-sqlite3": "^11.6.0",
-    "ioredis": "^5.9.3",
-    "mongodb": "^6.16.0",
+    "better-sqlite3": "^13.0.3",
+    "ioredis": "^6.0.0",
+    "mongodb": "^7.7.0",
     "pg": "^8.18.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.20.5",
     "@types/pg": "^8.10.9",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3"
   },
   "peerDependencies": {
-    "better-sqlite3": "^11.0.0",
-    "ioredis": "^5.0.0",
-    "mongodb": "^6.0.0",
+    "better-sqlite3": "^11.0.0 || ^12.0.0 || ^13.0.0",
+    "ioredis": "^5.0.0 || ^6.0.0",
+    "mongodb": "^6.0.0 || ^7.0.0",
     "pg": "^8.0.0"
   },
   "peerDependenciesMeta": {
