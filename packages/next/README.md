@@ -8,6 +8,8 @@ Next.js App Router integration for Cogitator AI runtime. Provides streaming chat
 pnpm add @cogitator-ai/next @cogitator-ai/core
 ```
 
+Works with Next.js 14, 15 and 16 and React 18 and 19.
+
 ## Quick Start
 
 ### 1. Create API Route
