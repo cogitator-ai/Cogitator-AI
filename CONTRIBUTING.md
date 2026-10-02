@@ -55,7 +55,7 @@ cogitator/
 │   ├── sandbox/        # Code execution sandbox (@cogitator-ai/sandbox)
 │   ├── wasm-tools/     # WASM plugin system (@cogitator-ai/wasm-tools)
 │   ├── worker/         # Background job worker (@cogitator-ai/worker)
-│   └── dashboard/      # Web dashboard & API (@cogitator-ai/dashboard)
+│   └── dashboard/      # Website: landing, docs, cookbook (@cogitator-ai/dashboard)
 ├── docs/               # Documentation
 └── scripts/            # Build and utility scripts
 ```

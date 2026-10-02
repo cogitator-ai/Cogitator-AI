@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Github, Cpu, Construction, Rocket } from 'lucide-react';
+import { Cpu, Construction, Rocket } from 'lucide-react';
+import { GithubIcon } from '@/components/icons/GithubIcon';
 import { TerminalDemo } from './TerminalDemo';
 
 export function Hero() {
@@ -100,7 +101,7 @@ export function Hero() {
             whileTap={{ scale: 0.98 }}
             className="group flex items-center gap-2 px-8 py-4 bg-transparent border border-[#333333] text-[#fafafa] rounded-xl font-semibold text-lg hover:border-[#00ff88]/50 hover:bg-[#00ff88]/5 transition-all"
           >
-            <Github className="w-5 h-5" />
+            <GithubIcon className="w-5 h-5" />
             View on GitHub
           </motion.a>
 

@@ -17,7 +17,7 @@ This guide explains how to run Cogitator with Docker for local development.
 # Full setup - starts services, pulls models, installs deps
 make setup
 
-# Start dashboard
+# Start the docs site (landing + docs)
 make dev
 ```
 
@@ -35,7 +35,7 @@ docker-compose exec ollama ollama pull llama3.2:3b
 pnpm install
 pnpm build
 
-# Start dashboard
+# Start the docs site (landing + docs)
 cd packages/dashboard && pnpm dev
 ```
 
@@ -88,7 +88,7 @@ make db-shell        # Open PostgreSQL shell
 make db-reset        # Reset database (deletes all data!)
 
 # Development
-make dev             # Start dashboard (also starts services)
+make dev             # Start the docs site (also starts services)
 make build           # Build all packages
 
 # Cleanup
@@ -129,16 +129,13 @@ EMBEDDING_MODEL=nomic-embed-text-v2-moe
 SANDBOX_DEFAULT_TYPE=native
 SANDBOX_DEFAULT_TIMEOUT=30000
 SANDBOX_MAX_CONTAINERS=5
-
-# Dashboard
-NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Cogitator Dashboard                       │
+│      Your app: Cogitator runtime + server adapter (optional)     │
 │                      http://localhost:3000                       │
 └───────────────┬────────────────────────┬────────────────────────┘
                 │                        │

@@ -36,7 +36,7 @@ Cogitator is a monorepo with 31 packages covering the full stack of agent infras
 | **Infrastructure** | `@cogitator-ai/redis`          | Redis client (standalone + cluster)                                  |
 |                    | `@cogitator-ai/deploy`         | Docker & Fly.io deployment utilities                                 |
 |                    | `@cogitator-ai/cli`            | CLI (init/up/run/deploy)                                             |
-| **Support**        | `@cogitator-ai/dashboard`      | Next.js landing + docs (Fumadocs); admin dashboard deprecated        |
+| **Support**        | `@cogitator-ai/dashboard`      | Next.js website: landing, docs (Fumadocs) and cookbook               |
 |                    | `@cogitator-ai/test-utils`     | Testing utilities                                                    |
 |                    | `@cogitator-ai/e2e`            | End-to-end test suite                                                |
 |                    | `create-cogitator-app`         | Interactive project scaffolder                                       |

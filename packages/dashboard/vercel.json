@@ -4,11 +4,6 @@
   "buildCommand": "cd ../.. && pnpm turbo run build --filter=@cogitator-ai/dashboard...",
   "installCommand": "cd ../.. && pnpm install",
   "regions": ["iad1"],
-  "functions": {
-    "app/api/**/*.ts": {
-      "maxDuration": 60
-    }
-  },
   "env": {
     "NODE_ENV": "production"
   },

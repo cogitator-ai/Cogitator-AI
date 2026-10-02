@@ -5,7 +5,4 @@ Allow: /
 # Sitemaps
 Sitemap: https://cogitator.app/sitemap.xml
 
-# Disallow API routes and auth
 Disallow: /api/
-Disallow: /auth/
-Disallow: /dashboard/

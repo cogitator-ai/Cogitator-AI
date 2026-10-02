@@ -137,7 +137,7 @@ packages/
 ├── channels/       # @cogitator-ai/channels - Messaging channels (Telegram, Discord, Slack, WhatsApp, WebChat)
 ├── deploy/         # @cogitator-ai/deploy - Docker & Fly.io deployment
 ├── cli/            # @cogitator-ai/cli - CLI (init/up/run/deploy)
-├── dashboard/      # @cogitator-ai/dashboard - Next.js landing + docs (Fumadocs) + dashboard
+├── dashboard/      # @cogitator-ai/dashboard - Next.js website: landing, docs (Fumadocs), cookbook
 ├── rag/            # @cogitator-ai/rag - RAG pipeline (loaders, chunkers, retrieval, reranking)
 ├── evals/          # @cogitator-ai/evals - Eval framework (metrics, A/B testing, assertions)
 ├── voice/          # @cogitator-ai/voice - Voice/Realtime agents (STT, TTS, VAD)

@@ -63,56 +63,48 @@ Cogitator is an open-source AI agent runtime that processes potentially sensitiv
 
 ### CC6.1 - Logical Access Controls
 
-> **Note:** The admin dashboard in `packages/dashboard` (Supabase auth, API keys, RBAC) is **deprecated and unmaintained**. Do not rely on it as an access control in production. Put authentication in front of your server adapter (`@cogitator-ai/express`, `fastify`, `hono`, `koa`, `next`) instead.
+Cogitator is a library and runtime, not a hosted service. It ships **no built-in admin UI, user accounts, login, API keys or RBAC**: `packages/dashboard` is only the public website (landing page, docs, cookbook). Access control belongs in front of the server adapter that exposes your agents over HTTP, and is owned by the application that embeds Cogitator.
 
 #### Authentication
 
-| Control                | Implementation                                                                          | Evidence                                        |
-| ---------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| API Key Authentication | `Authorization: Bearer cog_*` or `X-API-Key` header; timing-safe comparison via SHA-256 | `packages/dashboard/src/lib/auth/middleware.ts` |
-| Supabase Auth          | JWT session validation via Supabase SSR client                                          | `packages/dashboard/src/lib/supabase/`          |
-| Role-Based Access      | Three roles: `admin`, `user`, `readonly`; enforced via `withRole()` middleware          | `packages/dashboard/src/lib/auth/middleware.ts` |
-| Dev Mode Bypass        | Auth disabled by default in development (`COGITATOR_AUTH_ENABLED=true` to enable)       | `isAuthEnabled()` in middleware                 |
+| Control                   | Implementation                                                                                                                                                         | Evidence                                                             |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Adapter auth hook         | `auth` option on Express, Fastify, Hono and Koa adapters: an async function that validates the request (token, session, mTLS identity) and throws to reject with `401` | `AuthFunction` in `packages/{express,fastify,hono,koa}/src/types.ts` |
+| WebSocket auth            | Express and Fastify run `auth` on WebSocket upgrade requests; Koa's WebSocket config takes its own `auth` function                                                     | Adapter WebSocket handlers                                           |
+| Next.js handlers          | `beforeRun(req, input)` hook on `createAgentHandler` / `createChatHandler`; throwing rejects the request                                                               | `packages/next/src/types.ts`                                         |
+| Identity provider (yours) | Bring your own IdP, API gateway or reverse proxy (OAuth/OIDC, API keys, mTLS); Cogitator does not store credentials                                                    | Deployment configuration                                             |
 
 #### Authorization
 
-| Control            | Implementation                                                         | Evidence                                              |
-| ------------------ | ---------------------------------------------------------------------- | ----------------------------------------------------- |
-| Role-Based Access  | `withRole(['admin'])` wrapper on route handlers                        | `packages/dashboard/src/lib/auth/middleware.ts`       |
-| Tool Allowlists    | `tools?: Tool[]` array on AgentConfig limits available tools per agent | AgentConfig interface                                 |
-| Resource Isolation | Thread-based isolation for conversations                               | `threadId`-based memory partitioning in MemoryAdapter |
+| Control            | Implementation                                                                                                   | Evidence                                              |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Auth context       | The `auth` function returns `{ userId, roles, permissions }`; `userId` is passed to agent runs for your policies | `AuthContext` in adapter types                        |
+| Tool Allowlists    | `tools?: Tool[]` array on AgentConfig limits available tools per agent                                           | AgentConfig interface                                 |
+| Resource Isolation | Thread-based isolation for conversations                                                                         | `threadId`-based memory partitioning in MemoryAdapter |
 
 #### Code Example - API Authentication
 
 ```typescript
-// From packages/dashboard/src/lib/auth/middleware.ts
-// Accepts Authorization: Bearer cog_* header OR X-API-Key header
-// Uses timing-safe comparison to prevent timing attacks
-export async function getAuthenticatedUser(request: NextRequest): Promise<User | null> {
-  if (!isAuthEnabled()) {
-    return getDefaultUser(); // dev mode
-  }
+import express from 'express';
+import { CogitatorServer } from '@cogitator-ai/express';
 
-  const apiKey = extractApiKeyFromRequest(request); // checks both header forms
-  if (apiKey) {
-    const user = validateApiKey(apiKey); // hashes key internally, timing-safe compare
-    if (user) return user;
-  }
+const app = express();
 
-  // Fall through to Supabase session auth
-  const supabase = await createSupabaseClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  return user
-    ? {
-        id: user.id,
-        email: user.email,
-        role: user.user_metadata?.role ?? 'user',
-        authMethod: 'session',
-      }
-    : null;
-}
+const server = new CogitatorServer({
+  app,
+  cogitator,
+  agents: { assistant },
+  config: {
+    basePath: '/api',
+    auth: async (req) => {
+      const token = req.headers.authorization?.replace('Bearer ', '');
+      const user = await verifyToken(token); // your IdP / API key store; throw to reject with 401
+      return { userId: user.id, roles: user.roles };
+    },
+  },
+});
+
+await server.init();
 ```
 
 ### CC6.2 - System Access Restrictions
@@ -255,14 +247,6 @@ Express/Fastify/Hono adapters:
 | --------- | --------------- | ---------------------------------- |
 | `/health` | Basic health    | `200 OK` with uptime and timestamp |
 | `/ready`  | Readiness probe | `200 OK` if ready to serve         |
-
-Dashboard (`packages/dashboard`):
-
-| Endpoint            | Purpose         | Response                           |
-| ------------------- | --------------- | ---------------------------------- |
-| `/api/health`       | Basic health    | `200 OK`                           |
-| `/api/health/live`  | Liveness probe  | `200 OK` if process running        |
-| `/api/health/ready` | Readiness probe | `200 OK` if dependencies connected |
 
 ### A1.2 - Capacity Planning
 
@@ -785,32 +769,32 @@ npx snyk test
 
 ### SOC2 Trust Service Criteria Mapping
 
-| TSC                      | Control                    | Implementation                                                  | Status |
-| ------------------------ | -------------------------- | --------------------------------------------------------------- | ------ |
-| **Security**             |                            |                                                                 |        |
-| CC6.1                    | Logical access controls    | Deprecated dashboard auth only; use auth in your server adapter | ⚠️     |
-| CC6.2                    | System access restrictions | Sandbox isolation                                               | ✅     |
-| CC6.3                    | Security event monitoring  | Audit logging, Langfuse                                         | ✅     |
-| CC6.6                    | Encryption                 | TLS, encryption at rest                                         | ✅     |
-| CC6.7                    | Vulnerability management   | Dependency scanning, updates                                    | ✅     |
-| **Availability**         |                            |                                                                 |        |
-| A1.1                     | System availability        | Health checks, HA architecture                                  | ✅     |
-| A1.2                     | Capacity planning          | Resource limits, auto-scaling                                   | ✅     |
-| A1.3                     | Backup and recovery        | Database backups, DR plan                                       | ✅     |
-| **Processing Integrity** |                            |                                                                 |        |
-| PI1.1                    | Processing accuracy        | Input validation (Zod)                                          | ✅     |
-| PI1.2                    | Processing completeness    | Transaction handling                                            | ✅     |
-| PI1.3                    | Processing timeliness      | Timeouts, streaming                                             | ✅     |
-| **Confidentiality**      |                            |                                                                 |        |
-| C1.1                     | Information classification | Data classification policy                                      | ✅     |
-| C1.2                     | Information protection     | Encryption, access controls                                     | ✅     |
-| C1.3                     | Information disposal       | TTL, secure deletion                                            | ✅     |
-| **Privacy**              |                            |                                                                 |        |
-| P1.1                     | Privacy notice             | Configurable by deployer                                        | ✅     |
-| P2.1                     | Consent                    | Deployer responsibility                                         | ✅     |
-| P3.1                     | Collection                 | Configurable data collection                                    | ✅     |
-| P4.1                     | Use                        | Limited to service provision                                    | ✅     |
-| P6.1                     | Data subject rights        | Export/delete APIs                                              | ✅     |
+| TSC                      | Control                    | Implementation                                              | Status |
+| ------------------------ | -------------------------- | ----------------------------------------------------------- | ------ |
+| **Security**             |                            |                                                             |        |
+| CC6.1                    | Logical access controls    | No built-in auth UI; `auth` hook on server adapters (yours) | ⚠️     |
+| CC6.2                    | System access restrictions | Sandbox isolation                                           | ✅     |
+| CC6.3                    | Security event monitoring  | Audit logging, Langfuse                                     | ✅     |
+| CC6.6                    | Encryption                 | TLS, encryption at rest                                     | ✅     |
+| CC6.7                    | Vulnerability management   | Dependency scanning, updates                                | ✅     |
+| **Availability**         |                            |                                                             |        |
+| A1.1                     | System availability        | Health checks, HA architecture                              | ✅     |
+| A1.2                     | Capacity planning          | Resource limits, auto-scaling                               | ✅     |
+| A1.3                     | Backup and recovery        | Database backups, DR plan                                   | ✅     |
+| **Processing Integrity** |                            |                                                             |        |
+| PI1.1                    | Processing accuracy        | Input validation (Zod)                                      | ✅     |
+| PI1.2                    | Processing completeness    | Transaction handling                                        | ✅     |
+| PI1.3                    | Processing timeliness      | Timeouts, streaming                                         | ✅     |
+| **Confidentiality**      |                            |                                                             |        |
+| C1.1                     | Information classification | Data classification policy                                  | ✅     |
+| C1.2                     | Information protection     | Encryption, access controls                                 | ✅     |
+| C1.3                     | Information disposal       | TTL, secure deletion                                        | ✅     |
+| **Privacy**              |                            |                                                             |        |
+| P1.1                     | Privacy notice             | Configurable by deployer                                    | ✅     |
+| P2.1                     | Consent                    | Deployer responsibility                                     | ✅     |
+| P3.1                     | Collection                 | Configurable data collection                                | ✅     |
+| P4.1                     | Use                        | Limited to service provision                                | ✅     |
+| P6.1                     | Data subject rights        | Export/delete APIs                                          | ✅     |
 
 ---
 

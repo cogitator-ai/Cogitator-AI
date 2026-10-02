@@ -332,9 +332,6 @@ aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
    ```bash
    # Apply Kubernetes manifests
    kubectl apply -f k8s/
-
-   # Or use Helm
-   helm upgrade --install cogitator ./charts/cogitator
    ```
 
 5. **Verify recovery**
@@ -343,13 +340,13 @@ aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
    # Check all pods running
    kubectl get pods
 
-   # Run health checks
-   curl http://api.cogitator.dev/health
+   # Run health checks (Express adapter mounted at basePath '/api')
+   curl http://api.cogitator.dev/api/health
 
    # Test agent execution
-   curl -X POST http://api.cogitator.dev/api/runs \
+   curl -X POST http://api.cogitator.dev/api/agents/test-agent/run \
      -H "Content-Type: application/json" \
-     -d '{"agentId": "test-agent", "input": "hello"}'
+     -d '{"input": "hello"}'
    ```
 
 ### Scenario 5: Data Corruption
@@ -495,15 +492,7 @@ groups:
 
 ### Health Check Endpoints
 
-The available endpoints depend on which server adapter you use.
-
-**Dashboard (`@cogitator-ai/dashboard` — Next.js, deprecated admin dashboard):**
-
-| Endpoint            | Purpose                             | Expected Response |
-| ------------------- | ----------------------------------- | ----------------- |
-| `/api/health`       | Overall health (DB, Redis, Ollama)  | `200 OK`          |
-| `/api/health/ready` | Ready to accept traffic (checks DB) | `200 OK`          |
-| `/api/health/live`  | Process is alive                    | `200 OK`          |
+The available endpoints depend on which server adapter you use. Cogitator has no built-in admin service with its own health endpoints; `@cogitator-ai/dashboard` is only the public website (landing, docs, cookbook).
 
 **Express adapter (`@cogitator-ai/express`):**
 

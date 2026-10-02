@@ -104,7 +104,7 @@ echo ""
 echo "Available models:"
 docker-compose exec -T ollama ollama list
 echo ""
-echo -e "${YELLOW}To start the dashboard:${NC}"
+echo -e "${YELLOW}To start the docs site:${NC}"
 echo "  cd packages/dashboard && pnpm dev"
 echo ""
 echo -e "${YELLOW}To stop services:${NC}"

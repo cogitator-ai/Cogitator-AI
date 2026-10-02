@@ -13,7 +13,7 @@ help:
 	@echo "  setup       - Full setup: start services, pull models, install deps"
 	@echo "  up          - Start all Docker services"
 	@echo "  down        - Stop all Docker services"
-	@echo "  dev         - Start dashboard in development mode"
+	@echo "  dev         - Start the docs site in development mode"
 	@echo "  build       - Build all packages"
 	@echo ""
 	@echo "Models:"
@@ -53,7 +53,7 @@ down:
 	@echo "Services stopped."
 
 dev: up
-	@echo "Starting dashboard..."
+	@echo "Starting docs site..."
 	cd packages/dashboard && pnpm dev
 
 build:
