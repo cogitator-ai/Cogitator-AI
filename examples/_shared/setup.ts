@@ -1,7 +1,7 @@
 import { Cogitator, type CogitatorConfig } from '@cogitator-ai/core';
 import 'dotenv/config';
 
-export const DEFAULT_MODEL = 'google/gemini-3.8-flash';
+export const DEFAULT_MODEL = 'google/gemini-3.5-flash-lite';
 
 export function createCogitator(overrides: Partial<CogitatorConfig> = {}) {
   return new Cogitator({

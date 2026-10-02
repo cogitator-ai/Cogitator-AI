@@ -13,7 +13,7 @@ async function main() {
     llm,
     config: {
       enabled: true,
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3.5-flash-lite',
       filterInput: true,
       filterOutput: true,
       filterToolCalls: true,

@@ -25,12 +25,12 @@ All examples use **Google Gemini 3.8 Flash** by default — it has a free tier (
 
 To switch providers, edit `_shared/setup.ts` or set env variables:
 
-| Provider         | Env Variable        | Model Example                 |
-| ---------------- | ------------------- | ----------------------------- |
-| Google (default) | `GOOGLE_API_KEY`    | `google/gemini-3.8-flash`     |
-| OpenAI           | `OPENAI_API_KEY`    | `openai/gpt-5.2`              |
-| Anthropic        | `ANTHROPIC_API_KEY` | `anthropic/claude-sonnet-5-5` |
-| Ollama (local)   | `OLLAMA_URL`        | `ollama/qwen3:8b`             |
+| Provider         | Env Variable        | Model Example                  |
+| ---------------- | ------------------- | ------------------------------ |
+| Google (default) | `GOOGLE_API_KEY`    | `google/gemini-3.5-flash-lite` |
+| OpenAI           | `OPENAI_API_KEY`    | `openai/gpt-5.2`               |
+| Anthropic        | `ANTHROPIC_API_KEY` | `anthropic/claude-sonnet-5-5`  |
+| Ollama (local)   | `OLLAMA_URL`        | `ollama/qwen3:8b`              |
 
 ## Examples by Category
 

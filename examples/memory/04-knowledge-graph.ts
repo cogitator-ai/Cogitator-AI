@@ -370,7 +370,7 @@ async function main() {
     providers: { google: { apiKey: process.env.GOOGLE_API_KEY } },
   });
 
-  const model = 'gemini-3.8-flash';
+  const model = 'gemini-3.5-flash-lite';
   const backend = {
     chat: (opts: {
       messages: Array<{ role: string; content: string }>;
