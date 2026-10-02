@@ -27,12 +27,12 @@ const openai = new OpenAIBackend({ apiKey: process.env.OPENAI_API_KEY! });
 
 const analyzeImage = createAnalyzeImageTool({
   llm: openai,
-  defaultModel: 'gpt-4o',
+  defaultModel: 'gpt-6.1-sol',
 });
 
 const agent = new Agent({
   name: 'vision-assistant',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You can analyze images. Use the analyzeImage tool when given an image URL.',
   tools: [analyzeImage],
 });
@@ -68,7 +68,7 @@ The `images` array accepts URLs as strings or objects with `data` (base64) and `
 
 ## Image Generation
 
-`createGenerateImageTool` creates images using DALL-E 3 via the OpenAI API.
+`createGenerateImageTool` creates images with OpenAI image models. The default model is `gpt-image-2.5-flare`.
 
 ```typescript
 const generateImage = createGenerateImageTool({
@@ -77,47 +77,61 @@ const generateImage = createGenerateImageTool({
 
 const agent = new Agent({
   name: 'artist',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You create images based on user descriptions. Use the generateImage tool.',
   tools: [generateImage],
 });
 ```
 
+### Configuration
+
+| Option    | Type     | Default                     | Description                                                      |
+| --------- | -------- | --------------------------- | ---------------------------------------------------------------- |
+| `apiKey`  | `string` | `OPENAI_API_KEY`            | OpenAI API key                                                   |
+| `baseUrl` | `string` | `https://api.openai.com/v1` | API base URL (for OpenAI-compatible image endpoints)             |
+| `model`   | `string` | `gpt-image-2.5-flare`       | Image model; `dall-e-*` ids keep the legacy DALL-E request shape |
+
+Set `model` to a `dall-e-*` id only for OpenAI-compatible servers that still serve DALL-E. In that mode the tool sends `size` (`auto` becomes `1024x1024`), `quality` (`hd` or `standard`), `style` and `response_format: 'url'`, and the result carries a hosted `url` instead of base64 data.
+
 ### Parameters
 
-| Parameter | Type                                        | Description                                   |
-| --------- | ------------------------------------------- | --------------------------------------------- |
-| `prompt`  | `string`                                    | Detailed description of the image to generate |
-| `size`    | `'1024x1024' \| '1792x1024' \| '1024x1792'` | Image dimensions                              |
-| `quality` | `'standard' \| 'hd'`                        | HD produces finer textures and detail         |
-| `style`   | `'vivid' \| 'natural'`                      | Vivid for dramatic, natural for realistic     |
+| Parameter      | Type                                                                                | Description                                                                             |
+| -------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `prompt`       | `string`                                                                            | Detailed description of the image to generate                                           |
+| `size`         | `'auto' \| '1024x1024' \| '1536x1024' \| '1024x1536' \| '1792x1024' \| '1024x1792'` | Image dimensions (default: `auto`, the model chooses)                                   |
+| `quality`      | `'auto' \| 'low' \| 'medium' \| 'high' \| 'xhigh' \| 'max' \| 'standard' \| 'hd'`   | Rendering quality (default: `auto`); legacy `standard` maps to `medium`, `hd` to `high` |
+| `style`        | `'vivid' \| 'natural'`                                                              | Legacy DALL-E style; ignored by `gpt-image-*` models (describe the style in the prompt) |
+| `outputFormat` | `'png' \| 'jpeg' \| 'webp'`                                                         | Image file format (default: `png`)                                                      |
+| `background`   | `'auto' \| 'transparent' \| 'opaque'`                                               | Background handling; `transparent` requires `png` or `webp`                             |
 
 ### Result
 
 ```typescript
 {
-  url: 'https://oaidalleapiprodscus.blob.core.windows.net/...',
-  revisedPrompt: 'A detailed painting of...',
-  size: '1024x1024',
-  quality: 'standard',
-  style: 'vivid',
+  imageBase64: 'iVBORw0KGgo...', // base64-encoded image bytes (gpt-image-* models)
+  mimeType: 'image/png',
+  model: 'gpt-image-2.5-flare',
+  size: 'auto',
+  quality: 'auto',
 }
 ```
 
+`url` is optional and present only when a legacy `dall-e-*` compatible endpoint returns a hosted image; `style` is included only in that mode. `revisedPrompt` is set when the API returns one.
+
 ## Audio Transcription
 
-`createTranscribeAudioTool` transcribes audio to text using OpenAI Whisper or GPT-4o transcribe models.
+`createTranscribeAudioTool` transcribes audio to text using OpenAI transcription models (`gpt-transcribe` by default).
 
 ```typescript
 const transcribe = createTranscribeAudioTool({
   apiKey: process.env.OPENAI_API_KEY!,
-  defaultModel: 'whisper-1',
+  defaultModel: 'gpt-transcribe',
   defaultLanguage: 'en',
 });
 
 const agent = new Agent({
   name: 'transcriber',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'Transcribe audio files. Use the transcribeAudio tool.',
   tools: [transcribe],
 });
@@ -125,14 +139,16 @@ const agent = new Agent({
 
 ### Parameters
 
-| Parameter    | Type                                                             | Description                                           |
-| ------------ | ---------------------------------------------------------------- | ----------------------------------------------------- |
-| `audio`      | `string \| { data, format }`                                     | URL or base64-encoded audio data                      |
-| `language`   | `string`                                                         | ISO-639-1 code (`'en'`, `'es'`, `'fr'`, `'ja'`, etc.) |
-| `model`      | `'whisper-1' \| 'gpt-4o-transcribe' \| 'gpt-4o-mini-transcribe'` | Transcription model                                   |
-| `timestamps` | `boolean`                                                        | Include word-level timestamps (whisper-1 only)        |
+| Parameter    | Type                                                                                 | Description                                           |
+| ------------ | ------------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| `audio`      | `string \| { data, format }`                                                         | URL or base64-encoded audio data                      |
+| `language`   | `string`                                                                             | ISO-639-1 code (`'en'`, `'es'`, `'fr'`, `'ja'`, etc.) |
+| `model`      | `'gpt-transcribe' \| 'whisper-1' \| 'gpt-4o-transcribe' \| 'gpt-4o-mini-transcribe'` | Transcription model                                   |
+| `timestamps` | `boolean`                                                                            | Include word-level timestamps (see below)             |
 
 Supported audio formats: `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`, `ogg`, `flac` (up to 25MB).
+
+The default model is `gpt-transcribe`. Only `whisper-1` returns word timestamps, so when `timestamps: true` is requested without an explicit `model` (and no `defaultModel` is configured), the tool uses `whisper-1`. `words` and `duration` are returned only for `whisper-1` requests with timestamps.
 
 ### Result
 
@@ -151,7 +167,7 @@ Supported audio formats: `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`, `og
 
 ### Inline Audio via RunOptions
 
-Audio files can be passed directly to the run. Each file is transcribed with OpenAI Whisper before the agent sees the input, and the transcripts are prepended to `input` as `[Audio transcription]: ...` (or `[Audio N transcription]: ...` for several files). Transcription uses `llm.providers.openai.apiKey`, falling back to `OPENAI_API_KEY`; the run fails with a clear error when neither is set. Prompt-injection detection and input guardrails run on the combined text.
+Audio files can be passed directly to the run. Each file is transcribed with OpenAI `gpt-transcribe` before the agent sees the input, and the transcripts are prepended to `input` as `[Audio transcription]: ...` (or `[Audio N transcription]: ...` for several files). Transcription uses `llm.providers.openai.apiKey`, falling back to `OPENAI_API_KEY`; the run fails with a clear error when neither is set. Prompt-injection detection and input guardrails run on the combined text.
 
 ```typescript
 const result = await cog.run(agent, {
@@ -162,19 +178,19 @@ const result = await cog.run(agent, {
 
 ## Text-to-Speech
 
-`createGenerateSpeechTool` converts text to natural-sounding speech using OpenAI TTS.
+`createGenerateSpeechTool` converts text to natural-sounding speech using OpenAI TTS. The default model is `gpt-4o-mini-tts`; `tts-1` and `tts-1-hd` are legacy models.
 
 ```typescript
 const speak = createGenerateSpeechTool({
   apiKey: process.env.OPENAI_API_KEY!,
-  defaultModel: 'tts-1',
+  defaultModel: 'gpt-4o-mini-tts',
   defaultVoice: 'nova',
   defaultFormat: 'mp3',
 });
 
 const agent = new Agent({
   name: 'narrator',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'Read text aloud using the generateSpeech tool.',
   tools: [speak],
 });
@@ -201,7 +217,7 @@ const agent = new Agent({
   audioBase64: 'AAAA...',  // base64-encoded audio
   format: 'mp3',
   voice: 'nova',
-  model: 'tts-1',
+  model: 'gpt-4o-mini-tts',
   textLength: 256,
 }
 ```

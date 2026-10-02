@@ -22,7 +22,7 @@ const reflectionEngine = new ReflectionEngine({
   insightStore,
   config: {
     enabled: true,
-    reflectionModel: 'gpt-4o-mini',
+    reflectionModel: 'gpt-6-luna',
     storeInsights: true,
     minConfidenceToStore: 0.3,
     maxInsightsPerAgent: 100,
@@ -30,7 +30,7 @@ const reflectionEngine = new ReflectionEngine({
 });
 ```
 
-The `ReflectionEngine` requires an LLM backend for generating reflections, an `InsightStore` for persistence, and a config that controls quality thresholds. A standalone engine sends `reflectionModel` to the backend as-is, so pass the provider's own model id. When reflection is enabled through `new Cogitator({ reflection: { enabled: true } })`, `reflectionModel` may be a `provider/model` id (for example `openai/gpt-4o-mini`) and defaults to the running agent's model.
+The `ReflectionEngine` requires an LLM backend for generating reflections, an `InsightStore` for persistence, and a config that controls quality thresholds. A standalone engine sends `reflectionModel` to the backend as-is, so pass the provider's own model id. When reflection is enabled through `new Cogitator({ reflection: { enabled: true } })`, `reflectionModel` may be a `provider/model` id (for example `openai/gpt-6-luna`) and defaults to the running agent's model.
 
 ## Reflecting on Tool Calls
 

@@ -12,7 +12,7 @@ import { builtinTools, calculator, fileRead, httpRequest } from '@cogitator-ai/c
 
 const agent = new Agent({
   name: 'assistant',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: builtinTools,
 });
 ```
@@ -289,7 +289,7 @@ Full GitHub API integration. Supports 12 actions: `get_repo`, `list_issues`, `ge
 ```typescript
 const agent = new Agent({
   name: 'github-bot',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: [githubApi],
   instructions: 'You help manage GitHub repositories.',
 });
@@ -305,3 +305,14 @@ Executes shell commands. Declares side effects for `process`, `filesystem`, and 
 | `cwd`     | `string` | Working directory                         |
 | `timeout` | `number` | Timeout in ms (default: 30000, max: 300s) |
 | `env`     | `Record` | Additional environment variables          |
+
+## Multimodal Tool Factories
+
+Image and audio tools are created with factories rather than shipped in `builtinTools`. See [Vision & Audio](/docs/core/vision-and-audio) for parameters and results.
+
+| Factory                     | Tool              | Default model                                                                              |
+| --------------------------- | ----------------- | ------------------------------------------------------------------------------------------ |
+| `createAnalyzeImageTool`    | `analyzeImage`    | `gpt-6.1-sol` on the `llm` backend you pass in                                             |
+| `createGenerateImageTool`   | `generateImage`   | `gpt-image-2.5-flare`; returns base64 `imageBase64`, `size` / `quality` default to `auto`  |
+| `createTranscribeAudioTool` | `transcribeAudio` | `gpt-transcribe`; `whisper-1` when word timestamps are requested without an explicit model |
+| `createGenerateSpeechTool`  | `generateSpeech`  | `gpt-4o-mini-tts`                                                                          |

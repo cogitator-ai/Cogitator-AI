@@ -21,7 +21,7 @@ const cog = new Cogitator({
 
 const agent = new Agent({
   name: 'assistant',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You are a helpful assistant.',
 });
 
@@ -81,7 +81,7 @@ const cog = new Cogitator({
 });
 ```
 
-Backends are created lazily -- Cogitator only instantiates a provider's client the first time an agent requests it. The provider is determined by the model string prefix (`openai/gpt-4o` routes to OpenAI, `anthropic/claude-sonnet-4-20250514` routes to Anthropic).
+Backends are created lazily -- Cogitator only instantiates a provider's client the first time an agent requests it. The provider is determined by the model string prefix (`openai/gpt-6.1-sol` routes to OpenAI, `anthropic/claude-sonnet-5-5` routes to Anthropic).
 
 ## Running Agents
 

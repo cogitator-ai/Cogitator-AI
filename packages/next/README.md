@@ -20,14 +20,14 @@ import { z } from 'zod';
 
 const cogitator = new Cogitator({
   llm: {
-    defaultModel: 'openai/gpt-4o-mini',
+    defaultModel: 'openai/gpt-6-luna',
     providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
   },
 });
 
 const agent = new Agent({
   name: 'assistant',
-  model: 'openai/gpt-4o-mini',
+  model: 'openai/gpt-6-luna',
   instructions: 'You are a helpful assistant.',
   tools: [
     tool({

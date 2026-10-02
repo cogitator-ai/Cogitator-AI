@@ -110,6 +110,12 @@ interface ToolCall {
   name: string;
   arguments: Record<string, unknown>;
   thoughtSignature?: string; // provider reasoning signature, echoed back as-is (Gemini)
+  replay?: ToolCallReplayState; // opaque provider state replayed with the call (OpenAI Responses reasoning items)
+}
+
+interface ToolCallReplayState {
+  itemId?: string; // provider id of the output item that carried the call (e.g. `fc_...`)
+  precedingItems?: Record<string, unknown>[]; // e.g. reasoning items with encrypted_content, sent back verbatim
 }
 
 interface ToolResult {
@@ -201,11 +207,15 @@ interface ChatResponse {
   content: string;
   toolCalls?: ToolCall[];
   finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-  };
+  usage: ChatUsage;
+}
+
+interface ChatUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedInputTokens?: number; // served from the prompt cache; already counted in inputTokens
+  reasoningTokens?: number; // hidden reasoning tokens; already counted in outputTokens
 }
 
 interface ChatStreamChunk {
@@ -215,6 +225,7 @@ interface ChatStreamChunk {
     toolCalls?: Partial<ToolCall>[];
   };
   finishReason?: 'stop' | 'tool_calls' | 'length' | 'error';
+  usage?: ChatUsage; // typically only on the final chunk
 }
 
 interface LLMBackend {
@@ -222,6 +233,14 @@ interface LLMBackend {
   chat(request: ChatRequest): Promise<ChatResponse>;
   chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk>;
 }
+
+interface OpenAIProviderConfig {
+  apiKey: string;
+  baseUrl?: string;
+  api?: OpenAIWireApi; // default: 'responses' for api.openai.com, 'chat-completions' for other base URLs
+}
+
+type OpenAIWireApi = 'responses' | 'chat-completions';
 ```
 
 ## Configuration Types

@@ -28,7 +28,7 @@ const calculator = tool({
 const agent = new Agent({
   name: 'math-assistant',
   instructions: 'You are a helpful math assistant',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: [calculator],
 });
 
@@ -76,9 +76,9 @@ const agent = new Agent({
   model: 'ollama/llama3.1:8b',
 
   // Cloud providers use the same provider/model format:
-  // model: 'openai/gpt-4o'
-  // model: 'anthropic/claude-sonnet-4-5-20250929'
-  // model: 'google/gemini-2.5-flash'
+  // model: 'openai/gpt-6.1-sol'
+  // model: 'anthropic/claude-sonnet-5-5'
+  // model: 'google/gemini-3.8-flash'
   // model: 'vllm/mistral-7b'
 });
 ```
@@ -112,6 +112,12 @@ const cog = new Cogitator({
 });
 ```
 
+### Provider Notes
+
+- **OpenAI** — the official backend uses the Responses API and defaults to `gpt-6.1-sol`. Requests are stateless (`store: false`); reasoning items are round-tripped between tool-call turns via `ToolCall.replay`. Reasoning models (o-series, GPT-5+) get no `temperature` / `top_p`. Requests with stop sequences fall back to Chat Completions (the Responses API has no stop parameter). OpenAI-compatible providers (Azure, Mistral, Groq, Together, DeepSeek, vLLM, custom `baseUrl`) stay on Chat Completions. Force either path with `providers.openai.api: 'responses' | 'chat-completions'`. Usage includes `cachedInputTokens` and `reasoningTokens` when reported.
+- **Anthropic** — defaults to `claude-sonnet-5-5`. Sampling params are omitted for Claude 4.7+, 5.x and Fable (they reject non-default values); Claude 4.0 – 4.6 get at most one of `temperature` / `top_p` (`temperature` wins). `json_schema` uses native structured outputs on Claude 4.5+. Forced tool choice falls back to `auto` with a system-prompt instruction and a one-time warning on Opus/Sonnet 5.5 and Fable.
+- **Bedrock** — Claude models follow the same sampling and tool-choice rules; `json_object` and `json_schema` response formats are supported (schema enforced via `outputConfig.textFormat` on Claude 4.5 – 4.6, system-prompt instruction otherwise).
+
 ### Direct Backend Usage
 
 ```typescript
@@ -122,7 +128,7 @@ const backend = createLLMBackend('openai', {
 });
 
 const response = await backend.chat({
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
   messages: [
     { role: 'system', content: 'You are helpful.' },
     { role: 'user', content: 'Hello!' },
@@ -191,7 +197,7 @@ const agent = new Agent({
   id: 'custom-id',
   name: 'research-assistant',
   instructions: 'You research topics thoroughly',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: [webSearch, calculator],
 
   temperature: 0.7,
@@ -336,13 +342,24 @@ const schemas = registry.getSchemas();
 | ----------- | ------------------------------------------------ |
 | `githubApi` | GitHub API (issues, PRs, files, commits, search) |
 
+#### Multimodal Tool Factories
+
+Not part of `builtinTools`. `createAnalyzeImageTool` takes an `llm` backend; the other three call the OpenAI API (`apiKey` or `OPENAI_API_KEY`).
+
+| Factory                     | Tool              | Default model                                                                                                                                                                       |
+| --------------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createAnalyzeImageTool`    | `analyzeImage`    | `gpt-6.1-sol` (`defaultModel`) on the backend you pass in                                                                                                                           |
+| `createGenerateImageTool`   | `generateImage`   | `gpt-image-2.5-flare`; returns `imageBase64` (`url` only from legacy `dall-e-*` endpoints). `size` / `quality` default to `auto`; legacy `standard` / `hd` map to `medium` / `high` |
+| `createTranscribeAudioTool` | `transcribeAudio` | `gpt-transcribe`; `whisper-1` when word timestamps are requested without an explicit model                                                                                          |
+| `createGenerateSpeechTool`  | `generateSpeech`  | `gpt-4o-mini-tts`                                                                                                                                                                   |
+
 ```typescript
 import { builtinTools, calculator, datetime } from '@cogitator-ai/core';
 
 const agent = new Agent({
   name: 'utility-agent',
   instructions: 'Use your tools to help users',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: builtinTools,
 });
 ```
@@ -488,7 +505,7 @@ const result = await cog.run(agent, {
 });
 ```
 
-`audio` inputs are transcribed with OpenAI Whisper (`llm.providers.openai.apiKey` or `OPENAI_API_KEY`) and prepended to `input` before guardrails and prompt-injection checks run. History loaded from memory is repaired before it is sent: tool results without their assistant call and tool calls without results are dropped, so a truncated window never produces an invalid provider request.
+`audio` inputs are transcribed with OpenAI `gpt-transcribe` (`llm.providers.openai.apiKey` or `OPENAI_API_KEY`) and prepended to `input` before guardrails and prompt-injection checks run. History loaded from memory is repaired before it is sent: tool results without their assistant call and tool calls without results are dropped, so a truncated window never produces an invalid provider request.
 
 ### Run Result
 
@@ -567,7 +584,7 @@ import { Cogitator, ReflectionEngine, InMemoryInsightStore } from '@cogitator-ai
 const cog = new Cogitator({
   reflection: {
     enabled: true,
-    reflectionModel: 'openai/gpt-4o-mini',
+    reflectionModel: 'openai/gpt-6-luna',
     reflectAfterToolCall: true,
     reflectAtEnd: true,
     minConfidenceToStore: 0.7,
@@ -642,7 +659,7 @@ const executor = new ThoughtTreeExecutor(cogitator, {
   explorationStrategy: 'breadth-first',
   pruneThreshold: 0.3,
   branchTemperature: 0.8,
-  evaluationModel: 'openai/gpt-4o-mini',
+  evaluationModel: 'openai/gpt-6-luna',
 });
 ```
 
@@ -663,7 +680,7 @@ import {
 const traceStore = new InMemoryTraceStore();
 const optimizer = new AgentOptimizer(cogitator, {
   traceStore,
-  optimizationModel: 'openai/gpt-4o',
+  optimizationModel: 'openai/gpt-6.1-sol',
   maxCandidates: 5,
   evaluationRuns: 3,
 });
@@ -1136,7 +1153,7 @@ For higher accuracy with complex attacks:
 const detector = new PromptInjectionDetector({
   classifier: 'llm',
   llmBackend: openaiBackend,
-  llmModel: 'gpt-4o-mini',
+  llmModel: 'gpt-6-luna',
   action: 'block',
 });
 ```
@@ -1298,8 +1315,8 @@ const degraded = await withGracefulDegradation(
 );
 
 const llmExecutor = createLLMFallbackExecutor([
-  { provider: 'openai', model: 'gpt-4o' },
-  { provider: 'anthropic', model: 'claude-sonnet-4-5-20250929' },
+  { provider: 'openai', model: 'gpt-6.1-sol' },
+  { provider: 'anthropic', model: 'claude-sonnet-5-5' },
   { provider: 'ollama', model: 'llama3.3:70b' },
 ]);
 const response = await llmExecutor.chat(request);
@@ -1339,7 +1356,7 @@ const guardResult = await toolGuard.evaluate({
 const cog = new Cogitator({
   guardrails: {
     enabled: true,
-    model: 'openai/gpt-4o-mini',
+    model: 'openai/gpt-6-luna',
   },
 });
 ```
@@ -1433,7 +1450,7 @@ import { Cogitator, Agent, agentAsTool } from '@cogitator-ai/core';
 const researcher = new Agent({
   name: 'researcher',
   instructions: 'Research topics thoroughly',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: [webSearch],
 });
 
@@ -1446,7 +1463,7 @@ const researchTool = agentAsTool(cog, researcher, {
 const manager = new Agent({
   name: 'manager',
   instructions: 'Coordinate tasks and delegate research',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: [researchTool],
 });
 ```
@@ -1506,6 +1523,7 @@ import type {
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
+  ChatUsage,
   LLMErrorContext,
   LLMDebugOptions,
   LLMPlugin,
@@ -1622,7 +1640,7 @@ const cog = new Cogitator({
 const researcher = new Agent({
   name: 'researcher',
   instructions: 'Research topics thoroughly using web search',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: [webSearch],
 });
 

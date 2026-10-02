@@ -25,10 +25,10 @@ const cog = new Cogitator({
 Model strings follow the `provider/model-name` format:
 
 ```typescript
-'openai/gpt-4o'; // routes to OpenAI
-'anthropic/claude-sonnet-4-20250514'; // routes to Anthropic
+'openai/gpt-6.1-sol'; // routes to OpenAI
+'anthropic/claude-sonnet-5-5'; // routes to Anthropic
 'ollama/llama3.3:latest'; // routes to Ollama
-'google/gemini-2.5-flash'; // routes to Google
+'google/gemini-3.8-flash'; // routes to Google
 ```
 
 If the model string has no prefix, Cogitator falls back to `defaultProvider` (or `ollama` if unset).
@@ -38,8 +38,8 @@ The `parseModel()` utility handles this splitting:
 ```typescript
 import { parseModel } from '@cogitator-ai/core';
 
-parseModel('openai/gpt-4o');
-// { provider: 'openai', model: 'gpt-4o' }
+parseModel('openai/gpt-6.1-sol');
+// { provider: 'openai', model: 'gpt-6.1-sol' }
 
 parseModel('llama3.3:latest');
 // { provider: null, model: 'llama3.3:latest' }
@@ -72,17 +72,29 @@ providers: {
   openai: {
     apiKey: process.env.OPENAI_API_KEY!,
     baseUrl: 'https://api.openai.com/v1', // optional, for proxies
+    api: 'responses', // optional: 'responses' | 'chat-completions'
   },
 }
 ```
 
 ```typescript
-model: 'openai/gpt-4o';
-model: 'openai/gpt-4o-mini';
-model: 'openai/o1';
+model: 'openai/gpt-6.1-sol'; // default when no model is given
+model: 'openai/gpt-6-luna';
+model: 'openai/gpt-6-astra';
 ```
 
-Against the official endpoint (no `baseUrl`), `maxTokens` is sent as `max_completion_tokens`, which reasoning models require. With a custom `baseUrl` and for the other OpenAI-compatible providers it is sent as `max_tokens`.
+The official OpenAI backend talks to the **Responses API**. GPT-6 models only support tool calling there, and GPT-5.x/GPT-6 reject non-default sampling parameters on Chat Completions. Requests are stateless (`store: false`); encrypted reasoning items are kept on `ToolCall.replay` and sent back with the call on the next turn, so reasoning models keep their chain of thought across tool calls (also after a memory round-trip).
+
+| Behaviour          | Details                                                                                                                                                                    |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wire API selection | `responses` for the official endpoint (no `baseUrl`, or a `baseUrl` on `api.openai.com`); `chat-completions` when `baseUrl` points anywhere else. `api` forces either path |
+| Stop sequences     | The Responses API has no stop parameter, so a request with `stop` sequences is sent through Chat Completions                                                               |
+| Sampling params    | Reasoning models (o-series, GPT-5 and later) get no `temperature` / `top_p`; `gpt-4o` / `gpt-4.1` and `-chat` variants keep them                                           |
+| `maxTokens`        | Sent as `max_output_tokens` on the Responses API; on Chat Completions as `max_completion_tokens` for the official endpoint and `max_tokens` otherwise                      |
+| Structured output  | `responseFormat` maps to `text.format` (`json_object` / `json_schema`); images are sent as `input_image`                                                                   |
+| Usage              | `usage.cachedInputTokens` and `usage.reasoningTokens` are reported when OpenAI returns them (both already included in `inputTokens` / `outputTokens`)                      |
+
+OpenAI-compatible providers (Azure, Mistral, Groq, Together, DeepSeek, vLLM, any custom `baseUrl`) stay on Chat Completions unchanged. `DEFAULT_OPENAI_MODEL` and `isOpenAIReasoningModel(model)` are exported from `@cogitator-ai/core`.
 
 ### Anthropic
 
@@ -95,9 +107,21 @@ providers: {
 ```
 
 ```typescript
-model: 'anthropic/claude-sonnet-4-20250514';
-model: 'anthropic/claude-opus-4-20250514';
+model: 'anthropic/claude-sonnet-5-5'; // default when no model is given
+model: 'anthropic/claude-opus-5-5';
+model: 'anthropic/claude-haiku-4-5';
 ```
+
+The backend adapts each request to what the target Claude model accepts (model ids from the Anthropic API, Vertex AI and Bedrock, including inference-profile prefixes and ARNs, are recognised):
+
+| Model family                       | Behaviour                                                                                                                                                      |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude 4.7+, 5.x, Fable            | `temperature` / `top_p` are omitted (these models reject non-default sampling params), including the agent default `0.7`                                       |
+| Claude 4.0 – 4.6                   | At most one of `temperature` / `top_p` is sent; `temperature` wins when both are set                                                                           |
+| Claude 4.5+, Fable                 | `json_schema` response format uses native structured outputs (`output_config`) instead of a forced tool                                                        |
+| Claude Opus 5.5, Sonnet 5.5, Fable | Forced tool choice (`'required'` or a named function) falls back to `auto` with a system-prompt instruction naming the tool, plus a one-time warning per model |
+
+The stop reasons `model_context_window_exceeded` and `pause_turn` are reported as `finishReason: 'length'`, and `refusal` as `'error'`.
 
 ### Google (Gemini)
 
@@ -110,9 +134,9 @@ providers: {
 ```
 
 ```typescript
-model: 'google/gemini-2.5-flash';
-model: 'google/gemini-2.5-pro';
-model: 'google/gemini-3-flash';
+model: 'google/gemini-3.8-flash';
+model: 'google/gemini-3.1-pro-preview';
+model: 'google/gemini-3.5-flash-lite';
 ```
 
 Gemini attaches a thought signature to function calls; it is stored on `ToolCall.thoughtSignature` (also in memory) and sent back with the call on the next request, which Gemini 3 models require for multi-step tool use. Thought-summary parts are excluded from the response text.
@@ -125,7 +149,7 @@ providers: {
     endpoint: 'https://your-resource.openai.azure.com',
     apiKey: process.env.AZURE_OPENAI_API_KEY!,
     apiVersion: '2024-02-01',  // optional
-    deployment: 'gpt-4o',      // optional default deployment
+    deployment: 'gpt-6.1-sol',      // optional default deployment
   },
 }
 ```
@@ -141,6 +165,13 @@ providers: {
   },
 }
 ```
+
+```typescript
+model: 'bedrock/global.anthropic.claude-sonnet-5-5';
+model: 'bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0';
+```
+
+Claude models on Bedrock follow the same sampling-parameter and forced-tool-choice rules as the Anthropic backend. `json_object` and `json_schema` response formats are supported. `json_object` is requested through a system-prompt instruction; `json_schema` is enforced with Converse `outputConfig.textFormat` on Claude 4.5 – 4.6 (the only Claude versions Bedrock serves structured outputs for) and otherwise sent as a system-prompt instruction that includes the schema.
 
 ### OpenAI-Compatible Providers
 

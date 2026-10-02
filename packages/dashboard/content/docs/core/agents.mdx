@@ -12,7 +12,7 @@ import { Agent } from '@cogitator-ai/core';
 
 const agent = new Agent({
   name: 'researcher',
-  model: 'anthropic/claude-sonnet-4-20250514',
+  model: 'anthropic/claude-sonnet-5-5',
   instructions: 'You are a research assistant. Find accurate information and cite sources.',
 });
 ```
@@ -43,10 +43,10 @@ interface AgentConfig {
 The `model` field uses a `provider/model-name` convention to route to the correct backend:
 
 ```typescript
-model: 'openai/gpt-4o';
-model: 'anthropic/claude-sonnet-4-20250514';
+model: 'openai/gpt-6.1-sol';
+model: 'anthropic/claude-sonnet-5-5';
 model: 'ollama/llama3.3:latest';
-model: 'google/gemini-2.5-flash';
+model: 'google/gemini-3.8-flash';
 ```
 
 If you omit the provider prefix, Cogitator uses the `defaultProvider` from your runtime config.
@@ -85,7 +85,7 @@ const searchWeb = tool({
 
 const researcher = new Agent({
   name: 'researcher',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You are a research assistant. Use tools to find accurate information.',
   tools: [searchWeb],
   maxIterations: 15,
@@ -101,7 +101,7 @@ Force the LLM to respond with a specific JSON shape using Zod schemas:
 ```typescript
 const analyzer = new Agent({
   name: 'analyzer',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'Analyze the given text and extract structured information.',
   responseFormat: {
     type: 'json_schema',
@@ -123,7 +123,7 @@ Create variations of an agent with `clone()`:
 ```typescript
 const baseAgent = new Agent({
   name: 'coder',
-  model: 'anthropic/claude-sonnet-4-20250514',
+  model: 'anthropic/claude-sonnet-5-5',
   instructions: 'You are a senior software engineer.',
   temperature: 0.3,
 });
@@ -172,7 +172,7 @@ const researchTool = agentAsTool(cogitator, researcher, {
 
 const orchestrator = new Agent({
   name: 'orchestrator',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You coordinate tasks. Use the research tool for information gathering.',
   tools: [researchTool],
 });

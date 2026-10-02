@@ -64,7 +64,7 @@ const dbTools = await dbClient.getTools();
 
 const agent = new Agent({
   name: 'file-manager',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'Help users manage files and query databases.',
   tools: [...fsTools, ...dbTools],
 });
@@ -96,7 +96,7 @@ const { tools, cleanup } = await connectMCPServer({
 
 const agent = new Agent({
   name: 'github-bot',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools,
 });
 

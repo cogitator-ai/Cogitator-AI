@@ -164,7 +164,7 @@ const suite = new EvalSuite({
       prompt: 'Rate how technically accurate the response is for a software engineering audience.',
     }),
   ],
-  judge: { model: 'gpt-4o', temperature: 0 },
+  judge: { model: 'gpt-6.1-sol', temperature: 0 },
 });
 ```
 
@@ -335,7 +335,7 @@ const suite = new EvalBuilder()
   .withTarget({ fn: async (input) => myModel(input) })
   .withMetrics([exactMatch(), contains(), faithfulness()])
   .withStatisticalMetrics([latency()])
-  .withJudge({ model: 'gpt-4o', temperature: 0 })
+  .withJudge({ model: 'gpt-6.1-sol', temperature: 0 })
   .withAssertions([threshold('exactMatch', 0.85), noRegression('./baseline.json')])
   .withConcurrency(10)
   .withTimeout(60_000)

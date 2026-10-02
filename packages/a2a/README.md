@@ -41,7 +41,7 @@ const cogitator = new Cogitator();
 const agent = new Agent({
   name: 'researcher',
   description: 'Research agent',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You are a research assistant.',
 });
 
@@ -93,7 +93,7 @@ const remoteTool = client.asToolFromCard(card);
 
 const orchestrator = new Agent({
   name: 'orchestrator',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'Use the researcher for information gathering.',
   tools: [remoteTool],
 });

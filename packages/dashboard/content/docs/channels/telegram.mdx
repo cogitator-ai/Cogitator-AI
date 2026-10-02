@@ -40,7 +40,7 @@ const telegram = telegramChannel({
 const gateway = new Gateway({
   agent: new Agent({
     name: 'assistant',
-    model: 'anthropic/claude-sonnet-4-20250514',
+    model: 'anthropic/claude-sonnet-5-5',
     instructions: 'You are a helpful assistant.',
   }),
   cogitator: new Cogitator({
@@ -71,20 +71,20 @@ interface TelegramConfig {
 
 ## Features
 
-| Feature | Support |
-|---|---|
-| Text messages | Supported |
-| Photos | Supported (passed to LLM as vision) |
-| Voice / audio messages | Supported (transcribed via STT) |
-| Video | Supported (announced to the model) |
-| Documents | Supported (text files are inlined) |
-| Replies | `replyTo` is set from `reply_to_message` |
-| Sending files | Buffers (via `InputFile`) or URLs; photo/audio/video/document by type |
-| Streaming | Drafts (`sendMessageDraft`) with fallback to `editMessageText` |
-| Reactions | Supported via `setMessageReaction` |
-| Typing indicator | Supported |
-| Max message length | 4096 chars (auto-chunked) |
-| Groups | Supported |
+| Feature                | Support                                                               |
+| ---------------------- | --------------------------------------------------------------------- |
+| Text messages          | Supported                                                             |
+| Photos                 | Supported (passed to LLM as vision)                                   |
+| Voice / audio messages | Supported (transcribed via STT)                                       |
+| Video                  | Supported (announced to the model)                                    |
+| Documents              | Supported (text files are inlined)                                    |
+| Replies                | `replyTo` is set from `reply_to_message`                              |
+| Sending files          | Buffers (via `InputFile`) or URLs; photo/audio/video/document by type |
+| Streaming              | Drafts (`sendMessageDraft`) with fallback to `editMessageText`        |
+| Reactions              | Supported via `setMessageReaction`                                    |
+| Typing indicator       | Supported                                                             |
+| Max message length     | 4096 chars (auto-chunked)                                             |
+| Groups                 | Supported                                                             |
 
 ## Webhook vs Polling
 
@@ -107,7 +107,7 @@ On `start()` the channel initializes the bot, starts an HTTP server on `port` th
 
 ## Media Support
 
-**Photos** are downloaded automatically and forwarded to the LLM as image attachments. If the model supports vision (Claude, GPT-4o, Gemini), it can see and reason about the image. The largest available resolution is used.
+**Photos** are downloaded automatically and forwarded to the LLM as image attachments. If the model supports vision (Claude, GPT-6, Gemini), it can see and reason about the image. The largest available resolution is used.
 
 **Voice messages** are downloaded as OGG audio and passed through the configured STT pipeline (Whisper local or API). The transcribed text is sent to the LLM as the user's message. See the [Gateway docs](/docs/channels/gateway) for STT configuration.
 

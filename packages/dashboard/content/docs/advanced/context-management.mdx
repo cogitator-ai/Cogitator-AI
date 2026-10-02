@@ -53,8 +53,8 @@ const manager = new ContextManager({
   compressionThreshold: 0.8,
 });
 
-const limit = manager.getModelContextLimit('openai/gpt-4o'); // 128000
-const limit2 = manager.getModelContextLimit('anthropic/claude-sonnet-4-20250514'); // 200000
+const limit = manager.getModelContextLimit('openai/gpt-6.1-sol'); // 1050000
+const limit2 = manager.getModelContextLimit('anthropic/claude-sonnet-5-5'); // 1000000
 ```
 
 ## Checking Context State
@@ -62,7 +62,7 @@ const limit2 = manager.getModelContextLimit('anthropic/claude-sonnet-4-20250514'
 Before compressing, you can inspect the current state:
 
 ```typescript
-const state = manager.checkState(messages, 'openai/gpt-4o');
+const state = manager.checkState(messages, 'openai/gpt-6.1-sol');
 
 console.log(state.currentTokens); // estimated tokens used
 console.log(state.maxTokens); // effective limit (minus output reserve)
@@ -95,7 +95,7 @@ const cog = new Cogitator({
   context: {
     strategy: 'sliding-window',
     windowSize: 15,
-    summaryModel: 'openai/gpt-4o-mini',
+    summaryModel: 'openai/gpt-6-luna',
   },
   // ...
 });
@@ -111,7 +111,7 @@ Uses an LLM to generate a comprehensive summary of older conversation history, p
 const cog = new Cogitator({
   context: {
     strategy: 'summarize',
-    summaryModel: 'openai/gpt-4o-mini',
+    summaryModel: 'openai/gpt-6-luna',
     windowSize: 5,
   },
   // ...
@@ -145,7 +145,7 @@ This is the recommended default -- it adapts to the situation without manual tun
 Every compression call returns detailed metrics:
 
 ```typescript
-const result = await manager.compress(messages, 'openai/gpt-4o');
+const result = await manager.compress(messages, 'openai/gpt-6.1-sol');
 
 console.log(result.messages); // compressed message array
 console.log(result.originalTokens); // tokens before compression
@@ -167,8 +167,8 @@ const manager = new ContextManager(
   { getBackend: (model) => myBackendRegistry.get(model) }
 );
 
-if (manager.shouldCompress(messages, 'openai/gpt-4o')) {
-  const { messages: compressed } = await manager.compress(messages, 'openai/gpt-4o');
+if (manager.shouldCompress(messages, 'openai/gpt-6.1-sol')) {
+  const { messages: compressed } = await manager.compress(messages, 'openai/gpt-6.1-sol');
   messages = compressed;
 }
 ```

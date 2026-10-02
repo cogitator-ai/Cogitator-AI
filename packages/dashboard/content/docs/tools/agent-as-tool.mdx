@@ -20,20 +20,20 @@ const cog = new Cogitator({
 
 const researcher = new Agent({
   name: 'researcher',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You research topics thoroughly and return detailed findings.',
   tools: [webSearch, webScrape],
 });
 
 const writer = new Agent({
   name: 'writer',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You write clear, well-structured articles from research notes.',
 });
 
 const manager = new Agent({
   name: 'manager',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions:
     'You coordinate research and writing tasks. Delegate research to the researcher and writing to the writer.',
   tools: [
@@ -136,20 +136,20 @@ One manager agent coordinates multiple specialist workers:
 ```typescript
 const codeReviewer = new Agent({
   name: 'code-reviewer',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'Review code for bugs, security issues, and style problems.',
 });
 
 const testWriter = new Agent({
   name: 'test-writer',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'Write comprehensive unit tests for the provided code.',
   tools: [fileRead, fileWrite],
 });
 
 const leadDev = new Agent({
   name: 'lead-developer',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You are a tech lead. Review code with the reviewer, then have tests written.',
   tools: [
     agentAsTool(cog, codeReviewer, {
@@ -171,19 +171,19 @@ Use different models for different sub-agents based on task complexity:
 ```typescript
 const cheapSummarizer = new Agent({
   name: 'summarizer',
-  model: 'openai/gpt-4o-mini',
+  model: 'openai/gpt-6-luna',
   instructions: 'Summarize text concisely.',
 });
 
 const deepAnalyst = new Agent({
   name: 'analyst',
-  model: 'anthropic/claude-sonnet-4-20250514',
+  model: 'anthropic/claude-sonnet-5-5',
   instructions: 'Perform deep analysis with nuanced reasoning.',
 });
 
 const router = new Agent({
   name: 'router',
-  model: 'openai/gpt-4o-mini',
+  model: 'openai/gpt-6-luna',
   instructions:
     'Route tasks: use summarize for simple summaries, use analyze for complex analysis.',
   tools: [

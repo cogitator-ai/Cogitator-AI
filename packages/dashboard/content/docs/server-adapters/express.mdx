@@ -23,7 +23,7 @@ const app = express();
 
 const cogitator = new Cogitator({
   llm: {
-    defaultModel: 'openai/gpt-4o',
+    defaultModel: 'openai/gpt-6.1-sol',
     providers: {
       openai: { apiKey: process.env.OPENAI_API_KEY! },
     },
@@ -40,7 +40,7 @@ const search = tool({
 const assistant = new Agent({
   name: 'assistant',
   description: 'Assistant with web search',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You are a helpful assistant with web search capabilities.',
   tools: [search],
 });

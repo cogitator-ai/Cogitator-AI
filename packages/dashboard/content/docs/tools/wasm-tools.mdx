@@ -17,7 +17,7 @@ import { createCalcTool, createHashTool, createCsvTool } from '@cogitator-ai/was
 
 const agent = new Agent({
   name: 'data-processor',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: [createCalcTool(), createHashTool(), createCsvTool()],
 });
 ```
@@ -134,7 +134,7 @@ const tool = await manager.load('./plugins/calc.wasm');
 
 const agent = new Agent({
   name: 'dynamic-agent',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: manager.getTools(),
 });
 ```

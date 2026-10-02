@@ -27,7 +27,7 @@ const cogitator = new Cogitator({
 });
 const agent = new Agent({
   name: 'bot',
-  model: 'google/gemini-2.5-flash',
+  model: 'google/gemini-3.8-flash',
   instructions: 'You are a helpful assistant.',
 });
 
@@ -350,7 +350,7 @@ Voice messages are transcribed automatically. STT provider is selected by availa
 
 1. **Deepgram** — set `DEEPGRAM_API_KEY` (nova-3 model, fast and accurate)
 2. **Groq** — set `GROQ_API_KEY` (free tier available)
-3. **OpenAI** — set `OPENAI_API_KEY`
+3. **OpenAI** — set `OPENAI_API_KEY` (`gpt-transcribe` model)
 4. **Local Whisper** — downloads ~75MB model on first use, runs offline (no API key needed)
 
 Images are passed to the LLM as vision input if the model supports it. Attachments that arrive only as URLs (Discord) are downloaded (default cap 25 MiB). Text-like files (`.md`, `.json`, `text/*`, …) are inlined into the prompt; other files and videos are announced to the model.

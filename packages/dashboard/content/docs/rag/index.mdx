@@ -165,7 +165,7 @@ const [search, ingest] = ragTools(pipeline, {
 
 const agent = new Agent({
   name: 'docs-assistant',
-  model: 'google/gemini-2.5-flash',
+  model: 'google/gemini-3.8-flash',
   instructions: 'Use rag_search before answering and cite the source.',
   tools: [tool(search), tool(ingest)],
 });

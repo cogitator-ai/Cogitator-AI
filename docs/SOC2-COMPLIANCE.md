@@ -289,7 +289,7 @@ const cogitator = new Cogitator({
 
 const agent = new Agent({
   name: 'my-agent',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: '...',
   maxIterations: 10, // prevent infinite loops
   maxTokens: 4096, // output token limit

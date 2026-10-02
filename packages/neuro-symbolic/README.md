@@ -442,13 +442,13 @@ nsTools.instance.loadLogicProgram(`
 
 const agent = new Agent({
   name: 'reasoning-agent',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: nsTools.all,
   instructions:
     'Use query_logic for Prolog queries, solve_constraints for SAT/SMT problems and validate_plan to verify action sequences.',
 });
 
-const cogitator = new Cogitator({ llm: { defaultModel: 'openai/gpt-4o' } });
+const cogitator = new Cogitator({ llm: { defaultModel: 'openai/gpt-6.1-sol' } });
 const result = await cogitator.run(agent, { input: 'Who are the grandparents of ann?' });
 ```
 

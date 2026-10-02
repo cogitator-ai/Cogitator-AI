@@ -12,11 +12,11 @@ import { initializeModels, getModel, getPrice, listModels } from '@cogitator-ai/
 
 await initializeModels();
 
-const model = getModel('gpt-5.4-mini');
-console.log(model?.contextWindow); // 272000
+const model = getModel('gpt-6.1-sol');
+console.log(model?.contextWindow); // 1050000
 console.log(model?.capabilities?.supportsVision); // true
 
-const price = getPrice('claude-sonnet-4-6');
+const price = getPrice('claude-sonnet-5-5');
 console.log(`$${price?.input}/M input, $${price?.output}/M output`);
 ```
 
@@ -43,20 +43,20 @@ await registry.initialize();
 
 ### Options
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `cache.ttl` | 24 hours | Cache time-to-live in milliseconds |
-| `cache.storage` | `'memory'` | `'memory'` or `'file'` |
-| `cache.filePath` | `~/.cogitator/models-cache.json` | File path for file-based cache |
-| `autoRefresh` | `false` | Automatically refresh data in background |
-| `refreshInterval` | 24 hours | Refresh interval in milliseconds |
-| `fallbackToBuiltin` | `true` | Use built-in models when fetch fails |
+| Option              | Default                          | Description                              |
+| ------------------- | -------------------------------- | ---------------------------------------- |
+| `cache.ttl`         | 24 hours                         | Cache time-to-live in milliseconds       |
+| `cache.storage`     | `'memory'`                       | `'memory'` or `'file'`                   |
+| `cache.filePath`    | `~/.cogitator/models-cache.json` | File path for file-based cache           |
+| `autoRefresh`       | `false`                          | Automatically refresh data in background |
+| `refreshInterval`   | 24 hours                         | Refresh interval in milliseconds         |
+| `fallbackToBuiltin` | `true`                           | Use built-in models when fetch fails     |
 
 ### Methods
 
 ```typescript
-registry.getModel('gpt-5.4-mini');
-registry.getPrice('gpt-5.4-mini');
+registry.getModel('gpt-6.1-sol');
+registry.getPrice('gpt-6.1-sol');
 registry.listModels({ provider: 'openai', supportsTools: true });
 registry.listProviders();
 registry.getProvider('anthropic');
@@ -88,14 +88,14 @@ const largeContext = listModels({
 
 ### Filter Options
 
-| Filter | Type | Description |
-| --- | --- | --- |
-| `provider` | `string` | Filter by provider ID |
-| `supportsTools` | `boolean` | Filter by tool/function calling support |
-| `supportsVision` | `boolean` | Filter by vision/image support |
-| `minContextWindow` | `number` | Minimum context window size |
-| `maxPricePerMillion` | `number` | Max average price per million tokens |
-| `excludeDeprecated` | `boolean` | Exclude deprecated models |
+| Filter               | Type      | Description                             |
+| -------------------- | --------- | --------------------------------------- |
+| `provider`           | `string`  | Filter by provider ID                   |
+| `supportsTools`      | `boolean` | Filter by tool/function calling support |
+| `supportsVision`     | `boolean` | Filter by vision/image support          |
+| `minContextWindow`   | `number`  | Minimum context window size             |
+| `maxPricePerMillion` | `number`  | Max average price per million tokens    |
+| `excludeDeprecated`  | `boolean` | Exclude deprecated models               |
 
 ## Built-in Providers
 
@@ -107,14 +107,22 @@ Additional providers are automatically discovered when LiteLLM data is fetched.
 
 ## Built-in Models
 
-Built-in fallbacks cover current model families for major providers, including OpenAI GPT-5.5/GPT-5.4, Anthropic Claude Fable 5 / Opus 4.8 / Sonnet 4.6, and Google Gemini 3.5 Flash / Gemini 3.1 models.
+Built-in fallbacks cover current model families for major providers, including OpenAI GPT-6 (`gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-luna`) and GPT-5.6/5.5, Anthropic Claude Opus 5.5 / Sonnet 5.5 / Fable 5.1 / Haiku 4.5, and Google Gemini 3.8 Flash / Gemini 3.5 Flash-Lite / Gemini 3.1 Pro Preview.
+
+Retired or retiring models stay in the registry with `deprecated: true` so lookups and pricing keep working for existing configs — among them `o3`, `o3-mini`, `o3-pro`, `o4-mini`, `gpt-4.1-nano`, `gpt-5.4-nano`, `gpt-4`, `gpt-4-turbo`, `claude-sonnet-4`, `claude-opus-4`, `claude-opus-4-1`, the Claude 3.x models, and Gemini 2.5 / 2.0 / 1.5. Use `excludeDeprecated: true` (or filter on `model.deprecated`) to skip them.
 
 ```typescript
-import { BUILTIN_MODELS, OPENAI_MODELS, ANTHROPIC_MODELS, GOOGLE_MODELS } from '@cogitator-ai/models';
+import {
+  BUILTIN_MODELS,
+  OPENAI_MODELS,
+  ANTHROPIC_MODELS,
+  GOOGLE_MODELS,
+} from '@cogitator-ai/models';
 
 const activeOpenAI = OPENAI_MODELS.filter((model) => !model.deprecated);
 const cheapToolModels = BUILTIN_MODELS.filter(
-  (model) => model.capabilities?.supportsTools && (model.pricing.input + model.pricing.output) / 2 <= 5
+  (model) =>
+    model.capabilities?.supportsTools && (model.pricing.input + model.pricing.output) / 2 <= 5
 );
 ```
 
@@ -179,8 +187,8 @@ import {
 
 await initializeModels();
 
-getModel('gpt-5.4-mini');
-getPrice('claude-sonnet-4-6');
+getModel('gpt-6.1-sol');
+getPrice('claude-sonnet-5-5');
 listModels({ provider: 'google' });
 
 shutdownModels();

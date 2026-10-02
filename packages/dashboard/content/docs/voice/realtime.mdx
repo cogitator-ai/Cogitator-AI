@@ -9,7 +9,7 @@ Realtime mode bypasses the STT -> Agent -> TTS pipeline entirely. Instead, the L
 
 `RealtimeSession` is a unified interface over two provider-specific adapters:
 
-- **OpenAI Realtime API (GA)** — WebSocket connection to `gpt-realtime-mini` with server-side VAD, input transcription and tool calling
+- **OpenAI Realtime API (GA)** — WebSocket connection to `gpt-realtime-2.1-mini` with server-side VAD, input transcription and tool calling
 - **Gemini Live API** — WebSocket connection to `gemini-3.8-live` with native audio, input/output transcription and tool calling
 
 ## RealtimeSession
@@ -22,7 +22,7 @@ import { RealtimeSession } from '@cogitator-ai/voice';
 const session = new RealtimeSession({
   provider: 'openai',
   apiKey: process.env.OPENAI_API_KEY!,
-  model: 'gpt-realtime-mini',
+  model: 'gpt-realtime-2.1-mini',
   voice: 'marin',
   instructions: 'You are a helpful assistant.',
 });
@@ -111,13 +111,13 @@ session.on('error', (error: Error) => {
 
 ## OpenAI Realtime API
 
-Default model: `gpt-realtime-mini` (also `gpt-realtime`). Connects via WebSocket to `wss://api.openai.com/v1/realtime` using the GA interface (the beta `OpenAI-Beta: realtime=v1` interface was shut down in May 2026).
+Default model: `gpt-realtime-2.1-mini` (also `gpt-realtime-2.1`). Connects via WebSocket to `wss://api.openai.com/v1/realtime` using the GA interface (the beta `OpenAI-Beta: realtime=v1` interface was shut down in May 2026).
 
 ```typescript
 const session = new RealtimeSession({
   provider: 'openai',
   apiKey: process.env.OPENAI_API_KEY!,
-  model: 'gpt-realtime-mini',
+  model: 'gpt-realtime-2.1-mini',
   voice: 'marin',
   instructions: 'You are a friendly assistant who speaks concisely.',
   tools: [
@@ -145,7 +145,7 @@ session.pushAudio(pcm16Chunk);
 
 - **Server-side VAD** — OpenAI handles turn detection, emits `speech_start` events
 - **Tool calling** — all function calls of a completed response are executed, their outputs sent back, then a single follow-up response is requested; unknown tools and invalid arguments are answered with an error output
-- **Input audio transcription** — user speech transcripts (`gpt-4o-mini-transcribe`) via `transcript` event
+- **Input audio transcription** — user speech transcripts (`gpt-live-transcribe`) via `transcript` event
 - **Audio format** — PCM16 24kHz input and output
 
 ### OpenAI Voices
@@ -154,7 +154,7 @@ session.pushAudio(pcm16Chunk);
 
 ## Gemini Live API
 
-Default model: `gemini-3.8-live` (also `gemini-3.1-flash-live-preview`, `gemini-2.5-flash-native-audio-latest`). Connects via WebSocket to the Gemini Developer API `BidiGenerateContent` endpoint, authenticating with the `x-goog-api-key` header.
+Default model: `gemini-3.8-live` (also `gemini-3.1-flash-live-preview`). Connects via WebSocket to the Gemini Developer API `BidiGenerateContent` endpoint, authenticating with the `x-goog-api-key` header.
 
 ```typescript
 const session = new RealtimeSession({
@@ -196,17 +196,17 @@ session.pushAudio(pcm16Chunk);
 
 ## Provider Comparison
 
-| Feature          | OpenAI Realtime     | Gemini Live                                        |
-| ---------------- | ------------------- | -------------------------------------------------- |
-| Default model    | `gpt-realtime-mini` | `gemini-3.8-live`                                  |
-| Server-side VAD  | Yes                 | Yes                                                |
-| Tool calling     | Yes                 | Yes                                                |
-| User transcripts | Yes                 | Yes                                                |
-| Text input       | Yes                 | Yes                                                |
-| Interruption     | `response.cancel`   | Local audio drop; server `interrupted` on barge-in |
-| Input audio      | PCM16 24kHz         | PCM16 16kHz                                        |
-| Output audio     | PCM16 24kHz         | PCM16 24kHz                                        |
-| Default voice    | `marin`             | `Puck`                                             |
+| Feature          | OpenAI Realtime         | Gemini Live                                        |
+| ---------------- | ----------------------- | -------------------------------------------------- |
+| Default model    | `gpt-realtime-2.1-mini` | `gemini-3.8-live`                                  |
+| Server-side VAD  | Yes                     | Yes                                                |
+| Tool calling     | Yes                     | Yes                                                |
+| User transcripts | Yes                     | Yes                                                |
+| Text input       | Yes                     | Yes                                                |
+| Interruption     | `response.cancel`       | Local audio drop; server `interrupted` on barge-in |
+| Input audio      | PCM16 24kHz             | PCM16 16kHz                                        |
+| Output audio     | PCM16 24kHz             | PCM16 24kHz                                        |
+| Default voice    | `marin`                 | `Puck`                                             |
 
 ## Realtime with VoiceAgent
 
@@ -220,7 +220,7 @@ const voiceAgent = new VoiceAgent({
   mode: 'realtime',
   realtimeProvider: 'openai',
   realtimeApiKey: process.env.OPENAI_API_KEY!,
-  realtimeModel: 'gpt-realtime-mini',
+  realtimeModel: 'gpt-realtime-2.1-mini',
   voice: 'marin',
   tools: [weatherTool],
 });

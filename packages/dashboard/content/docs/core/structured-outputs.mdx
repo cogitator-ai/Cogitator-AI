@@ -13,7 +13,7 @@ import { z } from 'zod';
 
 const agent = new Agent({
   name: 'extractor',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'Extract structured data from the given text.',
   responseFormat: {
     type: 'json_schema',
@@ -45,7 +45,7 @@ The LLM is instructed to return valid JSON, but without a specific schema. Usefu
 ```typescript
 const agent = new Agent({
   name: 'json-agent',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'Respond with a JSON object containing your analysis.',
   responseFormat: { type: 'json' },
 });
@@ -74,7 +74,7 @@ const sentimentSchema = z.object({
 
 const agent = new Agent({
   name: 'sentiment-analyzer',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'Analyze the sentiment and extract entities from the input text.',
   responseFormat: {
     type: 'json_schema',
@@ -89,13 +89,13 @@ Each LLM provider implements structured outputs differently. Cogitator abstracts
 
 ### OpenAI
 
-OpenAI natively supports all three modes. For `json_schema`, it uses the `response_format` parameter with strict schema enforcement:
+OpenAI natively supports all three modes. The official OpenAI backend uses the Responses API, where `json_schema` is sent as `text.format` with strict schema enforcement:
 
 ```typescript
-// what Cogitator sends under the hood
-response_format: {
-  type: 'json_schema',
-  json_schema: {
+// what Cogitator sends under the hood (Responses API)
+text: {
+  format: {
+    type: 'json_schema',
     name: 'response',
     schema: { /* your Zod schema converted to JSON Schema */ },
     strict: true,
@@ -103,14 +103,20 @@ response_format: {
 }
 ```
 
+OpenAI-compatible providers (and requests with stop sequences) use Chat Completions, where the same schema goes into `response_format: { type: 'json_schema', json_schema: { ... } }`.
+
 ### Anthropic
 
-Anthropic does not have native JSON schema support. Cogitator uses a **tool trick** -- it creates a synthetic tool named `__json_response` with your schema as its parameters and forces the LLM to call it:
+- `json` mode: Appends "respond with valid JSON only" to the system prompt
+- `json_schema` mode on Claude 4.5+ and Fable: uses **native structured outputs** (`output_config.format`). The schema is adapted to the subset Claude accepts: every object gets `additionalProperties: false`, `oneOf` becomes `anyOf`, and unsupported constraints (numeric bounds, string lengths, `maxItems`, unknown formats) are moved into the description so the model still sees them
+- `json_schema` mode on older models: Cogitator uses a **tool trick** -- it creates a synthetic tool named `__json_response` with your schema as its parameters and forces the LLM to call it. The output is extracted from the tool call arguments
+
+Either way you get the same structured response regardless of provider.
+
+### AWS Bedrock
 
 - `json` mode: Appends "respond with valid JSON only" to the system prompt
-- `json_schema` mode: Injects a tool with your schema and sets `tool_choice` to require it
-
-The output is extracted from the tool call arguments, so you get the same structured response regardless of provider.
+- `json_schema` mode: enforced with Converse `outputConfig.textFormat` on Claude 4.5 – 4.6; other models get a system-prompt instruction containing the schema
 
 ### Google (Gemini)
 
@@ -184,7 +190,7 @@ const parsed = analysisSchema.parse(JSON.parse(result.output));
 ```typescript
 const classifier = new Agent({
   name: 'classifier',
-  model: 'openai/gpt-4o-mini',
+  model: 'openai/gpt-6-luna',
   instructions: 'Classify the support ticket into a category and priority.',
   temperature: 0,
   responseFormat: {
@@ -203,7 +209,7 @@ const classifier = new Agent({
 ```typescript
 const extractor = new Agent({
   name: 'extractor',
-  model: 'anthropic/claude-sonnet-4-20250514',
+  model: 'anthropic/claude-sonnet-5-5',
   instructions: 'Extract all contact information from the given text.',
   responseFormat: {
     type: 'json_schema',

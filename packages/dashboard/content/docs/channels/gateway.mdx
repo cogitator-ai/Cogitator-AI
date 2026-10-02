@@ -19,7 +19,7 @@ import { Gateway, telegramChannel } from '@cogitator-ai/channels';
 
 const agent = new Agent({
   name: 'assistant',
-  model: 'anthropic/claude-sonnet-4-20250514',
+  model: 'anthropic/claude-sonnet-5-5',
   instructions: 'You are a helpful personal assistant.',
 });
 
@@ -30,9 +30,7 @@ const gateway = new Gateway({
       providers: { anthropic: { apiKey: process.env.ANTHROPIC_API_KEY } },
     },
   }),
-  channels: [
-    telegramChannel({ token: process.env.TG_TOKEN! }),
-  ],
+  channels: [telegramChannel({ token: process.env.TG_TOKEN! })],
 });
 
 await gateway.start();
@@ -112,13 +110,13 @@ const gateway = new Gateway({
   reactions: {
     enabled: true,
     emojis: {
-      queued: '👀',    // message received
-      thinking: '🤔',  // LLM is generating
-      tool: '🔥',      // tool execution
-      done: '👍',      // response sent
-      error: '😱',     // something failed
+      queued: '👀', // message received
+      thinking: '🤔', // LLM is generating
+      tool: '🔥', // tool execution
+      done: '👍', // response sent
+      error: '😱', // something failed
     },
-    debounceMs: 700,    // skip rapid phase changes
+    debounceMs: 700, // skip rapid phase changes
     stallSoftMs: 10000, // show 🥱 after 10s on same phase
     stallHardMs: 30000, // show 😨 after 30s
   },
@@ -136,8 +134,8 @@ const gateway = new Gateway({
   // ...
   debounce: {
     enabled: true,
-    delayMs: 1500,                  // wait 1.5s of silence before processing
-    byChannel: { discord: 2000 },   // per-channel override
+    delayMs: 1500, // wait 1.5s of silence before processing
+    byChannel: { discord: 2000 }, // per-channel override
   },
 });
 ```
@@ -155,7 +153,7 @@ const gateway = new Gateway({
     enabled: true,
     includeTimestamp: true,
     includeElapsed: true,
-    timezone: 'utc',         // 'utc' | 'local' | IANA timezone string
+    timezone: 'utc', // 'utc' | 'local' | IANA timezone string
   },
 });
 ```
@@ -181,12 +179,12 @@ const gateway = new Gateway({
 });
 ```
 
-| Mode | Behavior |
-|------|----------|
-| `parallel` | Default. All messages processed immediately. |
-| `sequential` | FIFO per thread. Next message waits for current to finish. |
-| `interrupt` | Abort current processing (the run's `AbortSignal` fires), start new message immediately. Aborted runs are not reported to `onError`. |
-| `collect` | Buffer messages during processing, merge all when idle. |
+| Mode         | Behavior                                                                                                                             |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `parallel`   | Default. All messages processed immediately.                                                                                         |
+| `sequential` | FIFO per thread. Next message waits for current to finish.                                                                           |
+| `interrupt`  | Abort current processing (the run's `AbortSignal` fires), start new message immediately. Aborted runs are not reported to `onError`. |
+| `collect`    | Buffer messages during processing, merge all when idle.                                                                              |
 
 `parallel` is the default and matches the behavior before Phase 4. For personal assistants, `sequential` or `collect` usually give the best UX.
 
@@ -219,16 +217,16 @@ const gateway = new Gateway({
 
 ## Platform Comparison
 
-| Feature | Telegram | Discord | Slack | WhatsApp | WebChat |
-|---------|----------|---------|-------|----------|---------|
-| Streaming (edit) | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Reactions | ✅ | ✅ | ✅ | ❌ | ❌ |
-| Typing indicator | ✅ | ✅ | ❌ | ✅ | ✅ |
-| Media (vision) | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Voice (STT) | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Max message length | 4096 | 2000 | 40000 | 65536 | unlimited |
-| Public URL needed | webhook only | no | HTTP mode only | no | no |
-| Auth model | Bot token | Bot token | 3 tokens | QR code | custom |
+| Feature            | Telegram     | Discord   | Slack          | WhatsApp | WebChat   |
+| ------------------ | ------------ | --------- | -------------- | -------- | --------- |
+| Streaming (edit)   | ✅           | ✅        | ✅             | ✅       | ✅        |
+| Reactions          | ✅           | ✅        | ✅             | ❌       | ❌        |
+| Typing indicator   | ✅           | ✅        | ❌             | ✅       | ✅        |
+| Media (vision)     | ✅           | ✅        | ✅             | ✅       | ❌        |
+| Voice (STT)        | ✅           | ✅        | ✅             | ✅       | ❌        |
+| Max message length | 4096         | 2000      | 40000          | 65536    | unlimited |
+| Public URL needed  | webhook only | no        | HTTP mode only | no       | no        |
+| Auth model         | Bot token    | Bot token | 3 tokens       | QR code  | custom    |
 
 ## Session Management
 
@@ -249,7 +247,7 @@ const gateway = new Gateway({
       strategy: 'summary',
       threshold: 100, // messages in the thread before compaction runs
       keepRecent: 20, // newest messages kept verbatim
-      summaryModel: 'google/gemini-2.5-flash', // optional, defaults to the agent model
+      summaryModel: 'google/gemini-3.8-flash', // optional, defaults to the agent model
     },
   },
 });
@@ -305,7 +303,7 @@ WEBCHAT_SECRET=your-secret-token
 
 ```typescript
 process.on('SIGTERM', async () => {
-  await gateway.stop();  // flushes debouncer, disposes queue, stops channels
+  await gateway.stop(); // flushes debouncer, disposes queue, stops channels
   process.exit(0);
 });
 ```

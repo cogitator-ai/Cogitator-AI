@@ -1,6 +1,6 @@
 ---
 title: STT Providers
-description: Speech-to-text providers for @cogitator-ai/voice — OpenAI (gpt-4o-mini-transcribe) for batch transcription and Deepgram (nova-3) for real-time streaming with interim results.
+description: Speech-to-text providers for @cogitator-ai/voice — OpenAI (gpt-transcribe) for batch transcription and Deepgram (nova-3) for real-time streaming with interim results.
 ---
 
 ## Overview
@@ -19,26 +19,26 @@ Both providers support batch transcription via `transcribe()` and streaming via 
 
 ## Provider Comparison
 
-| Feature          | OpenAI STT                       | Deepgram STT                 |
-| ---------------- | -------------------------------- | ---------------------------- |
-| Default model    | `gpt-4o-mini-transcribe`         | `nova-3`                     |
-| Streaming        | Buffered (transcribes on close)  | Real-time WebSocket          |
-| Interim results  | No                               | Yes                          |
-| Word timestamps  | `whisper-1` only                 | Yes                          |
-| Endpointing      | No                               | Configurable                 |
-| Auto-punctuation | Yes                              | Yes                          |
-| Other models     | `gpt-4o-transcribe`, `whisper-1` | `nova-2`, `enhanced`, `base` |
+| Feature          | OpenAI STT                                                 | Deepgram STT                 |
+| ---------------- | ---------------------------------------------------------- | ---------------------------- |
+| Default model    | `gpt-transcribe`                                           | `nova-3`                     |
+| Streaming        | Buffered (transcribes on close)                            | Real-time WebSocket          |
+| Interim results  | No                                                         | Yes                          |
+| Word timestamps  | `whisper-1` only                                           | Yes                          |
+| Endpointing      | No                                                         | Configurable                 |
+| Auto-punctuation | Yes                                                        | Yes                          |
+| Other models     | `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `whisper-1` | `nova-2`, `enhanced`, `base` |
 
 ## OpenAI STT
 
-Uses the OpenAI Audio Transcriptions API. Default model is `gpt-4o-mini-transcribe`.
+Uses the OpenAI Audio Transcriptions API. Default model is `gpt-transcribe`.
 
 ```typescript
 import { OpenAISTT } from '@cogitator-ai/voice';
 
 const stt = new OpenAISTT({
   apiKey: process.env.OPENAI_API_KEY!,
-  model: 'gpt-4o-mini-transcribe',
+  model: 'gpt-transcribe',
 });
 ```
 
@@ -54,7 +54,7 @@ console.log(detailed.duration, detailed.words);
 // [{ word: 'Hello', start: 0.0, end: 0.32, confidence: 1 }, ...]
 ```
 
-`gpt-4o(-mini)-transcribe` models only support the `json` response format, so word timestamps and duration are returned for `whisper-1` only. Input can be a containerized file (wav, mp3, ogg, flac, webm, mp4 — detected from magic bytes) or headerless PCM16 mono 16kHz, which is wrapped into WAV automatically.
+`gpt-transcribe` and `gpt-4o(-mini)-transcribe` only support the `json` response format, so word timestamps and duration are returned for `whisper-1` only. For `gpt-transcribe`, `language` is sent as a `languages` list and the language the API detects is returned in `result.language`. Input can be a containerized file (wav, mp3, ogg, flac, webm, mp4 — detected from magic bytes) or headerless PCM16 mono 16kHz, which is wrapped into WAV automatically.
 
 ### Streaming
 
@@ -74,11 +74,11 @@ const result = await stream.close();
 
 ### Configuration
 
-| Field     | Type     | Default                  | Description         |
-| --------- | -------- | ------------------------ | ------------------- |
-| `apiKey`  | `string` | required                 | OpenAI API key      |
-| `model`   | `string` | `gpt-4o-mini-transcribe` | Model ID            |
-| `baseURL` | `string` | —                        | Custom API base URL |
+| Field     | Type     | Default          | Description         |
+| --------- | -------- | ---------------- | ------------------- |
+| `apiKey`  | `string` | required         | OpenAI API key      |
+| `model`   | `string` | `gpt-transcribe` | Model ID            |
+| `baseURL` | `string` | —                | Custom API base URL |
 
 ## Deepgram STT
 

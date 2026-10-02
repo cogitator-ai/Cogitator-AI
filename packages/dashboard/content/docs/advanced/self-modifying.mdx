@@ -23,7 +23,7 @@ const llm = createLLMBackend('openai', {
 
 const agent = new Agent({
   name: 'adaptive-assistant',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'Solve problems adaptively.',
 });
 
@@ -168,20 +168,23 @@ Inside `SelfModifyingAgent`, meta-reasoning only intervenes when a step is incom
 ```typescript
 import { MetaReasoner } from '@cogitator-ai/self-modifying';
 
-const metaReasoner = new MetaReasoner({ llm, model: 'gpt-4o', config: metaReasoningConfig });
+const metaReasoner = new MetaReasoner({ llm, model: 'gpt-6.1-sol', config: metaReasoningConfig });
 
 const modeConfig = metaReasoner.initializeRun(runId);
 
-const observation = metaReasoner.observe({
-  runId,
-  iteration: 3,
-  goal: 'Analyze data',
-  currentMode: 'analytical',
-  tokensUsed: 1500,
-  timeElapsed: 5000,
-  iterationsRemaining: 2,
-  budgetRemaining: 0.6,
-}, insights);
+const observation = metaReasoner.observe(
+  {
+    runId,
+    iteration: 3,
+    goal: 'Analyze data',
+    currentMode: 'analytical',
+    tokensUsed: 1500,
+    timeElapsed: 5000,
+    iterationsRemaining: 2,
+    budgetRemaining: 0.6,
+  },
+  insights
+);
 
 const assessment = await metaReasoner.assess(observation);
 
@@ -210,16 +213,16 @@ import { ParameterOptimizer } from '@cogitator-ai/self-modifying';
 
 const optimizer = new ParameterOptimizer({
   llm,
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
   config: evolutionConfig,
   baseConfig: {
-    model: 'gpt-4o',
+    model: 'gpt-6.1-sol',
     temperature: 0.7,
     maxTokens: 4096,
     toolStrategy: 'sequential',
     reflectionDepth: 0,
   },
-  availableModels: ['gpt-4o', 'gpt-4o-mini'],
+  availableModels: ['gpt-6.1-sol', 'gpt-6-luna'],
 });
 
 const result = await optimizer.optimize('Complex reasoning task');
@@ -266,12 +269,14 @@ const validator = new ModificationValidator({
     safety: DEFAULT_SAFETY_CONSTRAINTS,
     capability: DEFAULT_CAPABILITY_CONSTRAINTS,
     resource: DEFAULT_RESOURCE_CONSTRAINTS,
-    custom: [{
-      id: 'no-external-apis',
-      name: 'No External APIs',
-      description: 'External API calls not allowed',
-      predicate: (request) => !JSON.stringify(request.changes).includes('fetch'),
-    }],
+    custom: [
+      {
+        id: 'no-external-apis',
+        name: 'No External APIs',
+        description: 'External API calls not allowed',
+        predicate: (request) => !JSON.stringify(request.changes).includes('fetch'),
+      },
+    ],
   },
 });
 
@@ -293,7 +298,10 @@ import { RollbackManager } from '@cogitator-ai/self-modifying';
 const rollbackManager = new RollbackManager({ maxCheckpoints: 10 });
 
 const checkpoint = await rollbackManager.createCheckpoint(
-  agentName, agentConfig, currentTools, modifications
+  agentName,
+  agentConfig,
+  currentTools,
+  modifications
 );
 
 const restored = await rollbackManager.rollbackTo(checkpoint.id);
@@ -349,7 +357,7 @@ Normalizes LLM backend calls — uses `complete()` if available, falls back to `
 ```typescript
 import { llmChat } from '@cogitator-ai/self-modifying';
 
-const response = await llmChat(llm, [
-  { role: 'user', content: 'Analyze this data' },
-], { model: 'gpt-4o' });
+const response = await llmChat(llm, [{ role: 'user', content: 'Analyze this data' }], {
+  model: 'gpt-6.1-sol',
+});
 ```

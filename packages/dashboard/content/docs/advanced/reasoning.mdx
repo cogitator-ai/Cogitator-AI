@@ -17,7 +17,7 @@ const cogitator = new Cogitator({
   llm: {
     defaultProvider: 'openai',
     providers: {
-      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' },
+      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-6.1-sol' },
     },
   },
 });
@@ -34,7 +34,7 @@ const executor = new ThoughtTreeExecutor(cogitator, {
 const agent = new Agent({
   name: 'problem-solver',
   instructions: 'You solve complex problems by exploring multiple approaches.',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
 });
 
 const result = await executor.explore(agent, 'Design a caching strategy for a real-time dashboard');
@@ -79,7 +79,7 @@ The `BranchGenerator` asks the LLM to propose diverse approaches for a given nod
 ```typescript
 import { BranchGenerator } from '@cogitator-ai/core';
 
-const generator = new BranchGenerator(llmBackend, 'gpt-4o');
+const generator = new BranchGenerator(llmBackend, 'gpt-6.1-sol');
 
 const branches = await generator.generate(
   currentNode,
@@ -105,7 +105,7 @@ import { BranchEvaluator } from '@cogitator-ai/core';
 
 const evaluator = new BranchEvaluator({
   llm: llmBackend,
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
   reflectionEngine, // optional, enables reflection-based evaluation
   confidenceWeight: 0.5,
   progressWeight: 0.3,

@@ -341,7 +341,7 @@ const [ragSearch, ragIngest] = ragTools(pipeline, { allowedRoots: ['./knowledge-
 
 const agent = new Agent({
   name: 'docs-assistant',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'Use rag_search to find information before answering.',
   tools: [tool(ragSearch), tool(ragIngest)],
 });

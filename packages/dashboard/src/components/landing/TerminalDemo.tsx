@@ -12,7 +12,7 @@ const terminalLines = [
   { type: 'tool', text: '[Tool]  web_search → Found 12 results' },
   { type: 'agent', text: '[Agent] researcher → Synthesizing findings...' },
   { type: 'output', text: '' },
-  { type: 'model', text: '[Model] llama3.2:70b • 2,847 tokens • $0.004' },
+  { type: 'model', text: '[Model] qwen3:8b • 2,847 tokens • $0.004' },
   { type: 'output', text: '' },
   { type: 'result', text: '✓ WebGPU achieved full support in Chrome 121...' },
   { type: 'result', text: '✓ Firefox Nightly now supports compute shaders...' },

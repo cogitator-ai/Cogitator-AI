@@ -37,7 +37,7 @@ const queue = new JobQueue({
 const agentConfig = {
   name: 'Assistant',
   instructions: 'You are a helpful assistant.',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   provider: 'openai' as const,
   tools: [],
 };
@@ -131,7 +131,7 @@ interface QueueConfig {
 const agentConfig: SerializedAgent = {
   name: 'Researcher',
   instructions: 'Research and summarize topics.',
-  model: 'openai/gpt-4o', // or 'gpt-4o' — the provider is prepended when missing
+  model: 'openai/gpt-6.1-sol', // or 'gpt-6.1-sol' — the provider is prepended when missing
   provider: 'openai',
   temperature: 0.7,
   maxTokens: 2048,
@@ -658,7 +658,7 @@ async function main() {
   const agentConfig = {
     name: 'Summarizer',
     instructions: 'Summarize the given text concisely.',
-    model: 'openai/gpt-4o',
+    model: 'openai/gpt-6.1-sol',
     provider: 'openai' as const,
     tools: [],
   };

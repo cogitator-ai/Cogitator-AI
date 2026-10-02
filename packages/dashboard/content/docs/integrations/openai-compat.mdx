@@ -46,7 +46,7 @@ const openai = new OpenAI({
 });
 
 const assistant = await openai.beta.assistants.create({
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
   name: 'My Assistant',
   instructions: 'You are a helpful assistant with access to tools.',
 });
@@ -65,7 +65,7 @@ const run = await openai.beta.threads.runs.createAndPoll(thread.id, {
 const messages = await openai.beta.threads.messages.list(thread.id); // newest first
 ```
 
-Assistant `model` values are Cogitator model strings (`gpt-4o` uses the default provider, `ollama/llama3.2` selects one explicitly). The `cogitator` id listed by `GET /v1/models` maps to the server's `defaultModel`.
+Assistant `model` values are Cogitator model strings (`gpt-6.1-sol` uses the default provider, `ollama/llama3.2` selects one explicitly). The `cogitator` id listed by `GET /v1/models` maps to the server's `defaultModel`.
 
 ## OpenAIServer
 
@@ -138,7 +138,7 @@ import { createOpenAIAdapter } from '@cogitator-ai/openai-compat';
 const adapter = createOpenAIAdapter(cog, { tools: [calculator] });
 
 const assistant = await adapter.createAssistant({
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
   name: 'Math Helper',
   instructions: 'Help with math problems.',
 });
@@ -209,7 +209,7 @@ const storage = new RedisThreadStorage({
 });
 await storage.connect();
 
-const server = createOpenAIServer(cog, { storage, defaultModel: 'openai/gpt-4o' });
+const server = createOpenAIServer(cog, { storage, defaultModel: 'openai/gpt-6.1-sol' });
 // or in-process: createOpenAIAdapter(cog, { storage })
 ```
 

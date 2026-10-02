@@ -41,14 +41,14 @@ const add = tool({
 });
 
 const cogitator = new Cogitator({
-  llm: { defaultModel: 'openai/gpt-4o-mini' },
+  llm: { defaultModel: 'openai/gpt-6-luna' },
 });
 
 const server = createOpenAIServer(cogitator, {
   port: 8080,
   tools: [add],
   apiKeys: ['sk-my-secret-key'],
-  defaultModel: 'openai/gpt-4o-mini', // used for the advertised `cogitator` model id
+  defaultModel: 'openai/gpt-6-luna', // used for the advertised `cogitator` model id
 });
 
 await server.start();
@@ -92,7 +92,7 @@ const stream = openai.beta.threads.runs
 await stream.finalRun();
 ```
 
-Assistant `model` values are Cogitator model strings (`openai/gpt-4o`, `ollama/llama3.2:latest`, ...). The id `cogitator` listed by `GET /v1/models` maps to the server's `defaultModel`.
+Assistant `model` values are Cogitator model strings (`openai/gpt-6.1-sol`, `ollama/llama3.2:latest`, ...). The id `cogitator` listed by `GET /v1/models` maps to the server's `defaultModel`.
 
 ---
 
@@ -179,7 +179,7 @@ const adapter = createOpenAIAdapter(cogitator, {
 
 ```typescript
 const assistant = await adapter.createAssistant({
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   name: 'Code Helper',
   instructions: 'You help write code',
   temperature: 0.7,
@@ -230,7 +230,7 @@ await adapter.deleteThread(thread.id);
 ```typescript
 const run = await adapter.createRun(thread.id, {
   assistant_id: assistant.id,
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'Be concise',
   temperature: 0.5,
   additional_messages: [{ role: 'user', content: 'Extra context' }],
@@ -300,7 +300,7 @@ interface StoredAssistant {
 }
 
 const assistant = await manager.createAssistant({
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
   name: 'Helper',
   instructions: 'Be helpful',
 });
@@ -465,7 +465,7 @@ import { Cogitator } from '@cogitator-ai/core';
 const storage = new RedisThreadStorage({ host: 'localhost' });
 await storage.connect();
 
-const cogitator = new Cogitator({ llm: { defaultModel: 'openai/gpt-4o' } });
+const cogitator = new Cogitator({ llm: { defaultModel: 'openai/gpt-6.1-sol' } });
 
 // In-process adapter backed by Redis
 const adapter = new OpenAIAdapter(cogitator, { tools: [], storage });
@@ -973,7 +973,7 @@ const runCode = tool({
 });
 
 const cogitator = new Cogitator({
-  llm: { defaultModel: 'openai/gpt-4o' },
+  llm: { defaultModel: 'openai/gpt-6.1-sol' },
 });
 
 const server = createOpenAIServer(cogitator, {
@@ -991,7 +991,7 @@ const openai = new OpenAI({
 const assistant = await openai.beta.assistants.create({
   name: 'Code Runner',
   instructions: 'You can run Python code using the run_code tool.',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
 });
 // Server-side tools (`tools` on the server) are available to every run without
 // being declared on the assistant. Declare `function` tools only for functions
@@ -1044,7 +1044,7 @@ const localAssistant = await openai.beta.assistants.create({
 
 const cloudAssistant = await openai.beta.assistants.create({
   name: 'Cloud Assistant',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'Complex reasoning tasks',
 });
 ```

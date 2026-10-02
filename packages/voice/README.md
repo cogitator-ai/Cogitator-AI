@@ -20,7 +20,7 @@ pnpm add onnxruntime-node  # Silero VAD (neural network-based)
 
 - **Pipeline Mode** — STT -> Agent -> TTS, works with any Cogitator agent and LLM backend
 - **Realtime Mode** — Native speech-to-speech via OpenAI Realtime API or Gemini Live API
-- **2 STT Providers** — OpenAI (gpt-4o-mini-transcribe) and Deepgram (nova-3, real-time streaming)
+- **2 STT Providers** — OpenAI (gpt-transcribe) and Deepgram (nova-3, real-time streaming)
 - **2 TTS Providers** — OpenAI (gpt-4o-mini-tts) and ElevenLabs (eleven_flash_v2_5, ~75ms latency)
 - **2 VAD Providers** — Energy-based (zero deps) and Silero (ONNX neural network)
 - **WebSocket Transport** — Built-in server for browser/mobile clients
@@ -45,7 +45,7 @@ import {
 const cogitator = new Cogitator({ memory: { adapter: 'memory' } });
 const agent = new Agent({
   name: 'assistant',
-  model: 'openai/gpt-4o-mini',
+  model: 'openai/gpt-6-luna',
   instructions: 'You are a helpful voice assistant. Keep answers short.',
 });
 
@@ -68,10 +68,10 @@ Connect from any WebSocket client at `ws://localhost:8080/voice` — send binary
 
 ## STT Providers
 
-| Provider      | Default Model            | Streaming           | Word Timestamps  | Notes                                          |
-| ------------- | ------------------------ | ------------------- | ---------------- | ---------------------------------------------- |
-| `OpenAISTT`   | `gpt-4o-mini-transcribe` | Buffered            | `whisper-1` only | Also supports `gpt-4o-transcribe`, `whisper-1` |
-| `DeepgramSTT` | `nova-3`                 | Real-time WebSocket | Yes              | Interim results, endpointing, auto-punctuation |
+| Provider      | Default Model    | Streaming           | Word Timestamps  | Notes                                                                    |
+| ------------- | ---------------- | ------------------- | ---------------- | ------------------------------------------------------------------------ |
+| `OpenAISTT`   | `gpt-transcribe` | Buffered            | `whisper-1` only | Also supports `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `whisper-1` |
+| `DeepgramSTT` | `nova-3`         | Real-time WebSocket | Yes              | Interim results, endpointing, auto-punctuation                           |
 
 Both providers accept containerized audio (wav, mp3, ogg, flac, webm, mp4 — detected from magic bytes) or headerless PCM16 mono. Streams (`createStream()`) expect raw PCM16 at `sampleRate` (default 16kHz).
 
@@ -82,7 +82,7 @@ import { OpenAISTT } from '@cogitator-ai/voice';
 
 const stt = new OpenAISTT({
   apiKey: process.env.OPENAI_API_KEY!,
-  model: 'gpt-4o-mini-transcribe',
+  model: 'gpt-transcribe',
 });
 
 const result = await stt.transcribe(audioBuffer, { language: 'en' });
@@ -308,10 +308,10 @@ Without a VAD, audio is buffered until `endAudio()`. `interrupt()` cancels the i
 
 Native speech-to-speech without the STT/TTS pipeline. The LLM directly processes and generates audio. Lower latency, more natural conversation flow.
 
-| Provider | Default model       | Input audio      | Output audio     | Notes                                          |
-| -------- | ------------------- | ---------------- | ---------------- | ---------------------------------------------- |
-| `openai` | `gpt-realtime-mini` | PCM16 24kHz mono | PCM16 24kHz mono | Realtime API (GA), server VAD, `marin` voice   |
-| `gemini` | `gemini-3.8-live`   | PCM16 16kHz mono | PCM16 24kHz mono | Gemini Live API, input + output transcriptions |
+| Provider | Default model           | Input audio      | Output audio     | Notes                                                                                   |
+| -------- | ----------------------- | ---------------- | ---------------- | --------------------------------------------------------------------------------------- |
+| `openai` | `gpt-realtime-2.1-mini` | PCM16 24kHz mono | PCM16 24kHz mono | Realtime API (GA), server VAD, `marin` voice, `gpt-live-transcribe` input transcription |
+| `gemini` | `gemini-3.8-live`       | PCM16 16kHz mono | PCM16 24kHz mono | Gemini Live API, input + output transcriptions                                          |
 
 Audio and text sent before `connect()` resolves are queued and flushed once the session is ready. Tools are executed by the session and their results sent back to the model automatically.
 
@@ -323,7 +323,7 @@ import { RealtimeSession } from '@cogitator-ai/voice';
 const session = new RealtimeSession({
   provider: 'openai',
   apiKey: process.env.OPENAI_API_KEY!,
-  model: 'gpt-realtime-mini',
+  model: 'gpt-realtime-2.1-mini',
   voice: 'marin',
   instructions: 'You are a helpful assistant.',
   tools: [
@@ -499,7 +499,7 @@ const [transcribe, speak] = voiceTools({
 
 const agent = new Agent({
   name: 'voice-assistant',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You can transcribe audio and generate speech.',
   tools: [tool(transcribe), tool(speak)],
 });
@@ -560,11 +560,11 @@ detectAudioFormat(fileBuffer); // 'wav' | 'mp3' | 'ogg' | 'flac' | 'webm' | 'mp4
 
 ### `OpenAISTTConfig`
 
-| Field     | Type     | Default                  | Description         |
-| --------- | -------- | ------------------------ | ------------------- |
-| `apiKey`  | `string` | —                        | OpenAI API key      |
-| `model`   | `string` | `gpt-4o-mini-transcribe` | Model ID            |
-| `baseURL` | `string` | —                        | Custom API base URL |
+| Field     | Type     | Default          | Description         |
+| --------- | -------- | ---------------- | ------------------- |
+| `apiKey`  | `string` | —                | OpenAI API key      |
+| `model`   | `string` | `gpt-transcribe` | Model ID            |
+| `baseURL` | `string` | —                | Custom API base URL |
 
 ### `DeepgramSTTConfig`
 

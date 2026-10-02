@@ -344,8 +344,8 @@ console.log(result.usage);
 // { inputTokens: 45, outputTokens: 12, totalTokens: 57 }`}</CodeBlock>
 
         <Callout type="tip">
-          Replace <code>ollama/llama3.2</code> with <code>openai/gpt-4o</code> or{' '}
-          <code>anthropic/claude-3-5-sonnet</code> to use cloud models.
+          Replace <code>ollama/llama3.2</code> with <code>openai/gpt-6.1-sol</code> or{' '}
+          <code>anthropic/claude-sonnet-5-5</code> to use cloud models.
         </Callout>
 
         <h3 className="text-xl font-bold text-[#fafafa] mt-8 mb-3">How It Works</h3>
@@ -627,7 +627,7 @@ const readUrl = tool({
 
 const researcher = new Agent({
   name: 'researcher',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: \`You are a research assistant. When given a topic:
 1. Search the web for relevant information
 2. Read the most relevant URLs
@@ -724,7 +724,7 @@ const runCode = tool({
 
 const codeAssistant = new Agent({
   name: 'code-assistant',
-  model: 'anthropic/claude-3-5-sonnet',
+  model: 'anthropic/claude-sonnet-5-5',
   instructions: \`You are an expert coding assistant. You can:
 - Read existing code files
 - Write new code or modify existing files
@@ -916,7 +916,7 @@ const generateChart = tool({
 
 const analyst = new Agent({
   name: 'data-analyst',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: \`You are a data analyst. Given data:
 1. Parse and understand the structure
 2. Calculate relevant statistics
@@ -1504,7 +1504,7 @@ await scheduler.trigger('daily-report', { date: '2024-01-15' });`}</CodeBlock>
 // Supervisor: Project Manager
 const pm = new Agent({
   name: 'project-manager',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: \`You are a technical project manager. When given a task:
 1. Break it down into subtasks
 2. Assign each subtask to the appropriate worker
@@ -1606,7 +1606,7 @@ const pragmatist = new Agent({
 // Moderator synthesizes the debate
 const moderator = new Agent({
   name: 'moderator',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: \`You moderate debates fairly. Your role:
 1. Ensure all perspectives are heard
 2. Identify common ground
@@ -1831,7 +1831,7 @@ const agents = [
   }),
   new Agent({
     name: 'devops-expert',
-    model: 'anthropic/claude-3-5-sonnet',
+    model: 'anthropic/claude-sonnet-5-5',
     instructions: 'You are an expert in DevOps and cloud infrastructure.',
     capabilities: ['docker', 'kubernetes', 'aws', 'terraform'],
     costPerToken: 0.015,
@@ -4374,15 +4374,15 @@ const router = new CostRouter({
       qualityScore: 0.7,
     },
     standard: {
-      model: 'openai/gpt-4o-mini',
-      costPer1kTokens: 0.00015,
-      maxTokens: 128000,
+      model: 'openai/gpt-6-luna',
+      costPer1kTokens: 0.0001,
+      maxTokens: 1050000,
       qualityScore: 0.85,
     },
     premium: {
-      model: 'anthropic/claude-3-5-sonnet',
-      costPer1kTokens: 0.003,
-      maxTokens: 200000,
+      model: 'anthropic/claude-sonnet-5-5',
+      costPer1kTokens: 0.002,
+      maxTokens: 1000000,
       qualityScore: 0.95,
     },
   },
@@ -4414,7 +4414,7 @@ const complex = await agent.run({
   input: 'Design a microservices architecture for a banking system',
   quality: 0.95,  // Request high quality
 });
-console.log('Used:', complex.modelUsed);  // anthropic/claude-3-5-sonnet
+console.log('Used:', complex.modelUsed);  // anthropic/claude-sonnet-5-5
 console.log('Cost:', complex.cost);        // $0.05`}</CodeBlock>
 
         <Callout type="tip">
@@ -4432,9 +4432,9 @@ const report = router.getReport({
 console.log('Cost breakdown:', report);
 // {
 //   'ollama/llama3.2': { requests: 1250, tokens: 500000, cost: 0 },
-//   'openai/gpt-4o-mini': { requests: 300, tokens: 150000, cost: 22.50 },
-//   'anthropic/claude-3-5-sonnet': { requests: 50, tokens: 100000, cost: 300 },
-//   total: { requests: 1600, tokens: 750000, cost: 322.50 }
+//   'openai/gpt-6-luna': { requests: 300, tokens: 150000, cost: 0.015 },
+//   'anthropic/claude-sonnet-5-5': { requests: 50, tokens: 100000, cost: 0.2 },
+//   total: { requests: 1600, tokens: 750000, cost: 0.215 }
 // }
 
 // Set alerts
@@ -4498,7 +4498,7 @@ const budget = new BudgetManager({
 
 const agent = new Agent({
   name: 'budget-conscious',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   budget,  // Attach budget manager
   instructions: 'You are a helpful assistant.',
 });
@@ -4718,8 +4718,8 @@ const retryPolicy = new RetryPolicy({
 
 // Configure fallback chain
 const fallbackChain = [
-  'openai/gpt-4o',           // Primary
-  'anthropic/claude-3-5-sonnet', // Fallback 1
+  'openai/gpt-6.1-sol',           // Primary
+  'anthropic/claude-sonnet-5-5', // Fallback 1
   'ollama/llama3.2',         // Fallback 2 (local)
 ];
 
@@ -4766,7 +4766,7 @@ const circuitBreaker = new CircuitBreaker({
 
 const agent = new Agent({
   name: 'circuit-protected',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   circuitBreaker,
   fallbackModels: ['ollama/llama3.2'],
   instructions: 'You complete tasks reliably.',

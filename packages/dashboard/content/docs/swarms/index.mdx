@@ -20,13 +20,21 @@ const devTeam = swarm('dev-team')
   .supervisor(
     new Agent({
       name: 'tech-lead',
-      model: 'openai/gpt-4o',
+      model: 'openai/gpt-6.1-sol',
       instructions: 'You are a tech lead. Break down tasks and delegate to your team.',
     })
   )
   .workers([
-    new Agent({ name: 'frontend-dev', model: 'openai/gpt-4o-mini', instructions: 'Build React components.' }),
-    new Agent({ name: 'backend-dev', model: 'openai/gpt-4o-mini', instructions: 'Build APIs and services.' }),
+    new Agent({
+      name: 'frontend-dev',
+      model: 'openai/gpt-6-luna',
+      instructions: 'Build React components.',
+    }),
+    new Agent({
+      name: 'backend-dev',
+      model: 'openai/gpt-6-luna',
+      instructions: 'Build APIs and services.',
+    }),
   ])
   .build(cogitator);
 

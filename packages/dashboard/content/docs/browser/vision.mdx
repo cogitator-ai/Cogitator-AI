@@ -39,7 +39,7 @@ Captures the current viewport or the full scrollable page. By default produces P
 // returns JPEG of the #hero element
 ```
 
-The returned `image` field is a base64 string. When used with a vision-capable model (GPT-4o, Claude, Gemini), the agent can analyze the screenshot content to understand page layout.
+The returned `image` field is a base64 string. When used with a vision-capable model (GPT-6, Claude, Gemini), the agent can analyze the screenshot content to understand page layout.
 
 ### `browser_screenshot_element`
 
@@ -104,7 +104,7 @@ await session.start();
 
 const agent = new Agent({
   name: 'visual-browser',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: browserTools(session, {
     modules: ['navigation', 'vision', 'interaction'],
   }),
@@ -114,7 +114,7 @@ then use click_by_description to interact with elements you see.`,
 
 const cogitator = new Cogitator({
   llm: {
-    defaultModel: 'openai/gpt-4o',
+    defaultModel: 'openai/gpt-6.1-sol',
     providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
   },
 });

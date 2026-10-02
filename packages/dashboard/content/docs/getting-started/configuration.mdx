@@ -58,12 +58,12 @@ Cogitator reads environment variables with the `COGITATOR_` prefix:
 
 ```bash
 COGITATOR_LLM_DEFAULT_PROVIDER=openai
-COGITATOR_LLM_DEFAULT_MODEL=gpt-4o
+COGITATOR_LLM_DEFAULT_MODEL=gpt-6.1-sol
 COGITATOR_OLLAMA_BASE_URL=http://localhost:11434
 COGITATOR_OPENAI_API_KEY=sk-xxx
 COGITATOR_ANTHROPIC_API_KEY=sk-ant-xxx
 COGITATOR_GOOGLE_API_KEY=xxx
-COGITATOR_AZURE_DEPLOYMENT=gpt-4o
+COGITATOR_AZURE_DEPLOYMENT=gpt-6.1-sol
 COGITATOR_MISTRAL_API_KEY=xxx
 COGITATOR_GROQ_API_KEY=xxx
 COGITATOR_TOGETHER_API_KEY=xxx
@@ -108,7 +108,7 @@ import { defineConfig } from '@cogitator-ai/config';
 const config = defineConfig({
   llm: {
     defaultProvider: 'openai',
-    defaultModel: 'gpt-4o',
+    defaultModel: 'gpt-6.1-sol',
     providers: {
       openai: {
         apiKey: process.env.OPENAI_API_KEY!,
@@ -161,7 +161,10 @@ llm:
     openai:
       apiKey: sk-xxx
       baseUrl: https://api.openai.com/v1 # optional, for proxies
+      api: responses # optional: responses | chat-completions
 ```
+
+The official endpoint uses the OpenAI Responses API by default; a `baseUrl` pointing at another OpenAI-compatible server uses Chat Completions. Set `api` to force either wire API. Requests with stop sequences always go through Chat Completions.
 
 ### Anthropic
 
@@ -190,7 +193,7 @@ llm:
       apiKey: xxx
       endpoint: https://your-resource.openai.azure.com
       apiVersion: '2024-02-15-preview' # optional
-      deployment: gpt-4o # optional
+      deployment: gpt-6.1-sol # optional
 ```
 
 ### AWS Bedrock

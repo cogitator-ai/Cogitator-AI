@@ -22,7 +22,7 @@ import { notifyTool } from './03-notify.js';
 
 const agent = new Agent({
   name: 'assistant',
-  model: 'anthropic/claude-sonnet-4-20250514',
+  model: 'anthropic/claude-sonnet-5-5',
   tools: [screenshotTool, notifyTool],
 });
 ```
@@ -35,7 +35,7 @@ import deviceSkill from './skill.js';
 
 const agent = new Agent({
   name: 'assistant',
-  model: 'anthropic/claude-sonnet-4-20250514',
+  model: 'anthropic/claude-sonnet-5-5',
   skills: [deviceSkill],
 });
 ```

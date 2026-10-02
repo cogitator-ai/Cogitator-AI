@@ -45,14 +45,14 @@ if (!result.success) throw new Error(result.error);
 console.log(result.url); // https://my-app.fly.dev
 ```
 
-| Method                                    | Description                                                   |
-| ----------------------------------------- | ------------------------------------------------------------- |
-| `plan(options)`                           | Analyze + preflight. Returns `config`, `preflight`, `warnings`, `analysis`, `provider` |
-| `deploy(options)`                         | `plan`, generate artifacts, deploy. Returns `DeployResult` (`dryRun` stops before deploying) |
-| `status(target, config, projectDir)`      | `DeployStatus` (`running`, `url`, `instances`)                 |
-| `destroy(target, config, projectDir)`     | Tears down the deployment; throws when it fails               |
-| `availableTargets()`                      | Names of registered providers (`['docker', 'fly']` by default) |
-| `registerProvider(provider)`              | Add a custom `DeployProvider`                                 |
+| Method                                | Description                                                                                  |
+| ------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `plan(options)`                       | Analyze + preflight. Returns `config`, `preflight`, `warnings`, `analysis`, `provider`       |
+| `deploy(options)`                     | `plan`, generate artifacts, deploy. Returns `DeployResult` (`dryRun` stops before deploying) |
+| `status(target, config, projectDir)`  | `DeployStatus` (`running`, `url`, `instances`)                                               |
+| `destroy(target, config, projectDir)` | Tears down the deployment; throws when it fails                                              |
+| `availableTargets()`                  | Names of registered providers (`['docker', 'fly']` by default)                               |
+| `registerProvider(provider)`          | Add a custom `DeployProvider`                                                                |
 
 ## Configuration
 
@@ -86,16 +86,16 @@ Secrets are read from the current environment or the project's `.env` file. They
 
 ## Auto-Detection
 
-| What               | Source                                     | Example                                          |
-| ------------------ | ------------------------------------------ | ------------------------------------------------ |
-| Server adapter     | `package.json` dependencies                | `@cogitator-ai/express` → Express                |
-| Image / app name   | `package.json` `name`                      | `@acme/My Agent` → `my-agent`                    |
-| Package manager    | Lockfile                                   | `pnpm-lock.yaml` → `pnpm install --frozen-lockfile`, `package-lock.json` → `npm ci` |
-| Start command      | `scripts.start`, then `main`               | `node dist/index.js` → `CMD ["node","dist/index.js"]`, otherwise `npm start` |
-| Build step         | `tsconfig.json` + `scripts.build`          | Multi-stage build running `<pm> run build`       |
-| Services           | `cogitator.yml` / `.yaml` memory adapter   | `adapter: postgres` → PostgreSQL service         |
-| Required secrets   | `llm.defaultModel` (+ `defaultProvider`)   | `openai/gpt-4o` → `OPENAI_API_KEY`; Bedrock → both AWS keys |
-| Ollama Cloud       | Model tag `:cloud` / `-cloud`              | `gpt-oss:120b-cloud` → `OLLAMA_API_KEY`          |
+| What             | Source                                   | Example                                                                             |
+| ---------------- | ---------------------------------------- | ----------------------------------------------------------------------------------- |
+| Server adapter   | `package.json` dependencies              | `@cogitator-ai/express` → Express                                                   |
+| Image / app name | `package.json` `name`                    | `@acme/My Agent` → `my-agent`                                                       |
+| Package manager  | Lockfile                                 | `pnpm-lock.yaml` → `pnpm install --frozen-lockfile`, `package-lock.json` → `npm ci` |
+| Start command    | `scripts.start`, then `main`             | `node dist/index.js` → `CMD ["node","dist/index.js"]`, otherwise `npm start`        |
+| Build step       | `tsconfig.json` + `scripts.build`        | Multi-stage build running `<pm> run build`                                          |
+| Services         | `cogitator.yml` / `.yaml` memory adapter | `adapter: postgres` → PostgreSQL service                                            |
+| Required secrets | `llm.defaultModel` (+ `defaultProvider`) | `openai/gpt-6.1-sol` → `OPENAI_API_KEY`; Bedrock → both AWS keys                    |
+| Ollama Cloud     | Model tag `:cloud` / `-cloud`            | `gpt-oss:120b-cloud` → `OLLAMA_API_KEY`                                             |
 
 Problems found during analysis (invalid config, unparsable `package.json`, missing start script, local Ollama models on cloud targets) are returned as `plan.warnings` instead of being ignored.
 
@@ -120,11 +120,21 @@ import { Deployer, type DeployProvider } from '@cogitator-ai/deploy';
 
 class KubernetesProvider implements DeployProvider {
   readonly name = 'kubernetes';
-  async preflight(config, projectDir) { /* ... */ }
-  async generate(config, projectDir) { /* ... */ }
-  async deploy(config, artifacts, projectDir) { /* ... */ }
-  async status(config, projectDir) { /* ... */ }
-  async destroy(config, projectDir) { /* ... */ }
+  async preflight(config, projectDir) {
+    /* ... */
+  }
+  async generate(config, projectDir) {
+    /* ... */
+  }
+  async deploy(config, artifacts, projectDir) {
+    /* ... */
+  }
+  async status(config, projectDir) {
+    /* ... */
+  }
+  async destroy(config, projectDir) {
+    /* ... */
+  }
 }
 
 const deployer = new Deployer();

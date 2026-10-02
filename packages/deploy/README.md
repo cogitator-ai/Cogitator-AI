@@ -91,7 +91,7 @@ Secrets are read from the current environment or the project's `.env` file. They
 | Start command    | `scripts.start`, then `main`             | `node dist/index.js` → `CMD ["node","dist/index.js"]`, otherwise `npm start`        |
 | Build step       | `tsconfig.json` + `scripts.build`        | Multi-stage build running `<pm> run build`                                          |
 | Services         | `cogitator.yml` / `.yaml` memory adapter | `adapter: postgres` → PostgreSQL service                                            |
-| Required secrets | `llm.defaultModel` (+ `defaultProvider`) | `openai/gpt-4o` → `OPENAI_API_KEY`; Bedrock → both AWS keys                         |
+| Required secrets | `llm.defaultModel` (+ `defaultProvider`) | `openai/gpt-6.1-sol` → `OPENAI_API_KEY`; Bedrock → both AWS keys                    |
 | Ollama Cloud     | Model tag `:cloud` / `-cloud`            | `gpt-oss:120b-cloud` → `OLLAMA_API_KEY`                                             |
 
 Problems found during analysis (invalid config, unparsable `package.json`, missing start script, local Ollama models on cloud targets) are returned as `plan.warnings` instead of being ignored.

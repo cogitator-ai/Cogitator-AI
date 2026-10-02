@@ -42,14 +42,14 @@ await session.start();
 
 const agent = new Agent({
   name: 'web-researcher',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: browserTools(session),
   instructions: 'You browse the web to find information.',
 });
 
 const cogitator = new Cogitator({
   llm: {
-    defaultModel: 'openai/gpt-4o',
+    defaultModel: 'openai/gpt-6.1-sol',
     providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
   },
 });
@@ -66,13 +66,13 @@ await session.close();
 
 All 33 tools are organized into 5 modules. Use `browserTools(session)` to get all of them, or filter by module.
 
-| Module | Tools | Description |
-| --- | --- | --- |
-| [Navigation](/docs/browser/tools#navigation) | 7 | URL navigation, history, waiting |
-| [Interaction](/docs/browser/tools#interaction) | 9 | Clicking, typing, forms, drag & drop |
-| [Extraction](/docs/browser/tools#extraction) | 7 | Text, HTML, links, tables, structured data |
-| [Vision](/docs/browser/tools#vision) | 4 | Screenshots, accessibility tree, click-by-description |
-| [Network](/docs/browser/tools#network) | 6 | Request interception, HAR capture, API call tracking |
+| Module                                         | Tools | Description                                           |
+| ---------------------------------------------- | ----- | ----------------------------------------------------- |
+| [Navigation](/docs/browser/tools#navigation)   | 7     | URL navigation, history, waiting                      |
+| [Interaction](/docs/browser/tools#interaction) | 9     | Clicking, typing, forms, drag & drop                  |
+| [Extraction](/docs/browser/tools#extraction)   | 7     | Text, HTML, links, tables, structured data            |
+| [Vision](/docs/browser/tools#vision)           | 4     | Screenshots, accessibility tree, click-by-description |
+| [Network](/docs/browser/tools#network)         | 6     | Request interception, HAR capture, API call tracking  |
 
 ### Module Filtering
 
@@ -91,10 +91,7 @@ Import specific tool factories when you want fine-grained control:
 ```typescript
 import { createNavigateTool, createScreenshotTool } from '@cogitator-ai/browser';
 
-const tools = [
-  createNavigateTool(session),
-  createScreenshotTool(session),
-];
+const tools = [createNavigateTool(session), createScreenshotTool(session)];
 ```
 
 ## Key Features

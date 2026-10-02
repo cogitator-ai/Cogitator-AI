@@ -24,11 +24,11 @@ await session.start();
 
 ```typescript
 interface StealthConfig {
-  humanLikeTyping?: boolean;         // default: true
-  humanLikeMouse?: boolean;          // default: true
+  humanLikeTyping?: boolean; // default: true
+  humanLikeMouse?: boolean; // default: true
   fingerprintRandomization?: boolean; // default: true
-  blockWebDriver?: boolean;          // default: true
-  evasionScripts?: string[];         // custom init scripts
+  blockWebDriver?: boolean; // default: true
+  evasionScripts?: string[]; // custom init scripts
 }
 ```
 
@@ -49,16 +49,16 @@ const session = new BrowserSession({
 
 When stealth is enabled, the following evasion scripts run automatically on every new page via `context.addInitScript`:
 
-| Evasion | What it does |
-| --- | --- |
-| WebDriver | Sets `navigator.webdriver` to `false` on `Navigator.prototype` (no detectable own property) |
-| Plugins | Fakes `navigator.plugins` with Chrome PDF Plugin, PDF Viewer, Native Client |
-| Languages | Derives `navigator.languages` from `locale` (`de-DE` → `['de-DE', 'de']`, default `['en-US', 'en']`) |
-| Platform | Aligns `navigator.platform` and `navigator.userAgentData.platform` with the user agent (`Win32`, `MacIntel`, `Linux x86_64`, …) |
-| Canvas | `toDataURL` returns a copy with ±1 per-channel noise from a seeded PRNG; the original canvas is untouched |
-| WebGL | Overrides WebGL vendor/renderer to report Intel Iris OpenGL Engine |
-| Chrome | Adds `window.chrome` object with `runtime`, `loadTimes`, `csi` stubs |
-| Permissions | Overrides `Permissions.query` to return `denied` for notifications |
+| Evasion     | What it does                                                                                                                    |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| WebDriver   | Sets `navigator.webdriver` to `false` on `Navigator.prototype` (no detectable own property)                                     |
+| Plugins     | Fakes `navigator.plugins` with Chrome PDF Plugin, PDF Viewer, Native Client                                                     |
+| Languages   | Derives `navigator.languages` from `locale` (`de-DE` → `['de-DE', 'de']`, default `['en-US', 'en']`)                            |
+| Platform    | Aligns `navigator.platform` and `navigator.userAgentData.platform` with the user agent (`Win32`, `MacIntel`, `Linux x86_64`, …) |
+| Canvas      | `toDataURL` returns a copy with ±1 per-channel noise from a seeded PRNG; the original canvas is untouched                       |
+| WebGL       | Overrides WebGL vendor/renderer to report Intel Iris OpenGL Engine                                                              |
+| Chrome      | Adds `window.chrome` object with `runtime`, `loadTimes`, `csi` stubs                                                            |
+| Permissions | Overrides `Permissions.query` to return `denied` for notifications                                                              |
 
 ### Custom Evasion Scripts
 
@@ -159,14 +159,14 @@ await session.start();
 
 const agent = new Agent({
   name: 'stealth-scraper',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: browserTools(session),
   instructions: 'Browse websites naturally. Extract the requested data.',
 });
 
 const cogitator = new Cogitator({
   llm: {
-    defaultModel: 'openai/gpt-4o',
+    defaultModel: 'openai/gpt-6.1-sol',
     providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
   },
 });

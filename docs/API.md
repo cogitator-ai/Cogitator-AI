@@ -261,7 +261,7 @@ interface AgentConfig {
   description?: string;
 
   // Model: use 'provider/model' format
-  model: string; // e.g., 'ollama/llama3.3:70b', 'openai/gpt-4o', 'anthropic/claude-sonnet-4-5'
+  model: string; // e.g., 'ollama/llama3.3:70b', 'openai/gpt-6.1-sol', 'anthropic/claude-sonnet-5-5'
 
   // Explicit provider override (useful for OpenRouter and similar proxies)
   provider?: string;

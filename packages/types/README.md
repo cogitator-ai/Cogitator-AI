@@ -88,14 +88,14 @@ const toolResult: ToolResultMessage = {
 
 ### Message Interfaces
 
-| Type                | Description                                                |
-| ------------------- | ---------------------------------------------------------- |
-| `MessageRole`       | `'system' \| 'user' \| 'assistant' \| 'tool'`              |
-| `Message`           | Base message with role, content, optional name/toolCallId  |
-| `ToolCallMessage`   | Assistant message containing tool calls                    |
-| `ToolResultMessage` | Tool execution result                                      |
-| `ToolCall`          | Tool invocation with id, name, arguments, thoughtSignature |
-| `ToolResult`        | Tool execution result with callId, name, result, error     |
+| Type                | Description                                                        |
+| ------------------- | ------------------------------------------------------------------ |
+| `MessageRole`       | `'system' \| 'user' \| 'assistant' \| 'tool'`                      |
+| `Message`           | Base message with role, content, optional name/toolCallId          |
+| `ToolCallMessage`   | Assistant message containing tool calls                            |
+| `ToolResultMessage` | Tool execution result                                              |
+| `ToolCall`          | Tool invocation with id, name, arguments, thoughtSignature, replay |
+| `ToolResult`        | Tool execution result with callId, name, result, error             |
 
 ---
 
@@ -176,7 +176,7 @@ import type { Agent, AgentConfig, ResponseFormat } from '@cogitator-ai/types';
 
 const config: AgentConfig = {
   name: 'research-agent',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You are a research assistant...',
 
   // Optional settings
@@ -216,6 +216,8 @@ import type {
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
+  ChatUsage,
+  OpenAIProviderConfig,
 } from '@cogitator-ai/types';
 
 // Supported providers
@@ -235,14 +237,14 @@ type LLMProvider =
 // LLM configuration
 const llmConfig: LLMConfig = {
   provider: 'openai',
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
   temperature: 0.7,
   maxTokens: 4096,
 };
 
 // Chat request
 const request: ChatRequest = {
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
   messages: [{ role: 'user', content: 'Hello' }],
   tools: [{ name: 'calc', description: '...', parameters: { type: 'object', properties: {} } }],
   stream: true,
@@ -255,7 +257,24 @@ const response: ChatResponse = {
   finishReason: 'stop',
   usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
 };
+
+// Token usage; cached and reasoning tokens are already included in the totals
+const usage: ChatUsage = {
+  inputTokens: 1200,
+  outputTokens: 300,
+  totalTokens: 1500,
+  cachedInputTokens: 1024,
+  reasoningTokens: 120,
+};
+
+// OpenAI provider: Responses API for api.openai.com, Chat Completions for other base URLs
+const openaiConfig: OpenAIProviderConfig = {
+  apiKey: process.env.OPENAI_API_KEY!,
+  api: 'chat-completions', // force a wire API: 'responses' | 'chat-completions'
+};
 ```
+
+`ToolCall.replay` (`ToolCallReplayState`) carries opaque provider output that must be sent back with the call on the next turn, such as OpenAI Responses reasoning items. It is JSON-serializable, so it survives memory persistence; backends that did not produce it ignore it.
 
 ---
 
@@ -270,7 +289,7 @@ import type { CogitatorConfig, RunOptions, RunResult, Span } from '@cogitator-ai
 const config: CogitatorConfig = {
   llm: {
     defaultProvider: 'openai',
-    defaultModel: 'gpt-4o',
+    defaultModel: 'gpt-6.1-sol',
     providers: {
       openai: { apiKey: process.env.OPENAI_API_KEY! },
       ollama: { baseUrl: 'http://localhost:11434' },
@@ -426,7 +445,7 @@ const reflectionConfig: ReflectionConfig = {
   maxInsightsPerAgent: 100,
   minConfidenceToStore: 0.7,
   useSmallModelForReflection: true,
-  reflectionModel: 'gpt-4o-mini',
+  reflectionModel: 'gpt-6-luna',
 };
 
 // Insight types
@@ -552,7 +571,7 @@ const optimizerConfig: OptimizerConfig = {
   maxRounds: 3,
   instructionCandidates: 3,
   metricThreshold: 0.7,
-  teacherModel: 'gpt-4o',
+  teacherModel: 'gpt-6.1-sol',
 };
 
 // Execution trace
@@ -574,7 +593,7 @@ const trace: ExecutionTrace = {
     coherence: 0.9,
   },
   score: 0.92,
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
   createdAt: new Date(),
   duration: 1500,
   usage: {
@@ -784,7 +803,7 @@ const prompt: CapturedPrompt = {
   id: 'prompt_123',
   runId: 'run_456',
   agentId: 'agent-1',
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
   systemPrompt: 'You are a helpful assistant.',
   messages: [{ role: 'user', content: 'Hello' }],
   tools: [{ name: 'calculator', description: '...' }],

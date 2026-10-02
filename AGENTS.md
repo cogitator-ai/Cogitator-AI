@@ -205,7 +205,7 @@ pnpm --filter @cogitator-ai/e2e test -- --run src/__tests__/<pkg>  # e2e одн�
 ```ts
 new Cogitator({
   llm: {
-    defaultModel: 'google/gemini-2.5-flash',
+    defaultModel: 'google/gemini-3.5-flash-lite',
     providers: { google: { apiKey: process.env.GOOGLE_API_KEY } },
   },
 });
@@ -216,6 +216,7 @@ new Cogitator({
 - Прогресс по задачам отмечаем в `docs/plans/` — там лежат планы и их статусы
 - При добавлении фич в пакет — обновляй README внутри этого пакета
 - Если фича важная для юзеров — обновляй главный README.md в корне репо
+- При добавлении/изменении фич — обновляй доку на сайте (`packages/dashboard/content/docs/`, MDX) и, если фича заметная, лендинг (`packages/dashboard/src/components/landing/` — фичи, счётчики, сниппеты) и cookbook (`packages/dashboard/src/app/cookbook/`)
 - Если реализован новый пакет - он должен быть добавлен в главный README.md в табличку пакетов + в таблицу примеров должны быть добавлены примеры из него, так же обнови пункт ## Architecture в AGENTS.md добавив этот пакет
 - Используй MCP tools для research (`resolve-library-id`, `query-docs`)
 
@@ -237,10 +238,11 @@ new Cogitator({
 4. **README пакета** — обновлён если API изменился/добавился
 5. **Examples** — примеры в `examples/` работают и актуальны
 6. **Docs site** — обнови MDX страницы в `packages/dashboard/content/docs/` (Fumadocs)
-7. **Remove comments** — `npx tsx scripts/remove-comments.ts`
-8. **Plans** — обнови статус в `docs/plans/` (пометь DONE что сделано)
-9. **Publish** — если нужен release: `npx tsx scripts/publish-all.ts`
-10. **Push** — не забудь запушить!
+7. **Landing** — если фича заметная или поменялись цифры/API в сниппетах — обнови лендинг (`packages/dashboard/src/components/landing/`) и cookbook
+8. **Remove comments** — `npx tsx scripts/remove-comments.ts`
+9. **Plans** — обнови статус в `docs/plans/` (пометь DONE что сделано)
+10. **Publish** — если нужен release: `npx tsx scripts/publish-all.ts`
+11. **Push** — не забудь запушить!
 
 ## Documentation Site
 

@@ -21,7 +21,7 @@ const fastify = Fastify({ logger: true });
 
 const cogitator = new Cogitator({
   llm: {
-    defaultModel: 'openai/gpt-4o-mini',
+    defaultModel: 'openai/gpt-6-luna',
     providers: { openai: { apiKey: process.env.OPENAI_API_KEY } },
   },
 });
@@ -30,7 +30,7 @@ const chatAgent = new Agent({
   name: 'chat',
   description: 'General-purpose chat assistant',
   instructions: 'You are a helpful assistant.',
-  model: 'openai/gpt-4o-mini',
+  model: 'openai/gpt-6-luna',
 });
 
 await fastify.register(cogitatorPlugin, {

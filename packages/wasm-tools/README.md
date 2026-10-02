@@ -60,7 +60,7 @@ import { Cogitator, Agent } from '@cogitator-ai/core';
 
 const agent = new Agent({
   name: 'utility-assistant',
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
   tools: [
     createCalcTool(),
     createJsonTool(),

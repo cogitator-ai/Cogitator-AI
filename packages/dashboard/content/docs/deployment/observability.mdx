@@ -39,12 +39,12 @@ langfuse.onRunStart({
   agentName: 'researcher',
   input: 'Summarize recent papers on chain-of-thought reasoning',
   threadId: 'thread_xyz',
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
 });
 
 const generationId = langfuse.onLLMCall({
   runId: 'run_abc123',
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
   messages: [{ role: 'user', content: 'Summarize recent papers...' }],
   temperature: 0.7,
   maxTokens: 4096,
@@ -112,7 +112,7 @@ otlp.exportSpan('run_abc123', {
   startTime: Date.now() - 1500,
   endTime: Date.now(),
   duration: 1500,
-  attributes: { 'agent.name': 'researcher', 'llm.model': 'gpt-4o' },
+  attributes: { 'agent.name': 'researcher', 'llm.model': 'gpt-6.1-sol' },
 });
 
 await otlp.flush();

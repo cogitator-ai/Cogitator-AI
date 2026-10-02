@@ -51,11 +51,11 @@ personality: |
 
 llm:
   provider: google
-  model: google/gemini-2.5-flash
+  model: google/gemini-3.8-flash
 
 channels:
   telegram:
-    ownerIds: ["123456789"]
+    ownerIds: ['123456789']
 
 capabilities:
   webSearch: true
@@ -81,14 +81,17 @@ Instead of the wizard, you can use `RuntimeBuilder` directly:
 ```typescript
 import { RuntimeBuilder } from '@cogitator-ai/channels';
 
-const builder = new RuntimeBuilder({
-  name: 'jarvis',
-  personality: 'You are Jarvis, a personal AI assistant.',
-  llm: { provider: 'google', model: 'google/gemini-2.5-flash' },
-  channels: { telegram: { ownerIds: ['123456789'] } },
-  capabilities: { webSearch: true, scheduler: true },
-  memory: { adapter: 'sqlite', path: '~/.cogitator/memory.db', knowledgeGraph: true },
-}, process.env);
+const builder = new RuntimeBuilder(
+  {
+    name: 'jarvis',
+    personality: 'You are Jarvis, a personal AI assistant.',
+    llm: { provider: 'google', model: 'google/gemini-3.8-flash' },
+    channels: { telegram: { ownerIds: ['123456789'] } },
+    capabilities: { webSearch: true, scheduler: true },
+    memory: { adapter: 'sqlite', path: '~/.cogitator/memory.db', knowledgeGraph: true },
+  },
+  process.env
+);
 
 const runtime = await builder.build();
 await runtime.gateway.start();
@@ -96,23 +99,23 @@ await runtime.gateway.start();
 
 ## Config Reference
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `name` | `string` | required | Assistant name |
-| `personality` | `string` | required | System prompt / personality |
-| `llm.provider` | `google \| openai \| anthropic \| ollama` | required | LLM provider |
-| `llm.model` | `string` | required | Model identifier (e.g. `google/gemini-2.5-flash`) |
-| `channels` | `object` | `{}` | Channel configs (telegram, discord, slack) |
-| `capabilities` | `object` | `{}` | Enabled capabilities |
-| `memory.adapter` | `sqlite \| postgres` | `sqlite` | Memory storage backend |
-| `memory.path` | `string` | `~/.cogitator/memory.db` | SQLite file |
-| `memory.connectionString` | `string` | `DATABASE_URL` | Postgres connection (requires `pg`) |
-| `memory.compaction.threshold` | `number` | — | Messages in a conversation before compaction |
-| `memory.knowledgeGraph` | `boolean` | `true` | Enable knowledge graph |
-| `memory.autoExtract` | `boolean` | `true` | Auto-extract entities from conversations |
-| `capabilities.fileSystem.paths` | `string[]` | home dir | File tools are restricted to these paths |
-| `capabilities.selfConfig` | `boolean` | `false` | Config/env tools — usable only by channel owners and the local terminal |
-| `security.dmPolicy` | `open \| allowlist \| pairing \| disabled` | `open` | Who may DM the assistant |
-| `stream.flushInterval` | `number` | `600` | Stream flush interval (ms) |
-| `stream.minChunkSize` | `number` | `30` | Minimum chunk size before flushing |
-| `rateLimit.maxPerMinute` | `number` | `30` | Per-user rate limit |
+| Field                           | Type                                       | Default                  | Description                                                             |
+| ------------------------------- | ------------------------------------------ | ------------------------ | ----------------------------------------------------------------------- |
+| `name`                          | `string`                                   | required                 | Assistant name                                                          |
+| `personality`                   | `string`                                   | required                 | System prompt / personality                                             |
+| `llm.provider`                  | `google \| openai \| anthropic \| ollama`  | required                 | LLM provider                                                            |
+| `llm.model`                     | `string`                                   | required                 | Model identifier (e.g. `google/gemini-3.8-flash`)                       |
+| `channels`                      | `object`                                   | `{}`                     | Channel configs (telegram, discord, slack)                              |
+| `capabilities`                  | `object`                                   | `{}`                     | Enabled capabilities                                                    |
+| `memory.adapter`                | `sqlite \| postgres`                       | `sqlite`                 | Memory storage backend                                                  |
+| `memory.path`                   | `string`                                   | `~/.cogitator/memory.db` | SQLite file                                                             |
+| `memory.connectionString`       | `string`                                   | `DATABASE_URL`           | Postgres connection (requires `pg`)                                     |
+| `memory.compaction.threshold`   | `number`                                   | —                        | Messages in a conversation before compaction                            |
+| `memory.knowledgeGraph`         | `boolean`                                  | `true`                   | Enable knowledge graph                                                  |
+| `memory.autoExtract`            | `boolean`                                  | `true`                   | Auto-extract entities from conversations                                |
+| `capabilities.fileSystem.paths` | `string[]`                                 | home dir                 | File tools are restricted to these paths                                |
+| `capabilities.selfConfig`       | `boolean`                                  | `false`                  | Config/env tools — usable only by channel owners and the local terminal |
+| `security.dmPolicy`             | `open \| allowlist \| pairing \| disabled` | `open`                   | Who may DM the assistant                                                |
+| `stream.flushInterval`          | `number`                                   | `600`                    | Stream flush interval (ms)                                              |
+| `stream.minChunkSize`           | `number`                                   | `30`                     | Minimum chunk size before flushing                                      |
+| `rateLimit.maxPerMinute`        | `number`                                   | `30`                     | Per-user rate limit                                                     |

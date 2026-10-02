@@ -183,7 +183,7 @@ await session.start();
 
 const agent = new Agent({
   name: 'api-monitor',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: browserTools(session, {
     modules: ['navigation', 'interaction', 'network', 'extraction'],
   }),
@@ -194,7 +194,7 @@ then use browser_get_api_calls to see what API requests were made.`,
 
 const cogitator = new Cogitator({
   llm: {
-    defaultModel: 'openai/gpt-4o',
+    defaultModel: 'openai/gpt-6.1-sol',
     providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } },
   },
 });
@@ -214,7 +214,7 @@ Block unnecessary resources to speed up page loads during scraping:
 ```typescript
 const agent = new Agent({
   name: 'fast-scraper',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: browserTools(session),
   instructions: `Before scraping, use browser_block_resources to block images, fonts,
 stylesheets, and media. This speeds up page loads significantly.`,

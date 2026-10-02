@@ -68,20 +68,20 @@ The `ModelSelector` scores every available model against the task requirements a
 ```typescript
 const recommendation = await router.recommendModel('Write a quick summary of this text');
 
-console.log(recommendation.modelId); // 'gpt-4o-mini'
+console.log(recommendation.modelId); // 'gpt-6-luna'
 console.log(recommendation.provider); // 'openai'
 console.log(recommendation.score); // 85
 console.log(recommendation.reasons); // ['Cost-effective', 'Fast response time', ...]
 console.log(recommendation.estimatedCost); // 0.0003
-console.log(recommendation.fallbacks); // ['claude-haiku-4-5', 'gemini-2.5-flash']
+console.log(recommendation.fallbacks); // ['claude-haiku-4-5', 'gemini-3.5-flash-lite']
 ```
 
 Scoring factors include:
 
 - **Capability match** — vision, tool calling, context window support
 - **Cost efficiency** — cheaper models score higher when `costSensitivity` is high
-- **Speed** — fast models (gpt-4o-mini, claude-haiku, gemini-flash) score higher for urgent tasks
-- **Reasoning** — advanced models (gpt-4o, claude-sonnet, o3) score higher for complex reasoning
+- **Speed** — fast models (gpt-6-luna, claude-haiku, gemini-flash) score higher for urgent tasks
+- **Reasoning** — advanced models (gpt-6.1-sol, claude-sonnet, o3) score higher for complex reasoning
 - **Domain fit** — code-specialized models score higher for programming tasks
 - **Local preference** — Ollama models get a scoring boost when `preferLocal` is true
 
@@ -177,7 +177,7 @@ The `CostTracker` records actual spending and provides real-time aggregations:
 router.recordCost({
   runId: 'run_abc',
   agentId: 'research-agent',
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
   inputTokens: 2500,
   outputTokens: 800,
   cost: 0.035,

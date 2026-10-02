@@ -59,7 +59,7 @@ interface ResearchState {
   summary?: string;
 }
 
-const cog = new Cogitator({ llm: { defaultModel: 'openai/gpt-4o' } });
+const cog = new Cogitator({ llm: { defaultModel: 'openai/gpt-6.1-sol' } });
 
 const researchWorkflow = new WorkflowBuilder<ResearchState>('research-topic')
   .initialState({ topic: '' })

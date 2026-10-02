@@ -551,7 +551,7 @@ const results = await rag.query('how does authentication work?');
 import { Cogitator, Agent } from '@cogitator-ai/core';
 
 const cog = new Cogitator({
-  llm: { defaultModel: 'openai/gpt-4o' },
+  llm: { defaultModel: 'openai/gpt-6.1-sol' },
   memory: {
     adapter: 'postgres',
     postgres: { connectionString: process.env.DATABASE_URL! },

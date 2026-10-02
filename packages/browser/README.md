@@ -29,7 +29,7 @@ await session.start();
 
 const agent = new Agent({
   name: 'web-researcher',
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
   instructions: 'You browse the web and extract information.',
   tools: browserTools(session),
 });

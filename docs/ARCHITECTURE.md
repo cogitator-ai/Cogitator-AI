@@ -466,11 +466,15 @@ interface ChatResponse {
   content: string;
   toolCalls?: ToolCall[];
   finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-  };
+  usage: ChatUsage;
+}
+
+interface ChatUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedInputTokens?: number; // already counted in inputTokens
+  reasoningTokens?: number; // already counted in outputTokens
 }
 ```
 
@@ -491,6 +495,8 @@ const ollama = new OllamaBackend({
 import { OpenAIBackend } from '@cogitator-ai/core';
 
 const openai = new OpenAIBackend({ apiKey: process.env.OPENAI_API_KEY! });
+// Responses API on api.openai.com (default model gpt-6.1-sol); Chat Completions for other
+// base URLs or requests with stop sequences. Force with api: 'responses' | 'chat-completions'.
 
 // Anthropic
 import { AnthropicBackend } from '@cogitator-ai/core';
@@ -509,7 +515,7 @@ const azure = new AzureOpenAIBackend({
   endpoint: 'https://my-resource.openai.azure.com',
   apiKey: process.env.AZURE_API_KEY!,
   apiVersion: '2024-05-01-preview',
-  deployment: 'gpt-4o',
+  deployment: 'gpt-6.1-sol',
 });
 
 // AWS Bedrock
@@ -545,7 +551,7 @@ The `CostRouter` in `@cogitator-ai/core` automatically selects the cheapest mode
 ```typescript
 const cog = new Cogitator({
   llm: {
-    defaultModel: 'anthropic/claude-sonnet-4-5',
+    defaultModel: 'anthropic/claude-sonnet-5-5',
     providers: {
       /* ... */
     },
@@ -557,8 +563,8 @@ const cog = new Cogitator({
       runLimit: 0.1,
     },
     routing: {
-      simple: 'openai/gpt-4o-mini',
-      complex: 'anthropic/claude-sonnet-4-5',
+      simple: 'openai/gpt-6-luna',
+      complex: 'anthropic/claude-sonnet-5-5',
     },
   },
 });

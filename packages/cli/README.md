@@ -153,7 +153,7 @@ Run an agent with a message, or start an interactive REPL when no message is giv
 
 ```bash
 cogitator run "Explain quantum computing in simple terms"
-cogitator run -m openai/gpt-4o "Analyze this code..."
+cogitator run -m openai/gpt-6.1-sol "Analyze this code..."
 cogitator run --no-stream "Hello"
 cogitator run            # interactive
 ```
@@ -161,14 +161,14 @@ cogitator run            # interactive
 | Option                | Default     | Description                         |
 | --------------------- | ----------- | ----------------------------------- |
 | `-c, --config <path>` | auto        | Config file (must exist when given) |
-| `-m, --model <model>` | auto-detect | Model, e.g. `ollama/gemma3:4b`      |
+| `-m, --model <model>` | auto-detect | Model, e.g. `ollama/qwen3:8b`       |
 | `-i, --interactive`   | `false`     | Force interactive mode              |
 | `-s, --stream`        | `true`      | Stream response tokens              |
 | `--no-stream`         | -           | Disable streaming                   |
 
 **Config resolution:** `-c` → `COGITATOR_CONFIG` → `cogitator.yml`, `cogitator.yaml`, `cogitator.json`, `.cogitator.yml`, `.cogitator.yaml`. The file is loaded with [`@cogitator-ai/config`](../config), so `${ENV}` references and `COGITATOR_*` / provider environment variables apply even without a file.
 
-**Model resolution:** `-m` → `COGITATOR_MODEL` → `llm.defaultModel` from the config → first installed Ollama model (preferring llama3.1:8b, llama3:8b, gemma3:4b, gemma2:9b, mistral:7b). Ollama is reached at `llm.providers.ollama.baseUrl`, `OLLAMA_URL` or `OLLAMA_HOST`.
+**Model resolution:** `-m` → `COGITATOR_MODEL` → `llm.defaultModel` from the config → first installed Ollama model (preferring qwen3:8b, qwen3.5:9b, llama3.1:8b, llama3:8b, gemma3:4b, gemma2:9b, mistral:7b). Ollama is reached at `llm.providers.ollama.baseUrl`, `OLLAMA_URL` or `OLLAMA_HOST`.
 
 Interactive commands: `/model [name]`, `/clear`, `/help`, `exit` / `quit` (Ctrl+D also exits).
 

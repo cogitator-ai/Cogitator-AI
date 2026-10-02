@@ -15,7 +15,7 @@ const cogitator = new Cogitator({
   llm: {
     defaultProvider: 'openai',
     providers: {
-      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' },
+      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-6.1-sol' },
     },
   },
 });
@@ -79,16 +79,16 @@ interface WorkflowExecuteOptions {
 
 `WorkflowExecutor.execute` additionally accepts (`ExecutorExecuteOptions`):
 
-| Option             | Description                                                                   |
-| ------------------ | ----------------------------------------------------------------------------- |
-| `signal`           | Cancels the run between steps; passed to nodes as `ctx.signal` (agent/tool nodes and timers honour it) |
-| `tracer`           | `WorkflowTracer` — one workflow span plus a child span per node execution    |
-| `metricsCollector` | `WorkflowMetricsCollector` — workflow/node counts, latencies and retries      |
-| `defaultRetry`     | Retry policy for nodes without their own `config.retries` (honours `isRetryable`) |
-| `defaultCircuitBreaker` | Per-node circuit breaker shared across runs of the executor             |
-| `deadLetterQueue`  | Receives an entry for every node that finally failed                          |
-| `idempotencyStore` | Reuses results of nodes that already completed for the same `workflowId` and step |
-| `approvalStore` / `approvalNotifier` / `timerStore` | Run-level defaults for human and timer nodes |
+| Option                                              | Description                                                                                            |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `signal`                                            | Cancels the run between steps; passed to nodes as `ctx.signal` (agent/tool nodes and timers honour it) |
+| `tracer`                                            | `WorkflowTracer` — one workflow span plus a child span per node execution                              |
+| `metricsCollector`                                  | `WorkflowMetricsCollector` — workflow/node counts, latencies and retries                               |
+| `defaultRetry`                                      | Retry policy for nodes without their own `config.retries` (honours `isRetryable`)                      |
+| `defaultCircuitBreaker`                             | Per-node circuit breaker shared across runs of the executor                                            |
+| `deadLetterQueue`                                   | Receives an entry for every node that finally failed                                                   |
+| `idempotencyStore`                                  | Reuses results of nodes that already completed for the same `workflowId` and step                      |
+| `approvalStore` / `approvalNotifier` / `timerStore` | Run-level defaults for human and timer nodes                                                           |
 
 ### Lifecycle Hooks
 

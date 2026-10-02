@@ -17,7 +17,7 @@ Create `cogitator.yml` in your project root:
 ```yaml
 llm:
   defaultProvider: openai
-  defaultModel: gpt-4o
+  defaultModel: gpt-6.1-sol
   providers:
     openai:
       apiKey: sk-xxx
@@ -67,13 +67,14 @@ const config = defineConfig({
 ```yaml
 llm:
   defaultProvider: openai # ollama | openai | anthropic | google | azure | bedrock | vllm | mistral | groq | together | deepseek
-  defaultModel: gpt-4o
+  defaultModel: gpt-6.1-sol
   providers:
     ollama:
       baseUrl: http://localhost:11434
     openai:
       apiKey: sk-xxx
       baseUrl: https://api.openai.com/v1 # optional, for proxies
+      api: responses # optional: responses (default for api.openai.com) | chat-completions
     anthropic:
       apiKey: sk-ant-xxx
     google:
@@ -82,7 +83,7 @@ llm:
       apiKey: xxx
       endpoint: https://xxx.openai.azure.com
       apiVersion: 2024-02-15-preview # optional
-      deployment: gpt-4o # optional
+      deployment: gpt-6.1-sol # optional
     bedrock:
       region: us-east-1 # optional, can use AWS config chain
       accessKeyId: xxx # optional, uses AWS credentials chain
@@ -222,7 +223,7 @@ reflection:
   maxInsightsPerAgent: 50
   minConfidenceToStore: 0.7
   useSmallModelForReflection: true
-  reflectionModel: gpt-4o-mini
+  reflectionModel: gpt-6-luna
 ```
 
 ### Guardrails Configuration
@@ -230,7 +231,7 @@ reflection:
 ```yaml
 guardrails:
   enabled: true
-  model: gpt-4o-mini
+  model: gpt-6-luna
   filterInput: true
   filterOutput: true
   filterToolCalls: true
@@ -453,7 +454,7 @@ sandbox:
 # cogitator.prod.yml
 llm:
   defaultProvider: openai
-  defaultModel: gpt-4o
+  defaultModel: gpt-6.1-sol
   providers:
     openai:
       apiKey: sk-prod-openai

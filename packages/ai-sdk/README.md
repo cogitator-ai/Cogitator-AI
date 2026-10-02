@@ -42,7 +42,7 @@ const searchTool = tool({
 
 const researcher = new Agent({
   name: 'researcher',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You are a research assistant.',
   tools: [searchTool],
 });
@@ -87,7 +87,7 @@ const agent = new Agent({
 const cog = new Cogitator();
 
 // Use fromAISDK to create a backend from any AI SDK model
-const backend = fromAISDK(openai('gpt-4o'));
+const backend = fromAISDK(openai('gpt-6.1-sol'));
 
 // Run with custom backend (requires custom integration)
 const result = await cog.run(agent, {

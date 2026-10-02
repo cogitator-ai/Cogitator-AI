@@ -19,7 +19,7 @@ interface AgentConfig {
   description?: string;
 
   provider?: string; // Explicit provider override (e.g., 'openai' for OpenRouter)
-  model: string; // 'ollama/llama3.3:70b', 'openai/gpt-4o'
+  model: string; // 'ollama/llama3.3:70b', 'openai/gpt-6.1-sol'
   temperature?: number; // 0-2, default 0.7
   topP?: number; // 0-1
   maxTokens?: number; // Max output tokens
@@ -84,7 +84,7 @@ const readUrl = tool({
 
 const researcher = new Agent({
   name: 'researcher',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: `You are a research assistant. Use your tools to find accurate,
                  up-to-date information. Always cite your sources.`,
   tools: [searchWeb, readUrl],
@@ -96,7 +96,7 @@ const researcher = new Agent({
 ```typescript
 const analyzer = new Agent({
   name: 'analyzer',
-  model: 'anthropic/claude-sonnet-4-5',
+  model: 'anthropic/claude-sonnet-5-5',
   instructions: 'Analyze the given text and extract structured information.',
   responseFormat: {
     type: 'json_schema',
@@ -124,7 +124,7 @@ import { Cogitator, Agent } from '@cogitator-ai/core';
 
 const cog = new Cogitator({
   llm: {
-    defaultModel: 'openai/gpt-4.1',
+    defaultModel: 'openai/gpt-6.1-sol',
   },
   memory: {
     adapter: 'postgres',
@@ -142,7 +142,7 @@ const cog = new Cogitator({
 
 const personalAssistant = new Agent({
   name: 'personal-assistant',
-  model: 'openai/gpt-4.1',
+  model: 'openai/gpt-6.1-sol',
   instructions: `You are a personal assistant. Remember user preferences
                  and context from previous conversations.`,
 });
@@ -164,7 +164,7 @@ Breaks down complex tasks into subtasks.
 ```typescript
 const planner = new Agent({
   name: 'planner',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   temperature: 0.2,
   instructions: `You are a task planning agent. When given a complex task:
                  1. Analyze the requirements
@@ -195,7 +195,7 @@ Executes specific tasks with tools.
 ```typescript
 const executor = new Agent({
   name: 'executor',
-  model: 'anthropic/claude-sonnet-4-5',
+  model: 'anthropic/claude-sonnet-5-5',
   instructions: `You are a task execution agent. Execute the given task precisely.
                  Use tools when needed. Report success or failure clearly.`,
   tools: [fileRead, fileWrite, exec, webSearch],
@@ -210,7 +210,7 @@ Reviews and validates work.
 ```typescript
 const critic = new Agent({
   name: 'critic',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   temperature: 0.1,
   instructions: `You are a code review agent. Review code for:
                  - Bugs and logic errors
@@ -244,7 +244,7 @@ Routes requests to specialized agents.
 ```typescript
 const router = new Agent({
   name: 'router',
-  model: 'openai/gpt-4o-mini',
+  model: 'openai/gpt-6-luna',
   temperature: 0,
   instructions: `You are a routing agent. Analyze the user's request and determine
                  which specialized agent should handle it.
@@ -272,7 +272,7 @@ Self-improves through reflection.
 ```typescript
 const reflectiveAgent = new Agent({
   name: 'reflective-coder',
-  model: 'anthropic/claude-sonnet-4-5',
+  model: 'anthropic/claude-sonnet-5-5',
   instructions: `You are a thoughtful coder. For each task:
 
                  1. THINK: Analyze the requirements
@@ -301,23 +301,23 @@ model: 'ollama/codellama:34b';
 model: 'ollama/mistral:7b-instruct';
 
 // OpenAI
-model: 'openai/gpt-4o';
-model: 'openai/gpt-4o-mini';
-model: 'openai/o1-preview';
+model: 'openai/gpt-6.1-sol';
+model: 'openai/gpt-6-luna';
+model: 'openai/gpt-6-astra';
 
 // Anthropic
-model: 'anthropic/claude-sonnet-4-5';
-model: 'anthropic/claude-opus-4-5';
+model: 'anthropic/claude-sonnet-5-5';
+model: 'anthropic/claude-opus-5-5';
 
 // Google
-model: 'google/gemini-2.5-flash';
-model: 'google/gemini-2.5-pro';
+model: 'google/gemini-3.8-flash';
+model: 'google/gemini-3.1-pro-preview';
 
 // Azure OpenAI
 model: 'azure/my-deployment-name';
 
 // AWS Bedrock
-model: 'bedrock/anthropic.claude-sonnet-4-5-20250514-v1:0';
+model: 'bedrock/global.anthropic.claude-sonnet-5-5';
 ```
 
 ### Temperature Guidelines
@@ -359,7 +359,7 @@ import {
 
 const agent = new Agent({
   name: 'worker',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You are a helpful worker.',
   tools: [fileRead, fileWrite, exec],
 });
@@ -405,7 +405,7 @@ const fsTools = await client.getTools();
 
 const agent = new Agent({
   name: 'file-worker',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You can read and write files.',
   tools: [...fsTools],
 });
@@ -427,7 +427,7 @@ const { tools, cleanup } = await connectMCPServer({
 
 const agent = new Agent({
   name: 'file-worker',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You can read and write files.',
   tools: [...tools],
 });
@@ -445,12 +445,12 @@ Agents are run via the `Cogitator` runtime:
 import { Cogitator, Agent } from '@cogitator-ai/core';
 
 const cog = new Cogitator({
-  llm: { defaultModel: 'openai/gpt-4o' },
+  llm: { defaultModel: 'openai/gpt-6.1-sol' },
 });
 
 const agent = new Agent({
   name: 'assistant',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You are a helpful assistant.',
   maxIterations: 20,
   timeout: 300_000,
@@ -524,7 +524,7 @@ Create variants of an agent with configuration overrides:
 ```typescript
 const baseAgent = new Agent({
   name: 'coder',
-  model: 'anthropic/claude-sonnet-4-5',
+  model: 'anthropic/claude-sonnet-5-5',
   instructions: 'You write clean TypeScript code.',
 });
 
@@ -585,7 +585,7 @@ describe('Researcher Agent', () => {
 
     const agent = new Agent({
       name: 'test-researcher',
-      model: 'openai/gpt-4o',
+      model: 'openai/gpt-6.1-sol',
       instructions: 'You are a research assistant.',
       tools: [searchTool],
     });
@@ -685,14 +685,14 @@ instructions: `You are a Python code assistant. Your role is to:
 // Use smaller models for simple tasks
 const classifier = new Agent({
   name: 'classifier',
-  model: 'openai/gpt-4o-mini',
+  model: 'openai/gpt-6-luna',
   instructions: 'Classify the input into one of the categories.',
 });
 
 // Use powerful models for complex reasoning
 const architect = new Agent({
   name: 'architect',
-  model: 'anthropic/claude-opus-4-5',
+  model: 'anthropic/claude-opus-5-5',
   instructions: 'Design system architecture.',
 });
 ```
@@ -730,7 +730,7 @@ tool({
 ```typescript
 const agent = new Agent({
   name: 'worker',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You are a task execution agent.',
   maxIterations: 20,
   timeout: 300_000,
@@ -745,13 +745,13 @@ When conversations exceed the model's context window, Cogitator can automaticall
 
 ```typescript
 const cog = new Cogitator({
-  llm: { defaultModel: 'openai/gpt-4o' },
+  llm: { defaultModel: 'openai/gpt-6.1-sol' },
   context: {
     enabled: true,
     strategy: 'hybrid', // 'truncate' | 'sliding-window' | 'summarize' | 'hybrid'
     compressionThreshold: 0.8, // Compress when 80% of context used
     outputReserve: 0.15, // Reserve 15% for output
-    summaryModel: 'openai/gpt-4o-mini', // Model used for summarization
+    summaryModel: 'openai/gpt-6-luna', // Model used for summarization
     windowSize: 10, // Messages to keep in sliding window
     windowOverlap: 2, // Overlap between windows
   },

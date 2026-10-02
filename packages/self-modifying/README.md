@@ -260,7 +260,7 @@ import { MetaReasoner } from '@cogitator-ai/self-modifying';
 
 const metaReasoner = new MetaReasoner({
   llm,
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
   config: metaReasoningConfig,
 });
 
@@ -356,7 +356,7 @@ const optimizer = new ParameterOptimizer({
     toolStrategy: 'sequential',
     reflectionDepth: 0,
   },
-  availableModels: ['llama3.2', 'qwen2.5:7b'],
+  availableModels: ['llama3.2', 'qwen3:8b'],
 });
 
 // Optimize for a task
@@ -578,7 +578,7 @@ Adapter that normalizes LLM backend calls — uses `complete()` if available, fa
 import { llmChat } from '@cogitator-ai/self-modifying';
 
 const response = await llmChat(llm, [{ role: 'user', content: 'Analyze this data' }], {
-  model: 'gpt-4o',
+  model: 'gpt-6.1-sol',
 });
 ```
 

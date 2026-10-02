@@ -47,7 +47,7 @@ A supervisor agent delegates tasks to worker agents:
 import { Swarm } from '@cogitator-ai/swarms';
 import { Cogitator, Agent } from '@cogitator-ai/core';
 
-const cog = new Cogitator({ llm: { defaultModel: 'gpt-4o' } });
+const cog = new Cogitator({ llm: { defaultModel: 'gpt-6.1-sol' } });
 
 const devTeam = new Swarm(cog, {
   name: 'dev-team',
@@ -55,7 +55,7 @@ const devTeam = new Swarm(cog, {
 
   supervisor: new Agent({
     name: 'tech-lead',
-    model: 'gpt-4o',
+    model: 'gpt-6.1-sol',
     instructions: `You are a tech lead managing a development team.
                    Break down tasks and delegate to appropriate team members.
                    Coordinate their work and ensure quality.`,
@@ -64,21 +64,21 @@ const devTeam = new Swarm(cog, {
   workers: [
     new Agent({
       name: 'frontend-dev',
-      model: 'claude-sonnet-4-5',
+      model: 'claude-sonnet-5-5',
       instructions: 'You are a frontend developer. Build React/Vue components.',
       tools: [fileWrite, npmRun],
     }),
 
     new Agent({
       name: 'backend-dev',
-      model: 'claude-sonnet-4-5',
+      model: 'claude-sonnet-5-5',
       instructions: 'You are a backend developer. Build APIs and services.',
       tools: [fileWrite, databaseTool],
     }),
 
     new Agent({
       name: 'qa-engineer',
-      model: 'gpt-4o',
+      model: 'gpt-6.1-sol',
       instructions: 'You are a QA engineer. Write and run tests.',
       tools: [fileWrite, testRunner],
     }),
@@ -293,7 +293,7 @@ const debateSwarm = new Swarm(cog, {
   moderator: new Agent({
     name: 'moderator',
     instructions: 'Synthesize arguments from both sides and make a balanced recommendation.',
-    model: 'gpt-4o', // Use strong model for synthesis
+    model: 'gpt-6.1-sol', // Use strong model for synthesis
   }),
 
   debate: {

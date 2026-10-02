@@ -101,11 +101,11 @@ const cogitator = new Cogitator({
     defaultProvider: 'ollama',
     providers: {
       ollama: { type: 'ollama', host: 'http://localhost:11434', model: 'llama3.2' },
-      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' },
+      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-6.1-sol' },
       anthropic: {
         type: 'anthropic',
         apiKey: process.env.ANTHROPIC_API_KEY!,
-        model: 'claude-sonnet-4-5-20250929',
+        model: 'claude-sonnet-5-5',
       },
     },
   },
@@ -115,11 +115,11 @@ const cogitator = new Cogitator({
 const localAgent = new Agent({ name: 'local', instructions: '...' });
 
 // override per-agent
-const smartAgent = new Agent({ name: 'smart', instructions: '...', model: 'openai/gpt-4o' });
+const smartAgent = new Agent({ name: 'smart', instructions: '...', model: 'openai/gpt-6.1-sol' });
 const creativeAgent = new Agent({
   name: 'creative',
   instructions: '...',
-  model: 'anthropic/claude-sonnet-4-5-20250929',
+  model: 'anthropic/claude-sonnet-5-5',
 });
 ```
 

@@ -37,12 +37,12 @@ const suite = new EvalSuite({
 Case-sensitive mode:
 
 ```typescript
-exactMatch({ caseSensitive: true })
+exactMatch({ caseSensitive: true });
 ```
 
-| Option          | Type    | Default | Description                     |
-| --------------- | ------- | ------- | ------------------------------- |
-| `caseSensitive` | boolean | false   | Require exact case match        |
+| Option          | Type    | Default | Description              |
+| --------------- | ------- | ------- | ------------------------ |
+| `caseSensitive` | boolean | false   | Require exact case match |
 
 ### contains
 
@@ -51,8 +51,8 @@ Checks whether the output contains the expected string as a substring.
 ```typescript
 import { contains } from '@cogitator-ai/evals';
 
-contains()                          // case-insensitive (default)
-contains({ caseSensitive: true })   // case-sensitive
+contains(); // case-insensitive (default)
+contains({ caseSensitive: true }); // case-sensitive
 ```
 
 ### regex
@@ -62,8 +62,8 @@ Tests the output against a regular expression pattern.
 ```typescript
 import { regex } from '@cogitator-ai/evals';
 
-regex(/\d{4}-\d{2}-\d{2}/)   // matches date format
-regex('^(yes|no)$')           // string pattern
+regex(/\d{4}-\d{2}-\d{2}/); // matches date format
+regex('^(yes|no)$'); // string pattern
 ```
 
 ### jsonSchema
@@ -79,7 +79,7 @@ const schema = z.object({
   confidence: z.number().min(0).max(1),
 });
 
-jsonSchema(schema)
+jsonSchema(schema);
 ```
 
 Returns score 1 if the output parses as JSON and passes validation, 0 otherwise. The `details` field contains the parse or validation error on failure.
@@ -96,7 +96,7 @@ const suite = new EvalSuite({
   target: { fn },
   metrics: [faithfulness(), relevance(), coherence(), helpfulness()],
   judge: {
-    model: 'gpt-4o',
+    model: 'gpt-6.1-sol',
     temperature: 0,
   },
 });
@@ -106,12 +106,12 @@ Each judge metric prompts the LLM to score the response on a 0–1 scale and ret
 
 ### Built-in Judge Metrics
 
-| Metric           | Evaluates                                                  |
-| ---------------- | ---------------------------------------------------------- |
-| `faithfulness()`  | Whether the response is faithful to facts in the input    |
-| `relevance()`     | Whether the response addresses the question asked         |
-| `coherence()`     | Whether the response is logical and well-structured       |
-| `helpfulness()`   | Whether the response would be useful to the user          |
+| Metric           | Evaluates                                              |
+| ---------------- | ------------------------------------------------------ |
+| `faithfulness()` | Whether the response is faithful to facts in the input |
+| `relevance()`    | Whether the response addresses the question asked      |
+| `coherence()`    | Whether the response is logical and well-structured    |
+| `helpfulness()`  | Whether the response would be useful to the user       |
 
 ### Custom Judge Metrics
 
@@ -129,7 +129,7 @@ const suite = new EvalSuite({
   dataset,
   target: { fn },
   metrics: [tone],
-  judge: { model: 'gpt-4o', temperature: 0 },
+  judge: { model: 'gpt-6.1-sol', temperature: 0 },
 });
 ```
 
@@ -144,7 +144,7 @@ import { faithfulness, bindJudgeContext } from '@cogitator-ai/evals';
 
 const bound = bindJudgeContext(faithfulness(), {
   cogitator: { run: async ({ input }) => ({ output: await callLLM(input) }) },
-  judgeConfig: { model: 'gpt-4o', temperature: 0 },
+  judgeConfig: { model: 'gpt-6.1-sol', temperature: 0 },
 });
 ```
 
@@ -227,14 +227,9 @@ Pass any combination of metric types to EvalSuite:
 const suite = new EvalSuite({
   dataset,
   target: { fn },
-  metrics: [
-    exactMatch(),
-    contains(),
-    faithfulness(),
-    wordCount,
-  ],
+  metrics: [exactMatch(), contains(), faithfulness(), wordCount],
   statisticalMetrics: [latency(), cost()],
-  judge: { model: 'gpt-4o', temperature: 0 },
+  judge: { model: 'gpt-6.1-sol', temperature: 0 },
 });
 ```
 

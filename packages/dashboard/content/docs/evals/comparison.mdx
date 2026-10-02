@@ -18,10 +18,10 @@ interface ComparisonResult {
 }
 
 interface MetricComparison {
-  baseline: number;      // mean score
-  challenger: number;    // mean score
-  pValue: number;        // statistical significance
-  significant: boolean;  // p < 0.05
+  baseline: number; // mean score
+  challenger: number; // mean score
+  pValue: number; // statistical significance
+  significant: boolean; // p < 0.05
   winner: 'baseline' | 'challenger' | 'tie';
 }
 ```
@@ -42,10 +42,10 @@ const comparison = new EvalComparison({
   dataset,
   targets: {
     baseline: {
-      fn: async (input) => callModel('gpt-4o-mini', input),
+      fn: async (input) => callModel('gpt-6-luna', input),
     },
     challenger: {
-      fn: async (input) => callModel('gpt-4o', input),
+      fn: async (input) => callModel('gpt-6.1-sol', input),
     },
   },
   metrics: [exactMatch(), contains()],
@@ -64,10 +64,10 @@ console.log(`Winner: ${summary.winner}`);
 for (const [metric, comp] of Object.entries(summary.metrics)) {
   console.log(
     `${metric}: baseline=${comp.baseline.toFixed(3)} ` +
-    `challenger=${comp.challenger.toFixed(3)} ` +
-    `p=${comp.pValue.toFixed(4)} ` +
-    `significant=${comp.significant} ` +
-    `winner=${comp.winner}`
+      `challenger=${comp.challenger.toFixed(3)} ` +
+      `p=${comp.pValue.toFixed(4)} ` +
+      `significant=${comp.significant} ` +
+      `winner=${comp.winner}`
   );
 }
 
@@ -121,7 +121,7 @@ const comparison = new EvalComparison({
       fn: async (input) => {
         const res = await fetch('http://localhost:3000/v1/chat', {
           method: 'POST',
-          body: JSON.stringify({ model: 'gpt-4o-mini', input }),
+          body: JSON.stringify({ model: 'gpt-6-luna', input }),
         });
         const json = await res.json();
         return json.output;
@@ -131,7 +131,7 @@ const comparison = new EvalComparison({
       fn: async (input) => {
         const res = await fetch('http://localhost:3000/v1/chat', {
           method: 'POST',
-          body: JSON.stringify({ model: 'gpt-4o', input }),
+          body: JSON.stringify({ model: 'gpt-6.1-sol', input }),
         });
         const json = await res.json();
         return json.output;
@@ -140,7 +140,7 @@ const comparison = new EvalComparison({
   },
   metrics: [exactMatch(), contains(), faithfulness()],
   statisticalMetrics: [latency()],
-  judge: { model: 'gpt-4o', temperature: 0 },
+  judge: { model: 'gpt-6.1-sol', temperature: 0 },
   concurrency: 10,
   timeout: 30000,
   onProgress: ({ target, completed, total }) => {
@@ -155,25 +155,25 @@ for (const [name, mc] of Object.entries(result.summary.metrics)) {
   const sig = mc.significant ? '***' : '';
   console.log(
     `  ${name}: ${mc.baseline.toFixed(3)} vs ${mc.challenger.toFixed(3)} ` +
-    `(p=${mc.pValue.toFixed(4)}) ${mc.winner}${sig}`
+      `(p=${mc.pValue.toFixed(4)}) ${mc.winner}${sig}`
   );
 }
 ```
 
 ## Options
 
-| Option               | Type                | Default | Description                           |
-| -------------------- | ------------------- | ------- | ------------------------------------- |
-| `dataset`            | Dataset             | —       | Test cases to run                     |
-| `targets.baseline`   | EvalTarget          | —       | Baseline target                       |
-| `targets.challenger` | EvalTarget          | —       | Challenger target                     |
-| `metrics`            | MetricFn[]          | —       | Per-case metrics                      |
-| `statisticalMetrics` | StatisticalMetricFn[] | —     | Aggregate metrics                     |
-| `judge`              | JudgeConfig         | —       | Required for LLM metrics              |
-| `concurrency`        | number              | 5       | Parallel case execution per target    |
-| `timeout`            | number              | 30000   | Per-case timeout in ms                |
-| `retries`            | number              | 0       | Retry count for failed cases          |
-| `onProgress`         | function            | —       | Progress callback with target label   |
+| Option               | Type                  | Default | Description                         |
+| -------------------- | --------------------- | ------- | ----------------------------------- |
+| `dataset`            | Dataset               | —       | Test cases to run                   |
+| `targets.baseline`   | EvalTarget            | —       | Baseline target                     |
+| `targets.challenger` | EvalTarget            | —       | Challenger target                   |
+| `metrics`            | MetricFn[]            | —       | Per-case metrics                    |
+| `statisticalMetrics` | StatisticalMetricFn[] | —       | Aggregate metrics                   |
+| `judge`              | JudgeConfig           | —       | Required for LLM metrics            |
+| `concurrency`        | number                | 5       | Parallel case execution per target  |
+| `timeout`            | number                | 30000   | Per-case timeout in ms              |
+| `retries`            | number                | 0       | Retry count for failed cases        |
+| `onProgress`         | function              | —       | Progress callback with target label |
 
 ## Tips for Meaningful Comparisons
 

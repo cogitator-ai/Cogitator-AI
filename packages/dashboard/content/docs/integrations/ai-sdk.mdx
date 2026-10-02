@@ -34,7 +34,7 @@ const cog = new Cogitator({
 
 const agent = new Agent({
   name: 'researcher',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You are an expert researcher. Always cite sources.',
   tools: [webSearch, readUrl],
 });
@@ -97,7 +97,7 @@ import { google } from '@ai-sdk/google';
 import { Cogitator, Agent } from '@cogitator-ai/core';
 import { fromAISDK } from '@cogitator-ai/ai-sdk';
 
-const geminiBackend = fromAISDK(google('gemini-2.0-flash'));
+const geminiBackend = fromAISDK(google('gemini-3.5-flash-lite'));
 
 const cog = new Cogitator();
 
@@ -162,7 +162,7 @@ const cogWeather = fromAISDKTool(weatherTool, 'get_weather');
 
 const agent = new Agent({
   name: 'weather-bot',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'Help users check the weather.',
   tools: [cogWeather],
 });
@@ -178,7 +178,7 @@ const cogTools = convertToolsFromAISDK(aiTools);
 
 const agent = new Agent({
   name: 'multi-tool',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   tools: cogTools,
 });
 ```
@@ -202,7 +202,7 @@ const cog = new Cogitator({
 
 const agent = new Agent({
   name: 'assistant',
-  model: 'anthropic/claude-sonnet-4-20250514',
+  model: 'anthropic/claude-sonnet-5-5',
   instructions: 'You are a helpful coding assistant.',
   tools: [
     tool({

@@ -38,13 +38,13 @@ tools.instance.loadLogicProgram(`
 
 const agent = new Agent({
   name: 'reasoner',
-  model: 'google/gemini-2.5-flash',
+  model: 'google/gemini-3.8-flash',
   instructions:
     'Answer family questions by calling query_logic. Use solve_constraints for scheduling and validate_plan to verify action sequences.',
   tools: tools.all,
 });
 
-const cog = new Cogitator({ llm: { defaultModel: 'google/gemini-2.5-flash' } });
+const cog = new Cogitator({ llm: { defaultModel: 'google/gemini-3.8-flash' } });
 const result = await cog.run(agent, { input: 'Who are the grandchildren of tom?' });
 ```
 

@@ -38,7 +38,7 @@ All deployment settings live in the `deploy:` section of `cogitator.yml`:
 
 ```yaml
 name: my-agent-service
-model: gpt-4o
+model: gpt-6.1-sol
 memory: redis
 
 agents:
@@ -334,7 +334,7 @@ The deploy system inspects your project and automatically configures what it can
 | `package.json` has `@cogitator-ai/koa`     | `server: koa`                               |
 | `cogitator.yml` has `memory: redis`        | `services.redis: true`                      |
 | `cogitator.yml` has `memory: postgres`     | `services.postgres: true`                   |
-| `cogitator.yml` has `model: gpt-4o`        | `secrets: [OPENAI_API_KEY]`                 |
+| `cogitator.yml` has `model: gpt-6.1-sol`   | `secrets: [OPENAI_API_KEY]`                 |
 | `cogitator.yml` has `model: claude-*`      | `secrets: [ANTHROPIC_API_KEY]`              |
 | `tsconfig.json` exists                     | TypeScript project (multi-stage Dockerfile) |
 
@@ -407,7 +407,7 @@ By default, Ollama models (`ollama/llama3.2`, `qwen3.5`, etc.) require a local O
 **1. Use a cloud LLM provider instead:**
 
 ```yaml
-model: gpt-4o # or anthropic/claude-sonnet-4-5
+model: gpt-6.1-sol # or anthropic/claude-sonnet-5-5
 ```
 
 **2. Use Ollama Cloud with the `:cloud` suffix:**
@@ -444,7 +444,7 @@ If you try to deploy a local Ollama model to a cloud target, the preflight check
 ```
 Model "ollama/llama3.2:3b" requires local Ollama server.
 Cloud targets don't include Ollama. Options:
-  1. Switch to a cloud model (gpt-4o, claude-sonnet)
+  1. Switch to a cloud model (gpt-6.1-sol, claude-sonnet)
   2. Use Ollama Cloud (model:cloud suffix + OLLAMA_API_KEY)
   3. Point to external Ollama URL via OLLAMA_HOST env
 ```

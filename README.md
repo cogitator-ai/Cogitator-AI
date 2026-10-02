@@ -40,7 +40,7 @@ const weather = tool({
 
 const agent = new Agent({
   name: 'assistant',
-  model: 'google/gemini-2.5-flash', // free tier, no credit card
+  model: 'google/gemini-3.8-flash', // free tier, no credit card
   instructions: 'You help people with questions. Use tools when needed.',
   tools: [weather],
 });
@@ -83,7 +83,7 @@ Set `GOOGLE_API_KEY` in your `.env` ([get one free here](https://aistudio.google
 npx tsx examples/core/01-basic-agent.ts
 ```
 
-> **Works with any LLM**: swap `google/gemini-2.5-flash` for `openai/gpt-4o`, `anthropic/claude-sonnet-4-6`, `ollama/llama3.3`, or [10+ other providers](https://cogitator.app/docs).
+> **Works with any LLM**: swap `google/gemini-3.8-flash` for `openai/gpt-6.1-sol`, `anthropic/claude-sonnet-5-5`, `ollama/llama3.3`, or [10+ other providers](https://cogitator.app/docs).
 
 ---
 
@@ -102,7 +102,7 @@ name: Jarvis
 personality: 'You are Jarvis, a sharp personal assistant.'
 llm:
   provider: google
-  model: gemini-2.5-flash
+  model: gemini-3.8-flash
 channels:
   telegram:
     ownerIds: ['YOUR_TG_ID']
@@ -134,16 +134,16 @@ cogitator daemon install        # user service with restart on crash (systemd/la
 
 **Manage everything from chat** — no web dashboard needed:
 
-| Command         | What it does                            |
-| --------------- | --------------------------------------- |
-| `/status`       | Uptime, model, sessions, messages today |
-| `/sessions`     | Recent conversations                    |
-| `/model gpt-4o` | Switch model on the fly (or per user)   |
-| `/pair ABC123`  | Approve a new user                      |
-| `/users`        | Owners and approved users               |
-| `/compact`      | Compress conversation history           |
-| `/restart`      | Restart the assistant                   |
-| `/help`         | All available commands                  |
+| Command              | What it does                            |
+| -------------------- | --------------------------------------- |
+| `/status`            | Uptime, model, sessions, messages today |
+| `/sessions`          | Recent conversations                    |
+| `/model gpt-6.1-sol` | Switch model on the fly (or per user)   |
+| `/pair ABC123`       | Approve a new user                      |
+| `/users`             | Owners and approved users               |
+| `/compact`           | Compress conversation history           |
+| `/restart`           | Restart the assistant                   |
+| `/help`              | All available commands                  |
 
 **What you get out of the box:**
 
@@ -342,7 +342,7 @@ npx tsx examples/core/01-basic-agent.ts
 | [`create-cogitator-app/`](./examples/create-cogitator-app/) | 1     | Programmatic project scaffolding                                                                                                                               |
 | [`advanced/`](./examples/advanced/)                         | 3     | Self-modifying agents, neuro-symbolic reasoning, WASM tools                                                                                                    |
 
-Default LLM is **Google Gemini 2.5 Flash** - free tier, no credit card. See [`examples/README.md`](./examples/README.md) for setup.
+Default LLM is **Google Gemini 3.8 Flash** - free tier, no credit card. See [`examples/README.md`](./examples/README.md) for setup.
 
 ---
 

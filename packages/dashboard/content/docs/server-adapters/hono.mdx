@@ -21,7 +21,7 @@ import { z } from 'zod';
 
 const cogitator = new Cogitator({
   llm: {
-    defaultModel: 'anthropic/claude-sonnet-4-5-20250929',
+    defaultModel: 'anthropic/claude-sonnet-5-5',
     providers: {
       anthropic: { apiKey: process.env.ANTHROPIC_API_KEY! },
     },
@@ -31,7 +31,7 @@ const cogitator = new Cogitator({
 const summarizer = new Agent({
   name: 'summarizer',
   description: 'Summarizes text in a few sentences',
-  model: 'anthropic/claude-sonnet-4-5-20250929',
+  model: 'anthropic/claude-sonnet-5-5',
   instructions: 'You summarize text concisely. Keep it under 3 sentences.',
 });
 

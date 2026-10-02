@@ -22,7 +22,7 @@ const team = swarm('dev-team')
   .supervisor(
     new Agent({
       name: 'tech-lead',
-      model: 'openai/gpt-4o',
+      model: 'openai/gpt-6.1-sol',
       instructions: 'Break down tasks and delegate to your team members.',
     })
   )
@@ -209,7 +209,7 @@ const debateTeam = swarm('risk-assessment')
   .moderator(
     new Agent({
       name: 'moderator',
-      model: 'openai/gpt-4o',
+      model: 'openai/gpt-6.1-sol',
       instructions: 'Synthesize both sides into a balanced recommendation.',
     })
   )

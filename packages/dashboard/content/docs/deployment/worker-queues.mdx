@@ -33,7 +33,7 @@ const job = await queue.addAgentJob(
   {
     name: 'researcher',
     instructions: 'You are a research assistant.',
-    model: 'gpt-4o',
+    model: 'gpt-6.1-sol',
     provider: 'openai',
     tools: [],
   },
@@ -70,7 +70,9 @@ const pool = new WorkerPool(
     redis: { host: 'localhost', port: 6379 },
     workerCount: 4,
     concurrency: 5,
-    cogitator: new Cogitator({ llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY } } } }),
+    cogitator: new Cogitator({
+      llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY } } },
+    }),
     tools: [webSearch, calculator],
   },
   {
@@ -145,15 +147,15 @@ app.get('/metrics', async (req, res) => {
 
 Label values are escaped per the Prometheus exposition format.
 
-| Metric                            | Type      | Description                  |
-| --------------------------------- | --------- | ---------------------------- |
-| `cogitator_queue_depth`           | gauge     | Jobs waiting + delayed       |
-| `cogitator_queue_active`          | gauge     | Jobs currently processing    |
-| `cogitator_queue_completed_total` | counter   | Total completed jobs         |
-| `cogitator_queue_failed_total`    | counter   | Total failed jobs            |
+| Metric                            | Type      | Description                    |
+| --------------------------------- | --------- | ------------------------------ |
+| `cogitator_queue_depth`           | gauge     | Jobs waiting + delayed         |
+| `cogitator_queue_active`          | gauge     | Jobs currently processing      |
+| `cogitator_queue_completed_total` | counter   | Total completed jobs           |
+| `cogitator_queue_failed_total`    | counter   | Total failed jobs              |
 | `cogitator_workers_total`         | gauge     | Workers connected to the queue |
-| `cogitator_jobs_by_type_total`    | counter   | Jobs processed by type       |
-| `cogitator_job_duration_seconds`  | histogram | Processing time distribution |
+| `cogitator_jobs_by_type_total`    | counter   | Jobs processed by type         |
+| `cogitator_job_duration_seconds`  | histogram | Processing time distribution   |
 
 ### HPA Autoscaling
 

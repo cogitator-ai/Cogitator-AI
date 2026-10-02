@@ -38,12 +38,12 @@ npx create-cogitator-app my-project -t swarm -p ollama --pm pnpm --docker --no-g
 
 ## Providers
 
-| Provider    | Default Model              | Requires                                       |
-| ----------- | -------------------------- | ---------------------------------------------- |
-| `ollama`    | `qwen2.5:7b`               | [Ollama](https://ollama.com) installed locally |
-| `openai`    | `gpt-4o`                   | `OPENAI_API_KEY`                               |
-| `anthropic` | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY`                            |
-| `google`    | `gemini-2.5-flash`         | `GOOGLE_API_KEY`                               |
+| Provider    | Default Model       | Requires                                       |
+| ----------- | ------------------- | ---------------------------------------------- |
+| `ollama`    | `qwen3:8b`          | [Ollama](https://ollama.com) installed locally |
+| `openai`    | `gpt-6.1-sol`       | `OPENAI_API_KEY`                               |
+| `anthropic` | `claude-sonnet-5-5` | `ANTHROPIC_API_KEY`                            |
+| `google`    | `gemini-3.8-flash`  | `GOOGLE_API_KEY`                               |
 
 ## Programmatic API
 

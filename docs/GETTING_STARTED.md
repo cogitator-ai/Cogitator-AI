@@ -87,7 +87,7 @@ const cog = new Cogitator({
 // 2. Create an agent
 const assistant = new Agent({
   name: 'assistant',
-  model: 'llama3.1:8b', // or 'openai/gpt-4.1', 'anthropic/claude-sonnet-4-5'
+  model: 'llama3.1:8b', // or 'openai/gpt-6.1-sol', 'anthropic/claude-sonnet-5-5'
   instructions: `You are a helpful assistant. Be concise and friendly.`,
 });
 
@@ -208,7 +208,7 @@ import {
 
 const agent = new Agent({
   name: 'power-user',
-  model: 'openai/gpt-4.1',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You are a powerful assistant with many tools.',
   tools: [calculator, datetime, fileRead, httpRequest],
 });
@@ -216,7 +216,7 @@ const agent = new Agent({
 // Or use all built-in tools
 const superAgent = new Agent({
   name: 'super-agent',
-  model: 'openai/gpt-4.1',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You have access to all tools.',
   tools: builtinTools,
 });
@@ -353,7 +353,7 @@ const cog = new Cogitator({
 });
 
 const agent = new Agent({
-  model: 'gpt-4o', // or 'gpt-4.1', 'o3'
+  model: 'gpt-6.1-sol', // or 'gpt-6.1-sol', 'o3'
   // ...
 });
 ```
@@ -373,7 +373,7 @@ const cog = new Cogitator({
 });
 
 const agent = new Agent({
-  model: 'claude-sonnet-4-5-20250929', // or 'claude-opus-4-5'
+  model: 'claude-sonnet-5-5', // or 'claude-opus-5-5'
   // ...
 });
 ```
@@ -402,21 +402,21 @@ const localAgent = new Agent({
 
 // Uses OpenAI (provider prefix overrides default)
 const smartAgent = new Agent({
-  model: 'openai/gpt-4.1',
+  model: 'openai/gpt-6.1-sol',
   // ...
 });
 
 // Uses Anthropic (provider prefix overrides default)
 const creativeAgent = new Agent({
-  model: 'anthropic/claude-sonnet-4-5',
+  model: 'anthropic/claude-sonnet-5-5',
   // ...
 });
 ```
 
 **Model name format:**
 
-- `model-name` — Uses the default provider (e.g., `gpt-4.1`, `llama3.1:8b`)
-- `provider/model-name` — Explicitly specify provider (e.g., `openai/gpt-4.1`, `anthropic/claude-sonnet-4-5`)
+- `model-name` — Uses the default provider (e.g., `gpt-6.1-sol`, `llama3.1:8b`)
+- `provider/model-name` — Explicitly specify provider (e.g., `openai/gpt-6.1-sol`, `anthropic/claude-sonnet-5-5`)
 
 ---
 

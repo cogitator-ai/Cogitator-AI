@@ -91,7 +91,7 @@ The target defines what you're evaluating. Use `fn` for a simple function, or `a
 const target = {
   fn: async (input: string) => {
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o',
+      model: 'gpt-6.1-sol',
       messages: [{ role: 'user', content: input }],
     });
     return response.choices[0].message.content!;

@@ -23,7 +23,7 @@ const app = new Koa();
 
 const cogitator = new Cogitator({
   llm: {
-    defaultModel: 'openai/gpt-4o',
+    defaultModel: 'openai/gpt-6.1-sol',
     providers: {
       openai: { apiKey: process.env.OPENAI_API_KEY! },
     },
@@ -45,7 +45,7 @@ const translator = tool({
 const agent = new Agent({
   name: 'translator',
   description: 'Translates text between languages',
-  model: 'openai/gpt-4o',
+  model: 'openai/gpt-6.1-sol',
   instructions: 'You translate text between languages. Use the translate tool.',
   tools: [translator],
 });

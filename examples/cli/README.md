@@ -46,8 +46,8 @@ cogitator daemon uninstall
 # uses COGITATOR_MODEL, llm.defaultModel from cogitator.yml, or an installed Ollama model
 cogitator run "What is the capital of France?"
 
-cogitator run -m ollama/gemma3:4b "Write a haiku about TypeScript"
-OPENAI_API_KEY=sk-... cogitator run -m openai/gpt-4o "Explain monads"
+cogitator run -m ollama/qwen3:8b "Write a haiku about TypeScript"
+OPENAI_API_KEY=sk-... cogitator run -m openai/gpt-6.1-sol "Explain monads"
 cogitator run --no-stream "Hello"
 ```
 

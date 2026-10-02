@@ -27,11 +27,11 @@ import { initializeModels, getModel, getPrice, listModels } from '@cogitator-ai/
 
 await initializeModels();
 
-const model = getModel('gpt-5.4-mini');
+const model = getModel('gpt-6.1-sol');
 console.log(model?.contextWindow);
 console.log(model?.capabilities?.supportsVision);
 
-const price = getPrice('claude-sonnet-4-6');
+const price = getPrice('claude-sonnet-5-5');
 console.log(`Input: $${price?.input}/M tokens`);
 console.log(`Output: $${price?.output}/M tokens`);
 
@@ -97,9 +97,9 @@ interface CacheOptions {
 ```typescript
 await registry.initialize();
 
-const model = registry.getModel('gpt-5.4-mini');
+const model = registry.getModel('gpt-6.1-sol');
 
-const price = registry.getPrice('claude-sonnet-4-6');
+const price = registry.getPrice('claude-sonnet-5-5');
 
 const models = registry.listModels({
   provider: 'anthropic',
@@ -136,8 +136,8 @@ import {
 
 await initializeModels();
 
-const model = getModel('gpt-5.4-mini');
-const price = getPrice('gpt-5.4-mini');
+const model = getModel('gpt-6.1-sol');
+const price = getPrice('gpt-6.1-sol');
 const allModels = listModels();
 
 const registry = getModelRegistry();
@@ -184,22 +184,25 @@ interface ModelCapabilities {
 ### Example Model
 
 ```typescript
-const model = getModel('gpt-5.4-mini');
+const model = getModel('gpt-6.1-sol');
 // {
-//   id: 'gpt-5.4-mini',
+//   id: 'gpt-6.1-sol',
 //   provider: 'openai',
-//   displayName: 'GPT-5.4 Mini',
-//   pricing: { input: 0.75, output: 4.5 },
-//   contextWindow: 272000,
+//   displayName: 'GPT-6.1 Sol',
+//   pricing: { input: 2, output: 10, inputCached: 0.1 },
+//   contextWindow: 1050000,
 //   maxOutputTokens: 128000,
 //   capabilities: {
-//     supportsVision: true,
 //     supportsTools: true,
+//     supportsVision: true,
+//     supportsFunctions: true,
 //     supportsStreaming: true,
 //     supportsJson: true,
 //   }
 // }
 ```
+
+Values shown are the built-in fallback entry; after `initializeModels()` the data may come from LiteLLM instead.
 
 ---
 
@@ -309,25 +312,33 @@ import {
 } from '@cogitator-ai/models';
 ```
 
+Deprecated entries stay in the registry (with `deprecated: true`) so pricing and lookups keep working for existing configs; use `excludeDeprecated: true` to hide them.
+
 ### OpenAI Models
 
+- gpt-6-astra, gpt-6.1-sol, gpt-6-sol, gpt-6-luna
+- gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna
 - gpt-5.5, gpt-5.5-pro
-- gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gpt-5.4-pro
-- gpt-4.1, gpt-4.1-mini, gpt-4.1-nano
+- gpt-5.4, gpt-5.4-mini, gpt-5.4-pro
+- gpt-4.1, gpt-4.1-mini
 - gpt-4o, gpt-4o-mini
-- o3, o3-mini, o3-pro, o4-mini
+- Deprecated: gpt-5.4-nano, gpt-4.1-nano, o3, o3-mini, o3-pro, o4-mini, o1, o1-mini, o1-preview, gpt-4-turbo, gpt-4, gpt-3.5-turbo
 
 ### Anthropic Models
 
-- claude-fable-5, claude-opus-4-8, claude-sonnet-4-6
+- claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5
+- claude-opus-5, claude-sonnet-5, claude-fable-5
+- claude-opus-4-8, claude-opus-4-7, claude-opus-4-6, claude-sonnet-4-6
 - claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5
-- claude-opus-4-1, claude-sonnet-4, claude-opus-4
+- Deprecated: claude-opus-4-1, claude-sonnet-4, claude-opus-4, claude-3-7-sonnet, claude-3-5-sonnet, claude-3-5-haiku, claude-3-opus, claude-3-haiku
 
 ### Google Models
 
-- gemini-3.5-flash, gemini-3.1-pro-preview
-- gemini-3-flash-preview, gemini-3.1-flash-lite
-- gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite
+- gemini-3.8-flash, gemini-3.5-flash-lite, gemini-3.5-flash
+- gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-3.1-flash-lite
+- Deprecated: gemini-3.1-flash-lite-preview, gemini-3-pro-preview, gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite, gemini-2.0-flash, gemini-2.0-flash-lite, gemini-1.5-pro, gemini-1.5-flash, gemini-1.5-flash-8b
+
+Aliases resolve to the canonical id, for example `gemini-flash` / `gemini-3-flash` → `gemini-3.8-flash`, `gemini-flash-lite` / `gemini-3-flash-lite` → `gemini-3.5-flash-lite`, `claude-sonnet-5.5` → `claude-sonnet-5-5`.
 
 ---
 
@@ -425,7 +436,7 @@ function calculateCost(modelId: string, inputTokens: number, outputTokens: numbe
   return inputCost + outputCost;
 }
 
-const cost = calculateCost('gpt-4o', 10000, 2000);
+const cost = calculateCost('gpt-6.1-sol', 10000, 2000);
 console.log(`Cost: $${cost?.toFixed(4)}`);
 ```
 
