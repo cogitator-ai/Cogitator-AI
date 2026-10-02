@@ -29,7 +29,6 @@
     "changeset": "changeset",
     "version": "changeset version",
     "release": "turbo run build && changeset publish",
-    "publish:all": "npx tsx scripts/publish-all.ts",
     "dashboard": "pnpm --filter @cogitator-ai/dashboard dev",
     "dashboard:build": "pnpm --filter @cogitator-ai/dashboard build",
     "dashboard:start": "pnpm --filter @cogitator-ai/dashboard start",

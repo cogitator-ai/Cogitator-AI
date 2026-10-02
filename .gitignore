@@ -62,3 +62,8 @@ A2A-PROGRESS.md
 .gitnexus/
 docs/plans/
 docs/audits/
+
+# Personal maintainer scripts (kept locally, not part of the repo)
+scripts/publish-all.ts
+scripts/test-assistant.ts
+scripts/test-scheduler.ts
