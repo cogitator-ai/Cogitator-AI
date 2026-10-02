@@ -123,6 +123,7 @@ describe('RecursiveChunker regressions', () => {
       seed = (seed * 1103515245 + 12345) % 2 ** 31;
       return seed % n;
     };
+    const violations: string[] = [];
     for (let run = 0; run < 300; run++) {
       let text = '';
       const target = rand(400) + 1;
@@ -139,18 +140,25 @@ describe('RecursiveChunker regressions', () => {
       );
       const covered = new Set<number>();
       chunks.forEach((c, i) => {
-        expect(c.content).toBe(text.slice(c.startOffset, c.endOffset));
-        expect(c.content.length).toBeLessThanOrEqual(size);
-        if (i > 0) {
-          expect(c.startOffset).toBeGreaterThan(chunks[i - 1]!.startOffset);
-          expect(c.endOffset).toBeGreaterThan(chunks[i - 1]!.endOffset);
+        if (c.content !== text.slice(c.startOffset, c.endOffset)) {
+          violations.push(`run ${run} chunk ${i}: content does not match its offsets`);
+        }
+        if (c.content.length > size) {
+          violations.push(`run ${run} chunk ${i}: ${c.content.length} chars > size ${size}`);
+        }
+        const prev = chunks[i - 1];
+        if (prev && (c.startOffset <= prev.startOffset || c.endOffset <= prev.endOffset)) {
+          violations.push(`run ${run} chunk ${i}: does not advance past chunk ${i - 1}`);
         }
         for (let k = c.startOffset; k < c.endOffset; k++) covered.add(k);
       });
       for (let k = 0; k < text.length; k++) {
-        if (!/\s/.test(text[k]!)) expect(covered.has(k)).toBe(true);
+        if (!/\s/.test(text[k]!) && !covered.has(k)) {
+          violations.push(`run ${run}: char ${k} (${JSON.stringify(text[k])}) is in no chunk`);
+        }
       }
     }
+    expect(violations).toEqual([]);
   });
 
   it('keeps sentence punctuation when splitting on ". "', () => {
