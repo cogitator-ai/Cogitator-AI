@@ -20,6 +20,7 @@ cp .env.example .env  # add GOOGLE_API_KEY at minimum
 | 05  | `05-nextjs-handler.ts` | —    | Next.js App Router handler (reference file) |
 | 06  | `06-openai-compat.ts`  | 8080 | OpenAI Assistants API compatible server     |
 | 07  | `07-ai-sdk-adapter.ts` | —    | Bidirectional Vercel AI SDK adapter         |
+| 08  | `08-tetsu-server.ts`   | 3104 | Tetsu on Bun: users, own MCP server, agent  |
 
 ## Running
 
@@ -36,6 +37,14 @@ npx tsx examples/integrations/06-openai-compat.ts
 Example 05 is a reference file for Next.js projects — not directly runnable.
 
 Example 07 demonstrates AI SDK adapter usage and runs as a script.
+
+Example 08 runs on Bun, since Tetsu is a Bun framework:
+
+```bash
+bun examples/integrations/08-tetsu-server.ts
+```
+
+It starts an app with two users (`token-ada`, `token-grace`), its own MCP server for their tasks, and an agent that reads and adds tasks for whoever is signed in. API docs are at `http://localhost:3104/docs`.
 
 ## Testing with curl
 

@@ -147,6 +147,9 @@ importers:
       '@cogitator-ai/swarms':
         specifier: workspace:*
         version: link:../packages/swarms
+      '@cogitator-ai/tetsu':
+        specifier: workspace:*
+        version: link:../packages/tetsu
       '@cogitator-ai/voice':
         specifier: workspace:*
         version: link:../packages/voice
@@ -171,6 +174,15 @@ importers:
       '@koa/router':
         specifier: ^15.7.0
         version: 15.7.0(koa@3.2.1)(supports-color@10.2.2)
+      '@tetsujs/core':
+        specifier: ^0.6.1
+        version: 0.6.1
+      '@tetsujs/openapi':
+        specifier: ^0.6.1
+        version: 0.6.1(@tetsujs/core@0.6.1)
+      '@tetsujs/sse':
+        specifier: ^0.6.1
+        version: 0.6.1(@tetsujs/core@0.6.1)
       ai:
         specifier: ^7.0.127
         version: 7.0.127(zod@4.6.5)
@@ -677,6 +689,9 @@ importers:
       '@cogitator-ai/swarms':
         specifier: workspace:*
         version: link:../swarms
+      '@cogitator-ai/tetsu':
+        specifier: workspace:*
+        version: link:../tetsu
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
@@ -698,6 +713,12 @@ importers:
       '@koa/router':
         specifier: ^15.7.0
         version: 15.7.0(koa@3.2.1)(supports-color@10.2.2)
+      '@tetsujs/core':
+        specifier: ^0.6.1
+        version: 0.6.1
+      '@tetsujs/sse':
+        specifier: ^0.6.1
+        version: 0.6.1(@tetsujs/core@0.6.1)
       create-cogitator-app:
         specifier: workspace:*
         version: link:../create-cogitator-app
@@ -717,6 +738,9 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@types/bun':
+        specifier: ^1.4.2
+        version: 1.4.2
       '@types/express':
         specifier: ^5.0.6
         version: 5.0.6
@@ -1289,6 +1313,47 @@ importers:
       vitest:
         specifier: ^5.0.3
         version: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(@vitest/coverage-v8@5.0.3)(vite@8.3.2(@types/node@22.20.4)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  packages/tetsu:
+    dependencies:
+      '@cogitator-ai/core':
+        specifier: workspace:*
+        version: link:../core
+      '@cogitator-ai/memory':
+        specifier: workspace:*
+        version: link:../memory
+      '@cogitator-ai/server-shared':
+        specifier: workspace:*
+        version: link:../server-shared
+      '@cogitator-ai/types':
+        specifier: workspace:*
+        version: link:../types
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+    devDependencies:
+      '@tetsujs/core':
+        specifier: ^0.6.1
+        version: 0.6.1
+      '@tetsujs/openapi':
+        specifier: ^0.6.1
+        version: 0.6.1(@tetsujs/core@0.6.1)
+      '@tetsujs/sse':
+        specifier: ^0.6.1
+        version: 0.6.1(@tetsujs/core@0.6.1)
+      '@types/bun':
+        specifier: ^1.4.2
+        version: 1.4.2
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+    optionalDependencies:
+      '@cogitator-ai/swarms':
+        specifier: workspace:*
+        version: link:../swarms
+      '@cogitator-ai/workflows':
+        specifier: workspace:*
+        version: link:../workflows
 
   packages/types:
     dependencies:
@@ -3493,6 +3558,22 @@ packages:
   '@tailwindcss/postcss@4.3.3':
     resolution: {integrity: sha512-JTSZZGQi1AyKirbLN3azmjVzef92tcX7h+iSqPdaeStyFpGpDlKvvpxeOE8njhbUanbRwr3z8DyzhICWnMtQeg==}
 
+  '@tetsujs/core@0.6.1':
+    resolution: {integrity: sha512-EJrNIJPUTVkPsmTNQsJdq3GTW/W3Gq7kPtFsFdx7QaqHOQVc4XhpUo6ubvO8rKy3CCxEBZWwHAvUl2nW4G4vQA==}
+    engines: {bun: '>=1.4'}
+
+  '@tetsujs/openapi@0.6.1':
+    resolution: {integrity: sha512-4sCy2sbdzwB/XaE5qYqq40WO6txWgMNlDElnKMMAjBIAOBN2zxrnr+d45obK2jU8aiogJaO+OUfYTI6UF6Y3sw==}
+    engines: {bun: '>=1.4'}
+    peerDependencies:
+      '@tetsujs/core': ^0.6.1
+
+  '@tetsujs/sse@0.6.1':
+    resolution: {integrity: sha512-qtclV0wyRsKCSmyk2/C6lQBqVa+JNXHbg/s5egXD6dIprgcAnDcb1hHsuW4P4OgoOlzb7AbiLGEwkTahZc6Nmw==}
+    engines: {bun: '>=1.4'}
+    peerDependencies:
+      '@tetsujs/core': ^0.6.1
+
   '@tokenizer/inflate@0.4.1':
     resolution: {integrity: sha512-2mAv+8pkG6GIZiF1kNg1jAjh27IDxEPKwdGul3snfztFerfPGI1LjDezZp3i7BElXompqEtPmoPx6c2wgtWsOA==}
     engines: {node: '>=18'}
@@ -3538,6 +3619,9 @@ packages:
 
   '@types/body-parser@1.19.6':
     resolution: {integrity: sha512-HLFeCYgz89uk22N5Qg3dvGvsv46B8GLvKKo1zKG4NybA8U2DiEO3w9lqGg29t/tfLRJpJ6iQxnVw4OnB7MoM9g==}
+
+  '@types/bun@1.4.2':
+    resolution: {integrity: sha512-GimotNn7+ZV0uVArItBbriZsR1oNf0+WTzPkdcFrzShI7k2norL0uzEaJT8T33dWr7O/c9ZDuAFQrctKCi72oQ==}
 
   '@types/busboy@1.5.4':
     resolution: {integrity: sha512-kG7WrUuAKK0NoyxfQHsVE6j1m01s6kMma64E+OZenQABMQyTJop1DumUWcLwAQ2JzpefU7PDYoRDKl8uZosFjw==}
@@ -4103,6 +4187,9 @@ packages:
         optional: true
       redis:
         optional: true
+
+  bun-types@1.4.2:
+    resolution: {integrity: sha512-bxV1FgK7yBIzjRe5zBozIM4Bem11ZJcCXSrjWRG3YWLt8yFDePu4cLjpebO8OvPeIE9trbyPF4fuj3Cia4Fj3w==}
 
   bundle-require@5.1.0:
     resolution: {integrity: sha512-3WrrOuZiyaaZPWiEt4G3+IffISVC9HYlWueJEBWED4ZH4aIAC2PnkdnuRrR94M+w6yGWn4AglWtJtBI8YqvgoA==}
@@ -9077,6 +9164,16 @@ snapshots:
       postcss: 8.5.28
       tailwindcss: 4.3.3
 
+  '@tetsujs/core@0.6.1': {}
+
+  '@tetsujs/openapi@0.6.1(@tetsujs/core@0.6.1)':
+    dependencies:
+      '@tetsujs/core': 0.6.1
+
+  '@tetsujs/sse@0.6.1(@tetsujs/core@0.6.1)':
+    dependencies:
+      '@tetsujs/core': 0.6.1
+
   '@tokenizer/inflate@0.4.1(supports-color@10.2.2)':
     dependencies:
       debug: 4.4.3(supports-color@10.2.2)
@@ -9116,6 +9213,10 @@ snapshots:
     dependencies:
       '@types/connect': 3.4.38
       '@types/node': 22.20.4
+
+  '@types/bun@1.4.2':
+    dependencies:
+      bun-types: 1.4.2
 
   '@types/busboy@1.5.4':
     dependencies:
@@ -9728,6 +9829,10 @@ snapshots:
     optionalDependencies:
       ioredis: 6.0.0(supports-color@10.2.2)
       pg: 8.23.1
+
+  bun-types@1.4.2:
+    dependencies:
+      '@types/node': 22.20.4
 
   bundle-require@5.1.0(esbuild@0.27.2):
     dependencies:

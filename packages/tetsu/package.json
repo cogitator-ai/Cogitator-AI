@@ -1,0 +1,72 @@
+{
+  "name": "@cogitator-ai/tetsu",
+  "version": "0.0.0",
+  "description": "Tetsu server adapter for Cogitator AI runtime — a controller with agents, threads, workflows, swarms, SSE and WebSocket on Bun",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && tsx ../../scripts/fix-esm-imports.ts .",
+    "dev": "tsc --watch",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "bun": ">=1.4"
+  },
+  "dependencies": {
+    "@cogitator-ai/core": "workspace:*",
+    "@cogitator-ai/memory": "workspace:*",
+    "@cogitator-ai/types": "workspace:*",
+    "@cogitator-ai/server-shared": "workspace:*",
+    "zod": "^4.6.5"
+  },
+  "peerDependencies": {
+    "@tetsujs/core": "^0.6.1",
+    "@tetsujs/sse": "^0.6.1"
+  },
+  "optionalDependencies": {
+    "@cogitator-ai/workflows": "workspace:*",
+    "@cogitator-ai/swarms": "workspace:*"
+  },
+  "devDependencies": {
+    "@cogitator-ai/workflows": "workspace:*",
+    "@cogitator-ai/swarms": "workspace:*",
+    "@tetsujs/core": "^0.6.1",
+    "@tetsujs/openapi": "^0.6.1",
+    "@tetsujs/sse": "^0.6.1",
+    "@types/bun": "^1.4.2",
+    "typescript": "^6.0.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cogitator-ai/Cogitator-AI.git",
+    "directory": "packages/tetsu"
+  },
+  "license": "MIT",
+  "keywords": [
+    "cogitator",
+    "ai",
+    "agents",
+    "tetsu",
+    "bun",
+    "server",
+    "api",
+    "streaming",
+    "sse",
+    "websocket",
+    "openapi",
+    "llm"
+  ]
+}
