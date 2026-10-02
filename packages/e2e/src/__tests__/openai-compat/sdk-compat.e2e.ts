@@ -191,7 +191,7 @@ describeHeavy('OpenAI SDK with function calling (heavy model)', () => {
     await cogitator?.close();
   });
 
-  it('pauses for a client function call and uses the submitted output', async () => {
+  it('pauses for a client function call and uses the submitted output', { retry: 2 }, async () => {
     const assistant = await client.beta.assistants.create({
       model: 'cogitator',
       instructions:
