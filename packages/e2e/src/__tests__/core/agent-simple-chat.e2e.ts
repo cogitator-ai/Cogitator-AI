@@ -5,7 +5,7 @@ import {
   createTestJudge,
   isOllamaRunning,
 } from '../../helpers/setup';
-import { expectJudge, setJudge } from '../../helpers/assertions';
+import { setJudge } from '../../helpers/assertions';
 import type { Cogitator } from '@cogitator-ai/core';
 
 const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
@@ -81,11 +81,7 @@ describeE2E('Core: Agent Simple Chat', () => {
     });
 
     expect(result.output.length).toBeLessThan(1000);
-
-    await expectJudge(result.output, {
-      question: 'Was the output short/truncated due to token limit?',
-      criteria:
-        'The response is relatively short, likely cut off or brief due to token constraints',
-    });
+    expect(result.usage.outputTokens).toBeGreaterThan(0);
+    expect(result.usage.outputTokens).toBeLessThanOrEqual(50);
   });
 });
