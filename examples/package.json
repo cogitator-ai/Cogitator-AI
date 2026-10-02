@@ -12,6 +12,7 @@
     "@cogitator-ai/channels": "workspace:*",
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/deploy": "workspace:*",
+    "@cogitator-ai/evals": "workspace:*",
     "@cogitator-ai/express": "workspace:*",
     "@cogitator-ai/fastify": "workspace:*",
     "@cogitator-ai/hono": "workspace:*",

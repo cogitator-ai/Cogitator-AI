@@ -99,6 +99,9 @@ importers:
       '@cogitator-ai/deploy':
         specifier: workspace:*
         version: link:../packages/deploy
+      '@cogitator-ai/evals':
+        specifier: workspace:*
+        version: link:../packages/evals
       '@cogitator-ai/express':
         specifier: workspace:*
         version: link:../packages/express
