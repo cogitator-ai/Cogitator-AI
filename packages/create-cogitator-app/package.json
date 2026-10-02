@@ -23,11 +23,11 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
-    "@clack/prompts": "^0.10.0",
+    "@clack/prompts": "^1.8.1",
     "picocolors": "^1.1.0"
   },
   "devDependencies": {
-    "@types/node": "^22.20.5",
+    "@types/node": "^22.20.4",
     "tsup": "^8.4.0",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3"

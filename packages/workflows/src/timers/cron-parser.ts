@@ -9,7 +9,7 @@
  * - Validation and error reporting
  */
 
-import parser from 'cron-parser';
+import { CronExpressionParser } from 'cron-parser';
 
 /**
  * Cron field descriptor
@@ -119,7 +119,7 @@ export function validateCronExpression(expression: string): {
   const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
 
   try {
-    parser.parseExpression(normalized);
+    CronExpressionParser.parse(normalized);
     return { valid: true, normalized };
   } catch (error) {
     return {
@@ -138,23 +138,17 @@ export function parseCronExpression(expression: string, timezone?: string): Pars
 
   const hasSeconds = parts.length === 6;
 
-  const options: CronIteratorOptions = {};
-  if (timezone) {
-    options.timezone = timezone;
-  }
-
-  const interval = parser.parseExpression(normalized, options);
-  const fields = interval.fields;
+  const { fields } = CronExpressionParser.parse(normalized);
 
   return {
     expression: normalized,
     fields: {
-      second: hasSeconds ? (Array.from(fields.second) as number[]) : undefined,
-      minute: Array.from(fields.minute) as number[],
-      hour: Array.from(fields.hour) as number[],
-      dayOfMonth: Array.from(fields.dayOfMonth) as number[],
-      month: Array.from(fields.month) as number[],
-      dayOfWeek: Array.from(fields.dayOfWeek) as number[],
+      second: hasSeconds ? [...fields.second.values] : undefined,
+      minute: [...fields.minute.values],
+      hour: [...fields.hour.values],
+      dayOfMonth: [...fields.dayOfMonth.values] as number[],
+      month: [...fields.month.values],
+      dayOfWeek: [...fields.dayOfWeek.values] as number[],
     },
     hasSeconds,
     timezone,
@@ -167,7 +161,7 @@ export function parseCronExpression(expression: string, timezone?: string): Pars
 export function getNextCronOccurrence(expression: string, options: CronIteratorOptions = {}): Date {
   const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
 
-  const interval = parser.parseExpression(normalized, {
+  const interval = CronExpressionParser.parse(normalized, {
     currentDate: options.currentDate ?? new Date(),
     startDate: options.startDate,
     endDate: options.endDate,
@@ -186,7 +180,7 @@ export function getPreviousCronOccurrence(
 ): Date {
   const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
 
-  const interval = parser.parseExpression(normalized, {
+  const interval = CronExpressionParser.parse(normalized, {
     currentDate: options.currentDate ?? new Date(),
     startDate: options.startDate,
     endDate: options.endDate,
@@ -207,7 +201,7 @@ export function getNextCronOccurrences(
   const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
   const occurrences: Date[] = [];
 
-  const interval = parser.parseExpression(normalized, {
+  const interval = CronExpressionParser.parse(normalized, {
     currentDate: options.currentDate ?? new Date(),
     startDate: options.startDate,
     endDate: options.endDate,
@@ -462,7 +456,7 @@ export function createCronIterator(
 } {
   const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
 
-  let interval = parser.parseExpression(normalized, {
+  let interval = CronExpressionParser.parse(normalized, {
     currentDate: options.currentDate ?? new Date(),
     startDate: options.startDate,
     endDate: options.endDate,
@@ -487,7 +481,7 @@ export function createCronIterator(
     hasNext: () => interval.hasNext(),
     hasPrev: () => interval.hasPrev(),
     reset: (date?: Date) => {
-      interval = parser.parseExpression(normalized, {
+      interval = CronExpressionParser.parse(normalized, {
         currentDate: date ?? new Date(),
         startDate: options.startDate,
         endDate: options.endDate,

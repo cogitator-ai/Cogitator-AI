@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
-    "nanoid": "^5.0.4"
+    "nanoid": "^6.0.1"
   },
   "devDependencies": {
     "typescript": "^6.0.3",

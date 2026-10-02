@@ -28,7 +28,7 @@
   "dependencies": {
     "@cogitator-ai/redis": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "nanoid": "^5.0.4",
+    "nanoid": "^6.0.1",
     "zod": "^4.3.6"
   },
   "optionalDependencies": {
@@ -40,7 +40,7 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^22.20.5",
+    "@types/node": "^22.20.4",
     "@types/pg": "^8.10.9",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3"

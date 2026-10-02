@@ -151,6 +151,8 @@ console.log(pageDocs[0].metadata);
 | ------------ | ------- | ------- | ------------------------------------------- |
 | `splitPages` | boolean | false   | Create one document per page instead of one |
 
+When the PDF declares a title, it is added as `metadata.title`. In per-page mode, pages without text are skipped and the remaining documents keep their physical `pageNumber`.
+
 ## WebLoader
 
 Fetches a URL and extracts text content. HTML is processed by `HTMLLoader` (requires `cheerio`); `text/*` and JSON responses are kept as raw text; other content types are rejected. Redirects are followed (max 5), responses are decompressed (gzip/deflate/br), decoded with the declared charset and capped at `maxResponseBytes`. Documents get `metadata.url` (final URL after redirects) and `metadata.contentType`.

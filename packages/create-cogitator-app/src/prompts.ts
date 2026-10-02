@@ -65,7 +65,7 @@ export async function collectOptions(args: ParsedArgs): Promise<ProjectOptions> 
       placeholder: './my-agents',
       defaultValue: 'my-agents',
       validate: (value) => {
-        if (!value.trim()) return 'Project name is required';
+        if (value && !value.trim()) return 'Project name is required';
         return undefined;
       },
     })) as string);

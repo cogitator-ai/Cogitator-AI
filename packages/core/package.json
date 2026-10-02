@@ -30,8 +30,8 @@
     "@cogitator-ai/memory": "workspace:*",
     "@cogitator-ai/models": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "nanoid": "^5.0.4",
-    "openai": "^7.27.0",
+    "nanoid": "^6.0.1",
+    "openai": "^7.25.0",
     "zod": "^4.3.6"
   },
   "optionalDependencies": {
@@ -40,7 +40,7 @@
   "devDependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1145.0",
     "@cogitator-ai/sandbox": "workspace:*",
-    "@types/node": "^22.20.5",
+    "@types/node": "^22.20.4",
     "@types/pg": "^8.10.9",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3"

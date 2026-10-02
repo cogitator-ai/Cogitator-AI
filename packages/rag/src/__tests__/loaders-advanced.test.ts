@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -185,15 +185,42 @@ describe('HTMLLoader', () => {
   });
 });
 
+interface MockPdfOptions {
+  pages: string[];
+  info?: Record<string, unknown>;
+  failWith?: Error;
+}
+
+function mockPdfParse({ pages, info, failWith }: MockPdfOptions) {
+  const destroy = vi.fn().mockResolvedValue(undefined);
+  const getInfo = vi.fn().mockImplementation(async () => {
+    if (failWith) throw failWith;
+    return { total: pages.length, info, pages: [] };
+  });
+  const getText = vi.fn().mockImplementation(async (params?: { pageJoiner?: string }) => ({
+    total: pages.length,
+    pages: pages.map((text, i) => ({ num: i + 1, text })),
+    text: pages.map((text) => `${text}\n${params?.pageJoiner ?? ''}\n\n`).join(''),
+  }));
+  const PDFParse = vi.fn().mockImplementation(function () {
+    return { getInfo, getText, destroy };
+  });
+
+  vi.doMock('pdf-parse', () => ({ PDFParse }));
+  return { PDFParse, getInfo, getText, destroy };
+}
+
 describe('PDFLoader', () => {
+  afterEach(() => {
+    vi.doUnmock('pdf-parse');
+    vi.resetModules();
+  });
+
   it('loads all pages as a single document by default', async () => {
-    vi.doMock('pdf-parse', () => ({
-      default: vi.fn().mockResolvedValue({
-        text: 'Page one content\nPage two content',
-        numpages: 2,
-        info: { Title: 'Test PDF' },
-      }),
-    }));
+    const mock = mockPdfParse({
+      pages: ['Page one content', 'Page two content'],
+      info: { Title: 'Test PDF' },
+    });
 
     const { PDFLoader } = await import('../loaders/pdf-loader');
     const file = join(TEST_DIR, 'test.pdf');
@@ -205,37 +232,35 @@ describe('PDFLoader', () => {
     expect(docs).toHaveLength(1);
     expect(docs[0].content).toContain('Page one content');
     expect(docs[0].content).toContain('Page two content');
+    expect(docs[0].content).not.toContain('-- 1 of 2 --');
     expect(docs[0].sourceType).toBe('pdf');
+    expect(docs[0].source).toBe(file);
     expect(docs[0].metadata?.pages).toBe(2);
     expect(docs[0].metadata?.title).toBe('Test PDF');
 
-    vi.doUnmock('pdf-parse');
+    const [loadParams] = mock.PDFParse.mock.calls[0] as [{ data: Uint8Array }];
+    expect(Buffer.from(loadParams.data).toString()).toBe('fake pdf content');
+    expect(mock.destroy).toHaveBeenCalledOnce();
+  });
+
+  it('omits title when the PDF has none', async () => {
+    mockPdfParse({ pages: ['Only page'], info: {} });
+
+    const { PDFLoader } = await import('../loaders/pdf-loader');
+    const file = join(TEST_DIR, 'untitled.pdf');
+    writeFileSync(file, 'fake pdf');
+
+    const docs = await new PDFLoader().load(file);
+
+    expect(docs).toHaveLength(1);
+    expect(docs[0].metadata).toEqual({ pages: 1 });
   });
 
   it('splits pages into separate documents when splitPages=true', async () => {
-    const pageTexts = ['First page text', 'Second page text', 'Third page text'];
-
-    vi.doMock('pdf-parse', () => ({
-      default: vi
-        .fn()
-        .mockImplementation(
-          async (
-            _buf: Buffer,
-            options?: { pagerender?: (pageData: { pageIndex: number }) => string }
-          ) => {
-            if (options?.pagerender) {
-              for (let i = 0; i < pageTexts.length; i++) {
-                options.pagerender({ pageIndex: i });
-              }
-            }
-            return {
-              text: pageTexts.join('\n\n'),
-              numpages: 3,
-              info: { Title: 'Split PDF' },
-            };
-          }
-        ),
-    }));
+    const mock = mockPdfParse({
+      pages: ['First page text', '  Second page text  ', 'Third page text'],
+      info: { Title: 'Split PDF' },
+    });
 
     const { PDFLoader } = await import('../loaders/pdf-loader');
     const file = join(TEST_DIR, 'split.pdf');
@@ -244,25 +269,87 @@ describe('PDFLoader', () => {
     const loader = new PDFLoader({ splitPages: true });
     const docs = await loader.load(file);
 
-    expect(docs.length).toBeGreaterThanOrEqual(1);
-    expect(docs[0].sourceType).toBe('pdf');
-    if (docs.length > 1) {
-      expect(docs[0].metadata?.pageNumber).toBeDefined();
-    }
+    expect(docs).toHaveLength(3);
+    expect(docs.map((d) => d.content)).toEqual([
+      'First page text',
+      'Second page text',
+      'Third page text',
+    ]);
+    docs.forEach((doc, i) => {
+      expect(doc.sourceType).toBe('pdf');
+      expect(doc.source).toBe(file);
+      expect(doc.metadata).toEqual({ pageNumber: i + 1, totalPages: 3, title: 'Split PDF' });
+    });
+    expect(new Set(docs.map((d) => d.id)).size).toBe(3);
+    expect(mock.destroy).toHaveBeenCalledOnce();
+  });
 
-    vi.doUnmock('pdf-parse');
+  it('skips blank pages and keeps their real page numbers', async () => {
+    mockPdfParse({ pages: ['Intro', '   ', 'Outro'] });
+
+    const { PDFLoader } = await import('../loaders/pdf-loader');
+    const file = join(TEST_DIR, 'blank-page.pdf');
+    writeFileSync(file, 'fake pdf');
+
+    const docs = await new PDFLoader({ splitPages: true }).load(file);
+
+    expect(docs.map((d) => [d.content, d.metadata?.pageNumber])).toEqual([
+      ['Intro', 1],
+      ['Outro', 3],
+    ]);
+  });
+
+  it('falls back to a single page document when no page has text', async () => {
+    mockPdfParse({ pages: ['', ' '] });
+
+    const { PDFLoader } = await import('../loaders/pdf-loader');
+    const file = join(TEST_DIR, 'empty.pdf');
+    writeFileSync(file, 'fake pdf');
+
+    const docs = await new PDFLoader({ splitPages: true }).load(file);
+
+    expect(docs).toHaveLength(1);
+    expect(docs[0].metadata).toEqual({ pageNumber: 1, totalPages: 2 });
+  });
+
+  it('wraps parse errors with the source path and still destroys the parser', async () => {
+    const failure = new Error('Invalid PDF structure.');
+    const mock = mockPdfParse({ pages: [], failWith: failure });
+
+    const { PDFLoader } = await import('../loaders/pdf-loader');
+    const file = join(TEST_DIR, 'broken.pdf');
+    writeFileSync(file, 'not a pdf');
+
+    const error = await new PDFLoader().load(file).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      `PDFLoader: failed to parse "${file}": Invalid PDF structure.`
+    );
+    expect((error as Error).cause).toBe(failure);
+    expect(mock.destroy).toHaveBeenCalledOnce();
+  });
+
+  it('throws an install hint when pdf-parse is missing', async () => {
+    vi.doMock('pdf-parse', () => {
+      throw new Error("Cannot find package 'pdf-parse'");
+    });
+
+    const { PDFLoader } = await import('../loaders/pdf-loader');
+    const file = join(TEST_DIR, 'missing-dep.pdf');
+    writeFileSync(file, 'fake pdf');
+
+    await expect(new PDFLoader().load(file)).rejects.toThrow(
+      'pdf-parse is required for PDFLoader. Install it: pnpm add pdf-parse'
+    );
   });
 
   it('has correct supportedTypes', async () => {
-    vi.doMock('pdf-parse', () => ({
-      default: vi.fn(),
-    }));
+    mockPdfParse({ pages: [] });
 
     const { PDFLoader } = await import('../loaders/pdf-loader');
     const loader = new PDFLoader();
     expect(loader.supportedTypes).toEqual(['pdf']);
-
-    vi.doUnmock('pdf-parse');
   });
 });
 

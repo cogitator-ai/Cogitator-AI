@@ -1,32 +1,31 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { nanoid } from 'nanoid';
+import type { PDFParse as PDFParseClass } from 'pdf-parse';
 import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
 
-type PdfPageData = {
-  pageIndex: number;
-  getTextContent(): Promise<{ items: Array<{ str: string }> }>;
-};
+type PDFParseConstructor = typeof PDFParseClass;
 
-type PdfParseFn = (
-  dataBuffer: Buffer,
-  options?: {
-    pagerender?: (pageData: PdfPageData) => string | Promise<string>;
-    max?: number;
-  }
-) => Promise<{
-  numpages: number;
-  info: Record<string, unknown>;
+interface ParsedPdf {
   text: string;
-}>;
+  totalPages: number;
+  pages: Array<{ num: number; text: string }>;
+  title?: string;
+}
 
-async function loadPdfParse(): Promise<PdfParseFn> {
+async function loadPdfParse(): Promise<PDFParseConstructor> {
   try {
     const mod = await import('pdf-parse');
-    return mod.default as unknown as PdfParseFn;
+    return mod.PDFParse;
   } catch {
     throw new Error('pdf-parse is required for PDFLoader. Install it: pnpm add pdf-parse');
   }
+}
+
+function extractTitle(info: unknown): string | undefined {
+  if (typeof info !== 'object' || info === null || !('Title' in info)) return undefined;
+  const title = info.Title;
+  return typeof title === 'string' && title.length > 0 ? title : undefined;
 }
 
 export interface PDFLoaderOptions {
@@ -42,80 +41,65 @@ export class PDFLoader implements DocumentLoader {
   }
 
   async load(source: string): Promise<RAGDocument[]> {
-    const pdfParse = await loadPdfParse();
+    const PDFParse = await loadPdfParse();
     const filePath = resolve(source);
     const buffer = await readFile(filePath);
+    const parsed = await this.parse(PDFParse, buffer, filePath);
 
     if (this.splitPages) {
-      return this.loadSplitPages(pdfParse, buffer, filePath);
+      return this.buildPageDocs(parsed, filePath);
     }
 
-    return this.loadSingleDocument(pdfParse, buffer, filePath);
+    return [this.buildSingleDoc(parsed, filePath)];
   }
 
-  private async loadSingleDocument(
-    pdfParse: PdfParseFn,
+  private async parse(
+    PDFParse: PDFParseConstructor,
     buffer: Buffer,
     source: string
-  ): Promise<RAGDocument[]> {
-    const result = await this.parseWithErrorContext(pdfParse, buffer, source);
-    const title = result.info?.Title;
-
-    const metadata: Record<string, unknown> = { pages: result.numpages };
-    if (title) metadata.title = title;
-
-    return [
-      {
-        id: nanoid(),
-        content: result.text,
-        source,
-        sourceType: 'pdf',
-        metadata,
-      },
-    ];
-  }
-
-  private async loadSplitPages(
-    pdfParse: PdfParseFn,
-    buffer: Buffer,
-    source: string
-  ): Promise<RAGDocument[]> {
-    const pageTexts: string[] = [];
-
-    const result = await this.parseWithErrorContext(pdfParse, buffer, source, {
-      pagerender: async (pageData: PdfPageData) => {
-        if (typeof pageData.getTextContent !== 'function') return '';
-        const textContent = await pageData.getTextContent();
-        const text = textContent.items.map((item) => item.str).join('');
-        pageTexts.push(text);
-        return text;
-      },
-    });
-
-    const title = result.info?.Title;
-    const pages = pageTexts.filter((p) => p.trim().length > 0);
-
-    if (pages.length === 0) {
-      return [this.buildPageDoc(result.text, source, 1, result.numpages, title)];
-    }
-
-    return pages.map((text, i) =>
-      this.buildPageDoc(text.trim(), source, i + 1, result.numpages, title)
-    );
-  }
-
-  private async parseWithErrorContext(
-    pdfParse: PdfParseFn,
-    buffer: Buffer,
-    source: string,
-    options?: Parameters<PdfParseFn>[1]
-  ): Promise<{ numpages: number; info: Record<string, unknown>; text: string }> {
+  ): Promise<ParsedPdf> {
+    let parser: PDFParseClass | undefined;
     try {
-      return await pdfParse(buffer, options);
+      parser = new PDFParse({ data: new Uint8Array(buffer) });
+      const info = await parser.getInfo();
+      const result = await parser.getText({ pageJoiner: '' });
+      return {
+        text: result.text,
+        totalPages: result.total,
+        pages: result.pages.map(({ num, text }) => ({ num, text })),
+        title: extractTitle(info.info),
+      };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw new Error(`PDFLoader: failed to parse "${source}": ${message}`, { cause: err });
+    } finally {
+      await parser?.destroy();
     }
+  }
+
+  private buildSingleDoc(parsed: ParsedPdf, source: string): RAGDocument {
+    const metadata: Record<string, unknown> = { pages: parsed.totalPages };
+    if (parsed.title) metadata.title = parsed.title;
+
+    return {
+      id: nanoid(),
+      content: parsed.text,
+      source,
+      sourceType: 'pdf',
+      metadata,
+    };
+  }
+
+  private buildPageDocs(parsed: ParsedPdf, source: string): RAGDocument[] {
+    const pages = parsed.pages.filter((page) => page.text.trim().length > 0);
+
+    if (pages.length === 0) {
+      return [this.buildPageDoc(parsed.text, source, 1, parsed.totalPages, parsed.title)];
+    }
+
+    return pages.map((page) =>
+      this.buildPageDoc(page.text.trim(), source, page.num, parsed.totalPages, parsed.title)
+    );
   }
 
   private buildPageDoc(
@@ -123,7 +107,7 @@ export class PDFLoader implements DocumentLoader {
     source: string,
     pageNumber: number,
     totalPages: number,
-    title: unknown
+    title: string | undefined
   ): RAGDocument {
     const metadata: Record<string, unknown> = { pageNumber, totalPages };
     if (title) metadata.title = title;

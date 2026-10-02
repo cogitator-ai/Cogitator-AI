@@ -358,14 +358,14 @@ function cancelled(): never {
   process.exit(0);
 }
 
-function answer<T>(result: T | symbol): T {
+function answer<T>(result: T | typeof p.CANCEL_SYMBOL): T {
   if (p.isCancel(result)) cancelled();
   return result;
 }
 
 async function askSecret(message: string, emptyMessage: string): Promise<string> {
   return answer(
-    await p.password({ message, validate: (v) => (!v.trim() ? emptyMessage : undefined) })
+    await p.password({ message, validate: (v) => (!v?.trim() ? emptyMessage : undefined) })
   ).trim();
 }
 
@@ -376,7 +376,7 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
       await p.text({
         message: 'Project name',
         placeholder: 'my-assistant',
-        validate: validateProjectName,
+        validate: (v) => validateProjectName(v ?? ''),
       })
     ).trim();
 
@@ -458,7 +458,7 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
             message: 'PostgreSQL connection string',
             initialValue: DEFAULT_POSTGRES_URL,
             validate: (v) =>
-              !/^postgres(ql)?:\/\//.test(v.trim()) ? 'Expected postgres://...' : undefined,
+              !/^postgres(ql)?:\/\//.test(v?.trim() ?? '') ? 'Expected postgres://...' : undefined,
           })
         ).trim()
       : undefined;
@@ -541,7 +541,8 @@ export const initCommand = new Command('init')
       ]
         .filter(Boolean)
         .join('\n'),
-      'Next steps'
+      'Next steps',
+      { format: (line) => chalk.dim(line) }
     );
 
     p.outro(

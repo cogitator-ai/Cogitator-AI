@@ -1,11 +1,11 @@
-import parser from 'cron-parser';
+import { CronExpressionParser } from 'cron-parser';
 
 export function getNextCronMs(
   expression: string,
   from: number = Date.now(),
   timezone?: string
 ): number {
-  const interval = parser.parseExpression(expression.trim(), {
+  const interval = CronExpressionParser.parse(expression.trim(), {
     currentDate: new Date(from),
     ...(timezone ? { tz: timezone } : {}),
   });

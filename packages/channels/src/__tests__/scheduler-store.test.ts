@@ -20,6 +20,23 @@ describe('getNextCronMs', () => {
     expect(new Date(next).toISOString()).toBe('2026-01-01T14:00:00.000Z');
   });
 
+  it('keeps the wall-clock time across a DST transition', () => {
+    const from = new Date('2026-03-07T15:00:00Z').getTime();
+    const next = getNextCronMs('0 9 * * *', from, 'America/New_York');
+    expect(new Date(next).toISOString()).toBe('2026-03-08T13:00:00.000Z');
+  });
+
+  it('supports six-field expressions with seconds', () => {
+    const from = new Date('2026-01-01T10:00:05Z').getTime();
+    const next = getNextCronMs('*/20 * * * * *', from, 'UTC');
+    expect(new Date(next).toISOString()).toBe('2026-01-01T10:00:20.000Z');
+  });
+
+  it('falls back to local time without a timezone', () => {
+    const from = new Date(2026, 0, 1, 10, 0, 0).getTime();
+    expect(getNextCronMs('  0 9 * * *  ', from)).toBe(new Date(2026, 0, 2, 9, 0, 0).getTime());
+  });
+
   it('throws for invalid expressions', () => {
     expect(() => getNextCronMs('not a cron')).toThrow();
   });

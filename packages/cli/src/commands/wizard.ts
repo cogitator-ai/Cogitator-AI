@@ -30,6 +30,7 @@ export const CHANNEL_TOKEN_ENV: Record<ChannelName, string> = {
 
 const CHANNELS: readonly ChannelName[] = ['telegram', 'discord', 'slack'];
 const DEFAULT_MEMORY_PATH = '~/.cogitator/memory.db';
+const NOTE_STYLE = { format: (line: string) => chalk.dim(line) };
 
 export function splitCommandLine(command: string): string[] {
   const parts: string[] = [];
@@ -99,7 +100,7 @@ function cancel(): never {
   process.exit(0);
 }
 
-function prompt<T>(result: T | symbol): T {
+function prompt<T>(result: T | typeof p.CANCEL_SYMBOL): T {
   if (p.isCancel(result)) cancel();
   return result;
 }
@@ -126,7 +127,7 @@ async function askSecret(opts: {
   const value = prompt(
     await p.password({
       message: opts.current ? `${opts.message} (leave blank to keep current)` : opts.message,
-      validate: (v) => (!opts.current && !v.trim() ? opts.required : undefined),
+      validate: (v) => (!opts.current && !v?.trim() ? opts.required : undefined),
     })
   ).trim();
   return value || undefined;
@@ -158,7 +159,7 @@ export const wizardCommand = new Command('wizard')
     if (editing) {
       p.intro(chalk.bgCyan(chalk.black(' Cogitator Assistant Setup (editing existing config) ')));
       existing = loadExistingConfig(configPath);
-      p.note(`Loaded ${chalk.dim(configPath)}`, 'Existing config found');
+      p.note(`Loaded ${chalk.dim(configPath)}`, 'Existing config found', NOTE_STYLE);
     } else {
       p.intro(chalk.bgCyan(chalk.black(' Cogitator Personal Assistant Setup ')));
     }
@@ -171,7 +172,7 @@ export const wizardCommand = new Command('wizard')
         message: "What's your name?",
         placeholder: 'Alex',
         ...(existingUserName ? { initialValue: existingUserName } : {}),
-        validate: (v) => (!v.trim() ? 'Name is required' : undefined),
+        validate: (v) => (!v?.trim() ? 'Name is required' : undefined),
       })
     ).trim();
 
@@ -180,7 +181,7 @@ export const wizardCommand = new Command('wizard')
         message: 'Assistant name',
         placeholder: 'jarvis',
         initialValue: existing.name ?? 'jarvis',
-        validate: (v) => (!v.trim() ? 'Name is required' : undefined),
+        validate: (v) => (!v?.trim() ? 'Name is required' : undefined),
       })
     ).trim();
 
@@ -222,9 +223,10 @@ export const wizardCommand = new Command('wizard')
             placeholder: 'https://ollama.com',
             ...(currentUrl !== DEFAULT_OLLAMA_URL ? { initialValue: currentUrl } : {}),
             validate: (v) => {
-              if (!v.trim()) return 'URL is required';
+              const url = v?.trim();
+              if (!url) return 'URL is required';
               try {
-                new URL(v.trim());
+                new URL(url);
                 return undefined;
               } catch {
                 return 'Enter a valid URL, e.g. https://ollama.com';
@@ -312,7 +314,8 @@ export const wizardCommand = new Command('wizard')
           message: `${ch} owner user ID(s), comma-separated (for admin commands)`,
           placeholder: 'your user ID',
           ...(existingOwners ? { initialValue: existingOwners } : {}),
-          validate: (v) => (parsePathList(v).length === 0 ? 'Owner ID is required' : undefined),
+          validate: (v) =>
+            parsePathList(v ?? '').length === 0 ? 'Owner ID is required' : undefined,
         })
       );
 
@@ -367,7 +370,7 @@ export const wizardCommand = new Command('wizard')
               placeholder: '~/Documents, ~/Projects',
               ...(existingFsPaths ? { initialValue: existingFsPaths } : {}),
               validate: (v) =>
-                parsePathList(v).length === 0 ? 'At least one path is required' : undefined,
+                parsePathList(v ?? '').length === 0 ? 'At least one path is required' : undefined,
             })
           );
           capabilities.fileSystem = { paths: parsePathList(pathsRaw) };
@@ -411,7 +414,7 @@ export const wizardCommand = new Command('wizard')
               placeholder: '~/Documents/notes, ~/wiki',
               ...(existingRagPaths ? { initialValue: existingRagPaths } : {}),
               validate: (v) =>
-                parsePathList(v).length === 0 ? 'At least one path is required' : undefined,
+                parsePathList(v ?? '').length === 0 ? 'At least one path is required' : undefined,
             })
           );
           capabilities.rag = { paths: parsePathList(pathsRaw) };
@@ -458,7 +461,7 @@ export const wizardCommand = new Command('wizard')
           message: 'Full command to start MCP server',
           placeholder: 'npx -y @modelcontextprotocol/server-filesystem /home',
           validate: (v) => {
-            if (!v.trim()) return 'Command is required';
+            if (!v?.trim()) return 'Command is required';
             try {
               splitCommandLine(v);
               return undefined;
@@ -474,7 +477,7 @@ export const wizardCommand = new Command('wizard')
         await p.text({
           message: 'Server name',
           initialValue: extractMcpName(args),
-          validate: (v) => (!v.trim() ? 'Name is required' : undefined),
+          validate: (v) => (!v?.trim() ? 'Name is required' : undefined),
         })
       ).trim();
 
@@ -490,7 +493,7 @@ export const wizardCommand = new Command('wizard')
       await p.text({
         message: 'SQLite memory database path',
         initialValue: existing.memory?.path ?? DEFAULT_MEMORY_PATH,
-        validate: (v) => (!v.trim() ? 'Path is required' : undefined),
+        validate: (v) => (!v?.trim() ? 'Path is required' : undefined),
       })
     ).trim();
 
@@ -505,7 +508,7 @@ export const wizardCommand = new Command('wizard')
         message: 'Assistant personality',
         placeholder: 'Describe how the assistant should behave...',
         initialValue: existing.personality ?? defaultPersonality,
-        validate: (v) => (!v.trim() ? 'Personality is required' : undefined),
+        validate: (v) => (!v?.trim() ? 'Personality is required' : undefined),
       })
     );
 
@@ -544,7 +547,8 @@ export const wizardCommand = new Command('wizard')
       ]
         .filter(Boolean)
         .join('\n'),
-      'Files written'
+      'Files written',
+      NOTE_STYLE
     );
 
     p.outro(chalk.green('Setup complete! Run: cogitator up'));

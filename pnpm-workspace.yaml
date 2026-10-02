@@ -17,14 +17,6 @@ allowBuilds:
 # WhatsApp channel moves to baileys 7, which resolves libsignal from the registry.
 blockExoticSubdeps: false
 
-minimumReleaseAgeExclude:
-  - '@turbo/darwin-64@2.11.7'
-  - '@turbo/darwin-arm64@2.11.7'
-  - '@turbo/linux-64@2.11.7'
-  - '@turbo/linux-arm64@2.11.7'
-  - '@turbo/windows-64@2.11.7'
-  - '@turbo/windows-arm64@2.11.7'
-  - '@types/node@22.20.5'
-  - turbo@2.11.7
-  - openai@7.27.0
-  - supertest@7.3.1
+# Only install versions published at least a day ago. Setting it explicitly makes pnpm
+# fail instead of silently adding exclusions when a range has no old-enough version.
+minimumReleaseAge: 1440
