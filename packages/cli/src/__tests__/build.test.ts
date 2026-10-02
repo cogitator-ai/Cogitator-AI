@@ -38,7 +38,7 @@ export const gateway = {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await import(pathToFileURL(entryPath).href);
-    const mod: { calls: string[] } = await import(pathToFileURL(gatewayPath).href);
+    const mod: { calls: string[] } = await import(gatewayPath);
 
     expect(mod.calls).toEqual(['start']);
     expect(once.mock.calls.map(([event]) => event)).toEqual(

@@ -14,32 +14,35 @@ interface MockWS extends EventEmitter {
 let wsInstances: MockWS[] = [];
 let wsConstructorCalls: Array<[string, { headers: Record<string, string> }]> = [];
 
-vi.mock('ws', () => {
-  const MockWebSocket = vi.fn(function (
-    this: MockWS,
-    url: string,
-    options: { headers: Record<string, string> }
-  ) {
-    wsConstructorCalls.push([url, options]);
-    EventEmitter.call(this);
-    this.send = vi.fn();
-    this.close = vi.fn(() => {
+vi.mock('ws', async () => {
+  const { EventEmitter: Emitter } = await import('node:events');
+  class MockWebSocketImpl extends Emitter {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+
+    readyState = 0;
+    send = vi.fn();
+    close = vi.fn(() => {
       this.readyState = 3;
       this.emit('close', 1000, Buffer.from(''));
     });
-    this.terminate = vi.fn(() => {
+    terminate = vi.fn(() => {
       this.readyState = 3;
       this.emit('close', 1006, Buffer.from(''));
     });
-    this.readyState = 0;
-    this.on('open', () => {
-      this.readyState = 1;
-    });
-    wsInstances.push(this);
-  });
-  Object.assign(MockWebSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
-  Object.setPrototypeOf(MockWebSocket.prototype, EventEmitter.prototype);
-  return { WebSocket: MockWebSocket };
+
+    constructor(url: string, options: { headers: Record<string, string> }) {
+      super();
+      wsConstructorCalls.push([url, options]);
+      this.on('open', () => {
+        this.readyState = 1;
+      });
+      wsInstances.push(this as MockWS);
+    }
+  }
+  return { WebSocket: vi.fn(MockWebSocketImpl) };
 });
 
 import { DeepgramSTT } from '../../stt/deepgram-stt.js';

@@ -12,6 +12,13 @@ function createMockContext() {
   } as unknown as BrowserContext;
 }
 
+vi.mock('playwright', () => ({
+  default: {},
+  chromium: { launch: vi.fn() },
+  firefox: { launch: vi.fn() },
+  webkit: { launch: vi.fn() },
+}));
+
 describe('evasions', () => {
   it('returns an array of strings', () => {
     const scripts = getEvasionScripts();
@@ -577,13 +584,6 @@ describe('BrowserSession stealth integration', () => {
   beforeEach(async () => {
     vi.resetModules();
     pw = createPlaywrightMock();
-
-    vi.mock('playwright', () => ({
-      default: {},
-      chromium: { launch: vi.fn() },
-      firefox: { launch: vi.fn() },
-      webkit: { launch: vi.fn() },
-    }));
 
     const playwright = await import('playwright');
     Object.assign(playwright, pw.module);
