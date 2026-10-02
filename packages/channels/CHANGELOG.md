@@ -1,5 +1,13 @@
 # @cogitator-ai/channels
 
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [4940750]
+  - @cogitator-ai/core@0.21.1
+  - @cogitator-ai/browser@0.3.1
+
 ## 0.4.0
 
 ### Minor Changes
