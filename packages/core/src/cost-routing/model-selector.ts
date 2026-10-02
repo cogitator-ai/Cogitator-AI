@@ -2,6 +2,16 @@ import type { TaskRequirements, ModelRecommendation, CostRoutingConfig } from '@
 import { getModelRegistry, type ModelInfo } from '@cogitator-ai/models';
 
 const ADVANCED_MODELS = [
+  'gpt-6-astra',
+  'gpt-6.1-sol',
+  'gpt-6-sol',
+  'gpt-5.6-sol',
+  'gpt-5.5',
+  'claude-fable-5',
+  'claude-opus-5',
+  'claude-sonnet-5',
+  'claude-opus-4-8',
+  'claude-sonnet-4-6',
   'gpt-4.1',
   'gpt-4o',
   'o3',
@@ -17,6 +27,12 @@ const ADVANCED_MODELS = [
 ];
 
 const FAST_MODELS = [
+  'gpt-6-luna',
+  'gpt-5.6-luna',
+  'gemini-3.8-flash',
+  'gemini-3.5-flash',
+  'qwen3:0.6b',
+  'qwen3:8b',
   'gpt-4.1-mini',
   'gpt-4.1-nano',
   'gpt-4o-mini',
@@ -34,6 +50,12 @@ const FAST_MODELS = [
 ];
 
 const CODE_MODELS = [
+  'gpt-6-astra',
+  'gpt-6.1-sol',
+  'gpt-6-sol',
+  'claude-fable-5',
+  'claude-opus-5',
+  'claude-sonnet-5',
   'claude-sonnet-4-5',
   'claude-opus-4-5',
   'gpt-4.1',
@@ -218,12 +240,12 @@ export class ModelSelector {
 
   private fallbackRecommendation(): ModelRecommendation {
     return {
-      modelId: 'gpt-4o-mini',
+      modelId: 'gpt-6-luna',
       provider: 'openai',
       score: 50,
       reasons: ['Fallback model - no suitable candidates found'],
       estimatedCost: 0.0005,
-      fallbacks: ['claude-haiku-4-5', 'gemini-2.5-flash'],
+      fallbacks: ['claude-haiku-4-5', 'gemini-3.5-flash-lite'],
     };
   }
 

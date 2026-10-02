@@ -44,6 +44,53 @@ describe('ModelDiscovery', () => {
       expect(models[0].capabilities.supportsJson).toBe(true);
     });
 
+    it('llama3:latest should not advertise tool calling', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve(createOllamaTagsResponse([{ name: 'llama3:latest' }])),
+        })
+      );
+
+      const models = await discovery.discoverOllama();
+
+      expect(models[0].capabilities.supportsTools).toBeUndefined();
+      expect(models[0].capabilities.supportsJson).toBe(true);
+    });
+
+    it('qwen3:8b should match qwen3 (tools+json) with a 40K window', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve(createOllamaTagsResponse([{ name: 'qwen3:8b' }])),
+        })
+      );
+
+      const models = await discovery.discoverOllama();
+
+      expect(models[0].capabilities.supportsTools).toBe(true);
+      expect(models[0].capabilities.supportsVision).toBeUndefined();
+      expect(models[0].contextWindow).toBe(40960);
+    });
+
+    it('qwen3.5:9b should match qwen3.5 (vision+tools) with a 256K window', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve(createOllamaTagsResponse([{ name: 'qwen3.5:9b' }])),
+        })
+      );
+
+      const models = await discovery.discoverOllama();
+
+      expect(models[0].capabilities.supportsTools).toBe(true);
+      expect(models[0].capabilities.supportsVision).toBe(true);
+      expect(models[0].contextWindow).toBe(262144);
+    });
+
     it('phi4:latest should match phi4 (tools+json), not phi3 (json only)', async () => {
       vi.stubGlobal(
         'fetch',
@@ -331,56 +378,34 @@ describe('ModelDiscovery', () => {
   });
 
   describe('getCloudModels', () => {
-    it('should include expected OpenAI models with correct display names', () => {
-      const models = discovery.getCloudModels(['openai']);
-
-      const gpt4o = models.find((m) => m.id === 'gpt-4o');
-      expect(gpt4o).toBeDefined();
-      expect(gpt4o!.displayName).toBe('GPT-4o');
-
-      const gpt4oMini = models.find((m) => m.id === 'gpt-4o-mini');
-      expect(gpt4oMini).toBeDefined();
-      expect(gpt4oMini!.displayName).toBe('GPT-4o Mini');
-
-      const gpt41 = models.find((m) => m.id === 'gpt-4.1');
-      expect(gpt41).toBeDefined();
-      expect(gpt41!.displayName).toBe('GPT-4.1');
+    it.each([
+      ['openai', 'gpt-6-astra', 'GPT-6 Astra'],
+      ['openai', 'gpt-6.1-sol', 'GPT-6.1 Sol'],
+      ['openai', 'gpt-6-luna', 'GPT-6 Luna'],
+      ['anthropic', 'claude-opus-5-5', 'Claude Opus 5.5'],
+      ['anthropic', 'claude-sonnet-5-5', 'Claude Sonnet 5.5'],
+      ['anthropic', 'claude-haiku-4-5', 'Claude Haiku 4.5'],
+      ['google', 'gemini-3.1-pro-preview', 'Gemini 3.1 Pro Preview'],
+      ['google', 'gemini-3.8-flash', 'Gemini 3.8 Flash'],
+      ['google', 'gemini-3.5-flash-lite', 'Gemini 3.5 Flash-Lite'],
+    ] as const)('should include %s model %s as "%s"', (provider, id, displayName) => {
+      const model = discovery.getCloudModels([provider]).find((m) => m.id === id);
+      expect(model).toBeDefined();
+      expect(model!.displayName).toBe(displayName);
     });
 
-    it('should include expected Anthropic models with correct display names', () => {
-      const models = discovery.getCloudModels(['anthropic']);
-
-      const sonnet4 = models.find((m) => m.id === 'claude-sonnet-4-20250514');
-      expect(sonnet4).toBeDefined();
-      expect(sonnet4!.displayName).toBe('Claude Sonnet 4');
-
-      const sonnet45 = models.find((m) => m.id === 'claude-sonnet-4-5-20250929');
-      expect(sonnet45).toBeDefined();
-      expect(sonnet45!.displayName).toBe('Claude Sonnet 4.5');
-
-      const haiku = models.find((m) => m.id === 'claude-3-5-haiku-20241022');
-      expect(haiku).toBeDefined();
-      expect(haiku!.displayName).toBe('Claude 3.5 Haiku');
-
-      const opus = models.find((m) => m.id === 'claude-opus-4-5-20250229');
-      expect(opus).toBeDefined();
-      expect(opus!.displayName).toBe('Claude Opus 4.5');
-    });
-
-    it('should include expected Google models with correct display names', () => {
-      const models = discovery.getCloudModels(['google']);
-
-      const pro = models.find((m) => m.id === 'gemini-2.5-pro');
-      expect(pro).toBeDefined();
-      expect(pro!.displayName).toBe('Gemini 2.5 Pro');
-
-      const flash25 = models.find((m) => m.id === 'gemini-2.5-flash');
-      expect(flash25).toBeDefined();
-      expect(flash25!.displayName).toBe('Gemini 2.5 Flash');
-
-      const flash20 = models.find((m) => m.id === 'gemini-2.0-flash');
-      expect(flash20).toBeDefined();
-      expect(flash20!.displayName).toBe('Gemini 2.0 Flash');
+    it('should not list retired or non-existent cloud models', () => {
+      const ids = discovery.getCloudModels().map((m) => m.id);
+      for (const retired of [
+        'claude-opus-4-5-20250229',
+        'claude-sonnet-4-20250514',
+        'claude-3-5-haiku-20241022',
+        'gemini-2.0-flash',
+        'gemini-2.5-flash',
+        'gpt-4o',
+      ]) {
+        expect(ids).not.toContain(retired);
+      }
     });
 
     it('should only return models for enabled providers', () => {
@@ -411,9 +436,8 @@ describe('ModelDiscovery', () => {
 
     it('all cloud models should have vision, tools, json, and streaming', () => {
       const models = discovery.getCloudModels();
-      const withVision = models.filter((m) => m.id !== 'claude-3-5-haiku-20241022');
 
-      for (const m of withVision) {
+      for (const m of models) {
         expect(m.capabilities.supportsVision).toBe(true);
         expect(m.capabilities.supportsTools).toBe(true);
         expect(m.capabilities.supportsJson).toBe(true);

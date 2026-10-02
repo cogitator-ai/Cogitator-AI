@@ -48,7 +48,7 @@ function printState(label: string, state: ReturnType<ContextManager['checkState'
   console.log(`    Needs compression: ${state.needsCompression}`);
 }
 
-const MODEL = 'openai:gpt-4';
+const MODEL = 'ollama:llama3.1:8b';
 
 async function main() {
   header('04 — Context Manager');
@@ -164,11 +164,11 @@ async function main() {
 
   section('5. Model context limits');
   const models = [
-    'openai:gpt-4',
-    'openai:gpt-4o',
-    'anthropic:claude-3-opus',
-    'google:gemini-pro',
-    'ollama:llama3',
+    'openai:gpt-6.1-sol',
+    'anthropic:claude-sonnet-5-5',
+    'anthropic:claude-haiku-4-5',
+    'google:gemini-3.8-flash',
+    'ollama:llama3.1:8b',
   ];
 
   for (const model of models) {

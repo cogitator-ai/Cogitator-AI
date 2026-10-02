@@ -14,14 +14,14 @@ async function main() {
   section('1. Configure STT & TTS');
   const stt = new OpenAISTT({ apiKey });
   const tts = new OpenAITTS({ apiKey, voice: 'coral' });
-  console.log('STT: OpenAI gpt-4o-mini-transcribe');
+  console.log('STT: OpenAI gpt-transcribe');
   console.log('TTS: OpenAI gpt-4o-mini-tts (coral voice)');
 
   section('2. Create pipeline with a Cogitator agent');
   const cogitator = createCogitator();
   const agent = new Agent({
     name: 'voice-assistant',
-    model: process.env.GOOGLE_API_KEY ? DEFAULT_MODEL : 'openai/gpt-4o-mini',
+    model: process.env.GOOGLE_API_KEY ? DEFAULT_MODEL : 'openai/gpt-6-luna',
     instructions: 'You are a voice assistant. Answer in one short sentence.',
   });
   const pipeline = new VoicePipeline({ stt, tts, agent: createCogitatorRunner(cogitator, agent) });

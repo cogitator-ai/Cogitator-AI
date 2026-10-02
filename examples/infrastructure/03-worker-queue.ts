@@ -76,7 +76,7 @@ async function main() {
   const summarizer: SerializedAgent = {
     name: 'summarizer',
     instructions: 'Summarize the given text in one sentence.',
-    model: 'google/gemini-2.5-flash',
+    model: 'google/gemini-3.8-flash',
     provider: 'google',
     temperature: 0.3,
     tools: [],
@@ -85,7 +85,7 @@ async function main() {
   const translator: SerializedAgent = {
     name: 'translator',
     instructions: 'Translate the given text to French.',
-    model: 'google/gemini-2.5-flash',
+    model: 'google/gemini-3.8-flash',
     provider: 'google',
     temperature: 0.2,
     tools: [],

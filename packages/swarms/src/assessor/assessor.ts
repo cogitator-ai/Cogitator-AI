@@ -24,7 +24,7 @@ type ResolvedAssessorConfig = Omit<Required<AssessorConfig>, 'maxCostPerRun'> & 
 
 const DEFAULT_CONFIG: ResolvedAssessorConfig = {
   mode: 'rules',
-  assessorModel: 'gpt-4o-mini',
+  assessorModel: 'gpt-6-luna',
   preferLocal: true,
   minCapabilityMatch: 0.3,
   ollamaUrl: 'http://localhost:11434',

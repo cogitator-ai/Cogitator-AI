@@ -59,8 +59,8 @@ async function listModels(baseUrl: string, apiKey: string | undefined): Promise<
   if (models.length === 0) {
     log.warn('No models installed');
     console.log();
-    log.dim('Pull a model with: cogitator models --pull llama3.1:8b');
-    log.dim('Or directly: ollama pull llama3.1:8b');
+    log.dim('Pull a model with: cogitator models --pull qwen3:8b');
+    log.dim('Or directly: ollama pull qwen3:8b');
     return;
   }
 

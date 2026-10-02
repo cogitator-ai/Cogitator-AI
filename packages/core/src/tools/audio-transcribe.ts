@@ -6,7 +6,29 @@ import type { AudioInput } from '@cogitator-ai/types';
 
 const TRANSCRIPTION_TIMEOUT_MS = 60_000;
 
-export type TranscriptionModel = 'whisper-1' | 'gpt-4o-transcribe' | 'gpt-4o-mini-transcribe';
+export type TranscriptionModel =
+  | 'gpt-transcribe'
+  | 'whisper-1'
+  | 'gpt-4o-transcribe'
+  | 'gpt-4o-mini-transcribe';
+
+const TRANSCRIPTION_MODELS = [
+  'gpt-transcribe',
+  'whisper-1',
+  'gpt-4o-transcribe',
+  'gpt-4o-mini-transcribe',
+] as const satisfies readonly TranscriptionModel[];
+
+const DEFAULT_TRANSCRIPTION_MODEL: TranscriptionModel = 'gpt-transcribe';
+const TIMESTAMP_TRANSCRIPTION_MODEL: TranscriptionModel = 'whisper-1';
+
+interface TranscriptionApiResponse {
+  text: string;
+  language?: string;
+  languages?: Array<{ code?: string }>;
+  duration?: number;
+  words?: TranscriptionWord[];
+}
 
 export interface TranscribeAudioConfig {
   apiKey?: string;
@@ -47,6 +69,8 @@ export interface TranscribeAudioOptions {
 
 /**
  * Transcribe a single audio input with the OpenAI transcription API.
+ * Defaults to `gpt-transcribe`; word timestamps without an explicit model use `whisper-1`,
+ * the only transcription model that returns them.
  */
 export async function transcribeAudio(
   audio: AudioInput,
@@ -57,14 +81,20 @@ export async function transcribeAudio(
     timeout: TRANSCRIPTION_TIMEOUT_MS,
   });
 
-  const selectedModel = options.model ?? 'whisper-1';
+  const selectedModel =
+    options.model ??
+    (options.timestamps ? TIMESTAMP_TRANSCRIPTION_MODEL : DEFAULT_TRANSCRIPTION_MODEL);
 
   const formData = new FormData();
   formData.append('file', new Blob([new Uint8Array(buffer)]), filename);
   formData.append('model', selectedModel);
 
   if (options.language) {
-    formData.append('language', options.language);
+    if (selectedModel === 'gpt-transcribe') {
+      formData.append('languages[]', options.language);
+    } else {
+      formData.append('language', options.language);
+    }
   }
 
   if (options.timestamps && selectedModel === 'whisper-1') {
@@ -102,11 +132,11 @@ export async function transcribeAudio(
     throw new Error(`Transcription failed: ${errorMessage}`);
   }
 
-  const result = (await response.json()) as TranscriptionResult;
+  const result = (await response.json()) as TranscriptionApiResponse;
 
   return {
     text: result.text,
-    language: result.language,
+    language: result.language ?? result.languages?.[0]?.code,
     duration: result.duration,
     words: result.words,
   };
@@ -118,7 +148,7 @@ export function createTranscribeAudioTool(config: TranscribeAudioConfig = {}) {
   return tool({
     name: 'transcribeAudio',
     description:
-      'Transcribe audio to text using OpenAI Whisper. Supports mp3, mp4, wav, webm, m4a, ogg, flac formats up to 25MB.',
+      'Transcribe audio to text using OpenAI speech-to-text models. Supports mp3, mp4, wav, webm, m4a, ogg, flac formats up to 25MB.',
     parameters: z.object({
       audio: audioInputSchema.describe('Audio file as URL or base64 data'),
       language: z
@@ -126,13 +156,15 @@ export function createTranscribeAudioTool(config: TranscribeAudioConfig = {}) {
         .optional()
         .describe('ISO-639-1 language code (e.g., "en", "es", "fr", "de", "ja")'),
       model: z
-        .enum(['whisper-1', 'gpt-4o-transcribe', 'gpt-4o-mini-transcribe'])
+        .enum(TRANSCRIPTION_MODELS)
         .optional()
-        .describe('Transcription model to use'),
+        .describe('Transcription model to use (default: gpt-transcribe)'),
       timestamps: z
         .boolean()
         .optional()
-        .describe('Include word-level timestamps (only supported with whisper-1)'),
+        .describe(
+          'Include word-level timestamps. Only whisper-1 returns them; it is used automatically when no model is set'
+        ),
     }),
     execute: async (
       { audio, language, model, timestamps },

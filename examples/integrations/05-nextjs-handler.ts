@@ -77,7 +77,7 @@ const calculator = tool({
 
 const agent = new Agent({
   name: 'assistant',
-  model: 'google/gemini-2.5-flash',
+  model: 'google/gemini-3.8-flash',
   instructions: 'You are a helpful assistant. Use tools when appropriate. Be concise.',
   tools: [calculator],
   temperature: 0.3,

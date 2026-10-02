@@ -26,7 +26,7 @@ export class CausalExplainer {
 
   constructor(options: CausalExplainerOptions) {
     this.llm = options.llmBackend;
-    this.model = options.model ?? 'gpt-4';
+    this.model = options.model ?? 'gpt-6.1-sol';
     this.maxRootCauses = options.maxRootCauses ?? 5;
     this.maxCounterfactuals = options.maxCounterfactuals ?? 3;
   }

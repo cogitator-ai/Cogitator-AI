@@ -39,6 +39,18 @@ describe('ModelRegistry', () => {
       expect(oldPreview?.deprecated).toBe(true);
     });
 
+    it.each([
+      ['gemini-flash', 'gemini-3.8-flash'],
+      ['gemini-3-flash', 'gemini-3.8-flash'],
+      ['gemini-flash-lite', 'gemini-3.5-flash-lite'],
+      ['gemini-3-flash-lite', 'gemini-3.5-flash-lite'],
+      ['gemini-pro', 'gemini-3.1-pro-preview'],
+      ['claude-sonnet-5.5', 'claude-sonnet-5-5'],
+      ['claude-haiku-4-5', 'claude-haiku-4-5-20251001'],
+    ])('should resolve alias %s to %s', (alias, id) => {
+      expect(registry.getModel(alias)?.id).toBe(id);
+    });
+
     it('should return null for unknown model', () => {
       const model = registry.getModel('unknown-model-xyz');
       expect(model).toBeNull();

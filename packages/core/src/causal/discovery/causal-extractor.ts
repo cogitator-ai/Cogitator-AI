@@ -32,7 +32,7 @@ export class CausalExtractor {
 
   constructor(options: CausalExtractorOptions) {
     this.llm = options.llmBackend;
-    this.model = options.model ?? 'gpt-4';
+    this.model = options.model ?? 'gpt-6.1-sol';
     this.minConfidence = options.minConfidence ?? 0.3;
     this.minStrength = options.minStrength ?? 0.1;
     this.batchSize = options.batchSize ?? 5;

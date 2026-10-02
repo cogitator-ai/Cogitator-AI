@@ -17,20 +17,23 @@ export const API_KEY_ENV: Record<Exclude<SetupProvider, 'ollama'>, string> = {
 
 export const FALLBACK_MODELS: Record<SetupProvider, ModelOption[]> = {
   anthropic: [
-    { label: 'Claude Sonnet 4', value: 'anthropic/claude-sonnet-4-20250514' },
-    { label: 'Claude Opus 4', value: 'anthropic/claude-opus-4-20250514' },
-    { label: 'Claude Haiku 3.5', value: 'anthropic/claude-3-5-haiku-20241022' },
+    { label: 'Claude Sonnet 5.5', value: 'anthropic/claude-sonnet-5-5' },
+    { label: 'Claude Opus 5.5', value: 'anthropic/claude-opus-5-5' },
+    { label: 'Claude Haiku 4.5', value: 'anthropic/claude-haiku-4-5' },
   ],
   openai: [
-    { label: 'GPT-4o', value: 'openai/gpt-4o' },
-    { label: 'GPT-4o mini', value: 'openai/gpt-4o-mini' },
-    { label: 'o3-mini', value: 'openai/o3-mini' },
+    { label: 'GPT-6.1 Sol', value: 'openai/gpt-6.1-sol' },
+    { label: 'GPT-6 Astra', value: 'openai/gpt-6-astra' },
+    { label: 'GPT-6 Luna', value: 'openai/gpt-6-luna' },
   ],
   google: [
-    { label: 'Gemini 2.5 Flash', value: 'google/gemini-2.5-flash' },
-    { label: 'Gemini 2.5 Pro', value: 'google/gemini-2.5-pro' },
+    { label: 'Gemini 3.8 Flash', value: 'google/gemini-3.8-flash' },
+    { label: 'Gemini 3.1 Pro Preview', value: 'google/gemini-3.1-pro-preview' },
+    { label: 'Gemini 3.5 Flash-Lite', value: 'google/gemini-3.5-flash-lite' },
   ],
   ollama: [
+    { label: 'Qwen3 8B', value: 'ollama/qwen3:8b' },
+    { label: 'Qwen3.5 9B', value: 'ollama/qwen3.5:9b' },
     { label: 'Llama 3.1 8B', value: 'ollama/llama3.1:8b' },
     { label: 'Gemma 3 4B', value: 'ollama/gemma3:4b' },
     { label: 'Mistral 7B', value: 'ollama/mistral:7b' },

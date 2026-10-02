@@ -17,7 +17,7 @@ describe.skipIf(!hasAnthropicKey)('Anthropic Integration', () => {
   describe('chat()', () => {
     it('completes a simple prompt', async () => {
       const response = await backend.chat({
-        model: 'claude-3-5-haiku-latest',
+        model: 'claude-haiku-4-5',
         messages: [{ role: 'user', content: 'Say "hello" and nothing else.' }],
         maxTokens: 10,
       });
@@ -29,7 +29,7 @@ describe.skipIf(!hasAnthropicKey)('Anthropic Integration', () => {
 
     it('handles system messages', async () => {
       const response = await backend.chat({
-        model: 'claude-3-5-haiku-latest',
+        model: 'claude-haiku-4-5',
         messages: [
           { role: 'system', content: 'You are a pirate. Always say "Arrr!" at the start.' },
           { role: 'user', content: 'Hello' },
@@ -42,7 +42,7 @@ describe.skipIf(!hasAnthropicKey)('Anthropic Integration', () => {
 
     it('respects temperature setting', async () => {
       const response = await backend.chat({
-        model: 'claude-3-5-haiku-latest',
+        model: 'claude-haiku-4-5',
         messages: [{ role: 'user', content: 'What is 2+2? Reply with just the number.' }],
         maxTokens: 5,
         temperature: 0,
@@ -57,7 +57,7 @@ describe.skipIf(!hasAnthropicKey)('Anthropic Integration', () => {
       const chunks: string[] = [];
 
       for await (const chunk of backend.chatStream({
-        model: 'claude-3-5-haiku-latest',
+        model: 'claude-haiku-4-5',
         messages: [{ role: 'user', content: 'Count from 1 to 5.' }],
         maxTokens: 50,
       })) {
@@ -76,7 +76,7 @@ describe.skipIf(!hasAnthropicKey)('Anthropic Integration', () => {
   describe('tool calling', () => {
     it('calls a tool and returns result', async () => {
       const response = await backend.chat({
-        model: 'claude-3-5-haiku-latest',
+        model: 'claude-haiku-4-5',
         messages: [{ role: 'user', content: 'What is 15 * 7? Use the calculator tool.' }],
         tools: [
           {
@@ -117,7 +117,7 @@ describe.skipIf(!hasAnthropicKey)('Anthropic Integration', () => {
       const agent = new Agent({
         name: 'MathAgent',
         instructions: 'You are a math assistant. Use tools to calculate.',
-        model: 'anthropic/claude-3-5-haiku-latest',
+        model: 'anthropic/claude-haiku-4-5',
         tools: [calculatorTool],
         maxIterations: 3,
       });

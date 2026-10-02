@@ -10,7 +10,7 @@ Be concise, friendly, and proactive.
 Remember important things using memory tools.`,
   llm: {
     provider: 'google',
-    model: 'google/gemini-2.5-flash',
+    model: 'google/gemini-3.8-flash',
   },
   channels: process.env.TG_TOKEN
     ? { telegram: { ownerIds: OWNER_TG_ID ? [OWNER_TG_ID] : [] } }

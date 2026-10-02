@@ -67,7 +67,7 @@ export class OpenAISttProvider implements SttProvider {
 
   constructor(config: OpenAISttConfig) {
     this.apiKey = config.apiKey;
-    this.model = config.model ?? 'whisper-1';
+    this.model = config.model ?? 'gpt-transcribe';
   }
 
   async transcribe(buffer: Buffer, mimeType: string): Promise<string> {

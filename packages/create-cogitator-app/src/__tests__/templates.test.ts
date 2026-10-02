@@ -32,9 +32,13 @@ describe('template registry', () => {
 });
 
 describe('defaultModels', () => {
-  it('uses gemini-2.5-flash for google (not 2.0)', () => {
-    expect(defaultModels.google).toBe('gemini-2.5-flash');
-    expect(defaultModels.google).not.toContain('2.0');
+  it('uses current default models for every provider', () => {
+    expect(defaultModels).toEqual({
+      ollama: 'qwen3:8b',
+      openai: 'gpt-6.1-sol',
+      anthropic: 'claude-sonnet-5-5',
+      google: 'gemini-3.8-flash',
+    });
   });
 
   it('has models for all providers', () => {

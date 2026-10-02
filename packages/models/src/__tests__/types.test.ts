@@ -153,6 +153,15 @@ describe('Builtin data integrity', () => {
         'claude-sonnet-4-6',
         'gemini-3.5-flash',
         'gemini-3.1-flash-lite',
+        'gpt-6-astra',
+        'gpt-6.1-sol',
+        'gpt-6-luna',
+        'gpt-5.6-sol',
+        'claude-fable-5-1',
+        'claude-opus-5-5',
+        'claude-sonnet-5-5',
+        'gemini-3.8-flash',
+        'gemini-3.5-flash-lite',
       ])
     );
   });
@@ -165,5 +174,53 @@ describe('Builtin data integrity', () => {
     expect(byId.get('claude-fable-5')?.pricing).toEqual({ input: 10, output: 50 });
     expect(byId.get('claude-sonnet-4-6')?.maxOutputTokens).toBe(128000);
     expect(byId.get('gemini-3.5-flash')?.pricing).toEqual({ input: 1.5, output: 9 });
+    expect(byId.get('gpt-6.1-sol')?.pricing).toEqual({ input: 2, output: 10, inputCached: 0.1 });
+    expect(byId.get('gpt-6-astra')?.pricing).toEqual({ input: 10, output: 50, inputCached: 1 });
+    expect(byId.get('gpt-6-luna')?.pricing).toEqual({ input: 0.1, output: 0.5, inputCached: 0.01 });
+    expect(byId.get('gpt-6.1-sol')?.contextWindow).toBe(1050000);
+    expect(byId.get('claude-opus-5-5')?.pricing).toEqual({
+      input: 4,
+      output: 20,
+      inputCached: 0.2,
+    });
+    expect(byId.get('claude-sonnet-5-5')?.pricing).toEqual({
+      input: 2,
+      output: 10,
+      inputCached: 0.2,
+    });
+    expect(byId.get('claude-sonnet-5-5')?.contextWindow).toBe(1000000);
+    expect(byId.get('gemini-3.8-flash')?.pricing).toEqual({
+      input: 0.75,
+      output: 3.75,
+      inputCached: 0.075,
+    });
+    expect(byId.get('gemini-3.5-flash-lite')?.pricing).toEqual({ input: 0.3, output: 2.5 });
+  });
+
+  it('marks retired and shutting-down models as deprecated', () => {
+    const byId = new Map(BUILTIN_MODELS.map((model) => [model.id, model]));
+
+    for (const id of [
+      'gpt-4',
+      'gpt-4.1-nano-2025-04-14',
+      'o3-mini',
+      'o4-mini-2025-04-16',
+      'claude-sonnet-4-20250514',
+      'claude-3-5-haiku-20241022',
+      'gemini-2.5-flash',
+      'gemini-2.5-pro',
+      'gemini-2.0-flash',
+    ]) {
+      expect(byId.get(id)?.deprecated, id).toBe(true);
+    }
+
+    for (const id of [
+      'gpt-6.1-sol',
+      'claude-sonnet-5-5',
+      'claude-haiku-4-5-20251001',
+      'gemini-3.8-flash',
+    ]) {
+      expect(byId.get(id)?.deprecated, id).toBeFalsy();
+    }
   });
 });

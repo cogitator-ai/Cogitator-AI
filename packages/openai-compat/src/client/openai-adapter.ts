@@ -151,7 +151,7 @@ function renderTranscript(messages: LLMThreadMessage[]): string {
  * @example
  * ```typescript
  * const adapter = createOpenAIAdapter(cogitator, { tools: [calculator] });
- * const assistant = await adapter.createAssistant({ model: 'openai/gpt-4o' });
+ * const assistant = await adapter.createAssistant({ model: 'openai/gpt-6.1-sol' });
  * ```
  */
 export class OpenAIAdapter {

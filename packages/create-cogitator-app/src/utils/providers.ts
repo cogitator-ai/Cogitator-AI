@@ -1,10 +1,10 @@
 import type { LLMProvider } from '../types.js';
 
 export const defaultModels: Record<LLMProvider, string> = {
-  ollama: 'qwen2.5:7b',
-  openai: 'gpt-4o',
-  anthropic: 'claude-sonnet-4-20250514',
-  google: 'gemini-2.5-flash',
+  ollama: 'qwen3:8b',
+  openai: 'gpt-6.1-sol',
+  anthropic: 'claude-sonnet-5-5',
+  google: 'gemini-3.8-flash',
 };
 
 export function providerEnvKey(provider: LLMProvider): string {

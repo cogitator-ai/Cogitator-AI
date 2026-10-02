@@ -2,9 +2,9 @@ import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
 import type { RealtimeSessionConfig } from '../types.js';
 
-const DEFAULT_MODEL = 'gpt-realtime-mini';
+const DEFAULT_MODEL = 'gpt-realtime-2.1-mini';
 const DEFAULT_VOICE = 'marin';
-const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-4o-mini-transcribe';
+const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-live-transcribe';
 const BASE_URL = 'wss://api.openai.com/v1/realtime';
 const CONNECT_TIMEOUT_MS = 30_000;
 const PCM_FORMAT = { type: 'audio/pcm', rate: 24000 } as const;

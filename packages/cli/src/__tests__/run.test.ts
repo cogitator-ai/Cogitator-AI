@@ -96,6 +96,10 @@ describe('pickOllamaModel', () => {
     expect(pickOllamaModel(['qwen2.5:0.5b', 'gemma3:4b'])).toBe('ollama/gemma3:4b');
   });
 
+  it('prefers qwen3:8b over older preferred models', () => {
+    expect(pickOllamaModel(['llama3.1:8b', 'gemma3:4b', 'qwen3:8b'])).toBe('ollama/qwen3:8b');
+  });
+
   it('falls back to the first model', () => {
     expect(pickOllamaModel(['qwen2.5:0.5b', 'phi3'])).toBe('ollama/qwen2.5:0.5b');
   });

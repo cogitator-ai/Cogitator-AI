@@ -25,7 +25,7 @@ export class CausalPlanner {
 
   constructor(options: CausalPlannerOptions) {
     this.llm = options.llmBackend;
-    this.model = options.model ?? 'gpt-4';
+    this.model = options.model ?? 'gpt-6.1-sol';
     this.effectPredictor = new CausalEffectPredictor({ llmBackend: options.llmBackend });
     this.maxPlanSteps = options.maxPlanSteps ?? 10;
     this.maxAlternatives = options.maxAlternatives ?? 2;

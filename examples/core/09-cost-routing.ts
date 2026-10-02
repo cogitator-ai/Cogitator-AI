@@ -102,7 +102,7 @@ async function main() {
 
   const runs = [
     {
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       agentId: 'summarizer',
       inputTokens: 1200,
       outputTokens: 400,
@@ -110,7 +110,7 @@ async function main() {
       runId: 'run-1',
     },
     {
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       agentId: 'summarizer',
       inputTokens: 800,
       outputTokens: 200,
@@ -118,7 +118,7 @@ async function main() {
       runId: 'run-2',
     },
     {
-      model: 'gpt-4o',
+      model: 'gpt-6.1-sol',
       agentId: 'analyst',
       inputTokens: 5000,
       outputTokens: 2000,
@@ -126,7 +126,7 @@ async function main() {
       runId: 'run-3',
     },
     {
-      model: 'claude-sonnet-4-5',
+      model: 'claude-sonnet-5-5',
       agentId: 'coder',
       inputTokens: 3000,
       outputTokens: 1500,
@@ -134,7 +134,7 @@ async function main() {
       runId: 'run-4',
     },
     {
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       agentId: 'summarizer',
       inputTokens: 600,
       outputTokens: 150,

@@ -29,6 +29,8 @@ const CONFIG_FILE_NAMES = [
 ];
 
 const PREFERRED_OLLAMA_MODELS = [
+  'qwen3:8b',
+  'qwen3.5:9b',
   'llama3.1:8b',
   'llama3:8b',
   'gemma3:4b',
@@ -212,7 +214,7 @@ export const runCommand = new Command('run')
   .description('Run agent with a message')
   .argument('[message]', 'Message to send to agent')
   .option('-c, --config <path>', 'Config file path (default: ./cogitator.yml)')
-  .option('-m, --model <model>', 'Model to use (e.g. ollama/gemma3:4b)')
+  .option('-m, --model <model>', 'Model to use (e.g. ollama/qwen3:8b)')
   .option('-i, --interactive', 'Interactive mode')
   .option('-s, --stream', 'Stream response tokens', true)
   .option('--no-stream', 'Disable streaming')
@@ -246,9 +248,9 @@ export const runCommand = new Command('run')
         undefined;
       if (!model) {
         log.error('No model specified and no Ollama models found');
-        log.dim('Use -m to specify a model, e.g.: cogitator run -m ollama/gemma3:4b "Hello"');
+        log.dim('Use -m to specify a model, e.g.: cogitator run -m ollama/qwen3:8b "Hello"');
         log.dim('Or set COGITATOR_MODEL / llm.defaultModel in cogitator.yml');
-        log.dim('Or start Ollama and pull a model: ollama pull gemma3:4b');
+        log.dim('Or start Ollama and pull a model: ollama pull qwen3:8b');
         process.exit(1);
       }
       log.dim(`Auto-detected model: ${model}`);

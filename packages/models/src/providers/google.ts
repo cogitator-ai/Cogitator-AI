@@ -2,6 +2,38 @@ import type { ModelInfo } from '../types';
 
 export const GOOGLE_MODELS: ModelInfo[] = [
   {
+    id: 'gemini-3.8-flash',
+    provider: 'google',
+    displayName: 'Gemini 3.8 Flash',
+    pricing: { input: 0.75, output: 3.75, inputCached: 0.075 },
+    contextWindow: 1048576,
+    maxOutputTokens: 65536,
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsJson: true,
+    },
+    aliases: ['gemini-flash', 'gemini-3-flash'],
+  },
+  {
+    id: 'gemini-3.5-flash-lite',
+    provider: 'google',
+    displayName: 'Gemini 3.5 Flash-Lite',
+    pricing: { input: 0.3, output: 2.5 },
+    contextWindow: 1048576,
+    maxOutputTokens: 65536,
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsJson: true,
+    },
+    aliases: ['gemini-flash-lite', 'gemini-3-flash-lite'],
+  },
+  {
     id: 'gemini-3.5-flash',
     provider: 'google',
     displayName: 'Gemini 3.5 Flash',
@@ -31,7 +63,7 @@ export const GOOGLE_MODELS: ModelInfo[] = [
       supportsStreaming: true,
       supportsJson: true,
     },
-    aliases: ['gemini-3.1-pro', 'gemini-3-pro'],
+    aliases: ['gemini-3.1-pro', 'gemini-3-pro', 'gemini-pro'],
   },
   {
     id: 'gemini-3-flash-preview',
@@ -47,7 +79,6 @@ export const GOOGLE_MODELS: ModelInfo[] = [
       supportsStreaming: true,
       supportsJson: true,
     },
-    aliases: ['gemini-3-flash'],
   },
   {
     id: 'gemini-3.1-flash-lite',
@@ -63,7 +94,6 @@ export const GOOGLE_MODELS: ModelInfo[] = [
       supportsStreaming: true,
       supportsJson: true,
     },
-    aliases: ['gemini-3-flash-lite'],
   },
   {
     id: 'gemini-3.1-flash-lite-preview',
@@ -111,6 +141,7 @@ export const GOOGLE_MODELS: ModelInfo[] = [
       supportsStreaming: true,
       supportsJson: true,
     },
+    deprecated: true,
   },
   {
     id: 'gemini-2.5-flash',
@@ -126,7 +157,7 @@ export const GOOGLE_MODELS: ModelInfo[] = [
       supportsStreaming: true,
       supportsJson: true,
     },
-    aliases: ['gemini-flash'],
+    deprecated: true,
   },
   {
     id: 'gemini-2.5-flash-lite',
@@ -142,7 +173,7 @@ export const GOOGLE_MODELS: ModelInfo[] = [
       supportsStreaming: true,
       supportsJson: true,
     },
-    aliases: ['gemini-flash-lite'],
+    deprecated: true,
   },
   {
     id: 'gemini-2.0-flash',
@@ -191,7 +222,6 @@ export const GOOGLE_MODELS: ModelInfo[] = [
       supportsStreaming: true,
       supportsJson: true,
     },
-    aliases: ['gemini-pro'],
     deprecated: true,
   },
   {

@@ -2,6 +2,111 @@ import type { ModelInfo } from '../types';
 
 export const OPENAI_MODELS: ModelInfo[] = [
   {
+    id: 'gpt-6-astra',
+    provider: 'openai',
+    displayName: 'GPT-6 Astra',
+    pricing: { input: 10, output: 50, inputCached: 1 },
+    contextWindow: 1050000,
+    maxOutputTokens: 128000,
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsJson: true,
+    },
+  },
+  {
+    id: 'gpt-6.1-sol',
+    provider: 'openai',
+    displayName: 'GPT-6.1 Sol',
+    pricing: { input: 2, output: 10, inputCached: 0.1 },
+    contextWindow: 1050000,
+    maxOutputTokens: 128000,
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsJson: true,
+    },
+  },
+  {
+    id: 'gpt-6-sol',
+    provider: 'openai',
+    displayName: 'GPT-6 Sol',
+    pricing: { input: 2, output: 10, inputCached: 0.2 },
+    contextWindow: 1050000,
+    maxOutputTokens: 128000,
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsJson: true,
+    },
+  },
+  {
+    id: 'gpt-6-luna',
+    provider: 'openai',
+    displayName: 'GPT-6 Luna',
+    pricing: { input: 0.1, output: 0.5, inputCached: 0.01 },
+    contextWindow: 1050000,
+    maxOutputTokens: 128000,
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsJson: true,
+    },
+  },
+  {
+    id: 'gpt-5.6-sol',
+    provider: 'openai',
+    displayName: 'GPT-5.6 Sol',
+    pricing: { input: 4, output: 20, inputCached: 0.4 },
+    contextWindow: 1050000,
+    maxOutputTokens: 128000,
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsJson: true,
+    },
+  },
+  {
+    id: 'gpt-5.6-terra',
+    provider: 'openai',
+    displayName: 'GPT-5.6 Terra',
+    pricing: { input: 2, output: 12, inputCached: 0.2 },
+    contextWindow: 1050000,
+    maxOutputTokens: 128000,
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsJson: true,
+    },
+  },
+  {
+    id: 'gpt-5.6-luna',
+    provider: 'openai',
+    displayName: 'GPT-5.6 Luna',
+    pricing: { input: 0.2, output: 1.2, inputCached: 0.02 },
+    contextWindow: 1050000,
+    maxOutputTokens: 128000,
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsFunctions: true,
+      supportsStreaming: true,
+      supportsJson: true,
+    },
+  },
+  {
     id: 'gpt-5.5',
     provider: 'openai',
     displayName: 'GPT-5.5',
@@ -75,6 +180,7 @@ export const OPENAI_MODELS: ModelInfo[] = [
       supportsStreaming: true,
       supportsJson: true,
     },
+    deprecated: true,
   },
   {
     id: 'gpt-5.4-pro',
@@ -96,7 +202,7 @@ export const OPENAI_MODELS: ModelInfo[] = [
     provider: 'openai',
     displayName: 'GPT-4.1',
     pricing: { input: 2, output: 8 },
-    contextWindow: 1000000,
+    contextWindow: 1047576,
     maxOutputTokens: 32768,
     capabilities: {
       supportsTools: true,
@@ -112,7 +218,7 @@ export const OPENAI_MODELS: ModelInfo[] = [
     provider: 'openai',
     displayName: 'GPT-4.1 Mini',
     pricing: { input: 0.4, output: 1.6 },
-    contextWindow: 1000000,
+    contextWindow: 1047576,
     maxOutputTokens: 32768,
     capabilities: {
       supportsTools: true,
@@ -128,7 +234,7 @@ export const OPENAI_MODELS: ModelInfo[] = [
     provider: 'openai',
     displayName: 'GPT-4.1 Nano',
     pricing: { input: 0.1, output: 0.4 },
-    contextWindow: 1000000,
+    contextWindow: 1047576,
     maxOutputTokens: 32768,
     capabilities: {
       supportsTools: true,
@@ -138,6 +244,7 @@ export const OPENAI_MODELS: ModelInfo[] = [
       supportsJson: true,
     },
     aliases: ['gpt-4.1-nano'],
+    deprecated: true,
   },
   {
     id: 'o3-2025-04-16',
@@ -150,6 +257,7 @@ export const OPENAI_MODELS: ModelInfo[] = [
       supportsStreaming: true,
     },
     aliases: ['o3'],
+    deprecated: true,
   },
   {
     id: 'o3-mini',
@@ -161,6 +269,7 @@ export const OPENAI_MODELS: ModelInfo[] = [
     capabilities: {
       supportsStreaming: true,
     },
+    deprecated: true,
   },
   {
     id: 'o3-pro',
@@ -172,6 +281,7 @@ export const OPENAI_MODELS: ModelInfo[] = [
     capabilities: {
       supportsStreaming: true,
     },
+    deprecated: true,
   },
   {
     id: 'o4-mini-2025-04-16',
@@ -186,6 +296,7 @@ export const OPENAI_MODELS: ModelInfo[] = [
       supportsStreaming: true,
     },
     aliases: ['o4-mini'],
+    deprecated: true,
   },
   {
     id: 'gpt-4o',

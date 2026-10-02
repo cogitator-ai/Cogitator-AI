@@ -74,7 +74,7 @@ describe('OpenAIRealtimeAdapter', () => {
       adapter = new OpenAIRealtimeAdapter(createConfig());
       await adapter.connect();
 
-      expect(capturedUrl).toBe('wss://api.openai.com/v1/realtime?model=gpt-realtime-mini');
+      expect(capturedUrl).toBe('wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini');
     });
 
     it('uses custom model in WebSocket URL', async () => {
@@ -116,7 +116,7 @@ describe('OpenAIRealtimeAdapter', () => {
         audio: {
           input: {
             format: { type: 'audio/pcm', rate: 24000 },
-            transcription: { model: 'gpt-4o-mini-transcribe' },
+            transcription: { model: 'gpt-live-transcribe' },
             turn_detection: { type: 'server_vad' },
           },
           output: {

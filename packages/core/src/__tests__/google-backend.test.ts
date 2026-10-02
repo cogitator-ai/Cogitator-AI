@@ -335,7 +335,33 @@ describe('GoogleBackend', () => {
       });
 
       const [url] = mockFetch.mock.calls[0] as [string, RequestInit];
-      expect(url).toContain('gemini-2.5-flash:generateContent');
+      expect(url).toContain('gemini-3.8-flash:generateContent');
+    });
+
+    it.each([
+      ['default', 'gemini-3.8-flash'],
+      ['google/default', 'gemini-3.8-flash'],
+      ['gemini-pro', 'gemini-3.1-pro-preview'],
+      ['gemini-flash-lite', 'gemini-3.5-flash-lite'],
+      ['gemini-3-flash', 'gemini-3.8-flash'],
+      ['gemini-3-flash-lite', 'gemini-3.5-flash-lite'],
+      ['gemini-3.1-flash-lite', 'gemini-3.1-flash-lite'],
+      ['gemini-3.5-flash-lite', 'gemini-3.5-flash-lite'],
+    ])('should resolve %s to %s', async (alias, expected) => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          candidates: [
+            { content: { role: 'model', parts: [{ text: 'OK' }] }, finishReason: 'STOP' },
+          ],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        }),
+      });
+
+      await backend.chat({ model: alias, messages: [{ role: 'user', content: 'Test' }] });
+
+      const [url] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(url).toContain(`/models/${expected}:generateContent`);
     });
 
     it('should normalize gemini-3-pro to the active 3.1 preview', async () => {

@@ -37,7 +37,7 @@ export class CausalValidator {
 
   constructor(options: CausalValidatorOptions) {
     this.llm = options.llmBackend;
-    this.model = options.model ?? 'gpt-4';
+    this.model = options.model ?? 'gpt-6.1-sol';
     this.validationThreshold = options.validationThreshold ?? 0.7;
     this.maxForksPerHypothesis = options.maxForksPerHypothesis ?? 3;
   }

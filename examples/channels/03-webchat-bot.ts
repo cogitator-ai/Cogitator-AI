@@ -24,7 +24,7 @@ const timeTool = tool({
 
 const agent = new Agent({
   name: 'webchat-assistant',
-  model: 'google/gemini-2.5-flash',
+  model: 'google/gemini-3.8-flash',
   instructions: `You are a helpful assistant connected via WebChat.
 Keep responses concise. Use markdown for formatting.`,
   tools: [timeTool],

@@ -75,7 +75,7 @@ export function createGenerateSpeechTool(config: GenerateSpeechConfig = {}) {
         ),
       model: modelSchema
         .optional()
-        .describe('TTS model. tts-1 is fast, tts-1-hd is higher quality'),
+        .describe('TTS model (default: gpt-4o-mini-tts). tts-1 and tts-1-hd are legacy models'),
       speed: z
         .number()
         .min(0.25)
@@ -91,7 +91,7 @@ export function createGenerateSpeechTool(config: GenerateSpeechConfig = {}) {
         throw new Error('OpenAI API key required for speech generation');
       }
 
-      const selectedModel = model || config.defaultModel || 'tts-1';
+      const selectedModel = model || config.defaultModel || 'gpt-4o-mini-tts';
       const selectedVoice = voice || config.defaultVoice || 'alloy';
       const selectedFormat = format || config.defaultFormat || 'mp3';
       const selectedSpeed = speed ?? config.defaultSpeed ?? 1.0;

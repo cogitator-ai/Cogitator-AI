@@ -44,11 +44,11 @@ export async function resolveTestLLM(): Promise<TestLLM | null> {
   if (googleKey) {
     return {
       provider: 'google',
-      model: 'google/gemini-2.5-flash',
+      model: 'google/gemini-3.5-flash-lite',
       createCogitator: () =>
         new Cogitator({
           llm: {
-            defaultModel: 'google/gemini-2.5-flash',
+            defaultModel: 'google/gemini-3.5-flash-lite',
             providers: { google: { apiKey: googleKey } },
           },
           memory: { adapter: 'memory' },

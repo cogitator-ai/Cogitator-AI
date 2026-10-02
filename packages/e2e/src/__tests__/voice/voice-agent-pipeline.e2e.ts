@@ -199,7 +199,7 @@ describeLLM('Voice: VoiceAgent pipeline with a real Cogitator agent', () => {
   let cogitator: Cogitator;
   let voice: VoiceAgent | undefined;
   let ws: WebSocket | undefined;
-  const model = GOOGLE_API_KEY ? 'google/gemini-2.5-flash' : `ollama/${TEST_MODEL}`;
+  const model = GOOGLE_API_KEY ? 'google/gemini-3.5-flash-lite' : `ollama/${TEST_MODEL}`;
 
   beforeAll(() => {
     cogitator = new Cogitator({

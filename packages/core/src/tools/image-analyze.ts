@@ -18,7 +18,7 @@ export interface AnalyzeImageConfig {
 }
 
 export function createAnalyzeImageTool(config: AnalyzeImageConfig) {
-  const { llm, defaultModel = 'gpt-4o' } = config;
+  const { llm, defaultModel = 'gpt-6.1-sol' } = config;
 
   return tool({
     name: 'analyzeImage',
@@ -38,7 +38,7 @@ export function createAnalyzeImageTool(config: AnalyzeImageConfig) {
         .describe(
           'Level of detail for analysis. "high" uses more tokens but provides better analysis.'
         ),
-      model: z.string().optional().describe('Vision model to use. Defaults to gpt-4o.'),
+      model: z.string().optional().describe('Vision model to use. Defaults to gpt-6.1-sol.'),
     }),
     execute: async ({ image, prompt, detail, model }) => {
       const content: ContentPart[] = [];

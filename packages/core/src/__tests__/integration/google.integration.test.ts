@@ -15,7 +15,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', { retry: 2 }, () => {
   describe('chat()', () => {
     it('completes a simple prompt', async () => {
       const response = await backend.chat({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.5-flash-lite',
         messages: [{ role: 'user', content: 'Say "hello" and nothing else.' }],
         maxTokens: 256,
       });
@@ -26,7 +26,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', { retry: 2 }, () => {
 
     it('handles system messages', async () => {
       const response = await backend.chat({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.5-flash-lite',
         messages: [
           { role: 'system', content: 'You are a pirate. Always say "Arrr!" at the start.' },
           { role: 'user', content: 'Hello' },
@@ -39,7 +39,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', { retry: 2 }, () => {
 
     it('respects temperature setting', async () => {
       const response = await backend.chat({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.5-flash-lite',
         messages: [{ role: 'user', content: 'What is 2+2? Reply with just the number.' }],
         maxTokens: 256,
         temperature: 0,
@@ -54,7 +54,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', { retry: 2 }, () => {
       const chunks: string[] = [];
 
       for await (const chunk of backend.chatStream({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.5-flash-lite',
         messages: [{ role: 'user', content: 'Count from 1 to 5.' }],
         maxTokens: 256,
       })) {
@@ -72,7 +72,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', { retry: 2 }, () => {
   describe('tool calling', () => {
     it('calls a tool and returns result', async () => {
       const response = await backend.chat({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.5-flash-lite',
         messages: [{ role: 'user', content: 'What is 15 * 7? Use the calculator tool.' }],
         tools: [
           {
@@ -102,7 +102,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', { retry: 2 }, () => {
     it('runs simple agent', async () => {
       const cogitator = new Cogitator({
         llm: {
-          defaultModel: 'google/gemini-2.5-flash',
+          defaultModel: 'google/gemini-3.5-flash-lite',
           providers: {
             google: { apiKey: process.env.GOOGLE_API_KEY! },
           },
@@ -112,7 +112,7 @@ describe.skipIf(!hasGoogleKey)('Google Integration', { retry: 2 }, () => {
       const agent = new Agent({
         name: 'SimpleAgent',
         instructions: 'You are a helpful assistant. Keep responses brief.',
-        model: 'google/gemini-2.5-flash',
+        model: 'google/gemini-3.5-flash-lite',
       });
 
       const result = await cogitator.run(agent, {

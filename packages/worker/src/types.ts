@@ -16,7 +16,7 @@ import type {
 export interface SerializedAgent {
   name: string;
   instructions: string;
-  /** Model name; may already carry a provider prefix (e.g. 'openai/gpt-4o') */
+  /** Model name; may already carry a provider prefix (e.g. 'openai/gpt-6.1-sol') */
   model: string;
   /** Provider used when `model` has no provider prefix */
   provider: LLMProvider;

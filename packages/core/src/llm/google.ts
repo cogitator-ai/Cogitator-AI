@@ -364,17 +364,15 @@ export class GoogleBackend extends BaseLLMBackend {
     const stripped = model.startsWith('google/') ? model.slice(7) : model;
 
     const modelMap: Record<string, string> = {
-      default: 'gemini-2.5-flash',
-      'gemini-pro': 'gemini-2.5-pro',
-      'gemini-flash': 'gemini-2.5-flash',
+      default: 'gemini-3.8-flash',
+      'gemini-pro': 'gemini-3.1-pro-preview',
+      'gemini-flash': 'gemini-3.8-flash',
+      'gemini-flash-lite': 'gemini-3.5-flash-lite',
       'gemini-3-pro': 'gemini-3.1-pro-preview',
       'gemini-3.1-pro': 'gemini-3.1-pro-preview',
-      'gemini-3-flash': 'gemini-3-flash-preview',
-      'gemini-3.1-flash-lite': 'gemini-3.1-flash-lite-preview',
-      'gemini-3-flash-lite': 'gemini-3.1-flash-lite-preview',
+      'gemini-3-flash': 'gemini-3.8-flash',
+      'gemini-3-flash-lite': 'gemini-3.5-flash-lite',
       'gemini-2-flash': 'gemini-2.5-flash',
-      'gemini-2.5-pro': 'gemini-2.5-pro',
-      'gemini-2.5-flash': 'gemini-2.5-flash',
     };
 
     return modelMap[stripped] ?? stripped;

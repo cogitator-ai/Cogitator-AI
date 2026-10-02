@@ -17,7 +17,7 @@ describe('RuntimeBuilder E2E', () => {
       {
         name: 'test-assistant',
         personality: 'Helpful bot',
-        llm: { provider: 'google', model: 'google/gemini-2.5-flash' },
+        llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:' },
@@ -38,7 +38,7 @@ describe('RuntimeBuilder E2E', () => {
       {
         name: 'memory-bot',
         personality: 'Bot with memory',
-        llm: { provider: 'google', model: 'google/gemini-2.5-flash' },
+        llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:', knowledgeGraph: true },
@@ -59,7 +59,7 @@ describe('RuntimeBuilder E2E', () => {
       {
         name: 'no-memory-bot',
         personality: 'Bot without memory',
-        llm: { provider: 'google', model: 'google/gemini-2.5-flash' },
+        llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:', knowledgeGraph: false },
@@ -80,7 +80,7 @@ describe('RuntimeBuilder E2E', () => {
       {
         name: 'scheduler-bot',
         personality: 'Bot with scheduler',
-        llm: { provider: 'google', model: 'google/gemini-2.5-flash' },
+        llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: { scheduler: true },
         memory: { adapter: 'sqlite', path: ':memory:' },
@@ -103,7 +103,7 @@ describe('RuntimeBuilder E2E', () => {
       {
         name: 'capable-bot',
         personality: 'Bot with self-awareness',
-        llm: { provider: 'google', model: 'google/gemini-2.5-flash' },
+        llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: { webSearch: true },
         memory: { adapter: 'sqlite', path: ':memory:' },
@@ -122,7 +122,7 @@ describe('RuntimeBuilder E2E', () => {
       {
         name: 'basic-bot',
         personality: 'Basic bot',
-        llm: { provider: 'google', model: 'google/gemini-2.5-flash' },
+        llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:' },
@@ -142,7 +142,7 @@ describe('RuntimeBuilder E2E', () => {
       {
         name: 'no-scheduler-bot',
         personality: 'Bot',
-        llm: { provider: 'google', model: 'google/gemini-2.5-flash' },
+        llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:' },
@@ -160,7 +160,7 @@ describe('RuntimeBuilder E2E', () => {
       {
         name: 'persona-bot',
         personality: 'You are a pirate. Speak in pirate speak.',
-        llm: { provider: 'google', model: 'google/gemini-2.5-flash' },
+        llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:' },
@@ -178,7 +178,7 @@ describe('RuntimeBuilder E2E', () => {
       {
         name: 'device-bot',
         personality: 'Bot with device access',
-        llm: { provider: 'google', model: 'google/gemini-2.5-flash' },
+        llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: { deviceTools: true },
         memory: { adapter: 'sqlite', path: ':memory:' },
@@ -200,7 +200,7 @@ describe('RuntimeBuilder E2E', () => {
       {
         name: 'cleanup-bot',
         personality: 'Bot',
-        llm: { provider: 'google', model: 'google/gemini-2.5-flash' },
+        llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:', knowledgeGraph: true },

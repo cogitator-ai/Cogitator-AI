@@ -46,24 +46,40 @@ describe('OpenAISTT', () => {
 
     expect(mockCreate).toHaveBeenCalledOnce();
     const args = mockCreate.mock.calls[0][0];
-    expect(args.model).toBe('gpt-4o-mini-transcribe');
+    expect(args.model).toBe('gpt-transcribe');
     expect(args.file).toBeInstanceOf(File);
   });
 
-  it('uses gpt-4o-mini-transcribe by default', async () => {
+  it('uses gpt-transcribe by default', async () => {
     const audio = Buffer.from('fake-audio');
     await stt.transcribe(audio);
 
     const args = mockCreate.mock.calls[0][0];
-    expect(args.model).toBe('gpt-4o-mini-transcribe');
+    expect(args.model).toBe('gpt-transcribe');
   });
 
-  it('passes language option', async () => {
+  it('passes the language as languages[] for gpt-transcribe', async () => {
     const audio = Buffer.from('fake-audio');
     await stt.transcribe(audio, { language: 'en' });
 
     const args = mockCreate.mock.calls[0][0];
+    expect(args.languages).toEqual(['en']);
+    expect(args.language).toBeUndefined();
+  });
+
+  it('passes the singular language field for gpt-4o transcribe models', async () => {
+    const customStt = new OpenAISTT({ apiKey: 'test-key', model: 'gpt-4o-mini-transcribe' });
+    await customStt.transcribe(Buffer.from('fake-audio'), { language: 'en' });
+
+    const args = mockCreate.mock.calls[0][0];
     expect(args.language).toBe('en');
+    expect(args.languages).toBeUndefined();
+  });
+
+  it('reports the detected language from gpt-transcribe responses', async () => {
+    mockCreate.mockResolvedValue({ text: 'Bonjour', languages: [{ code: 'fr' }] });
+    const result = await stt.transcribe(Buffer.from('fake-audio'));
+    expect(result).toEqual({ text: 'Bonjour', language: 'fr' });
   });
 
   it('passes prompt option', async () => {
@@ -157,7 +173,7 @@ describe('OpenAISTT', () => {
     expect(args.timestamp_granularities).toContain('word');
   });
 
-  it('requests plain json for gpt-4o transcribe models (verbose_json is unsupported)', async () => {
+  it('requests plain json for gpt-transcribe (verbose_json is unsupported)', async () => {
     await stt.transcribe(Buffer.from('fake-audio'), { language: 'de' });
 
     const args = mockCreate.mock.calls[0][0];
@@ -327,7 +343,7 @@ describe('OpenAISTT', () => {
       await stream.close();
 
       const args = mockCreate.mock.calls[0][0];
-      expect(args.language).toBe('fr');
+      expect(args.languages).toEqual(['fr']);
     });
 
     it('off() removes listener', async () => {

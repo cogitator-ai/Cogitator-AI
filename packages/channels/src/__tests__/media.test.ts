@@ -133,6 +133,19 @@ describe('STT providers', () => {
     expect((init.body.get('file') as File).name).toBe('audio.mp3');
   });
 
+  it.each([
+    ['Groq', () => new GroqSttProvider({ apiKey: 'k' }), 'whisper-large-v3'],
+    ['OpenAI', () => new OpenAISttProvider({ apiKey: 'k' }), 'gpt-transcribe'],
+  ])('%s uses %s by default', async (_name, create, model) => {
+    vi.stubGlobal('fetch', fetchMock);
+    fetchMock.mockResolvedValue({ ok: true, json: () => Promise.resolve({ text: 'hi' }) });
+
+    await create().transcribe(Buffer.from('x'), 'audio/mpeg');
+
+    const [, init] = fetchMock.mock.calls[0] as [string, { body: FormData }];
+    expect(init.body.get('model')).toBe(model);
+  });
+
   it('Deepgram sends the real content type', async () => {
     vi.stubGlobal('fetch', fetchMock);
     fetchMock.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });

@@ -100,7 +100,7 @@ export function createTestJudge(): LLMJudge | null {
   const apiKey = process.env.GOOGLE_API_KEY;
   if (!apiKey) return null;
   const backend = new GoogleBackend({ apiKey });
-  return new LLMJudge(backend, 'gemini-2.5-flash');
+  return new LLMJudge(backend, 'gemini-3.5-flash-lite');
 }
 
 export function getTestModel(): string {

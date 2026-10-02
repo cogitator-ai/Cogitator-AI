@@ -194,7 +194,7 @@ describe('generateCogitatorYml', () => {
 
   it('includes model name', () => {
     const file = generateCogitatorYml('openai');
-    expect(file.content).toContain('model: gpt-4o');
+    expect(file.content).toContain('model: gpt-6.1-sol');
   });
 
   it('includes ollama baseUrl for ollama provider', () => {
@@ -207,10 +207,10 @@ describe('generateCogitatorYml', () => {
     expect(file.content).not.toContain('baseUrl:');
   });
 
-  it('uses gemini-2.5-flash for google provider', () => {
+  it('uses gemini-3.8-flash for google provider', () => {
     const file = generateCogitatorYml('google');
-    expect(file.content).toContain('gemini-2.5-flash');
-    expect(file.content).not.toContain('gemini-2.0');
+    expect(file.content).toContain('model: gemini-3.8-flash');
+    expect(file.content).not.toContain('gemini-2.');
   });
 });
 

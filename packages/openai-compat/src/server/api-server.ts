@@ -32,7 +32,7 @@ export interface OpenAIServerConfig {
 
   /**
    * Cogitator model used for assistants/runs that request the advertised
-   * `cogitator` model id (e.g. 'openai/gpt-4o', 'ollama/llama3.1')
+   * `cogitator` model id (e.g. 'openai/gpt-6.1-sol', 'ollama/qwen3:8b')
    */
   defaultModel?: string;
 

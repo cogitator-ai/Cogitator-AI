@@ -7,6 +7,14 @@ export interface ScoredModel {
 }
 
 const ADVANCED_MODELS = [
+  'gpt-6-astra',
+  'gpt-6.1-sol',
+  'gpt-6-sol',
+  'gpt-5.6-sol',
+  'claude-fable-5',
+  'claude-opus-5',
+  'claude-sonnet-5',
+  'gemini-3.1-pro',
   'gpt-4o',
   'gpt-4.1',
   'claude-opus-4-5',
@@ -14,13 +22,22 @@ const ADVANCED_MODELS = [
   'claude-sonnet-4-5',
   'gemini-2.5-pro',
   'llama3.1:70b',
-  'llama3.2:70b',
+  'llama3.3:70b',
   'qwen2.5:72b',
   'mixtral',
   'deepseek-r1',
 ];
 
 const FAST_MODELS = [
+  'gpt-6-luna',
+  'gpt-5.6-luna',
+  'claude-haiku-4-5',
+  'gemini-3.8-flash',
+  'gemini-3.5-flash',
+  'qwen3:0.6b',
+  'qwen3:1.7b',
+  'qwen3.5:0.8b',
+  'qwen3.5:2b',
   'gpt-4o-mini',
   'claude-3-5-haiku',
   'gemini-2.5-flash',
@@ -34,6 +51,11 @@ const FAST_MODELS = [
 ];
 
 const CODE_MODELS = [
+  'gpt-6-astra',
+  'gpt-6.1-sol',
+  'claude-fable-5',
+  'claude-opus-5',
+  'claude-sonnet-5',
   'claude-sonnet-4-5',
   'claude-sonnet-4',
   'gpt-4o',

@@ -66,8 +66,42 @@ describe('ContextManager', () => {
 
     it('returns correct limit for gpt-4.1', () => {
       const limit = manager.getModelContextLimit('openai:gpt-4.1');
-      expect(limit).toBe(128000);
+      expect(limit).toBe(1047576);
     });
+
+    it.each(['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna', 'gpt-5.6-terra', 'gpt-5.5', 'gpt-5.4'])(
+      'returns the 1.05M window for %s',
+      (model) => {
+        expect(manager.getModelContextLimit(`openai:${model}`)).toBe(1050000);
+      }
+    );
+
+    it('returns the 400K window for earlier gpt-5 models', () => {
+      expect(manager.getModelContextLimit('openai:gpt-5-mini')).toBe(400000);
+      expect(manager.getModelContextLimit('openai:gpt-5.4-nano')).toBe(400000);
+    });
+
+    it.each([
+      'claude-sonnet-5-5',
+      'claude-opus-5-5',
+      'claude-fable-5-1',
+      'claude-opus-4-8',
+      'claude-sonnet-4-6',
+    ])('returns the 1M window for %s', (model) => {
+      expect(manager.getModelContextLimit(`anthropic:${model}`)).toBe(1000000);
+    });
+
+    it('keeps the 200K window for claude-haiku-4-5 and claude-opus-4-5', () => {
+      expect(manager.getModelContextLimit('anthropic:claude-haiku-4-5')).toBe(200000);
+      expect(manager.getModelContextLimit('anthropic:claude-opus-4-5')).toBe(200000);
+    });
+
+    it.each(['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview'])(
+      'returns the 1M window for %s',
+      (model) => {
+        expect(manager.getModelContextLimit(`google:${model}`)).toBe(1048576);
+      }
+    );
 
     it('returns correct limit for gpt-4', () => {
       const limit = manager.getModelContextLimit('openai:gpt-4');

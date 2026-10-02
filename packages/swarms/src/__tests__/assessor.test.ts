@@ -172,6 +172,31 @@ describe('ModelScorer', () => {
       expect(localResult.score).toBeGreaterThan(cloudResult.score);
     });
 
+    it.each([
+      'gpt-6-astra',
+      'gpt-6.1-sol',
+      'claude-opus-5-5',
+      'claude-sonnet-5-5',
+      'claude-fable-5-1',
+      'gemini-3.1-pro-preview',
+    ])('should treat %s as an advanced reasoning model', (id) => {
+      const model = createMockModel({ id, isLocal: false });
+      const result = scorer.score(model, createMockRequirements({ needsReasoning: 'advanced' }));
+      expect(result.reasons).toContain('Strong reasoning capability');
+    });
+
+    it.each([
+      'gpt-6-luna',
+      'claude-haiku-4-5',
+      'gemini-3.8-flash',
+      'gemini-3.5-flash-lite',
+      'qwen3:0.6b',
+    ])('should treat %s as a fast model', (id) => {
+      const model = createMockModel({ id, isLocal: false });
+      const result = scorer.score(model, createMockRequirements({ needsSpeed: 'fast' }));
+      expect(result.reasons).toContain('Fast response time');
+    });
+
     it('should prefer cheaper models when cost sensitivity is high', () => {
       const cheapModel = createMockModel({
         id: 'cheap-cloud',

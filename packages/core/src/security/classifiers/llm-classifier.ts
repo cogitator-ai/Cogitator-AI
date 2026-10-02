@@ -50,7 +50,7 @@ export class LLMInjectionClassifier implements InjectionClassifier {
   }
 
   async analyze(input: string, config: PromptInjectionConfig): Promise<InjectionThreat[]> {
-    const model = config.llmModel ?? 'gpt-4o-mini';
+    const model = config.llmModel ?? 'gpt-6-luna';
 
     try {
       const response = await this.llm.chat({

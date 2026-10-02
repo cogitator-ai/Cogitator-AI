@@ -10,7 +10,7 @@ async function main() {
 
   const reasoner = new CausalReasoner({
     llmBackend: llm,
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.8-flash',
     config: {
       enableLLMDiscovery: true,
       enableSafetyChecks: true,

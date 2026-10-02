@@ -238,7 +238,7 @@ describeGoogle('RAG: Gemini embeddings, semantic chunking, reranking and agent t
     embeddingService = new GoogleEmbeddingService({ apiKey: GOOGLE_API_KEY! });
     cogitator = new Cogitator({
       llm: {
-        defaultModel: 'google/gemini-2.5-flash',
+        defaultModel: 'google/gemini-3.5-flash-lite',
         providers: { google: { apiKey: GOOGLE_API_KEY! } },
       },
     });
@@ -261,7 +261,7 @@ describeGoogle('RAG: Gemini embeddings, semantic chunking, reranking and agent t
   async function generate(prompt: string): Promise<string> {
     const agent = new Agent({
       name: 'rag-helper',
-      model: 'google/gemini-2.5-flash',
+      model: 'google/gemini-3.5-flash-lite',
       instructions: '',
     });
     const result = await cogitator.run(agent, { input: prompt });
@@ -322,7 +322,7 @@ describeGoogle('RAG: Gemini embeddings, semantic chunking, reranking and agent t
 
       const agent = new Agent({
         name: 'handbook-assistant',
-        model: 'google/gemini-2.5-flash',
+        model: 'google/gemini-3.5-flash-lite',
         instructions:
           'Answer questions about the company handbook. Always call rag_search first and answer only from its results.',
         tools: [tool(createSearchTool(pipeline))],

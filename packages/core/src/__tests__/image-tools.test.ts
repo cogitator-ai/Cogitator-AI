@@ -45,7 +45,7 @@ describe('image tools', () => {
 
       expect(result.analysis).toBe('This is a photo of a cat.');
       expect(mockLlm.chat).toHaveBeenCalledWith({
-        model: 'gpt-4o',
+        model: 'gpt-6.1-sol',
         messages: [
           {
             role: 'user',
@@ -77,7 +77,7 @@ describe('image tools', () => {
 
       expect(result.analysis).toBe('A landscape photo.');
       expect(mockLlm.chat).toHaveBeenCalledWith({
-        model: 'gpt-4o',
+        model: 'gpt-6.1-sol',
         messages: [
           {
             role: 'user',
@@ -129,7 +129,7 @@ describe('image tools', () => {
       });
 
       expect(mockLlm.chat).toHaveBeenCalledWith({
-        model: 'gpt-4o',
+        model: 'gpt-6.1-sol',
         messages: [
           {
             role: 'user',
@@ -170,29 +170,28 @@ describe('image tools', () => {
       expect(tool.sideEffects).toContain('network');
     });
 
-    it('generates image with default parameters', async () => {
+    it('generates image with gpt-image-2.5-flare by default and returns base64 data', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: () =>
           Promise.resolve({
             created: 1234567890,
-            data: [
-              {
-                url: 'https://oaidalleapi.blob.core.windows.net/image.png',
-                revised_prompt: 'A cute fluffy cat sitting on a windowsill',
-              },
-            ],
+            data: [{ b64_json: 'aW1hZ2U=' }],
+            output_format: 'png',
           }),
       });
 
       const tool = createGenerateImageTool();
       const result = await tool.execute({ prompt: 'A cute cat' });
 
-      expect(result.url).toBe('https://oaidalleapi.blob.core.windows.net/image.png');
-      expect(result.revisedPrompt).toBe('A cute fluffy cat sitting on a windowsill');
-      expect(result.size).toBe('1024x1024');
-      expect(result.quality).toBe('standard');
-      expect(result.style).toBe('vivid');
+      expect(result).toEqual({
+        imageBase64: 'aW1hZ2U=',
+        mimeType: 'image/png',
+        revisedPrompt: undefined,
+        model: 'gpt-image-2.5-flare',
+        size: 'auto',
+        quality: 'auto',
+      });
 
       expect(mockFetch).toHaveBeenCalledWith(
         'https://api.openai.com/v1/images/generations',
@@ -203,15 +202,24 @@ describe('image tools', () => {
           }),
         })
       );
+
+      const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(callBody).toEqual({
+        model: 'gpt-image-2.5-flare',
+        prompt: 'A cute cat',
+        n: 1,
+        size: 'auto',
+        quality: 'auto',
+      });
     });
 
-    it('uses custom parameters', async () => {
+    it('maps legacy DALL-E quality values and drops unsupported style for gpt-image', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: () =>
           Promise.resolve({
             created: 1234567890,
-            data: [{ url: 'https://example.com/image.png' }],
+            data: [{ b64_json: 'aW1hZ2U=' }],
           }),
       });
 
@@ -224,13 +232,88 @@ describe('image tools', () => {
       });
 
       expect(result.size).toBe('1792x1024');
-      expect(result.quality).toBe('hd');
-      expect(result.style).toBe('natural');
+      expect(result.quality).toBe('high');
+      expect(result.style).toBeUndefined();
 
       const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(callBody.size).toBe('1792x1024');
-      expect(callBody.quality).toBe('hd');
-      expect(callBody.style).toBe('natural');
+      expect(callBody.quality).toBe('high');
+      expect(callBody.style).toBeUndefined();
+      expect(callBody.response_format).toBeUndefined();
+    });
+
+    it('maps "standard" quality to medium and forwards output format and background', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ created: 1, data: [{ b64_json: 'd2VicA==' }] }),
+      });
+
+      const tool = createGenerateImageTool();
+      const result = await tool.execute({
+        prompt: 'A logo',
+        quality: 'standard',
+        outputFormat: 'webp',
+        background: 'transparent',
+      });
+
+      const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(callBody.quality).toBe('medium');
+      expect(callBody.output_format).toBe('webp');
+      expect(callBody.background).toBe('transparent');
+      expect(result.mimeType).toBe('image/webp');
+      expect(result.imageBase64).toBe('d2VicA==');
+    });
+
+    it('keeps the legacy DALL-E request shape for dall-e models', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            created: 1234567890,
+            data: [
+              {
+                url: 'https://example.com/image.png',
+                revised_prompt: 'A cute fluffy cat sitting on a windowsill',
+              },
+            ],
+          }),
+      });
+
+      const tool = createGenerateImageTool({
+        model: 'dall-e-3',
+        baseUrl: 'http://localhost:8080/v1',
+      });
+      const result = await tool.execute({ prompt: 'A cute cat', style: 'natural' });
+
+      expect(result.url).toBe('https://example.com/image.png');
+      expect(result.imageBase64).toBeUndefined();
+      expect(result.revisedPrompt).toBe('A cute fluffy cat sitting on a windowsill');
+      expect(result.size).toBe('1024x1024');
+      expect(result.quality).toBe('standard');
+      expect(result.style).toBe('natural');
+
+      const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(callBody).toEqual({
+        model: 'dall-e-3',
+        prompt: 'A cute cat',
+        n: 1,
+        size: '1024x1024',
+        quality: 'standard',
+        style: 'natural',
+        response_format: 'url',
+      });
+    });
+
+    it('throws when the response contains no image', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ created: 1, data: [] }),
+      });
+
+      const tool = createGenerateImageTool();
+      await expect(tool.execute({ prompt: 'test' })).rejects.toThrow(
+        'Image generation failed: response contained no image'
+      );
     });
 
     it('throws when API key is missing', async () => {
@@ -259,7 +342,7 @@ describe('image tools', () => {
         json: () =>
           Promise.resolve({
             created: 1234567890,
-            data: [{ url: 'https://example.com/image.png' }],
+            data: [{ b64_json: 'aW1hZ2U=' }],
           }),
       });
 

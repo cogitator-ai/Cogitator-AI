@@ -12,7 +12,7 @@ describeGoogle('Core: Google Provider E2E', () => {
   beforeAll(() => {
     cogitator = new Cogitator({
       llm: {
-        defaultModel: 'google/gemini-2.5-flash',
+        defaultModel: 'google/gemini-3.5-flash-lite',
         providers: {
           google: {
             apiKey: process.env.GOOGLE_API_KEY!,
@@ -30,7 +30,7 @@ describeGoogle('Core: Google Provider E2E', () => {
     const agent = new Agent({
       name: 'google-basic',
       instructions: 'You are a math assistant. Reply with ONLY the number, nothing else.',
-      model: 'google/gemini-2.5-flash',
+      model: 'google/gemini-3.5-flash-lite',
     });
 
     const result = await cogitator.run(agent, {
@@ -57,7 +57,7 @@ describeGoogle('Core: Google Provider E2E', () => {
       name: 'google-tool-agent',
       instructions:
         'You are a math assistant. You MUST use the multiply tool for multiplication. Report the exact result.',
-      model: 'google/gemini-2.5-flash',
+      model: 'google/gemini-3.5-flash-lite',
       tools: [multiplyTool],
     });
 
@@ -78,7 +78,7 @@ describeGoogle('Core: Google Provider E2E', () => {
     const agent = new Agent({
       name: 'google-json',
       instructions: 'Reply only with valid JSON. No markdown fences.',
-      model: 'google/gemini-2.5-flash',
+      model: 'google/gemini-3.5-flash-lite',
       responseFormat: { type: 'json' },
     });
 
@@ -113,11 +113,11 @@ describeGoogle('Core: Multi-Provider Consistency', () => {
       create: () =>
         new Cogitator({
           llm: {
-            defaultModel: 'google/gemini-2.5-flash',
+            defaultModel: 'google/gemini-3.5-flash-lite',
             providers: { google: { apiKey: process.env.GOOGLE_API_KEY! } },
           },
         }),
-      model: 'google/gemini-2.5-flash',
+      model: 'google/gemini-3.5-flash-lite',
     },
   ];
 

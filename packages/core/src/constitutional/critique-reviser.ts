@@ -76,7 +76,7 @@ export class CritiqueReviser {
     const prompt = buildCritiquePrompt(response, toUse);
 
     const result = await this.llm.chat({
-      model: this.config.model ?? 'gpt-4o-mini',
+      model: this.config.model ?? 'gpt-6-luna',
       messages: [{ role: 'user', content: prompt }],
       temperature: 0,
       maxTokens: 800,
@@ -93,7 +93,7 @@ export class CritiqueReviser {
     const prompt = buildRevisionPrompt(response, critique, violatedPrinciples);
 
     const result = await this.llm.chat({
-      model: this.config.model ?? 'gpt-4o-mini',
+      model: this.config.model ?? 'gpt-6-luna',
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.3,
       maxTokens: 2000,

@@ -1,6 +1,9 @@
 import { EventEmitter } from 'node:events';
 import OpenAI from 'openai';
-import type { TranscriptionVerbose } from 'openai/resources/audio/transcriptions';
+import type {
+  TranscriptionCreateParamsNonStreaming,
+  TranscriptionVerbose,
+} from 'openai/resources/audio/transcriptions';
 import { audioMimeType, detectAudioFormat, pcmToWav } from '../audio.js';
 import type {
   STTProvider,
@@ -16,11 +19,24 @@ export interface OpenAISTTConfig {
   baseURL?: string;
 }
 
-const DEFAULT_MODEL = 'gpt-4o-mini-transcribe';
+const DEFAULT_MODEL = 'gpt-transcribe';
 const DEFAULT_SAMPLE_RATE = 16000;
 
 function supportsVerboseJson(model: string): boolean {
   return model.startsWith('whisper');
+}
+
+function usesLanguagesList(model: string): boolean {
+  return model.startsWith('gpt-transcribe');
+}
+
+type JsonTranscriptionParams = TranscriptionCreateParamsNonStreaming<'json'> & {
+  languages?: string[];
+};
+
+interface JsonTranscription {
+  text: string;
+  languages?: Array<{ code?: string }>;
 }
 
 function toUploadFile(audio: Buffer, sampleRate: number): File {
@@ -75,28 +91,38 @@ export class OpenAISTT implements STTProvider {
   }
 
   private async transcribeFile(file: File, options?: STTOptions): Promise<TranscribeResult> {
-    const common = {
-      file,
-      model: this.model,
-      ...(options?.language && { language: options.language }),
-      ...(options?.prompt && { prompt: options.prompt }),
-    };
+    const prompt = options?.prompt ? { prompt: options.prompt } : {};
 
     if (supportsVerboseJson(this.model)) {
       const response = await this.client.audio.transcriptions.create({
-        ...common,
+        file,
+        model: this.model,
+        ...(options?.language && { language: options.language }),
+        ...prompt,
         response_format: 'verbose_json',
         timestamp_granularities: ['word'],
       });
       return this.mapResponse(response);
     }
 
-    const response = await this.client.audio.transcriptions.create({
-      ...common,
+    const params: JsonTranscriptionParams = {
+      file,
+      model: this.model,
+      ...prompt,
       response_format: 'json',
-    });
+    };
+    if (options?.language) {
+      if (usesLanguagesList(this.model)) {
+        params.languages = [options.language];
+      } else {
+        params.language = options.language;
+      }
+    }
+
+    const response: JsonTranscription = await this.client.audio.transcriptions.create(params);
     const result: TranscribeResult = { text: response.text };
-    if (options?.language) result.language = options.language;
+    const language = response.languages?.[0]?.code ?? options?.language;
+    if (language) result.language = language;
     return result;
   }
 

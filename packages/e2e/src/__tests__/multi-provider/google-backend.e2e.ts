@@ -16,7 +16,7 @@ describeGoogle('Multi-Provider: Google Gemini Backend', () => {
 
   it('basic chat returns a valid response', async () => {
     const response = await backend.chat({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash-lite',
       messages: [
         {
           role: 'user',
@@ -45,7 +45,7 @@ describeGoogle('Multi-Provider: Google Gemini Backend', () => {
     }> = [];
 
     for await (const chunk of backend.chatStream({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash-lite',
       messages: [
         {
           role: 'user',
@@ -84,7 +84,7 @@ describeGoogle('Multi-Provider: Google Gemini Backend', () => {
     });
 
     const response = await backend.chat({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash-lite',
       messages: [
         {
           role: 'user',

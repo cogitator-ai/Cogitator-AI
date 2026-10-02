@@ -197,7 +197,7 @@ describe('Neuro-Symbolic: plan repair with invariants', () => {
 
 describeGoogle('Neuro-Symbolic: LLM integration (Gemini)', () => {
   let cogitator: Cogitator;
-  const model = 'google/gemini-2.5-flash';
+  const model = 'google/gemini-3.5-flash-lite';
 
   beforeAll(() => {
     cogitator = new Cogitator({

@@ -45,7 +45,7 @@ const calcTool = tool({
 
 const agent = new Agent({
   name: 'telegram-assistant',
-  model: 'google/gemini-2.5-flash',
+  model: 'google/gemini-3.8-flash',
   instructions: `You are a helpful personal assistant on Telegram.
 
 IMPORTANT: You MUST use your tools when relevant. NEVER guess or make up answers when a tool can provide accurate data.

@@ -63,7 +63,7 @@ describeGoogle('Core: runtime integrity (Gemini)', () => {
   beforeAll(() => {
     cogitator = new Cogitator({
       llm: {
-        defaultModel: 'google/gemini-2.5-flash',
+        defaultModel: 'google/gemini-3.5-flash-lite',
         providers: { google: { apiKey: process.env.GOOGLE_API_KEY! } },
       },
       memory: { adapter: 'memory' },
@@ -93,7 +93,7 @@ describeGoogle('Core: runtime integrity (Gemini)', () => {
         name: 'parallel-weather',
         instructions:
           'Always call get_temperature once per city, calling it for all cities in the same turn. Then report each temperature as a number.',
-        model: 'google/gemini-2.5-flash',
+        model: 'google/gemini-3.5-flash-lite',
         tools: [weather],
       });
 
@@ -128,7 +128,7 @@ describeGoogle('Core: runtime integrity (Gemini)', () => {
         name: 'gemini3-tools',
         instructions:
           'Always use get_population to answer population questions. Report the number.',
-        model: 'google/gemini-3-flash',
+        model: 'google/gemini-3.5-flash-lite',
         tools: [lookup],
       });
 
@@ -153,7 +153,7 @@ describeGoogle('Core: runtime integrity (Gemini)', () => {
       const agent = new Agent({
         name: 'gemini-history',
         instructions: 'Answer in one short sentence.',
-        model: 'google/gemini-2.5-flash',
+        model: 'google/gemini-3.5-flash-lite',
       });
 
       await cogitator.run(agent, { input: 'Remember the number 42.', threadId });

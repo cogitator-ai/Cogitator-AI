@@ -15,8 +15,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const hasApiKey = !!GOOGLE_API_KEY || !!OPENAI_API_KEY;
 
 function getModel(): string {
-  if (GOOGLE_API_KEY) return 'google/gemini-2.5-flash';
-  return 'openai/gpt-4o-mini';
+  if (GOOGLE_API_KEY) return 'google/gemini-3.5-flash-lite';
+  return 'openai/gpt-6-luna';
 }
 
 function createCogitator(): Cogitator {

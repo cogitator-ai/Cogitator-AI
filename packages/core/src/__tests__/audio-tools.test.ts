@@ -97,6 +97,66 @@ describe('audio tools', () => {
       expect(result.words![0].word).toBe('Hello');
     });
 
+    it('should default to gpt-transcribe and send languages[] for it', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve({ text: 'Bonjour', languages: [{ code: 'fr' }] }),
+        })
+      );
+
+      const tool = createTranscribeAudioTool({ apiKey: 'test-key' });
+      const audioData = Buffer.from('fake audio').toString('base64');
+
+      const result = await tool.execute(
+        { audio: { data: audioData, format: 'mp3' }, language: 'fr' },
+        mockContext
+      );
+
+      const formData = vi.mocked(fetch).mock.calls[0][1]?.body as FormData;
+      expect(formData.get('model')).toBe('gpt-transcribe');
+      expect(formData.getAll('languages[]')).toEqual(['fr']);
+      expect(formData.get('language')).toBeNull();
+      expect(formData.get('response_format')).toBeNull();
+      expect(result).toEqual({
+        text: 'Bonjour',
+        language: 'fr',
+        duration: undefined,
+        words: undefined,
+      });
+    });
+
+    it('should use whisper-1 with word granularity when timestamps are requested without a model', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              text: 'Hello',
+              language: 'english',
+              words: [{ word: 'Hello', start: 0, end: 0.4 }],
+            }),
+        })
+      );
+
+      const tool = createTranscribeAudioTool({ apiKey: 'test-key' });
+      const audioData = Buffer.from('fake audio').toString('base64');
+
+      const result = await tool.execute(
+        { audio: { data: audioData, format: 'mp3' }, timestamps: true, language: 'en' },
+        mockContext
+      );
+
+      const formData = vi.mocked(fetch).mock.calls[0][1]?.body as FormData;
+      expect(formData.get('model')).toBe('whisper-1');
+      expect(formData.get('language')).toBe('en');
+      expect(formData.get('response_format')).toBe('verbose_json');
+      expect(formData.get('timestamp_granularities[]')).toBe('word');
+      expect(result.words).toEqual([{ word: 'Hello', start: 0, end: 0.4 }]);
+    });
+
     it('should use default model from config', async () => {
       vi.stubGlobal(
         'fetch',
@@ -203,7 +263,10 @@ describe('audio tools', () => {
       expect(result.audioBase64).toBe(Buffer.from(mockAudioData).toString('base64'));
       expect(result.format).toBe('mp3');
       expect(result.voice).toBe('alloy');
-      expect(result.model).toBe('tts-1');
+      expect(result.model).toBe('gpt-4o-mini-tts');
+      expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string).model).toBe(
+        'gpt-4o-mini-tts'
+      );
       expect(result.textLength).toBe(13);
 
       expect(fetch).toHaveBeenCalledWith(

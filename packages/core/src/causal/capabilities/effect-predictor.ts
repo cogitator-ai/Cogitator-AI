@@ -22,7 +22,7 @@ export class CausalEffectPredictor {
 
   constructor(options: EffectPredictorOptions) {
     this.llm = options.llmBackend;
-    this.model = options.model ?? 'gpt-4';
+    this.model = options.model ?? 'gpt-6.1-sol';
     this.safetyThresholds = options.safetyThresholds ?? {
       maxRisk: 0.7,
       minConfidence: 0.3,

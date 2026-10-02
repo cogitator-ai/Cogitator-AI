@@ -28,7 +28,7 @@ export class CausalHypothesisGenerator {
 
   constructor(options: HypothesisGeneratorOptions) {
     this.llm = options.llmBackend;
-    this.model = options.model ?? 'gpt-4';
+    this.model = options.model ?? 'gpt-6.1-sol';
     this.maxHypothesesPerBatch = options.maxHypothesesPerBatch ?? 5;
     this.minExpectedStrength = options.minExpectedStrength ?? 0.3;
   }
