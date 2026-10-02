@@ -15,11 +15,23 @@ import type {
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
 import { type LLMError, wrapSDKError, type LLMErrorContext } from './errors';
+import {
+  createWarnOnce,
+  forcedToolChoiceInstruction,
+  jsonOutputInstruction,
+  mapClaudeStopReason,
+  resolveClaudeSampling,
+  supportsForcedToolChoice,
+  supportsNativeStructuredOutput,
+} from './claude-models';
+import { toClaudeStrictJsonSchema } from './claude-json-schema';
 import { getLogger } from '../logger';
 
 interface AnthropicConfig {
   apiKey: string;
 }
+
+const JSON_RESPONSE_TOOL = '__json_response';
 
 interface AnthropicToolInput {
   type: 'object';
@@ -29,8 +41,11 @@ interface AnthropicToolInput {
 }
 
 export class AnthropicBackend extends BaseLLMBackend {
+  static readonly DEFAULT_MODEL = 'claude-sonnet-5-5';
+
   readonly provider = 'anthropic' as const;
   private client: Anthropic;
+  private readonly warnOnce = createWarnOnce();
 
   constructor(config: AnthropicConfig) {
     super();
@@ -40,13 +55,14 @@ export class AnthropicBackend extends BaseLLMBackend {
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
+    const model = this.resolveModel(request.model);
     const ctx: LLMErrorContext = {
       provider: this.provider,
-      model: request.model,
+      model,
     };
 
     const { system, messages } = this.convertMessages(request.messages);
-    const { tools, toolChoice, systemSuffix } = this.prepareJsonMode(request);
+    const { tools, toolChoice, systemSuffix, outputConfig } = this.prepareJsonMode(request, model);
 
     const allTools = [
       ...(request.tools?.map((t) => ({
@@ -60,15 +76,15 @@ export class AnthropicBackend extends BaseLLMBackend {
     let response: Anthropic.Message;
     try {
       const params = {
-        model: request.model,
+        model,
         system: this.buildSystemPrompt(system, systemSuffix),
         messages,
         tools: allTools.length > 0 ? allTools : undefined,
         tool_choice: toolChoice,
         max_tokens: request.maxTokens ?? 4096,
-        temperature: request.temperature,
-        top_p: request.topP,
+        ...this.buildSamplingParams(model, request),
         stop_sequences: request.stop,
+        ...(outputConfig && { output_config: outputConfig }),
       };
 
       response = request.signal
@@ -86,7 +102,7 @@ export class AnthropicBackend extends BaseLLMBackend {
       if (block.type === 'text') {
         content += block.text;
       } else if (block.type === 'tool_use') {
-        if (block.name === '__json_response') {
+        if (block.name === JSON_RESPONSE_TOOL) {
           jsonSchemaResponse = block.input as Record<string, unknown>;
         } else {
           toolCalls.push({
@@ -109,7 +125,7 @@ export class AnthropicBackend extends BaseLLMBackend {
       finishReason:
         jsonSchemaResponse && toolCalls.length === 0
           ? 'stop'
-          : this.mapStopReason(response.stop_reason),
+          : mapClaudeStopReason(response.stop_reason),
       usage: {
         inputTokens: response.usage.input_tokens,
         outputTokens: response.usage.output_tokens,
@@ -119,13 +135,14 @@ export class AnthropicBackend extends BaseLLMBackend {
   }
 
   async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
+    const model = this.resolveModel(request.model);
     const ctx: LLMErrorContext = {
       provider: this.provider,
-      model: request.model,
+      model,
     };
 
     const { system, messages } = this.convertMessages(request.messages);
-    const { tools, toolChoice, systemSuffix } = this.prepareJsonMode(request);
+    const { tools, toolChoice, systemSuffix, outputConfig } = this.prepareJsonMode(request, model);
 
     const allTools = [
       ...(request.tools?.map((t) => ({
@@ -139,15 +156,15 @@ export class AnthropicBackend extends BaseLLMBackend {
     let stream: ReturnType<typeof this.client.messages.stream>;
     try {
       const params = {
-        model: request.model,
+        model,
         system: this.buildSystemPrompt(system, systemSuffix),
         messages,
         tools: allTools.length > 0 ? allTools : undefined,
         tool_choice: toolChoice,
         max_tokens: request.maxTokens ?? 4096,
-        temperature: request.temperature,
-        top_p: request.topP,
+        ...this.buildSamplingParams(model, request),
         stop_sequences: request.stop,
+        ...(outputConfig && { output_config: outputConfig }),
       };
 
       stream = request.signal
@@ -196,7 +213,7 @@ export class AnthropicBackend extends BaseLLMBackend {
           if (currentToolCall) {
             currentToolCall.arguments = this.parseToolInput(inputJson, currentToolName);
 
-            if (currentToolName === '__json_response') {
+            if (currentToolName === JSON_RESPONSE_TOOL) {
               jsonSchemaContent = JSON.stringify(currentToolCall.arguments);
             } else {
               toolCalls.push(currentToolCall as ToolCall);
@@ -229,7 +246,7 @@ export class AnthropicBackend extends BaseLLMBackend {
                 ? 'tool_calls'
                 : jsonSchemaContent
                   ? 'stop'
-                  : this.mapStopReason(streamStopReason),
+                  : mapClaudeStopReason(streamStopReason),
             usage: {
               inputTokens,
               outputTokens,
@@ -382,44 +399,63 @@ export class AnthropicBackend extends BaseLLMBackend {
       .join(' ');
   }
 
-  private mapStopReason(reason: string | null): ChatResponse['finishReason'] {
-    switch (reason) {
-      case 'end_turn':
-        return 'stop';
-      case 'tool_use':
-        return 'tool_calls';
-      case 'max_tokens':
-        return 'length';
-      default:
-        return 'stop';
-    }
+  private resolveModel(model: string): string {
+    const trimmed = model.trim();
+    return trimmed.length > 0 ? trimmed : AnthropicBackend.DEFAULT_MODEL;
   }
 
-  private prepareJsonMode(request: ChatRequest): {
+  private buildSamplingParams(
+    model: string,
+    request: ChatRequest
+  ): Pick<Anthropic.MessageCreateParams, 'temperature' | 'top_p'> {
+    const { temperature, topP } = resolveClaudeSampling(model, {
+      temperature: request.temperature,
+      topP: request.topP,
+    });
+    return {
+      ...(temperature !== undefined && { temperature }),
+      ...(topP !== undefined && { top_p: topP }),
+    };
+  }
+
+  private prepareJsonMode(
+    request: ChatRequest,
+    model: string
+  ): {
     tools: Array<{ name: string; description: string; input_schema: AnthropicToolInput }>;
     toolChoice: Anthropic.MessageCreateParams['tool_choice'];
     systemSuffix: string;
+    outputConfig?: Anthropic.OutputConfig;
   } {
     const format = request.responseFormat;
 
-    if (!format || format.type === 'text') {
+    if (!format || format.type === 'text' || format.type === 'json_object') {
+      const { toolChoice, instruction } = this.convertToolChoice(request.toolChoice, model);
+      const jsonInstruction = format?.type === 'json_object' ? jsonOutputInstruction() : '';
       return {
         tools: [],
-        toolChoice: this.convertToolChoice(request.toolChoice),
-        systemSuffix: '',
+        toolChoice,
+        systemSuffix: [instruction, jsonInstruction].filter((part) => part.length > 0).join('\n\n'),
       };
     }
 
-    if (format.type === 'json_object') {
+    const { jsonSchema } = format;
+
+    if (supportsNativeStructuredOutput(model)) {
+      const { toolChoice, instruction } = this.convertToolChoice(request.toolChoice, model);
+      const schema = toClaudeStrictJsonSchema(jsonSchema.schema);
+      if (jsonSchema.description && typeof schema.description !== 'string') {
+        schema.description = jsonSchema.description;
+      }
       return {
         tools: [],
-        toolChoice: this.convertToolChoice(request.toolChoice),
-        systemSuffix:
-          'You must respond with valid JSON only. Do not include any text before or after the JSON object.',
+        toolChoice,
+        systemSuffix: instruction,
+        outputConfig: { format: { type: 'json_schema', schema } },
       };
     }
 
-    const schema = format.jsonSchema.schema;
+    const schema = jsonSchema.schema;
     const inputSchema: AnthropicToolInput = {
       ...schema,
       type: 'object',
@@ -428,38 +464,47 @@ export class AnthropicBackend extends BaseLLMBackend {
     };
 
     const jsonSchemaTool = {
-      name: '__json_response',
-      description: format.jsonSchema.description ?? 'Respond with structured JSON data',
+      name: JSON_RESPONSE_TOOL,
+      description: jsonSchema.description ?? 'Respond with structured JSON data',
       input_schema: inputSchema,
     };
 
     return {
       tools: [jsonSchemaTool],
-      toolChoice: { type: 'tool' as const, name: '__json_response' },
+      toolChoice: { type: 'tool' as const, name: JSON_RESPONSE_TOOL },
       systemSuffix: '',
     };
   }
 
+  /**
+   * Map a provider-neutral tool choice to Anthropic's `tool_choice`. Models that
+   * reject forced tool use (Claude Opus 5.5, Sonnet 5.5, Fable 5.1, Mythos 5.1 and
+   * later) get `auto` plus a system-prompt instruction naming the required tool,
+   * and a one-time warning is logged per model and choice kind.
+   */
   private convertToolChoice(
-    choice: ToolChoice | undefined
-  ): Anthropic.MessageCreateParams['tool_choice'] {
-    if (!choice) return undefined;
+    choice: ToolChoice | undefined,
+    model: string
+  ): { toolChoice: Anthropic.MessageCreateParams['tool_choice']; instruction: string } {
+    if (!choice) return { toolChoice: undefined, instruction: '' };
 
-    if (typeof choice === 'string') {
-      switch (choice) {
-        case 'auto':
-          return { type: 'auto' };
-        case 'none':
-          return { type: 'none' };
-        case 'required':
-          return { type: 'any' };
-      }
+    if (choice === 'auto') return { toolChoice: { type: 'auto' }, instruction: '' };
+    if (choice === 'none') return { toolChoice: { type: 'none' }, instruction: '' };
+
+    const toolName = choice === 'required' ? undefined : choice.function.name;
+    if (supportsForcedToolChoice(model)) {
+      return {
+        toolChoice: toolName ? { type: 'tool', name: toolName } : { type: 'any' },
+        instruction: '',
+      };
     }
 
-    return {
-      type: 'tool',
-      name: choice.function.name,
-    };
+    this.warnOnce(
+      `forced-tool-choice:${model}:${toolName ? 'tool' : 'any'}`,
+      `${model} does not support forced tool use; falling back to tool_choice "auto" with a system-prompt instruction`,
+      { provider: this.provider, model, requested: toolName ?? 'required' }
+    );
+    return { toolChoice: { type: 'auto' }, instruction: forcedToolChoiceInstruction(toolName) };
   }
 
   private wrapAnthropicError(error: unknown, ctx: LLMErrorContext): LLMError {

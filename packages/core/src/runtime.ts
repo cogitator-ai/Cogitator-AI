@@ -68,7 +68,7 @@ import { CostEstimator } from './cost-routing/cost-estimator';
  *
  * const agent = new Agent({
  *   name: 'assistant',
- *   model: 'anthropic/claude-sonnet-4-20250514',
+ *   model: 'anthropic/claude-sonnet-5-5',
  *   instructions: 'You are a helpful assistant.',
  * });
  *

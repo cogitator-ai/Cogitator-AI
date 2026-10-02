@@ -34,7 +34,7 @@ export class AgentDeserializationError extends Error {
  *
  * const agent = new Agent({
  *   name: 'researcher',
- *   model: 'anthropic/claude-sonnet-4-20250514',
+ *   model: 'anthropic/claude-sonnet-5-5',
  *   instructions: 'You are a research assistant.',
  *   tools: [searchTool],
  * });
@@ -53,7 +53,7 @@ export class Agent implements IAgent {
    *
    * @param config - Agent configuration
    * @param config.name - Human-readable name for the agent
-   * @param config.model - LLM model identifier (e.g., 'anthropic/claude-sonnet-4-20250514')
+   * @param config.model - LLM model identifier (e.g., 'anthropic/claude-sonnet-5-5')
    * @param config.instructions - System prompt defining agent behavior
    * @param config.tools - Array of tools the agent can use
    * @param config.temperature - Sampling temperature (default: 0.7)

@@ -18,6 +18,16 @@ import type {
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
 import { createLLMError, llmUnavailable, llmConfigError, type LLMErrorContext } from './errors';
+import {
+  createWarnOnce,
+  forcedToolChoiceInstruction,
+  jsonOutputInstruction,
+  mapClaudeStopReason,
+  resolveClaudeSampling,
+  supportsBedrockStructuredOutput,
+  supportsForcedToolChoice,
+} from './claude-models';
+import { toClaudeStrictJsonSchema } from './claude-json-schema';
 import { fetchImageAsBase64 } from '../utils/image-fetch';
 import { getLogger } from '../logger';
 
@@ -93,12 +103,26 @@ interface ToolConfiguration {
   toolChoice?: ToolChoiceConfig;
 }
 
+interface OutputConfiguration {
+  textFormat?: {
+    type: 'json_schema';
+    structure: {
+      jsonSchema: {
+        schema: string;
+        name?: string;
+        description?: string;
+      };
+    };
+  };
+}
+
 interface ConverseCommandInput {
   modelId: string;
   messages: BedrockMessage[];
   system?: SystemContentBlock[];
   toolConfig?: ToolConfiguration;
   inferenceConfig?: InferenceConfiguration;
+  outputConfig?: OutputConfiguration;
 }
 
 interface ConverseCommandOutput {
@@ -165,6 +189,7 @@ export class BedrockBackend extends BaseLLMBackend {
   readonly provider = 'bedrock' as const;
   private config: BedrockConfig;
   private clientPromise: Promise<BedrockRuntimeClientType> | null = null;
+  private readonly warnOnce = createWarnOnce();
 
   constructor(config: BedrockConfig) {
     super();
@@ -213,36 +238,7 @@ export class BedrockBackend extends BaseLLMBackend {
     const moduleName = '@aws-sdk/client-bedrock-runtime';
     const { ConverseCommand } = await import(/* webpackIgnore: true */ moduleName);
 
-    const { system, messages } = await this.convertMessages(request.messages, request.signal);
-    const input: ConverseCommandInput = {
-      modelId: request.model,
-      messages,
-    };
-
-    if (system) {
-      input.system = [{ text: system }];
-    }
-
-    if (request.tools && request.tools.length > 0) {
-      input.toolConfig = {
-        tools: request.tools.map((t) => this.convertTool(t)),
-      };
-
-      const toolChoice = this.convertToolChoice(request.toolChoice);
-      if (toolChoice) {
-        input.toolConfig.toolChoice = toolChoice;
-      }
-    }
-
-    const inferenceConfig: InferenceConfiguration = {};
-    if (request.maxTokens !== undefined) inferenceConfig.maxTokens = request.maxTokens;
-    if (request.temperature !== undefined) inferenceConfig.temperature = request.temperature;
-    if (request.topP !== undefined) inferenceConfig.topP = request.topP;
-    if (request.stop) inferenceConfig.stopSequences = request.stop;
-
-    if (Object.keys(inferenceConfig).length > 0) {
-      input.inferenceConfig = inferenceConfig;
-    }
+    const input = await this.buildConverseInput(request);
 
     let response: ConverseCommandOutput;
     try {
@@ -267,36 +263,7 @@ export class BedrockBackend extends BaseLLMBackend {
     const moduleName = '@aws-sdk/client-bedrock-runtime';
     const { ConverseStreamCommand } = await import(/* webpackIgnore: true */ moduleName);
 
-    const { system, messages } = await this.convertMessages(request.messages, request.signal);
-    const input: ConverseStreamCommandInput = {
-      modelId: request.model,
-      messages,
-    };
-
-    if (system) {
-      input.system = [{ text: system }];
-    }
-
-    if (request.tools && request.tools.length > 0) {
-      input.toolConfig = {
-        tools: request.tools.map((t) => this.convertTool(t)),
-      };
-
-      const toolChoice = this.convertToolChoice(request.toolChoice);
-      if (toolChoice) {
-        input.toolConfig.toolChoice = toolChoice;
-      }
-    }
-
-    const inferenceConfig: InferenceConfiguration = {};
-    if (request.maxTokens !== undefined) inferenceConfig.maxTokens = request.maxTokens;
-    if (request.temperature !== undefined) inferenceConfig.temperature = request.temperature;
-    if (request.topP !== undefined) inferenceConfig.topP = request.topP;
-    if (request.stop) inferenceConfig.stopSequences = request.stop;
-
-    if (Object.keys(inferenceConfig).length > 0) {
-      input.inferenceConfig = inferenceConfig;
-    }
+    const input: ConverseStreamCommandInput = await this.buildConverseInput(request);
 
     const command = new ConverseStreamCommand(input as ConverseStreamCommandInput);
     let response: ConverseStreamCommandOutput;
@@ -372,7 +339,7 @@ export class BedrockBackend extends BaseLLMBackend {
     }
 
     if (event.messageStop) {
-      const finishReason = this.mapStopReason(event.messageStop.stopReason);
+      const finishReason = mapClaudeStopReason(event.messageStop.stopReason);
       yield {
         id,
         delta: {
@@ -530,6 +497,21 @@ export class BedrockBackend extends BaseLLMBackend {
       .join(' ');
   }
 
+  private buildInferenceConfig(request: ChatRequest): InferenceConfiguration | undefined {
+    const inferenceConfig: InferenceConfiguration = {};
+    if (request.maxTokens !== undefined) inferenceConfig.maxTokens = request.maxTokens;
+
+    const { temperature, topP } = resolveClaudeSampling(request.model, {
+      temperature: request.temperature,
+      topP: request.topP,
+    });
+    if (temperature !== undefined) inferenceConfig.temperature = temperature;
+    if (topP !== undefined) inferenceConfig.topP = topP;
+    if (request.stop) inferenceConfig.stopSequences = request.stop;
+
+    return Object.keys(inferenceConfig).length > 0 ? inferenceConfig : undefined;
+  }
+
   private convertTool(tool: ToolSchema): BedrockTool {
     return {
       toolSpec: {
@@ -542,23 +524,106 @@ export class BedrockBackend extends BaseLLMBackend {
     };
   }
 
+  /**
+   * Map a provider-neutral tool choice to Converse `toolChoice`. Claude models that
+   * reject forced tool use (Opus 5.5, Sonnet 5.5, Fable 5.1, Mythos 5.1 and later)
+   * get `auto` plus a system-prompt instruction naming the required tool, and a
+   * one-time warning is logged per model and choice kind.
+   */
   private convertToolChoice(
-    choice: ToolChoice | undefined
-  ): ToolConfiguration['toolChoice'] | undefined {
-    if (!choice) return undefined;
+    choice: ToolChoice | undefined,
+    model: string
+  ): { toolChoice: ToolChoiceConfig | undefined; instruction: string } {
+    if (!choice || choice === 'none') return { toolChoice: undefined, instruction: '' };
+    if (choice === 'auto') return { toolChoice: { auto: {} }, instruction: '' };
 
-    if (typeof choice === 'string') {
-      switch (choice) {
-        case 'auto':
-          return { auto: {} };
-        case 'none':
-          return undefined;
-        case 'required':
-          return { any: {} };
-      }
+    const toolName = choice === 'required' ? undefined : choice.function.name;
+    if (supportsForcedToolChoice(model)) {
+      return {
+        toolChoice: toolName ? { tool: { name: toolName } } : { any: {} },
+        instruction: '',
+      };
     }
 
-    return { tool: { name: choice.function.name } };
+    this.warnOnce(
+      `forced-tool-choice:${model}:${toolName ? 'tool' : 'any'}`,
+      `${model} does not support forced tool use; falling back to toolChoice "auto" with a system-prompt instruction`,
+      { provider: this.provider, model, requested: toolName ?? 'required' }
+    );
+    return { toolChoice: { auto: {} }, instruction: forcedToolChoiceInstruction(toolName) };
+  }
+
+  /**
+   * JSON output for Converse: `outputConfig.textFormat` where Bedrock enforces the
+   * schema (Claude 4.5 – 4.6), otherwise a system-prompt instruction.
+   */
+  private prepareResponseFormat(request: ChatRequest): {
+    outputConfig?: OutputConfiguration;
+    instruction: string;
+  } {
+    const format = request.responseFormat;
+    if (!format || format.type === 'text') return { instruction: '' };
+    if (format.type === 'json_object') return { instruction: jsonOutputInstruction() };
+
+    const { jsonSchema } = format;
+    if (!supportsBedrockStructuredOutput(request.model)) {
+      return { instruction: jsonOutputInstruction(jsonSchema.schema) };
+    }
+
+    return {
+      instruction: '',
+      outputConfig: {
+        textFormat: {
+          type: 'json_schema',
+          structure: {
+            jsonSchema: {
+              schema: JSON.stringify(toClaudeStrictJsonSchema(jsonSchema.schema)),
+              name: jsonSchema.name,
+              ...(jsonSchema.description && { description: jsonSchema.description }),
+            },
+          },
+        },
+      },
+    };
+  }
+
+  private async buildConverseInput(request: ChatRequest): Promise<ConverseCommandInput> {
+    const { system, messages } = await this.convertMessages(request.messages, request.signal);
+    const input: ConverseCommandInput = {
+      modelId: request.model,
+      messages,
+    };
+
+    const hasTools = request.tools !== undefined && request.tools.length > 0;
+    const { toolChoice, instruction: toolInstruction } = hasTools
+      ? this.convertToolChoice(request.toolChoice, request.model)
+      : { toolChoice: undefined, instruction: '' };
+
+    if (hasTools) {
+      input.toolConfig = {
+        tools: (request.tools ?? []).map((t) => this.convertTool(t)),
+        ...(toolChoice && { toolChoice }),
+      };
+    }
+
+    const { outputConfig, instruction: formatInstruction } = this.prepareResponseFormat(request);
+    if (outputConfig) {
+      input.outputConfig = outputConfig;
+    }
+
+    const systemText = [system ?? '', toolInstruction, formatInstruction]
+      .filter((part) => part.length > 0)
+      .join('\n\n');
+    if (systemText) {
+      input.system = [{ text: systemText }];
+    }
+
+    const inferenceConfig = this.buildInferenceConfig(request);
+    if (inferenceConfig) {
+      input.inferenceConfig = inferenceConfig;
+    }
+
+    return input;
   }
 
   private parseResponse(response: ConverseCommandOutput): ChatResponse {
@@ -584,26 +649,13 @@ export class BedrockBackend extends BaseLLMBackend {
       id: this.generateId(),
       content,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      finishReason: this.mapStopReason(response.stopReason),
+      finishReason: mapClaudeStopReason(response.stopReason),
       usage: {
         inputTokens: response.usage?.inputTokens ?? 0,
         outputTokens: response.usage?.outputTokens ?? 0,
         totalTokens: response.usage?.totalTokens ?? 0,
       },
     };
-  }
-
-  private mapStopReason(reason: string | undefined): ChatResponse['finishReason'] {
-    switch (reason) {
-      case 'end_turn':
-        return 'stop';
-      case 'tool_use':
-        return 'tool_calls';
-      case 'max_tokens':
-        return 'length';
-      default:
-        return 'stop';
-    }
   }
 
   private tryParseJson(str: string): Record<string, unknown> {

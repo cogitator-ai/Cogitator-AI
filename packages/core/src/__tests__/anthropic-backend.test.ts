@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AnthropicBackend } from '../llm/anthropic';
+import { getLogger } from '../logger';
 
 const mockCreate = vi.fn();
 const mockStream = vi.fn();
@@ -214,7 +215,7 @@ describe('AnthropicBackend', () => {
       });
 
       await backend.chat({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-3-5-sonnet-20241022',
         messages: [{ role: 'user', content: 'Test' }],
         temperature: 0.7,
         topP: 0.9,
@@ -229,6 +230,119 @@ describe('AnthropicBackend', () => {
           max_tokens: 1000,
           stop_sequences: ['END'],
         })
+      );
+    });
+
+    describe('sampling parameters per model family', () => {
+      const respondOk = () =>
+        mockCreate.mockResolvedValueOnce({
+          id: 'msg_123',
+          content: [{ type: 'text', text: 'OK' }],
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 5, output_tokens: 2 },
+        });
+
+      const sentParams = () => mockCreate.mock.calls[0][0] as Record<string, unknown>;
+
+      it.each([
+        'claude-sonnet-5-5',
+        'claude-opus-5-5',
+        'claude-fable-5-1',
+        'claude-mythos-5-1',
+        'claude-opus-4-7',
+        'claude-opus-4-8',
+        'claude-sonnet-5',
+      ])('omits temperature and top_p for %s', async (model) => {
+        respondOk();
+
+        await backend.chat({
+          model,
+          messages: [{ role: 'user', content: 'Test' }],
+          temperature: 0.7,
+          topP: 0.9,
+          maxTokens: 1000,
+          stop: ['END'],
+        });
+
+        const params = sentParams();
+        expect(params).not.toHaveProperty('temperature');
+        expect(params).not.toHaveProperty('top_p');
+        expect(params).toMatchObject({ model, max_tokens: 1000, stop_sequences: ['END'] });
+      });
+
+      it.each(['claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-opus-4-6', 'claude-sonnet-4-5'])(
+        'sends only temperature when both are set for %s',
+        async (model) => {
+          respondOk();
+
+          await backend.chat({
+            model,
+            messages: [{ role: 'user', content: 'Test' }],
+            temperature: 0.7,
+            topP: 0.9,
+          });
+
+          const params = sentParams();
+          expect(params.temperature).toBe(0.7);
+          expect(params).not.toHaveProperty('top_p');
+        }
+      );
+
+      it('sends top_p alone to claude-haiku-4-5 when temperature is unset', async () => {
+        respondOk();
+
+        await backend.chat({
+          model: 'claude-haiku-4-5',
+          messages: [{ role: 'user', content: 'Test' }],
+          topP: 0.9,
+        });
+
+        const params = sentParams();
+        expect(params.top_p).toBe(0.9);
+        expect(params).not.toHaveProperty('temperature');
+      });
+
+      it('omits sampling params from streaming requests to claude-sonnet-5-5', async () => {
+        mockStream.mockReturnValueOnce(
+          (async function* () {
+            yield { type: 'message_start', message: { usage: { input_tokens: 1 } } };
+            yield {
+              type: 'message_delta',
+              delta: { stop_reason: 'end_turn' },
+              usage: { output_tokens: 1 },
+            };
+            yield { type: 'message_stop' };
+          })()
+        );
+
+        for await (const _ of backend.chatStream({
+          model: 'claude-sonnet-5-5',
+          messages: [{ role: 'user', content: 'Hi' }],
+          temperature: 0.7,
+          topP: 0.9,
+        })) {
+          /* consume stream */
+        }
+
+        const params = mockStream.mock.calls[0][0] as Record<string, unknown>;
+        expect(params).not.toHaveProperty('temperature');
+        expect(params).not.toHaveProperty('top_p');
+      });
+    });
+
+    it('falls back to claude-sonnet-5-5 when the model is empty', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'msg_123',
+        content: [{ type: 'text', text: 'OK' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 5, output_tokens: 2 },
+      });
+
+      await backend.chat({ model: '', messages: [{ role: 'user', content: 'Test' }] });
+
+      expect(AnthropicBackend.DEFAULT_MODEL).toBe('claude-sonnet-5-5');
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'claude-sonnet-5-5' })
       );
     });
 
@@ -350,8 +464,12 @@ describe('AnthropicBackend', () => {
     it('maps stop reasons correctly', async () => {
       const testCases = [
         { reason: 'end_turn', expected: 'stop' },
+        { reason: 'stop_sequence', expected: 'stop' },
         { reason: 'tool_use', expected: 'tool_calls' },
         { reason: 'max_tokens', expected: 'length' },
+        { reason: 'model_context_window_exceeded', expected: 'length' },
+        { reason: 'pause_turn', expected: 'length' },
+        { reason: 'refusal', expected: 'error' },
       ];
 
       for (const { reason, expected } of testCases) {
@@ -920,6 +1038,34 @@ describe('AnthropicBackend', () => {
       });
     });
 
+    it.each([
+      ['refusal', 'error'],
+      ['model_context_window_exceeded', 'length'],
+      ['pause_turn', 'length'],
+    ])('maps streamed stop reason %s to %s', async (stopReason, expected) => {
+      mockStream.mockReturnValueOnce(
+        (async function* () {
+          yield { type: 'message_start', message: { usage: { input_tokens: 1 } } };
+          yield {
+            type: 'message_delta',
+            delta: { stop_reason: stopReason },
+            usage: { output_tokens: 1 },
+          };
+          yield { type: 'message_stop' };
+        })()
+      );
+
+      const finishReasons: unknown[] = [];
+      for await (const chunk of backend.chatStream({
+        model: 'claude-sonnet-5-5',
+        messages: [{ role: 'user', content: 'Hi' }],
+      })) {
+        if (chunk.finishReason) finishReasons.push(chunk.finishReason);
+      }
+
+      expect(finishReasons).toEqual([expected]);
+    });
+
     it('parses empty streamed tool input as an empty object', async () => {
       mockStream.mockReturnValueOnce(
         (async function* () {
@@ -947,6 +1093,339 @@ describe('AnthropicBackend', () => {
       }
 
       expect(toolCalls).toEqual([{ id: 'toolu_1', name: 'now', arguments: {} }]);
+    });
+  });
+
+  describe('current model compatibility', () => {
+    const personSchema = {
+      name: 'person',
+      description: 'A person object',
+      schema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', minLength: 1 },
+          age: { type: 'integer', minimum: 0 },
+        },
+        required: ['name'],
+      },
+    };
+
+    const tool1 = {
+      name: 'tool1',
+      description: 'Tool 1',
+      parameters: { type: 'object' as const, properties: {} },
+    };
+
+    const textResponse = (text: string, stopReason = 'end_turn') => ({
+      id: 'msg_123',
+      content: [{ type: 'text', text }],
+      stop_reason: stopReason,
+      usage: { input_tokens: 5, output_tokens: 5 },
+    });
+
+    const sentParams = (index = 0) => mockCreate.mock.calls[index][0] as Record<string, unknown>;
+
+    describe('json_schema via native structured outputs', () => {
+      it.each([
+        'claude-sonnet-5-5',
+        'claude-opus-5-5',
+        'claude-fable-5-1',
+        'claude-opus-5',
+        'claude-sonnet-4-6',
+        'claude-sonnet-4-5-20250929',
+        'claude-haiku-4-5',
+        'claude-opus-4-5-20251101',
+      ])('sends output_config.format for %s', async (model) => {
+        mockCreate.mockResolvedValueOnce(textResponse('{"name":"John","age":30}'));
+
+        const response = await backend.chat({
+          model,
+          messages: [{ role: 'user', content: 'Test' }],
+          responseFormat: { type: 'json_schema', jsonSchema: personSchema },
+        });
+
+        const params = sentParams();
+        expect(params.output_config).toEqual({
+          format: {
+            type: 'json_schema',
+            schema: {
+              type: 'object',
+              description: 'A person object',
+              properties: {
+                name: { type: 'string', description: '{minLength: 1}' },
+                age: { type: 'integer', description: '{minimum: 0}' },
+              },
+              required: ['name'],
+              additionalProperties: false,
+            },
+          },
+        });
+        expect(params.tools).toBeUndefined();
+        expect(params.tool_choice).toBeUndefined();
+        expect(response.content).toBe('{"name":"John","age":30}');
+        expect(response.finishReason).toBe('stop');
+        expect(response.toolCalls).toBeUndefined();
+      });
+
+      it('keeps user tools and their tool choice alongside structured output', async () => {
+        mockCreate.mockResolvedValueOnce(textResponse('{"name":"Ann"}'));
+
+        await backend.chat({
+          model: 'claude-sonnet-5-5',
+          messages: [{ role: 'user', content: 'Test' }],
+          tools: [tool1],
+          toolChoice: 'auto',
+          responseFormat: { type: 'json_schema', jsonSchema: personSchema },
+        });
+
+        const params = sentParams();
+        expect(params.tools).toEqual([
+          { name: 'tool1', description: 'Tool 1', input_schema: tool1.parameters },
+        ]);
+        expect(params.tool_choice).toEqual({ type: 'auto' });
+        expect(params.output_config).toBeDefined();
+      });
+
+      it('reports a refusal instead of a successful JSON response', async () => {
+        mockCreate.mockResolvedValueOnce(textResponse('', 'refusal'));
+
+        const response = await backend.chat({
+          model: 'claude-opus-5-5',
+          messages: [{ role: 'user', content: 'Test' }],
+          responseFormat: { type: 'json_schema', jsonSchema: personSchema },
+        });
+
+        expect(response.finishReason).toBe('error');
+      });
+
+      it('streams structured output as text deltas', async () => {
+        mockStream.mockReturnValueOnce(
+          (async function* () {
+            yield { type: 'message_start', message: { usage: { input_tokens: 3 } } };
+            yield {
+              type: 'content_block_start',
+              content_block: { type: 'text', text: '' },
+            };
+            yield {
+              type: 'content_block_delta',
+              delta: { type: 'text_delta', text: '{"name":' },
+            };
+            yield {
+              type: 'content_block_delta',
+              delta: { type: 'text_delta', text: '"John"}' },
+            };
+            yield { type: 'content_block_stop' };
+            yield {
+              type: 'message_delta',
+              delta: { stop_reason: 'end_turn' },
+              usage: { output_tokens: 4 },
+            };
+            yield { type: 'message_stop' };
+          })()
+        );
+
+        let content = '';
+        let finishReason: string | undefined;
+        for await (const chunk of backend.chatStream({
+          model: 'claude-sonnet-5-5',
+          messages: [{ role: 'user', content: 'Test' }],
+          responseFormat: { type: 'json_schema', jsonSchema: personSchema },
+        })) {
+          content += chunk.delta.content ?? '';
+          finishReason = chunk.finishReason ?? finishReason;
+        }
+
+        const params = mockStream.mock.calls[0][0] as Record<string, unknown>;
+        expect(params.output_config).toMatchObject({ format: { type: 'json_schema' } });
+        expect(params.tool_choice).toBeUndefined();
+        expect(params.tools).toBeUndefined();
+        expect(JSON.parse(content)).toEqual({ name: 'John' });
+        expect(finishReason).toBe('stop');
+      });
+    });
+
+    describe('json_schema via forced tool on older models', () => {
+      it.each(['claude-3-5-sonnet-20241022', 'claude-opus-4-1-20250805'])(
+        'uses the __json_response tool for %s',
+        async (model) => {
+          mockCreate.mockResolvedValueOnce({
+            id: 'msg_123',
+            content: [
+              { type: 'tool_use', id: 'toolu_1', name: '__json_response', input: { name: 'J' } },
+            ],
+            stop_reason: 'tool_use',
+            usage: { input_tokens: 5, output_tokens: 5 },
+          });
+
+          const response = await backend.chat({
+            model,
+            messages: [{ role: 'user', content: 'Test' }],
+            responseFormat: { type: 'json_schema', jsonSchema: personSchema },
+          });
+
+          const params = sentParams();
+          expect(params.output_config).toBeUndefined();
+          expect(params.tool_choice).toEqual({ type: 'tool', name: '__json_response' });
+          expect(response.content).toBe('{"name":"J"}');
+        }
+      );
+    });
+
+    describe('json_object', () => {
+      it.each(['claude-sonnet-5-5', 'claude-3-5-sonnet-20241022'])(
+        'uses a system instruction without forcing tools for %s',
+        async (model) => {
+          mockCreate.mockResolvedValueOnce(textResponse('{"ok":true}'));
+
+          const response = await backend.chat({
+            model,
+            messages: [
+              { role: 'system', content: 'Be terse.' },
+              { role: 'user', content: 'Test' },
+            ],
+            responseFormat: { type: 'json_object' },
+          });
+
+          const params = sentParams();
+          expect(params.system).toBe(
+            'Be terse.\n\nYou must respond with valid JSON only. Do not include any text before or after the JSON object.'
+          );
+          expect(params.output_config).toBeUndefined();
+          expect(params.tool_choice).toBeUndefined();
+          expect(response.content).toBe('{"ok":true}');
+        }
+      );
+    });
+
+    describe('forced tool choice', () => {
+      it.each([
+        ['claude-sonnet-5-5', 'required', undefined],
+        ['claude-opus-5-5', 'required', undefined],
+        ['claude-fable-5-1', { type: 'function', function: { name: 'tool1' } }, 'tool1'],
+        ['claude-mythos-5-1', { type: 'function', function: { name: 'tool1' } }, 'tool1'],
+      ] as const)('%s downgrades %o to auto with an instruction', async (model, choice, name) => {
+        mockCreate.mockResolvedValueOnce(textResponse('ok'));
+
+        await backend.chat({
+          model,
+          messages: [
+            { role: 'system', content: 'Base.' },
+            { role: 'user', content: 'Test' },
+          ],
+          tools: [tool1],
+          toolChoice: choice,
+        });
+
+        const params = sentParams();
+        expect(params.tool_choice).toEqual({ type: 'auto' });
+        expect(params.system).toBe(
+          name
+            ? `Base.\n\nYou must respond by calling the "${name}" tool.`
+            : 'Base.\n\nYou must respond by calling one of the provided tools.'
+        );
+      });
+
+      it.each([
+        ['claude-opus-5', 'required', { type: 'any' }],
+        ['claude-sonnet-5', 'required', { type: 'any' }],
+        ['claude-fable-5', 'required', { type: 'any' }],
+        [
+          'claude-opus-4-8',
+          { type: 'function', function: { name: 'tool1' } },
+          { type: 'tool', name: 'tool1' },
+        ],
+        [
+          'claude-haiku-4-5',
+          { type: 'function', function: { name: 'tool1' } },
+          { type: 'tool', name: 'tool1' },
+        ],
+      ] as const)('%s keeps forced tool choice %o', async (model, choice, expected) => {
+        mockCreate.mockResolvedValueOnce(textResponse('ok'));
+
+        await backend.chat({
+          model,
+          messages: [{ role: 'user', content: 'Test' }],
+          tools: [tool1],
+          toolChoice: choice,
+        });
+
+        const params = sentParams();
+        expect(params.tool_choice).toEqual(expected);
+        expect(params.system).toBeUndefined();
+      });
+
+      it('keeps auto and none on models that reject forced tool use', async () => {
+        mockCreate.mockResolvedValueOnce(textResponse('ok'));
+        mockCreate.mockResolvedValueOnce(textResponse('ok'));
+
+        await backend.chat({
+          model: 'claude-sonnet-5-5',
+          messages: [{ role: 'user', content: 'Test' }],
+          tools: [tool1],
+          toolChoice: 'none',
+        });
+        await backend.chat({
+          model: 'claude-sonnet-5-5',
+          messages: [{ role: 'user', content: 'Test' }],
+          tools: [tool1],
+          toolChoice: 'auto',
+        });
+
+        expect(sentParams(0).tool_choice).toEqual({ type: 'none' });
+        expect(sentParams(1).tool_choice).toEqual({ type: 'auto' });
+      });
+
+      it('warns once per model and choice kind', async () => {
+        const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+        for (let i = 0; i < 3; i++) mockCreate.mockResolvedValueOnce(textResponse('ok'));
+
+        for (let i = 0; i < 3; i++) {
+          await backend.chat({
+            model: 'claude-sonnet-5-5',
+            messages: [{ role: 'user', content: 'Test' }],
+            tools: [tool1],
+            toolChoice: 'required',
+          });
+        }
+
+        const forcedWarnings = warn.mock.calls.filter(([message]) =>
+          message.includes('does not support forced tool use')
+        );
+        expect(forcedWarnings).toHaveLength(1);
+        expect(forcedWarnings[0][1]).toMatchObject({
+          provider: 'anthropic',
+          model: 'claude-sonnet-5-5',
+          requested: 'required',
+        });
+        warn.mockRestore();
+      });
+
+      it('applies the same downgrade to streaming requests', async () => {
+        mockStream.mockReturnValueOnce(
+          (async function* () {
+            yield { type: 'message_start', message: { usage: { input_tokens: 1 } } };
+            yield {
+              type: 'message_delta',
+              delta: { stop_reason: 'end_turn' },
+              usage: { output_tokens: 1 },
+            };
+            yield { type: 'message_stop' };
+          })()
+        );
+
+        for await (const _ of backend.chatStream({
+          model: 'claude-opus-5-5',
+          messages: [{ role: 'user', content: 'Hi' }],
+          tools: [tool1],
+          toolChoice: { type: 'function', function: { name: 'tool1' } },
+        })) {
+          /* consume stream */
+        }
+
+        const params = mockStream.mock.calls[0][0] as Record<string, unknown>;
+        expect(params.tool_choice).toEqual({ type: 'auto' });
+        expect(params.system).toBe('You must respond by calling the "tool1" tool.');
+      });
     });
   });
 });
