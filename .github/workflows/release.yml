@@ -61,9 +61,27 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish packages
+      - name: Publish to GitHub Packages
         # pnpm publish -r skips versions that already exist in the registry,
-        # so any non-zero exit is a real failure.
-        run: pnpm publish -r --access public --no-git-checks
+        # so any non-zero exit is a real failure. Only scoped packages can go
+        # to GitHub Packages; create-cogitator-app is npm-only.
+        run: pnpm publish -r --filter "@cogitator-ai/*" --access public --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to npm
+        # Needs the NPM_TOKEN repository secret (granular token with publish
+        # rights that bypasses 2FA); skipped when it is not configured.
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "NPM_TOKEN is not set, skipping npm publish"
+            exit 0
+          fi
+          npmrc="$RUNNER_TEMP/npmjs.npmrc"
+          printf '%s\n' \
+            'registry=https://registry.npmjs.org/' \
+            '@cogitator-ai:registry=https://registry.npmjs.org/' \
+            '//registry.npmjs.org/:_authToken=${NPM_TOKEN}' > "$npmrc"
+          NPM_CONFIG_USERCONFIG="$npmrc" pnpm publish -r --access public --no-git-checks
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
