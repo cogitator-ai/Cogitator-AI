@@ -9,6 +9,7 @@ import { generateEnvExample } from './templates/base/env-example.js';
 import { generateDockerCompose } from './templates/base/docker-compose.js';
 import { generateCogitatorYml } from './templates/base/cogitator-yml.js';
 import { generateReadme } from './templates/base/readme.js';
+import { generatePnpmWorkspace } from './templates/base/pnpm-workspace.js';
 import { installDependencies } from './utils/package-manager.js';
 import { initGitRepo, isGitInstalled } from './utils/git.js';
 
@@ -48,6 +49,10 @@ function collectFiles(options: ProjectOptions): TemplateFile[] {
 
   if (options.template !== 'nextjs') {
     files.push(generateTsconfig());
+  }
+
+  if (options.packageManager === 'pnpm') {
+    files.push(generatePnpmWorkspace());
   }
 
   if (options.docker) {

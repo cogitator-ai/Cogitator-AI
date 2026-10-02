@@ -192,6 +192,29 @@ describe('buildGatewayFile', () => {
   });
 });
 
+describe('buildProjectFiles', () => {
+  it('allows native dependency builds for pnpm projects', () => {
+    const files = buildProjectFiles(answers(), {
+      dependencyVersions: VERSIONS,
+      packageManager: 'pnpm',
+    });
+
+    expect(files['pnpm-workspace.yaml']).toBe(
+      'allowBuilds:\n  better-sqlite3: true\n  esbuild: true\n  sharp: true\n'
+    );
+  });
+
+  it('does not generate pnpm settings for other package managers', () => {
+    for (const packageManager of ['npm', 'yarn', 'bun'] as const) {
+      const files = buildProjectFiles(answers(), { dependencyVersions: VERSIONS, packageManager });
+      expect(files['pnpm-workspace.yaml']).toBeUndefined();
+    }
+    expect(
+      buildProjectFiles(answers(), { dependencyVersions: VERSIONS })['pnpm-workspace.yaml']
+    ).toBeUndefined();
+  });
+});
+
 describe('writeProjectFiles', () => {
   let dir: string;
   beforeEach(() => {

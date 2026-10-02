@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { getTemplate, templateChoices } from '../templates/index.js';
 import { defaultModels } from '../utils/providers.js';
+import { generatePnpmWorkspace } from '../templates/base/pnpm-workspace.js';
 import type { ProjectOptions } from '../types.js';
 
 const baseOptions: ProjectOptions = {
@@ -12,6 +13,16 @@ const baseOptions: ProjectOptions = {
   docker: false,
   git: false,
 };
+
+describe('pnpm workspace template', () => {
+  it('allows the native dependency builds pnpm would otherwise refuse', () => {
+    const file = generatePnpmWorkspace();
+    expect(file.path).toBe('pnpm-workspace.yaml');
+    expect(file.content).toBe(
+      'allowBuilds:\n  better-sqlite3: true\n  esbuild: true\n  sharp: true\n'
+    );
+  });
+});
 
 describe('template registry', () => {
   it('has all expected templates registered', () => {

@@ -36,7 +36,15 @@ export interface InitAnswers {
 
 export interface ScaffoldOptions {
   dependencyVersions: Record<string, string>;
+  /** When `pnpm`, a pnpm-workspace.yaml allowing the native dependency builds is generated */
+  packageManager?: PackageManager;
 }
+
+/**
+ * pnpm 10.26+ skips dependency build scripts unless they are allowed, and pnpm 11 fails the
+ * install instead. These are the native/binary packages a Cogitator project pulls in.
+ */
+export const PNPM_ALLOWED_BUILDS = ['better-sqlite3', 'esbuild', 'sharp'] as const;
 
 export const DEFAULT_POSTGRES_URL = 'postgresql://cogitator:cogitator@localhost:5432/cogitator';
 const PROJECT_NAME = /^[a-z0-9][a-z0-9._-]*$/;
@@ -327,6 +335,13 @@ export function buildProjectFiles(
   };
   const env = buildEnvFile(answers);
   if (env) files['.env'] = env;
+  if (options.packageManager === 'pnpm') {
+    files['pnpm-workspace.yaml'] = [
+      'allowBuilds:',
+      ...PNPM_ALLOWED_BUILDS.map((name) => `  ${name}: true`),
+      '',
+    ].join('\n');
+  }
   return files;
 }
 
@@ -488,7 +503,10 @@ export const initCommand = new Command('init')
     }
 
     const pm = detectPackageManager();
-    const files = buildProjectFiles(answers, { dependencyVersions: resolveDependencyVersions() });
+    const files = buildProjectFiles(answers, {
+      dependencyVersions: resolveDependencyVersions(),
+      packageManager: pm,
+    });
     let installed = false;
 
     await p.tasks([
