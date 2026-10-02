@@ -22,6 +22,9 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "dependencies": {
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/memory": "workspace:*",

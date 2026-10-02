@@ -1,6 +1,6 @@
-# cogitator/sandbox:node20
+# cogitator/sandbox:node22
 # Node.js sandbox for JavaScript/TypeScript execution
-FROM node:20-alpine
+FROM node:22-alpine
 
 # Install common global packages
 RUN npm install -g typescript tsx esbuild

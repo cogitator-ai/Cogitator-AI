@@ -20,6 +20,9 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "dependencies": {
     "@ai-sdk/provider": "^1.0.0"
   },

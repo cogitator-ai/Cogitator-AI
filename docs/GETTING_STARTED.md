@@ -10,7 +10,7 @@ This guide will walk you through installing Cogitator, creating your first agent
 
 Before you begin, make sure you have:
 
-- **Node.js 20+** — [Download](https://nodejs.org/)
+- **Node.js 22.12+** — [Download](https://nodejs.org/)
 - **pnpm** (recommended) — `npm install -g pnpm`
 - **Docker** (optional) — For Redis, Postgres, and sandboxed execution
 - **Ollama** (for local LLMs) — [Download](https://ollama.ai/) or use OpenAI/Anthropic API

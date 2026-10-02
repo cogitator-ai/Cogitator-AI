@@ -114,7 +114,7 @@ export function buildPackageJson(answers: InitAnswers, options: ScaffoldOptions)
         version: '0.1.0',
         private: true,
         type: 'module',
-        engines: { node: '>=20.12.0' },
+        engines: { node: '>=22.12.0' },
         scripts: {
           dev: 'tsx watch src/agent.ts',
           start: 'tsx src/agent.ts',

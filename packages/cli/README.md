@@ -12,7 +12,7 @@ pnpm add -g @cogitator-ai/cli
 npx @cogitator-ai/cli <command>
 ```
 
-Requires Node.js 20+.
+Requires Node.js 22.12+.
 
 ## Quick Start
 
@@ -189,7 +189,7 @@ node dist/cogitator.mjs
 | ---------------------- | -------------------- |
 | `-c, --config <path>`  | `src/gateway.ts`     |
 | `-o, --outfile <path>` | `dist/cogitator.mjs` |
-| `--target <version>`   | `node20`             |
+| `--target <version>`   | `node22`             |
 | `--sourcemap`          | `true`               |
 | `--minify`             | `false`              |
 

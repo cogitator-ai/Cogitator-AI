@@ -417,8 +417,8 @@ CMD ["python", "-c", "print('Sandbox ready')"]
 ```
 
 ```dockerfile
-# cogitator/sandbox:node20
-FROM node:20-alpine
+# cogitator/sandbox:node22
+FROM node:22-alpine
 
 # Install common packages
 RUN npm install -g typescript tsx

@@ -21,6 +21,9 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
     "yaml": "^2.3.4",

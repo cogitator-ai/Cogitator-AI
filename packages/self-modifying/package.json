@@ -24,6 +24,9 @@
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit"
   },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
     "nanoid": "^5.0.4",

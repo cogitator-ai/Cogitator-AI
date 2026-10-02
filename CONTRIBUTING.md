@@ -10,7 +10,7 @@ By participating in this project, you agree to abide by our code of conduct: be 
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 22.12+
 - pnpm 8+
 - Docker (for sandbox testing)
 - Ollama (for local LLM testing)
