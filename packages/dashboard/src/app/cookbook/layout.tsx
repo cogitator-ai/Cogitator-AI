@@ -1,9 +1,9 @@
-import { Metadata } from 'next';
+import type { Metadata } from 'next';
+import { recipeCount } from './recipes';
 
 export const metadata: Metadata = {
-  title: 'Cookbook - Cogitator',
-  description:
-    'Practical recipes for building AI agents, workflows, and swarms with Cogitator. Copy-paste examples for every feature.',
+  title: 'Cookbook',
+  description: `${recipeCount} runnable, type-checked recipes for building AI agents with Cogitator: tools, memory and RAG, workflows, swarms, MCP and A2A, servers, voice, browser agents and more.`,
   keywords: [
     'AI agent cookbook',
     'LLM recipes',
@@ -12,15 +12,10 @@ export const metadata: Metadata = {
     'workflow examples',
     'swarm patterns',
     'TypeScript AI',
-    'self-modifying agents',
-    'causal reasoning',
-    'neuro-symbolic AI',
+    'MCP server',
+    'RAG pipeline',
+    'voice agents',
   ],
-  openGraph: {
-    title: 'Cogitator Cookbook',
-    description: '44 practical recipes for building production AI agents.',
-    type: 'website',
-  },
 };
 
 export default function CookbookLayout({ children }: { children: React.ReactNode }) {
