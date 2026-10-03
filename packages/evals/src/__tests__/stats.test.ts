@@ -184,9 +184,10 @@ describe('McNemar test', () => {
     expect(result.significant).toBe(false);
   });
 
-  it('handles equal discordant pairs', () => {
+  it('clamps the continuity correction at zero for equal discordant pairs', () => {
     const result = mcnemarsTest(15, 15);
-    expect(result.chiSquare).toBeCloseTo(1 / 30, 10);
+    expect(result.chiSquare).toBe(0);
+    expect(result.pValue).toBe(1);
     expect(result.significant).toBe(false);
   });
 

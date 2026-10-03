@@ -78,6 +78,14 @@ describe('threshold', () => {
     expect(passes.passed).toBe(true);
   });
 
+  it('uses lower-is-better for the tokenUsage metric', () => {
+    const agg = { tokenUsage: makeMetric({ name: 'tokenUsage', mean: 400, p95: 900 }) };
+
+    expect(threshold('tokenUsage', 500)(agg, defaultStats).passed).toBe(true);
+    expect(threshold('tokenUsage', 300)(agg, defaultStats).passed).toBe(false);
+    expect(threshold('tokenUsage.p95', 1000)(agg, defaultStats).passed).toBe(true);
+  });
+
   it('handles dotted path like latency.p95', () => {
     const agg = { latency: makeMetric({ name: 'latency', p95: 250, mean: 150 }) };
     const result = threshold('latency.p95', 300)(agg, defaultStats);
@@ -160,6 +168,16 @@ describe('noRegression', () => {
     const failAgg = { latencyMs: makeMetric({ name: 'latencyMs', mean: 250 }) };
     const failResult = noRegression(baselinePath)(failAgg, defaultStats);
     expect(failResult.passed).toBe(false);
+  });
+
+  it('uses lower-is-better for the tokenUsage metric', () => {
+    const baselinePath = writeBaseline({ tokenUsage: 400 });
+
+    const fewerTokens = { tokenUsage: makeMetric({ name: 'tokenUsage', mean: 200 }) };
+    expect(noRegression(baselinePath)(fewerTokens, defaultStats).passed).toBe(true);
+
+    const moreTokens = { tokenUsage: makeMetric({ name: 'tokenUsage', mean: 600 }) };
+    expect(noRegression(baselinePath)(moreTokens, defaultStats).passed).toBe(false);
   });
 
   it('defaults to 5% tolerance', () => {

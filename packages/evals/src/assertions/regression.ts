@@ -1,15 +1,6 @@
 import * as fs from 'node:fs';
 import type { AssertionFn } from './index';
-
-function isLowerBetter(name: string): boolean {
-  const base = name.split('.')[0];
-  return (
-    base.startsWith('latency') ||
-    base.startsWith('cost') ||
-    base.endsWith('Duration') ||
-    base.endsWith('Latency')
-  );
-}
+import { isLowerBetter } from './direction';
 
 export function noRegression(baselinePath: string, opts?: { tolerance?: number }): AssertionFn {
   return (aggregated, _stats) => {

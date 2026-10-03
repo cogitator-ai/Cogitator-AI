@@ -36,7 +36,7 @@ export function mcnemarsTest(
     return { chiSquare: 0, pValue: 1, significant: false };
   }
 
-  const diff = Math.abs(b - c) - 1;
+  const diff = Math.max(0, Math.abs(b - c) - 1);
   const chiSquare = (diff * diff) / (b + c);
   const pValue = chiSquareSurvival(chiSquare);
 

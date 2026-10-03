@@ -1,14 +1,5 @@
 import type { AssertionFn, AggregatedMetric } from './index';
-
-function isLowerBetter(name: string): boolean {
-  const base = name.split('.')[0];
-  return (
-    base.startsWith('latency') ||
-    base.startsWith('cost') ||
-    base.endsWith('Duration') ||
-    base.endsWith('Latency')
-  );
-}
+import { isLowerBetter } from './direction';
 
 function resolve(
   aggregated: Record<string, AggregatedMetric>,
