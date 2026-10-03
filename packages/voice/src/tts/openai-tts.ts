@@ -1,6 +1,6 @@
-import OpenAI from 'openai';
 import type { SpeechCreateParams } from 'openai/resources/audio/speech';
 import type { TTSProvider, TTSOptions, VoiceAudioFormat } from '../types.js';
+import { lazyOpenAIClient, type OpenAIClientFactory } from '../openai-client.js';
 
 export interface OpenAITTSConfig {
   apiKey: string;
@@ -20,12 +20,12 @@ function mapFormat(format: VoiceAudioFormat): string {
 export class OpenAITTS implements TTSProvider {
   readonly name = 'openai';
 
-  private readonly client: OpenAI;
+  private readonly client: OpenAIClientFactory;
   private readonly model: string;
   private readonly voice: string;
 
   constructor(config: OpenAITTSConfig) {
-    this.client = new OpenAI({
+    this.client = lazyOpenAIClient({
       apiKey: config.apiKey,
       ...(config.baseURL && { baseURL: config.baseURL }),
     });
@@ -35,14 +35,16 @@ export class OpenAITTS implements TTSProvider {
 
   async synthesize(text: string, options?: TTSOptions): Promise<Buffer> {
     this.validateText(text);
-    const response = await this.client.audio.speech.create(this.buildParams(text, options));
+    const client = await this.client();
+    const response = await client.audio.speech.create(this.buildParams(text, options));
     const arrayBuffer = await response.arrayBuffer();
     return Buffer.from(arrayBuffer);
   }
 
   async *streamSynthesize(text: string, options?: TTSOptions): AsyncGenerator<Buffer> {
     this.validateText(text);
-    const response = await this.client.audio.speech.create(this.buildParams(text, options));
+    const client = await this.client();
+    const response = await client.audio.speech.create(this.buildParams(text, options));
 
     const body: unknown = response.body;
     if (!body) {

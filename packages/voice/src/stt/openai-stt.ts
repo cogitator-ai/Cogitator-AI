@@ -1,10 +1,10 @@
 import { EventEmitter } from 'node:events';
-import OpenAI from 'openai';
 import type {
   TranscriptionCreateParamsNonStreaming,
   TranscriptionVerbose,
 } from 'openai/resources/audio/transcriptions';
 import { audioMimeType, detectAudioFormat, pcmToWav } from '../audio.js';
+import { lazyOpenAIClient, type OpenAIClientFactory } from '../openai-client.js';
 import type {
   STTProvider,
   STTOptions,
@@ -59,11 +59,11 @@ function hasContainerHeader(audio: Buffer): boolean {
 export class OpenAISTT implements STTProvider {
   readonly name = 'openai';
 
-  private readonly client: OpenAI;
+  private readonly client: OpenAIClientFactory;
   private readonly model: string;
 
   constructor(config: OpenAISTTConfig) {
-    this.client = new OpenAI({
+    this.client = lazyOpenAIClient({
       apiKey: config.apiKey,
       ...(config.baseURL && { baseURL: config.baseURL }),
     });
@@ -91,10 +91,11 @@ export class OpenAISTT implements STTProvider {
   }
 
   private async transcribeFile(file: File, options?: STTOptions): Promise<TranscribeResult> {
+    const client = await this.client();
     const prompt = options?.prompt ? { prompt: options.prompt } : {};
 
     if (supportsVerboseJson(this.model)) {
-      const response = await this.client.audio.transcriptions.create({
+      const response = await client.audio.transcriptions.create({
         file,
         model: this.model,
         ...(options?.language && { language: options.language }),
@@ -119,7 +120,7 @@ export class OpenAISTT implements STTProvider {
       }
     }
 
-    const response: JsonTranscription = await this.client.audio.transcriptions.create(params);
+    const response: JsonTranscription = await client.audio.transcriptions.create(params);
     const result: TranscribeResult = { text: response.text };
     const language = response.languages?.[0]?.code ?? options?.language;
     if (language) result.language = language;

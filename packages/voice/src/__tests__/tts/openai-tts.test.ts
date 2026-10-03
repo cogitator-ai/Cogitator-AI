@@ -132,7 +132,8 @@ describe('OpenAITTS', () => {
 
   it('passes baseURL to OpenAI client', async () => {
     const { default: MockOpenAI } = await import('openai');
-    new OpenAITTS({ apiKey: 'key', baseURL: 'https://custom.api.com/v1' });
+    const tts = new OpenAITTS({ apiKey: 'key', baseURL: 'https://custom.api.com/v1' });
+    await tts.synthesize('test');
 
     expect((MockOpenAI as unknown as { lastConfig: Record<string, unknown> }).lastConfig).toEqual(
       expect.objectContaining({ baseURL: 'https://custom.api.com/v1' })

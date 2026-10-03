@@ -214,7 +214,8 @@ describe('OpenAISTT', () => {
 
   it('passes baseURL to OpenAI client', async () => {
     const { default: MockOpenAI } = await import('openai');
-    new OpenAISTT({ apiKey: 'key', baseURL: 'https://custom.api.com/v1' });
+    const stt = new OpenAISTT({ apiKey: 'key', baseURL: 'https://custom.api.com/v1' });
+    await stt.transcribe(Buffer.alloc(64));
 
     expect((MockOpenAI as unknown as { lastConfig: Record<string, unknown> }).lastConfig).toEqual(
       expect.objectContaining({ baseURL: 'https://custom.api.com/v1' })
