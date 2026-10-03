@@ -3,6 +3,7 @@
  */
 
 import type { IncomingMessage } from 'node:http';
+import type { ToolContext } from '@cogitator-ai/types';
 
 export type MCPTransportType = 'stdio' | 'http' | 'sse';
 
@@ -142,6 +143,29 @@ export interface MCPPromptConfig {
   ) => Promise<MCPPromptResult> | MCPPromptResult;
 }
 
+/** A field of an elicitation form (MCP `requestedSchema` primitives) */
+export type MCPElicitField =
+  | { type: 'string'; title?: string; description?: string; enum?: string[] }
+  | { type: 'number' | 'integer'; title?: string; description?: string }
+  | { type: 'boolean'; title?: string; description?: string; default?: boolean };
+
+export interface MCPElicitRequest {
+  message: string;
+  schema: { type: 'object'; properties: Record<string, MCPElicitField>; required?: string[] };
+}
+
+export type MCPElicitResult =
+  { action: 'accept'; content: Record<string, unknown> } | { action: 'decline' | 'cancel' };
+
+/**
+ * The context a tool gets when an MCP server runs it: the usual tool context,
+ * plus `elicit` to ask the person at the client a question while the call waits.
+ */
+export interface MCPToolContext extends ToolContext {
+  /** `undefined` (as a result) when the client cannot answer elicitation requests */
+  elicit?: (request: MCPElicitRequest) => Promise<MCPElicitResult | undefined>;
+}
+
 /**
  * Who is calling an MCP server over HTTP, as its `auth` function established it.
  * `userId` reaches tools as `context.userId`.
@@ -188,6 +212,14 @@ export interface MCPServerConfig {
    * to anyone who can reach it.
    */
   auth?: MCPAuthFunction;
+
+  /**
+   * For HTTP transport: keep a session per client (`mcp-session-id`) instead
+   * of serving every request on its own. Needed for requests from the server
+   * to the client, such as elicitation; each session belongs to the caller
+   * that started it.
+   */
+  sessions?: boolean;
 
   /** Enable logging */
   logging?: boolean;

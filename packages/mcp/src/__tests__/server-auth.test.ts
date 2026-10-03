@@ -152,3 +152,67 @@ describe('MCPServer auth', () => {
     await strict.stop();
   });
 });
+
+describe('MCPServer sessions', () => {
+  it('keeps a session per client and refuses it to another caller', async () => {
+    const server = new MCPServer({
+      name: 'sessions',
+      version: '1.0.0',
+      transport: 'http',
+      host: '127.0.0.1',
+      port: 0,
+      sessions: true,
+      auth: bearer,
+    });
+    server.registerTool(myOrders);
+    await server.start();
+    const url = `http://127.0.0.1:${server.getPort()}/mcp`;
+    const post = (token: string, body: unknown, sessionId?: string) =>
+      fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          Authorization: `Bearer ${token}`,
+          ...(sessionId && { 'mcp-session-id': sessionId }),
+        },
+        body: JSON.stringify(body),
+      });
+
+    const init = await post('token-alice', {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'test', version: '1.0.0' },
+      },
+    });
+    const sessionId = init.headers.get('mcp-session-id');
+    const hijack = await post(
+      'token-bob',
+      { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+      sessionId!
+    );
+    const unknown = await post(
+      'token-alice',
+      { jsonrpc: '2.0', id: 3, method: 'tools/list' },
+      'nope'
+    );
+
+    expect(init.status).toBe(200);
+    expect(sessionId).toBeTruthy();
+    expect(hijack.status).toBe(403);
+    expect(unknown.status).toBe(404);
+
+    const alice = await MCPClient.connect({
+      transport: 'http',
+      url,
+      headers: { Authorization: 'Bearer token-alice' },
+    });
+    expect(await alice.callTool('my_orders', {})).toEqual({ userId: 'alice', orders: ['A-1'] });
+    await alice.close();
+    await server.stop();
+  });
+});

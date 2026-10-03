@@ -319,6 +319,7 @@ interface MCPServerConfig {
   maxBodySize?: number; // Default: 10 MB, larger bodies get 413
   corsOrigin?: string; // Default: '*'
   auth?: MCPAuthFunction; // Establishes the caller; undefined → 401
+  sessions?: boolean; // Session per client (needed for elicitation); default: off
 
   logging?: boolean; // Diagnostic logging to stderr (stdout stays clean for stdio JSON-RPC)
 }
@@ -576,6 +577,19 @@ Add to Claude Desktop config:
 ```
 
 ---
+
+## Serving Agents
+
+Serve Cogitator agents to Claude Desktop, Cursor or any MCP client in one call; each agent becomes a tool that takes a `task` (and a `threadId` to continue a conversation, with memory on):
+
+```typescript
+import { serveAgents } from '@cogitator-ai/mcp';
+
+await serveAgents(cog, [researcher, writer]); // stdio
+await serveAgents(cog, support, { transport: 'http', port: 3333, auth }); // remote, per user
+```
+
+Tools that need approval are asked from the person at the client through MCP elicitation; clients without it get a paused answer and a `<agent>_resume` tool. `sessions: true` (on in `serveAgents`) keeps an HTTP session per client, which elicitation needs; a session belongs to the caller that started it. See [`examples/mcp/04-agent-as-mcp-server.ts`](../../examples/mcp/04-agent-as-mcp-server.ts).
 
 ## Tool Adapters
 

@@ -19,11 +19,12 @@ No need to run it manually — the example spawns it automatically via stdio tra
 
 ## Examples
 
-| #   | File                 | Description                                                                             |
-| --- | -------------------- | --------------------------------------------------------------------------------------- |
-| 01  | `01-mcp-client.ts`   | Connect to MCP server, discover tools, use with an agent                                |
-| 02  | `02-mcp-server.ts`   | Expose Cogitator tools over HTTP, call them from an MCP client and an agent             |
-| 03  | `03-per-user-mcp.ts` | An agent on your own MCP server: bearer tokens, tools acting per user, thread isolation |
+| #   | File                        | Description                                                                             |
+| --- | --------------------------- | --------------------------------------------------------------------------------------- |
+| 01  | `01-mcp-client.ts`          | Connect to MCP server, discover tools, use with an agent                                |
+| 02  | `02-mcp-server.ts`          | Expose Cogitator tools over HTTP, call them from an MCP client and an agent             |
+| 03  | `03-per-user-mcp.ts`        | An agent on your own MCP server: bearer tokens, tools acting per user, thread isolation |
+| 04  | `04-agent-as-mcp-server.ts` | Serve a Cogitator agent as an MCP tool in one line (Claude Desktop, Cursor, any client) |
 
 ## Running
 
@@ -31,4 +32,5 @@ No need to run it manually — the example spawns it automatically via stdio tra
 npx tsx examples/mcp/01-mcp-client.ts
 npx tsx examples/mcp/02-mcp-server.ts
 npx tsx examples/mcp/03-per-user-mcp.ts
+npx tsx examples/mcp/04-agent-as-mcp-server.ts
 ```

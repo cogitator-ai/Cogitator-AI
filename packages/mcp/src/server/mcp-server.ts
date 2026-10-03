@@ -6,11 +6,18 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { IncomingMessage, Server as HttpServer } from 'node:http';
+import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node:http';
+import type { StreamableHTTPServerTransport as StreamableHTTPServerTransportType } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import type { Tool, ToolContext } from '@cogitator-ai/types';
+import type { Tool } from '@cogitator-ai/types';
+import { ElicitResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
 import type {
+  MCPElicitRequest,
+  MCPElicitResult,
+  MCPToolContext,
   MCPCaller,
   MCPServerConfig,
   MCPResourceConfig,
@@ -36,6 +43,8 @@ interface MCPCallToolResult {
 }
 
 type MCPPromptContent = MCPPromptMessage['content'];
+
+type ToolHandlerExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
 function toServerContent(item: MCPToolContent | MCPPromptContent): MCPServerContent {
   switch (item.type) {
@@ -103,6 +112,14 @@ export class MCPServer {
   private prompts = new Map<string, MCPPromptConfig>();
   private started = false;
   private httpServer?: HttpServer;
+  private readonly sessions = new Map<
+    string,
+    {
+      transport: StreamableHTTPServerTransportType;
+      server: McpServer;
+      caller: MCPCaller | undefined;
+    }
+  >();
 
   constructor(config: MCPServerConfig) {
     this.config = config;
@@ -261,8 +278,8 @@ export class MCPServer {
         description: tool.description,
         inputSchema: this.buildInputSchema(tool),
       },
-      async (args: unknown, extra: { signal: AbortSignal }): Promise<MCPCallToolResult> => {
-        return this.executeTool(tool, args, extra.signal, caller);
+      async (args: unknown, extra: ToolHandlerExtra): Promise<MCPCallToolResult> => {
+        return this.executeTool(tool, args, extra, caller);
       }
     );
   }
@@ -286,14 +303,15 @@ export class MCPServer {
   private async executeTool(
     tool: Tool,
     args: unknown,
-    signal: AbortSignal,
+    extra: ToolHandlerExtra,
     caller?: MCPCaller
   ): Promise<MCPCallToolResult> {
-    const context: ToolContext = {
+    const context: MCPToolContext = {
       agentId: 'mcp-server',
       runId: `mcp_${randomUUID()}`,
-      signal,
+      signal: extra.signal,
       ...(caller?.userId !== undefined && { userId: caller.userId }),
+      ...(this.canElicit() && { elicit: (request) => this.elicit(extra, request) }),
     };
 
     try {
@@ -477,6 +495,36 @@ export class MCPServer {
     this.log('info', `Server started on ${this.config.transport} transport`);
   }
 
+  /** Elicitation needs the client's reply to reach this server: stdio, or HTTP with sessions. */
+  private canElicit(): boolean {
+    return this.config.transport === 'stdio' || this.config.sessions === true;
+  }
+
+  /**
+   * Ask the client's user through MCP elicitation, tied to the tool call so it
+   * works on stateless HTTP too. `undefined` when the client cannot answer.
+   */
+  private async elicit(
+    extra: ToolHandlerExtra,
+    request: MCPElicitRequest
+  ): Promise<MCPElicitResult | undefined> {
+    try {
+      const result = await extra.sendRequest(
+        {
+          method: 'elicitation/create',
+          params: { mode: 'form', message: request.message, requestedSchema: request.schema },
+        },
+        ElicitResultSchema
+      );
+      return result.action === 'accept'
+        ? { action: 'accept', content: result.content ?? {} }
+        : { action: result.action };
+    } catch (error) {
+      this.log('info', `Elicitation unavailable: ${errorMessageOf(error)}`);
+      return undefined;
+    }
+  }
+
   /**
    * The caller of an HTTP request per `config.auth`: `undefined` when the
    * server has no `auth`, `null` when the request is refused.
@@ -489,6 +537,50 @@ export class MCPServer {
       this.log('error', `Auth error: ${errorMessageOf(error)}`);
       return null;
     }
+  }
+
+  /**
+   * A request in session mode: a request without a session id starts a
+   * session (an `initialize`), the others go to their session's transport.
+   * A session belongs to the caller that started it.
+   */
+  private async handleSessionRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    body: unknown,
+    caller: MCPCaller | undefined,
+    Transport: typeof StreamableHTTPServerTransportType
+  ): Promise<void> {
+    const header = req.headers['mcp-session-id'];
+    const sessionId = Array.isArray(header) ? header[0] : header;
+
+    if (sessionId) {
+      const session = this.sessions.get(sessionId);
+      if (!session) {
+        writeJsonRpcError(res, 404, -32001, 'Session not found');
+        return;
+      }
+      if (session.caller?.userId !== caller?.userId) {
+        writeJsonRpcError(res, 403, -32001, 'The session belongs to another caller');
+        return;
+      }
+      await session.transport.handleRequest(req, res, body);
+      return;
+    }
+
+    const server = this.buildServer(caller);
+    const transport: StreamableHTTPServerTransportType = new Transport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (id) => {
+        this.sessions.set(id, { transport, server, caller });
+      },
+    });
+    transport.onclose = () => {
+      if (transport.sessionId) this.sessions.delete(transport.sessionId);
+      server.close().catch(() => {});
+    };
+    await server.connect(transport);
+    await transport.handleRequest(req, res, body);
   }
 
   /**
@@ -536,61 +628,28 @@ export class MCPServer {
         return;
       }
 
-      const server = this.buildServer(caller);
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-      });
-      res.on('close', () => {
-        transport.close().catch(() => {});
-        server.close().catch(() => {});
-      });
-
       try {
-        await server.connect(transport);
-
-        if (req.method === 'POST') {
-          const chunks: Buffer[] = [];
-          let totalSize = 0;
-          let tooLarge = false;
-          for await (const chunk of req) {
-            const buffer = chunk as Buffer;
-            totalSize += buffer.length;
-            if (totalSize > maxBodySize) {
-              tooLarge = true;
-              break;
-            }
-            chunks.push(buffer);
-          }
-
-          if (tooLarge) {
-            res.writeHead(413, { 'Content-Type': 'text/plain' });
-            res.end('Payload Too Large');
-            req.destroy();
-            return;
-          }
-
-          let body: Record<string, unknown>;
-          try {
-            body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
-          } catch {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(
-              JSON.stringify({
-                jsonrpc: '2.0',
-                error: { code: -32700, message: 'Parse error: invalid JSON' },
-                id: null,
-              })
-            );
-            return;
-          }
-
-          await transport.handleRequest(req, res, body);
-        } else if (req.method === 'GET' || req.method === 'DELETE') {
-          await transport.handleRequest(req, res);
-        } else {
+        if (req.method !== 'POST' && req.method !== 'GET' && req.method !== 'DELETE') {
           res.writeHead(405, { 'Content-Type': 'text/plain' });
           res.end('Method Not Allowed');
+          return;
         }
+        const body = req.method === 'POST' ? await readJsonBody(req, res, maxBodySize) : undefined;
+        if (body === null) return;
+
+        if (this.config.sessions) {
+          await this.handleSessionRequest(req, res, body, caller, StreamableHTTPServerTransport);
+          return;
+        }
+
+        const server = this.buildServer(caller);
+        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+        res.on('close', () => {
+          transport.close().catch(() => {});
+          server.close().catch(() => {});
+        });
+        await server.connect(transport);
+        await transport.handleRequest(req, res, body);
       } catch (error) {
         this.log('error', `HTTP request error: ${errorMessageOf(error)}`);
         if (!res.headersSent) {
@@ -635,6 +694,9 @@ export class MCPServer {
     }
 
     try {
+      const sessions = [...this.sessions.values()];
+      this.sessions.clear();
+      await Promise.all(sessions.map(({ transport }) => transport.close().catch(() => {})));
       const httpServer = this.httpServer;
       if (httpServer) {
         this.httpServer = undefined;
@@ -680,4 +742,41 @@ export async function serveMCPTools(tools: Tool[], config: MCPServerConfig): Pro
   server.registerTools(tools);
   await server.start();
   return server;
+}
+
+/** The JSON body of a POST, or `null` when the request was answered (too large, invalid JSON). */
+async function readJsonBody(
+  req: IncomingMessage,
+  res: ServerResponse,
+  maxBodySize: number
+): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let totalSize = 0;
+  for await (const chunk of req) {
+    const buffer = chunk as Buffer;
+    totalSize += buffer.length;
+    if (totalSize > maxBodySize) {
+      res.writeHead(413, { 'Content-Type': 'text/plain' });
+      res.end('Payload Too Large');
+      req.destroy();
+      return null;
+    }
+    chunks.push(buffer);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString()) as unknown;
+  } catch {
+    writeJsonRpcError(res, 400, -32700, 'Parse error: invalid JSON');
+    return null;
+  }
+}
+
+function writeJsonRpcError(
+  res: ServerResponse,
+  status: number,
+  code: number,
+  message: string
+): void {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ jsonrpc: '2.0', error: { code, message }, id: null }));
 }

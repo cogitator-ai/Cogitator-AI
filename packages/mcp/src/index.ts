@@ -12,6 +12,8 @@ export { createStdioTransport, createHttpTransport } from './client/transports';
 export type { StdioTransportConfig, HttpTransportConfig } from './client/transports';
 
 export { MCPServer, serveMCPTools } from './server/mcp-server';
+export { serveAgents, agentTools } from './server/serve-agents';
+export type { AgentHost, AgentToolAnswer, ServeAgentsConfig } from './server/serve-agents';
 
 export {
   cogitatorToMCP,
@@ -31,6 +33,10 @@ export type {
   MCPServerConfig,
   MCPCaller,
   MCPAuthFunction,
+  MCPToolContext,
+  MCPElicitRequest,
+  MCPElicitResult,
+  MCPElicitField,
   MCPTransportType,
   MCPResource,
   MCPResourceContent,
