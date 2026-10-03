@@ -3,10 +3,10 @@ import type {
   AutoOptimizationConfig,
   OptimizationRun,
   OptimizationRunStatus,
-  Agent,
   ABTestOutcome,
   DegradationAlert,
 } from '@cogitator-ai/types';
+import { Agent } from '../agent';
 import type { AgentOptimizer } from './agent-optimizer';
 import type { ABTestingFramework } from './ab-testing';
 import type { PromptMonitor } from './prompt-monitor';
@@ -90,37 +90,10 @@ export class AutoOptimizer {
     const alerts = this.monitor.recordExecution(trace);
     await this.handleAlerts(agentId, alerts);
 
-    const activeABTest = await this.abTesting.getActiveTest(agentId);
-    if (activeABTest && trace.score !== undefined) {
-      const currentVersion = await this.rollbackManager.getCurrentVersion(agentId);
-      const variant =
-        currentVersion?.instructions === activeABTest.treatmentInstructions
-          ? 'treatment'
-          : 'control';
-
-      await this.abTesting.recordResult(
-        activeABTest.id,
-        variant,
-        trace.score,
-        trace.duration ?? 0,
-        trace.usage?.cost ?? 0
-      );
-
-      const outcome = await this.abTesting.checkAndCompleteIfReady(activeABTest.id);
-      if (outcome) {
-        await this.handleABTestCompletion(agentId, activeABTest.id, outcome);
-      }
+    if (!trace.prompt) {
+      await this.recordOutcome(agentId, trace);
     }
-
-    if (trace.score !== undefined) {
-      await this.rollbackManager.recordMetrics(
-        agentId,
-        trace.score,
-        trace.duration ?? 0,
-        trace.usage?.cost ?? 0,
-        trace.metrics?.success ?? true
-      );
-    }
+    await this.settleABTest(agentId);
 
     if (count >= this.config.triggerAfterRuns && (await this.shouldTriggerOptimization(agentId))) {
       await this.triggerOptimization(agentId);
@@ -140,9 +113,14 @@ export class AutoOptimizer {
       run.status = 'optimizing';
 
       const currentVersion = await this.rollbackManager.getCurrentVersion(agentId);
-      const currentInstructions = currentVersion?.instructions ?? '';
+      if (!currentVersion) {
+        throw new Error(
+          `Agent "${agentId}" has no deployed instructions to optimize: deploy a version with the RollbackManager first`
+        );
+      }
+      const currentInstructions = currentVersion.instructions;
 
-      const agent = { id: agentId, instructions: currentInstructions } as Agent;
+      const agent = new Agent({ id: agentId, name: agentId, instructions: currentInstructions });
       const optimizationResult = await this.agentOptimizer.compile(agent, [], {
         maxRounds: 2,
         optimizeInstructions: true,
@@ -274,6 +252,61 @@ export class AutoOptimizer {
     }
 
     return true;
+  }
+
+  /**
+   * Records a trace of a run Cogitator did not resolve the instructions of: for
+   * the running A/B test, as the treatment while the treatment is the deployed
+   * version, else as the control; and for the current version's metrics.
+   */
+  private async recordOutcome(agentId: string, trace: ExecutionTrace): Promise<void> {
+    if (trace.score === undefined) return;
+
+    const test = await this.abTesting.getActiveTest(agentId);
+    if (test) {
+      const current = await this.rollbackManager.getCurrentVersion(agentId);
+      const variant =
+        current?.instructions === test.treatmentInstructions ? 'treatment' : 'control';
+
+      await this.abTesting.recordResult(
+        test.id,
+        variant,
+        trace.score,
+        trace.duration ?? 0,
+        trace.usage?.cost ?? 0
+      );
+
+      const outcome = await this.abTesting.checkAndCompleteIfReady(test.id);
+      if (outcome) {
+        await this.handleABTestCompletion(agentId, test.id, outcome);
+      }
+    }
+
+    await this.rollbackManager.recordMetrics(
+      agentId,
+      trace.score,
+      trace.duration ?? 0,
+      trace.usage?.cost ?? 0,
+      trace.metrics?.success ?? true
+    );
+  }
+
+  /**
+   * Completes the A/B test of the agent's optimization run once it is ready,
+   * or picks up its outcome when Cogitator completed it while recording runs.
+   */
+  private async settleABTest(agentId: string): Promise<void> {
+    const run = this.activeRuns.get(agentId);
+    if (run?.status !== 'testing' || !run.abTestId) return;
+
+    let outcome = await this.abTesting.checkAndCompleteIfReady(run.abTestId);
+    if (!outcome) {
+      const test = await this.abTesting.getTest(run.abTestId);
+      if (test?.status === 'completed') outcome = this.abTesting.analyzeResults(test);
+    }
+    if (outcome) {
+      await this.handleABTestCompletion(agentId, run.abTestId, outcome);
+    }
   }
 
   private async handleAlerts(agentId: string, alerts: DegradationAlert[]): Promise<void> {

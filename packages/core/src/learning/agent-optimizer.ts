@@ -10,11 +10,13 @@ import type {
   RunResult,
   Agent,
   LLMBackend,
+  MetricDefinition,
 } from '@cogitator-ai/types';
+import { DEFAULT_LEARNING_CONFIG } from '@cogitator-ai/types';
 import { InMemoryTraceStore } from './trace-store';
 import { buildExecutionTrace } from './trace-builder';
 import { Agent as CoreAgent } from '../agent';
-import { MetricEvaluator } from './metrics';
+import { MetricEvaluator, builtinMetricDefinition } from './metrics';
 import { DemoSelector } from './demo-selector';
 import { InstructionOptimizer } from './instruction-optimizer';
 
@@ -69,6 +71,7 @@ export class AgentOptimizer {
     this.metricEvaluator = new MetricEvaluator({
       llm: this.llm,
       model: this.model,
+      config: { metrics: this.scoringMetrics() },
     });
 
     this.demoSelector = new DemoSelector({
@@ -102,9 +105,26 @@ export class AgentOptimizer {
       evaluation.results.find((r) => r.name === 'completeness')?.value ??
       trace.metrics.completeness;
 
-    await this.traceStore.store(trace);
+    if (this.config.captureTraces !== false) {
+      await this.traceStore.store(trace);
+      if (this.config.traceRetention !== undefined) {
+        await this.traceStore.prune(trace.agentId, this.config.traceRetention);
+      }
+    }
 
     return trace;
+  }
+
+  /** `defaultMetrics` and `customMetrics`, a custom definition replacing a built-in one of the same name. */
+  private scoringMetrics(): MetricDefinition[] {
+    const metrics = new Map<string, MetricDefinition>();
+    for (const name of this.config.defaultMetrics ?? DEFAULT_LEARNING_CONFIG.defaultMetrics ?? []) {
+      metrics.set(name, builtinMetricDefinition(name));
+    }
+    for (const metric of this.config.customMetrics ?? []) {
+      metrics.set(metric.name, metric);
+    }
+    return [...metrics.values()];
   }
 
   /**

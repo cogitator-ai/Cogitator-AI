@@ -10,6 +10,7 @@
 
 import type { ToolCall, ToolResult } from './message';
 import type { Reflection, InsightStore } from './reflection';
+import type { RunPrompt } from './runtime';
 
 export type ExecutionStepType = 'llm_call' | 'tool_call' | 'reflection';
 export type BuiltinMetric =
@@ -61,6 +62,12 @@ export interface ExecutionTrace {
   labels?: string[];
   isDemo: boolean;
   expected?: unknown;
+  /**
+   * The versioned instructions or A/B variant the run used, when Cogitator
+   * resolved them through `prompts`; Cogitator has then recorded the run's
+   * outcome against that version or variant itself.
+   */
+  prompt?: RunPrompt;
 }
 
 export interface TraceQuery {
@@ -203,14 +210,25 @@ export interface OptimizationResult {
 
 export interface LearningConfig {
   enabled: boolean;
+  /** Store the traces `captureTrace()` builds (default true); off, they are only scored */
   captureTraces?: boolean;
+  /** Traces kept per agent; older and lower-scoring ones are pruned after each capture */
   traceRetention?: number;
+  /** @deprecated Not read: run optimization automatically with `AutoOptimizer` (`enabled`) */
   autoOptimize?: boolean;
+  /** @deprecated Not read: use `AutoOptimizer`'s `triggerAfterRuns` */
   optimizeAfterRuns?: number;
   maxDemosPerAgent?: number;
   minScoreForDemo?: number;
+  /** Built-in metrics traces are scored with (default success, tool_accuracy, efficiency) */
   defaultMetrics?: BuiltinMetric[];
+  /**
+   * More metrics to score traces with, or new weights for built-in ones of the
+   * same name; give a non-built-in metric its function with
+   * `getMetricEvaluator().registerMetric(name, fn)`
+   */
   customMetrics?: MetricDefinition[];
+  /** @deprecated Not read: pass a `TraceStore` as the optimizer's `traceStore` option */
   traceStore?: 'memory' | 'file';
 }
 

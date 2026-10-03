@@ -28,7 +28,6 @@ const DEFAULT_CONFIG: ResolvedABTestingConfig = {
 export class ABTestingFramework {
   private store: ABTestStore;
   private config: ResolvedABTestingConfig;
-  private activeTests = new Map<string, ABTest>();
 
   constructor(config: ABTestingFrameworkConfig) {
     this.store = config.store;
@@ -73,31 +72,22 @@ export class ABTestingFramework {
   }
 
   async startTest(testId: string): Promise<ABTest> {
-    const test = await this.store.update(testId, {
+    return this.store.update(testId, {
       status: 'running',
       startedAt: new Date(),
     });
-
-    this.activeTests.set(test.agentId, test);
-    return test;
   }
 
   async pauseTest(testId: string): Promise<ABTest> {
-    const test = await this.store.update(testId, {
+    return this.store.update(testId, {
       status: 'paused',
     });
-
-    this.activeTests.delete(test.agentId);
-    return test;
   }
 
   async resumeTest(testId: string): Promise<ABTest> {
-    const test = await this.store.update(testId, {
+    return this.store.update(testId, {
       status: 'running',
     });
-
-    this.activeTests.set(test.agentId, test);
-    return test;
   }
 
   async completeTest(testId: string): Promise<{ test: ABTest; outcome: ABTestOutcome }> {
@@ -106,34 +96,21 @@ export class ABTestingFramework {
       completedAt: new Date(),
     });
 
-    this.activeTests.delete(test.agentId);
-
     const outcome = this.analyzeResults(test);
 
     return { test, outcome };
   }
 
   async cancelTest(testId: string): Promise<ABTest> {
-    const test = await this.store.update(testId, {
+    return this.store.update(testId, {
       status: 'cancelled',
       completedAt: new Date(),
     });
-
-    this.activeTests.delete(test.agentId);
-    return test;
   }
 
+  /** Read from the store each time, so tests completed through another framework on it are seen. */
   async getActiveTest(agentId: string): Promise<ABTest | null> {
-    const cached = this.activeTests.get(agentId);
-    if (cached) {
-      return cached;
-    }
-
-    const test = await this.store.getActive(agentId);
-    if (test) {
-      this.activeTests.set(agentId, test);
-    }
-    return test;
+    return this.store.getActive(agentId);
   }
 
   async getTest(testId: string): Promise<ABTest | null> {
@@ -156,11 +133,6 @@ export class ABTestingFramework {
     cost: number
   ): Promise<void> {
     await this.store.recordResult(testId, variant, score, latency, cost);
-
-    const test = await this.store.get(testId);
-    if (test?.agentId) {
-      this.activeTests.set(test.agentId, test);
-    }
   }
 
   async checkAndCompleteIfReady(testId: string): Promise<ABTestOutcome | null> {
@@ -183,7 +155,6 @@ export class ABTestingFramework {
           status: 'completed',
           completedAt: new Date(),
         });
-        this.activeTests.delete(test.agentId);
         return outcome;
       }
     }

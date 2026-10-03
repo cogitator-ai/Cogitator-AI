@@ -49,6 +49,7 @@ export function buildExecutionTrace(
     labels: options.labels,
     isDemo: false,
     expected: options.expected,
+    ...(runResult.prompt && { prompt: runResult.prompt }),
   };
 }
 

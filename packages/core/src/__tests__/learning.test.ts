@@ -810,3 +810,90 @@ describe('AgentOptimizer', () => {
     expect(optimizer.getInstructionOptimizer()).toBeDefined();
   });
 });
+
+describe('learning config', () => {
+  const runResult = (traceId: string) => createMockRunResult({ trace: { traceId, spans: [] } });
+
+  it('evaluates a registered metric that is not in the configured metrics', async () => {
+    const evaluator = new MetricEvaluator({
+      config: {
+        metrics: [{ name: 'success', type: 'boolean', description: 'Success' }],
+        aggregation: 'average',
+        passThreshold: 0.5,
+      },
+    });
+    const custom = vi.fn().mockReturnValue({ name: 'custom', value: 0, passed: false });
+    evaluator.registerMetric('custom', custom);
+
+    const evaluation = await evaluator.evaluate(createMockTrace());
+
+    expect(custom).toHaveBeenCalledTimes(1);
+    expect(evaluation.results.map((r) => r.name)).toEqual(['success', 'custom']);
+    expect(evaluation.score).toBe(0.5);
+  });
+
+  it('scores traces with defaultMetrics and customMetrics', async () => {
+    const optimizer = new AgentOptimizer({
+      llm: createMockLLM(),
+      model: 'test-model',
+      config: {
+        defaultMetrics: ['success'],
+        customMetrics: [{ name: 'tone', type: 'numeric', description: 'Tone', weight: 3 }],
+      },
+    });
+    optimizer
+      .getMetricEvaluator()
+      .registerMetric('tone', () => ({ name: 'tone', value: 0, passed: false }));
+
+    const trace = await optimizer.captureTrace(runResult('t1'), 'input');
+
+    expect(
+      optimizer
+        .getMetricEvaluator()
+        .getConfig()
+        .metrics.map((m) => m.name)
+    ).toEqual(['success', 'tone']);
+    expect(trace.score).toBeCloseTo(0.4 / 3.4);
+  });
+
+  it('only scores captured traces with captureTraces: false', async () => {
+    const traceStore = new InMemoryTraceStore();
+    const optimizer = new AgentOptimizer({
+      llm: createMockLLM(),
+      model: 'test-model',
+      traceStore,
+      config: { captureTraces: false },
+    });
+
+    const trace = await optimizer.captureTrace(runResult('t1'), 'input');
+
+    expect(trace.score).toBeGreaterThan(0);
+    expect(await traceStore.getAll('test-agent')).toEqual([]);
+  });
+
+  it('prunes each agent to traceRetention traces', async () => {
+    const traceStore = new InMemoryTraceStore();
+    const optimizer = new AgentOptimizer({
+      llm: createMockLLM(),
+      model: 'test-model',
+      traceStore,
+      config: { traceRetention: 2 },
+    });
+
+    for (const id of ['t1', 't2', 't3']) await optimizer.captureTrace(runResult(id), 'input');
+
+    expect(await traceStore.getAll('test-agent')).toHaveLength(2);
+  });
+
+  it('keeps the versioned instructions a run used on its trace', async () => {
+    const optimizer = new AgentOptimizer({ llm: createMockLLM(), model: 'test-model' });
+    const prompt = { key: 'test-agent', abTest: { id: 'ab_1', variant: 'treatment' as const } };
+
+    const trace = await optimizer.captureTrace(
+      createMockRunResult({ prompt, trace: { traceId: 't1', spans: [] } }),
+      'input'
+    );
+
+    expect(trace.prompt).toEqual(prompt);
+  });
+});

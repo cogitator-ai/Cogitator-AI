@@ -2,6 +2,7 @@ import type {
   ExecutionTrace,
   MetricResult,
   MetricFn,
+  MetricDefinition,
   MetricEvaluatorConfig,
   BuiltinMetric,
   LLMBackend,
@@ -13,21 +14,49 @@ export interface MetricEvaluatorOptions {
   config?: Partial<MetricEvaluatorConfig>;
 }
 
+const BUILTIN_METRICS: Record<BuiltinMetric, MetricDefinition> = {
+  success: {
+    name: 'success',
+    type: 'boolean',
+    description: 'Did the run complete without errors?',
+    weight: 0.4,
+  },
+  tool_accuracy: {
+    name: 'tool_accuracy',
+    type: 'numeric',
+    description: 'Did tools produce expected results?',
+    weight: 0.3,
+  },
+  efficiency: {
+    name: 'efficiency',
+    type: 'numeric',
+    description: 'Token/time efficiency',
+    weight: 0.3,
+  },
+  completeness: {
+    name: 'completeness',
+    type: 'numeric',
+    description: 'Does the output fully address the input?',
+    weight: 0.3,
+  },
+  coherence: {
+    name: 'coherence',
+    type: 'numeric',
+    description: 'Are the steps logical and well-structured?',
+    weight: 0.3,
+  },
+};
+
+/** The definition, with its default weight, of a built-in metric. */
+export function builtinMetricDefinition(name: BuiltinMetric): MetricDefinition {
+  return { ...BUILTIN_METRICS[name] };
+}
+
 const DEFAULT_CONFIG: MetricEvaluatorConfig = {
   metrics: [
-    {
-      name: 'success',
-      type: 'boolean',
-      description: 'Did the run complete without errors?',
-      weight: 0.4,
-    },
-    {
-      name: 'tool_accuracy',
-      type: 'numeric',
-      description: 'Did tools produce expected results?',
-      weight: 0.3,
-    },
-    { name: 'efficiency', type: 'numeric', description: 'Token/time efficiency', weight: 0.3 },
+    builtinMetricDefinition('success'),
+    builtinMetricDefinition('tool_accuracy'),
+    builtinMetricDefinition('efficiency'),
   ],
   aggregation: 'weighted-average',
   passThreshold: 0.7,
@@ -45,6 +74,11 @@ export class MetricEvaluator {
     this.config = { ...DEFAULT_CONFIG, ...options.config };
   }
 
+  /**
+   * Score traces with `fn` under `name`: in place of the built-in metric of
+   * that name, else alongside the configured metrics, with the weight of its
+   * entry in `config.metrics` or 1 without one.
+   */
   registerMetric(name: string, fn: MetricFn): void {
     this.customMetrics.set(name, fn);
   }
@@ -55,9 +89,11 @@ export class MetricEvaluator {
   ): Promise<{ results: MetricResult[]; score: number; passed: boolean }> {
     const results: MetricResult[] = [];
 
-    for (const metricDef of this.config.metrics) {
-      const result = await this.evaluateMetric(metricDef.name, trace, expected);
-      results.push(result);
+    const configured = this.config.metrics.map((metric) => metric.name);
+    const registered = [...this.customMetrics.keys()].filter((name) => !configured.includes(name));
+
+    for (const name of [...configured, ...registered]) {
+      results.push(await this.evaluateMetric(name, trace, expected));
     }
 
     const score = this.aggregateScores(results);
