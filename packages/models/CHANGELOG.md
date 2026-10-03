@@ -1,5 +1,21 @@
 # @cogitator-ai/models
 
+## 18.1.0
+
+### Minor Changes
+
+- 7bee3ef: Reasoning models and prompt caching work the same way on every provider.
+
+  - **Reasoning.** `reasoning: { effort, budgetTokens?, summary? }` on an agent, a run or a `ChatRequest` (`effort` from `none` to `max`). Anthropic and Bedrock get adaptive thinking with the closest effort the Claude model accepts (`disabled` / `between_tools` / lowest effort for `none`, a thinking budget on Claude 3.7 – 4.5); OpenAI gets `reasoning.effort` and summaries; OpenAI-compatible servers `reasoning_effort`; Gemini `thinkingLevel` (3+) or `thinkingBudget` (2.5) with `includeThoughts`; Ollama `think`. The summary comes back as `ChatResponse.reasoning` / `delta.reasoning`, `RunResult.reasoning` and `onReasoning`; server adapters, Next.js handlers and hooks, and the AI SDK adapter stream it as `reasoning-start` / `reasoning-delta` / `reasoning-end` parts.
+  - **Thinking across tool calls.** Claude thinking blocks (Anthropic and Bedrock) are kept with the tool calls they preceded and sent back during the tool loop — only after the latest user message, since they are bound to the conversation that produced them — and a request whose replayed blocks the API refuses is retried once without them.
+  - **Prompt caching.** Agent runs cache by default (`llm.promptCache`, `false` turns it off): Anthropic requests carry `cache_control`, Bedrock requests cache points; every backend reports `usage.cachedInputTokens` / `cacheWriteTokens` / `reasoningTokens`. `@cogitator-ai/models` prices cache reads and writes (`inputCached`, new `inputCacheWrite`, `calculateCost()`), so run costs account for them.
+
+  **Fixes:** Anthropic and Bedrock `inputTokens` now include cache reads and writes (they counted only uncached input); Gemini `outputTokens` now include thinking tokens (`thoughtsTokenCount`), which were billed but not counted.
+
+### Patch Changes
+
+- a7cb81b: Cogitator runs on Cloudflare Workers and on Deno without extra permissions. Agents no longer draw a random id in their constructor — it is generated on first read — so they can be created at module scope, where Workers forbid random values. The runtime, logger and built-in tools read environment variables through a guard, and only when a feature needs them: a run no longer asks for `OPENAI_API_KEY` unless it has audio, and runtimes without `process` or with env access denied get `undefined` instead of an error. The model price cache in `@cogitator-ai/models` loads the file system lazily and stays in memory where there is none, so importing it no longer reads the home directory. `validateSkill` checks dependencies through `process.getBuiltinModule` and warns where packages cannot be resolved.
+
 ## 18.0.0
 
 ### Major Changes

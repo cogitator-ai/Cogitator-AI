@@ -1,5 +1,26 @@
 # @cogitator-ai/workflows
 
+## 0.8.0
+
+### Minor Changes
+
+- 4964fb6: Workflow checkpoints in Redis and Postgres, and resuming that resumes.
+
+  - `RedisCheckpointStore` (an `@cogitator-ai/redis` client or ioredis) and `PostgresCheckpointStore` (a `pg` Pool; creates its table on first use) keep checkpoints where any process can resume them.
+  - **Fixes:** `WorkflowExecutor.resume()` ran finished nodes again when they followed another finished node, and nodes after a finished node lost its output as their input; both are fixed (`WorkflowExecuteOptions.nodeResults` carries the outputs). Checkpoints saved in the same millisecond now get increasing timestamps, so "latest" is the latest. `WorkflowManager.replay(workflow, runId, node)` runs the node and everything after it again (it used to skip some of them) with the earlier nodes' results, and a manager with a `checkpointStore` checkpoints its runs by default, so they can be replayed.
+
+### Patch Changes
+
+- Updated dependencies [a7cb81b]
+- Updated dependencies [0933009]
+- Updated dependencies [0933009]
+- Updated dependencies [0933009]
+- Updated dependencies [7bee3ef]
+- Updated dependencies [7bee3ef]
+- Updated dependencies [4964fb6]
+  - @cogitator-ai/core@0.24.0
+  - @cogitator-ai/types@0.27.0
+
 ## 0.7.3
 
 ### Patch Changes

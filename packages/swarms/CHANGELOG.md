@@ -1,5 +1,20 @@
 # @cogitator-ai/swarms
 
+## 0.8.1
+
+### Patch Changes
+
+- Updated dependencies [a7cb81b]
+- Updated dependencies [0933009]
+- Updated dependencies [0933009]
+- Updated dependencies [0933009]
+- Updated dependencies [7bee3ef]
+- Updated dependencies [7bee3ef]
+- Updated dependencies [4964fb6]
+  - @cogitator-ai/core@0.24.0
+  - @cogitator-ai/types@0.27.0
+  - @cogitator-ai/workflows@0.8.0
+
 ## 0.8.0
 
 ### Minor Changes
