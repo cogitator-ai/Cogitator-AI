@@ -60,8 +60,10 @@
     "@types/express": "^5.0.6",
     "@types/koa": "^3.0.3",
     "@types/node": "^22.20.4",
+    "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.2",
     "openai": "^7.25.0",
+    "pg": "^8.23.1",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3",
     "ws": "^8.22.0"

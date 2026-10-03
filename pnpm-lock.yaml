@@ -753,12 +753,18 @@ importers:
       '@types/node':
         specifier: ^22.20.4
         version: 22.20.4
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
       '@types/ws':
         specifier: ^8.18.2
         version: 8.18.2
       openai:
         specifier: ^7.25.0
         version: 7.25.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@7.22.0)(ws@8.22.0)(zod@4.6.5)
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
