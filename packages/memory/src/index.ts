@@ -54,6 +54,8 @@ export {
   createEmbeddingService,
 } from './embedding/index';
 
+export { unwrap } from './result';
+
 export { CoreFactsStore } from './core-facts';
 export type { CoreFactsStoreConfig, FactHistoryEntry } from './core-facts';
 

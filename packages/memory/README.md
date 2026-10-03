@@ -36,13 +36,12 @@ pnpm add @qdrant/js-client-rest  # For Qdrant embedding adapter
 ## Quick Start
 
 ```typescript
-import { InMemoryAdapter, ContextBuilder } from '@cogitator-ai/memory';
+import { InMemoryAdapter, ContextBuilder, unwrap } from '@cogitator-ai/memory';
 
 const memory = new InMemoryAdapter();
 await memory.connect();
 
-const threadResult = await memory.createThread('agent-1', { topic: 'greeting' });
-const thread = threadResult.data!;
+const thread = unwrap(await memory.createThread('agent-1', { topic: 'greeting' }));
 
 await memory.addEntry({
   threadId: thread.id,
@@ -67,6 +66,8 @@ const context = await builder.build({
 
 console.log(context.messages);
 ```
+
+Adapter calls return a `MemoryResult` — `{ success: true, data }` or `{ success: false, error }` — instead of throwing. `unwrap(result)` returns the data or throws an `Error` with the adapter's message; check `result.success` yourself where a failure is expected.
 
 ---
 
