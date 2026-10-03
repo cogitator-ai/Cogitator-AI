@@ -95,7 +95,7 @@ const researcher = new Agent({
 });
 ```
 
-The agent loops up to `maxIterations` times. Each iteration the LLM may call tools or produce a final response. The loop ends when the LLM responds without tool calls.
+The agent loops up to `maxIterations` times. Each iteration the LLM may call tools or produce a final response. The loop ends when the LLM responds without tool calls. An empty turn (no text and no tool calls) is not taken as the final response: the run asks the model again, up to twice.
 
 ## Agent with Structured Output
 

@@ -7,6 +7,7 @@ import type {
   ToolCall,
   ToolResult,
   LLMBackend,
+  ChatResponse,
   ModelRoute,
   Span,
   Reflection,
@@ -71,6 +72,22 @@ import { readEnv } from './utils/env';
 
 /** Run timeout when neither the run, the agent nor `limits.defaultTimeout` sets one. */
 const DEFAULT_RUN_TIMEOUT = 120_000;
+
+/**
+ * How many times a run asks again when the model ends its turn with neither text nor tool calls.
+ * Some models (Gemini after a function response, notably) occasionally stop with an empty turn;
+ * asking again usually gets the real answer, and the empty turn never enters the history.
+ */
+const MAX_EMPTY_ANSWER_RETRIES = 2;
+
+/** A finished turn with no text and no tool calls: nothing a caller could use as an answer. */
+function isEmptyAnswer(response: ChatResponse): boolean {
+  return (
+    response.finishReason === 'stop' &&
+    !response.toolCalls?.length &&
+    response.content.trim() === ''
+  );
+}
 
 /**
  * Main runtime for executing AI agents.
@@ -710,6 +727,7 @@ export class Cogitator {
 
       const streaming = Boolean(options.stream && options.onToken);
       let structuredRepaired = false;
+      let emptyAnswerRetries = 0;
 
       while (!pausedTurn && iterations < maxIterations) {
         throwIfAborted(abortController.signal);
@@ -796,6 +814,20 @@ export class Cogitator {
         cacheWriteTokens += response.usage.cacheWriteTokens ?? 0;
         reasoningTokens += response.usage.reasoningTokens ?? 0;
         if (response.reasoning) reasoningParts.push(response.reasoning);
+
+        if (
+          isEmptyAnswer(response) &&
+          emptyAnswerRetries < MAX_EMPTY_ANSWER_RETRIES &&
+          iterations < maxIterations
+        ) {
+          emptyAnswerRetries++;
+          getLogger().warn('Model returned an empty answer, asking again', {
+            model,
+            iteration: iterations,
+            attempt: emptyAnswerRetries,
+          });
+          continue;
+        }
 
         let outputContent = response.content;
 
