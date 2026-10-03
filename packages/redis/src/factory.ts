@@ -18,15 +18,24 @@ interface RawRedisClient {
   del(...keys: string[]): Promise<number>;
   expire(key: string, seconds: number): Promise<number>;
   mget(...keys: string[]): Promise<(string | null)[]>;
+  exists(...keys: string[]): Promise<number>;
+  incr(key: string): Promise<number>;
+  decr(key: string): Promise<number>;
   zadd(key: string, score: number, member: string): Promise<number>;
-  zrange(key: string, start: number, stop: number): Promise<string[]>;
+  zrange(key: string, start: number, stop: number | string): Promise<string[]>;
   zrangebyscore(key: string, min: number | string, max: number | string): Promise<string[]>;
   zrem(key: string, ...members: string[]): Promise<number>;
   smembers(key: string): Promise<string[]>;
   publish(channel: string, message: string): Promise<number>;
   subscribe(channel: string): Promise<void>;
   unsubscribe(channel: string): Promise<void>;
-  scan(cursor: string, ...args: (string | number)[]): Promise<[string, string[]]>;
+  scan(
+    cursor: string,
+    matchToken: 'MATCH',
+    pattern: string,
+    countToken: 'COUNT',
+    count: number | string
+  ): Promise<[string, string[]]>;
   on(event: string, callback: EventCallback): void;
   off(event: string, callback: EventCallback): void;
   duplicate(): RawRedisClient;
@@ -151,30 +160,59 @@ function escapeGlob(value: string): string {
   return value.replace(/[*?[\]\\]/g, '\\$&');
 }
 
+function parseClusterCursor(cursor: string, nodeCount: number): { node: number; at: string } {
+  if (cursor === '0') return { node: 0, at: '0' };
+  const match = /^(\d+):(\d+)$/.exec(cursor);
+  const node = match ? Number(match[1]) : -1;
+  if (!match || node >= nodeCount) {
+    throw new Error(`Invalid SCAN cursor "${cursor}" for a cluster of ${nodeCount} master nodes`);
+  }
+  return { node, at: match[2] };
+}
+
 /**
- * KEYS-compatible lookup built on SCAN: non-blocking, covers every master of a cluster,
- * and applies/strips the key prefix (ioredis does not prefix patterns).
+ * One SCAN step that applies the key prefix to the pattern and strips it from the keys
+ * (ioredis prefixes neither). In cluster mode the cursor is `<master index>:<node cursor>`,
+ * so walking it to `'0'` covers every master.
  */
+async function scanStep(
+  client: RawRedisClient,
+  cursor: string,
+  pattern: string,
+  count: number | string,
+  options: WrapOptions
+): Promise<[cursor: string, keys: string[]]> {
+  const match = escapeGlob(options.keyPrefix) + pattern;
+  const strip = (keys: string[]) =>
+    keys.map((key) =>
+      key.startsWith(options.keyPrefix) ? key.slice(options.keyPrefix.length) : key
+    );
+
+  if (!options.cluster || !client.nodes) {
+    const [next, keys] = await client.scan(cursor, 'MATCH', match, 'COUNT', count);
+    return [next, strip(keys)];
+  }
+
+  const masters = client.nodes('master');
+  const { node, at } = parseClusterCursor(cursor, masters.length);
+  const [next, keys] = await masters[node].scan(at, 'MATCH', match, 'COUNT', count);
+  if (next !== '0') return [`${node}:${next}`, strip(keys)];
+  return [node + 1 < masters.length ? `${node + 1}:0` : '0', strip(keys)];
+}
+
+/** KEYS-compatible lookup built on SCAN: non-blocking and covering every master of a cluster. */
 async function scanKeys(
   client: RawRedisClient,
   pattern: string,
   options: WrapOptions
 ): Promise<string[]> {
-  const nodes = options.cluster && client.nodes ? client.nodes('master') : [client];
-  const match = escapeGlob(options.keyPrefix) + pattern;
   const found = new Set<string>();
-
-  for (const node of nodes) {
-    let cursor = '0';
-    do {
-      const [next, batch] = await node.scan(cursor, 'MATCH', match, 'COUNT', SCAN_BATCH_SIZE);
-      for (const key of batch) {
-        found.add(key.startsWith(options.keyPrefix) ? key.slice(options.keyPrefix.length) : key);
-      }
-      cursor = next;
-    } while (cursor !== '0');
-  }
-
+  let cursor = '0';
+  do {
+    const [next, keys] = await scanStep(client, cursor, pattern, SCAN_BATCH_SIZE, options);
+    for (const key of keys) found.add(key);
+    cursor = next;
+  } while (cursor !== '0');
   return [...found];
 }
 
@@ -193,6 +231,9 @@ function wrapClient(client: RawRedisClient, options: WrapOptions): RedisClient {
     del: (...keys) => client.del(...keys),
     expire: (key, seconds) => client.expire(key, seconds),
     mget: (...keys) => client.mget(...keys),
+    exists: (...keys) => client.exists(...keys),
+    incr: (key) => client.incr(key),
+    decr: (key) => client.decr(key),
     zadd: (key, score, member) => client.zadd(key, score, member),
     zrange: (key, start, stop) => client.zrange(key, start, stop),
     zrangebyscore: (key, min, max) => client.zrangebyscore(key, min, max),
@@ -231,6 +272,8 @@ function wrapClient(client: RawRedisClient, options: WrapOptions): RedisClient {
       client.off(event, callback as EventCallback);
     },
     keys: (pattern) => scanKeys(client, pattern, options),
+    scan: (cursor, _match, pattern, _count, count) =>
+      scanStep(client, String(cursor), pattern, count, options),
     duplicate: () => wrapClient(client.duplicate(), options),
     info: (section) => (section ? client.info(section) : client.info()),
   };

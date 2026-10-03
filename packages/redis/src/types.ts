@@ -79,9 +79,13 @@ export interface RedisClient {
   del(...keys: string[]): Promise<number>;
   expire(key: string, seconds: number): Promise<number>;
   mget(...keys: string[]): Promise<(string | null)[]>;
+  exists(...keys: string[]): Promise<number>;
+  incr(key: string): Promise<number>;
+  decr(key: string): Promise<number>;
 
   zadd(key: string, score: number, member: string): Promise<number>;
-  zrange(key: string, start: number, stop: number): Promise<string[]>;
+  /** `stop` may also be a string such as `'-1'`, as ioredis takes it */
+  zrange(key: string, start: number, stop: number | string): Promise<string[]>;
   zrangebyscore(key: string, min: number | string, max: number | string): Promise<string[]>;
   zrem(key: string, ...members: string[]): Promise<number>;
 
@@ -104,6 +108,20 @@ export interface RedisClient {
    * instead of the blocking KEYS command and covers every master node in cluster mode.
    */
   keys(pattern: string): Promise<string[]>;
+
+  /**
+   * One SCAN step with ioredis' `SCAN cursor MATCH pattern COUNT count` signature: start with
+   * cursor `'0'` and call again with the returned cursor until it is `'0'` again. Like `keys`,
+   * the pattern and the returned keys are relative to `keyPrefix`; in cluster mode the cursor
+   * walks every master node in turn.
+   */
+  scan(
+    cursor: number | string,
+    matchToken: 'MATCH',
+    pattern: string,
+    countToken: 'COUNT',
+    count: number | string
+  ): Promise<[cursor: string, keys: string[]]>;
 
   duplicate(): RedisClient;
 

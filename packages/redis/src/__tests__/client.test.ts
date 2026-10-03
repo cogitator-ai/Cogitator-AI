@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi, beforeEach } from 'vitest';
 import type { RedisClient } from '../types';
 
 type EventCallback = (...args: unknown[]) => void;
@@ -15,6 +15,9 @@ function createMockRawClient() {
     del: vi.fn().mockResolvedValue(1),
     expire: vi.fn().mockResolvedValue(1),
     mget: vi.fn().mockResolvedValue([]),
+    exists: vi.fn().mockResolvedValue(0),
+    incr: vi.fn().mockResolvedValue(1),
+    decr: vi.fn().mockResolvedValue(0),
     zadd: vi.fn().mockResolvedValue(1),
     zrange: vi.fn().mockResolvedValue([]),
     zrangebyscore: vi.fn().mockResolvedValue([]),
@@ -214,6 +217,20 @@ describe('wrapClient (via createRedisClient)', () => {
 
     await client.zrem('zkey', 'm1', 'm2');
     expect(rawClient.zrem).toHaveBeenCalledWith('zkey', 'm1', 'm2');
+  });
+
+  it('delegates the counters and existence checks a tool cache uses', async () => {
+    await client.exists('k1', 'k2');
+    expect(rawClient.exists).toHaveBeenCalledWith('k1', 'k2');
+
+    await client.incr('counter');
+    expect(rawClient.incr).toHaveBeenCalledWith('counter');
+
+    await client.decr('counter');
+    expect(rawClient.decr).toHaveBeenCalledWith('counter');
+
+    await client.zrange('zkey', 0, '-1');
+    expect(rawClient.zrange).toHaveBeenCalledWith('zkey', 0, '-1');
   });
 
   it('delegates smembers', async () => {
@@ -422,6 +439,86 @@ describe('keys with prefixes and clusters', () => {
     expect(nodes).toHaveBeenCalledWith('master');
     expect(rawClient.scan).not.toHaveBeenCalled();
     expect(keys.sort()).toEqual(['x', 'y']);
+  });
+});
+
+describe('scan with prefixes and clusters', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('takes one SCAN step relative to the key prefix', async () => {
+    const rawClient = createMockRawClient();
+    rawClient.scan.mockResolvedValue(['42', ['app:toolcache:entry:a']]);
+    vi.doMock('ioredis', () => ({ default: createMockIoRedis(rawClient) }));
+
+    const { createRedisClient } = await import('../factory');
+    const client = await createRedisClient({ keyPrefix: 'app:' });
+    const step = await client.scan(0, 'MATCH', 'toolcache:*', 'COUNT', 100);
+
+    expect(rawClient.scan).toHaveBeenCalledWith('0', 'MATCH', 'app:toolcache:*', 'COUNT', 100);
+    expect(step).toEqual(['42', ['toolcache:entry:a']]);
+  });
+
+  it('walks every master node with one cursor in cluster mode', async () => {
+    const rawClient = createMockRawClient();
+    const masterA = createMockRawClient();
+    const masterB = createMockRawClient();
+    masterA.scan
+      .mockResolvedValueOnce(['5', ['{app}:a1']])
+      .mockResolvedValueOnce(['0', ['{app}:a2']]);
+    masterB.scan.mockResolvedValueOnce(['0', ['{app}:b1']]);
+    Object.assign(rawClient, { nodes: vi.fn().mockReturnValue([masterA, masterB]) });
+    vi.doMock('ioredis', () => ({ default: createMockIoRedis(rawClient) }));
+
+    const { createRedisClient } = await import('../factory');
+    const client = await createRedisClient({
+      mode: 'cluster',
+      nodes: [{ host: 'h', port: 7000 }],
+      keyPrefix: '{app}:',
+    });
+
+    const steps: Array<[string, string[]]> = [];
+    let cursor = '0';
+    do {
+      const step = await client.scan(cursor, 'MATCH', '*', 'COUNT', 10);
+      steps.push(step);
+      cursor = step[0];
+    } while (cursor !== '0');
+
+    expect(steps).toEqual([
+      ['0:5', ['a1']],
+      ['1:0', ['a2']],
+      ['0', ['b1']],
+    ]);
+    expect(masterA.scan).toHaveBeenNthCalledWith(2, '5', 'MATCH', '{app}:*', 'COUNT', 10);
+    await expect(client.scan('7:0', 'MATCH', '*', 'COUNT', 10)).rejects.toThrow(
+      'Invalid SCAN cursor'
+    );
+  });
+
+  it('has every command the core tool cache needs from its Redis client', () => {
+    interface ToolCacheRedisClient {
+      get(key: string): Promise<string | null>;
+      setex(key: string, seconds: number, value: string): Promise<string>;
+      del(...keys: string[]): Promise<number>;
+      mget(...keys: string[]): Promise<(string | null)[]>;
+      zadd(key: string, score: number, member: string): Promise<number>;
+      zrange(key: string, start: number, stop: string): Promise<string[]>;
+      zrem(key: string, ...members: string[]): Promise<number>;
+      incr(key: string): Promise<number>;
+      decr(key: string): Promise<number>;
+      exists(...keys: string[]): Promise<number>;
+      scan(
+        cursor: number | string,
+        matchToken: 'MATCH',
+        pattern: string,
+        countToken: 'COUNT',
+        count: number | string
+      ): Promise<[cursor: string, keys: string[]]>;
+    }
+
+    expectTypeOf<RedisClient>().toExtend<ToolCacheRedisClient>();
   });
 });
 
