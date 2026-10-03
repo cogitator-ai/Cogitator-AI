@@ -14,6 +14,7 @@ import { BaseSandboxExecutor } from './base';
 import { ContainerPool } from '../pool/container-pool';
 import { parseMemory } from '../utils/parse-resources';
 import { OutputCollector } from '../utils/output-collector';
+import { dockerConnectionCandidates } from '../utils/docker-connection';
 import type { Docker, DockerExec, DockerStream } from '../docker-types';
 
 export interface DockerExecutorOptions {
@@ -39,20 +40,23 @@ export class DockerSandboxExecutor extends BaseSandboxExecutor {
   async connect(): Promise<SandboxResult<void>> {
     try {
       const Dockerode = (await import('dockerode')).default;
-      const connection = this.options.docker ?? {};
-      const dockerOptions = connection.socketPath
-        ? { socketPath: connection.socketPath }
-        : connection.host
-          ? { host: connection.host, port: connection.port }
-          : undefined;
-
-      this.docker = new Dockerode(dockerOptions) as unknown as Docker;
-
-      await this.docker.ping();
+      let lastError: unknown;
+      for (const options of dockerConnectionCandidates(this.options.docker)) {
+        const docker = new Dockerode(options) as unknown as Docker;
+        try {
+          await docker.ping();
+          this.docker = docker;
+          break;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (!this.docker) throw lastError;
 
       this.pool = new ContainerPool(this.docker, {
         maxSize: this.options.pool?.maxSize ?? 5,
         idleTimeoutMs: this.options.pool?.idleTimeoutMs ?? 60_000,
+        reuseContainers: this.options.pool?.reuseContainers ?? false,
       });
 
       return this.success(undefined);

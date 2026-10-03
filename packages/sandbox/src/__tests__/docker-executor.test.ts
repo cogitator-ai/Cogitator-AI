@@ -101,7 +101,7 @@ describe('DockerSandboxExecutor', () => {
     });
 
     it('returns failure when Docker ping fails', async () => {
-      mockDocker.ping.mockRejectedValueOnce(new Error('Docker not running'));
+      mockDocker.ping.mockRejectedValue(new Error('Docker not running'));
 
       const result = await executor.connect();
       expect(result.success).toBe(false);

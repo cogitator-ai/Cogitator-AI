@@ -19,6 +19,7 @@ export class SandboxManager {
   private executors = new Map<SandboxType, BaseSandboxExecutor>();
   private config: SandboxManagerConfig;
   private initPromise?: Promise<void>;
+  private warnedNativeFallback = false;
 
   constructor(config: SandboxManagerConfig = {}) {
     this.config = config;
@@ -86,18 +87,33 @@ export class SandboxManager {
       return executor.execute(request, mergedConfig);
     }
 
-    const fallbackChain: SandboxType[] =
-      type === 'wasm' ? ['docker', 'native'] : type === 'docker' ? ['native'] : [];
-
-    for (const fallback of fallbackChain) {
-      const fallbackExecutor = this.executors.get(fallback);
-      if (fallbackExecutor) {
-        console.warn(`[sandbox] ${type} unavailable, falling back to ${fallback} execution`);
-        return fallbackExecutor.execute(request, { ...mergedConfig, type: fallback });
-      }
+    if (type !== 'docker') {
+      return {
+        success: false,
+        error:
+          type === 'wasm'
+            ? 'WASM sandbox unavailable: install @extism/extism to run WASM tools'
+            : `Sandbox type '${type}' not available`,
+      };
     }
 
-    return { success: false, error: `Sandbox type '${type}' not available` };
+    const native = this.executors.get('native');
+    if (this.config.allowNativeFallback === false || !native) {
+      return {
+        success: false,
+        error:
+          'Docker sandbox unavailable and sandbox.allowNativeFallback is false: refusing to run the command on the host',
+      };
+    }
+
+    if (!this.warnedNativeFallback) {
+      this.warnedNativeFallback = true;
+      console.warn(
+        '[sandbox] Docker is unavailable: Docker-sandboxed commands now run UNSANDBOXED on the host. ' +
+          'Set sandbox.allowNativeFallback: false to refuse them instead.'
+      );
+    }
+    return native.execute(request, { ...mergedConfig, type: 'native' });
   }
 
   async isDockerAvailable(): Promise<boolean> {

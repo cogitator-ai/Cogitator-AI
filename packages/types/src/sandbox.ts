@@ -87,6 +87,13 @@ export interface SandboxPoolConfig {
   maxSize?: number;
   /** Idle timeout before destroying container (ms) */
   idleTimeoutMs?: number;
+  /**
+   * Run later executions with the same settings in the same container instead
+   * of a fresh one. Faster, but files and processes an execution leaves behind
+   * are visible to the next — including other runs and users. Default: false,
+   * every execution gets a container nothing ran in before (kept warm ahead).
+   */
+  reuseContainers?: boolean;
 }
 
 export interface SandboxDockerConfig {
@@ -120,6 +127,12 @@ export interface SandboxManagerConfig {
   docker?: SandboxDockerConfig;
   /** WASM sandbox options */
   wasm?: SandboxWasmConfig;
+  /**
+   * Run a Docker-sandboxed tool directly on the host, unsandboxed, when Docker
+   * is unavailable (with a warning). Default: true; set false to fail those
+   * calls instead. WASM tools never fall back: nothing else can run them.
+   */
+  allowNativeFallback?: boolean;
 }
 
 export type SandboxResult<T> = { success: true; data: T } | { success: false; error: string };

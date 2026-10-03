@@ -9,7 +9,8 @@ import { cpusToNanoCpus } from '../utils/parse-resources';
 interface PooledContainer {
   container: DockerContainer;
   key: string;
-  inUse: boolean;
+  image: string;
+  options: ContainerCreateOptions;
   lastUsed: number;
 }
 
@@ -27,6 +28,8 @@ export interface ContainerCreateOptions {
 export interface ContainerPoolOptions {
   maxSize?: number;
   idleTimeoutMs?: number;
+  /** Hand a released container to the next execution with the same settings (see `SandboxPoolConfig.reuseContainers`) */
+  reuseContainers?: boolean;
 }
 
 export const SANDBOX_CONTAINER_LABEL = 'ai.cogitator.sandbox';
@@ -45,17 +48,29 @@ function poolKey(image: string, options: ContainerCreateOptions): string {
   ]);
 }
 
+/**
+ * Docker containers for sandboxed executions. By default every execution gets
+ * a container no code ran in before: a released container is destroyed and a
+ * fresh one with the same settings is started in its place, so the next
+ * execution finds it warm. With `reuseContainers` a released container goes
+ * back to the pool as it is.
+ */
 export class ContainerPool {
   private docker: Docker;
-  private containers: PooledContainer[] = [];
+  private idle: PooledContainer[] = [];
+  private active = new Map<string, PooledContainer>();
+  private warming = new Set<Promise<void>>();
   private maxSize: number;
   private idleTimeoutMs: number;
+  private reuseContainers: boolean;
+  private closed = false;
   private cleanupInterval?: ReturnType<typeof setInterval>;
 
   constructor(docker: Docker, options: ContainerPoolOptions = {}) {
     this.docker = docker;
     this.maxSize = options.maxSize ?? 5;
     this.idleTimeoutMs = options.idleTimeoutMs ?? 60_000;
+    this.reuseContainers = options.reuseContainers ?? false;
 
     this.cleanupInterval = setInterval(() => void this.cleanup(), this.idleTimeoutMs / 2);
     this.cleanupInterval.unref?.();
@@ -63,45 +78,53 @@ export class ContainerPool {
 
   async acquire(image: string, options: ContainerCreateOptions): Promise<DockerContainer> {
     const key = poolKey(image, options);
-    const available = this.containers.find((c) => !c.inUse && c.key === key);
+    const index = this.idle.findIndex((c) => c.key === key);
+    const pooled =
+      index === -1
+        ? { container: await this.createContainer(image, options), key, image, options }
+        : this.idle.splice(index, 1)[0];
 
-    if (available) {
-      available.inUse = true;
-      available.lastUsed = Date.now();
-      return available.container;
-    }
-
-    const container = await this.createContainer(image, options);
-
-    if (this.containers.length < this.maxSize) {
-      this.containers.push({
-        container,
-        key,
-        inUse: true,
-        lastUsed: Date.now(),
-      });
-    }
-
-    return container;
+    this.active.set(pooled.container.id, { ...pooled, lastUsed: Date.now() });
+    return pooled.container;
   }
 
   async release(container: DockerContainer, options?: { corrupted?: boolean }): Promise<void> {
-    const pooled = this.containers.find((c) => c.container.id === container.id);
+    const pooled = this.active.get(container.id);
+    this.active.delete(container.id);
 
-    if (options?.corrupted) {
-      if (pooled) {
-        this.containers = this.containers.filter((c) => c.container.id !== container.id);
-      }
-      await this.destroyContainer(container);
+    if (pooled && this.reuseContainers && !options?.corrupted && this.hasRoom()) {
+      this.idle.push({ ...pooled, lastUsed: Date.now() });
       return;
     }
 
-    if (pooled) {
-      pooled.inUse = false;
-      pooled.lastUsed = Date.now();
-    } else {
-      await this.destroyContainer(container);
-    }
+    await this.destroyContainer(container);
+    if (pooled && !this.reuseContainers) this.prewarm(pooled.image, pooled.options);
+  }
+
+  private hasRoom(): boolean {
+    return !this.closed && this.idle.length + this.warming.size < this.maxSize;
+  }
+
+  /** Starts a fresh container with these settings for the next execution. */
+  private prewarm(image: string, options: ContainerCreateOptions): void {
+    if (!this.hasRoom()) return;
+    const warming: Promise<void> = this.createContainer(image, options)
+      .then(async (container) => {
+        if (this.closed) {
+          await this.destroyContainer(container);
+          return;
+        }
+        const key = poolKey(image, options);
+        this.idle.push({ container, key, image, options, lastUsed: Date.now() });
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          '[container-pool] Failed to start a warm container:',
+          error instanceof Error ? error.message : String(error)
+        );
+      })
+      .finally(() => this.warming.delete(warming));
+    this.warming.add(warming);
   }
 
   private async createContainer(
@@ -174,26 +197,21 @@ export class ContainerPool {
 
   private async cleanup(): Promise<void> {
     const now = Date.now();
-    const toRemove: PooledContainer[] = [];
-
-    for (const pooled of this.containers) {
-      if (!pooled.inUse && now - pooled.lastUsed > this.idleTimeoutMs) {
-        toRemove.push(pooled);
-      }
-    }
-
-    for (const pooled of toRemove) {
-      this.containers = this.containers.filter((c) => c !== pooled);
-      await this.destroyContainer(pooled.container);
-    }
+    const expired = this.idle.filter((pooled) => now - pooled.lastUsed > this.idleTimeoutMs);
+    this.idle = this.idle.filter((pooled) => !expired.includes(pooled));
+    await Promise.all(expired.map((pooled) => this.destroyContainer(pooled.container)));
   }
 
   async destroyAll(): Promise<void> {
+    this.closed = true;
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
     }
 
-    await Promise.all(this.containers.map((c) => this.destroyContainer(c.container)));
-    this.containers = [];
+    await Promise.all([...this.warming]);
+    const containers = [...this.idle, ...this.active.values()].map((c) => c.container);
+    this.idle = [];
+    this.active.clear();
+    await Promise.all(containers.map((container) => this.destroyContainer(container)));
   }
 }

@@ -57,9 +57,28 @@ describe('ContainerPool', () => {
     );
 
     it.skipIf(!dockerAvailable)(
-      'reuses containers with same image',
+      'gives the next execution a fresh container by default',
       async () => {
-        const pool = new ContainerPool(docker!, { maxSize: 5 });
+        const pool = new ContainerPool(docker!, { maxSize: 2 });
+
+        try {
+          const first = await pool.acquire('alpine:3.19', { networkMode: 'none' });
+          await pool.release(first);
+          const second = await pool.acquire('alpine:3.19', { networkMode: 'none' });
+
+          expect(second.id).not.toBe(first.id);
+          await pool.release(second);
+        } finally {
+          await pool.destroyAll();
+        }
+      },
+      60_000
+    );
+
+    it.skipIf(!dockerAvailable)(
+      'reuses containers with same image when reuseContainers is on',
+      async () => {
+        const pool = new ContainerPool(docker!, { maxSize: 5, reuseContainers: true });
 
         try {
           const container1 = await pool.acquire('alpine:3.19', {

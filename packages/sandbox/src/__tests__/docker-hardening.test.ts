@@ -58,7 +58,7 @@ describe('ContainerPool isolation', () => {
 
   it('never reuses a container created with different security settings', async () => {
     const docker = createMockDocker();
-    pool = new ContainerPool(docker, { maxSize: 5, idleTimeoutMs: 60_000 });
+    pool = new ContainerPool(docker, { maxSize: 5, idleTimeoutMs: 60_000, reuseContainers: true });
 
     const networked = await pool.acquire('alpine:3.19', {
       networkMode: 'bridge',

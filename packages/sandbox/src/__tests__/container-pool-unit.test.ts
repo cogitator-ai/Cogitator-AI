@@ -49,13 +49,49 @@ describe('ContainerPool (unit, mocked Docker)', () => {
     expect(container.start).toHaveBeenCalled();
   });
 
-  it('reuses container after release', async () => {
-    const container1 = await pool.acquire('alpine:3.19', { networkMode: 'none' });
-    const id1 = container1.id;
-    await pool.release(container1);
+  it('never hands out a container another execution ran in', async () => {
+    const first = await pool.acquire('alpine:3.19', { networkMode: 'none' });
+    await pool.release(first);
 
-    const container2 = await pool.acquire('alpine:3.19', { networkMode: 'none' });
-    expect(container2.id).toBe(id1);
+    const second = await pool.acquire('alpine:3.19', { networkMode: 'none' });
+
+    expect(second.id).not.toBe(first.id);
+    expect(first.stop).toHaveBeenCalled();
+    expect(first.remove).toHaveBeenCalledWith({ force: true });
+  });
+
+  it('starts a fresh container ahead for the next execution with the same settings', async () => {
+    const first = await pool.acquire('alpine:3.19', { networkMode: 'none' });
+    await pool.release(first);
+    await vi.waitFor(() => expect(docker.createContainer).toHaveBeenCalledTimes(2));
+    const warm = await (docker.createContainer as ReturnType<typeof vi.fn>).mock.results[1].value;
+    await vi.waitFor(() => expect(warm.start).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const second = await pool.acquire('alpine:3.19', { networkMode: 'none' });
+
+    expect(second).toBe(warm);
+    expect(second.exec).not.toHaveBeenCalled();
+    expect(docker.createContainer).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses a released container with reuseContainers', async () => {
+    const reusing = new ContainerPool(docker, { maxSize: 3, reuseContainers: true });
+    const container1 = await reusing.acquire('alpine:3.19', { networkMode: 'none' });
+    await reusing.release(container1);
+
+    const container2 = await reusing.acquire('alpine:3.19', { networkMode: 'none' });
+
+    expect(container2.id).toBe(container1.id);
+    await reusing.destroyAll();
+  });
+
+  it('destroys a container still in use on destroyAll', async () => {
+    const container = await pool.acquire('alpine:3.19', { networkMode: 'none' });
+
+    await pool.destroyAll();
+
+    expect(container.remove).toHaveBeenCalled();
   });
 
   it('creates new container for different image', async () => {
@@ -161,7 +197,7 @@ describe('ContainerPool (unit, mocked Docker)', () => {
     );
   });
 
-  it('does not exceed max pool size in tracked containers', async () => {
+  it('keeps at most maxSize containers warm', async () => {
     const containers: DockerContainer[] = [];
     for (let i = 0; i < 5; i++) {
       containers.push(await pool.acquire('alpine:3.19', { networkMode: 'none' }));
@@ -171,10 +207,11 @@ describe('ContainerPool (unit, mocked Docker)', () => {
       await pool.release(c);
     }
 
-    expect(docker.createContainer).toHaveBeenCalledTimes(5);
+    await vi.waitFor(() => expect(docker.createContainer).toHaveBeenCalledTimes(8));
   });
 
-  it('destroys non-pooled container on release', async () => {
+  it('destroys a released container beyond maxSize with reuseContainers', async () => {
+    pool = new ContainerPool(docker, { maxSize: 3, reuseContainers: true });
     for (let i = 0; i < 3; i++) {
       const c = await pool.acquire('alpine:3.19', { networkMode: 'none' });
       await pool.release(c);
