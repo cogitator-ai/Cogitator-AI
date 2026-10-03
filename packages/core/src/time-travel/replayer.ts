@@ -12,6 +12,7 @@ import type {
 } from '@cogitator-ai/types';
 import type { Agent } from '../agent';
 import type { Cogitator } from '../runtime';
+import { countToolCallSteps } from './checkpoint-store';
 
 export interface ExecutionReplayerOptions {
   checkpointStore: TimeTravelCheckpointStore;
@@ -45,7 +46,7 @@ export class ExecutionReplayer {
   ): Promise<ReplayResult> {
     const messages = this.buildMessagesForReplay(checkpoint, options.modifiedMessages);
 
-    const stepsReplayed = checkpoint.stepIndex + 1;
+    const stepsReplayed = checkpoint.stepIndex;
     const stepsExecuted = 0;
     const divergedAt: number | undefined = undefined;
 
@@ -106,8 +107,8 @@ export class ExecutionReplayer {
       threadId: `replay_${checkpoint.runId}`,
     });
 
-    const stepsReplayed = checkpoint.stepIndex + 1;
-    const stepsExecuted = this.countSteps(runResult);
+    const stepsReplayed = checkpoint.stepIndex;
+    const stepsExecuted = countToolCallSteps(runResult);
     const divergedAt = this.findDivergencePoint(checkpoint, runResult);
 
     const replayResult: ReplayResult = {
@@ -177,9 +178,12 @@ export class ExecutionReplayer {
       .map((m) => `[${m.role}]: ${this.getTextContent(m.content)}`)
       .join('\n');
 
-    const newInstructions = systemMessage
-      ? `${this.getTextContent(systemMessage.content)}\n\n---\nReplay Context (conversation history up to checkpoint):\n${contextFromHistory}`
+    const baseInstructions = systemMessage
+      ? this.getTextContent(systemMessage.content)
       : agent.instructions;
+    const newInstructions = contextFromHistory
+      ? `${baseInstructions}\n\n---\nReplay Context (conversation history up to checkpoint):\n${contextFromHistory}`
+      : baseInstructions;
 
     return new (agent.constructor as typeof Agent)({
       ...agent.config,
@@ -187,20 +191,6 @@ export class ExecutionReplayer {
       instructions: newInstructions,
       tools: replayTools(agent.tools, options),
     });
-  }
-
-  private countSteps(result: RunResult): number {
-    let count = 0;
-    for (const span of result.trace.spans) {
-      if (
-        span.name.startsWith('tool.') ||
-        span.name.includes('llm') ||
-        span.name.includes('chat')
-      ) {
-        count++;
-      }
-    }
-    return count;
   }
 
   private findDivergencePoint(
@@ -215,18 +205,18 @@ export class ExecutionReplayer {
       const curr = newToolCalls[i];
 
       if (orig.name !== curr.name) {
-        return checkpoint.stepIndex + i + 1;
+        return checkpoint.stepIndex + i;
       }
 
       const origArgs = JSON.stringify(orig.arguments);
       const currArgs = JSON.stringify(curr.arguments);
       if (origArgs !== currArgs) {
-        return checkpoint.stepIndex + i + 1;
+        return checkpoint.stepIndex + i;
       }
     }
 
     if (originalToolCalls.length !== newToolCalls.length) {
-      return checkpoint.stepIndex + Math.min(originalToolCalls.length, newToolCalls.length) + 1;
+      return checkpoint.stepIndex + Math.min(originalToolCalls.length, newToolCalls.length);
     }
 
     return undefined;

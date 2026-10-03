@@ -302,6 +302,20 @@ describe('InMemoryCheckpointStore', () => {
     });
   });
 
+  describe('createFromTrace', () => {
+    it('keeps the result of the pending tool call out of the checkpoint', () => {
+      const trace = createMockTrace();
+
+      const pending = store.createFromTrace(trace, 1);
+      const after = store.createFromTrace(trace, 2);
+
+      expect(pending.pendingToolCalls.map((c) => c.id)).toEqual(['call_123']);
+      expect(pending.toolResults).toEqual({});
+      expect(after.pendingToolCalls).toEqual([]);
+      expect(after.toolResults).toEqual({ call_123: 3 });
+    });
+  });
+
   describe('createAllFromRunResult', () => {
     it('should create checkpoints for all steps', async () => {
       const runResult = createMockRunResult();

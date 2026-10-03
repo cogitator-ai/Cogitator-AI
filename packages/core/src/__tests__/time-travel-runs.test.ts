@@ -184,3 +184,117 @@ describe('TimeTravel on real runs', () => {
     expect(labels).toEqual(['fresh']);
   });
 });
+
+/** Searches for "ai", then for "ml", then answers. */
+function twoSearchBackend() {
+  const requests: ChatRequest[] = [];
+  const backend: LLMBackend = {
+    provider: 'openai',
+    chat: vi.fn(async (request: ChatRequest): Promise<ChatResponse> => {
+      requests.push(request);
+      const results = request.messages.filter((m) => m.role === 'tool').length;
+      if (results < 2) {
+        const q = results === 0 ? 'ai' : 'ml';
+        return {
+          id: `r${requests.length}`,
+          content: `searching ${q}`,
+          toolCalls: [{ id: `call_${q}`, name: 'search', arguments: { q } }],
+          finishReason: 'tool_calls',
+          usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+        };
+      }
+      return {
+        id: 'done',
+        content: 'done',
+        finishReason: 'stop',
+        usage: { inputTokens: 20, outputTokens: 5, totalTokens: 25 },
+      };
+    }),
+    chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+      yield { id: 's', delta: {}, finishReason: 'stop' };
+    }),
+  };
+  return { backend, requests };
+}
+
+describe('TimeTravel checkpoints anchored on tool calls', () => {
+  let cog: Cogitator;
+  let requests: ChatRequest[];
+  const agent = () =>
+    new Agent({
+      name: 'researcher',
+      model: 'openai/gpt-6-luna',
+      instructions: 'Research the question.',
+      tools: [search],
+    });
+
+  beforeEach(async () => {
+    const scripted = twoSearchBackend();
+    requests = scripted.requests;
+    const { createLLMBackend } = await import('../llm/index');
+    vi.mocked(createLLMBackend).mockReturnValue(scripted.backend);
+    cog = new Cogitator();
+  });
+
+  afterEach(async () => {
+    await cog.close();
+  });
+
+  it('holds the conversation before the result of the pending tool call', async () => {
+    const tt = new TimeTravel(cog);
+    const run = await cog.run(agent(), { input: 'Research AI' });
+
+    const [first, second] = await Promise.all([tt.checkpoint(run, 0), tt.checkpoint(run, 1)]);
+
+    expect(first.pendingToolCalls.map((c) => c.id)).toEqual(['call_ai']);
+    expect(first.toolResults).toEqual({});
+    expect(first.messages.filter((m) => m.role === 'tool')).toEqual([]);
+    expect(first.messages.at(-1)?.content).toBe('searching ai');
+
+    expect(second.pendingToolCalls.map((c) => c.id)).toEqual(['call_ml']);
+    expect(Object.keys(second.toolResults)).toEqual(['call_ai']);
+    expect(second.messages.filter((m) => m.role === 'tool').map((m) => m.toolCallId)).toEqual([
+      'call_ai',
+    ]);
+    expect(second.messages.at(-1)?.content).toBe('searching ml');
+  });
+
+  it('checkpoints every tool call, not every model call', async () => {
+    const tt = new TimeTravel(cog);
+    const run = await cog.run(agent(), { input: 'Research AI' });
+
+    const all = await tt.checkpointAll(run);
+    const every = await tt.checkpointEvery(run, 1);
+
+    expect(all.map((c) => c.pendingToolCalls[0]?.id)).toEqual(['call_ai', 'call_ml']);
+    expect(every).toHaveLength(2);
+  });
+
+  it('reports the step a live replay diverged at and the steps it replayed', async () => {
+    const tt = new TimeTravel(cog);
+    const run = await cog.run(agent(), { input: 'Research AI' });
+    const checkpoint = await tt.checkpoint(run, 1);
+
+    const replay = await tt.replayLive(agent(), checkpoint.id);
+
+    expect(replay.stepsReplayed).toBe(1);
+    expect(replay.stepsExecuted).toBe(2);
+    expect(replay.divergedAt).toBe(1);
+  });
+
+  it('keeps the history in a live replay of messages without a system message', async () => {
+    const tt = new TimeTravel(cog);
+    const run = await cog.run(agent(), { input: 'Research AI' });
+    const checkpoint = await tt.checkpoint(run, 1);
+    requests.length = 0;
+
+    await tt.replay(agent(), checkpoint.id, {
+      modifiedMessages: checkpoint.messages.filter((m) => m.role !== 'system'),
+    });
+
+    const system = requests[0].messages.find((m) => m.role === 'system');
+    expect(system?.content).toContain('Research the question.');
+    expect(system?.content).toContain('Replay Context');
+    expect(system?.content).toContain('searching ai');
+  });
+});

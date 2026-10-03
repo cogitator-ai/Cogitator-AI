@@ -9,6 +9,14 @@ import type {
 } from '@cogitator-ai/types';
 import { toolResultsByCallId } from '../learning/trace-builder';
 
+/**
+ * The steps of a run that checkpoints anchor on: its tool calls, counted from
+ * the `tool.*` spans of its trace.
+ */
+export function countToolCallSteps(result: RunResult): number {
+  return result.trace.spans.filter((span) => span.name.startsWith('tool.')).length;
+}
+
 export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
   private checkpoints = new Map<string, ExecutionCheckpoint>();
   private traceIndex = new Map<string, Set<string>>();
@@ -173,14 +181,14 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
     stepIndex: number,
     options?: { label?: string; metadata?: Record<string, unknown> }
   ): ExecutionCheckpoint {
-    const stepsUpToIndex = trace.steps.slice(0, stepIndex + 1);
+    const stepsBeforeIndex = trace.steps.slice(0, stepIndex);
 
     const messages: Message[] = [];
     messages.push({ role: 'user', content: trace.input });
 
     const toolResults: Record<string, unknown> = {};
 
-    for (const step of stepsUpToIndex) {
+    for (const step of stepsBeforeIndex) {
       if (step.type === 'tool_call' && step.toolResult) {
         toolResults[step.toolResult.callId] = step.toolResult.result;
       }
@@ -212,7 +220,7 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
     options?: { labelPrefix?: string }
   ): Promise<ExecutionCheckpoint[]> {
     const checkpoints: ExecutionCheckpoint[] = [];
-    const stepCount = this.countStepsFromSpans(result);
+    const stepCount = countToolCallSteps(result);
 
     for (let i = 0; i < stepCount; i++) {
       const checkpoint = this.createFromRunResult(result, i, {
@@ -262,16 +270,17 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
     }
   }
 
+  /** The conversation before the result of the `stepIndex`-th tool call. */
   private extractMessagesUpToStep(messages: Message[], stepIndex: number): Message[] {
-    let toolCallCount = 0;
+    let toolResultCount = 0;
     const result: Message[] = [];
 
     for (const msg of messages) {
-      result.push(msg);
       if (msg.role === 'tool') {
-        toolCallCount++;
-        if (toolCallCount > stepIndex) break;
+        if (toolResultCount === stepIndex) break;
+        toolResultCount++;
       }
+      result.push(msg);
     }
 
     return result;
@@ -322,20 +331,6 @@ export class InMemoryCheckpointStore implements TimeTravelCheckpointStore {
     }
 
     return [];
-  }
-
-  private countStepsFromSpans(result: RunResult): number {
-    let count = 0;
-    for (const span of result.trace.spans) {
-      if (
-        span.name.startsWith('tool.') ||
-        span.name.includes('llm') ||
-        span.name.includes('chat')
-      ) {
-        count++;
-      }
-    }
-    return count;
   }
 
   private callIdOf(attributes: Record<string, unknown>): string | undefined {

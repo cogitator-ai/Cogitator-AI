@@ -9,11 +9,12 @@ import type {
   TimeTravelCheckpointStore,
   RunResult,
   TimeTravelConfig,
+  ExecutionStep,
 } from '@cogitator-ai/types';
 import { DEFAULT_TIME_TRAVEL_CONFIG } from '@cogitator-ai/types';
 import type { Agent } from '../agent';
 import type { Cogitator } from '../runtime';
-import { InMemoryCheckpointStore } from './checkpoint-store';
+import { InMemoryCheckpointStore, countToolCallSteps } from './checkpoint-store';
 import { ExecutionReplayer } from './replayer';
 import { ExecutionForker } from './forker';
 import { TraceComparator } from './comparator';
@@ -85,7 +86,7 @@ export class TimeTravel {
     }
 
     await this.recordTrace(result);
-    const stepCount = this.countSteps(result);
+    const stepCount = countToolCallSteps(result);
     const checkpoints: ExecutionCheckpoint[] = [];
 
     for (let i = 0; i < stepCount; i += interval) {
@@ -271,7 +272,7 @@ export class TimeTravel {
       id: result.trace.traceId,
       runId: result.runId,
       output: result.output,
-      steps: original.steps.slice(0, result.stepsReplayed),
+      steps: stepsBeforeToolCall(original.steps, result.stepsReplayed),
       createdAt: new Date(),
       isDemo: false,
     });
@@ -304,18 +305,15 @@ export class TimeTravel {
     await this.recordTrace(fork.result, true);
     return fork;
   }
+}
 
-  private countSteps(result: RunResult): number {
-    let count = 0;
-    for (const span of result.trace.spans) {
-      if (
-        span.name.startsWith('tool.') ||
-        span.name.includes('llm') ||
-        span.name.includes('chat')
-      ) {
-        count++;
-      }
-    }
-    return count;
+/** The trace steps before its `toolCallIndex`-th tool call: all of them when it has fewer. */
+function stepsBeforeToolCall(steps: ExecutionStep[], toolCallIndex: number): ExecutionStep[] {
+  let toolCalls = 0;
+  for (let i = 0; i < steps.length; i++) {
+    if (steps[i].type !== 'tool_call') continue;
+    if (toolCalls === toolCallIndex) return steps.slice(0, i);
+    toolCalls++;
   }
+  return [...steps];
 }
