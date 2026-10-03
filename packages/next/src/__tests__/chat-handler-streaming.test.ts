@@ -34,6 +34,12 @@ function chatRequest(body: unknown, init: RequestInit = {}): Request {
 
 const userBody = { messages: [{ role: 'user', content: 'Hi' }] };
 
+function collectGarbage(): void {
+  const { gc } = globalThis as { gc?: () => void };
+  if (!gc) throw new Error('Run with --expose-gc (see vitest.config.ts)');
+  gc();
+}
+
 interface Event {
   type: string;
   [key: string]: unknown;
@@ -203,7 +209,7 @@ describe('createChatHandler streaming', () => {
     await vi.waitFor(() => expect(runSignal?.aborted).toBe(true));
   });
 
-  it('aborts the run when the request signal aborts', async () => {
+  it('aborts the run when the request signal aborts, even after the request is collected', async () => {
     const controller = new AbortController();
     let runSignal: AbortSignal | undefined;
     const { cogitator } = cogitatorWith(
@@ -220,6 +226,9 @@ describe('createChatHandler streaming', () => {
     )(chatRequest(userBody, { signal: controller.signal }));
     const text = res.text();
     await vi.waitFor(() => expect(runSignal).toBeDefined());
+    collectGarbage();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    collectGarbage();
     controller.abort();
 
     await vi.waitFor(() => expect(runSignal?.aborted).toBe(true));

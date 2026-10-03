@@ -11,5 +11,6 @@ export default defineConfig({
       exclude: ['**/node_modules/**', '**/dist/**'],
     },
     testTimeout: 30000,
+    execArgv: ['--expose-gc'],
   },
 });

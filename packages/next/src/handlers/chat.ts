@@ -125,10 +125,15 @@ export function createChatHandler(
     const abortRun = () => {
       if (!abortController.signal.aborted) abortController.abort();
     };
-    const parentSignals = [req.signal, runContext.signal].filter(
-      (signal): signal is AbortSignal => signal instanceof AbortSignal
-    );
-    for (const signal of parentSignals) {
+    /**
+     * Read from `req` on every use: a Request's signal follows its source only
+     * while the Request is reachable, so the stream must keep `req` alive.
+     */
+    const parentSignals = () =>
+      [req.signal, runContext.signal].filter(
+        (signal): signal is AbortSignal => signal instanceof AbortSignal
+      );
+    for (const signal of parentSignals()) {
       if (signal.aborted) abortRun();
       else signal.addEventListener('abort', abortRun, { once: true });
     }
@@ -218,7 +223,7 @@ export function createChatHandler(
           });
         }
       } finally {
-        for (const signal of parentSignals) {
+        for (const signal of parentSignals()) {
           signal.removeEventListener('abort', abortRun);
         }
         await sw.close();
