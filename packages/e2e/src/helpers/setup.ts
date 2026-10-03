@@ -47,6 +47,7 @@ export function createTestAgent(opts?: {
   maxTokens?: number;
   maxIterations?: number;
   responseFormat?: { type: 'text' } | { type: 'json' };
+  temperature?: number;
 }): Agent {
   return new Agent({
     name: opts?.name ?? 'TestAgent',
@@ -56,6 +57,7 @@ export function createTestAgent(opts?: {
     maxTokens: opts?.maxTokens,
     maxIterations: opts?.maxIterations,
     responseFormat: opts?.responseFormat,
+    temperature: opts?.temperature ?? 0,
   });
 }
 

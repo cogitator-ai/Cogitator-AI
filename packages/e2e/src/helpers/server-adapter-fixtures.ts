@@ -82,6 +82,7 @@ export function createChatAgent(model: string): Agent {
     instructions: 'You are a concise assistant. Answer in one short sentence.',
     model,
     maxTokens: 256,
+    temperature: 0,
   });
 }
 
@@ -94,6 +95,7 @@ export function createCalculatorAgent(model: string): Agent {
     model,
     tools: [multiplyTool],
     maxIterations: 4,
+    temperature: 0,
   });
 }
 
