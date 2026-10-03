@@ -237,10 +237,6 @@ export interface CogitatorProvider<
   languageModel(agentName: string, options?: CogitatorProviderOptions): CogitatorLanguageModel<V>;
 }
 
-export interface AISDKModelWrapperOptions {
-  defaultModel?: string;
-}
-
 export type CogitatorTool<TParams = unknown, TResult = unknown> = Tool<TParams, TResult>;
 
 type Bivariant<TArgs extends unknown[], TResult> = {

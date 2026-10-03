@@ -4,7 +4,6 @@ export { fromAISDKTool, toAISDKTool, convertToolsFromAISDK, convertToolsToAISDK 
 
 export type {
   AISDKLanguageModel,
-  AISDKModelWrapperOptions,
   AISDKSchema,
   AISDKSchemaValidation,
   AISDKTool,
