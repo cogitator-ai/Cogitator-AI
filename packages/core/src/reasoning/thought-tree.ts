@@ -95,7 +95,8 @@ export class ThoughtTreeExecutor {
 
     let bestNode: ThoughtNode | null = null;
 
-    const timeoutAt = options.timeout ? startTime + options.timeout : null;
+    const timeout = options.timeout ?? this.config.timeout;
+    const timeoutAt = timeout ? startTime + timeout : null;
     const abortSignal = options.abortSignal;
 
     while (this.open.length > 0) {

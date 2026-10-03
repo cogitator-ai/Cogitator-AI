@@ -169,6 +169,38 @@ describe('ThoughtTreeExecutor', () => {
     await cog.close();
   });
 
+  it('stops exploring at the configured timeout unless explore() sets its own', async () => {
+    const script: TreeScript = {
+      children: (thought) => (thought === 'root' ? ['A', 'B'] : []),
+      confidence: () => 0.6,
+    };
+    const slowRoot = () => {
+      const until = Date.now() + 10;
+      while (Date.now() < until);
+    };
+
+    const configured = setup(script);
+    const timedOut = await new ThoughtTreeExecutor(configured.cog, {
+      maxDepth: 1,
+      timeout: 5,
+      onBranchGenerated: slowRoot,
+    }).explore(configured.agent, 'goal');
+
+    expect(configured.runs).toEqual([]);
+    expect(timedOut.stats.exploredNodes).toBe(0);
+    await configured.cog.close();
+
+    const overridden = setup(script);
+    await new ThoughtTreeExecutor(overridden.cog, {
+      maxDepth: 1,
+      timeout: 5,
+      onBranchGenerated: slowRoot,
+    }).explore(overridden.agent, 'goal', { timeout: 60_000 });
+
+    expect(overridden.runs).toEqual(['A', 'B']);
+    await overridden.cog.close();
+  });
+
   it('caps the iterations of each branch run at maxIterationsPerBranch', async () => {
     const { cog, agent, runCalls } = setup({
       children: (thought) => (thought === 'root' ? ['A'] : []),

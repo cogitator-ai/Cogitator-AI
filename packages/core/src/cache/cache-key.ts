@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 export interface CacheKeyOptions {
   toolName: string;
   params: unknown;
+  /** Key prefix (default `toolcache`); a `:` is added when it does not end with one */
   prefix?: string;
 }
 
@@ -10,7 +11,8 @@ export function generateCacheKey(options: CacheKeyOptions): string {
   const { toolName, params, prefix = 'toolcache' } = options;
   const paramsStr = stableStringify(params);
   const hash = createHash('sha256').update(`${toolName}:${paramsStr}`).digest('hex').slice(0, 16);
-  return `${prefix}:${toolName}:${hash}`;
+  const separator = prefix.endsWith(':') ? '' : ':';
+  return `${prefix}${separator}${toolName}:${hash}`;
 }
 
 export function stableStringify(obj: unknown): string {

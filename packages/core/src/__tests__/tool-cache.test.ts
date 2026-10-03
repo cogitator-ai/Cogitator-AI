@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { tool } from '../tool';
 import {
   withCache,
+  createToolCacheStorage,
   InMemoryToolCacheStorage,
   generateCacheKey,
   paramsToQueryString,
@@ -119,6 +120,35 @@ describe('Tool Cache', () => {
         prefix: 'myprefix',
       });
       expect(key.startsWith('myprefix:')).toBe(true);
+    });
+
+    it('does not double the separator of a prefix that ends with a colon', () => {
+      const plain = generateCacheKey({ toolName: 'test', params: { a: 1 }, prefix: 'app' });
+      const colon = generateCacheKey({ toolName: 'test', params: { a: 1 }, prefix: 'app:' });
+
+      expect(colon).toBe(plain);
+      expect(colon).not.toContain('::');
+    });
+  });
+
+  describe('createToolCacheStorage', () => {
+    it('reports memory evictions through onEvict', async () => {
+      const onEvict = vi.fn();
+      const storage = createToolCacheStorage('memory', { maxSize: 1, onEvict });
+      const now = Date.now();
+      const entry = (key: string) => ({
+        key,
+        result: key,
+        createdAt: now,
+        expiresAt: now + 60_000,
+        hits: 0,
+        lastAccessedAt: now,
+      });
+
+      await storage.set('a', entry('a'));
+      await storage.set('b', entry('b'));
+
+      expect(onEvict).toHaveBeenCalledExactlyOnceWith('a');
     });
   });
 
@@ -345,6 +375,29 @@ describe('Tool Cache', () => {
         generateCacheKey({ toolName: 'upper', params: { input: 'a' }, prefix: 'toolcache' })
       );
       expect(cached.cache.stats().evictions).toBe(1);
+    });
+
+    it('keys entries under a keyPrefix that ends with a colon without doubling it', async () => {
+      const upper = tool({
+        name: 'upper',
+        description: 'Upper-case',
+        parameters: z.object({ input: z.string() }),
+        execute: async ({ input }) => input.toUpperCase(),
+      });
+      const onMiss = vi.fn();
+      const cached = withCache(upper, {
+        strategy: 'exact',
+        ttl: '1h',
+        maxSize: 10,
+        storage: 'memory',
+        keyPrefix: 'app:',
+        onMiss,
+      });
+
+      await cached.execute({ input: 'a' }, mockContext);
+
+      const [key] = onMiss.mock.calls[0] as [string];
+      expect(key).toMatch(/^app:upper:[0-9a-f]{16}$/);
     });
 
     it('throws immediately when redis storage has no client', () => {

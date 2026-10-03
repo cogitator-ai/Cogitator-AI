@@ -1,6 +1,6 @@
 import { describe, it, expect, expectTypeOf, beforeEach, vi } from 'vitest';
 import type { CacheEntry, RedisClientLike } from '@cogitator-ai/types';
-import { RedisToolCacheStorage } from '../cache/index';
+import { RedisToolCacheStorage, createToolCacheStorage } from '../cache/index';
 
 class FakeRedis implements RedisClientLike {
   readonly strings = new Map<string, string>();
@@ -127,6 +127,16 @@ describe('RedisToolCacheStorage', () => {
   it('reports LRU evictions through onEvict', async () => {
     const onEvict = vi.fn();
     const evicting = new RedisToolCacheStorage({ client: redis, maxSize: 1, onEvict });
+
+    await evicting.set('a', entry('a', { lastAccessedAt: 1 }));
+    await evicting.set('b', entry('b', { lastAccessedAt: 2 }));
+
+    expect(onEvict).toHaveBeenCalledExactlyOnceWith('a');
+  });
+
+  it('forwards onEvict from createToolCacheStorage', async () => {
+    const onEvict = vi.fn();
+    const evicting = createToolCacheStorage('redis', { redisClient: redis, maxSize: 1, onEvict });
 
     await evicting.set('a', entry('a', { lastAccessedAt: 1 }));
     await evicting.set('b', entry('b', { lastAccessedAt: 2 }));

@@ -155,6 +155,8 @@ export function createToolCacheStorage(
     maxSize?: number;
     redisClient?: RedisClientLike;
     keyPrefix?: string;
+    /** Called with the key of each entry evicted to make room (`maxSize`) */
+    onEvict?: (key: string) => void;
   } = {}
 ): ToolCacheStorage {
   if (type === 'redis') {
@@ -165,8 +167,9 @@ export function createToolCacheStorage(
       client: options.redisClient,
       keyPrefix: options.keyPrefix,
       maxSize: options.maxSize,
+      onEvict: options.onEvict,
     });
   }
 
-  return new InMemoryToolCacheStorage(options.maxSize);
+  return new InMemoryToolCacheStorage(options.maxSize, { onEvict: options.onEvict });
 }
