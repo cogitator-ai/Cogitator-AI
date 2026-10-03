@@ -194,6 +194,33 @@ describe('WebSocket', () => {
     expect(observer.messages).toHaveLength(before);
   });
 
+  it("keeps another user's run events away from a subscriber", async () => {
+    const { url } = await start(
+      async (options) => {
+        options.onToken?.(`secret of ${options.userId}`);
+        return { output: 'done' };
+      },
+      { auth: (req) => ({ userId: String(req.headers['x-user']) }) }
+    );
+    const alice = await connect(url, { 'x-user': 'alice' });
+    const aliceTab = await connect(url, { 'x-user': 'alice' });
+    for (const client of [alice, aliceTab]) {
+      client.send({ type: 'subscribe', channel: 'agent:bot' });
+      await vi.waitFor(() => expect(client.messages[0]).toMatchObject({ type: 'subscribed' }));
+    }
+
+    const bob = await connect(url, { 'x-user': 'bob' });
+    bob.send(runMessage('bob-run'));
+    await vi.waitFor(() => expect(bob.messages).toHaveLength(2));
+
+    alice.send(runMessage('alice-run'));
+    await vi.waitFor(() =>
+      expect(aliceTab.messages.slice(1).map((m) => m.id)).toEqual(['alice-run', 'alice-run'])
+    );
+    expect(JSON.stringify(aliceTab.messages)).not.toContain('secret of bob');
+    expect(alice.messages.some((m) => m.id === 'bob-run')).toBe(false);
+  });
+
   it.each([
     ['non-JSON text', 'not json'],
     ['null', 'null'],

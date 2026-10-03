@@ -52,16 +52,20 @@ type AgentRunControls = Pick<
   'userId' | 'signal' | 'stream' | 'onToken' | 'onReasoning' | 'onToolCall' | 'onToolResult'
 >;
 
+/**
+ * Run events fan out only to subscribers acting as the user who started the run,
+ * so one user's prompts and results never reach another user's socket.
+ */
 class ChannelHub {
-  private readonly channels = new Map<string, Set<WebSocketType>>();
+  private readonly channels = new Map<string, Map<WebSocketType, string | undefined>>();
 
-  subscribe(ws: WebSocketType, channel: string): void {
+  subscribe(ws: WebSocketType, channel: string, userId: string | undefined): void {
     let members = this.channels.get(channel);
     if (!members) {
-      members = new Set();
+      members = new Map();
       this.channels.set(channel, members);
     }
-    members.add(ws);
+    members.set(ws, userId);
   }
 
   unsubscribe(ws: WebSocketType, channel: string): void {
@@ -71,11 +75,17 @@ class ChannelHub {
     if (members.size === 0) this.channels.delete(channel);
   }
 
-  publish(channel: string, response: WebSocketResponse, exclude?: WebSocketType): void {
+  publish(
+    channel: string,
+    response: WebSocketResponse,
+    origin: { ws: WebSocketType; userId: string | undefined }
+  ): void {
     const members = this.channels.get(channel);
     if (!members) return;
-    for (const member of members) {
-      if (member !== exclude) sendResponse(member, { ...response, channel });
+    for (const [member, userId] of members) {
+      if (member !== origin.ws && userId === origin.userId) {
+        sendResponse(member, { ...response, channel });
+      }
     }
   }
 }
@@ -255,7 +265,7 @@ async function handleMessage(
         break;
       }
       state.subscriptions.add(channel);
-      hub.subscribe(ws, channel);
+      hub.subscribe(ws, channel, state.auth?.userId);
       sendResponse(ws, { type: 'subscribed', id: message.id, channel });
       break;
     }
@@ -366,7 +376,7 @@ async function streamAgentRun(
   const emit = (eventPayload: Record<string, unknown>) => {
     const response: WebSocketResponse = { type: 'event', id: message.id, payload: eventPayload };
     sendResponse(ws, response);
-    hub.publish(channel, response, ws);
+    hub.publish(channel, response, { ws, userId: state.auth?.userId });
   };
 
   try {

@@ -51,16 +51,20 @@ interface WebSocketRoutesOptions {
   path?: string;
 }
 
+/**
+ * Run events fan out only to subscribers acting as the user who started the run,
+ * so one user's prompts and results never reach another user's socket.
+ */
 class ChannelHub {
-  private readonly channels = new Map<string, Set<WebSocket>>();
+  private readonly channels = new Map<string, Map<WebSocket, string | undefined>>();
 
-  subscribe(socket: WebSocket, channel: string): void {
+  subscribe(socket: WebSocket, channel: string, userId: string | undefined): void {
     let members = this.channels.get(channel);
     if (!members) {
-      members = new Set();
+      members = new Map();
       this.channels.set(channel, members);
     }
-    members.add(socket);
+    members.set(socket, userId);
   }
 
   unsubscribe(socket: WebSocket, channel: string): void {
@@ -70,11 +74,17 @@ class ChannelHub {
     if (members.size === 0) this.channels.delete(channel);
   }
 
-  publish(channel: string, response: WebSocketResponse, exclude?: WebSocket): void {
+  publish(
+    channel: string,
+    response: WebSocketResponse,
+    origin: { socket: WebSocket; userId: string | undefined }
+  ): void {
     const members = this.channels.get(channel);
     if (!members) return;
-    for (const member of members) {
-      if (member !== exclude) sendResponse(member, { ...response, channel });
+    for (const [member, userId] of members) {
+      if (member !== origin.socket && userId === origin.userId) {
+        sendResponse(member, { ...response, channel });
+      }
     }
   }
 }
@@ -210,7 +220,7 @@ async function handleMessage(
         break;
       }
       state.subscriptions.add(channel);
-      hub.subscribe(socket, channel);
+      hub.subscribe(socket, channel, state.auth?.userId);
       sendResponse(socket, { type: 'subscribed', id: message.id, channel });
       break;
     }
@@ -329,7 +339,7 @@ async function streamAgentRun(
   const emit = (eventPayload: Record<string, unknown>) => {
     const response: WebSocketResponse = { type: 'event', id: message.id, payload: eventPayload };
     sendResponse(socket, response);
-    hub.publish(channel, response, socket);
+    hub.publish(channel, response, { socket, userId: state.auth?.userId });
   };
 
   try {
