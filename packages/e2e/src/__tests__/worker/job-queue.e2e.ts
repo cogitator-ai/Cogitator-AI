@@ -96,8 +96,8 @@ describe('Worker: Metrics', () => {
     expect(output).toContain('cogitator_queue_depth 15');
     expect(output).toContain('cogitator_queue_waiting 10');
     expect(output).toContain('cogitator_queue_active 3');
-    expect(output).toContain('cogitator_queue_completed_total 500');
-    expect(output).toContain('cogitator_queue_failed_total 12');
+    expect(output).toContain('cogitator_queue_completed 500');
+    expect(output).toContain('cogitator_queue_failed 12');
     expect(output).toContain('cogitator_queue_delayed 5');
     expect(output).toContain('cogitator_workers_total 8');
   });

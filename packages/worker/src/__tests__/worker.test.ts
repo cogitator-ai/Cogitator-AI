@@ -181,6 +181,27 @@ describe('WorkerPool', () => {
       expect(onJobFailed).toHaveBeenCalledWith('job_123', error);
     });
 
+    it('counts a failed job once its last attempt failed', async () => {
+      pool = new WorkerPool(defaultConfig);
+      await pool.start();
+
+      const handler = mockWorkerOn.mock.calls.find((call) => call[0] === 'failed')![1];
+      const error = new Error('Job failed');
+      handler({ id: 'job_1', data: { jobId: 'job_1', type: 'agent' } }, error);
+      handler({ id: 'job_1', data: { jobId: 'job_1', type: 'agent' }, finishedOn: 2000 }, error);
+
+      const output = pool.metrics.format({
+        waiting: 0,
+        active: 0,
+        completed: 0,
+        failed: 1,
+        delayed: 0,
+        depth: 0,
+        workerCount: 2,
+      });
+      expect(output).toContain('cogitator_jobs_failed_total{type="agent"} 1');
+    });
+
     it('calls onWorkerError callback', async () => {
       const onWorkerError = vi.fn();
       pool = new WorkerPool(defaultConfig, { onWorkerError });

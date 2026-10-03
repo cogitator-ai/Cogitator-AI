@@ -20,8 +20,8 @@ describe('Prometheus Metrics', () => {
       expect(output).toContain('cogitator_queue_depth 12');
       expect(output).toContain('cogitator_queue_waiting 10');
       expect(output).toContain('cogitator_queue_active 3');
-      expect(output).toContain('cogitator_queue_completed_total 500');
-      expect(output).toContain('cogitator_queue_failed_total 5');
+      expect(output).toContain('cogitator_queue_completed 500');
+      expect(output).toContain('cogitator_queue_failed 5');
       expect(output).toContain('cogitator_queue_delayed 2');
       expect(output).toContain('cogitator_workers_total 4');
     });
@@ -31,7 +31,15 @@ describe('Prometheus Metrics', () => {
 
       expect(output).toContain('# HELP cogitator_queue_depth');
       expect(output).toContain('# TYPE cogitator_queue_depth gauge');
-      expect(output).toContain('# TYPE cogitator_queue_completed_total counter');
+      expect(output).toContain('# TYPE cogitator_queue_delayed gauge');
+    });
+
+    it('exports the retained completed and failed job counts as gauges, not counters', () => {
+      const output = formatPrometheusMetrics(sampleMetrics);
+
+      expect(output).toContain('# TYPE cogitator_queue_completed gauge');
+      expect(output).toContain('# TYPE cogitator_queue_failed gauge');
+      expect(output).not.toMatch(/^# TYPE cogitator_queue_\w+ counter$/m);
     });
 
     it('formats metrics with labels', () => {
@@ -125,6 +133,22 @@ describe('Prometheus Metrics', () => {
 
       expect(output).toContain('cogitator_jobs_by_type_total{type="agent"} 2');
       expect(output).toContain('cogitator_jobs_by_type_total{type="workflow"} 1');
+    });
+
+    it('counts jobs that failed their last attempt by type', () => {
+      collector.recordFailure('agent');
+      collector.recordFailure('agent');
+      collector.recordFailure('swarm');
+
+      const output = collector.format(sampleMetrics, { cluster: 'main' });
+
+      expect(output).toContain('# TYPE cogitator_jobs_failed_total counter');
+      expect(output).toContain('cogitator_jobs_failed_total{cluster="main",type="agent"} 2');
+      expect(output).toContain('cogitator_jobs_failed_total{cluster="main",type="swarm"} 1');
+    });
+
+    it('omits the failure counter until a job fails', () => {
+      expect(collector.format(sampleMetrics)).not.toContain('cogitator_jobs_failed_total');
     });
 
     it('tracks job durations', () => {

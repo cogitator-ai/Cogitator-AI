@@ -83,6 +83,7 @@ export class WorkerPool {
 
       worker.on('failed', (job, error) => {
         if (job) {
+          if (job.finishedOn !== undefined) this.metrics.recordFailure(job.data.type);
           this.events.onJobFailed?.(job.id ?? job.data.jobId, error);
         }
       });

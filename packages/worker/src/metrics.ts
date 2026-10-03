@@ -54,13 +54,13 @@ export function formatPrometheusMetrics(
     '# TYPE cogitator_queue_active gauge',
     `cogitator_queue_active${labelSuffix} ${metrics.active}`,
     '',
-    '# HELP cogitator_queue_completed_total Total number of completed jobs',
-    '# TYPE cogitator_queue_completed_total counter',
-    `cogitator_queue_completed_total${labelSuffix} ${metrics.completed}`,
+    '# HELP cogitator_queue_completed Completed jobs kept in Redis (capped by removeOnComplete)',
+    '# TYPE cogitator_queue_completed gauge',
+    `cogitator_queue_completed${labelSuffix} ${metrics.completed}`,
     '',
-    '# HELP cogitator_queue_failed_total Total number of failed jobs',
-    '# TYPE cogitator_queue_failed_total counter',
-    `cogitator_queue_failed_total${labelSuffix} ${metrics.failed}`,
+    '# HELP cogitator_queue_failed Failed jobs kept in Redis (capped by removeOnFail)',
+    '# TYPE cogitator_queue_failed gauge',
+    `cogitator_queue_failed${labelSuffix} ${metrics.failed}`,
     '',
     '# HELP cogitator_queue_delayed Number of delayed/scheduled jobs',
     '# TYPE cogitator_queue_delayed gauge',
@@ -156,6 +156,7 @@ export class DurationHistogram {
 export class MetricsCollector {
   readonly jobDuration: DurationHistogram;
   private jobsByType = new Map<string, number>();
+  private failedJobsByType = new Map<string, number>();
 
   constructor() {
     this.jobDuration = new DurationHistogram(
@@ -173,21 +174,48 @@ export class MetricsCollector {
   }
 
   /**
+   * Record a job that failed its last attempt
+   */
+  recordFailure(type: string): void {
+    this.failedJobsByType.set(type, (this.failedJobsByType.get(type) ?? 0) + 1);
+  }
+
+  /**
    * Format all metrics
    */
   format(queueMetrics: QueueMetrics, labels?: Record<string, string>): string {
     const parts = [formatPrometheusMetrics(queueMetrics, labels), this.jobDuration.format(labels)];
 
-    if (this.jobsByType.size > 0) {
-      parts.push('# HELP cogitator_jobs_by_type_total Jobs processed by type');
-      parts.push('# TYPE cogitator_jobs_by_type_total counter');
-      for (const [type, count] of this.jobsByType) {
-        const typeLabels = renderLabels({ ...labels, type });
-        parts.push(`cogitator_jobs_by_type_total{${typeLabels}} ${count}`);
-      }
-      parts.push('');
-    }
+    parts.push(
+      ...formatCounterByType(
+        'cogitator_jobs_by_type_total',
+        'Jobs processed by type',
+        this.jobsByType,
+        labels
+      ),
+      ...formatCounterByType(
+        'cogitator_jobs_failed_total',
+        'Jobs that failed their last attempt, by type',
+        this.failedJobsByType,
+        labels
+      )
+    );
 
     return parts.join('\n');
   }
+}
+
+function formatCounterByType(
+  name: string,
+  help: string,
+  counts: ReadonlyMap<string, number>,
+  labels: Record<string, string> | undefined
+): string[] {
+  if (counts.size === 0) return [];
+  const lines = [`# HELP ${name} ${help}`, `# TYPE ${name} counter`];
+  for (const [type, count] of counts) {
+    lines.push(`${name}{${renderLabels({ ...labels, type })}} ${count}`);
+  }
+  lines.push('');
+  return lines;
 }
