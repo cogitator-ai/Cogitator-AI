@@ -14,6 +14,7 @@ import type {
   SolverResult,
   LogicQueryResult,
   NeuroSymbolicConfig,
+  ResolvedNeuroSymbolicConfig,
   NeuroSymbolicResult,
 } from '@cogitator-ai/types';
 
@@ -55,7 +56,7 @@ export interface NeuroSymbolicOptions {
 }
 
 export class NeuroSymbolic {
-  private config: NeuroSymbolicConfig;
+  private config: ResolvedNeuroSymbolicConfig;
   private knowledgeBase: KnowledgeBase;
   private resolver: SLDResolver;
   private actionRegistry: ActionRegistry;
@@ -435,7 +436,8 @@ export class NeuroSymbolic {
     return this.actionRegistry;
   }
 
-  getConfig(): NeuroSymbolicConfig {
+  /** A copy of the configuration with every section filled in. */
+  getConfig(): ResolvedNeuroSymbolicConfig {
     return {
       logic: { ...this.config.logic },
       constraints: { ...this.config.constraints },

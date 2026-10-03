@@ -563,6 +563,11 @@ export interface NeuroSymbolicConfig {
   };
 }
 
+/** `NeuroSymbolicConfig` with every section present, as a running instance holds it. */
+export type ResolvedNeuroSymbolicConfig = {
+  [K in keyof NeuroSymbolicConfig]-?: NonNullable<NeuroSymbolicConfig[K]>;
+};
+
 export const DEFAULT_LOGIC_CONFIG: Required<LogicProgrammingConfig> = {
   maxDepth: 50,
   maxSolutions: 10,
