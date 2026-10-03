@@ -16,6 +16,24 @@ import {
 import type { Tool, ToolContext } from '@cogitator-ai/types';
 import type { MCPClient } from '../client/mcp-client';
 
+type JsonSchemaInput = Parameters<typeof jsonSchemaToZod>[0];
+type JsonSchemaProperty = NonNullable<JsonSchemaInput['properties']>[string];
+
+function isJsonSchemaProperty(value: unknown): value is JsonSchemaProperty {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function toJsonSchemaInput(json: ReturnType<typeof zodToJsonSchema>): JsonSchemaInput {
+  const properties: Record<string, JsonSchemaProperty> = {};
+  for (const [key, value] of Object.entries(json.properties)) {
+    if (!isJsonSchemaProperty(value)) {
+      throw new Error(`Property ${key} is not a JSON Schema object`);
+    }
+    properties[key] = value;
+  }
+  return { ...json, properties };
+}
+
 describe('zodToJsonSchema', () => {
   it('should convert simple string schema', () => {
     const schema = z.object({
@@ -617,7 +635,7 @@ describe('jsonSchemaToZod edge cases', () => {
 
   it('round-trips nullable fields produced by zodToJsonSchema', () => {
     const json = zodToJsonSchema(z.object({ note: z.string().nullable() }));
-    const schema = jsonSchemaToZod(json);
+    const schema = jsonSchemaToZod(toJsonSchemaInput(json));
     expect(schema.safeParse({ note: null }).success).toBe(true);
     expect(schema.safeParse({ note: 'x' }).success).toBe(true);
   });

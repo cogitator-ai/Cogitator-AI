@@ -108,6 +108,9 @@ export interface MCPPromptMessage {
   };
 }
 
+/** What a resource's `read` returns; `uri` defaults to the URI that was read. */
+export type MCPResourceReadContent = Omit<MCPResourceContent, 'uri'> & { uri?: string };
+
 export interface MCPResourceConfig {
   uri: string;
   name: string;
@@ -117,7 +120,7 @@ export interface MCPResourceConfig {
   read: (
     params: Record<string, string>,
     caller?: MCPCaller
-  ) => Promise<MCPResourceContent | MCPResourceContent[]>;
+  ) => Promise<MCPResourceReadContent | MCPResourceReadContent[]>;
 }
 
 export interface MCPPromptArgumentConfig {
@@ -126,8 +129,14 @@ export interface MCPPromptArgumentConfig {
   required?: boolean;
 }
 
+/** A message a prompt's `get` returns; string content is plain text. */
+export interface MCPPromptReplyMessage {
+  role: MCPPromptMessage['role'];
+  content: string | MCPPromptMessage['content'];
+}
+
 export interface MCPPromptResult {
-  messages: MCPPromptMessage[];
+  messages: MCPPromptReplyMessage[];
   description?: string;
 }
 

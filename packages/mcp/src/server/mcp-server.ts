@@ -21,7 +21,7 @@ import type {
   MCPCaller,
   MCPServerConfig,
   MCPResourceConfig,
-  MCPResourceContent,
+  MCPResourceReadContent,
   MCPPromptConfig,
   MCPPromptMessage,
   MCPToolContent,
@@ -352,9 +352,12 @@ export class MCPServer {
   ): void {
     const isTemplate = config.uri.includes('{');
 
-    const formatContents = (result: MCPResourceContent | MCPResourceContent[], uriHref: string) => {
+    const formatContents = (
+      result: MCPResourceReadContent | MCPResourceReadContent[],
+      uriHref: string
+    ) => {
       const contents = Array.isArray(result) ? result : [result];
-      return contents.map((c: MCPResourceContent) => {
+      return contents.map((c) => {
         const base: { uri: string; mimeType?: string } = {
           uri: c.uri || uriHref,
         };

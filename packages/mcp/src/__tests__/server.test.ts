@@ -45,7 +45,11 @@ const mockTool: Tool = {
   }),
 };
 
-const mockToolNoParams: Tool = {
+function withoutParameters(tool: Omit<Tool, 'parameters'>): Tool {
+  return tool as Tool;
+}
+
+const mockToolNoParams = withoutParameters({
   name: 'simple_tool',
   description: 'A simple tool without Zod params',
   execute: vi.fn().mockResolvedValue('simple result'),
@@ -57,7 +61,7 @@ const mockToolNoParams: Tool = {
       properties: { value: { type: 'number' } },
     },
   }),
-};
+});
 
 describe('MCPServer', () => {
   beforeEach(() => {
@@ -270,7 +274,7 @@ describe('MCPServer Resources', () => {
         name: 'Threads',
         description: 'List of threads',
         mimeType: 'application/json',
-        read: async () => ({ text: '[]' }),
+        read: async () => ({ uri: 'memory://threads', text: '[]' }),
       });
 
       expect(server.getRegisteredResources()).toContain('memory://threads');
@@ -286,7 +290,7 @@ describe('MCPServer Resources', () => {
       server.registerResource({
         uri: 'memory://thread/{id}',
         name: 'Thread',
-        read: async ({ id }) => ({ text: JSON.stringify({ id }) }),
+        read: async ({ id }) => ({ uri: `memory://thread/${id}`, text: JSON.stringify({ id }) }),
       });
 
       expect(server.getRegisteredResources()).toContain('memory://thread/{id}');
@@ -303,12 +307,12 @@ describe('MCPServer Resources', () => {
         {
           uri: 'memory://threads',
           name: 'Threads',
-          read: async () => ({ text: '[]' }),
+          read: async () => ({ uri: 'memory://threads', text: '[]' }),
         },
         {
           uri: 'memory://thread/{id}',
           name: 'Thread',
-          read: async () => ({ text: '{}' }),
+          read: async () => ({ uri: 'memory://thread/1', text: '{}' }),
         },
       ]);
 
@@ -328,7 +332,7 @@ describe('MCPServer Resources', () => {
         server.registerResource({
           uri: 'memory://test',
           name: 'Test',
-          read: async () => ({ text: 'test' }),
+          read: async () => ({ uri: 'memory://test', text: 'test' }),
         })
       ).toThrow('Cannot register resources after server has started');
 
@@ -347,7 +351,7 @@ describe('MCPServer Resources', () => {
       server.registerResource({
         uri: 'memory://test',
         name: 'Test',
-        read: async () => ({ text: 'test' }),
+        read: async () => ({ uri: 'memory://test', text: 'test' }),
       });
 
       const removed = server.unregisterResource('memory://test');
@@ -376,7 +380,7 @@ describe('MCPServer Resources', () => {
       server.registerResource({
         uri: 'memory://test',
         name: 'Test',
-        read: async () => ({ text: 'test' }),
+        read: async () => ({ uri: 'memory://test', text: 'test' }),
       });
       await server.start();
 
