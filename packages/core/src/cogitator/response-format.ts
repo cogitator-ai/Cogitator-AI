@@ -59,26 +59,73 @@ function isStrictCompatible(schema: unknown): boolean {
 /**
  * Reads the structured result of a run from its final text.
  *
- * Returns `undefined` when the agent asked for plain text, when the text is not
- * JSON, or when it does not match the agent's schema.
+ * Returns `undefined` when the agent asked for plain text, when the text holds
+ * no JSON, or when it does not match the agent's schema.
  */
 export function parseStructuredOutput(format: ResponseFormat | undefined, output: string): unknown {
-  if (!format || format.type === 'text') return undefined;
-
-  const parsed = parseJson(output);
-  if (parsed === undefined) return undefined;
-  if (format.type === 'json') return parsed;
-
-  const result = format.schema.safeParse(parsed);
-  return result.success ? result.data : undefined;
+  const check = checkStructuredOutput(format, output);
+  return check.ok ? check.value : undefined;
 }
 
+/**
+ * Why `output` does not satisfy `format`, in words a model can act on, or
+ * `undefined` when it does (or the agent asked for plain text).
+ */
+export function structuredOutputProblem(
+  format: ResponseFormat | undefined,
+  output: string
+): string | undefined {
+  const check = checkStructuredOutput(format, output);
+  return check.ok ? undefined : check.problem;
+}
+
+type StructuredCheck = { ok: true; value: unknown } | { ok: false; problem: string };
+
+function checkStructuredOutput(
+  format: ResponseFormat | undefined,
+  output: string
+): StructuredCheck {
+  if (!format || format.type === 'text') return { ok: true, value: undefined };
+
+  const parsed = parseJson(output);
+  if (parsed === undefined) return { ok: false, problem: 'the answer is not valid JSON' };
+  if (format.type === 'json') return { ok: true, value: parsed };
+
+  const result = format.schema.safeParse(parsed);
+  if (result.success) return { ok: true, value: result.data };
+  return {
+    ok: false,
+    problem: result.error.issues
+      .map((issue) => `${issue.path.join('.') || 'the answer'}: ${issue.message}`)
+      .join('; '),
+  };
+}
+
+/** JSON in `text`: the whole text, a fenced block, or the outermost object or array within prose. */
 function parseJson(text: string): unknown {
   const trimmed = text.trim();
   const fenced = /^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i.exec(trimmed);
   const candidate = fenced ? fenced[1] : trimmed;
+  const whole = tryParse(candidate);
+  if (whole !== undefined) return whole;
+
+  for (const [open, close] of [
+    ['{', '}'],
+    ['[', ']'],
+  ] as const) {
+    const start = candidate.indexOf(open);
+    const end = candidate.lastIndexOf(close);
+    if (start !== -1 && end > start) {
+      const embedded = tryParse(candidate.slice(start, end + 1));
+      if (embedded !== undefined) return embedded;
+    }
+  }
+  return undefined;
+}
+
+function tryParse(text: string): unknown {
   try {
-    return JSON.parse(candidate) as unknown;
+    return JSON.parse(text) as unknown;
   } catch {
     return undefined;
   }

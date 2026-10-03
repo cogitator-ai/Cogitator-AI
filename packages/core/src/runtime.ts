@@ -61,7 +61,11 @@ import { RunLimiter } from './cogitator/run-limiter';
 import { findHandoffAgent, handoffTools } from './cogitator/handoffs';
 import { PromptRegistry } from './cogitator/prompts';
 import { InMemoryRunCheckpointStore, ThreadRunCheckpointStore } from './cogitator/run-checkpoints';
-import { parseStructuredOutput, toLLMResponseFormat } from './cogitator/response-format';
+import {
+  parseStructuredOutput,
+  structuredOutputProblem,
+  toLLMResponseFormat,
+} from './cogitator/response-format';
 import { CostEstimator } from './cost-routing/cost-estimator';
 import { readEnv } from './utils/env';
 
@@ -675,6 +679,9 @@ export class Cogitator {
         });
       }
 
+      const streaming = Boolean(options.stream && options.onToken);
+      let structuredRepaired = false;
+
       while (!pausedTurn && iterations < maxIterations) {
         throwIfAborted(abortController.signal);
         this.assertTokenBudget(totalInputTokens + totalOutputTokens);
@@ -695,7 +702,7 @@ export class Cogitator {
         const llmSpanStart = Date.now();
 
         let response;
-        if (options.stream && options.onToken) {
+        if (streaming && options.onToken) {
           response = await waitForAbortable(
             streamChat(
               backend,
@@ -788,6 +795,25 @@ export class Cogitator {
           : ({ role: 'assistant', content: outputContent } as Message);
         messages.push(assistantMessage);
 
+        const finalAnswer = !(
+          response.finishReason === 'tool_calls' &&
+          response.toolCalls &&
+          response.toolCalls.length > 0
+        );
+        const structuredProblem =
+          finalAnswer && !streaming && !structuredRepaired && iterations < maxIterations
+            ? structuredOutputProblem(active.config.responseFormat, outputContent)
+            : undefined;
+
+        if (structuredProblem) {
+          structuredRepaired = true;
+          messages.push({
+            role: 'user',
+            content: `Your answer does not match the required response format (${structuredProblem}). Reply again with only the corrected JSON.`,
+          });
+          continue;
+        }
+
         if (
           this.state.memoryAdapter &&
           options.saveHistory !== false &&
@@ -805,16 +831,9 @@ export class Cogitator {
           );
         }
 
-        if (
-          response.finishReason === 'tool_calls' &&
-          response.toolCalls &&
-          response.toolCalls.length > 0
-        ) {
-          pausedTurn = await handleToolTurn(response.toolCalls);
-          if (pausedTurn) break;
-        } else {
-          break;
-        }
+        if (finalAnswer || !response.toolCalls) break;
+        pausedTurn = await handleToolTurn(response.toolCalls);
+        if (pausedTurn) break;
       }
 
       if (pausedTurn) {

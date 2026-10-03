@@ -178,7 +178,9 @@ const result = await cog.run(agent, { input: 'Analyze this article...' });
 const analysis = result.structured as z.infer<typeof analysisSchema> | undefined;
 ```
 
-`structured` is `undefined` when the answer is not valid JSON or does not match the schema, so check it before use. Agents with tools can call them as usual: the format applies to the final answer.
+JSON wrapped in prose or a code fence is still read. When the final answer is not valid JSON or does not match the schema, the run asks the model once more, telling it what was wrong (for example `celsius: expected number, received string`); the rejected answer is not saved to the thread. Streamed runs skip that second attempt, since the client has already seen the first answer.
+
+`structured` is `undefined` when even that answer does not fit, so check it before use. Agents with tools can call them as usual: the format applies to the final answer.
 
 Strict mode is requested only when the schema allows it: OpenAI rejects strict schemas with optional fields, so a schema with `.optional()` properties is sent with `strict: false`.
 
