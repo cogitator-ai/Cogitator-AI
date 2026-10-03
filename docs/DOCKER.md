@@ -42,7 +42,7 @@ pnpm build
 cd packages/dashboard && pnpm dev
 ```
 
-The CLI does the same from any directory below the compose file: `cogitator up` runs `docker compose up -d` when the current directory has no `cogitator.yml`, and `cogitator down` stops the services (`-v` also deletes the volumes). See [cogitator up / down](https://cogitator.app/docs/cli#cogitator-up--down).
+The CLI does the same from any directory below the compose file: `cogitator up` runs `docker compose up -d` when the current directory has no assistant `cogitator.yml` (a runtime config for `@cogitator-ai/config`, such as the one create-cogitator-app generates, does not count), and `cogitator down` stops the services (`-v` also deletes the volumes). See [cogitator up / down](https://cogitator.app/docs/cli#cogitator-up--down).
 
 ### Option 3: CPU Only (No GPU)
 

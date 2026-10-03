@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { constants as osConstants } from 'node:os';
-import { dirname, resolve as resolvePath } from 'node:path';
+import { basename, dirname, resolve as resolvePath } from 'node:path';
 import ora from 'ora';
 import chalk from 'chalk';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
@@ -15,20 +15,29 @@ import {
 import { log } from '../utils/logger.js';
 import { findDockerCompose, checkDocker, composePs, type ComposeService } from '../utils/docker.js';
 import { loadDotenvInto } from '../utils/env.js';
+import {
+  detectConfigKind,
+  findProjectConfig,
+  readConfigKind,
+  runtimeConfigMessage,
+} from '../utils/project-config.js';
 
 export const RESTART_EXIT_CODE = 78;
-const ASSISTANT_CONFIG_FILES = ['cogitator.yml', 'cogitator.yaml'];
 
+/**
+ * `./cogitator.yml` (or `.yaml`) when it is an assistant config. A runtime config of a
+ * code-first project (`@cogitator-ai/config`) is not one: its project runs it.
+ */
 export function findAssistantConfig(cwd: string = process.cwd()): string | null {
-  for (const name of ASSISTANT_CONFIG_FILES) {
-    const full = resolvePath(cwd, name);
-    if (existsSync(full)) return full;
-  }
-  return null;
+  const configPath = findProjectConfig(cwd);
+  return configPath && readConfigKind(configPath) === 'assistant' ? configPath : null;
 }
 
 export function loadAssistantConfig(configPath: string): AssistantConfigOutput {
   const raw: unknown = parseYaml(readFileSync(configPath, 'utf-8'));
+  if (detectConfigKind(raw) === 'runtime') {
+    throw new Error(runtimeConfigMessage(configPath));
+  }
   const result = AssistantConfigSchema.safeParse(raw);
   if (!result.success) {
     const issues = result.error.issues
@@ -109,9 +118,7 @@ async function startFromConfig(configPath: string): Promise<void> {
     return;
   }
 
-  const channelTypes = Object.entries(config.channels)
-    .filter(([, value]) => value !== undefined)
-    .map(([key]) => key);
+  const channelTypes = runtime.gateway.stats.connectedChannels;
 
   console.log();
   log.success(`Assistant "${config.name}" is running`);
@@ -119,6 +126,8 @@ async function startFromConfig(configPath: string): Promise<void> {
   log.dim('  Model:    ' + config.llm.model);
   if (channelTypes.length > 0) {
     log.dim('  Channels: ' + channelTypes.join(', '));
+  } else {
+    log.warn('No channels are running: set their tokens in .env');
   }
   log.dim('  Memory:   ' + config.memory.adapter);
   console.log();
@@ -198,19 +207,32 @@ function printComposeServices(composeDir: string): void {
   }
 }
 
-async function startComposeServices(options: { detach: boolean; pull?: boolean }) {
+async function startComposeServices(
+  options: { detach: boolean; pull?: boolean },
+  runtimeConfig: string | null
+) {
+  const composePath = findDockerCompose();
+  if (!composePath) {
+    if (runtimeConfig) {
+      log.error(runtimeConfigMessage(runtimeConfig));
+      log.dim('No docker-compose.yml found either, so there are no services to start');
+    } else {
+      log.error('No cogitator.yml or docker-compose.yml found');
+      log.dim('Run "cogitator wizard" to create an assistant config');
+    }
+    process.exit(1);
+  }
+
+  if (runtimeConfig) {
+    log.dim(
+      `${basename(runtimeConfig)} is your project's runtime config (loaded by its code), not an assistant`
+    );
+  }
   log.info('Starting Cogitator services...');
 
   if (!checkDocker()) {
     log.error('Docker is not installed or not running');
     log.dim('Install Docker: https://docs.docker.com/get-docker/');
-    process.exit(1);
-  }
-
-  const composePath = findDockerCompose();
-  if (!composePath) {
-    log.error('No cogitator.yml or docker-compose.yml found');
-    log.dim('Run "cogitator wizard" to create an assistant config');
     process.exit(1);
   }
 
@@ -280,13 +302,13 @@ export const upCommand = new Command('up')
         return;
       }
 
-      const configPath = findAssistantConfig();
-      if (configPath) {
-        await startAssistant(configPath, options.restartLoop);
+      const assistantConfig = findAssistantConfig();
+      if (assistantConfig) {
+        await startAssistant(assistantConfig, options.restartLoop);
         return;
       }
 
-      await startComposeServices(options);
+      await startComposeServices(options, findProjectConfig());
     }
   );
 

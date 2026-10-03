@@ -1,12 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync, readSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
+import { PROJECT_CONFIG_FILES, readConfigKind, runtimeConfigMessage } from './project-config.js';
 
 export const DAEMON_LABEL = 'ai.cogitator.daemon';
 export const SYSTEMD_UNIT = 'cogitator';
 export const BUNDLED_ENTRY = 'dist/cogitator.mjs';
 export const BUNDLE_MARKER = '__cogitatorCreateRequire';
-const ASSISTANT_CONFIGS = ['cogitator.yml', 'cogitator.yaml'];
 const DEFAULT_GATEWAY = 'src/gateway.ts';
 
 export interface DaemonLaunch {
@@ -67,18 +67,25 @@ export function resolveDaemonLaunch(opts: ResolveLaunchOptions): DaemonLaunch {
     if (!existsSync(explicit)) {
       throw new Error(`Config not found: ${explicit}`);
     }
+    if (isAssistantConfig(explicit) && readConfigKind(explicit) === 'runtime') {
+      throw new Error(runtimeConfigMessage(explicit));
+    }
     return launchFor(explicit, opts);
   }
 
   const candidates = [
     resolve(opts.cwd, BUNDLED_ENTRY),
-    ...ASSISTANT_CONFIGS.map((name) => resolve(opts.cwd, name)),
+    ...PROJECT_CONFIG_FILES.map((name) => resolve(opts.cwd, name)),
     resolve(opts.cwd, DEFAULT_GATEWAY),
   ];
-  const found = candidates.find((candidate) => existsSync(candidate));
+  const found = candidates.find(
+    (candidate) =>
+      existsSync(candidate) &&
+      !(isAssistantConfig(candidate) && readConfigKind(candidate) === 'runtime')
+  );
   if (!found) {
     throw new Error(
-      `Nothing to run in ${opts.cwd}: expected ${BUNDLED_ENTRY}, cogitator.yml or ${DEFAULT_GATEWAY}`
+      `Nothing to run in ${opts.cwd}: expected ${BUNDLED_ENTRY}, an assistant cogitator.yml or ${DEFAULT_GATEWAY}`
     );
   }
   return launchFor(found, opts);

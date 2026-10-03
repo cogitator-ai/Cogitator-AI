@@ -24,6 +24,7 @@ vi.mock('@cogitator-ai/channels', async (importOriginal) => {
 });
 
 import { upCommand } from '../commands/up.js';
+import { log } from '../utils/logger.js';
 
 describe('cogitator up restart supervisor', () => {
   let dir: string;
@@ -77,5 +78,42 @@ describe('cogitator up restart supervisor', () => {
       [process.argv[1], 'up', '--no-restart-loop', '--config', configPath],
       expect.objectContaining({ stdio: 'inherit' })
     );
+  });
+
+  it('lists only the channels that started, not ones skipped for a missing token', async () => {
+    const configPath = join(dir, 'cogitator.yml');
+    writeFileSync(
+      configPath,
+      [
+        'name: jarvis',
+        'personality: helpful',
+        'llm:',
+        '  provider: ollama',
+        '  model: qwen2.5:0.5b',
+        'channels:',
+        '  telegram:',
+        '    ownerIds: ["42"]',
+        '  webchat:',
+        '    port: 8080',
+        '',
+      ].join('\n')
+    );
+    buildMock.mockReset().mockResolvedValue({
+      gateway: {
+        start: vi.fn().mockResolvedValue(undefined),
+        stats: { connectedChannels: ['telegram'] },
+      },
+      cleanup: vi.fn().mockResolvedValue(undefined),
+    });
+    const lines: string[] = [];
+    vi.spyOn(log, 'dim').mockImplementation((message) => void lines.push(message));
+    vi.spyOn(log, 'info').mockImplementation(() => undefined);
+    vi.spyOn(log, 'success').mockImplementation(() => undefined);
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await upCommand.parseAsync(['--no-restart-loop', '--config', configPath], { from: 'user' });
+
+    expect(lines).toContain('  Channels: telegram');
+    expect(lines.join('\n')).not.toContain('webchat');
   });
 });
