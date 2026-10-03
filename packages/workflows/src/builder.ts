@@ -18,7 +18,7 @@ import type {
 interface InternalNode<S> {
   name: string;
   fn: NodeFn<S>;
-  config?: NodeConfig;
+  config?: NodeConfig<S>;
   after: string[];
 }
 
@@ -84,7 +84,7 @@ export class WorkflowBuilder<S extends WorkflowState = WorkflowState> {
    * Add a node to the workflow. Accepts a node function or a node created by a factory
    * (`agentNode`, `toolNode`, `functionNode`, `customNode`, ...).
    */
-  addNode(name: string, node: NodeFn<S> | WorkflowNode<S>, options?: AddNodeOptions): this {
+  addNode(name: string, node: NodeFn<S> | WorkflowNode<S>, options?: AddNodeOptions<S>): this {
     this.registerName(name);
     const fn = typeof node === 'function' ? node : node.fn;
     const nodeConfig = typeof node === 'function' ? undefined : node.config;

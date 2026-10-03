@@ -104,6 +104,7 @@ export type {
   CompensationStep,
   CompensationResult,
   CompensationReport,
+  CompensationHooks,
   CompensationManagerSummary,
   ExtendedDeadLetterEntry,
   DLQFilters,

@@ -7,6 +7,7 @@ import type {
   WorkflowState,
   WorkflowResult,
   WorkflowExecuteOptions,
+  WorkflowExecuteOptionsV2,
   StreamingWorkflowEvent,
   CheckpointStore,
   NodeConfig,
@@ -26,18 +27,30 @@ import { nanoid } from 'nanoid';
 import { WorkflowScheduler } from './scheduler';
 import { InMemoryCheckpointStore, createCheckpointId } from './checkpoint';
 import type { ExtendedNodeContext } from './nodes/base';
-import type { WorkflowTracer, SpanScope } from './observability/tracer';
-import type { WorkflowMetricsCollector } from './observability/metrics';
+import { getGlobalTracer, type WorkflowTracer, type SpanScope } from './observability/tracer';
+import { getGlobalMetrics, type WorkflowMetricsCollector } from './observability/metrics';
+import { COMPENSATION_NODE, COMPENSATION_TRIGGERED } from './observability/span-attributes';
 import { computeRetryDelay } from './saga/retry';
 import { CircuitBreaker } from './saga/circuit-breaker';
+import { CompensationManager } from './saga/compensation';
 import { createDLQEntry } from './saga/dead-letter';
 
-export interface ExecutorExecuteOptions extends WorkflowExecuteOptions {
+export interface ExecutorExecuteOptions
+  extends
+    WorkflowExecuteOptions,
+    Pick<
+      WorkflowExecuteOptionsV2,
+      | 'onApprovalRequired'
+      | 'onCompensationStart'
+      | 'onCompensationComplete'
+      | 'onTimerScheduled'
+      | 'onDeadLetter'
+    > {
   /** Abort the run; checked between steps and passed to nodes (`ctx.signal`) */
   signal?: AbortSignal;
-  /** Emit a workflow span and one span per node execution */
+  /** Emit a workflow span and one span per node execution (defaults to the enabled global tracer) */
   tracer?: WorkflowTracer;
-  /** Record workflow and node executions */
+  /** Record workflow and node executions (defaults to the enabled global metrics collector) */
   metricsCollector?: WorkflowMetricsCollector;
   /** Subworkflow nesting depth, exposed to nodes as `ctx.depth` */
   depth?: number;
@@ -80,6 +93,30 @@ export class NodeTimeoutError extends Error {
     this.nodeName = nodeName;
     this.timeoutMs = timeoutMs;
   }
+}
+
+/** Call an observer without letting its exception break the run. */
+function notify<A extends unknown[]>(
+  name: string,
+  callback: ((...args: A) => void) | undefined,
+  ...args: A
+): void {
+  if (!callback) return;
+  try {
+    callback(...args);
+  } catch (error) {
+    console.warn(`[WorkflowExecutor] ${name} callback failed:`, error);
+  }
+}
+
+function activeGlobalTracer(): WorkflowTracer | undefined {
+  const tracer = getGlobalTracer();
+  return tracer.isSampled() ? tracer : undefined;
+}
+
+function activeGlobalMetrics(): WorkflowMetricsCollector | undefined {
+  const metrics = getGlobalMetrics();
+  return metrics.isEnabled() ? metrics : undefined;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -138,7 +175,7 @@ async function runNodeAttempt<S extends WorkflowState>(
 }
 
 interface NodeRunPolicy {
-  config: NodeConfig | undefined;
+  config: Pick<NodeConfig, 'timeout' | 'retries' | 'retryDelay'> | undefined;
   defaultRetry: RetryConfig | undefined;
   breaker: CircuitBreaker | undefined;
   signal: AbortSignal | undefined;
@@ -235,8 +272,10 @@ export class WorkflowExecutor {
 
     const graph = this.scheduler.buildDependencyGraph(workflow);
     const reachability = this.scheduler.buildReachability(workflow);
-    const tracer = options?.tracer;
-    const metrics = options?.metricsCollector;
+    const tracer = options?.tracer ?? activeGlobalTracer();
+    const metrics = options?.metricsCollector ?? activeGlobalMetrics();
+    const compensation = new CompensationManager<S>();
+    const inFlight = new Set<Promise<unknown>>();
     const breaker = options?.defaultCircuitBreaker
       ? this.getBreaker(options.defaultCircuitBreaker)
       : undefined;
@@ -248,6 +287,41 @@ export class WorkflowExecutor {
     metrics?.recordWorkflowStart(workflow.name);
 
     let currentNodes = [workflow.entryPoint];
+
+    const trackCompensation = (nodeName: string, output: unknown) => {
+      const config = workflow.nodes.get(nodeName)?.config?.compensation;
+      if (!config?.compensate) return;
+      if (!compensation.hasCompensation(nodeName)) {
+        compensation.registerFromConfig(nodeName, config);
+      }
+      compensation.markCompleted(nodeName, output);
+    };
+
+    const compensate = async (failedNode: string, cause: Error) => {
+      await Promise.allSettled(inFlight);
+      if (compensation.getCompensableNodes().length === 0) return;
+
+      workflowSpan?.setAttribute(COMPENSATION_TRIGGERED, true);
+      await compensation.compensate(state, failedNode, cause, {
+        onStepStart: (nodeId) => {
+          notify('onCompensationStart', options?.onCompensationStart, nodeId);
+        },
+        onStepComplete: (step) => {
+          workflowSpan?.addEvent('compensation', {
+            [COMPENSATION_NODE]: step.nodeId,
+            'compensation.success': step.success,
+            'compensation.duration_ms': step.duration,
+          });
+          if (!step.success) {
+            console.warn(
+              `[WorkflowExecutor] Compensation of node '${step.nodeId}' failed:`,
+              step.error
+            );
+          }
+          notify('onCompensationComplete', options?.onCompensationComplete, step.nodeId);
+        },
+      });
+    };
 
     let lastCheckpointAt = 0;
     const saveCheckpoint = async () => {
@@ -302,6 +376,8 @@ export class WorkflowExecutor {
             approvalStore: options?.approvalStore,
             approvalNotifier: options?.approvalNotifier,
             timerStore: options?.timerStore,
+            onApprovalRequired: options?.onApprovalRequired,
+            onTimerScheduled: options?.onTimerScheduled,
             reportProgress: (progress: number) => {
               const clamped = Math.max(0, Math.min(100, progress));
               options?.onNodeProgress?.(nodeName, clamped);
@@ -331,6 +407,7 @@ export class WorkflowExecutor {
             await idempotencyStore.store(idempotencyKey, result);
           }
           const duration = Date.now() - nodeStart;
+          trackCompensation(nodeName, result.output);
 
           nodeSpan?.setAttribute('node.retries', retries);
           nodeSpan?.end('ok');
@@ -351,22 +428,28 @@ export class WorkflowExecutor {
             node.config?.retries ?? options?.defaultRetry?.maxRetries ?? 0
           );
           if (options?.deadLetterQueue) {
-            await options.deadLetterQueue
-              .add(
-                createDLQEntry(nodeName, workflowId, workflow.name, state, err, {
-                  input,
-                  attempts: 1 + (node.config?.retries ?? options.defaultRetry?.maxRetries ?? 0),
-                })
-              )
-              .catch((dlqError: unknown) => {
-                console.warn('[WorkflowExecutor] Failed to write dead letter entry:', dlqError);
-              });
+            const entry = createDLQEntry(nodeName, workflowId, workflow.name, state, err, {
+              input,
+              attempts: 1 + (node.config?.retries ?? options.defaultRetry?.maxRetries ?? 0),
+            });
+            try {
+              const id = await options.deadLetterQueue.add(entry);
+              notify('onDeadLetter', options.onDeadLetter, { ...entry, id });
+            } catch (dlqError) {
+              console.warn('[WorkflowExecutor] Failed to write dead letter entry:', dlqError);
+            }
           }
           throw new NodeExecutionError(nodeName, err);
         }
       };
 
-      return tracer ? tracer.runInContext(runNode) : runNode();
+      const running = tracer ? tracer.runInContext(runNode) : runNode();
+      inFlight.add(running);
+      try {
+        return await running;
+      } finally {
+        inFlight.delete(running);
+      }
     };
 
     const processNodeResult = (
@@ -412,6 +495,7 @@ export class WorkflowExecutor {
             const nodeName = skipped.shift()!;
             if (completedNodes.has(nodeName)) continue;
             completedNodes.add(nodeName);
+            trackCompensation(nodeName, nodeResults.get(nodeName)?.output);
             for (const next of this.scheduler.getNextNodes(workflow, nodeName, state)) {
               if (completedNodes.has(next) || currentNodes.includes(next)) continue;
               if (skipNodes.has(next)) skipped.push(next);
@@ -461,6 +545,11 @@ export class WorkflowExecutor {
       if (e instanceof NodeExecutionError) {
         error = e.cause instanceof Error ? e.cause : e;
         options?.onNodeError?.(e.nodeName, error);
+        if (!options?.signal?.aborted) {
+          await compensate(e.nodeName, error).catch((compensationError: unknown) => {
+            console.warn('[WorkflowExecutor] Compensation failed:', compensationError);
+          });
+        }
       } else {
         error = e instanceof Error ? e : new Error(String(e));
         options?.onNodeError?.(currentNodes[0] ?? 'unknown', error);
@@ -510,7 +599,7 @@ export class WorkflowExecutor {
   async resume<S extends WorkflowState>(
     workflow: Workflow<S>,
     checkpointId: string,
-    options?: WorkflowExecuteOptions
+    options?: ExecutorExecuteOptions
   ): Promise<WorkflowResult<S>> {
     const checkpoint = await this.checkpointStore.load(checkpointId);
 
@@ -556,7 +645,7 @@ export class WorkflowExecutor {
     workflow: Workflow<S>,
     input?: Partial<S>,
     options?: Omit<
-      WorkflowExecuteOptions,
+      ExecutorExecuteOptions,
       'onNodeStart' | 'onNodeComplete' | 'onNodeError' | 'onNodeProgress'
     >
   ): AsyncIterable<StreamingWorkflowEvent> {

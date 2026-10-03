@@ -75,6 +75,11 @@ export class WorkflowMetricsCollector {
     };
   }
 
+  /** Whether this collector records anything */
+  isEnabled(): boolean {
+    return this.config.enabled;
+  }
+
   /**
    * Get prefixed metric name
    */

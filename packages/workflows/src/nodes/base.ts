@@ -6,6 +6,8 @@ import type {
   NodeResult,
   ApprovalStore,
   ApprovalNotifier,
+  ApprovalRequest,
+  TimerEntry,
   TimerStore,
 } from '@cogitator-ai/types';
 import type { Cogitator } from '@cogitator-ai/core';
@@ -22,4 +24,7 @@ export interface ExtendedNodeContext<S = WorkflowState> extends NodeContext<S> {
   approvalStore?: ApprovalStore;
   approvalNotifier?: ApprovalNotifier;
   timerStore?: TimerStore;
+  /** Run-level observers, reported by human and timer nodes */
+  onApprovalRequired?: (request: ApprovalRequest) => void;
+  onTimerScheduled?: (entry: TimerEntry) => void;
 }

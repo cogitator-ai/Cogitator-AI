@@ -15,11 +15,16 @@
 
 export type WorkflowState = Record<string, unknown>;
 
-export interface NodeConfig {
+export interface NodeConfig<S = WorkflowState> {
   name?: string;
   timeout?: number;
   retries?: number;
   retryDelay?: number;
+  /**
+   * Saga rollback for this node: when a later node of the same run fails, the executor
+   * calls `compensate` for every completed node that has one (see `CompensationConfig`).
+   */
+  compensation?: CompensationConfig<S>;
 }
 
 export interface NodeContext<S = WorkflowState> {
@@ -42,7 +47,7 @@ export type NodeFn<S = WorkflowState> = (ctx: NodeContext<S>) => Promise<NodeRes
 export interface WorkflowNode<S = WorkflowState> {
   name: string;
   fn: NodeFn<S>;
-  config?: NodeConfig;
+  config?: NodeConfig<S>;
 }
 
 export type Edge = SequentialEdge | ConditionalEdge | ParallelEdge | LoopEdge;
@@ -152,9 +157,9 @@ export interface CheckpointStore {
   delete(id: string): Promise<void>;
 }
 
-export interface AddNodeOptions {
+export interface AddNodeOptions<S = WorkflowState> {
   after?: string[];
-  config?: NodeConfig;
+  config?: NodeConfig<S>;
 }
 
 export interface AddConditionalOptions {
@@ -827,9 +832,14 @@ export interface WorkflowExecuteOptionsV2 extends WorkflowExecuteOptions {
   depth?: number;
   metadata?: Record<string, unknown>;
 
+  /** A human node created an approval request (each chain step and escalation included) */
   onApprovalRequired?: (request: ApprovalRequest) => void;
+  /** A node's `config.compensation` starts rolling back after a later node failed */
   onCompensationStart?: (nodeId: string) => void;
+  /** A node's compensation finished, successfully or not */
   onCompensationComplete?: (nodeId: string) => void;
+  /** A timer node persisted a timer in the `timerStore` (`persist: true` configs) */
   onTimerScheduled?: (entry: TimerEntry) => void;
+  /** A node that finally failed was written to the `deadLetterQueue` */
   onDeadLetter?: (entry: DeadLetterEntry) => void;
 }

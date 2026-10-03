@@ -37,6 +37,7 @@ export {
   type CompensationStep,
   type CompensationResult,
   type CompensationReport,
+  type CompensationHooks,
   type CompensationManagerSummary,
 } from './compensation';
 

@@ -1,11 +1,25 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { Cogitator } from '@cogitator-ai/core';
-import type { NodeContext, NodeResult } from '@cogitator-ai/types';
+import type {
+  ApprovalRequest,
+  DeadLetterEntry,
+  NodeContext,
+  NodeResult,
+  TimerEntry,
+  WorkflowState,
+} from '@cogitator-ai/types';
 import { WorkflowBuilder } from '../builder';
 import { WorkflowExecutor, NodeTimeoutError } from '../executor';
 import { functionNode, customNode } from '../nodes';
-import { createTracer } from '../observability/tracer';
-import { createMetricsCollector } from '../observability/metrics';
+import { humanWorkflowNode, timerWorkflowNode } from '../nodes/adapters';
+import { createTracer, setGlobalTracer } from '../observability/tracer';
+import { createMetricsCollector, setGlobalMetrics } from '../observability/metrics';
+import { InMemoryCheckpointStore } from '../checkpoint';
+import { delayNode } from '../timers/timer-node';
+import { createInMemoryTimerStore } from '../timers/timer-store';
+import { approvalNode } from '../human/human-node';
+import { InMemoryApprovalStore } from '../human/approval-store';
+import { createInMemoryDLQ } from '../saga/dead-letter';
 import { DefaultWorkflowManager } from '../manager/workflow-manager';
 import type { ExtendedNodeContext } from '../nodes/base';
 
@@ -455,5 +469,297 @@ describe('WorkflowExecutor run policies', () => {
 
     const result = await running;
     expect(result.nodeResults.get('ok')?.output).toMatchObject({ approved: false });
+  });
+});
+
+describe('Run observer callbacks', () => {
+  it('reports persisted timers to onTimerScheduled', async () => {
+    const timerStore = createInMemoryTimerStore();
+    const scheduled: TimerEntry[] = [];
+    const workflow = new WorkflowBuilder('timed')
+      .addNode('wait', timerWorkflowNode(delayNode('wait', 5, { persist: true })))
+      .build();
+
+    const result = await new WorkflowExecutor(cogitator).execute(
+      workflow,
+      {},
+      {
+        timerStore,
+        onTimerScheduled: (entry) => scheduled.push(entry),
+      }
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0]).toMatchObject({ nodeId: 'wait', workflowId: result.workflowId });
+  });
+
+  it('reports approval requests to onApprovalRequired', async () => {
+    const approvalStore = new InMemoryApprovalStore();
+    const requested: ApprovalRequest[] = [];
+    const workflow = new WorkflowBuilder('approve')
+      .addNode('review', humanWorkflowNode(approvalNode('review', { title: 'Ship it?' })))
+      .build();
+
+    const running = new WorkflowExecutor(cogitator).execute(
+      workflow,
+      {},
+      {
+        approvalStore,
+        onApprovalRequired: (request) => {
+          requested.push(request);
+          void approvalStore.submitResponse({
+            requestId: request.id,
+            decision: true,
+            respondedBy: 'lead',
+            respondedAt: Date.now(),
+          });
+        },
+      }
+    );
+
+    const result = await running;
+    expect(result.error).toBeUndefined();
+    expect(requested.map((r) => r.title)).toEqual(['Ship it?']);
+  });
+
+  it('reports dead-lettered nodes to onDeadLetter', async () => {
+    const deadLetterQueue = createInMemoryDLQ();
+    const dead: DeadLetterEntry[] = [];
+    const workflow = new WorkflowBuilder('dlq')
+      .addNode('boom', async () => {
+        throw new Error('exploded');
+      })
+      .build();
+
+    await new WorkflowExecutor(cogitator).execute(
+      workflow,
+      {},
+      {
+        deadLetterQueue,
+        onDeadLetter: (entry) => dead.push(entry),
+      }
+    );
+
+    expect(dead).toHaveLength(1);
+    expect(dead[0]).toMatchObject({ nodeId: 'boom', error: { message: 'exploded' } });
+    expect(await deadLetterQueue.get(dead[0].id)).not.toBeNull();
+  });
+
+  it('keeps running when an observer throws', async () => {
+    const deadLetterQueue = createInMemoryDLQ();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const workflow = new WorkflowBuilder('dlq-throw')
+      .addNode('boom', async () => {
+        throw new Error('exploded');
+      })
+      .build();
+
+    const result = await new WorkflowExecutor(cogitator).execute(
+      workflow,
+      {},
+      {
+        deadLetterQueue,
+        onDeadLetter: () => {
+          throw new Error('observer broke');
+        },
+      }
+    );
+
+    expect(result.error?.message).toBe('exploded');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
+describe('Saga compensation', () => {
+  interface BookingState extends WorkflowState {
+    log: string[];
+  }
+
+  function bookingWorkflow(log: string[], failAt = 'pay') {
+    const step = (name: string) => ({
+      name,
+      fn: async (): Promise<NodeResult<BookingState>> => {
+        if (name === failAt) throw new Error(`${name} failed`);
+        log.push(`do:${name}`);
+        return { output: `${name}-ref` };
+      },
+      config: {
+        compensation: {
+          compensate: async (_state: BookingState, original: unknown) => {
+            log.push(`undo:${name}:${String(original)}`);
+          },
+        },
+      },
+    });
+    return new WorkflowBuilder<BookingState>('booking')
+      .initialState({ log: [] })
+      .addNode('flight', step('flight'))
+      .addNode('hotel', step('hotel'), { after: ['flight'] })
+      .addNode('pay', step('pay'), { after: ['hotel'] })
+      .build();
+  }
+
+  it('compensates completed nodes in reverse order when a later node fails', async () => {
+    const log: string[] = [];
+    const started: string[] = [];
+    const completed: string[] = [];
+
+    const result = await new WorkflowExecutor(cogitator).execute(
+      bookingWorkflow(log),
+      {},
+      {
+        onCompensationStart: (node) => started.push(node),
+        onCompensationComplete: (node) => completed.push(node),
+      }
+    );
+
+    expect(result.error?.message).toBe('pay failed');
+    expect(log).toEqual([
+      'do:flight',
+      'do:hotel',
+      'undo:hotel:hotel-ref',
+      'undo:flight:flight-ref',
+    ]);
+    expect(started).toEqual(['hotel', 'flight']);
+    expect(completed).toEqual(['hotel', 'flight']);
+  });
+
+  it('does not compensate a run that succeeded or was aborted', async () => {
+    const log: string[] = [];
+    await new WorkflowExecutor(cogitator).execute(bookingWorkflow(log, 'none'));
+    expect(log).toEqual(['do:flight', 'do:hotel', 'do:pay']);
+
+    const aborted: string[] = [];
+    const controller = new AbortController();
+    const workflow = new WorkflowBuilder<BookingState>('abortable')
+      .initialState({ log: [] })
+      .addNode('book', {
+        name: 'book',
+        fn: async () => ({ output: 'ref' }),
+        config: { compensation: { compensate: async () => void aborted.push('undo') } },
+      })
+      .addNode(
+        'wait',
+        async (ctx) => {
+          controller.abort();
+          throw (ctx as ExtendedNodeContext<BookingState>).signal?.reason ?? new Error('aborted');
+        },
+        { after: ['book'] }
+      )
+      .build();
+
+    await new WorkflowExecutor(cogitator).execute(workflow, {}, { signal: controller.signal });
+    expect(aborted).toEqual([]);
+  });
+
+  it('compensates nodes that completed before a checkpoint resume', async () => {
+    const log: string[] = [];
+    const checkpointStore = new InMemoryCheckpointStore();
+    const executor = new WorkflowExecutor(cogitator, checkpointStore);
+    let failPay = false;
+    const workflow = new WorkflowBuilder<BookingState>('resumable-booking')
+      .initialState({ log: [] })
+      .addNode('flight', {
+        name: 'flight',
+        fn: async () => ({ output: 'flight-ref' }),
+        config: {
+          compensation: { compensate: async (_s, ref) => void log.push(`undo:${String(ref)}`) },
+        },
+      })
+      .addNode(
+        'pay',
+        async () => {
+          if (failPay) throw new Error('declined');
+          return {};
+        },
+        { after: ['flight'] }
+      )
+      .build();
+
+    const first = await executor.execute(workflow, {}, { checkpoint: true });
+    const [afterFlight] = (await checkpointStore.list('resumable-booking')).filter(
+      (c) => c.completedNodes.includes('flight') && !c.completedNodes.includes('pay')
+    );
+    expect(first.error).toBeUndefined();
+
+    failPay = true;
+    const resumed = await executor.resume(workflow, afterFlight.id);
+
+    expect(resumed.error?.message).toBe('declined');
+    expect(log).toEqual(['undo:flight-ref']);
+  });
+});
+
+describe('Global observability', () => {
+  afterEach(() => {
+    setGlobalTracer(createTracer({ enabled: false }));
+    setGlobalMetrics(createMetricsCollector({ enabled: false }));
+  });
+
+  it('uses the global tracer and metrics when a run passes none', async () => {
+    const tracer = createTracer({ enabled: true, exporter: 'console' });
+    const startWorkflowSpan = vi.spyOn(tracer, 'startWorkflowSpan');
+    const metrics = createMetricsCollector();
+    setGlobalTracer(tracer);
+    setGlobalMetrics(metrics);
+
+    const workflow = new WorkflowBuilder('global-observed').addNode('a', async () => ({})).build();
+    await new WorkflowExecutor(cogitator).execute(workflow);
+
+    expect(startWorkflowSpan).toHaveBeenCalledWith(
+      'global-observed',
+      expect.any(String),
+      expect.any(String)
+    );
+    expect(metrics.getWorkflowMetrics('global-observed')?.executionCount).toBe(1);
+  });
+
+  it('prefers the run tracer and metrics over the global ones', async () => {
+    const globalTracer = createTracer({ enabled: true, exporter: 'console' });
+    const globalSpans = vi.spyOn(globalTracer, 'startWorkflowSpan');
+    const globalMetrics = createMetricsCollector();
+    setGlobalTracer(globalTracer);
+    setGlobalMetrics(globalMetrics);
+
+    const workflow = new WorkflowBuilder('run-observed').addNode('a', async () => ({})).build();
+    await new WorkflowExecutor(cogitator).execute(
+      workflow,
+      {},
+      {
+        tracer: createTracer({ enabled: true, exporter: 'console' }),
+        metricsCollector: createMetricsCollector(),
+      }
+    );
+
+    expect(globalSpans).not.toHaveBeenCalled();
+    expect(globalMetrics.getWorkflowMetrics('run-observed')).toBeNull();
+  });
+});
+
+describe('Executor resume and stream options', () => {
+  it('passes executor-only options such as signal through resume() and stream()', async () => {
+    const checkpointStore = new InMemoryCheckpointStore();
+    const executor = new WorkflowExecutor(cogitator, checkpointStore);
+    const workflow = new WorkflowBuilder('resumable')
+      .addNode('a', async () => ({ output: 'a' }))
+      .addNode('b', async () => ({ output: 'b' }), { after: ['a'] })
+      .build();
+    await executor.execute(workflow, {}, { checkpoint: true });
+    const [first] = (await checkpointStore.list('resumable')).filter(
+      (c) => c.completedNodes.length === 1
+    );
+
+    const controller = new AbortController();
+    controller.abort();
+    const resumed = await executor.resume(workflow, first.id, { signal: controller.signal });
+    expect(resumed.error?.message).toBe('Workflow execution aborted');
+
+    const metricsCollector = createMetricsCollector();
+    for await (const event of executor.stream(workflow, {}, { metricsCollector })) {
+      if (event.type === 'workflow_completed') expect(event.result.error).toBeUndefined();
+    }
+    expect(metricsCollector.getWorkflowMetrics('resumable')?.executionCount).toBe(1);
   });
 });

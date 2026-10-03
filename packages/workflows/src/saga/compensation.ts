@@ -50,6 +50,14 @@ export interface CompensationReport {
 }
 
 /**
+ * Callbacks around each compensation step that actually runs (skipped steps report none)
+ */
+export interface CompensationHooks {
+  onStepStart?: (nodeId: string) => void;
+  onStepComplete?: (result: CompensationResult) => void;
+}
+
+/**
  * Compensation Manager class
  */
 export class CompensationManager<S = WorkflowState> {
@@ -125,7 +133,12 @@ export class CompensationManager<S = WorkflowState> {
   /**
    * Execute compensation for all completed nodes
    */
-  async compensate(state: S, failedNodeId: string, error: Error): Promise<CompensationReport> {
+  async compensate(
+    state: S,
+    failedNodeId: string,
+    error: Error,
+    hooks: CompensationHooks = {}
+  ): Promise<CompensationReport> {
     const startTime = Date.now();
     const compensated: CompensationResult[] = [];
     const partialFailures: string[] = [];
@@ -152,6 +165,8 @@ export class CompensationManager<S = WorkflowState> {
         return;
       }
 
+      hooks.onStepStart?.(nodeId);
+
       let lastError: Error | undefined;
       let success = false;
 
@@ -172,17 +187,20 @@ export class CompensationManager<S = WorkflowState> {
         }
       }
 
-      compensated.push({
+      const result: CompensationResult = {
         nodeId,
         success,
         error: lastError,
         duration: Date.now() - stepStart,
         skipped: false,
-      });
+      };
+      compensated.push(result);
 
       if (!success) {
         partialFailures.push(nodeId);
       }
+
+      hooks.onStepComplete?.(result);
     };
 
     for (const group of groups) {

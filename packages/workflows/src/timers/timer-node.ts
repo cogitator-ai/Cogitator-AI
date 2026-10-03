@@ -90,6 +90,8 @@ export interface TimerExecutionContext {
   nodeId: string;
   timerStore?: TimerStore;
   signal?: AbortSignal;
+  /** Called with the stored entry once a persisted timer is scheduled */
+  onTimerScheduled?: (entry: TimerEntry) => void;
 }
 
 /**
@@ -222,6 +224,11 @@ export async function executeTimerNode<S>(
     const entry = await context.timerStore.get(timerId);
     if (entry) {
       config.onScheduled?.(entry);
+      try {
+        context.onTimerScheduled?.(entry);
+      } catch (error) {
+        console.warn(`[TimerNode] onTimerScheduled failed for timer '${entry.id}':`, error);
+      }
     }
   } else {
     timerId = `timer_${Date.now()}_${Math.random().toString(36).slice(2)}`;
