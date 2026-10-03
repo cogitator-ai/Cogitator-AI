@@ -9,8 +9,8 @@
 ### AI agents that actually do things.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
-[![Node](https://img.shields.io/badge/Node-20+-green.svg)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-6-blue.svg)](https://www.typescriptlang.org/)
+[![Node](https://img.shields.io/badge/Node-22.12+-green.svg)](https://nodejs.org/)
 [![npm](https://img.shields.io/npm/v/@cogitator-ai/core.svg)](https://www.npmjs.com/package/@cogitator-ai/core)
 
 [Quick Start](#quick-start) · [Examples](./examples) · [Docs](https://cogitator.app/docs) · [Cookbook](https://cogitator.app/cookbook) · [Discussions](https://github.com/cogitator-ai/Cogitator-AI/discussions)
