@@ -89,7 +89,10 @@ export async function executeTool(
 
   if (!constitutionalAI || result.error) return result;
 
-  const filtered = await constitutionalAI.filterToolResult(tool.name, toolResultText(result.result));
+  const filtered = await constitutionalAI.filterToolResult(
+    tool.name,
+    toolResultText(result.result)
+  );
   if (filtered.allowed) return result;
   return {
     ...result,

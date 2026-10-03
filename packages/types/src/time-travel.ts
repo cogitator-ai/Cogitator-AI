@@ -78,7 +78,6 @@ export interface ReplayOptions {
   modifiedToolResults?: Record<string, unknown>;
   /** Tools removed from the replayed agent, so the model cannot call them */
   skipTools?: string[];
-
 }
 
 export interface ReplayResult extends RunResult {
