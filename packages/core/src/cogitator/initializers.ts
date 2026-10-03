@@ -177,7 +177,11 @@ export function initializeGuardrails(
   agentModel: string,
   route: (model: string) => ModelRoute
 ): void {
-  if (state.guardrailsInitialized || !config.guardrails?.enabled) return;
+  if (state.guardrailsInitialized) return;
+  if (!config.guardrails || config.guardrails.enabled === false) {
+    state.guardrailsInitialized = true;
+    return;
+  }
 
   const { backend, model } = route(config.guardrails.model ?? agentModel);
 

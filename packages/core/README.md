@@ -1115,7 +1115,7 @@ const cog = new Cogitator({
   },
 });
 
-// Throws PromptInjectionError if attack detected
+// Throws a CogitatorError with code PROMPT_INJECTION_DETECTED when an attack is found
 await cog.run(agent, { input: userInput });
 ```
 

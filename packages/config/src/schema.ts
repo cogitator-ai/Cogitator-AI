@@ -246,18 +246,18 @@ export const HarmCategorySchema = z.enum([
 export const SeveritySchema = z.enum(['low', 'medium', 'high']);
 
 export const GuardrailConfigSchema = z.object({
-  enabled: z.boolean(),
+  enabled: z.boolean().optional(),
   model: z.string().optional(),
-  filterInput: z.boolean(),
-  filterOutput: z.boolean(),
-  filterToolCalls: z.boolean(),
-  filterToolResults: z.boolean(),
-  enableCritiqueRevision: z.boolean(),
-  maxRevisionIterations: z.number().positive(),
-  revisionConfidenceThreshold: z.number().min(0).max(1),
-  thresholds: z.record(HarmCategorySchema, SeveritySchema),
-  strictMode: z.boolean(),
-  logViolations: z.boolean(),
+  filterInput: z.boolean().optional(),
+  filterOutput: z.boolean().optional(),
+  filterToolCalls: z.boolean().optional(),
+  filterToolResults: z.boolean().optional(),
+  enableCritiqueRevision: z.boolean().optional(),
+  maxRevisionIterations: z.number().positive().optional(),
+  revisionConfidenceThreshold: z.number().min(0).max(1).optional(),
+  thresholds: z.partialRecord(HarmCategorySchema, SeveritySchema).optional(),
+  strictMode: z.boolean().optional(),
+  logViolations: z.boolean().optional(),
 });
 
 export const BudgetConfigSchema = z.object({
@@ -350,15 +350,15 @@ export const InjectionActionSchema = z.enum(['block', 'warn', 'log']);
 export const InjectionClassifierSchema = z.enum(['local', 'llm']);
 
 export const PromptInjectionConfigSchema = z.object({
-  detectInjection: z.boolean(),
-  detectJailbreak: z.boolean(),
-  detectRoleplay: z.boolean(),
-  detectEncoding: z.boolean(),
-  detectContextManipulation: z.boolean(),
-  classifier: InjectionClassifierSchema,
+  detectInjection: z.boolean().optional(),
+  detectJailbreak: z.boolean().optional(),
+  detectRoleplay: z.boolean().optional(),
+  detectEncoding: z.boolean().optional(),
+  detectContextManipulation: z.boolean().optional(),
+  classifier: InjectionClassifierSchema.optional(),
   llmModel: z.string().optional(),
-  action: InjectionActionSchema,
-  threshold: z.number().min(0).max(1),
+  action: InjectionActionSchema.optional(),
+  threshold: z.number().min(0).max(1).optional(),
   allowlist: z.array(z.string()).optional(),
 });
 

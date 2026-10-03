@@ -754,9 +754,9 @@ Input/output filtering via `@cogitator-ai/core`:
 ```typescript
 const cog = new Cogitator({
   guardrails: {
-    constitution: 'Be helpful. Do not assist with harmful requests.',
-    onToolApproval: async (tool, args) => {
-      if (tool.name === 'delete_file') {
+    // fields left out use DEFAULT_GUARDRAIL_CONFIG; `constitution` takes a Constitution object
+    onToolApproval: async (toolName, args) => {
+      if (toolName === 'delete_file') {
         return confirm(`Allow delete: ${args.path}?`);
       }
       return true;
@@ -771,8 +771,7 @@ const cog = new Cogitator({
 const cog = new Cogitator({
   security: {
     promptInjection: {
-      enabled: true,
-      action: 'block', // 'block' | 'warn' | 'sanitize'
+      action: 'block', // 'block' | 'warn' | 'log'
       threshold: 0.8,
     },
   },

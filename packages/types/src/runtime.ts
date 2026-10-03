@@ -40,7 +40,8 @@ export interface CogitatorConfig {
   /** Reflection configuration for self-analyzing agents */
   reflection?: ReflectionConfig;
   /** Constitutional AI guardrails configuration */
-  guardrails?: GuardrailConfig;
+  /** Constitutional AI guardrails; fields left out take `DEFAULT_GUARDRAIL_CONFIG`. On unless `enabled: false`. */
+  guardrails?: Partial<GuardrailConfig>;
   /** Cost-aware model routing configuration */
   costRouting?: CostRoutingConfig;
   /** Knowledge graph memory configuration */
@@ -49,7 +50,8 @@ export interface CogitatorConfig {
   promptOptimization?: PromptOptimizationConfig;
   /** Security configuration for prompt injection detection */
   security?: {
-    promptInjection?: PromptInjectionConfig;
+    /** Prompt injection detection; fields left out take the detector's defaults */
+    promptInjection?: Partial<PromptInjectionConfig>;
   };
   /** Context management for long conversations (128k+ tokens) */
   context?: ContextManagerConfig;

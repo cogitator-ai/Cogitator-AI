@@ -73,20 +73,34 @@ export async function executeTool(
     }
   }
 
-  if (tool.sandbox?.type === 'docker' || tool.sandbox?.type === 'wasm') {
-    return executeInSandbox(
-      tool,
-      { ...toolCall, arguments: validatedArgs as Record<string, unknown> },
-      runId,
-      agentId,
-      sandboxManager,
-      initializeSandbox,
-      signal,
-      extraContext
-    );
-  }
+  const result =
+    tool.sandbox?.type === 'docker' || tool.sandbox?.type === 'wasm'
+      ? await executeInSandbox(
+          tool,
+          { ...toolCall, arguments: validatedArgs as Record<string, unknown> },
+          runId,
+          agentId,
+          sandboxManager,
+          initializeSandbox,
+          signal,
+          extraContext
+        )
+      : await executeNatively(tool, toolCall, validatedArgs, runId, agentId, signal, extraContext);
 
-  return executeNatively(tool, toolCall, validatedArgs, runId, agentId, signal, extraContext);
+  if (!constitutionalAI || result.error) return result;
+
+  const filtered = await constitutionalAI.filterToolResult(tool.name, toolResultText(result.result));
+  if (filtered.allowed) return result;
+  return {
+    ...result,
+    result: null,
+    error: `Tool result blocked: ${filtered.blockedReason ?? 'Policy violation'}`,
+  };
+}
+
+function toolResultText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value) ?? String(value);
 }
 
 async function executeNatively(

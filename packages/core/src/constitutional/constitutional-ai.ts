@@ -11,6 +11,7 @@ import type {
   ToolContext,
   FilterLayer,
 } from '@cogitator-ai/types';
+import { DEFAULT_GUARDRAIL_CONFIG } from '@cogitator-ai/types';
 import { DEFAULT_CONSTITUTION } from './constitution';
 import { InputFilter } from './input-filter';
 import { OutputFilter } from './output-filter';
@@ -35,30 +36,11 @@ export class ConstitutionalAI {
   private logger = getLogger().child({ component: 'ConstitutionalAI' });
 
   constructor(options: ConstitutionalAIOptions) {
-    const defaultConfig: GuardrailConfig = {
-      enabled: true,
-      filterInput: true,
-      filterOutput: true,
-      filterToolCalls: true,
-      filterToolResults: false,
-      enableCritiqueRevision: true,
-      maxRevisionIterations: 3,
-      revisionConfidenceThreshold: 0.85,
-      thresholds: {
-        violence: 'medium',
-        hate: 'low',
-        sexual: 'medium',
-        'self-harm': 'low',
-        illegal: 'low',
-        privacy: 'medium',
-        misinformation: 'high',
-        manipulation: 'medium',
-      },
-      strictMode: false,
-      logViolations: true,
+    this._config = {
+      ...DEFAULT_GUARDRAIL_CONFIG,
+      ...options.config,
+      thresholds: { ...DEFAULT_GUARDRAIL_CONFIG.thresholds, ...options.config?.thresholds },
     };
-
-    this._config = { ...defaultConfig, ...options.config };
     this._constitution = options.constitution ?? DEFAULT_CONSTITUTION;
 
     this.inputFilter = new InputFilter({
@@ -109,19 +91,29 @@ export class ConstitutionalAI {
     }
 
     const result = await this.outputFilter.filter(output, context);
+    this.logViolation('output', result);
 
     if (!result.allowed && this._config.enableCritiqueRevision) {
       const revision = await this.critiqueAndRevise(output, context);
       if (revision.revised !== revision.original) {
-        return {
-          allowed: true,
-          harmScores: result.harmScores,
-          suggestedRevision: revision.revised,
-        };
+        return { ...result, suggestedRevision: revision.revised };
       }
     }
 
-    this.logViolation('output', result);
+    return result;
+  }
+
+  /**
+   * Checks what a tool returned before the model reads it, with the input
+   * filter, when `filterToolResults` is on.
+   */
+  async filterToolResult(toolName: string, content: string): Promise<FilterResult> {
+    if (!this._config.enabled || !this._config.filterToolResults) {
+      return { allowed: true, harmScores: [] };
+    }
+
+    const result = await this.inputFilter.filter(content, `Result of the tool "${toolName}"`);
+    this.logViolation('tool', result);
     return result;
   }
 

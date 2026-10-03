@@ -270,7 +270,7 @@ export class Cogitator {
         }
       }
 
-      if (this.state.constitutionalAI && this.config.guardrails?.filterInput) {
+      if (this.state.constitutionalAI?.config.filterInput) {
         const inputResult = await this.state.constitutionalAI.filterInput(input);
         if (!inputResult.allowed) {
           throw new Error(`Input blocked: ${inputResult.blockedReason ?? 'Policy violation'}`);
@@ -398,7 +398,7 @@ export class Cogitator {
 
         let outputContent = response.content;
 
-        if (this.state.constitutionalAI && this.config.guardrails?.filterOutput) {
+        if (this.state.constitutionalAI?.config.filterOutput) {
           const outputResult = await this.state.constitutionalAI.filterOutput(
             outputContent,
             messages
@@ -495,7 +495,7 @@ export class Cogitator {
                 agent.id,
                 this.state.sandboxManager,
                 this.state.constitutionalAI,
-                !!this.config.guardrails?.filterToolCalls,
+                this.state.constitutionalAI?.config.filterToolCalls ?? false,
                 () => initializeSandbox(this.config, this.state),
                 abortController.signal,
                 {
@@ -789,7 +789,7 @@ export class Cogitator {
       await initializeReflection(this.config, this.state, agentModel, (model) => this.route(model));
     }
 
-    if (this.config.guardrails?.enabled && !this.state.guardrailsInitialized) {
+    if (this.config.guardrails && !this.state.guardrailsInitialized) {
       initializeGuardrails(this.config, this.state, agentModel, (model) => this.route(model));
     }
 
