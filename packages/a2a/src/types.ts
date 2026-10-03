@@ -226,8 +226,13 @@ export interface A2AAuthConfig {
 export interface A2AServerConfig {
   agents: Record<string, Agent>;
   cogitator: CogitatorLike;
+  /**
+   * Path of the JSON-RPC endpoint the framework adapters serve, relative to
+   * where they are mounted (default: '/a2a'). Must start with '/'.
+   */
   basePath?: string;
   taskStore?: TaskStore;
+  /** URL the Agent Cards advertise (default: `basePath`) */
   cardUrl?: string;
   auth?: A2AAuthConfig;
   pushNotificationStore?: PushNotificationStore;
@@ -265,4 +270,11 @@ export interface A2AClientConfig {
   timeout?: number;
   agentCardPath?: string;
   rpcPath?: string;
+  /**
+   * The agent to talk to on a server that hosts several: the name it is
+   * registered under in the server's `agents`. Sent with `message/send`,
+   * `message/stream` and `agent/extendedCard`; `agentCard()` returns the card
+   * of that name. Without it the server answers with its first agent.
+   */
+  agentName?: string;
 }

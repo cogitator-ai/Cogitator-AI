@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { TaskManager } from '../task-manager';
 import type { CogitatorLike, AgentRunResult } from '../types';
 import { A2AError } from '../errors';
@@ -81,16 +82,35 @@ describe('TaskManager', () => {
       );
     });
 
-    it('should fail task on error', async () => {
+    it('should fail task with the message of a CogitatorError', async () => {
       const msg = createUserMessage('Crash');
       const task = await manager.createTask(msg);
       const cogitator: CogitatorLike = {
-        run: vi.fn().mockRejectedValue(new Error('LLM failure')),
+        run: vi
+          .fn()
+          .mockRejectedValue(
+            new CogitatorError({ message: 'LLM failure', code: ErrorCode.LLM_UNAVAILABLE })
+          ),
       };
 
       const failed = await manager.executeTask(task, cogitator, {}, msg);
       expect(failed.status.state).toBe('failed');
-      expect(failed.status.message).toContain('LLM failure');
+      expect(failed.status.message).toBe('LLM failure');
+    });
+
+    it('should fail task without the text of an internal error, logging it instead', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const msg = createUserMessage('Crash');
+      const task = await manager.createTask(msg);
+      const internal = new Error('connect ECONNREFUSED 10.0.0.5:6379');
+      const cogitator: CogitatorLike = { run: vi.fn().mockRejectedValue(internal) };
+
+      const failed = await manager.executeTask(task, cogitator, {}, msg);
+      expect(failed.status.state).toBe('failed');
+      expect(failed.status.message).toBe('Internal error');
+      expect(failed.status.errorDetails?.message).toBe('Internal error');
+      expect(consoleError).toHaveBeenCalledWith(`[a2a] Task ${task.id} failed:`, internal);
+      consoleError.mockRestore();
     });
 
     it('should include structured data as artifact', async () => {

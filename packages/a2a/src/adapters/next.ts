@@ -60,7 +60,9 @@ export function a2aNext(server: A2AServer) {
         }
         return Response.json(response);
       } catch (error) {
-        return Response.json(createErrorResponse(null, errors.internalError(String(error))));
+        return Response.json(
+          createErrorResponse(null, errors.clientJsonRpcError(error, 'A2A request failed'))
+        );
       }
     },
   };

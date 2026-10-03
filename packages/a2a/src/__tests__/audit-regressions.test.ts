@@ -108,6 +108,7 @@ describe('streaming', () => {
   });
 
   it('fails instead of hanging when execution rejects', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     const inner = new InMemoryTaskStore();
     let updates = 0;
     const flakyStore: TaskStore = {
@@ -132,7 +133,9 @@ describe('streaming', () => {
     const last = events.at(-1);
 
     expect(last?.type === 'status-update' && last.status.state).toBe('failed');
-    expect(last?.type === 'status-update' && last.status.message).toContain('store unavailable');
+    expect(last?.type === 'status-update' && last.status.message).toBe('Internal error');
+    expect(String(consoleError.mock.calls.at(-1)?.[1])).toContain('store unavailable');
+    consoleError.mockRestore();
   });
 
   it('aborts the agent run when the client signal aborts', async () => {

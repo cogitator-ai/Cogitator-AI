@@ -10,7 +10,16 @@ export function a2aFastify(server: A2AServer): FastifyPluginAsync {
       if (error instanceof SyntaxError || error.statusCode === 400) {
         return reply.send(createErrorResponse(null, errors.parseError('Invalid JSON body')));
       }
-      return reply.send(createErrorResponse(null, errors.internalError(error.message)));
+      if (
+        typeof error.statusCode === 'number' &&
+        error.statusCode > 400 &&
+        error.statusCode < 500
+      ) {
+        return reply.send(createErrorResponse(null, errors.invalidRequest(error.message)));
+      }
+      return reply.send(
+        createErrorResponse(null, errors.clientJsonRpcError(error, 'A2A request failed'))
+      );
     });
 
     fastify.get('/.well-known/agent.json', async (_request, reply) => {
@@ -18,7 +27,7 @@ export function a2aFastify(server: A2AServer): FastifyPluginAsync {
       return reply.send(cards.length === 1 ? cards[0] : cards);
     });
 
-    fastify.post('/a2a', async (request, reply) => {
+    fastify.post(server.basePath, async (request, reply) => {
       const contentType = request.headers['content-type'];
       if (contentType && !contentType.startsWith('application/json')) {
         return reply.send(createErrorResponse(null, errors.contentTypeNotSupported(contentType)));
@@ -50,7 +59,9 @@ export function a2aFastify(server: A2AServer): FastifyPluginAsync {
         }
         return reply.send(response);
       } catch (error) {
-        return reply.send(createErrorResponse(null, errors.internalError(String(error))));
+        return reply.send(
+          createErrorResponse(null, errors.clientJsonRpcError(error, 'A2A request failed'))
+        );
       }
     });
   };

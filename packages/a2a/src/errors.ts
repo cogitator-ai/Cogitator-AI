@@ -1,4 +1,6 @@
+import { CogitatorError } from '@cogitator-ai/types';
 import type { JsonRpcError } from './json-rpc.js';
+import { JsonRpcParseError } from './json-rpc.js';
 
 export function taskNotFound(taskId: string): JsonRpcError {
   return { code: -32001, message: `Task not found: ${taskId}`, data: { taskId } };
@@ -81,4 +83,37 @@ export class A2AError extends Error {
   get code(): number {
     return this.jsonRpcError.code;
   }
+}
+
+function logInternalError(error: unknown, context: string): void {
+  console.error(`[a2a] ${context}:`, error);
+}
+
+/**
+ * The message a client may see for an error: the message of an `A2AError`,
+ * a `JsonRpcParseError` or a `CogitatorError`. Anything else is a failure of
+ * the server: it is logged with `context` and reported as `Internal error`.
+ */
+export function clientErrorMessage(error: unknown, context: string): string {
+  if (
+    error instanceof A2AError ||
+    error instanceof JsonRpcParseError ||
+    CogitatorError.isCogitatorError(error)
+  ) {
+    return error.message;
+  }
+  logInternalError(error, context);
+  return internalError().message;
+}
+
+/**
+ * The JSON-RPC error a client may see for an error: an `A2AError` as it is, a
+ * `CogitatorError` as an internal error with its message, and anything else,
+ * logged with `context`, as a bare `Internal error`.
+ */
+export function clientJsonRpcError(error: unknown, context: string): JsonRpcError {
+  if (error instanceof A2AError) return error.jsonRpcError;
+  if (CogitatorError.isCogitatorError(error)) return internalError(error.message);
+  logInternalError(error, context);
+  return internalError();
 }

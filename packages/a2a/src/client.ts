@@ -63,6 +63,7 @@ export class A2AClient {
   private timeout: number;
   private agentCardPath: string;
   private rpcPath: string;
+  private agentName?: string;
   private cachedCard: AgentCard | null = null;
 
   constructor(baseUrl: string, config?: A2AClientConfig) {
@@ -71,6 +72,7 @@ export class A2AClient {
     this.timeout = config?.timeout ?? 30000;
     this.agentCardPath = config?.agentCardPath ?? '/.well-known/agent.json';
     this.rpcPath = config?.rpcPath ?? '/a2a';
+    this.agentName = config?.agentName;
   }
 
   async agentCard(): Promise<AgentCard> {
@@ -78,14 +80,15 @@ export class A2AClient {
 
     const response = await this.httpGet(this.agentCardPath);
     const data = (await response.json()) as AgentCard | AgentCard[];
-    let card: AgentCard;
-    if (Array.isArray(data)) {
-      if (data.length === 0) {
-        throw new A2AError(errors.internalError('Agent card response is empty array'));
-      }
-      card = data[0];
-    } else {
-      card = data;
+    const cards = Array.isArray(data) ? data : [data];
+    if (cards.length === 0) {
+      throw new A2AError(errors.internalError('Agent card response is empty array'));
+    }
+    const card = this.agentName
+      ? cards.find((candidate) => candidate.name === this.agentName)
+      : cards[0];
+    if (!card) {
+      throw new A2AError(errors.agentNotFound(this.agentName ?? ''));
     }
     this.cachedCard = card;
     return card;
@@ -101,7 +104,11 @@ export class A2AClient {
     config?: SendMessageConfiguration,
     options?: A2ARequestOptions
   ): Promise<A2ATask> {
-    const result = await this.rpc('message/send', { message, configuration: config }, options);
+    const result = await this.rpc(
+      'message/send',
+      this.withAgent({ message, configuration: config }),
+      options
+    );
     return result as A2ATask;
   }
 
@@ -117,7 +124,7 @@ export class A2AClient {
     const body = JSON.stringify({
       jsonrpc: '2.0',
       method: 'message/stream',
-      params: { message, configuration: config },
+      params: this.withAgent({ message, configuration: config }),
       id: this.generateRequestId(),
     });
 
@@ -310,7 +317,7 @@ export class A2AClient {
   }
 
   async extendedAgentCard(): Promise<ExtendedAgentCard> {
-    const result = await this.rpc('agent/extendedCard', {});
+    const result = await this.rpc('agent/extendedCard', this.withAgent({}));
     return result as ExtendedAgentCard;
   }
 
@@ -463,6 +470,10 @@ export class A2AClient {
     }
 
     return task.status.message ?? '';
+  }
+
+  private withAgent<T extends object>(params: T): T & { agentName?: string } {
+    return this.agentName === undefined ? params : { ...params, agentName: this.agentName };
   }
 
   private generateRequestId(): string {

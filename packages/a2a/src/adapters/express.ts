@@ -12,7 +12,7 @@ export function a2aExpress(server: A2AServer): Router {
     res.json(cards.length === 1 ? cards[0] : cards);
   });
 
-  router.post('/a2a', json(), async (req: Request, res: Response) => {
+  router.post(server.basePath, json(), async (req: Request, res: Response) => {
     const contentType = req.headers['content-type'];
     if (contentType && !contentType.startsWith('application/json')) {
       res.json(createErrorResponse(null, errors.contentTypeNotSupported(contentType)));
@@ -42,7 +42,7 @@ export function a2aExpress(server: A2AServer): Router {
       }
       res.json(response);
     } catch (error) {
-      res.json(createErrorResponse(null, errors.internalError(String(error))));
+      res.json(createErrorResponse(null, errors.clientJsonRpcError(error, 'A2A request failed')));
     }
   });
 

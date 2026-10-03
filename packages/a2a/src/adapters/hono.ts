@@ -14,7 +14,7 @@ export function a2aHono(server: A2AServer): Hono {
     return c.json(cards.length === 1 ? cards[0] : cards);
   });
 
-  app.post('/a2a', async (c) => {
+  app.post(server.basePath, async (c) => {
     const contentType = c.req.header('content-type');
     if (contentType && !contentType.startsWith('application/json')) {
       return c.json(createErrorResponse(null, errors.contentTypeNotSupported(contentType)));
@@ -62,7 +62,9 @@ export function a2aHono(server: A2AServer): Hono {
       }
       return c.json(response);
     } catch (error) {
-      return c.json(createErrorResponse(null, errors.internalError(String(error))));
+      return c.json(
+        createErrorResponse(null, errors.clientJsonRpcError(error, 'A2A request failed'))
+      );
     }
   });
 

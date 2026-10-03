@@ -12,7 +12,7 @@ export function a2aKoa(server: A2AServer): Middleware {
       return;
     }
 
-    if (ctx.path === '/a2a' && ctx.method === 'POST') {
+    if (ctx.path === server.basePath && ctx.method === 'POST') {
       const contentType = ctx.headers['content-type'];
       if (contentType && !contentType.startsWith('application/json')) {
         ctx.body = createErrorResponse(null, errors.contentTypeNotSupported(contentType));
@@ -51,7 +51,10 @@ export function a2aKoa(server: A2AServer): Middleware {
         }
         ctx.body = response;
       } catch (error) {
-        ctx.body = createErrorResponse(null, errors.internalError(String(error)));
+        ctx.body = createErrorResponse(
+          null,
+          errors.clientJsonRpcError(error, 'A2A request failed')
+        );
       }
       return;
     }

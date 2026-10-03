@@ -99,7 +99,10 @@ export class TaskManager extends EventEmitter {
         }
         return await this.cancelTask(task.id);
       }
-      return await this.failTask(task.id, error instanceof Error ? error.message : String(error));
+      return await this.failTask(
+        task.id,
+        errors.clientErrorMessage(error, `Task ${task.id} failed`)
+      );
     } finally {
       this.activeTasks.delete(task.id);
     }

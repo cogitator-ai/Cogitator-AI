@@ -56,11 +56,6 @@ function failedStatusEvent(message: string, taskId = ''): A2AStreamEvent {
   };
 }
 
-function errorMessageOf(error: unknown): string {
-  if (error instanceof A2AError) return error.message;
-  return error instanceof Error ? error.message : String(error);
-}
-
 function isValidMessage(message: unknown): message is A2AMessage {
   if (!message || typeof message !== 'object') return false;
   const m = message as Partial<A2AMessage>;
@@ -79,7 +74,8 @@ export class A2AServer {
   private cogitator: CogitatorLike;
   private taskManager: TaskManager;
   private agentCards: Map<string, AgentCard>;
-  private basePath: string;
+  /** The path the framework adapters serve JSON-RPC on, and the cards advertise without `cardUrl`. */
+  readonly basePath: string;
   private cardUrl: string;
   private pushNotificationStore: PushNotificationStore;
   private pushSender: PushNotificationSender;
@@ -97,6 +93,11 @@ export class A2AServer {
     this.agents = config.agents;
     this.cogitator = config.cogitator;
     this.basePath = config.basePath ?? '/a2a';
+    if (!this.basePath.startsWith('/')) {
+      throw new Error(
+        `A2AServer basePath must be a path starting with "/", got "${this.basePath}"`
+      );
+    }
     this.cardUrl = config.cardUrl ?? '';
     this.cardSigning = config.cardSigning;
     this.extendedCardGenerator = config.extendedCardGenerator;
@@ -202,7 +203,7 @@ export class A2AServer {
           e.code === -32600 ? errors.invalidRequest(e.message) : errors.parseError(e.message)
         );
       }
-      return createErrorResponse(null, errors.internalError(String(e)));
+      return createErrorResponse(null, errors.clientJsonRpcError(e, 'JSON-RPC parse error'));
     }
 
     let caller: A2ACaller | undefined;
@@ -210,10 +211,7 @@ export class A2AServer {
       caller = await this.authenticate(authToken);
     } catch (e) {
       if (request.id === undefined) return null;
-      if (e instanceof A2AError) {
-        return createErrorResponse(request.id, e.jsonRpcError);
-      }
-      return createErrorResponse(request.id, errors.internalError(String(e)));
+      return createErrorResponse(request.id, errors.clientJsonRpcError(e, 'Authentication error'));
     }
 
     try {
@@ -222,12 +220,9 @@ export class A2AServer {
       return createSuccessResponse(request.id, result);
     } catch (e) {
       if (request.id === undefined) return null;
-      if (e instanceof A2AError) {
-        return createErrorResponse(request.id, e.jsonRpcError);
-      }
       return createErrorResponse(
         request.id,
-        errors.internalError(e instanceof Error ? e.message : String(e))
+        errors.clientJsonRpcError(e, `${request.method} failed`)
       );
     }
   }
@@ -246,7 +241,7 @@ export class A2AServer {
       }
       request = parsed;
     } catch (e) {
-      yield failedStatusEvent(e instanceof Error ? e.message : 'Invalid JSON-RPC request');
+      yield failedStatusEvent(errors.clientErrorMessage(e, 'JSON-RPC parse error'));
       return;
     }
 
@@ -254,7 +249,7 @@ export class A2AServer {
     try {
       caller = await this.authenticate(authToken);
     } catch (e) {
-      yield failedStatusEvent(e instanceof Error ? e.message : 'Authentication failed');
+      yield failedStatusEvent(errors.clientErrorMessage(e, 'Authentication error'));
       return;
     }
 
@@ -321,7 +316,10 @@ export class A2AServer {
           await this.registerInitialPushConfig(task.id, params.configuration);
         }
       } catch (error) {
-        yield failedStatusEvent(errorMessageOf(error), taskId ?? '');
+        yield failedStatusEvent(
+          errors.clientErrorMessage(error, 'message/stream failed'),
+          taskId ?? ''
+        );
         return;
       }
 
@@ -379,7 +377,10 @@ export class A2AServer {
 
         if (executionDone) {
           if (executionError !== undefined) {
-            yield failedStatusEvent(errorMessageOf(executionError), task.id);
+            yield failedStatusEvent(
+              errors.clientErrorMessage(executionError, `Task ${task.id} failed`),
+              task.id
+            );
             return;
           }
           const finalTask = await this.taskManager.getTask(task.id);
@@ -504,7 +505,7 @@ export class A2AServer {
 
     if (configuration?.blocking === false) {
       execution.catch((error: unknown) => {
-        process.stderr.write(`[a2a] Background task ${task.id} failed: ${errorMessageOf(error)}\n`);
+        console.error(`[a2a] Background task ${task.id} failed:`, error);
       });
       return this.shapeTask(task, configuration);
     }
@@ -530,10 +531,7 @@ export class A2AServer {
     try {
       await this.pushNotificationStore.create(taskId, pushConfig);
     } catch (error) {
-      await this.taskManager.failTask(
-        taskId,
-        `Failed to register push notification: ${errorMessageOf(error)}`
-      );
+      await this.taskManager.failTask(taskId, 'Failed to register push notification');
       throw error;
     }
   }
