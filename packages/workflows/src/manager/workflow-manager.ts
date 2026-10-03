@@ -27,10 +27,10 @@ import type {
 import type { Cogitator } from '@cogitator-ai/core';
 import { WorkflowExecutor } from '../executor';
 import { WorkflowScheduler } from '../scheduler';
-import { type JobScheduler, createJobScheduler } from './scheduler';
+import { type CronJob, type JobScheduler, createJobScheduler } from './scheduler';
 import { InMemoryRunStore } from './run-store';
 import { createTracer, type WorkflowTracer } from '../observability/tracer';
-import type { WorkflowMetricsCollector } from '../observability/metrics';
+import { createMetricsCollector, type WorkflowMetricsCollector } from '../observability/metrics';
 
 /**
  * Workflow manager configuration
@@ -38,6 +38,7 @@ import type { WorkflowMetricsCollector } from '../observability/metrics';
 export interface WorkflowManagerConfig {
   cogitator: Cogitator;
   runStore?: RunStore;
+  /** Checkpoints every run; needed to pause and resume runs */
   checkpointStore?: CheckpointStore;
   maxConcurrency?: number;
   /** Cancel runs that take longer than this many ms (marked failed with a timeout error) */
@@ -47,6 +48,44 @@ export interface WorkflowManagerConfig {
   /** Metrics collector used for every run (`options.metrics.enabled: false` opts a run out) */
   metrics?: WorkflowMetricsCollector;
   onRunStateChange?: (run: WorkflowRun) => void;
+}
+
+/** Why a run was asked to stop before it finished */
+type StopReason = 'paused' | 'cancelled';
+
+interface ActiveRun {
+  controller: AbortController;
+  stopReason?: StopReason;
+  /** The store write of the stop, which the run's final write must not overtake */
+  stopWrite?: Promise<void>;
+}
+
+/** Where a run continues from instead of the workflow's entry point */
+interface ResumePoint {
+  workflowId: string;
+  skipNodes: Set<string>;
+  nodeResults: Record<string, unknown>;
+}
+
+interface RunLaunch<S extends WorkflowState> {
+  runId: string;
+  workflow: Workflow<S>;
+  input?: Partial<S>;
+  options?: WorkflowExecuteOptionsV2;
+  timeout?: number;
+  resumeFrom?: ResumePoint;
+}
+
+type RunUpdate = Partial<WorkflowRun>;
+
+/** A finite number stored under `key` in the run's metadata (scheduling options live there) */
+function metadataNumber(run: WorkflowRun, key: string): number | undefined {
+  const value = run.metadata?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function errorRecord(error: Error): NonNullable<WorkflowRun['error']> {
+  return { name: error.name, message: error.message, stack: error.stack };
 }
 
 /**
@@ -59,12 +98,15 @@ export class DefaultWorkflowManager implements IWorkflowManager {
   private scheduler: JobScheduler;
   private executor: WorkflowExecutor;
   private workflows = new Map<string, Workflow<WorkflowState>>();
-  private activeRuns = new Map<string, { abort: () => void }>();
+  private activeRuns = new Map<string, ActiveRun>();
+  /** Execute options of runs that are active or paused, reused when a paused run resumes */
+  private runOptions = new Map<string, WorkflowExecuteOptionsV2>();
   private stateChangeCallbacks = new Set<(run: WorkflowRun) => void>();
   private runLocks = new Map<string, Promise<void>>();
   private defaultTimeout?: number;
   private tracer?: WorkflowTracer;
   private metrics?: WorkflowMetricsCollector;
+  private disabledMetrics?: WorkflowMetricsCollector;
 
   constructor(config: WorkflowManagerConfig) {
     this.cogitator = config.cogitator;
@@ -79,7 +121,11 @@ export class DefaultWorkflowManager implements IWorkflowManager {
     this.scheduler = createJobScheduler({
       runStore: this.runStore,
       maxConcurrency: config.maxConcurrency,
-      onRunReady: (runId) => this.handleRunReady(runId),
+      onRunReady: (runId) => {
+        this.handleRunReady(runId).catch((error: unknown) => {
+          console.warn(`[WorkflowManager] Scheduled run '${runId}' could not be started:`, error);
+        });
+      },
     });
 
     if (config.onRunStateChange) {
@@ -88,7 +134,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
   }
 
   /**
-   * Start the manager (begins processing scheduled runs)
+   * Start the manager (begins processing scheduled runs and cron jobs)
    */
   start(): void {
     this.scheduler.start();
@@ -102,14 +148,15 @@ export class DefaultWorkflowManager implements IWorkflowManager {
   }
 
   /**
-   * Register a workflow for scheduling
+   * Register a workflow for scheduling, retries and resuming
    */
   registerWorkflow<S extends WorkflowState>(workflow: Workflow<S>): void {
     this.workflows.set(workflow.name, workflow as unknown as Workflow<WorkflowState>);
   }
 
   /**
-   * Schedule a workflow for later execution
+   * Schedule a workflow for later execution. `cron` queues one run at the next
+   * occurrence; use `registerCronJob` for a recurring schedule.
    */
   async schedule<S extends WorkflowState>(
     workflow: Workflow<S>,
@@ -117,6 +164,45 @@ export class DefaultWorkflowManager implements IWorkflowManager {
   ): Promise<string> {
     this.registerWorkflow(workflow);
     return this.scheduler.scheduleRun(workflow, options);
+  }
+
+  /**
+   * Run `workflow` on every occurrence of the cron `expression` while the manager is
+   * started. Each occurrence queues a run with `jobOptions` and `triggerId: 'cron:<jobId>'`.
+   * Returns the job id.
+   */
+  registerCronJob<S extends WorkflowState>(
+    workflow: Workflow<S>,
+    expression: string,
+    options?: {
+      id?: string;
+      timezone?: string;
+      jobOptions?: Omit<ScheduleOptions, 'at' | 'cron' | 'timezone'>;
+    }
+  ): string {
+    this.registerWorkflow(workflow);
+    return this.scheduler.registerCronJob(workflow, expression, options);
+  }
+
+  /**
+   * Remove a cron job; runs it already queued are kept
+   */
+  unregisterCronJob(jobId: string): boolean {
+    return this.scheduler.unregisterCronJob(jobId);
+  }
+
+  /**
+   * Pause or continue a cron job
+   */
+  setCronJobEnabled(jobId: string, enabled: boolean): boolean {
+    return this.scheduler.setCronJobEnabled(jobId, enabled);
+  }
+
+  /**
+   * List the registered cron jobs
+   */
+  getCronJobs(): CronJob[] {
+    return this.scheduler.getCronJobs();
   }
 
   /**
@@ -153,106 +239,13 @@ export class DefaultWorkflowManager implements IWorkflowManager {
     await this.runStore.save(run);
     this.notifyStateChange(run);
 
-    const abortController = new AbortController();
-    this.activeRuns.set(runId, { abort: () => abortController.abort() });
     this.scheduler.runStarted(runId);
-
-    let timedOut = false;
-    const timeoutHandle =
-      this.defaultTimeout !== undefined && this.defaultTimeout > 0
-        ? setTimeout(() => {
-            timedOut = true;
-            abortController.abort();
-          }, this.defaultTimeout)
-        : undefined;
-
-    const runTracer = options?.tracing ? createTracer(options.tracing) : this.tracer;
-    const runMetrics = options?.metrics?.enabled === false ? undefined : this.metrics;
-
-    try {
-      const executed = await this.executor.execute(workflow, input, {
-        checkpoint: !!this.checkpointStore,
-        ...options,
-        signal: abortController.signal,
-        tracer: runTracer,
-        metricsCollector: runMetrics,
-        ...this.trackNodes(runId, options),
-      });
-      await this.settleNodeUpdates(runId);
-
-      const result: WorkflowResult<S> = timedOut
-        ? {
-            ...executed,
-            error: new Error(
-              `Workflow run '${runId}' timed out after ${String(this.defaultTimeout)}ms`
-            ),
-          }
-        : executed;
-
-      if (result.error) {
-        await this.runStore.update(runId, {
-          status: 'failed',
-          state: result.state,
-          completedAt: Date.now(),
-          checkpointId: result.checkpointId,
-          error: {
-            name: result.error.name,
-            message: result.error.message,
-            stack: result.error.stack,
-          },
-        });
-
-        const updatedRun = await this.runStore.get(runId);
-        if (updatedRun) this.notifyStateChange(updatedRun);
-
-        return result;
-      }
-
-      await this.runStore.update(runId, {
-        status: 'completed',
-        state: result.state,
-        output: result.state,
-        completedAt: Date.now(),
-        checkpointId: result.checkpointId,
-      });
-
-      const updatedRun = await this.runStore.get(runId);
-      if (updatedRun) this.notifyStateChange(updatedRun);
-
-      return result;
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      await this.settleNodeUpdates(runId);
-
-      await this.runStore.update(runId, {
-        status: 'failed',
-        completedAt: Date.now(),
-        error: {
-          name: err.name,
-          message: err.message,
-          stack: err.stack,
-        },
-      });
-
-      const updatedRun = await this.runStore.get(runId);
-      if (updatedRun) this.notifyStateChange(updatedRun);
-
-      throw error;
-    } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-      if (runTracer && runTracer !== this.tracer) {
-        await runTracer.flush().catch((error: unknown) => {
-          console.warn('[WorkflowManager] Failed to flush run traces:', error);
-        });
-      }
-      this.activeRuns.delete(runId);
-      this.runLocks.delete(runId);
-      this.scheduler.runCompleted(runId);
-    }
+    return this.runWorkflow({ runId, workflow, input, options, timeout: this.defaultTimeout });
   }
 
   /**
-   * Cancel a run
+   * Cancel a run. A running run is aborted: the nodes in flight get the abort signal and
+   * no further node starts.
    */
   async cancel(runId: string, reason?: string): Promise<void> {
     const run = await this.runStore.get(runId);
@@ -266,19 +259,12 @@ export class DefaultWorkflowManager implements IWorkflowManager {
     }
 
     if (run.status === 'running' || run.status === 'paused') {
-      const active = this.activeRuns.get(runId);
-      if (active) {
-        active.abort();
-      }
-
-      await this.runStore.update(runId, {
+      await this.stopRun(runId, 'cancelled', {
         status: 'cancelled',
         completedAt: Date.now(),
         error: reason ? { name: 'CancelError', message: reason } : undefined,
       });
-
-      const updatedRun = await this.runStore.get(runId);
-      if (updatedRun) this.notifyStateChange(updatedRun);
+      if (!this.activeRuns.has(runId)) this.runOptions.delete(runId);
     }
   }
 
@@ -304,7 +290,9 @@ export class DefaultWorkflowManager implements IWorkflowManager {
   }
 
   /**
-   * Pause a running workflow (aborts execution; resume requires a checkpoint)
+   * Pause a running workflow. Execution is aborted (nodes in flight get the abort signal)
+   * and `resume()` continues from the run's last checkpoint, so the manager needs a
+   * `checkpointStore`.
    */
   async pause(runId: string): Promise<void> {
     const run = await this.runStore.get(runId);
@@ -314,24 +302,22 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       throw new Error(`Cannot pause run in status: ${run.status}`);
     }
 
-    const active = this.activeRuns.get(runId);
-    if (active) {
-      active.abort();
+    if (!this.checkpointStore) {
+      throw new Error(
+        `Cannot pause run '${runId}': the manager has no checkpointStore to resume it from (use cancel() to stop it)`
+      );
     }
 
-    await this.runStore.update(runId, {
-      status: 'paused',
-      pausedAt: Date.now(),
-    });
-
-    const updatedRun = await this.runStore.get(runId);
-    if (updatedRun) this.notifyStateChange(updatedRun);
+    await this.stopRun(runId, 'paused', { status: 'paused', pausedAt: Date.now() });
   }
 
   /**
-   * Resume a paused workflow
+   * Resume a paused workflow from its last checkpoint (from the start when it was paused
+   * before the first checkpoint). Nodes that completed before the checkpoint are not run
+   * again. Resolves once the run is running again; follow it with `onRunStateChange` or
+   * `getStatus`. `options` default to the ones the run was started with in this process.
    */
-  async resume(runId: string): Promise<void> {
+  async resume(runId: string, options?: WorkflowExecuteOptionsV2): Promise<void> {
     const run = await this.runStore.get(runId);
     if (!run) throw new Error(`Run not found: ${runId}`);
 
@@ -339,13 +325,50 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       throw new Error(`Cannot resume run in status: ${run.status}`);
     }
 
+    if (this.activeRuns.has(runId)) {
+      throw new Error(
+        `Cannot resume run '${runId}' yet: the nodes it was running when paused have not finished`
+      );
+    }
+
+    const workflow = this.workflows.get(run.workflowName);
+    if (!workflow) {
+      throw new Error(`Workflow not found: ${run.workflowName}`);
+    }
+
+    const checkpoint = run.checkpointId
+      ? await this.checkpointStore?.load(run.checkpointId)
+      : undefined;
+    if (run.checkpointId && !checkpoint) {
+      throw new Error(`Checkpoint '${run.checkpointId}' of run '${runId}' not found`);
+    }
+
     await this.runStore.update(runId, {
       status: 'running',
       pausedAt: undefined,
+      currentNodes: [],
     });
 
     const updatedRun = await this.runStore.get(runId);
     if (updatedRun) this.notifyStateChange(updatedRun);
+
+    this.scheduler.runStarted(runId);
+    void this.runWorkflow({
+      runId,
+      workflow,
+      options: options ?? this.runOptions.get(runId),
+      timeout: this.runTimeout(run),
+      ...(checkpoint
+        ? {
+            input: checkpoint.state,
+            resumeFrom: {
+              workflowId: checkpoint.workflowId,
+              skipNodes: new Set(checkpoint.completedNodes),
+              nodeResults: checkpoint.nodeResults,
+            },
+          }
+        : { input: run.input as Partial<WorkflowState> | undefined }),
+    }).catch(() => {});
   }
 
   /**
@@ -384,6 +407,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
         ...run.metadata,
         retriedFrom: runId,
         retriedAt: now,
+        retryAttempt: (metadataNumber(run, 'retryAttempt') ?? 0) + 1,
       },
     };
 
@@ -452,56 +476,22 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       },
     };
 
+    this.registerWorkflow(workflow);
     await this.runStore.save(newRun);
     this.notifyStateChange(newRun);
 
-    const skipNodes = new Set(newRun.completedNodes);
-
-    const abortController = new AbortController();
-    this.activeRuns.set(newRunId, { abort: () => abortController.abort() });
     this.scheduler.runStarted(newRunId);
-
-    try {
-      const result = await this.executor.execute(workflow, run.state as Partial<S>, {
-        checkpoint: !!this.checkpointStore,
-        skipNodes,
+    return this.runWorkflow({
+      runId: newRunId,
+      workflow,
+      input: run.state as Partial<S>,
+      timeout: this.defaultTimeout,
+      resumeFrom: {
+        workflowId: newRunId,
+        skipNodes: new Set(kept),
         nodeResults: keptResults,
-        signal: abortController.signal,
-      });
-
-      await this.runStore.update(newRunId, {
-        status: result.error ? 'failed' : 'completed',
-        state: result.state,
-        output: result.error ? undefined : result.state,
-        completedAt: Date.now(),
-        checkpointId: result.checkpointId,
-        error: result.error
-          ? { name: result.error.name, message: result.error.message, stack: result.error.stack }
-          : undefined,
-      });
-
-      const updatedRun = await this.runStore.get(newRunId);
-      if (updatedRun) this.notifyStateChange(updatedRun);
-
-      return result;
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-
-      await this.runStore.update(newRunId, {
-        status: 'failed',
-        completedAt: Date.now(),
-        error: { name: err.name, message: err.message, stack: err.stack },
-      });
-
-      const updatedRun = await this.runStore.get(newRunId);
-      if (updatedRun) this.notifyStateChange(updatedRun);
-
-      throw error;
-    } finally {
-      this.activeRuns.delete(newRunId);
-      this.runLocks.delete(newRunId);
-      this.scheduler.runCompleted(newRunId);
-    }
+      },
+    });
   }
 
   /**
@@ -536,15 +526,24 @@ export class DefaultWorkflowManager implements IWorkflowManager {
   dispose(): void {
     this.stop();
     this.activeRuns.clear();
+    this.runOptions.clear();
     this.runLocks.clear();
     this.workflows.clear();
     this.stateChangeCallbacks.clear();
     this.scheduler.dispose();
   }
 
+  /** Scheduling `timeout` stored on the run, else the manager's `defaultTimeout` */
+  private runTimeout(run: WorkflowRun): number | undefined {
+    return metadataNumber(run, 'timeout') ?? this.defaultTimeout;
+  }
+
   private async handleRunReady(runId: string): Promise<void> {
     const run = await this.runStore.get(runId);
-    if (!run) return;
+    if (!run || (run.status !== 'pending' && run.status !== 'scheduled')) {
+      this.scheduler.runCompleted(runId);
+      return;
+    }
 
     const workflow = this.workflows.get(run.workflowName);
     if (!workflow) {
@@ -557,6 +556,8 @@ export class DefaultWorkflowManager implements IWorkflowManager {
         },
       });
       this.scheduler.runCompleted(runId);
+      const failedRun = await this.runStore.get(runId);
+      if (failedRun) this.notifyStateChange(failedRun);
       return;
     }
 
@@ -565,47 +566,152 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       startedAt: Date.now(),
     });
 
-    const abortController = new AbortController();
-    this.activeRuns.set(runId, { abort: () => abortController.abort() });
+    const startedRun = await this.runStore.get(runId);
+    if (startedRun) this.notifyStateChange(startedRun);
 
     try {
-      const result = await this.executor.execute(workflow, run.input as Partial<WorkflowState>, {
-        signal: abortController.signal,
-        ...this.trackNodes(runId),
+      await this.runWorkflow({
+        runId,
+        workflow,
+        input: run.input as Partial<WorkflowState> | undefined,
+        timeout: this.runTimeout(run),
+      });
+    } catch {}
+
+    const finished = await this.runStore.get(runId);
+    const maxRetries = finished ? metadataNumber(finished, 'maxRetries') : undefined;
+    if (
+      finished?.status === 'failed' &&
+      maxRetries !== undefined &&
+      (metadataNumber(finished, 'retryAttempt') ?? 0) < maxRetries
+    ) {
+      await this.retry(runId);
+    }
+  }
+
+  /**
+   * Abort an active run for `reason` and record `update`. The run's own final write waits
+   * for this one, so the stop status is never overwritten by a stale 'running' outcome.
+   */
+  private async stopRun(runId: string, reason: StopReason, update: RunUpdate): Promise<void> {
+    const write = this.runStore.update(runId, update);
+    const active = this.activeRuns.get(runId);
+    if (active) {
+      active.stopReason = reason;
+      active.stopWrite = write.catch(() => {});
+      active.controller.abort();
+    }
+
+    await write;
+    const updatedRun = await this.runStore.get(runId);
+    if (updatedRun) this.notifyStateChange(updatedRun);
+  }
+
+  /**
+   * Execute a run that is already stored as running and counted by the scheduler, then
+   * record how it ended: completed, failed, or paused/cancelled when it was stopped.
+   */
+  private async runWorkflow<S extends WorkflowState>(
+    launch: RunLaunch<S>
+  ): Promise<WorkflowResult<S>> {
+    const { runId, workflow, input, options, timeout, resumeFrom } = launch;
+    const active: ActiveRun = { controller: new AbortController() };
+    this.activeRuns.set(runId, active);
+    if (options) this.runOptions.set(runId, options);
+
+    let timedOut = false;
+    const timeoutHandle =
+      timeout !== undefined && timeout > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            active.controller.abort();
+          }, timeout)
+        : undefined;
+
+    const runTracer = options?.tracing ? createTracer(options.tracing) : this.tracer;
+    const runMetrics =
+      options?.metrics?.enabled === false
+        ? (this.disabledMetrics ??= createMetricsCollector({ enabled: false }))
+        : this.metrics;
+
+    try {
+      const executed = await this.executor.execute(workflow, input, {
+        checkpoint: !!this.checkpointStore,
+        workflowId: runId,
+        ...options,
+        ...resumeFrom,
+        signal: active.controller.signal,
+        tracer: runTracer,
+        metricsCollector: runMetrics,
+        ...this.trackNodes(runId, options),
       });
       await this.settleNodeUpdates(runId);
+      await active.stopWrite;
 
-      await this.runStore.update(runId, {
-        status: result.error ? 'failed' : 'completed',
-        state: result.state,
-        output: result.error ? undefined : result.state,
-        completedAt: Date.now(),
-        checkpointId: result.checkpointId,
-        error: result.error
-          ? { name: result.error.name, message: result.error.message, stack: result.error.stack }
-          : undefined,
-      });
+      const stopped = executed.error ? active.stopReason : undefined;
+      const error = stopped
+        ? new Error(`Workflow run '${runId}' was ${stopped}`)
+        : timedOut
+          ? new Error(`Workflow run '${runId}' timed out after ${String(timeout)}ms`)
+          : executed.error;
+      const result: WorkflowResult<S> =
+        error === executed.error ? executed : { ...executed, error };
+
+      const checkpoint = result.checkpointId ? { checkpointId: result.checkpointId } : {};
+      if (stopped) {
+        await this.finishRun(runId, { status: stopped, state: result.state, ...checkpoint });
+      } else if (result.error) {
+        await this.finishRun(runId, {
+          status: 'failed',
+          state: result.state,
+          completedAt: Date.now(),
+          ...checkpoint,
+          error: errorRecord(result.error),
+        });
+      } else {
+        await this.finishRun(runId, {
+          status: 'completed',
+          state: result.state,
+          output: result.state,
+          completedAt: Date.now(),
+          pausedAt: undefined,
+          error: undefined,
+          ...checkpoint,
+        });
+      }
+
+      return result;
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       await this.settleNodeUpdates(runId);
+      await active.stopWrite;
 
-      await this.runStore.update(runId, {
-        status: 'failed',
-        completedAt: Date.now(),
-        error: {
-          name: err.name,
-          message: err.message,
-          stack: err.stack,
-        },
-      });
+      await this.finishRun(
+        runId,
+        active.stopReason
+          ? { status: active.stopReason }
+          : { status: 'failed', completedAt: Date.now(), error: errorRecord(err) }
+      );
+
+      throw error;
     } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (runTracer && runTracer !== this.tracer) {
+        await runTracer.flush().catch((error: unknown) => {
+          console.warn('[WorkflowManager] Failed to flush run traces:', error);
+        });
+      }
       this.activeRuns.delete(runId);
       this.runLocks.delete(runId);
+      if (active.stopReason !== 'paused') this.runOptions.delete(runId);
       this.scheduler.runCompleted(runId);
-
-      const updatedRun = await this.runStore.get(runId);
-      if (updatedRun) this.notifyStateChange(updatedRun);
     }
+  }
+
+  private async finishRun(runId: string, update: RunUpdate): Promise<void> {
+    await this.runStore.update(runId, update);
+    const updatedRun = await this.runStore.get(runId);
+    if (updatedRun) this.notifyStateChange(updatedRun);
   }
 
   /** Node callbacks that record the run's current, completed and failed nodes, then call `options`' own. */
@@ -646,18 +752,23 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       if (!run) return;
 
       const updates: Partial<WorkflowRun> = {};
+      const others = run.currentNodes.filter((n) => n !== nodeId);
 
       switch (action) {
         case 'start':
-          updates.currentNodes = [...run.currentNodes, nodeId];
+          updates.currentNodes = [...others, nodeId];
           break;
         case 'complete':
-          updates.currentNodes = run.currentNodes.filter((n) => n !== nodeId);
-          updates.completedNodes = [...run.completedNodes, nodeId];
+          updates.currentNodes = others;
+          updates.completedNodes = run.completedNodes.includes(nodeId)
+            ? run.completedNodes
+            : [...run.completedNodes, nodeId];
           break;
         case 'error':
-          updates.currentNodes = run.currentNodes.filter((n) => n !== nodeId);
-          updates.failedNodes = [...run.failedNodes, nodeId];
+          updates.currentNodes = others;
+          updates.failedNodes = run.failedNodes.includes(nodeId)
+            ? run.failedNodes
+            : [...run.failedNodes, nodeId];
           break;
       }
 

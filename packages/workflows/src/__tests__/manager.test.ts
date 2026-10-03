@@ -9,6 +9,9 @@ import {
   createWorkflowManager,
 } from '../manager/index';
 import { WorkflowBuilder } from '../builder';
+import { InMemoryCheckpointStore } from '../checkpoint';
+import { createMetricsCollector } from '../observability/metrics';
+import type { ExtendedNodeContext } from '../nodes/base';
 import type { Cogitator } from '@cogitator-ai/core';
 import type { WorkflowRun, WorkflowState } from '@cogitator-ai/types';
 
@@ -579,30 +582,20 @@ describe('Workflow Manager', () => {
       expect(['cancelled', 'completed', 'failed']).toContain(updatedRuns[0].status);
     });
 
-    it('pauses and resumes workflows', async () => {
-      const workflow = new WorkflowBuilder<TestState>('pausable')
+    it('refuses to pause without a checkpoint store to resume from', async () => {
+      let release!: () => void;
+      const workflow = new WorkflowBuilder<TestState>('unpausable')
         .initialState({ value: 0, steps: [] })
-        .addNode('step1', async () => ({ state: { value: 1 } }))
+        .addNode('wait', () => new Promise((resolve) => (release = () => resolve({}))))
         .build();
 
       const resultPromise = manager.execute(workflow);
+      const runId = await waitForRun(manager, 'unpausable', 'running');
 
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await expect(manager.pause(runId)).rejects.toThrow('no checkpointStore');
+      expect((await manager.getStatus(runId))?.status).toBe('running');
 
-      const runs = await manager.listRuns({ workflowName: 'pausable' });
-
-      if (runs[0].status === 'running') {
-        await manager.pause(runs[0].id);
-
-        const pausedRun = await manager.getStatus(runs[0].id);
-        expect(pausedRun?.status).toBe('paused');
-
-        await manager.resume(runs[0].id);
-
-        const resumedRun = await manager.getStatus(runs[0].id);
-        expect(resumedRun?.status).toBe('running');
-      }
-
+      release();
       await resultPromise;
     });
 
@@ -691,5 +684,199 @@ describe('Workflow Manager', () => {
 
       await resultPromise;
     });
+  });
+});
+
+async function waitForRun(
+  manager: DefaultWorkflowManager,
+  workflowName: string,
+  status: WorkflowRun['status'],
+  count = 1
+): Promise<string> {
+  for (;;) {
+    const runs = await manager.listRuns({ workflowName, status });
+    if (runs.length >= count) return runs[0].id;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+}
+
+function untilRun(
+  manager: DefaultWorkflowManager,
+  runId: string,
+  status: WorkflowRun['status']
+): Promise<WorkflowRun> {
+  return new Promise((resolve) => {
+    const unsubscribe = manager.onRunStateChange((run) => {
+      if (run.id === runId && run.status === status) {
+        unsubscribe();
+        resolve(run);
+      }
+    });
+  });
+}
+
+describe('Workflow Manager run lifecycle', () => {
+  let manager: DefaultWorkflowManager;
+
+  afterEach(() => {
+    manager.dispose();
+    vi.useRealTimers();
+  });
+
+  function gatedWorkflow(name: string, calls: string[]) {
+    let gateOpen = false;
+    const workflow = new WorkflowBuilder<TestState>(name)
+      .initialState({ value: 0, steps: [] })
+      .addNode('a', async () => {
+        calls.push('a');
+        return { output: 'a-out' };
+      })
+      .addNode(
+        'b',
+        (ctx) => {
+          calls.push('b');
+          if (gateOpen) return Promise.resolve({ output: `b saw ${String(ctx.input)}` });
+          const signal = (ctx as ExtendedNodeContext<TestState>).signal;
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(new Error('stopped')), { once: true });
+          });
+        },
+        { after: ['a'] }
+      )
+      .addNode(
+        'c',
+        async (ctx) => {
+          calls.push('c');
+          return { output: ctx.input, state: { value: 1 } };
+        },
+        { after: ['b'] }
+      )
+      .build();
+    return { workflow, open: () => (gateOpen = true) };
+  }
+
+  it('keeps a paused run paused and resumes it from its last checkpoint', async () => {
+    manager = createWorkflowManager({
+      cogitator: mockCogitator,
+      checkpointStore: new InMemoryCheckpointStore(),
+    });
+    const calls: string[] = [];
+    const completed: string[] = [];
+    const { workflow, open } = gatedWorkflow('pausable', calls);
+
+    const resultPromise = manager.execute(workflow, undefined, {
+      onNodeComplete: (node) => completed.push(node),
+    });
+    const runId = await waitForRun(manager, 'pausable', 'running');
+    while (!calls.includes('b')) await new Promise((resolve) => setTimeout(resolve, 2));
+
+    await manager.pause(runId);
+    const result = await resultPromise;
+
+    expect(result.error?.message).toBe(`Workflow run '${runId}' was paused`);
+    const paused = await manager.getStatus(runId);
+    expect(paused?.status).toBe('paused');
+    expect(paused?.checkpointId).toBeDefined();
+
+    open();
+    const done = untilRun(manager, runId, 'completed');
+    await manager.resume(runId);
+    const finished = await done;
+
+    expect(calls).toEqual(['a', 'b', 'b', 'c']);
+    expect(completed).toEqual(['a', 'b', 'c']);
+    expect(finished.state).toMatchObject({ value: 1 });
+    expect(finished.output).toMatchObject({ value: 1 });
+    expect(finished.completedNodes).toEqual(['a', 'b', 'c']);
+  });
+
+  it('keeps a cancelled run cancelled with its reason', async () => {
+    manager = createWorkflowManager({ cogitator: mockCogitator });
+    const { workflow } = gatedWorkflow('cancellable-run', []);
+
+    const resultPromise = manager.execute(workflow);
+    const runId = await waitForRun(manager, 'cancellable-run', 'running');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    await manager.cancel(runId, 'not needed');
+    const result = await resultPromise;
+
+    expect(result.error?.message).toBe(`Workflow run '${runId}' was cancelled`);
+    const run = await manager.getStatus(runId);
+    expect(run?.status).toBe('cancelled');
+    expect(run?.error).toEqual({ name: 'CancelError', message: 'not needed' });
+  });
+
+  it('gives scheduled runs the checkpoint store, metrics and their timeout', async () => {
+    const metrics = createMetricsCollector();
+    manager = createWorkflowManager({
+      cogitator: mockCogitator,
+      checkpointStore: new InMemoryCheckpointStore(),
+      metrics,
+      defaultTimeout: 10_000,
+    });
+    manager.start();
+    const quick = new WorkflowBuilder<TestState>('scheduled-quick')
+      .initialState({ value: 0, steps: [] })
+      .addNode('step', async () => ({ state: { value: 1 } }))
+      .build();
+    const slow = new WorkflowBuilder<TestState>('scheduled-slow')
+      .initialState({ value: 0, steps: [] })
+      .addNode('step', () => new Promise((resolve) => setTimeout(() => resolve({}), 500)))
+      .build();
+
+    const quickId = await manager.schedule(quick);
+    const slowId = await manager.schedule(slow, { timeout: 20 });
+    const quickRun = await untilRun(manager, quickId, 'completed');
+    const slowRun = await untilRun(manager, slowId, 'failed');
+
+    expect(quickRun.checkpointId).toBeDefined();
+    expect(metrics.getWorkflowMetrics('scheduled-quick')?.executionCount).toBe(1);
+    expect(slowRun.error?.message).toContain('timed out after 20ms');
+  });
+
+  it('retries a failed scheduled run up to maxRetries times', async () => {
+    manager = createWorkflowManager({ cogitator: mockCogitator });
+    manager.start();
+    let attempts = 0;
+    const flaky = new WorkflowBuilder<TestState>('flaky')
+      .initialState({ value: 0, steps: [] })
+      .addNode('step', async () => {
+        attempts++;
+        throw new Error(`attempt ${attempts} failed`);
+      })
+      .build();
+
+    await manager.schedule(flaky, { maxRetries: 2 });
+    await waitForRun(manager, 'flaky', 'failed', 3);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    expect(attempts).toBe(3);
+    const runs = await manager.listRuns({ workflowName: 'flaky' });
+    expect(runs.map((r) => r.metadata?.retryAttempt ?? 0).sort()).toEqual([0, 1, 2]);
+  });
+
+  it('runs registered cron jobs on every occurrence', async () => {
+    vi.useFakeTimers({ now: new Date('2026-01-01T00:00:30Z') });
+    manager = createWorkflowManager({ cogitator: mockCogitator });
+    manager.start();
+    let runs = 0;
+    const tick = new WorkflowBuilder<TestState>('every-minute')
+      .initialState({ value: 0, steps: [] })
+      .addNode('step', async () => {
+        runs++;
+        return {};
+      })
+      .build();
+
+    const jobId = manager.registerCronJob(tick, '* * * * *');
+    expect(manager.getCronJobs().map((job) => job.id)).toEqual([jobId]);
+
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
+    expect(runs).toBe(3);
+
+    expect(manager.unregisterCronJob(jobId)).toBe(true);
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    expect(runs).toBe(3);
   });
 });
