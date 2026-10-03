@@ -19,6 +19,7 @@ export type {
   RunStreamEvent,
   OpenAIAdapterOptions,
 } from './client/openai-adapter';
+export { InvalidRequestError } from './client/errors';
 export { ThreadManager } from './client/thread-manager';
 export type {
   StoredThread,

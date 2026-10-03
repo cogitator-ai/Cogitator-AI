@@ -8,7 +8,14 @@ import type { FastifyInstance } from 'fastify';
 import type { OpenAIAdapter } from '../../client/openai-adapter';
 import type { StoredFile } from '../../client/storage';
 import type { FileObject, FilePurpose, ListResponse } from '../../types/openai-types';
-import { sendInvalidRequest, sendNotFound } from './shared';
+import {
+  FILE_LIST_LIMIT,
+  paginate,
+  parseLimit,
+  parseOrder,
+  sendInvalidRequest,
+  sendNotFound,
+} from './shared';
 
 const FILE_PURPOSES: readonly FilePurpose[] = [
   'assistants',
@@ -98,24 +105,34 @@ export function registerFileRoutes(fastify: FastifyInstance, adapter: OpenAIAdap
     return reply.status(201).send(toFileObject({ ...file, content: fileContent }));
   });
 
-  fastify.get<{ Querystring: { purpose?: string } }>('/v1/files', async (request, reply) => {
+  fastify.get<{
+    Querystring: { purpose?: string; limit?: string; order?: string; after?: string };
+  }>('/v1/files', async (request, reply) => {
     const { purpose } = request.query;
     if (purpose !== undefined && !isFilePurpose(purpose)) {
       return sendInvalidRequest(reply, `Invalid purpose: ${purpose}`, 'purpose');
     }
+    const limit = parseLimit(request.query.limit, FILE_LIST_LIMIT);
+    if (limit === null) {
+      return sendInvalidRequest(
+        reply,
+        `limit must be between 1 and ${FILE_LIST_LIMIT.max}`,
+        'limit'
+      );
+    }
+    const order = parseOrder(request.query.order);
+    if (order === null) return sendInvalidRequest(reply, "order must be 'asc' or 'desc'", 'order');
 
     const files = await threadManager.listFiles();
-    const data = files
+    const sorted = files
       .map(toFileObject)
       .filter((file) => !purpose || file.purpose === purpose)
-      .sort((a, b) => b.created_at - a.created_at);
+      .sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
+    const ordered = order === 'asc' ? sorted : sorted.reverse();
 
     const response: ListResponse<FileObject> = {
       object: 'list',
-      data,
-      first_id: data[0]?.id,
-      last_id: data[data.length - 1]?.id,
-      has_more: false,
+      ...paginate(ordered, { limit, after: request.query.after }),
     };
 
     return reply.send(response);

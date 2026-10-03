@@ -4,6 +4,14 @@ import { formatOpenAIError } from '../middleware/error-handler';
 export const MAX_LIST_LIMIT = 100;
 export const DEFAULT_LIST_LIMIT = 20;
 
+export interface ListLimitBounds {
+  max: number;
+  fallback: number;
+}
+
+/** `GET /v1/files` returns up to 10 000 files per page and all of them by default, as OpenAI does */
+export const FILE_LIST_LIMIT: ListLimitBounds = { max: 10_000, fallback: 10_000 };
+
 export function sendNotFound(reply: FastifyReply, resource: string, id: string) {
   return reply
     .status(404)
@@ -18,12 +26,15 @@ export function sendInvalidRequest(reply: FastifyReply, message: string, param?:
 
 /**
  * Parse a `limit` query value (query strings arrive as strings). Returns
- * null when the value is not an integer between 1 and MAX_LIST_LIMIT.
+ * null when the value is not an integer between 1 and `bounds.max`.
  */
-export function parseLimit(value: unknown): number | null {
-  if (value === undefined || value === '') return DEFAULT_LIST_LIMIT;
+export function parseLimit(
+  value: unknown,
+  bounds: ListLimitBounds = { max: MAX_LIST_LIMIT, fallback: DEFAULT_LIST_LIMIT }
+): number | null {
+  if (value === undefined || value === '') return bounds.fallback;
   const parsed = typeof value === 'number' ? value : Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_LIST_LIMIT) return null;
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > bounds.max) return null;
   return parsed;
 }
 

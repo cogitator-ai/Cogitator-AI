@@ -1,8 +1,16 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import OpenAI from 'openai';
 import type { Cogitator } from '@cogitator-ai/core';
-import type { Agent, RunOptions, RunResult, Tool } from '@cogitator-ai/types';
+import {
+  CogitatorError,
+  ErrorCode,
+  type Agent,
+  type RunOptions,
+  type RunResult,
+  type Tool,
+} from '@cogitator-ai/types';
 import { OpenAIServer } from '../server/api-server';
+import { ThreadManager } from '../client/thread-manager';
 
 type RunHandler = (agent: Agent, options: RunOptions) => Promise<Partial<RunResult>>;
 
@@ -408,6 +416,163 @@ describe('OpenAI SDK compatibility', () => {
     expect(content.headers.get('content-disposition')).toBe(
       'attachment; filename="r_sum_.txt"; filename*=UTF-8\'\'r%C3%A9sum%C3%A9.txt'
     );
+  });
+
+  it('reports a failed run without the text of internal errors', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    handler = async () => {
+      throw new Error('connect ECONNREFUSED 10.0.0.5:6379');
+    };
+    const thread = await client.beta.threads.create({
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    const run = await client.beta.threads.runs.createAndPoll(
+      thread.id,
+      { assistant_id: assistantId },
+      POLL
+    );
+
+    expect(run.status).toBe('failed');
+    expect(run.last_error).toEqual({ code: 'server_error', message: 'Internal server error' });
+    expect(String(consoleError.mock.calls[0]?.[1])).toContain('ECONNREFUSED');
+    consoleError.mockRestore();
+  });
+
+  it('reports the message of a CogitatorError on a failed run', async () => {
+    handler = async () => {
+      throw new CogitatorError({ message: 'Model is overloaded', code: ErrorCode.LLM_UNAVAILABLE });
+    };
+    const thread = await client.beta.threads.create({
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    const run = await client.beta.threads.runs.createAndPoll(
+      thread.id,
+      { assistant_id: assistantId },
+      POLL
+    );
+
+    expect(run.last_error?.message).toBe('Model is overloaded');
+  });
+
+  it('answers a storage failure while creating a run with a generic 500', async () => {
+    const thread = await client.beta.threads.create({
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    const getAssistant = vi
+      .spyOn(ThreadManager.prototype, 'getAssistant')
+      .mockRejectedValueOnce(new Error('connect ECONNREFUSED 10.0.0.5:6379'));
+
+    const response = await fetch(`${server.getBaseUrl()}/threads/${thread.id}/runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assistant_id: assistantId }),
+    });
+    getAssistant.mockRestore();
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: { message: 'Internal server error', type: 'server_error', code: 'internal_error' },
+    });
+  });
+
+  it('answers a refused run with 400, its message and the parameter at fault', async () => {
+    const thread = await client.beta.threads.create({
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    const response = await fetch(`${server.getBaseUrl()}/threads/${thread.id}/runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assistant_id: 'asst_missing' }),
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatchObject({
+      message: 'Assistant asst_missing not found',
+      param: 'assistant_id',
+    });
+  });
+
+  it('leaves the oldest messages out of the prompt to honour max_prompt_tokens', async () => {
+    const thread = await client.beta.threads.create({
+      messages: [
+        { role: 'user', content: 'old '.repeat(100) },
+        { role: 'assistant', content: 'reply' },
+        { role: 'user', content: 'Who?' },
+      ],
+    });
+
+    const run = await client.beta.threads.runs.createAndPoll(
+      thread.id,
+      { assistant_id: assistantId, max_prompt_tokens: 60 },
+      POLL
+    );
+
+    expect(run.status).toBe('completed');
+    expect(calls[0].options.input).toBe('Conversation so far:\n\nAssistant: reply\n\nUser: Who?');
+    expect(calls[0].options.loadHistory).toBe(false);
+  });
+
+  it('ends the run incomplete when the last message alone exceeds max_prompt_tokens', async () => {
+    const thread = await client.beta.threads.create({
+      messages: [{ role: 'user', content: 'x'.repeat(400) }],
+    });
+
+    const run = await client.beta.threads.runs.createAndPoll(
+      thread.id,
+      { assistant_id: assistantId, max_prompt_tokens: 50 },
+      POLL
+    );
+
+    expect(run.status).toBe('incomplete');
+    expect(run.incomplete_details).toEqual({ reason: 'max_prompt_tokens' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('rejects a max_prompt_tokens that is not a positive integer', async () => {
+    const thread = await client.beta.threads.create({
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    const response = await fetch(`${server.getBaseUrl()}/threads/${thread.id}/runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assistant_id: assistantId, max_prompt_tokens: 0 }),
+    });
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error.param).toBe('max_prompt_tokens');
+  });
+
+  it('pages the file list with limit, after and order', async () => {
+    const uploaded = [];
+    for (const name of ['one.txt', 'two.txt', 'three.txt']) {
+      uploaded.push(
+        await client.files.create({ file: new File([name], name), purpose: 'fine-tune' })
+      );
+    }
+    const list = async (query: string) => {
+      const response = await fetch(`${server.getBaseUrl()}/files?purpose=fine-tune&${query}`);
+      return (await response.json()) as {
+        data: { id: string }[];
+        has_more: boolean;
+        last_id?: string;
+      };
+    };
+
+    const all = await list('order=asc');
+    const first = await list('order=asc&limit=2');
+    const rest = await list(`order=asc&limit=2&after=${first.last_id}`);
+    const bad = await fetch(`${server.getBaseUrl()}/files?limit=0`);
+
+    expect(all.data.map((f) => f.id).sort()).toEqual(uploaded.map((f) => f.id).sort());
+    expect(first.data).toHaveLength(2);
+    expect(first.has_more).toBe(true);
+    expect([...first.data, ...rest.data].map((f) => f.id)).toEqual(all.data.map((f) => f.id));
+    expect(rest.has_more).toBe(false);
+    expect(bad.status).toBe(400);
   });
 });
 

@@ -33,6 +33,11 @@ export function errorHandler(error: FastifyError, request: FastifyRequest, reply
   request.log.error(error);
 
   const statusCode = error.statusCode ?? 500;
+  if (statusCode >= 500) {
+    return reply
+      .status(statusCode)
+      .send(formatOpenAIError('internal_error', 'Internal server error', 'server_error'));
+  }
 
   let errorType = 'server_error';
   let errorCode = 'internal_error';

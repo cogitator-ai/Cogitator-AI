@@ -5,12 +5,18 @@
  */
 
 import { type Cogitator, Agent } from '@cogitator-ai/core';
-import type { ImageInput, ResponseFormat as AgentResponseFormat, Tool } from '@cogitator-ai/types';
+import {
+  CogitatorError,
+  type ImageInput,
+  type ResponseFormat as AgentResponseFormat,
+  type Tool,
+} from '@cogitator-ai/types';
 import { EventEmitter } from 'events';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { ThreadManager, type LLMThreadMessage, type StoredAssistant } from './thread-manager';
 import type { ThreadStorage } from './storage';
+import { InvalidRequestError } from './errors';
 import type {
   Assistant,
   AssistantTool,
@@ -37,6 +43,7 @@ export type StreamEventType =
   | 'thread.run.cancelling'
   | 'thread.run.cancelled'
   | 'thread.run.expired'
+  | 'thread.run.incomplete'
   | 'thread.run.step.created'
   | 'thread.run.step.in_progress'
   | 'thread.run.step.completed'
@@ -73,7 +80,11 @@ export interface OpenAIAdapterOptions {
   /** Maximum number of finished runs kept in memory (default: 10 000) */
   maxStoredRuns?: number;
 
-  /** Persistence for assistants, threads, messages and files (default: in-memory) */
+  /**
+   * Persistence for assistants, threads, messages and files (default: in-memory).
+   * Runs are not persisted: they live in the memory of the process that
+   * created them, whatever the storage.
+   */
   storage?: ThreadStorage;
 }
 
@@ -86,6 +97,8 @@ const ACTIVE_STATUSES: readonly RunStatus[] = [
   'cancelling',
 ];
 const RUN_TTL_SECONDS = 600;
+const CHARS_PER_TOKEN = 4;
+const TRANSCRIPT_HEADER = 'Conversation so far:\n\n';
 
 interface PendingToolCall {
   call: ToolCall;
@@ -108,6 +121,13 @@ class RunTerminatedError extends Error {
   constructor(readonly status: 'cancelled' | 'expired') {
     super(status === 'cancelled' ? 'Run was cancelled' : 'Run expired waiting for tool outputs');
     this.name = 'RunTerminatedError';
+  }
+}
+
+class PromptBudgetExceededError extends Error {
+  constructor(maxPromptTokens: number) {
+    super(`The prompt does not fit in max_prompt_tokens (${maxPromptTokens})`);
+    this.name = 'PromptBudgetExceededError';
   }
 }
 
@@ -139,14 +159,53 @@ function toZodParameters(schema: Record<string, unknown> | undefined): z.ZodType
   }
 }
 
-function renderTranscript(messages: LLMThreadMessage[]): string {
-  return messages
-    .map((m) => `${m.role === 'assistant' ? 'Assistant' : 'User'}: ${m.content}`)
-    .join('\n\n');
+function renderMessage(message: LLMThreadMessage): string {
+  return `${message.role === 'assistant' ? 'Assistant' : 'User'}: ${message.content}`;
+}
+
+function renderInput(prior: LLMThreadMessage[], current: LLMThreadMessage): string {
+  if (prior.length === 0) return current.content;
+  return `${TRANSCRIPT_HEADER}${prior.map(renderMessage).join('\n\n')}\n\n${renderMessage(current)}`;
+}
+
+/** Rough token count (4 characters per token), the estimate the prompt budget is held to. */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+/**
+ * The most recent part of `prior` that fits in `budget` tokens next to the
+ * current message, or null when the current message alone does not fit.
+ */
+function fitPromptBudget(
+  prior: LLMThreadMessage[],
+  current: LLMThreadMessage,
+  budget: number
+): LLMThreadMessage[] | null {
+  if (estimateTokens(current.content) > budget) return null;
+
+  const fixedCost = estimateTokens(`${TRANSCRIPT_HEADER}${renderMessage(current)}`);
+  const costs = prior.map((message) => estimateTokens(`${renderMessage(message)}\n\n`));
+  let total = fixedCost + costs.reduce((sum, cost) => sum + cost, 0);
+  let start = 0;
+  while (start < prior.length && total > budget) {
+    total -= costs[start];
+    start++;
+  }
+  return start < prior.length ? prior.slice(start) : [];
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
 /**
  * OpenAI SDK Adapter
+ *
+ * Runs execute and are kept in this process: a run is only visible, cancellable
+ * and resumable (`submit_tool_outputs`) through the adapter that created it,
+ * and is lost when the process exits. Serve one adapter per thread set (a single
+ * instance, or sticky routing by thread) when running several processes.
  *
  * @example
  * ```typescript
@@ -288,17 +347,23 @@ export class OpenAIAdapter {
   async createRun(threadId: string, request: CreateRunRequest): Promise<Run> {
     const assistant = await this.threadManager.getAssistant(request.assistant_id);
     if (!assistant) {
-      throw new Error(`Assistant ${request.assistant_id} not found`);
+      throw new InvalidRequestError(`Assistant ${request.assistant_id} not found`, 'assistant_id');
     }
 
     const thread = await this.threadManager.getThread(threadId);
     if (!thread) {
-      throw new Error(`Thread ${threadId} not found`);
+      throw new InvalidRequestError(`Thread ${threadId} not found`);
     }
 
     const activeRunId = this.activeRunByThread.get(threadId);
     if (activeRunId) {
-      throw new Error(`Thread ${threadId} already has an active run ${activeRunId}.`);
+      throw new InvalidRequestError(`Thread ${threadId} already has an active run ${activeRunId}.`);
+    }
+    if (request.max_prompt_tokens !== undefined && !isPositiveInteger(request.max_prompt_tokens)) {
+      throw new InvalidRequestError(
+        'max_prompt_tokens must be a positive integer',
+        'max_prompt_tokens'
+      );
     }
 
     const runId = `run_${nanoid()}`;
@@ -395,7 +460,7 @@ export class OpenAIAdapter {
       return undefined;
     }
     if (!isActive(state.run.status) || state.run.status === 'cancelling') {
-      throw new Error(`Cannot cancel run with status '${state.run.status}'.`);
+      throw new InvalidRequestError(`Cannot cancel run with status '${state.run.status}'.`);
     }
 
     state.run.status = 'cancelling';
@@ -419,7 +484,9 @@ export class OpenAIAdapter {
     }
 
     if (state.run.status !== 'requires_action') {
-      throw new Error(`Run is not waiting for tool outputs (status: '${state.run.status}').`);
+      throw new InvalidRequestError(
+        `Run is not waiting for tool outputs (status: '${state.run.status}').`
+      );
     }
 
     const outputs = new Map(
@@ -427,15 +494,16 @@ export class OpenAIAdapter {
     );
     const missing = state.pendingCalls.filter((pending) => !outputs.has(pending.call.id));
     if (missing.length > 0) {
-      throw new Error(
-        `Missing tool outputs for tool calls: ${missing.map((p) => p.call.id).join(', ')}`
+      throw new InvalidRequestError(
+        `Missing tool outputs for tool calls: ${missing.map((p) => p.call.id).join(', ')}`,
+        'tool_outputs'
       );
     }
     const unknown = [...outputs.keys()].filter(
       (id) => !state.pendingCalls.some((pending) => pending.call.id === id)
     );
     if (unknown.length > 0) {
-      throw new Error(`Unknown tool call ids: ${unknown.join(', ')}`);
+      throw new InvalidRequestError(`Unknown tool call ids: ${unknown.join(', ')}`, 'tool_outputs');
     }
 
     const pending = state.pendingCalls;
@@ -548,11 +616,25 @@ export class OpenAIAdapter {
     }
   }
 
+  /**
+   * What the client learns of a failed run: the message of an
+   * `InvalidRequestError` or a `CogitatorError`; any other error is logged
+   * and reported as a generic server error.
+   */
+  private clientErrorMessage(run: Run, error: unknown): string {
+    if (error instanceof InvalidRequestError || CogitatorError.isCogitatorError(error)) {
+      return error.message;
+    }
+    console.error(`[CogitatorOpenAI] Run ${run.id} failed:`, error);
+    return 'Internal server error';
+  }
+
   private resolveModel(model: string): string {
     if (model !== COGITATOR_MODEL_ID) return model;
     if (!this.defaultModel) {
-      throw new Error(
-        `Model '${COGITATOR_MODEL_ID}' requires the server to be configured with a defaultModel`
+      throw new InvalidRequestError(
+        `Model '${COGITATOR_MODEL_ID}' requires the server to be configured with a defaultModel`,
+        'model'
       );
     }
     return this.defaultModel;
@@ -628,9 +710,16 @@ export class OpenAIAdapter {
     });
   }
 
+  /**
+   * The input of a run: the last user message, preceded by the transcript of
+   * the thread before it. With `max_prompt_tokens` the oldest messages are
+   * left out until the input fits next to `instructions`; when even the last
+   * user message does not fit, it throws `PromptBudgetExceededError`.
+   */
   private async buildRunInput(
     threadId: string,
-    request: CreateRunRequest
+    request: CreateRunRequest,
+    instructions: string
   ): Promise<{ input: string; images?: ImageInput[]; hasHistory: boolean }> {
     let messages = await this.threadManager.getMessagesForLLM(threadId);
     const truncation = request.truncation_strategy;
@@ -646,17 +735,28 @@ export class OpenAIAdapter {
       }
     }
     if (lastUserIndex === -1) {
-      throw new Error('No user message found');
+      throw new InvalidRequestError('No user message found');
     }
 
     const current = messages[lastUserIndex];
     const prior = messages.slice(0, lastUserIndex);
-    const input =
-      prior.length > 0
-        ? `Conversation so far:\n\n${renderTranscript(prior)}\n\nUser: ${current.content}`
-        : current.content;
+    let replayed = prior;
+    const maxPromptTokens = request.max_prompt_tokens;
+    if (maxPromptTokens !== undefined) {
+      const fitted = fitPromptBudget(
+        prior,
+        current,
+        maxPromptTokens - estimateTokens(instructions)
+      );
+      if (!fitted) throw new PromptBudgetExceededError(maxPromptTokens);
+      replayed = fitted;
+    }
 
-    return { input, images: current.images, hasHistory: prior.length > 0 };
+    return {
+      input: renderInput(replayed, current),
+      images: current.images,
+      hasHistory: prior.length > 0,
+    };
   }
 
   private async executeRun(
@@ -673,7 +773,20 @@ export class OpenAIAdapter {
       run.started_at = nowSeconds();
       this.emit(state, 'thread.run.in_progress', run);
 
-      const { input, images, hasHistory } = await this.buildRunInput(threadId, request);
+      const format = toAgentResponseFormat(run.response_format);
+      const instructions = [
+        run.instructions ?? '',
+        request.additional_instructions ?? '',
+        format.instructions ?? '',
+      ]
+        .filter((part) => part.length > 0)
+        .join('\n\n');
+
+      const { input, images, hasHistory } = await this.buildRunInput(
+        threadId,
+        request,
+        instructions
+      );
 
       const serverToolNames = new Set(this.tools.map((t) => t.name));
       const functionDefinitions = run.tools.flatMap((t) =>
@@ -686,15 +799,6 @@ export class OpenAIAdapter {
       } else if (typeof toolChoice === 'object') {
         tools = tools.filter((t) => t.name === toolChoice.function.name);
       }
-
-      const format = toAgentResponseFormat(run.response_format);
-      const instructions = [
-        run.instructions ?? '',
-        request.additional_instructions ?? '',
-        format.instructions ?? '',
-      ]
-        .filter((part) => part.length > 0)
-        .join('\n\n');
 
       const agent = new Agent({
         name: assistant.name ?? 'assistant',
@@ -793,13 +897,14 @@ export class OpenAIAdapter {
           run.status = 'expired';
           this.emit(state, 'thread.run.expired', run);
         }
+      } else if (reason instanceof PromptBudgetExceededError) {
+        run.status = 'incomplete';
+        run.incomplete_details = { reason: 'max_prompt_tokens' };
+        this.emit(state, 'thread.run.incomplete', run);
       } else {
         run.status = 'failed';
         run.failed_at = nowSeconds();
-        run.last_error = {
-          code: 'server_error',
-          message: error instanceof Error ? error.message : String(error),
-        };
+        run.last_error = { code: 'server_error', message: this.clientErrorMessage(run, error) };
         this.emit(state, 'thread.run.failed', run);
       }
     } finally {

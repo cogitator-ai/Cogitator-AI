@@ -6,6 +6,7 @@
 
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { OpenAIAdapter } from '../../client/openai-adapter';
+import { InvalidRequestError } from '../../client/errors';
 import type {
   CreateMessageRequest,
   CreateRunRequest,
@@ -31,7 +32,7 @@ export function registerRunRoutes(fastify: FastifyInstance, adapter: OpenAIAdapt
       try {
         run = await adapter.createRun(request.params.thread_id, request.body);
       } catch (error) {
-        return sendInvalidRequest(reply, errorMessage(error, 'Failed to create run'));
+        return sendRequestError(reply, error);
       }
 
       if (request.body.stream) {
@@ -63,7 +64,7 @@ export function registerRunRoutes(fastify: FastifyInstance, adapter: OpenAIAdapt
       run = await adapter.createRun(thread.id, request.body);
     } catch (error) {
       await adapter.deleteThread(thread.id);
-      return sendInvalidRequest(reply, errorMessage(error, 'Failed to create run'));
+      return sendRequestError(reply, error);
     }
 
     if (request.body.stream) {
@@ -117,7 +118,7 @@ export function registerRunRoutes(fastify: FastifyInstance, adapter: OpenAIAdapt
       try {
         run = adapter.cancelRun(request.params.thread_id, request.params.run_id);
       } catch (error) {
-        return sendInvalidRequest(reply, errorMessage(error, 'Failed to cancel run'));
+        return sendRequestError(reply, error);
       }
       if (!run) {
         return sendNotFound(reply, 'run', request.params.run_id);
@@ -140,7 +141,7 @@ export function registerRunRoutes(fastify: FastifyInstance, adapter: OpenAIAdapt
         request.body ?? { tool_outputs: [] }
       );
     } catch (error) {
-      return sendInvalidRequest(reply, errorMessage(error, 'Failed to submit tool outputs'));
+      return sendRequestError(reply, error);
     }
 
     if (!run) {
@@ -154,8 +155,15 @@ export function registerRunRoutes(fastify: FastifyInstance, adapter: OpenAIAdapt
   });
 }
 
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
+/**
+ * Answer a refused request with 400 and its message; rethrow anything else
+ * for the error handler, which hides the details of server failures.
+ */
+function sendRequestError(reply: FastifyReply, error: unknown): FastifyReply {
+  if (error instanceof InvalidRequestError) {
+    return sendInvalidRequest(reply, error.message, error.param);
+  }
+  throw error;
 }
 
 /**

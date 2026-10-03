@@ -439,9 +439,9 @@ describe('Error Handler', () => {
     await fastify.close();
   });
 
-  it('handles thrown errors', async () => {
+  it('answers thrown errors with a generic server error', async () => {
     fastify.get('/error', async () => {
-      throw new Error('Test error');
+      throw new Error('connect ECONNREFUSED 10.0.0.5:6379');
     });
     await fastify.ready();
 
@@ -451,9 +451,24 @@ describe('Error Handler', () => {
     });
 
     expect(response.statusCode).toBe(500);
-    const body = response.json();
-    expect(body.error).toBeDefined();
-    expect(body.error.message).toContain('Test error');
+    expect(response.json()).toEqual({
+      error: { message: 'Internal server error', type: 'server_error', code: 'internal_error' },
+    });
+  });
+
+  it('keeps the message of client errors', async () => {
+    fastify.get('/bad', async () => {
+      throw Object.assign(new Error('limit must be a number'), { statusCode: 400 });
+    });
+    await fastify.ready();
+
+    const response = await fastify.inject({ method: 'GET', url: '/bad' });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toMatchObject({
+      message: 'limit must be a number',
+      type: 'invalid_request_error',
+    });
   });
 
   it('handles 404 not found', async () => {
