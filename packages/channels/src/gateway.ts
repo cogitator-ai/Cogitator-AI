@@ -100,6 +100,10 @@ function isScheduled(msg: ChannelMessage): boolean {
   return typeof raw === 'object' && raw !== null && 'scheduled' in raw && raw.scheduled === true;
 }
 
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 function isResumeRejection(error: unknown): boolean {
   return (
     CogitatorError.isCogitatorError(error) &&
@@ -289,7 +293,7 @@ export class Gateway {
       await this.processWithChannel(msg, channel, threadId, signal);
     } catch (error) {
       if (signal?.aborted) return;
-      this.config.onError?.(error instanceof Error ? error : new Error(String(error)), msg);
+      this.config.onError?.(toError(error), msg);
     } finally {
       const remaining = (this.inFlight.get(threadId) ?? 1) - 1;
       if (remaining <= 0) this.inFlight.delete(threadId);
@@ -356,7 +360,7 @@ export class Gateway {
       try {
         await this.compactIfNeeded(threadId, agent);
       } catch (error) {
-        this.config.onError?.(error instanceof Error ? error : new Error(String(error)), msg);
+        this.config.onError?.(toError(error), msg);
       }
     }
 
@@ -641,7 +645,7 @@ export class Gateway {
       result = await invoke({});
     } catch (error) {
       if (!isResumeRejection(error)) {
-        await this.hooks?.emit('agent:error', { msg, threadId, error });
+        await this.hooks?.emit('agent:error', { msg, threadId, error: toError(error) });
       }
       throw error;
     }
@@ -694,7 +698,7 @@ export class Gateway {
     } catch (error) {
       await stream.abort();
       if (!isResumeRejection(error)) {
-        await this.hooks?.emit('agent:error', { msg, threadId, error });
+        await this.hooks?.emit('agent:error', { msg, threadId, error: toError(error) });
       }
       throw error;
     }

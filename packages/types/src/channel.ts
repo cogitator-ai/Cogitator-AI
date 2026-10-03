@@ -3,8 +3,9 @@
  */
 
 import type { Agent } from './agent';
-import type { CompactionConfig, SessionManager } from './session';
+import type { CompactionConfig, CompactionResult, Session, SessionManager } from './session';
 import type { MemoryAdapter } from './memory';
+import type { ToolApprovalDecision, ToolApprovalRequest } from './runtime';
 
 export type ChannelType = 'telegram' | 'discord' | 'slack' | 'whatsapp' | 'webchat' | (string & {});
 
@@ -120,26 +121,115 @@ export interface EnvelopeConfig {
   includeChatType?: boolean;
 }
 
-export type HookName =
-  | 'message:received'
-  | 'message:sending'
-  | 'message:sent'
-  | 'agent:before_run'
-  | 'agent:after_run'
-  | 'agent:error'
-  | 'session:created'
-  | 'session:compacted'
-  | 'stream:started'
-  | 'stream:finished'
-  | 'approval:requested'
-  | 'approval:resolved';
+/** Fields shared by the payloads of hooks fired while handling one inbound message */
+export interface MessageHookEvent {
+  msg: ChannelMessage;
+  threadId: string;
+}
+
+/** Payload of `message:received`: a message passed the middleware chain */
+export interface MessageReceivedEvent extends MessageHookEvent {
+  user: ChannelUser;
+}
+
+/** Payload of `message:sending`: a reply is about to be sent */
+export interface MessageSendingEvent extends MessageHookEvent {
+  text: string;
+  channelId: string;
+}
+
+/** Payload of `message:sent`: a reply was sent; `messageId` is the first chunk's id */
+export interface MessageSentEvent extends MessageHookEvent {
+  text: string;
+  messageId: string;
+}
+
+/** Payload of `agent:before_run`; `agent` is the agent's name */
+export interface AgentBeforeRunEvent extends MessageHookEvent {
+  agent: string;
+}
+
+/** Payload of `agent:after_run` */
+export interface AgentAfterRunEvent extends MessageHookEvent {
+  output: string;
+}
+
+/** Payload of `agent:error`: the run threw */
+export interface AgentErrorEvent extends MessageHookEvent {
+  error: Error;
+}
+
+/** Payload of `session:created`: the first message of a new session */
+export interface SessionCreatedEvent {
+  session: Session;
+  threadId: string;
+}
+
+/** Payload of `session:compacted`: older messages of a thread were summarized */
+export interface SessionCompactedEvent {
+  threadId: string;
+  result: CompactionResult;
+}
+
+/** Payload of `stream:started`: a streaming reply began */
+export type StreamStartedEvent = MessageHookEvent;
+
+/** Payload of `stream:finished`: ids of the messages the streamed reply was sent as */
+export interface StreamFinishedEvent extends MessageHookEvent {
+  messageIds: readonly string[];
+}
+
+/** Payload of `approval:requested`: a run paused and the chat was asked */
+export interface ApprovalRequestedEvent {
+  msg: ChannelMessage;
+  threadId: string;
+  userId: string;
+  approvals: readonly ToolApprovalRequest[];
+}
+
+/**
+ * Payload of `approval:resolved`. `superseded` is true when the user
+ * sent a new message instead of answering, so the runtime declined the calls.
+ * `approvals` is missing when the pause predates this process (e.g. a restart).
+ */
+export interface ApprovalResolvedEvent {
+  msg: ChannelMessage;
+  threadId: string;
+  userId: string;
+  decision: ToolApprovalDecision;
+  approvals?: readonly ToolApprovalRequest[];
+  superseded: boolean;
+}
+
+/** Payload type of every gateway hook, by hook name */
+export interface HookPayloads {
+  'message:received': MessageReceivedEvent;
+  'message:sending': MessageSendingEvent;
+  'message:sent': MessageSentEvent;
+  'agent:before_run': AgentBeforeRunEvent;
+  'agent:after_run': AgentAfterRunEvent;
+  'agent:error': AgentErrorEvent;
+  'session:created': SessionCreatedEvent;
+  'session:compacted': SessionCompactedEvent;
+  'stream:started': StreamStartedEvent;
+  'stream:finished': StreamFinishedEvent;
+  'approval:requested': ApprovalRequestedEvent;
+  'approval:resolved': ApprovalResolvedEvent;
+}
+
+export type HookName = keyof HookPayloads;
 
 export type HookHandler<T = unknown> = (event: T) => void | Promise<void>;
 
+/**
+ * Gateway lifecycle hooks. Handlers receive the payload type of the hook they
+ * are registered for (see `HookPayloads`); a handler typed `HookHandler`
+ * (`unknown` payload) is still accepted for any hook.
+ */
 export interface HookRegistry {
-  on(hook: HookName, handler: HookHandler): void;
-  off(hook: HookName, handler: HookHandler): void;
-  emit(hook: HookName, event: unknown): Promise<void>;
+  on<K extends HookName>(hook: K, handler: HookHandler<HookPayloads[K]>): void;
+  off<K extends HookName>(hook: K, handler: HookHandler<HookPayloads[K]>): void;
+  emit<K extends HookName>(hook: K, event: HookPayloads[K]): Promise<void>;
 }
 
 export interface GatewayConfig {
@@ -149,6 +239,10 @@ export interface GatewayConfig {
   sessionManager?: SessionManager;
   middleware?: GatewayMiddleware[];
 
+  /**
+   * @deprecated Never read by the gateway. Owners are configured on the middleware that
+   * uses them: `ownerCommands({ ownerIds })` and `dmPolicy({ ownerIds })`.
+   */
   owner?: OwnerConfig;
 
   session?: {

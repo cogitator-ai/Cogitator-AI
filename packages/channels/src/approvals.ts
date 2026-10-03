@@ -1,8 +1,11 @@
 import type {
-  ChannelMessage,
+  ApprovalRequestedEvent,
+  ApprovalResolvedEvent,
   ToolApprovalDecision,
   ToolApprovalRequest,
 } from '@cogitator-ai/types';
+
+export type { ApprovalRequestedEvent, ApprovalResolvedEvent };
 
 export interface ApprovalReplyWords {
   approveWords: readonly string[];
@@ -21,28 +24,6 @@ export interface GatewayApprovalsConfig {
   denyWords?: readonly string[];
   /** Sent when someone other than the user who started the run answers it */
   notAllowedMessage?: string;
-}
-
-/** Payload of the `approval:requested` hook: a run paused and the chat was asked */
-export interface ApprovalRequestedEvent {
-  msg: ChannelMessage;
-  threadId: string;
-  userId: string;
-  approvals: readonly ToolApprovalRequest[];
-}
-
-/**
- * Payload of the `approval:resolved` hook. `superseded` is true when the user
- * sent a new message instead of answering, so the runtime declined the calls.
- * `approvals` is missing when the pause predates this process (e.g. a restart).
- */
-export interface ApprovalResolvedEvent {
-  msg: ChannelMessage;
-  threadId: string;
-  userId: string;
-  decision: ToolApprovalDecision;
-  approvals?: readonly ToolApprovalRequest[];
-  superseded: boolean;
 }
 
 export const DEFAULT_APPROVE_WORDS: readonly string[] = ['approve', 'yes', 'да', 'одобряю'];

@@ -57,7 +57,7 @@ export { OwnerCommandsMiddleware, ownerCommands } from './middleware/owner-comma
 export type { OwnerCommandsConfig, CommandLevel } from './middleware/owner-commands';
 
 export { createHookRegistry } from './hooks';
-export type { HookName, HookHandler, HookRegistry } from './hooks';
+export type { HookName, HookHandler, HookPayloads, HookRegistry } from './hooks';
 
 export { AutoExtractMiddleware, autoExtract } from './middleware/auto-extract';
 export type {
