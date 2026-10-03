@@ -79,10 +79,11 @@ const executor = new ThoughtTreeExecutor(cogitator, {
   terminationConfidence: 0.8, // branch confidence that stops the search (default 0.8)
   maxTotalNodes: 50, // hard cap on executed nodes (default 50)
   maxIterationsPerBranch: 3, // iteration cap for each branch run (default 3)
+  timeout: 60_000, // ms per explore() call (no limit by default)
 });
 ```
 
-`maxIterationsPerBranch` caps the iterations of each branch's `cogitator.run()`; it never raises the cap above the agent's own `maxIterations`. Pass a time limit as `timeout` in the `explore()` options (see [Progress Monitoring](#progress-monitoring)); the `timeout` field of the config is not read.
+`maxIterationsPerBranch` caps the iterations of each branch's `cogitator.run()`; it never raises the cap above the agent's own `maxIterations`. `timeout` is the default time limit of every `explore()` call; `explore(agent, goal, { timeout })` overrides it for one call (see [Progress Monitoring](#progress-monitoring)).
 
 Higher `branchFactor` explores more possibilities but costs more tokens. Lower `beamWidth` focuses the search but risks missing good paths. `DEFAULT_TOT_CONFIG` holds the defaults.
 

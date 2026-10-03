@@ -88,13 +88,13 @@ The instance getters `id`, `name`, `model`, `instructions`, `tools` and `config`
 
 ### Tool Caching
 
-| Export                                                                         | Signature                                                                                                               | Purpose                                        |
-| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| `withCache`                                                                    | `withCache(tool: Tool<P, R>, config: WithCacheOptions): CachedTool<P, R>`                                               | [Cache tool results](/docs/tools/tool-caching) |
-| `createToolCacheStorage`                                                       | `createToolCacheStorage(type: 'memory' \| 'redis', options?: { maxSize?; redisClient?; keyPrefix? }): ToolCacheStorage` | A storage instance                             |
-| `InMemoryToolCacheStorage`                                                     | `new InMemoryToolCacheStorage(maxSize = 1000, options?: { onEvict? })`                                                  | LRU storage in a `Map`                         |
-| `RedisToolCacheStorage`                                                        | `new RedisToolCacheStorage(config: { client: RedisClientLike; keyPrefix?; maxSize?; onEvict? })`                        | Redis storage                                  |
-| `generateCacheKey`, `paramsToQueryString`, `cosineSimilarity`, `parseDuration` | functions                                                                                                               | Cache key and matching helpers                 |
+| Export                                                                         | Signature                                                                                                                         | Purpose                                        |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `withCache`                                                                    | `withCache(tool: Tool<P, R>, config: WithCacheOptions): CachedTool<P, R>`                                                         | [Cache tool results](/docs/tools/tool-caching) |
+| `createToolCacheStorage`                                                       | `createToolCacheStorage(type: 'memory' \| 'redis', options?: { maxSize?; redisClient?; keyPrefix?; onEvict? }): ToolCacheStorage` | A storage instance                             |
+| `InMemoryToolCacheStorage`                                                     | `new InMemoryToolCacheStorage(maxSize = 1000, options?: { onEvict? })`                                                            | LRU storage in a `Map`                         |
+| `RedisToolCacheStorage`                                                        | `new RedisToolCacheStorage(config: { client: RedisClientLike; keyPrefix?; maxSize?; onEvict? })`                                  | Redis storage                                  |
+| `generateCacheKey`, `paramsToQueryString`, `cosineSimilarity`, `parseDuration` | functions                                                                                                                         | Cache key and matching helpers                 |
 
 ## LLM Backends
 

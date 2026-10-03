@@ -1641,7 +1641,7 @@ await cachedSearch.execute({ query: 'Paris weather forecast' }, ctx); // semanti
 
 ### Redis Storage
 
-For production with persistence. `redisClient` takes any `RedisClientLike`; an ioredis client fits as it is:
+For production with persistence. `redisClient` takes any `RedisClientLike`; an ioredis client and a `createRedisClient()` client from `@cogitator-ai/redis` (standalone or cluster) fit as they are:
 
 ```typescript
 import { withCache } from '@cogitator-ai/core';
@@ -1661,7 +1661,7 @@ const cachedTool = withCache(webSearch, {
 });
 ```
 
-Keys live under `keyPrefix` (a `:` is appended when missing): entries at `<prefix>:entry:<cache key>`, the LRU order in `<prefix>:lru` and the entry count in `<prefix>:counter`. Cached tools sharing a prefix share one LRU and `maxSize`; `cache.clear()` deletes every key under the prefix.
+Keys live under `keyPrefix` (a `:` is appended when missing and never doubled): entries at `<prefix>:entry:<cache key>`, the LRU order in `<prefix>:lru` and the entry count in `<prefix>:counter`. Cached tools sharing a prefix share one LRU and `maxSize`; `cache.clear()` deletes every key under the prefix.
 
 ### Cache Management
 
@@ -1699,6 +1699,19 @@ const cached = withCache(searchTool, {
 ```
 
 `onEvict` fires for entries removed by `cache.invalidate()` and for entries evicted to stay under `maxSize`, in memory and in Redis.
+
+To build a storage yourself, `createToolCacheStorage()` takes the same `onEvict`, called with the key of each entry evicted to make room:
+
+```typescript
+import { createToolCacheStorage } from '@cogitator-ai/core';
+
+const storage = createToolCacheStorage('redis', {
+  redisClient: redis,
+  keyPrefix: 'myapp:cache',
+  maxSize: 5000,
+  onEvict: (key) => console.log('Evicted:', key),
+});
+```
 
 ---
 

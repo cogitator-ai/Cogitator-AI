@@ -10,11 +10,11 @@ The Cogitator repository ships a `docker-compose.yml` with the three services ag
 ```bash
 docker compose up -d
 # or, from any directory below the compose file:
-cogitator up      # runs `docker compose up -d` when there is no cogitator.yml here
+cogitator up      # runs `docker compose up -d` when there is no assistant cogitator.yml here
 cogitator down    # `docker compose down`; add -v to delete the volumes
 ```
 
-`cogitator up` starts an assistant when the current directory has a `cogitator.yml`; otherwise it looks for `docker-compose.yml` / `compose.yml` in the current directory and up to five parents and starts those services (`--pull` pulls images first, `--no-detach` runs in the foreground).
+`cogitator up` starts an assistant when the current directory has an assistant `cogitator.yml` (a [runtime config](/docs/cli#cogitator-up--down) such as the one create-cogitator-app generates does not count); otherwise it looks for `docker-compose.yml` / `compose.yml` in the current directory and up to five parents and starts those services (`--pull` pulls images first, `--no-detach` runs in the foreground).
 
 | Service     | Image                    | Port  | Purpose                                                     |
 | ----------- | ------------------------ | ----- | ----------------------------------------------------------- |

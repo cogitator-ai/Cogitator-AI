@@ -259,21 +259,21 @@ console.log(result.agentResults);
 
 The `SwarmRunOptions`:
 
-| Field             | Type                      | Description                                                                                 |
-| ----------------- | ------------------------- | ------------------------------------------------------------------------------------------- |
-| `input`           | `string`                  | The task to execute                                                                         |
-| `context`         | `Record<string, unknown>` | Additional context passed to all agents                                                     |
-| `saveHistory`     | `boolean`                 | Whether to persist conversation history (default `true`)                                    |
-| `threadId`        | `string`                  | Base thread id; each agent uses `${threadId}:${agentName}`                                  |
-| `userId`          | `string`                  | The user the swarm acts for; every agent run carries it, so the threads belong to that user |
-| `timeout`         | `number`                  | Rejects with `SwarmTimeoutError` and cancels in-flight LLM calls when exceeded              |
-| `onAgentStart`    | `(agent) => void`         | Called when an agent turn starts                                                            |
-| `onAgentComplete` | `(agent, result) => void` | Called when an agent turn completes                                                         |
-| `onAgentError`    | `(agent, error) => void`  | Called when an agent turn fails                                                             |
-| `onMessage`       | `(message) => void`       | Called for every message sent on the swarm's message bus                                    |
-| `onEvent`         | `(event) => void`         | Called for every swarm event during this run                                                |
+| Field             | Type                      | Description                                                                                              |
+| ----------------- | ------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `input`           | `string`                  | The task to execute                                                                                      |
+| `context`         | `Record<string, unknown>` | Additional context passed to all agents                                                                  |
+| `saveHistory`     | `boolean`                 | Whether to persist conversation history (default `true`)                                                 |
+| `threadId`        | `string`                  | Base thread id; each agent uses `${threadId}:${agentName}`                                               |
+| `userId`          | `string`                  | The user the swarm acts for; every agent run carries it, so the threads belong to that user              |
+| `timeout`         | `number`                  | Rejects with `SwarmTimeoutError` and cancels the run (in-flight LLM calls, further agents) when exceeded |
+| `onAgentStart`    | `(agent) => void`         | Called when an agent turn starts                                                                         |
+| `onAgentComplete` | `(agent, result) => void` | Called when an agent turn completes                                                                      |
+| `onAgentError`    | `(agent, error) => void`  | Called when an agent turn fails                                                                          |
+| `onMessage`       | `(message) => void`       | Called for every message sent on the swarm's message bus                                                 |
+| `onEvent`         | `(event) => void`         | Called for every swarm event during this run                                                             |
 
-A `Swarm` instance runs one task at a time — concurrent `run()` calls on the same instance are rejected. A run that exceeds `timeout` rejects with `SwarmTimeoutError` (exported).
+A `Swarm` instance runs one task at a time — concurrent `run()` calls on the same instance are rejected. A run that exceeds `timeout` rejects with `SwarmTimeoutError` (exported). A run that times out or fails is cancelled as a whole: in-flight agent calls get the abort signal, and whatever its strategy still has in flight starts no further agents or retries — not after `run()` has rejected, and not inside the next run of the same swarm.
 
 ## Swarm Instance API
 

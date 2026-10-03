@@ -5,7 +5,7 @@ description: Unified Redis client with standalone and cluster support — the fo
 
 ## Overview
 
-The `@cogitator-ai/redis` package provides a unified Redis client that works identically in standalone and cluster modes. It wraps [ioredis](https://github.com/redis/ioredis) (a peer dependency, loaded on first use) with a consistent interface used by the `@cogitator-ai/memory` Redis adapter and accepted by the workflow Redis stores.
+The `@cogitator-ai/redis` package provides a unified Redis client that works identically in standalone and cluster modes. It wraps [ioredis](https://github.com/redis/ioredis) (a peer dependency, loaded on first use) with a consistent interface used by the `@cogitator-ai/memory` Redis adapter and accepted by the workflow Redis stores and the tool cache.
 
 ```bash
 pnpm add @cogitator-ai/redis ioredis
@@ -112,10 +112,13 @@ await redis.setex('key', 3600, 'value');
 await redis.del('key1', 'key2');
 await redis.expire('key', 60);
 await redis.mget('key1', 'key2');
+await redis.exists('key1', 'key2'); // number of keys that exist
+await redis.incr('counter');
+await redis.decr('counter');
 
 // Sorted sets
 await redis.zadd('scores', 100, 'player1');
-await redis.zrange('scores', 0, -1);
+await redis.zrange('scores', 0, -1); // stop may also be a string, e.g. '-1'
 await redis.zrangebyscore('scores', 0, 100);
 await redis.zrem('scores', 'player1');
 
@@ -142,6 +145,17 @@ await redis.del(...keys);
 
 `keys()` is relative to `keyPrefix`: the prefix is added to the pattern and stripped from the results, so they can be passed straight to `get`/`del`. It uses `SCAN` (non-blocking) and visits every master node in cluster mode.
 
+For a step-by-step walk, `scan()` has ioredis' `SCAN cursor MATCH pattern COUNT count` signature: start with cursor `'0'` and call again with the returned cursor until it is `'0'` again. Like `keys()`, the pattern and the returned keys are relative to `keyPrefix`. In cluster mode the cursor (`<master index>:<node cursor>`) walks every master node in turn.
+
+```typescript
+let cursor = '0';
+do {
+  const [next, batch] = await redis.scan(cursor, 'MATCH', 'cache:*', 'COUNT', 100);
+  if (batch.length > 0) await redis.del(...batch);
+  cursor = next;
+} while (cursor !== '0');
+```
+
 Pub/sub channels are not prefixed. Subscribe on a `duplicate()` connection: a subscribed connection can only run pub/sub commands. Several callbacks can share a channel; `unsubscribe(channel)` removes all of them.
 
 ## Used By
@@ -160,6 +174,29 @@ const approvalStore = new RedisApprovalStore({ client: redis, keyPrefix: '{appro
 ```
 
 See [Workflow Execution](/docs/workflows/execution) for what the stores do.
+
+### Tool-Cache Client
+
+A `RedisClient` also satisfies `RedisClientLike` from `@cogitator-ai/core`, so it can back [tool caching](/docs/tools/tool-caching#redis) without ioredis-specific code. In cluster mode, use a `{hashtag}` key prefix: the cache storage sends multi-key commands (`mget`, `del`) that must stay in one slot.
+
+```typescript
+import { createRedisClient } from '@cogitator-ai/redis';
+import { withCache, webSearch } from '@cogitator-ai/core';
+
+const redis = await createRedisClient({
+  mode: 'cluster',
+  nodes: [{ host: 'redis-1', port: 6379 }],
+  keyPrefix: '{tools}:',
+});
+
+const cachedSearch = withCache(webSearch, {
+  strategy: 'exact',
+  ttl: '30m',
+  maxSize: 1000,
+  storage: 'redis',
+  redisClient: redis,
+});
+```
 
 ## Cluster Key Routing
 

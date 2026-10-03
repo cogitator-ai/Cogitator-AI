@@ -67,7 +67,8 @@ const config = loadConfig({
 
 | Section       | What it configures                                                                                                        |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `llm`         | `defaultProvider`, `defaultModel`, `providers`, `retry`, `promptCache`                                                    |
+| `llm`         | `defaultProvider`, `defaultModel`, `providers`, `retry`, `promptCache`, `plugins`                                         |
+| `prompts`     | `autoDeployWinner` for [prompt A/B tests](/docs/advanced/prompt-versions)                                                 |
 | `limits`      | `maxConcurrentRuns`, `defaultTimeout` (ms), `maxTokensPerRun` — see [Cogitator](/docs/core/cogitator#defaults-and-limits) |
 | `memory`      | Adapter, its connection, `embedding` and `contextBuilder`                                                                 |
 | `sandbox`     | Defaults, container pool, Docker and WASM settings for [sandboxed tools](/docs/deployment/sandbox)                        |
@@ -113,7 +114,7 @@ memory:
     includeSemanticContext: true
 ```
 
-`memory.qdrant.dimensions` must match the embedding model; a mismatch is logged. To use an adapter you built yourself, connect it and hand it over:
+`memory.qdrant.dimensions` must match the embedding model; a mismatch is logged. `memory.embedding.dimensions` sets the vector size: OpenAI `text-embedding-3-*` and Google models return vectors of that size, and for Ollama it declares the size of a model the runtime does not know. `memory.contextBuilder.graphContextOptions` (`maxNodes`, `maxEdges`, `maxDepth`, `includeInferred`, `entityTypes`) shapes the [knowledge-graph context](/docs/memory#context-building). To use an adapter you built yourself, connect it and hand it over:
 
 ```typescript
 import { Cogitator } from '@cogitator-ai/core';
@@ -234,14 +235,13 @@ const cogitator = new Cogitator(config);
 
 `defineConfig()` validates like `loadConfig()` but reads neither files nor the environment. Neither of them is required: `new Cogitator({...})` takes the same object without validation.
 
-Some options exist only in code, since they hold functions or objects: `llm.backends`, `llm.plugins`, `llm.retry.onRetry`, `runCheckpoints` and `prompts`. The config schema also does not know `sandbox.allowNativeFallback`, `sandbox.pool.reuseContainers` and `memory.embedding.dimensions` yet. Validation strips unknown keys, so pass them to the constructor next to the loaded config:
+Options that hold functions, stores or backends exist only in code: `llm.backends`, `llm.retry.onRetry`, `runCheckpoints`, `prompts.versions` / `prompts.abTests` / `prompts.score`, `security.promptInjection.llmBackend`, and callbacks such as `security.promptInjection.onThreat`, `security.pii.onDetect` and `guardrails.onToolApproval`. Plain-data options, including `llm.plugins` and `prompts.autoDeployWinner`, can come from YAML. Add the code-only options next to the loaded config:
 
 ```typescript
 const config = loadConfig();
 const cogitator = new Cogitator({
   ...config,
-  prompts: { autoDeployWinner: true },
-  sandbox: { ...config.sandbox, allowNativeFallback: false },
+  prompts: { ...config.prompts, score: (result) => (result.output.length > 0 ? 1 : 0) },
 });
 ```
 
@@ -367,6 +367,44 @@ security:
       - type: customer_id
         pattern: 'CUS-\d{6}'
 ```
+
+### Prompt Injection
+
+Detection settings live under `security.promptInjection` (see [Security](/docs/advanced/security#prompt-injection-detection)). `patterns` are regular expression sources, compiled without flags, so they are case-sensitive; pass `RegExp` objects in code for flags:
+
+```yaml
+security:
+  promptInjection:
+    action: block # block | warn | log
+    threshold: 0.7
+    patterns:
+      - '[Rr]eveal (the|your) system prompt'
+    failMode: secure # secure (default): a throwing classifier fails the check; open: the input passes
+    allowlist:
+      - ignore the previous search
+```
+
+### Sandbox
+
+Settings for [sandboxed tools](/docs/deployment/sandbox):
+
+```yaml
+sandbox:
+  allowNativeFallback: false # default true: Docker tools run on the host when Docker is unavailable
+  defaults:
+    image: cogitator/sandbox:base
+    env:
+      PYTHONUNBUFFERED: '1'
+    mounts:
+      - source: /srv/data
+        target: /workspace/data
+        readOnly: true
+  pool:
+    maxSize: 5
+    reuseContainers: false # default; true reuses containers, so one execution's files reach the next
+```
+
+`sandbox.defaults` also takes `wasmModule`, `wasmFunction` and `wasi` for WASM tools. A custom constitution for [guardrails](/docs/advanced/constitutional-ai#custom-constitutions) can be written in YAML too, under `guardrails.constitution` (`id`, `name`, `version`, `customizable`, `strictMode` and `principles`).
 
 ## Config Merging
 

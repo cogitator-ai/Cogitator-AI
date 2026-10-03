@@ -853,7 +853,7 @@ class Swarm {
 }
 ```
 
-`SwarmTimeoutError` (exported) is thrown when `run({ timeout })` expires; it carries `swarmName` and `timeoutMs`.
+`SwarmTimeoutError` (exported) is thrown when `run({ timeout })` expires; it carries `swarmName` and `timeoutMs`. A run that times out or fails is cancelled as a whole: in-flight agent calls are aborted, and work its strategy still has in flight starts no further agents or retries, even after `run()` has rejected or the next run of the same swarm has begun. Coordinators bind strategy work to its run with `BaseSwarmCoordinator.runInScope(scope, work)`, so every agent run takes the scope (thread, user, abort signal) of the run that started it.
 
 ### SwarmConfig
 

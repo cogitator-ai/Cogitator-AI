@@ -20,7 +20,8 @@ Used across Cogitator: the memory package's `RedisAdapter` builds on it, and the
 - **TLS Support** - Secure connections with TLS
 - **NAT Mapping** - Support for cluster nodes behind NAT
 - **Key Prefixing** - Transparent key prefixes (including `keys()` lookups); use hash tags in cluster mode
-- **Non-blocking Key Scans** - `keys()` uses SCAN and covers every master node of a cluster
+- **Non-blocking Key Scans** - `keys()` and the ioredis-style `scan()` use SCAN and cover every master node of a cluster
+- **Tool-Cache Client** - Satisfies `RedisClientLike` from `@cogitator-ai/core`, so it can back `withCache({ storage: 'redis' })`
 - **Reconnect Strategy** - Built-in capped reconnect backoff
 - **Pub/Sub** - Publish/subscribe with per-channel callbacks
 
@@ -189,6 +190,11 @@ await redis.del('key1', 'key2');
 await redis.expire('key', 3600);
 
 await redis.mget('key1', 'key2', 'key3');
+
+const present = await redis.exists('key1', 'key2'); // how many of them exist
+
+await redis.incr('counter');
+await redis.decr('counter');
 ```
 
 ### Sorted Sets
@@ -198,6 +204,7 @@ await redis.zadd('leaderboard', 100, 'player1');
 await redis.zadd('leaderboard', 200, 'player2');
 
 const top3 = await redis.zrange('leaderboard', 0, 2);
+const all = await redis.zrange('leaderboard', 0, '-1'); // stop may be a string, as in ioredis
 
 const highScores = await redis.zrangebyscore('leaderboard', 100, 500);
 
@@ -249,6 +256,15 @@ const memoryInfo = await redis.info('memory');
 // and returns ['cache:a', ...], ready to pass to get/del
 const cacheKeys = await redis.keys('cache:*');
 await redis.del(...cacheKeys);
+
+// One SCAN step at a time, with ioredis' signature; also relative to keyPrefix.
+// In cluster mode the cursor walks every master node in turn.
+let cursor = '0';
+do {
+  const [next, batch] = await redis.scan(cursor, 'MATCH', 'cache:*', 'COUNT', 100);
+  for (const key of batch) console.log(key);
+  cursor = next;
+} while (cursor !== '0');
 
 const sub = redis.duplicate();
 
@@ -396,6 +412,25 @@ const redis = await createRedisClient({ url: process.env.REDIS_URL });
 
 const runStore = new RedisRunStore({ client: redis });
 const checkpointStore = new RedisCheckpointStore({ client: redis });
+```
+
+### Tool Cache
+
+A `RedisClient` satisfies `RedisClientLike` from `@cogitator-ai/core`, so it backs Redis tool caching without ioredis-specific code. In cluster mode use a hash-tag `keyPrefix`: the cache storage sends multi-key commands (`mget`, `del`).
+
+```typescript
+import { createRedisClient } from '@cogitator-ai/redis';
+import { withCache, webSearch } from '@cogitator-ai/core';
+
+const redis = await createRedisClient({ url: process.env.REDIS_URL, keyPrefix: 'myapp:' });
+
+const cachedSearch = withCache(webSearch, {
+  strategy: 'exact',
+  ttl: '30m',
+  maxSize: 1000,
+  storage: 'redis',
+  redisClient: redis,
+});
 ```
 
 ### Connection Pooling Pattern

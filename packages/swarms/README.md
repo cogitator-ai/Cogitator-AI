@@ -231,7 +231,7 @@ swarm.on('negotiation:approval-required', (event) => {
 const result = await swarm.run({
   input: 'Plan the release',
   threadId: 'release-42', // each agent uses thread `release-42:<agent>`
-  timeout: 120_000, // rejects with SwarmTimeoutError and cancels in-flight calls
+  timeout: 120_000, // rejects with SwarmTimeoutError and cancels the run
   saveHistory: false,
   context: { project: 'cogitator' },
   onAgentStart: (agent) => console.log('start', agent),
@@ -243,6 +243,8 @@ const result = await swarm.run({
 ```
 
 A `Swarm` instance runs one task at a time; create separate instances for concurrent runs.
+
+A run that times out or fails is cancelled as a whole: in-flight LLM calls are aborted, and work its strategy still has in flight starts no further agents or retries, even after `run()` has rejected or the next run of the same swarm has begun. Coordinators bind strategy work to its run with `runInScope(scope, work)` (`BaseSwarmCoordinator`), so every agent run takes the thread, user and abort signal of the run that started it.
 
 ### Pause, Resume, Abort, Reset
 

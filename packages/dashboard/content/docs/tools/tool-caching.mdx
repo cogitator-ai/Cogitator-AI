@@ -65,7 +65,7 @@ interface WithCacheOptions {
 | `maxSize`          | `number`                | required      | Maximum number of cached entries                  |
 | `storage`          | `'memory' \| 'redis'`   | required      | Storage backend                                   |
 | `similarity`       | `number`                | `0.95`        | Cosine similarity threshold for semantic matching |
-| `keyPrefix`        | `string`                | `"toolcache"` | Key prefix for namespacing                        |
+| `keyPrefix`        | `string`                | `"toolcache"` | Key prefix; a trailing `:` is not doubled         |
 | `embeddingService` | `EmbeddingService`      | --            | Required for semantic strategy                    |
 | `redisClient`      | `RedisClientLike`       | --            | Required for redis storage (throws without it)    |
 | `onHit`            | `function`              | --            | Called on an exact or semantic hit                |
@@ -171,9 +171,25 @@ const cached = withCache(webScrape, {
 });
 ```
 
-An ioredis client matches `RedisClientLike` as it is. Other clients need a small adapter: node-redis, for example, spells the commands `setEx`/`zAdd` and takes `SCAN` options as an object. Entries are written with `SETEX`, so Redis expires them on its own as well.
+An ioredis client matches `RedisClientLike` as it is, and so does a client from [`@cogitator-ai/redis`](/docs/deployment/redis#tool-cache-client):
 
-The storage keeps its data under `keyPrefix` (a `:` is appended when it does not end with one): each entry at `<prefix>:entry:<cache key>`, the LRU order in the sorted set `<prefix>:lru` and the entry count in `<prefix>:counter`. The cache key itself is `<keyPrefix>:<toolName>:<hash>`, so with the options above an entry lives at `myapp:tools:entry:myapp:tools:web_scrape:<hash>`. Cached tools that share a `keyPrefix` share one LRU and one `maxSize`, and `cache.clear()` deletes every key under the prefix.
+```typescript
+import { createRedisClient } from '@cogitator-ai/redis';
+
+const client = await createRedisClient({ url: 'redis://localhost:6379', keyPrefix: 'myapp:' });
+
+const cachedScrape = withCache(webScrape, {
+  strategy: 'exact',
+  ttl: '1h',
+  maxSize: 5000,
+  storage: 'redis',
+  redisClient: client,
+});
+```
+
+Its `scan` is relative to the client's `keyPrefix` and walks every master in cluster mode, so `cache.clear()` and semantic lookups work in both modes; in a cluster, give the client a `{hashtag}` prefix so the storage's multi-key commands (`mget`, `del`) stay in one slot. Other clients need a small adapter: node-redis, for example, spells the commands `setEx`/`zAdd` and takes `SCAN` options as an object. Entries are written with `SETEX`, so Redis expires them on its own as well.
+
+The storage keeps its data under `keyPrefix` (a `:` is appended when it does not end with one): each entry at `<prefix>:entry:<cache key>`, the LRU order in the sorted set `<prefix>:lru` and the entry count in `<prefix>:counter`. The cache key itself is `<keyPrefix>:<toolName>:<hash>` (again with a single `:` after the prefix), so with `keyPrefix: 'myapp:tools'` (the ioredis example) an entry lives at `myapp:tools:entry:myapp:tools:web_scrape:<hash>`. Cached tools that share a `keyPrefix` share one LRU and one `maxSize`, and `cache.clear()` deletes every key under the prefix. A `keyPrefix` set on the Redis client itself comes in front of all of these.
 
 The `RedisClientLike` interface requires the methods used by Redis-backed cache storage:
 
@@ -210,10 +226,11 @@ const redisStorage = createToolCacheStorage('redis', {
   redisClient: redis,
   keyPrefix: 'cache:',
   maxSize: 5000,
+  onEvict: (key) => console.log('evicted', key),
 });
 ```
 
-`createToolCacheStorage(type, { maxSize?, redisClient?, keyPrefix? })` returns a `ToolCacheStorage` (`InMemoryToolCacheStorage` or `RedisToolCacheStorage`, both exported; `maxSize` defaults to 1000, the Redis key prefix to `toolcache:`). `withCache` creates its own storage from its options, so use these when you build caching around something other than a tool.
+`createToolCacheStorage(type, { maxSize?, redisClient?, keyPrefix?, onEvict? })` returns a `ToolCacheStorage` (`InMemoryToolCacheStorage` or `RedisToolCacheStorage`, both exported; `maxSize` defaults to 1000, the Redis key prefix to `toolcache:`). `onEvict` is called with the key of each entry evicted to make room for a new one. `withCache` creates its own storage from its options, so use these when you build caching around something other than a tool.
 
 ---
 

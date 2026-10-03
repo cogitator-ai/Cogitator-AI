@@ -120,6 +120,10 @@ cogitator up --no-restart-loop     # run in-process, without the restart supervi
 
 When a `cogitator.yml` exists, `up` validates it (errors list the offending fields), loads the `.env` next to it into `process.env` without overriding variables that are already set (so tools that read `process.env`, such as `web_search` and `github_api`, see the wizard's keys) and starts the assistant. Unless `--no-restart-loop` is given, `up` runs the assistant in a child process and starts it again whenever it exits with code `78` — the owner `/restart` command and self-config updates; `SIGINT`/`SIGTERM` are forwarded for a graceful shutdown. With `--no-restart-loop` the assistant runs in the `up` process and simply stops on `/restart`.
 
+Once the assistant is up, the summary lists the channels that actually started and warns when none did (for example because their tokens are missing from `.env`).
+
+A `cogitator.yml` made only of [`@cogitator-ai/config`](/docs/getting-started/configuration) runtime keys (`llm.defaultModel`, `memory`, `sandbox`, … — the file create-cogitator-app generates) is not an assistant config: your project's code loads it. `up` then starts the project's Docker Compose services, or, without a compose file, exits explaining that you start the project itself (e.g. `pnpm dev`). `up -c` with such a file fails with the same explanation.
+
 Without an assistant config, `up` manages the Docker Compose project found in the current or a parent directory (`docker-compose.yml`, `compose.yml`, …):
 
 | Option         | Default | Description                        |
@@ -204,7 +208,7 @@ Native and optional channel dependencies (`better-sqlite3`, `pg`, `grammy`, `dis
 
 ### cogitator daemon
 
-Runs your assistant in the background. The entry is auto-detected in this order: `dist/cogitator.mjs` (from `cogitator build`), `cogitator.yml` / `cogitator.yaml` (via `cogitator up`), `src/gateway.ts` (via `cogitator assistant --quiet`). Use `-c` to choose explicitly.
+Runs your assistant in the background. The entry is auto-detected in this order: `dist/cogitator.mjs` (from `cogitator build`), an assistant `cogitator.yml` / `cogitator.yaml` (via `cogitator up`; a runtime config is skipped), `src/gateway.ts` (via `cogitator assistant --quiet`). Use `-c` to choose explicitly; `-c` with a runtime config fails like `up -c`.
 
 ```bash
 cogitator daemon start [-c <entry>]
