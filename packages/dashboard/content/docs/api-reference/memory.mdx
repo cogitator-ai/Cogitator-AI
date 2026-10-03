@@ -1,96 +1,195 @@
 ---
 title: Memory API
-description: Complete API reference for @cogitator-ai/memory — memory adapters, embeddings, and RAG.
+description: Public exports of @cogitator-ai/memory — memory adapters, embeddings, hybrid search, context building, facts, sessions and knowledge graphs — with their signatures.
 ---
+
+Every adapter method returns a `MemoryResult<T>` (`{ success: true, data } | { success: false, error }`). Check `result.success`, or use `unwrap()`:
+
+```typescript
+import { InMemoryAdapter, unwrap } from '@cogitator-ai/memory';
+
+const memory = new InMemoryAdapter();
+await memory.connect();
+
+const thread = unwrap(await memory.createThread('agent-1', { topic: 'billing' }));
+await memory.addEntry({
+  threadId: thread.id,
+  message: { role: 'user', content: 'Hello' },
+  tokenCount: 2,
+});
+const entries = unwrap(await memory.getEntries({ threadId: thread.id, limit: 20 }));
+```
+
+| Export   | Signature                               | Purpose                                     |
+| -------- | --------------------------------------- | ------------------------------------------- |
+| `unwrap` | `unwrap<T>(result: MemoryResult<T>): T` | The `data`, or throws `Error(result.error)` |
 
 ## Memory Adapters
 
-```typescript
-import {
-  InMemoryAdapter,
-  RedisMemoryAdapter,
-  PostgresMemoryAdapter,
-  SQLiteMemoryAdapter,
-  MongoMemoryAdapter,
-  QdrantMemoryAdapter,
-} from '@cogitator-ai/memory';
-```
+All conversation adapters implement `MemoryAdapter`:
 
-### Common Interface
+| Method         | Signature                                                                                                                                    |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `connect`      | `connect(): Promise<MemoryResult<void>>`                                                                                                     |
+| `disconnect`   | `disconnect(): Promise<MemoryResult<void>>`                                                                                                  |
+| `createThread` | `createThread(agentId: string, metadata?: Record<string, unknown>, threadId?: string): Promise<MemoryResult<Thread>>`                        |
+| `getThread`    | `getThread(threadId: string): Promise<MemoryResult<Thread \| null>>`                                                                         |
+| `updateThread` | `updateThread(threadId: string, metadata: Record<string, unknown>): Promise<MemoryResult<Thread>>`                                           |
+| `deleteThread` | `deleteThread(threadId: string): Promise<MemoryResult<void>>`                                                                                |
+| `addEntry`     | `addEntry(entry: Omit<MemoryEntry, 'id' \| 'createdAt'>): Promise<MemoryResult<MemoryEntry>>`                                                |
+| `getEntries`   | `getEntries(options: MemoryQueryOptions): Promise<MemoryResult<MemoryEntry[]>>` (`{ threadId, limit?, before?, after?, includeToolCalls? }`) |
+| `getEntry`     | `getEntry(entryId: string): Promise<MemoryResult<MemoryEntry \| null>>`                                                                      |
+| `deleteEntry`  | `deleteEntry(entryId: string): Promise<MemoryResult<void>>`                                                                                  |
+| `clearThread`  | `clearThread(threadId: string): Promise<MemoryResult<void>>`                                                                                 |
 
-All adapters implement the `MemoryAdapter` interface:
+| Export                | Constructor                                                                     | Also implements                                           | Notes                                                                                                         |
+| --------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `InMemoryAdapter`     | `new InMemoryAdapter(config?: InMemoryAdapterConfig)`                           | —                                                         | Process memory; `maxEntries` (default 10000); `stats` getter                                                  |
+| `RedisAdapter`        | `new RedisAdapter(config: RedisAdapterConfig)`                                  | —                                                         | `url` or `host`/`port`, or `cluster`; `ttl` (default 86400 s), `keyPrefix`                                    |
+| `PostgresAdapter`     | `new PostgresAdapter(config: PostgresAdapterConfig)`                            | `FactAdapter`, `EmbeddingAdapter`, `KeywordSearchAdapter` | `connectionString`, `schema?`, `poolSize?`; pgvector; `setVectorDimensions(n)`                                |
+| `SQLiteAdapter`       | `new SQLiteAdapter(config: SQLiteAdapterConfig)`                                | —                                                         | `path` (`':memory:'` allowed), `walMode` (default true)                                                       |
+| `MongoDBAdapter`      | `new MongoDBAdapter(config: MongoDBAdapterConfig)`                              | —                                                         | `uri`, `database` (default `cogitator`), `collectionPrefix` (default `memory_`)                               |
+| `BaseMemoryAdapter`   | abstract class                                                                  | —                                                         | Base for your own adapter                                                                                     |
+| `createMemoryAdapter` | `createMemoryAdapter(config: MemoryAdapterConfigUnion): Promise<MemoryAdapter>` | —                                                         | Adapter from `{ provider: 'memory' \| 'redis' \| 'postgres' \| 'sqlite' \| 'mongodb', … }`; not connected yet |
 
-| Method     | Signature                                              | Description               |
-| ---------- | ------------------------------------------------------ | ------------------------- |
-| `store`    | `store(entry: MemoryEntry): Promise<void>`             | Store a memory entry      |
-| `retrieve` | `retrieve(query: MemoryQuery): Promise<MemoryEntry[]>` | Retrieve matching entries |
-| `delete`   | `delete(id: string): Promise<void>`                    | Delete an entry           |
-| `clear`    | `clear(threadId?: string): Promise<void>`              | Clear entries             |
+The adapter configs take `provider` plus the fields above; inside `CogitatorConfig.memory` the same fields go under `inMemory`, `redis`, `postgres`, `sqlite` or `mongodb` without `provider`. See [Memory Adapters](/docs/memory/adapters).
 
-### Adapter Comparison
+### Facts and Embeddings
 
-| Adapter                 | Persistence | Vector Search      | Best For                    |
-| ----------------------- | ----------- | ------------------ | --------------------------- |
-| `InMemoryAdapter`       | None        | Yes (brute force)  | Development, testing        |
-| `RedisMemoryAdapter`    | Session     | No                 | Short-term, fast access     |
-| `PostgresMemoryAdapter` | Permanent   | Yes (pgvector)     | Production, semantic search |
-| `SQLiteMemoryAdapter`   | Permanent   | No                 | Embedded, single-node       |
-| `MongoMemoryAdapter`    | Permanent   | Yes (Atlas Search) | Document-oriented           |
-| `QdrantMemoryAdapter`   | Permanent   | Yes (native)       | Heavy vector workloads      |
+| Interface              | Methods                                                                                                                                              |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FactAdapter`          | `addFact(fact)`, `getFacts(agentId, category?)`, `updateFact(factId, updates)`, `deleteFact(factId)`, `searchFacts(agentId, query)`                  |
+| `EmbeddingAdapter`     | `addEmbedding(embedding)`, `search(options: SemanticSearchOptions)` → `(Embedding & { score })[]`, `deleteEmbedding(id)`, `deleteBySource(sourceId)` |
+| `KeywordSearchAdapter` | `keywordSearch(options: KeywordSearchOptions): Promise<MemoryResult<SearchResult[]>>`                                                                |
 
-## Embedding Providers
+| Export                     | Constructor                                                                      | Implements                                                                                                                                    |
+| -------------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `QdrantAdapter`            | `new QdrantAdapter(config: QdrantAdapterConfig)`                                 | `EmbeddingAdapter` (+ `connect`/`disconnect`); `dimensions` required, `url` default `http://localhost:6333`, `collection` default `cogitator` |
+| `InMemoryEmbeddingAdapter` | `new InMemoryEmbeddingAdapter()`                                                 | `EmbeddingAdapter`, `KeywordSearchAdapter`; `size`, `clear()`                                                                                 |
+| `createEmbeddingAdapter`   | `createEmbeddingAdapter(config: QdrantAdapterConfig): Promise<EmbeddingAdapter>` | —                                                                                                                                             |
 
-```typescript
-import {
-  OpenAIEmbeddingService,
-  OllamaEmbeddingService,
-  GoogleEmbeddingService,
-} from '@cogitator-ai/memory';
-```
+## Embedding Services
 
-| Provider                 | Models                                             | Dimensions  |
-| ------------------------ | -------------------------------------------------- | ----------- |
-| `OpenAIEmbeddingService` | `text-embedding-3-small`, `text-embedding-3-large` | 1536 / 3072 |
-| `OllamaEmbeddingService` | `nomic-embed-text`, `mxbai-embed-large`            | 768 / 1024  |
-| `GoogleEmbeddingService` | `gemini-embedding-001`                             | 3072        |
+`EmbeddingService`: `embed(text): Promise<number[]>`, `embedBatch(texts): Promise<number[][]>`, `dimensions`, `model`.
+
+| Export                   | Constructor                                                                | Default model            | Default dimensions           |
+| ------------------------ | -------------------------------------------------------------------------- | ------------------------ | ---------------------------- |
+| `OpenAIEmbeddingService` | `new OpenAIEmbeddingService({ apiKey, model?, baseUrl?, dimensions? })`    | `text-embedding-3-small` | per model (1536 for 3-small) |
+| `OllamaEmbeddingService` | `new OllamaEmbeddingService({ model?, baseUrl?, dimensions? }?)`           | `nomic-embed-text`       | per model (768 for nomic)    |
+| `GoogleEmbeddingService` | `new GoogleEmbeddingService({ apiKey, model?, baseUrl?, dimensions? })`    | `gemini-embedding-001`   | 3072                         |
+| `createEmbeddingService` | `createEmbeddingService(config: EmbeddingServiceConfig): EmbeddingService` | —                        | —                            |
+
+See [Embeddings](/docs/memory/embeddings).
 
 ## Search
 
-```typescript
-import { HybridSearch, BM25Search, VectorSearch } from '@cogitator-ai/memory';
-```
+| Export                                                                 | Signature                                                                                                                                                                 | Purpose                                                         |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `HybridSearch`                                                         | `new HybridSearch(config: { embeddingAdapter; embeddingService; keywordAdapter?; defaultWeights? })`                                                                      | Vector + BM25 search fused with RRF                             |
+| `hybrid.search`                                                        | `search(options: SearchOptions): Promise<MemoryResult<SearchResult[]>>` (`{ query, strategy: 'vector' \| 'keyword' \| 'hybrid', weights?, limit?, threshold?, filter? }`) | Run a search                                                    |
+| `hybrid.indexDocument` / `removeDocument` / `clearIndex` / `indexSize` | `(id, content)`, `(id)`, `()`, getter                                                                                                                                     | The built-in BM25 index, used when no `keywordAdapter` is given |
+| `BM25Index`                                                            | `new BM25Index(config?: { k1?; b?; tokenizer? })` — `addDocument`, `addDocuments`, `removeDocument`, `search(query, limit?)`, `getDocument`, `clear`, `size`              | Keyword index                                                   |
+| `reciprocalRankFusion`                                                 | `reciprocalRankFusion(resultSets: { id }[][], weights: number[], config?: { k? }): Map<string, number>`                                                                   | RRF scores (`k` default 60)                                     |
+| `fuseSearchResults`                                                    | `fuseSearchResults(vector: SearchResult[], keyword: SearchResult[], weights: HybridSearchWeights, config?): SearchResult[]`                                               | Merge two result lists                                          |
+| `tokenize`, `getTermFrequency`                                         | `tokenize(text, config?: { lowercase?; removeStopwords?; minLength? }): string[]`                                                                                         | Tokenizer used by BM25                                          |
 
-| Class          | Description                     |
-| -------------- | ------------------------------- |
-| `VectorSearch` | Cosine similarity on embeddings |
-| `BM25Search`   | Full-text keyword search        |
-| `HybridSearch` | Combines BM25 + vector with RRF |
+`defaultWeights` is `{ bm25: 0.4, vector: 0.6 }`. See [Hybrid Search](/docs/memory/hybrid-search).
 
-**HybridSearch config:**
+## Context Building and Tokens
 
-| Property       | Type     | Default | Description               |
-| -------------- | -------- | ------- | ------------------------- |
-| `vectorWeight` | `number` | `0.7`   | Weight for vector results |
-| `bm25Weight`   | `number` | `0.3`   | Weight for BM25 results   |
-| `k`            | `number` | `60`    | RRF constant              |
-| `topK`         | `number` | `10`    | Results to return         |
+| Export                                      | Signature                                                                                             | Purpose                                                                   |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `ContextBuilder`                            | `new ContextBuilder(config: ContextBuilderConfig, deps: ContextBuilderDeps)`                          | Assemble history, facts, semantic and graph context within a token budget |
+| `builder.build`                             | `build(options: { threadId; agentId; userId?; systemPrompt?; currentInput? }): Promise<BuiltContext>` | Messages plus metadata                                                    |
+| `countTokens`                               | `countTokens(text: string): number`                                                                   | Token estimate                                                            |
+| `countMessageTokens`, `countMessagesTokens` | `(message: Message)`, `(messages: Message[])`                                                         | Token estimates for messages                                              |
+| `truncateToTokens`                          | `truncateToTokens(text: string, maxTokens: number): string`                                           | Cut text to a token budget                                                |
+
+`ContextBuilderConfig` is `{ maxTokens, strategy: 'recent' | 'relevant' | 'hybrid', reserveTokens?, includeSystemPrompt?, includeFacts?, includeSemanticContext?, includeGraphContext?, graphContextOptions? }`; `ContextBuilderDeps` is `{ memoryAdapter, factAdapter?, embeddingAdapter?, embeddingService?, graphContextBuilder? }`.
+
+## Core Facts, Sessions, Compaction
+
+| Export              | Signature                                                                                                                                                                                    | Purpose                                              |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `CoreFactsStore`    | `new CoreFactsStore(config: { path: string } \| { db })` — `initialize`, `set`, `get`, `getAll`, `delete`, `getHistory`, `formatForPrompt`, `close`                                          | Key-value facts about a user in SQLite, with history |
+| `SessionManager`    | `new SessionManager(adapter: MemoryAdapter, options?: { compaction?: CompactionService })` — `getOrCreate`, `get`, `update`, `archive`, `list`, `delete`, `incrementMessageCount`, `compact` | Channel sessions per user and channel                |
+| `CompactionService` | `new CompactionService(config: { adapter: MemoryAdapter; summarize: SummarizeFn })` — `compact(sessionId, config)`, `applySummary(…)`                                                        | Replace old entries with a summary                   |
+
+`SummarizeFn` is `(messages: Message[]) => Promise<string>`.
 
 ## Knowledge Graphs
 
+| Export                 | Signature                                                                                                                                                                                                   | Purpose                                       |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `PostgresGraphAdapter` | `new PostgresGraphAdapter(config: { pool; schema?; vectorDimensions? })` — call `initialize()`                                                                                                              | `GraphAdapter` on Postgres (pass a `pg` pool) |
+| `SQLiteGraphAdapter`   | `new SQLiteGraphAdapter(config: { path: string; walMode?: boolean })` — `initialize()`, `close()`                                                                                                           | `GraphAdapter` on SQLite                      |
+| `LLMEntityExtractor`   | `new LLMEntityExtractor(backend: LLMBackendMinimal, config?: { minConfidence?; maxEntitiesPerText?; maxRelationsPerText? })` — `extract(text, context?)`, `extractBatch`                                    | Entities and relations from text              |
+| `GraphInferenceEngine` | `new GraphInferenceEngine(graphAdapter: GraphAdapter, useDefaultRules?: boolean)` — `registerRule`, `removeRule`, `getRules`, `enableRule`, `disableRule`, `infer(agentId, options?)`, `materialize(edges)` | Rule-based edge inference                     |
+| `GraphContextBuilder`  | `new GraphContextBuilder(graphAdapter, embeddingService?, config?: GraphContextBuilderConfig)` — `buildContext(agentId, input, options?)`                                                                   | Graph context for prompts                     |
+
+`GraphAdapter` methods: `addNode`, `getNode`, `getNodeByName`, `updateNode`, `deleteNode`, `queryNodes`, `searchNodesSemantic`, `addEdge`, `getEdge`, `getEdgesBetween`, `updateEdge`, `deleteEdge`, `queryEdges`, `traverse`, `findShortestPath`, `getNeighbors`, `mergeNodes`, `clearGraph`, `getGraphStats` — all returning `MemoryResult`. See [Knowledge Graphs](/docs/memory/knowledge-graphs).
+
+## Zod Schemas
+
+For validating configuration: `MemoryProviderSchema`, `InMemoryConfigSchema`, `RedisConfigSchema`, `PostgresConfigSchema`, `SQLiteConfigSchema`, `MongoDBConfigSchema`, `QdrantConfigSchema`, `MemoryAdapterConfigSchema`, `ContextStrategySchema`, `ContextBuilderConfigSchema`, `EmbeddingProviderSchema`, `OpenAIEmbeddingConfigSchema`, `OllamaEmbeddingConfigSchema`, `GoogleEmbeddingConfigSchema`, `EmbeddingServiceConfigSchema`, and the knowledge-graph schemas (`GraphNodeSchema`, `GraphEdgeSchema`, `ExtractionResultSchema`, `TraversalOptionsSchema`, `KnowledgeGraphConfigSchema`, …).
+
+## Types
+
+Re-exported from `@cogitator-ai/types`:
+
 ```typescript
-import {
-  KnowledgeGraph,
-  InMemoryGraphAdapter,
-  PostgresGraphAdapter,
-  Neo4jGraphAdapter,
-  EntityExtractor,
-} from '@cogitator-ai/memory';
+interface Thread {
+  id: string;
+  agentId: string;
+  metadata: Record<string, unknown>; // metadata.userId: the owning user
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface MemoryEntry {
+  id: string;
+  threadId: string;
+  message: Message;
+  toolCalls?: ToolCall[];
+  toolResults?: ToolResult[];
+  tokenCount: number;
+  createdAt: Date;
+  metadata?: Record<string, unknown>;
+}
+
+interface Fact {
+  id: string;
+  agentId: string;
+  content: string;
+  category: string;
+  confidence: number;
+  source: 'user' | 'inferred' | 'system';
+  createdAt: Date;
+  updatedAt: Date;
+  expiresAt?: Date;
+  metadata?: Record<string, unknown>; // metadata.userId: only in that user's context
+}
+
+interface Embedding {
+  id: string;
+  sourceId: string;
+  sourceType: 'message' | 'fact' | 'document';
+  vector: number[];
+  content: string;
+  createdAt: Date;
+  metadata?: Record<string, unknown>;
+}
+
+interface SearchResult {
+  id: string;
+  sourceId: string;
+  sourceType: Embedding['sourceType'];
+  content: string;
+  score: number;
+  vectorScore?: number;
+  keywordScore?: number;
+  metadata?: Record<string, unknown>;
+}
 ```
 
-| Class                  | Description                          |
-| ---------------------- | ------------------------------------ |
-| `KnowledgeGraph`       | Main graph interface                 |
-| `EntityExtractor`      | Extract entities from text using LLM |
-| `InMemoryGraphAdapter` | In-memory graph storage              |
-| `PostgresGraphAdapter` | Postgres-backed graph                |
-| `Neo4jGraphAdapter`    | Neo4j native graph database          |
+Also re-exported: the adapter configs, `MemoryQueryOptions`, `SemanticSearchOptions`, `SearchOptions`, `SearchFilter`, `HybridSearchConfig`, `ContextBuilderConfig`, `BuiltContext`, `MemoryConfig`, the graph types (`GraphNode`, `GraphEdge`, `TraversalOptions`, `InferenceRule`, …) and the session types (`Session`, `SessionFilter`, `CompactionConfig`, `CompactionResult`; the interface is exported as `ISessionManager`).

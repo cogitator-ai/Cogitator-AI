@@ -97,7 +97,9 @@ const params = z.object({
 });
 ```
 
-Cogitator converts Zod schemas to OpenAPI 3.0-compatible JSON Schema via `z.toJSONSchema()`. This means `z.string()`, `z.number()`, `z.enum()`, `z.object()`, `z.array()`, `z.union()`, `z.record()`, `z.boolean()`, and `z.unknown()` all work correctly with every LLM provider.
+Cogitator converts Zod schemas to OpenAPI 3.0-compatible JSON Schema via `z.toJSONSchema()`. This means `z.string()`, `z.number()`, `z.enum()`, `z.object()`, `z.array()`, `z.union()`, `z.record()`, `z.boolean()`, and `z.unknown()` all work correctly with every LLM provider. Types JSON Schema cannot express are sent as "any".
+
+Before `execute` runs, the runtime parses the model's arguments with your schema: `execute` receives the parsed values (defaults applied, transforms run), and arguments that do not match are answered with `Invalid arguments: …` so the model can correct itself. A field with `.default()` is listed as required in the schema the model sees (see [Schema Serialization](#schema-serialization)); use `.optional()` when the model may leave it out.
 
 ---
 
@@ -110,6 +112,10 @@ interface ToolContext {
   agentId: string;
   runId: string;
   signal: AbortSignal;
+  threadId?: string;
+  userId?: string; // the run's userId — scope data access by it
+  channelType?: string; // set when the run comes from a channel (Telegram, Slack, …)
+  channelId?: string;
 }
 ```
 
@@ -138,7 +144,7 @@ const searchTool = tool({
 
 ### Using AbortSignal
 
-The `context.signal` is tied to the agent's run timeout. Pass it to fetch calls and other cancellable operations so they abort cleanly when the run times out:
+The `context.signal` aborts when the run times out or is cancelled, and when the tool's own `timeout` elapses. Pass it to fetch calls and other cancellable operations so they stop cleanly. A tool that outlives its `timeout` fails with `Tool "<name>" timed out after <ms>ms` either way:
 
 ```typescript
 execute: async ({ url }, context) => {
@@ -215,7 +221,7 @@ execute: async ({ connectionString }) => {
 };
 ```
 
-Thrown errors surface as tool execution failures in the agent's run trace.
+The runtime catches thrown errors: the model receives `{ "error": "<message>" }` as the tool result and the run goes on, so it can still explain the failure to the user. `result.toolCalls` keeps the call.
 
 ---
 
@@ -242,11 +248,19 @@ const deployTool = tool({
 `requiresApproval` can also be a function for conditional approval:
 
 ```typescript
-requiresApproval: (params) => {
-  const dangerous = ['rm', 'sudo', 'chmod', 'kill'];
-  return dangerous.some((cmd) => params.command.includes(cmd));
-};
+const shell = tool({
+  name: 'shell',
+  description: 'Run a shell command',
+  parameters: z.object({ command: z.string() }),
+  requiresApproval: (params) => {
+    const dangerous = ['rm', 'sudo', 'chmod', 'kill'];
+    return dangerous.some((cmd) => params.command.includes(cmd));
+  },
+  execute: async ({ command }) => runCommand(command),
+});
 ```
+
+The check receives the model's arguments as sent, before schema parsing and defaults; a check that throws counts as "needs approval".
 
 A call that needs approval pauses the run until someone decides — see [Approvals](/docs/tools/approvals).
 
@@ -264,27 +278,30 @@ A call that needs approval pauses the run until someone decides — see [Approva
 
 ## Sandbox Configuration
 
-Tools can declare a sandbox for isolated execution:
+Tools can declare a sandbox for isolated execution. A sandboxed tool is not run through its `execute` inside a `Cogitator` — the runtime hands the arguments to `@cogitator-ai/sandbox` instead:
+
+- **`type: 'docker'`** runs `sh -c <command>` in the container, with the `command`, `cwd` and `env` arguments, and returns `{ stdout, stderr, exitCode, timedOut, duration, command }`. Give such a tool a `command` parameter.
+- **`type: 'wasm'`** passes the arguments as JSON to `wasmFunction` of `wasmModule` and returns its output, parsed as JSON when possible.
 
 ```typescript
-const unsafeTool = tool({
-  name: 'run_code',
-  description: 'Execute user-provided code safely',
-  parameters: z.object({ code: z.string(), language: z.enum(['python', 'javascript']) }),
+const runPython = tool({
+  name: 'run_python',
+  description: 'Run a Python one-liner, e.g. python3 -c "print(2 ** 10)"',
+  parameters: z.object({ command: z.string().describe('Shell command that runs python3') }),
   sandbox: {
     type: 'docker',
-    image: 'cogitator/sandbox:python3.11',
+    image: 'python:3.12-alpine',
     resources: { memory: '512MB', pidsLimit: 100 },
     network: { mode: 'none' },
     timeout: 30_000,
   },
-  execute: async ({ code, language }) => {
-    return { code, language };
-  },
+  execute: async ({ command }) => ({ error: 'sandbox unavailable', command }),
 });
 ```
 
-For lightweight computation, use WASM sandboxing instead:
+When the sandbox cannot be initialized (the package is not installed or Docker is unreachable), the runtime logs a warning and calls `execute` on the host instead — make `execute` safe for that case, as above. See [Sandbox](/docs/deployment/sandbox) for the configuration.
+
+For lightweight computation, use WASM sandboxing instead (or [`defineWasmTool()`](/docs/tools/wasm-tools), which sets this up):
 
 ```typescript
 sandbox: {
@@ -302,17 +319,32 @@ sandbox: {
 A function that builds several related tools can return them with `toolset()`: the result is an ordinary array an agent takes, and each element keeps its own parameter and result types.
 
 ```typescript
-import { tool, toolset } from '@cogitator-ai/core';
+import { Agent, tool, toolset } from '@cogitator-ai/core';
 
 export function createOrderTools(api: OrdersApi) {
   return toolset(
-    tool({ name: 'find_order', parameters: z.object({ id: z.string() }), execute: ({ id }) => api.find(id) }),
-    tool({ name: 'cancel_order', parameters: z.object({ id: z.string(), reason: z.string() }), execute: (p) => api.cancel(p) })
+    tool({
+      name: 'find_order',
+      description: 'Find an order by id',
+      parameters: z.object({ id: z.string() }),
+      execute: async ({ id }) => api.find(id),
+    }),
+    tool({
+      name: 'cancel_order',
+      description: 'Cancel an order',
+      parameters: z.object({ id: z.string(), reason: z.string() }),
+      execute: async (p) => api.cancel(p),
+    })
   );
 }
 
 const tools = createOrderTools(api);
-const agent = new Agent({ name: 'support', instructions: '...', tools });
+const agent = new Agent({
+  name: 'support',
+  model: 'openai/gpt-6.1-sol',
+  instructions: 'You help customers with their orders.',
+  tools,
+});
 
 const [findOrder] = tools;
 await findOrder.execute({ id: 'A-1' }, context); // typed as find_order's parameters
@@ -333,11 +365,32 @@ const schema = weatherTool.toJSON();
 //     type: 'object',
 //     properties: {
 //       city: { type: 'string', description: 'City name' },
-//       units: { type: 'string', enum: ['celsius', 'fahrenheit'], default: 'celsius' },
+//       units: { default: 'celsius', type: 'string', enum: ['celsius', 'fahrenheit'] },
 //     },
-//     required: ['city'],
+//     required: ['city', 'units'],
 //   },
 // }
 ```
 
-This conversion happens automatically when the agent sends tools to the LLM backend. You never need to write JSON Schema by hand.
+This conversion happens automatically when the agent sends tools to the LLM backend; `toolToSchema(tool)` does the same for any tool. You never need to write JSON Schema by hand.
+
+## Registering Tools Globally
+
+`cogitator.tools` is a `ToolRegistry` (`register`, `registerMany`, `get`, `has`, `getAll`, `getNames`, `getSchemas`, `clear`). Tools registered there are offered to every agent this `Cogitator` runs, next to the agent's own `tools` (an agent tool with the same name wins):
+
+```typescript
+cog.tools.register(weatherTool);
+
+const result = await cog.run(agent, { input: 'Weather in Paris?' }); // agent can call get_weather
+```
+
+A standalone `ToolRegistry` also resolves tool names when you restore a serialized agent:
+
+```typescript
+import { Agent, ToolRegistry } from '@cogitator-ai/core';
+
+const registry = new ToolRegistry();
+registry.registerMany([weatherTool]);
+
+const restored = Agent.deserialize(snapshot, { toolRegistry: registry });
+```

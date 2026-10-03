@@ -1,103 +1,198 @@
 ---
 title: Swarms API
-description: Complete API reference for @cogitator-ai/swarms — multi-agent coordination.
+description: Public exports of @cogitator-ai/swarms — the Swarm class and builder, strategies, communication, distributed execution, swarm tools, workflow nodes and the assessor — with their signatures.
 ---
 
-## Classes
-
-### Swarm
-
-The main swarm orchestrator:
+## Swarm
 
 ```typescript
-import { Swarm } from '@cogitator-ai/swarms';
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { Swarm, swarm } from '@cogitator-ai/swarms';
 
-const swarm = new Swarm({
-  name: 'my-swarm',
-  agents: [agent1, agent2, agent3],
+const team = new Swarm(cog, {
+  name: 'dev-team',
   strategy: 'hierarchical',
-  options: { maxRounds: 10 },
+  supervisor: lead,
+  workers: [developer, reviewer],
+  hierarchical: { maxDelegationDepth: 2 },
 });
 
-const result = await swarm.run(cogitator, 'Build a landing page');
-```
-
-**SwarmConfig:**
-
-| Property   | Type            | Description               |
-| ---------- | --------------- | ------------------------- |
-| `name`     | `string`        | Swarm identifier          |
-| `agents`   | `Agent[]`       | Participating agents      |
-| `strategy` | `SwarmStrategy` | Coordination strategy     |
-| `options`  | `SwarmOptions`  | Strategy-specific options |
-
-### SwarmAssessor
-
-Analyze tasks and auto-configure swarms:
-
-```typescript
-import { SwarmAssessor } from '@cogitator-ai/swarms';
-
-const assessor = new SwarmAssessor(cogitator);
-const config = await assessor.assess('Build a full-stack web app');
-```
-
-### TaskAnalyzer
-
-Analyze task complexity and requirements:
-
-```typescript
-import { TaskAnalyzer } from '@cogitator-ai/swarms';
-```
-
-### RoleMatcher
-
-Match agents to roles based on capabilities:
-
-```typescript
-import { RoleMatcher } from '@cogitator-ai/swarms';
-```
-
-## Builder Function
-
-### swarm()
-
-Fluent builder for swarm construction:
-
-```typescript
-import { swarm } from '@cogitator-ai/swarms';
-
-const mySwarm = swarm('dev-team')
-  .agent(architect, { role: 'lead' })
-  .agent(developer)
-  .agent(reviewer)
+const sameTeam = swarm('dev-team')
   .strategy('hierarchical')
-  .maxRounds(10)
-  .build();
+  .supervisor(lead)
+  .workers([developer, reviewer])
+  .hierarchical({ maxDelegationDepth: 2 })
+  .build(cog);
+
+const result = await team.run({ input: 'Build a landing page' });
+console.log(result.output, result.agentResults.get('developer')?.output);
+```
+
+| Member                                                                              | Signature                                                                               | Purpose                                                         |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| constructor                                                                         | `new Swarm(cogitator: Cogitator, config: SwarmConfig, assessorConfig?: AssessorConfig)` | With `assessorConfig`, the first `run()` assigns models first   |
+| `run`                                                                               | `run(options: SwarmRunOptions): Promise<StrategyResult>`                                | Run the swarm on an input                                       |
+| `dryRun`                                                                            | `dryRun(options: { input: string }): Promise<AssessmentResult>`                         | Assess models without running (throws without an assessor)      |
+| `getLastAssessment`                                                                 | `getLastAssessment(): AssessmentResult \| undefined`                                    | The assessment the last run used                                |
+| `on` / `once`                                                                       | `on(event: SwarmEventType \| '*', handler: SwarmEventHandler): () => void`              | Subscribe to [events](#events); returns an unsubscribe function |
+| `getAgents`, `getAgent`                                                             | `getAgents(): SwarmAgent[]`, `getAgent(name: string): SwarmAgent \| undefined`          | Agents with their metadata, state and usage                     |
+| `getResourceUsage`                                                                  | `getResourceUsage(): SwarmResourceUsage`                                                | Tokens, cost, elapsed time, per-agent usage                     |
+| `pause`, `resume`, `abort`                                                          | `(): void`                                                                              | Control a running swarm                                         |
+| `isPaused`, `isAborted`                                                             | `(): boolean`                                                                           | State                                                           |
+| `reset`                                                                             | `reset(): Promise<void>`                                                                | Clear messages, blackboard, usage and agent state               |
+| `close`                                                                             | `close(): Promise<void>`                                                                | Release resources (Redis connections when distributed)          |
+| `name`, `id`, `strategyType`, `isDistributed`, `messageBus`, `blackboard`, `events` | getters                                                                                 | The swarm's identity and communication objects                  |
+
+| Export              | Signature                                                                                                                                                                                                                                                                                                                           | Purpose                                      |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `swarm`             | `swarm(name: string): SwarmBuilder`                                                                                                                                                                                                                                                                                                 | Fluent builder                               |
+| `SwarmBuilder`      | `strategy`, `supervisor`, `workers`, `agents`, `moderator`, `router`, `agentMetadata`, `observability`, `hierarchical`, `roundRobin`, `consensus`, `auction`, `pipeline`, `debate`, `negotiation`, `messaging`, `blackboardConfig`, `resources`, `errorHandling`, `distributed`, `withAssessor(config?)`, `build(cogitator): Swarm` | One method per `SwarmConfig` field           |
+| `SwarmTimeoutError` | `class extends Error { swarmName; timeoutMs }`                                                                                                                                                                                                                                                                                      | Thrown by `run()` when its `timeout` elapses |
+
+### SwarmConfig
+
+| Field                                                                                     | Type                                                | Used by                                                                                        |
+| ----------------------------------------------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `name`                                                                                    | `string`                                            | all                                                                                            |
+| `strategy`                                                                                | `SwarmStrategy`                                     | all                                                                                            |
+| `supervisor`, `workers`                                                                   | `Agent`, `Agent[]`                                  | `hierarchical` (supervisor required)                                                           |
+| `agents`                                                                                  | `Agent[]`                                           | `round-robin`, `consensus`, `auction`, `debate`, `negotiation`                                 |
+| `moderator`, `router`                                                                     | `Agent`                                             | `debate` moderator, specialist routing                                                         |
+| `stages`                                                                                  | `PipelineStage[]`                                   | pipeline agents (the strategy reads `pipeline.stages`)                                         |
+| `agentMetadata`                                                                           | `Record<string, SwarmAgentMetadata>`                | role, expertise, priority, weight, `locked` per agent name                                     |
+| `hierarchical`, `roundRobin`, `consensus`, `auction`, `pipeline`, `debate`, `negotiation` | strategy configs                                    | the matching strategy; `consensus`, `auction`, `pipeline` and `debate` are required for theirs |
+| `messaging`, `blackboard`                                                                 | `MessageBusConfig`, `BlackboardConfig`              | communication                                                                                  |
+| `resources`                                                                               | `SwarmResourceConfig`                               | `maxConcurrency` (default 4), `tokenBudget`, `costLimit`, `timeout`, `perAgent`                |
+| `errorHandling`                                                                           | `SwarmErrorConfig`                                  | retry / skip / failover / abort on agent failure                                               |
+| `distributed`                                                                             | `DistributedSwarmConfig`                            | run agents as Redis jobs                                                                       |
+| `observability`                                                                           | `{ tracing?; messageLogging?; blackboardLogging? }` | logging                                                                                        |
+
+### SwarmRunOptions and Results
+
+```typescript
+interface SwarmRunOptions {
+  input: string;
+  context?: Record<string, unknown>; // passed to all agents
+  threadId?: string;
+  userId?: string; // every agent run acts for this user
+  timeout?: number;
+  saveHistory?: boolean; // default: true
+  onAgentStart?: (agentName: string) => void;
+  onAgentComplete?: (agentName: string, result: RunResult) => void;
+  onAgentError?: (agentName: string, error: Error) => void;
+  onMessage?: (message: SwarmMessage) => void;
+  onEvent?: (event: SwarmEvent) => void;
+}
+
+interface StrategyResult {
+  output: unknown;
+  structured?: unknown;
+  agentResults: Map<string, RunResult>;
+  votes?: Map<string, unknown>; // consensus
+  bids?: Map<string, number>; // auction
+  auctionWinner?: string;
+  debateTranscript?: SwarmMessage[];
+  pipelineOutputs?: Map<string, unknown>;
+  negotiationResult?: NegotiationResult;
+}
 ```
 
 ## Strategies
 
-| Strategy     | Key              | Description                           |
-| ------------ | ---------------- | ------------------------------------- |
-| Hierarchical | `'hierarchical'` | Leader delegates to workers           |
-| Round Robin  | `'round-robin'`  | Agents take turns                     |
-| Consensus    | `'consensus'`    | Agents vote on decisions              |
-| Auction      | `'auction'`      | Agents bid for tasks                  |
-| Pipeline     | `'pipeline'`     | Sequential processing chain           |
-| Debate       | `'debate'`       | Agents argue positions                |
-| Negotiation  | `'negotiation'`  | Agents negotiate solutions            |
-| Distributed  | `'distributed'`  | Redis-backed distributed coordination |
+| `strategy`       | Class                  | Config (`SwarmConfig` field)                                                                                        | Needs                     |
+| ---------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| `'hierarchical'` | `HierarchicalStrategy` | `hierarchical?: { maxDelegationDepth? (3), workerCommunication?, routeThrough?, visibility? }`                      | `supervisor`              |
+| `'round-robin'`  | `RoundRobinStrategy`   | `roundRobin?: { sticky?, stickyKey?, rotation?: 'sequential' \| 'random' }`                                         | 1+ `agents`               |
+| `'consensus'`    | `ConsensusStrategy`    | `consensus: { threshold, maxRounds, resolution: 'majority' \| 'unanimous' \| 'weighted', onNoConsensus, weights? }` | 2+ `agents`               |
+| `'auction'`      | `AuctionStrategy`      | `auction: { bidding: 'capability-match' \| 'custom', bidFunction?, selection, minBid? }`                            | 1+ `agents`               |
+| `'pipeline'`     | `PipelineStrategy`     | `pipeline: { stages: PipelineStage[], stageInput?, gates? }`                                                        | 1+ stages                 |
+| `'debate'`       | `DebateStrategy`       | `debate: { rounds, maxTokensPerTurn?, format? }`                                                                    | 2+ `agents`, `rounds` ≥ 1 |
+| `'negotiation'`  | `NegotiationStrategy`  | `negotiation?: Partial<NegotiationConfig>`                                                                          | 2+ `agents`               |
+
+| Export                                                        | Signature                                                                                | Purpose                                     |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `createStrategy`                                              | `createStrategy(coordinator: SwarmCoordinatorInterface, config: SwarmConfig): IStrategy` | The strategy for a config                   |
+| `getDefaultStrategyConfig`                                    | `getDefaultStrategyConfig(strategy: SwarmStrategy)`                                      | Default config of a strategy                |
+| `BaseStrategy`                                                | `abstract class BaseStrategy implements IStrategy` (`new (coordinator)`)                 | Base for your own strategy                  |
+| `TurnManager`, `ConvergenceCalculator`, `ApprovalIntegration` | classes                                                                                  | Building blocks of the negotiation strategy |
+
+Every strategy class takes `(coordinator, config)`. See [Strategies](/docs/swarms/strategies).
+
+## Coordinators
+
+| Export                        | Signature                                                                                                                                                           | Purpose                                                              |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `SwarmCoordinator`            | `new SwarmCoordinator(cogitator: Cogitator, config: SwarmConfig)`                                                                                                   | In-process coordinator `Swarm` uses                                  |
+| `DistributedSwarmCoordinator` | `new DistributedSwarmCoordinator(options: { config; distributed: DistributedSwarmConfig; resolveModel? })` — `initialize()`, `reset()`, `close()`                   | Runs agent turns as jobs on a Redis queue for `@cogitator-ai/worker` |
+| `BaseSwarmCoordinator`        | abstract class                                                                                                                                                      | Shared coordinator logic                                             |
+| `swarmJobQueueKey`            | `swarmJobQueueKey(keyPrefix?: string, queue?: string): string`                                                                                                      | Redis key of the agent job queue                                     |
+| `ResourceTracker`             | `new ResourceTracker(config?: SwarmResourceConfig)` — `trackAgentRun`, `isWithinBudget`, `checkLimit`, `getUsage`, `getAgentUsage`, `getRemainingBudget`, `reset`   | Budgets                                                              |
+| `CircuitBreaker`              | `new CircuitBreaker(config: { threshold; resetTimeout; successThreshold? })` — `canExecute`, `recordSuccess`, `recordFailure`, `getState`, `onStateChange`, `reset` | Per-agent failure breaker                                            |
+
+`DistributedSwarmConfig`: `{ enabled, queue? ('swarm-agent-jobs'), workerConcurrency? (4), timeout? (300000), redis?: { host?, port?, password?, keyPrefix?, db? }, retry?, cleanupAfter? (3600000) }`. The job payload and result types are `SwarmAgentJobPayload`, `SwarmAgentJobResult` and `SerializedSwarmAgentConfig`. See [Distributed Swarms](/docs/swarms/distributed).
 
 ## Communication
 
-```typescript
-import { Blackboard, MessageBus, RedisMessageBus, RedisBlackboard } from '@cogitator-ai/swarms';
-```
+| Export                                               | Signature                                                                                | Purpose                                     |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `InMemoryMessageBus`                                 | `new InMemoryMessageBus(config: MessageBusConfig)`                                       | `MessageBus` in process memory              |
+| `RedisMessageBus`                                    | `new RedisMessageBus(config: MessageBusConfig, options: { redis; swarmId; keyPrefix? })` | `MessageBus` over Redis                     |
+| `InMemoryBlackboard`                                 | `new InMemoryBlackboard(config: BlackboardConfig)`                                       | `Blackboard` in process memory              |
+| `RedisBlackboard`                                    | `new RedisBlackboard(config: BlackboardConfig, options: { redis; swarmId; keyPrefix? })` | `Blackboard` over Redis                     |
+| `SwarmEventEmitterImpl`                              | `new SwarmEventEmitterImpl(maxEvents?: number)`                                          | `SwarmEventEmitter`                         |
+| `RedisSwarmEventEmitter`                             | `new RedisSwarmEventEmitter(options: { redis; swarmId; keyPrefix?; maxEvents? })`        | Events over Redis pub/sub                   |
+| `isReadTrackingMessageBus`, `isObservableBlackboard` | type guards                                                                              | Optional capabilities of a bus / blackboard |
 
-| Class             | Description                   |
-| ----------------- | ----------------------------- |
-| `Blackboard`      | Shared state store for agents |
-| `MessageBus`      | In-memory agent messaging     |
-| `RedisBlackboard` | Redis-backed shared state     |
-| `RedisMessageBus` | Redis-backed messaging        |
+`MessageBus`: `send(message)`, `broadcast(from, content, channel?)`, `subscribe(agentName, handler)`, `getMessages(agentName, limit?)`, `getConversation(a, b)`, `getAllMessages()`, `getUnreadMessages(agentName)`, `clear()`.
+
+`Blackboard`: `read(section)`, `write(section, data, agentName)`, `append(section, item, agentName)`, `has`, `delete`, `subscribe(section, handler)`, `getSections()`, `getSection(section)`, `getHistory(section)`, `clear()`. See [Communication](/docs/swarms/communication).
+
+## Swarm Tools
+
+Tools agents get inside a swarm, for use in custom strategies:
+
+| Export                   | Signature                                                                | Tools                                                                                                                                                                     |
+| ------------------------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createSwarmTools`       | `createSwarmTools(context: SwarmToolContext): Tool[]`                    | all of the tools below                                                                                                                                                    |
+| `createStrategyTools`    | `createStrategyTools(strategy, context: SwarmToolContext): Tool[]`       | the set for a strategy                                                                                                                                                    |
+| `createMessagingTools`   | `createMessagingTools(messageBus, currentAgent, swarmId?, options?)`     | `send_message`, `read_messages`, `broadcast_message`, `reply_to_message`                                                                                                  |
+| `createBlackboardTools`  | `createBlackboardTools(blackboard, currentAgent)`                        | `read_blackboard`, `write_blackboard`, `append_blackboard`, `list_blackboard_sections`, `get_blackboard_history`                                                          |
+| `createDelegationTools`  | `createDelegationTools(coordinator, blackboard, currentAgent)`           | `delegate_task`, `check_progress`, `request_revision`, `list_workers`                                                                                                     |
+| `createVotingTools`      | `createVotingTools(blackboard, events, currentAgent, agentWeight?)`      | `cast_vote`, `get_votes`, `change_vote`, `get_consensus_status`                                                                                                           |
+| `createNegotiationTools` | `createNegotiationTools(blackboard, events, currentAgent, agentWeight?)` | `make_offer`, `counter_offer`, `accept_offer`, `reject_offer`, `get_negotiation_status`, `get_current_offers`, `propose_coalition`, `join_coalition`, `declare_interests` |
+
+`SwarmToolContext`: `{ coordinator, blackboard, messageBus, events, agentName, agentWeight?, swarmId? }`.
+
+## Workflow Nodes
+
+| Export                 | Signature                                                                                                                           | Purpose                         |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `swarmNode`            | `swarmNode<S>(swarmOrConfig: Swarm \| SwarmConfig, options?: SwarmNodeOptions<S>): WorkflowNode<S>`                                 | Run a swarm as a workflow node  |
+| `conditionalSwarmNode` | `conditionalSwarmNode<S>(swarmOrConfig, condition: (state: S, ctx) => boolean, options?)`                                           | Run only when `condition` holds |
+| `parallelSwarmsNode`   | `parallelSwarmsNode<S>(swarms: { swarm; key; options? }[], mergeResults?: (results: Record<string, StrategyResult>) => Partial<S>)` | Several swarms at once          |
+
+`SwarmNodeOptions`: `{ inputMapper?: (state, input?) => string; stateMapper?: (result: StrategyResult) => Partial<S>; runOptions?: Partial<SwarmRunOptions> }`. With a `SwarmConfig`, the node builds the swarm from the `cogitator` in the node context.
+
+## Assessor
+
+| Export                   | Signature                                                                                                                   | Purpose                                  |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `SwarmAssessor`          | `new SwarmAssessor(config?: AssessorConfig)`                                                                                | Pick models per agent for a task         |
+| `assessor.analyze`       | `analyze(task: string, swarmConfig: SwarmConfig, resolveModel?): Promise<AssessmentResult>`                                 | Requirements, candidates and assignments |
+| `assessor.assignModels`  | `assignModels(config: SwarmConfig, result: AssessmentResult): SwarmConfig`                                                  | Apply an assessment                      |
+| `assessor.suggestModels` | `suggestModels(requirements: TaskRequirements): Promise<ModelCandidate[]>`                                                  | Ranked models for requirements           |
+| `createAssessor`         | `createAssessor(config?: AssessorConfig): SwarmAssessor`                                                                    | Factory                                  |
+| `TaskAnalyzer`           | `new TaskAnalyzer()` — `analyze(task: string): TaskRequirements`                                                            | Rule-based task analysis                 |
+| `ModelDiscovery`         | `new ModelDiscovery(config: AssessorConfig)` — `discoverAll`, `discoverOllama`, `getCloudModels`, `checkOllamaAvailability` | Available models                         |
+| `ModelScorer`            | `new ModelScorer()` — `score(model, requirements)`, `scoreAll(models, requirements)`                                        | Score models (`ScoredModel`)             |
+| `RoleMatcher`            | `new RoleMatcher()` — `analyzeRole(agent, taskReqs)`, `extractAgentsFromConfig(config)`                                     | Requirements per role                    |
+
+See [Assessment](/docs/swarms/assessment).
+
+## Events
+
+`SwarmEventType` covers the swarm lifecycle (`swarm:start`, `swarm:complete`, `swarm:error`, `swarm:paused`, `swarm:resumed`, `swarm:aborted`, `swarm:reset`), agents (`agent:start`, `agent:complete`, `agent:error`), messaging (`message:sent`, `message:received`, `blackboard:write`), each strategy (`consensus:*`, `auction:*`, `debate:*`, `pipeline:*`, `round-robin:assigned`, `negotiation:*`) and `assessor:complete`. A `SwarmEvent` is `{ type, timestamp, agentName?, data? }`; subscribe to `'*'` for all of them.
+
+## Types
+
+Re-exported from `@cogitator-ai/types`: `SwarmStrategy`, `SwarmConfig`, `SwarmRunOptions`, `SwarmAgent`, `SwarmAgentMetadata`, `SwarmAgentState`, `SwarmMessage`, `SwarmMessageType`, `MessageBus`, `MessageBusConfig`, `Blackboard`, `BlackboardConfig`, `BlackboardEntry`, `SwarmEventEmitter`, `SwarmEventType`, `SwarmEvent`, `SwarmEventHandler`, the strategy configs (`HierarchicalConfig`, `RoundRobinConfig`, `ConsensusConfig`, `AuctionConfig`, `PipelineConfig`, `PipelineStage`, `PipelineContext`, `PipelineGateConfig`, `DebateConfig`, `NegotiationConfig`, …), the negotiation types (`NegotiationOffer`, `NegotiationAgreement`, `NegotiationResult`, `Coalition`, …), `StrategyResult`, `IStrategy`, `SwarmCoordinatorInterface`, `SwarmResourceConfig`, `SwarmErrorConfig` and the assessor types (`TaskRequirements`, `RoleRequirements`, `ModelCandidate`, `ModelAssignment`, `AssessmentResult`, `AssessorConfig`, `DiscoveredModel`, …).

@@ -13,7 +13,7 @@ const refund = tool({
   description: 'Refund an order',
   parameters: z.object({ order: z.string(), amount: z.number() }),
   requiresApproval: ({ amount }) => amount > 100, // small refunds need no one
-  sideEffects: ['payment'],
+  sideEffects: ['external'],
   execute: async ({ order, amount }) => payments.refund(order, amount),
 });
 
@@ -31,6 +31,8 @@ if (result.status === 'paused') {
 ```
 
 Nothing of the paused turn has run: if the model asked for several tools at once, all of them wait, so a decision never comes after side effects already happened.
+
+`requiresApproval` is `true` (always ask) or a function of the model's arguments as sent — before schema parsing and defaults. A function that throws counts as "needs approval". Each waiting call in `pendingApprovals` is a `ToolApprovalRequest`: `{ toolCallId, toolName, arguments, description, sideEffects? }`, where `description` is the tool's description.
 
 ## Resuming
 
@@ -64,7 +66,9 @@ await cog.run(agent, {
 });
 ```
 
-Without `onApproval`, `guardrails.onToolApproval` decides when it is set; otherwise the run pauses.
+Without `onApproval`, `guardrails.onToolApproval` (`(toolName, args, sideEffects) => Promise<boolean>`) decides when it is set; otherwise the run pauses. `onApproval` is a run option, so it also works for `cog.resume()`, where it decides calls the model makes after resuming.
+
+Agents wrapped with [`agentAsTool()`](/docs/tools/agent-as-tool) cannot pause: unless you pass `onApproval` to `agentAsTool`, their calls that need approval are declined and the inner agent is told why.
 
 ## Where Paused Runs Live
 
@@ -79,4 +83,4 @@ The checkpoint holds the whole conversation, so it stays on the server. You can 
 ## Servers and Chats
 
 - **Server adapters** answer a paused run with `status: 'paused'` and `pendingApprovals`, stream an `approval-required` event, and take decisions on `POST /agents/:name/resume` (`{ threadId, decisions?, defaultDecision? }`).
-- **Channels** ask in the chat ("reply approve or deny") and resume when the user answers — see [Channels](/docs/channels).
+- **Channels** ask in the chat ("reply approve or deny") and resume when the user answers — see [Gateway approvals](/docs/channels/gateway#approvals).

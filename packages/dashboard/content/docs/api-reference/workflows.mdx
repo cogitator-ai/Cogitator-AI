@@ -1,96 +1,219 @@
 ---
 title: Workflows API
-description: Complete API reference for @cogitator-ai/workflows — DAG-based orchestration.
+description: Public exports of @cogitator-ai/workflows — builder, executor, nodes, checkpoints, human approvals, timers, sagas, map-reduce, subworkflows, triggers, run management and observability — with their signatures.
 ---
 
-## Classes
+Workflow state types must satisfy `WorkflowState` (`Record<string, unknown>`): use a type alias or `interface MyState extends WorkflowState`.
 
-### WorkflowBuilder
-
-Fluent API for constructing workflow DAGs:
+## Building and Running
 
 ```typescript
-import { WorkflowBuilder, agentNode, toolNode } from '@cogitator-ai/workflows';
+import {
+  WorkflowBuilder,
+  WorkflowExecutor,
+  agentNode,
+  functionNode,
+} from '@cogitator-ai/workflows';
+import type { WorkflowState } from '@cogitator-ai/types';
 
-const workflow = new WorkflowBuilder('pipeline')
-  .addNode('step1', agentNode(agent))
-  .addNode('step2', toolNode(myTool, { argsMapper: (state) => ({ query: state.query }) }), {
-    after: ['step1'],
-  })
+interface ReportState extends WorkflowState {
+  topic?: string;
+  draft?: string;
+  words?: number;
+}
+
+const workflow = new WorkflowBuilder<ReportState>('report')
+  .initialState({ topic: 'WebAssembly' })
+  .addNode(
+    'write',
+    agentNode<ReportState>(writer, {
+      inputMapper: (state) => `Write a short report about ${state.topic}`,
+      stateMapper: (result) => ({ draft: result.output }),
+    })
+  )
+  .addNode(
+    'count',
+    functionNode<ReportState>('count', async (state) => state.draft?.split(/\s+/).length ?? 0, {
+      stateMapper: (words) => ({ words: words as number }),
+    }),
+    { after: ['write'] }
+  )
   .build();
+
+const result = await new WorkflowExecutor(cog).execute(workflow);
+console.log(result.state.words, result.error);
 ```
 
-**Methods:**
+### `WorkflowBuilder<S>`
 
-| Method           | Signature                                                          | Description                                   |
-| ---------------- | ------------------------------------------------------------------ | --------------------------------------------- |
-| `initialState`   | `initialState(state: S)`                                           | Default state merged with the execution input |
-| `addNode`        | `addNode(name, node: NodeFn \| WorkflowNode, { after?, config? })` | Add a node function or a factory-created node |
-| `addConditional` | `addConditional(name, condition, { after? })`                      | Route to the node(s) named by `condition`     |
-| `addLoop`        | `addLoop(name, { condition, back, exit, after? })`                 | Loop back while `condition` holds             |
-| `addParallel`    | `addParallel(name, targets, { after? })`                           | Fan out to several nodes                      |
-| `entryPoint`     | `entryPoint(name)`                                                 | Set the entry point explicitly                |
-| `build`          | `build(): Workflow`                                                | Validate and compile the workflow             |
+| Method           | Signature                                                                                                              | Purpose                                        |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| constructor      | `new WorkflowBuilder<S>(name: string)`                                                                                 |                                                |
+| `initialState`   | `initialState(state: S): this`                                                                                         | Default state, merged with the execution input |
+| `addNode`        | `addNode(name: string, node: NodeFn<S> \| WorkflowNode<S>, options?: { after?: string[]; config?: NodeConfig }): this` | Add a node function or a factory-made node     |
+| `addConditional` | `addConditional(name: string, condition: (state: S) => string \| string[], options?: { after? }): this`                | Route to the node(s) `condition` names         |
+| `addLoop`        | `addLoop(name: string, options: { condition: (state: S) => boolean; back: string; exit: string; after? }): this`       | Loop back while `condition` holds              |
+| `addParallel`    | `addParallel(name: string, targets: string[], options?: { after? }): this`                                             | Fan out to several nodes                       |
+| `entryPoint`     | `entryPoint(nodeName: string): this`                                                                                   | Set the entry point explicitly                 |
+| `build`          | `build(): Workflow<S>`                                                                                                 | Validate and compile                           |
 
-Dependencies are declared with `after`. `build()` throws when there is no single root node (several independent roots need a root `addParallel` or `.entryPoint()`) and when a node that follows a loop is neither its `back` nor its `exit` node.
+`NodeFn<S>` is `(ctx: NodeContext<S>) => Promise<NodeResult<S>>` with `ctx = { state, input?, nodeId, workflowId, step, reportProgress? }` and `NodeResult = { state?: Partial<S>; output?; next? }`. `NodeConfig` is `{ timeout?, retries?, retryDelay? }`. `build()` throws when there is no single root (independent roots need a root `addParallel` or `.entryPoint()`) and when a node after a loop is neither its `back` nor its `exit` node. See [Builder](/docs/workflows/builder).
 
-### WorkflowExecutor
+### `WorkflowExecutor`
 
-Execute compiled workflows:
+| Method      | Signature                                                                                                              | Purpose                                                                                                           |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| constructor | `new WorkflowExecutor(cogitator: Cogitator, checkpointStore?: CheckpointStore)`                                        | Default store: `InMemoryCheckpointStore`                                                                          |
+| `execute`   | `execute<S>(workflow: Workflow<S>, input?: Partial<S>, options?: ExecutorExecuteOptions): Promise<WorkflowResult<S>>`  | Run to completion; a failure lands in `result.error`                                                              |
+| `resume`    | `resume<S>(workflow: Workflow<S>, checkpointId: string, options?: WorkflowExecuteOptions): Promise<WorkflowResult<S>>` | Continue from a checkpoint, skipping completed nodes                                                              |
+| `stream`    | `stream<S>(workflow, input?, options?): AsyncIterable<StreamingWorkflowEvent>`                                         | Events: `workflow_started`, `node_started`, `node_progress`, `node_completed`, `node_error`, `workflow_completed` |
 
-```typescript
-import { WorkflowExecutor } from '@cogitator-ai/workflows';
+`ExecutorExecuteOptions` extends `WorkflowExecuteOptions`:
 
-const executor = new WorkflowExecutor(cogitator, checkpointStore?);
-const result = await executor.execute(workflow, input?, options?);
-console.log(result.state, result.error);
-```
+| Option                                                           | Purpose                                              |
+| ---------------------------------------------------------------- | ---------------------------------------------------- |
+| `maxConcurrency`, `maxIterations`                                | Parallel nodes, loop safety limit                    |
+| `checkpoint`, `checkpointStrategy`                               | Save checkpoints (`'per-iteration'` or `'per-node'`) |
+| `onNodeStart`, `onNodeComplete`, `onNodeError`, `onNodeProgress` | Callbacks                                            |
+| `workflowId`, `skipNodes`, `nodeResults`                         | Identity and resumption                              |
+| `signal`                                                         | Cancel the run                                       |
+| `tracer`, `metricsCollector`                                     | [Observability](#observability)                      |
+| `defaultRetry`, `defaultCircuitBreaker`                          | Saga defaults for every node                         |
+| `deadLetterQueue`, `idempotencyStore`                            | Saga infrastructure                                  |
+| `approvalStore`, `approvalNotifier`, `timerStore`                | Stores for human and timer nodes                     |
+| `depth`                                                          | Subworkflow nesting depth                            |
 
-**Execute options (selection):**
+`WorkflowResult<S>`: `{ workflowId, workflowName, state, nodeResults: Map<string, { output, duration }>, duration, checkpointId?, error? }`. `NodeExecutionError` (`nodeName`) and `NodeTimeoutError` (`nodeName`, `timeoutMs`) are the errors nodes fail with. `WorkflowScheduler` is the executor's internal DAG scheduler (dependency graph, ready nodes, concurrency), exported for custom executors. See [Execution](/docs/workflows/execution).
 
-| Property         | Type                               | Description                              |
-| ---------------- | ---------------------------------- | ---------------------------------------- |
-| `maxConcurrency` | `number`                           | Max parallel nodes                       |
-| `maxIterations`  | `number`                           | Safety limit for loops                   |
-| `checkpoint`     | `boolean`                          | Save checkpoints to the checkpoint store |
-| `signal`         | `AbortSignal`                      | Cancel the run                           |
-| `onNodeStart`    | `(node) => void`                   | Called before each node runs             |
-| `onNodeComplete` | `(node, result, duration) => void` | Called after each node runs              |
+## Nodes
 
-## Node Factories
+| Export                     | Signature                                                                                                                                     | Purpose                                             |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `agentNode`                | `agentNode<S>(agent: Agent, options?: { inputMapper?; stateMapper?: (result: RunResult) => Partial<S>; runOptions? }): WorkflowNode<S>`       | Run an agent                                        |
+| `toolNode`                 | `toolNode<S, TArgs>(tool: Tool<TArgs>, options: { argsMapper: (state: S, input?) => TArgs; stateMapper?; signal? }): WorkflowNode<S>`         | Run a tool                                          |
+| `functionNode`             | `functionNode<S, O>(name: string, fn: (state: S, input?) => Promise<O>, options?: { stateMapper?: (output) => Partial<S> }): WorkflowNode<S>` | Run a function                                      |
+| `customNode`               | `customNode<S>(name: string, fn: (ctx: NodeContext<S>) => Promise<NodeResult<S>>): WorkflowNode<S>`                                           | Full control over state, output and `next`          |
+| `humanWorkflowNode`        | `humanWorkflowNode<S>(config: HumanNodeConfig<S>, options?: { approvalStore?; approvalNotifier?; stateMapper? }): WorkflowNode<S>`            | Wait for a person (see [Human](#human-in-the-loop)) |
+| `timerWorkflowNode`        | `timerWorkflowNode<S>(config: AnyTimerNodeConfig<S>, options?: { timerStore?; stateMapper? }): WorkflowNode<S>`                               | Wait for a delay, date or cron time                 |
+| `mapWorkflowNode`          | `mapWorkflowNode<S, T>(config: MapNodeConfig<S, T>, options?: { stateMapper? }): WorkflowNode<S>`                                             | Process items in parallel                           |
+| `mapReduceWorkflowNode`    | `mapReduceWorkflowNode<S, T, R>(config: MapReduceNodeConfig<S, T, R>, options?: { stateMapper? }): WorkflowNode<S>`                           | Map, then reduce                                    |
+| `subworkflowWorkflowNode`  | `subworkflowWorkflowNode<PS, CS>(config: SubworkflowConfig<PS, CS>, options?: { checkpointStore? }): WorkflowNode<PS>`                        | Run a nested workflow                               |
+| `parallelSubworkflowsNode` | `parallelSubworkflowsNode<S>(config: ParallelSubworkflowsConfig<S>, options?: { checkpointStore? }): WorkflowNode<S>`                         | Run nested workflows in parallel                    |
 
-```typescript
-import { agentNode, toolNode, functionNode, humanNode, customNode } from '@cogitator-ai/workflows';
-```
+The `*WorkflowNode` adapters turn the configs built by the helpers below (`approvalNode`, `delayNode`, `mapNode`, `subworkflowNode`, …) into nodes for `addNode`. See [Nodes](/docs/workflows/nodes).
 
-| Factory                            | Description                      |
-| ---------------------------------- | -------------------------------- |
-| `agentNode(agent, options?)`       | Run an Agent, returns its output |
-| `toolNode(tool, { argsMapper })`   | Execute a tool directly          |
-| `functionNode(name, fn, options?)` | Run arbitrary async function     |
-| `humanNode(options)`               | Pause for human input            |
-| `customNode(name, fn)`             | Fully custom node logic          |
+## Checkpoints
 
-## Saga Support
+| Export                    | Signature                                                                          | Purpose                                                 |
+| ------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `InMemoryCheckpointStore` | `new InMemoryCheckpointStore()`                                                    | Process memory                                          |
+| `FileCheckpointStore`     | `new FileCheckpointStore(directory?: string)`                                      | JSON files                                              |
+| `RedisCheckpointStore`    | `new RedisCheckpointStore(options: { client: CheckpointRedisClient; keyPrefix? })` | Redis (any client with the listed methods)              |
+| `PostgresCheckpointStore` | `new PostgresCheckpointStore(options: { client: CheckpointPgClient; table? })`     | Postgres (`{ query(text, values?) }`, e.g. a `pg` pool) |
+| `createCheckpointId`      | `createCheckpointId(): string`                                                     | New checkpoint id                                       |
 
-```typescript
-import { SagaExecutor, CompensationRegistry } from '@cogitator-ai/workflows';
-```
+`CheckpointStore`: `save(checkpoint)`, `load(id)`, `list(workflowName)`, `delete(id)`.
 
-| Class                  | Description                         |
-| ---------------------- | ----------------------------------- |
-| `SagaExecutor`         | Execute workflows with compensation |
-| `CompensationRegistry` | Register rollback actions per node  |
+## Human in the Loop
 
-## Scheduling
+| Export                                                                                                                           | Signature                                                                                                                                                  | Purpose                                                                                |
+| -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `approvalNode`                                                                                                                   | `approvalNode<S>(name, { title, description?, assignee?, timeout?, timeoutAction?: 'approve' \| 'reject' \| 'fail', priority? }): NamedHumanNodeConfig<S>` | Approve / reject                                                                       |
+| `choiceNode`                                                                                                                     | `choiceNode<S>(name, { title, choices: ApprovalChoice[], … })`                                                                                             | Pick one of several choices                                                            |
+| `inputNode`                                                                                                                      | `inputNode<S>(name, { title, … })`                                                                                                                         | Free-form input                                                                        |
+| `ratingNode`                                                                                                                     | `ratingNode<S>(name, { title, … })`                                                                                                                        | Numeric rating                                                                         |
+| `chainNode`                                                                                                                      | `chainNode<S>(name, { title, chain: ApprovalChainStep[], … })`                                                                                             | Several approvers in turn                                                              |
+| `managementChain`                                                                                                                | `managementChain<S>(name, { title, manager, director?, vp?, timeoutPerStep? })`                                                                            | Manager → director → VP chain                                                          |
+| `humanNode`                                                                                                                      | `humanNode<S>(name, approval: HumanNodeConfig<S>['approval']): NamedHumanNodeConfig<S>`                                                                    | Any approval config                                                                    |
+| `executeHumanNode`                                                                                                               | `executeHumanNode<S>(state, config, context: HumanNodeContext): Promise<HumanNodeResult<S>>`                                                               | Run an approval outside a workflow                                                     |
+| `InMemoryApprovalStore`                                                                                                          | `new InMemoryApprovalStore(options?: { ttl?; cleanupInterval? })`                                                                                          | Process memory                                                                         |
+| `FileApprovalStore`                                                                                                              | `new FileApprovalStore(options: { directory; pollInterval? })`                                                                                             | JSON files                                                                             |
+| `RedisApprovalStore`                                                                                                             | `new RedisApprovalStore(options: { client: ApprovalStoreRedisClient; keyPrefix?; pollInterval?; onPollError? })`                                           | Redis, shared between processes                                                        |
+| `PostgresApprovalStore`                                                                                                          | `new PostgresApprovalStore(options: { client: ApprovalStorePgClient; tablePrefix?; pollInterval?; onPollError? })`                                         | Postgres, shared between processes                                                     |
+| `withDelegation`                                                                                                                 | `withDelegation(store: ApprovalStore, options?: { onDelegation? }): ApprovalStore`                                                                         | Let assignees delegate requests                                                        |
+| `ApprovalAlreadyAnsweredError`                                                                                                   | `class extends Error { requestId; existing? }`                                                                                                             | `submitResponse` on an answered request: the first answer wins                         |
+| `submitOrExisting`                                                                                                               | `submitOrExisting(store, response): Promise<ApprovalResponse>`                                                                                             | Submit, or return the answer that got there first                                      |
+| `WITHDRAWN`, `withdrawnResponse`, `isUnanswered`                                                                                 | constant, `(requestId) => ApprovalResponse`, `(response) => boolean`                                                                                       | Requests deleted or expired before an answer resolve waiters with a withdrawn response |
+| `ConsoleNotifier`, `WebhookNotifier`, `CompositeNotifier`, `slackNotifier`, `filteredNotifier`, `priorityRouter`, `nullNotifier` | `ApprovalNotifier`s                                                                                                                                        | Tell people a request is waiting                                                       |
 
-```typescript
-import { WorkflowScheduler, CronTrigger, WebhookTrigger } from '@cogitator-ai/workflows';
-```
+`ApprovalStore`: `createRequest`, `getRequest`, `getPendingRequests(workflowId?)`, `getPendingForAssignee(assignee)`, `submitResponse`, `getResponse`, `deleteRequest`, `onResponse(requestId, callback)`. `HumanNodeResult`: `{ approved, decision, response, state, timedOut?, escalated?, withdrawn? }`.
 
-| Class               | Description                  |
-| ------------------- | ---------------------------- |
-| `WorkflowScheduler` | Schedule workflow executions |
-| `CronTrigger`       | Cron-based scheduling        |
-| `WebhookTrigger`    | HTTP webhook triggers        |
-| `TimerTrigger`      | One-shot delayed execution   |
+## Timers and Cron
+
+| Export                                                                                                                                                                                                                                                                                                                              | Signature                                                                                                                                                                    | Purpose                                                                                                      |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `delayNode`                                                                                                                                                                                                                                                                                                                         | `delayNode(name, delay: number, options?): FixedDelayConfig`                                                                                                                 | Fixed delay (ms)                                                                                             |
+| `dynamicDelayNode`                                                                                                                                                                                                                                                                                                                  | `dynamicDelayNode<S>(name, getDelay: (state: S) => number, options?)`                                                                                                        | Delay computed from state                                                                                    |
+| `cronWaitNode`                                                                                                                                                                                                                                                                                                                      | `cronWaitNode(name, expression: string, options?): CronWaitConfig`                                                                                                           | Wait for the next cron time                                                                                  |
+| `untilNode`                                                                                                                                                                                                                                                                                                                         | `untilNode<S>(name, getDate: (state: S) => Date \| number, options?)`                                                                                                        | Wait until a date                                                                                            |
+| `InMemoryTimerStore`, `FileTimerStore`                                                                                                                                                                                                                                                                                              | `new InMemoryTimerStore()`, `new FileTimerStore(directory)`                                                                                                                  | Local timer stores                                                                                           |
+| `RedisTimerStore`, `PostgresTimerStore`                                                                                                                                                                                                                                                                                             | `new RedisTimerStore({ client, keyPrefix?, claimTtl? })`, `new PostgresTimerStore({ client, table?, claimTtl? })`                                                            | Durable stores that claim due timers, so one worker fires each                                               |
+| `TimerManager`                                                                                                                                                                                                                                                                                                                      | `new TimerManager(store: TimerStore, config?: TimerManagerConfig)` — `start`, `stop`, `schedule`, `cancel`, `registerHandler`, `setDefaultHandler`, `getStats`, `processNow` | Polls the store and fires handlers; renews claims while a handler runs and releases timers it did not handle |
+| `RecurringTimerScheduler`                                                                                                                                                                                                                                                                                                           | `new RecurringTimerScheduler(manager)` — `scheduleRecurring`, `cancelRecurring`                                                                                              | Recurring timers                                                                                             |
+| `createInMemoryTimerStore`, `createFileTimerStore`, `createTimerManager`, `createRecurringScheduler`, `createTimerNodeHelpers`                                                                                                                                                                                                      | factories                                                                                                                                                                    |                                                                                                              |
+| `parseCronExpression`, `validateCronExpression`, `isValidCronExpression`, `getNextCronOccurrence`, `getPreviousCronOccurrence`, `getNextCronOccurrences`, `msUntilNextCronOccurrence`, `cronMatchesDate`, `describeCronExpression`, `createCronIterator`, `CRON_PRESETS`, `CRON_FIELDS`, `getSupportedTimezones`, `isValidTimezone` | cron helpers                                                                                                                                                                 |                                                                                                              |
+| `Duration`, `parseDuration`, `formatDuration`                                                                                                                                                                                                                                                                                       | `parseDuration('5m')` → ms                                                                                                                                                   | Duration helpers                                                                                             |
+| `calculateTimerDelay`, `executeTimerNode`, `AbortError`                                                                                                                                                                                                                                                                             | functions, class                                                                                                                                                             | Timer node internals                                                                                         |
+
+`TimerManagerConfig`: `{ pollInterval?, batchSize?, processOverdueOnStart?, cleanupMaxAge?, cleanupInterval?, enableCleanup?, maxRetries?, onError?, onTimerFired?, onTimerMissed?, onDeadLetter?, onClaimLost? }`. See [Scheduling](/docs/workflows/scheduling).
+
+## Sagas
+
+| Export                                                                                                                                     | Signature                                                                                                                                                                       | Purpose                              |
+| ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| `executeWithRetry`                                                                                                                         | `executeWithRetry<T>(fn: (attempt) => Promise<T>, options?: RetryOptions<T>): Promise<RetryResult<T>>`                                                                          | Retry with backoff                   |
+| `withRetry`, `Retryable`                                                                                                                   | `withRetry(fn, options?)` → wrapped function; `@Retryable(options?)` decorator                                                                                                  | Retry wrappers                       |
+| `estimateRetryDuration`                                                                                                                    | `estimateRetryDuration(config?: Partial<RetryConfig>): number`                                                                                                                  | Worst-case retry time                |
+| `CircuitBreaker`, `createCircuitBreaker`                                                                                                   | `new CircuitBreaker(config?: Partial<CircuitBreakerConfig>)` — `canExecute(nodeId)`, `recordSuccess`, `recordFailure`, `getState`, `getStats`, `forceState`, `reset`, `onEvent` | Per-node circuit breaker             |
+| `CircuitBreakerOpenError`, `WithCircuitBreaker`                                                                                            | error class, decorator                                                                                                                                                          |                                      |
+| `CompensationManager`, `createCompensationManager`                                                                                         | `registerCompensation(nodeId, fn, options?)`, `markCompleted`, `compensate(state, failedNodeId, error): Promise<CompensationReport>`                                            | Undo completed steps after a failure |
+| `CompensationBuilder`, `compensationBuilder`                                                                                               | `compensationBuilder<S>().addStep(nodeId, fn).addConditionalStep(…).build()`                                                                                                    | Build a compensation manager         |
+| `InMemoryDLQ`, `FileDLQ`, `BaseDLQ`, `createInMemoryDLQ`, `createFileDLQ`, `createDLQEntry`                                                | `add`, `get`, `list(filters?)`, `retry`, `remove`, `count`, `clear`                                                                                                             | Dead-letter queue                    |
+| `InMemoryIdempotencyStore`, `FileIdempotencyStore`, `BaseIdempotencyStore`, `createInMemoryIdempotencyStore`, `createFileIdempotencyStore` | `check`, `store`, `get`, `delete`, `clear`                                                                                                                                      | Idempotency records                  |
+| `idempotent`, `Idempotent`, `generateIdempotencyKey`, `generateCustomKey`                                                                  | `idempotent(store, key, fn)`, decorator, key helpers                                                                                                                            | Run once per key                     |
+
+See [Sagas](/docs/workflows/sagas).
+
+## Map-Reduce and Subworkflows
+
+| Export                                                                                          | Signature                                                                     | Purpose                                                 |
+| ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `mapNode`, `reduceNode`, `mapReduceNode`                                                        | `mapNode<S, T>(name, config): MapNodeConfig<S, T>`, …                         | Configs for `mapWorkflowNode` / `mapReduceWorkflowNode` |
+| `executeMap`, `executeReduce`, `executeMapReduce`                                               | `executeMapReduce<S, T, R>(state, config): Promise<MapReduceResult<T, R>>`, … | Run without a workflow                                  |
+| `parallelMap`, `sequentialMap`, `batchedMap`                                                    | `(state, items: (state) => unknown[], mapper, …)`                             | Map helpers                                             |
+| `collect`, `sum`, `count`, `first`, `last`, `groupBy`, `partition`, `flatMap`, `stats`          | reducer configs                                                               | Ready-made reducers                                     |
+| `subworkflowNode`, `simpleSubworkflow`, `nestedSubworkflow`, `conditionalSubworkflow`           | `subworkflowNode<PS, CS>(name, config): SubworkflowConfig<PS, CS>`, …         | Configs for `subworkflowWorkflowNode`                   |
+| `parallelSubworkflows`, `fanOutFanIn`, `scatterGather`                                          | `parallelSubworkflows<S>(name, config): ParallelSubworkflowsConfig<S>`, …     | Configs for `parallelSubworkflowsNode`                  |
+| `executeSubworkflow`, `executeParallelSubworkflows`, `raceSubworkflows`, `fallbackSubworkflows` | `(parentState, config, context: SubworkflowContext)`                          | Run without a node                                      |
+| `MaxDepthExceededError`                                                                         | error class                                                                   | Nesting deeper than allowed                             |
+
+See [Patterns](/docs/workflows/patterns).
+
+## Run Management and Triggers
+
+| Export                                                                                                                                                                                                 | Signature                                                                                                                                                                                                                                                                                                                | Purpose                                 |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------- |
+| `DefaultWorkflowManager`, `createWorkflowManager`                                                                                                                                                      | `new DefaultWorkflowManager(config: { cogitator; runStore?; checkpointStore?; maxConcurrency?; defaultTimeout?; tracer?; metrics?; onRunStateChange? })`                                                                                                                                                                 | Queue, schedule and track runs          |
+| manager methods                                                                                                                                                                                        | `start`, `stop`, `registerWorkflow`, `schedule(workflow, options?: ScheduleOptions): Promise<string>`, `execute(workflow, input?, options?)`, `cancel`, `pause`, `resume`, `retry`, `replay(workflow, runId, fromNode)`, `getStatus`, `listRuns`, `getStats`, `getActiveCount`, `onRunStateChange`, `cleanup`, `dispose` |                                         |
+| `InMemoryRunStore`, `FileRunStore`                                                                                                                                                                     | `new InMemoryRunStore()`, `new FileRunStore({ directory, … })`                                                                                                                                                                                                                                                           | Run records                             |
+| `RedisRunStore`, `PostgresRunStore`                                                                                                                                                                    | `new RedisRunStore({ client, keyPrefix? })`, `new PostgresRunStore({ client, table? })`                                                                                                                                                                                                                                  | Durable run records                     |
+| `JobScheduler`, `PriorityQueue`, `createJobScheduler`                                                                                                                                                  | `new JobScheduler(config: SchedulerConfig)`                                                                                                                                                                                                                                                                              | The manager's queue and cron scheduling |
+| `DefaultTriggerManager`, `createTriggerManager`                                                                                                                                                        | `new DefaultTriggerManager(config?: { store?; eventEmitter?; onTriggerFire? })` — `register`, `unregister`, `enable`, `disable`, `list`, `fire`, `onTrigger`, `handleWebhook(request)`, `emitEvent(type, payload)`, `registerWorkflow(workflow, triggers)`, `start`, `stop`                                              | Cron, webhook and event triggers        |
+| `cronTrigger`, `webhookTrigger`, `eventTrigger`                                                                                                                                                        | `cronTrigger(expression, options?)`, `webhookTrigger(path, method?, options?)`, `eventTrigger(eventType, options?)`                                                                                                                                                                                                      | Trigger configs                         |
+| `CronTriggerExecutor`, `WebhookTriggerExecutor`, `createCronTrigger`, `createWebhookTrigger`, `validateCronTriggerConfig`, `validateWebhookTriggerConfig`, `WebhookAuthError`, `WebhookRateLimitError` | executors and validation                                                                                                                                                                                                                                                                                                 |                                         |
+| `InMemoryTriggerStore`, `SimpleTriggerEventEmitter`                                                                                                                                                    | classes                                                                                                                                                                                                                                                                                                                  | Defaults of the trigger manager         |
+| `TokenBucket`, `RateLimiter`, `SlidingWindowRateLimiter`, `createRateLimiter`, `createSlidingWindowLimiter`                                                                                            | rate limiters                                                                                                                                                                                                                                                                                                            | Webhook rate limiting                   |
+
+## Observability
+
+| Export                                                                                                                             | Signature                                                       | Purpose                     |
+| ---------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | --------------------------- |
+| `WorkflowTracer`, `createTracer`, `getGlobalTracer`, `setGlobalTracer`                                                             | `new WorkflowTracer(config?: Partial<TracingConfig>)`           | Spans per workflow and node |
+| `WorkflowMetricsCollector`, `createMetricsCollector`, `getGlobalMetrics`, `setGlobalMetrics`                                       | `new WorkflowMetricsCollector(config?: Partial<MetricsConfig>)` | Run and node metrics        |
+| `ConsoleSpanExporter`, `OTLPSpanExporter`, `ZipkinSpanExporter`, `CompositeSpanExporter`, `NoopSpanExporter`, `createSpanExporter` | `createSpanExporter(config: ExporterConfig)`                    | Span exporters              |
+
+Pass a tracer and metrics collector to `execute()` as `tracer` / `metricsCollector`.
+
+## Types
+
+Re-exported from `@cogitator-ai/types`: `Workflow`, `WorkflowState`, `WorkflowNode`, `WorkflowResult`, `WorkflowEvent`, `StreamingWorkflowEvent`, `WorkflowExecuteOptions`, `WorkflowCheckpoint`, `CheckpointStore`, `NodeContext`, `NodeResult`, `NodeConfig`, `NodeFn`, the edge and builder option types, the saga types (`RetryConfig`, `CircuitBreakerConfig`, `CompensationConfig`, `DeadLetterEntry`, `IdempotencyStore`, …), the human types (`ApprovalRequest`, `ApprovalResponse`, `ApprovalStore`, `ApprovalNotifier`, `HumanNodeConfig`, …), the timer types (`TimerEntry`, `TimerStore`), the manager types (`WorkflowRun`, `RunStore`, `WorkflowManager`, `ScheduleOptions`, …), the trigger types (`CronTriggerConfig`, `WebhookTriggerConfig`, `EventTriggerConfig`, `WorkflowTrigger`, `TriggerManager`, …) and the tracing types (`TracingConfig`, `MetricsConfig`, `WorkflowSpan`, …).

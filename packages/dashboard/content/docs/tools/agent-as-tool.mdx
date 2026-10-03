@@ -8,7 +8,7 @@ description: Wrap agents as tools with agentAsTool() to enable hierarchical dele
 The `agentAsTool()` function wraps a Cogitator agent as a tool that other agents can call. This enables hierarchical delegation -- a manager agent can delegate subtasks to specialist agents, each with their own models, instructions, and tool sets.
 
 ```typescript
-import { Cogitator, Agent, agentAsTool } from '@cogitator-ai/core';
+import { Cogitator, Agent, agentAsTool, webSearch, webScrape } from '@cogitator-ai/core';
 
 const cog = new Cogitator({
   llm: {
@@ -65,7 +65,9 @@ function agentAsTool(
 ): Tool<{ task: string }, AgentToolResult>;
 ```
 
-The returned tool has a single `task` parameter -- a string that becomes the input to the inner agent's `cog.run()` call.
+The returned tool has a single `task` parameter -- a string that becomes the input to the inner agent's `cog.run()` call. Each call is a separate run on a new thread: the inner agent sees only the task, not the parent's conversation, and keeps no memory between calls. The run inherits the parent call's abort signal and `userId`, so cancelling the parent run cancels the delegated one and thread ownership stays with the same user.
+
+The tool declares `sideEffects: ['external']`.
 
 ---
 
@@ -78,6 +80,7 @@ interface AgentAsToolOptions {
   timeout?: number;
   includeUsage?: boolean;
   includeToolCalls?: boolean;
+  onApproval?: RunOptions['onApproval'];
 }
 ```
 
@@ -88,6 +91,24 @@ interface AgentAsToolOptions {
 | `timeout`          | `number`  | No       | Override timeout for the inner agent run (ms)       |
 | `includeUsage`     | `boolean` | No       | Include token usage and cost in the result          |
 | `includeToolCalls` | `boolean` | No       | Include the list of tool calls the inner agent made |
+| `onApproval`       | function  | No       | Decides inner tool calls that need approval         |
+
+### Approvals Inside Delegated Runs
+
+A delegated run cannot pause and wait for a person. Calls of the inner agent that need [approval](/docs/tools/approvals) are therefore declined by default (the inner agent is told "no one can approve calls of a delegated agent" and answers accordingly). Pass `onApproval` to decide them yourself:
+
+```typescript
+agentAsTool(cog, billingAgent, {
+  name: 'billing',
+  description: 'Handle refunds and invoices.',
+  onApproval: async (call) =>
+    call.toolName === 'refund' && Number(call.arguments.amount) <= 50
+      ? { approved: true }
+      : { approved: false, reason: 'refunds over $50 need a manager' },
+});
+```
+
+Do not return `'pause'` from this `onApproval`: the inner run would pause, and the tool reports `success: true` with an empty `output` while the paused run is dropped. To let a person approve delegated work, use [handoffs](/docs/core/agents#handoffs) instead: a handed-over run can pause and resume.
 
 ### Writing Good Descriptions
 
@@ -245,7 +266,7 @@ The parent agent receives:
 {
   "output": "",
   "success": false,
-  "error": "Agent run timed out after 30000ms"
+  "error": "Run timed out after 30000ms"
 }
 ```
 
@@ -257,7 +278,7 @@ The parent agent sees `success: false` and can decide to retry with simpler inst
 
 The timeout resolution follows this priority:
 
-1. `timeout` in `AgentAsToolOptions` (if set)
+1. `timeout` in `AgentAsToolOptions` (if set) -- also used as the tool's own timeout
 2. `timeout` in the inner agent's config
 3. Cogitator runtime's `limits.defaultTimeout`, then 120 seconds
 

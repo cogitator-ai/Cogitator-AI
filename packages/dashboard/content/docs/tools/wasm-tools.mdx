@@ -13,11 +13,13 @@ The `@cogitator-ai/wasm-tools` package provides tools that execute inside WebAss
 - **No network or filesystem access** -- no hosts are allowed and no directories are pre-opened
 
 ```typescript
+import { Agent } from '@cogitator-ai/core';
 import { createCalcTool, createHashTool, createCsvTool } from '@cogitator-ai/wasm-tools';
 
 const agent = new Agent({
   name: 'data-processor',
   model: 'openai/gpt-6.1-sol',
+  instructions: 'You process and verify data.',
   tools: [createCalcTool(), createHashTool(), createCsvTool()],
 });
 ```
@@ -28,28 +30,30 @@ const agent = new Agent({
 
 The package ships with **14 ready-to-use** WASM tool factories. Each returns a `Tool` instance backed by a compiled `.wasm` module.
 
-| Factory                   | Tool Name      | Description                                         |
-| ------------------------- | -------------- | --------------------------------------------------- |
-| `createCalcTool()`        | `calculate`    | Evaluate math expressions (+, -, \*, /, %, parens)  |
-| `createJsonTool()`        | `process_json` | Parse JSON and query with JSONPath                  |
-| `createHashTool()`        | `hash_text`    | Cryptographic hashes (SHA-256, SHA-1, MD5)          |
-| `createBase64Tool()`      | `base64`       | Encode/decode Base64 (standard and URL-safe)        |
-| `createSlugTool()`        | `slug`         | Convert text to URL-safe slugs with transliteration |
-| `createValidationTool()`  | `validate`     | Validate email, URL, UUID, IPv4, IPv6               |
-| `createDiffTool()`        | `diff`         | Generate diffs between texts (Myers algorithm)      |
-| `createRegexTool()`       | `regex`        | Regex operations with ReDoS protection              |
-| `createCsvTool()`         | `csv`          | Parse/generate CSV data (RFC 4180)                  |
-| `createMarkdownTool()`    | `markdown`     | Convert Markdown to HTML (GFM subset)               |
-| `createXmlTool()`         | `xml`          | Parse XML to JSON with XPath-like queries           |
-| `createDatetimeTool()`    | `datetime`     | Parse, format, manipulate dates (UTC + offsets)     |
-| `createCompressionTool()` | `compression`  | Gzip compress/decompress data                       |
-| `createSigningTool()`     | `signing`      | Ed25519 keypair generation, sign, and verify        |
+| Factory                   | Tool name      | Parameters                                                                                                                                                  | Description                                         |
+| ------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `createCalcTool()`        | `calculate`    | `expression`                                                                                                                                                | Evaluate math expressions (+, -, \*, /, %, parens)  |
+| `createJsonTool()`        | `process_json` | `json`, `query?` (JSONPath)                                                                                                                                 | Parse JSON and query with JSONPath                  |
+| `createHashTool()`        | `hash_text`    | `text`, `algorithm` (`sha256` \| `sha1` \| `md5`)                                                                                                           | Cryptographic hashes                                |
+| `createBase64Tool()`      | `base64`       | `text`, `operation` (`encode` \| `decode`), `urlSafe?`                                                                                                      | Encode/decode Base64 (standard and URL-safe)        |
+| `createSlugTool()`        | `slug`         | `text`, `separator?` (`-`), `lowercase?` (true), `maxLength?`                                                                                               | Convert text to URL-safe slugs with transliteration |
+| `createValidationTool()`  | `validate`     | `value`, `type` (`email` \| `url` \| `uuid` \| `ipv4` \| `ipv6`)                                                                                            | Validate common formats                             |
+| `createDiffTool()`        | `diff`         | `original`, `modified`, `format?` (`unified` \| `inline` \| `json`), `context?` (3)                                                                         | Generate diffs between texts (Myers algorithm)      |
+| `createRegexTool()`       | `regex`        | `text`, `pattern`, `operation` (`match` \| `matchAll` \| `test` \| `replace` \| `split`), `flags?`, `replacement?`, `limit?`                                | Regex operations with ReDoS protection              |
+| `createCsvTool()`         | `csv`          | `data` (string or rows), `operation` (`parse` \| `stringify`), `delimiter?`, `quote?`, `headers?`                                                           | Parse/generate CSV data (RFC 4180)                  |
+| `createMarkdownTool()`    | `markdown`     | `markdown`, `options?: { sanitize?, gfm? }`                                                                                                                 | Convert Markdown to HTML (GFM subset)               |
+| `createXmlTool()`         | `xml`          | `xml`, `query?` (XPath-like)                                                                                                                                | Parse XML to JSON with XPath-like queries           |
+| `createDatetimeTool()`    | `datetime`     | `operation` (`parse` \| `format` \| `add` \| `subtract` \| `diff` \| `now`), `date?`, `format?`, `timezone?`, `amount?`, `unit?`, `endDate?`                | Parse, format, manipulate dates (UTC + offsets)     |
+| `createCompressionTool()` | `compression`  | `data`, `operation` (`compress` \| `decompress`), `inputEncoding?`, `outputEncoding?`, `level?` (0-9, 6)                                                    | Gzip compress/decompress data                       |
+| `createSigningTool()`     | `signing`      | `operation` (`generateKeypair` \| `sign` \| `verify`), `algorithm` (`ed25519`), `message?`, `privateKey?`, `publicKey?`, `signature?`, `encoding?`, `seed?` | Ed25519 keypair generation, sign, and verify        |
 
-Every factory accepts an optional `{ timeout }` config:
+Every factory accepts an optional `{ timeout }` in milliseconds — 5000 by default, 10000 for `compression` and `signing`:
 
 ```typescript
 const calc = createCalcTool({ timeout: 10000 });
 ```
+
+The Zod schemas are exported too (`calcToolSchema`, `jsonToolSchema`, …, `signingToolSchema`, with matching `CalcToolInput`-style types), as is `getWasmPath(name)`, the path of a bundled module (`getWasmPath('calc')`). `calcToolConfig`, `jsonToolConfig`, `hashToolConfig` and `base64ToolConfig` are ready-made `SandboxConfig`s for those four modules.
 
 ### Executing Tools
 
@@ -135,9 +139,18 @@ const tool = await manager.load('./plugins/calc.wasm');
 const agent = new Agent({
   name: 'dynamic-agent',
   model: 'openai/gpt-6.1-sol',
+  instructions: 'Use the loaded plugins.',
   tools: manager.getTools(),
 });
 ```
+
+| Option       | Default | Description                                    |
+| ------------ | ------- | ---------------------------------------------- |
+| `debounceMs` | `100`   | Debounce for file change events while watching |
+| `useWasi`    | `false` | Instantiate plugins with WASI                  |
+| `timeout`    | `30000` | Per-call timeout in ms                         |
+
+A manager tool is named after the file (`calc.wasm` → `calc`), described as `WASM tool: calc`, and takes a free-form object: whatever the model passes is JSON-serialized and handed to the module's `run` export, and the output is parsed as JSON when possible. Loading a second file with the same base name replaces the first. Use `defineWasmTool()` when the model needs a real schema.
 
 ### File Watching
 
@@ -152,9 +165,9 @@ await manager.watch('./plugins/*.wasm', {
 });
 ```
 
-When a `.wasm` file is modified, the manager closes the old plugin instance and loads the new one -- zero-downtime hot reload for agent tools.
+When a `.wasm` file is modified, the manager closes the old plugin instance and loads the new one; deleting the file unloads it. Agents keep the same tool object, so a reload is picked up on the next call. A manager watches one pattern at a time — `watch()` throws if it is already watching. `WasmLoader` and `FileWatcher`, the building blocks of the manager, are exported as well.
 
-Manager tools call the module's `run` export. Plugins run in worker threads: when a call exceeds `timeout` (default 30 s) or its `context.signal` aborts, the call rejects and the plugin is replaced with a fresh instance.
+Plugins run in worker threads: when a call exceeds `timeout` (default 30 s) or its `context.signal` aborts, the call rejects and the plugin is replaced with a fresh instance.
 
 ### Manager API
 
@@ -167,6 +180,8 @@ const specific = manager.getTool('calc');
 
 const mod = manager.getModule('calc');
 // { name, path, plugin, tool, loadedAt }
+
+const modules = manager.getModules();
 
 await manager.close();
 ```

@@ -3,6 +3,8 @@ title: Types Reference
 description: Key TypeScript type definitions from @cogitator-ai/types.
 ---
 
+`@cogitator-ai/types` holds the shared interfaces of every package. Most of the types below are also re-exported from `@cogitator-ai/core`. Comments mark defaults and behaviour; the definitions are trimmed of doc comments, not of fields.
+
 ## Agent Types
 
 ```typescript
@@ -10,40 +12,85 @@ interface AgentConfig {
   id?: string;
   name: string;
   description?: string;
-  provider?: string;
-  model: string;
+  provider?: string; // explicit provider, e.g. 'openai' for an OpenAI-compatible server
+  model?: string; // 'provider/model'; falls back to llm.defaultModel of the Cogitator
   instructions: string;
   tools?: Tool[];
   skills?: Skill[];
-  temperature?: number;
+  temperature?: number; // Agent default: 0.7
   topP?: number;
   maxTokens?: number;
   stopSequences?: string[];
   responseFormat?: ResponseFormat;
-  maxIterations?: number;
-  timeout?: number;
+  reasoning?: ReasoningConfig;
+  handoffs?: Array<Agent | Handoff>; // each becomes a transfer_to_<name> tool
+  maxIterations?: number; // Agent default: 10
+  timeout?: number; // ms; run default: limits.defaultTimeout, else 120000
+}
+
+interface Handoff {
+  agent: Agent;
+  toolName?: string; // instead of transfer_to_<agent name>
+  description?: string; // defaults to the agent's description
 }
 
 type ResponseFormat =
-  | { type: 'text' }
-  | { type: 'json' }
-  | { type: 'json_schema'; schema: ZodType };
+  { type: 'text' } | { type: 'json' } | { type: 'json_schema'; schema: ZodType };
 
+interface Agent {
+  readonly id: string;
+  readonly name: string;
+  readonly config: AgentConfig;
+  readonly model: string | undefined;
+  readonly instructions: string;
+  readonly tools: Tool[];
+  clone(overrides: Partial<AgentConfig>): Agent;
+  serialize(): AgentSnapshot;
+}
+
+interface DeserializeOptions {
+  toolRegistry?: { get(name: string): Tool | undefined };
+  tools?: Tool[];
+  overrides?: Partial<AgentConfig>;
+}
+```
+
+`AgentSnapshot` (`{ version, id, name, config: SerializedAgentConfig, metadata? }`) is the JSON form `agent.serialize()` produces; tools are kept by name.
+
+## Run Types
+
+```typescript
 interface RunOptions {
   input: string;
-  images?: ImageInput[];
-  audio?: AudioInput[];
+  images?: ImageInput[]; // URLs, base64 or { data, mimeType }
+  audio?: AudioInput[]; // transcribed and added to the input
   context?: Record<string, unknown>;
   threadId?: string;
   timeout?: number;
-  stream?: boolean;
+  signal?: AbortSignal;
+  stream?: boolean; // streams only together with onToken
   onToken?: (token: string) => void;
+  onReasoning?: (delta: string) => void;
+  onHandoff?: (handoff: HandoffEvent) => void;
+  reasoning?: ReasoningConfig; // overrides the agent's
+  onApproval?: (
+    request: ToolApprovalRequest
+  ) => ToolApprovalDecision | 'pause' | Promise<ToolApprovalDecision | 'pause'>;
   onToolCall?: (call: ToolCall) => void;
   onToolResult?: (result: ToolResult) => void;
-  useMemory?: boolean;
-  loadHistory?: boolean;
-  saveHistory?: boolean;
-  parallelToolCalls?: boolean;
+  useMemory?: boolean; // default: true when an adapter is configured
+  loadHistory?: boolean; // default: true
+  saveHistory?: boolean; // default: true
+  onRunStart?: (data: { runId: string; agentId: string; input: string; threadId: string }) => void;
+  onRunComplete?: (result: RunResult) => void;
+  onRunError?: (error: Error, runId: string) => void;
+  onSpan?: (span: Span) => void;
+  onMemoryError?: (error: Error, operation: 'save' | 'load') => void;
+  parallelToolCalls?: boolean; // default: false
+  userId?: string; // owns new threads, scopes facts, reaches tools as context.userId
+  threadAccess?: 'owner' | 'shared'; // default: 'owner'
+  channelType?: string;
+  channelId?: string;
 }
 
 interface RunResult {
@@ -59,11 +106,61 @@ interface RunResult {
     readonly totalTokens: number;
     readonly cost: number;
     readonly duration: number;
+    readonly reasoningTokens?: number;
+    readonly cachedInputTokens?: number;
+    readonly cacheWriteTokens?: number;
   };
+  readonly reasoning?: string;
+  readonly prompt?: RunPrompt; // the instruction version or A/B variant used
+  readonly handoffs?: readonly HandoffEvent[];
+  readonly finalAgent?: string;
+  readonly status?: 'completed' | 'paused';
+  readonly pendingApprovals?: readonly ToolApprovalRequest[];
+  readonly checkpoint?: RunCheckpoint;
   readonly toolCalls: readonly ToolCall[];
   readonly messages: readonly Message[];
+  readonly trace: { readonly traceId: string; readonly spans: readonly Span[] };
+  readonly reflections?: readonly Reflection[];
+  readonly reflectionSummary?: ReflectionSummary;
+}
+
+interface HandoffEvent {
+  from: string;
+  to: string;
+  reason?: string;
 }
 ```
+
+### Approvals
+
+```typescript
+interface ToolApprovalRequest {
+  toolCallId: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+  description: string;
+  sideEffects?: string[];
+}
+
+type ToolApprovalDecision = { approved: true } | { approved: false; reason?: string };
+
+interface ResumeOptions extends Omit<
+  RunOptions,
+  'input' | 'images' | 'audio' | 'context' | 'threadId' | 'threadAccess'
+> {
+  userId?: string;
+  decisions?: Record<string, ToolApprovalDecision>; // by tool call id
+  defaultDecision?: ToolApprovalDecision; // for every call decisions leaves out
+}
+
+interface RunCheckpointStore {
+  save(checkpoint: RunCheckpoint): Promise<void>;
+  load(threadId: string): Promise<RunCheckpoint | null>;
+  delete(threadId: string): Promise<void>;
+}
+```
+
+`RunCheckpoint` is the plain-JSON state of a paused run (`version: 1`, `runId`, `threadId`, `model`, `messages`, the paused `turn` with its decisions, usage so far, …) that `cogitator.resume()` continues from.
 
 ## Tool Types
 
@@ -94,6 +191,22 @@ interface ToolConfig<TParams = unknown, TResult = unknown> {
   timeout?: number;
   sandbox?: SandboxConfig;
 }
+
+type ApprovalCheck = (params: Record<string, unknown>) => boolean;
+
+type ToolCategory =
+  | 'math'
+  | 'text'
+  | 'file'
+  | 'network'
+  | 'system'
+  | 'utility'
+  | 'web'
+  | 'database'
+  | 'communication'
+  | 'development';
+
+type SideEffectType = 'filesystem' | 'network' | 'database' | 'process' | 'external';
 
 interface ToolContext {
   agentId: string;
@@ -136,12 +249,25 @@ interface ToolSchema {
 }
 ```
 
+The tool cache types (`WithCacheOptions`, `CachedTool`, `CacheStats`, `ToolCacheStorage`, `RedisClientLike`, `DurationString`) are described on [Tool Caching](/docs/tools/tool-caching).
+
 ## Message Types
 
 ```typescript
 type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
 
 type MessageContent = string | ContentPart[];
+
+type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }
+  | {
+      type: 'image_base64';
+      image_base64: {
+        data: string;
+        media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+      };
+    };
 
 interface Message {
   role: MessageRole;
@@ -164,6 +290,8 @@ interface ToolResultMessage extends Message {
 }
 ```
 
+The three content parts are exported as `TextContentPart`, `ImageUrlContentPart` and `ImageBase64ContentPart`.
+
 ## LLM Types
 
 ```typescript
@@ -180,26 +308,29 @@ type LLMProvider =
   | 'together'
   | 'deepseek';
 
-interface LLMConfig {
-  provider: LLMProvider;
-  model: string;
-  temperature?: number;
-  topP?: number;
-  maxTokens?: number;
-  stopSequences?: string[];
+type LLMBackendProvider = LLMProvider | (string & {}); // or the name of your own backend / plugin
+
+interface LLMBackend {
+  readonly provider: LLMBackendProvider;
+  chat(request: ChatRequest): Promise<ChatResponse>;
+  chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk>;
+  complete?(request: Omit<ChatRequest, 'model'> & { model?: string }): Promise<ChatResponse>;
 }
 
 interface ChatRequest {
   model: string;
   messages: Message[];
   tools?: ToolSchema[];
-  toolChoice?: ToolChoice;
+  toolChoice?: ToolChoice; // 'auto' | 'none' | 'required' | { type: 'function'; function: { name } }
   temperature?: number;
   topP?: number;
   maxTokens?: number;
   stop?: string[];
   stream?: boolean;
-  responseFormat?: LLMResponseFormat;
+  responseFormat?: LLMResponseFormat; // text | json_object | json_schema
+  reasoning?: ReasoningConfig;
+  cache?: PromptCacheConfig | false;
+  signal?: AbortSignal;
 }
 
 interface ChatResponse {
@@ -208,6 +339,7 @@ interface ChatResponse {
   toolCalls?: ToolCall[];
   finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
   usage: ChatUsage;
+  reasoning?: string; // readable reasoning summary, when returned
 }
 
 interface ChatUsage {
@@ -215,6 +347,7 @@ interface ChatUsage {
   outputTokens: number;
   totalTokens: number;
   cachedInputTokens?: number; // served from the prompt cache; already counted in inputTokens
+  cacheWriteTokens?: number; // written to the prompt cache; already counted in inputTokens
   reasoningTokens?: number; // hidden reasoning tokens; already counted in outputTokens
 }
 
@@ -222,25 +355,82 @@ interface ChatStreamChunk {
   id: string;
   delta: {
     content?: string;
+    reasoning?: string;
     toolCalls?: Partial<ToolCall>[];
   };
   finishReason?: 'stop' | 'tool_calls' | 'length' | 'error';
   usage?: ChatUsage; // typically only on the final chunk
 }
 
-interface LLMBackend {
-  readonly provider: LLMProvider;
-  chat(request: ChatRequest): Promise<ChatResponse>;
-  chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk>;
+interface ReasoningConfig {
+  effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  budgetTokens?: number; // Gemini 2.5 thinkingBudget, Claude before 4.6
+  summary?: boolean; // ask for a readable summary
 }
 
+interface LLMRetryConfig {
+  maxRetries?: number; // default 2
+  baseDelay?: number; // default 1000 ms, doubled per retry
+  maxDelay?: number; // default 30000 ms
+  maxRetryAfter?: number; // default 60000 ms
+  onRetry?: (event: LLMRetryEvent) => void;
+}
+
+interface PromptCacheConfig {
+  ttl?: '5m' | '1h'; // Anthropic cache lifetime, default 5m
+}
+
+interface ModelRoute {
+  backend: LLMBackend;
+  model: string;
+}
+
+interface LLMConfig {
+  provider: LLMProvider;
+  model: string;
+  temperature?: number;
+  topP?: number;
+  maxTokens?: number;
+  stopSequences?: string[];
+}
+```
+
+### Provider Configuration
+
+```typescript
+type LLMProvidersConfig = { [K in LLMProvider]?: ProviderConfigMap[K] };
+
+interface OllamaProviderConfig {
+  baseUrl: string;
+  apiKey?: string;
+}
 interface OpenAIProviderConfig {
   apiKey: string;
   baseUrl?: string;
   api?: OpenAIWireApi; // default: 'responses' for api.openai.com, 'chat-completions' for other base URLs
 }
-
 type OpenAIWireApi = 'responses' | 'chat-completions';
+interface AnthropicProviderConfig {
+  apiKey: string;
+}
+interface GoogleProviderConfig {
+  apiKey: string;
+}
+interface AzureProviderConfig {
+  endpoint: string;
+  apiKey: string;
+  apiVersion?: string;
+  deployment?: string;
+}
+interface BedrockProviderConfig {
+  region?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+}
+interface VLLMProviderConfig {
+  baseUrl: string;
+}
+// MistralProviderConfig, GroqProviderConfig, TogetherProviderConfig, DeepSeekProviderConfig: { apiKey: string }
 ```
 
 ## Configuration Types
@@ -248,10 +438,16 @@ type OpenAIWireApi = 'responses' | 'chat-completions';
 ```typescript
 interface CogitatorConfig {
   llm?: {
-    defaultProvider?: LLMProvider;
+    defaultProvider?: LLMProvider; // for model strings without a known provider prefix; default 'ollama'
     defaultModel?: string;
     providers?: LLMProvidersConfig;
+    backends?: Record<string, LLMBackend>; // your own backends by name; a built-in name replaces it
+    plugins?: Record<string, unknown>; // config for registerLLMBackend plugins, by provider
+    retry?: LLMRetryConfig | false; // on by default
+    promptCache?: PromptCacheConfig | false; // on by default
   };
+  runCheckpoints?: RunCheckpointStore; // where paused runs wait
+  prompts?: PromptsConfig; // instruction versions and A/B tests
   limits?: {
     maxConcurrentRuns?: number;
     defaultTimeout?: number;
@@ -260,18 +456,41 @@ interface CogitatorConfig {
   memory?: MemoryConfig;
   sandbox?: SandboxManagerConfig;
   reflection?: ReflectionConfig;
-  guardrails?: GuardrailConfig;
+  guardrails?: Partial<GuardrailConfig>; // on unless enabled: false
   costRouting?: CostRoutingConfig;
   security?: {
-    promptInjection?: PromptInjectionConfig;
+    promptInjection?: Partial<PromptInjectionConfig>;
+    pii?: PiiConfig;
   };
   context?: ContextManagerConfig;
   logging?: LoggingConfig;
   deploy?: DeployConfig;
 }
 
+interface PromptsConfig {
+  versions?: InstructionVersionStore; // default: in process memory
+  abTests?: ABTestStore; // default: in process memory
+  score?: (result: RunResult) => number | Promise<number>; // default: 1
+  autoDeployWinner?: boolean;
+}
+
+interface PiiConfig {
+  mode?: 'mask' | 'redact' | 'block';
+  detect?: PiiType[]; // default: all built-in kinds
+  custom?: Array<{ type: string; pattern: RegExp }>;
+  onDetect?: (counts: Record<string, number>) => void;
+}
+```
+
+## Memory Types
+
+```typescript
+type MemoryResult<T> = { success: true; data: T } | { success: false; error: string };
+
+type MemoryProvider = 'memory' | 'redis' | 'postgres' | 'sqlite' | 'mongodb' | 'qdrant';
+
 interface MemoryConfig {
-  adapter?: 'memory' | 'redis' | 'postgres' | 'sqlite' | 'mongodb' | 'qdrant';
+  adapter?: MemoryProvider;
   inMemory?: Omit<InMemoryAdapterConfig, 'provider'>;
   redis?: Omit<RedisAdapterConfig, 'provider'>;
   postgres?: Omit<PostgresAdapterConfig, 'provider'>;
@@ -285,13 +504,21 @@ interface MemoryConfig {
 type EmbeddingServiceConfig = OpenAIEmbeddingConfig | OllamaEmbeddingConfig | GoogleEmbeddingConfig;
 ```
 
-## Error Types
+Every adapter method returns a `MemoryResult`; `unwrap(result)` from `@cogitator-ai/memory` returns `data` or throws. `MemoryAdapter`, `Thread`, `MemoryEntry`, `Fact`, `Embedding` and the search and graph types are listed on the [Memory API](/docs/api-reference/memory) page.
+
+## Errors
 
 ```typescript
 class CogitatorError extends Error {
-  code: ErrorCode;
-  statusCode: number;
-  details?: ErrorDetails;
+  readonly code: ErrorCode;
+  readonly statusCode: number; // default: ERROR_STATUS_CODES[code]
+  readonly details?: ErrorDetails;
+  readonly retryable: boolean; // default: false
+  readonly retryAfter?: number; // ms
+  constructor(options: CogitatorErrorOptions); // { message, code, statusCode?, details?, cause?, retryable?, retryAfter? }
+  toJSON(): Record<string, unknown>;
+  static isCogitatorError(error: unknown): error is CogitatorError;
+  static wrap(error: unknown, code?: ErrorCode): CogitatorError; // default code: INTERNAL_ERROR
 }
 
 enum ErrorCode {
@@ -313,15 +540,19 @@ enum ErrorCode {
   MEMORY_UNAVAILABLE = 'MEMORY_UNAVAILABLE',
   MEMORY_WRITE_FAILED = 'MEMORY_WRITE_FAILED',
   MEMORY_READ_FAILED = 'MEMORY_READ_FAILED',
+  THREAD_ACCESS_DENIED = 'THREAD_ACCESS_DENIED',
   AGENT_NOT_FOUND = 'AGENT_NOT_FOUND',
   AGENT_ALREADY_RUNNING = 'AGENT_ALREADY_RUNNING',
   AGENT_MAX_ITERATIONS = 'AGENT_MAX_ITERATIONS',
+  RUN_TOKEN_LIMIT_EXCEEDED = 'RUN_TOKEN_LIMIT_EXCEEDED',
+  RUN_NOT_PAUSED = 'RUN_NOT_PAUSED',
   WORKFLOW_NOT_FOUND = 'WORKFLOW_NOT_FOUND',
   WORKFLOW_STEP_FAILED = 'WORKFLOW_STEP_FAILED',
   WORKFLOW_CYCLE_DETECTED = 'WORKFLOW_CYCLE_DETECTED',
   SWARM_NO_WORKERS = 'SWARM_NO_WORKERS',
   SWARM_CONSENSUS_FAILED = 'SWARM_CONSENSUS_FAILED',
   PROMPT_INJECTION_DETECTED = 'PROMPT_INJECTION_DETECTED',
+  PII_DETECTED = 'PII_DETECTED',
   VALIDATION_ERROR = 'VALIDATION_ERROR',
   CONFIGURATION_ERROR = 'CONFIGURATION_ERROR',
   INTERNAL_ERROR = 'INTERNAL_ERROR',
@@ -329,3 +560,19 @@ enum ErrorCode {
   CIRCUIT_OPEN = 'CIRCUIT_OPEN',
 }
 ```
+
+`ERROR_STATUS_CODES` maps each code to an HTTP status; `isRetryableError(error)` and `getRetryDelay(error, defaultDelay = 1000)` read `retryable` / `retryAfter` (and treat plain errors mentioning timeouts, connection resets, rate limits, 429 or 503 as retryable).
+
+## Other Modules
+
+The package also defines the types of the other packages, among them:
+
+| Module                                                           | Main types                                                                                                                                                                                                    |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workflows                                                        | `Workflow`, `WorkflowState`, `WorkflowNode`, `NodeContext`, `NodeResult`, `WorkflowResult`, `CheckpointStore`, `ApprovalStore`, `TimerStore`, `RunStore` — see [Workflows API](/docs/api-reference/workflows) |
+| Swarms                                                           | `SwarmConfig`, `SwarmRunOptions`, `StrategyResult`, `MessageBus`, `Blackboard`, `SwarmEvent` — see [Swarms API](/docs/api-reference/swarms)                                                                   |
+| Sandbox                                                          | `SandboxConfig`, `SandboxManagerConfig`, `SandboxExecutionRequest`, `SandboxExecutionResult`                                                                                                                  |
+| Reflection, learning, time travel                                | `ReflectionConfig`, `Insight`, `ExecutionTrace`, `ToTConfig`, `ExecutionCheckpoint`, `TraceDiff`                                                                                                              |
+| Guardrails, cost routing, security                               | `GuardrailConfig`, `Constitution`, `CostRoutingConfig`, `BudgetConfig`, `PromptInjectionConfig`, `PiiType`                                                                                                    |
+| Prompt optimization                                              | `InstructionVersion`, `InstructionVersionStore`, `ABTest`, `ABTestStore`                                                                                                                                      |
+| Knowledge graphs, RAG, voice, channels, sessions, skills, deploy | `GraphAdapter`, `RAGPipelineConfig`, `Channel`, `ChannelMessage`, `Session`, `Skill`, `DeployConfig`, …                                                                                                       |

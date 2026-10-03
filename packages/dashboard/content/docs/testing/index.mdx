@@ -1,115 +1,148 @@
 ---
 title: Testing Overview
-description: Testing strategies for Cogitator agents, workflows, and swarms.
+description: Testing strategies for Cogitator tools, agents, workflows and swarms without calling a real LLM.
 ---
 
-## Why Test AI Agents?
+## What to Test
 
-AI agents are non-deterministic by nature — the same input can produce different outputs. Testing focuses on:
+Model output is non-deterministic, but almost everything around it is not. Test the deterministic parts directly and script the model:
 
-- **Behavioral correctness** — does the agent call the right tools?
-- **Tool execution** — do tools produce expected results?
-- **Workflow logic** — do DAG nodes execute in the right order?
-- **Swarm coordination** — do agents communicate correctly?
-- **Error handling** — does the system recover gracefully?
+- **Tools** — call `execute()` with parameters and a `ToolContext`
+- **Agent behaviour** — script the LLM with a mock backend and assert on tool calls, output and the requests sent
+- **Workflow logic** — run DAGs of function nodes; no LLM needed
+- **Error handling** — make the mock throw and check how the run fails or recovers
+- **Real providers** — a smaller end-to-end suite against Google, OpenAI or Ollama
 
-## Testing Strategy
+## Unit Testing Tools
 
-### Unit Tests
-
-Test individual components in isolation:
+`tool()` returns a plain object, so its `execute` is directly callable. It takes the validated parameters and a `ToolContext`:
 
 ```typescript
 import { tool } from '@cogitator-ai/core';
+import type { ToolContext } from '@cogitator-ai/types';
 import { z } from 'zod';
 import { describe, it, expect } from 'vitest';
 
-const calculator = tool({
-  name: 'calculator',
-  description: 'Evaluate math expressions',
-  parameters: z.object({ expression: z.string() }),
-  execute: async ({ expression }) => {
-    return { result: eval(expression) };
-  },
+const add = tool({
+  name: 'add',
+  description: 'Add two numbers',
+  parameters: z.object({ a: z.number(), b: z.number() }),
+  execute: async ({ a, b }) => ({ sum: a + b }),
 });
 
-describe('calculator tool', () => {
-  it('evaluates simple expressions', async () => {
-    const result = await calculator.execute({ expression: '2 + 2' });
-    expect(result.result).toBe(4);
+const context: ToolContext = {
+  agentId: 'agent-test',
+  runId: 'run-test',
+  signal: new AbortController().signal,
+};
+
+describe('add', () => {
+  it('adds', async () => {
+    await expect(add.execute({ a: 2, b: 2 }, context)).resolves.toEqual({ sum: 4 });
+  });
+
+  it('rejects bad arguments the way the runtime does', () => {
+    expect(add.parameters.safeParse({ a: '2' }).success).toBe(false);
   });
 });
 ```
 
-### Integration Tests with MockLLMBackend
+`execute` does not validate on its own — the runtime parses the model's arguments with `parameters` first and answers the model with `Invalid arguments: …` when they do not match. The built-in tools work the same way (`calculator.execute({ expression: '2 + 2' }, context)`).
 
-Use the mock backend to test agent behavior without real LLM calls:
+## Agent Tests with a Mock Backend
+
+Give the `Cogitator` a scripted backend in `llm.backends` and point the agent's model at it. [`@cogitator-ai/test-utils`](/docs/testing/test-utils) ships one:
 
 ```typescript
 import { Cogitator, Agent } from '@cogitator-ai/core';
-import { MockLLMBackend } from '@cogitator-ai/core/testing';
+import { MockLLMBackend, createToolCall } from '@cogitator-ai/test-utils';
 
-const mock = new MockLLMBackend({
-  responses: [
-    {
-      text: 'I will check the weather.',
-      toolCalls: [{ name: 'get_weather', arguments: { city: 'Tokyo' } }],
-    },
-    { text: 'The weather in Tokyo is sunny and 22°C.' },
-  ],
-});
+const mock = new MockLLMBackend().setResponses([
+  { toolCalls: [createToolCall('add', { a: 2, b: 3 })] },
+  { content: 'The answer is 5.' },
+]);
 
-const cogitator = new Cogitator({
-  llm: { defaultProvider: 'mock', providers: { mock: { backend: mock } } },
-});
-
+const cog = new Cogitator({ llm: { backends: { mock } } });
 const agent = new Agent({
-  name: 'test-agent',
-  instructions: 'You are a weather assistant.',
-  tools: [weatherTool],
+  name: 'math',
+  model: 'mock/test-model',
+  instructions: 'Use the add tool for arithmetic.',
+  tools: [add],
 });
 
-const result = await cogitator.run(agent, 'What is the weather in Tokyo?');
-expect(result.text).toContain('Tokyo');
-expect(mock.calls).toHaveLength(2);
+const result = await cog.run(agent, { input: 'What is 2 + 3?' });
+
+expect(result.output).toBe('The answer is 5.');
+expect(result.toolCalls[0]).toMatchObject({ name: 'add', arguments: { a: 2, b: 3 } });
+expect(mock.getCallCount()).toBe(2);
+
+await cog.close();
 ```
 
-### Workflow Tests
+The tool executes for real between the two scripted responses. For responses that depend on the request, implement `LLMBackend` yourself — see [Your Own Scripted Backend](/docs/testing/test-utils#your-own-scripted-backend).
 
-Test workflow execution with deterministic node outputs:
+A few things that matter in tests:
+
+- The runtime retries failed LLM calls (2 retries by default). Set `llm: { backends, retry: false }` when you script errors.
+- Streaming (`chatStream`) is used only when the run passes both `stream: true` and `onToken`.
+- Pass `threadId` to reuse a conversation; give the `Cogitator` a memory adapter (`cog.memory = new MockMemoryAdapter()`) to inspect what is saved.
+- Call `cog.close()` after each test to release memory adapters and sandboxes.
+
+## Workflow Tests
+
+Workflows built only from function nodes never touch the `Cogitator`, so the workflows package's own tests pass a stub (`{} as Cogitator`). Use a mock backend as above when the workflow contains `agentNode`s.
 
 ```typescript
 import { WorkflowBuilder, WorkflowExecutor, functionNode } from '@cogitator-ai/workflows';
+import type { Cogitator } from '@cogitator-ai/core';
 
 type PipelineState = { data?: string; processed?: boolean };
 
 const workflow = new WorkflowBuilder<PipelineState>('test-pipeline')
   .addNode(
     'fetch',
-    functionNode('fetch', async () => 'test', {
+    functionNode<PipelineState>('fetch', async () => 'test', {
       stateMapper: (data) => ({ data: data as string }),
     })
   )
   .addNode(
     'process',
-    functionNode('process', async () => true, {
+    functionNode<PipelineState>('process', async () => true, {
       stateMapper: (processed) => ({ processed: processed as boolean }),
     }),
     { after: ['fetch'] }
   )
   .build();
 
-const executor = new WorkflowExecutor(cogitator);
+const executor = new WorkflowExecutor({} as Cogitator);
 const result = await executor.execute(workflow);
 
-expect(result.state.processed).toBe(true);
-expect(result.state.data).toBe('test');
+expect(result.error).toBeUndefined();
+expect(result.state).toMatchObject({ data: 'test', processed: true });
+```
+
+A failing node does not reject `execute()`: the result carries it in `error`.
+
+## End-to-End Tests
+
+Unit tests live next to each package (`packages/<pkg>/src/__tests__/*.test.ts`); tests against real providers live in `packages/e2e/src/__tests__/<pkg>/*.e2e.ts` and need `GOOGLE_API_KEY`, `OPENAI_API_KEY` and/or a running Ollama. When a test uses Google, pass the key through `providers`:
+
+```typescript
+const cog = new Cogitator({
+  llm: {
+    defaultModel: 'google/gemini-3.5-flash-lite',
+    providers: { google: { apiKey: process.env.GOOGLE_API_KEY! } },
+  },
+});
 ```
 
 ## Running Tests
 
 ```bash
-pnpm test              # run all tests
-pnpm test --watch      # watch mode
-pnpm test --coverage   # with coverage report
+pnpm test                                             # unit tests of every package
+pnpm --filter @cogitator-ai/core test                 # one package
+pnpm --filter @cogitator-ai/e2e test                  # all e2e tests
+pnpm --filter @cogitator-ai/e2e test -- --run src/__tests__/core   # e2e tests of one package
 ```
+
+Packages use Vitest; `pnpm --filter <pkg> test:watch` (where defined) or `npx vitest` inside a package starts watch mode.

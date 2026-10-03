@@ -8,7 +8,7 @@ description: Cache tool results with TTL, LRU eviction, and semantic similarity 
 The `withCache()` function wraps any tool with a caching layer. Repeated calls with the same (or semantically similar) parameters return cached results instantly, saving API calls, database queries, and compute time.
 
 ```typescript
-import { withCache } from '@cogitator-ai/core';
+import { Agent, withCache, webSearch } from '@cogitator-ai/core';
 
 const cachedSearch = withCache(webSearch, {
   strategy: 'exact',
@@ -20,11 +20,14 @@ const cachedSearch = withCache(webSearch, {
 const agent = new Agent({
   name: 'assistant',
   model: 'openai/gpt-6.1-sol',
+  instructions: 'Answer questions using web search.',
   tools: [cachedSearch],
 });
 ```
 
-The cached tool is a drop-in replacement -- it has the same name, description, and parameters as the original, plus a `.cache` object for management.
+The cached tool is a drop-in replacement -- it has the same name, description, parameters and approval settings as the original, plus a `.cache` object for management. Only its `execute` changes, so caching works the same inside agent runs and when you call the tool directly.
+
+Whatever `execute` returns is cached, including error objects such as `{ error: 'API key not found…' }` that many built-in tools return instead of throwing. A thrown error is never cached. If a tool reports transient failures as data, wrap it so those results throw, or keep the TTL short.
 
 ---
 
@@ -64,10 +67,12 @@ interface WithCacheOptions {
 | `similarity`       | `number`                | `0.95`        | Cosine similarity threshold for semantic matching |
 | `keyPrefix`        | `string`                | `"toolcache"` | Key prefix for namespacing                        |
 | `embeddingService` | `EmbeddingService`      | --            | Required for semantic strategy                    |
-| `redisClient`      | `RedisClientLike`       | --            | Required for redis storage                        |
-| `onHit`            | `function`              | --            | Callback on cache hit                             |
-| `onMiss`           | `function`              | --            | Callback on cache miss                            |
-| `onEvict`          | `function`              | --            | Callback on entry eviction                        |
+| `redisClient`      | `RedisClientLike`       | --            | Required for redis storage (throws without it)    |
+| `onHit`            | `function`              | --            | Called on an exact or semantic hit                |
+| `onMiss`           | `function`              | --            | Called before the tool runs on a miss             |
+| `onEvict`          | `function`              | --            | Called when `cache.invalidate()` removes an entry |
+
+`maxSize` caps the number of entries per storage; when it is reached, the least recently used entry is dropped. Expired entries are dropped when they are read.
 
 ### Duration Strings
 
@@ -88,7 +93,7 @@ TTL values use human-readable duration strings:
 
 ### Exact Matching
 
-The default strategy. Generates a deterministic cache key from the tool name and serialized parameters. Two calls with identical parameters hit the same cache entry.
+Generates a deterministic cache key from the key prefix, the tool name and a SHA-256 hash of the parameters (serialized with sorted keys, so property order does not matter). Two calls with identical parameters hit the same cache entry.
 
 ```typescript
 const cachedHash = withCache(hash, {
@@ -101,7 +106,7 @@ const cachedHash = withCache(hash, {
 
 ### Semantic Matching
 
-Uses embedding vectors to find cached results for semantically similar inputs. Requires an `embeddingService` that converts parameter strings to vectors.
+Uses embedding vectors to find cached results for semantically similar inputs. Requires an `embeddingService` (any `EmbeddingService` from `@cogitator-ai/memory`, such as `OpenAIEmbeddingService`, or your own `{ embed, embedBatch, dimensions, model }`). Without one, `semantic` behaves like `exact`.
 
 ```typescript
 const cachedSearch = withCache(webSearch, {
@@ -116,6 +121,8 @@ const cachedSearch = withCache(webSearch, {
 
 With semantic matching, a query like `"TypeScript best practices"` might match a cached result for `"best practices for TypeScript development"` if their cosine similarity exceeds the threshold.
 
+The text that gets embedded is the first string among the parameters `query`, `q`, `search`, `text`, `input`, `prompt` and `question`, or the JSON of all parameters when there is none. A semantic hit therefore ignores the other parameters: `{ query: 'react hooks', maxResults: 20 }` can be answered from the entry for `{ query: 'React hooks', maxResults: 5 }`. Use `exact` when the other parameters change the result.
+
 The lookup flow:
 
 1. Check for an exact key match first
@@ -123,13 +130,15 @@ The lookup flow:
 3. If a similar entry is found, return its cached result
 4. Otherwise, execute the tool and cache the result with its embedding
 
+Embedding failures are ignored: the lookup falls back to running the tool, and the entry is stored without an embedding.
+
 ---
 
 ## Storage Backends
 
 ### In-Memory (LRU)
 
-The default storage. Entries are stored in a `Map` with LRU eviction -- when `maxSize` is reached, the least recently accessed entry is evicted.
+Entries are stored in a `Map` with LRU eviction -- when `maxSize` is reached, the least recently accessed entry is evicted. Each cached tool gets its own storage.
 
 ```typescript
 const cached = withCache(sqlQuery, {
@@ -147,20 +156,36 @@ In-memory storage is fast and requires no external dependencies, but entries are
 For persistent, shared caching across multiple processes or server instances. Uses Redis sorted sets for LRU tracking and key-value storage for entries.
 
 ```typescript
-import { createClient } from 'redis';
+import Redis from 'ioredis';
+import { withCache, webScrape, type RedisClientLike } from '@cogitator-ai/core';
 
-const redis = createClient({ url: 'redis://localhost:6379' });
-await redis.connect();
+const redis = new Redis('redis://localhost:6379');
+
+const redisClient: RedisClientLike = {
+  get: (key) => redis.get(key),
+  setex: (key, seconds, value) => redis.setex(key, seconds, value),
+  del: (...keys) => redis.del(...keys),
+  mget: (...keys) => redis.mget(...keys),
+  zadd: async (key, score, member) => Number(await redis.zadd(key, score, member)),
+  zrange: (key, start, stop) => redis.zrange(key, String(start), String(stop)),
+  zrem: (key, ...members) => redis.zrem(key, ...members),
+  incr: (key) => redis.incr(key),
+  decr: (key) => redis.decr(key),
+  exists: (...keys) => redis.exists(...keys),
+  scan: (cursor, { match, count = 100 }) => redis.scan(cursor, 'MATCH', match, 'COUNT', count),
+};
 
 const cached = withCache(webScrape, {
   strategy: 'exact',
   ttl: '1h',
   maxSize: 5000,
   storage: 'redis',
-  redisClient: redis,
+  redisClient,
   keyPrefix: 'myapp:tools',
 });
 ```
+
+Clients rarely match the interface method for method — `scan` takes `{ match, count }` here, and node-redis spells commands `setEx`/`zAdd` — so pass a small adapter like the one above. Entries are written with `SETEX`, so Redis expires them on its own as well.
 
 The `RedisClientLike` interface requires the methods used by Redis-backed cache storage:
 
@@ -191,11 +216,13 @@ import { createToolCacheStorage } from '@cogitator-ai/core';
 const memoryStorage = createToolCacheStorage('memory', { maxSize: 1000 });
 
 const redisStorage = createToolCacheStorage('redis', {
-  redisClient: redis,
+  redisClient,
   keyPrefix: 'cache:',
   maxSize: 5000,
 });
 ```
+
+`createToolCacheStorage(type, { maxSize?, redisClient?, keyPrefix? })` returns a `ToolCacheStorage` (`InMemoryToolCacheStorage` or `RedisToolCacheStorage`, both exported; `maxSize` defaults to 1000, the Redis key prefix to `toolcache:`). `withCache` creates its own storage from its options, so use these when you build caching around something other than a tool.
 
 ---
 
@@ -222,9 +249,11 @@ const stats = cachedSearch.cache.stats();
 await cachedSearch.cache.clear();
 ```
 
+`hits`, `misses` and `hitRate` count calls of this cached tool since it was created; `evictions` counts entries dropped to stay under `maxSize`.
+
 ### Invalidate
 
-Remove a specific entry by its parameters:
+Remove a specific entry by its parameters (it resolves to whether an entry existed, and calls `onEvict`):
 
 ```typescript
 const existed = await cachedSearch.cache.invalidate({
@@ -241,11 +270,11 @@ Pre-populate the cache with known parameter-result pairs:
 await cachedSearch.cache.warmup([
   {
     params: { query: 'React hooks guide', maxResults: 5 },
-    result: { query: 'React hooks guide', provider: 'tavily', results: [...] },
+    result: { query: 'React hooks guide', provider: 'tavily', results: [] },
   },
   {
     params: { query: 'Node.js streams', maxResults: 5 },
-    result: { query: 'Node.js streams', provider: 'tavily', results: [...] },
+    result: { query: 'Node.js streams', provider: 'tavily', results: [] },
   },
 ]);
 ```
@@ -271,7 +300,7 @@ Avoid caching tools that:
 
 ## Observability Callbacks
 
-Use the `onHit`, `onMiss`, and `onEvict` callbacks to integrate with your monitoring:
+Use the `onHit`, `onMiss`, and `onEvict` callbacks to integrate with your monitoring. `onEvict` fires only for `cache.invalidate()`; entries dropped to stay under `maxSize` show up in `cache.stats().evictions` instead, and expired entries are dropped silently.
 
 ```typescript
 const cached = withCache(webSearch, {
@@ -290,3 +319,12 @@ const cached = withCache(webSearch, {
   },
 });
 ```
+
+## Helpers
+
+| Export                                            | Description                                                    |
+| ------------------------------------------------- | -------------------------------------------------------------- |
+| `generateCacheKey({ toolName, params, prefix? })` | The exact-match key: `<prefix>:<toolName>:<16-hex-char hash>`  |
+| `paramsToQueryString(params)`                     | The text semantic matching embeds                              |
+| `cosineSimilarity(a, b)`                          | Similarity of two vectors                                      |
+| `parseDuration(duration)`                         | `DurationString` to milliseconds (throws on an invalid string) |
