@@ -32,7 +32,7 @@ export class VoicePipeline {
       return { transcript, response, audio: Buffer.alloc(0) };
     }
 
-    const outputAudio = await this.config.tts.synthesize(response);
+    const outputAudio = await this.config.tts.synthesize(response, this.config.ttsOptions);
     return { transcript, response, audio: outputAudio };
   }
 

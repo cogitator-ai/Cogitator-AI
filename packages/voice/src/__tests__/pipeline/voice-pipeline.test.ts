@@ -66,7 +66,16 @@ describe('VoicePipeline', () => {
 
       expect(stt.transcribe).toHaveBeenCalledWith(audio);
       expect(agent.run).toHaveBeenCalledWith('Hello', undefined);
-      expect(tts.synthesize).toHaveBeenCalledWith('Hi there!');
+      expect(tts.synthesize).toHaveBeenCalledWith('Hi there!', undefined);
+    });
+
+    it('passes ttsOptions to synthesize', async () => {
+      const ttsOptions = { format: 'pcm16' as const, voice: 'nova' };
+      const p = new VoicePipeline({ stt, tts, agent, ttsOptions });
+
+      await p.process(Buffer.from('test-audio'));
+
+      expect(tts.synthesize).toHaveBeenCalledWith('Hi there!', ttsOptions);
     });
 
     it('returns transcript, response, and audio', async () => {

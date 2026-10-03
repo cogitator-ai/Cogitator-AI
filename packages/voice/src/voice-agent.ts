@@ -56,6 +56,7 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
         tts: config.tts!,
         vad: config.vad,
         agent: config.agent,
+        ttsOptions: config.ttsOptions,
       });
     }
   }

@@ -51,6 +51,7 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
   private readonly tts: VoicePipelineConfig['tts'];
   private readonly vad: VoicePipelineConfig['vad'];
   private readonly agent: VoicePipelineConfig['agent'];
+  private readonly ttsOptions: VoicePipelineConfig['ttsOptions'];
   private state: SessionState = 'idle';
   private stream: STTStream | null = null;
   private turn = new AbortController();
@@ -65,6 +66,7 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
     this.tts = config.tts;
     this.vad = config.vad;
     this.agent = config.agent;
+    this.ttsOptions = config.ttsOptions;
   }
 
   get currentState(): SessionState {
@@ -277,7 +279,7 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
   }
 
   private async speak(content: string, signal: AbortSignal): Promise<boolean> {
-    const iterator = this.tts.streamSynthesize(content)[Symbol.asyncIterator]();
+    const iterator = this.tts.streamSynthesize(content, this.ttsOptions)[Symbol.asyncIterator]();
     try {
       for (;;) {
         const next = await abortable(iterator.next(), signal);

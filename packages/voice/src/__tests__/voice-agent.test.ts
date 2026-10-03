@@ -180,6 +180,27 @@ describe('VoiceAgent', () => {
     });
   });
 
+  describe('pipeline ttsOptions', () => {
+    it('forwards ttsOptions to the TTS provider', async () => {
+      const tts = createMockTTS();
+      agent = new VoiceAgent({
+        agent: createMockAgent(),
+        mode: 'pipeline',
+        stt: createMockSTT(),
+        tts,
+        ttsOptions: { format: 'pcm16' },
+      });
+      await agent.listen(0);
+
+      const ws = await connect(agent.port!);
+      ws.send(JSON.stringify({ type: 'text', text: 'hi' }));
+
+      await vi.waitFor(() =>
+        expect(tts.streamSynthesize).toHaveBeenCalledWith('response', { format: 'pcm16' })
+      );
+    });
+  });
+
   describe('session lifecycle', () => {
     it('emits session_start on client connection', async () => {
       agent = new VoiceAgent({

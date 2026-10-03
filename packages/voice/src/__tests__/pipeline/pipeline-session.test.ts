@@ -252,7 +252,18 @@ describe('PipelineSession', () => {
       vad._event = { type: 'speech_end', duration: 500 };
       session.pushAudio(Buffer.alloc(320));
 
-      await vi.waitFor(() => expect(tts.streamSynthesize).toHaveBeenCalledWith('Agent response'));
+      await vi.waitFor(() =>
+        expect(tts.streamSynthesize).toHaveBeenCalledWith('Agent response', undefined)
+      );
+    });
+
+    it('passes ttsOptions to streamSynthesize', async () => {
+      const ttsOptions = { format: 'pcm16' as const, speed: 1.2 };
+      session = new PipelineSession({ stt, tts, agent, ttsOptions });
+
+      await session.sendText('hello');
+
+      expect(tts.streamSynthesize).toHaveBeenCalledWith('Agent response', ttsOptions);
     });
   });
 

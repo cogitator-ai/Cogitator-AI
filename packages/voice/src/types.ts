@@ -74,6 +74,11 @@ export interface VoicePipelineConfig {
   tts: TTSProvider;
   vad?: VADProvider;
   agent: VoiceAgentRunner;
+  /**
+   * Options passed to every `tts.synthesize` / `tts.streamSynthesize` call, e.g.
+   * `{ format: 'pcm16' }` for raw audio or a per-pipeline `voice`, `speed` or `instructions`.
+   */
+  ttsOptions?: TTSOptions;
   /** @deprecated Not used by the pipeline. Audio is processed at provider-native rates. */
   sampleRate?: number;
 }
@@ -113,6 +118,8 @@ export interface VoiceAgentConfig {
   stt?: STTProvider;
   tts?: TTSProvider;
   vad?: VADProvider;
+  /** Pipeline-mode options passed to every TTS call (see `VoicePipelineConfig.ttsOptions`). */
+  ttsOptions?: TTSOptions;
   realtimeProvider?: 'openai' | 'gemini';
   realtimeApiKey?: string;
   realtimeModel?: string;
