@@ -1,4 +1,4 @@
-import type { RunOptions, Tool, ToolContext } from '@cogitator-ai/types';
+import type { RunOptions, Tool, ToolApprovalDecision, ToolContext } from '@cogitator-ai/types';
 import type { Agent } from './agent';
 import type { Cogitator } from './runtime';
 import { tool } from './tool';
@@ -11,9 +11,10 @@ export interface AgentAsToolOptions {
   includeUsage?: boolean;
   includeToolCalls?: boolean;
   /**
-   * Decides the calls of the inner agent that need approval. Without it they
-   * are declined, since a delegated run cannot wait for a person; the inner
-   * agent is told why and answers accordingly.
+   * Decides the calls of the inner agent that need approval. Without it — or
+   * when it answers `'pause'` — they are declined, since a delegated run
+   * cannot wait for a person; the inner agent is told why and answers
+   * accordingly.
    */
   onApproval?: RunOptions['onApproval'];
 }
@@ -31,6 +32,11 @@ export interface AgentToolResult {
   };
   toolCalls?: Array<{ name: string; arguments: unknown }>;
 }
+
+const DELEGATED_DECLINE: ToolApprovalDecision = {
+  approved: false,
+  reason: 'no one can approve calls of a delegated agent',
+};
 
 const DEFAULT_SCHEMA = z.object({
   task: z.string().describe('The task to delegate to the agent'),
@@ -66,10 +72,19 @@ export function agentAsTool(
           timeout: effectiveTimeout,
           signal: context.signal,
           ...(context.userId !== undefined && { userId: context.userId }),
-          onApproval:
-            onApproval ??
-            (() => ({ approved: false, reason: 'no one can approve calls of a delegated agent' })),
+          onApproval: async (request) => {
+            const decision = onApproval ? await onApproval(request) : 'pause';
+            return decision === 'pause' ? DELEGATED_DECLINE : decision;
+          },
         });
+
+        if (result.status === 'paused') {
+          return {
+            output: result.output,
+            success: false,
+            error: `The delegated agent paused for approval of ${(result.pendingApprovals ?? []).map((p) => p.toolName).join(', ')}, which a delegated run cannot wait for`,
+          };
+        }
 
         return {
           output: result.output,

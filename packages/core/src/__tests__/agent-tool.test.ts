@@ -302,6 +302,54 @@ describe('agentAsTool()', () => {
       { agentId: 'p', runId: 'r', signal: new AbortController().signal }
     );
 
-    expect((runSpy.mock.calls[0][1] as RunOptions).onApproval).toBe(onApproval);
+    const request = { toolCallId: 'c', toolName: 'refund', arguments: {}, description: 'Refund' };
+    const decision = await (runSpy.mock.calls[0][1] as RunOptions).onApproval?.(request);
+
+    expect(onApproval).toHaveBeenCalledWith(request);
+    expect(decision).toEqual({ approved: true });
+  });
+
+  it("declines a call the caller's onApproval wants to pause on, since nothing can resume it", async () => {
+    const runSpy = vi.fn().mockResolvedValue(createMockRunResult('done'));
+    const tool = agentAsTool(createMockCogitator(runSpy), testAgent, {
+      name: 'delegate',
+      description: 'Delegate',
+      onApproval: () => 'pause',
+    });
+
+    await tool.execute(
+      { task: 'refund' },
+      { agentId: 'p', runId: 'r', signal: new AbortController().signal }
+    );
+    const decision = await (runSpy.mock.calls[0][1] as RunOptions).onApproval?.({
+      toolCallId: 'c',
+      toolName: 'refund',
+      arguments: {},
+      description: 'Refund',
+    });
+
+    expect(decision).toEqual({
+      approved: false,
+      reason: 'no one can approve calls of a delegated agent',
+    });
+  });
+
+  it('does not report a paused sub-agent run as a success', async () => {
+    const paused = createMockRunResult('', {
+      status: 'paused',
+      pendingApprovals: [{ toolCallId: 'c', toolName: 'refund', arguments: {}, description: 'x' }],
+    });
+    const tool = agentAsTool(createMockCogitator(vi.fn().mockResolvedValue(paused)), testAgent, {
+      name: 'delegate',
+      description: 'Delegate',
+    });
+
+    const result = await tool.execute(
+      { task: 'refund' },
+      { agentId: 'p', runId: 'r', signal: new AbortController().signal }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('paused for approval of refund');
   });
 });
