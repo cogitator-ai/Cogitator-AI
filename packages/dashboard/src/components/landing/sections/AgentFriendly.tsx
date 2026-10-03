@@ -1,4 +1,4 @@
-import { ArrowUpRight, Copy, ExternalLink } from 'lucide-react';
+import { ArrowUpRight } from 'lucide-react';
 import {
   buildLlmsIndex,
   getDocsSections,
@@ -9,6 +9,7 @@ import {
 import { source } from '@/lib/source';
 import { LLMS_FULL_TXT_URL, LLMS_TXT_URL, SITE_URL } from '@/lib/site';
 import { Section, SectionHeader } from '../ui';
+import { AgentActions } from './agent-friendly/AgentActions';
 import { AgentTerminal } from './agent-friendly/AgentTerminal';
 import type { TerminalLine } from './agent-friendly/types';
 
@@ -182,25 +183,11 @@ export async function AgentFriendlySection() {
           </ul>
 
           <div className="mt-6">
-            <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-l-brass">
-              On every docs page
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2" aria-hidden>
-              <span className="inline-flex items-center gap-1.5 rounded-md border border-l-line-strong px-2.5 py-1 text-xs text-l-muted">
-                <Copy className="size-3" /> Copy Markdown
-              </span>
-              {['ChatGPT', 'Claude', 'Cursor'].map((target) => (
-                <span
-                  key={target}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-l-line px-2.5 py-1 text-xs text-l-faint"
-                >
-                  <ExternalLink className="size-3" /> Open in {target}
-                </span>
-              ))}
-            </div>
+            <p className="vox-label !text-[12px]">+++ Hand the docs to your agent +++</p>
+            <AgentActions llmsUrl={`${PUBLIC_ORIGIN}${LLMS_TXT_URL}`} />
             <p className="mt-3 text-sm leading-relaxed text-l-muted text-pretty">
-              Paste a page into your prompt, or open ChatGPT, Claude or Cursor with a prompt to read
-              it.
+              Every docs page has the same actions for that page: Copy Markdown, and Open in
+              ChatGPT, Claude or Cursor.
             </p>
           </div>
         </div>

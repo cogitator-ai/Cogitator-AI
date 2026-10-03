@@ -17,7 +17,7 @@ function statusAt(step: number): Status {
   return 'running';
 }
 
-function useRunTimeline(active: boolean, reduced: boolean): number {
+function useRunTimeline(active: boolean, reduced: boolean) {
   const [step, setStep] = useState(0);
 
   useEffect(() => {
@@ -33,8 +33,13 @@ function useRunTimeline(active: boolean, reduced: boolean): number {
     return () => clearTimeout(timer);
   }, [active, reduced, step]);
 
-  return step;
+  return { step, jump: setStep };
 }
+
+type Decision = 'approved' | 'declined';
+
+/** The run waits on these steps; the approval buttons work only then. */
+const AWAITING = new Set([3, 4]);
 
 function Streamed({ text, play }: { text: string; play: boolean }) {
   const reduced = useReducedMotion();
@@ -106,8 +111,24 @@ export function HeroRun() {
   const ref = useRef<HTMLDivElement>(null);
   const inView = useInView(ref, { margin: '-80px' });
   const reduced = useReducedMotion() ?? false;
-  const step = useRunTimeline(inView, reduced);
+  const { step, jump } = useRunTimeline(inView, reduced);
   const status = statusAt(step);
+  const [decision, setDecision] = useState<Decision>('approved');
+  const [skippedRestart, setSkippedRestart] = useState(false);
+  const declined = decision === 'declined';
+  const awaiting = AWAITING.has(step);
+
+  useEffect(() => {
+    if (step !== 0) return;
+    setDecision('approved');
+    setSkippedRestart(false);
+  }, [step]);
+
+  const decide = (next: Decision) => {
+    setDecision(next);
+    setSkippedRestart(step < 4);
+    jump(5);
+  };
 
   return (
     <div ref={ref} className="cog-text flex h-full flex-col text-[14px]">
@@ -160,27 +181,45 @@ export function HeroRun() {
               </span>
               <Vox tone="brass">checkpoint enshrined</Vox>
               <div className="ml-auto flex gap-1.5">
-                <span className="rounded-md border border-l-accent/20 px-2 py-0.5 text-[12px] text-l-accent/50">
-                  Decline
-                </span>
-                <motion.span
-                  animate={step === 5 ? { scale: [1, 0.94, 1] } : { scale: 1 }}
-                  transition={{ duration: 0.35 }}
-                  className={cx(
-                    'rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors',
-                    step >= 5
-                      ? 'border border-l-accent/60 bg-l-accent/15 text-l-accent'
-                      : 'border border-l-phosphor/40 bg-l-phosphor/[0.06] text-l-phosphor'
-                  )}
-                >
-                  {step >= 5 ? 'Approved' : 'Approve'}
-                </motion.span>
+                {awaiting ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => decide('declined')}
+                      className="cursor-pointer rounded-md border border-l-warn/40 px-2 py-0.5 text-[12px] text-l-warn/80 transition-colors hover:border-l-warn/70 hover:bg-l-warn/10 hover:text-l-warn"
+                    >
+                      Decline
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => decide('approved')}
+                      className="cursor-pointer rounded-md border border-l-phosphor/45 bg-l-phosphor/[0.06] px-2 py-0.5 text-[12px] text-l-phosphor transition-colors hover:border-l-accent/70 hover:bg-l-accent/15"
+                    >
+                      Approve
+                    </button>
+                  </>
+                ) : (
+                  <motion.span
+                    animate={step === 5 ? { scale: [1, 0.94, 1] } : { scale: 1 }}
+                    transition={{ duration: 0.35 }}
+                    className={cx(
+                      'select-none rounded-md border px-2 py-0.5 text-[12px]',
+                      step < 5
+                        ? 'border-l-accent/15 text-l-accent/40'
+                        : declined
+                          ? 'border-l-warn/50 bg-l-warn/10 text-l-warn'
+                          : 'border-l-accent/60 bg-l-accent/15 text-l-accent'
+                    )}
+                  >
+                    {step < 5 ? 'awaiting' : declined ? 'Declined' : 'Approved'}
+                  </motion.span>
+                )}
               </div>
             </div>
           </div>
         </Row>
 
-        <Row show={step >= 4}>
+        <Row show={step >= 4 && !skippedRestart}>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-l-accent/55">
             <RotateCcw className="size-3 text-l-brass" />
             worker restarted
@@ -189,16 +228,28 @@ export function HeroRun() {
         </Row>
 
         <Row show={step >= 6}>
-          <div className="flex items-center gap-2 text-[12.5px] text-l-phosphor/80">
-            <Play className="size-3 text-l-accent" />
-            refund_order → <span className="text-l-accent">{'{ refunded: 340 }'}</span>
-          </div>
+          {declined ? (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-l-phosphor/80">
+              <Vox tone="warn">sanction denied</Vox>
+              refund_order → <span className="text-l-warn">{'{ declined: "needs photos" }'}</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-[12.5px] text-l-phosphor/80">
+              <Play className="size-3 text-l-accent" />
+              refund_order → <span className="text-l-accent">{'{ refunded: 340 }'}</span>
+            </div>
+          )}
         </Row>
 
         <Row show={step >= 7}>
           <div className="text-l-phosphor">
             <Streamed
-              text="Done — $340 is on its way back to your card. It usually lands in 3–5 days."
+              key={decision}
+              text={
+                declined
+                  ? "I can't refund the full $340 yet — refunds over $100 need photos of the damage. Could you send a couple?"
+                  : 'Done — $340 is on its way back to your card. It usually lands in 3–5 days.'
+              }
               play={step === 7}
             />
           </div>
