@@ -50,7 +50,7 @@ describeDocker('deploy: docker lifecycle', () => {
       join(projectDir, 'server.js'),
       `const http = require('node:http');
 http.createServer((req, res) => {
-  if (req.url === '/health') {
+  if (req.url === '/cogitator/health') {
     res.end(JSON.stringify({ ok: true, secret: process.env.E2E_DEPLOY_SECRET ?? null }));
     return;
   }
@@ -80,13 +80,13 @@ http.createServer((req, res) => {
     });
     expect(result.error).toBeUndefined();
     expect(result.success).toBe(true);
-    expect(result.endpoints?.health).toBe(`http://localhost:${port}/health`);
+    expect(result.endpoints?.health).toBe(`http://localhost:${port}/cogitator/health`);
 
     const ignore = readFileSync(join(projectDir, '.dockerignore'), 'utf-8');
     expect(ignore).toContain('.env');
     expect(existsSync(join(projectDir, '.cogitator/docker-compose.prod.yml'))).toBe(true);
 
-    const body = await waitForHealth(`http://localhost:${port}/health`);
+    const body = await waitForHealth(`http://localhost:${port}/cogitator/health`);
     expect(body).not.toBeNull();
     expect(JSON.parse(body ?? '{}')).toEqual({ ok: true, secret: 'from-dotenv' });
 
