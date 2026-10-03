@@ -74,7 +74,7 @@ dmPolicy({
 | `pairing`   | Gets a `/pair CODE` message; an owner approves it with `/pair CODE` in DM |
 | `disabled`  | Silently ignored                                                          |
 
-Owners always pass. Group messages (`groupId` set) are judged only by `groupPolicy` — `allowlist` lets in the chats in `groupAllowlist` plus owners. Approved users are saved to `storePath` (written atomically, loaded on start) and listed by `getApprovedUsers()`; write failures go to `onStoreError` (default: `console.error`). `storePath` is used as given — `~` is not expanded (`RuntimeBuilder` expands it for `security.storePath`). The class form is `new DmPolicyMiddleware(config)`.
+Owners always pass. Group messages (`groupId` set) are judged only by `groupPolicy` — `allowlist` lets in the chats in `groupAllowlist` plus owners. Approved users are saved to `storePath` (written atomically, loaded on start) and listed by `getApprovedUsers()`; write failures go to `onStoreError` (default: `console.error`). A leading `~` in `storePath` (`~/...`) expands to the home directory. The class form is `new DmPolicyMiddleware(config)`.
 
 ### Auto-Extract
 

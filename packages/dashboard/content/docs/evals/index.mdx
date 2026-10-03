@@ -82,18 +82,18 @@ const suite = new EvalSuite({
 });
 ```
 
-| Option               | Default | Description                                                                 |
-| -------------------- | ------- | --------------------------------------------------------------------------- |
-| `dataset`            | —       | [`Dataset`](/docs/evals/datasets) of cases                                  |
-| `target`             | —       | What to evaluate — see [Target](#target)                                    |
-| `metrics`            | `[]`    | Per-case [metrics](/docs/evals/metrics)                                     |
-| `statisticalMetrics` | `[]`    | Metrics over the whole run (`latency()`, `cost()`, `tokenUsage()`)          |
-| `judge`              | —       | `{ model, temperature, maxTokens?, cogitator? }` — required for LLM metrics |
-| `assertions`         | `[]`    | [Pass/fail checks](/docs/evals/assertions)                                  |
-| `concurrency`        | `5`     | Cases run in parallel                                                       |
-| `timeout`            | `30000` | Per-attempt timeout in ms (minimum 1000)                                    |
-| `retries`            | `0`     | Extra attempts for a failed or timed-out case (max 10)                      |
-| `onProgress`         | —       | Called with `{ completed, total, currentCase }` after each case             |
+| Option               | Default | Description                                                                                                                      |
+| -------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `dataset`            | —       | [`Dataset`](/docs/evals/datasets) of cases                                                                                       |
+| `target`             | —       | What to evaluate — see [Target](#target)                                                                                         |
+| `metrics`            | `[]`    | Per-case [metrics](/docs/evals/metrics)                                                                                          |
+| `statisticalMetrics` | `[]`    | Metrics over the whole run (`latency()`, `cost()`, `tokenUsage()`)                                                               |
+| `judge`              | —       | `{ model, temperature?, maxTokens?, cogitator? }` (`JudgeConfigInput`; `temperature` defaults to `0`) — required for LLM metrics |
+| `assertions`         | `[]`    | [Pass/fail checks](/docs/evals/assertions)                                                                                       |
+| `concurrency`        | `5`     | Cases run in parallel                                                                                                            |
+| `timeout`            | `30000` | Per-attempt timeout in ms (minimum 1000)                                                                                         |
+| `retries`            | `0`     | Extra attempts for a failed or timed-out case (max 10)                                                                           |
+| `onProgress`         | —       | Called with `{ completed, total, currentCase }` after each case                                                                  |
 
 Errors and timeouts are retried up to `retries` times. If every attempt fails, the case result has an empty `output` and an `error` message (for example `Timed out after 30000ms`), so a failed run is never mistaken for an empty answer. Metrics still score that empty output.
 
@@ -141,6 +141,14 @@ result.saveBaseline('./baseline.json');
 
 Results keep the dataset order regardless of concurrency. See [Reporters](/docs/evals/reporters) and [baselines](/docs/evals/assertions#noregression).
 
+To try a suite on a slice of the dataset, pass `EvalRunOptions`:
+
+```typescript
+const smoke = await suite.run({ maxCases: 5 });
+```
+
+Only the first `maxCases` cases run; `results`, `aggregated`, `assertions`, `stats.total` and the `onProgress` totals cover just those cases. `maxCases` must be a positive integer, otherwise `run()` throws.
+
 ## EvalBuilder
 
 Fluent builder API as an alternative to direct `EvalSuite` construction:
@@ -170,7 +178,7 @@ const suite = new EvalBuilder()
 const result = await suite.run();
 ```
 
-Use `.withJudge({ model, temperature, cogitator })` when the metrics include LLM-as-judge metrics; `build()` throws without it, or without a dataset or target.
+Use `.withJudge({ model, temperature?, cogitator })` when the metrics include LLM-as-judge metrics; `build()` throws without it, or without a dataset or target.
 
 ## Agent Tool
 
@@ -190,7 +198,7 @@ const qaAgent = new Agent({
 });
 ```
 
-The tool takes an optional `maxCases` and returns `{ success, total, duration, cost, metrics, assertionsPassed }`, where `metrics` holds the mean of each metric. `maxCases` only trims the summary — the whole suite still runs — and `assertionsPassed` is always `true` when it is set. Errors come back as `{ success: false, error }`. `createRunEvalTool(suite)` builds the same tool.
+The tool takes an optional `maxCases` and returns `{ success, total, duration, cost, metrics, assertionsPassed }`, where `metrics` holds the mean of each metric. With `maxCases` the tool calls `suite.run({ maxCases })`, so only the first N cases run and `total`, `metrics` and `assertionsPassed` are computed from them. Errors come back as `{ success: false, error }`. `createRunEvalTool(suite)` builds the same tool.
 
 ## Next Steps
 

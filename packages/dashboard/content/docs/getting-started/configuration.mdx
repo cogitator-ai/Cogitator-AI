@@ -77,11 +77,43 @@ const config = loadConfig({
 | `security`    | `promptInjection` detection and `pii` masking ([Security](/docs/advanced/security))                                       |
 | `context`     | [Context compression](/docs/advanced/context-management) for long conversations                                           |
 | `deploy`      | Target, server, port, registry and resources for `cogitator deploy` ([Deploy](/docs/deployment/deploy-package))           |
-| `logging`     | `level`, `format`, `destination`, `filePath` — validated, but not applied by the runtime (see below)                      |
+| `logging`     | `level`, `format`, `destination`, `filePath` of the process-wide logger (see below)                                       |
 
 ### Memory
 
-`memory.adapter` takes `memory`, `redis`, `postgres`, `sqlite`, `mongodb` or `qdrant`, with the adapter's settings under the key of the same name. The `Cogitator` runtime connects `memory`, `redis` (it needs `redis.url`) and `postgres` adapters from this config by itself. For SQLite, MongoDB or Qdrant, connect the adapter yourself and hand it over:
+`memory.adapter` names the thread store, with its settings under the key of the same name. The runtime builds and connects it on the first run (or on `getMemory()`):
+
+| `adapter`  | Settings                                                                                              |
+| ---------- | ----------------------------------------------------------------------------------------------------- |
+| `memory`   | `inMemory.maxEntries` (optional)                                                                      |
+| `redis`    | `redis.url`, or `redis.host` + `redis.port`, or `redis.cluster.nodes`; `keyPrefix`, `ttl`, `password` |
+| `postgres` | `postgres.connectionString`, `schema`, `poolSize`                                                     |
+| `sqlite`   | `sqlite.path` (`':memory:'` for an in-memory database), `walMode`                                     |
+| `mongodb`  | `mongodb.uri`, `database`, `collectionPrefix`                                                         |
+
+When the section lacks what the store needs (for example `adapter: sqlite` without `sqlite.path`), or the connection fails, the runtime logs a warning, runs without memory and tries again on the next run. `adapter: qdrant` only logs a warning (see below). The Postgres store sizes its vector column to the embedding model in `memory.embedding`.
+
+`qdrant` is not a thread store: it holds embeddings. Pick one of the stores above as `adapter` and add `memory.qdrant` next to `memory.embedding` and `memory.contextBuilder`; the context builder then searches Qdrant for semantic context. The runtime only searches it — add embeddings with a `QdrantAdapter` of your own.
+
+```yaml title="cogitator.yml"
+memory:
+  adapter: redis
+  redis:
+    host: localhost
+    port: 6379
+  qdrant:
+    url: http://localhost:6333
+    collection: cogitator
+    dimensions: 768
+  embedding:
+    provider: ollama
+    model: nomic-embed-text
+  contextBuilder:
+    strategy: hybrid
+    includeSemanticContext: true
+```
+
+`memory.qdrant.dimensions` must match the embedding model; a mismatch is logged. To use an adapter you built yourself, connect it and hand it over:
 
 ```typescript
 import { Cogitator } from '@cogitator-ai/core';
@@ -97,11 +129,21 @@ cogitator.memory = memory;
 
 ### Logging
 
-The runtime logger is configured in code, not by the `logging` section: it logs at `info` (or `LOG_LEVEL`), as JSON when `NODE_ENV=production` and pretty-printed otherwise. Replace it with `setLogger()`:
+`logging` configures the process-wide logger that `getLogger()` returns, when a `Cogitator` is created with it; with several runtimes, the last one created with `logging` wins. `level` is `debug`, `info` (default), `warn`, `error` or `silent`. `format` is `pretty` (default) or `json`. `destination: file` appends one line per entry to `filePath`, as JSON unless `format` says otherwise; without `filePath`, or where there is no file system (edge runtimes), it logs to the console and warns.
+
+```yaml title="cogitator.yml"
+logging:
+  level: warn
+  destination: file
+  filePath: ./logs/cogitator.log
+```
+
+Without `logging`, the logger logs at `info` (or `LOG_LEVEL`), as JSON when `NODE_ENV=production` and pretty-printed otherwise. In code, build the same logger with `createLoggerFromConfig()` or your own with `createLogger()`, and install it with `setLogger()`:
 
 ```typescript
-import { createLogger, setLogger } from '@cogitator-ai/core';
+import { createLogger, createLoggerFromConfig, setLogger } from '@cogitator-ai/core';
 
+setLogger(createLoggerFromConfig({ level: 'debug', destination: 'file', filePath: './debug.log' }));
 setLogger(createLogger({ level: 'debug', format: 'json' }));
 ```
 
@@ -192,12 +234,14 @@ const cogitator = new Cogitator(config);
 
 `defineConfig()` validates like `loadConfig()` but reads neither files nor the environment. Neither of them is required: `new Cogitator({...})` takes the same object without validation.
 
-Some options exist only in code, since they hold functions or objects: `llm.backends`, `llm.plugins`, `llm.retry.onRetry`, `runCheckpoints` and `prompts`. Validation strips unknown keys, so pass them to the constructor next to the loaded config:
+Some options exist only in code, since they hold functions or objects: `llm.backends`, `llm.plugins`, `llm.retry.onRetry`, `runCheckpoints` and `prompts`. The config schema also does not know `sandbox.allowNativeFallback`, `sandbox.pool.reuseContainers` and `memory.embedding.dimensions` yet. Validation strips unknown keys, so pass them to the constructor next to the loaded config:
 
 ```typescript
+const config = loadConfig();
 const cogitator = new Cogitator({
-  ...loadConfig(),
+  ...config,
   prompts: { autoDeployWinner: true },
+  sandbox: { ...config.sandbox, allowNativeFallback: false },
 });
 ```
 

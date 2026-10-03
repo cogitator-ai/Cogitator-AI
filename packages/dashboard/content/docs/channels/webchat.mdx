@@ -17,9 +17,26 @@ import { webchatChannel } from '@cogitator-ai/channels';
 const webchat = webchatChannel({
   port: 3100,
   path: '/ws',
-  auth: (token) => token === process.env.WEBCHAT_SECRET,
+  auth: (token) => token === process.env.WEBCHAT_TOKEN,
 });
 ```
+
+## Use with `cogitator up`
+
+Add a `webchat` entry to `cogitator.yml` and set `WEBCHAT_TOKEN` in the `.env` next to it:
+
+```yaml title="cogitator.yml"
+channels:
+  webchat:
+    port: 8080 # default
+    path: /ws # default
+```
+
+```bash title=".env"
+WEBCHAT_TOKEN=a-long-random-secret
+```
+
+Clients connect to `ws://localhost:8080/ws?token=<WEBCHAT_TOKEN>`. Without `WEBCHAT_TOKEN` the channel is not started (a warning is logged), because an open socket would give anyone the assistant's tools. WebChat has no `ownerIds`: every connection is a separate anonymous user. `cogitator wizard --edit` keeps the entry. See the [config reference](/docs/channels/wizard#config-reference).
 
 ## Configuration
 

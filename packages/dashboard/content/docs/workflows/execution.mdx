@@ -78,19 +78,23 @@ interface WorkflowExecuteOptions {
 
 `WorkflowExecutor.execute` additionally accepts (`ExecutorExecuteOptions`):
 
-| Option                                              | Description                                                                                            |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `signal`                                            | Cancels the run between steps; passed to nodes as `ctx.signal` (agent/tool nodes and timers honour it) |
-| `tracer`                                            | `WorkflowTracer` — one workflow span plus a child span per node execution                              |
-| `metricsCollector`                                  | `WorkflowMetricsCollector` — workflow/node counts, latencies and retries                               |
-| `defaultRetry`                                      | Retry policy for nodes without their own `config.retries` (honours `isRetryable`)                      |
-| `defaultCircuitBreaker`                             | Per-node circuit breaker shared across runs of the executor                                            |
-| `deadLetterQueue`                                   | Receives an entry for every node that finally failed                                                   |
-| `idempotencyStore`                                  | Reuses results of nodes that already completed for the same `workflowId` and step                      |
-| `approvalStore` / `approvalNotifier` / `timerStore` | Run-level defaults for human and timer nodes                                                           |
-| `depth`                                             | Subworkflow nesting depth, exposed to nodes as `ctx.depth`                                             |
+| Option                                                           | Description                                                                                                                                           |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `signal`                                                         | Cancels the run between steps; passed to nodes as `ctx.signal` (agent/tool nodes and timers honour it)                                                |
+| `tracer`                                                         | `WorkflowTracer` — one workflow span plus a child span per node execution; defaults to the global tracer when it is enabled                           |
+| `metricsCollector`                                               | `WorkflowMetricsCollector` — workflow/node counts, latencies and retries; defaults to the global collector when it is enabled                         |
+| `defaultRetry`                                                   | Retry policy for nodes without their own `config.retries` (honours `isRetryable`)                                                                     |
+| `defaultCircuitBreaker`                                          | Per-node circuit breaker shared across runs of the executor                                                                                           |
+| `deadLetterQueue`                                                | Receives an entry for every node that finally failed                                                                                                  |
+| `idempotencyStore`                                               | Reuses results of nodes that already completed for the same `workflowId` and step                                                                     |
+| `approvalStore` / `approvalNotifier` / `timerStore`              | Run-level defaults for human and timer nodes                                                                                                          |
+| `depth`                                                          | Subworkflow nesting depth, exposed to nodes as `ctx.depth`                                                                                            |
+| `onApprovalRequired(request)`                                    | A human node opened an approval request — each chain step and escalation included                                                                     |
+| `onTimerScheduled(entry)`                                        | A timer node stored a persisted timer in the `timerStore` (`persist: true` configs only)                                                              |
+| `onDeadLetter(entry)`                                            | A node that finally failed was written to the `deadLetterQueue` (`entry.id` is the queue's id)                                                        |
+| `onCompensationStart(nodeId)` / `onCompensationComplete(nodeId)` | A node's `config.compensation` starts / finishes rolling back after a later node failed ([Sagas](/docs/workflows/sagas#compensation-in-the-executor)) |
 
-`resume()` takes the plain `WorkflowExecuteOptions`, and `stream()` takes them without the four callbacks (it turns them into events).
+`resume()` takes the same `ExecutorExecuteOptions`, and `stream()` takes them without the four node callbacks (`onNodeStart`, `onNodeComplete`, `onNodeError`, `onNodeProgress` — it turns those into events). The five run observers in the table above are guarded: one that throws is logged and does not break the run.
 
 ### Lifecycle Hooks
 
@@ -217,7 +221,7 @@ const redisStore = new RedisCheckpointStore({ client: redis, keyPrefix: 'myapp:c
 const pgStore = new PostgresCheckpointStore({ client: pool }); // creates cogitator_workflow_checkpoints on first use
 ```
 
-A checkpoint saved by one process resumes in any other that reads the same store. A `WorkflowManager` with a `checkpointStore` checkpoints the runs it starts with `execute()`, so `replay(workflow, runId, node)` can run that node and everything after it again, while the nodes before it keep their results. Runs the manager starts from its schedule are not checkpointed, so they cannot be replayed.
+A checkpoint saved by one process resumes in any other that reads the same store. A `WorkflowManager` with a `checkpointStore` checkpoints every run it starts — with `execute()`, from its schedule or on `resume()` — so `replay(workflow, runId, node)` can run that node and everything after it again, while the nodes before it keep their results, and a paused run can [resume](/docs/workflows/scheduling#pause-and-resume) from its last checkpoint.
 
 ### Runs, approvals and timers in Redis or Postgres
 
@@ -330,7 +334,7 @@ const result = await executor.execute(workflow, input, {
 
 A node that still fails after its retries is written to the `deadLetterQueue`. The circuit breaker is kept per node name and shared by every run of the same executor that passes the same config object; while it is open the node fails at once with `CircuitBreakerOpenError`. With an `idempotencyStore`, a node that already completed for the same `workflowId` and step returns its stored result instead of running again.
 
-For more sophisticated error handling (retry policies, circuit breakers, compensation), see [Sagas & Compensation](/docs/workflows/sagas).
+`NodeConfig` also takes `compensation`, a rollback the executor runs when a later node fails. For more sophisticated error handling (retry policies, circuit breakers, compensation), see [Sagas & Compensation](/docs/workflows/sagas).
 
 ## Concurrency Control
 
@@ -384,7 +388,7 @@ console.log(metrics.toPrometheusFormat());
 await tracer.shutdown();
 ```
 
-The tracer records one workflow span and a child span per node execution (with `node.retries`); the collector counts runs and node executions with their latencies and retries. `exporter: 'noop'` keeps the tracer in place while sending spans nowhere, and `enabled: false` does the same. A `WorkflowManager` takes a `tracer` and `metrics` collector for all its runs, and `execute(..., { tracing, metrics: { enabled: false } })` overrides them per run.
+The tracer records one workflow span and a child span per node execution (with `node.retries`); the collector counts runs and node executions with their latencies and retries. `exporter: 'noop'` keeps the tracer in place while sending spans nowhere, and `enabled: false` does the same. A `WorkflowManager` takes a `tracer` and `metrics` collector for all its runs, and `execute(..., { tracing, metrics: { enabled: false } })` overrides them per run. A run that gets neither uses the global ones from `setGlobalTracer` / `setGlobalMetrics` when they are enabled (the defaults are disabled, so nothing is recorded until you set enabled ones).
 
 ## Iteration Safety
 

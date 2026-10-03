@@ -40,6 +40,23 @@ console.log(result.response); // what the agent replied
 // result.audio — synthesized response as Buffer
 ```
 
+### TTS options
+
+`ttsOptions` is passed to every `synthesize` / `streamSynthesize` call made by the pipeline and its sessions. Use it to pick the output format or a per-pipeline `voice`, `speed` or `instructions`:
+
+```typescript
+const pipeline = new VoicePipeline({
+  stt: new OpenAISTT({ apiKey: process.env.OPENAI_API_KEY! }),
+  tts: new OpenAITTS({ apiKey: process.env.OPENAI_API_KEY! }),
+  agent: createCogitatorRunner(cogitator, agent),
+  ttsOptions: { format: 'pcm16' },
+});
+```
+
+Without `ttsOptions` the TTS provider's defaults apply (MP3 output). `format: 'pcm16'` returns raw PCM16 mono at 24kHz. `VoiceAgent` accepts the same `ttsOptions` in pipeline mode.
+
+`openai` is an optional peer dependency: install it only when you use `OpenAISTT` / `OpenAITTS`. They load it on the first `transcribe` / `synthesize` call, which throws with an install hint if it is missing.
+
 ### `createSession(options?)`
 
 Creates a `PipelineSession` for streaming use. Pass `{ sessionId }` to set the id the agent sees (default: a random id). See below.
@@ -222,17 +239,18 @@ Browsers cannot set headers on a WebSocket, so pass credentials in the query str
 | ---------------- | ------ | --------------------------------------------------------------------------------------------------- |
 | Client -> Server | Binary | PCM16 mono (16kHz pipeline / Gemini, 24kHz OpenAI realtime)                                         |
 | Client -> Server | JSON   | `{ type: 'interrupt' }`, `{ type: 'end_of_speech' }` (pipeline), `{ type: 'text', text }`           |
-| Server -> Client | Binary | Response audio (MP3 from the pipeline's TTS, PCM16 24kHz in realtime mode)                          |
+| Server -> Client | Binary | Response audio (TTS output format in pipeline mode, MP3 by default; PCM16 24kHz in realtime mode)   |
 | Server -> Client | JSON   | `{ type: 'transcript', text, isFinal }`, `agent_response`, `speech_start`, `speech_end`, `turn_end` |
 
 In realtime mode `transcript` carries `role` (`'user'` or `'assistant'`) instead of `isFinal`, and there is no `agent_response` or `speech_end`. Invalid JSON and unknown control types are reported through the `error` event and otherwise ignored.
 
 ### VoicePipelineConfig
 
-| Field        | Type               | Required | Description                                                  |
-| ------------ | ------------------ | -------- | ------------------------------------------------------------ |
-| `stt`        | `STTProvider`      | Yes      | Speech-to-text provider                                      |
-| `tts`        | `TTSProvider`      | Yes      | Text-to-speech provider                                      |
-| `vad`        | `VADProvider`      | No       | Voice activity detection                                     |
-| `agent`      | `VoiceAgentRunner` | Yes      | `createCogitatorRunner(...)` or any `{ run(input, ctx) }`    |
-| `sampleRate` | `number`           | No       | Deprecated, unused (configure the STT/VAD providers instead) |
+| Field        | Type               | Required | Description                                                             |
+| ------------ | ------------------ | -------- | ----------------------------------------------------------------------- |
+| `stt`        | `STTProvider`      | Yes      | Speech-to-text provider                                                 |
+| `tts`        | `TTSProvider`      | Yes      | Text-to-speech provider                                                 |
+| `vad`        | `VADProvider`      | No       | Voice activity detection                                                |
+| `ttsOptions` | `TTSOptions`       | No       | Options for every TTS call (`format`, `voice`, `speed`, `instructions`) |
+| `agent`      | `VoiceAgentRunner` | Yes      | `createCogitatorRunner(...)` or any `{ run(input, ctx) }`               |
+| `sampleRate` | `number`           | No       | Deprecated, unused (configure the STT/VAD providers instead)            |

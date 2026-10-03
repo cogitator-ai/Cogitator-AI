@@ -33,6 +33,8 @@ Both providers support batch transcription via `transcribe()` and streaming via 
 
 Uses the OpenAI Audio Transcriptions API. Default model is `gpt-transcribe`.
 
+Requires the optional `openai` peer (`pnpm add openai`). It is loaded on the first `transcribe` call (or the first stream `close()`), not when you import the package or construct `OpenAISTT`; if it is missing, that call throws with an install hint.
+
 ```typescript
 import { OpenAISTT } from '@cogitator-ai/voice';
 

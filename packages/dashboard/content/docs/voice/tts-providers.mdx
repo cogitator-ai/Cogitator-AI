@@ -33,6 +33,8 @@ Both providers support batch synthesis via `synthesize()` and streaming via `str
 
 Uses the OpenAI Audio Speech API. Default model is `gpt-4o-mini-tts` with 13 built-in voices.
 
+Requires the optional `openai` peer (`pnpm add openai`). It is loaded on the first `synthesize` / `streamSynthesize` call, not when you import the package or construct `OpenAITTS`; if it is missing, that call throws with an install hint.
+
 ```typescript
 import { OpenAITTS } from '@cogitator-ai/voice';
 
@@ -141,6 +143,8 @@ Options shared by both providers:
 | `speed`        | `number`           | Playback speed (OpenAI 0.25 - 4.0, ElevenLabs 0.7 - 1.2)                                        |
 | `format`       | `VoiceAudioFormat` | Output format: `"mp3"` (default), `"pcm16"` (raw PCM16 mono **24kHz** for both providers), etc. |
 | `instructions` | `string`           | Voice style instructions (OpenAI `gpt-4o-mini-tts` only)                                        |
+
+`VoicePipeline` and pipeline-mode `VoiceAgent` pass their `ttsOptions` to every call (see [TTS options](/docs/voice/pipeline#tts-options)).
 
 ## Custom TTS Provider
 

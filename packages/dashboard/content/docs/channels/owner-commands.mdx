@@ -44,7 +44,7 @@ const gateway: Gateway = new Gateway({
 
 Arguments may follow on the next line, and Telegram group syntax `/status@your_bot` is recognized. `/help` also lists `/pair <code>`, which is handled by the [pairing / DM policy middleware](/docs/channels/middleware), not by this one.
 
-`/model` without an `onModel` callback only echoes `Model set to: …` and changes nothing; wire it to your runtime as `RuntimeBuilder` does. With `RuntimeBuilder`, `/model gemini-3.5-flash @42` sets a model for one user (bare model names get the configured provider prefix) and `/restart` exits the process with code `78` — `cogitator up` restarts it only when it supervises the assistant, which it does when `capabilities.selfConfig` is on; otherwise the assistant just stops.
+`/model` without an `onModel` callback only echoes `Model set to: …` and changes nothing; wire it to your runtime as `RuntimeBuilder` does. With `RuntimeBuilder`, `/model gemini-3.5-flash @42` sets a model for one user (bare model names get the configured provider prefix) and `/restart` exits the process with code `78`, which `cogitator up` answers by starting the assistant again (unless it runs with `--no-restart-loop`, where the assistant just stops).
 
 ## Configuration
 

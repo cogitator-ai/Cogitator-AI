@@ -369,8 +369,8 @@ Start or stop capturing HTTP traffic of all tabs. Stop returns `{ capturing: fal
 
 Get captured XHR/fetch API calls with optional filtering. Returns `{ calls }`.
 
-| Parameter    | Type      | Description                                      |
-| ------------ | --------- | ------------------------------------------------ |
-| `urlPattern` | `string`  | Filter by URL substring or regex literal         |
-| `method`     | `string`  | Filter by HTTP method                            |
-| `clear`      | `boolean` | Clear the whole recorded history after returning |
+| Parameter    | Type      | Description                                                                     |
+| ------------ | --------- | ------------------------------------------------------------------------------- |
+| `urlPattern` | `string`  | Filter by URL substring or regex literal                                        |
+| `method`     | `string`  | Filter by HTTP method                                                           |
+| `clear`      | `boolean` | Remove the returned calls from the history; calls the filters excluded are kept |

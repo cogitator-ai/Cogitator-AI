@@ -32,7 +32,13 @@ cog.getCostSummary(); // totals by model and agent
 cog.getCostRouter()?.getBudgetStatus();
 ```
 
-With `enabled: true`, every run's cost is recorded (unless `trackCosts: false`). With `autoSelectModel: true`, each run ignores the agent's model: the router analyzes the input, picks a model from the [model registry](/docs/core/model-registry) and checks the budget against that model's estimated cost; a run over budget fails with `Budget exceeded: <reason>` before any model call. Candidates come from the whole registry, so make sure the providers it may pick are configured — `preferLocal` (on by default) favours Ollama models. Budgets are only checked before runs when `autoSelectModel` is on; without it they still apply to `checkBudget()` calls of your own. The router is created on the first run, so `getCostRouter()` and `getCostSummary()` return `undefined` before it.
+With `enabled: true`, every run's cost is recorded (unless `trackCosts: false`) and the `budget` is checked before every run. A run over budget fails before any model call with a `CogitatorError` whose code is `BUDGET_EXCEEDED` (`statusCode` 429) and whose message is `Budget exceeded: <reason>`.
+
+With `autoSelectModel: true`, the router analyzes the input and picks a model from the [model registry](/docs/core/model-registry), considering only providers the runtime can call: a backend in `llm.backends`, a registered plugin, `llm.defaultProvider`, the provider of the agent's own model, or a built-in provider configured in `llm.providers` with its credentials. The budget is then checked against that model's estimated cost. When no callable provider has a fitting model, the run keeps the agent's model. `preferLocal` (on by default) favours local models such as Ollama's.
+
+Without `autoSelectModel`, the run uses the agent's model, and the budget check estimates the run's cost from the input's complexity and that model's price (0 when the price is unknown, so the hourly and daily limits still hold against what was already spent).
+
+`getCostRouter()` and `getCostSummary()` work before the first run; they return `undefined` only without `costRouting.enabled`.
 
 `cog.estimateCost()` predicts a run's cost before you start it (see [Cost Estimation](#cost-estimation)):
 
@@ -127,6 +133,15 @@ Every model in the registry that is not deprecated and supports what the task ne
 
 Models below `minCapabilityMatch × 100` (default 30) are dropped. With `preferLocal`, the best local model wins when it scores at least 80% of the best overall. With no candidate left, it recommends `openai/gpt-6-luna`. `recommendModelForRequirements(requirements)` skips the analysis step.
 
+`recommendAvailableModel(input, isProviderAvailable)` ranks only the models of providers the callback accepts and has no fallback: it returns `undefined` when none of them fits. The runtime uses it for `autoSelectModel`:
+
+```typescript
+const configured = new Set(['openai', 'ollama']);
+const pick = await router.recommendAvailableModel(input, (provider) => configured.has(provider));
+
+const model = pick ? `${pick.provider}/${pick.modelId}` : agent.model;
+```
+
 ## Budget Enforcement
 
 `checkBudget()` compares an estimated cost with the limits and the tracked spending:
@@ -138,6 +153,12 @@ if (!check.allowed) {
   console.log('Budget blocked:', check.reason);
   // "Would exceed daily budget ($48.50 + $2.00 > $50.00)"
 }
+```
+
+`checkRunBudget(input, model)` estimates the cost itself, from the complexity of `input` and the price of `model` (a registry model id), the way the runtime checks runs without `autoSelectModel`:
+
+```typescript
+const runCheck = router.checkRunBudget('Summarize this report', 'gpt-6-luna');
 ```
 
 Three budget levels are enforced independently:

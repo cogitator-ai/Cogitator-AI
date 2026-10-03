@@ -66,7 +66,7 @@ interface CogitatorConfig {
   costRouting?: CostRoutingConfig;
   security?: { promptInjection?: Partial<PromptInjectionConfig>; pii?: PiiConfig };
   context?: ContextManagerConfig;
-  logging?: LoggingConfig; // typed and validated, not applied by the runtime
+  logging?: LoggingConfig; // level, format and destination of the process-wide logger
   deploy?: DeployConfig; // read by `cogitator deploy`
 }
 ```
@@ -77,8 +77,9 @@ The same object can come from `cogitator.yml` and the environment via [`loadConf
 
 - `llm.defaultModel` is the model of every agent that sets no `model` of its own. `cog.resolveModel(agent)` returns the model a run would use and throws `CONFIGURATION_ERROR` when there is none.
 - `limits.maxConcurrentRuns` caps how many `run()` calls execute at once on this instance. The rest wait in arrival order; their timeout and abort signal also cover the wait.
-- `limits.defaultTimeout` applies to runs whose options and agent set no `timeout`. Without it, runs time out after 2 minutes.
+- `limits.defaultTimeout` applies to runs whose options and agent set no `timeout`. Without it, runs time out after 2 minutes. A run that times out throws a `CogitatorError` with code `RUN_TIMEOUT` (HTTP 504 in the server adapters).
 - `limits.maxTokensPerRun` is checked before every model call: once the run has used that many input and output tokens, the next call fails with `RUN_TOKEN_LIMIT_EXCEEDED`. The answer of the call that crosses the limit is still returned.
+- `logging` replaces the process-wide logger (`getLogger()`) when the runtime is created, so with several runtimes the last one created with `logging` wins. `level: 'silent'` turns logging off; `destination: 'file'` appends JSON lines to `filePath`. See [Configuration](/docs/getting-started/configuration#logging).
 
 ## Multi-Provider Setup
 
@@ -228,7 +229,7 @@ console.log(`Expected cost: $${estimate.expectedCost.toFixed(4)}`);
 console.log(`Confidence: ${(estimate.confidence * 100).toFixed(0)}%`);
 ```
 
-With `costRouting` enabled, `cog.getCostSummary()` returns what runs have spent and `cog.getCostRouter()` the router itself ([Cost Routing](/docs/advanced/cost-routing)).
+With `costRouting` enabled, `cog.getCostSummary()` returns what runs have spent and `cog.getCostRouter()` the router itself, both before the first run as well ([Cost Routing](/docs/advanced/cost-routing)). A run over budget throws a `CogitatorError` with code `BUDGET_EXCEEDED` (HTTP 429).
 
 ## Global Tool Registry
 
@@ -250,11 +251,11 @@ const memory = await cog.getMemory(); // undefined when memory is not configured
 
 ## Other Methods
 
-| Method                                                   | Returns                                                                                  |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `getGuardrails()` / `setConstitution(constitution)`      | The [Constitutional AI](/docs/advanced/constitutional-ai) instance, or replace its rules |
-| `getInsights(agentId)` / `getReflectionSummary(agentId)` | [Reflection](/docs/advanced/reflection) insights and summary                             |
-| `reflectionEngine`                                       | The reflection engine, when reflection is enabled                                        |
+| Method                                                   | Returns                                                                                                                                                                    |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `getGuardrails()` / `setConstitution(constitution)`      | The [Constitutional AI](/docs/advanced/constitutional-ai) instance, or replace its rules; usable before the first run when `guardrails.model` or `llm.defaultModel` is set |
+| `getInsights(agentId)` / `getReflectionSummary(agentId)` | [Reflection](/docs/advanced/reflection) insights and summary                                                                                                               |
+| `reflectionEngine`                                       | The reflection engine, when reflection is enabled                                                                                                                          |
 
 ## Cleanup
 

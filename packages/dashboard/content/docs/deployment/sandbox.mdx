@@ -15,13 +15,13 @@ pnpm add @cogitator-ai/sandbox
 
 ## SandboxManager
 
-Initializes available executors and routes requests with automatic fallback when Docker or WASM is unavailable. Every call returns a `SandboxResult` — `{ success: true, data }` with `stdout`, `stderr`, `exitCode`, `timedOut` and `duration`, or `{ success: false, error }`.
+Initializes the available executors and routes each request to the one its `type` names; see [Fallback](#fallback) for what happens when that executor is missing. Every call returns a `SandboxResult` — `{ success: true, data }` with `stdout`, `stderr`, `exitCode`, `timedOut` and `duration`, or `{ success: false, error }`.
 
 ```typescript
 import { SandboxManager } from '@cogitator-ai/sandbox';
 
 const sandbox = new SandboxManager({
-  docker: { socketPath: '/var/run/docker.sock' },
+  allowNativeFallback: false,
   pool: { maxSize: 10, idleTimeoutMs: 60_000 },
   defaults: {
     timeout: 30_000,
@@ -68,7 +68,7 @@ const shell = tool({
 });
 ```
 
-For a `docker` tool, the runtime does not call `execute`: it runs `sh -c <args.command>` in the container (with `args.cwd` and `args.env` when present) and returns `{ stdout, stderr, exitCode, timedOut, duration, command }`. For a `wasm` tool, the arguments are passed as JSON on the module's input and its stdout is parsed as JSON when possible. If the sandbox cannot be initialized at all, the tool runs natively and a warning is logged. See [Custom Tools](/docs/tools/custom-tools) for the tool side.
+For a `docker` tool, the runtime does not call `execute`: it runs `sh -c <args.command>` in the container (with `args.cwd` and `args.env` when present) and returns `{ stdout, stderr, exitCode, timedOut, duration, command }`. For a `wasm` tool, the arguments are passed as JSON on the module's input and its stdout is parsed as JSON when possible. The runtime passes `sandbox.allowNativeFallback` on: when Docker is unavailable — or `@cogitator-ai/sandbox` is not installed or fails to start — a `docker` tool runs its `execute` function unsandboxed on the host with a warning, unless `allowNativeFallback: false` turns the call into a tool error. A `wasm` tool whose WASM executor is unavailable fails; it runs its own `execute` function only when `@cogitator-ai/sandbox` is missing or fails to start. See [Custom Tools](/docs/tools/custom-tools) for the tool side.
 
 ## DockerSandboxExecutor
 
@@ -108,7 +108,17 @@ await executor.disconnect();
 
 `resources.memory` accepts strings like `'256MB'` or `'1GB'` (`parseMemory()`), `cpus` is converted to Docker NanoCPUs (`cpusToNanoCpus()`), and `cpuShares`, `mounts` (`{ source, target, readOnly }`), `user` and `env` are passed through. The default timeout is 30 seconds.
 
-Commands are argv arrays executed without a shell (use `['sh', '-c', '...']` for shell syntax). Output is demultiplexed frame by frame and capped at 50 000 bytes per stream, timed-out containers are destroyed, `network.dns` is applied, and `network.allowedHosts` is rejected because Docker cannot enforce an egress allow-list. Containers carry the `ai.cogitator.sandbox=true` label. Without explicit connection options Dockerode's defaults (including `DOCKER_HOST`) are used.
+Commands are argv arrays executed without a shell (use `['sh', '-c', '...']` for shell syntax). Output is demultiplexed frame by frame and capped at 50 000 bytes per stream, timed-out containers are destroyed, `network.dns` is applied, and `network.allowedHosts` is rejected because Docker cannot enforce an egress allow-list. Containers carry the `ai.cogitator.sandbox=true` label.
+
+### Finding the Daemon
+
+Without `docker.socketPath` or `docker.host`, the executor looks for the daemon the way the `docker` CLI does and uses the first candidate that answers a ping:
+
+1. `DOCKER_HOST`, when set (passed to Dockerode, nothing else is tried)
+2. The endpoint of the current Docker context (`DOCKER_CONTEXT`, else `currentContext` in `$DOCKER_CONFIG/config.json`, default `~/.docker`)
+3. The sockets that exist among `/var/run/docker.sock` (Docker Engine), `~/.docker/run/docker.sock` (Docker Desktop), `~/.orbstack/run/docker.sock` (OrbStack), `~/.colima/default/docker.sock` and `~/.colima/docker.sock` (Colima), `~/.rd/docker.sock` (Rancher Desktop) and `$XDG_RUNTIME_DIR/docker.sock` (rootless Docker)
+
+When none of them exists, Dockerode's defaults are tried. An explicit `socketPath` or `host`/`port` is the only candidate.
 
 ## WasmSandboxExecutor
 
@@ -139,7 +149,7 @@ Modules load from URLs, local paths, or npm packages. Idle plugins are pooled pe
 
 ## ContainerPool
 
-Reuses Docker containers across executions. Containers stay alive with `sleep infinity` and commands run via `docker exec`, amortizing startup cost.
+Keeps Docker containers ready for executions. Containers stay alive with `sleep infinity` and commands run via `docker exec`. By default every execution gets a container nothing ran in before: a released container is destroyed and a fresh one with the same settings is started in its place, so the next execution finds a warm spare instead of waiting for startup. Nothing an execution leaves behind — files, processes — is visible to the next run or user.
 
 ```typescript
 import Docker from 'dockerode';
@@ -160,17 +170,17 @@ await pool.release(container);
 await pool.release(container, { corrupted: true });
 ```
 
-`memory` is in bytes here. Releasing with `corrupted: true` destroys the container instead of returning it. Idle containers are cleaned up automatically; `destroyAll()` removes every pooled container. When the pool is full, extra containers are created for the request and destroyed on release. Defaults: `maxSize` 5, `idleTimeoutMs` 60 000. A pooled container is only reused for requests with identical image, resources, network mode, DNS, mounts and user.
+`memory` is in bytes here. Idle containers are cleaned up after `idleTimeoutMs`; `destroyAll()` removes every container and closes the pool. `maxSize` caps the idle and warming containers, not the active ones: when it is reached, no spare is started. Defaults: `maxSize` 5, `idleTimeoutMs` 60 000, `reuseContainers` false. A container only serves requests with identical image, resources, network mode, DNS, mounts and user.
 
-## Fallback Chain
+`reuseContainers: true` (`pool.reuseContainers` on the manager or executor) returns a released container to the pool as it is, the older behaviour: faster, but whatever one execution leaves in the container is visible to the next, including other runs and users. Releasing with `corrupted: true` always destroys the container.
 
-`SandboxManager` falls back when a requested executor is unavailable:
+## Fallback
 
-1. **WASM requested** → Docker → Native
-2. **Docker requested** → Native
-3. **Native** — always available, no isolation
+`SandboxManager` falls back in one case only:
 
-A fallback logs a warning. When nothing in the chain is available the result is `{ success: false, error }`.
+- **Docker requested, Docker unavailable** → the command runs on the host through the native executor, with no isolation, and the first such call logs a warning. `allowNativeFallback: false` refuses instead with `{ success: false, error }`. The option defaults to `true`.
+- **WASM requested, WASM unavailable** → `{ success: false, error }` asking you to install `@extism/extism`. Nothing else can run a WASM module.
+- **Native requested** → always available, no isolation.
 
 Manager `defaults` apply to fallback executions too, and initialization is shared by concurrent callers. The native executor runs a single-element command through the shell and longer commands with exact argv, pipes `stdin`, inherits only `PATH`, `HOME`, temp-dir, locale and Windows system variables from the host, and kills the whole process group on timeout. Check availability first when untrusted code must never run on the host:
 

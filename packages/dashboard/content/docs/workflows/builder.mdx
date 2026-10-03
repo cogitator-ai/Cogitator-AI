@@ -71,7 +71,7 @@ builder.addNode('process', async (ctx) => {
 The optional `options` parameter accepts:
 
 - **`after`** -- Array of node names this node depends on. The node won't execute until all dependencies complete.
-- **`config`** -- Optional `NodeConfig`: `timeout` (ms per attempt), `retries` (extra attempts) and `retryDelay` (ms between attempts). See [Execution](/docs/workflows/execution#per-node-timeouts-and-retries).
+- **`config`** -- Optional `NodeConfig`: `timeout` (ms per attempt), `retries` (extra attempts) and `retryDelay` (ms between attempts), plus `compensation` to roll the node back when a later node fails. See [Execution](/docs/workflows/execution#per-node-timeouts-and-retries) and [Sagas](/docs/workflows/sagas#compensation-in-the-executor).
 
 ```typescript
 builder.addNode('analyze', analyzeNodeFn, {

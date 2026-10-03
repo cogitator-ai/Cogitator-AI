@@ -30,29 +30,18 @@ Conversation ──► LLMEntityExtractor ──► GraphAdapter (storage)
 
 The `LLMEntityExtractor` uses an LLM to identify entities and relationships from text. It prompts the model for JSON output (`responseFormat: { type: 'json_object' }`), then validates and filters the results.
 
-The extractor takes any object with a `chat({ messages, responseFormat })` method that resolves to `{ content }` (`LLMBackendMinimal`). Wrap a Cogitator LLM backend like this:
+Pass it a Cogitator `LLMBackend` together with the `model` to extract with:
 
 ```typescript
-import { Cogitator } from '@cogitator-ai/core';
-import { LLMEntityExtractor, type LLMBackendMinimal } from '@cogitator-ai/memory';
+import { createLLMBackend } from '@cogitator-ai/core';
+import { LLMEntityExtractor } from '@cogitator-ai/memory';
 
-const cog = new Cogitator({
-  llm: { providers: { google: { apiKey: process.env.GOOGLE_API_KEY! } } },
+const backend = createLLMBackend('google', {
+  providers: { google: { apiKey: process.env.GOOGLE_API_KEY! } },
 });
-const backend = cog.getLLMBackend('google/gemini-3.5-flash-lite');
 
-const llmBackend: LLMBackendMinimal = {
-  async chat({ messages, responseFormat }) {
-    const response = await backend.chat({
-      model: 'gemini-3.5-flash-lite',
-      messages,
-      responseFormat,
-    });
-    return { content: response.content };
-  },
-};
-
-const extractor = new LLMEntityExtractor(llmBackend, {
+const extractor = new LLMEntityExtractor(backend, {
+  model: 'gemini-3.5-flash-lite',
   minConfidence: 0.7,
   maxEntitiesPerText: 20,
   maxRelationsPerText: 30,
@@ -80,11 +69,31 @@ console.log(result.relations);
 
 Entities and relations below `minConfidence` are dropped, as are relations whose endpoints are not among the extracted entities. The result also carries the input `text` and a `timestamp`. Use `extractBatch(texts, context)` for several texts.
 
-| Option                | Default | Description                         |
-| --------------------- | ------- | ----------------------------------- |
-| `minConfidence`       | 0.7     | Minimum confidence to keep a result |
-| `maxEntitiesPerText`  | 20      | Max entities returned per text      |
-| `maxRelationsPerText` | 30      | Max relations returned per text     |
+Instead of a backend you can pass any object with a `chat({ model?, messages, responseFormat })` method that resolves to `{ content }` (`LLMBackendMinimal`), for example to post-process responses yourself. With this form `model` is optional; when you set it, it is passed through in each `chat` request:
+
+```typescript
+import { LLMEntityExtractor, type LLMBackendMinimal } from '@cogitator-ai/memory';
+
+const custom: LLMBackendMinimal = {
+  async chat({ model, messages, responseFormat }) {
+    const response = await backend.chat({
+      model: model ?? 'gemini-3.5-flash-lite',
+      messages,
+      responseFormat,
+    });
+    return { content: response.content };
+  },
+};
+
+const customExtractor = new LLMEntityExtractor(custom, { minConfidence: 0.6 });
+```
+
+| Option                | Default | Description                                                                              |
+| --------------------- | ------- | ---------------------------------------------------------------------------------------- |
+| `model`               | —       | Model to extract with; required with an `LLMBackend` (the constructor throws without it) |
+| `minConfidence`       | 0.7     | Minimum confidence to keep a result                                                      |
+| `maxEntitiesPerText`  | 20      | Max entities returned per text                                                           |
+| `maxRelationsPerText` | 30      | Max relations returned per text                                                          |
 
 ### Entity Types
 
@@ -138,7 +147,7 @@ const graph = new PostgresGraphAdapter({
 | `schema`           | `cogitator` | Schema holding the graph tables     |
 | `vectorDimensions` | 768         | Size of the node `embedding` column |
 
-The adapter does not create the schema or the `vector` extension: both must exist — `PostgresAdapter.connect()` creates them. Database errors are thrown rather than returned as a failed `MemoryResult`.
+The adapter does not create the schema or the `vector` extension: both must exist — `PostgresAdapter.connect()` creates them.
 
 ### SQLiteGraphAdapter
 
@@ -159,7 +168,7 @@ await graph.close();
 
 ### Adding Nodes and Edges
 
-Node and edge methods return a `MemoryResult` — `unwrap()` it (imported from `@cogitator-ai/memory`) or check `success`.
+Node and edge methods return a `MemoryResult` — `unwrap()` it (imported from `@cogitator-ai/memory`) or check `success`. Both adapters report database errors as `{ success: false, error }` rather than throwing, including failures inside `traverse`, `findShortestPath` and `mergeNodes`.
 
 ```typescript
 const alice = unwrap(

@@ -46,6 +46,13 @@ npx create-cogitator-app my-project \
   --no-git
 ```
 
+Or accept the defaults for everything you don't pass:
+
+```bash
+npx create-cogitator-app -y
+npx create-cogitator-app my-project --provider openai --yes
+```
+
 | Flag                       | Shorthand | Values                                                         |
 | -------------------------- | --------- | -------------------------------------------------------------- |
 | `[directory]`              |           | First positional argument; its last segment names the project  |
@@ -54,8 +61,9 @@ npx create-cogitator-app my-project \
 | `--pm`                     |           | `pnpm`, `npm`, `yarn`, `bun`                                   |
 | `--docker` / `--no-docker` |           | Include Docker Compose                                         |
 | `--git` / `--no-git`       |           | Initialize a git repository                                    |
+| `--yes`                    | `-y`      | Don't prompt; use the defaults for every missing value         |
 
-An invalid flag value is ignored and asked for interactively; anything not given by a flag is prompted for.
+An invalid flag value is ignored and asked for interactively; anything not given by a flag is prompted for. With `--yes` nothing is prompted and the defaults fill the gaps: `my-agents`, `basic`, `ollama`, the detected package manager, Docker Compose on, git on.
 
 ## Providers
 
@@ -85,7 +93,7 @@ my-project/
 └── README.md
 ```
 
-The generated code configures `Cogitator` in `src/` and does not read `cogitator.yml`; its top-level `provider` / `model` keys are not the [`@cogitator-ai/config`](/docs/getting-started/configuration) format, so move them under `llm` (`defaultProvider`, `defaultModel`) before loading the file with `loadConfig()`.
+`cogitator.yml` is in [`@cogitator-ai/config`](/docs/getting-started/configuration) format (`llm.defaultProvider`, `llm.defaultModel`, and `memory` for the `memory` template) and is read by `cogitator run` and `cogitator deploy`. The generated code configures `Cogitator` in `src/` itself and does not load it.
 
 `docker-compose.yml` runs Redis 7 and Postgres 16 (credentials from `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, all defaulting to `cogitator`), plus Ollama when it is the provider.
 

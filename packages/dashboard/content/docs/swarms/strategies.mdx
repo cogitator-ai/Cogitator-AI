@@ -74,13 +74,13 @@ const pool = swarm('support-pool')
   .build(cogitator);
 ```
 
-| Option      | Default        | Description                                            |
-| ----------- | -------------- | ------------------------------------------------------ |
-| `sticky`    | `false`        | Enable sticky sessions — same agent handles follow-ups |
-| `stickyKey` | `undefined`    | Function to extract a routing key from the input       |
-| `rotation`  | `'sequential'` | `'sequential'` or `'random'`                           |
+| Option      | Default        | Description                                      |
+| ----------- | -------------- | ------------------------------------------------ |
+| `sticky`    | `false`        | Enable sticky sessions — same key, same agent    |
+| `stickyKey` | `undefined`    | Function to extract a routing key from the input |
+| `rotation`  | `'sequential'` | `'sequential'` or `'random'`                     |
 
-The rotation position lives in the `Swarm` instance, so it carries over between runs. Sticky assignments map each `stickyKey` to the agent that first handled it. In the current release `sticky: true` with `rotation: 'sequential'` does not advance the rotation, so every new key lands on the same agent — pair `sticky` with `rotation: 'random'` to spread new keys. The `round-robin:assigned` event reports each assignment.
+The rotation position lives in the `Swarm` instance, so it carries over between runs. With `sticky: true` a known `stickyKey` stays with the agent that handled it first, while a new key takes the next agent of the rotation; without `stickyKey` every run rotates. The `round-robin:assigned` event reports each assignment.
 
 **Best for:** Load balancing, support teams, distributing work evenly.
 
@@ -116,7 +116,7 @@ const result = await reviewBoard.run({ input: 'Should we merge this PR? Vote MER
 | `onNoConsensus` | yes      | `'fail'`, `'escalate'` or `'supervisor-decides'`                                         |
 | `weights`       | no       | Per-agent vote weights for `'weighted'` (falls back to `agentMetadata` `weight`, then 1) |
 
-- **Voting.** Agents vote by writing a `VOTE: <decision>` line (a `decision:` / `vote:` / `choose:` / `select:` line also counts). A vote recorded with the `cast_vote` tool for the same round wins over the text, but the voting tools are not attached automatically — create them with `createVotingTools(blackboard, events, agentName)` (see [Communication](/docs/swarms/communication#swarm-tools)). Decisions are compared case-, punctuation- and markdown-insensitively.
+- **Voting.** Agents vote by writing a `VOTE: <decision>` line (a `decision:` / `vote:` / `choose:` / `select:` line also counts). Voters get the `cast_vote`, `get_votes`, `change_vote` and `get_consensus_status` tools automatically (the supervisor does not, and distributed swarms attach no tools); a vote recorded with `cast_vote` for the same round wins over the text. Decisions are compared case-, punctuation- and markdown-insensitively.
 - **Winning.** `majority` and `weighted` pick the leading decision when its share of **all eligible voters** (or of their total weight) reaches the threshold and it is not tied — abstentions count against it. `unanimous` needs every voter on the same decision.
 - **Rounds.** Voters run one after another; from round 2 on they see the previous votes and discussion and can change their position.
 - **No consensus.** `'fail'` throws, `'escalate'` returns a report that starts with `ESCALATION REQUIRED`, and `'supervisor-decides'` runs the supervisor (an agent added with `.supervisor()`, which does not vote) on the votes and discussion; without a supervisor it returns the `NO CONSENSUS` report.
@@ -191,7 +191,7 @@ If no bid reaches `minBid`, the run throws. The winner's answer is the output; `
 
 ## Pipeline
 
-Sequential processing through specialized stages. Each stage's output feeds into the next. Stages can act as quality gates that reject bad output and trigger retries.
+Sequential processing through specialized stages. Each stage's output feeds into the next. Stages can act as quality gates that reject bad output and trigger retries. Stages come from `pipeline.stages` or the top-level `stages` field (`gates` and `stageInput` always come from `pipeline`); different stages in both places throw.
 
 ```typescript
 const contentPipeline = swarm('content-pipeline')
@@ -327,7 +327,23 @@ An offer becomes an agreement once **every recipient** has accepted it with `acc
 
 `result.negotiationResult` holds `outcome`, `agreement` (`parties`, `terms`, `reachedVia`), all `offers`, `coalitions`, each agent's `finalPositions`, the `convergenceHistory`, `rounds` and `duration`; `result.output` is a readable summary of the same.
 
-Approval gates fire on their `trigger` when the optional `condition` holds (`'always'`, `'round>3'`, `'convergence>0.8'`, `'parties>2'`, or `'term:price>=10000'`). A request is announced with the `negotiation:approval-required` event. Inside a swarm, a gate resolves through its `timeout` and `timeoutAction` (`'approve'`, `'reject'` or `'escalate'`); a gate without `timeout` is rejected at once, and a rejected agreement is withdrawn while the negotiation continues. To answer requests yourself, drive a `NegotiationStrategy` instance directly and call `respondToApproval(requestId, response)`.
+Approval gates fire on their `trigger` when the optional `condition` holds (`'always'`, `'round>3'`, `'convergence>0.8'`, `'parties>2'`, or `'term:price>=10000'`). A request is announced with the `negotiation:approval-required` event. A gate with `timeout` resolves through its `timeoutAction` (`'approve'`, `'reject'` or `'escalate'`) when nobody answers in time; a gate without `timeout` waits for `swarm.respondToApproval(request.id, response)`. A run `timeout` or `swarm.abort()` stops the wait. A rejected agreement is withdrawn while the negotiation continues.
+
+```typescript
+import type { NegotiationApprovalRequest } from '@cogitator-ai/types';
+
+negotiationSwarm.on('negotiation:approval-required', (event) => {
+  const { request } = event.data as { request: NegotiationApprovalRequest };
+  negotiationSwarm.respondToApproval(request.id, {
+    requestId: request.id,
+    decision: 'approved',
+    approved: true,
+    continueNegotiation: false,
+    respondedBy: 'legal-team',
+    respondedAt: Date.now(),
+  });
+});
+```
 
 **Best for:** Contract negotiations, resource allocation, multi-stakeholder decisions.
 

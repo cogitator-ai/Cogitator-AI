@@ -57,7 +57,7 @@ The Zod schemas are exported too (`calcToolSchema`, `jsonToolSchema`, …, `sign
 
 ### Executing Tools
 
-Inside Cogitator, tools run through the `@cogitator-ai/sandbox` WASM executor when it is available, otherwise through the tool's own `execute()`. You can also call them directly -- parameters are validated with the Zod schema, the module runs in an Extism worker thread, the timeout terminates the worker, and `context.signal` aborts the call:
+Inside Cogitator, tools run through the `@cogitator-ai/sandbox` WASM executor; only when that package is not installed or cannot start does the runtime call the tool's own `execute()`. A WASM call never falls back to Docker or the host. You can also call them directly -- parameters are validated with the Zod schema, the module runs in an Extism worker thread, the timeout terminates the worker, and `context.signal` aborts the call:
 
 ```typescript
 const result = await createCalcTool().execute(

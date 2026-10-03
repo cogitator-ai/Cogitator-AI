@@ -53,15 +53,7 @@ You can access nested aggregation fields with dot notation:
 
 ### Direction Detection
 
-Metrics whose names start with `latency` or `cost` (or end with `Duration` or `Latency`) are treated as "lower is better" — the assertion passes when the actual value is at or below the threshold. All other metrics are "higher is better" — including `tokenUsage`, so `threshold('tokenUsage', 2000)` passes when the mean is **at least** 2000. To cap token usage, use a [custom assertion](#custom-assertions):
-
-```typescript
-const tokenBudget = assertion({
-  name: 'tokenBudget',
-  check: (aggregated) => (aggregated.tokenUsage?.mean ?? 0) <= 2000,
-  message: 'Mean token usage above 2000',
-});
-```
+Metrics whose names start with `latency`, `cost` or `tokenUsage` (or end with `Duration` or `Latency`) are treated as "lower is better" — the assertion passes when the actual value is at or below the threshold, so `threshold('tokenUsage', 2000)` caps the mean at 2000 tokens. All other metrics are "higher is better". `threshold` and `noRegression` use the same rule.
 
 ## noRegression
 
@@ -107,9 +99,7 @@ const suite = new EvalSuite({
 | ----------- | ------ | ------- | -------------------------------------------- |
 | `tolerance` | number | 0.05    | Allowed regression as a fraction (0.05 = 5%) |
 
-For "higher is better" metrics, the assertion fails if `actual < baseline * (1 - tolerance)`. For "lower is better" metrics (latency, cost), it fails if `actual > baseline * (1 + tolerance)`. Only means are compared, and baseline metrics missing from the current run are skipped. The assertion reports the first regression it finds, and also fails when the baseline file cannot be read or none of its metrics are in the current results.
-
-Because `tokenUsage` counts as "higher is better", a baseline that contains it flags a **drop** in token usage as a regression; remove `tokenUsage` from the baseline file if you track it with `statisticalMetrics`.
+For "higher is better" metrics, the assertion fails if `actual < baseline * (1 - tolerance)`. For "lower is better" metrics (latency, cost, tokenUsage), it fails if `actual > baseline * (1 + tolerance)`. Only means are compared, and baseline metrics missing from the current run are skipped. The assertion reports the first regression it finds, and also fails when the baseline file cannot be read or none of its metrics are in the current results.
 
 ### Baseline Workflow
 

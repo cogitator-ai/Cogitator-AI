@@ -70,7 +70,7 @@ interface WithCacheOptions {
 | `redisClient`      | `RedisClientLike`       | --            | Required for redis storage (throws without it)    |
 | `onHit`            | `function`              | --            | Called on an exact or semantic hit                |
 | `onMiss`           | `function`              | --            | Called before the tool runs on a miss             |
-| `onEvict`          | `function`              | --            | Called when `cache.invalidate()` removes an entry |
+| `onEvict`          | `function`              | --            | Called when an entry is invalidated or evicted    |
 
 `maxSize` caps the number of entries per storage; when it is reached, the least recently used entry is dropped. Expired entries are dropped when they are read.
 
@@ -157,35 +157,23 @@ For persistent, shared caching across multiple processes or server instances. Us
 
 ```typescript
 import Redis from 'ioredis';
-import { withCache, webScrape, type RedisClientLike } from '@cogitator-ai/core';
+import { withCache, webScrape } from '@cogitator-ai/core';
 
 const redis = new Redis('redis://localhost:6379');
-
-const redisClient: RedisClientLike = {
-  get: (key) => redis.get(key),
-  setex: (key, seconds, value) => redis.setex(key, seconds, value),
-  del: (...keys) => redis.del(...keys),
-  mget: (...keys) => redis.mget(...keys),
-  zadd: async (key, score, member) => Number(await redis.zadd(key, score, member)),
-  zrange: (key, start, stop) => redis.zrange(key, String(start), String(stop)),
-  zrem: (key, ...members) => redis.zrem(key, ...members),
-  incr: (key) => redis.incr(key),
-  decr: (key) => redis.decr(key),
-  exists: (...keys) => redis.exists(...keys),
-  scan: (cursor, { match, count = 100 }) => redis.scan(cursor, 'MATCH', match, 'COUNT', count),
-};
 
 const cached = withCache(webScrape, {
   strategy: 'exact',
   ttl: '1h',
   maxSize: 5000,
   storage: 'redis',
-  redisClient,
+  redisClient: redis,
   keyPrefix: 'myapp:tools',
 });
 ```
 
-Clients rarely match the interface method for method — `scan` takes `{ match, count }` here, and node-redis spells commands `setEx`/`zAdd` — so pass a small adapter like the one above. Entries are written with `SETEX`, so Redis expires them on its own as well.
+An ioredis client matches `RedisClientLike` as it is. Other clients need a small adapter: node-redis, for example, spells the commands `setEx`/`zAdd` and takes `SCAN` options as an object. Entries are written with `SETEX`, so Redis expires them on its own as well.
+
+The storage keeps its data under `keyPrefix` (a `:` is appended when it does not end with one): each entry at `<prefix>:entry:<cache key>`, the LRU order in the sorted set `<prefix>:lru` and the entry count in `<prefix>:counter`. The cache key itself is `<keyPrefix>:<toolName>:<hash>`, so with the options above an entry lives at `myapp:tools:entry:myapp:tools:web_scrape:<hash>`. Cached tools that share a `keyPrefix` share one LRU and one `maxSize`, and `cache.clear()` deletes every key under the prefix.
 
 The `RedisClientLike` interface requires the methods used by Redis-backed cache storage:
 
@@ -196,15 +184,18 @@ interface RedisClientLike {
   del(...keys: string[]): Promise<number>;
   mget(...keys: string[]): Promise<(string | null)[]>;
   zadd(key: string, score: number, member: string): Promise<number>;
-  zrange(key: string, start: number, stop: number): Promise<string[]>;
+  zrange(key: string, start: number, stop: string): Promise<string[]>;
   zrem(key: string, ...members: string[]): Promise<number>;
   incr(key: string): Promise<number>;
   decr(key: string): Promise<number>;
   exists(...keys: string[]): Promise<number>;
   scan(
     cursor: number | string,
-    options: { match: string; count?: number }
-  ): Promise<[number | string, string[]]>;
+    matchToken: 'MATCH',
+    pattern: string,
+    countToken: 'COUNT',
+    count: number | string
+  ): Promise<[cursor: string, keys: string[]]>;
 }
 ```
 
@@ -216,7 +207,7 @@ import { createToolCacheStorage } from '@cogitator-ai/core';
 const memoryStorage = createToolCacheStorage('memory', { maxSize: 1000 });
 
 const redisStorage = createToolCacheStorage('redis', {
-  redisClient,
+  redisClient: redis,
   keyPrefix: 'cache:',
   maxSize: 5000,
 });
@@ -300,7 +291,7 @@ Avoid caching tools that:
 
 ## Observability Callbacks
 
-Use the `onHit`, `onMiss`, and `onEvict` callbacks to integrate with your monitoring. `onEvict` fires only for `cache.invalidate()`; entries dropped to stay under `maxSize` show up in `cache.stats().evictions` instead, and expired entries are dropped silently.
+Use the `onHit`, `onMiss`, and `onEvict` callbacks to integrate with your monitoring. `onEvict` receives the cache key of each entry removed by `cache.invalidate()` or dropped to stay under `maxSize` (in memory and in Redis); expired entries are dropped silently.
 
 ```typescript
 const cached = withCache(webSearch, {

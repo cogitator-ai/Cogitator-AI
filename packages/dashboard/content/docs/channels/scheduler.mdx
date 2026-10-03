@@ -61,6 +61,7 @@ interface HeartbeatConfig {
   staggerMs?: number; // random startup delay (0-N ms) to prevent thundering herd
   retentionMs?: number; // default: 7 days — fired/cancelled entries are cleaned up hourly
   onError?: (error: Error, entry?: TimerEntry) => void; // store/onFire failures never stop the loop
+  onClaimLost?: (entry: TimerEntry) => void; // claiming stores only, see Persistence
   onRunComplete?: (
     entry: TimerEntry,
     status: 'ok' | 'error',
@@ -150,7 +151,13 @@ Rescheduled cron/interval jobs get a new id; use `listJobs()` to find the curren
 
 `SimpleTimerStore` persists timers to a JSON file with atomic writes (write to temp file, then rename). Timers survive restarts. Without `persistPath` it keeps timers in memory.
 
-`HeartbeatScheduler` accepts any `TimerStore`. It does not renew or release claims of stores that claim timers (the Redis/Postgres timer stores of `@cogitator-ai/workflows`), so run a single scheduler per store.
+`HeartbeatScheduler` accepts any `TimerStore`. With a store that claims the timers `getOverdue()` hands out (one with `claimTtl`, `renew` and `release`, such as `RedisTimerStore` / `PostgresTimerStore` from `@cogitator-ai/workflows`), several schedulers can share one store:
+
+- the claim is renewed right before a task fires and every `claimTtl / 3` while `onFire` runs
+- when a renewal says the claim is gone, `onClaimLost(entry)` is called: before firing the task is skipped (another worker has it); while running, its lease ran out and another worker may fire it too
+- claims are released for disabled tasks, tasks over `maxRetries`, and overdue tasks the poll did not reach before `stop()`, so other workers pick them up right away
+
+Renewal and release errors go to `onError`.
 
 ```typescript
 const store = new SimpleTimerStore({

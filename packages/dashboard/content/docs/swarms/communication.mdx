@@ -98,7 +98,6 @@ const team = swarm('collab-team')
   .agents([agentA, agentB, agentC])
   .messaging({
     enabled: true,
-    protocol: 'direct',
     maxMessageLength: 2000,
     maxMessagesPerTurn: 5,
     maxTotalMessages: 100,
@@ -134,7 +133,7 @@ const thread = bus.getConversation('agent-a', 'agent-b');
 const all = bus.getAllMessages();
 ```
 
-Read tracking is per agent. Inside a swarm, unread messages are injected into the recipient's next turn exactly once (emitting `message:received`), and the `read_messages` tool marks the messages it returns as read. The concrete buses (`InMemoryMessageBus`, `RedisMessageBus`) also have `markAsRead(agentName, ids)`.
+Read tracking is per agent. Inside a swarm, unread messages are injected into the recipient's next turn exactly once (emitting `message:received`), and the `read_messages` tool marks the messages it returns as read. `swarm.messageBus` is typed as `ReadTrackingMessageBus`, so it also has `markAsRead(agentName, ids)` and `onMessage(listener)` (every message sent on the bus; returns an unsubscribe function).
 
 ### Subscribing to Incoming Messages
 
@@ -217,15 +216,28 @@ The event emitter keeps a rolling buffer of recent events (default 1000):
 
 ```typescript
 const allEvents = team.events.getEvents();
-const agentEvents = allEvents.filter((e) => e.agentName === 'frontend-dev');
-const roundEvents = allEvents.filter((e) => e.type === 'consensus:round');
+const agentEvents = team.events.getEventsByAgent('frontend-dev');
+const roundEvents = team.events.getEventsByType('consensus:round');
+team.events.clearEvents();
 ```
 
-The concrete emitters (`SwarmEventEmitterImpl`, `RedisSwarmEventEmitter`) also offer `getEventsByType`, `getEventsByAgent` and `clearEvents`. `SwarmRunOptions.onEvent` receives every event of one run.
+`swarm.events` is typed as `QueryableSwarmEventEmitter`, which adds `getEventsByType`, `getEventsByAgent` and `clearEvents` to `SwarmEventEmitter`. `SwarmRunOptions.onEvent` receives every event of one run.
 
 ## Swarm Tools
 
-Strategies attach the tools they depend on: the hierarchical supervisor gets the delegation tools and negotiating agents get the negotiation tools (in-process swarms only). Messaging, blackboard and voting tools are not attached automatically. The factories build them for a given blackboard, bus and event emitter:
+Strategies attach the tools they depend on: the hierarchical supervisor gets the delegation tools, consensus voters the voting tools and negotiating agents the negotiation tools. The messaging and blackboard tools are opt-in with `agentTools` (or `SwarmBuilder.agentTools()`), which gives every agent both sets bound to the swarm's own bus and blackboard:
+
+```typescript
+const team = swarm('collab-team')
+  .strategy('round-robin')
+  .agents([agentA, agentB])
+  .agentTools({ messaging: true, blackboard: true })
+  .build(cogitator);
+```
+
+Tools an agent already defines with the same name are left untouched. All of this applies to in-process swarms only: distributed swarms attach no tools, and `agentTools` is rejected there (and when `messaging.enabled` or `blackboard.enabled` is `false`).
+
+The factories build the same tools for a given blackboard, bus and event emitter:
 
 | Factory                  | Tools                                                                                                                                                                     |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

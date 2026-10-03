@@ -203,7 +203,7 @@ const cog = new Cogitator({
   memory: {
     adapter: 'postgres',
     postgres: { connectionString: process.env.DATABASE_URL! },
-    embedding: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY!, dimensions: 768 },
+    embedding: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY! },
     contextBuilder: {
       maxTokens: 8000,
       strategy: 'hybrid',
@@ -223,8 +223,9 @@ await cog.run(agent, { input: 'Hi, I am Alice', threadId: 'thread-alice' });
 await cog.run(agent, { input: 'What is my name?', threadId: 'thread-alice' });
 ```
 
-- `memory.adapter` accepts `'memory'`, `'redis'` (requires `redis.url`) and `'postgres'` (requires `postgres.connectionString`). For SQLite, MongoDB or a Redis cluster, connect the adapter yourself and assign it with `cog.memory = adapter`; such runs load the last 20 entries, since the context builder is only created from the `memory` config.
-- With `contextBuilder` set, each run builds its context as described above (`maxTokens` defaults to 4000, `strategy` to `'recent'`). Postgres is used as the fact and embedding adapter automatically. The runtime creates the Postgres `embeddings` table with 768-dimensional vectors, so pick an embedding config that produces 768 dimensions (`dimensions: 768` with OpenAI `text-embedding-3-*` or Google, or Ollama `nomic-embed-text`); the dimension cannot be changed through the `memory` config. Without `contextBuilder`, a run loads the last 20 entries of the thread.
+- `memory.adapter` names the thread store and takes its settings from the key of the same name: `'memory'` (`inMemory`), `'redis'` (`redis.url`, `redis.host` + `redis.port`, or `redis.cluster`), `'postgres'` (`postgres.connectionString`), `'sqlite'` (`sqlite.path`) or `'mongodb'` (`mongodb.uri`). When the required setting is missing or the connection fails, the run goes on without memory and logs a warning. An adapter you connect yourself can be assigned with `cog.memory = adapter`; such runs load the last 20 entries, since the context builder is only created from the `memory` config.
+- With `contextBuilder` set, each run builds its context as described above (`maxTokens` defaults to 4000, `strategy` to `'recent'`). A Postgres store is also the fact adapter, and the embedding adapter unless `memory.qdrant` is set. The runtime creates the Postgres `embeddings` table with the vector size of `memory.embedding` (768 without one). Without `contextBuilder`, a run loads the last 20 entries of the thread.
+- `'qdrant'` is not a thread store. For semantic context from Qdrant, keep a thread store as `adapter` and add `memory.qdrant` (`url`, `apiKey`, `collection`, `dimensions` matching the embedding model) together with `memory.embedding` and `contextBuilder: { includeSemanticContext: true }`. The runtime searches the collection but does not write to it; add embeddings with your own `QdrantAdapter`. See [Configuration](/docs/getting-started/configuration#memory) for a YAML example.
 - Per run, `useMemory: false` disables memory, `loadHistory: false` / `saveHistory: false` skip loading or saving, and `onMemoryError` is called when a load or save fails.
 - `await cog.getMemory()` connects and returns the adapter before any run — see [Cogitator](/docs/core/cogitator).
 
@@ -250,14 +251,28 @@ Three helpers build on top of any `MemoryAdapter`. The [channels gateway](/docs/
 **`SessionManager`** maps a user on a channel to a long-lived thread (`session_<channelType>_<userId>`) and tracks its status, message count and per-session config overrides:
 
 ```typescript
+import { createLLMBackend } from '@cogitator-ai/core';
 import { SessionManager, CompactionService, InMemoryAdapter } from '@cogitator-ai/memory';
 
 const memory = new InMemoryAdapter();
 await memory.connect();
 
+const llm = createLLMBackend('google', {
+  providers: { google: { apiKey: process.env.GOOGLE_API_KEY! } },
+});
+
 const compaction = new CompactionService({
   adapter: memory,
-  summarize: async (messages) => `Summary of ${messages.length} messages`,
+  summarize: async (messages, { model, prompt } = {}) => {
+    const response = await llm.chat({
+      model: model ?? 'gemini-3.5-flash-lite',
+      messages: [
+        { role: 'system', content: prompt ?? 'Summarize this conversation in a few sentences.' },
+        ...messages,
+      ],
+    });
+    return response.content;
+  },
 });
 
 const sessions = new SessionManager(memory, { compaction });
@@ -281,6 +296,8 @@ const result = await compaction.compact(session.id, {
   strategy: 'summary',
   threshold: 8000,
   keepRecent: 10,
+  summaryModel: 'gemini-3.5-flash',
+  summaryPrompt: 'Keep names, decisions and open questions.',
 });
 // { sessionId, originalMessages, compactedMessages, summaryTokens }
 ```
@@ -291,7 +308,7 @@ const result = await compaction.compact(session.id, {
 | `sliding-window` | Deletes older entries                                                                              |
 | `hybrid`         | `sliding-window` when 5 or fewer entries would be removed, otherwise `summary`                     |
 
-`summarize` is your function — call any LLM in it. `sessions.compact()` throws unless the manager was created with `{ compaction }`.
+`summarize` is your function — call any LLM in it. It receives the messages being replaced and, as a second argument, `SummarizeOptions` `{ model, prompt }` taken from the `summaryModel` / `summaryPrompt` of the `compact()` config (either may be `undefined`). `sessions.compact()` throws unless the manager was created with `{ compaction }`.
 
 **`CoreFactsStore`** is a small SQLite key–value store (requires `better-sqlite3`) for always-on facts about the user, with a history of every value:
 

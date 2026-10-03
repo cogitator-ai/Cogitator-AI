@@ -223,7 +223,7 @@ The vector dimensions of your embedding model **must** match the adapter configu
 - `InMemoryEmbeddingAdapter` handles any dimension since it uses in-process cosine similarity (vectors of different lengths score 0).
 - `PostgresGraphAdapter` takes `vectorDimensions` (default 768) for node embeddings.
 
-When memory is configured through `Cogitator` (`memory.adapter: 'postgres'`), the table is created with 768 dimensions, so choose an embedding config that yields 768-dimensional vectors (for example `dimensions: 768` or Ollama `nomic-embed-text`).
+When memory is configured through `Cogitator` (`memory.adapter: 'postgres'`), the table is created with the dimensions of `memory.embedding` (768 without one). `memory.qdrant.dimensions` must be set to match the embedding model; the runtime logs a warning when it does not.
 
 pgvector's `ivfflat` index supports up to 2000 dimensions; with larger vectors (e.g. 3072) the adapter logs a warning and searches without the index.
 

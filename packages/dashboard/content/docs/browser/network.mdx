@@ -101,7 +101,7 @@ Wait for an HTTP response on the active tab whose URL contains `urlPattern` as a
 
 ### `browser_get_api_calls`
 
-Get XHR and fetch calls recorded since the session started (the latest 1000 are kept). Filter by URL substring or `/regex/flags` literal and by HTTP method (case-insensitive); pass `clear: true` to empty the whole history — not only the matching calls — after reading it. Failed calls are recorded with `status: 0` and an `error` message.
+Get XHR and fetch calls recorded since the session started (the latest 1000 are kept). Filter by URL substring or `/regex/flags` literal and by HTTP method (case-insensitive); pass `clear: true` to remove the returned calls from the history after reading them; calls the filters excluded are kept. Failed calls are recorded with `status: 0` and an `error` message.
 
 ```typescript
 // get all captured API calls
@@ -113,7 +113,7 @@ Get XHR and fetch calls recorded since the session started (the latest 1000 are 
 // filter by method
 { "method": "POST" }
 
-// both, then clear the history
+// both, then remove the returned calls from the history
 { "urlPattern": "/api/", "method": "GET", "clear": true }
 ```
 

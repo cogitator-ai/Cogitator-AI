@@ -480,7 +480,16 @@ interface PiiConfig {
   custom?: Array<{ type: string; pattern: RegExp }>;
   onDetect?: (counts: Record<string, number>) => void;
 }
+
+interface LoggingConfig {
+  level?: 'debug' | 'info' | 'warn' | 'error' | 'silent'; // default: 'info'
+  format?: 'json' | 'pretty'; // default: 'pretty' ('json' for files)
+  destination?: 'console' | 'file'; // default: 'console'
+  filePath?: string; // required for 'file'
+}
 ```
+
+`logging` configures the process-wide logger (`getLogger()` from `@cogitator-ai/core`), so the last `Cogitator` created with `logging` sets it for every runtime in the process. `'silent'` outputs nothing; `destination: 'file'` appends one line per entry to `filePath` (JSON lines unless `format` is set) and falls back to the console, with a warning, when `filePath` is missing or the runtime has no file system.
 
 ## Memory Types
 
@@ -546,6 +555,8 @@ enum ErrorCode {
   AGENT_MAX_ITERATIONS = 'AGENT_MAX_ITERATIONS',
   RUN_TOKEN_LIMIT_EXCEEDED = 'RUN_TOKEN_LIMIT_EXCEEDED',
   RUN_NOT_PAUSED = 'RUN_NOT_PAUSED',
+  RUN_TIMEOUT = 'RUN_TIMEOUT',
+  BUDGET_EXCEEDED = 'BUDGET_EXCEEDED',
   WORKFLOW_NOT_FOUND = 'WORKFLOW_NOT_FOUND',
   WORKFLOW_STEP_FAILED = 'WORKFLOW_STEP_FAILED',
   WORKFLOW_CYCLE_DETECTED = 'WORKFLOW_CYCLE_DETECTED',
@@ -561,7 +572,9 @@ enum ErrorCode {
 }
 ```
 
-`ERROR_STATUS_CODES` maps each code to an HTTP status; `isRetryableError(error)` and `getRetryDelay(error, defaultDelay = 1000)` read `retryable` / `retryAfter` (and treat plain errors mentioning timeouts, connection resets, rate limits, 429 or 503 as retryable).
+`cog.run()` throws a `CogitatorError` when a run hits its `timeout` (`Run timed out after <n>ms`, `RUN_TIMEOUT`), when cost routing finds the budget exceeded (`Budget exceeded: …`, `BUDGET_EXCEEDED`), and when guardrails block the input or output (`Input blocked: …` / `Output blocked: …`, `LLM_CONTENT_FILTERED`, with `details.harmScores`), so server adapters answer with that status and message.
+
+`ERROR_STATUS_CODES` maps each code to an HTTP status (for example `RUN_TIMEOUT` → 504, `BUDGET_EXCEEDED` → 429, `LLM_CONTENT_FILTERED` → 400); `isRetryableError(error)` and `getRetryDelay(error, defaultDelay = 1000)` read `retryable` / `retryAfter` (and treat plain errors mentioning timeouts, connection resets, rate limits, 429 or 503 as retryable).
 
 ## Other Modules
 

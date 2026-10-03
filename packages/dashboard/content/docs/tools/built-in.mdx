@@ -21,11 +21,11 @@ const everything = new Agent({
   name: 'power-user',
   model: 'openai/gpt-6.1-sol',
   instructions: 'You are a helpful assistant.',
-  tools: [...builtinTools],
+  tools: builtinTools,
 });
 ```
 
-`builtinTools` is a readonly tuple, so spread it into the `tools` array. Prefer picking the tools an agent needs: `builtinTools` includes `exec`, `file_delete` and `send_email`.
+`builtinTools` is a `Tool[]`, so pass it as `tools` directly or spread it next to your own tools. Prefer picking the tools an agent needs: `builtinTools` includes `exec`, `file_delete` and `send_email`.
 
 | Export          | Tool name        | Export         | Tool name       |
 | --------------- | ---------------- | -------------- | --------------- |
@@ -380,7 +380,7 @@ Executes shell commands and returns stdout, stderr and the exit code. Declares `
 | `timeout` | `number` | Timeout in ms (100 - 300000, default: 30000) |
 | `env`     | `Record` | Additional environment variables             |
 
-`exec` declares a Docker sandbox (`cogitator/sandbox:base`, 256 MB, 100 PIDs, no network). Inside a `Cogitator` the command runs in that container through `@cogitator-ai/sandbox`. When the sandbox cannot be initialized (package not installed, Docker unreachable), the runtime logs `Sandbox unavailable, executing natively` and runs the command **on the host**. See [Sandbox](/docs/deployment/sandbox).
+`exec` declares a Docker sandbox (`cogitator/sandbox:base`, 256 MB, 100 PIDs, no network). Inside a `Cogitator` the command runs in that container through `@cogitator-ai/sandbox`. When the sandbox package is not installed or Docker is unreachable, the runtime logs a warning and runs the command **on the host**, unless `sandbox.allowNativeFallback: false` on the `Cogitator` makes the call fail. See [Sandbox](/docs/deployment/sandbox).
 
 ---
 

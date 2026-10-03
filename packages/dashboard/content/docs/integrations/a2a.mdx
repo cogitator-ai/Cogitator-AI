@@ -53,7 +53,14 @@ This exposes:
 - `GET /.well-known/agent.json` -- Agent Card discovery
 - `POST /a2a` -- JSON-RPC endpoint for messaging, streaming, and task management
 
-`cardUrl` is the `url` the cards advertise. Without it the cards advertise `basePath` (default `/a2a`); `basePath` changes only that URL — the adapters always serve the two routes above.
+`basePath` (default `/a2a`, must start with `/`) is the JSON-RPC path the adapters serve, relative to where they are mounted, and the card URL when `cardUrl` is unset; the server exposes it as `a2aServer.basePath`. For Next.js, put the `POST` route file at that path. `cardUrl` is the `url` the cards advertise.
+
+```typescript
+const a2aServer = new A2AServer({ agents: { researcher }, cogitator, basePath: '/rpc' });
+
+app.use(a2aExpress(a2aServer)); // POST /rpc
+const client = new A2AClient('http://localhost:3000', { rpcPath: a2aServer.basePath });
+```
 
 ### Agent Cards
 
@@ -105,7 +112,19 @@ const a2aServer = new A2AServer({
 });
 ```
 
-`/.well-known/agent.json` then returns an array of cards. `message/send`, `message/stream` and `agent/extendedCard` pick the agent from an `agentName` param and fall back to the first registered agent. `A2AClient` does not send `agentName`, so it always talks to the first agent; to reach another one, send the JSON-RPC request yourself with `params: { message, agentName: 'writer' }`.
+`/.well-known/agent.json` then returns an array of cards. `message/send`, `message/stream` and `agent/extendedCard` pick the agent from an `agentName` param and fall back to the first registered agent. To reach another agent from `A2AClient`, pass its registered name:
+
+```typescript
+const writer = new A2AClient('https://my-server.com', { agentName: 'writer' });
+
+const card = await writer.agentCard();
+const task = await writer.sendMessage({
+  role: 'user',
+  parts: [{ type: 'text', text: 'Draft a summary' }],
+});
+```
+
+The client sends `agentName` with `message/send`, `message/stream` and `agent/extendedCard`, and `agentCard()` returns the card of that name (`-32007 Agent not found` when the server has none).
 
 ## A2AClient
 
@@ -317,7 +336,7 @@ const a2aServer = new A2AServer({
 });
 ```
 
-`RedisTaskStore` accepts any Redis client that implements the `RedisClientLike` interface: `get`, `set`, `del`, `keys`, and optionally `setex` (TTL), `scan` (listing without blocking `KEYS`), `mget` (batched reads) and `eval` (atomic task updates). The client from `@cogitator-ai/redis` (`createRedisClient`, standalone or cluster) fits it directly; other clients such as `ioredis` or `redis` may need a thin wrapper whose methods match these signatures.
+`RedisTaskStore` accepts any Redis client that implements the `RedisClientLike` interface: `get`, `set`, `del`, `keys`, and optionally `setex` (TTL), `scan` (listing without blocking `KEYS`), `mget` (batched reads) and `eval` (atomic task updates). The client from `@cogitator-ai/redis` (`createRedisClient`, standalone or cluster) and an `ioredis` instance (`new Redis(url)`) fit it directly; other clients such as `redis` may need a thin wrapper whose methods match these signatures.
 
 Configuration options:
 
@@ -462,6 +481,8 @@ The Agent Card advertises this capability via `capabilities.extendedAgentCard: t
 
 All adapters stream only for `message/stream` (an `Accept: text/event-stream` header alone does not switch `message/send` to SSE) and answer JSON-RPC notifications with HTTP `204` and no body. Structurally invalid JSON-RPC requests get `-32600 Invalid Request`; only unparseable JSON gets `-32700 Parse error`.
 
+Errors that are neither A2A errors nor `CogitatorError`s (in parsing, authentication, routing, streams or agent runs) are logged on the server and answered as `-32603 Internal error`, without their text; a `CogitatorError` is answered as `-32603 Internal error: <message>`. A task that fails that way gets the status message `Internal error`, and so does the `failed` status event of a stream.
+
 ### Express
 
 ```typescript
@@ -501,7 +522,7 @@ app.use(a2aKoa(a2aServer));
 
 ```typescript
 // app/.well-known/agent.json/route.ts → GET
-// app/a2a/route.ts → POST
+// app/a2a/route.ts → POST (the route at basePath)
 import { a2aNext } from '@cogitator-ai/a2a/next';
 
 export const { GET, POST } = a2aNext(a2aServer);

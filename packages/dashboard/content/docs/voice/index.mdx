@@ -26,11 +26,12 @@ Realtime Mode:
 ## Installation
 
 ```bash
-pnpm add @cogitator-ai/voice openai
+pnpm add @cogitator-ai/voice
+pnpm add openai             # only for OpenAISTT / OpenAITTS
 pnpm add onnxruntime-node   # only for Silero VAD
 ```
 
-`openai` is an optional peer dependency, but the package entry point imports the OpenAI STT/TTS classes, so install it even when you use only Deepgram or ElevenLabs. `@cogitator-ai/core` is needed for `createCogitatorRunner()` with a Cogitator agent.
+`openai` is an optional peer dependency, needed only for `OpenAISTT` and `OpenAITTS`. They load it on first use, so the package works without it when you use Deepgram, ElevenLabs or the realtime providers; if it is missing, the first `transcribe` / `synthesize` call throws with an install hint. `@cogitator-ai/core` is needed for `createCogitatorRunner()` with a Cogitator agent.
 
 ## Quick Start — Pipeline
 
@@ -104,13 +105,13 @@ await voiceAgent.listen(8080);
 
 All raw audio in the voice package is **PCM16**: 16-bit signed integers, little-endian, mono.
 
-| Path                        | Input                                        | Output                                  |
-| --------------------------- | -------------------------------------------- | --------------------------------------- |
-| Pipeline (STT streams, VAD) | 16kHz (Deepgram and VAD take a `sampleRate`) | MP3 (the TTS provider's default format) |
-| OpenAI Realtime             | 24kHz                                        | 24kHz                                   |
-| Gemini Live                 | 16kHz                                        | 24kHz                                   |
+| Path                        | Input                                        | Output                                 |
+| --------------------------- | -------------------------------------------- | -------------------------------------- |
+| Pipeline (STT streams, VAD) | 16kHz (Deepgram and VAD take a `sampleRate`) | MP3 by default, or `ttsOptions.format` |
+| OpenAI Realtime             | 24kHz                                        | 24kHz                                  |
+| Gemini Live                 | 16kHz                                        | 24kHz                                  |
 
-STT providers also accept containerized files (wav, mp3, ogg, flac, webm, mp4); the container is detected from magic bytes. The pipeline calls `tts.streamSynthesize(text)` without options, so it always gets the provider's default format (MP3); call `synthesize(text, { format: 'pcm16' })` yourself for raw 24kHz PCM.
+STT providers also accept containerized files (wav, mp3, ogg, flac, webm, mp4); the container is detected from magic bytes. The pipeline passes its `ttsOptions` to every TTS call; without them it gets the provider's default format (MP3). Set `ttsOptions: { format: 'pcm16' }` on the pipeline or `VoiceAgent` for raw 24kHz PCM (see [TTS options](/docs/voice/pipeline#tts-options)).
 
 The package includes audio conversion utilities:
 

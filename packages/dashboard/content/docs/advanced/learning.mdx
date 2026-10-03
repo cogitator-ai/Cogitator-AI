@@ -52,7 +52,40 @@ console.log(`Tool accuracy: ${trace.metrics.toolAccuracy}`);
 console.log(`Efficiency: ${trace.metrics.efficiency}`);
 ```
 
-The trace records the run's model calls and tool executions with token usage, latency and cost. Its `score` is a weighted average of `success` (0.4, no errors), `tool_accuracy` (0.3, the share of tool calls without errors) and `efficiency` (0.3, tokens and duration). `expected` and `labels` are stored with the trace; for a run with tool calls, a string `expected` also moves `tool_accuracy` up or down by 0.2 depending on whether the output contains it.
+The trace records the run's model calls and tool executions with token usage, latency and cost. By default its `score` is a weighted average of `success` (0.4, no errors), `tool_accuracy` (0.3, the share of tool calls without errors) and `efficiency` (0.3, tokens and duration). `expected` and `labels` are stored with the trace; for a run with tool calls, a string `expected` also moves `tool_accuracy` up or down by 0.2 depending on whether the output contains it. When the run's instructions came from [`cog.prompts`](/docs/advanced/prompt-versions), the trace's `prompt` holds the version or A/B variant it used (`result.prompt`).
+
+### Metrics and Retention
+
+The optimizer's `config` decides how traces are scored and kept:
+
+```typescript
+const optimizer = new AgentOptimizer({
+  llm: backend,
+  model,
+  config: {
+    defaultMetrics: ['success', 'completeness', 'coherence'],
+    customMetrics: [
+      { name: 'success', type: 'boolean', description: 'No errors', weight: 0.6 },
+      { name: 'cites_sources', type: 'numeric', description: 'Output cites a source', weight: 0.4 },
+    ],
+    captureTraces: true,
+    traceRetention: 1000,
+  },
+});
+
+optimizer.getMetricEvaluator().registerMetric('cites_sources', (trace) => {
+  const value = trace.output.includes('http') ? 1 : 0;
+  return { name: 'cites_sources', value, passed: value === 1 };
+});
+```
+
+- `defaultMetrics` — the built-in metrics traces are scored with: `success`, `tool_accuracy`, `efficiency`, `completeness` and `coherence` (default the first three). `completeness` and `coherence` are judged by `llm`, so each costs a model call per trace; their default weight is 0.3.
+- `customMetrics` — more `MetricDefinition`s, or new weights for built-in metrics of the same name. A metric that is not built in needs its function, registered with `getMetricEvaluator().registerMetric(name, fn)`; without one it scores a neutral 0.5.
+- `registerMetric(name, fn)` alone also works: a registered metric that is not in the config is scored with weight 1, and one with a built-in name replaces the built-in function.
+- `captureTraces` — `false` scores traces without storing them (default `true`).
+- `traceRetention` — the number of traces kept per agent; older and lower-scoring ones are pruned after each capture.
+
+`autoOptimize`, `optimizeAfterRuns` and `traceStore` in the learning config are deprecated and not read: use the [`AutoOptimizer`](#autooptimizer) and the optimizer's `traceStore` option.
 
 ## Compiling (DSPy-Style Optimization)
 
@@ -245,7 +278,55 @@ const trace = await optimizer.captureTrace(result, input);
 await autoOptimizer.recordExecution(trace);
 ```
 
-`enabled` defaults to `false`. Each recorded trace goes to the monitor (a critical alert with `autoAction: 'rollback'` rolls the agent back to its previous version) and to the current version's metrics in the `RollbackManager`. Every `triggerAfterRuns` traces, at most `maxOptimizationsPerDay` times a day, it compiles the agent's current version (from the `RollbackManager`, so deploy one first) against the traces in the optimizer's store. Improved instructions are deployed as a new version, or with `requireABTest` (the default) put into an A/B test against the current ones. That test counts a trace for the treatment only while the treatment is the deployed version, so serving the treatment to part of the traffic is up to you; `triggerOptimization(agentId)` and `forceRollback(agentId, reason)` run the steps by hand.
+`enabled` defaults to `false`. Each recorded trace goes to the monitor (a critical alert with `autoAction: 'rollback'` rolls the agent back to its previous version). Every `triggerAfterRuns` traces, once at least `minRunsForOptimization` were recorded and at most `maxOptimizationsPerDay` times a day, it compiles the agent's current version (from the `RollbackManager`) against the traces in the optimizer's store. Deploy a version first: without one, the optimization run ends with `status: 'failed'` and an `error`. Improved instructions are deployed as a new version, or with `requireABTest` (the default) put into an A/B test against the current ones; the optimization run completes when the test does, deploying the treatment if it won. `triggerOptimization(agentId)` and `forceRollback(agentId, reason)` run the steps by hand.
+
+### A/B Tests on Live Traffic
+
+To serve an A/B test to real traffic, let the Cogitator run it: give its [`prompts`](/docs/advanced/prompt-versions) config the same stores as the `AutoOptimizer`, and give the agent an explicit `id` (versions and tests are keyed by it, and traces carry it):
+
+```typescript
+import {
+  ABTestingFramework,
+  Agent,
+  AutoOptimizer,
+  Cogitator,
+  InMemoryABTestStore,
+  InMemoryInstructionVersionStore,
+  PromptMonitor,
+  RollbackManager,
+} from '@cogitator-ai/core';
+
+const abTests = new InMemoryABTestStore();
+const versions = new InMemoryInstructionVersionStore();
+
+const cogitator = new Cogitator({
+  llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } } },
+  prompts: { abTests, versions },
+});
+
+const agent = new Agent({
+  id: 'support-agent',
+  name: 'support',
+  model: 'openai/gpt-5.5',
+  instructions: 'You are a helpful support agent.',
+});
+await cogitator.prompts.deploy(agent, agent.instructions);
+
+const autoOptimizer = new AutoOptimizer({
+  enabled: true,
+  agentOptimizer: optimizer,
+  abTesting: new ABTestingFramework({ store: abTests }),
+  monitor: new PromptMonitor(),
+  rollbackManager: new RollbackManager({ store: versions }),
+});
+
+const result = await cogitator.run(agent, { input, threadId });
+await autoOptimizer.recordExecution(await optimizer.captureTrace(result, input));
+```
+
+While the test runs, the Cogitator gives each thread one variant and records every run's result against it; the trace's `prompt` tells the `AutoOptimizer` that the run was already recorded, so it is not counted twice, and the optimizer settles its run once the test has completed. Leave `prompts.autoDeployWinner` off: the `AutoOptimizer` deploys the winner itself.
+
+Traces without a `prompt` — runs of a Cogitator without `prompts` — are recorded by the `AutoOptimizer`: against the A/B test as the variant whose instructions are currently deployed, and to that version's metrics.
 
 ## Storage
 
@@ -257,6 +338,7 @@ import { PostgresTraceStore } from '@cogitator-ai/core';
 const store = new PostgresTraceStore({ connectionString: process.env.DATABASE_URL! });
 await store.connect();
 
+const optimizer = new AgentOptimizer({ llm: backend, model, traceStore: store.traces() });
 const abTesting = new ABTestingFramework({ store: store.abTests() });
 const rollbackManager = new RollbackManager({ store: store.instructionVersions() });
 
@@ -264,7 +346,7 @@ await store.storeTrace(trace);
 const recent = await store.queryTraces({ agentId: 'support-agent', limit: 50 });
 ```
 
-It stores traces (`storeTrace`, `queryTraces`, `getAllTraces`), captured prompts (`capture`, `getByRun`, `query`), A/B tests and instruction versions. Its trace methods have their own names, so it is not a `TraceStore` for `AgentOptimizer`; `abTests()` and `instructionVersions()` adapt it for A/B tests and versions, including the [`prompts`](/docs/advanced/prompt-versions#stores) config.
+It stores traces (`storeTrace`, `queryTraces`, `getAllTraces`), captured prompts (`capture`, `getByRun`, `query`), A/B tests and instruction versions. `traces()` adapts it to a `TraceStore` for `AgentOptimizer`, `DemoSelector` or [time travel](/docs/advanced/time-travel); `abTests()` and `instructionVersions()` adapt it for A/B tests and versions, including the [`prompts`](/docs/advanced/prompt-versions#stores) config. Traces keep their `prompt` in a `prompt` column, which `connect()` adds to tables created by older versions.
 
 ## Prompt Logging
 

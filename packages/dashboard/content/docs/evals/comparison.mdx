@@ -185,18 +185,18 @@ for (const [name, mc] of Object.entries(result.summary.metrics)) {
 
 ## Options
 
-| Option               | Type                  | Default | Description                                                      |
-| -------------------- | --------------------- | ------- | ---------------------------------------------------------------- |
-| `dataset`            | Dataset               | —       | Test cases to run                                                |
-| `targets.baseline`   | EvalTarget            | —       | Baseline target                                                  |
-| `targets.challenger` | EvalTarget            | —       | Challenger target                                                |
-| `metrics`            | MetricFn[]            | —       | Per-case metrics                                                 |
-| `statisticalMetrics` | StatisticalMetricFn[] | —       | Aggregate metrics                                                |
-| `judge`              | JudgeConfig           | —       | Required for LLM metrics; with `fn` targets it needs `cogitator` |
-| `concurrency`        | number                | 5       | Parallel case execution per target                               |
-| `timeout`            | number                | 30000   | Per-case timeout in ms                                           |
-| `retries`            | number                | 0       | Retry count for failed cases                                     |
-| `onProgress`         | function              | —       | Progress callback with target label                              |
+| Option               | Type                  | Default | Description                                                                                      |
+| -------------------- | --------------------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `dataset`            | Dataset               | —       | Test cases to run                                                                                |
+| `targets.baseline`   | EvalTarget            | —       | Baseline target                                                                                  |
+| `targets.challenger` | EvalTarget            | —       | Challenger target                                                                                |
+| `metrics`            | MetricFn[]            | —       | Per-case metrics                                                                                 |
+| `statisticalMetrics` | StatisticalMetricFn[] | —       | Aggregate metrics                                                                                |
+| `judge`              | JudgeConfigInput      | —       | Required for LLM metrics (`temperature` defaults to `0`); with `fn` targets it needs `cogitator` |
+| `concurrency`        | number                | 5       | Parallel case execution per target                                                               |
+| `timeout`            | number                | 30000   | Per-case timeout in ms                                                                           |
+| `retries`            | number                | 0       | Retry count for failed cases                                                                     |
+| `onProgress`         | function              | —       | Progress callback with target label                                                              |
 
 ## Tips for Meaningful Comparisons
 

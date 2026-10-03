@@ -108,7 +108,7 @@ agentAsTool(cog, billingAgent, {
 });
 ```
 
-Do not return `'pause'` from this `onApproval`: the inner run would pause, and the tool reports `success: true` with an empty `output` while the paused run is dropped. To let a person approve delegated work, use [handoffs](/docs/core/agents#handoffs) instead: a handed-over run can pause and resume.
+Returning `'pause'` from this `onApproval` declines the call like the default. If the inner run pauses anyway, the tool reports `success: false` with an `error` naming the tools that waited for approval, never an empty success. To let a person approve delegated work, use [handoffs](/docs/core/agents#handoffs) instead: a handed-over run can pause and resume.
 
 ### Writing Good Descriptions
 

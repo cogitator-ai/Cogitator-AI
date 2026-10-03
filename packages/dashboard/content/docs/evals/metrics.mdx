@@ -111,9 +111,11 @@ const suite = new EvalSuite({
 | Judge option  | Description                                                             |
 | ------------- | ----------------------------------------------------------------------- |
 | `model`       | Judge model, e.g. `'openai/gpt-6.1-sol'`                                |
-| `temperature` | Judge temperature — pass it explicitly (`0` for repeatable scores)      |
+| `temperature` | Judge temperature; optional, defaults to `0` for repeatable scores      |
 | `maxTokens`   | Optional cap on the judge's reply                                       |
 | `cogitator`   | Runtime that runs the judge; defaults to the agent target's `cogitator` |
+
+The option type is `JudgeConfigInput`; the suite parses it into `JudgeConfig`, filling in the `temperature` default.
 
 Each judge metric sends one prompt per case containing the rubric, the case `input`, the `expected` value (or `N/A`) and the response, and asks for JSON with `score` and `reasoning`; the judge agent (one iteration, no memory) requests that shape with a JSON schema. The score is clamped to [0, 1] and `reasoning` becomes the score's `details`. An answer without a parsable score, or a judge error, counts as 0 with the reason in `details` — it never fails the run.
 
@@ -202,7 +204,7 @@ Reports cost distribution in USD. Only cases with `usage` count — that is, age
 
 ### tokenUsage
 
-Reports token consumption per case (input plus output). Like `cost`, it only counts cases with `usage`. Note that `threshold('tokenUsage', n)` treats it as higher-is-better — see [Direction Detection](/docs/evals/assertions#direction-detection).
+Reports token consumption per case (input plus output). Like `cost`, it only counts cases with `usage`. Assertions treat it as lower-is-better, so `threshold('tokenUsage', n)` caps the mean at `n` — see [Direction Detection](/docs/evals/assertions#direction-detection).
 
 ```typescript
 // result.aggregated.tokenUsage.metadata:

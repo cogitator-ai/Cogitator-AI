@@ -286,7 +286,7 @@ const results = unwrap(
 
 `connect()` creates the collection with cosine distance if it does not exist. Search results carry the payload but not the stored vector (`vector` is `[]`), and no `threshold` is applied unless you pass one. Embedding metadata is stored in the point payload, so `filter.threadId` / `filter.agentId` match the `metadata.threadId` / `metadata.agentId` payload keys, and `filter.userId` matches `metadata.userId` or points without a user.
 
-> **Known issue:** `addEmbedding` uses ids of the form `emb_…` as Qdrant point ids, but Qdrant only accepts unsigned integers and UUIDs as point ids, so inserts are rejected by a real Qdrant server. Until this is fixed, use `PostgresAdapter` (pgvector) for vector storage.
+Qdrant only accepts unsigned integers and UUIDs as point ids, so each point is stored under a deterministic UUID derived from the embedding id. The `emb_…` id itself is kept in `payload.embeddingId`; it is what `addEmbedding` and `search` return and what `deleteEmbedding` takes.
 
 **Requires:** `pnpm add @qdrant/js-client-rest`
 
@@ -338,7 +338,7 @@ It needs no `connect()`. Vector search uses a default `threshold` of 0.7, and bo
 | Keyword Search     | No¹      | No      | tsvector | No             | No      | No                     |
 | Knowledge Graph    | No       | No      | Yes²     | Yes²           | No      | No                     |
 | TTL Expiration     | No       | Yes     | No       | No             | No      | No                     |
-| `memory.adapter`³  | Yes      | Yes     | Yes      | No             | No      | No                     |
+| `memory.adapter`³  | Yes      | Yes     | Yes      | Yes            | Yes     | `memory.qdrant`        |
 | Extra Dependencies | None     | ioredis | pg       | better-sqlite3 | mongodb | @qdrant/js-client-rest |
 
-¹ Use `InMemoryEmbeddingAdapter`. ² Via `PostgresGraphAdapter` / `SQLiteGraphAdapter` — see [Knowledge Graphs](/docs/memory/knowledge-graphs). ³ Can be selected in the `Cogitator` `memory` config; the others can be assigned with `cog.memory = adapter` — see [Using Memory with Cogitator](/docs/memory#using-memory-with-cogitator).
+¹ Use `InMemoryEmbeddingAdapter`. ² Via `PostgresGraphAdapter` / `SQLiteGraphAdapter` — see [Knowledge Graphs](/docs/memory/knowledge-graphs). ³ Can be selected as the thread store in the `Cogitator` `memory` config. Qdrant is configured next to a thread store as `memory.qdrant`, the embedding store semantic context searches. Any adapter can also be assigned with `cog.memory = adapter` — see [Using Memory with Cogitator](/docs/memory#using-memory-with-cogitator).

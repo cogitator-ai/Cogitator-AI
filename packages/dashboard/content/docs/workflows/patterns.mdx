@@ -215,7 +215,7 @@ The state `outputMapper` returns replaces the parent state, so spread `parentSta
 | `'retry'`     | Retry according to `retryConfig` (default 3 attempts, 1 s apart, linear), then re-throw |
 | `'ignore'`    | Return success with the parent state unchanged                                          |
 
-Inside a workflow, `subworkflowWorkflowNode` fails the node whenever the result has `success: false`, so `'catch'` still stops the parent run there; use `'ignore'` to carry on past a failed child.
+Inside a workflow, `subworkflowWorkflowNode` with `'catch'` lets the parent run continue: the parent state stays as it was and the node's output is `{ error: { name, message } }`, so the node after it receives the error as `ctx.input`. With `'ignore'` the node completes normally, also with the parent state unchanged.
 
 ### Simple Sub-Workflow
 
@@ -300,10 +300,8 @@ const config = fanOutFanIn<BatchState, ItemState>('process-batch', {
   continueOnError: true,
 });
 
-builder.addNode('process-batch', parallelSubworkflowsNode(config as never));
+builder.addNode('process-batch', parallelSubworkflowsNode(config));
 ```
-
-`parallelSubworkflowsNode` is currently declared for configs whose children use the plain `WorkflowState`, so a config typed with a child state needs the `as never` above to type-check; the node runs it unchanged.
 
 ### Scatter-Gather
 

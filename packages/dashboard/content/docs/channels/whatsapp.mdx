@@ -39,7 +39,19 @@ const gateway = new Gateway({ agent, cogitator, channels: [whatsapp] });
 await gateway.start();
 ```
 
-`cogitator.yml` / `RuntimeBuilder` do not set up WhatsApp (their channels are Telegram, Discord and Slack), so add the channel to a `Gateway` in code as above.
+## Use with `cogitator up`
+
+Add a `whatsapp` entry to `cogitator.yml` (the wizard does not ask about it, but `cogitator wizard --edit` keeps it):
+
+```yaml title="cogitator.yml"
+channels:
+  whatsapp:
+    ownerIds:
+      - '15551234567' # phone number without @s.whatsapp.net
+    sessionPath: ~/.cogitator/whatsapp-session # default
+```
+
+`cogitator up` (or `RuntimeBuilder`) starts the channel with the QR printed in the terminal on first run. `ownerIds` work like on other channels: the first one gets owner commands and self-config access. See the [config reference](/docs/channels/wizard#config-reference).
 
 ## Configuration
 

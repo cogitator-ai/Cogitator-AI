@@ -195,7 +195,7 @@ fastify.get('/custom', async (request, reply) => {
 
 ## Errors
 
-Schema validation failures and malformed JSON return `400 INVALID_INPUT` (with the validation `details`), unknown agents, workflows and swarms `404 NOT_FOUND`, and a failed workflow `500 WORKFLOW_FAILED`. The thread routes return `503 UNAVAILABLE` when the runtime has no memory and `403 THREAD_ACCESS_DENIED` for another user's thread; workflow and swarm routes return `501 UNIMPLEMENTED` without their packages. `CogitatorError`s keep their message, code and mapped status (for example `LLM_RATE_LIMITED` → 429). Any other error is logged through `request.log` and answered as `500` with the message `Internal server error` (code `INTERNAL`, or `INTERNAL_ERROR` when it reaches the plugin's error handler).
+Schema validation failures and malformed JSON return `400 INVALID_INPUT` (with the validation `details`), unknown agents, workflows and swarms `404 NOT_FOUND`, and a failed workflow `500 WORKFLOW_FAILED`. The thread routes return `503 UNAVAILABLE` when the runtime has no memory and `403 THREAD_ACCESS_DENIED` for another user's thread; workflow and swarm routes return `501 UNIMPLEMENTED` without their packages. `CogitatorError`s keep their message, code and mapped status (for example `LLM_RATE_LIMITED` → 429). Any other error is logged through `request.log` and answered as `500` with the message `Internal server error` (code `INTERNAL_ERROR`).
 
 ## Exported Schemas
 

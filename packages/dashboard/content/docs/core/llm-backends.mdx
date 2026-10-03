@@ -140,7 +140,7 @@ model: 'google/gemini-3.1-pro-preview';
 model: 'google/gemini-3.5-flash-lite';
 ```
 
-Gemini attaches a thought signature to function calls; it is stored on `ToolCall.thoughtSignature` (also in memory) and sent back with the call on the next request, which Gemini 3 models require for multi-step tool use. Thought-summary parts are excluded from the response text.
+Gemini has no `null` schema type, so `.nullable()` fields in tool parameters and response schemas are sent as `nullable: true`. Gemini attaches a thought signature to function calls; it is stored on `ToolCall.thoughtSignature` (also in memory) and sent back with the call on the next request, which Gemini 3 models require for multi-step tool use. Thought-summary parts are excluded from the response text.
 
 ### Azure OpenAI
 
@@ -200,13 +200,13 @@ model: 'vllm/mistral-7b';
 
 ### Message Conversion
 
-All backends receive the same `Message[]`. Every `system` message (the agent instructions plus any later ones, such as reflection hints or context summaries) is combined into the provider's system prompt for Anthropic, Gemini and Bedrock, and consecutive tool results are sent together in a single turn, as those APIs expect for parallel tool calls.
+All backends receive the same `Message[]`. Every `system` message (the agent instructions plus any later ones, such as reflection hints or context summaries) is combined into the provider's system prompt for Anthropic, Gemini and Bedrock, and consecutive tool results are sent together in a single turn, as those APIs expect for parallel tool calls. Images in tool results are placed where each API accepts them (see [Images in Tool Results](/docs/core/tools#images-in-tool-results)).
 
 ## Custom Backends
 
 ### Backend Instances
 
-A backend implements `LLMBackend` (`provider`, `chat()`, `chatStream()`), usually by extending `BaseLLMBackend`, or `OpenAICompatibleBackend` for servers that speak the OpenAI API. Its `provider` field is typed as one of the built-in provider names; choose the closest one, since the name it is registered under is what routes to it.
+A backend implements `LLMBackend` (`provider`, `chat()`, `chatStream()`), usually by extending `BaseLLMBackend`, or `OpenAICompatibleBackend` for servers that speak the OpenAI API. Its `provider` field is an `LLMBackendProvider`: a built-in provider name or any name of your own (usually the one it is registered under). Routing goes by the name in `llm.backends` or the plugin's provider, not by this field.
 
 Pass backends of your own to `llm.backends`. An agent whose model starts with the name, or whose `provider` is the name, runs on it; the rest of the model string is sent as the model name. A name of a built-in provider replaces it, for example with a `withDebug()` wrapper:
 

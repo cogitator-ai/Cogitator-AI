@@ -108,6 +108,24 @@ const calculator = tool({
 
 If the execute function throws, the error message is sent back to the LLM (as `{ "error": "..." }`) so it can retry or adjust its approach. A call to a tool the agent does not have gets `Tool not found: <name>`.
 
+### Images in Tool Results
+
+A result object with a base64 image in `image` or `imageBase64` (PNG, JPEG, GIF or WebP, plain or as a `data:image/...;base64,` URL) reaches the model as an image, so a vision model sees a screenshot or chart instead of its base64 text. The rest of the object is still sent as JSON, with the image field replaced by `"(image attached)"`:
+
+```typescript
+const renderChart = tool({
+  name: 'render_chart',
+  description: 'Render a line chart of the given values as a PNG',
+  parameters: z.object({ values: z.array(z.number()) }),
+  execute: async ({ values }) => {
+    const png = await drawChart(values);
+    return { points: values.length, image: png.toString('base64') };
+  },
+});
+```
+
+Each backend places the image where its API allows: inside the tool result for Anthropic, Bedrock and the OpenAI Responses API, after the function responses of the turn for Google, in the tool message's `images` for Ollama, and in a user message right after the turn's tool messages for Chat Completions (`api: 'chat-completions'`, OpenAI-compatible `baseUrl`, Azure), whose tool messages take only text. Results of the image-generation tool (`imageBase64`) and the browser screenshot tools (`image`) take this path.
+
 ## Typed Tool Sets
 
 A function that returns several tools as `Tool[]` loses each tool's own parameter types. `toolset()` keeps them as a tuple, which is still an array an agent accepts:
@@ -216,12 +234,12 @@ const schema = toolToSchema(getWeather);
 //       city: { type: 'string', description: 'City name' },
 //       units: { type: 'string', enum: ['celsius', 'fahrenheit'], default: 'celsius' }
 //     },
-//     required: ['city', 'units']
+//     required: ['city']
 //   }
 // }
 ```
 
-The conversion uses the schema's output type, so fields with a `.default()` are listed as required. `tool.toJSON()` returns the same schema.
+The conversion uses the schema's input type, so fields with a `.default()` are optional for the model; the default is applied when the arguments are parsed. `tool.toJSON()` returns the same schema.
 
 ## Sandboxed Execution
 
@@ -248,7 +266,7 @@ const runPython = tool({
 });
 ```
 
-The container is managed by the runtime (configure it with `sandbox` on the `Cogitator`). Two fallbacks log a warning and run without isolation: when `@cogitator-ai/sandbox` cannot be loaded, the runtime calls `execute` natively, so keep `execute` harmless; when Docker is not available, the sandbox manager runs the command on the host shell. Check `isDockerAvailable()` first when untrusted commands must never reach the host — see [Sandbox](/docs/deployment/sandbox#fallback-chain).
+The container is managed by the runtime (configure it with `sandbox` on the `Cogitator`). Two fallbacks log a warning and run without isolation: when `@cogitator-ai/sandbox` cannot be loaded, the runtime calls `execute` natively, so keep `execute` harmless; when Docker is not available, the sandbox manager runs the command on the host shell. Both are allowed by `sandbox.allowNativeFallback` (default `true`); set it to `false` on the `Cogitator` when untrusted commands must never reach the host, and such calls fail instead — see [Sandbox](/docs/deployment/sandbox#fallback).
 
 ## Tool Caching
 

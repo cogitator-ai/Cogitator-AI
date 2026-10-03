@@ -141,7 +141,7 @@ const pool = new WorkerPool({ redis: redisConfig, workerCount: 4, concurrency: 1
 
 ## Prometheus Metrics
 
-`queue.getMetrics()` returns the queue counts; `WorkerPool` records job durations and per-type counts in `pool.metrics` (a `MetricsCollector`). Combine them in the Prometheus exposition format for monitoring and Kubernetes HPA:
+`queue.getMetrics()` returns the queue counts; `WorkerPool` records job durations, per-type counts and final failures in `pool.metrics` (a `MetricsCollector`: `recordJob(type, durationMs)` on completion, `recordFailure(type)` when a job fails its last attempt). Combine them in the Prometheus exposition format for monitoring and Kubernetes HPA:
 
 ```typescript
 app.get('/metrics', async (req, res) => {
@@ -153,19 +153,20 @@ app.get('/metrics', async (req, res) => {
 
 Label values are escaped per the Prometheus exposition format. Without a pool, `formatPrometheusMetrics(await queue.getMetrics(), labels)` renders the queue metrics alone.
 
-| Metric                            | Type      | Description                    |
-| --------------------------------- | --------- | ------------------------------ |
-| `cogitator_queue_depth`           | gauge     | Jobs waiting + delayed         |
-| `cogitator_queue_waiting`         | gauge     | Jobs waiting                   |
-| `cogitator_queue_delayed`         | gauge     | Delayed / scheduled jobs       |
-| `cogitator_queue_active`          | gauge     | Jobs currently processing      |
-| `cogitator_queue_completed_total` | counter   | Completed jobs kept in Redis   |
-| `cogitator_queue_failed_total`    | counter   | Failed jobs kept in Redis      |
-| `cogitator_workers_total`         | gauge     | Workers connected to the queue |
-| `cogitator_jobs_by_type_total`    | counter   | Jobs processed by type         |
-| `cogitator_job_duration_seconds`  | histogram | Processing time distribution   |
+| Metric                           | Type      | Description                                                 |
+| -------------------------------- | --------- | ----------------------------------------------------------- |
+| `cogitator_queue_depth`          | gauge     | Jobs waiting + delayed                                      |
+| `cogitator_queue_waiting`        | gauge     | Jobs waiting                                                |
+| `cogitator_queue_delayed`        | gauge     | Delayed / scheduled jobs                                    |
+| `cogitator_queue_active`         | gauge     | Jobs currently processing                                   |
+| `cogitator_queue_completed`      | gauge     | Completed jobs kept in Redis (capped by `removeOnComplete`) |
+| `cogitator_queue_failed`         | gauge     | Failed jobs kept in Redis (capped by `removeOnFail`)        |
+| `cogitator_workers_total`        | gauge     | Workers connected to the queue                              |
+| `cogitator_jobs_by_type_total`   | counter   | Jobs processed by type                                      |
+| `cogitator_jobs_failed_total`    | counter   | Jobs that failed their last attempt, by type                |
+| `cogitator_job_duration_seconds` | histogram | Processing time distribution                                |
 
-The completed and failed counts come from BullMQ, so they only cover jobs that `removeOnComplete` / `removeOnFail` have not trimmed yet.
+`cogitator_queue_completed` and `cogitator_queue_failed` come from BullMQ and drop as old jobs are trimmed, so they are not counters. Alert on `cogitator_jobs_failed_total` instead, for example `increase(cogitator_jobs_failed_total[5m]) > 5`. The per-type counters appear after the first job of that type.
 
 ### HPA Autoscaling
 

@@ -31,7 +31,7 @@ interface NodeContext<S> {
 - **`step`** -- The executor iteration the node runs in
 - **`reportProgress`** -- Report 0-100 progress (clamped) for `onNodeProgress` and `node_progress` stream events; the executor always sets it, the type marks it optional
 
-At run time the executor passes an `ExtendedNodeContext<S>` (exported from `@cogitator-ai/workflows`) that adds `cogitator`, `signal` (the run's `AbortSignal`, or a per-attempt signal when the node has a `timeout`), `depth` (subworkflow nesting) and the run-level `approvalStore`, `approvalNotifier` and `timerStore`. Cast to it in a custom node when you need them.
+At run time the executor passes an `ExtendedNodeContext<S>` (exported from `@cogitator-ai/workflows`) that adds `cogitator`, `signal` (the run's `AbortSignal`, or a per-attempt signal when the node has a `timeout`), `depth` (subworkflow nesting) and the run-level `approvalStore`, `approvalNotifier`, `timerStore`, `onApprovalRequired` and `onTimerScheduled`. Cast to it in a custom node when you need them.
 
 ## Node Result
 
@@ -339,9 +339,9 @@ try {
 }
 ```
 
-`getPendingRequests(workflowId?)` lists open requests of a run; each request carries `workflowId`, `nodeId`, `type`, `title`, `description`, `choices`, `assignee`, `deadline` and `priority`.
+The `onApprovalRequired` execute option is called with every request a human node opens — each chain step and escalation included — once the node is waiting for its answer. `getPendingRequests(workflowId?)` lists open requests of a run; each request carries `workflowId`, `nodeId`, `type`, `title`, `description`, `choices`, `assignee`, `deadline` and `priority`.
 
-The node output is `{ approved, decision, timedOut, escalated }`. `stateMapper` receives the full `HumanNodeResult` — `approved`, `decision`, `response`, `timedOut`, `escalated` and `withdrawn` — so copy what a following conditional needs into state there.
+The node output is `{ approved, decision, timedOut, escalated, withdrawn }`; `escalated` is `true` when the answer came from the `escalateTo` assignee after a timeout. `stateMapper` receives the full `HumanNodeResult` — `approved`, `decision`, `response`, `timedOut`, `escalated` and `withdrawn` — so copy what a following conditional needs into state there.
 
 What counts as approved depends on the type: `approve-reject` needs `true` or `'approve'`, `multi-choice` any non-null choice, `free-form` a non-empty string and `numeric-rating` a number.
 
@@ -369,7 +369,7 @@ builder
   .addNode('analyze', subworkflowWorkflowNode(subConfig), { after: ['cool-down'] });
 ```
 
-Timers are cancelled when the run is aborted; subworkflow failures propagate to the parent (or follow `onError`), and timed-out child runs are cancelled. A timer config with `persist: true` records its timer in the `timerStore` (node option or execute option) so it shows up in a `TimerManager`; the wait itself still happens in the running process.
+Timers are cancelled when the run is aborted; subworkflow failures propagate to the parent (or follow `onError` — with `'catch'` the parent continues and the node outputs `{ error: { name, message } }`), and timed-out child runs are cancelled. A timer config with `persist: true` records its timer in the `timerStore` (node option or execute option) so it shows up in a `TimerManager`, and reports the stored entry to the `onTimerScheduled` execute option; the wait itself still happens in the running process.
 
 To run a swarm as a step, use `swarmNode`, `conditionalSwarmNode` or `parallelSwarmsNode` from `@cogitator-ai/swarms` (see [Swarms](/docs/swarms#swarms-inside-workflows)).
 
@@ -377,7 +377,7 @@ To run a swarm as a step, use `swarmNode`, `conditionalSwarmNode` or `parallelSw
 
 ## Wiring Nodes into Workflows
 
-All node factories and adapters return `WorkflowNode<S>` objects. Pass them directly to `WorkflowBuilder.addNode` (a node's `config` — `timeout`, `retries`, `retryDelay` — is merged with the `config` passed to `addNode`):
+All node factories and adapters return `WorkflowNode<S>` objects. Pass them directly to `WorkflowBuilder.addNode` (a node's `config` — `timeout`, `retries`, `retryDelay`, `compensation` — is merged with the `config` passed to `addNode`):
 
 ```typescript
 type MyState = { url: string; content?: string; analysis?: string };

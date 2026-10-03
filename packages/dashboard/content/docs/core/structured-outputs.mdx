@@ -117,7 +117,7 @@ Either way you get the same structured response regardless of provider.
 Google supports structured outputs via `responseMimeType` and `responseSchema`:
 
 - `json` mode: Sets `responseMimeType: 'application/json'`
-- `json_schema` mode: Sets both `responseMimeType` and `responseSchema` (keywords Gemini does not accept are dropped)
+- `json_schema` mode: Sets both `responseMimeType` and `responseSchema` (keywords Gemini does not accept are dropped). Gemini has no `null` type, so nullable fields (`.nullable()` in Zod, a `null` in `type`, `anyOf` or `oneOf`) are sent as `nullable: true`, in tool parameter schemas too
 - Gemini 1.x and 2.x refuse a JSON mime type together with function calling, so for an agent with tools the schema goes into the system instruction instead. Gemini 3 takes both in one request
 
 ### Ollama

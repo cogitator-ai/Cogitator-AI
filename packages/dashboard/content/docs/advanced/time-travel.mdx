@@ -26,7 +26,7 @@ Checkpoints and the traces used for comparisons live in process memory (`InMemor
 
 ## Creating Checkpoints
 
-Checkpoints are cut from a finished `RunResult`. The run's steps are its model and tool calls, counted from its trace; a checkpoint at step `i` is anchored on the run's `i`-th tool call (counting from 0).
+Checkpoints are cut from a finished `RunResult`. The steps checkpoints count are the run's tool calls: a checkpoint at step `i` is anchored on the run's `i`-th tool call (counting from 0), so `checkpoint(result, n)` captures the state after `n` tool calls have returned.
 
 ```typescript
 const result = await cogitator.run(agent, { input: 'Research quantum computing advances' });
@@ -34,16 +34,16 @@ const result = await cogitator.run(agent, { input: 'Research quantum computing a
 // checkpoint a specific step
 const checkpoint = await timeTravel.checkpoint(result, 3, 'after-web-search');
 
-// checkpoint every step
+// checkpoint every tool call
 const allCheckpoints = await timeTravel.checkpointAll(result, 'research-run');
 
-// checkpoint every N steps
+// checkpoint every N tool calls
 const sparseCheckpoints = await timeTravel.checkpointEvery(result, 2, 'sparse');
 ```
 
 Each checkpoint stores:
 
-- `messages` — the conversation up to and including the result of that tool call
+- `messages` — the conversation up to that tool call, without its result
 - `toolResults` — the results of the earlier tool calls, by call id
 - `pendingToolCalls` — the tool call the step is anchored on
 - `label` — for retrieval with `getByLabel()` on the store; `checkpointAll` and `checkpointEvery` label them `<prefix>_step_<i>`
@@ -82,9 +82,11 @@ console.log('Steps replayed:', replay.stepsReplayed);
 console.log('Steps executed:', replay.stepsExecuted); // 0 in deterministic mode
 ```
 
+`stepsReplayed` is the checkpoint's `stepIndex`: the number of tool calls before it.
+
 ### Live Replay
 
-Runs the agent again from the checkpoint with fresh model calls. The replayed agent is a copy named `<name>_replay` whose instructions carry the conversation up to the checkpoint (its assistant and tool messages); it answers the checkpoint's last user message in a thread of its own (`replay_<runId>`):
+Runs the agent again from the checkpoint with fresh model calls. The replayed agent is a copy named `<name>_replay` whose instructions — the checkpoint's system message, or the agent's own instructions when it has none — carry the conversation up to the checkpoint (its assistant and tool messages); it answers the checkpoint's last user message in a thread of its own (`replay_<runId>`):
 
 ```typescript
 const replay = await timeTravel.replayLive(agent, checkpoint.id);
@@ -98,7 +100,7 @@ if (replay.divergedAt !== undefined) {
 }
 ```
 
-`divergedAt` is the first step at which the replay called a different tool, or the same tool with different arguments, than the call the checkpoint is anchored on.
+`stepsExecuted` counts the replay's tool calls. `divergedAt` is numbered like the original run's steps: `stepIndex` when the replay's first tool call differs from the call the checkpoint is anchored on (another tool, or the same tool with different arguments) or when it calls no tool, and `stepIndex + 1` when it matches but the replay goes on to call more tools.
 
 Live replays take options to change what the agent sees:
 

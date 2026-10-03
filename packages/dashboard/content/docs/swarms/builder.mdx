@@ -144,7 +144,6 @@ swarm('team')
   .strategy('hierarchical')
   .messaging({
     enabled: true,
-    protocol: 'direct',
     maxMessageLength: 2000,
     maxMessagesPerTurn: 5,
     maxTotalMessages: 100,
@@ -157,7 +156,16 @@ swarm('team')
   .observability({ messageLogging: true, blackboardLogging: true });
 ```
 
-Both default to enabled, in-memory instances (`protocol: 'direct'`, history tracked). `messageLogging` and `blackboardLogging` log every message and blackboard write through the Cogitator logger; `message:sent` and `blackboard:write` events are emitted either way. Agents do not get messaging or blackboard tools automatically — see [Swarm Tools](/docs/swarms/communication#swarm-tools).
+Both default to enabled, in-memory instances (blackboard history tracked). `messageLogging` and `blackboardLogging` log every message and blackboard write through the Cogitator logger; `message:sent` and `blackboard:write` events are emitted either way, and `tracing: true` logs the spans of every agent run. `messaging.protocol` and `blackboard.locking` are deprecated and have no effect.
+
+To give every agent the built-in messaging and blackboard tools, enable them with `agentTools` (see [Swarm Tools](/docs/swarms/communication#swarm-tools)):
+
+```typescript
+swarm('team')
+  .strategy('round-robin')
+  .agents([agentA, agentB])
+  .agentTools({ messaging: true, blackboard: true });
+```
 
 ### Resources and Error Handling
 
@@ -230,7 +238,7 @@ const team = new Swarm(cogitator, {
 });
 ```
 
-The constructor validates configuration immediately and throws on an unknown strategy, a hierarchical swarm without `supervisor`, a pipeline without stages, a missing `consensus` / `auction` / `debate` / `negotiation` block, or a consensus or negotiation swarm with fewer than two `agents`. The remaining agent requirements (two debaters, two voters besides the supervisor, ...) are checked when the strategy runs.
+The constructor validates configuration immediately and throws on an unknown strategy, a hierarchical swarm without `supervisor`, a pipeline without stages or with different stages in `stages` and `pipeline.stages`, `agentTools` in a distributed swarm or with the message bus / blackboard disabled, a missing `consensus` / `auction` / `debate` / `negotiation` block, or a consensus or negotiation swarm with fewer than two `agents`. The remaining agent requirements (two debaters, two voters besides the supervisor, ...) are checked when the strategy runs.
 
 ## Running a Swarm
 
@@ -296,6 +304,7 @@ team.once('swarm:complete', (event) => {
 team.pause(); // the next agent turn waits until resume()
 team.resume();
 team.abort(); // also cancels in-flight LLM calls
+team.respondToApproval(requestId, response); // negotiation approval gates
 await team.reset(); // clears state, messages and the blackboard; needed after abort()
 
 // distributed cleanup

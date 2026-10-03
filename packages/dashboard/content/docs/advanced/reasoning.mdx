@@ -33,7 +33,7 @@ const executor = new ThoughtTreeExecutor(cogitator, {
 const agent = new Agent({
   name: 'problem-solver',
   instructions: 'You solve complex problems by exploring multiple approaches.',
-  model: 'gpt-6.1-sol',
+  model: 'openai/gpt-5.5',
 });
 
 const result = await executor.explore(agent, 'Design a caching strategy for a real-time dashboard');
@@ -44,19 +44,28 @@ console.log('Best path depth:', result.bestPath.length);
 console.log('Nodes explored:', result.stats.exploredNodes);
 ```
 
-The executor makes its own model calls — branch generation, branch evaluation and the final synthesis — with the backend of the agent's model, and sends the agent's model string to it as is. Give the agent a bare model name served by `llm.defaultProvider`, as above: a `provider/model` id would reach the provider with its prefix.
+The executor makes its own model calls — branch generation, branch evaluation and the final synthesis — on the agent's model, routed like a normal run: a `provider/model` id, a bare name served by `llm.defaultProvider` and `agent.config.provider` all work.
 
 ## How It Works
 
 1. **Root** — the goal becomes the root node.
 2. **Branch generation** — the `BranchGenerator` asks the model for `branchFactor` candidate approaches for the node, each a `thought` with a proposed action: a tool call, a sub-goal or a direct response.
 3. **Branch evaluation** — the `BranchEvaluator` scores every candidate on confidence, progress and novelty, combined into a `composite` score.
-4. **Pruning** — candidates with a composite score below `confidenceThreshold` are dropped, and at most `beamWidth` of the rest are kept.
-5. **Expansion** — each kept candidate becomes a child node. A direct response is taken as is; a tool call or sub-goal runs the agent with `cogitator.run()` (without memory) on a prompt built from the goal and the approach.
-6. **Termination** — exploration stops as soon as a child's branch confidence reaches `terminationConfidence`, or when the frontier is empty, `maxTotalNodes` nodes exist, the `timeout` passes or the abort signal fires. Nodes at `maxDepth` are not expanded further.
-7. **Result** — the node with the highest cumulative score (the sum of composite scores along its path) wins. Its answer is the output; without one, the path is synthesized into a final answer with one more model call.
+4. **Pruning** — candidates with a composite score below `confidenceThreshold` are dropped. Every other candidate becomes a pending child node.
+5. **Queueing** — the `beamWidth` best children are queued for execution; the rest wait as alternatives for backtracking.
+6. **Execution** — a direct response is taken as is; a tool call or sub-goal runs the agent with `cogitator.run()` (without memory) on a prompt built from the goal and the approach. A completed node below `maxDepth` is queued again to be expanded; a failed one backtracks.
+7. **Termination** — exploration stops as soon as an executed node's branch confidence reaches `terminationConfidence`, or when the frontier is empty, `maxTotalNodes` nodes have been executed, the `timeout` passes or the abort signal fires.
+8. **Result** — the completed node with the highest cumulative score (the sum of composite scores along its path) wins. Its answer is the output; without one, the path is synthesized into a final answer with one more model call.
 
-Expanded nodes go back into the frontier, which is ordered by cumulative score.
+### Exploration Strategies
+
+`explorationStrategy` decides which queued node runs next:
+
+| Strategy         | Order                                                                                                                                                                        |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `beam` (default) | Level by level: the shallowest node first, pending nodes before completed ones at the same depth, then by cumulative score. A whole level runs before the next is generated. |
+| `best-first`     | The node whose own branch has the highest composite score.                                                                                                                   |
+| `dfs`            | Last in, first out, with the best child of the latest expansion on top, so the search goes deep before it goes wide.                                                         |
 
 ## Configuration
 
@@ -64,13 +73,16 @@ Expanded nodes go back into the frontier, which is ordered by cumulative score.
 const executor = new ThoughtTreeExecutor(cogitator, {
   maxDepth: 5, // how deep the tree can grow (default 5)
   branchFactor: 3, // candidates generated per node (default 3)
-  beamWidth: 2, // candidates kept per node (default 2)
+  beamWidth: 2, // best candidates queued per expanded node (default 2)
+  explorationStrategy: 'beam', // 'beam' | 'best-first' | 'dfs' (default 'beam')
   confidenceThreshold: 0.3, // minimum composite score to keep a candidate (default 0.3)
   terminationConfidence: 0.8, // branch confidence that stops the search (default 0.8)
-  maxTotalNodes: 50, // hard cap on expanded nodes (default 50)
-  timeout: 60_000, // ms, optional
+  maxTotalNodes: 50, // hard cap on executed nodes (default 50)
+  maxIterationsPerBranch: 3, // iteration cap for each branch run (default 3)
 });
 ```
+
+`maxIterationsPerBranch` caps the iterations of each branch's `cogitator.run()`; it never raises the cap above the agent's own `maxIterations`. Pass a time limit as `timeout` in the `explore()` options (see [Progress Monitoring](#progress-monitoring)); the `timeout` field of the config is not read.
 
 Higher `branchFactor` explores more possibilities but costs more tokens. Lower `beamWidth` focuses the search but risks missing good paths. `DEFAULT_TOT_CONFIG` holds the defaults.
 
@@ -86,7 +98,7 @@ const executor = new ThoughtTreeExecutor(cogitator, {
 });
 ```
 
-`onBacktrack` fires when every candidate of a node scores below the threshold, or when running a node fails; the node is marked `failed`.
+`onBacktrack` fires when every candidate of a node scores below the threshold, or when running a node fails; the node is marked `failed`. `to` is the best deferred alternative — a pending sibling, or a pending sibling of the nearest ancestor that has one — which is queued next, or `null` when none is left.
 
 ## Branch Generation
 
@@ -149,7 +161,7 @@ const result = await executor.explore(agent, goal, {
 });
 ```
 
-`onProgress` is called after each node's candidates have been expanded. On timeout or abort, the best node found so far is returned.
+`onProgress` is called after every step of the search — each node execution and each expansion. On timeout or abort, the best node found so far is returned.
 
 ## Result Structure
 
@@ -172,7 +184,7 @@ interface ToTResult {
 }
 ```
 
-`bestPath` holds every node from the root to the winning node, so you can trace how the agent reached its conclusion; the full `tree` (with `nodes` as a `Map`) is there for visualization or debugging. `success` is true when the winning node completed. `usage` counts the tokens of the agent runs inside the tree, not those of generation and evaluation calls, and `cost` is not computed (always 0).
+`bestPath` holds every node from the root to the winning node, so you can trace how the agent reached its conclusion; the full `tree` (with `nodes` as a `Map`) is there for visualization or debugging. `success` is true when the winning node completed. `usage` and `stats.tokenUsage` count the tokens of the branch runs and of the executor's own generation, evaluation and synthesis calls; `usage.cost` adds the cost of the branch runs to the cost of those calls, priced from the model registry. In `stats`, `llmCalls` counts the executor's own model calls (not those inside branch runs), `prunedNodes` the candidates dropped below `confidenceThreshold`, and `totalNodes` every child node created, including pending alternatives that never ran.
 
 ## When to Use ToT
 

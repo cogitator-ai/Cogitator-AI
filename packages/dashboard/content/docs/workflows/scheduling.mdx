@@ -20,7 +20,7 @@ const workflowManager = createWorkflowManager({
   cogitator,
   runStore: new PostgresRunStore({ client: pool }), // defaults to InMemoryRunStore
   maxConcurrency: 4, // scheduled runs at a time
-  defaultTimeout: 10 * 60_000, // runs started with execute() fail after 10 minutes
+  defaultTimeout: 10 * 60_000, // runs fail after 10 minutes unless they set their own timeout
   onRunStateChange: (run) => console.log(run.id, run.status),
 });
 
@@ -52,13 +52,39 @@ const retryId = await workflowManager.retry(failedRunId); // new run with the sa
 await workflowManager.cleanup(Date.now() - 30 * 24 * 60 * 60 * 1000);
 ```
 
-- `schedule()` with `cron` (and `timezone`) queues **one** run at the next occurrence. For a recurring schedule, fire `schedule()` or `execute()` from a [cron trigger](#cron-triggers).
+- `schedule()` with `cron` (and `timezone`) queues **one** run at the next occurrence. For a recurring schedule use `registerCronJob` (below) or fire `schedule()` / `execute()` from a [cron trigger](#cron-triggers).
 - Scheduled runs wait in an in-process priority queue (highest `priority` first) that the manager checks every second; the `RunStore` keeps their records. Call `stop()` / `dispose()` on shutdown.
-- `retry()` and scheduled runs need the workflow registered in this manager — `execute()` and `schedule()` register it, or call `registerWorkflow(workflow)` after a restart.
-- `pause()` aborts a running run and marks it `paused`; `resume()` only marks it `running` again and does not restart it. To continue work, `replay(workflow, runId, fromNode)` a checkpointed run (see [Execution](/docs/workflows/execution#checkpointing)).
-- `execute()` accepts the executor options (`defaultRetry`, `approvalStore`, `timerStore`, ...) plus `priority`, `tags`, `metadata`, `tracing` and `metrics`. Runs the manager starts from its schedule run with the workflow's defaults — no checkpoint, tracer or `defaultTimeout` — and the `timeout` / `maxRetries` fields of `ScheduleOptions` are only stored in the run's `metadata`.
+- `retry()`, `resume()` and scheduled runs need the workflow registered in this manager — `execute()`, `schedule()` and `registerCronJob()` register it, or call `registerWorkflow(workflow)` after a restart.
+- `execute()` accepts the executor options (`defaultRetry`, `approvalStore`, `timerStore`, the run callbacks, ...) plus `priority`, `tags`, `metadata`, `tracing` and `metrics`. A run's `workflowId` (and so `ctx.workflowId`) defaults to its run id.
+- Runs the manager starts from its schedule get the same infrastructure as `execute()` runs: checkpoints when the manager has a `checkpointStore`, the manager's `tracer` and `metrics`, and the `timeout` of their `ScheduleOptions` (else `defaultTimeout`). With `maxRetries`, a scheduled run that fails is retried automatically up to that many times; each retry is a new run whose `metadata.retryAttempt` counts the attempts.
+
+### Recurring runs
+
+```typescript
+const jobId = workflowManager.registerCronJob(reportWorkflow, '0 9 * * *', {
+  timezone: 'Europe/London',
+  jobOptions: { input: { day: 'today' }, tags: ['daily'], timeout: 10 * 60_000, maxRetries: 2 },
+});
+
+workflowManager.setCronJobEnabled(jobId, false); // pause the job; true picks the next occurrence again
+console.log(workflowManager.getCronJobs()); // { id, workflowName, expression, timezone, nextRun, enabled, ... }
+workflowManager.unregisterCronJob(jobId); // runs already queued are kept
+```
+
+`registerCronJob(workflow, expression, { id?, timezone?, jobOptions? })` returns the job id. While the manager is started, every occurrence queues a run with `jobOptions` (any `ScheduleOptions` except `at`, `cron` and `timezone`) and `triggerId: 'cron:<jobId>'`. Cron jobs live in the manager's memory: register them again after a restart.
+
+### Pause and resume
+
+```typescript
+await workflowManager.pause(runId); // status 'paused'
+await workflowManager.resume(runId); // resolves once the run is 'running' again
+```
+
+`pause()` needs a manager with a `checkpointStore` (it throws otherwise — use `cancel()` to stop a run for good) and a run in status `running`. It aborts the run — nodes in flight get the abort signal — and the run stays `paused`; `cancel()` likewise keeps `cancelled`. `resume(runId, options?)` continues a paused run from its last checkpoint (from the start if it was paused before the first one), so nodes completed before that checkpoint do not run again. It resolves as soon as the run is running again; follow the rest with `onRunStateChange` or `getStatus`. `options` default to the ones the run was started with in this process, and `resume()` throws while the nodes that were running at the pause have not finished yet.
 
 ## Trigger Manager
+
+The `DefaultTriggerManager` is the central coordinator for all trigger types. `onTriggerFire` receives the trigger and a `TriggerContext` (`triggerType`, `timestamp`, `payload`, `headers`, `metadata`) and returns a run id:
 
 ```typescript
 import {
@@ -67,14 +93,6 @@ import {
   webhookTrigger,
   eventTrigger,
 } from '@cogitator-ai/workflows';
-```
-
-## Trigger Manager
-
-The `DefaultTriggerManager` is the central coordinator for all trigger types. `onTriggerFire` receives the trigger and a `TriggerContext` (`triggerType`, `timestamp`, `payload`, `headers`, `metadata`) and returns a run id:
-
-```typescript
-import { createTriggerManager } from '@cogitator-ai/workflows';
 
 const manager = createTriggerManager({
   onTriggerFire: async (trigger, context) =>
@@ -191,15 +209,15 @@ const config = cronTrigger('0 9 * * *', {
 });
 ```
 
-| Option           | Type                 | Description                                                                                                             |
-| ---------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `timezone`       | `string`             | IANA timezone (e.g., `'America/New_York'`)                                                                              |
-| `enabled`        | `boolean`            | Whether the trigger is active (`cronTrigger` sets `true`)                                                               |
-| `runImmediately` | `boolean`            | Fire once immediately on registration                                                                                   |
-| `maxConcurrent`  | `number`             | Skip an occurrence while this many `onTriggerFire` calls are still running                                              |
-| `catchUp`        | `boolean`            | Allows `CronTriggerExecutor.catchUp(triggerId, since)` to replay missed occurrences; nothing replays them automatically |
-| `input`          | `object \| function` | Static or per-fire input, delivered as `context.payload`                                                                |
-| `condition`      | `(ctx) => boolean`   | Additional gate before firing                                                                                           |
+| Option           | Type                 | Description                                                                                                            |
+| ---------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `timezone`       | `string`             | IANA timezone (e.g., `'America/New_York'`)                                                                             |
+| `enabled`        | `boolean`            | Whether the trigger is active (`cronTrigger` sets `true`)                                                              |
+| `runImmediately` | `boolean`            | Fire once immediately on registration                                                                                  |
+| `maxConcurrent`  | `number`             | Skip an occurrence while this many `onTriggerFire` calls are still running                                             |
+| `catchUp`        | `boolean`            | Fire every occurrence a late timer missed (sleep, a blocked event loop), and allow `catchUp(triggerId, since)` replays |
+| `input`          | `object \| function` | Static or per-fire input, delivered as `context.payload`                                                               |
+| `condition`      | `(ctx) => boolean`   | Additional gate before firing                                                                                          |
 
 ### Cron Utilities
 
@@ -259,7 +277,9 @@ const manual = await cronExecutor.fire(triggerId); // { triggered, runId?, skipp
 
 ### Missed Runs
 
-To replay occurrences missed while the process was down, keep the time of the last run yourself and call `catchUp` on a trigger registered with `catchUp: true`; it fires every occurrence between `since` and now (at most 100) with its historical timestamp:
+With `catchUp: true`, a timer that fires so late that later occurrences have passed too (the machine slept, the event loop was blocked) fires each missed occurrence (at most 100) with its own timestamp instead of skipping them; without it only the due occurrence fires.
+
+Occurrences missed while the process was down are not replayed automatically. Keep the time of the last run yourself and call `catchUp` on a trigger registered with `catchUp: true`; it fires every occurrence between `since` and now (at most 100) with its historical timestamp:
 
 ```typescript
 const results = await cronExecutor.catchUp(triggerId, lastRunAt);

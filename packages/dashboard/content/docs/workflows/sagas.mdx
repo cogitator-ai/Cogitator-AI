@@ -30,7 +30,7 @@ const result = await executor.execute(workflow, input, {
 });
 ```
 
-A node's own `config.retries` / `retryDelay` take precedence over `defaultRetry`. Compensation is not run by the executor: use a `CompensationManager` around the run (record completed steps, call `compensate()` when `result.error` is set). The primitives below also work on their own, outside workflows.
+A node's own `config.retries` / `retryDelay` take precedence over `defaultRetry`. Compensation is configured per node with `config.compensation` (see [Compensation in the Executor](#compensation-in-the-executor)). The primitives below also work on their own, outside workflows.
 
 ## Retry with Backoff
 
@@ -187,9 +187,77 @@ const stats = breaker.getStats('external-api');
 console.log(`State: ${stats.state}, Failures: ${stats.totalFailures}`);
 ```
 
+## Compensation in the Executor
+
+Give a node `config.compensation` and the executor rolls it back when a later node of the same run fails:
+
+```typescript
+import { WorkflowBuilder } from '@cogitator-ai/workflows';
+import type { WorkflowState } from '@cogitator-ai/types';
+
+interface OrderState extends WorkflowState {
+  orderId: string;
+  reservationId?: string;
+  chargeId?: string;
+}
+
+const checkout = new WorkflowBuilder<OrderState>('checkout')
+  .initialState({ orderId: '' })
+  .addNode(
+    'reserve',
+    async (ctx) => {
+      const reservation = await inventory.reserve(ctx.state.orderId);
+      return { state: { reservationId: reservation.id }, output: reservation };
+    },
+    {
+      config: {
+        compensation: {
+          compensate: async (_state, originalResult) => {
+            await inventory.release((originalResult as { id: string }).id);
+          },
+        },
+      },
+    }
+  )
+  .addNode(
+    'charge',
+    async (ctx) => {
+      const charge = await payments.charge(ctx.state.orderId);
+      return { state: { chargeId: charge.id }, output: charge };
+    },
+    {
+      after: ['reserve'],
+      config: {
+        compensation: {
+          compensate: async (state) => payments.refund(state.chargeId!),
+          compensateCondition: (_state, error) => error.message !== 'ALREADY_REFUNDED',
+          compensateTimeout: 10_000,
+        },
+      },
+    }
+  )
+  .addNode('ship', async (ctx) => ({ output: await shipping.ship(ctx.state.orderId) }), {
+    after: ['charge'],
+  })
+  .build();
+
+const result = await executor.execute(
+  checkout,
+  { orderId: 'ord_1' },
+  {
+    onCompensationStart: (nodeId) => console.log(`Rolling back ${nodeId}`),
+    onCompensationComplete: (nodeId) => console.log(`Rolled back ${nodeId}`),
+  }
+);
+```
+
+- `compensation` is a `CompensationConfig`: `compensate(state, originalResult)` (required to register anything; `originalResult` is the node's output), `compensateCondition?(state, error)` to skip a step, `compensateOrder?` (`'reverse'` by default, `'parallel'` or `'forward'`) and `compensateTimeout?` in ms.
+- It runs when a node fails after its retries: every completed node that has a `compensate` is rolled back (the failed node itself is not), in reverse completion order by default, once the nodes still in flight have settled. Nodes passed over on a resume count as completed. An aborted run — `signal`, or a `WorkflowManager` pause or cancel — is not compensated.
+- `onCompensationStart(nodeId)` and `onCompensationComplete(nodeId)` fire around each step that runs (steps skipped by `compensateCondition` report neither); `onCompensationComplete` fires whether the step succeeded or not. A failing step is logged and does not stop the others; `result.error` stays the node's original error.
+
 ## Compensation Manager
 
-When a multi-step workflow fails, compensation rolls back already-completed steps in reverse order.
+`CompensationManager` is the same rollback logic as a standalone object, for code outside the executor or for custom flows. When a multi-step workflow fails, compensation rolls back already-completed steps in reverse order.
 
 ```typescript
 import { CompensationManager, createCompensationManager } from '@cogitator-ai/workflows';
@@ -246,7 +314,7 @@ if (report.partialFailures.length > 0) {
 }
 ```
 
-Only steps that were marked completed (and are not the failed step) are compensated. Compensation executes in reverse completion order by default; each step can set `order: 'parallel'` (consecutive parallel steps run together) or `'forward'` (run last, in completion order). A step that throws is retried `retries` times with a short backoff, and `timeout` fails a step that takes too long; failed steps are listed in `partialFailures` instead of stopping the rest. `getSummary()` and `reset()` help when you reuse a manager across runs, and `registerFromConfig(nodeId, { compensate, compensateCondition, compensateOrder, compensateTimeout })` registers from a `CompensationConfig`.
+Only steps that were marked completed (and are not the failed step) are compensated. Compensation executes in reverse completion order by default; each step can set `order: 'parallel'` (consecutive parallel steps run together) or `'forward'` (run last, in completion order). A step that throws is retried `retries` times with a short backoff, and `timeout` fails a step that takes too long; failed steps are listed in `partialFailures` instead of stopping the rest. An optional fourth argument, `CompensationHooks` (`{ onStepStart?(nodeId), onStepComplete?(result) }`), observes each step that runs — the executor's `onCompensationStart` / `onCompensationComplete` are built on it. `getSummary()` and `reset()` help when you reuse a manager across runs, and `registerFromConfig(nodeId, { compensate, compensateCondition, compensateOrder, compensateTimeout })` registers from a `CompensationConfig`.
 
 ### CompensationBuilder
 

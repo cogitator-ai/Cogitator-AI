@@ -137,9 +137,11 @@ if (!guardResult.approved) {
 }
 ```
 
-The `ToolGuard` refuses dangerous commands (`rm -rf /`, `mkfs.`, `dd of=/dev/...`, `chmod -R 777 /`, `format c:`) in the `command`/`cmd` argument of a tool named `exec` or declaring the `process` side effect, and sensitive paths (`/etc/shadow`, `/etc/sudoers`, `/boot/`, `/proc/`, `~/.ssh/`, `/root/`) in the `path`/`file` argument of a tool whose name contains `file` or that declares `filesystem`. `riskLevel` follows the declared `sideEffects`. In `strictMode`, every call of a tool with side effects is passed to `config.onToolApproval` (and runs when there is none).
+The `ToolGuard` refuses dangerous commands (`rm -rf /`, `mkfs.`, `dd of=/dev/...`, `chmod -R 777 /`, `format c:`) in the `command`/`cmd` argument of a tool named `exec` or declaring the `process` side effect, and sensitive paths (`/etc/shadow`, `/etc/sudoers`, `/boot/`, `/proc/`, `~/.ssh/`, `/root/`) in the `path`/`file` argument of a tool whose name contains `file` or that declares `filesystem`. `riskLevel` follows the declared `sideEffects`.
 
-`requiresApproval` itself is enforced by the runtime whether or not guardrails are on: the run's `onApproval` decides, else `guardrails.onToolApproval`, and without either the run pauses ([Approvals](/docs/tools/approvals)). A call approved that way is not asked about again by the guard.
+A call needs approval when the tool's `requiresApproval` says so (a `requiresApproval` function that throws counts as yes), and in `strictMode` also when the tool declares any side effect. The guard fails closed: such a call runs only when `config.onToolApproval` returns `true` or the caller passes `{ approvedByUser: true }` as the fourth argument of `guardTool()`. Without either it is refused with `Tool "<name>" needs approval, and no approval handler is configured`; a `false` from the handler gives `User denied tool execution`.
+
+Inside a `Cogitator`, these calls go through the run's approval flow before they reach the guard: the run's `onApproval` decides, else `guardrails.onToolApproval`, and without either the run pauses until you [resume](/docs/tools/approvals) it. `requiresApproval` is enforced this way whether or not guardrails are on; `strictMode` side effects are added while guardrails and `filterToolCalls` are on. A call approved in the flow is not asked about again by the guard.
 
 ### Tool Results
 
@@ -149,7 +151,7 @@ With `filterToolResults: true`, what a tool returns is checked with the input fi
 
 `new Cogitator({ guardrails: { ... } })` turns guardrails on unless `enabled: false`; fields you leave out take `DEFAULT_GUARDRAIL_CONFIG`, so `guardrails: { filterInput: false }` keeps output and tool filtering. The checks run on `guardrails.model` (a `provider/model` id), or on the running agent's model when it is not set.
 
-A blocked input fails the run with `Input blocked: <reason>` before the first model call. When the output filter blocks an answer and the critique-revise loop produces a safe one, the run answers with the revision; without a revision it fails with `Output blocked: <reason>`. A blocked tool call or tool result reaches the model as the tool's error. Every block is logged and reported to `onViolation`, also when a revision replaces the answer.
+A blocked input fails the run with `Input blocked: <reason>` before the first model call. When the output filter blocks an answer and the critique-revise loop produces a safe one, the run answers with the revision; without a revision it fails with `Output blocked: <reason>`. Both failures are a `CogitatorError` with code `LLM_CONTENT_FILTERED` and the harm scores in `details.harmScores`. A blocked tool call or tool result reaches the model as the tool's error. Every block is logged and reported to `onViolation`, also when a revision replaces the answer.
 
 ```typescript
 const cog = new Cogitator({
@@ -162,7 +164,17 @@ cog.getGuardrails()?.getViolationLog();
 cog.setConstitution(customConstitution); // see Custom Constitutions below
 ```
 
-The `ConstitutionalAI` instance is created on the first run, so `getGuardrails()` returns `undefined` and `setConstitution()` does nothing before it: pass the constitution you start with as `guardrails.constitution`.
+The `ConstitutionalAI` instance is built on first use. With `guardrails.model` or `llm.defaultModel` set, `getGuardrails()` and `setConstitution()` work before the first run; otherwise `getGuardrails()` returns `undefined` until a run builds the instance with its agent's model. A constitution passed to `setConstitution()` before that is applied as soon as the instance exists, and it stays in force after `close()`. Without `guardrails` in the config (or with `enabled: false`), `setConstitution()` only logs a warning.
+
+```typescript
+const cog = new Cogitator({
+  llm: { defaultModel: 'openai/gpt-5.5' },
+  guardrails: { model: 'openai/gpt-6-luna' },
+});
+
+cog.setConstitution(customConstitution);
+cog.getGuardrails()?.getConstitution();
+```
 
 ## Custom Constitutions
 

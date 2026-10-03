@@ -50,15 +50,15 @@ console.log(result.url); // https://my-app.fly.dev
 console.log(result.endpoints); // { api, a2a, health }
 ```
 
-| Method                                | Description                                                                                                      |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `plan(options)`                       | Analyze + preflight. Returns `config`, `preflight`, `warnings`, `analysis`, `provider`                           |
-| `deploy(options)`                     | `plan`, generate artifacts, deploy. Returns `DeployResult` (`dryRun` stops before writing or deploying anything) |
-| `status(target, config, projectDir)`  | `DeployStatus` (`running`, `url`, `instances`)                                                                   |
-| `destroy(target, config, projectDir)` | Tears down the deployment; throws when it fails                                                                  |
-| `availableTargets()`                  | Names of registered providers (`['docker', 'fly']` by default)                                                   |
-| `getProvider(target)`                 | The registered `DeployProvider`; throws for an unknown target                                                    |
-| `registerProvider(provider)`          | Add a custom `DeployProvider`                                                                                    |
+| Method                                | Description                                                                                                                            |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `plan(options)`                       | Analyze + preflight. Returns `config`, `preflight`, `warnings`, `analysis`, `provider`                                                 |
+| `deploy(options)`                     | `plan`, the provider's `generate()`, then its `deploy()`. Returns `DeployResult` (`dryRun` stops before writing or deploying anything) |
+| `status(target, config, projectDir)`  | `DeployStatus` (`running`, `url`, `instances`)                                                                                         |
+| `destroy(target, config, projectDir)` | Tears down the deployment; throws when it fails                                                                                        |
+| `availableTargets()`                  | Names of registered providers (`['docker', 'fly']` by default)                                                                         |
+| `getProvider(target)`                 | The registered `DeployProvider`; throws for an unknown target                                                                          |
+| `registerProvider(provider)`          | Add a custom `DeployProvider`                                                                                                          |
 
 ## Configuration
 
@@ -81,7 +81,7 @@ deploy:
   secrets:
     - OPENAI_API_KEY
   health: # Dockerfile HEALTHCHECK and Fly.io HTTP check
-    path: /health
+    path: /cogitator/health
     interval: 30s
     timeout: 5s
   resources: # Fly.io VM size
@@ -91,7 +91,7 @@ deploy:
 
 Explicit `services` and `secrets` replace auto-detection rather than merging with it.
 
-`health.path` defaults to `/health`. The server adapters mount their routes under `/cogitator` by default, so with an unchanged base path set `health.path: /cogitator/health` — otherwise the container health check and the Fly.io check hit a route that does not exist.
+`health.path` defaults to `/cogitator/health`, where the Express and Fastify adapters answer at their default base path. Set it only when the adapter is mounted elsewhere (Hono, Koa and Tetsu answer wherever you mount them).
 
 Secrets are read from the current environment or the project's `.env` file (the environment wins). They are checked during preflight, passed through to the Docker Compose stack, and imported into Fly.io with `fly secrets import --stage`. Multi-line secret values are rejected for Fly.io because `fly secrets import` cannot carry them.
 
@@ -116,7 +116,7 @@ Problems found during analysis (invalid config, unparsable `package.json`, missi
 
 Artifacts are written to `.cogitator/`: `Dockerfile` (on `node:22-alpine`, multi-stage when the project has TypeScript, with a `HEALTHCHECK` on `health.path`), `.dockerignore`, `Dockerfile.dockerignore` and `docker-compose.prod.yml`. A root `.dockerignore` is created when the project has none, so `.env` and `node_modules` never enter the image.
 
-`deploy` builds and tags the image (`<registry>/<image>:latest`), pushes it when a registry is configured, then runs `docker compose up -d` for the app plus the Redis (`redis:7-alpine`) and PostgreSQL (`pgvector/pgvector:pg16`) services it needs — health-gated, data in named volumes, with `REDIS_URL` / `DATABASE_URL` injected into the app. The result URL is `http://localhost:<port>`. `status` reports whether the `app` service is running; `destroy` runs `docker compose down` and keeps volumes.
+`deploy` builds and tags the image (`<registry>/<image>:latest`), pushes it when a registry is configured, then runs `docker compose up -d` for the app plus the Redis (`redis:7-alpine`) and PostgreSQL (`pgvector/pgvector:pg16`) services it needs — health-gated, data in named volumes, with `REDIS_URL` / `DATABASE_URL` injected into the app. Each key appears once in the app's `environment`: a `REDIS_URL` / `DATABASE_URL` in `env` replaces the bundled service URL, and one listed in `secrets` is read from your environment with the bundled URL as fallback. The result URL is `http://localhost:<port>`. `status` reports whether the `app` service is running; `destroy` runs `docker compose down` and keeps volumes.
 
 Preflight checks: Docker installed, daemon running, Compose v2 available, registry credentials (read from the Docker config, credential helpers and stores), secrets.
 
@@ -127,7 +127,12 @@ Generates `.cogitator/fly.toml` (your own `fly.toml` is never overwritten) with 
 ## Custom Providers
 
 ```typescript
-import { Deployer, type DeployProvider } from '@cogitator-ai/deploy';
+import {
+  ArtifactGenerator,
+  Deployer,
+  ProjectAnalyzer,
+  type DeployProvider,
+} from '@cogitator-ai/deploy';
 import type {
   DeployConfig,
   DeployResult,
@@ -143,7 +148,8 @@ class KubernetesProvider implements DeployProvider {
     return { checks: [], passed: true };
   }
   async generate(config: DeployConfig, projectDir: string): Promise<GeneratedArtifacts> {
-    return { files: [], outputDir: '.cogitator' };
+    const build = new ProjectAnalyzer().detectBuild(projectDir);
+    return new ArtifactGenerator().generate(config, build);
   }
   async deploy(
     config: DeployConfig,
@@ -163,15 +169,15 @@ deployer.registerProvider(new KubernetesProvider());
 await deployer.deploy({ projectDir: process.cwd(), target: 'kubernetes' });
 ```
 
-`Deployer.deploy()` hands your provider the artifacts produced by the built-in `ArtifactGenerator` (Dockerfile, `.dockerignore`, and a Compose file for targets other than `fly`); write them and deploy however your platform needs. `generate()` is part of the interface for standalone use.
+`Deployer.deploy()` runs preflight, calls your provider's `generate(config, projectDir)` and passes the result to `deploy()`; with `dryRun` it stops after `generate()`. Writing the files and deploying them is up to the provider. The example reuses the built-in Dockerfile: `ProjectAnalyzer.detectBuild(projectDir)` reports the TypeScript setup, package manager, lockfile, build script and start command that `ArtifactGenerator` needs.
 
 All external commands are executed without a shell, so paths with spaces and user-supplied values are passed verbatim.
 
 ## Architecture
 
 ```
-ProjectAnalyzer  →  ArtifactGenerator  →  DeployProvider  →  Result
-(detect config)     (Dockerfile, etc.)     (docker/fly)       (url, status)
+ProjectAnalyzer  →  DeployProvider.generate  →  DeployProvider.deploy  →  Result
+(detect config)     (Dockerfile, etc.)            (docker/fly)              (url, status)
 ```
 
 ## See Also

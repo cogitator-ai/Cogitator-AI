@@ -138,7 +138,31 @@ console.log(result.explanation);
 console.log(result.reasoning); // { abduction, action, prediction }
 ```
 
-`evaluateCounterfactual(graph, query, options)` does the same in one call. Structural equations support `linear`, `logistic` and `polynomial` types with configurable noise distributions (`gaussian`, `uniform`, `bernoulli`). A node without an equation keeps its observed value, and a `custom` equation contributes only its noise term — `customFn` is not evaluated.
+`evaluateCounterfactual(graph, query, options)` does the same in one call. Structural equations support `linear`, `logistic`, `polynomial` and `custom` types with configurable noise distributions (`gaussian`, `uniform`, `bernoulli`). A node without an equation keeps its factual value.
+
+A `custom` equation is an arithmetic expression over the parent node ids in `customFn`:
+
+```typescript
+const profitGraph = CausalGraphBuilder.create('profit-model')
+  .variable('price', 'Price')
+  .variable('demand', 'Demand')
+  .outcome('profit', 'Profit')
+  .withEquation({ type: 'custom', customFn: '2 * price - log(demand) + max(price, 1)' })
+  .from('price')
+  .causes('profit')
+  .from('demand')
+  .causes('profit')
+  .build();
+
+const whatIf = cfReasoner.evaluate(profitGraph, {
+  factual: { price: 10, demand: 100, profit: 25 },
+  intervention: { price: 12 },
+  target: 'profit',
+  question: 'What would profit have been at price 12?',
+});
+```
+
+It may use numbers, parent ids, `+ - * / ^`, parentheses and the functions `abs`, `exp`, `log`, `sqrt`, `pow`, `min`, `max`, `tanh` and `sigmoid`; a parent without a value counts as 0. The expression is parsed, never run as code, so it is safe to load from storage or take from an LLM; an invalid one throws when it is evaluated. As with `linear`, the node's noise term is added to its value.
 
 ## Intervention Analysis
 

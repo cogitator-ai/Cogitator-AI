@@ -136,6 +136,8 @@ The last chunk of each list carries `finishReason` (default `'stop'`) and usage.
 | `getCallCount()`           | Number of requests                                         |
 | `wasCalledWith(predicate)` | Whether any request matches `(request) => boolean`         |
 
+Each request is recorded as a snapshot of what was sent at that moment: the runtime keeps appending to the same conversation, but `getCalls()[0].messages` still holds only the messages of the first call, and later calls show the tool results added in between.
+
 ```typescript
 expect(mock.getCalls()[0].tools?.map((t) => t.name)).toEqual(['get_weather']);
 expect(

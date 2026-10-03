@@ -154,6 +154,10 @@ const selfModifying = new SelfModifyingAgent({
       enabled: true,
       defaultMode: 'analytical',
       allowedModes: ['analytical', 'creative', 'systematic'],
+      modeProfiles: {
+        analytical: { temperature: 0.2, depth: 4 },
+        creative: { temperature: 1.0 },
+      },
       maxMetaAssessments: 5,
       maxAdaptations: 3,
       triggers: ['on_failure', 'on_low_confidence', 'periodic'],
@@ -164,6 +168,8 @@ const selfModifying = new SelfModifyingAgent({
   },
 });
 ```
+
+`modeProfiles` overrides the temperature, depth or parameters of individual modes; each given field is merged over the mode's default in `DEFAULT_MODE_PROFILES`, so list only what you change. `mergeModeProfiles(base, overrides)` applies the same merge to profiles of your own.
 
 Inside `SelfModifyingAgent`, meta-reasoning only intervenes when a step is incomplete (empty or truncated answer). Only triggers listed in `triggers` fire, and the next attempt uses the adapted mode temperature, parameters or injected context. LLM assessments are validated; recommendations without a valid confidence are ignored.
 

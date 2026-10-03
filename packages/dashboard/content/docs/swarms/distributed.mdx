@@ -66,22 +66,36 @@ await team.run({ input: 'Write the release notes' });
 await team.close();
 ```
 
-Always call `team.close()` when done to clean up Redis connections.
+Always call `team.close()` when done: it closes the Redis connections and schedules the swarm's Redis state to expire after `cleanupAfter`.
 
 ## Distributed Configuration
 
-| Option            | Default              | Description                                    |
-| ----------------- | -------------------- | ---------------------------------------------- |
-| `enabled`         | `false`              | Enable distributed mode                        |
-| `redis.host`      | `'localhost'`        | Redis server hostname                          |
-| `redis.port`      | `6379`               | Redis server port                              |
-| `redis.password`  | `undefined`          | Redis authentication password                  |
-| `redis.db`        | `0`                  | Redis database number                          |
-| `redis.keyPrefix` | `'swarm'`            | Key prefix for all Redis keys                  |
-| `queue`           | `'swarm-agent-jobs'` | Job queue name (`{keyPrefix}:jobs:{queue}`)    |
-| `timeout`         | `300000`             | Timeout in ms for waiting on agent job results |
+| Option            | Default                  | Description                                                                                                                                                                           |
+| ----------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`         | `false`                  | Enable distributed mode                                                                                                                                                               |
+| `redis.host`      | `'localhost'`            | Redis server hostname                                                                                                                                                                 |
+| `redis.port`      | `6379`                   | Redis server port                                                                                                                                                                     |
+| `redis.password`  | `undefined`              | Redis authentication password                                                                                                                                                         |
+| `redis.db`        | `0`                      | Redis database number                                                                                                                                                                 |
+| `redis.keyPrefix` | `'swarm'`                | Key prefix for all Redis keys                                                                                                                                                         |
+| `queue`           | `'swarm-agent-jobs'`     | Job queue name (`{keyPrefix}:jobs:{queue}`)                                                                                                                                           |
+| `timeout`         | `300000`                 | Timeout in ms for waiting on agent job results                                                                                                                                        |
+| `retry`           | `undefined` (no retries) | Re-dispatch jobs that fail on a worker or time out: `maxRetries` (`3`), `backoff` (`'exponential'`; or `'constant'`, `'linear'`), `initialDelay` (`1000` ms), `maxDelay` (`30000` ms) |
+| `cleanupAfter`    | `3600000`                | How long the swarm's Redis state (blackboard, messages, events) is kept after `close()`, in ms; `0` deletes it at once                                                                |
 
-`DistributedSwarmConfig` also declares `workerConcurrency`, `retry` and `cleanupAfter`, but the coordinator does not use them: set concurrency on the worker (`DistributedSwarmWorker`'s `concurrency`), and retries through the swarm's `errorHandling`.
+`retry` acts before the swarm's `errorHandling` sees the failure, and an aborted run is never retried. A timed-out job may still be running on its worker, so a retried turn can run twice. `workerConcurrency` is deprecated and has no effect: set concurrency where the workers run, with `DistributedSwarmWorker`'s `concurrency` option.
+
+```typescript
+swarm('team')
+  .strategy('pipeline')
+  .pipeline({ stages })
+  .distributed({
+    enabled: true,
+    redis: { host: 'localhost', port: 6379 },
+    retry: { maxRetries: 2, backoff: 'exponential', initialDelay: 500 },
+    cleanupAfter: 600_000,
+  });
+```
 
 ## How It Works
 
@@ -93,7 +107,7 @@ When distributed mode is enabled, the `Swarm` creates a `DistributedSwarmCoordin
 4. **Applies the same policies as local swarms** — retry, failover, skip, budgets, circuit breaking and events behave exactly like in-process execution.
 5. **Synchronizes state** — blackboard writes and messages are persisted in Redis, so all nodes see the same state.
 
-Strategy tools that call back into the coordinator (hierarchical delegation, negotiation tools) only exist in-process: a distributed hierarchical supervisor cannot delegate and distributed negotiators cannot make offers. Prefer pipeline, round-robin, consensus, debate and auction for distributed swarms. Agent tools are executed on the worker from its own tool registry.
+Strategy tools that call back into the coordinator (hierarchical delegation, voting, negotiation tools) only exist in-process: a distributed hierarchical supervisor cannot delegate, distributed negotiators cannot make offers, and consensus voters vote with a `VOTE:` line. `agentTools` is rejected for distributed swarms. Prefer pipeline, round-robin, consensus, debate and auction for distributed swarms. Agent tools are executed on the worker from its own tool registry.
 
 ## Redis Key Structure
 
@@ -120,7 +134,7 @@ import { RedisMessageBus } from '@cogitator-ai/swarms';
 import Redis from 'ioredis';
 
 const bus = new RedisMessageBus(
-  { enabled: true, protocol: 'direct' },
+  { enabled: true },
   { redis: new Redis(), swarmId: 'swarm_abc123', keyPrefix: 'swarm' }
 );
 

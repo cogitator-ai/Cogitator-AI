@@ -66,7 +66,7 @@ Cogitator ships with 7 built-in coordination strategies:
 | `debate`       | Agents argue opposing positions, moderator synthesizes             |
 | `negotiation`  | Multi-party negotiation with offers, counteroffers, and agreements |
 
-Swarms can run in **distributed mode** (`.distributed({ enabled: true, ... })`) with Redis-backed state and worker nodes. Pipeline, round-robin, consensus, debate and auction work there unchanged; hierarchical delegation and the negotiation tools exist only in-process — see [Distributed Swarms](/docs/swarms/distributed).
+Swarms can run in **distributed mode** (`.distributed({ enabled: true, ... })`) with Redis-backed state and worker nodes. Pipeline, round-robin, consensus, debate and auction work there (consensus voters vote with a `VOTE:` line); hierarchical delegation, the voting and negotiation tools and `agentTools` exist only in-process — see [Distributed Swarms](/docs/swarms/distributed).
 
 ## Swarms vs Workflows
 

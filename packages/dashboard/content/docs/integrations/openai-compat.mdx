@@ -101,38 +101,40 @@ await server.stop();
 
 With `apiKeys`, every request except `GET /health` needs `Authorization: Bearer <key>`; a missing or unknown key answers `401` with code `invalid_api_key`. Keys only gate access: every key sees the same assistants, threads, runs and files, and runs carry no `userId`, so give each tenant its own server (or storage) when their data must stay apart.
 
-Errors use OpenAI's shape, `{ "error": { "message", "type", "param", "code" } }`, with `invalid_request` (400), `invalid_api_key` (401), `permission_denied` (403), `not_found` (404), `rate_limit_exceeded` (429) and otherwise `internal_error`. A run that fails ends with `status: 'failed'` and `last_error: { code: 'server_error', message }`.
+Errors use OpenAI's shape, `{ "error": { "message", "type", "param", "code" } }`, with `invalid_request` (400), `invalid_api_key` (401), `permission_denied` (403), `not_found` (404), `rate_limit_exceeded` (429) and otherwise `internal_error`. Every 5xx answer says `Internal server error` and the details are only logged. Requests the adapter refuses throw `InvalidRequestError` (exported from the package), which the server answers as `400 invalid_request`. A run that fails ends with `status: 'failed'` and `last_error: { code: 'server_error', message }`, where `message` is `Internal server error` unless the cause is a `CogitatorError` or an `InvalidRequestError`.
 
 ## Supported Endpoints
 
 The server implements these OpenAI API routes:
 
-| Method   | Endpoint                                        | Description              |
-| -------- | ----------------------------------------------- | ------------------------ |
-| `GET`    | `/v1/models`                                    | List available models    |
-| `POST`   | `/v1/assistants`                                | Create assistant         |
-| `GET`    | `/v1/assistants`                                | List assistants          |
-| `GET`    | `/v1/assistants/:id`                            | Get assistant            |
-| `POST`   | `/v1/assistants/:id`                            | Update assistant         |
-| `DELETE` | `/v1/assistants/:id`                            | Delete assistant         |
-| `POST`   | `/v1/threads`                                   | Create thread            |
-| `POST`   | `/v1/threads/runs`                              | Create thread and run    |
-| `GET`    | `/v1/threads/:id`                               | Get thread               |
-| `POST`   | `/v1/threads/:id`                               | Update thread metadata   |
-| `DELETE` | `/v1/threads/:id`                               | Delete thread            |
-| `POST`   | `/v1/threads/:id/messages`                      | Add message              |
-| `GET`    | `/v1/threads/:id/messages`                      | List messages            |
-| `GET`    | `/v1/threads/:id/messages/:mid`                 | Get message              |
-| `POST`   | `/v1/threads/:id/runs`                          | Create run               |
-| `GET`    | `/v1/threads/:id/runs`                          | List runs                |
-| `GET`    | `/v1/threads/:id/runs/:rid`                     | Get run status           |
-| `POST`   | `/v1/threads/:id/runs/:rid/cancel`              | Cancel run               |
-| `POST`   | `/v1/threads/:id/runs/:rid/submit_tool_outputs` | Submit tool outputs      |
-| `POST`   | `/v1/files`                                     | Upload file              |
-| `GET`    | `/v1/files`                                     | List files (`?purpose=`) |
-| `GET`    | `/v1/files/:id`                                 | Get file metadata        |
-| `GET`    | `/v1/files/:id/content`                         | Download file            |
-| `DELETE` | `/v1/files/:id`                                 | Delete file              |
+| Method   | Endpoint                                        | Description                                         |
+| -------- | ----------------------------------------------- | --------------------------------------------------- |
+| `GET`    | `/v1/models`                                    | List available models                               |
+| `POST`   | `/v1/assistants`                                | Create assistant                                    |
+| `GET`    | `/v1/assistants`                                | List assistants                                     |
+| `GET`    | `/v1/assistants/:id`                            | Get assistant                                       |
+| `POST`   | `/v1/assistants/:id`                            | Update assistant                                    |
+| `DELETE` | `/v1/assistants/:id`                            | Delete assistant                                    |
+| `POST`   | `/v1/threads`                                   | Create thread                                       |
+| `POST`   | `/v1/threads/runs`                              | Create thread and run                               |
+| `GET`    | `/v1/threads/:id`                               | Get thread                                          |
+| `POST`   | `/v1/threads/:id`                               | Update thread metadata                              |
+| `DELETE` | `/v1/threads/:id`                               | Delete thread                                       |
+| `POST`   | `/v1/threads/:id/messages`                      | Add message                                         |
+| `GET`    | `/v1/threads/:id/messages`                      | List messages                                       |
+| `GET`    | `/v1/threads/:id/messages/:mid`                 | Get message                                         |
+| `POST`   | `/v1/threads/:id/runs`                          | Create run                                          |
+| `GET`    | `/v1/threads/:id/runs`                          | List runs                                           |
+| `GET`    | `/v1/threads/:id/runs/:rid`                     | Get run status                                      |
+| `POST`   | `/v1/threads/:id/runs/:rid/cancel`              | Cancel run                                          |
+| `POST`   | `/v1/threads/:id/runs/:rid/submit_tool_outputs` | Submit tool outputs                                 |
+| `POST`   | `/v1/files`                                     | Upload file                                         |
+| `GET`    | `/v1/files`                                     | List files (`?purpose=`, `limit`, `order`, `after`) |
+| `GET`    | `/v1/files/:id`                                 | Get file metadata                                   |
+| `GET`    | `/v1/files/:id/content`                         | Download file                                       |
+| `DELETE` | `/v1/files/:id`                                 | Delete file                                         |
+
+`GET /v1/files` takes `limit` (1-10 000, default 10 000), `order` (`asc` / `desc`, default `desc`) and `after`.
 
 ## OpenAIAdapter
 
@@ -161,7 +163,7 @@ const run = await adapter.createRun(thread.id, {
 });
 ```
 
-Runs see the whole thread (earlier messages are replayed to the agent), are aborted on cancel, and honour `additional_instructions`, `response_format`, `max_completion_tokens`, `top_p`, `tool_choice` (`none` or a specific function), `parallel_tool_calls` and `truncation_strategy`. A thread can have one active run at a time (a second `createRun` returns HTTP 400), and cancelling a run that has already finished returns HTTP 400. Messages are listed in insertion order (`order: 'desc'`, the default, returns the newest first). Image parts are passed to the model.
+Runs see the whole thread (earlier messages are replayed to the agent), are aborted on cancel, and honour `additional_instructions`, `response_format`, `max_completion_tokens`, `top_p`, `tool_choice` (`none` or a specific function), `parallel_tool_calls` and `truncation_strategy`. `max_prompt_tokens` is best-effort (about 4 characters per token, instructions included): the oldest replayed messages are dropped until the prompt fits, and a run whose last user message alone does not fit ends `incomplete` with `incomplete_details.reason: 'max_prompt_tokens'`. A thread can have one active run at a time (a second `createRun` returns HTTP 400), and cancelling a run that has already finished returns HTTP 400. Messages are listed in insertion order (`order: 'desc'`, the default, returns the newest first). Image parts are passed to the model.
 
 ### Function Calling
 
@@ -221,7 +223,7 @@ const server = createOpenAIServer(cog, { storage, defaultModel: 'openai/gpt-6.1-
 // or in-process: createOpenAIAdapter(cog, { storage })
 ```
 
-Storage is the single source of truth (no per-process cache), so several server instances can share it. `ioredis` and `pg` are optional peer dependencies loaded on `connect()`; Redis `ttl: 0` disables expiry.
+Storage is the single source of truth (no per-process cache), so several server instances can share it. Runs are not stored: they live in the process that created them, so with several instances route each thread to the same one (sticky routing). `ioredis` and `pg` are optional peer dependencies loaded on `connect()`; Redis `ttl: 0` disables expiry.
 
 Or use the factory function:
 

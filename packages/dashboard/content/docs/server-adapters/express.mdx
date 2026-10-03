@@ -98,7 +98,7 @@ interface CogitatorServerConfig {
 - A workflow that fails returns `500 WORKFLOW_FAILED`, and its stream ends with an `error` event instead of `workflow_completed`. Without `@cogitator-ai/workflows` or `@cogitator-ai/swarms` installed, those routes return `501 UNIMPLEMENTED`.
 - Unknown agents, workflows, swarms and routes return `404 NOT_FOUND`. `GET /swarms/:name/blackboard` returns the swarm's configured `blackboard.sections`, or `400` when its blackboard is not enabled.
 - The thread routes use `cogitator.getMemory()` and return `503 UNAVAILABLE` when the runtime has no memory. Another user's thread returns `403 THREAD_ACCESS_DENIED`.
-- `CogitatorError`s keep their message, code and mapped status (for example `LLM_RATE_LIMITED` → 429). Any other error is logged and answered as `500` with `{ "message": "Internal server error", "code": "INTERNAL" }`.
+- `CogitatorError`s keep their message, code and mapped status (for example `LLM_RATE_LIMITED` → 429). Any other error is logged and answered as `500` with `{ "error": { "message": "Internal server error", "code": "INTERNAL_ERROR" } }`.
 - `GET /agents` exposes each agent's `config.description`, never its `instructions`.
 
 ## Authentication

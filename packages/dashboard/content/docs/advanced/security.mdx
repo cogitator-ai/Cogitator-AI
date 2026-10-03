@@ -199,11 +199,11 @@ const cog = new Cogitator({
 });
 ```
 
-A blocked input fails the run with `Input blocked: <reason>`; a blocked output is replaced by its revision, or fails the run with `Output blocked: <reason>` when there is none. See [Constitutional AI](/docs/advanced/constitutional-ai) for principles, thresholds and custom constitutions.
+A blocked input fails the run with `Input blocked: <reason>`; a blocked output is replaced by its revision, or fails the run with `Output blocked: <reason>` when there is none (both a `CogitatorError` with code `LLM_CONTENT_FILTERED`). See [Constitutional AI](/docs/advanced/constitutional-ai) for principles, thresholds and custom constitutions.
 
 ## Tool Approvals
 
-Tools that change things can wait for a person: `requiresApproval: true` (or a function of the arguments) pauses the run until someone approves or denies the call, or asks `onApproval` inline. The guardrails' tool guard additionally refuses dangerous shell commands (`rm -rf /`, `mkfs.`, `dd of=/dev/...`) and system paths (`/etc/shadow`, `~/.ssh/`). See [Approvals](/docs/tools/approvals).
+Tools that change things can wait for a person: `requiresApproval: true` (or a function of the arguments) pauses the run until someone approves or denies the call, or asks `onApproval` inline. With guardrails on, `strictMode: true` sends every call of a tool that declares `sideEffects` through the same approval flow, and the guardrails' tool guard refuses dangerous shell commands (`rm -rf /`, `mkfs.`, `dd of=/dev/...`) and system paths (`/etc/shadow`, `~/.ssh/`). The guard fails closed: a call that needs approval and was neither approved in the run nor by `guardrails.onToolApproval` does not run. See [Approvals](/docs/tools/approvals).
 
 ## Rate Limiting
 
@@ -260,7 +260,7 @@ const runShell = tool({
 });
 ```
 
-- **Docker** — the tool's `command` argument runs with `sh -c` in the container (with its `cwd` and `env` arguments, when given), and the tool returns `{ stdout, stderr, exitCode, timedOut, duration }`. Containers drop all capabilities, cannot gain privileges and have no network unless `network.mode` says otherwise.
+- **Docker** — the tool's `command` argument runs with `sh -c` in the container (with its `cwd` and `env` arguments, when given), and the tool returns `{ stdout, stderr, exitCode, timedOut, duration, command }`. Containers drop all capabilities, cannot gain privileges and have no network unless `network.mode` says otherwise.
 - **WASM** — the arguments go to the module (`wasmModule`, export `wasmFunction`) as JSON on stdin; its JSON output is the result. Without `wasi: true` the module has no filesystem or environment access.
 
 Settings shared by all sandboxed tools go into the Cogitator's `sandbox` option:
@@ -271,11 +271,12 @@ const cog = new Cogitator({
     defaults: { timeout: 30_000, resources: { memory: '512MB' }, network: { mode: 'none' } },
     pool: { maxSize: 5, idleTimeoutMs: 60_000 },
     wasm: { memoryPages: 256, cacheSize: 10 },
+    allowNativeFallback: false,
   },
 });
 ```
 
-When Docker or WASM is not available, the sandbox falls back (WASM → Docker → native) and logs a warning, and without `@cogitator-ai/sandbox` installed sandboxed tools run natively. Native execution has no isolation, so when untrusted code must never run on the host, check `isDockerAvailable()` / `isWasmAvailable()` on a `SandboxManager` before you register such tools. See [Sandbox](/docs/deployment/sandbox) for executors, pooling and limits.
+When Docker is unavailable (no daemon found, or `@cogitator-ai/sandbox` not installed), a Docker-sandboxed tool runs **unsandboxed on the host** with a warning, because `allowNativeFallback` defaults to `true`. Set `sandbox.allowNativeFallback: false` wherever untrusted code must never reach the host: the call then fails with an error the model sees instead. WASM tools never fall back to Docker or the host: without `@extism/extism` the call fails, and only when `@cogitator-ai/sandbox` itself is missing or fails to start does the runtime call the tool's own `execute` function. Each Docker execution gets a fresh container, so files and processes do not leak from one run or user to the next. See [Sandbox](/docs/deployment/sandbox) for executors, pooling and limits.
 
 | Feature           | WASM                  | Docker                   | Native |
 | ----------------- | --------------------- | ------------------------ | ------ |

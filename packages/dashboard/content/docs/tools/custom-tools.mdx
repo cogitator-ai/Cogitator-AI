@@ -99,7 +99,7 @@ const params = z.object({
 
 Cogitator converts Zod schemas to OpenAPI 3.0-compatible JSON Schema via `z.toJSONSchema()`. This means `z.string()`, `z.number()`, `z.enum()`, `z.object()`, `z.array()`, `z.union()`, `z.record()`, `z.boolean()`, and `z.unknown()` all work correctly with every LLM provider. Types JSON Schema cannot express are sent as "any".
 
-Before `execute` runs, the runtime parses the model's arguments with your schema: `execute` receives the parsed values (defaults applied, transforms run), and arguments that do not match are answered with `Invalid arguments: …` so the model can correct itself. A field with `.default()` is listed as required in the schema the model sees (see [Schema Serialization](#schema-serialization)); use `.optional()` when the model may leave it out.
+Before `execute` runs, the runtime parses the model's arguments with your schema: `execute` receives the parsed values (defaults applied, transforms run), and arguments that do not match are answered with `Invalid arguments: …` so the model can correct itself. A field with `.default()` is optional in the schema the model sees (see [Schema Serialization](#schema-serialization)), and `execute` receives the default when the model leaves it out.
 
 ---
 
@@ -177,6 +177,12 @@ return {
 ```
 
 Avoid returning raw strings when you can return an object. Structured results let the LLM make better decisions about what to do next.
+
+To show the model an image, return it base64-encoded in an `image` or `imageBase64` field: the model receives it as an image next to the rest of the result (see [Images in Tool Results](/docs/core/tools#images-in-tool-results)).
+
+```typescript
+return { width: 1280, height: 720, image: screenshot.toString('base64') };
+```
 
 ---
 
@@ -299,7 +305,7 @@ const runPython = tool({
 });
 ```
 
-When the sandbox cannot be initialized (the package is not installed or Docker is unreachable), the runtime logs a warning and calls `execute` on the host instead — make `execute` safe for that case, as above. See [Sandbox](/docs/deployment/sandbox) for the configuration.
+When `@cogitator-ai/sandbox` is not installed or cannot start, the runtime logs a warning and calls `execute` on the host instead — make `execute` safe for that case, as above; when Docker is unreachable, the command runs on the host shell. `sandbox.allowNativeFallback: false` on the `Cogitator` makes both fail instead. See [Sandbox](/docs/deployment/sandbox) for the configuration.
 
 For lightweight computation, use WASM sandboxing instead (or [`defineWasmTool()`](/docs/tools/wasm-tools), which sets this up):
 
@@ -367,7 +373,7 @@ const schema = weatherTool.toJSON();
 //       city: { type: 'string', description: 'City name' },
 //       units: { default: 'celsius', type: 'string', enum: ['celsius', 'fahrenheit'] },
 //     },
-//     required: ['city', 'units'],
+//     required: ['city'],
 //   },
 // }
 ```
