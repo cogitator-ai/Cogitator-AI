@@ -92,3 +92,10 @@ jobs:
           NPM_CONFIG_USERCONFIG="$npmrc" pnpm publish -r --access public --no-git-checks
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub releases
+        # Tags and releases every package version npm now serves that has no
+        # release yet, with that version's CHANGELOG section as the notes.
+        run: npx tsx scripts/github-releases.ts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
