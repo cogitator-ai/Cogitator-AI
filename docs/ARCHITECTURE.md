@@ -587,11 +587,13 @@ const exporter = new OTLPExporter({
 exporter.start();
 
 // Wire up via RunOptions
-const result = await cog.run(agent, {
+let runId = '';
+await cog.run(agent, {
   input: 'Hello',
-  onRunStart: (data) => exporter.onRunStart({ ...data, agentName: agent.name }),
-  onRunComplete: (result) => exporter.onRunComplete(result),
-  onSpan: (span) => exporter.exportSpan(result.runId, span),
+  onRunStart: (data) => {
+    runId = data.runId;
+  },
+  onSpan: (span) => exporter.exportSpan(runId, span),
 });
 ```
 

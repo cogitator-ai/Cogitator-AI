@@ -120,6 +120,23 @@ await otlp.flush();
 
 Spans are batched and flushed every 5 seconds, or when the buffer reaches 100 spans.
 
+OTLP needs hex ids (16 bytes for a trace, 8 for a span), while Cogitator ids look like `trace_…` and `span_…`. The exporter derives the OTLP ids from them with SHA-256, so the spans of a run share a trace and child spans point at their parents, also when they are exported after the run. The original ids and the run id are kept as the `cogitator.trace_id`, `cogitator.span_id` and `cogitator.run_id` attributes. Numbers, booleans and objects keep their types as OTLP attribute values.
+
+A batch the collector refuses with a 4xx status is dropped and logged; on network errors, 408, 429 and 5xx it is kept and sent again with the next flush, up to 10,000 pending spans.
+
+To export every span of a run as it happens:
+
+```typescript
+let runId = '';
+await cog.run(agent, {
+  input: 'Hello',
+  onRunStart: (data) => {
+    runId = data.runId;
+  },
+  onSpan: (span) => otlp.exportSpan(runId, span),
+});
+```
+
 ### Span Kinds
 
 | Cogitator Kind | OTLP Kind | Typical Use                 |

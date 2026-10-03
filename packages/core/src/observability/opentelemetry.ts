@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Span as CogitatorSpan, RunResult } from '@cogitator-ai/types';
 
 export interface OTLPExporterConfig {
@@ -16,7 +17,7 @@ interface OTLPSpan {
   kind: number;
   startTimeUnixNano: string;
   endTimeUnixNano: string;
-  attributes: Array<{ key: string; value: { stringValue?: string; intValue?: string } }>;
+  attributes: Array<{ key: string; value: OTLPAnyValue }>;
   status: { code: number; message?: string };
 }
 
@@ -44,13 +45,42 @@ const STATUS_CODE = {
   ERROR: 2,
 } as const;
 
+type OTLPAnyValue =
+  { stringValue: string } | { intValue: string } | { doubleValue: number } | { boolValue: boolean };
+
 const MAX_PENDING_SPANS = 10_000;
+const TRACE_ID_BYTES = 16;
+const SPAN_ID_BYTES = 8;
+const NANOS_PER_MILLI = 1_000_000n;
+
+/**
+ * An OTLP id for a Cogitator id: kept when it already is lowercase hex of the
+ * right length, otherwise the first bytes of its SHA-256. Deriving rather than
+ * generating keeps parent links intact and needs no state per run.
+ */
+function toOtlpId(id: string, bytes: number): string {
+  const hexLength = bytes * 2;
+  if (id.length === hexLength && /^[0-9a-f]+$/.test(id) && !/^0+$/.test(id)) return id;
+  return createHash('sha256').update(id).digest('hex').slice(0, hexLength);
+}
+
+function toAnyValue(value: unknown): OTLPAnyValue {
+  if (typeof value === 'boolean') return { boolValue: value };
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? { intValue: String(value) } : { doubleValue: value };
+  }
+  if (typeof value === 'string') return { stringValue: value };
+  return { stringValue: JSON.stringify(value) ?? String(value) };
+}
+
+function toUnixNano(milliseconds: number): string {
+  return (BigInt(Math.round(milliseconds)) * NANOS_PER_MILLI).toString();
+}
 
 export class OTLPExporter {
   private config: OTLPExporterConfig;
   private pendingSpans: OTLPSpan[] = [];
   private flushTimer: ReturnType<typeof setInterval> | null = null;
-  private traceIds = new Map<string, string>();
 
   constructor(config: OTLPExporterConfig) {
     this.config = {
@@ -76,25 +106,28 @@ export class OTLPExporter {
     }
   }
 
-  onRunStart(options: { runId: string; agentId: string; agentName: string; input: string }): void {
-    if (!this.config.enabled) return;
+  /**
+   * Run lifecycle hooks. OTLP ids derive from the ids on each span, so a run
+   * needs no setup or cleanup here; the hooks stay so callers can wire every
+   * Cogitator callback the same way.
+   */
+  onRunStart(_options: {
+    runId: string;
+    agentId: string;
+    agentName: string;
+    input: string;
+  }): void {}
 
-    const traceId = this.generateTraceId();
-    this.traceIds.set(options.runId, traceId);
-  }
+  onRunComplete(_result: RunResult): void {}
 
-  onRunComplete(result: RunResult): void {
-    this.traceIds.delete(result.runId);
-  }
+  onRunError(_error: Error, _runId: string): void {}
 
-  onRunError(_error: Error, runId: string): void {
-    this.traceIds.delete(runId);
-  }
-
+  /**
+   * Queues a span for export. `runId` is recorded as the `cogitator.run_id`
+   * attribute; the trace comes from `span.traceId`.
+   */
   exportSpan(runId: string, span: CogitatorSpan): void {
     if (!this.config.enabled) return;
-
-    const traceId = this.traceIds.get(runId) ?? span.traceId;
 
     const kind = {
       internal: SPAN_KIND.INTERNAL,
@@ -110,20 +143,23 @@ export class OTLPExporter {
       unset: STATUS_CODE.UNSET,
     }[span.status];
 
-    const attributes = Object.entries(span.attributes).map(([key, value]) => ({
-      key,
-      value:
-        typeof value === 'number' ? { intValue: String(value) } : { stringValue: String(value) },
-    }));
+    const attributes = [
+      ...Object.entries(span.attributes)
+        .filter(([, value]) => value !== undefined && value !== null)
+        .map(([key, value]) => ({ key, value: toAnyValue(value) })),
+      { key: 'cogitator.run_id', value: { stringValue: runId } },
+      { key: 'cogitator.trace_id', value: { stringValue: span.traceId } },
+      { key: 'cogitator.span_id', value: { stringValue: span.id } },
+    ];
 
     const otlpSpan: OTLPSpan = {
-      traceId,
-      spanId: span.id,
-      parentSpanId: span.parentId,
+      traceId: toOtlpId(span.traceId, TRACE_ID_BYTES),
+      spanId: toOtlpId(span.id, SPAN_ID_BYTES),
+      ...(span.parentId && { parentSpanId: toOtlpId(span.parentId, SPAN_ID_BYTES) }),
       name: span.name,
       kind,
-      startTimeUnixNano: String(span.startTime * 1_000_000),
-      endTimeUnixNano: String(span.endTime * 1_000_000),
+      startTimeUnixNano: toUnixNano(span.startTime),
+      endTimeUnixNano: toUnixNano(span.endTime),
       attributes,
       status: { code: status },
     };
@@ -166,8 +202,13 @@ export class OTLPExporter {
       });
 
       if (!response.ok) {
-        console.error(`OTLP export failed: ${response.status} ${response.statusText}`);
-        this.pushBackSpans(spans);
+        const retryable =
+          response.status >= 500 || response.status === 408 || response.status === 429;
+        console.error(
+          `OTLP export failed: ${response.status} ${response.statusText}` +
+            (retryable ? '' : ` (dropping ${spans.length} spans the collector refused)`)
+        );
+        if (retryable) this.pushBackSpans(spans);
       }
     } catch (err) {
       console.error('OTLP export error:', err);
@@ -186,14 +227,6 @@ export class OTLPExporter {
     } else {
       this.pendingSpans.push(...spans);
     }
-  }
-
-  private generateTraceId(): string {
-    const bytes = new Uint8Array(16);
-    crypto.getRandomValues(bytes);
-    return Array.from(bytes)
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
   }
 }
 
