@@ -1,5 +1,21 @@
 # @cogitator-ai/voice
 
+## 0.3.4
+
+### Patch Changes
+
+- 0e21115: `verifyClient` may return `false` to reject an upgrade with 401, so an async check such as `async (req) => isValid(req)` type-checks; `true` accepts and `{ code, message }` still rejects with that status.
+- Updated dependencies [e211b6a]
+- Updated dependencies [0ef09fc]
+- Updated dependencies [6b16db1]
+- Updated dependencies [452a248]
+- Updated dependencies [57ac053]
+- Updated dependencies [7482f93]
+- Updated dependencies [b8c7c3d]
+- Updated dependencies [35701f9]
+  - @cogitator-ai/core@0.25.0
+  - @cogitator-ai/types@0.28.0
+
 ## 0.3.3
 
 ### Patch Changes

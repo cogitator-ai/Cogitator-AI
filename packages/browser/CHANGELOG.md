@@ -1,5 +1,21 @@
 # @cogitator-ai/browser
 
+## 0.3.5
+
+### Patch Changes
+
+- 7482f93: `toolset(...tools)` returns tools as a typed tuple: still an array an agent accepts, but each element keeps its own parameter and result types, so `const [search] = createMyTools()` calls `search.execute` with search's parameters. `createMemoryTools`, `createSchedulerTools` and the browser's `createNavigationTools`, `createInteractionTools`, `createExtractionTools`, `createVisionTools` and `createNetworkTools` use it; before, their elements were a union whose `execute` accepted nothing.
+- Updated dependencies [e211b6a]
+- Updated dependencies [0ef09fc]
+- Updated dependencies [6b16db1]
+- Updated dependencies [452a248]
+- Updated dependencies [57ac053]
+- Updated dependencies [7482f93]
+- Updated dependencies [b8c7c3d]
+- Updated dependencies [35701f9]
+  - @cogitator-ai/core@0.25.0
+  - @cogitator-ai/types@0.28.0
+
 ## 0.3.4
 
 ### Patch Changes

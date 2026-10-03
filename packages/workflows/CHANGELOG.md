@@ -1,5 +1,30 @@
 # @cogitator-ai/workflows
 
+## 0.9.0
+
+### Minor Changes
+
+- 3d08d05: Approvals settle once. The first answer to a request wins in every store — in-memory, file, Redis and Postgres, atomically across processes — and a later `submitResponse` throws `ApprovalAlreadyAnsweredError` with the answer that stands; a human node whose timeout fires just after someone answered keeps that answer. Deleting (or expiring) a request nobody answered withdraws it: waiters, in this process or another, get a withdrawal and the node finishes with `withdrawn: true` instead of waiting forever. A timeout or withdrawal no longer counts as approval for `multi-choice` requests, where any decision value did.
+- 57ac053: Timer claims belong to the store instance that took them. `TimerStore` gains optional `claimTtl`, `renew(id)` and `release(id)`, which `RedisTimerStore` and `PostgresTimerStore` implement (Postgres adds a `claimed_by` column, also to existing tables). `TimerManager` renews a claim right before a handler starts and every `claimTtl / 3` while it runs, so a handler slower than the lease no longer lets another worker run the same timer; it skips a timer whose claim another worker took while it waited and reports it through the new `onClaimLost` option. A timer without a handler, or beyond a poll's `batchSize`, is released so another manager can take it right away. A failed handler still keeps the claim until the lease ends, which spaces out retries.
+- 802388e: Runs, approvals and timers can live in Redis or Postgres, like checkpoints: `RedisRunStore` / `PostgresRunStore`, `RedisApprovalStore` / `PostgresApprovalStore` and `RedisTimerStore` / `PostgresTimerStore` take an existing `@cogitator-ai/redis` client or ioredis, or a `pg` Pool, and create their tables on first use. Run queries, counts and stats run in the database (Postgres) or on sorted-set indexes (Redis); a human node waiting in one process resumes when another process answers (polled every `pollInterval`); and overdue timers are claimed for `claimTtl`, so several `TimerManager`s can share a store without firing a timer twice and a crashed worker's timers come back. All Postgres stores, the checkpoint store included, now survive two processes creating their tables at the same moment.
+
+### Patch Changes
+
+- 4c46b22: `humanNode`, `approvalNode`, `choiceNode`, `inputNode`, `ratingNode`, `chainNode` and `managementChain` return `NamedHumanNodeConfig` — the config with its `name` known to be set — so `config.name` can be passed where a string is required.
+- 6b16db1: `InMemoryRunStore` hands out copies of runs, so changing a returned run's node or tag lists no longer changes the stored run, and `list()` without filters is sorted like `list({})` (newest started first), matching the Redis and Postgres stores. `WorkflowRunStats` documents that cancelled runs count toward neither the success nor the failure rate.
+- 8d2d1bf: `WorkflowManager` records `currentNodes`, `completedNodes` and `failedNodes` for scheduled and triggered runs too (it did only for `execute()`), and a run's record holds every node update by the time the run is marked finished.
+- 35701f9: Workflow typing fixes. `addLoop` conditions receive the builder's state type, like `addConditional`, instead of `unknown`. `executeParallelSubworkflows`, `parallelSubworkflows`, `fanOutFanIn` and `scatterGather` carry the child workflow state (`CS`), so a typed child workflow fits without casts. `'noop'` is a valid tracing exporter, and `WorkflowTracer.isSampled()` is `false` with a sample rate of 0.
+- Updated dependencies [e211b6a]
+- Updated dependencies [0ef09fc]
+- Updated dependencies [6b16db1]
+- Updated dependencies [452a248]
+- Updated dependencies [57ac053]
+- Updated dependencies [7482f93]
+- Updated dependencies [b8c7c3d]
+- Updated dependencies [35701f9]
+  - @cogitator-ai/core@0.25.0
+  - @cogitator-ai/types@0.28.0
+
 ## 0.8.0
 
 ### Minor Changes

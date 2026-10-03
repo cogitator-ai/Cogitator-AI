@@ -1,5 +1,17 @@
 # @cogitator-ai/mcp
 
+## 19.2.1
+
+### Patch Changes
+
+- db8ebaf: Server handler types match what the server accepts: a resource's `read` may leave out `uri` (it defaults to the URI that was read) through `MCPResourceReadContent`, and a prompt's `get` may return plain string content through `MCPPromptReplyMessage`. The client's `MCPResourceContent` and `MCPPromptMessage` keep their complete shapes.
+- Updated dependencies [0ef09fc]
+- Updated dependencies [6b16db1]
+- Updated dependencies [57ac053]
+- Updated dependencies [b8c7c3d]
+- Updated dependencies [35701f9]
+  - @cogitator-ai/types@0.28.0
+
 ## 19.2.0
 
 ### Minor Changes

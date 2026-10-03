@@ -1,5 +1,20 @@
 # @cogitator-ai/memory
 
+## 0.10.0
+
+### Minor Changes
+
+- 333e4ad: `unwrap(result)` turns a `MemoryResult` into its data, or throws an `Error` with the adapter's message when the call failed: `const thread = unwrap(await memory.createThread('agent-1'))`.
+
+### Patch Changes
+
+- Updated dependencies [0ef09fc]
+- Updated dependencies [6b16db1]
+- Updated dependencies [57ac053]
+- Updated dependencies [b8c7c3d]
+- Updated dependencies [35701f9]
+  - @cogitator-ai/types@0.28.0
+
 ## 0.9.1
 
 ### Patch Changes

@@ -1,5 +1,25 @@
 # @cogitator-ai/core
 
+## 0.25.0
+
+### Minor Changes
+
+- e211b6a: `cog.getMemory()` connects the configured memory adapter on first use, so threads can be read before any agent has run; `cog.memory` stays `undefined` until then. The `/threads` routes of every server adapter use it, so they no longer answer `503 Memory not configured` on a fresh server.
+- 7482f93: `toolset(...tools)` returns tools as a typed tuple: still an array an agent accepts, but each element keeps its own parameter and result types, so `const [search] = createMyTools()` calls `search.execute` with search's parameters. `createMemoryTools`, `createSchedulerTools` and the browser's `createNavigationTools`, `createInteractionTools`, `createExtractionTools`, `createVisionTools` and `createNetworkTools` use it; before, their elements were a union whose `execute` accepted nothing.
+
+### Patch Changes
+
+- 452a248: A run whose final answer does not fit its `responseFormat` asks the model once more with the validation problem (for example `celsius: expected number, received string`) instead of returning `structured: undefined` straight away; the rejected answer is not saved to the thread. Streamed runs keep the first answer, since the client has already seen it. JSON wrapped in prose is now read as well.
+- Updated dependencies [333e4ad]
+- Updated dependencies [0ef09fc]
+- Updated dependencies [6b16db1]
+- Updated dependencies [57ac053]
+- Updated dependencies [b8c7c3d]
+- Updated dependencies [35701f9]
+  - @cogitator-ai/memory@0.10.0
+  - @cogitator-ai/types@0.28.0
+  - @cogitator-ai/sandbox@0.4.4
+
 ## 0.24.0
 
 ### Minor Changes

@@ -1,5 +1,28 @@
 # @cogitator-ai/channels
 
+## 0.6.1
+
+### Patch Changes
+
+- 1368ff8: `RuntimeBuilder` takes the config as written (`AssistantConfigInput`) and applies the schema itself, so a config built in code no longer has to spell out fields that have defaults (`memory.autoExtract`, `memory.knowledgeGraph`, channel policies); an invalid config throws when the builder is created.
+- e561607: The WhatsApp channel supports Baileys 7 (`@whiskeysockets/baileys` 7.x, now its `latest`) next to 6.x. When WhatsApp addresses a person by LID, the message's `userId` is still their phone number from `remoteJidAlt` / `participantAlt` whenever WhatsApp shares it, so owner lists and per-user memory keep matching.
+- Updated dependencies [e211b6a]
+- Updated dependencies [db8ebaf]
+- Updated dependencies [333e4ad]
+- Updated dependencies [0ef09fc]
+- Updated dependencies [6b16db1]
+- Updated dependencies [452a248]
+- Updated dependencies [57ac053]
+- Updated dependencies [7482f93]
+- Updated dependencies [b8c7c3d]
+- Updated dependencies [35701f9]
+  - @cogitator-ai/core@0.25.0
+  - @cogitator-ai/mcp@19.2.1
+  - @cogitator-ai/memory@0.10.0
+  - @cogitator-ai/types@0.28.0
+  - @cogitator-ai/browser@0.3.5
+  - @cogitator-ai/rag@0.3.4
+
 ## 0.6.0
 
 ### Minor Changes

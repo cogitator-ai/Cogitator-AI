@@ -1,5 +1,17 @@
 # @cogitator-ai/sandbox
 
+## 0.4.4
+
+### Patch Changes
+
+- b8c7c3d: `memoryPages` now limits the WASM module's own memory, not only the memory Extism uses for input and output: the module's memory section gets that maximum before it loads, so `memory.grow` past it fails inside the module, and a module that needs more to start is refused. Modules given by URL are fetched by the executor so the limit applies to them as well.
+- Updated dependencies [0ef09fc]
+- Updated dependencies [6b16db1]
+- Updated dependencies [57ac053]
+- Updated dependencies [b8c7c3d]
+- Updated dependencies [35701f9]
+  - @cogitator-ai/types@0.28.0
+
 ## 0.4.3
 
 ### Patch Changes

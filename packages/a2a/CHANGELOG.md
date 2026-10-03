@@ -1,5 +1,24 @@
 # @cogitator-ai/a2a
 
+## 0.6.0
+
+### Minor Changes
+
+- 3b35cd8: `auth.validate` may return the caller (`{ userId }`) instead of `true`. Tasks then belong to the user who created them: other users get `Task not found` from `tasks/get`, `tasks/cancel`, the push-notification methods and attempts to continue the task, `tasks/list` returns only the caller's own tasks (`TaskFilter.visibleTo`), a `contextId` holding another user's tasks is refused, and runs carry the `userId` so threads and memory are scoped too. Returning `true` keeps every caller in one shared space as before. The push-notification `get`, `list` and `delete` methods now require the task to exist, like `create`.
+
+### Patch Changes
+
+- Updated dependencies [e211b6a]
+- Updated dependencies [0ef09fc]
+- Updated dependencies [6b16db1]
+- Updated dependencies [452a248]
+- Updated dependencies [57ac053]
+- Updated dependencies [7482f93]
+- Updated dependencies [b8c7c3d]
+- Updated dependencies [35701f9]
+  - @cogitator-ai/core@0.25.0
+  - @cogitator-ai/types@0.28.0
+
 ## 0.5.3
 
 ### Patch Changes
