@@ -18,14 +18,19 @@ export interface ApprovalIntegrationConfig {
   negotiationId: string;
 }
 
+interface PendingApproval {
+  /** Settle with an answer: announces it with `negotiation:approval-received` */
+  answer: (response: NegotiationApprovalResponse) => void;
+  /** Settle silently with the given response */
+  resolve: (response: NegotiationApprovalResponse) => void;
+  reject: (error: Error) => void;
+}
+
 export class ApprovalIntegration {
   private gates: NegotiationApprovalGate[];
   private store?: ApprovalStore;
   private negotiationId: string;
-  private pendingApprovals = new Map<
-    string,
-    { resolve: (r: NegotiationApprovalResponse) => void; timeout?: ReturnType<typeof setTimeout> }
-  >();
+  private pendingApprovals = new Map<string, PendingApproval>();
 
   constructor(config: ApprovalIntegrationConfig) {
     this.gates = config.gates;
@@ -147,41 +152,42 @@ export class ApprovalIntegration {
 
     events.emit('negotiation:approval-required', { request, gate }, 'system');
 
-    if (!this.store && !gate.timeout) {
-      const fallbackResponse: NegotiationApprovalResponse = {
-        requestId,
-        decision: 'rejected',
-        approved: false,
-        respondedBy: 'system',
-        respondedAt: Date.now(),
-        continueNegotiation: true,
-      };
-      events.emit(
-        'negotiation:approval-received',
-        { requestId, response: fallbackResponse },
-        'system'
-      );
-      return fallbackResponse;
-    }
-
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       let unsubscribe: (() => void) | undefined;
+      let settled = false;
+
+      const settle = (): boolean => {
+        if (settled) return false;
+        settled = true;
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        unsubscribe?.();
+        this.pendingApprovals.delete(requestId);
+        return true;
+      };
+
+      const pending: PendingApproval = {
+        answer: (response) => {
+          if (!settle()) return;
+          events.emit(
+            'negotiation:approval-received',
+            { requestId, response },
+            response.respondedBy
+          );
+          resolve(response);
+        },
+        resolve: (response) => {
+          if (settle()) resolve(response);
+        },
+        reject: (error) => {
+          if (settle()) reject(error);
+        },
+      };
+      this.pendingApprovals.set(requestId, pending);
 
       if (gate.timeout) {
         timeoutHandle = setTimeout(() => {
-          if (unsubscribe) unsubscribe();
-          this.pendingApprovals.delete(requestId);
-
           const isApproved = gate.timeoutAction === 'approve';
-          const timeoutResponse: NegotiationApprovalResponse = {
-            requestId,
-            decision: isApproved ? 'approved' : 'rejected',
-            approved: isApproved,
-            respondedBy: 'system',
-            respondedAt: Date.now(),
-            continueNegotiation: gate.timeoutAction !== 'reject',
-          };
 
           if (gate.timeoutAction === 'escalate') {
             events.emit(
@@ -194,52 +200,39 @@ export class ApprovalIntegration {
             );
           }
 
-          resolve(timeoutResponse);
+          pending.resolve({
+            requestId,
+            decision: isApproved ? 'approved' : 'rejected',
+            approved: isApproved,
+            respondedBy: 'system',
+            respondedAt: Date.now(),
+            continueNegotiation: gate.timeoutAction !== 'reject',
+          });
         }, gate.timeout);
       }
 
-      this.pendingApprovals.set(requestId, { resolve, timeout: timeoutHandle });
-
       if (this.store) {
         unsubscribe = this.store.onResponse(requestId, (response: ApprovalResponse) => {
-          if (timeoutHandle) clearTimeout(timeoutHandle);
-          this.pendingApprovals.delete(requestId);
-
           const isApproved = response.decision === 'approved' || response.decision === true;
-          const negotiationResponse: NegotiationApprovalResponse = {
+          const answer = response as Partial<NegotiationApprovalResponse>;
+          pending.answer({
             ...response,
             approved: isApproved,
-            continueNegotiation:
-              !isApproved ||
-              (response as NegotiationApprovalResponse).continueNegotiation !== false,
-            approvedTerms: (response as NegotiationApprovalResponse).approvedTerms,
-            rejectedTerms: (response as NegotiationApprovalResponse).rejectedTerms,
-            suggestedModifications: (response as NegotiationApprovalResponse)
-              .suggestedModifications,
-          };
-
-          events.emit(
-            'negotiation:approval-received',
-            {
-              requestId,
-              response: negotiationResponse,
-            },
-            response.respondedBy
-          );
-
-          resolve(negotiationResponse);
+            continueNegotiation: !isApproved || answer.continueNegotiation !== false,
+            approvedTerms: answer.approvedTerms,
+            rejectedTerms: answer.rejectedTerms,
+            suggestedModifications: answer.suggestedModifications,
+          });
         });
       }
     });
   }
 
+  /**
+   * Answer a pending request; with a store the answer is also recorded there.
+   */
   submitResponse(requestId: string, response: NegotiationApprovalResponse): void {
-    const pending = this.pendingApprovals.get(requestId);
-    if (pending) {
-      if (pending.timeout) clearTimeout(pending.timeout);
-      this.pendingApprovals.delete(requestId);
-      pending.resolve(response);
-    }
+    this.pendingApprovals.get(requestId)?.answer(response);
 
     if (this.store) {
       void this.store.submitResponse(response);
@@ -295,9 +288,11 @@ export class ApprovalIntegration {
     return this.pendingApprovals.size;
   }
 
+  /**
+   * Settle every pending request as rejected, ending the negotiation.
+   */
   cancelAll(): void {
-    for (const [requestId, pending] of this.pendingApprovals) {
-      if (pending.timeout) clearTimeout(pending.timeout);
+    for (const [requestId, pending] of [...this.pendingApprovals]) {
       pending.resolve({
         requestId,
         decision: 'rejected',
@@ -307,6 +302,14 @@ export class ApprovalIntegration {
         continueNegotiation: false,
       });
     }
-    this.pendingApprovals.clear();
+  }
+
+  /**
+   * Fail every pending request with `error`, so whatever awaits it stops.
+   */
+  abortAll(error: Error): void {
+    for (const pending of [...this.pendingApprovals.values()]) {
+      pending.reject(error);
+    }
   }
 }

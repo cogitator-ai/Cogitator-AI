@@ -17,14 +17,15 @@ import { TaskAnalyzer } from './task-analyzer';
 import { ModelDiscovery } from './model-discovery';
 import { ModelScorer } from './scoring';
 import { RoleMatcher } from './role-matcher';
+import { AiTaskAnalyzer, mergeTaskRequirements, type AssessorRuntime } from './ai-task-analyzer';
 
-type ResolvedAssessorConfig = Omit<Required<AssessorConfig>, 'maxCostPerRun'> & {
+type ResolvedAssessorConfig = Omit<Required<AssessorConfig>, 'maxCostPerRun' | 'assessorModel'> & {
   maxCostPerRun?: number;
+  assessorModel?: string;
 };
 
 const DEFAULT_CONFIG: ResolvedAssessorConfig = {
   mode: 'rules',
-  assessorModel: 'gpt-6-luna',
   preferLocal: true,
   minCapabilityMatch: 0.3,
   ollamaUrl: 'http://localhost:11434',
@@ -59,14 +60,26 @@ export class SwarmAssessor implements Assessor {
   private modelDiscovery: ModelDiscovery;
   private modelScorer: ModelScorer;
   private roleMatcher: RoleMatcher;
+  private aiTaskAnalyzer?: AiTaskAnalyzer;
   private assessmentCache = new Map<string, { result: AssessmentResult; timestamp: number }>();
 
-  constructor(config: AssessorConfig = {}) {
+  /**
+   * @param runtime - the Cogitator the swarm runs on. It runs the assessor model in 'ai' and
+   *   'hybrid' modes, and only cloud models it can route (their provider is configured) are
+   *   offered. Without it every enabled provider is offered and analysis uses the rules.
+   */
+  constructor(config: AssessorConfig = {}, runtime?: AssessorRuntime) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.taskAnalyzer = new TaskAnalyzer();
-    this.modelDiscovery = new ModelDiscovery(this.config);
+    this.modelDiscovery = new ModelDiscovery(
+      this.config,
+      runtime && ((model) => canRoute(runtime, qualifiedModelId(model)))
+    );
     this.modelScorer = new ModelScorer();
     this.roleMatcher = new RoleMatcher();
+    if (runtime && this.config.mode !== 'rules') {
+      this.aiTaskAnalyzer = new AiTaskAnalyzer(runtime, this.config.assessorModel);
+    }
   }
 
   /**
@@ -86,7 +99,8 @@ export class SwarmAssessor implements Assessor {
       }
     }
 
-    const taskAnalysis = this.taskAnalyzer.analyze(task);
+    const warnings: string[] = [];
+    const taskAnalysis = await this.analyzeTask(task, warnings);
 
     const discoveredModels = await this.modelDiscovery.discoverAll();
 
@@ -94,7 +108,6 @@ export class SwarmAssessor implements Assessor {
 
     const roleAnalyses = new Map<string, RoleRequirements>();
     const assignments: ModelAssignment[] = [];
-    const warnings: string[] = [];
 
     for (const agent of agents) {
       const currentModel = resolveModel(agent.agent);
@@ -188,6 +201,28 @@ export class SwarmAssessor implements Assessor {
     }
 
     return result;
+  }
+
+  private async analyzeTask(task: string, warnings: string[]): Promise<TaskRequirements> {
+    const rules = this.taskAnalyzer.analyze(task);
+    const mode = this.config.mode;
+    if (mode === 'rules') return rules;
+
+    if (!this.aiTaskAnalyzer) {
+      warnings.push(
+        `Assessor mode '${mode}' needs a Cogitator to run the assessor model; used rule-based task analysis`
+      );
+      return rules;
+    }
+
+    try {
+      const ai = await this.aiTaskAnalyzer.analyze(task);
+      return mode === 'hybrid' ? mergeTaskRequirements(ai, rules) : ai;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      warnings.push(`AI task analysis failed (${reason}); used rule-based task analysis`);
+      return rules;
+    }
   }
 
   /**
@@ -387,8 +422,20 @@ function isModelProvider(value: string): value is ModelProvider {
   return (MODEL_PROVIDERS as readonly string[]).includes(value);
 }
 
-export function createAssessor(config?: AssessorConfig): SwarmAssessor {
-  return new SwarmAssessor(config);
+/**
+ * @param runtime - the Cogitator the swarm runs on (see {@link SwarmAssessor})
+ */
+export function createAssessor(config?: AssessorConfig, runtime?: AssessorRuntime): SwarmAssessor {
+  return new SwarmAssessor(config, runtime);
+}
+
+function canRoute(runtime: AssessorRuntime, model: string): boolean {
+  try {
+    runtime.route(model);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function requireOwnModel(agent: Agent): string {

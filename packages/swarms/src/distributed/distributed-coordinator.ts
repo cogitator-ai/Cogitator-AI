@@ -13,7 +13,12 @@ import type {
 import { RedisMessageBus } from '../communication/redis-message-bus.js';
 import { RedisBlackboard } from '../communication/redis-blackboard.js';
 import { RedisSwarmEventEmitter } from '../communication/redis-event-emitter.js';
-import { BaseSwarmCoordinator, type AgentRunRequest } from '../base-coordinator.js';
+import {
+  BaseSwarmCoordinator,
+  computeBackoffDelay,
+  toError,
+  type AgentRunRequest,
+} from '../base-coordinator.js';
 
 export interface DistributedCoordinatorOptions {
   config: SwarmConfig;
@@ -116,10 +121,11 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
     const redis = new Redis(redisOptions);
 
     super(options.config, swarmId, {
-      messageBus: new RedisMessageBus(
-        options.config.messaging ?? { enabled: true, protocol: 'direct' },
-        { redis, swarmId, keyPrefix }
-      ),
+      messageBus: new RedisMessageBus(options.config.messaging ?? { enabled: true }, {
+        redis,
+        swarmId,
+        keyPrefix,
+      }),
       blackboard: new RedisBlackboard(
         options.config.blackboard ?? { enabled: true, sections: {}, trackHistory: true },
         { redis, swarmId, keyPrefix }
@@ -209,9 +215,33 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
   }
 
   protected async executeRun(request: AgentRunRequest): Promise<RunResult> {
-    const payload = this.createJobPayload(request);
-    const jobResult = await this.dispatchJobAndWait(payload, request);
+    const jobResult = await this.dispatchWithRetry(request);
     return this.toRunResult(request.swarmAgent, jobResult);
+  }
+
+  /**
+   * Dispatch the agent turn as a job, re-dispatching it per `distributed.retry` when it fails
+   * on a worker or times out. Cancellation is never retried.
+   */
+  private async dispatchWithRetry(request: AgentRunRequest): Promise<SwarmAgentJobResult> {
+    const retry = this.distributed.retry;
+    const maxRetries = retry ? Math.max(0, retry.maxRetries ?? 3) : 0;
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.dispatchJobAndWait(this.createJobPayload(request), request);
+      } catch (error) {
+        if (attempt >= maxRetries || request.signal.aborted || this.closed) throw error;
+
+        const delay = computeBackoffDelay(
+          retry?.backoff ?? 'exponential',
+          attempt + 1,
+          retry?.initialDelay ?? 1000,
+          retry?.maxDelay ?? 30000
+        );
+        await abortableDelay(delay, request.signal);
+      }
+    }
   }
 
   private createJobPayload(request: AgentRunRequest): SwarmAgentJobPayload {
@@ -338,8 +368,35 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
     await this.messageBus.close();
     await this.blackboard.close();
     await this.events.close();
+    await this.scheduleStateCleanup();
     await closeRedis(this.subscriber);
     await closeRedis(this.redis);
+  }
+
+  /**
+   * Expire the swarm's shared state in Redis `distributed.cleanupAfter` ms from now. Only a
+   * connection that is still up is used; a coordinator that never connected left no state.
+   */
+  private async scheduleStateCleanup(): Promise<void> {
+    if (this.redis.status !== 'ready') return;
+
+    const ttl = Math.max(0, this.distributed.cleanupAfter ?? 3600000);
+    const pattern = `${this.keyPrefix}:${this.swarmId}:*`;
+    let cursor = '0';
+
+    try {
+      do {
+        const [next, keys] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+        cursor = next;
+        if (keys.length === 0) continue;
+
+        const pipeline = this.redis.pipeline();
+        for (const key of keys) pipeline.pexpire(key, ttl);
+        await pipeline.exec();
+      } while (cursor !== '0');
+    } catch (error) {
+      console.warn('[DistributedSwarmCoordinator] Failed to schedule state cleanup:', error);
+    }
   }
 
   private rejectPendingJobs(error: Error): void {
@@ -349,6 +406,24 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
       job.reject(error);
     }
   }
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(toError(signal.reason));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(toError(signal.reason));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

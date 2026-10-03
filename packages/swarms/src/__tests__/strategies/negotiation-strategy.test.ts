@@ -236,6 +236,23 @@ describe('NegotiationStrategy', () => {
       expect(supervisorCalls.length).toBeGreaterThan(0);
     });
 
+    it('should keep waiting for a deadlock approval until the gate times out', async () => {
+      const strategy = new NegotiationStrategy(coordinator, {
+        maxRounds: 1,
+        onDeadlock: 'escalate',
+        approvalGates: [{ trigger: 'deadlock', timeout: 20, timeoutAction: 'escalate' }],
+      });
+      const escalations: unknown[] = [];
+      coordinator.events.on('negotiation:escalation', (event) => {
+        escalations.push(event.data);
+      });
+
+      const result = await strategy.execute({ input: 'topic' });
+
+      expect(result.negotiationResult?.outcome).toBe('escalated');
+      expect(escalations).toContainEqual(expect.objectContaining({ reason: 'approval_timeout' }));
+    });
+
     it('should emit escalation event on escalate mode', async () => {
       const escalationHandler = vi.fn();
       coordinator.events.on('negotiation:escalation', escalationHandler);

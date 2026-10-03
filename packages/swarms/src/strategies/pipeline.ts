@@ -10,8 +10,30 @@ import type {
   PipelineContext,
   RunResult,
   SwarmCoordinatorInterface,
+  SwarmConfig,
 } from '@cogitator-ai/types';
 import { BaseStrategy } from './base.js';
+
+/**
+ * Pipeline configuration of a swarm. Stages come from `pipeline.stages` or the top-level
+ * `stages`; the rest (`gates`, `stageInput`) from `pipeline`.
+ */
+export function resolvePipelineConfig(config: SwarmConfig): PipelineConfig {
+  const nested = config.pipeline?.stages ?? [];
+  const topLevel = config.stages ?? [];
+
+  if (nested.length > 0 && topLevel.length > 0 && !sameStageNames(nested, topLevel)) {
+    throw new Error(
+      "Pipeline stages are configured twice with different stages: use either 'stages' or 'pipeline.stages'"
+    );
+  }
+
+  return { ...config.pipeline, stages: nested.length > 0 ? nested : topLevel };
+}
+
+function sameStageNames(a: readonly PipelineStage[], b: readonly PipelineStage[]): boolean {
+  return a.length === b.length && a.every((stage, index) => stage.name === b[index].name);
+}
 
 export class PipelineStrategy extends BaseStrategy {
   private config: PipelineConfig;

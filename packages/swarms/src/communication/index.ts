@@ -2,7 +2,7 @@
  * Communication primitives for swarm coordination
  */
 
-export { SwarmEventEmitterImpl } from './event-emitter.js';
+export { SwarmEventEmitterImpl, type QueryableSwarmEventEmitter } from './event-emitter.js';
 export {
   InMemoryMessageBus,
   createMessageBus,

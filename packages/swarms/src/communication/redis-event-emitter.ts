@@ -1,12 +1,8 @@
 import { nanoid } from 'nanoid';
-import type {
-  SwarmEventEmitter,
-  SwarmEventType,
-  SwarmEvent,
-  SwarmEventHandler,
-} from '@cogitator-ai/types';
+import type { SwarmEventType, SwarmEvent, SwarmEventHandler } from '@cogitator-ai/types';
 import type { Redis } from 'ioredis';
 import { invokeSafely } from '../utils/invoke.js';
+import type { QueryableSwarmEventEmitter } from './event-emitter.js';
 
 export interface RedisEventEmitterOptions {
   redis: Redis;
@@ -38,7 +34,7 @@ function parseSwarmEvent(raw: string): SwarmEvent | null {
   }
 }
 
-export class RedisSwarmEventEmitter implements SwarmEventEmitter {
+export class RedisSwarmEventEmitter implements QueryableSwarmEventEmitter {
   private redis: Redis;
   private subscriber: Redis;
   private swarmId: string;

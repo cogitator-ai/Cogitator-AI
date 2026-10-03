@@ -527,6 +527,51 @@ describe('ApprovalIntegration', () => {
 
       expect(integration.getPendingCount()).toBe(0);
     });
+
+    it('should wait for an answer when the gate has neither timeout nor store', async () => {
+      const state = createState();
+      const gate = { trigger: 'agreement-reached' as const };
+
+      const promise = integration.requestApproval(gate, state, mockEvents);
+      const requested = vi
+        .mocked(mockEvents.emit)
+        .mock.calls.find(([type]) => type === 'negotiation:approval-required');
+      const { request } = requested?.[1] as { request: { id: string } };
+      await Promise.resolve();
+      expect(integration.getPendingCount()).toBe(1);
+
+      const answer = {
+        requestId: request.id,
+        decision: 'approved',
+        approved: true,
+        respondedBy: 'cfo',
+        respondedAt: Date.now(),
+        continueNegotiation: false,
+      };
+      integration.submitResponse(request.id, answer);
+
+      await expect(promise).resolves.toEqual(answer);
+      expect(mockEvents.emit).toHaveBeenCalledWith(
+        'negotiation:approval-received',
+        { requestId: request.id, response: answer },
+        'cfo'
+      );
+      expect(integration.getPendingCount()).toBe(0);
+    });
+
+    it('should fail pending approvals on abortAll', async () => {
+      const state = createState();
+      const promise = integration.requestApproval(
+        { trigger: 'agreement-reached' as const },
+        state,
+        mockEvents
+      );
+
+      integration.abortAll(new Error('Swarm execution aborted'));
+
+      await expect(promise).rejects.toThrow('Swarm execution aborted');
+      expect(integration.getPendingCount()).toBe(0);
+    });
   });
 });
 

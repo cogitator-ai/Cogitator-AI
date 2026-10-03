@@ -208,8 +208,14 @@ export class ModelDiscovery {
   private enabledProviders: Set<ModelProvider>;
   private cache = new Map<string, { models: DiscoveredModel[]; timestamp: number }>();
   private cacheTTL: number;
+  private canRunModel?: (model: DiscoveredModel) => boolean;
 
-  constructor(config: AssessorConfig) {
+  /**
+   * @param canRunModel - whether a cloud model can actually run (e.g. its provider's API key
+   *   is configured); cloud models it rejects are not offered
+   */
+  constructor(config: AssessorConfig, canRunModel?: (model: DiscoveredModel) => boolean) {
+    this.canRunModel = canRunModel;
     this.ollamaUrl = config.ollamaUrl ?? 'http://localhost:11434';
     this.enabledProviders = new Set(
       config.enabledProviders ?? ['ollama', 'openai', 'anthropic', 'google']
@@ -319,7 +325,9 @@ export class ModelDiscovery {
     const providers = filterProviders
       ? new Set(filterProviders.filter((p) => this.enabledProviders.has(p)))
       : this.enabledProviders;
-    return CLOUD_MODELS.filter((model) => providers.has(model.provider));
+    return CLOUD_MODELS.filter(
+      (model) => providers.has(model.provider) && (this.canRunModel?.(model) ?? true)
+    );
   }
 
   async checkOllamaAvailability(): Promise<boolean> {

@@ -165,3 +165,152 @@ describe('Swarm subscriptions', () => {
     expect(once).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('Swarm pipeline stages', () => {
+  it('runs a pipeline configured with the top-level stages field', async () => {
+    const { cogitator, run } = instant();
+    const swarm = new Swarm(cogitator, {
+      name: 'stages-swarm',
+      strategy: 'pipeline',
+      stages: [
+        { name: 'draft', agent: createMockAgent('writer') },
+        { name: 'review', agent: createMockAgent('editor') },
+      ],
+    });
+
+    const result = await swarm.run({ input: 'write a haiku' });
+
+    expect(run.mock.calls.map(([agent]) => agent.name)).toEqual(['writer', 'editor']);
+    expect(result.output).toBe('editor done');
+  });
+
+  it('rejects different stages in both stages and pipeline.stages', () => {
+    const { cogitator } = instant();
+
+    expect(
+      () =>
+        new Swarm(cogitator, {
+          name: 'twice',
+          strategy: 'pipeline',
+          stages: [{ name: 'draft', agent: createMockAgent('writer') }],
+          pipeline: { stages: [{ name: 'review', agent: createMockAgent('editor') }] },
+        })
+    ).toThrow('configured twice');
+  });
+});
+
+describe('Swarm communication typing', () => {
+  it('exposes the event history queries and read tracking of its communication', async () => {
+    const { cogitator } = instant();
+    const swarm = roundRobin(cogitator, ['a', 'b']);
+
+    await swarm.run({ input: 'go' });
+    const message = await swarm.messageBus.send({
+      swarmId: swarm.id,
+      from: 'a',
+      to: 'b',
+      type: 'notification',
+      content: 'ping',
+    });
+    swarm.messageBus.markAsRead('b', [message.id]);
+
+    expect(swarm.events.getEventsByType('swarm:complete')).toHaveLength(1);
+    expect(swarm.events.getEventsByAgent('a').map((e) => e.type)).toContain('agent:complete');
+    expect(swarm.messageBus.getUnreadMessages('b')).toEqual([]);
+  });
+});
+
+describe('Swarm negotiation approvals', () => {
+  const negotiation = (cogitator: Cogitator) =>
+    new Swarm(cogitator, {
+      name: 'deal',
+      strategy: 'negotiation',
+      agents: [createMockAgent('buyer'), createMockAgent('seller')],
+      negotiation: {
+        maxRounds: 1,
+        onDeadlock: 'escalate',
+        approvalGates: [{ trigger: 'deadlock' }],
+      },
+    });
+
+  it('waits for an approval without timeout until it is answered through the swarm', async () => {
+    const { cogitator } = instant();
+    const swarm = negotiation(cogitator);
+    const escalations: unknown[] = [];
+    swarm.on('negotiation:escalation', (event) => {
+      escalations.push(event.data);
+    });
+    swarm.on('negotiation:approval-required', (event) => {
+      const { request } = event.data as { request: { id: string } };
+      setTimeout(() => {
+        swarm.respondToApproval(request.id, {
+          requestId: request.id,
+          decision: 'approved',
+          approved: true,
+          respondedBy: 'cfo',
+          respondedAt: Date.now(),
+          continueNegotiation: false,
+          suggestedModifications: [
+            { termId: 'price', label: 'Price', value: 100, negotiable: true, priority: 1 },
+          ],
+        });
+      }, 5);
+    });
+    const received = vi.fn();
+    swarm.on('negotiation:approval-received', received);
+
+    const result = await swarm.run({ input: 'agree on a price' });
+
+    expect(result.negotiationResult?.outcome).toBe('escalated');
+    expect(received).toHaveBeenCalledWith(expect.objectContaining({ agentName: 'cfo' }));
+    expect(escalations).toContainEqual(
+      expect.objectContaining({ reason: 'authority_modifications', respondedBy: 'cfo' })
+    );
+  });
+
+  it('stops waiting for approvals when the run times out', async () => {
+    const { cogitator } = instant();
+    const swarm = negotiation(cogitator);
+
+    await expect(swarm.run({ input: 'agree on a price', timeout: 50 })).rejects.toBeInstanceOf(
+      SwarmTimeoutError
+    );
+  });
+
+  it('refuses approval answers for swarms without negotiation', () => {
+    const { cogitator } = instant();
+    const swarm = roundRobin(cogitator);
+
+    expect(() =>
+      swarm.respondToApproval('approval_x', {
+        requestId: 'approval_x',
+        decision: 'approved',
+        approved: true,
+        respondedBy: 'cfo',
+        respondedAt: Date.now(),
+        continueNegotiation: false,
+      })
+    ).toThrow('has no approvals');
+  });
+});
+
+describe('Swarm assessment', () => {
+  it('only offers cloud models the Cogitator has a configured provider for', async () => {
+    const run = vi.fn(async () => createMockRunResult('ok'));
+    const route = (model: string) => {
+      if (!model.startsWith('google/')) throw new Error('API key is required');
+      return { model };
+    };
+    const cogitator = { run, route, resolveModel: () => 'ollama/test' } as unknown as Cogitator;
+    const swarm = new Swarm(
+      cogitator,
+      { name: 'assessed', strategy: 'round-robin', agents: [createMockAgent('a')] },
+      { enabledProviders: ['openai', 'anthropic', 'google'] }
+    );
+
+    const assessment = await swarm.dryRun({ input: 'Summarize the report' });
+
+    expect(assessment.discoveredModels.length).toBeGreaterThan(0);
+    expect(assessment.discoveredModels.every((m) => m.provider === 'google')).toBe(true);
+  });
+});

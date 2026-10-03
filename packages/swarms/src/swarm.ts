@@ -8,23 +8,25 @@ import type {
   SwarmRunOptions,
   StrategyResult,
   SwarmAgent,
-  SwarmEventEmitter,
   SwarmEventType,
   SwarmEventHandler,
   SwarmResourceUsage,
-  MessageBus,
-  Blackboard,
   IStrategy,
   AssessorConfig,
   AssessmentResult,
   SwarmCoordinatorInterface,
   RunResult,
+  NegotiationApprovalResponse,
 } from '@cogitator-ai/types';
 import { SwarmCoordinator, type SwarmRunScope } from './coordinator.js';
 import { createStrategy } from './strategies/index.js';
+import { resolvePipelineConfig } from './strategies/pipeline.js';
 import { createAssessor } from './assessor/index.js';
 import { DistributedSwarmCoordinator } from './distributed/index.js';
-import { isReadTrackingMessageBus } from './communication/message-bus.js';
+import type { ReadTrackingMessageBus } from './communication/message-bus.js';
+import type { ObservableBlackboard } from './communication/blackboard.js';
+import type { QueryableSwarmEventEmitter } from './communication/event-emitter.js';
+import { NegotiationStrategy } from './strategies/negotiation-strategy.js';
 
 const VALID_STRATEGIES: readonly SwarmConfig['strategy'][] = [
   'hierarchical',
@@ -40,6 +42,9 @@ const VALID_STRATEGIES: readonly SwarmConfig['strategy'][] = [
  * Coordinator contract the Swarm facade relies on, shared by the local and distributed engines.
  */
 interface ManagedCoordinator extends SwarmCoordinatorInterface {
+  readonly messageBus: ReadTrackingMessageBus;
+  readonly blackboard: ObservableBlackboard;
+  readonly events: QueryableSwarmEventEmitter;
   getSwarmId(): string;
   beginRun(scope: SwarmRunScope): void;
   endRun(): void;
@@ -120,21 +125,22 @@ export class Swarm {
   /**
    * Message bus for agent communication
    */
-  get messageBus(): MessageBus {
+  get messageBus(): ReadTrackingMessageBus {
     return this.coordinator.messageBus;
   }
 
   /**
    * Shared blackboard
    */
-  get blackboard(): Blackboard {
+  get blackboard(): ObservableBlackboard {
     return this.coordinator.blackboard;
   }
 
   /**
-   * Event emitter for swarm events
+   * Event emitter for swarm events, including the history queries
+   * (`getEventsByType`, `getEventsByAgent`)
    */
-  get events(): SwarmEventEmitter {
+  get events(): QueryableSwarmEventEmitter {
     return this.coordinator.events;
   }
 
@@ -196,7 +202,9 @@ export class Swarm {
 
       return result;
     } catch (error) {
-      const failure = runController.signal.aborted ? abortReason(runController.signal) : error;
+      const aborted = runController.signal.aborted ? abortReason(runController.signal) : undefined;
+      if (aborted) this.abortPendingApprovals(aborted);
+      const failure = aborted ?? error;
 
       this.coordinator.events.emit('swarm:error', {
         swarmId: this.id,
@@ -220,7 +228,7 @@ export class Swarm {
       throw new Error('Assessor not configured. Use SwarmBuilder.withAssessor() to enable.');
     }
 
-    const assessor = createAssessor(this.assessorConfig);
+    const assessor = createAssessor(this.assessorConfig, this.cogitator);
     return assessor.analyze(options.input, this.config, (agent) =>
       this.cogitator.resolveModel(agent)
     );
@@ -234,7 +242,7 @@ export class Swarm {
   }
 
   private async runAssessment(task: string): Promise<void> {
-    const assessor = createAssessor(this.assessorConfig);
+    const assessor = createAssessor(this.assessorConfig, this.cogitator);
     this.lastAssessment = await assessor.analyze(task, this.config, (agent) =>
       this.cogitator.resolveModel(agent)
     );
@@ -361,10 +369,7 @@ export class Swarm {
     }
 
     if (options.onMessage) {
-      const bus = this.coordinator.messageBus;
-      if (isReadTrackingMessageBus(bus)) {
-        detachers.push(bus.onMessage(options.onMessage));
-      }
+      detachers.push(this.coordinator.messageBus.onMessage(options.onMessage));
     }
 
     return () => {
@@ -400,7 +405,27 @@ export class Swarm {
    */
   abort(): void {
     this.coordinator.abort();
+    this.abortPendingApprovals(new Error('Swarm execution aborted'));
     this.coordinator.events.emit('swarm:aborted', { swarmId: this.id });
+  }
+
+  /**
+   * Answer a pending approval request of a negotiation swarm. Requests are announced by the
+   * `negotiation:approval-required` event; its `request.id` is the `requestId`.
+   */
+  respondToApproval(requestId: string, response: NegotiationApprovalResponse): void {
+    if (!(this.strategy instanceof NegotiationStrategy)) {
+      throw new Error(
+        `Swarm '${this.config.name}' uses the ${this.config.strategy} strategy, which has no approvals`
+      );
+    }
+    this.strategy.respondToApproval(requestId, response);
+  }
+
+  private abortPendingApprovals(reason: Error): void {
+    if (this.strategy instanceof NegotiationStrategy) {
+      this.strategy.abortPendingApprovals(reason);
+    }
   }
 
   /**
@@ -452,6 +477,8 @@ export class Swarm {
       );
     }
 
+    this.validateAgentTools(config);
+
     switch (config.strategy) {
       case 'hierarchical':
         if (!config.supervisor) {
@@ -460,7 +487,7 @@ export class Swarm {
         break;
 
       case 'pipeline':
-        if (!config.pipeline?.stages || config.pipeline.stages.length === 0) {
+        if (resolvePipelineConfig(config).stages.length === 0) {
           throw new Error('Pipeline strategy requires at least one stage');
         }
         break;
@@ -497,6 +524,23 @@ export class Swarm {
     }
 
     return config;
+  }
+
+  private validateAgentTools(config: SwarmConfig): void {
+    const tools = config.agentTools;
+    if (!tools?.messaging && !tools?.blackboard) return;
+
+    if (config.distributed?.enabled) {
+      throw new Error(
+        'agentTools are not available in distributed swarms: register the tools on the workers instead'
+      );
+    }
+    if (tools.messaging && config.messaging?.enabled === false) {
+      throw new Error('agentTools.messaging needs the message bus: messaging.enabled is false');
+    }
+    if (tools.blackboard && config.blackboard?.enabled === false) {
+      throw new Error('agentTools.blackboard needs the blackboard: blackboard.enabled is false');
+    }
   }
 }
 
@@ -624,6 +668,14 @@ export class SwarmBuilder {
 
   blackboardConfig(config: SwarmConfig['blackboard']): this {
     this.config.blackboard = config;
+    return this;
+  }
+
+  /**
+   * Give every agent built-in swarm tools (messaging, blackboard)
+   */
+  agentTools(config: SwarmConfig['agentTools']): this {
+    this.config.agentTools = config;
     return this;
   }
 

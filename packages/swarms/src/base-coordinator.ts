@@ -25,6 +25,9 @@ import { buildSwarmAgents } from './agents';
 import { runWithConcurrency } from './utils/concurrency';
 import { createDelegationTools } from './tools/delegation';
 import { createNegotiationTools } from './tools/negotiation';
+import { createVotingTools } from './tools/voting';
+import { createMessagingTools, createHierarchyMessageAuthorizer } from './tools/messaging';
+import { createBlackboardTools } from './tools/blackboard';
 
 type RetryConfig = NonNullable<NonNullable<SwarmConfig['errorHandling']>['retry']>;
 
@@ -358,6 +361,7 @@ export abstract class BaseSwarmCoordinator<
       });
 
       this.setAgentState(agentName, 'completed');
+      this.logTrace(agentName, result);
       swarmAgent.lastResult = result;
       swarmAgent.tokenCount += result.usage.totalTokens;
       this.resourceTracker.trackAgentRun(agentName, result);
@@ -375,12 +379,17 @@ export abstract class BaseSwarmCoordinator<
   }
 
   /**
-   * Tools a strategy needs an agent to have: the supervisor of a hierarchical swarm gets the
-   * delegation tools, negotiating agents get the negotiation tools. Tools the agent already
-   * defines (by name) are left untouched. Engines that cannot ship tool implementations
-   * (e.g. remote workers) override this.
+   * Tools the swarm adds to an agent: the supervisor of a hierarchical swarm gets the
+   * delegation tools, consensus voters the voting tools, negotiating agents the negotiation
+   * tools, and every agent the built-in tools enabled with `agentTools`. Tools the agent
+   * already defines (by name) are left untouched. Engines that cannot ship tool
+   * implementations (e.g. remote workers) override this.
    */
   protected strategyTools(swarmAgent: SwarmAgent): Tool[] {
+    return [...this.roleTools(swarmAgent), ...this.configuredAgentTools(swarmAgent.agent.name)];
+  }
+
+  private roleTools(swarmAgent: SwarmAgent): Tool[] {
     const name = swarmAgent.agent.name;
     const role = swarmAgent.metadata.role;
 
@@ -389,6 +398,17 @@ export abstract class BaseSwarmCoordinator<
         return role === 'supervisor'
           ? Object.values(createDelegationTools(this, this.blackboard, name))
           : [];
+      case 'consensus':
+        return role === 'supervisor'
+          ? []
+          : Object.values(
+              createVotingTools(
+                this.blackboard,
+                this.events,
+                name,
+                this.config.consensus?.weights?.[name] ?? swarmAgent.metadata.weight ?? 1
+              )
+            );
       case 'negotiation':
         return role === 'supervisor' || role === 'moderator'
           ? []
@@ -403,6 +423,26 @@ export abstract class BaseSwarmCoordinator<
       default:
         return [];
     }
+  }
+
+  private configuredAgentTools(agentName: string): Tool[] {
+    const enabled = this.config.agentTools;
+    const tools: Tool[] = [];
+
+    if (enabled?.messaging) {
+      tools.push(
+        ...Object.values(
+          createMessagingTools(this.messageBus, agentName, this.swarmId, {
+            authorize: createHierarchyMessageAuthorizer(this, this.blackboard, agentName),
+          })
+        )
+      );
+    }
+    if (enabled?.blackboard) {
+      tools.push(...Object.values(createBlackboardTools(this.blackboard, agentName)));
+    }
+
+    return tools;
   }
 
   private missingStrategyTools(swarmAgent: SwarmAgent): Tool[] {
@@ -521,6 +561,26 @@ export abstract class BaseSwarmCoordinator<
     if (agent) {
       agent.state = state;
     }
+  }
+
+  private logTrace(agentName: string, result: RunResult): void {
+    if (!this.config.observability?.tracing) return;
+
+    getLogger().info('[Swarm] agent trace', {
+      swarm: this.config.name,
+      swarmId: this.swarmId,
+      agent: agentName,
+      runId: result.runId,
+      traceId: result.trace.traceId,
+      spans: result.trace.spans.map((span) => ({
+        id: span.id,
+        parentId: span.parentId,
+        name: span.name,
+        status: span.status,
+        duration: span.duration,
+        attributes: span.attributes,
+      })),
+    });
   }
 
   private wireObservability(): void {

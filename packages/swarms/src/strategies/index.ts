@@ -22,7 +22,7 @@ import { HierarchicalStrategy } from './hierarchical';
 import { RoundRobinStrategy } from './round-robin';
 import { ConsensusStrategy } from './consensus';
 import { AuctionStrategy } from './auction';
-import { PipelineStrategy } from './pipeline';
+import { PipelineStrategy, resolvePipelineConfig } from './pipeline';
 import { DebateStrategy } from './debate';
 import { NegotiationStrategy } from './negotiation-strategy';
 export {
@@ -64,10 +64,7 @@ export function createStrategy(
       return new AuctionStrategy(coordinator, config.auction);
 
     case 'pipeline':
-      if (!config.pipeline) {
-        throw new Error('Pipeline strategy requires pipeline configuration');
-      }
-      return new PipelineStrategy(coordinator, config.pipeline);
+      return new PipelineStrategy(coordinator, resolvePipelineConfig(config));
 
     case 'debate':
       if (!config.debate) {

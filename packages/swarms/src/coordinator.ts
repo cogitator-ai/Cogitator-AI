@@ -23,7 +23,7 @@ export class SwarmCoordinator extends BaseSwarmCoordinator<
 
   constructor(cogitator: Cogitator, config: SwarmConfig) {
     super(config, `swarm_${nanoid(12)}`, {
-      messageBus: new InMemoryMessageBus(config.messaging ?? { enabled: true, protocol: 'direct' }),
+      messageBus: new InMemoryMessageBus(config.messaging ?? { enabled: true }),
       blackboard: new InMemoryBlackboard(
         config.blackboard ?? { enabled: true, sections: {}, trackHistory: true }
       ),

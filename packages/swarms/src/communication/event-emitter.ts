@@ -10,7 +10,16 @@ import type {
 } from '@cogitator-ai/types';
 import { invokeSafely } from '../utils/invoke.js';
 
-export class SwarmEventEmitterImpl implements SwarmEventEmitter {
+/**
+ * Event emitter that can be queried for the events it has recorded.
+ */
+export interface QueryableSwarmEventEmitter extends SwarmEventEmitter {
+  getEventsByType(type: SwarmEventType): SwarmEvent[];
+  getEventsByAgent(agentName: string): SwarmEvent[];
+  clearEvents(): void;
+}
+
+export class SwarmEventEmitterImpl implements QueryableSwarmEventEmitter {
   private handlers = new Map<SwarmEventType | '*', Set<SwarmEventHandler>>();
   private events: SwarmEvent[] = [];
   private maxEvents: number;

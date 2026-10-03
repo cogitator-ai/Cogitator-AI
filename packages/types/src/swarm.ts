@@ -47,7 +47,10 @@ export interface HierarchicalConfig {
 }
 
 export interface RoundRobinConfig {
-  /** Enable sticky sessions (same agent handles follow-ups) */
+  /**
+   * Enable sticky sessions: runs with the same `stickyKey` go to the agent that handled the
+   * key first, while new keys keep rotating. Without `stickyKey` every run rotates.
+   */
   sticky?: boolean;
   /** Key function for sticky routing */
   stickyKey?: (input: unknown) => string;
@@ -139,7 +142,11 @@ export interface SwarmMessage {
 
 export interface MessageBusConfig {
   enabled: boolean;
-  protocol: 'direct' | 'broadcast' | 'pub-sub';
+  /**
+   * @deprecated Has no effect: the message bus always delivers direct messages, broadcasts
+   * and channel-tagged messages. Kept so existing configurations still type-check.
+   */
+  protocol?: 'direct' | 'broadcast' | 'pub-sub';
   /** Max message length in characters */
   maxMessageLength?: number;
   /** Max messages per turn per agent */
@@ -171,7 +178,10 @@ export interface BlackboardConfig {
   enabled: boolean;
   /** Initial sections with their data */
   sections: Record<string, unknown>;
-  /** Lock sections during write (optimistic locking) */
+  /**
+   * @deprecated Has no effect: every write is already atomic (in memory it runs synchronously,
+   * on Redis it runs as a single Lua script), so there is no lock to enable.
+   */
   locking?: boolean;
   /** Track history of changes */
   trackHistory?: boolean;
@@ -334,7 +344,11 @@ export interface DistributedSwarmConfig {
   enabled: boolean;
   /** Queue name for agent jobs (default: 'swarm-agent-jobs') */
   queue?: string;
-  /** Worker concurrency per pool (default: 4) */
+  /**
+   * @deprecated Has no effect: workers pull jobs from the queue, so their concurrency is set
+   * where they run, with the `concurrency` option of `DistributedSwarmWorker`
+   * (`@cogitator-ai/worker`).
+   */
   workerConcurrency?: number;
   /** Job timeout in ms (default: 300000) */
   timeout?: number;
@@ -346,15 +360,40 @@ export interface DistributedSwarmConfig {
     keyPrefix?: string;
     db?: number;
   };
-  /** Retry configuration for failed jobs */
+  /**
+   * Re-dispatch a job that failed on a worker or timed out, before the failure reaches the
+   * swarm's `errorHandling`. A timed-out job may still be running on its worker, so its
+   * agent turn can run twice. Without this option a failed job is not retried.
+   */
   retry?: {
+    /** Re-dispatches after the first attempt (default: 3) */
     maxRetries?: number;
+    /** Delay growth between attempts (default: 'exponential') */
     backoff?: 'constant' | 'linear' | 'exponential';
+    /** Delay before the first re-dispatch in ms (default: 1000) */
     initialDelay?: number;
+    /** Upper bound for a single delay in ms (default: 30000) */
     maxDelay?: number;
   };
-  /** Cleanup completed job data after ms (default: 3600000 = 1 hour) */
+  /**
+   * How long the swarm's shared state in Redis (blackboard, messages, events) is kept after
+   * `swarm.close()`, in ms (default: 3600000 = 1 hour). `0` deletes it at once.
+   */
   cleanupAfter?: number;
+}
+
+/**
+ * Built-in tools the swarm adds to its agents. They act on the swarm's own message bus and
+ * blackboard, so they are only available in local (non-distributed) swarms.
+ */
+export interface SwarmAgentToolsConfig {
+  /** `send_message`, `read_messages`, `broadcast_message`, `reply_to_message` */
+  messaging?: boolean;
+  /**
+   * `read_blackboard`, `write_blackboard`, `append_blackboard`, `list_blackboard_sections`,
+   * `get_blackboard_history`
+   */
+  blackboard?: boolean;
 }
 
 export interface SwarmConfig {
@@ -367,7 +406,7 @@ export interface SwarmConfig {
   workers?: Agent[];
   /** General agents for round-robin, consensus, auction */
   agents?: Agent[];
-  /** Pipeline stages for pipeline strategy */
+  /** Pipeline stages for pipeline strategy (alternative to `pipeline.stages`) */
   stages?: PipelineStage[];
   /** Moderator agent for debate strategy */
   moderator?: Agent;
@@ -393,8 +432,11 @@ export interface SwarmConfig {
   /** Distributed execution configuration */
   distributed?: DistributedSwarmConfig;
 
+  /** Built-in swarm tools every agent gets in addition to the tools of the strategy */
+  agentTools?: SwarmAgentToolsConfig;
+
   observability?: {
-    /** Enable tracing */
+    /** Log the trace (spans) of every agent run, tagged with the swarm and agent */
     tracing?: boolean;
     /** Log all messages */
     messageLogging?: boolean;
@@ -594,9 +636,14 @@ export interface AssessmentResult {
 }
 
 export interface AssessorConfig {
-  /** Assessment mode: 'rules' (fast), 'ai' (smart), 'hybrid' (balanced) */
+  /**
+   * How the task is analyzed: 'rules' (keyword heuristics, default), 'ai' (the assessor model
+   * judges the task), 'hybrid' (the model's judgement plus every hard requirement the rules
+   * detect). 'ai' and 'hybrid' need a Cogitator to run the model; when the model cannot be
+   * run, the assessment falls back to the rules and says so in `warnings`.
+   */
   mode?: AssessorMode;
-  /** Model to use for AI-based assessment */
+  /** Model for 'ai' and 'hybrid' analysis (default: the Cogitator's `llm.defaultModel`) */
   assessorModel?: string;
   /** Prefer local Ollama models when capable */
   preferLocal?: boolean;
@@ -606,7 +653,11 @@ export interface AssessorConfig {
   minCapabilityMatch?: number;
   /** Ollama server URL */
   ollamaUrl?: string;
-  /** Enabled model providers */
+  /**
+   * Providers whose models may be assigned. When the assessor runs with a Cogitator (as in a
+   * Swarm), cloud models are only offered when the Cogitator can run them, i.e. their
+   * provider's backend is configured (for example its API key is set).
+   */
   enabledProviders?: ModelProvider[];
   /** Cache assessment results */
   cacheAssessments?: boolean;

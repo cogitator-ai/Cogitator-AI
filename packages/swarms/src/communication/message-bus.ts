@@ -257,7 +257,6 @@ export class InMemoryMessageBus implements ReadTrackingMessageBus {
 export function createMessageBus(config?: Partial<MessageBusConfig>): MessageBus {
   return new InMemoryMessageBus({
     enabled: true,
-    protocol: 'direct',
     ...config,
   });
 }

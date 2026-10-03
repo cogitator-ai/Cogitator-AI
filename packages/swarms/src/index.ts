@@ -32,6 +32,7 @@ export {
 
 export {
   SwarmEventEmitterImpl,
+  type QueryableSwarmEventEmitter,
   InMemoryMessageBus,
   InMemoryBlackboard,
   RedisMessageBus,
@@ -97,7 +98,9 @@ export {
   ModelDiscovery,
   ModelScorer,
   RoleMatcher,
+  AiTaskAnalyzer,
   type ScoredModel,
+  type AssessorRuntime,
 } from './assessor/index';
 
 export type {
@@ -142,6 +145,7 @@ export type {
   SwarmCoordinatorInterface,
   SwarmResourceConfig,
   SwarmErrorConfig,
+  SwarmAgentToolsConfig,
   TaskRequirements,
   RoleRequirements,
   ModelCandidate,

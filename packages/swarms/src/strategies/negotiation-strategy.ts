@@ -151,11 +151,11 @@ export class NegotiationStrategy extends BaseStrategy {
         }
 
         if (this.isDeadlocked(round)) {
-          return this.handleDeadlock(options, agentResults);
+          return await this.handleDeadlock(options, agentResults);
         }
       }
 
-      return this.handleDeadlock(options, agentResults);
+      return await this.handleDeadlock(options, agentResults);
     } finally {
       this.approvalIntegration?.cancelAll();
     }
@@ -169,6 +169,14 @@ export class NegotiationStrategy extends BaseStrategy {
       throw new Error('No approval gates are configured for this negotiation');
     }
     this.approvalIntegration.submitResponse(requestId, response);
+  }
+
+  /**
+   * Stop waiting for approvals: every pending request fails with `reason`, which ends the
+   * current run. Used when the swarm run is aborted or times out.
+   */
+  abortPendingApprovals(reason: Error): void {
+    this.approvalIntegration?.abortAll(reason);
   }
 
   private initializeState(negotiationId: string): void {
