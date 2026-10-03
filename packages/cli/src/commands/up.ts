@@ -45,11 +45,22 @@ function exitCodeFor(code: number | null, signal: NodeJS.Signals | null): number
   return 0;
 }
 
+/**
+ * Load the `.env` next to the assistant config into `target` (the process environment by
+ * default) without overriding variables that are already set. Built-in tools such as
+ * `web_search` and `github_api` read their keys from `process.env`, so the file must land there.
+ */
+export function loadAssistantEnv(
+  configPath: string,
+  target: NodeJS.ProcessEnv = process.env
+): void {
+  loadDotenvInto(resolvePath(dirname(configPath), '.env'), target);
+}
+
 async function startFromConfig(configPath: string): Promise<void> {
   const config = loadAssistantConfig(configPath);
-
+  loadAssistantEnv(configPath);
   const env: Record<string, string | undefined> = { ...process.env };
-  loadDotenvInto(resolvePath(dirname(configPath), '.env'), env);
 
   log.info(`Loading ${configPath}...`);
   const spinner = ora('Building runtime...').start();
@@ -140,7 +151,7 @@ function startWithAutoRestart(configPath: string): void {
 
     child.on('exit', (code, signal) => {
       if (!stopping && code === RESTART_EXIT_CODE) {
-        log.info('Restarting with updated config...');
+        log.info('Restarting assistant...');
         console.log();
         launch();
         return;
@@ -158,12 +169,8 @@ async function startAssistant(configPath: string, restartLoop: boolean): Promise
       await startFromConfig(configPath);
       return;
     }
-    const config = loadAssistantConfig(configPath);
-    if (config.capabilities.selfConfig) {
-      startWithAutoRestart(configPath);
-    } else {
-      await startFromConfig(configPath);
-    }
+    loadAssistantConfig(configPath);
+    startWithAutoRestart(configPath);
   } catch (error) {
     log.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
@@ -257,7 +264,10 @@ export const upCommand = new Command('up')
   .option('-d, --detach', 'Run Docker services in background (default)', true)
   .option('--no-detach', 'Run Docker services in foreground')
   .option('--pull', 'Pull latest images before starting')
-  .option('--no-restart-loop', 'Do not supervise the assistant for self-config restarts')
+  .option(
+    '--no-restart-loop',
+    'Do not supervise the assistant for restarts (/restart, self-config updates)'
+  )
   .action(
     async (options: { config?: string; detach: boolean; pull?: boolean; restartLoop: boolean }) => {
       if (options.config) {

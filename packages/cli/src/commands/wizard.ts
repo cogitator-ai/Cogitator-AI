@@ -95,6 +95,35 @@ export function parsePathList(raw: string): string[] {
     .filter((s) => s.length > 0);
 }
 
+/** Channels configured in cogitator.yml that the wizard does not set up, kept on `--edit` */
+export function channelsKeptOnEdit(
+  channels: AssistantConfig['channels'] | undefined
+): AssistantConfig['channels'] {
+  return {
+    ...(channels?.whatsapp && { whatsapp: channels.whatsapp }),
+    ...(channels?.webchat && { webchat: channels.webchat }),
+  };
+}
+
+/**
+ * Memory settings written by the wizard. A postgres config is kept as is (the wizard only
+ * sets up SQLite); otherwise SQLite is used with `sqlitePath`.
+ */
+export function resolveMemoryConfig(
+  existing: AssistantConfig['memory'] | undefined,
+  sqlitePath: string | undefined
+): AssistantConfig['memory'] {
+  const memory: AssistantConfig['memory'] = {
+    adapter: 'sqlite',
+    autoExtract: true,
+    knowledgeGraph: true,
+    compaction: { threshold: 50 },
+    ...existing,
+  };
+  if (memory.adapter === 'postgres') return memory;
+  return { ...memory, adapter: 'sqlite', path: sqlitePath ?? memory.path ?? DEFAULT_MEMORY_PATH };
+}
+
 function cancel(): never {
   p.cancel('Setup cancelled');
   process.exit(0);
@@ -297,7 +326,7 @@ export const wizardCommand = new Command('wizard')
       })
     ).filter((c): c is ChannelName => c === 'telegram' || c === 'discord' || c === 'slack');
 
-    const channelsConfig: AssistantConfig['channels'] = {};
+    const channelsConfig = channelsKeptOnEdit(existing.channels);
 
     for (const ch of selectedChannels) {
       const tokenEnv = CHANNEL_TOKEN_ENV[ch];
@@ -498,13 +527,18 @@ export const wizardCommand = new Command('wizard')
       );
     }
 
-    const memoryPath = prompt(
-      await p.text({
-        message: 'SQLite memory database path',
-        initialValue: existing.memory?.path ?? DEFAULT_MEMORY_PATH,
-        validate: (v) => (!v?.trim() ? 'Path is required' : undefined),
-      })
-    ).trim();
+    let sqlitePath: string | undefined;
+    if (existing.memory?.adapter === 'postgres') {
+      p.log.info('Keeping postgres memory');
+    } else {
+      sqlitePath = prompt(
+        await p.text({
+          message: 'SQLite memory database path',
+          initialValue: existing.memory?.path ?? DEFAULT_MEMORY_PATH,
+          validate: (v) => (!v?.trim() ? 'Path is required' : undefined),
+        })
+      ).trim();
+    }
 
     const defaultPersonality = [
       `You are ${assistantName}, a personal AI assistant for ${userName}.`,
@@ -529,14 +563,7 @@ export const wizardCommand = new Command('wizard')
       channels: channelsConfig,
       capabilities,
       ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : { mcpServers: undefined }),
-      memory: {
-        autoExtract: true,
-        knowledgeGraph: true,
-        compaction: { threshold: 50 },
-        ...existing.memory,
-        adapter: 'sqlite',
-        path: memoryPath,
-      },
+      memory: resolveMemoryConfig(existing.memory, sqlitePath),
       stream: existing.stream ?? { flushInterval: 600, minChunkSize: 30 },
     };
 
