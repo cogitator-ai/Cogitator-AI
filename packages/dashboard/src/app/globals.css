@@ -563,6 +563,26 @@
     }
   }
 
+  .cog-screen,
+  .cog-screen * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(127 212 181 / 0.22) transparent;
+  }
+
+  .cog-screen ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .cog-screen ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .cog-screen ::-webkit-scrollbar-thumb {
+    background: rgb(127 212 181 / 0.22);
+    border-radius: 3px;
+  }
+
   .cog-screen .crt-glow {
     text-shadow: 0 0 6px rgb(127 212 181 / 0.3);
   }

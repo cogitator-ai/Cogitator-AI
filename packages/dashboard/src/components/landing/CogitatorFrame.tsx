@@ -78,7 +78,7 @@ export function CogitatorFrame({
   psalm?: string;
 }) {
   return (
-    <div className={cx('cog-bezel', className)}>
+    <div className={cx('cog-bezel flex flex-col', className)}>
       <Corner className="left-1 top-1" />
       <Corner className="right-1 top-1 rotate-90" />
       <Corner className="bottom-1 right-1 rotate-180" />
@@ -97,13 +97,15 @@ export function CogitatorFrame({
         <Lamps lamps={[...lamps].reverse()} />
         <span className="cog-rivet" aria-hidden />
       </div>
-      <div className={cx('cog-screen', variant === 'code' && 'cog-screen--code')}>
+      <div
+        className={cx('cog-screen flex grow flex-col', variant === 'code' && 'cog-screen--code')}
+      >
         {watermark && (
           <div className="cog-watermark" aria-hidden>
             <LogoMark className="size-56" />
           </div>
         )}
-        <div className={cx('relative z-[1]', screenClassName)}>{children}</div>
+        <div className={cx('relative z-[1] grow', screenClassName)}>{children}</div>
         {psalm && (
           <div
             className="cog-psalm relative z-[1] border-t border-l-accent/10 px-4 py-1.5"

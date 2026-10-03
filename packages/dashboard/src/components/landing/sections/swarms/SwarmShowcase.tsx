@@ -234,7 +234,7 @@ export function SwarmShowcase({ snippets }: { snippets: Record<StrategyId, React
                 transition={{ duration: 0.2 }}
                 className="absolute inset-0 overflow-auto"
               >
-                <CodeBody className="overflow-visible">{snippets[scene.id]}</CodeBody>
+                <CodeBody className="!overflow-visible">{snippets[scene.id]}</CodeBody>
               </motion.div>
             </AnimatePresence>
           </div>
