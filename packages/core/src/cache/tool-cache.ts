@@ -28,9 +28,10 @@ export function withCache<TParams, TResult>(
       client: config.redisClient,
       keyPrefix: prefix,
       maxSize: config.maxSize,
+      onEvict: config.onEvict,
     });
   } else {
-    storage = new InMemoryToolCacheStorage(config.maxSize);
+    storage = new InMemoryToolCacheStorage(config.maxSize, { onEvict: config.onEvict });
   }
 
   const cachedExecute = async (params: TParams, context: ToolContext): Promise<TResult> => {

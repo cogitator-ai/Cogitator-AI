@@ -7,11 +7,15 @@ import type {
 import { cosineSimilarity } from '../cache-key';
 
 const PRUNE_BATCH_SIZE = 100;
+const SCAN_BATCH_SIZE = 100;
 
 export interface RedisToolCacheStorageConfig {
   client: RedisClientLike;
+  /** Prefix of every key the cache writes; a `:` is added when it does not end with one */
   keyPrefix?: string;
   maxSize?: number;
+  /** Called with the key of each entry dropped to make room */
+  onEvict?: (key: string) => void;
 }
 
 export class RedisToolCacheStorage implements ToolCacheStorage {
@@ -20,6 +24,7 @@ export class RedisToolCacheStorage implements ToolCacheStorage {
   private maxSize: number;
   private lruKey: string;
   private counterKey: string;
+  private onEvict?: (key: string) => void;
   private stats: CacheStats = {
     hits: 0,
     misses: 0,
@@ -30,7 +35,9 @@ export class RedisToolCacheStorage implements ToolCacheStorage {
 
   constructor(config: RedisToolCacheStorageConfig) {
     this.client = config.client;
-    this.prefix = config.keyPrefix ?? 'toolcache:';
+    const prefix = config.keyPrefix ?? 'toolcache:';
+    this.prefix = prefix.endsWith(':') ? prefix : `${prefix}:`;
+    this.onEvict = config.onEvict;
     this.maxSize = config.maxSize ?? 1000;
     this.lruKey = `${this.prefix}lru`;
     this.counterKey = `${this.prefix}counter`;
@@ -125,22 +132,25 @@ export class RedisToolCacheStorage implements ToolCacheStorage {
   }
 
   async clear(): Promise<void> {
-    let cursor = 0;
+    let cursor = '0';
     do {
-      const [nextCursor, keys] = await this.client.scan(cursor, {
-        match: `${this.prefix}*`,
-        count: 100,
-      });
-      cursor = typeof nextCursor === 'string' ? parseInt(nextCursor, 10) : nextCursor;
+      const [nextCursor, keys] = await this.client.scan(
+        cursor,
+        'MATCH',
+        `${this.prefix}*`,
+        'COUNT',
+        SCAN_BATCH_SIZE
+      );
+      cursor = String(nextCursor);
       if (keys.length > 0) {
         await this.client.del(...keys);
       }
-    } while (cursor !== 0);
+    } while (cursor !== '0');
     this.stats.size = 0;
   }
 
   async getOldest(): Promise<CacheEntry | null> {
-    const keys = await this.client.zrange(this.lruKey, 0, 0);
+    const keys = await this.client.zrange(this.lruKey, 0, '0');
     if (keys.length === 0) return null;
     return this.get(keys[0]);
   }
@@ -159,13 +169,16 @@ export class RedisToolCacheStorage implements ToolCacheStorage {
     const now = Date.now();
     const pattern = `${this.prefix}entry:*`;
 
-    let cursor = 0;
+    let cursor = '0';
     do {
-      const [nextCursor, keys] = await this.client.scan(cursor, {
-        match: pattern,
-        count: 100,
-      });
-      cursor = typeof nextCursor === 'string' ? parseInt(nextCursor, 10) : nextCursor;
+      const [nextCursor, keys] = await this.client.scan(
+        cursor,
+        'MATCH',
+        pattern,
+        'COUNT',
+        SCAN_BATCH_SIZE
+      );
+      cursor = String(nextCursor);
 
       if (keys.length === 0) continue;
 
@@ -182,13 +195,13 @@ export class RedisToolCacheStorage implements ToolCacheStorage {
           results.push({ ...entry, score });
         }
       }
-    } while (cursor !== 0);
+    } while (cursor !== '0');
 
     return results.sort((a, b) => b.score - a.score).slice(0, limit);
   }
 
   private async pruneExpired(): Promise<void> {
-    const members = await this.client.zrange(this.lruKey, 0, -1);
+    const members = await this.client.zrange(this.lruKey, 0, '-1');
     for (let start = 0; start < members.length; start += PRUNE_BATCH_SIZE) {
       const batch = members.slice(start, start + PRUNE_BATCH_SIZE);
       const values = await this.client.mget(...batch.map((member) => this.entryKey(member)));
@@ -201,10 +214,11 @@ export class RedisToolCacheStorage implements ToolCacheStorage {
   }
 
   private async evictOldest(): Promise<void> {
-    const keys = await this.client.zrange(this.lruKey, 0, 0);
+    const keys = await this.client.zrange(this.lruKey, 0, '0');
     if (keys.length > 0) {
       await this.delete(keys[0]);
       this.recordEviction();
+      this.onEvict?.(keys[0]);
     }
   }
 }

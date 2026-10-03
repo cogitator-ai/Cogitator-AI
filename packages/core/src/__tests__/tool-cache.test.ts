@@ -322,6 +322,31 @@ describe('Tool Cache', () => {
       expect(callCount).toBe(1);
     });
 
+    it('reports entries evicted to make room through onEvict', async () => {
+      const upper = tool({
+        name: 'upper',
+        description: 'Upper-case',
+        parameters: z.object({ input: z.string() }),
+        execute: async ({ input }) => input.toUpperCase(),
+      });
+      const onEvict = vi.fn();
+      const cached = withCache(upper, {
+        strategy: 'exact',
+        ttl: '1h',
+        maxSize: 1,
+        storage: 'memory',
+        onEvict,
+      });
+
+      await cached.execute({ input: 'a' }, mockContext);
+      await cached.execute({ input: 'b' }, mockContext);
+
+      expect(onEvict).toHaveBeenCalledExactlyOnceWith(
+        generateCacheKey({ toolName: 'upper', params: { input: 'a' }, prefix: 'toolcache' })
+      );
+      expect(cached.cache.stats().evictions).toBe(1);
+    });
+
     it('throws immediately when redis storage has no client', () => {
       const testTool = tool({
         name: 'test_tool',

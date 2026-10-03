@@ -4,6 +4,7 @@ import { cosineSimilarity } from '../cache-key';
 export class InMemoryToolCacheStorage implements ToolCacheStorage {
   private cache = new Map<string, CacheEntry>();
   private maxSize: number;
+  private onEvict?: (key: string) => void;
   private stats: CacheStats = {
     hits: 0,
     misses: 0,
@@ -12,8 +13,13 @@ export class InMemoryToolCacheStorage implements ToolCacheStorage {
     hitRate: 0,
   };
 
-  constructor(maxSize: number = 1000) {
+  /**
+   * @param maxSize - Entries kept before the least recently used is evicted
+   * @param options.onEvict - Called with the key of each evicted entry
+   */
+  constructor(maxSize: number = 1000, options: { onEvict?: (key: string) => void } = {}) {
     this.maxSize = maxSize;
+    this.onEvict = options.onEvict;
   }
 
   private updateHitRate(): void {
@@ -128,6 +134,7 @@ export class InMemoryToolCacheStorage implements ToolCacheStorage {
       this.cache.delete(oldest.key);
       this.stats.size = this.cache.size;
       this.recordEviction();
+      this.onEvict?.(oldest.key);
     }
   }
 }

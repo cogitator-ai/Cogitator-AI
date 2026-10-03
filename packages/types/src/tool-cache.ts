@@ -15,6 +15,7 @@ export interface ToolCacheConfig {
   embeddingService?: EmbeddingService;
   onHit?: (key: string, params: unknown) => void;
   onMiss?: (key: string, params: unknown) => void;
+  /** Called with the key of each entry removed by `invalidate()` or evicted to make room (`maxSize`) */
   onEvict?: (key: string) => void;
 }
 
@@ -74,13 +75,17 @@ export interface RedisClientLike {
   del(...keys: string[]): Promise<number>;
   mget(...keys: string[]): Promise<(string | null)[]>;
   zadd(key: string, score: number, member: string): Promise<number>;
-  zrange(key: string, start: number, stop: number): Promise<string[]>;
+  zrange(key: string, start: number, stop: string): Promise<string[]>;
   zrem(key: string, ...members: string[]): Promise<number>;
   incr(key: string): Promise<number>;
   decr(key: string): Promise<number>;
   exists(...keys: string[]): Promise<number>;
+  /** ioredis' `SCAN cursor MATCH pattern COUNT count` */
   scan(
     cursor: number | string,
-    options: { match: string; count?: number }
-  ): Promise<[number | string, string[]]>;
+    matchToken: 'MATCH',
+    pattern: string,
+    countToken: 'COUNT',
+    count: number | string
+  ): Promise<[cursor: string, keys: string[]]>;
 }
