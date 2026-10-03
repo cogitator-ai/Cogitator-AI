@@ -1,4 +1,12 @@
 {
   "title": "Deployment",
-  "pages": ["deploy-package", "docker", "edge", "redis", "worker-queues", "sandbox", "observability"]
+  "pages": [
+    "deploy-package",
+    "docker",
+    "edge",
+    "redis",
+    "worker-queues",
+    "sandbox",
+    "observability"
+  ]
 }
