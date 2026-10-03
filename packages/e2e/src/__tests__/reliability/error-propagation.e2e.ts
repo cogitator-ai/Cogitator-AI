@@ -193,7 +193,8 @@ describe('Reliability: Error Propagation', () => {
 
     const result = response as { result?: { status?: { state: string; message?: string } } };
     expect(result.result?.status?.state).toBe('failed');
-    expect(result.result?.status?.message).toContain('Agent exploded');
+    expect(result.result?.status?.message).toBe('Internal error');
+    expect(result.result?.status?.message).not.toContain('Agent exploded');
   });
 
   it('SSE stream yields failed event when agent throws', async () => {
@@ -264,7 +265,8 @@ describe('Reliability: Error Propagation', () => {
         (e: any) => e.type === 'status-update' && e.status?.state === 'failed'
       );
       expect(failedEvent).toBeDefined();
-      expect((failedEvent as any).status.message).toContain('stream boom');
+      expect((failedEvent as any).status.message).toBe('Internal error');
+      expect((failedEvent as any).status.message).not.toContain('stream boom');
     } finally {
       await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     }

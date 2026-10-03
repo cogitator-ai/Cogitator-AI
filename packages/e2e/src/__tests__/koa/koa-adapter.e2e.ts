@@ -171,7 +171,7 @@ describe('Koa adapter: HTTP contract', () => {
     expect(res.status).toBe(500);
     const text = await res.text();
     expect(text).not.toContain('hunter2');
-    expect(JSON.parse(text).error.code).toBe('INTERNAL');
+    expect(JSON.parse(text).error.code).toBe('INTERNAL_ERROR');
   });
 
   it('streams workflow node events over SSE', async () => {
