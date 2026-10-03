@@ -142,7 +142,7 @@ describe('RoundRobinStrategy', () => {
       expect(calls.every((c) => c.agent === 'agent-1')).toBe(true);
     });
 
-    it('should assign new keys to current agent (index does not advance with sticky)', async () => {
+    it('should rotate new keys to the next agent and keep follow-ups on their agent', async () => {
       const strategy = new RoundRobinStrategy(coordinator, {
         sticky: true,
         rotation: 'sequential',
@@ -151,10 +151,42 @@ describe('RoundRobinStrategy', () => {
 
       await strategy.execute({ input: 'user1:message' });
       await strategy.execute({ input: 'user2:message' });
+      await strategy.execute({ input: 'user1:follow-up' });
+      await strategy.execute({ input: 'user3:message' });
 
-      const calls = coordinator.getCalls();
-      expect(calls[0].agent).toBe('agent-1');
-      expect(calls[1].agent).toBe('agent-1');
+      expect(coordinator.getCalls().map((c) => c.agent)).toEqual([
+        'agent-1',
+        'agent-2',
+        'agent-1',
+        'agent-1',
+      ]);
+    });
+
+    it('should keep rotating when sticky is enabled without a stickyKey', async () => {
+      const strategy = new RoundRobinStrategy(coordinator, { sticky: true });
+
+      await strategy.execute({ input: 'first' });
+      await strategy.execute({ input: 'second' });
+      await strategy.execute({ input: 'third' });
+
+      expect(coordinator.getCalls().map((c) => c.agent)).toEqual(['agent-1', 'agent-2', 'agent-1']);
+    });
+
+    it('should report the sticky agent index in the round-robin:assigned event', async () => {
+      const strategy = new RoundRobinStrategy(coordinator, {
+        sticky: true,
+        stickyKey: (input) => (input as string).split(':')[0],
+      });
+      const indexes: unknown[] = [];
+      coordinator.events.on('round-robin:assigned', (e) => {
+        indexes.push((e.data as { index: number }).index);
+      });
+
+      await strategy.execute({ input: 'user1:a' });
+      await strategy.execute({ input: 'user2:a' });
+      await strategy.execute({ input: 'user1:b' });
+
+      expect(indexes).toEqual([0, 1, 0]);
     });
 
     it('should track sticky assignments in state', async () => {
@@ -168,7 +200,7 @@ describe('RoundRobinStrategy', () => {
 
       const state = strategy.getState();
       expect(state.stickyAssignments.user1).toBe('agent-1');
-      expect(state.stickyAssignments.user2).toBe('agent-1');
+      expect(state.stickyAssignments.user2).toBe('agent-2');
     });
   });
 

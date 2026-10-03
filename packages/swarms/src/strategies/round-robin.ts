@@ -12,6 +12,13 @@ import type {
 } from '@cogitator-ai/types';
 import { BaseStrategy } from './base.js';
 
+interface AgentSelection {
+  swarmAgent: SwarmAgent;
+  index: number;
+  /** The agent was picked from the rotation rather than reused from a sticky assignment */
+  rotated: boolean;
+}
+
 export class RoundRobinStrategy extends BaseStrategy {
   private config: RoundRobinConfig;
   private currentIndex = 0;
@@ -34,11 +41,12 @@ export class RoundRobinStrategy extends BaseStrategy {
       throw new Error('Round-robin strategy requires at least 1 agent');
     }
 
-    const selectedAgent = this.selectAgent(agents, options);
+    const selection = this.selectAgent(agents, options);
+    const selectedAgent = selection.swarmAgent;
 
     this.coordinator.events.emit('round-robin:assigned', {
       agent: selectedAgent.agent.name,
-      index: this.currentIndex,
+      index: selection.index,
       sticky: this.config.sticky,
     });
 
@@ -46,7 +54,7 @@ export class RoundRobinStrategy extends BaseStrategy {
       'round-robin',
       {
         currentAgent: selectedAgent.agent.name,
-        currentIndex: this.currentIndex,
+        currentIndex: selection.index,
         totalAgents: agents.length,
         stickyEnabled: this.config.sticky,
       },
@@ -70,8 +78,8 @@ export class RoundRobinStrategy extends BaseStrategy {
     );
     agentResults.set(selectedAgent.agent.name, result);
 
-    if (this.config.rotation === 'sequential' && !this.config.sticky) {
-      this.currentIndex = (this.currentIndex + 1) % agents.length;
+    if (this.config.rotation === 'sequential' && selection.rotated) {
+      this.currentIndex = (selection.index + 1) % agents.length;
     }
 
     return {
@@ -81,39 +89,43 @@ export class RoundRobinStrategy extends BaseStrategy {
     };
   }
 
-  private selectAgent(agents: SwarmAgent[], options: SwarmRunOptions): SwarmAgent {
+  /**
+   * A sticky key that is already assigned keeps its agent; every other run takes the next
+   * agent of the rotation (and a new sticky key is assigned to it).
+   */
+  private selectAgent(agents: SwarmAgent[], options: SwarmRunOptions): AgentSelection {
     if (this.config.sticky && this.config.stickyKey) {
       const key = this.config.stickyKey(options.input);
       const existingAssignment = this.stickyAssignments.get(key);
 
       if (existingAssignment) {
-        const agent = agents.find((a) => a.agent.name === existingAssignment);
-        if (agent) {
-          return agent;
+        const index = agents.findIndex((a) => a.agent.name === existingAssignment);
+        if (index >= 0) {
+          return { swarmAgent: agents[index], index, rotated: false };
         }
         this.stickyAssignments.delete(key);
       }
 
-      const selectedAgent = this.getNextAgent(agents);
-      this.stickyAssignments.set(key, selectedAgent.agent.name);
-      return selectedAgent;
+      const selection = this.getNextAgent(agents);
+      this.stickyAssignments.set(key, selection.swarmAgent.agent.name);
+      return selection;
     }
 
     return this.getNextAgent(agents);
   }
 
-  private getNextAgent(agents: SwarmAgent[]): SwarmAgent {
+  private getNextAgent(agents: SwarmAgent[]): AgentSelection {
     if (this.config.rotation === 'random') {
       const randomIndex = Math.floor(Math.random() * agents.length);
       this.currentIndex = randomIndex;
-      return agents[randomIndex];
+      return { swarmAgent: agents[randomIndex], index: randomIndex, rotated: true };
     }
 
     if (this.currentIndex >= agents.length) {
       this.currentIndex = 0;
     }
 
-    return agents[this.currentIndex];
+    return { swarmAgent: agents[this.currentIndex], index: this.currentIndex, rotated: true };
   }
 
   /**
