@@ -176,19 +176,9 @@ export class DefaultWorkflowManager implements IWorkflowManager {
         signal: abortController.signal,
         tracer: runTracer,
         metricsCollector: runMetrics,
-        onNodeStart: (node) => {
-          void this.updateRunNodes(runId, node, 'start');
-          options?.onNodeStart?.(node);
-        },
-        onNodeComplete: (node, result, duration) => {
-          void this.updateRunNodes(runId, node, 'complete');
-          options?.onNodeComplete?.(node, result, duration);
-        },
-        onNodeError: (node, error) => {
-          void this.updateRunNodes(runId, node, 'error');
-          options?.onNodeError?.(node, error);
-        },
+        ...this.trackNodes(runId, options),
       });
+      await this.settleNodeUpdates(runId);
 
       const result: WorkflowResult<S> = timedOut
         ? {
@@ -232,6 +222,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       return result;
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
+      await this.settleNodeUpdates(runId);
 
       await this.runStore.update(runId, {
         status: 'failed',
@@ -580,7 +571,9 @@ export class DefaultWorkflowManager implements IWorkflowManager {
     try {
       const result = await this.executor.execute(workflow, run.input as Partial<WorkflowState>, {
         signal: abortController.signal,
+        ...this.trackNodes(runId),
       });
+      await this.settleNodeUpdates(runId);
 
       await this.runStore.update(runId, {
         status: result.error ? 'failed' : 'completed',
@@ -594,6 +587,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       });
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
+      await this.settleNodeUpdates(runId);
 
       await this.runStore.update(runId, {
         status: 'failed',
@@ -606,11 +600,38 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       });
     } finally {
       this.activeRuns.delete(runId);
+      this.runLocks.delete(runId);
       this.scheduler.runCompleted(runId);
 
       const updatedRun = await this.runStore.get(runId);
       if (updatedRun) this.notifyStateChange(updatedRun);
     }
+  }
+
+  /** Node callbacks that record the run's current, completed and failed nodes, then call `options`' own. */
+  private trackNodes(
+    runId: string,
+    options?: Pick<WorkflowExecuteOptionsV2, 'onNodeStart' | 'onNodeComplete' | 'onNodeError'>
+  ): Pick<WorkflowExecuteOptionsV2, 'onNodeStart' | 'onNodeComplete' | 'onNodeError'> {
+    return {
+      onNodeStart: (node) => {
+        void this.updateRunNodes(runId, node, 'start');
+        options?.onNodeStart?.(node);
+      },
+      onNodeComplete: (node, result, duration) => {
+        void this.updateRunNodes(runId, node, 'complete');
+        options?.onNodeComplete?.(node, result, duration);
+      },
+      onNodeError: (node, error) => {
+        void this.updateRunNodes(runId, node, 'error');
+        options?.onNodeError?.(node, error);
+      },
+    };
+  }
+
+  /** Waits for the node updates still being written, so the final run record has them all. */
+  private async settleNodeUpdates(runId: string): Promise<void> {
+    await this.runLocks.get(runId);
   }
 
   private async updateRunNodes(

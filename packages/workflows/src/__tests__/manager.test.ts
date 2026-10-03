@@ -468,6 +468,39 @@ describe('Workflow Manager', () => {
       expect(runs[0].status).toBe('completed');
     });
 
+    it('records every completed node by the time execute resolves', async () => {
+      const workflow = new WorkflowBuilder<TestState>('recorded')
+        .initialState({ value: 0, steps: [] })
+        .addNode('first', async () => ({ state: { value: 1 } }))
+        .addNode('second', async () => ({ state: { value: 2 } }), { after: ['first'] })
+        .build();
+
+      await manager.execute(workflow);
+
+      const [run] = await manager.listRuns({ workflowName: 'recorded' });
+      expect(run.completedNodes).toEqual(['first', 'second']);
+      expect(run.currentNodes).toEqual([]);
+    });
+
+    it('records the nodes of scheduled runs', async () => {
+      const workflow = new WorkflowBuilder<TestState>('scheduled-nodes')
+        .initialState({ value: 0, steps: [] })
+        .addNode('only', async () => ({ state: { value: 1 } }))
+        .build();
+
+      const runId = await manager.schedule(workflow, { at: Date.now() });
+
+      await vi.waitFor(
+        async () => {
+          const runs = await manager.listRuns({ workflowName: 'scheduled-nodes' });
+          expect(runs.find((r) => r.id === runId)?.status).toBe('completed');
+        },
+        { timeout: 5000 }
+      );
+      const [run] = await manager.listRuns({ workflowName: 'scheduled-nodes' });
+      expect(run.completedNodes).toEqual(['only']);
+    });
+
     it('handles workflow errors', async () => {
       const workflow = new WorkflowBuilder<TestState>('failing')
         .initialState({ value: 0, steps: [] })
