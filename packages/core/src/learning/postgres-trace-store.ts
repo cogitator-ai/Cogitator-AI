@@ -14,6 +14,8 @@ import type {
   ABTestStore,
   InstructionVersionStore,
   ToolCall,
+  TraceStore,
+  RunPrompt,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 
@@ -97,9 +99,13 @@ export class PostgresTraceStore implements CombinedPersistentStore {
         labels TEXT[],
         is_demo BOOLEAN DEFAULT FALSE,
         expected JSONB,
+        prompt JSONB,
         created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+    await this.pool.query(
+      `ALTER TABLE ${this.schema}.traces ADD COLUMN IF NOT EXISTS prompt JSONB`
+    );
 
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.schema}.prompts (
@@ -208,8 +214,8 @@ export class PostgresTraceStore implements CombinedPersistentStore {
 
     await this.pool.query(
       `INSERT INTO ${this.schema}.traces
-       (id, run_id, agent_id, thread_id, input, output, context, steps, tool_calls, reflections, metrics, score, model, duration, usage, labels, is_demo, expected, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+       (id, run_id, agent_id, thread_id, input, output, context, steps, tool_calls, reflections, metrics, score, model, duration, usage, labels, is_demo, expected, prompt, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
       [
         trace.id,
         trace.runId,
@@ -229,6 +235,7 @@ export class PostgresTraceStore implements CombinedPersistentStore {
         trace.labels ?? [],
         trace.isDemo,
         trace.expected ?? null,
+        trace.prompt ?? null,
         trace.createdAt,
       ]
     );
@@ -245,8 +252,8 @@ export class PostgresTraceStore implements CombinedPersistentStore {
       for (const trace of traces) {
         await client.query(
           `INSERT INTO ${this.schema}.traces
-           (id, run_id, agent_id, thread_id, input, output, context, steps, tool_calls, reflections, metrics, score, model, duration, usage, labels, is_demo, expected, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+           (id, run_id, agent_id, thread_id, input, output, context, steps, tool_calls, reflections, metrics, score, model, duration, usage, labels, is_demo, expected, prompt, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
           [
             trace.id,
             trace.runId,
@@ -266,6 +273,7 @@ export class PostgresTraceStore implements CombinedPersistentStore {
             trace.labels ?? [],
             trace.isDemo,
             trace.expected ?? null,
+            trace.prompt ?? null,
             trace.createdAt,
           ]
         );
@@ -451,6 +459,7 @@ export class PostgresTraceStore implements CombinedPersistentStore {
       labels: row.labels as string[] | undefined,
       isDemo: row.is_demo as boolean,
       expected: row.expected as unknown,
+      ...(row.prompt ? { prompt: row.prompt as RunPrompt } : {}),
       createdAt: new Date(row.created_at as string),
     };
   }
@@ -955,6 +964,25 @@ export class PostgresTraceStore implements CombinedPersistentStore {
         totalCost: row.total_cost as number,
       },
       parentVersionId: row.parent_version_id as string | undefined,
+    };
+  }
+
+  /** This store as a `TraceStore`, e.g. for `AgentOptimizer`'s `traceStore`. */
+  traces(): TraceStore {
+    return {
+      store: (trace) => this.storeTrace(trace),
+      storeMany: (traces) => this.storeTraceMany(traces),
+      get: (id) => this.getTrace(id),
+      getByRunId: (runId) => this.getTraceByRunId(runId),
+      query: (query) => this.queryTraces(query),
+      getAll: (agentId) => this.getAllTraces(agentId),
+      getDemos: (agentId, limit) => this.getDemos(agentId, limit),
+      markAsDemo: (id) => this.markAsDemo(id),
+      unmarkAsDemo: (id) => this.unmarkAsDemo(id),
+      delete: (id) => this.deleteTrace(id),
+      prune: (agentId, maxTraces) => this.pruneTraces(agentId, maxTraces),
+      clear: (agentId) => this.clearTraces(agentId),
+      getStats: (agentId) => this.getTraceStats(agentId),
     };
   }
 

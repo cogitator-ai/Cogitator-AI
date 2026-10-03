@@ -216,4 +216,80 @@ describe('PostgresTraceStore', () => {
       expect(mockQuery).not.toHaveBeenCalled();
     });
   });
+
+  describe('traces()', () => {
+    let store: PostgresTraceStore;
+
+    beforeEach(async () => {
+      mockQuery.mockReset();
+      mockQuery.mockResolvedValue({ rows: [] });
+      store = new PostgresTraceStore({ connectionString: 'postgres://localhost/db' });
+      await store.connect();
+      mockQuery.mockClear();
+    });
+
+    it('adapts the store to a TraceStore', async () => {
+      const traces = store.traces();
+      const prompt = { key: 'agent-1', abTest: { id: 'ab_1', variant: 'control' as const } };
+      mockQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'trace_1',
+            run_id: 'run_1',
+            agent_id: 'agent-1',
+            thread_id: 'thread_1',
+            input: 'in',
+            output: 'out',
+            steps: [],
+            tool_calls: [],
+            reflections: [],
+            metrics: {},
+            score: 0.9,
+            model: 'm',
+            duration: 10,
+            usage: { inputTokens: 1, outputTokens: 1, cost: 0 },
+            labels: [],
+            is_demo: false,
+            expected: null,
+            prompt,
+            created_at: new Date(0).toISOString(),
+          },
+        ],
+      });
+
+      await traces.store({
+        id: 'trace_1',
+        runId: 'run_1',
+        agentId: 'agent-1',
+        threadId: 'thread_1',
+        input: 'in',
+        output: 'out',
+        steps: [],
+        toolCalls: [],
+        reflections: [],
+        metrics: { success: true, toolAccuracy: 1, efficiency: 1, completeness: 1, coherence: 1 },
+        score: 0.9,
+        model: 'm',
+        createdAt: new Date(0),
+        duration: 10,
+        usage: { inputTokens: 1, outputTokens: 1, cost: 0 },
+        isDemo: false,
+        prompt,
+      });
+      const [stored] = await traces.getAll('agent-1');
+
+      expect(mockQuery.mock.calls[0][0]).toContain('INSERT INTO cogitator.traces');
+      expect(mockQuery.mock.calls[0][1]).toContain(prompt);
+      expect(mockQuery.mock.calls[1][1]).toEqual(['agent-1']);
+      expect(stored).toMatchObject({ id: 'trace_1', agentId: 'agent-1', prompt });
+    });
+
+    it('adds the prompt column to an existing traces table', async () => {
+      mockQuery.mockClear();
+      await store.connect();
+
+      const sql = mockQuery.mock.calls.map(([text]) => String(text));
+      expect(sql.some((text) => text.includes('ADD COLUMN IF NOT EXISTS prompt JSONB'))).toBe(true);
+    });
+  });
 });
