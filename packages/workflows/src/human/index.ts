@@ -13,6 +13,13 @@
  */
 
 export { InMemoryApprovalStore, FileApprovalStore, withDelegation } from './approval-store';
+export {
+  ApprovalAlreadyAnsweredError,
+  WITHDRAWN,
+  isUnanswered,
+  submitOrExisting,
+  withdrawnResponse,
+} from './approval-outcomes';
 
 export {
   ConsoleNotifier,

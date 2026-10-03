@@ -16,6 +16,7 @@ import {
 import type {
   ApprovalRequest,
   ApprovalResponse,
+  ApprovalStore,
   HumanNodeConfig,
   WorkflowState,
 } from '@cogitator-ai/types';
@@ -543,6 +544,94 @@ describe('Human-in-the-Loop', () => {
       expect(result.approved).toBe(true);
       expect(result.timedOut).toBe(true);
 
+      store.dispose();
+    });
+
+    it('does not approve a multi-choice request nobody answered', async () => {
+      const store = new InMemoryApprovalStore();
+      const config: HumanNodeConfig<TestState> = {
+        name: 'pick',
+        approval: {
+          type: 'multi-choice',
+          title: 'Pick one',
+          choices: [{ id: 'a', label: 'A', value: 'a' }],
+          timeout: 20,
+          timeoutAction: 'fail',
+        },
+      };
+
+      const result = await executeHumanNode({ value: 1 }, config, {
+        workflowId: 'wf-1',
+        runId: 'run-1',
+        nodeId: 'node-1',
+        approvalStore: store,
+      });
+
+      expect(result.approved).toBe(false);
+      expect(result.timedOut).toBe(true);
+      store.dispose();
+    });
+
+    it('keeps an answer that beat the timeout from another process', async () => {
+      const shared = new InMemoryApprovalStore();
+      const unseen: ApprovalStore = {
+        createRequest: (request) => shared.createRequest(request),
+        getRequest: (id) => shared.getRequest(id),
+        getPendingRequests: (workflowId) => shared.getPendingRequests(workflowId),
+        getPendingForAssignee: (assignee) => shared.getPendingForAssignee(assignee),
+        submitResponse: (response) => shared.submitResponse(response),
+        getResponse: (requestId) => shared.getResponse(requestId),
+        deleteRequest: (id) => shared.deleteRequest(id),
+        onResponse: () => () => {},
+      };
+      const config: HumanNodeConfig<TestState> = {
+        name: 'race',
+        approval: { type: 'approve-reject', title: 'Race', timeout: 30, timeoutAction: 'reject' },
+      };
+
+      const resultPromise = executeHumanNode({ value: 1 }, config, {
+        workflowId: 'wf-1',
+        runId: 'run-1',
+        nodeId: 'node-1',
+        approvalStore: unseen,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const [pending] = await shared.getPendingRequests();
+      await shared.submitResponse({
+        requestId: pending.id,
+        decision: true,
+        respondedBy: 'manager',
+        respondedAt: Date.now(),
+      });
+
+      const result = await resultPromise;
+
+      expect(result.approved).toBe(true);
+      expect(result.timedOut).toBe(false);
+      expect(result.response.respondedBy).toBe('manager');
+      shared.dispose();
+    });
+
+    it('reports a request deleted while waiting as withdrawn', async () => {
+      const store = new InMemoryApprovalStore();
+      const config: HumanNodeConfig<TestState> = {
+        name: 'withdrawn',
+        approval: { type: 'approve-reject', title: 'Withdrawn' },
+      };
+
+      const resultPromise = executeHumanNode({ value: 1 }, config, {
+        workflowId: 'wf-1',
+        runId: 'run-1',
+        nodeId: 'node-1',
+        approvalStore: store,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const [pending] = await store.getPendingRequests();
+      await store.deleteRequest(pending.id);
+
+      const result = await resultPromise;
+
+      expect(result).toMatchObject({ approved: false, withdrawn: true });
       store.dispose();
     });
 

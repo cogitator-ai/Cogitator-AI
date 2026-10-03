@@ -12,6 +12,11 @@ import type { ApprovalStore, ApprovalRequest, ApprovalResponse } from '@cogitato
 import { nanoid } from 'nanoid';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import {
+  ApprovalAlreadyAnsweredError,
+  submitOrExisting,
+  withdrawnResponse,
+} from './approval-outcomes';
 
 /**
  * In-memory approval store for development and testing
@@ -70,17 +75,23 @@ export class InMemoryApprovalStore implements ApprovalStore {
     return pending;
   }
 
+  /** Records the answer; a request that already has one throws `ApprovalAlreadyAnsweredError`. */
   async submitResponse(response: ApprovalResponse): Promise<void> {
+    const existing = this.responses.get(response.requestId);
+    if (existing) throw new ApprovalAlreadyAnsweredError(response.requestId, existing);
     this.responses.set(response.requestId, { ...response });
+    this.notify(response);
+  }
 
+  private notify(response: ApprovalResponse): void {
     const callbacks = this.callbacks.get(response.requestId);
     if (callbacks) {
+      this.callbacks.delete(response.requestId);
       for (const callback of callbacks) {
         try {
           callback(response);
         } catch {}
       }
-      this.callbacks.delete(response.requestId);
     }
   }
 
@@ -88,9 +99,12 @@ export class InMemoryApprovalStore implements ApprovalStore {
     return this.responses.get(requestId) ?? null;
   }
 
+  /** Removes the request; anyone still waiting for its answer gets `withdrawnResponse`. */
   async deleteRequest(id: string): Promise<void> {
+    const pending = this.requests.has(id) && !this.responses.has(id);
     this.requests.delete(id);
     this.responses.delete(id);
+    if (pending) this.notify(withdrawnResponse(id));
     this.callbacks.delete(id);
   }
 
@@ -262,19 +276,36 @@ export class FileApprovalStore implements ApprovalStore {
     );
   }
 
+  /**
+   * Records the answer, creating its file exclusively so the first answer
+   * wins across processes; a later one throws `ApprovalAlreadyAnsweredError`.
+   */
   async submitResponse(response: ApprovalResponse): Promise<void> {
     const filePath = this.getResponsePath(response.requestId);
     await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, JSON.stringify(response, null, 2), 'utf-8');
+    try {
+      await fs.writeFile(filePath, JSON.stringify(response, null, 2), {
+        encoding: 'utf-8',
+        flag: 'wx',
+      });
+    } catch (err: unknown) {
+      if (!isEexist(err)) throw err;
+      const existing = await this.getResponse(response.requestId);
+      throw new ApprovalAlreadyAnsweredError(response.requestId, existing ?? undefined);
+    }
+    this.notify(response);
+  }
 
+  private notify(response: ApprovalResponse): void {
     const callbacks = this.callbacks.get(response.requestId);
     if (callbacks) {
+      this.callbacks.delete(response.requestId);
+      this.firedCallbacks.add(response.requestId);
       for (const callback of callbacks) {
         try {
           callback(response);
         } catch {}
       }
-      this.callbacks.delete(response.requestId);
     }
   }
 
@@ -288,22 +319,31 @@ export class FileApprovalStore implements ApprovalStore {
     }
   }
 
+  /**
+   * Removes the request. A request nobody answered yet gets `withdrawnResponse`
+   * as its answer, which stays on disk so waiters in other processes see it.
+   */
   async deleteRequest(id: string): Promise<void> {
+    const pending = (await this.getRequest(id)) !== null && (await this.getResponse(id)) === null;
+
     try {
       await fs.unlink(this.getRequestPath(id));
     } catch (err: unknown) {
       if (!isEnoent(err)) throw err;
     }
 
-    try {
-      await fs.unlink(this.getResponsePath(id));
-    } catch (err: unknown) {
-      if (!isEnoent(err)) throw err;
+    if (pending) {
+      await submitOrExisting(this, withdrawnResponse(id));
+    } else {
+      try {
+        await fs.unlink(this.getResponsePath(id));
+      } catch (err: unknown) {
+        if (!isEnoent(err)) throw err;
+      }
     }
 
     this.callbacks.delete(id);
     this.lastResponseCheck.delete(id);
-    this.firedCallbacks.delete(id);
   }
 
   onResponse(requestId: string, callback: (response: ApprovalResponse) => void): () => void {
@@ -433,6 +473,10 @@ export class FileApprovalStore implements ApprovalStore {
 
 function isEnoent(err: unknown): boolean {
   return err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+function isEexist(err: unknown): boolean {
+  return err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'EEXIST';
 }
 
 export function withDelegation(

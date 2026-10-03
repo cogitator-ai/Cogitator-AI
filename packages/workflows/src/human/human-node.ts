@@ -22,6 +22,7 @@ import type {
   ApprovalChoice,
   ApprovalChainStep,
 } from '@cogitator-ai/types';
+import { isUnanswered, submitOrExisting, WITHDRAWN } from './approval-outcomes';
 
 /**
  * Context for human node execution
@@ -44,6 +45,8 @@ export interface HumanNodeResult<S extends WorkflowState> {
   state: S;
   timedOut?: boolean;
   escalated?: boolean;
+  /** The request was deleted, or expired, before anyone answered */
+  withdrawn?: boolean;
 }
 
 /**
@@ -97,7 +100,7 @@ export async function executeHumanNode<S extends WorkflowState>(
 
   const response = await waitForResponse(request, context.approvalStore, context.approvalNotifier);
 
-  const approved = isApproved(request.type, response.decision);
+  const approved = !isUnanswered(response) && isApproved(request.type, response.decision);
 
   return {
     approved,
@@ -106,6 +109,7 @@ export async function executeHumanNode<S extends WorkflowState>(
     state,
     timedOut: response.respondedBy === '__timeout__',
     escalated: response.respondedBy === '__escalation__',
+    withdrawn: response.respondedBy === WITHDRAWN,
   };
 }
 
@@ -173,7 +177,10 @@ async function executeApprovalChain<S extends WorkflowState>(
       continue;
     }
 
-    if (step.required && !isApproved(approval.type, response.decision)) {
+    if (
+      step.required &&
+      (isUnanswered(response) || !isApproved(approval.type, response.decision))
+    ) {
       return {
         approved: false,
         decision: response.decision,
@@ -181,6 +188,7 @@ async function executeApprovalChain<S extends WorkflowState>(
         state,
         timedOut,
         escalated: response.respondedBy === '__escalation__',
+        withdrawn: response.respondedBy === WITHDRAWN,
       };
     }
   }
@@ -240,8 +248,7 @@ async function createFailResponse(
     respondedAt: Date.now(),
     comment: 'Request timed out without response',
   };
-  await store.submitResponse(response);
-  return response;
+  return submitOrExisting(store, response);
 }
 
 /**
@@ -265,8 +272,7 @@ async function handleTimeout(
         respondedAt: Date.now(),
         comment: 'Auto-approved due to timeout',
       };
-      await store.submitResponse(response);
-      return response;
+      return submitOrExisting(store, response);
     }
 
     case 'reject': {
@@ -277,8 +283,7 @@ async function handleTimeout(
         respondedAt: Date.now(),
         comment: 'Auto-rejected due to timeout',
       };
-      await store.submitResponse(response);
-      return response;
+      return submitOrExisting(store, response);
     }
 
     case 'escalate': {
@@ -351,12 +356,12 @@ function isApproved(type: ApprovalType, decision: unknown): boolean {
   }
 }
 
-/**
- * Create a human approval node factory
- */
 /** A human node config with its name set, as the node factories return it. */
 export type NamedHumanNodeConfig<S extends WorkflowState> = HumanNodeConfig<S> & { name: string };
 
+/**
+ * Create a human approval node factory
+ */
 export function humanNode<S extends WorkflowState>(
   name: string,
   approval: HumanNodeConfig<S>['approval']

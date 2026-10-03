@@ -9,6 +9,11 @@
 
 import type { ApprovalRequest, ApprovalResponse, ApprovalStore } from '@cogitator-ai/types';
 import { createIfMissing, fromJson, TABLE_NAME } from '../postgres-schema';
+import {
+  ApprovalAlreadyAnsweredError,
+  submitOrExisting,
+  withdrawnResponse,
+} from './approval-outcomes';
 
 const DEFAULT_POLL_INTERVAL = 1000;
 
@@ -92,7 +97,16 @@ export class RedisApprovalStore implements ApprovalStore {
     );
   }
 
+  /**
+   * Records the answer; the first answer wins (claimed by adding the request
+   * to the answered set), a later one throws `ApprovalAlreadyAnsweredError`.
+   */
   async submitResponse(response: ApprovalResponse): Promise<void> {
+    const claimed = await this.client.zadd(this.answeredKey(), Date.now(), response.requestId);
+    if (Number(claimed) !== 1) {
+      const existing = await this.getResponse(response.requestId);
+      throw new ApprovalAlreadyAnsweredError(response.requestId, existing ?? undefined);
+    }
     await this.client.set(this.responseKey(response.requestId), JSON.stringify(response));
     const request = await this.getRequest(response.requestId);
     if (request) {
@@ -108,10 +122,21 @@ export class RedisApprovalStore implements ApprovalStore {
     return raw ? (JSON.parse(raw) as ApprovalResponse) : null;
   }
 
+  /**
+   * Removes the request. A request nobody answered yet gets `withdrawnResponse`
+   * as its answer, which stays stored so waiters in other processes see it.
+   */
   async deleteRequest(id: string): Promise<void> {
-    this.watcher.cancel(id);
     const request = await this.getRequest(id);
-    await this.client.del(this.requestKey(id), this.responseKey(id));
+    const pending = request !== null && (await this.getResponse(id)) === null;
+    if (pending) {
+      await submitOrExisting(this, withdrawnResponse(id));
+      await this.client.del(this.requestKey(id));
+    } else {
+      this.watcher.cancel(id);
+      await this.client.del(this.requestKey(id), this.responseKey(id));
+      await this.client.zrem(this.answeredKey(), id);
+    }
     if (request) {
       await Promise.all(this.pendingIndexes(request).map((key) => this.client.zrem(key, id)));
     }
@@ -163,6 +188,10 @@ export class RedisApprovalStore implements ApprovalStore {
 
   private requestKey(id: string): string {
     return `${this.prefix}:request:${id}`;
+  }
+
+  private answeredKey(): string {
+    return `${this.prefix}:answered`;
   }
 
   private responseKey(requestId: string): string {
@@ -277,14 +306,20 @@ export class PostgresApprovalStore implements ApprovalStore {
     return rows.map((row) => fromJson<ApprovalRequest>(row.data));
   }
 
+  /** Records the answer; the first answer wins, a later one throws `ApprovalAlreadyAnsweredError`. */
   async submitResponse(response: ApprovalResponse): Promise<void> {
     await this.ensureTables();
-    await this.client.query(
+    const { rows } = await this.client.query(
       `INSERT INTO ${this.responses} (request_id, data)
        VALUES ($1, $2)
-       ON CONFLICT (request_id) DO UPDATE SET data = EXCLUDED.data`,
+       ON CONFLICT (request_id) DO NOTHING
+       RETURNING request_id`,
       [response.requestId, JSON.stringify(response)]
     );
+    if (rows.length === 0) {
+      const existing = await this.getResponse(response.requestId);
+      throw new ApprovalAlreadyAnsweredError(response.requestId, existing ?? undefined);
+    }
     this.watcher.deliver(response);
   }
 
@@ -297,9 +332,19 @@ export class PostgresApprovalStore implements ApprovalStore {
     return rows[0] ? fromJson<ApprovalResponse>(rows[0].data) : null;
   }
 
+  /**
+   * Removes the request. A request nobody answered yet gets `withdrawnResponse`
+   * as its answer, which stays stored so waiters in other processes see it.
+   */
   async deleteRequest(id: string): Promise<void> {
-    this.watcher.cancel(id);
     await this.ensureTables();
+    const pending = (await this.getRequest(id)) !== null && (await this.getResponse(id)) === null;
+    if (pending) {
+      await submitOrExisting(this, withdrawnResponse(id));
+      await this.client.query(`DELETE FROM ${this.requests} WHERE id = $1`, [id]);
+      return;
+    }
+    this.watcher.cancel(id);
     await this.client.query(
       `WITH removed AS (DELETE FROM ${this.responses} WHERE request_id = $1)
        DELETE FROM ${this.requests} WHERE id = $1`,

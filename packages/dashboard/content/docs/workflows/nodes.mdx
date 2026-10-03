@@ -285,7 +285,9 @@ builder
 await approvalStore.submitResponse({ requestId, decision: true, respondedBy: 'manager', respondedAt: Date.now() });
 ```
 
-The node output is `{ approved, decision, timedOut, escalated }`; use `stateMapper` to copy the decision into state for a following conditional.
+The node output is `{ approved, decision, timedOut, escalated, withdrawn }`; use `stateMapper` to copy the decision into state for a following conditional.
+
+The first answer to a request wins: a second `submitResponse` — another approver, or a timeout firing just after someone answered — throws `ApprovalAlreadyAnsweredError` carrying the answer that stands, and the node keeps that answer. Deleting a request nobody answered yet (or letting it expire) withdraws it: the waiting node finishes with `withdrawn: true` and `approved: false` instead of waiting forever. A timeout, a withdrawal or an expired escalation never counts as approval, whatever the approval type.
 
 ## Timer, Map-Reduce and Subworkflow Adapters
 

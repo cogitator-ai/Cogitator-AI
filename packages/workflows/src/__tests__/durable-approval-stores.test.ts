@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { ApprovalRequest, ApprovalResponse, ApprovalStore } from '@cogitator-ai/types';
 import { InMemoryApprovalStore } from '../human/approval-store';
+import { WITHDRAWN } from '../human/approval-outcomes';
 import {
   PostgresApprovalStore,
   RedisApprovalStore,
@@ -29,9 +30,10 @@ function fakeRedis(): FakeRedis {
     mget: async (...keys) => keys.map((key) => strings.get(key) ?? null),
     zadd: async (key, score, member) => {
       const set = sortedSets.get(key) ?? new Map<string, number>();
+      const added = set.has(member) ? 0 : 1;
       set.set(member, score);
       sortedSets.set(key, set);
-      return 1;
+      return added;
     },
     zrange: async (key) =>
       [...(sortedSets.get(key) ?? new Map<string, number>()).entries()]
@@ -205,11 +207,15 @@ describe.each<[string, () => DisposableStore]>([
     store.onResponse('r1', second);
 
     await store.submitResponse(response('r1'));
-    await store.submitResponse(response('r1', { decision: false }));
+    await expect(store.submitResponse(response('r1', { decision: false }))).rejects.toMatchObject({
+      name: 'ApprovalAlreadyAnsweredError',
+      existing: response('r1'),
+    });
 
     expect(first).toHaveBeenCalledTimes(1);
     expect(first).toHaveBeenCalledWith(response('r1'));
     expect(second).toHaveBeenCalledTimes(1);
+    expect(await store.getResponse('r1')).toEqual(response('r1'));
   });
 
   it('keeps calling the other callbacks when one throws', async () => {
@@ -251,16 +257,17 @@ describe.each<[string, () => DisposableStore]>([
     expect(callback).toHaveBeenCalledTimes(1);
   });
 
-  it('forgets waiting callbacks when the request is deleted', async () => {
+  it('answers waiting callbacks with a withdrawal when the request is deleted', async () => {
     const store = createStore();
     const callback = vi.fn();
     await store.createRequest(request('r1'));
     store.onResponse('r1', callback);
 
     await store.deleteRequest('r1');
-    await store.submitResponse(response('r1'));
 
-    expect(callback).not.toHaveBeenCalled();
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback).toHaveBeenCalledWith(expect.objectContaining({ respondedBy: WITHDRAWN }));
+    expect(await store.getRequest('r1')).toBeNull();
   });
 });
 
@@ -288,7 +295,9 @@ describe('RedisApprovalStore', () => {
     expect(JSON.parse(client.strings.get('app:approvals:response:r1') ?? '')).toEqual(
       response('r1')
     );
-    for (const members of client.sortedSets.values()) expect(members.size).toBe(0);
+    for (const [key, members] of client.sortedSets) {
+      expect([...members.keys()]).toEqual(key === 'app:approvals:answered' ? ['r1'] : []);
+    }
   });
 
   it('drops index entries whose request was answered or removed elsewhere', async () => {
@@ -405,21 +414,64 @@ describe('PostgresApprovalStore', () => {
     expect(byAssignee.values).toEqual(['alice']);
   });
 
-  it('upserts responses and deletes a request with its response in one statement', async () => {
-    const client = fakePostgres();
+  it('inserts the first answer only and deletes an answered request with its response', async () => {
+    let answered = false;
+    const client = fakePostgres((sql) => {
+      if (sql.startsWith('INSERT INTO cogitator_workflow_approvals_responses')) {
+        if (answered) return [];
+        answered = true;
+        return [{ request_id: 'r1' }];
+      }
+      if (sql.includes('FROM cogitator_workflow_approvals_responses WHERE request_id')) {
+        return answered ? [{ data: response('r1') }] : [];
+      }
+      return [];
+    });
     const store = track(new PostgresApprovalStore({ client }));
 
     await store.submitResponse(response('r1'));
+    await expect(store.submitResponse(response('r1', { decision: false }))).rejects.toMatchObject({
+      name: 'ApprovalAlreadyAnsweredError',
+      existing: response('r1'),
+    });
     await store.deleteRequest('r1');
 
-    const [submit, remove] = client.statements.slice(5);
-    expect(submit.sql).toContain('INSERT INTO cogitator_workflow_approvals_responses');
-    expect(submit.sql).toContain('ON CONFLICT (request_id) DO UPDATE');
-    expect(submit.values).toEqual(['r1', JSON.stringify(response('r1'))]);
-    expect(remove.sql).toBe(
-      'WITH removed AS (DELETE FROM cogitator_workflow_approvals_responses WHERE request_id = $1) DELETE FROM cogitator_workflow_approvals_requests WHERE id = $1'
-    );
-    expect(remove.values).toEqual(['r1']);
+    const submit = client.statements.find((s) => s.sql.startsWith('INSERT INTO'));
+    expect(submit?.sql).toContain('ON CONFLICT (request_id) DO NOTHING RETURNING request_id');
+    expect(submit?.values).toEqual(['r1', JSON.stringify(response('r1'))]);
+    expect(client.statements.at(-1)).toEqual({
+      sql: 'WITH removed AS (DELETE FROM cogitator_workflow_approvals_responses WHERE request_id = $1) DELETE FROM cogitator_workflow_approvals_requests WHERE id = $1',
+      values: ['r1'],
+    });
+  });
+
+  it('answers a request deleted before anyone answered it with a withdrawal it keeps', async () => {
+    const stored = new Map<string, unknown>();
+    const client = fakePostgres((sql, values) => {
+      if (sql.includes('FROM cogitator_workflow_approvals_requests WHERE id')) {
+        return [{ data: request('r1') }];
+      }
+      if (sql.startsWith('INSERT INTO cogitator_workflow_approvals_responses')) {
+        stored.set(String(values[0]), values[1]);
+        return [{ request_id: values[0] }];
+      }
+      if (sql.includes('FROM cogitator_workflow_approvals_responses WHERE request_id')) {
+        const data = stored.get(String(values[0]));
+        return data ? [{ data }] : [];
+      }
+      return [];
+    });
+    const store = track(new PostgresApprovalStore({ client }));
+    const callback = vi.fn();
+    store.onResponse('r1', callback);
+
+    await store.deleteRequest('r1');
+
+    expect(callback).toHaveBeenCalledWith(expect.objectContaining({ respondedBy: WITHDRAWN }));
+    expect(client.statements.at(-1)).toEqual({
+      sql: 'DELETE FROM cogitator_workflow_approvals_requests WHERE id = $1',
+      values: ['r1'],
+    });
   });
 
   it('reads JSONB returned parsed or as text', async () => {

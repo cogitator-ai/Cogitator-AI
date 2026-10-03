@@ -2,8 +2,10 @@ import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest
 import pg from 'pg';
 import { createRedisClient, type RedisClient } from '@cogitator-ai/redis';
 import {
+  ApprovalAlreadyAnsweredError,
   PostgresApprovalStore,
   RedisApprovalStore,
+  WITHDRAWN,
   executeHumanNode,
 } from '@cogitator-ai/workflows';
 import type { ApprovalRequest, ApprovalResponse, ApprovalStore } from '@cogitator-ai/types';
@@ -147,6 +149,37 @@ function approvalStoreContract(createStore: (pollInterval: number) => DurableSto
 
     expect(await received).toEqual(response('r1', { decision: false, comment: 'not yet' }));
     expect(await worker.getPendingRequests()).toEqual([]);
+  });
+
+  it('lets exactly one of two concurrent answers win', async () => {
+    const alice = open();
+    const bob = open();
+    await alice.createRequest(request('r1', { assignee: 'alice', assigneeGroup: ['bob'] }));
+
+    const outcomes = await Promise.allSettled([
+      alice.submitResponse(response('r1', { respondedBy: 'alice', decision: true })),
+      bob.submitResponse(response('r1', { respondedBy: 'bob', decision: false })),
+    ]);
+
+    const won = outcomes.filter((o) => o.status === 'fulfilled');
+    const lost = outcomes.filter((o) => o.status === 'rejected');
+    expect(won).toHaveLength(1);
+    expect(lost).toHaveLength(1);
+    expect((lost[0] as PromiseRejectedResult).reason).toBeInstanceOf(ApprovalAlreadyAnsweredError);
+    const standing = await alice.getResponse('r1');
+    expect(standing?.respondedBy).toBe(outcomes[0].status === 'fulfilled' ? 'alice' : 'bob');
+  });
+
+  it('tells a waiter in another process that its request was withdrawn', async () => {
+    const worker = open();
+    const server = open();
+    await worker.createRequest(request('r1'));
+    const received = new Promise<ApprovalResponse>((resolve) => worker.onResponse('r1', resolve));
+
+    await server.deleteRequest('r1');
+
+    expect((await received).respondedBy).toBe(WITHDRAWN);
+    expect(await worker.getRequest('r1')).toBeNull();
   });
 
   it('resumes a human node in one process when another answers the approval', async () => {
