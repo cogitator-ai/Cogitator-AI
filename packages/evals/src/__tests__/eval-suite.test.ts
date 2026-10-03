@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeAll, describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -432,6 +432,10 @@ describe('EvalSuite', () => {
   });
 
   describe('LLM metrics', () => {
+    beforeAll(async () => {
+      await import('@cogitator-ai/core');
+    }, 60_000);
+
     it('runs the judge as an agent on the judge model and uses its verdict', async () => {
       const run = vi.fn(async (_agent: unknown, _options: { input: string }) => ({
         output: 'ignored',
