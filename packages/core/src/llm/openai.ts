@@ -25,6 +25,8 @@ interface OpenAIConfig {
    * Chat Completions for every other OpenAI-compatible server.
    */
   api?: OpenAIWireApi;
+  /** Retries the provider's SDK makes on its own; leave unset for the SDK default. The runtime passes 0 and retries itself. */
+  maxRetries?: number;
 }
 
 const OFFICIAL_OPENAI_HOST = 'api.openai.com';
@@ -53,6 +55,7 @@ export class OpenAIBackend extends OpenAICompatibleBackend {
     this.client = new OpenAI({
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
+      maxRetries: config.maxRetries,
     });
   }
 

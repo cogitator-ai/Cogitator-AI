@@ -8,6 +8,7 @@ export { loadConfig, defineConfig, type LoadConfigOptions } from './config';
 export {
   CogitatorConfigSchema,
   LLMConfigSchema,
+  LLMRetryConfigSchema,
   LimitsConfigSchema,
   ProvidersConfigSchema,
   LLMProviderSchema,

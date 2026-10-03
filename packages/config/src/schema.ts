@@ -56,10 +56,21 @@ export const ProvidersConfigSchema = z.object({
   deepseek: z.object({ apiKey: z.string() }).optional(),
 });
 
+export const LLMRetryConfigSchema = z.union([
+  z.literal(false),
+  z.object({
+    maxRetries: z.number().int().nonnegative().optional(),
+    baseDelay: z.number().nonnegative().optional(),
+    maxDelay: z.number().nonnegative().optional(),
+    maxRetryAfter: z.number().nonnegative().optional(),
+  }),
+]);
+
 export const LLMConfigSchema = z.object({
   defaultProvider: LLMProviderSchema.optional(),
   defaultModel: z.string().optional(),
   providers: ProvidersConfigSchema.optional(),
+  retry: LLMRetryConfigSchema.optional(),
 });
 
 export const LimitsConfigSchema = z.object({

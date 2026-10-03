@@ -103,9 +103,20 @@ describe('backend routing', () => {
     await cog.close();
   });
 
-  it('exposes the route of a model string', () => {
+  it('exposes the route of a model string', async () => {
     const custom = recordingBackend('x');
     const cog = new Cogitator({ llm: { backends: { local: custom.backend } } });
+
+    const route = cog.route('local/a/b');
+    await route.backend.chat({ model: route.model, messages: [] });
+
+    expect(route.model).toBe('a/b');
+    expect(custom.models).toEqual(['a/b']);
+  });
+
+  it('hands out the backend itself when retries are off', () => {
+    const custom = recordingBackend('x');
+    const cog = new Cogitator({ llm: { backends: { local: custom.backend }, retry: false } });
 
     expect(cog.route('local/a/b')).toEqual({ backend: custom.backend, model: 'a/b' });
   });

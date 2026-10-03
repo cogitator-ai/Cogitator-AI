@@ -75,8 +75,24 @@ describe('Reliability: Error Propagation', () => {
       expect(CogitatorError.isCogitatorError(err)).toBe(true);
       expect(err.code).toBe(ErrorCode.LLM_UNAVAILABLE);
       expect(err.retryable).toBe(true);
-      expect(err.retryAfter).toBe(5000);
+      expect(err.retryAfter).toBeUndefined();
     }
+  });
+
+  it('503 with Retry-After carries the wait the server asked for', async () => {
+    currentHandler = (_req, res) => {
+      res.writeHead(503, { 'Content-Type': 'text/plain', 'Retry-After': '12' });
+      res.end('overloaded');
+    };
+
+    const backend = new OllamaBackend({ baseUrl: `http://localhost:${mockPort}` });
+    const error = await backend
+      .chat({ model: 'mock', messages: [{ role: 'user', content: 'test' }] })
+      .catch((e: unknown) => e as CogitatorError);
+
+    expect(error.code).toBe(ErrorCode.LLM_UNAVAILABLE);
+    expect(error.retryable).toBe(true);
+    expect(error.retryAfter).toBe(12_000);
   });
 
   it('401 maps to non-retryable error', async () => {

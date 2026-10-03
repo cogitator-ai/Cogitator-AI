@@ -15,7 +15,13 @@ import type {
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { BaseLLMBackend } from './base';
-import { createLLMError, llmUnavailable, llmInvalidResponse, type LLMErrorContext } from './errors';
+import {
+  createLLMError,
+  retryAfterFromHeaders,
+  llmUnavailable,
+  llmInvalidResponse,
+  type LLMErrorContext,
+} from './errors';
 import { fetchImageAsBase64 } from '../utils/image-fetch';
 import { getLogger } from '../logger';
 
@@ -120,7 +126,9 @@ export class OllamaBackend extends BaseLLMBackend {
 
     if (!response.ok) {
       const errorBody = await response.text();
-      throw createLLMError(ctx, response.status, errorBody);
+      throw createLLMError(ctx, response.status, errorBody, {
+        retryAfterOverride: retryAfterFromHeaders(response.headers),
+      });
     }
 
     const data = (await response.json()) as OllamaChatResponse;
@@ -170,7 +178,9 @@ export class OllamaBackend extends BaseLLMBackend {
 
     if (!response.ok) {
       const errorBody = await response.text();
-      throw createLLMError(ctx, response.status, errorBody);
+      throw createLLMError(ctx, response.status, errorBody, {
+        retryAfterOverride: retryAfterFromHeaders(response.headers),
+      });
     }
 
     const reader = response.body?.getReader();

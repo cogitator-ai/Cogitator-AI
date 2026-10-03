@@ -222,6 +222,19 @@ llm:
       apiKey: xxx
 ```
 
+### Retries
+
+Failed LLM calls (rate limits, 5xx, timeouts, dropped connections) are retried with exponential backoff and the provider's `Retry-After`. The defaults are below; `retry: false` turns retries off. See [LLM Backends](/docs/core/llm-backends#retries) for how streams and cancellation are handled.
+
+```yaml
+llm:
+  retry:
+    maxRetries: 2 # attempts after the first one
+    baseDelay: 1000 # ms before the first retry, doubled each time
+    maxDelay: 30000 # backoff cap, ms
+    maxRetryAfter: 60000 # a longer Retry-After fails the call at once
+```
+
 ## Config Merging
 
 Configs are merged with this priority (highest wins):

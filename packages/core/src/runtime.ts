@@ -24,6 +24,7 @@ import { ToolRegistry } from './registry';
 import { createLLMBackend, parseModel } from './llm/index';
 import { isLLMProvider } from './llm/providers';
 import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
+import { withLLMRetry } from './llm/retry';
 import { getLogger } from './logger';
 import {
   type InitializerState,
@@ -845,25 +846,24 @@ export class Cogitator {
   }
 
   private backendFor(name: string): LLMBackend {
-    const custom = this.config.llm?.backends;
-    if (custom && Object.hasOwn(custom, name)) return custom[name];
-
     const cached = this.backends.get(name);
     if (cached) return cached;
-
-    let backend: LLMBackend;
-    if (isLLMProvider(name)) {
-      backend = createLLMBackend(name, this.config.llm);
-    } else if (hasLLMPlugin(name)) {
-      backend = createLLMBackendFromPlugin(name, this.config.llm?.plugins?.[name]);
-    } else {
-      throw new CogitatorError({
-        message: `Unknown LLM provider "${name}": not a built-in provider, a backend in llm.backends or a registered plugin`,
-        code: ErrorCode.CONFIGURATION_ERROR,
-      });
-    }
+    const backend = withLLMRetry(this.createBackend(name), this.config.llm?.retry);
     this.backends.set(name, backend);
     return backend;
+  }
+
+  private createBackend(name: string): LLMBackend {
+    const custom = this.config.llm?.backends;
+    if (custom && Object.hasOwn(custom, name)) return custom[name];
+    if (isLLMProvider(name)) return createLLMBackend(name, this.config.llm);
+    if (hasLLMPlugin(name)) {
+      return createLLMBackendFromPlugin(name, this.config.llm?.plugins?.[name]);
+    }
+    throw new CogitatorError({
+      message: `Unknown LLM provider "${name}": not a built-in provider, a backend in llm.backends or a registered plugin`,
+      code: ErrorCode.CONFIGURATION_ERROR,
+    });
   }
 
   private calculateCost(model: string, inputTokens: number, outputTokens: number): number {

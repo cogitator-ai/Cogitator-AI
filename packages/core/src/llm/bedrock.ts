@@ -178,6 +178,8 @@ interface BedrockConfig {
   region?: string;
   accessKeyId?: string;
   secretAccessKey?: string;
+  /** Retries the provider's SDK makes on its own; leave unset for the SDK default. The runtime passes 0 and retries itself. */
+  maxRetries?: number;
 }
 
 export class BedrockBackend extends BaseLLMBackend {
@@ -208,6 +210,10 @@ export class BedrockBackend extends BaseLLMBackend {
               accessKeyId: this.config.accessKeyId,
               secretAccessKey: this.config.secretAccessKey,
             };
+          }
+
+          if (this.config.maxRetries !== undefined) {
+            clientConfig.maxAttempts = this.config.maxRetries + 1;
           }
 
           return new BedrockRuntimeClient(clientConfig);

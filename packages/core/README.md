@@ -1033,6 +1033,22 @@ const hypotheses = await generator.generateFromFailure(trace, { agentId: 'agent-
 
 ## Error Handling & Resilience
 
+### Retrying LLM Calls
+
+Agent runs retry failed LLM calls on their own: rate limits, 5xx, timeouts and dropped connections, with exponential backoff and the provider's `Retry-After`. Streams are retried only before the first chunk. Tune or turn this off with `llm.retry`:
+
+```typescript
+const cog = new Cogitator({
+  llm: {
+    retry: { maxRetries: 3, maxRetryAfter: 30_000, onRetry: (e) => console.warn(e) },
+    // retry: false — no retries
+  },
+});
+
+// A backend used on its own
+const backend = withLLMRetry(new GoogleBackend({ apiKey }), { maxRetries: 3 });
+```
+
 ### Retry with Backoff
 
 ```typescript

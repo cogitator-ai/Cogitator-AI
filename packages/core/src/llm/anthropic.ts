@@ -29,6 +29,8 @@ import { getLogger } from '../logger';
 
 interface AnthropicConfig {
   apiKey: string;
+  /** Retries the provider's SDK makes on its own; leave unset for the SDK default. The runtime passes 0 and retries itself. */
+  maxRetries?: number;
 }
 
 const JSON_RESPONSE_TOOL = '__json_response';
@@ -51,6 +53,7 @@ export class AnthropicBackend extends BaseLLMBackend {
     super();
     this.client = new Anthropic({
       apiKey: config.apiKey,
+      maxRetries: config.maxRetries,
     });
   }
 

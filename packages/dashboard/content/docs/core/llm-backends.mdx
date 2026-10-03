@@ -265,6 +265,33 @@ const debugBackend = withDebug(backend, {
 });
 ```
 
+## Retries
+
+The runtime retries LLM calls that fail with a retryable error: rate limits (429), server errors (5xx), timeouts and dropped connections. Authentication, bad requests and content filters fail at once. Retries are on by default for every backend an agent runs on, including your own `llm.backends` and plugins:
+
+```typescript
+const cog = new Cogitator({
+  llm: {
+    defaultModel: 'anthropic/claude-sonnet-5-5',
+    retry: {
+      maxRetries: 3, // attempts after the first one (default 2)
+      baseDelay: 1000, // first backoff, doubled on each retry (default 1000 ms)
+      maxDelay: 30_000, // backoff cap (default 30000 ms)
+      maxRetryAfter: 60_000, // longest Retry-After worth waiting for (default 60000 ms)
+      onRetry: ({ provider, attempt, delay, error }) =>
+        console.warn(`${provider}: retry ${attempt} in ${delay}ms (${error.message})`),
+    },
+  },
+});
+```
+
+- **Retry-After.** When the provider names a wait (`retry-after`, `retry-after-ms` or Gemini's `RetryInfo`), the runtime waits exactly that long. If the wait is longer than `maxRetryAfter`, the call fails at once instead of holding the run.
+- **Streaming.** A stream is retried only until its first chunk. After that the caller has already seen part of the answer, so the error is passed on.
+- **Cancellation.** The run's timeout and abort signal stop the waits between attempts too.
+- **One layer.** Backends created by the runtime make one attempt per call: the OpenAI, Anthropic, Azure and Bedrock SDKs have their own retries switched off, so attempts never multiply.
+
+`retry: false` turns retries off. To use a backend on its own with the same behaviour, wrap it with `withLLMRetry(backend, { maxRetries: 3 })`.
+
 ## Error Handling
 
 All backends throw typed `LLMError` instances with structured error codes:
@@ -277,10 +304,10 @@ try {
 } catch (e) {
   if (e instanceof LLMError) {
     if (e.code === ErrorCode.LLM_RATE_LIMITED) {
-      // retry after e.retryAfter ms
+      // still rate limited after the runtime's retries; e.retryAfter is the provider's hint, if any
     }
   }
 }
 ```
 
-Error codes include `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_INVALID_RESPONSE`, and `LLM_TIMEOUT`. Rate limit and server errors are automatically marked as retryable.
+Error codes include `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_INVALID_RESPONSE`, and `LLM_TIMEOUT`. Rate limit, server and connection errors are marked as retryable, and `retryAfter` holds the wait the provider asked for, when it named one.

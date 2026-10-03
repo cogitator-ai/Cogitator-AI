@@ -22,7 +22,13 @@ import type {
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { BaseLLMBackend } from './base';
-import { createLLMError, llmUnavailable, llmInvalidResponse, type LLMErrorContext } from './errors';
+import {
+  createLLMError,
+  retryAfterFromHeaders,
+  llmUnavailable,
+  llmInvalidResponse,
+  type LLMErrorContext,
+} from './errors';
 import { getLogger } from '../logger';
 
 interface GoogleConfig {
@@ -158,7 +164,9 @@ export class GoogleBackend extends BaseLLMBackend {
 
     if (!response.ok) {
       const errorBody = await response.text();
-      throw createLLMError(ctx, response.status, errorBody);
+      throw createLLMError(ctx, response.status, errorBody, {
+        retryAfterOverride: retryAfterFromHeaders(response.headers),
+      });
     }
 
     const data = (await response.json()) as GeminiResponse;
@@ -192,7 +200,9 @@ export class GoogleBackend extends BaseLLMBackend {
 
     if (!response.ok) {
       const errorBody = await response.text();
-      throw createLLMError(ctx, response.status, errorBody);
+      throw createLLMError(ctx, response.status, errorBody, {
+        retryAfterOverride: retryAfterFromHeaders(response.headers),
+      });
     }
 
     const reader = response.body?.getReader();

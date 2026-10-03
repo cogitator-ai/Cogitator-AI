@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
 import type net from 'node:net';
 import {
+  Agent,
+  Cogitator,
   OllamaBackend,
   withRetry,
   CircuitBreaker,
@@ -290,5 +292,102 @@ describe('Reliability: LLM Resilience', () => {
     expect(result).toBe('from-backup');
     expect(fallbackCalls).toHaveLength(1);
     expect(fallbackCalls[0]).toEqual({ from: 'primary', to: 'backup' });
+  });
+
+  describe('agent runs retry the provider', () => {
+    const agent = new Agent({ name: 'retrier', model: 'ollama/mock', instructions: 'x' });
+    const cogitator = (retry?: { maxRetryAfter?: number }) =>
+      new Cogitator({
+        llm: {
+          providers: { ollama: { baseUrl: `http://localhost:${mockPort}` } },
+          retry: { baseDelay: 10, maxDelay: 20, ...retry },
+        },
+      });
+
+    function failingFirst(failures: number, answer: (res: http.ServerResponse) => void) {
+      let requests = 0;
+      currentHandler = (_req, res) => {
+        requests++;
+        if (requests <= failures) {
+          res.writeHead(503, { 'Content-Type': 'text/plain', 'Retry-After': '0' });
+          res.end('overloaded');
+          return;
+        }
+        answer(res);
+      };
+      return () => requests;
+    }
+
+    it('recovers from 503s and answers', async () => {
+      const requests = failingFirst(2, (res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(ollamaLine('recovered', true));
+      });
+      const cog = cogitator();
+
+      const result = await cog.run(agent, { input: 'hi' });
+
+      expect(result.output).toBe('recovered');
+      expect(requests()).toBe(3);
+      await cog.close();
+    });
+
+    it('retries a stream that has not started', async () => {
+      const requests = failingFirst(1, (res) => {
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        res.write(ollamaLine('stream', false) + '\n');
+        res.end(ollamaLine('ed', true) + '\n');
+      });
+      const cog = cogitator();
+      const tokens: string[] = [];
+
+      const result = await cog.run(agent, {
+        input: 'hi',
+        stream: true,
+        onToken: (t) => tokens.push(t),
+      });
+
+      expect(result.output).toBe('streamed');
+      expect(tokens.join('')).toBe('streamed');
+      expect(requests()).toBe(2);
+      await cog.close();
+    });
+
+    it('does not repeat a stream that broke after its first token', async () => {
+      const requests = failingFirst(0, (res) => {
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        res.write(ollamaLine('half', false) + '\n');
+        setTimeout(() => res.destroy(), 10);
+      });
+      const cog = cogitator();
+      const tokens: string[] = [];
+
+      await expect(
+        cog.run(agent, { input: 'hi', stream: true, onToken: (t) => tokens.push(t) })
+      ).rejects.toThrow();
+
+      expect(tokens).toEqual(['half']);
+      expect(requests()).toBe(1);
+      await cog.close();
+    });
+
+    it('fails at once when the provider asks to wait too long', async () => {
+      let requests = 0;
+      currentHandler = (_req, res) => {
+        requests++;
+        res.writeHead(429, { 'Content-Type': 'text/plain', 'Retry-After': '3600' });
+        res.end('quota exhausted');
+      };
+      const cog = cogitator({ maxRetryAfter: 60_000 });
+
+      const error = await cog
+        .run(agent, { input: 'hi' })
+        .catch((e: unknown) => e as CogitatorError);
+
+      expect(error.code).toBe(ErrorCode.LLM_RATE_LIMITED);
+      expect(error.retryAfter).toBe(3_600_000);
+      expect(requests).toBe(1);
+      await cog.close();
+    });
   });
 });

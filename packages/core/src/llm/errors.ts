@@ -60,8 +60,9 @@ export function createLLMError(
   const ctx = { ...context, statusCode, responseBody };
   const cause = options?.cause;
 
+  const retryAfter = options?.retryAfterOverride ?? parseRetryAfter(responseBody);
+
   if (statusCode === 429) {
-    const retryAfter = options?.retryAfterOverride ?? parseRetryAfter(responseBody) ?? 60000;
     return new LLMError('Rate limit exceeded', ErrorCode.LLM_RATE_LIMITED, ctx, {
       cause,
       retryable: true,
@@ -112,7 +113,7 @@ export function createLLMError(
       `Server error (${statusCode}): ${responseBody?.slice(0, 200) ?? 'unknown'}`,
       ErrorCode.LLM_UNAVAILABLE,
       ctx,
-      { cause, retryable: true, retryAfter: 5000 }
+      { cause, retryable: true, retryAfter }
     );
   }
 
@@ -134,11 +135,7 @@ export function createLLMError(
 }
 
 export function llmUnavailable(context: LLMErrorContext, reason: string, cause?: Error): LLMError {
-  return new LLMError(reason, ErrorCode.LLM_UNAVAILABLE, context, {
-    cause,
-    retryable: true,
-    retryAfter: 5000,
-  });
+  return new LLMError(reason, ErrorCode.LLM_UNAVAILABLE, context, { cause, retryable: true });
 }
 
 export function llmInvalidResponse(
@@ -155,7 +152,6 @@ export function llmInvalidResponse(
 export function llmTimeout(context: LLMErrorContext, timeoutMs: number): LLMError {
   return new LLMError(`Request timed out after ${timeoutMs}ms`, ErrorCode.LLM_TIMEOUT, context, {
     retryable: true,
-    retryAfter: 1000,
   });
 }
 
@@ -174,11 +170,9 @@ export function wrapSDKError(error: unknown, ctx: LLMErrorContext): LLMError {
     const statusCode = error.status ?? 500;
     const enrichedCtx = { ...ctx, statusCode, responseBody: error.message };
 
-    const retryAfterMs = parseRetryAfterHeader(error.headers) ?? parseRetryAfter(error.message);
-
     return createLLMError(enrichedCtx, statusCode, error.message, {
       cause: error,
-      retryAfterOverride: retryAfterMs,
+      retryAfterOverride: retryAfterFromHeaders(error.headers),
     });
   }
 
@@ -186,7 +180,6 @@ export function wrapSDKError(error: unknown, ctx: LLMErrorContext): LLMError {
     return new LLMError(`Request failed: ${error.message}`, ErrorCode.LLM_UNAVAILABLE, ctx, {
       cause: error,
       retryable: true,
-      retryAfter: 1000,
     });
   }
 
@@ -197,35 +190,49 @@ function isSDKAPIError(error: unknown): error is SDKAPIError {
   return error instanceof Error && typeof (error as SDKAPIError).status === 'number';
 }
 
-function parseRetryAfterHeader(headers?: Headers): number | undefined {
+/**
+ * The wait a provider asks for in its response headers, in milliseconds:
+ * `retry-after-ms`, or `retry-after` as seconds or an HTTP date.
+ */
+export function retryAfterFromHeaders(headers?: Headers | null): number | undefined {
   if (!headers) return undefined;
+  const ms = Number(headers.get('retry-after-ms') ?? Number.NaN);
+  if (Number.isFinite(ms) && ms >= 0) return ms;
   const value = headers.get('retry-after');
   if (!value) return undefined;
   const seconds = Number(value);
-  if (!Number.isNaN(seconds) && seconds > 0) {
-    return seconds * 1000;
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+}
+
+/** The wait a provider asks for in an error body: `retry_after` seconds, or Google's `RetryInfo.retryDelay`. */
+function parseRetryAfter(responseBody?: string): number | undefined {
+  if (!responseBody) return undefined;
+  let json: unknown;
+  try {
+    json = JSON.parse(responseBody);
+  } catch {
+    const match = /retry.?after[:\s]+(\d+)/i.exec(responseBody);
+    return match ? parseInt(match[1], 10) * 1000 : undefined;
+  }
+  const body = asRecord(Array.isArray(json) ? json[0] : json);
+  const error = asRecord(body?.error);
+  const seconds = body?.retry_after ?? error?.retry_after;
+  if (typeof seconds === 'number') return seconds * 1000;
+  const details = Array.isArray(error?.details) ? error.details : [];
+  for (const detail of details) {
+    const delay = asRecord(detail)?.retryDelay;
+    const match = typeof delay === 'string' ? /^(\d+(?:\.\d+)?)s$/.exec(delay) : null;
+    if (match) return Math.round(parseFloat(match[1]) * 1000);
   }
   return undefined;
 }
 
-function parseRetryAfter(responseBody?: string): number | undefined {
-  if (!responseBody) return undefined;
-  try {
-    const json = JSON.parse(responseBody) as Record<string, unknown>;
-    if (typeof json.retry_after === 'number') {
-      return json.retry_after * 1000;
-    }
-    const error = json.error as Record<string, unknown> | undefined;
-    if (error && typeof error.retry_after === 'number') {
-      return (error.retry_after as number) * 1000;
-    }
-  } catch {
-    const match = /retry.?after[:\s]+(\d+)/i.exec(responseBody);
-    if (match) {
-      return parseInt(match[1], 10) * 1000;
-    }
-  }
-  return undefined;
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 export function tryParseJson<T>(

@@ -7,6 +7,8 @@ interface AzureOpenAIConfig {
   apiKey: string;
   apiVersion?: string;
   deployment?: string;
+  /** Retries the provider's SDK makes on its own; leave unset for the SDK default. The runtime passes 0 and retries itself. */
+  maxRetries?: number;
 }
 
 export class AzureOpenAIBackend extends OpenAICompatibleBackend {
@@ -22,6 +24,7 @@ export class AzureOpenAIBackend extends OpenAICompatibleBackend {
       apiKey: config.apiKey,
       apiVersion: config.apiVersion ?? '2024-08-01-preview',
       deployment: config.deployment,
+      maxRetries: config.maxRetries,
     });
   }
 

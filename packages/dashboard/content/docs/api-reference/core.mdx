@@ -213,5 +213,10 @@ import {
   CircuitBreaker,
   withFallback,
   withGracefulDegradation,
+  withLLMRetry,
+  RetryingBackend,
+  DEFAULT_LLM_RETRY,
 } from '@cogitator-ai/core';
 ```
+
+`withLLMRetry(backend, config)` wraps an `LLMBackend` with the retry policy agent runs use (`llm.retry`): retryable errors only, the provider's `Retry-After` up to `maxRetryAfter`, exponential backoff otherwise, streams retried only before their first chunk. `config: false` returns the backend unchanged.

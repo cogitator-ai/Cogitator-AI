@@ -20,6 +20,7 @@ export {
   llmTimeout,
   llmConfigError,
   llmNotImplemented,
+  retryAfterFromHeaders,
   type LLMErrorContext,
 } from './errors';
 export { LLMDebugWrapper, withDebug, type LLMDebugOptions, type LLMDebugLogger } from './debug';
@@ -46,9 +47,14 @@ import { BedrockBackend } from './bedrock';
 import { isLLMProvider } from './providers';
 
 export { isLLMProvider } from './providers';
+export { RetryingBackend, withLLMRetry, DEFAULT_LLM_RETRY } from './retry';
 
 /**
- * Create an LLM backend from configuration
+ * Create an LLM backend from configuration.
+ *
+ * The backend makes a single attempt per call: the SDKs' own retries are off
+ * because the runtime retries per `llm.retry`. Using the backend on its own,
+ * wrap it with `withLLMRetry(backend, config.retry)` for the same behaviour.
  */
 export function createLLMBackend(
   provider: LLMProvider,
@@ -71,6 +77,7 @@ export function createLLMBackend(
         apiKey: providers.openai.apiKey,
         baseUrl: providers.openai.baseUrl,
         api: providers.openai.api,
+        maxRetries: 0,
       });
 
     case 'anthropic':
@@ -79,6 +86,7 @@ export function createLLMBackend(
       }
       return new AnthropicBackend({
         apiKey: providers.anthropic.apiKey,
+        maxRetries: 0,
       });
 
     case 'google':
@@ -98,6 +106,7 @@ export function createLLMBackend(
         apiKey: providers.azure.apiKey,
         apiVersion: providers.azure.apiVersion,
         deployment: providers.azure.deployment,
+        maxRetries: 0,
       });
 
     case 'bedrock':
@@ -105,6 +114,7 @@ export function createLLMBackend(
         region: providers.bedrock?.region,
         accessKeyId: providers.bedrock?.accessKeyId,
         secretAccessKey: providers.bedrock?.secretAccessKey,
+        maxRetries: 0,
       });
 
     case 'mistral':
@@ -115,6 +125,7 @@ export function createLLMBackend(
         apiKey: providers.mistral.apiKey,
         baseUrl: 'https://api.mistral.ai/v1',
         provider,
+        maxRetries: 0,
       });
 
     case 'groq':
@@ -125,6 +136,7 @@ export function createLLMBackend(
         apiKey: providers.groq.apiKey,
         baseUrl: 'https://api.groq.com/openai/v1',
         provider,
+        maxRetries: 0,
       });
 
     case 'together':
@@ -135,6 +147,7 @@ export function createLLMBackend(
         apiKey: providers.together.apiKey,
         baseUrl: 'https://api.together.xyz/v1',
         provider,
+        maxRetries: 0,
       });
 
     case 'deepseek':
@@ -145,6 +158,7 @@ export function createLLMBackend(
         apiKey: providers.deepseek.apiKey,
         baseUrl: 'https://api.deepseek.com/v1',
         provider,
+        maxRetries: 0,
       });
 
     case 'vllm':
@@ -155,6 +169,7 @@ export function createLLMBackend(
         apiKey: 'vllm',
         baseUrl: providers.vllm.baseUrl,
         provider,
+        maxRetries: 0,
       });
 
     default: {

@@ -3,7 +3,7 @@
  */
 
 import type { Message, ToolCall, ToolResult } from './message';
-import type { LLMBackend, LLMProvider, LLMProvidersConfig } from './llm';
+import type { LLMBackend, LLMProvider, LLMProvidersConfig, LLMRetryConfig } from './llm';
 import type { MemoryConfig } from './memory';
 import type { SandboxManagerConfig } from './sandbox';
 import type { ReflectionConfig, Reflection, ReflectionSummary } from './reflection';
@@ -26,6 +26,11 @@ export interface CogitatorConfig {
     backends?: Record<string, LLMBackend>;
     /** Configuration passed to backend plugins registered with `registerLLMBackend`, by provider name. */
     plugins?: Record<string, unknown>;
+    /**
+     * Retries for failed LLM calls, on every backend the runtime uses; `false`
+     * turns them off. On by default: 2 retries with exponential backoff.
+     */
+    retry?: LLMRetryConfig | false;
   };
   limits?: {
     maxConcurrentRuns?: number;

@@ -807,7 +807,7 @@ const result = await cog.run(agent, {
 });
 ```
 
-LLM backend errors include a `retryable` flag — Cogitator's built-in backends automatically set this based on HTTP status codes (429, 500, 503).
+LLM backend errors include a `retryable` flag — Cogitator's built-in backends automatically set this based on HTTP status codes (429, 5xx) and connection failures. Agent runs retry such errors themselves (2 retries with exponential backoff by default, honouring the provider's `Retry-After`; streams only before the first chunk) — tune it with `llm.retry` or turn it off with `retry: false`.
 
 ---
 

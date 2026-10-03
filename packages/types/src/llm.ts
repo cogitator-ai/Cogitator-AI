@@ -100,6 +100,34 @@ export interface LLMBackend {
 }
 
 /**
+ * How the runtime retries LLM calls that fail with a retryable error: rate
+ * limits, 5xx, timeouts and dropped connections. A stream is retried only
+ * until its first chunk arrives.
+ */
+export interface LLMRetryConfig {
+  /** Attempts after the first one (default 2) */
+  maxRetries?: number;
+  /** Delay before the first retry when the provider names none, doubled on each retry (default 1000 ms) */
+  baseDelay?: number;
+  /** Cap for that backoff (default 30000 ms) */
+  maxDelay?: number;
+  /** Longest `Retry-After` worth waiting for; a longer one fails the call at once (default 60000 ms) */
+  maxRetryAfter?: number;
+  /** Called before each retry */
+  onRetry?: (event: LLMRetryEvent) => void;
+}
+
+export interface LLMRetryEvent {
+  provider: string;
+  model: string;
+  /** The retry about to start, from 1 */
+  attempt: number;
+  /** Milliseconds until it starts */
+  delay: number;
+  error: Error;
+}
+
+/**
  * Type-safe provider configuration interfaces
  */
 
