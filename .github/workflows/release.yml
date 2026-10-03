@@ -8,6 +8,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  # onnxruntime-node (via @huggingface/transformers) downloads its CUDA
+  # binaries on Linux x64 at install time; CI never uses them and the
+  # download host times out now and then.
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+
 jobs:
   release:
     name: Release
