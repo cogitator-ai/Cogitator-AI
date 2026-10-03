@@ -1,137 +1,138 @@
 ---
 title: Architecture
-description: System architecture and component diagram for the Cogitator runtime.
+description: How the Cogitator runtime and its packages fit together.
 ---
 
 ## High-Level Architecture
 
-Cogitator is designed as a **distributed agent runtime** with clear separation of concerns across four layers:
+Cogitator is a library-first runtime: everything runs inside your Node.js process (or a worker you start), and every capability is a package you add when you need it.
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      USER LAYER                          │
-│   SDK (TypeScript)  │  REST API  │  WebSocket  │  CLI   │
-└─────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────┐
-│                    CONTROL PLANE                         │
-│  Gateway  │  Orchestrator  │  Scheduler  │  Registry    │
-└─────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────┐
-│                     DATA PLANE                           │
-│  Agent Execution Engine  │  Workflow Engine  │  Swarms   │
-│  Worker Pools (Docker/WASM/Native)                       │
-└─────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────┐
-│                    STORAGE LAYER                         │
-│  Redis (sessions, cache, pub/sub)                        │
-│  Postgres + pgvector (memory, embeddings, search)        │
-│  Object Storage (artifacts, files, snapshots)            │
-└─────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────┐
-│                    LLM BACKENDS                          │
-│  Ollama │ OpenAI │ Anthropic │ Google │ Azure │ Bedrock  │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                           ENTRY POINTS                               │
+│  Your code (SDK) │ Server adapters │ Channel gateway │ CLI │ MCP/A2A │
+└──────────────────────────────────────────────────────────────────────┘
+                                   │
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                     COGITATOR RUNTIME (core)                         │
+│  Agent loop · tool execution · approvals · handoffs · retries        │
+│  guardrails · prompt-injection / PII · cost tracking · tracing       │
+└──────────────────────────────────────────────────────────────────────┘
+                                   │
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                          ORCHESTRATION                               │
+│  Workflows (DAG, sagas, timers) │ Swarms (7 strategies) │ Workers    │
+└──────────────────────────────────────────────────────────────────────┘
+                                   │
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                     STATE & EXECUTION BACKENDS                       │
+│  Memory adapters: in-memory, Redis, Postgres (pgvector), SQLite,     │
+│  MongoDB, Qdrant │ Workflow run/approval/timer/checkpoint stores     │
+│  Docker / WASM sandboxes │ BullMQ queues                             │
+└──────────────────────────────────────────────────────────────────────┘
+                                   │
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                           LLM BACKENDS                               │
+│  Ollama │ OpenAI │ Anthropic │ Google │ Azure │ Bedrock │ vLLM       │
+│  Mistral │ Groq │ Together │ DeepSeek │ custom backends & plugins    │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-## Package Architecture
+## Packages
 
-The 26 packages follow a layered dependency model:
+The monorepo publishes 32 `@cogitator-ai/*` packages plus the `create-cogitator-app` scaffolder (see [Project Structure](/docs/getting-started/project-structure) for the full list). Dependencies point downwards:
 
-### Layer 0: Types
+### Foundation
 
-`@cogitator-ai/types` — zero-dependency shared TypeScript interfaces. Every other package depends on this.
+- `@cogitator-ai/types` — shared TypeScript interfaces, error codes and defaults; no dependencies
+- `@cogitator-ai/models` — model registry with pricing, context windows and capabilities (LiteLLM data with built-in fallbacks)
+- `@cogitator-ai/redis` — Redis client for standalone and cluster setups
+- `@cogitator-ai/config` — `cogitator.yml` and environment loading with Zod validation
 
-### Layer 1: Core Runtime
+### Runtime
 
-`@cogitator-ai/core` — the `Cogitator` class, `Agent`, `tool()`, tool registry, built-in tools. Depends only on `types`.
+- `@cogitator-ai/memory` — memory adapters, embeddings, context builder, hybrid search, knowledge graphs
+- `@cogitator-ai/core` — `Cogitator`, `Agent`, `tool()`, LLM backends, built-in tools; depends on `types`, `models` and `memory`
 
-### Layer 2: Infrastructure
+### Capabilities
 
-- `@cogitator-ai/models` — dynamic model registry with pricing, context windows, capabilities, LiteLLM refresh, and built-in fallbacks
-- `@cogitator-ai/config` — YAML/env config loading
-- `@cogitator-ai/redis` — Redis pub/sub, streams, distributed state
+- `@cogitator-ai/workflows` — DAG engine, sagas, map-reduce, human-in-the-loop, timers, scheduling
+- `@cogitator-ai/swarms` — multi-agent coordination
+- `@cogitator-ai/rag` — loaders, chunkers, retrieval and reranking
+- `@cogitator-ai/sandbox` and `@cogitator-ai/wasm-tools` — isolated code execution and WASM tools
+- `@cogitator-ai/browser` — Playwright browser automation
+- `@cogitator-ai/voice` — STT, TTS, VAD and realtime voice agents
+- `@cogitator-ai/evals` — metrics, datasets, A/B comparison
+- `@cogitator-ai/self-modifying`, `@cogitator-ai/neuro-symbolic` — runtime tool generation, logic programming
 
-### Layer 3: Capabilities
+### Protocols, Servers and Channels
 
-- `@cogitator-ai/memory` — memory adapters, embeddings, RAG, hybrid search, knowledge graphs
-- `@cogitator-ai/workflows` — DAG engine, sagas, scheduling, checkpoints
-- `@cogitator-ai/swarms` — multi-agent coordination, 8 strategies, assessment
-- `@cogitator-ai/sandbox` — Docker/WASM sandboxed execution
-- `@cogitator-ai/mcp` — Model Context Protocol client & server
-- `@cogitator-ai/tools` — extended tool library
-- `@cogitator-ai/wasm-tools` — WASM-based tools
+- `@cogitator-ai/mcp`, `@cogitator-ai/a2a` — Model Context Protocol and Agent-to-Agent protocol
+- `@cogitator-ai/server-shared` — shared REST/SSE/WebSocket protocol and OpenAPI generation
+- `@cogitator-ai/express`, `fastify`, `hono`, `koa`, `tetsu`, `next` — server and framework adapters
+- `@cogitator-ai/ai-sdk`, `@cogitator-ai/openai-compat` — Vercel AI SDK bridge, OpenAI Assistants-compatible API
+- `@cogitator-ai/channels` — Telegram, Discord, Slack, WhatsApp and WebChat gateway
 
-### Layer 4: Server Adapters
+### Operations
 
-- `@cogitator-ai/express` — Express.js server
-- `@cogitator-ai/fastify` — Fastify server
-- `@cogitator-ai/hono` — Hono multi-runtime server
-- `@cogitator-ai/koa` — Koa server
-
-### Layer 5: Integrations
-
-- `@cogitator-ai/next` — Next.js integration
-- `@cogitator-ai/ai-sdk` — Vercel AI SDK bridge
-- `@cogitator-ai/openai-compat` — OpenAI API compatibility
-
-### Layer 6: Observability
-
-- `@cogitator-ai/langfuse` — Langfuse tracing and cost tracking
+- `@cogitator-ai/worker` — BullMQ distributed job queue
+- `@cogitator-ai/deploy`, `@cogitator-ai/cli` — Docker and Fly.io deployment, the `cogitator` command
+- `@cogitator-ai/test-utils` — mocks and helpers for tests
 
 ## Agent Execution Flow
 
 ```
-User Input
+cogitator.run(agent, { input, threadId, ... })
     │
-    ▼
-Cogitator.run(agent, input)
+    ├── Wait for a run slot (limits.maxConcurrentRuns)
+    ├── Resolve the model (agent.model or llm.defaultModel) and its backend
+    ├── Pick versioned instructions / A/B variant (cog.prompts)
+    ├── Build messages: instructions, memory history, facts and semantic context
+    ├── Input checks: prompt injection, guardrails
     │
-    ├─── Build message history (system prompt + context)
-    │
-    ├─── Send to LLM Backend
-    │         │
-    │         ▼
-    │    LLM Response
-    │         │
-    │         ├── Text only → Return result
-    │         │
-    │         └── Tool calls → Execute tools
-    │                   │
-    │                   ▼
-    │              Tool Results
-    │                   │
-    │                   └── Append to messages, loop back to LLM
-    │
-    └─── Return final AgentResult
-           (text, toolCalls, usage, metadata)
+    └── Loop (up to maxIterations)
+          │
+          ├── LLM call (PII masked, retried on rate limits and 5xx)
+          │
+          ├── Tool calls?
+          │     ├── validate arguments with the Zod schema
+          │     ├── requiresApproval → onApproval, or pause the run (status: 'paused')
+          │     ├── transfer_to_<agent> → hand the conversation over
+          │     └── execute (natively or in a sandbox), append results, loop
+          │
+          └── Final answer → check responseFormat (one repair attempt)
+                │
+                ▼
+          Save to memory, record cost and prompt metrics
+                │
+                ▼
+          RunResult { output, structured, toolCalls, usage, trace, ... }
 ```
+
+A paused run continues with `cogitator.resume()`; see [Tool Approvals](/docs/tools/approvals).
 
 ## Key Design Decisions
 
-| Decision          | Choice          | Rationale                                  |
-| ----------------- | --------------- | ------------------------------------------ |
-| Language          | TypeScript      | Type safety, Node.js ecosystem, full-stack |
-| Package manager   | pnpm            | Fast, disk-efficient, workspace support    |
-| Module system     | ESM             | Modern standard, tree-shaking              |
-| Schema validation | Zod             | Runtime + static types from single source  |
-| Build tool        | tsup            | Fast esbuild-based builds, DTS generation  |
-| Monorepo          | pnpm workspaces | Simple, no extra tooling needed            |
+| Decision          | Choice                        | Rationale                                  |
+| ----------------- | ----------------------------- | ------------------------------------------ |
+| Language          | TypeScript (strict)           | Type safety, Node.js ecosystem, full-stack |
+| Package manager   | pnpm workspaces               | Fast, disk-efficient, workspace protocol   |
+| Task runner       | Turborepo                     | Cached, dependency-ordered builds          |
+| Module system     | ESM                           | Modern standard, tree-shaking              |
+| Schema validation | Zod 4                         | Runtime + static types from single source  |
+| Build             | `tsc` (`tsup` for scaffolder) | Plain emitted ESM with declarations        |
 
 ## Extensibility
 
 Every layer is pluggable:
 
-- **LLM Backends** — implement the `LLMBackend` interface
-- **Memory Adapters** — implement the `MemoryAdapter` interface
-- **Tools** — use `tool()` factory with any async function
-- **Workflow Nodes** — `functionNode()` wraps arbitrary code
-- **Swarm Strategies** — implement `SwarmStrategy` interface
-- **Server Adapters** — follow the adapter pattern from existing packages
+- **LLM backends** — implement the `LLMBackend` interface and pass it in `llm.backends`, or register a plugin with `registerLLMBackend()` ([LLM Backends](/docs/core/llm-backends#custom-backends))
+- **Memory adapters** — implement the `MemoryAdapter` interface
+- **Tools** — the `tool()` factory wraps any async function; `toolset()` groups typed tools
+- **Run checkpoints and prompt versions** — `runCheckpoints`, `prompts.versions` and `prompts.abTests` take your own stores
+- **Workflow nodes and stores** — `functionNode()` wraps arbitrary code; run, approval, timer and checkpoint stores have in-memory, Redis and Postgres implementations
+- **Server adapters** — build on `@cogitator-ai/server-shared` like the existing adapters

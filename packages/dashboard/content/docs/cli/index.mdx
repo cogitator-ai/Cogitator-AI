@@ -71,14 +71,15 @@ cogitator init my-assistant            # prompts for provider, model, channels, 
 cogitator init my-assistant --no-install
 ```
 
-The project name must be a valid npm package name (lowercase, `-`, `_`, `.`). The package manager used for installation is detected from how you invoked the CLI (`pnpm`, `npm`, `yarn` or `bun`).
+The project name must be a valid npm package name (lowercase, `-`, `_`, `.`) and the directory must not exist yet. The prompts cover the provider (Anthropic, OpenAI, Google or Ollama) and its API key, the default model (listed live from the provider), channels (Telegram, Discord, Slack, WebChat — WebChat when none is picked) and the memory adapter. The package manager used for installation is detected from how you invoked the CLI (`pnpm`, `npm`, `yarn` or `bun`, otherwise pnpm).
 
 ```
 my-assistant/
 ├── package.json     # @cogitator-ai/* pinned to the versions this CLI ships with
 ├── tsconfig.json
-├── .env             # API keys and channel tokens (mode 0600)
+├── .env             # API keys and channel tokens (mode 0600), when any were entered
 ├── .gitignore
+├── pnpm-workspace.yaml  # allows native builds (better-sqlite3, esbuild, sharp), pnpm only
 └── src/
     ├── gateway.ts   # exports `gateway` — agent, channels, memory adapter
     └── agent.ts     # starts the gateway (pnpm dev / pnpm start)
@@ -131,7 +132,7 @@ After starting, the published ports of every service are printed.
 
 ```bash
 cogitator down             # stop services (keep data)
-cogitator down --volumes   # stop and delete volumes
+cogitator down -v         # stop and delete volumes (--volumes)
 ```
 
 ---
@@ -195,6 +196,7 @@ node dist/cogitator.mjs
 | `--target <version>`   | `node22`             |
 | `--sourcemap`          | `true`               |
 | `--minify`             | `false`              |
+| `-q, --quiet`          | `false`              |
 
 Native and optional channel dependencies (`better-sqlite3`, `pg`, `grammy`, `discord.js`, `@slack/bolt`, `playwright`, …) stay external.
 
@@ -207,7 +209,7 @@ Runs your assistant in the background. The entry is auto-detected in this order:
 ```bash
 cogitator daemon start [-c <entry>]
 cogitator daemon status          # PID, uptime, memory
-cogitator daemon logs -f -n 100  # .cogitator/daemon.log
+cogitator daemon logs -f -n 100  # .cogitator/daemon.log (-n defaults to 50)
 cogitator daemon restart
 cogitator daemon stop            # SIGTERM, then SIGKILL after 10s
 
@@ -222,11 +224,11 @@ The PID file (`.cogitator/daemon.pid`) records the launched script, so `stop` ne
 ### cogitator skill
 
 ```bash
-cogitator skill create weather-api --template api   # basic | device | api
-cogitator skill validate skills/weather-api
+cogitator skill create weather-api --template api   # -t: basic | device | api; -g for global
+cogitator skill validate skills/weather-api         # default: the current directory
 cogitator skill list
-cogitator skill add ./path/to/skill [--global]
-cogitator skill remove weather-api [--global]
+cogitator skill add ./path/to/skill [-g, --global]
+cogitator skill remove weather-api [-g, --global]
 ```
 
 Local skills live in `./skills`, global ones in `~/.cogitator/skills`. Skill names must be kebab-case. `validate` loads `skill.ts`/`skill.js`/`skill.mjs`, checks the `defineSkill` shape and every tool, required environment variables (`env`) and that `dependencies` resolve from the skill's location; it exits non-zero on problems.
@@ -252,6 +254,13 @@ cogitator status          # compose services (state, health) + Ollama reachabili
 cogitator logs ollama -f -t -n 50
 cogitator logs -n all
 ```
+
+| `logs` option        | Default | Description                   |
+| -------------------- | ------- | ----------------------------- |
+| `[service]`          | all     | Compose service, e.g. `redis` |
+| `-f, --follow`       | `false` | Follow log output             |
+| `-n, --tail <lines>` | `100`   | Number of lines, or `all`     |
+| `-t, --timestamps`   | `false` | Show timestamps               |
 
 `status` still reports Ollama when Docker is not running.
 
@@ -283,13 +292,13 @@ The plan lists detected services, required secrets (read from the environment or
 
 ## Environment Variables
 
-| Variable                                                | Used by                   | Description                         |
-| ------------------------------------------------------- | ------------------------- | ----------------------------------- |
-| `COGITATOR_CONFIG`                                      | `run`                     | Config file path                    |
-| `COGITATOR_MODEL`                                       | `run`                     | Default model                       |
-| `OLLAMA_URL` / `OLLAMA_HOST`                            | `run`, `models`, `status` | Ollama endpoint                     |
-| `OLLAMA_API_KEY`                                        | `run`, `models`, `wizard` | Ollama Cloud / authenticated Ollama |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | `run`, `init`, `wizard`   | Provider keys                       |
-| `COGITATOR_DEBUG`                                       | all                       | Print stack traces                  |
+| Variable                                                | Used by                               | Description                                  |
+| ------------------------------------------------------- | ------------------------------------- | -------------------------------------------- |
+| `COGITATOR_CONFIG`                                      | `run`                                 | Config file path                             |
+| `COGITATOR_MODEL`                                       | `run`                                 | Default model                                |
+| `OLLAMA_URL` / `OLLAMA_HOST`                            | `run`, `models`, `status`             | Ollama endpoint                              |
+| `OLLAMA_API_KEY`                                        | `run`, `models`, `wizard`             | Ollama Cloud / authenticated Ollama          |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | `run`, `wizard`, projects from `init` | Provider keys (`init` writes them to `.env`) |
+| `COGITATOR_DEBUG`                                       | all                                   | Print stack traces                           |
 
 See [`@cogitator-ai/config`](/docs/getting-started/configuration) for every `COGITATOR_*` variable.

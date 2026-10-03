@@ -18,8 +18,10 @@ const getWeather = tool({
     city: z.string().describe('City name'),
     units: z.enum(['celsius', 'fahrenheit']).default('celsius'),
   }),
-  execute: async ({ city, units }) => {
-    const response = await fetch(`https://api.weather.com/${city}?units=${units}`);
+  execute: async ({ city, units }, context) => {
+    const response = await fetch(`https://api.weather.com/${city}?units=${units}`, {
+      signal: context.signal,
+    });
     return response.json();
   },
 });
@@ -33,18 +35,30 @@ function tool<TParams, TResult>(config: ToolConfig<TParams, TResult>): Tool<TPar
 
 ### ToolConfig
 
-| Field              | Type                                     | Description                                                      |
-| ------------------ | ---------------------------------------- | ---------------------------------------------------------------- |
-| `name`             | `string`                                 | Unique tool name (used in LLM function calling)                  |
-| `description`      | `string`                                 | What the tool does (sent to the LLM)                             |
-| `parameters`       | `ZodType`                                | Zod schema defining accepted parameters                          |
-| `execute`          | `(params, context?) => Promise<TResult>` | Implementation function                                          |
-| `category`         | `string`                                 | Optional grouping category                                       |
-| `tags`             | `string[]`                               | Optional tags for filtering                                      |
-| `sideEffects`      | `string[]`                               | Declare side effects (`'network'`, `'filesystem'`, `'external'`) |
-| `requiresApproval` | `boolean`                                | Require human approval before execution                          |
-| `timeout`          | `number`                                 | Per-call timeout in milliseconds                                 |
-| `sandbox`          | `SandboxConfig`                          | Run in isolated environment                                      |
+| Field              | Type                                    | Description                                                                                                                     |
+| ------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `name`             | `string`                                | Unique tool name (used in LLM function calling)                                                                                 |
+| `description`      | `string`                                | What the tool does (sent to the LLM)                                                                                            |
+| `parameters`       | `ZodType`                               | Zod schema defining accepted parameters                                                                                         |
+| `execute`          | `(params, context) => Promise<TResult>` | Implementation function                                                                                                         |
+| `category`         | `ToolCategory`                          | `'math'`, `'text'`, `'file'`, `'network'`, `'system'`, `'utility'`, `'web'`, `'database'`, `'communication'` or `'development'` |
+| `tags`             | `string[]`                              | Optional tags for filtering                                                                                                     |
+| `sideEffects`      | `SideEffectType[]`                      | `'filesystem'`, `'network'`, `'database'`, `'process'`, `'external'`; shown to approvers                                        |
+| `requiresApproval` | `boolean \| (params) => boolean`        | Require human approval before execution ([Approvals](/docs/tools/approvals))                                                    |
+| `timeout`          | `number`                                | Per-call timeout in milliseconds                                                                                                |
+| `sandbox`          | `SandboxConfig`                         | Run in an isolated environment (see below)                                                                                      |
+
+### Tool Context
+
+`execute` receives the validated parameters and a `ToolContext`:
+
+| Field                      | Description                                                                  |
+| -------------------------- | ---------------------------------------------------------------------------- |
+| `agentId`, `runId`         | The agent and run that called the tool                                       |
+| `signal`                   | Aborted when the run is cancelled, times out, or the tool's `timeout` passes |
+| `threadId`                 | The conversation                                                             |
+| `userId`                   | The user the run acts for (`RunOptions.userId`)                              |
+| `channelType`, `channelId` | Where the message came from, for channel gateways                            |
 
 When `timeout` is set, the runtime aborts `context.signal` once the limit is reached and reports `Tool "<name>" timed out after <ms>ms` to the model as the tool error. Long-running tools should pass `context.signal` to `fetch` and other cancellable APIs so the work actually stops.
 
@@ -72,6 +86,8 @@ const createIssue = tool({
 
 Use `.describe()` on each field -- these descriptions are sent to the LLM and significantly improve tool call accuracy.
 
+Arguments the model sends are parsed with the schema before `execute` runs, so defaults and transforms apply. Arguments that fail validation never reach `execute`: the model gets `Invalid arguments: ...` as the tool result and can try again.
+
 ## Tool Results
 
 The `execute` function can return any serializable value. Cogitator converts the result to JSON and feeds it back to the LLM as a tool response:
@@ -90,11 +106,32 @@ const calculator = tool({
 });
 ```
 
-If the execute function throws, the error message is sent back to the LLM so it can retry or adjust its approach.
+If the execute function throws, the error message is sent back to the LLM (as `{ "error": "..." }`) so it can retry or adjust its approach. A call to a tool the agent does not have gets `Tool not found: <name>`.
+
+## Typed Tool Sets
+
+A function that returns several tools as `Tool[]` loses each tool's own parameter types. `toolset()` keeps them as a tuple, which is still an array an agent accepts:
+
+```typescript
+import { toolset } from '@cogitator-ai/core';
+
+function createIssueTools() {
+  return toolset(createIssue, getWeather);
+}
+
+const [issues, weather] = createIssueTools();
+await weather.execute({ city: 'Tokyo', units: 'celsius' }, context); // typed parameters
+const agent = new Agent({
+  name: 'ops',
+  model: 'openai/gpt-6.1-sol',
+  instructions: '...',
+  tools: createIssueTools(),
+});
+```
 
 ## Built-in Tools
 
-Cogitator ships with ready-to-use tools:
+Cogitator ships with ready-to-use tools (`builtinTools` is all of them as one array; see [Built-in Tools](/docs/tools/built-in) for parameters):
 
 ```typescript
 import {
@@ -153,7 +190,12 @@ registry.registerMany([calculator, datetime]);
 const weatherTool = registry.get('get_weather');
 const allNames = registry.getNames();
 const schemas = registry.getSchemas();
+registry.has('get_weather'); // true
+registry.getAll(); // Tool[]
+registry.clear();
 ```
+
+Registering a tool under a name that already exists replaces it.
 
 The Cogitator runtime uses `ToolRegistry` internally to resolve tool calls from the LLM.
 
@@ -174,28 +216,39 @@ const schema = toolToSchema(getWeather);
 //       city: { type: 'string', description: 'City name' },
 //       units: { type: 'string', enum: ['celsius', 'fahrenheit'], default: 'celsius' }
 //     },
-//     required: ['city']
+//     required: ['city', 'units']
 //   }
 // }
 ```
 
+The conversion uses the schema's output type, so fields with a `.default()` are listed as required. `tool.toJSON()` returns the same schema.
+
 ## Sandboxed Execution
 
-Tools that execute untrusted code can declare a sandbox:
+Tools that run untrusted commands can declare a sandbox. A sandboxed tool does not run its `execute` function: the runtime executes the call in the sandbox instead (install `@cogitator-ai/sandbox`):
+
+- `type: 'docker'` runs the `command` argument with `sh -c` in a container of `image`, with optional `cwd` and `env` arguments, and returns `{ stdout, stderr, exitCode, timedOut, duration, command }`.
+- `type: 'wasm'` passes the arguments as JSON on stdin to `wasmModule` and returns its stdout, parsed as JSON when possible.
 
 ```typescript
-const runCode = tool({
-  name: 'run_code',
-  description: 'Execute Python code in a sandboxed environment',
+const runPython = tool({
+  name: 'run_python',
+  description: 'Run a shell command in a Python 3.12 container, e.g. python -c "print(2 ** 10)"',
   parameters: z.object({
-    code: z.string().describe('Python code to execute'),
+    command: z.string().describe('Shell command to run'),
   }),
-  execute: async ({ code }) => ({ code }),
-  sandbox: { type: 'docker', image: 'python:3.12-slim' },
+  execute: async ({ command }) => ({ command }), // not called while the sandbox is available
+  sandbox: {
+    type: 'docker',
+    image: 'python:3.12-slim',
+    network: { mode: 'none' },
+    resources: { memory: '256MB', cpus: 0.5 },
+    timeout: 30_000,
+  },
 });
 ```
 
-When sandbox is configured, the tool's execute function runs inside an isolated container managed by the Cogitator runtime.
+The container is managed by the runtime (configure it with `sandbox` on the `Cogitator`). Two fallbacks log a warning and run without isolation: when `@cogitator-ai/sandbox` cannot be loaded, the runtime calls `execute` natively, so keep `execute` harmless; when Docker is not available, the sandbox manager runs the command on the host shell. Check `isDockerAvailable()` first when untrusted commands must never reach the host — see [Sandbox](/docs/deployment/sandbox#fallback-chain).
 
 ## Tool Caching
 
@@ -205,9 +258,11 @@ Wrap tools with `withCache` to avoid repeated expensive calls:
 import { withCache } from '@cogitator-ai/core';
 
 const cachedWeather = withCache(getWeather, {
-  ttl: '5m',
   strategy: 'exact',
+  ttl: '5m',
+  maxSize: 1000,
+  storage: 'memory',
 });
 ```
 
-See [Tool Caching](/docs/advanced/caching) for TTL strategies, semantic matching, and Redis-backed storage.
+See [Tool Caching](/docs/tools/tool-caching) for TTL strategies, semantic matching, and Redis-backed storage.

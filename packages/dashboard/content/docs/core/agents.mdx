@@ -28,6 +28,7 @@ interface AgentConfig {
   provider?: string;
   instructions: string;
   tools?: Tool[];
+  skills?: Skill[]; // bundles of tools + instructions, merged in
   temperature?: number; // default: 0.7
   topP?: number;
   maxTokens?: number;
@@ -51,7 +52,7 @@ model: 'ollama/llama3.3:latest';
 model: 'google/gemini-3.8-flash';
 ```
 
-If you omit the provider prefix, Cogitator uses the `defaultProvider` from your runtime config. If you omit `model` altogether, the agent runs on `llm.defaultModel`; a run fails with a `CONFIGURATION_ERROR` when neither is set. `cog.resolveModel(agent)` returns the model a run would use.
+If you omit the provider prefix (or the prefix is not a known provider, backend or plugin), the whole string goes to the `defaultProvider` from your runtime config, Ollama when unset. If you omit `model` altogether, the agent runs on `llm.defaultModel`; a run fails with a `CONFIGURATION_ERROR` when neither is set. `cog.resolveModel(agent)` returns the model a run would use.
 
 ### Provider Override
 
@@ -136,29 +137,65 @@ const creativeAgent = baseAgent.clone({
 });
 
 const fastAgent = baseAgent.clone({
-  model: 'anthropic/claude-haiku',
+  model: 'anthropic/claude-haiku-4-5',
 });
 ```
+
+A clone gets a new `id` unless the overrides set one.
 
 ## Serialization
 
 Agents can be serialized to JSON for storage and restored later:
 
 ```typescript
+import { writeFile } from 'node:fs/promises';
+
 const snapshot = agent.serialize();
-await fs.writeFile('agent.json', JSON.stringify(snapshot, null, 2));
+await writeFile('agent.json', JSON.stringify(snapshot, null, 2));
 ```
 
-Restore with a tool registry to re-attach tool implementations:
+Restore with the tool implementations:
 
 ```typescript
-const snapshot = JSON.parse(await fs.readFile('agent.json', 'utf-8'));
-const restored = Agent.deserialize(snapshot, {
+import { readFile } from 'node:fs/promises';
+import { Agent } from '@cogitator-ai/core';
+import type { AgentSnapshot } from '@cogitator-ai/types';
+
+const saved = JSON.parse(await readFile('agent.json', 'utf-8')) as AgentSnapshot;
+const restored = Agent.deserialize(saved, {
   tools: [searchWeb, readUrl],
 });
 ```
 
-Tools are stored by name in the snapshot. During deserialization, each tool name is resolved from the provided `tools` array or `toolRegistry`.
+Tools are stored by name in the snapshot. During deserialization, each tool name is resolved from `toolRegistry` (any `{ get(name) }`, such as a `ToolRegistry`) when given, otherwise from the `tools` array; a missing tool throws `AgentDeserializationError`. `overrides` replaces any config field of the restored agent.
+
+A snapshot keeps the model, instructions, sampling parameters, `reasoning`, `maxIterations` and `timeout`, but not `handoffs` or `skills` (their tools are kept by name). A `json_schema` response format is saved by name only, so pass the Zod schema back as `overrides.responseFormat`. `Agent.validateSnapshot(value)` checks a parsed snapshot; it rejects snapshots without a `model`, so give agents you serialize an explicit model.
+
+## Skills
+
+A skill bundles tools with the instructions for using them. `skills` on an agent adds each skill's tools (unless the agent already has a tool of that name) and appends its instructions to the agent's:
+
+```typescript
+import { defineSkill } from '@cogitator-ai/core';
+
+const weatherSkill = defineSkill({
+  name: 'weather',
+  version: '1.0.0',
+  description: 'Current weather and forecasts',
+  tools: [getWeather],
+  instructions: 'Use get_weather for any question about the weather.',
+  env: ['WEATHER_API_KEY'],
+});
+
+const assistant = new Agent({
+  name: 'assistant',
+  model: 'openai/gpt-6.1-sol',
+  instructions: 'You are a helpful assistant.',
+  skills: [weatherSkill],
+});
+```
+
+`validateSkill(skill)` reports missing fields, environment variables and dependencies; the CLI scaffolds and validates skill packages with [`cogitator skill`](/docs/cli#cogitator-skill).
 
 ## Agents as Tools
 
@@ -179,6 +216,8 @@ const orchestrator = new Agent({
   tools: [researchTool],
 });
 ```
+
+The tool takes a single `task` string and returns `{ output, success, error? }`; `includeUsage` and `includeToolCalls` add the inner run's usage and tool calls, and `timeout` limits it. The inner run inherits the caller's `userId` and abort signal. Calls of the inner agent that need approval are declined unless you pass `onApproval`, since nobody can answer them mid-delegation. See [Agent as Tool](/docs/tools/agent-as-tool).
 
 ## Reasoning
 

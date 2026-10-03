@@ -5,76 +5,102 @@ description: How Cogitator projects and the monorepo are organized.
 
 ## Monorepo Architecture
 
-Cogitator is a pnpm monorepo with 26 packages:
+Cogitator is a pnpm + Turborepo monorepo. It publishes 32 `@cogitator-ai/*` packages and the `create-cogitator-app` scaffolder; `dashboard` (this site) and `e2e` (end-to-end tests) are private:
 
 ```
 packages/
-├── types/          # @cogitator-ai/types — shared TypeScript interfaces
-├── core/           # @cogitator-ai/core — runtime, Agent, tool(), Cogitator class
-├── config/         # @cogitator-ai/config — YAML/env config loader
-├── models/         # @cogitator-ai/models — LLM backend implementations
-├── memory/         # @cogitator-ai/memory — memory adapters, embeddings, RAG
-├── workflows/      # @cogitator-ai/workflows — DAG engine, sagas, scheduling
-├── swarms/         # @cogitator-ai/swarms — multi-agent coordination
-├── redis/          # @cogitator-ai/redis — Redis pub/sub, streams, distributed state
-├── sandbox/        # @cogitator-ai/sandbox — Docker/WASM code execution
-├── mcp/            # @cogitator-ai/mcp — Model Context Protocol client & server
-├── express/        # @cogitator-ai/express — Express.js server adapter
-├── fastify/        # @cogitator-ai/fastify — Fastify server adapter
-├── hono/           # @cogitator-ai/hono — Hono server adapter
-├── koa/            # @cogitator-ai/koa — Koa server adapter
-├── next/           # @cogitator-ai/next — Next.js integration
-├── ai-sdk/         # @cogitator-ai/ai-sdk — Vercel AI SDK bridge
-├── openai-compat/  # @cogitator-ai/openai-compat — OpenAI Assistants API compatibility
-├── langfuse/       # @cogitator-ai/langfuse — Langfuse observability
-├── tools/          # @cogitator-ai/tools — extended tool library
-├── wasm-tools/     # @cogitator-ai/wasm-tools — WASM-based tools
-├── dashboard/      # @cogitator-ai/dashboard — this documentation site
-├── cli/            # @cogitator-ai/cli — CLI tool
-└── create-cogitator-app/  # create-cogitator-app — project scaffolder
+├── types/            # @cogitator-ai/types — shared TypeScript interfaces
+├── core/             # @cogitator-ai/core — Cogitator runtime, Agent, tool(), LLM backends, built-in tools
+├── models/           # @cogitator-ai/models — model registry with pricing and capabilities
+├── config/           # @cogitator-ai/config — cogitator.yml and environment loading
+├── memory/           # @cogitator-ai/memory — memory adapters, embeddings, knowledge graphs
+├── rag/              # @cogitator-ai/rag — RAG pipeline (loaders, chunkers, retrieval, reranking)
+├── workflows/        # @cogitator-ai/workflows — DAG engine, sagas, map-reduce, scheduling
+├── swarms/           # @cogitator-ai/swarms — 7 swarm strategies
+├── a2a/              # @cogitator-ai/a2a — Agent-to-Agent Protocol v0.3
+├── mcp/              # @cogitator-ai/mcp — Model Context Protocol client and server
+├── browser/          # @cogitator-ai/browser — browser automation (Playwright, stealth, vision)
+├── sandbox/          # @cogitator-ai/sandbox — Docker and WASM execution isolation
+├── wasm-tools/       # @cogitator-ai/wasm-tools — pre-built WASM tools
+├── voice/            # @cogitator-ai/voice — voice and realtime agents (STT, TTS, VAD)
+├── evals/            # @cogitator-ai/evals — eval framework (metrics, A/B testing, assertions)
+├── self-modifying/   # @cogitator-ai/self-modifying — runtime tool generation
+├── neuro-symbolic/   # @cogitator-ai/neuro-symbolic — Prolog-style logic, SAT/SMT
+├── redis/            # @cogitator-ai/redis — Redis client (standalone + cluster)
+├── worker/           # @cogitator-ai/worker — BullMQ distributed job queue
+├── server-shared/    # @cogitator-ai/server-shared — shared REST/SSE/WebSocket utilities, OpenAPI
+├── express/          # @cogitator-ai/express — Express.js integration
+├── fastify/          # @cogitator-ai/fastify — Fastify integration
+├── hono/             # @cogitator-ai/hono — Hono integration
+├── koa/              # @cogitator-ai/koa — Koa middleware
+├── tetsu/            # @cogitator-ai/tetsu — Tetsu controller on Bun (SSE, WebSocket, OpenAPI)
+├── next/             # @cogitator-ai/next — Next.js App Router
+├── ai-sdk/           # @cogitator-ai/ai-sdk — Vercel AI SDK adapter
+├── openai-compat/    # @cogitator-ai/openai-compat — OpenAI Assistants API compatibility
+├── channels/         # @cogitator-ai/channels — Telegram, Discord, Slack, WhatsApp, WebChat
+├── deploy/           # @cogitator-ai/deploy — Docker and Fly.io deployment
+├── cli/              # @cogitator-ai/cli — the `cogitator` command
+├── test-utils/       # @cogitator-ai/test-utils — testing utilities
+├── create-cogitator-app/  # create-cogitator-app — project scaffolder
+├── dashboard/        # private — landing page, docs and cookbook site
+└── e2e/              # private — end-to-end test suite
 ```
 
 ## Package Dependency Graph
 
 ```
-@cogitator-ai/types          ← shared interfaces, no dependencies
+@cogitator-ai/types            ← shared interfaces, no dependencies
        ↑
-@cogitator-ai/core           ← Agent, tool(), Cogitator runtime
+models · redis → memory        ← model registry, Redis client, memory adapters
        ↑
-┌──────┼──────────┬───────────┬──────────┐
-│      │          │           │          │
-swarms workflows  memory     mcp      server adapters
-       │          │                    (express, fastify, hono, koa)
-       │          │
-       └──────────┘
-            ↑
-        integrations
-     (next, ai-sdk, openai-compat)
+@cogitator-ai/core             ← Cogitator runtime (types + models + memory)
+       ↑
+┌──────┼───────────┬──────────────────┬───────────────────────────┐
+│      │           │                  │                           │
+workflows  browser, neuro-symbolic  channels  express, fastify, hono, koa, tetsu
+  ↑                                           (+ server-shared), next, openai-compat
+swarms
+  ↑
+worker
 ```
 
-Every package imports `@cogitator-ai/types` for shared interfaces. The `core` package depends only on `types`. Higher-level packages (`swarms`, `workflows`, `memory`) depend on `core` and `types`.
+- `@cogitator-ai/core` depends on `types`, `models` and `memory` (which uses `redis`).
+- `swarms` builds on `workflows`, and `worker` on `swarms`.
+- `mcp`, `rag`, `sandbox`, `wasm-tools`, `voice`, `a2a`, `evals`, `ai-sdk` and `self-modifying` declare at most `types` as a dependency (some take `core` or `memory` as a peer dependency).
+- `config` and `deploy` handle configuration and deployment; `cli` combines `core`, `config`, `models`, `memory`, `channels` and `deploy`.
 
 ## Typical Project Layout
 
-A project scaffolded with `create-cogitator-app` looks like this:
+A project scaffolded with `create-cogitator-app` (`basic` template) looks like this:
 
 ```
 my-agent/
 ├── src/
-│   └── index.ts        # entry point
-├── cogitator.yml       # runtime configuration
-├── .env                # API keys and secrets
-├── docker-compose.yml  # infrastructure services
+│   ├── index.ts          # entry point: Cogitator + Agent
+│   └── tools.ts          # tool definitions
+├── cogitator.yml
+├── .env.example          # API keys to copy into your environment
+├── .gitignore
+├── docker-compose.yml    # Redis + Postgres (+ Ollama), when Docker was chosen
+├── pnpm-workspace.yaml   # when pnpm is the package manager
 ├── package.json
+├── README.md
 └── tsconfig.json
 ```
 
+Other templates add files such as `src/agents/*.ts` (swarm) or `src/agents.ts` (workflow, api-server); see [Project Scaffolding](/docs/getting-started/scaffolding).
+
 ## Development Commands
+
+Run these from the monorepo root:
 
 ```bash
 pnpm install        # install all dependencies
-pnpm build          # build all packages
+pnpm build          # build all packages (turbo)
 pnpm dev            # watch mode for all packages
-pnpm test           # run tests across all packages
+pnpm test           # unit tests across all packages
 pnpm typecheck      # type-check all packages
+pnpm lint           # lint the whole repo
+
+pnpm --filter @cogitator-ai/core test    # one package
 ```

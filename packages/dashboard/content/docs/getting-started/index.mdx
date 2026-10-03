@@ -6,59 +6,62 @@ description: Install Cogitator and set up your development environment.
 ## Prerequisites
 
 - **Node.js 22.12+** — [Download](https://nodejs.org/)
-- **pnpm** (recommended) — `npm install -g pnpm`
-- **Docker** (optional) — For Redis, Postgres, and sandboxed execution
-- **Ollama** (for local LLMs) — [Download](https://ollama.ai/) or use OpenAI/Anthropic API
+- **pnpm** (recommended) — `npm install -g pnpm`; npm, yarn and bun work too
+- **Docker** (optional) — for Redis, Postgres and sandboxed execution
+- **Ollama** (for local LLMs) — [Download](https://ollama.com/), or use a hosted provider such as OpenAI, Anthropic or Google
 
 ```bash
-node --version    # v20.0.0 or higher
-pnpm --version    # 8.0.0 or higher
+node --version    # v22.12.0 or higher
 ```
 
 ## Scaffolding a Project
 
-The fastest way to start is with the CLI scaffolder:
+The fastest way to start is the project scaffolder. It generates the project and installs its dependencies:
 
 ```bash
 npx create-cogitator-app my-agent
 cd my-agent
-npm install
 npm run dev
 ```
 
 `create-cogitator-app` supports 6 templates:
 
-| Template     | Description                          |
-| ------------ | ------------------------------------ |
-| `basic`      | Simple agent with tools              |
-| `memory`     | Agent with persistent memory and RAG |
-| `swarm`      | Multi-agent swarm coordination       |
-| `workflow`   | DAG-based workflow orchestration     |
-| `api-server` | REST API server with Express         |
-| `nextjs`     | Next.js app with chat UI             |
+| Template     | Description                                   |
+| ------------ | --------------------------------------------- |
+| `basic`      | Single agent with tools                       |
+| `memory`     | Agent with persistent memory in Redis         |
+| `swarm`      | Team of agents with hierarchical coordination |
+| `workflow`   | Multi-step DAG pipeline of agents             |
+| `api-server` | Express server exposing agents over HTTP      |
+| `nextjs`     | Next.js chat app with streaming               |
 
-You can also pass flags for non-interactive mode:
+Pass flags to skip the prompts:
 
 ```bash
 npx create-cogitator-app my-agent \
   --template swarm \
   --provider openai \
-  --package-manager pnpm
+  --pm pnpm
 ```
+
+See [Project Scaffolding](/docs/getting-started/scaffolding) for every flag. For a config-driven personal assistant with Telegram, Discord or Slack, use the [CLI](/docs/cli) (`cogitator wizard` or `cogitator init`) instead.
 
 ## Manual Installation
 
 Add Cogitator to an existing project:
 
 ```bash
-pnpm add @cogitator-ai/core @cogitator-ai/types zod
+pnpm add @cogitator-ai/core zod
 ```
 
 Optional packages depending on your needs:
 
 ```bash
-# Memory & RAG
+# Memory adapters (Redis, Postgres, SQLite, MongoDB, Qdrant)
 pnpm add @cogitator-ai/memory
+
+# RAG pipeline
+pnpm add @cogitator-ai/rag
 
 # Multi-agent swarms
 pnpm add @cogitator-ai/swarms
@@ -67,30 +70,32 @@ pnpm add @cogitator-ai/swarms
 pnpm add @cogitator-ai/workflows
 
 # Server adapters
-pnpm add @cogitator-ai/express    # or fastify, hono, koa
+pnpm add @cogitator-ai/express    # or fastify, hono, koa, tetsu, next
 
-# Config file support
+# cogitator.yml and environment loading
 pnpm add @cogitator-ai/config
 
 # MCP protocol
 pnpm add @cogitator-ai/mcp
 ```
 
+Some providers and adapters load optional peer dependencies on demand: `@aws-sdk/client-bedrock-runtime` for Bedrock, `pg` for Postgres, `better-sqlite3` for SQLite, `@cogitator-ai/sandbox` for sandboxed tools, `langfuse` for the Langfuse exporter.
+
 ## Docker Services
 
-For production features (memory, RAG, queues), start infrastructure:
+Projects scaffolded with Docker Compose (the default answer, or `--docker`) get a `docker-compose.yml` with:
+
+- **Redis** (port 6379) — short-term memory, pub/sub, job queues
+- **Postgres** (port 5432) — long-term memory (user, password and database `cogitator` unless `POSTGRES_*` variables are set)
+- **Ollama** (port 11434) — local LLM inference, only when Ollama is the chosen provider
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
-This starts:
+The `postgres:16-alpine` image has no pgvector extension. For semantic search in Postgres, switch the image to `pgvector/pgvector:pg16`.
 
-- **Redis** (port 6379) — Short-term memory, pub/sub, job queues
-- **Postgres + pgvector** (port 5432) — Long-term memory, semantic search
-- **Ollama** (port 11434) — Local LLM inference
-
-Pull a model:
+Pull a model when you use Ollama:
 
 ```bash
 ollama pull llama3.2

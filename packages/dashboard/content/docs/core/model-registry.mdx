@@ -20,6 +20,29 @@ const price = getPrice('claude-sonnet-5-5');
 console.log(`$${price?.input}/M input, $${price?.output}/M output`);
 ```
 
+Model ids are matched case-insensitively, a `provider/` prefix is ignored (`openai/gpt-6.1-sol` finds `gpt-6.1-sol`), and `aliases` resolve too (`claude-sonnet-5.5` → `claude-sonnet-5-5`). Lookups return `null` for unknown models.
+
+## Pricing and Cost
+
+Prices are USD per million tokens. `getPrice()` returns only `input` and `output`; `getPricing()` returns the full `ModelPricing`, including prompt-cache prices:
+
+```typescript
+import { getPricing, calculateCost } from '@cogitator-ai/models';
+
+getPricing('claude-sonnet-5-5');
+// { input: 2, output: 10, inputCached: 0.2, inputCacheWrite: 2.5 }
+
+const cost = calculateCost('claude-sonnet-5-5', {
+  inputTokens: 10_000,
+  outputTokens: 1_000,
+  cachedInputTokens: 8_000, // part of inputTokens read from the cache
+  cacheWriteTokens: 0, // part of inputTokens written to the cache
+});
+// 0.0156 (USD), or null when the model's price is unknown
+```
+
+Cache reads and writes are charged at `inputCached` / `inputCacheWrite` where the model has them, and at the input price otherwise. The runtime uses `calculateCost()` with the shared registry for `RunResult.usage.cost`, so a model the registry does not know costs `0`.
+
 ## ModelRegistry
 
 The `ModelRegistry` class manages model data with caching and auto-refresh.
@@ -43,20 +66,23 @@ await registry.initialize();
 
 ### Options
 
-| Option              | Default                          | Description                              |
-| ------------------- | -------------------------------- | ---------------------------------------- |
-| `cache.ttl`         | 24 hours                         | Cache time-to-live in milliseconds       |
-| `cache.storage`     | `'memory'`                       | `'memory'` or `'file'`                   |
-| `cache.filePath`    | `~/.cogitator/models-cache.json` | File path for file-based cache           |
-| `autoRefresh`       | `false`                          | Automatically refresh data in background |
-| `refreshInterval`   | 24 hours                         | Refresh interval in milliseconds         |
-| `fallbackToBuiltin` | `true`                           | Use built-in models when fetch fails     |
+| Option              | Default                          | Description                                                                                  |
+| ------------------- | -------------------------------- | -------------------------------------------------------------------------------------------- |
+| `cache.ttl`         | 24 hours                         | Cache time-to-live in milliseconds                                                           |
+| `cache.storage`     | `'memory'`                       | `'memory'` or `'file'`                                                                       |
+| `cache.filePath`    | `~/.cogitator/models-cache.json` | File path for file-based cache (in memory where there is no file system, e.g. edge runtimes) |
+| `autoRefresh`       | `false`                          | Automatically refresh data in background                                                     |
+| `refreshInterval`   | 24 hours                         | Refresh interval in milliseconds                                                             |
+| `fallbackToBuiltin` | `true`                           | Use built-in models when fetch fails                                                         |
 
 ### Methods
+
+`initialize()` loads a fresh cache if there is one (and refreshes it in the background), otherwise fetches LiteLLM data; on failure it falls back to built-in models (or throws when `fallbackToBuiltin` is `false`). Lookups before `initialize()` load the built-in models.
 
 ```typescript
 registry.getModel('gpt-6.1-sol');
 registry.getPrice('gpt-6.1-sol');
+registry.getPricing('gpt-6.1-sol');
 registry.listModels({ provider: 'openai', supportsTools: true });
 registry.listProviders();
 registry.getProvider('anthropic');
@@ -99,11 +125,11 @@ const largeContext = listModels({
 
 ## Built-in Providers
 
-The registry includes built-in data for 15 providers:
+The registry includes provider entries (`BUILTIN_PROVIDERS`) for 15 providers:
 
-OpenAI, Anthropic, Google, Ollama, Azure OpenAI, AWS Bedrock, Mistral AI, Cohere, Groq, Together AI, Fireworks AI, DeepInfra, Perplexity, Replicate, xAI.
+OpenAI (`openai`), Anthropic (`anthropic`), Google (`google`), Ollama (`ollama`), Azure OpenAI (`azure`), AWS Bedrock (`aws`), Mistral AI (`mistral`), Cohere (`cohere`), Groq (`groq`), Together AI (`together`), Fireworks AI (`fireworks`), DeepInfra (`deepinfra`), Perplexity (`perplexity`), Replicate (`replicate`), xAI (`xai`).
 
-Additional providers are automatically discovered when LiteLLM data is fetched.
+Built-in model data covers OpenAI, Anthropic and Google; models of the other providers, and additional providers, come from LiteLLM data once it is fetched. `getProvider(id).models` lists the model ids loaded for a provider.
 
 ## Built-in Models
 
@@ -140,7 +166,9 @@ new ModelRegistry({
 });
 ```
 
-The cache supports stale-while-revalidate: if a refresh fails, the registry falls back to stale cached data before using built-in models.
+The cache supports stale-while-revalidate: if a refresh fails, the registry falls back to stale cached data before using built-in models. Fetched data is merged over the built-in entries, so built-in models keep their display names and aliases with fresh prices.
+
+`ModelCache` is exported for direct use (`get()`, `getStale()`, `set(models)`, `clear()`).
 
 ## LiteLLM Integration
 
@@ -194,4 +222,4 @@ listModels({ provider: 'google' });
 shutdownModels();
 ```
 
-These functions auto-initialize with built-in data on first use, so `initializeModels()` is optional but recommended for fetching latest data.
+These functions auto-initialize with built-in data on first use, so `initializeModels()` is optional but recommended for fetching latest data. The shared registry (`getModelRegistry()`) caches to the file `~/.cogitator/models-cache.json` for 24 hours; `shutdownModels()` stops it and discards it, so the next call creates a new one.

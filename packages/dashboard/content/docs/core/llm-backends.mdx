@@ -31,7 +31,7 @@ Model strings follow the `provider/model-name` format:
 'google/gemini-3.8-flash'; // routes to Google
 ```
 
-If the model string has no prefix, Cogitator falls back to `defaultProvider` (or `ollama` if unset).
+If the model string has no prefix, or its prefix is not a built-in provider, a backend in `llm.backends` or a registered plugin, the whole string goes to `defaultProvider` (or `ollama` if unset). That is how `meta-llama/llama-3.3-70b` reaches an OpenAI-compatible default provider unchanged. An agent's `provider` field skips the prefix check and sends the model string as it is.
 
 The `parseModel()` utility handles this splitting:
 
@@ -55,6 +55,7 @@ Local inference with Ollama. No API key required.
 providers: {
   ollama: {
     baseUrl: 'http://localhost:11434', // default
+    apiKey: process.env.OLLAMA_API_KEY, // optional: Ollama Cloud (https://ollama.com) or an authenticated server
   },
 }
 ```
@@ -166,6 +167,8 @@ providers: {
 }
 ```
 
+Bedrock needs the optional `@aws-sdk/client-bedrock-runtime` package. Without explicit credentials it uses the AWS credential chain.
+
 ```typescript
 model: 'bedrock/global.anthropic.claude-sonnet-5-5';
 model: 'bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0';
@@ -203,6 +206,8 @@ All backends receive the same `Message[]`. Every `system` message (the agent ins
 
 ### Backend Instances
 
+A backend implements `LLMBackend` (`provider`, `chat()`, `chatStream()`), usually by extending `BaseLLMBackend`, or `OpenAICompatibleBackend` for servers that speak the OpenAI API. Its `provider` field is typed as one of the built-in provider names; choose the closest one, since the name it is registered under is what routes to it.
+
 Pass backends of your own to `llm.backends`. An agent whose model starts with the name, or whose `provider` is the name, runs on it; the rest of the model string is sent as the model name. A name of a built-in provider replaces it, for example with a `withDebug()` wrapper:
 
 ```typescript
@@ -227,13 +232,15 @@ Register custom LLM backends for providers not included by default. The runtime 
 ```typescript
 import { defineBackend, registerLLMBackend } from '@cogitator-ai/core';
 
-const myBackend = defineBackend({
+const myBackend = defineBackend<{ apiKey: string }>({
   provider: 'my-provider',
   metadata: {
-    name: 'My Provider',
+    name: 'My Provider', // version, description and author are optional
     version: '1.0.0',
   },
   create: (config) => new MyCustomBackend(config),
+  validateConfig: (config): config is { apiKey: string } =>
+    typeof config === 'object' && config !== null && 'apiKey' in config,
 });
 
 registerLLMBackend(myBackend);
@@ -241,6 +248,8 @@ registerLLMBackend(myBackend);
 const cog = new Cogitator({ llm: { plugins: { 'my-provider': { apiKey: '...' } } } });
 const agent = new Agent({ name: 'a', model: 'my-provider/model-x', instructions: '...' });
 ```
+
+Registering a provider name twice throws; `unregisterLLMBackend(provider)` removes one. A failing `validateConfig` makes the first run on that provider fail with `Invalid configuration for provider '...'`.
 
 List registered plugins:
 
@@ -261,9 +270,16 @@ import { withDebug } from '@cogitator-ai/core';
 const debugBackend = withDebug(backend, {
   logRequest: true,
   logResponse: true,
-  logger: (msg) => console.log('[LLM]', msg),
+  logStream: false,
+  redactApiKeys: true,
+  maxContentLength: 2000,
+  logger: {
+    log: (level, message, data) => console.log(`[LLM:${level}]`, message, data ?? ''),
+  },
 });
 ```
+
+Without a `logger` it prints timestamped entries to the console. Put the wrapped backend into `llm.backends` under the provider's name to debug every run on it.
 
 ## Reasoning
 
@@ -346,4 +362,4 @@ try {
 }
 ```
 
-Error codes include `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_INVALID_RESPONSE`, and `LLM_TIMEOUT`. Rate limit, server and connection errors are marked as retryable, and `retryAfter` holds the wait the provider asked for, when it named one.
+Error codes include `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_TIMEOUT`, `LLM_INVALID_RESPONSE`, `LLM_CONTEXT_LENGTH_EXCEEDED` and `LLM_CONTENT_FILTERED`; `e.details` carries the provider, model, status code and request id. Rate limit, server and connection errors are marked as retryable, and `retryAfter` holds the wait the provider asked for, when it named one.

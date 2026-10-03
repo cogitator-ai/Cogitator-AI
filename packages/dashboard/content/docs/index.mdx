@@ -5,49 +5,52 @@ description: The Sovereign AI Agent Runtime — self-hosted, production-grade or
 
 ## What is Cogitator?
 
-Cogitator is a self-hosted, production-grade AI agent runtime for TypeScript. It provides everything you need to build, orchestrate, and deploy autonomous AI agents — from simple chat assistants to complex multi-agent swarms with memory, tools, workflows, and sandboxed code execution.
+Cogitator is a self-hosted, production-grade AI agent runtime for TypeScript. It provides everything you need to build, orchestrate, and deploy autonomous AI agents — from simple chat assistants to multi-agent swarms with memory, tools, workflows, and sandboxed code execution.
 
 ## Key Features
 
-- **Multi-Model Support** — Ollama, OpenAI, Anthropic, Google Gemini, Azure OpenAI, AWS Bedrock
-- **Agent Framework** — Type-safe tool creation, structured outputs, vision & audio
-- **Swarm Intelligence** — 8 coordination strategies for multi-agent systems
-- **Workflow Engine** — DAG-based orchestration with sagas, scheduling, and checkpoints
-- **Memory & RAG** — Vector search, hybrid BM25+vector, knowledge graphs
-- **Server Adapters** — Express, Fastify, Hono, Koa with OpenAPI generation
-- **Sandboxed Execution** — Docker and WASM sandboxes for safe code execution
-- **MCP Protocol** — Full Model Context Protocol client and server support
-- **Observability** — Langfuse, OpenTelemetry, cost tracking
+- **Multi-Model Support** — Ollama, OpenAI, Anthropic, Google Gemini, Azure OpenAI, AWS Bedrock, vLLM, Mistral, Groq, Together and DeepSeek, plus your own backends
+- **Agent Framework** — type-safe tools, structured outputs, reasoning, handoffs, tool approvals with pause/resume, vision & audio
+- **Swarm Intelligence** — 7 coordination strategies (hierarchical, round-robin, consensus, auction, pipeline, debate, negotiation)
+- **Workflow Engine** — DAG-based orchestration with sagas, human-in-the-loop approvals, timers, scheduling and checkpoints
+- **Memory & RAG** — Redis, Postgres, SQLite, MongoDB, Qdrant and in-memory adapters, hybrid BM25 + vector search, knowledge graphs, a RAG pipeline
+- **Channels & Voice** — Telegram, Discord, Slack, WhatsApp and WebChat gateways; STT/TTS and realtime voice agents
+- **Server Adapters** — Express, Fastify, Hono, Koa, Tetsu and Next.js, with OpenAPI generation
+- **Sandboxed Execution** — Docker and WASM sandboxes for running untrusted code
+- **Protocols** — Model Context Protocol (client and server) and Agent-to-Agent (A2A)
+- **Observability & Evals** — Langfuse and OpenTelemetry exporters, per-run cost tracking, an eval framework
 
 ## Quick Start
+
+Scaffold a project:
 
 ```bash
 npx create-cogitator-app my-agent
 cd my-agent
-npm install
 npm run dev
 ```
 
 Or install manually:
 
 ```bash
-npm install @cogitator-ai/core @cogitator-ai/types
+npm install @cogitator-ai/core zod
 ```
 
 ```typescript
 import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { z } from 'zod';
 
 const cogitator = new Cogitator({
   llm: {
-    defaultProvider: 'ollama',
     providers: {
-      ollama: { type: 'ollama', host: 'http://localhost:11434', model: 'llama3.2' },
+      ollama: { baseUrl: 'http://localhost:11434' },
     },
   },
 });
 
 const agent = new Agent({
   name: 'assistant',
+  model: 'ollama/llama3.2',
   instructions: 'You are a helpful assistant.',
   tools: [
     tool({
@@ -59,6 +62,10 @@ const agent = new Agent({
   ],
 });
 
-const result = await cogitator.run(agent, 'Say hello to the world');
-console.log(result.text);
+const result = await cogitator.run(agent, { input: 'Say hello to the world' });
+console.log(result.output);
+
+await cogitator.close();
 ```
+
+Continue with the [Quick Start](/docs/getting-started/quick-start) guide.

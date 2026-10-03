@@ -12,29 +12,33 @@ import { Cogitator, Agent } from '@cogitator-ai/core';
 
 const cogitator = new Cogitator({
   llm: {
-    defaultProvider: 'ollama',
     providers: {
-      ollama: { type: 'ollama', host: 'http://localhost:11434', model: 'llama3.2' },
+      ollama: { baseUrl: 'http://localhost:11434' },
     },
   },
 });
 
 const assistant = new Agent({
   name: 'assistant',
+  model: 'ollama/llama3.2',
   instructions: 'You are a helpful assistant. Be concise and friendly.',
 });
 
-const result = await cogitator.run(assistant, 'Hello! What can you help me with?');
+const result = await cogitator.run(assistant, { input: 'Hello! What can you help me with?' });
 
-console.log('Agent:', result.text);
-console.log('Tokens:', result.usage?.totalTokens);
+console.log('Agent:', result.output);
+console.log('Tokens:', result.usage.totalTokens);
+
+await cogitator.close();
 ```
 
-Run it:
+Run it (with Ollama running and `ollama pull llama3.2` done):
 
 ```bash
 npx tsx src/agent.ts
 ```
+
+`run()` takes the agent and a `RunOptions` object; `input` is the user message. The result carries the answer in `output`, token counts and cost in `usage`, every tool call in `toolCalls` and the run's spans in `trace`.
 
 ## Adding Tools
 
@@ -60,61 +64,70 @@ const getWeather = tool({
 
 const weatherBot = new Agent({
   name: 'weather-bot',
+  model: 'ollama/llama3.2',
   instructions: 'You are a weather assistant. Use the get_weather tool to answer questions.',
   tools: [getWeather],
 });
 
-const cogitator = new Cogitator({
-  llm: {
-    defaultProvider: 'ollama',
-    providers: {
-      ollama: { type: 'ollama', host: 'http://localhost:11434', model: 'llama3.2' },
-    },
-  },
-});
+const cogitator = new Cogitator();
 
-const result = await cogitator.run(weatherBot, 'What is the weather like in Tokyo?');
-console.log(result.text);
+const result = await cogitator.run(weatherBot, { input: 'What is the weather like in Tokyo?' });
+console.log(result.output);
+console.log(result.toolCalls.map((call) => call.name)); // ['get_weather']
 ```
+
+Without any configuration, Cogitator talks to Ollama at `http://localhost:11434`.
 
 ## Streaming Responses
 
-For real-time output, use streaming:
+For real-time output, stream the tokens:
 
 ```typescript
 const result = await cogitator.run(assistant, {
   input: 'Write a short poem about coding.',
   stream: true,
-  onToken: (token) => {
-    process.stdout.write(token);
-  },
+  onToken: (token) => process.stdout.write(token),
 });
 ```
 
+`result.output` still holds the whole answer once the run finishes.
+
+## Conversations
+
+Runs with the same `threadId` share a conversation when memory is configured:
+
+```typescript
+const cogitator = new Cogitator({
+  llm: { providers: { ollama: { baseUrl: 'http://localhost:11434' } } },
+  memory: { adapter: 'memory' },
+});
+
+await cogitator.run(assistant, { input: 'My name is Alex.', threadId: 'chat-1' });
+const reply = await cogitator.run(assistant, { input: 'What is my name?', threadId: 'chat-1' });
+```
+
+See [Memory](/docs/memory) for persistent adapters.
+
 ## Multiple Providers
 
-Configure multiple LLM providers and route agents to different models:
+Configure several LLM providers and route each agent to the model it needs:
 
 ```typescript
 const cogitator = new Cogitator({
   llm: {
-    defaultProvider: 'ollama',
+    defaultModel: 'ollama/llama3.2',
     providers: {
-      ollama: { type: 'ollama', host: 'http://localhost:11434', model: 'llama3.2' },
-      openai: { type: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-6.1-sol' },
-      anthropic: {
-        type: 'anthropic',
-        apiKey: process.env.ANTHROPIC_API_KEY!,
-        model: 'claude-sonnet-5-5',
-      },
+      ollama: { baseUrl: 'http://localhost:11434' },
+      openai: { apiKey: process.env.OPENAI_API_KEY! },
+      anthropic: { apiKey: process.env.ANTHROPIC_API_KEY! },
     },
   },
 });
 
-// uses default ollama provider
+// runs on llm.defaultModel
 const localAgent = new Agent({ name: 'local', instructions: '...' });
 
-// override per-agent
+// per-agent models
 const smartAgent = new Agent({ name: 'smart', instructions: '...', model: 'openai/gpt-6.1-sol' });
 const creativeAgent = new Agent({
   name: 'creative',
@@ -123,13 +136,14 @@ const creativeAgent = new Agent({
 });
 ```
 
-Model name format:
+Model strings:
 
-- `model-name` — uses the default provider
-- `provider/model-name` — explicitly routes to a specific provider
+- `provider/model-name` — routes to that provider (`openai/gpt-6.1-sol`, `google/gemini-3.5-flash-lite`)
+- `model-name` — runs on `llm.defaultProvider` (Ollama when unset); so does a string whose prefix is not a known provider, such as `meta-llama/llama-3.3-70b`
+- no `model` on the agent — uses `llm.defaultModel`; a run fails with `CONFIGURATION_ERROR` when neither is set
 
 ## Next Steps
 
-- [Project Structure](/docs/getting-started/project-structure) — understand how projects are organized
+- [Project Structure](/docs/getting-started/project-structure) — how projects and the monorepo are organized
 - [Configuration](/docs/getting-started/configuration) — `cogitator.yml`, environment variables, provider setup
 - [Core Concepts](/docs/core/cogitator) — deep dive into the Cogitator runtime

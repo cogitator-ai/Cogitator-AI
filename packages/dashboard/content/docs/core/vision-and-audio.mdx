@@ -42,7 +42,7 @@ const agent = new Agent({
 
 | Parameter | Type                           | Description                                     |
 | --------- | ------------------------------ | ----------------------------------------------- |
-| `image`   | `string \| { data, mimeType }` | URL or base64-encoded image data                |
+| `image`   | `string \| { data, mimeType }` | Image URL, or base64 data with its MIME type    |
 | `prompt`  | `string`                       | Question or instruction about the image         |
 | `detail`  | `'auto' \| 'low' \| 'high'`    | Analysis detail level (`high` uses more tokens) |
 | `model`   | `string`                       | Override the vision model                       |
@@ -236,8 +236,14 @@ import {
 } from '@cogitator-ai/core';
 
 const image = await fetchImageAsBase64('https://example.com/photo.jpg');
-// { data: 'base64...', mimeType: 'image/jpeg' }
+// { data: 'base64...', mediaType: 'image/jpeg' } — up to 20 MB, 30 s timeout
 
 const audio = await fetchAudioAsBuffer('https://example.com/audio.mp3');
-// { buffer: ArrayBuffer, filename: 'audio.mp3' }
+// { buffer: Buffer, format: 'mp3', filename: 'audio.mp3' } — 60 s timeout
+
+const input = await audioInputToBuffer({ data: base64Audio, format: 'wav' }); // URL or base64 AudioInput
+isValidAudioFormat('ogg'); // true
+getAudioMimeType('mp3'); // 'audio/mpeg'
 ```
+
+Both fetchers take `{ timeout, signal }` as a second argument.

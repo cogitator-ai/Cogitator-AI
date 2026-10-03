@@ -10,17 +10,20 @@ Create a `cogitator.yml` in your project root:
 ```yaml
 llm:
   defaultProvider: ollama
-  defaultModel: llama3.2
+  defaultModel: ollama/llama3.2
   providers:
     ollama:
       baseUrl: http://localhost:11434
     openai:
-      apiKey: sk-xxx
-      baseUrl: https://api.openai.com/v1
+      apiKey: ${OPENAI_API_KEY}
     anthropic:
-      apiKey: sk-ant-xxx
+      apiKey: ${ANTHROPIC_API_KEY}
     google:
-      apiKey: xxx
+      apiKey: ${GOOGLE_API_KEY}
+
+limits:
+  maxConcurrentRuns: 10
+  defaultTimeout: 120000
 
 memory:
   adapter: redis
@@ -29,10 +32,6 @@ memory:
   embedding:
     provider: ollama
     model: nomic-embed-text
-
-logging:
-  level: info
-  format: pretty
 ```
 
 Load it with `@cogitator-ai/config`:
@@ -45,44 +44,104 @@ const config = loadConfig();
 const cogitator = new Cogitator(config);
 ```
 
-`loadConfig()` automatically:
+`loadConfig()`:
 
-- Reads `cogitator.yml` (or `.cogitator.yml`) from the current directory
-- Merges with environment variables (see below)
-- Validates the config against Zod schemas
-- Applies programmatic overrides
+- Reads the first of `cogitator.yaml`, `cogitator.yml`, `.cogitator.yaml`, `.cogitator.yml` in the current working directory (none is fine)
+- Substitutes `${VAR}` references in the YAML
+- Merges environment variables over the file (see below)
+- Merges `overrides` over both
+- Validates the result against Zod schemas and throws `Invalid configuration: ...` listing the offending fields
+
+```typescript
+const config = loadConfig({
+  configPath: './config/cogitator.yml', // must exist, or loadConfig throws
+  skipEnv: false, // true: ignore environment variables
+  skipYaml: false, // true: ignore config files
+  overrides: { limits: { maxConcurrentRuns: 4 } },
+});
+```
+
+`loadConfig()` does not read `.env` files. Load them first with `process.loadEnvFile()` (Node 20.12+), or parse one with `loadDotenvFile(path)` / `parseDotenv(text)` from the same package.
+
+## Top-Level Sections
+
+| Section       | What it configures                                                                                                        |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `llm`         | `defaultProvider`, `defaultModel`, `providers`, `retry`, `promptCache`                                                    |
+| `limits`      | `maxConcurrentRuns`, `defaultTimeout` (ms), `maxTokensPerRun` — see [Cogitator](/docs/core/cogitator#defaults-and-limits) |
+| `memory`      | Adapter, its connection, `embedding` and `contextBuilder`                                                                 |
+| `sandbox`     | Defaults, container pool, Docker and WASM settings for [sandboxed tools](/docs/deployment/sandbox)                        |
+| `reflection`  | [Reflection](/docs/advanced/reflection) after tool calls, errors or at the end of a run                                   |
+| `guardrails`  | [Constitutional AI](/docs/advanced/constitutional-ai) input/output/tool filtering                                         |
+| `costRouting` | [Cost-aware model routing](/docs/advanced/cost-routing) and budgets                                                       |
+| `security`    | `promptInjection` detection and `pii` masking ([Security](/docs/advanced/security))                                       |
+| `context`     | [Context compression](/docs/advanced/context-management) for long conversations                                           |
+| `deploy`      | Target, server, port, registry and resources for `cogitator deploy` ([Deploy](/docs/deployment/deploy-package))           |
+| `logging`     | `level`, `format`, `destination`, `filePath` — validated, but not applied by the runtime (see below)                      |
+
+### Memory
+
+`memory.adapter` takes `memory`, `redis`, `postgres`, `sqlite`, `mongodb` or `qdrant`, with the adapter's settings under the key of the same name. The `Cogitator` runtime connects `memory`, `redis` (it needs `redis.url`) and `postgres` adapters from this config by itself. For SQLite, MongoDB or Qdrant, connect the adapter yourself and hand it over:
+
+```typescript
+import { Cogitator } from '@cogitator-ai/core';
+import { SQLiteAdapter } from '@cogitator-ai/memory';
+
+const memory = new SQLiteAdapter({ provider: 'sqlite', path: './data/memory.db' });
+const connected = await memory.connect();
+if (!connected.success) throw new Error(connected.error);
+
+const cogitator = new Cogitator({ llm: { defaultModel: 'ollama/llama3.2' } });
+cogitator.memory = memory;
+```
+
+### Logging
+
+The runtime logger is configured in code, not by the `logging` section: it logs at `info` (or `LOG_LEVEL`), as JSON when `NODE_ENV=production` and pretty-printed otherwise. Replace it with `setLogger()`:
+
+```typescript
+import { createLogger, setLogger } from '@cogitator-ai/core';
+
+setLogger(createLogger({ level: 'debug', format: 'json' }));
+```
 
 ## Environment Variables
 
 Cogitator reads environment variables with the `COGITATOR_` prefix:
 
-```bash
-COGITATOR_LLM_DEFAULT_PROVIDER=openai
-COGITATOR_LLM_DEFAULT_MODEL=gpt-6.1-sol
-COGITATOR_OLLAMA_BASE_URL=http://localhost:11434
-COGITATOR_OPENAI_API_KEY=sk-xxx
-COGITATOR_ANTHROPIC_API_KEY=sk-ant-xxx
-COGITATOR_GOOGLE_API_KEY=xxx
-COGITATOR_AZURE_DEPLOYMENT=gpt-6.1-sol
-COGITATOR_MISTRAL_API_KEY=xxx
-COGITATOR_GROQ_API_KEY=xxx
-COGITATOR_TOGETHER_API_KEY=xxx
-COGITATOR_DEEPSEEK_API_KEY=xxx
-```
+| Variable                                                                               | Config path                       |
+| -------------------------------------------------------------------------------------- | --------------------------------- |
+| `COGITATOR_LLM_DEFAULT_PROVIDER`                                                       | `llm.defaultProvider`             |
+| `COGITATOR_LLM_DEFAULT_MODEL`                                                          | `llm.defaultModel`                |
+| `COGITATOR_OLLAMA_BASE_URL`, `COGITATOR_OLLAMA_API_KEY`                                | `llm.providers.ollama.*`          |
+| `COGITATOR_OPENAI_API_KEY`, `COGITATOR_OPENAI_BASE_URL`                                | `llm.providers.openai.*`          |
+| `COGITATOR_ANTHROPIC_API_KEY`                                                          | `llm.providers.anthropic.apiKey`  |
+| `COGITATOR_GOOGLE_API_KEY`                                                             | `llm.providers.google.apiKey`     |
+| `COGITATOR_AZURE_API_KEY`, `_ENDPOINT`, `_API_VERSION`, `_DEPLOYMENT`                  | `llm.providers.azure.*`           |
+| `COGITATOR_BEDROCK_REGION`, `_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY`                     | `llm.providers.bedrock.*`         |
+| `COGITATOR_VLLM_BASE_URL`                                                              | `llm.providers.vllm.baseUrl`      |
+| `COGITATOR_MISTRAL_API_KEY`, `_GROQ_API_KEY`, `_TOGETHER_API_KEY`, `_DEEPSEEK_API_KEY` | `llm.providers.<provider>.apiKey` |
+| `COGITATOR_LIMITS_MAX_CONCURRENT_RUNS`, `_DEFAULT_TIMEOUT`, `_MAX_TOKENS_PER_RUN`      | `limits.*` (digits only)          |
+| `COGITATOR_DEPLOY_TARGET`, `_PORT`, `_REGISTRY`                                        | `deploy.*`                        |
 
-Standard provider env vars are also supported:
+Standard provider variables work too; a `COGITATOR_*` variable wins over its standard counterpart:
 
 ```bash
 OPENAI_API_KEY=sk-xxx
+OPENAI_BASE_URL=https://proxy.example.com/v1
 ANTHROPIC_API_KEY=sk-ant-xxx
 GOOGLE_API_KEY=xxx            # or GEMINI_API_KEY
 OLLAMA_URL=http://localhost:11434   # or OLLAMA_HOST (scheme optional)
 OLLAMA_API_KEY=xxx            # Ollama Cloud; URL defaults to https://ollama.com unless set in env or YAML
+AZURE_OPENAI_API_KEY=xxx      # with AZURE_OPENAI_ENDPOINT, optional AZURE_OPENAI_DEPLOYMENT
+AWS_REGION=us-east-1          # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY for Bedrock
 MISTRAL_API_KEY=xxx
 GROQ_API_KEY=xxx
 TOGETHER_API_KEY=xxx
 DEEPSEEK_API_KEY=xxx
 ```
+
+Azure is configured from the environment only when both the key and the endpoint are set.
 
 ### Referencing Environment Variables in YAML
 
@@ -100,15 +159,15 @@ Substituted values are always strings, so numeric fields (for example `deploy.po
 
 ## Programmatic Configuration
 
-You can skip the YAML file and configure directly:
+You can skip the YAML file and validate a config object directly:
 
 ```typescript
+import { Cogitator } from '@cogitator-ai/core';
 import { defineConfig } from '@cogitator-ai/config';
 
 const config = defineConfig({
   llm: {
-    defaultProvider: 'openai',
-    defaultModel: 'gpt-6.1-sol',
+    defaultModel: 'openai/gpt-6.1-sol',
     providers: {
       openai: {
         apiKey: process.env.OPENAI_API_KEY!,
@@ -131,14 +190,14 @@ const config = defineConfig({
 const cogitator = new Cogitator(config);
 ```
 
-Or use `loadConfig` with overrides:
+`defineConfig()` validates like `loadConfig()` but reads neither files nor the environment. Neither of them is required: `new Cogitator({...})` takes the same object without validation.
+
+Some options exist only in code, since they hold functions or objects: `llm.backends`, `llm.plugins`, `llm.retry.onRetry`, `runCheckpoints` and `prompts`. Validation strips unknown keys, so pass them to the constructor next to the loaded config:
 
 ```typescript
-const config = loadConfig({
-  configPath: './cogitator.yml',
-  overrides: {
-    logging: { level: 'debug' },
-  },
+const cogitator = new Cogitator({
+  ...loadConfig(),
+  prompts: { autoDeployWinner: true },
 });
 ```
 
@@ -150,7 +209,8 @@ const config = loadConfig({
 llm:
   providers:
     ollama:
-      baseUrl: http://localhost:11434
+      baseUrl: http://localhost:11434 # default; https://ollama.com when only apiKey is set
+      apiKey: xxx # optional, Ollama Cloud or an authenticated server
 ```
 
 ### OpenAI
@@ -207,6 +267,8 @@ llm:
       secretAccessKey: xxx # optional
 ```
 
+Bedrock needs the optional `@aws-sdk/client-bedrock-runtime` package.
+
 ### OpenAI-Compatible Providers
 
 ```yaml
@@ -220,6 +282,8 @@ llm:
       apiKey: xxx
     deepseek:
       apiKey: xxx
+    vllm:
+      baseUrl: http://localhost:8000/v1
 ```
 
 ### Retries
@@ -262,9 +326,11 @@ security:
 
 ## Config Merging
 
-Configs are merged with this priority (highest wins):
+Configs are deep-merged with this priority (highest wins):
 
 1. Programmatic overrides passed to `loadConfig({ overrides })`
 2. Environment variables (`COGITATOR_*` and standard provider vars)
 3. YAML config file values
 4. Built-in defaults
+
+Objects merge key by key; arrays and scalar values replace each other.

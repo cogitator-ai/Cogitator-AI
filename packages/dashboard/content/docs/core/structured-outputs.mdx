@@ -30,13 +30,7 @@ const agent = new Agent({
 
 ### `text` (default)
 
-The LLM responds with free-form text. This is the default when no `responseFormat` is set.
-
-```typescript
-responseFormat: {
-  type: 'text';
-}
-```
+The LLM responds with free-form text. This is the default when no `responseFormat` is set, and the same as `responseFormat: { type: 'text' }`. `result.structured` stays `undefined`.
 
 ### `json`
 
@@ -56,7 +50,7 @@ const data = result.structured; // the parsed JSON, or undefined if the answer w
 
 ### `json_schema`
 
-The LLM is constrained to a specific JSON structure defined by a Zod schema. This is the most powerful mode -- the output is guaranteed to match your schema.
+The LLM is constrained to a specific JSON structure defined by a Zod schema. This is the most powerful mode -- providers with native structured outputs enforce the schema, and every answer is validated against it (see [Reading the Result](#reading-the-result)).
 
 ```typescript
 const sentimentSchema = z.object({
@@ -98,7 +92,7 @@ text: {
     type: 'json_schema',
     name: 'response',
     schema: { /* your Zod schema converted to JSON Schema */ },
-    strict: true,
+    strict: true, // when the schema allows it, see below
   },
 }
 ```
@@ -167,7 +161,7 @@ const analysisSchema = z.object({
 });
 ```
 
-Field descriptions (`.describe()`) are included in the JSON Schema sent to the LLM, which improves output quality.
+Field descriptions (`.describe()`) are included in the JSON Schema sent to the LLM, which improves output quality. A `.describe()` on the root schema becomes the schema's description, and names the schema in a [serialized](/docs/core/agents#serialization) agent snapshot.
 
 ## Reading the Result
 

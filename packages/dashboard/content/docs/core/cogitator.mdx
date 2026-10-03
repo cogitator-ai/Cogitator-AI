@@ -5,7 +5,7 @@ description: The main runtime that orchestrates agent execution, LLM routing, me
 
 ## Overview
 
-The `Cogitator` class is the central runtime for executing AI agents. It manages LLM backend connections, memory persistence, tool registries, and observability. You create one instance and use it to run any number of agents.
+The `Cogitator` class is the central runtime for executing AI agents. It manages LLM backend connections, memory persistence, the global tool registry, approvals and observability. You create one instance and use it to run any number of agents.
 
 ```typescript
 import { Cogitator, Agent } from '@cogitator-ai/core';
@@ -37,16 +37,20 @@ await cog.close();
 const cog = new Cogitator(config?: CogitatorConfig);
 ```
 
-The config object is entirely optional. Without it, Cogitator defaults to Ollama at `localhost:11434`.
+The config object is entirely optional. Without it, Cogitator talks to Ollama at `localhost:11434`, and every agent must name its own `model`. Nothing connects in the constructor: backends, memory and other services start on first use.
 
 ### Configuration
 
 ```typescript
 interface CogitatorConfig {
   llm?: {
-    defaultProvider?: LLMProvider;
-    defaultModel?: string;
-    providers?: LLMProvidersConfig;
+    defaultProvider?: LLMProvider; // for model strings without a known provider prefix (default 'ollama')
+    defaultModel?: string; // for agents that set no model
+    providers?: LLMProvidersConfig; // API keys and URLs per provider
+    backends?: Record<string, LLMBackend>; // your own backends, by name
+    plugins?: Record<string, unknown>; // config for registerLLMBackend() plugins
+    retry?: LLMRetryConfig | false; // default: 2 retries with backoff
+    promptCache?: PromptCacheConfig | false; // default: on
   };
   limits?: {
     maxConcurrentRuns?: number; // runs over the limit wait in order
@@ -54,18 +58,24 @@ interface CogitatorConfig {
     maxTokensPerRun?: number; // checked before each model call
   };
   memory?: MemoryConfig;
+  runCheckpoints?: RunCheckpointStore; // where paused runs wait
+  prompts?: PromptsConfig; // instruction versions and A/B tests
   sandbox?: SandboxManagerConfig;
   reflection?: ReflectionConfig;
-  guardrails?: GuardrailConfig;
+  guardrails?: Partial<GuardrailConfig>;
   costRouting?: CostRoutingConfig;
-  security?: { promptInjection?: PromptInjectionConfig };
+  security?: { promptInjection?: Partial<PromptInjectionConfig>; pii?: PiiConfig };
   context?: ContextManagerConfig;
+  logging?: LoggingConfig; // typed and validated, not applied by the runtime
+  deploy?: DeployConfig; // read by `cogitator deploy`
 }
 ```
 
+The same object can come from `cogitator.yml` and the environment via [`loadConfig()`](/docs/getting-started/configuration). Retries and prompt caching are described in [LLM Backends](/docs/core/llm-backends#retries); `security` in [Security](/docs/advanced/security).
+
 ### Defaults and Limits
 
-- `llm.defaultModel` is the model of every agent that sets no `model` of its own.
+- `llm.defaultModel` is the model of every agent that sets no `model` of its own. `cog.resolveModel(agent)` returns the model a run would use and throws `CONFIGURATION_ERROR` when there is none.
 - `limits.maxConcurrentRuns` caps how many `run()` calls execute at once on this instance. The rest wait in arrival order; their timeout and abort signal also cover the wait.
 - `limits.defaultTimeout` applies to runs whose options and agent set no `timeout`. Without it, runs time out after 2 minutes.
 - `limits.maxTokensPerRun` is checked before every model call: once the run has used that many input and output tokens, the next call fails with `RUN_TOKEN_LIMIT_EXCEEDED`. The answer of the call that crosses the limit is still returned.
@@ -88,7 +98,7 @@ const cog = new Cogitator({
 });
 ```
 
-Backends are created lazily -- Cogitator only instantiates a provider's client the first time an agent requests it. The provider is determined by the model string prefix (`openai/gpt-6.1-sol` routes to OpenAI, `anthropic/claude-sonnet-5-5` routes to Anthropic).
+Backends are created lazily -- Cogitator only instantiates a provider's client the first time an agent requests it. The provider is determined by the model string prefix (`openai/gpt-6.1-sol` routes to OpenAI, `anthropic/claude-sonnet-5-5` routes to Anthropic). `cog.route(model)` returns the backend and model name a run would use, and `cog.getLLMBackend(model)` just the backend, already wrapped with retries and PII masking.
 
 ## Running Agents
 
@@ -107,46 +117,101 @@ const result = await cog.run(agent, {
 
 ### RunOptions
 
-| Option              | Type                           | Description                                    |
-| ------------------- | ------------------------------ | ---------------------------------------------- |
-| `input`             | `string`                       | User prompt (required)                         |
-| `images`            | `ImageInput[]`                 | Images to include with the input               |
-| `audio`             | `AudioInput[]`                 | Audio files to transcribe and include          |
-| `threadId`          | `string`                       | Thread ID for memory persistence               |
-| `context`           | `Record<string, unknown>`      | Additional context injected into system prompt |
-| `stream`            | `boolean`                      | Enable token streaming                         |
-| `signal`            | `AbortSignal`                  | Cancel the run and linked provider/tool work   |
-| `onToken`           | `(token: string) => void`      | Streaming callback                             |
-| `onToolCall`        | `(call: ToolCall) => void`     | Called when agent invokes a tool               |
-| `onToolResult`      | `(result: ToolResult) => void` | Called when a tool returns                     |
-| `onSpan`            | `(span: Span) => void`         | Observability callback for tracing             |
-| `timeout`           | `number`                       | Override agent timeout (ms)                    |
-| `parallelToolCalls` | `boolean`                      | Execute tool calls in parallel                 |
-| `useMemory`         | `boolean`                      | Enable/disable memory for this run             |
-| `loadHistory`       | `boolean`                      | Load prior memory history for this run         |
-| `saveHistory`       | `boolean`                      | Persist run messages to memory                 |
+| Option                     | Type                                                  | Description                                                                                              |
+| -------------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `input`                    | `string`                                              | User prompt (required)                                                                                   |
+| `images`                   | `ImageInput[]`                                        | Images to include with the input ([Vision & Audio](/docs/core/vision-and-audio))                         |
+| `audio`                    | `AudioInput[]`                                        | Audio files to transcribe and include                                                                    |
+| `threadId`                 | `string`                                              | Conversation to continue; a new one is created when omitted                                              |
+| `userId`                   | `string`                                              | The user the run acts for: owns new threads, scopes memory, reaches tools as `context.userId`            |
+| `threadAccess`             | `'owner' \| 'shared'`                                 | `'owner'` (default): only the thread's creator may continue it ([Multi-User](/docs/advanced/multi-user)) |
+| `context`                  | `Record<string, unknown>`                             | Additional context injected into the system prompt                                                       |
+| `stream`                   | `boolean`                                             | Enable token streaming                                                                                   |
+| `signal`                   | `AbortSignal`                                         | Cancel the run and linked provider/tool work                                                             |
+| `timeout`                  | `number`                                              | Override the agent timeout (ms)                                                                          |
+| `reasoning`                | `ReasoningConfig`                                     | Override the agent's `reasoning` for this run                                                            |
+| `parallelToolCalls`        | `boolean`                                             | Execute tool calls in parallel (default: sequential)                                                     |
+| `useMemory`                | `boolean`                                             | Enable/disable memory for this run (default: on when an adapter is configured)                           |
+| `loadHistory`              | `boolean`                                             | Load prior memory history for this run (default: true)                                                   |
+| `saveHistory`              | `boolean`                                             | Persist run messages to memory (default: true)                                                           |
+| `onApproval`               | `(request) => decision \| 'pause'`                    | Decide calls of tools with `requiresApproval` ([Approvals](/docs/tools/approvals))                       |
+| `onToken`                  | `(token: string) => void`                             | Streaming callback                                                                                       |
+| `onReasoning`              | `(delta: string) => void`                             | Streamed reasoning summary (needs `reasoning.summary`)                                                   |
+| `onToolCall`               | `(call: ToolCall) => void`                            | Called when the agent invokes a tool                                                                     |
+| `onToolResult`             | `(result: ToolResult) => void`                        | Called when a tool returns                                                                               |
+| `onHandoff`                | `(handoff: HandoffEvent) => void`                     | Called when an agent hands the conversation over ([Handoffs](/docs/core/agents#handoffs))                |
+| `onRunStart`               | `({ runId, agentId, input, threadId }) => void`       | Called when the run starts                                                                               |
+| `onRunComplete`            | `(result: RunResult) => void`                         | Called with the result                                                                                   |
+| `onRunError`               | `(error: Error, runId: string) => void`               | Called when the run fails                                                                                |
+| `onMemoryError`            | `(error: Error, operation: 'save' \| 'load') => void` | Called when loading or saving history fails (the run goes on)                                            |
+| `onSpan`                   | `(span: Span) => void`                                | Observability callback for tracing                                                                       |
+| `channelType`, `channelId` | `string`                                              | Where the message came from; passed on to tools in their context                                         |
 
 ### RunResult
 
 ```typescript
 interface RunResult {
-  output: string;
+  output: string; // final answer text
+  structured?: unknown; // parsed JSON for json / json_schema agents
   runId: string;
   agentId: string;
   threadId: string;
-  modelUsed?: string;
+  modelUsed?: string; // differs from agent.model under cost routing
   usage: {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
-    cost: number;
-    duration: number;
+    cost: number; // USD, from the model registry's prices
+    duration: number; // ms
+    reasoningTokens?: number;
+    cachedInputTokens?: number;
+    cacheWriteTokens?: number;
   };
+  reasoning?: string; // reasoning summary, when asked for
+  prompt?: RunPrompt; // instruction version / A/B variant used
+  handoffs?: HandoffEvent[];
+  finalAgent?: string; // the agent that answered after handoffs
+  status?: 'completed' | 'paused';
+  pendingApprovals?: ToolApprovalRequest[]; // when paused
+  checkpoint?: RunCheckpoint; // when paused, for cog.resume()
   toolCalls: ToolCall[];
   messages: Message[];
   trace: { traceId: string; spans: Span[] };
+  reflections?: Reflection[];
+  reflectionSummary?: ReflectionSummary;
 }
 ```
+
+All fields are `readonly`.
+
+## Pausing and Resuming
+
+A run that reaches a tool call with `requiresApproval` and no `onApproval` decision pauses: it returns with `status: 'paused'`, the waiting calls in `pendingApprovals` and a JSON `checkpoint`. Continue it later by thread id (the checkpoint is kept in `runCheckpoints`, by default in the memory adapter's threads or in process memory) or from the checkpoint itself:
+
+```typescript
+const paused = await cog.run(agent, { input: 'Refund order 42', threadId, userId });
+
+if (paused.status === 'paused') {
+  const result = await cog.resume(agent, threadId, {
+    userId,
+    decisions: { [paused.pendingApprovals![0].toolCallId]: { approved: true } },
+  });
+}
+```
+
+See [Approvals](/docs/tools/approvals) for decisions, stores and servers.
+
+## Prompt Versions
+
+`cog.prompts` deploys new instructions for an agent without changing code, rolls them back, and runs A/B tests on live traffic; every run records its outcome against the version it used:
+
+```typescript
+await cog.prompts.deploy(agent, 'You write release notes. Lead with what changed for the user.');
+const result = await cog.run(agent, { input });
+result.prompt; // { key: 'assistant', versionId: '...', version: 2 }
+```
+
+See [Prompt Versions](/docs/advanced/prompt-versions).
 
 ## Cost Estimation
 
@@ -163,9 +228,11 @@ console.log(`Expected cost: $${estimate.expectedCost.toFixed(4)}`);
 console.log(`Confidence: ${(estimate.confidence * 100).toFixed(0)}%`);
 ```
 
+With `costRouting` enabled, `cog.getCostSummary()` returns what runs have spent and `cog.getCostRouter()` the router itself ([Cost Routing](/docs/advanced/cost-routing)).
+
 ## Global Tool Registry
 
-Cogitator exposes a shared `tools` registry. Tools registered here are available to all agents:
+Cogitator exposes a shared `tools` registry. Tools registered here are available to every agent run on this instance, next to the agent's own tools (an agent tool with the same name wins):
 
 ```typescript
 cog.tools.register(myGlobalTool);
@@ -179,7 +246,15 @@ The configured memory adapter connects on the first run. To read threads before 
 const memory = await cog.getMemory(); // undefined when memory is not configured
 ```
 
-`cog.memory` is the same adapter once connected, and `undefined` before.
+`cog.memory` is the same adapter once connected, and `undefined` before. Assigning `cog.memory = adapter` uses an adapter you connected yourself, for example one the config cannot create.
+
+## Other Methods
+
+| Method                                                   | Returns                                                                                  |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `getGuardrails()` / `setConstitution(constitution)`      | The [Constitutional AI](/docs/advanced/constitutional-ai) instance, or replace its rules |
+| `getInsights(agentId)` / `getReflectionSummary(agentId)` | [Reflection](/docs/advanced/reflection) insights and summary                             |
+| `reflectionEngine`                                       | The reflection engine, when reflection is enabled                                        |
 
 ## Cleanup
 

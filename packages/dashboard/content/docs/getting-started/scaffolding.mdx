@@ -3,7 +3,7 @@ title: Project Scaffolding
 description: Create new Cogitator projects in seconds with create-cogitator-app.
 ---
 
-`create-cogitator-app` is an interactive CLI that scaffolds production-ready Cogitator projects with your chosen template, LLM provider, and tooling.
+`create-cogitator-app` is an interactive CLI that scaffolds a Cogitator project from a template, wired to your chosen LLM provider, and installs its dependencies.
 
 ## Quick Start
 
@@ -11,24 +11,27 @@ description: Create new Cogitator projects in seconds with create-cogitator-app.
 npx create-cogitator-app
 ```
 
-This launches an interactive prompt that guides you through:
+The prompts ask for:
 
-1. Project name and location
-2. Template selection
+1. Project directory (default `my-agents`)
+2. Template
 3. LLM provider
-4. Package manager
-5. Docker Compose and git options
+4. Package manager (pre-selected from the one running the command, otherwise pnpm)
+5. Docker Compose (default yes)
+6. Git repository (default yes)
+
+The target directory must not exist or be empty. The scaffolder then writes the files, runs `<pm> install` and, if chosen and git is installed, creates a repository. A failed install or git step is reported and left for you to run by hand.
 
 ## Templates
 
-| Template     | Best For                                      |
-| ------------ | --------------------------------------------- |
-| `basic`      | Getting started, single agent with tools      |
-| `memory`     | Agents that need cross-session memory (Redis) |
-| `swarm`      | Multi-agent hierarchical task delegation      |
-| `workflow`   | DAG pipelines with sequential agent nodes     |
-| `api-server` | REST API backends with Express                |
-| `nextjs`     | Full-stack chat apps with streaming UI        |
+| Template     | What you get                                                                         |
+| ------------ | ------------------------------------------------------------------------------------ |
+| `basic`      | One agent with two tools (`src/index.ts`, `src/tools.ts`)                            |
+| `memory`     | Agent with Redis-backed memory that remembers a conversation across runs             |
+| `swarm`      | Hierarchical swarm: a reviewer supervising a researcher and a writer (`src/agents/`) |
+| `workflow`   | DAG workflow of three agent nodes and a function node (`@cogitator-ai/workflows`)    |
+| `api-server` | Express server exposing agents over HTTP (`@cogitator-ai/express`)                   |
+| `nextjs`     | Next.js App Router chat app with a streaming route and `useCogitatorChat` UI         |
 
 ## CLI Flags
 
@@ -45,11 +48,14 @@ npx create-cogitator-app my-project \
 
 | Flag                       | Shorthand | Values                                                         |
 | -------------------------- | --------- | -------------------------------------------------------------- |
+| `[directory]`              |           | First positional argument; its last segment names the project  |
 | `--template`               | `-t`      | `basic`, `memory`, `swarm`, `workflow`, `api-server`, `nextjs` |
 | `--provider`               | `-p`      | `ollama`, `openai`, `anthropic`, `google`                      |
 | `--pm`                     |           | `pnpm`, `npm`, `yarn`, `bun`                                   |
-| `--docker` / `--no-docker` |           | Include Docker Compose (Redis, Postgres)                       |
-| `--git` / `--no-git`       |           | Initialize git repository                                      |
+| `--docker` / `--no-docker` |           | Include Docker Compose                                         |
+| `--git` / `--no-git`       |           | Initialize a git repository                                    |
+
+An invalid flag value is ignored and asked for interactively; anything not given by a flag is prompted for.
 
 ## Providers
 
@@ -60,24 +66,34 @@ npx create-cogitator-app my-project \
 | `anthropic` | `claude-sonnet-5-5` | `ANTHROPIC_API_KEY`          |
 | `google`    | `gemini-3.8-flash`  | `GOOGLE_API_KEY`             |
 
+The generated code sets `llm.defaultProvider` to the chosen provider, reads the key from the environment variable above and gives each agent the default model. `.env.example` lists the variables to set. Next.js loads `.env*` files on its own; the other templates do not, so export the variables in your shell or run with `tsx --env-file=.env src/index.ts`.
+
 ## Generated Structure
 
 ```
 my-project/
 ├── src/
-│   ├── index.ts        # Entry point
-│   └── tools.ts        # Tool definitions
-├── package.json
-├── tsconfig.json
-├── cogitator.yml       # Provider config
+│   ├── index.ts        # entry point
+│   └── tools.ts        # tool definitions (files vary by template)
+├── package.json        # dev/start scripts (tsx), build, typecheck
+├── tsconfig.json       # not for nextjs, which brings its own
+├── cogitator.yml       # provider and model, for reference
 ├── .env.example
 ├── .gitignore
+├── pnpm-workspace.yaml # with --pm pnpm
+├── docker-compose.yml  # with --docker
 └── README.md
 ```
 
-Docker Compose (when `--docker`) adds `docker-compose.yml` with Redis and Postgres services.
+The generated code configures `Cogitator` in `src/` and does not read `cogitator.yml`; its top-level `provider` / `model` keys are not the [`@cogitator-ai/config`](/docs/getting-started/configuration) format, so move them under `llm` (`defaultProvider`, `defaultModel`) before loading the file with `loadConfig()`.
+
+`docker-compose.yml` runs Redis 7 and Postgres 16 (credentials from `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, all defaulting to `cogitator`), plus Ollama when it is the provider.
+
+Start the project with `npm run dev` (or `pnpm dev`, `yarn dev`, `bun dev`).
 
 ## Programmatic API
+
+The package also exports its building blocks:
 
 ```ts
 import { scaffold } from 'create-cogitator-app';
@@ -92,3 +108,5 @@ await scaffold({
   git: true,
 });
 ```
+
+`scaffold()` writes the files, installs dependencies and initializes git exactly like the CLI. `parseArgs(argv)` and `collectOptions(args)` turn command-line arguments into these options (prompting for the rest); `getTemplate(name)`, `templateChoices`, `defaultModels`, `providerConfig(provider)`, `providerEnvKey(provider)`, `detectPackageManager()` and `devCommand(pm)` are exported as well.
