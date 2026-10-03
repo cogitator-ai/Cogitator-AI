@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, expectTypeOf, beforeEach, vi } from 'vitest';
 import { RedisTaskStore, type RedisClientLike } from '../redis-task-store';
 import type { A2ATask } from '../types';
 import { TASK_OWNER_KEY } from '../ownership';
@@ -176,6 +176,52 @@ describe('RedisTaskStore', () => {
       await scanStore.list();
       expect(scanRedis.scan).toHaveBeenCalled();
       expect(scanRedis.keys).not.toHaveBeenCalled();
+    });
+
+    it('follows the cursor across pages and lists a key SCAN repeats once', async () => {
+      const scanRedis = createMockRedis();
+      await new RedisTaskStore({ client: scanRedis }).create(createTask('task_1'));
+      await new RedisTaskStore({ client: scanRedis }).create(createTask('task_2'));
+      const pages: Record<string, [string, string[]]> = {
+        '0': ['17', ['a2a:task:task_1']],
+        '17': ['0', ['a2a:task:task_1', 'a2a:task:task_2']],
+      };
+      scanRedis.scan = vi.fn(async (cursor: number | string) => pages[String(cursor)]);
+
+      const tasks = await new RedisTaskStore({ client: scanRedis }).list();
+
+      expect(tasks.map((t) => t.id).sort()).toEqual(['task_1', 'task_2']);
+      expect(scanRedis.scan).toHaveBeenCalledWith('17', 'MATCH', 'a2a:task:*', 'COUNT', 100);
+    });
+
+    it('accepts the overloaded scan() of ioredis', () => {
+      type Callback<T> = (err?: Error | null, result?: T) => void;
+      type ScanReply = [cursor: string, elements: string[]];
+      interface IoredisScan {
+        scan(cursor: number | string, callback?: Callback<ScanReply>): Promise<ScanReply>;
+        scan(
+          cursor: number | string,
+          countToken: 'COUNT',
+          count: number | string,
+          callback?: Callback<ScanReply>
+        ): Promise<ScanReply>;
+        scan(
+          cursor: number | string,
+          patternToken: 'MATCH',
+          pattern: string,
+          callback?: Callback<ScanReply>
+        ): Promise<ScanReply>;
+        scan(
+          cursor: number | string,
+          patternToken: 'MATCH',
+          pattern: string,
+          countToken: 'COUNT',
+          count: number | string,
+          callback?: Callback<ScanReply>
+        ): Promise<ScanReply>;
+      }
+
+      expectTypeOf<IoredisScan['scan']>().toExtend<NonNullable<RedisClientLike['scan']>>();
     });
   });
 

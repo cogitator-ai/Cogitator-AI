@@ -7,7 +7,13 @@ export interface RedisClientLike {
   del(key: string): Promise<unknown>;
   keys(pattern: string): Promise<string[]>;
   setex?(key: string, seconds: number, value: string): Promise<unknown>;
-  scan?(cursor: number | string, ...args: string[]): Promise<[string, string[]]>;
+  scan?(
+    cursor: number | string,
+    matchToken: 'MATCH',
+    pattern: string,
+    countToken: 'COUNT',
+    count: number | string
+  ): Promise<[cursor: string, keys: string[]]>;
   mget?(...keys: string[]): Promise<(string | null)[]>;
   eval?(script: string, numKeys: number, ...args: string[]): Promise<unknown>;
 }
@@ -154,20 +160,14 @@ export class RedisTaskStore implements TaskStore {
 
   private async scanKeys(pattern: string): Promise<string[]> {
     if (this.client.scan) {
-      const keys: string[] = [];
-      let cursor: string | number = 0;
+      const keys = new Set<string>();
+      let cursor = '0';
       do {
-        const [nextCursor, batch] = await this.client.scan(
-          cursor,
-          'MATCH',
-          pattern,
-          'COUNT',
-          '100'
-        );
-        keys.push(...batch);
-        cursor = typeof nextCursor === 'string' ? parseInt(nextCursor, 10) : nextCursor;
-      } while (cursor !== 0);
-      return keys;
+        const [nextCursor, batch] = await this.client.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+        for (const key of batch) keys.add(key);
+        cursor = String(nextCursor);
+      } while (cursor !== '0');
+      return [...keys];
     }
     return this.client.keys(pattern);
   }
