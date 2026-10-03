@@ -5,17 +5,23 @@ description: Run Cogitator with Docker Compose — PostgreSQL, Redis, Ollama, an
 
 ## Infrastructure Services
 
-Cogitator uses three core services: PostgreSQL with pgvector for memory storage, Redis for caching and job queues, and Ollama for local LLM inference.
+The Cogitator repository ships a `docker-compose.yml` with the three services agents usually need: PostgreSQL with pgvector for memory storage, Redis for caching, distributed state and job queues, and Ollama for local LLM inference.
 
 ```bash
-docker-compose up -d
+docker compose up -d
+# or, from any directory below the compose file:
+cogitator up      # runs `docker compose up -d` when there is no cogitator.yml here
+cogitator down    # `docker compose down`; add -v to delete the volumes
 ```
 
-| Service    | Image                    | Port  | Purpose                    |
-| ---------- | ------------------------ | ----- | -------------------------- |
-| PostgreSQL | `pgvector/pgvector:pg16` | 5432  | Vector memory, agent state |
-| Redis      | `redis:7-alpine`         | 6379  | Cache, events, job queues  |
-| Ollama     | `ollama/ollama:latest`   | 11434 | Local LLM runtime          |
+`cogitator up` starts an assistant when the current directory has a `cogitator.yml`; otherwise it looks for `docker-compose.yml` / `compose.yml` in the current directory and up to five parents and starts those services (`--pull` pulls images first, `--no-detach` runs in the foreground).
+
+| Service     | Image                    | Port  | Purpose                                                     |
+| ----------- | ------------------------ | ----- | ----------------------------------------------------------- |
+| PostgreSQL  | `pgvector/pgvector:pg16` | 5432  | Vector memory, agent state                                  |
+| Redis       | `redis:7-alpine`         | 6379  | Cache, events, job queues                                   |
+| Ollama      | `ollama/ollama:latest`   | 11434 | Local LLM runtime                                           |
+| ollama-init | `ollama/ollama:latest`   | —     | One-shot: pulls `nomic-embed-text-v2-moe` and `llama3.2:3b` |
 
 ## Docker Compose Configuration
 
@@ -37,15 +43,21 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     ports:
       - '6379:6379'
+    volumes:
+      - redis_data:/data
     command: redis-server --appendonly yes
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
   ollama:
     image: ollama/ollama:latest
@@ -60,7 +72,15 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  ollama_data:
 ```
+
+`docker/postgres/init.sql` enables the `vector` and `uuid-ossp` extensions on first start.
 
 ## Environment Variables
 
@@ -73,23 +93,33 @@ OLLAMA_URL=http://localhost:11434
 
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
-EMBEDDING_PROVIDER=ollama
-EMBEDDING_MODEL=nomic-embed-text-v2-moe
+GOOGLE_API_KEY=...
+```
+
+`@cogitator-ai/config` maps `OLLAMA_URL` (or `OLLAMA_HOST`) and the provider API keys onto `llm.providers` automatically. `DATABASE_URL` and `REDIS_URL` are conventions for your own code — pass them to the memory adapters or Redis client you create (the `cogitator init` templates and the built-in `sqlQuery` tool read `DATABASE_URL`):
+
+```typescript
+import { PostgresAdapter } from '@cogitator-ai/memory';
+
+const memory = new PostgresAdapter({
+  provider: 'postgres',
+  connectionString: process.env.DATABASE_URL!,
+});
 ```
 
 ## Production Dockerfile
 
-Multi-stage build for deploying a Cogitator application as a container:
+`cogitator deploy` generates a Dockerfile, a Compose stack and preflight checks for you — see [Deploy Package](/docs/deployment/deploy-package). If you maintain your own, a multi-stage build looks like this:
 
 ```dockerfile
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
 RUN corepack enable && pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build
 
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=builder /app/dist ./dist
@@ -97,9 +127,11 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/cogitator/health || exit 1
 CMD ["node", "dist/index.js"]
 ```
+
+The server adapters expose `GET /health` and `GET /ready` under their base path (`/cogitator` by default) — point the health check at whatever path you mounted them on.
 
 ## GPU and CPU-Only Mode
 
@@ -107,21 +139,21 @@ The default compose file reserves NVIDIA GPUs for Ollama. On Apple Silicon, run 
 
 ```bash
 brew install ollama && ollama serve
-docker-compose up -d postgres redis
+docker compose up -d postgres redis
 ```
 
-Without a GPU, use the CPU compose variant and smaller models:
+Without a GPU, use the CPU compose variant (no GPU reservation; pulls `nomic-embed-text` instead of the MoE embedding model) and smaller models:
 
 ```bash
-docker-compose -f docker-compose.cpu.yml up -d
-docker-compose exec ollama ollama pull llama3.2:3b
+docker compose -f docker-compose.cpu.yml up -d
+docker compose exec ollama ollama pull llama3.2:3b
 ```
 
 ## Production Checklist
 
 - **External PostgreSQL** with backups, connection pooling (PgBouncer), and pgvector
-- **Redis Cluster** or managed Redis (ElastiCache, Upstash) for HA
-- **Dedicated GPU server** for Ollama, or cloud providers (OpenAI, Anthropic)
+- **Redis Cluster** or managed Redis (ElastiCache, Upstash) for HA — see [Redis](/docs/deployment/redis)
+- **Dedicated GPU server** for Ollama, or cloud providers (OpenAI, Anthropic, Google)
 - **Reverse proxy** (nginx, Caddy) with TLS termination
 - **Secrets management** via Vault, AWS SSM, or Kubernetes secrets
 - **Health checks** on all services to enable orchestrator restarts

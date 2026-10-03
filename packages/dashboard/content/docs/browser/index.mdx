@@ -25,7 +25,7 @@ Agent
 pnpm add @cogitator-ai/browser playwright
 ```
 
-Playwright requires browser binaries. Install them after adding the package:
+`playwright` comes with the package (it is loaded when the session starts); add it yourself to pin its version. Playwright needs browser binaries — install them after adding the package:
 
 ```bash
 npx playwright install chromium
@@ -62,6 +62,8 @@ console.log(result.output);
 await session.close();
 ```
 
+Tools from `browserTools()` start the session on their first call, so `session.start()` is optional here — it just moves the browser launch out of the first tool call.
+
 ## Tool Modules
 
 All 33 tools are organized into 5 modules. Use `browserTools(session)` to get all of them, or filter by module.
@@ -86,13 +88,16 @@ const tools = browserTools(session, {
 
 ### Individual Tool Import
 
-Import specific tool factories when you want fine-grained control:
+Import module or tool factories when you want fine-grained control. Module factories return typed tuples, so each destructured tool keeps its own parameter and result types:
 
 ```typescript
-import { createNavigateTool, createScreenshotTool } from '@cogitator-ai/browser';
+import { createNavigateTool, createScreenshotTool, createVisionTools } from '@cogitator-ai/browser';
 
 const tools = [createNavigateTool(session), createScreenshotTool(session)];
+const [screenshot, , findByDescription] = createVisionTools(session);
 ```
+
+Factory-made tools expect a started session — call `await session.start()` before the agent runs.
 
 ## Key Features
 

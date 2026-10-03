@@ -13,7 +13,7 @@ pnpm add @cogitator-ai/worker @cogitator-ai/core ioredis
 
 ## JobQueue
 
-`JobQueue` serializes agent configurations and dispatches them as jobs to Redis.
+`JobQueue` dispatches serialized agent, workflow and swarm configurations as jobs to Redis. Without options, the queue is named `cogitator-jobs` and jobs get 3 attempts with exponential backoff from 1 s, keeping the last 100 completed and 500 failed jobs.
 
 ```typescript
 import { JobQueue } from '@cogitator-ai/worker';
@@ -33,21 +33,23 @@ const job = await queue.addAgentJob(
   {
     name: 'researcher',
     instructions: 'You are a research assistant.',
-    model: 'gpt-6.1-sol',
-    provider: 'openai',
+    model: 'gpt-5.5',
+    provider: 'openai', // used when `model` has no provider prefix
     tools: [],
   },
   'Summarize the latest AI papers on reasoning',
-  { priority: 1, threadId: 'thread_abc123' }
+  { priority: 1, threadId: 'thread_abc123', userId: 'user_42', delay: 5_000 }
 );
 
 console.log('State:', await queue.getJobState(job.id!));
 ```
 
+`threadId` defaults to a fresh id; `userId` makes the run act for that user (it owns the thread), and `metadata` is stored on the payload. Other queue methods: `getJob(id)`, `getMetrics()`, `pause()`, `resume()`, `clean(grace, limit, state)`, `getQueue()` (the underlying BullMQ `Queue`) and `close()`.
+
 Workflow and swarm jobs follow the same pattern:
 
 ```typescript
-await queue.addWorkflowJob(workflowConfig, { query: 'input' }, { priority: 2 });
+await queue.addWorkflowJob(workflowConfig, { query: 'input' }, { priority: 2, runId: 'run_1' });
 await queue.addSwarmJob(
   { topology: 'debate', agents: [proAgent, conAgent], coordinator: moderatorAgent, maxRounds: 2 },
   'Debate the pros and cons of microservices'
@@ -58,7 +60,7 @@ Workflow jobs execute a serialized DAG (`agent`, `transform`, `condition` and `p
 
 ## WorkerPool
 
-`WorkerPool` spawns BullMQ workers that consume jobs from the queue. Built-in processors handle agent, workflow, swarm, and distributed swarm-agent job types.
+`WorkerPool` spawns BullMQ workers that consume jobs from the queue. Built-in processors handle agent, workflow, swarm, and distributed swarm-agent job types. Without a `cogitator`, the pool runs agents with `new Cogitator()` (provider keys from the environment).
 
 ```typescript
 import { Cogitator } from '@cogitator-ai/core';
@@ -71,13 +73,15 @@ const pool = new WorkerPool(
     workerCount: 4,
     concurrency: 5,
     cogitator: new Cogitator({
-      llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY } } },
+      llm: { providers: { openai: { apiKey: process.env.OPENAI_API_KEY! } } },
     }),
     tools: [webSearch, calculator],
   },
   {
-    onJobCompleted: (jobId, result) => console.log(`${jobId} done`),
+    onJobStarted: (jobId, type) => console.log(`${type} job ${jobId} started`),
+    onJobCompleted: (jobId, result) => console.log(`${jobId} done`, result.type),
     onJobFailed: (jobId, error) => console.error(`${jobId} failed:`, error.message),
+    onWorkerError: (error) => console.error(error),
   }
 );
 
@@ -88,6 +92,8 @@ process.on('SIGTERM', async () => {
   await queue.close();
 });
 ```
+
+`lockDuration` and `stalledInterval` are passed to BullMQ. `forceStop()` closes workers without waiting; `getWorkerCount()` and `isPoolRunning()` report pool state.
 
 Serialized agents carry tool **schemas** only. The pool resolves tools by name from its `tools` option; jobs that need tools the worker does not provide fail with a clear error instead of running with stubs.
 
@@ -102,13 +108,15 @@ const worker = new DistributedSwarmWorker({
   redis: { host: 'localhost', port: 6379 },
   keyPrefix: 'swarm', // must match the swarm's distributed.redis.keyPrefix
   queue: 'swarm-agent-jobs', // must match distributed.queue
-  concurrency: 4,
+  concurrency: 4, // default 4
   cogitator,
   tools: [webSearch],
 });
 
 await worker.start();
 ```
+
+`redis` also takes `password` and `db`; `pollTimeout` (seconds, default 1) controls how long a blocking poll waits before re-checking state. A second constructor argument takes `onJobStarted`, `onJobCompleted`, `onJobFailed` and `onError` callbacks.
 
 See [Distributed Swarms](/docs/swarms/distributed) for the coordinator side.
 
@@ -133,9 +141,7 @@ const pool = new WorkerPool({ redis: redisConfig, workerCount: 4, concurrency: 1
 
 ## Prometheus Metrics
 
-Expose queue metrics for monitoring and Kubernetes HPA:
-
-`WorkerPool` records job durations and per-type counts in `pool.metrics` (a `MetricsCollector`):
+`queue.getMetrics()` returns the queue counts; `WorkerPool` records job durations and per-type counts in `pool.metrics` (a `MetricsCollector`). Combine them in the Prometheus exposition format for monitoring and Kubernetes HPA:
 
 ```typescript
 app.get('/metrics', async (req, res) => {
@@ -145,21 +151,25 @@ app.get('/metrics', async (req, res) => {
 });
 ```
 
-Label values are escaped per the Prometheus exposition format.
+Label values are escaped per the Prometheus exposition format. Without a pool, `formatPrometheusMetrics(await queue.getMetrics(), labels)` renders the queue metrics alone.
 
 | Metric                            | Type      | Description                    |
 | --------------------------------- | --------- | ------------------------------ |
 | `cogitator_queue_depth`           | gauge     | Jobs waiting + delayed         |
+| `cogitator_queue_waiting`         | gauge     | Jobs waiting                   |
+| `cogitator_queue_delayed`         | gauge     | Delayed / scheduled jobs       |
 | `cogitator_queue_active`          | gauge     | Jobs currently processing      |
-| `cogitator_queue_completed_total` | counter   | Total completed jobs           |
-| `cogitator_queue_failed_total`    | counter   | Total failed jobs              |
+| `cogitator_queue_completed_total` | counter   | Completed jobs kept in Redis   |
+| `cogitator_queue_failed_total`    | counter   | Failed jobs kept in Redis      |
 | `cogitator_workers_total`         | gauge     | Workers connected to the queue |
 | `cogitator_jobs_by_type_total`    | counter   | Jobs processed by type         |
 | `cogitator_job_duration_seconds`  | histogram | Processing time distribution   |
 
+The completed and failed counts come from BullMQ, so they only cover jobs that `removeOnComplete` / `removeOnFail` have not trimmed yet.
+
 ### HPA Autoscaling
 
-Use `cogitator_queue_depth` as the scaling signal in a Kubernetes HorizontalPodAutoscaler:
+Use `cogitator_queue_depth` as the scaling signal in a Kubernetes HorizontalPodAutoscaler (through a custom-metrics adapter such as prometheus-adapter or KEDA):
 
 ```yaml
 apiVersion: autoscaling/v2

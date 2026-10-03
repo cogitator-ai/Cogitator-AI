@@ -11,9 +11,11 @@ The `@cogitator-ai/sandbox` package provides isolated execution for agent-genera
 pnpm add @cogitator-ai/sandbox
 ```
 
+`dockerode` (Docker) and `@extism/extism` (WASM) are optional dependencies, loaded lazily; when one is missing or its backend is unreachable, the manager simply has fewer executors.
+
 ## SandboxManager
 
-Initializes available executors and routes requests with automatic fallback when Docker or WASM is unavailable.
+Initializes available executors and routes requests with automatic fallback when Docker or WASM is unavailable. Every call returns a `SandboxResult` — `{ success: true, data }` with `stdout`, `stderr`, `exitCode`, `timedOut` and `duration`, or `{ success: false, error }`.
 
 ```typescript
 import { SandboxManager } from '@cogitator-ai/sandbox';
@@ -36,15 +38,41 @@ const result = await sandbox.execute(
 );
 
 if (result.success) {
-  console.log(result.data.stdout);
+  console.log(result.data.stdout, result.data.exitCode);
+} else {
+  console.error(result.error);
 }
 
 await sandbox.shutdown();
 ```
 
+## Sandboxed Tools
+
+Give `Cogitator` a `sandbox` config and declare `sandbox` on a tool to run it in isolation. The runtime creates one `SandboxManager` on first use and shuts it down in `cog.close()`:
+
+```typescript
+import { Cogitator, tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const cog = new Cogitator({
+  sandbox: { defaults: { timeout: 30_000, resources: { memory: '256MB' } } },
+});
+
+const shell = tool({
+  name: 'run_command',
+  description: 'Run a shell command in an isolated container',
+  parameters: z.object({ command: z.string() }),
+  execute: async ({ command }) => ({ command }),
+  sandbox: { type: 'docker', image: 'alpine:3.19' },
+  timeout: 15_000,
+});
+```
+
+For a `docker` tool, the runtime does not call `execute`: it runs `sh -c <args.command>` in the container (with `args.cwd` and `args.env` when present) and returns `{ stdout, stderr, exitCode, timedOut, duration, command }`. For a `wasm` tool, the arguments are passed as JSON on the module's input and its stdout is parsed as JSON when possible. If the sandbox cannot be initialized at all, the tool runs natively and a warning is logged. See [Custom Tools](/docs/tools/custom-tools) for the tool side.
+
 ## DockerSandboxExecutor
 
-Runs commands inside isolated Docker containers. Containers are created with all capabilities dropped, `no-new-privileges` enforced, and network disabled by default.
+Runs commands inside isolated Docker containers. Containers are created with all capabilities dropped, `no-new-privileges` enforced, and network disabled by default. Missing images are pulled on first use; without `image` the executor uses `alpine:3.19`, and commands run in `/workspace` unless `cwd` / `workdir` say otherwise.
 
 ```typescript
 import { DockerSandboxExecutor } from '@cogitator-ai/sandbox';
@@ -60,7 +88,7 @@ const result = await executor.execute(
   { command: ['node', '-e', 'console.log(2 + 2)'], timeout: 10_000 },
   {
     type: 'docker',
-    image: 'node:20-alpine',
+    image: 'node:22-alpine',
     resources: { memory: '128MB', cpus: 0.5, pidsLimit: 50 },
     network: { mode: 'none' },
   }
@@ -78,36 +106,46 @@ await executor.disconnect();
 | `NetworkMode` | `none`              | No network access            |
 | `PidsLimit`   | `100`               | Prevent fork bombs           |
 
+`resources.memory` accepts strings like `'256MB'` or `'1GB'` (`parseMemory()`), `cpus` is converted to Docker NanoCPUs (`cpusToNanoCpus()`), and `cpuShares`, `mounts` (`{ source, target, readOnly }`), `user` and `env` are passed through. The default timeout is 30 seconds.
+
 Commands are argv arrays executed without a shell (use `['sh', '-c', '...']` for shell syntax). Output is demultiplexed frame by frame and capped at 50 000 bytes per stream, timed-out containers are destroyed, `network.dns` is applied, and `network.allowedHosts` is rejected because Docker cannot enforce an egress allow-list. Containers carry the `ai.cogitator.sandbox=true` label. Without explicit connection options Dockerode's defaults (including `DOCKER_HOST`) are used.
 
 ## WasmSandboxExecutor
 
-Runs code inside WASM modules via Extism. Every plugin runs in its own worker thread, so timeouts terminate runaway modules; concurrent executions use separate plugin instances.
+Runs code inside WASM modules via Extism. Every plugin runs in its own worker thread, so timeouts terminate runaway modules (the result has `timedOut: true` and exit code 124); concurrent executions use separate plugin instances.
 
 ```typescript
 import { WasmSandboxExecutor } from '@cogitator-ai/sandbox';
 
-const executor = new WasmSandboxExecutor({ wasm: { cacheSize: 10 } });
+const executor = new WasmSandboxExecutor({ wasm: { cacheSize: 10, memoryPages: 512 } });
 await executor.connect();
 
 const result = await executor.execute(
-  { command: ['run'], stdin: JSON.stringify({ code: 'return 2 + 2' }) },
-  { type: 'wasm', wasmModule: 'https://example.com/sandbox.wasm', wasi: true }
+  { command: [], stdin: JSON.stringify({ code: 'return 2 + 2' }) },
+  {
+    type: 'wasm',
+    wasmModule: 'https://example.com/sandbox.wasm',
+    wasmFunction: 'run',
+    wasi: true,
+  }
 );
 
 await executor.disconnect();
 ```
 
-Modules load from URLs, local paths, or npm packages. Idle plugins are pooled per module, WASI flag and allowed hosts (up to `cacheSize`). `network.allowedHosts` feeds Extism's HTTP allow-list. `memoryPages` (default 256 = 16 MB) caps the module's own memory: its memory section gets that maximum before the module loads, so `memory.grow` past it fails inside the module, and a module that needs more to start is refused. Extism's memory for plugin input, output and vars gets the same limit. Modules from a URL are fetched by the executor so the cap applies to them too.
+The module's export named by `wasmFunction` (or `wasm.functionName`, default `run`) is called with `stdin` as input — or, without `stdin`, with `{ command, cwd, env }` as JSON. When it returns a JSON object with `stdout`, `stderr` and `exitCode` those fields are used; any other output becomes `stdout`. `wasm.wasmModule` sets a default module for requests that do not name one.
+
+Modules load from URLs, local paths, or npm packages. Idle plugins are pooled per module, WASI flag and allowed hosts (up to `cacheSize`, default 10). `network.allowedHosts` feeds Extism's HTTP allow-list; `network.mode: 'none'` clears it. `memoryPages` (default 256 = 16 MB) caps the module's own memory: its memory section gets that maximum before the module loads, so `memory.grow` past it fails inside the module, and a module that needs more to start is refused. Extism's memory for plugin input, output and vars gets the same limit. Modules from a URL are fetched by the executor so the cap applies to them too.
 
 ## ContainerPool
 
 Reuses Docker containers across executions. Containers stay alive with `sleep infinity` and commands run via `docker exec`, amortizing startup cost.
 
 ```typescript
+import Docker from 'dockerode';
 import { ContainerPool } from '@cogitator-ai/sandbox';
 
-const pool = new ContainerPool(dockerClient, {
+const pool = new ContainerPool(new Docker(), {
   maxSize: 10,
   idleTimeoutMs: 120_000,
 });
@@ -122,15 +160,17 @@ await pool.release(container);
 await pool.release(container, { corrupted: true });
 ```
 
-Releasing with `corrupted: true` destroys the container instead of returning it. Idle containers are cleaned up automatically. A pooled container is only reused for requests with identical image, resources, network mode, DNS, mounts and user.
+`memory` is in bytes here. Releasing with `corrupted: true` destroys the container instead of returning it. Idle containers are cleaned up automatically; `destroyAll()` removes every pooled container. When the pool is full, extra containers are created for the request and destroyed on release. Defaults: `maxSize` 5, `idleTimeoutMs` 60 000. A pooled container is only reused for requests with identical image, resources, network mode, DNS, mounts and user.
 
 ## Fallback Chain
 
 `SandboxManager` falls back when a requested executor is unavailable:
 
-1. **WASM requested** -- Docker -- Native
-2. **Docker requested** -- Native
-3. **Native** -- always available, no isolation
+1. **WASM requested** → Docker → Native
+2. **Docker requested** → Native
+3. **Native** — always available, no isolation
+
+A fallback logs a warning. When nothing in the chain is available the result is `{ success: false, error }`.
 
 Manager `defaults` apply to fallback executions too, and initialization is shared by concurrent callers. The native executor runs a single-element command through the shell and longer commands with exact argv, pipes `stdin`, inherits only `PATH`, `HOME`, temp-dir, locale and Windows system variables from the host, and kills the whole process group on timeout. Check availability first when untrusted code must never run on the host:
 

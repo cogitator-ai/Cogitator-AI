@@ -29,20 +29,20 @@ The full `BrowserSessionConfig` interface:
 
 ```typescript
 interface BrowserSessionConfig {
-  headless?: boolean;           // default: true
-  browser?: BrowserType;        // 'chromium' | 'firefox' | 'webkit', default: 'chromium'
+  headless?: boolean; // default: true
+  browser?: BrowserType; // 'chromium' | 'firefox' | 'webkit', default: 'chromium'
   stealth?: boolean | StealthConfig;
   proxy?: string | ProxyConfig;
-  viewport?: { width: number; height: number };  // default: 1280x720
+  viewport?: { width: number; height: number }; // default: 1280x720
   userAgent?: string;
-  locale?: string;              // e.g. 'en-US'
-  timezone?: string;            // e.g. 'America/New_York'
+  locale?: string; // e.g. 'en-US'
+  timezone?: string; // e.g. 'America/New_York'
   geolocation?: { latitude: number; longitude: number };
-  persistentContext?: string;   // user data dir; profile survives restarts
-  cookies?: BrowserCookie[];    // initial cookies
-  timeout?: number;             // navigation timeout, default: 30000ms
-  actionTimeout?: number;       // action timeout, default: 10000ms
-  pool?: { maxPages: number };  // max open tabs for newTab(), positive integer
+  persistentContext?: string; // user data dir; profile survives restarts
+  cookies?: BrowserCookie[]; // initial cookies
+  timeout?: number; // navigation timeout, default: 30000ms
+  actionTimeout?: number; // action timeout, default: 10000ms
+  pool?: { maxPages: number }; // max open tabs for newTab(), positive integer
 }
 ```
 
@@ -68,9 +68,9 @@ const session = new BrowserSession({ pool: { maxPages: 3 } });
 Playwright supports three browser engines:
 
 ```typescript
-new BrowserSession({ browser: 'chromium' });  // Chrome, Edge
-new BrowserSession({ browser: 'firefox' });   // Firefox
-new BrowserSession({ browser: 'webkit' });    // Safari
+new BrowserSession({ browser: 'chromium' }); // Chrome, Edge
+new BrowserSession({ browser: 'firefox' }); // Firefox
+new BrowserSession({ browser: 'webkit' }); // Safari
 ```
 
 ### Proxy
@@ -89,6 +89,10 @@ new BrowserSession({
 });
 ```
 
+### User Agent
+
+An explicit `userAgent` wins over stealth: the random stealth user agent is skipped, but the evasion scripts still run and report a `navigator.platform` that matches your user agent.
+
 ### Viewport and Locale
 
 ```typescript
@@ -96,7 +100,7 @@ new BrowserSession({
   viewport: { width: 1920, height: 1080 },
   locale: 'de-DE',
   timezone: 'Europe/Berlin',
-  geolocation: { latitude: 52.52, longitude: 13.405 },
+  geolocation: { latitude: 52.52, longitude: 13.405 }, // also grants the geolocation permission
 });
 ```
 
@@ -110,6 +114,8 @@ Launches the browser, creates a context with the configured options, opens the f
 const session = new BrowserSession({ headless: false });
 await session.start();
 ```
+
+If the browser context closes on its own (crash, the user closing a headed window), the session resets and `started` becomes `false`.
 
 ### `ensureStarted()`
 
@@ -131,10 +137,17 @@ const unsubscribe = session.onStart((context) => {
 
 ### `close()`
 
-Closes the browser and cleans up all resources. Safe to call multiple times.
+Closes the browser (or the persistent context) and cleans up all resources. Safe to call multiple times, and waits for a launch in progress first.
 
 ```typescript
 await session.close();
+```
+
+`BrowserSession` is also async-disposable, so `await using` closes it at the end of the scope:
+
+```typescript
+await using session = new BrowserSession();
+await session.start();
 ```
 
 ### `page`
@@ -199,9 +212,7 @@ const cookies = await session.getCookies();
 Adds cookies to the browser context. Cookies with a `domain` but no `path` default to `path: '/'`.
 
 ```typescript
-await session.setCookies([
-  { name: 'session', value: 'abc123', domain: '.example.com' },
-]);
+await session.setCookies([{ name: 'session', value: 'abc123', domain: '.example.com' }]);
 ```
 
 ### `saveCookies(filePath)` / `loadCookies(filePath)`
@@ -223,9 +234,7 @@ Pass cookies at construction time to have them applied on `start()`:
 
 ```typescript
 const session = new BrowserSession({
-  cookies: [
-    { name: 'token', value: 'xyz', domain: '.example.com', path: '/' },
-  ],
+  cookies: [{ name: 'token', value: 'xyz', domain: '.example.com', path: '/' }],
 });
 await session.start();
 ```
@@ -235,9 +244,17 @@ await session.start();
 For advanced use cases, you can access the underlying Playwright objects directly:
 
 ```typescript
-session.browser;   // Browser | null (null with persistentContext)
-session.context;   // BrowserContext | null
-session.page;      // active Page
+session.browser; // Browser | null (null with persistentContext)
+session.context; // BrowserContext | null
+session.page; // active Page
+```
+
+The resolved configuration is available too:
+
+```typescript
+session.config; // BrowserSessionConfig with defaults applied
+session.stealthEnabled; // true when `stealth` is set
+session.stealthConfig; // StealthConfig merged with defaults, or null
 ```
 
 ## Next Steps

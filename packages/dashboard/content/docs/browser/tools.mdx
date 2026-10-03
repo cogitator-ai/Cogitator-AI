@@ -5,7 +5,7 @@ description: Complete reference for all 33 browser tools across navigation, inte
 
 ## Overview
 
-`browserTools(session)` returns all 33 tools. You can filter by module or import individual tool factories.
+`browserTools(session)` returns all 33 tools. You can filter by module or create tools with the module and per-tool factories.
 
 ```typescript
 import { browserTools } from '@cogitator-ai/browser';
@@ -17,6 +17,34 @@ const subset = browserTools(session, {
 });
 ```
 
+Tools from `browserTools()` call `session.ensureStarted()` before every execution, so the browser launches on the first tool call (and relaunches if it was closed or crashed). An unknown module name throws, listing the available ones. Every tool has `category: 'web'` and the tags `['browser', <module>]`.
+
+### Typed Factories
+
+Each module has a factory — `createNavigationTools`, `createInteractionTools`, `createExtractionTools`, `createVisionTools`, `createNetworkTools` — that returns a typed tuple built with [`toolset()`](/docs/tools/custom-tools). Destructuring keeps each tool's parameter and result types, which is handy when you call tools from your own code:
+
+```typescript
+import {
+  BrowserSession,
+  createNavigationTools,
+  createExtractionTools,
+} from '@cogitator-ai/browser';
+
+const session = new BrowserSession();
+await session.start();
+
+const [navigate] = createNavigationTools(session);
+const [getText, , , getLinks] = createExtractionTools(session);
+
+const ctx = { agentId: 'script', runId: 'manual', signal: AbortSignal.timeout(30_000) };
+
+const page = await navigate.execute({ url: 'https://example.com' }, ctx); // { url, title, status }
+const { text } = await getText.execute({ selector: 'main' }, ctx);
+const { links } = await getLinks.execute({ baseUrl: page.url }, ctx);
+```
+
+Tuple order matches the order of the tools on this page. Factory-made tools do not auto-start the session — call `session.start()` first. Every tool also has its own factory (`createNavigateTool`, `createClickTool`, …), and the Zod schemas (`navigateSchema`, `clickSchema`, …) and input types (`NavigateInput`, `ClickInput`, …) are exported.
+
 ---
 
 ## Navigation
@@ -25,137 +53,137 @@ const subset = browserTools(session, {
 
 ### `browser_navigate`
 
-Navigate to a URL. Returns the final URL, page title, and HTTP status.
+Navigate to a URL. Returns `{ url, title, status }` — the final URL, page title, and HTTP status (`0` when there is no response, e.g. `about:blank`).
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `url` | `string` | URL to navigate to |
-| `waitUntil` | `enum` | `load` \| `domcontentloaded` \| `networkidle` \| `commit` |
+| Parameter   | Type     | Description                                                                         |
+| ----------- | -------- | ----------------------------------------------------------------------------------- |
+| `url`       | `string` | URL to navigate to; must include a scheme (`https:`, `about:`, `data:`, `file:`, …) |
+| `waitUntil` | `enum`   | `load` (default) \| `domcontentloaded` \| `networkidle` \| `commit`                 |
 
 ### `browser_go_back`
 
-Go back to the previous page in browser history. No parameters.
+Go back to the previous page in browser history. No parameters. Returns `{ navigated, url, title }`; `navigated` is `false` when there was no history entry.
 
 ### `browser_go_forward`
 
-Go forward to the next page in browser history. No parameters.
+Go forward to the next page in browser history. No parameters. Returns `{ navigated, url, title }`.
 
 ### `browser_reload`
 
-Reload the current page.
+Reload the current page. Returns `{ url, title }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `waitUntil` | `enum` | `load` \| `domcontentloaded` \| `networkidle` \| `commit` |
+| Parameter   | Type   | Description                                                         |
+| ----------- | ------ | ------------------------------------------------------------------- |
+| `waitUntil` | `enum` | `load` (default) \| `domcontentloaded` \| `networkidle` \| `commit` |
 
 ### `browser_wait_for_navigation`
 
-Wait for the page to navigate to a URL matching a pattern.
+Wait for the page URL to match a glob pattern. Returns `{ url, title }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `url` | `string` | URL pattern to wait for |
-| `timeout` | `number` | Timeout in milliseconds |
+| Parameter | Type     | Description                                                         |
+| --------- | -------- | ------------------------------------------------------------------- |
+| `url`     | `string` | URL glob to wait for (e.g. `**/dashboard`); default `**` (any)      |
+| `timeout` | `number` | Timeout in milliseconds; `0` disables it (default: session timeout) |
 
 ### `browser_get_current_url`
 
-Get the current page URL and title. No parameters.
+Get the current page URL and title. No parameters. Returns `{ url, title }`.
 
 ### `browser_wait_for_selector`
 
-Wait for a CSS selector to appear on the page.
+Wait for a CSS selector to reach a state. Returns `{ found: true }`, or `{ found: false }` on timeout.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `selector` | `string` | CSS selector to wait for |
-| `state` | `enum` | `visible` \| `hidden` \| `attached` \| `detached` |
-| `timeout` | `number` | Timeout in milliseconds |
+| Parameter  | Type     | Description                                                 |
+| ---------- | -------- | ----------------------------------------------------------- |
+| `selector` | `string` | CSS selector to wait for                                    |
+| `state`    | `enum`   | `visible` (default) \| `hidden` \| `attached` \| `detached` |
+| `timeout`  | `number` | Timeout in milliseconds; `0` disables it                    |
 
 ---
 
 ## Interaction
 
-9 tools for clicking, typing, and form manipulation.
+9 tools for clicking, typing, and form manipulation. With stealth `humanLikeMouse`, click, hover and scroll use human-like mouse movement; with `humanLikeTyping`, typing is keystroke by keystroke (see [Stealth](/docs/browser/stealth#human-like-behavior)).
 
 ### `browser_click`
 
-Click an element by CSS selector.
+Click an element by CSS selector. Returns `{ clicked: true }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `selector` | `string` | CSS selector of element |
-| `button` | `enum` | `left` \| `right` \| `middle` |
-| `clickCount` | `number` | Number of clicks (2 for double-click) |
-| `position` | `{ x, y }` | Position relative to element |
+| Parameter    | Type       | Description                           |
+| ------------ | ---------- | ------------------------------------- |
+| `selector`   | `string`   | CSS selector of element               |
+| `button`     | `enum`     | `left` \| `right` \| `middle`         |
+| `clickCount` | `number`   | Number of clicks (2 for double-click) |
+| `position`   | `{ x, y }` | Position relative to element          |
 
 ### `browser_type`
 
-Type text into an input element. Uses `fill()` for instant input, or keystrokes when `delay` is set (appending unless `clearFirst`). With stealth `humanLikeTyping`, the field is cleared and typed key by key with human-like delays, so the result matches `fill()`.
+Type text into an input element. Uses `fill()` for instant input (replacing the value), or keystrokes when `delay` is set (appending unless `clearFirst`). With stealth `humanLikeTyping`, the field is cleared and typed key by key with human-like delays, so the result matches `fill()`. Returns `{ typed: true }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `selector` | `string` | CSS selector of input |
-| `text` | `string` | Text to type |
-| `delay` | `number` | Delay between keystrokes in ms |
-| `clearFirst` | `boolean` | Clear the field before typing |
+| Parameter    | Type      | Description                                  |
+| ------------ | --------- | -------------------------------------------- |
+| `selector`   | `string`  | CSS selector of input                        |
+| `text`       | `string`  | Text to type                                 |
+| `delay`      | `number`  | Delay between keystrokes in ms               |
+| `clearFirst` | `boolean` | Clear the field before typing (with `delay`) |
 
 ### `browser_select_option`
 
-Select an option from a `<select>` element.
+Select an option from a `<select>` element. At least one of `value`, `label` or `index` is required. Returns `{ selected }` — the selected option values.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
+| Parameter  | Type     | Description                    |
+| ---------- | -------- | ------------------------------ |
 | `selector` | `string` | CSS selector of select element |
-| `value` | `string` | Option value |
-| `label` | `string` | Option label text |
-| `index` | `number` | Option index |
+| `value`    | `string` | Option value                   |
+| `label`    | `string` | Option label text              |
+| `index`    | `number` | Option index                   |
 
 ### `browser_hover`
 
-Hover over an element.
+Hover over an element. Returns `{ hovered: true }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `selector` | `string` | CSS selector |
+| Parameter  | Type       | Description                  |
+| ---------- | ---------- | ---------------------------- |
+| `selector` | `string`   | CSS selector                 |
 | `position` | `{ x, y }` | Position relative to element |
 
 ### `browser_scroll`
 
-Scroll the page or a specific element.
+Scroll the page or a specific element. Returns `{ scrolled: true }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `direction` | `enum` | `up` \| `down` \| `left` \| `right` |
-| `amount` | `number` | Scroll amount in pixels (default: 500) |
-| `selector` | `string` | CSS selector of scrollable element |
+| Parameter   | Type     | Description                            |
+| ----------- | -------- | -------------------------------------- |
+| `direction` | `enum`   | `up` \| `down` \| `left` \| `right`    |
+| `amount`    | `number` | Scroll amount in pixels (default: 500) |
+| `selector`  | `string` | CSS selector of scrollable element     |
 
 ### `browser_press_key`
 
-Press a keyboard key with optional modifiers.
+Press a keyboard key with optional modifiers (sent as a combo such as `Control+a`). Returns `{ pressed: true }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `key` | `string` | Key to press (e.g. `"Enter"`, `"Tab"`, `"a"`) |
-| `modifiers` | `string[]` | `Shift`, `Control`, `Alt`, `Meta` |
+| Parameter   | Type       | Description                                   |
+| ----------- | ---------- | --------------------------------------------- |
+| `key`       | `string`   | Key to press (e.g. `"Enter"`, `"Tab"`, `"a"`) |
+| `modifiers` | `string[]` | `Shift`, `Control`, `Alt`, `Meta`             |
 
 ### `browser_drag_and_drop`
 
-Drag an element and drop it onto another.
+Drag an element and drop it onto another. Returns `{ dropped: true }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `source` | `string` | CSS selector of drag source |
-| `target` | `string` | CSS selector of drop target |
+| Parameter | Type     | Description                 |
+| --------- | -------- | --------------------------- |
+| `source`  | `string` | CSS selector of drag source |
+| `target`  | `string` | CSS selector of drop target |
 
 ### `browser_fill_form`
 
-Smart form filler. Finds inputs by name, placeholder, aria-label, or associated label text.
+Smart form filler. For each key it tries, in order: `input[name]`, `input[placeholder]`, `input[aria-label]`, `textarea[name]`, `select[name]`, then an `input` / `textarea` / `select` inside a `<label>` containing the text, and fills the first match.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `fields` | `Record<string, string \| boolean \| string[]>` | Field name/label to value mapping |
+| Parameter | Type                                            | Description                       |
+| --------- | ----------------------------------------------- | --------------------------------- |
+| `fields`  | `Record<string, string \| boolean \| string[]>` | Field name/label to value mapping |
 
-String values are typed into inputs, booleans toggle checkboxes, and string arrays select multiple options. When stealth is enabled, typing uses human-like delays.
+String values are typed into inputs, booleans check or uncheck checkboxes, and string arrays select options. When stealth is enabled, typing uses human-like delays. Returns `{ filled, skipped, errors }`: the keys that were filled, the keys with no matching field or that failed, and `{ field, error }` for failures.
 
 ```typescript
 // the agent calls this tool with:
@@ -171,12 +199,12 @@ String values are typed into inputs, booleans toggle checkboxes, and string arra
 
 ### `browser_upload_file`
 
-Upload files to a file input element.
+Upload files to a file input element. Paths are resolved against the working directory and must exist, otherwise the tool throws `Upload file not found`. Returns `{ uploaded: true }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `selector` | `string` | CSS selector of file input |
-| `filePaths` | `string[]` | Absolute paths to files |
+| Parameter   | Type       | Description                       |
+| ----------- | ---------- | --------------------------------- |
+| `selector`  | `string`   | CSS selector of file input        |
+| `filePaths` | `string[]` | Paths to the files (at least one) |
 
 ---
 
@@ -186,65 +214,65 @@ Upload files to a file input element.
 
 ### `browser_get_text`
 
-Extract rendered text (`innerText`) from the page or the first element matching the selector. Hidden elements, scripts and styles are excluded.
+Extract rendered text (`innerText`) from the page or the first element matching the selector. Hidden elements, scripts and styles are excluded. Returns `{ text }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
+| Parameter  | Type     | Description                     |
+| ---------- | -------- | ------------------------------- |
 | `selector` | `string` | CSS selector (defaults to body) |
 
 ### `browser_get_html`
 
-Get HTML content of the page or a specific element.
+Get HTML content. Without a selector returns the full document; with one, the element's inner HTML, or its outer HTML when `outer` is set. Returns `{ html }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `selector` | `string` | CSS selector (defaults to full page) |
-| `outer` | `boolean` | Include outer HTML of element |
+| Parameter  | Type      | Description                          |
+| ---------- | --------- | ------------------------------------ |
+| `selector` | `string`  | CSS selector (defaults to full page) |
+| `outer`    | `boolean` | Include outer HTML of element        |
 
 ### `browser_get_attribute`
 
-Get the value of an attribute on a DOM element.
+Get the value of an attribute on a DOM element. Returns `{ value }` (`null` when the attribute is missing).
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `selector` | `string` | CSS selector |
+| Parameter   | Type     | Description    |
+| ----------- | -------- | -------------- |
+| `selector`  | `string` | CSS selector   |
 | `attribute` | `string` | Attribute name |
 
 ### `browser_get_links`
 
-Extract all links from the page or a scoped element. Returns text, href, and title for each link.
+Extract all links from the page or the first element matching `selector`. Returns `{ links }` with `text`, `href` and `title` for each link; `href` is the raw attribute unless `baseUrl` is given.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `selector` | `string` | CSS selector to scope link search |
-| `baseUrl` | `string` | Base URL for resolving relative links |
+| Parameter  | Type     | Description                           |
+| ---------- | -------- | ------------------------------------- |
+| `selector` | `string` | CSS selector to scope link search     |
+| `baseUrl`  | `string` | Base URL for resolving relative links |
 
 ### `browser_query_selector_all`
 
-Query all elements matching a CSS selector. Returns tag, text, attributes, and visibility for each.
+Query all elements matching a CSS selector. Returns `{ elements }` with `tag`, `text` (first 200 characters), `attributes` and `visible` for each.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `selector` | `string` | CSS selector |
+| Parameter    | Type       | Description                                                       |
+| ------------ | ---------- | ----------------------------------------------------------------- |
+| `selector`   | `string`   | CSS selector                                                      |
 | `attributes` | `string[]` | Attributes to include (default: id, class, href, src, type, name) |
-| `limit` | `number` | Max elements to return |
+| `limit`      | `number`   | Max elements to return                                            |
 
 ### `browser_extract_table`
 
-Extract structured data from an HTML table as headers and rows. Uses the table's own rows and cells, so nested tables do not leak extra rows. If the selector matches a wrapper element, the first table inside it is used.
+Extract structured data from an HTML table as `{ headers, rows }`. Headers come from the last `<thead>` row, or from the first row when there is no `<thead>`. Uses the table's own rows and cells, so nested tables do not leak extra rows. If the selector matches a wrapper element, the first table inside it is used; when nothing matches, both arrays are empty.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
+| Parameter  | Type     | Description                                                          |
+| ---------- | -------- | -------------------------------------------------------------------- |
 | `selector` | `string` | CSS selector of the table or a wrapper (defaults to the first table) |
 
 ### `browser_extract_structured`
 
-Extract the rendered text of the page or a scoped element without cloning the DOM (no side effects on the page). Scripts, styles, and non-visible elements are excluded and runs of blank lines collapsed. Returns the text alongside the extraction instruction, URL, and title for agent processing.
+Extract the rendered text of the page or a scoped element without cloning the DOM (no side effects on the page). Scripts, styles, and non-visible elements are excluded and runs of blank lines collapsed. Returns `{ instruction, text, url, title }` so the agent can pull the requested data out of the text itself.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `instruction` | `string` | What data to extract |
-| `selector` | `string` | CSS selector to scope extraction |
+| Parameter     | Type     | Description                      |
+| ------------- | -------- | -------------------------------- |
+| `instruction` | `string` | What data to extract             |
+| `selector`    | `string` | CSS selector to scope extraction |
 
 ---
 
@@ -256,36 +284,36 @@ Extract the rendered text of the page or a scoped element without cloning the DO
 
 Take a screenshot of the page or element (first match). Returns `{ image, mimeType, width, height }` with base64-encoded image data. `fullPage` only applies to page screenshots.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `fullPage` | `boolean` | Capture full scrollable page |
-| `selector` | `string` | CSS selector of element to capture |
-| `quality` | `number` | Image quality 0-100 (switches to JPEG) |
+| Parameter  | Type      | Description                            |
+| ---------- | --------- | -------------------------------------- |
+| `fullPage` | `boolean` | Capture full scrollable page           |
+| `selector` | `string`  | CSS selector of element to capture     |
+| `quality`  | `number`  | Image quality 0-100 (switches to JPEG) |
 
 ### `browser_screenshot_element`
 
-Screenshot a specific element with bounding box coordinates.
+Screenshot a specific element (first match) as PNG. Returns `{ image, boundingBox }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
+| Parameter  | Type     | Description             |
+| ---------- | -------- | ----------------------- |
 | `selector` | `string` | CSS selector of element |
 
 ### `browser_find_by_description`
 
-Find elements matching a natural language description using the accessibility tree.
+Find elements matching a natural language description using the accessibility tree. Returns `{ elements, total }` (up to 50 elements with `role`, `name`, `description`).
 
-| Parameter | Type | Description |
-| --- | --- | --- |
+| Parameter     | Type     | Description                  |
+| ------------- | -------- | ---------------------------- |
 | `description` | `string` | Natural language description |
 
 ### `browser_click_by_description`
 
-Find an element by description and click it. Tries button, link, text, label, and placeholder strategies.
+Find an element by description and click it. Tries button, link, text, label, and placeholder strategies. Returns `{ clicked, element }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `description` | `string` | Natural language description |
-| `index` | `number` | Index of match if multiple found |
+| Parameter     | Type     | Description                      |
+| ------------- | -------- | -------------------------------- |
+| `description` | `string` | Natural language description     |
+| `index`       | `number` | Index of match if multiple found |
 
 ---
 
@@ -295,54 +323,54 @@ Find an element by description and click it. Tries button, link, text, label, an
 
 ### `browser_intercept_request`
 
-Intercept HTTP requests matching a URL pattern in every tab.
+Intercept HTTP requests matching a URL pattern in every tab. Returns `{ interceptorId }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `urlPattern` | `string` | Glob (`**/api/**`) or regex literal (`/\.png$/i`) |
-| `action` | `enum` | `block` \| `modify` \| `continue` |
-| `modify` | `object` | `{ headers?, body?, url? }` for action=modify; headers are merged |
+| Parameter    | Type     | Description                                                       |
+| ------------ | -------- | ----------------------------------------------------------------- |
+| `urlPattern` | `string` | Glob (`**/api/**`) or regex literal (`/\.png$/i`)                 |
+| `action`     | `enum`   | `block` \| `modify` \| `continue`                                 |
+| `modify`     | `object` | `{ headers?, body?, url? }` for action=modify; headers are merged |
 
 ### `browser_remove_interceptor`
 
-Remove an interceptor created by `browser_intercept_request` or `browser_block_resources`.
+Remove an interceptor created by `browser_intercept_request` or `browser_block_resources`. Returns `{ removed }` — the removed ids.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
+| Parameter       | Type     | Description                               |
+| --------------- | -------- | ----------------------------------------- |
 | `interceptorId` | `string` | Interceptor to remove; omit to remove all |
 
 ### `browser_wait_for_response`
 
-Wait for an HTTP response matching a URL pattern.
+Wait for an HTTP response matching a URL pattern. Returns `{ url, status, headers, body }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `urlPattern` | `string` | URL substring or regex literal |
-| `timeout` | `number` | Timeout in milliseconds |
+| Parameter    | Type     | Description                              |
+| ------------ | -------- | ---------------------------------------- |
+| `urlPattern` | `string` | URL substring or regex literal           |
+| `timeout`    | `number` | Timeout in milliseconds; `0` disables it |
 
 ### `browser_block_resources`
 
-Block specific resource types from loading.
+Block specific resource types from loading. Returns `{ blocking: true, interceptorId, types }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `types` | `string[]` | `image`, `stylesheet`, `font`, `media`, `script` |
+| Parameter | Type       | Description                                      |
+| --------- | ---------- | ------------------------------------------------ |
+| `types`   | `string[]` | `image`, `stylesheet`, `font`, `media`, `script` |
 
 ### `browser_capture_har`
 
-Start or stop capturing HTTP traffic of all tabs.
+Start or stop capturing HTTP traffic of all tabs. Stop returns `{ capturing: false, entries, truncated, har, path? }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `action` | `enum` | `start` \| `stop` |
-| `path` | `string` | Path inside the working directory for a HAR 1.2 file (on stop) |
+| Parameter | Type     | Description                                                    |
+| --------- | -------- | -------------------------------------------------------------- |
+| `action`  | `enum`   | `start` \| `stop`                                              |
+| `path`    | `string` | Path inside the working directory for a HAR 1.2 file (on stop) |
 
 ### `browser_get_api_calls`
 
-Get captured XHR/fetch API calls with optional filtering.
+Get captured XHR/fetch API calls with optional filtering. Returns `{ calls }`.
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `urlPattern` | `string` | Filter by URL substring or regex literal |
-| `method` | `string` | Filter by HTTP method |
-| `clear` | `boolean` | Clear the recorded calls after returning them |
+| Parameter    | Type      | Description                                      |
+| ------------ | --------- | ------------------------------------------------ |
+| `urlPattern` | `string`  | Filter by URL substring or regex literal         |
+| `method`     | `string`  | Filter by HTTP method                            |
+| `clear`      | `boolean` | Clear the whole recorded history after returning |

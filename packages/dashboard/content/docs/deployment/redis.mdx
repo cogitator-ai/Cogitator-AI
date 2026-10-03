@@ -5,7 +5,7 @@ description: Unified Redis client with standalone and cluster support — the fo
 
 ## Overview
 
-The `@cogitator-ai/redis` package provides a unified Redis client that works identically in standalone and cluster modes. It wraps [ioredis](https://github.com/redis/ioredis) with a consistent interface used by `@cogitator-ai/memory` (Redis adapter) and the dashboard.
+The `@cogitator-ai/redis` package provides a unified Redis client that works identically in standalone and cluster modes. It wraps [ioredis](https://github.com/redis/ioredis) (a peer dependency, loaded on first use) with a consistent interface used by the `@cogitator-ai/memory` Redis adapter and accepted by the workflow Redis stores.
 
 ```bash
 pnpm add @cogitator-ai/redis ioredis
@@ -44,6 +44,24 @@ const redis = await createRedisClient({
 });
 ```
 
+## Options
+
+| Option                 | Mode       | Description                                                     |
+| ---------------------- | ---------- | --------------------------------------------------------------- |
+| `url`                  | standalone | Connection URL; otherwise built from `host` / `port`            |
+| `host`, `port`         | standalone | Default `localhost:6379`                                        |
+| `db`                   | standalone | Database number                                                 |
+| `nodes`                | cluster    | Seed nodes (at least one, otherwise `createRedisClient` throws) |
+| `scaleReads`           | cluster    | `'master'` (default), `'slave'` or `'all'`                      |
+| `natMap`               | cluster    | Map internal node addresses to reachable ones                   |
+| `keyPrefix`            | both       | Prepended to every key; use a `{hashtag}` in cluster mode       |
+| `password`             | both       | Authentication password                                         |
+| `tls`                  | both       | Connect over TLS                                                |
+| `maxRetriesPerRequest` | both       | Default `3`                                                     |
+| `lazyConnect`          | both       | Delay connecting until the first command (default `false`)      |
+
+A config is treated as cluster when it has `mode: 'cluster'` or a `nodes` array (`isClusterConfig(config)`). Reconnects back off up to 2 seconds.
+
 ## Environment Configuration
 
 Configure Redis entirely from environment variables:
@@ -51,18 +69,20 @@ Configure Redis entirely from environment variables:
 ```typescript
 import { createRedisClient, createConfigFromEnv } from '@cogitator-ai/redis';
 
-const config = createConfigFromEnv();
+const config = createConfigFromEnv(); // or createConfigFromEnv(customEnv)
 const redis = await createRedisClient(config);
 ```
 
-| Variable | Description |
-| --- | --- |
-| `REDIS_URL` | Redis connection URL |
-| `REDIS_HOST` | Redis host (default: `localhost`) |
-| `REDIS_PORT` | Redis port (default: `6379`) |
-| `REDIS_PASSWORD` | Authentication password |
-| `REDIS_CLUSTER_NODES` | JSON array of `{host, port}` objects (a malformed value throws instead of falling back to localhost) |
-| `REDIS_KEY_PREFIX` | Key prefix (default: `cogitator:` / `{cogitator}:`) |
+`parseClusterNodesEnv(value)` parses a `REDIS_CLUSTER_NODES`-style string on its own and returns `null` for invalid JSON.
+
+| Variable              | Description                                                                                                                    |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `REDIS_URL`           | Redis connection URL (takes precedence over host/port)                                                                         |
+| `REDIS_HOST`          | Redis host (default: `localhost`)                                                                                              |
+| `REDIS_PORT`          | Redis port (default: `6379`)                                                                                                   |
+| `REDIS_PASSWORD`      | Authentication password                                                                                                        |
+| `REDIS_CLUSTER_NODES` | JSON array of `{host, port}` objects; switches to cluster mode (a malformed value throws instead of falling back to localhost) |
+| `REDIS_KEY_PREFIX`    | Key prefix (default: `cogitator:` / `{cogitator}:`)                                                                            |
 
 ## Auto-Detection
 
@@ -71,7 +91,7 @@ Detect whether a Redis server runs in standalone or cluster mode:
 ```typescript
 import { detectRedisMode, createRedisClient } from '@cogitator-ai/redis';
 
-const mode = await detectRedisMode({ host: 'localhost', port: 6379 });
+const mode = await detectRedisMode({ host: 'localhost', port: 6379 }); // reads INFO cluster
 
 const redis = await createRedisClient(
   mode === 'cluster'
@@ -82,7 +102,7 @@ const redis = await createRedisClient(
 
 ## Client Interface
 
-The `RedisClient` interface provides key-value, sorted set, pub/sub, and utility operations that work identically in both modes.
+The `RedisClient` interface provides key-value, sorted set, set, pub/sub, event and utility operations that work identically in both modes.
 
 ```typescript
 // Key-value
@@ -90,12 +110,17 @@ await redis.set('key', 'value');
 await redis.get('key');
 await redis.setex('key', 3600, 'value');
 await redis.del('key1', 'key2');
+await redis.expire('key', 60);
 await redis.mget('key1', 'key2');
 
 // Sorted sets
 await redis.zadd('scores', 100, 'player1');
 await redis.zrange('scores', 0, -1);
 await redis.zrangebyscore('scores', 0, 100);
+await redis.zrem('scores', 'player1');
+
+// Sets
+await redis.smembers('tags');
 
 // Pub/sub
 const sub = redis.duplicate();
@@ -103,6 +128,10 @@ await sub.subscribe('events', (channel, message) => {
   console.log(channel, message);
 });
 await redis.publish('events', JSON.stringify({ type: 'update' }));
+
+// Connection events
+redis.on('error', (error) => console.error(error));
+redis.on('reconnecting', () => console.warn('reconnecting'));
 
 // Utility
 await redis.ping();
@@ -115,6 +144,23 @@ await redis.del(...keys);
 
 Pub/sub channels are not prefixed. Subscribe on a `duplicate()` connection: a subscribed connection can only run pub/sub commands. Several callbacks can share a channel; `unsubscribe(channel)` removes all of them.
 
+## Used By
+
+- **Memory** — `RedisAdapter` in `@cogitator-ai/memory` creates its own client from `{ url | host/port | cluster: { nodes, scaleReads }, password, keyPrefix }`.
+- **Workflows** — `RedisRunStore`, `RedisApprovalStore`, `RedisTimerStore` and `RedisCheckpointStore` take any client with the commands they need, so a `RedisClient` from this package fits:
+
+```typescript
+import { createRedisClient, createConfigFromEnv } from '@cogitator-ai/redis';
+import { RedisApprovalStore, RedisRunStore } from '@cogitator-ai/workflows';
+
+const redis = await createRedisClient(createConfigFromEnv());
+
+const runStore = new RedisRunStore({ client: redis });
+const approvalStore = new RedisApprovalStore({ client: redis, keyPrefix: '{approvals}' });
+```
+
+See [Workflow Execution](/docs/workflows/execution) for what the stores do.
+
 ## Cluster Key Routing
 
 Use hash tags to route related keys to the same slot:
@@ -122,7 +168,7 @@ Use hash tags to route related keys to the same slot:
 ```typescript
 const redis = await createRedisClient({
   mode: 'cluster',
-  nodes: [...],
+  nodes: [{ host: 'redis-1', port: 6379 }],
   keyPrefix: '{myapp}:',
 });
 
@@ -135,13 +181,13 @@ await redis.set('sessions:456', '...');
 
 ```typescript
 // TLS
-const redis = await createRedisClient({
+const secure = await createRedisClient({
   url: 'rediss://secure.redis.host:6379',
   tls: true,
 });
 
 // NAT mapping for clusters behind load balancers
-const redis = await createRedisClient({
+const natCluster = await createRedisClient({
   mode: 'cluster',
   nodes: [{ host: 'external.host', port: 6379 }],
   natMap: {

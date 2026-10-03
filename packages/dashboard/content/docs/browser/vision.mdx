@@ -13,33 +13,43 @@ import { browserTools } from '@cogitator-ai/browser';
 const tools = browserTools(session, { modules: ['vision'] });
 ```
 
-Or import individual tools:
+Or create them yourself. `createVisionTools(session)` returns a typed tuple, so destructuring keeps each tool's parameter and result types:
 
 ```typescript
-import {
-  createScreenshotTool,
-  createScreenshotElementTool,
-  createFindByDescriptionTool,
-  createClickByDescriptionTool,
-} from '@cogitator-ai/browser';
+import { createVisionTools, createScreenshotTool } from '@cogitator-ai/browser';
+
+const [screenshot, screenshotElement, findByDescription, clickByDescription] =
+  createVisionTools(session);
+const single = createScreenshotTool(session);
 ```
+
+Tools created this way do not start the session on demand like `browserTools()` does — call `session.start()` first.
 
 ## Screenshots
 
 ### `browser_screenshot`
 
-Captures the current viewport or the full scrollable page. By default produces PNG; setting `quality` switches to JPEG.
+Captures the current viewport, the full scrollable page, or the first element matching `selector`. By default produces PNG; setting `quality` switches to JPEG. `width` and `height` are read from the image itself.
 
 ```typescript
 // agent calls:
 { "fullPage": true }
-// returns: { image: "base64...", width: 1280, height: 720 }
+// returns: { image: "base64...", mimeType: "image/png", width: 1280, height: 2400 }
 
 { "selector": "#hero", "quality": 80 }
-// returns JPEG of the #hero element
+// returns: { image: "base64...", mimeType: "image/jpeg", width: ..., height: ... }
 ```
 
-The returned `image` field is a base64 string. When used with a vision-capable model (GPT-6, Claude, Gemini), the agent can analyze the screenshot content to understand page layout.
+Tool results reach the model as JSON text, so the model receives the base64 string, not a picture — and a full-page PNG costs a lot of context. To let a vision-capable model actually look at the page, capture the screenshot yourself and pass it as an image input:
+
+```typescript
+const shot = await session.page.screenshot({ type: 'png' });
+
+const result = await cogitator.run(agent, {
+  input: 'What does the checkout form ask for?',
+  images: [{ data: shot.toString('base64'), mimeType: 'image/png' }],
+});
+```
 
 ### `browser_screenshot_element`
 
@@ -57,7 +67,7 @@ These tools let agents interact with elements using natural language instead of 
 
 ### `browser_find_by_description`
 
-Walks the page's accessibility tree and matches nodes whose name or role contains the given description. Returns a list of matching elements with their role and name.
+Walks the page's accessibility tree (Playwright's ARIA snapshot) and matches nodes case-insensitively: the name contains the description, the description contains the name as a whole word (names of 3+ characters), or the role contains the description. Returns up to 50 matches plus the `total` count.
 
 ```typescript
 // agent calls:
@@ -66,7 +76,8 @@ Walks the page's accessibility tree and matches nodes whose name or role contain
 //   elements: [
 //     { role: "button", name: "Login", description: 'button: "Login"' },
 //     { role: "link", name: "Login here", description: 'link: "Login here"' }
-//   ]
+//   ],
+//   total: 2
 // }
 ```
 
@@ -80,7 +91,7 @@ Finds an element by description and clicks it. Tries multiple Playwright strateg
 4. `getByLabel(description)` — elements with matching label
 5. `getByPlaceholder(description)` — inputs with matching placeholder
 
-If multiple matches exist, use `index` to pick which one to click.
+The first strategy with any match wins; `index` picks which of its matches to click (default 0). With stealth `humanLikeMouse`, the click follows a human-like mouse path. When nothing matches, or `index` is out of range, it returns `{ clicked: false, element: null }`.
 
 ```typescript
 // agent calls:
@@ -91,9 +102,20 @@ If multiple matches exist, use `index` to pick which one to click.
 // clicks the third "Add to cart" match
 ```
 
+## Accessibility Tree Helper
+
+The tree used by `browser_find_by_description` is exported for your own code:
+
+```typescript
+import { getAccessibilityTree, type AccessibilityNode } from '@cogitator-ai/browser';
+
+const tree: AccessibilityNode | null = await getAccessibilityTree(session.page);
+// { role: 'WebArea', name: '', children: [{ role: 'button', name: 'Login' }, ...] }
+```
+
 ## Vision Flow Example
 
-A typical vision-based browsing flow where the agent uses screenshots to understand what it sees:
+A typical browsing flow where the agent finds and clicks elements by what they say rather than by CSS selectors:
 
 ```typescript
 import { Cogitator, Agent } from '@cogitator-ai/core';
@@ -108,8 +130,8 @@ const agent = new Agent({
   tools: browserTools(session, {
     modules: ['navigation', 'vision', 'interaction'],
   }),
-  instructions: `You browse the web visually. Take screenshots to see what's on the page,
-then use click_by_description to interact with elements you see.`,
+  instructions: `You browse the web. Use browser_find_by_description to discover elements,
+then browser_click_by_description to interact with them.`,
 });
 
 const cogitator = new Cogitator({

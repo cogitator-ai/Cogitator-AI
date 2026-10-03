@@ -19,9 +19,13 @@ pnpm add @cogitator-ai/deploy
 cogitator deploy --dry-run            # analyze + preflight, change nothing
 cogitator deploy                      # Docker: build image, start the compose stack
 cogitator deploy --target fly         # Fly.io
+cogitator deploy --registry ghcr.io/myorg --region fra
+cogitator deploy --no-push            # build locally, skip the registry push
 cogitator deploy status
 cogitator deploy destroy
 ```
+
+The CLI reads the `deploy` section of `cogitator.yml` (or the file passed with `-c, --config`), applies `--registry` / `--region` on top, and picks the target from `--target`, then `deploy.target`, then `docker`.
 
 ### Programmatic API
 
@@ -43,28 +47,31 @@ console.log(plan.preflight.passed, plan.preflight.checks);
 const result = await deployer.deploy({ projectDir: process.cwd(), target: 'fly' });
 if (!result.success) throw new Error(result.error);
 console.log(result.url); // https://my-app.fly.dev
+console.log(result.endpoints); // { api, a2a, health }
 ```
 
-| Method                                | Description                                                                                  |
-| ------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `plan(options)`                       | Analyze + preflight. Returns `config`, `preflight`, `warnings`, `analysis`, `provider`       |
-| `deploy(options)`                     | `plan`, generate artifacts, deploy. Returns `DeployResult` (`dryRun` stops before deploying) |
-| `status(target, config, projectDir)`  | `DeployStatus` (`running`, `url`, `instances`)                                               |
-| `destroy(target, config, projectDir)` | Tears down the deployment; throws when it fails                                              |
-| `availableTargets()`                  | Names of registered providers (`['docker', 'fly']` by default)                               |
-| `registerProvider(provider)`          | Add a custom `DeployProvider`                                                                |
+| Method                                | Description                                                                                                      |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `plan(options)`                       | Analyze + preflight. Returns `config`, `preflight`, `warnings`, `analysis`, `provider`                           |
+| `deploy(options)`                     | `plan`, generate artifacts, deploy. Returns `DeployResult` (`dryRun` stops before writing or deploying anything) |
+| `status(target, config, projectDir)`  | `DeployStatus` (`running`, `url`, `instances`)                                                                   |
+| `destroy(target, config, projectDir)` | Tears down the deployment; throws when it fails                                                                  |
+| `availableTargets()`                  | Names of registered providers (`['docker', 'fly']` by default)                                                   |
+| `getProvider(target)`                 | The registered `DeployProvider`; throws for an unknown target                                                    |
+| `registerProvider(provider)`          | Add a custom `DeployProvider`                                                                                    |
 
 ## Configuration
 
-Add a `deploy` section to `cogitator.yml` (or pass `configOverrides`):
+Add a `deploy` section to `cogitator.yml` — the CLI loads it for you. The programmatic `Deployer` does not read it; pass the same object as `configOverrides`:
 
 ```yaml
 deploy:
   target: fly # docker | fly
-  port: 3000
+  server: express # express | fastify | hono | koa (detected from package.json when omitted)
+  port: 3000 # default 3000
   image: my-agent # Docker image / Fly app name (default: package.json name)
-  region: iad
-  instances: 2 # Fly.io only
+  region: iad # Fly.io only (default iad)
+  instances: 2 # Fly.io only; the docker target runs one container
   registry: ghcr.io/myorg
   services:
     redis: true
@@ -73,74 +80,90 @@ deploy:
     LOG_LEVEL: info
   secrets:
     - OPENAI_API_KEY
-  health:
+  health: # Dockerfile HEALTHCHECK and Fly.io HTTP check
     path: /health
     interval: 30s
     timeout: 5s
-  resources:
+  resources: # Fly.io VM size
     memory: 512mb
     cpu: 1
 ```
 
-Secrets are read from the current environment or the project's `.env` file. They are checked during preflight, passed through to the Docker Compose stack, and imported into Fly.io with `fly secrets import --stage`.
+Explicit `services` and `secrets` replace auto-detection rather than merging with it.
+
+`health.path` defaults to `/health`. The server adapters mount their routes under `/cogitator` by default, so with an unchanged base path set `health.path: /cogitator/health` — otherwise the container health check and the Fly.io check hit a route that does not exist.
+
+Secrets are read from the current environment or the project's `.env` file (the environment wins). They are checked during preflight, passed through to the Docker Compose stack, and imported into Fly.io with `fly secrets import --stage`. Multi-line secret values are rejected for Fly.io because `fly secrets import` cannot carry them.
 
 ## Auto-Detection
 
-| What             | Source                                   | Example                                                                             |
-| ---------------- | ---------------------------------------- | ----------------------------------------------------------------------------------- |
-| Server adapter   | `package.json` dependencies              | `@cogitator-ai/express` → Express                                                   |
-| Image / app name | `package.json` `name`                    | `@acme/My Agent` → `my-agent`                                                       |
-| Package manager  | Lockfile                                 | `pnpm-lock.yaml` → `pnpm install --frozen-lockfile`, `package-lock.json` → `npm ci` |
-| Start command    | `scripts.start`, then `main`             | `node dist/index.js` → `CMD ["node","dist/index.js"]`, otherwise `npm start`        |
-| Build step       | `tsconfig.json` + `scripts.build`        | Multi-stage build running `<pm> run build`                                          |
-| Services         | `cogitator.yml` / `.yaml` memory adapter | `adapter: postgres` → PostgreSQL service                                            |
-| Required secrets | `llm.defaultModel` (+ `defaultProvider`) | `openai/gpt-6.1-sol` → `OPENAI_API_KEY`; Bedrock → both AWS keys                    |
-| Ollama Cloud     | Model tag `:cloud` / `-cloud`            | `gpt-oss:120b-cloud` → `OLLAMA_API_KEY`                                             |
+| What             | Source                                   | Example                                                                                                                                                     |
+| ---------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Server adapter   | `package.json` dependencies              | `@cogitator-ai/express` → Express                                                                                                                           |
+| Image / app name | `package.json` `name`                    | `@acme/My Agent` → `my-agent`                                                                                                                               |
+| Package manager  | Lockfile                                 | `pnpm-lock.yaml` → `pnpm install --frozen-lockfile`, `yarn.lock` → yarn, `package-lock.json` → `npm ci`                                                     |
+| Start command    | `scripts.start`, then `main`             | `node dist/index.js` → `CMD ["node","dist/index.js"]`, any other script → `npm start`; neither → `node dist/server.js` (`src/server.js` without TypeScript) |
+| Build step       | `tsconfig.json` + `scripts.build`        | Multi-stage build running `<pm> run build`                                                                                                                  |
+| Services         | `cogitator.yml` / `.yaml` memory adapter | `adapter: postgres` → PostgreSQL service                                                                                                                    |
+| Required secrets | `llm.defaultModel` (+ `defaultProvider`) | `openai/gpt-6.1-sol` → `OPENAI_API_KEY`; Bedrock → both AWS keys                                                                                            |
+| Ollama Cloud     | Model tag `:cloud` / `-cloud`            | `gpt-oss:120b-cloud` → `OLLAMA_API_KEY`                                                                                                                     |
 
-Problems found during analysis (invalid config, unparsable `package.json`, missing start script, local Ollama models on cloud targets) are returned as `plan.warnings` instead of being ignored.
+Problems found during analysis (invalid config, unparsable `package.json`, missing start script, `tsconfig.json` without a `build` script, local Ollama models on cloud targets, `instances > 1` on Docker) are returned as `plan.warnings` instead of being ignored.
 
 ## Deploy Targets
 
 ### Docker
 
-Artifacts are written to `.cogitator/`: `Dockerfile`, `Dockerfile.dockerignore` and `docker-compose.prod.yml`. A root `.dockerignore` is created when the project has none, so `.env` and `node_modules` never enter the image.
+Artifacts are written to `.cogitator/`: `Dockerfile` (on `node:22-alpine`, multi-stage when the project has TypeScript, with a `HEALTHCHECK` on `health.path`), `.dockerignore`, `Dockerfile.dockerignore` and `docker-compose.prod.yml`. A root `.dockerignore` is created when the project has none, so `.env` and `node_modules` never enter the image.
 
-`deploy` builds and tags the image (`<registry>/<image>:latest`), pushes it when a registry is configured, then runs `docker compose up -d` for the app plus the Redis/PostgreSQL services it needs (health-gated, data in named volumes). `status` reports whether the `app` service is running; `destroy` runs `docker compose down` and keeps volumes.
+`deploy` builds and tags the image (`<registry>/<image>:latest`), pushes it when a registry is configured, then runs `docker compose up -d` for the app plus the Redis (`redis:7-alpine`) and PostgreSQL (`pgvector/pgvector:pg16`) services it needs — health-gated, data in named volumes, with `REDIS_URL` / `DATABASE_URL` injected into the app. The result URL is `http://localhost:<port>`. `status` reports whether the `app` service is running; `destroy` runs `docker compose down` and keeps volumes.
 
 Preflight checks: Docker installed, daemon running, Compose v2 available, registry credentials (read from the Docker config, credential helpers and stores), secrets.
 
 ### Fly.io
 
-Generates `.cogitator/fly.toml` (your own `fly.toml` is never overwritten) with `[env]`, HTTP checks from `health`, VM size from `resources`, and `min_machines_running` from `instances`. `deploy` creates the app when needed, stages secrets, runs `fly deploy --config .cogitator/fly.toml --dockerfile .cogitator/Dockerfile`, and scales to `instances`. Works with either `flyctl` or `fly` on `PATH`.
+Generates `.cogitator/fly.toml` (your own `fly.toml` is never overwritten) with `[env]`, HTTP checks from `health`, a shared-CPU VM sized from `resources` (default `256mb`, 1 CPU), and `min_machines_running` from `instances` (machines auto-stop when `instances` is 1). `deploy` creates the app when needed, stages secrets, runs `fly deploy --config .cogitator/fly.toml --dockerfile .cogitator/Dockerfile`, and scales to `instances`. The result URL is `https://<image>.fly.dev`, with the A2A card at `/.well-known/agent.json`. Preflight checks that `flyctl` (or `fly`) is on `PATH`, that you are logged in (`fly auth whoami`), and the secrets.
 
 ## Custom Providers
 
 ```typescript
 import { Deployer, type DeployProvider } from '@cogitator-ai/deploy';
+import type {
+  DeployConfig,
+  DeployResult,
+  DeployStatus,
+  GeneratedArtifacts,
+  PreflightResult,
+} from '@cogitator-ai/types';
 
 class KubernetesProvider implements DeployProvider {
   readonly name = 'kubernetes';
-  async preflight(config, projectDir) {
-    /* ... */
+
+  async preflight(config: DeployConfig, projectDir: string): Promise<PreflightResult> {
+    return { checks: [], passed: true };
   }
-  async generate(config, projectDir) {
-    /* ... */
+  async generate(config: DeployConfig, projectDir: string): Promise<GeneratedArtifacts> {
+    return { files: [], outputDir: '.cogitator' };
   }
-  async deploy(config, artifacts, projectDir) {
-    /* ... */
+  async deploy(
+    config: DeployConfig,
+    artifacts: GeneratedArtifacts,
+    projectDir: string
+  ): Promise<DeployResult> {
+    return { success: true, url: 'https://my-agent.example.com' };
   }
-  async status(config, projectDir) {
-    /* ... */
+  async status(config: DeployConfig, projectDir: string): Promise<DeployStatus> {
+    return { running: true };
   }
-  async destroy(config, projectDir) {
-    /* ... */
-  }
+  async destroy(config: DeployConfig, projectDir: string): Promise<void> {}
 }
 
 const deployer = new Deployer();
 deployer.registerProvider(new KubernetesProvider());
 await deployer.deploy({ projectDir: process.cwd(), target: 'kubernetes' });
 ```
+
+`Deployer.deploy()` hands your provider the artifacts produced by the built-in `ArtifactGenerator` (Dockerfile, `.dockerignore`, and a Compose file for targets other than `fly`); write them and deploy however your platform needs. `generate()` is part of the interface for standalone use.
 
 All external commands are executed without a shell, so paths with spaces and user-supplied values are passed verbatim.
 

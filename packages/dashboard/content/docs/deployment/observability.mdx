@@ -5,11 +5,26 @@ description: Trace agent executions with Langfuse and OpenTelemetry — cost tra
 
 ## Overview
 
-Cogitator ships two observability exporters in `@cogitator-ai/core`: **Langfuse** for AI-native tracing with cost tracking, and **OpenTelemetry (OTLP)** for standard distributed tracing. Both hook into the agent lifecycle to capture runs, LLM calls, and tool executions.
+Cogitator ships two observability exporters in `@cogitator-ai/core`: **Langfuse** for AI-native tracing with cost tracking, and **OpenTelemetry (OTLP)** for standard distributed tracing. Neither is attached automatically — you connect them to the run callbacks (`onRunStart`, `onToolCall`, `onToolResult`, `onSpan`, `onRunComplete`, `onRunError`) that `cog.run()` accepts.
+
+Both exporters are **off unless you pass `enabled: true`**; a disabled exporter accepts every call and does nothing, which makes it easy to toggle per environment.
+
+## Spans
+
+Every run produces spans, returned in `result.trace.spans` and streamed one by one to `onSpan` as they finish:
+
+| Span            | Kind       | Attributes                                                                                                                                      |
+| --------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent.run`     | `server`   | `agent.id`, `agent.name`, `agent.model`, `run.id`, `run.thread_id`, `run.iterations`, `run.tool_calls`, `run.input_tokens`, `run.output_tokens` |
+| `llm.chat`      | `client`   | `llm.model`, `llm.iteration`, `llm.input_tokens`, `llm.output_tokens`, `llm.cached_input_tokens`, `llm.reasoning_tokens`, `llm.finish_reason`   |
+| `tool.<name>`   | `internal` | `tool.name`, `tool.call_id`, `tool.arguments`, `tool.success`, `tool.error`                                                                     |
+| `agent.handoff` | `internal` | `handoff.from`, `handoff.to`                                                                                                                    |
+
+The root `agent.run` span is emitted last (when the run ends); a failed run emits it with status `error` and an `error` attribute.
 
 ## Langfuse Integration
 
-[Langfuse](https://langfuse.com) provides purpose-built observability for LLM applications -- traces, generations, cost analysis, and evaluation scores.
+[Langfuse](https://langfuse.com) provides purpose-built observability for LLM applications — traces, generations, cost analysis, and evaluation scores. The `langfuse` SDK is an optional peer dependency:
 
 ```bash
 pnpm add langfuse
@@ -27,24 +42,45 @@ const langfuse = createLangfuseExporter({
   enabled: true,
 });
 
-await langfuse.init();
+await langfuse.init(); // throws when `langfuse` is not installed
 ```
 
-### Tracing Runs and LLM Calls
+### Wiring a Run
+
+Each run becomes a Langfuse trace (id = run id, session = thread id, tagged `cogitator` and the agent name); tool calls become `tool:<name>` spans on it:
 
 ```typescript
-langfuse.onRunStart({
-  runId: 'run_abc123',
-  agentId: 'agent_001',
-  agentName: 'researcher',
-  input: 'Summarize recent papers on chain-of-thought reasoning',
-  threadId: 'thread_xyz',
-  model: 'gpt-6.1-sol',
-});
+let currentRunId = '';
 
+const result = await cog.run(agent, {
+  input: 'Summarize recent papers on chain-of-thought reasoning',
+  onRunStart: ({ runId, agentId, input, threadId }) => {
+    currentRunId = runId;
+    langfuse.onRunStart({
+      runId,
+      agentId,
+      agentName: agent.name,
+      input,
+      threadId,
+      model: agent.model,
+    });
+  },
+  onToolCall: (call) => langfuse.onToolCall(currentRunId, call),
+  onToolResult: (toolResult) => langfuse.onToolResult(currentRunId, toolResult),
+  onRunComplete: (runResult) => langfuse.onRunComplete(runResult),
+});
+```
+
+`onToolCall` and `onToolResult` do not carry the run id, so keep the one from `onRunStart` in a variable scoped to the run. `onRunComplete` writes the output, token usage and tool-call count to the trace and releases its state.
+
+### Generations and Custom Spans
+
+For LLM calls you make yourself (or to record finished `onSpan` spans), use the lower-level hooks:
+
+```typescript
 const generationId = langfuse.onLLMCall({
-  runId: 'run_abc123',
-  model: 'gpt-6.1-sol',
+  runId,
+  model: 'openai/gpt-5.5',
   messages: [{ role: 'user', content: 'Summarize recent papers...' }],
   temperature: 0.7,
   maxTokens: 4096,
@@ -57,74 +93,45 @@ langfuse.onLLMResponse({
   outputTokens: 820,
 });
 
-langfuse.onRunComplete({
-  runId: 'run_abc123',
-  output: 'Here is a summary...',
-  usage: { prompt: 150, completion: 820, total: 970 },
-  toolCalls: [],
-});
+const span = {
+  id: 'span_rerank',
+  traceId: 'trace_abc123',
+  name: 'rerank',
+  kind: 'internal' as const,
+  startTime: Date.now(),
+  attributes: { candidates: 20 },
+};
+langfuse.onSpanStart(runId, span);
+langfuse.onSpanEnd({
+  ...span,
+  status: 'ok',
+  endTime: Date.now(),
+  duration: 0,
+  attributes: { ...span.attributes, output: ['doc-3', 'doc-7'] },
+}); // the span's output is `attributes.output`
 ```
 
-### Tool Call Tracing
-
-Tool executions appear as child spans on the trace:
-
-```typescript
-langfuse.onToolCall('run_abc123', {
-  id: 'call_001',
-  name: 'search_papers',
-  arguments: { query: 'chain-of-thought reasoning 2025' },
-});
-
-langfuse.onToolResult('run_abc123', {
-  callId: 'call_001',
-  result: { papers: ['...'] },
-});
-```
+`onLLMCall` and `onSpanStart` take an optional parent (`spanId` / `span.parentId`) and fall back to the trace. Hooks for a run that was never started return quietly (`onLLMCall` returns `''`).
 
 ## OpenTelemetry (OTLP)
 
-For teams using Jaeger, Grafana Tempo, or Datadog, the OTLP exporter sends spans in standard OpenTelemetry format.
+For teams using Jaeger, Grafana Tempo, Honeycomb or Datadog, the OTLP exporter sends spans as OTLP/HTTP JSON.
 
 ```typescript
 import { createOTLPExporter } from '@cogitator-ai/core';
 
 const otlp = createOTLPExporter({
   endpoint: 'http://localhost:4318/v1/traces',
-  serviceName: 'cogitator-production',
-  serviceVersion: '1.0.0',
+  serviceName: 'cogitator-production', // default 'cogitator'
+  serviceVersion: '1.0.0', // default '1.0.0'
   headers: { Authorization: `Bearer ${process.env.OTLP_TOKEN}` },
   enabled: true,
 });
 
-otlp.start();
+otlp.start(); // flush every 5 seconds
 ```
 
-Export Cogitator spans to the OTLP wire format:
-
-```typescript
-otlp.exportSpan('run_abc123', {
-  id: 'span_001',
-  traceId: 'run_abc123',
-  name: 'agent.run',
-  kind: 'server',
-  status: 'ok',
-  startTime: Date.now() - 1500,
-  endTime: Date.now(),
-  duration: 1500,
-  attributes: { 'agent.name': 'researcher', 'llm.model': 'gpt-6.1-sol' },
-});
-
-await otlp.flush();
-```
-
-Spans are batched and flushed every 5 seconds, or when the buffer reaches 100 spans.
-
-OTLP needs hex ids (16 bytes for a trace, 8 for a span), while Cogitator ids look like `trace_…` and `span_…`. The exporter derives the OTLP ids from them with SHA-256, so the spans of a run share a trace and child spans point at their parents, also when they are exported after the run. The original ids and the run id are kept as the `cogitator.trace_id`, `cogitator.span_id` and `cogitator.run_id` attributes. Numbers, booleans and objects keep their types as OTLP attribute values.
-
-A batch the collector refuses with a 4xx status is dropped and logged; on network errors, 408, 429 and 5xx it is kept and sent again with the next flush, up to 10,000 pending spans.
-
-To export every span of a run as it happens:
+To export every span of a run as it finishes:
 
 ```typescript
 let runId = '';
@@ -137,28 +144,49 @@ await cog.run(agent, {
 });
 ```
 
+You can also export spans after the fact — `result.trace.spans.forEach((span) => otlp.exportSpan(result.runId, span))` — or build your own `Span` objects:
+
+```typescript
+otlp.exportSpan('run_abc123', {
+  id: 'span_001',
+  traceId: 'trace_abc123',
+  name: 'agent.run',
+  kind: 'server',
+  status: 'ok',
+  startTime: Date.now() - 1500,
+  endTime: Date.now(),
+  duration: 1500,
+  attributes: { 'agent.name': 'researcher', 'llm.model': 'openai/gpt-5.5' },
+});
+
+await otlp.flush();
+```
+
+Spans are batched and flushed every 5 seconds after `start()`, or as soon as 100 spans are pending.
+
+OTLP needs hex ids (16 bytes for a trace, 8 for a span), while Cogitator ids look like `trace_…` and `span_…`. The exporter derives the OTLP ids from them with SHA-256 (ids that already are hex of the right length are kept), so the spans of a run share a trace and child spans point at their parents, also when they are exported after the run. The original ids and the run id are kept as the `cogitator.trace_id`, `cogitator.span_id` and `cogitator.run_id` attributes. Numbers, booleans and strings keep their types as OTLP attribute values; objects are sent as JSON strings.
+
+A batch the collector refuses with a 4xx status is dropped and logged; on network errors, 408, 429 and 5xx it is kept and sent again with the next flush, up to 10,000 pending spans.
+
+`OTLPExporter` also has `onRunStart`, `onRunComplete` and `onRunError` hooks. They do nothing — ids come from the spans themselves — and exist so you can wire both exporters to the same callbacks.
+
 ### Span Kinds
 
-| Cogitator Kind | OTLP Kind | Typical Use                 |
-| -------------- | --------- | --------------------------- |
-| `internal`     | INTERNAL  | Agent planning, reasoning   |
-| `client`       | CLIENT    | Outbound LLM API calls      |
-| `server`       | SERVER    | Incoming agent run requests |
-| `producer`     | PRODUCER  | Job queue dispatch          |
-| `consumer`     | CONSUMER  | Worker job processing       |
+| Cogitator Kind | OTLP Kind | Emitted by                                      |
+| -------------- | --------- | ----------------------------------------------- |
+| `internal`     | INTERNAL  | `tool.<name>`, `agent.handoff`                  |
+| `client`       | CLIENT    | `llm.chat`                                      |
+| `server`       | SERVER    | `agent.run`                                     |
+| `producer`     | PRODUCER  | Available for your own spans (e.g. queue jobs)  |
+| `consumer`     | CONSUMER  | Available for your own spans (e.g. worker jobs) |
+
+Span status maps to OTLP `OK`, `ERROR` or `UNSET`.
 
 ## Cost Tracking
 
-Langfuse computes cost from token usage on generations. Group costs by agent, model, or session in the dashboard:
+Every run reports its cost in `result.usage.cost` (USD, from the [model registry](/docs/core/model-registry) prices) alongside `inputTokens`, `outputTokens`, `cachedInputTokens` and `reasoningTokens`. The `llm.chat` spans carry per-call token counts, so any OTLP backend can aggregate them by `llm.model`.
 
-```typescript
-langfuse.onLLMResponse({
-  generationId,
-  output: responseText,
-  inputTokens: usage.promptTokens,
-  outputTokens: usage.completionTokens,
-});
-```
+Langfuse computes cost from the token usage of generations; with `onRunComplete` the run's usage (including `cost`) is attached to the trace metadata. Group costs by agent (trace name), model, or session (thread) in the Langfuse dashboard.
 
 ## Shutdown
 
@@ -169,5 +197,6 @@ process.on('SIGTERM', async () => {
   await langfuse.flush();
   await langfuse.shutdown();
   otlp.stop();
+  await otlp.flush();
 });
 ```

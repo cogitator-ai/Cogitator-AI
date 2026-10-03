@@ -13,10 +13,11 @@ import { browserTools } from '@cogitator-ai/browser';
 const tools = browserTools(session, { modules: ['network'] });
 ```
 
-Or import individual tools:
+Or create them yourself — `createNetworkTools(session)` returns a typed tuple `[intercept, waitForResponse, blockResources, captureHar, getApiCalls, removeInterceptor]`, or pick single factories:
 
 ```typescript
 import {
+  createNetworkTools,
   createInterceptRequestTool,
   createRemoveInterceptorTool,
   createWaitForResponseTool,
@@ -59,7 +60,9 @@ Intercept HTTP requests matching a URL pattern. `urlPattern` is a Playwright glo
 }
 ```
 
-Returns an `interceptorId` that can be passed to `browser_remove_interceptor`.
+Returns an `interceptorId` that can be passed to `browser_remove_interceptor`. `action: "modify"` without a `modify` object registers nothing and returns `{ interceptorId: null, warning }`.
+
+Interceptors and a running HAR capture belong to the browser context: when the session is closed and started again (or relaunched by `ensureStarted()`), they are gone and need to be registered again.
 
 ### `browser_remove_interceptor`
 
@@ -88,7 +91,7 @@ Supported types: `image`, `stylesheet`, `font`, `media`, `script`.
 
 ### `browser_wait_for_response`
 
-Wait for an HTTP response whose URL contains `urlPattern` as a substring, or matches it when it is a `/regex/flags` literal. Returns the response status, headers, and body.
+Wait for an HTTP response on the active tab whose URL contains `urlPattern` as a substring, or matches it when it is a `/regex/flags` literal. Returns the response status, headers, and body (`""` when the body cannot be read). `timeout: 0` waits indefinitely; without it the session's `actionTimeout` applies.
 
 ```typescript
 // wait for the search API to respond
@@ -98,7 +101,7 @@ Wait for an HTTP response whose URL contains `urlPattern` as a substring, or mat
 
 ### `browser_get_api_calls`
 
-Get XHR and fetch calls recorded since the session started (the latest 1000 are kept). Filter by URL substring or `/regex/flags` literal and by HTTP method; pass `clear: true` to empty the history after reading it. Failed calls are recorded with `status: 0` and an `error` message.
+Get XHR and fetch calls recorded since the session started (the latest 1000 are kept). Filter by URL substring or `/regex/flags` literal and by HTTP method (case-insensitive); pass `clear: true` to empty the whole history — not only the matching calls — after reading it. Failed calls are recorded with `status: 0` and an `error` message.
 
 ```typescript
 // get all captured API calls

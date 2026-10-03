@@ -47,18 +47,18 @@ const session = new BrowserSession({
 
 ## Evasion Scripts
 
-When stealth is enabled, the following evasion scripts run automatically on every new page via `context.addInitScript`:
+When stealth is enabled, the following evasion scripts run automatically on every new page via `context.addInitScript`. `blockWebDriver: false` drops the WebDriver and Permissions evasions; `fingerprintRandomization: false` drops the rest and the random user agent.
 
-| Evasion     | What it does                                                                                                                    |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| WebDriver   | Sets `navigator.webdriver` to `false` on `Navigator.prototype` (no detectable own property)                                     |
-| Plugins     | Fakes `navigator.plugins` with Chrome PDF Plugin, PDF Viewer, Native Client                                                     |
-| Languages   | Derives `navigator.languages` from `locale` (`de-DE` → `['de-DE', 'de']`, default `['en-US', 'en']`)                            |
-| Platform    | Aligns `navigator.platform` and `navigator.userAgentData.platform` with the user agent (`Win32`, `MacIntel`, `Linux x86_64`, …) |
-| Canvas      | `toDataURL` returns a copy with ±1 per-channel noise from a seeded PRNG; the original canvas is untouched                       |
-| WebGL       | Overrides WebGL vendor/renderer to report Intel Iris OpenGL Engine                                                              |
-| Chrome      | Adds `window.chrome` object with `runtime`, `loadTimes`, `csi` stubs                                                            |
-| Permissions | Overrides `Permissions.query` to return `denied` for notifications                                                              |
+| Evasion     | Gated by                   | What it does                                                                                                                    |
+| ----------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| WebDriver   | `blockWebDriver`           | Sets `navigator.webdriver` to `false` on `Navigator.prototype` (no detectable own property)                                     |
+| Plugins     | `fingerprintRandomization` | Fakes `navigator.plugins` with Chrome PDF Plugin, PDF Viewer, Native Client                                                     |
+| Languages   | `fingerprintRandomization` | Derives `navigator.languages` from `locale` (`de-DE` → `['de-DE', 'de']`, default `['en-US', 'en']`)                            |
+| Platform    | `fingerprintRandomization` | Aligns `navigator.platform` and `navigator.userAgentData.platform` with the user agent (`Win32`, `MacIntel`, `Linux x86_64`, …) |
+| Canvas      | `fingerprintRandomization` | `toDataURL` returns a copy with ±1 per-channel noise from a seeded PRNG; the original canvas is untouched                       |
+| WebGL       | `fingerprintRandomization` | Overrides WebGL vendor/renderer to report Intel Iris OpenGL Engine                                                              |
+| Chrome      | `fingerprintRandomization` | Adds `window.chrome` object with `runtime`, `loadTimes`, `csi` stubs                                                            |
+| Permissions | `blockWebDriver`           | Overrides `Permissions.query` to return `denied` for notifications                                                              |
 
 ### Custom Evasion Scripts
 
@@ -77,7 +77,7 @@ const session = new BrowserSession({
 
 ## Human-Like Behavior
 
-With `humanLikeTyping`, the `browser_type` and `browser_fill_form` tools clear the field and type it key by key with random 50-150ms delays, so the result matches the instant `fill()` used without stealth.
+With `humanLikeTyping`, the `browser_type` and `browser_fill_form` tools clear the field and type it key by key with a random 50-150ms per-key delay (picked once per call), so the result matches the instant `fill()` used without stealth. An explicit `delay` on `browser_type` takes precedence.
 
 With `humanLikeMouse`, `browser_click`, `browser_click_by_description` and `browser_hover` move the mouse along a Bezier curve from its last position before acting, and `browser_scroll` hovers the target (if a selector is given) and scrolls with several small wheel steps.
 
@@ -134,6 +134,27 @@ import { getRandomUserAgent, getAllUserAgents } from '@cogitator-ai/browser';
 const ua = getRandomUserAgent('chromium');
 const all = getAllUserAgents(); // { chromium: [...], firefox: [...], webkit: [...] }
 ```
+
+## Stealth for Your Own Playwright Context
+
+The building blocks are exported, so you can apply the same evasions to a context you manage yourself:
+
+```typescript
+import { chromium } from 'playwright';
+import { applyStealthToContext, getStealthLaunchOptions } from '@cogitator-ai/browser';
+
+const stealth = { blockWebDriver: true, fingerprintRandomization: true };
+const launchOptions = getStealthLaunchOptions(stealth, 'chromium'); // { userAgent }
+
+const browser = await chromium.launch();
+const context = await browser.newContext(launchOptions);
+await applyStealthToContext(context, stealth, {
+  userAgent: typeof launchOptions.userAgent === 'string' ? launchOptions.userAgent : undefined,
+  locale: 'en-US',
+});
+```
+
+`getEvasionScripts({ blockWebDriver, fingerprintRandomization, userAgent, locale })` returns the raw init scripts if you want to inject them another way.
 
 ## Full Stealth Example
 
