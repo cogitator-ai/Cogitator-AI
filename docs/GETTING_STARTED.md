@@ -2,68 +2,60 @@
 
 > Build your first AI agent in 5 minutes
 
-This guide will walk you through installing Cogitator, creating your first agent, and running it with tools and memory.
+This guide walks you through installing Cogitator, creating your first agent, and running it with tools and memory. The website has the same material in more depth: [Getting Started](https://cogitator.app/docs/getting-started), [Quick Start](https://cogitator.app/docs/getting-started/quick-start), [Configuration](https://cogitator.app/docs/getting-started/configuration).
 
 ---
 
 ## Prerequisites
 
-Before you begin, make sure you have:
-
 - **Node.js 22.12+** — [Download](https://nodejs.org/)
 - **pnpm** (recommended) — `npm install -g pnpm`
 - **Docker** (optional) — For Redis, Postgres, and sandboxed execution
-- **Ollama** (for local LLMs) — [Download](https://ollama.ai/) or use OpenAI/Anthropic API
-
-### Verify Installation
+- **Ollama** (for local LLMs) — [Download](https://ollama.com/), or use an OpenAI/Anthropic/Google API key
 
 ```bash
-node --version    # v20.0.0 or higher
-pnpm --version    # 8.0.0 or higher
-docker --version  # Optional: 24.0.0 or higher
-ollama --version  # Optional: 0.1.0 or higher
+node --version    # v22.12.0 or higher
+pnpm --version
+docker --version  # optional
+ollama --version  # optional
 ```
 
 ---
 
 ## Quick Start (3 minutes)
 
-The fastest way to get started is using the Cogitator CLI:
+The fastest way to start is the project scaffolder:
 
 ```bash
-# Install CLI globally
-npm install -g @cogitator-ai/cli
-
-# Create a new project
-cogitator init my-agents
+npx create-cogitator-app my-agents --template basic --provider ollama --docker
 cd my-agents
 
-# Start infrastructure (Redis, Postgres, Ollama)
-cogitator up
+# Start Redis, Postgres (and Ollama, for the ollama provider)
+docker compose up -d
 
 # Run your first agent
 pnpm dev
 ```
 
-That's it! You should see your agent respond to a greeting.
+Templates: `basic`, `memory`, `swarm`, `workflow`, `api-server`, `nextjs`. Without flags the scaffolder asks for everything interactively. See [Project Scaffolding](https://cogitator.app/docs/getting-started/scaffolding).
+
+The `@cogitator-ai/cli` package (`cogitator` command) covers the rest of the lifecycle: `cogitator init <name>` scaffolds a personal assistant connected to messaging channels (Telegram, Discord, Slack, WebChat), `cogitator up` starts the assistant from `cogitator.yml` or the Docker Compose services in the current directory, and `cogitator run`, `status`, `logs`, `down`, `deploy` and `models` do what they say. See [CLI](https://cogitator.app/docs/cli).
 
 ---
 
 ## Manual Installation
 
-If you prefer to set up manually or add Cogitator to an existing project:
+To add Cogitator to an existing project:
 
 ```bash
-# Create a new project
 mkdir my-agents && cd my-agents
 pnpm init
 
-# Install Cogitator packages
 pnpm add @cogitator-ai/core @cogitator-ai/config zod
-
-# Install dev dependencies
 pnpm add -D typescript tsx @types/node
 ```
+
+Set `"type": "module"` in `package.json` so top-level `await` works in the examples below.
 
 ---
 
@@ -74,24 +66,20 @@ Create a file `src/agent.ts`:
 ```typescript
 import { Cogitator, Agent } from '@cogitator-ai/core';
 
-// 1. Create the Cogitator runtime
 const cog = new Cogitator({
   llm: {
-    defaultProvider: 'ollama',
     providers: {
       ollama: { baseUrl: 'http://localhost:11434' },
     },
   },
 });
 
-// 2. Create an agent
 const assistant = new Agent({
   name: 'assistant',
-  model: 'llama3.1:8b', // or 'openai/gpt-6.1-sol', 'anthropic/claude-sonnet-5-5'
-  instructions: `You are a helpful assistant. Be concise and friendly.`,
+  model: 'ollama/llama3.2', // or 'openai/gpt-6.1-sol', 'anthropic/claude-sonnet-5-5'
+  instructions: 'You are a helpful assistant. Be concise and friendly.',
 });
 
-// 3. Run the agent
 const result = await cog.run(assistant, {
   input: 'Hello! What can you help me with?',
 });
@@ -99,27 +87,27 @@ const result = await cog.run(assistant, {
 console.log('Agent:', result.output);
 console.log('Tokens:', result.usage.totalTokens);
 
-// 4. Cleanup
 await cog.close();
 ```
 
-Run it:
+Run it (with Ollama running and `ollama pull llama3.2` done):
 
 ```bash
 npx tsx src/agent.ts
 ```
 
+The result carries the answer in `output`, token counts and cost in `usage`, every tool call in `toolCalls` and the run's spans in `trace`.
+
 ---
 
 ## Add Tools
 
-Tools give your agent superpowers. Define them with Zod schemas for full type safety:
+Tools let your agent take actions. Define them with Zod schemas for full type safety:
 
 ```typescript
 import { Cogitator, Agent, tool } from '@cogitator-ai/core';
 import { z } from 'zod';
 
-// Define a custom tool
 const getWeather = tool({
   name: 'get_weather',
   description: 'Get the current weather for a city',
@@ -128,7 +116,6 @@ const getWeather = tool({
     units: z.enum(['celsius', 'fahrenheit']).default('celsius'),
   }),
   execute: async ({ city, units }) => {
-    // In production, call a real weather API
     return {
       city,
       temperature: units === 'celsius' ? 22 : 72,
@@ -138,10 +125,9 @@ const getWeather = tool({
   },
 });
 
-// Create agent with tools
 const weatherBot = new Agent({
   name: 'weather-bot',
-  model: 'llama3.1:8b',
+  model: 'ollama/llama3.2',
   instructions:
     'You are a weather assistant. Use the get_weather tool to answer questions about weather.',
   tools: [getWeather],
@@ -161,6 +147,8 @@ console.log(
 
 await cog.close();
 ```
+
+Without any configuration, Cogitator talks to Ollama at `http://localhost:11434`.
 
 ### Built-in Tools
 
@@ -194,8 +182,8 @@ import {
 
   // Network & External
   httpRequest, // HTTP calls
-  exec, // Shell commands (sandboxed)
-  webSearch, // Web search
+  exec, // Shell commands (requires approval, Docker sandbox)
+  webSearch, // Web search (Tavily, Brave or Serper)
   webScrape, // Scrape web pages
   sqlQuery, // SQL queries
   vectorSearch, // Vector similarity search
@@ -213,14 +201,15 @@ const agent = new Agent({
   tools: [calculator, datetime, fileRead, httpRequest],
 });
 
-// Or use all built-in tools
 const superAgent = new Agent({
   name: 'super-agent',
   model: 'openai/gpt-6.1-sol',
   instructions: 'You have access to all tools.',
-  tools: builtinTools,
+  tools: [...builtinTools],
 });
 ```
+
+Tools with `requiresApproval` (like `exec`) pause the run until someone decides — see [Approvals](https://cogitator.app/docs/tools/approvals) and [TOOLS.md](./TOOLS.md).
 
 ---
 
@@ -232,33 +221,27 @@ Enable persistent memory so your agent remembers conversations:
 import { Cogitator, Agent } from '@cogitator-ai/core';
 
 const cog = new Cogitator({
-  llm: {
-    defaultProvider: 'ollama',
-  },
-  // Enable memory
   memory: {
     adapter: 'memory', // In-memory (for development)
-    // adapter: 'redis',   // Redis (for production short-term)
-    // adapter: 'postgres', // Postgres (for production long-term)
+    // adapter: 'redis', redis: { url: 'redis://localhost:6379' },
+    // adapter: 'postgres', postgres: { connectionString: process.env.DATABASE_URL! },
   },
 });
 
 const assistant = new Agent({
   name: 'memory-assistant',
-  model: 'llama3.1:8b',
+  model: 'ollama/llama3.2',
   instructions: 'You are a helpful assistant. Remember what the user tells you.',
 });
 
-// First conversation
 await cog.run(assistant, {
   input: 'My name is Alex and I live in Berlin.',
-  threadId: 'user-123', // Unique thread ID
+  threadId: 'user-123',
 });
 
-// Later conversation (agent remembers!)
 const result = await cog.run(assistant, {
   input: 'What is my name and where do I live?',
-  threadId: 'user-123', // Same thread ID
+  threadId: 'user-123',
 });
 
 console.log(result.output); // "Your name is Alex and you live in Berlin."
@@ -268,31 +251,41 @@ await cog.close();
 
 ### Memory Adapters
 
-| Adapter    | Use Case                        | Persistence          |
-| ---------- | ------------------------------- | -------------------- |
-| `memory`   | Development, testing            | None (RAM only)      |
-| `redis`    | Production short-term           | Session-based        |
-| `postgres` | Production long-term + pgvector | Permanent            |
-| `sqlite`   | Embedded / single-file storage  | Permanent            |
-| `mongodb`  | Document-oriented workloads     | Permanent            |
-| `qdrant`   | Native vector search            | Permanent (external) |
+| Adapter    | Use Case                        | Persistence          | Via `memory.adapter` |
+| ---------- | ------------------------------- | -------------------- | -------------------- |
+| `memory`   | Development, testing            | None (RAM only)      | Yes                  |
+| `redis`    | Production short-term (TTL)     | Until TTL expires    | Yes (`redis.url`)    |
+| `postgres` | Production long-term + pgvector | Permanent            | Yes                  |
+| `sqlite`   | Embedded / single-file storage  | Permanent            | No¹                  |
+| `mongodb`  | Document-oriented workloads     | Permanent            | No¹                  |
+| `qdrant`   | Vector search only              | Permanent (external) | No²                  |
 
-For production with semantic search, use Postgres with pgvector:
+¹ Create the adapter from `@cogitator-ai/memory`, `connect()` it and assign `cog.memory = adapter`.
+² `QdrantAdapter` is an embedding store, not a conversation store; pair it with one of the adapters above.
+
+For semantic retrieval, use Postgres with pgvector and a context builder. The runtime creates 768-dimensional vector columns, so pick a 768-dimension embedding model:
 
 ```typescript
 const cog = new Cogitator({
   memory: {
     adapter: 'postgres',
     postgres: {
-      connectionString: 'postgresql://user:pass@localhost:5432/cogitator',
+      connectionString: 'postgresql://cogitator:cogitator@localhost:5432/cogitator',
     },
     embedding: {
       provider: 'ollama',
       model: 'nomic-embed-text',
     },
+    contextBuilder: {
+      maxTokens: 8000,
+      strategy: 'hybrid',
+      includeSemanticContext: true,
+    },
   },
 });
 ```
+
+See [MEMORY.md](./MEMORY.md) and [Memory](https://cogitator.app/docs/memory).
 
 ---
 
@@ -305,7 +298,7 @@ const result = await cog.run(assistant, {
   input: 'Write a short poem about coding.',
   stream: true,
   onToken: (token) => {
-    process.stdout.write(token); // Print each token as it arrives
+    process.stdout.write(token);
   },
 });
 
@@ -316,7 +309,7 @@ console.log('\n\nFull response:', result.output);
 
 ## Use Different LLM Providers
 
-Cogitator supports multiple LLM providers with a unified API:
+Cogitator supports Ollama, OpenAI, Anthropic, Google, Azure OpenAI, AWS Bedrock, vLLM, Mistral, Groq, Together and DeepSeek with one API. Backends read their keys from `llm.providers` — not from the environment directly (use `loadConfig()` from `@cogitator-ai/config` to pick up `OPENAI_API_KEY` and friends). See [LLM Backends](https://cogitator.app/docs/core/llm-backends).
 
 ### Ollama (Local)
 
@@ -325,16 +318,15 @@ const cog = new Cogitator({
   llm: {
     defaultProvider: 'ollama',
     providers: {
-      ollama: {
-        baseUrl: 'http://localhost:11434',
-      },
+      ollama: { baseUrl: 'http://localhost:11434' },
     },
   },
 });
 
 const agent = new Agent({
-  model: 'llama3.1:8b', // or 'codellama:13b', 'mistral:7b'
-  // ...
+  name: 'local',
+  model: 'llama3.2', // or 'qwen3:8b', 'mistral:7b'
+  instructions: 'You are a helpful assistant.',
 });
 ```
 
@@ -345,16 +337,15 @@ const cog = new Cogitator({
   llm: {
     defaultProvider: 'openai',
     providers: {
-      openai: {
-        apiKey: process.env.OPENAI_API_KEY,
-      },
+      openai: { apiKey: process.env.OPENAI_API_KEY! },
     },
   },
 });
 
 const agent = new Agent({
-  model: 'gpt-6.1-sol', // or 'gpt-6.1-sol', 'o3'
-  // ...
+  name: 'gpt',
+  model: 'gpt-6.1-sol', // or 'gpt-5.5', 'o3'
+  instructions: 'You are a helpful assistant.',
 });
 ```
 
@@ -365,22 +356,21 @@ const cog = new Cogitator({
   llm: {
     defaultProvider: 'anthropic',
     providers: {
-      anthropic: {
-        apiKey: process.env.ANTHROPIC_API_KEY,
-      },
+      anthropic: { apiKey: process.env.ANTHROPIC_API_KEY! },
     },
   },
 });
 
 const agent = new Agent({
+  name: 'claude',
   model: 'claude-sonnet-5-5', // or 'claude-opus-5-5'
-  // ...
+  instructions: 'You are a helpful assistant.',
 });
 ```
 
 ### Multiple Providers
 
-You can configure multiple providers and use different ones for different agents:
+Configure several providers and pick one per agent:
 
 ```typescript
 const cog = new Cogitator({
@@ -388,44 +378,44 @@ const cog = new Cogitator({
     defaultProvider: 'ollama',
     providers: {
       ollama: { baseUrl: 'http://localhost:11434' },
-      openai: { apiKey: process.env.OPENAI_API_KEY },
-      anthropic: { apiKey: process.env.ANTHROPIC_API_KEY },
+      openai: { apiKey: process.env.OPENAI_API_KEY! },
+      anthropic: { apiKey: process.env.ANTHROPIC_API_KEY! },
     },
   },
 });
 
-// Uses Ollama (default provider)
 const localAgent = new Agent({
-  model: 'llama3.1:8b',
-  // ...
+  name: 'local',
+  model: 'llama3.2', // default provider (Ollama)
+  instructions: 'You answer quick questions.',
 });
 
-// Uses OpenAI (provider prefix overrides default)
 const smartAgent = new Agent({
-  model: 'openai/gpt-6.1-sol',
-  // ...
+  name: 'smart',
+  model: 'openai/gpt-6.1-sol', // provider prefix overrides the default
+  instructions: 'You solve hard problems.',
 });
 
-// Uses Anthropic (provider prefix overrides default)
 const creativeAgent = new Agent({
+  name: 'creative',
   model: 'anthropic/claude-sonnet-5-5',
-  // ...
+  instructions: 'You write stories.',
 });
 ```
 
 **Model name format:**
 
-- `model-name` — Uses the default provider (e.g., `gpt-6.1-sol`, `llama3.1:8b`)
-- `provider/model-name` — Explicitly specify provider (e.g., `openai/gpt-6.1-sol`, `anthropic/claude-sonnet-5-5`)
+- `model-name` — runs on `llm.defaultProvider` (Ollama when unset), e.g. `gpt-6.1-sol`, `llama3.2`
+- `provider/model-name` — explicit provider, e.g. `openai/gpt-6.1-sol`, `anthropic/claude-sonnet-5-5`
+- no `model` at all — the agent uses `llm.defaultModel`
 
 ---
 
 ## Configuration File
 
-Create a `cogitator.yml` for project-wide settings:
+Create a `cogitator.yml` (or `cogitator.yaml`, `.cogitator.yml`) for project-wide settings. `${VAR}` and `${VAR:-default}` are substituted from the environment:
 
 ```yaml
-# cogitator.yml
 llm:
   defaultProvider: ollama
   providers:
@@ -444,61 +434,59 @@ logging:
   format: pretty
 ```
 
-Load it automatically:
+Load it:
 
 ```typescript
 import { Cogitator } from '@cogitator-ai/core';
 import { loadConfig } from '@cogitator-ai/config';
 
-const config = loadConfig(); // Loads cogitator.yml (synchronous)
+const config = loadConfig(); // synchronous: YAML, then env vars, then overrides
 const cog = new Cogitator(config);
 ```
+
+`loadConfig()` also maps environment variables such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OLLAMA_URL` and `COGITATOR_LLM_DEFAULT_MODEL` into the config, and validates the result. See [Configuration](https://cogitator.app/docs/getting-started/configuration).
 
 ---
 
 ## Docker Services
 
-Start the required services with Docker Compose:
+The repository's `docker-compose.yml` (and the one `create-cogitator-app --docker` generates) runs the backing services:
 
 ```bash
-# Start all services
+docker compose up -d
+# or, with the CLI, from the directory holding docker-compose.yml:
 cogitator up
-
-# Or manually with docker-compose
-docker-compose up -d
 ```
 
-This starts:
+The repository's compose file starts:
 
 - **Redis** (port 6379) — Short-term memory
 - **Postgres + pgvector** (port 5432) — Long-term memory with semantic search
-- **Ollama** (port 11434) — Local LLM inference
+- **Ollama** (port 11434) — Local LLM inference; an init container pulls `llama3.2:3b` and `nomic-embed-text-v2-moe`
 
-Pull an Ollama model:
-
-```bash
-ollama pull llama3.2:3b
-```
+Use `docker-compose.cpu.yml` on machines without an NVIDIA GPU. See [DOCKER.md](./DOCKER.md).
 
 ---
 
 ## Examples
 
-Check out the `examples/` directory for more:
+The `examples/` directory has runnable scripts, for example:
 
 | Example                                    | Description                             |
 | ------------------------------------------ | --------------------------------------- |
 | `examples/core/01-basic-agent.ts`          | Custom tools, streaming, usage tracking |
-| `examples/core/02-built-in-tools.ts`       | All 26 built-in tools in action         |
+| `examples/core/02-built-in-tools.ts`       | Built-in tools in action                |
 | `examples/core/04-context-manager.ts`      | Long conversation context management    |
 | `examples/core/06-reflection.ts`           | Self-improving agent with reflection    |
 | `examples/core/09-cost-routing.ts`         | Cost-aware model routing                |
+| `examples/core/14-approvals.ts`            | Tool approvals with pause/resume        |
+| `examples/core/15-handoffs.ts`             | Handing a conversation to another agent |
 | `examples/swarms/01-debate-swarm.ts`       | Multi-agent debate swarm                |
 | `examples/swarms/03-hierarchical-swarm.ts` | Hierarchical multi-agent team           |
 | `examples/workflows/01-basic-workflow.ts`  | DAG-based workflow orchestration        |
 | `examples/workflows/02-human-in-loop.ts`   | Workflow with human approval steps      |
 
-Run an example:
+Run an example from the repository root:
 
 ```bash
 npx tsx examples/core/01-basic-agent.ts
@@ -507,8 +495,6 @@ npx tsx examples/core/01-basic-agent.ts
 ---
 
 ## Next Steps
-
-Now that you have a working agent, explore more advanced features:
 
 | Topic            | Description                                | Guide                                |
 | ---------------- | ------------------------------------------ | ------------------------------------ |
@@ -538,13 +524,13 @@ ollama serve
 ### Model Not Found
 
 ```
-Error: model 'llama3.2:3b' not found
+Error: model 'llama3.2' not found
 ```
 
 Pull the model first:
 
 ```bash
-ollama pull llama3.2:3b
+ollama pull llama3.2
 ```
 
 ### Docker Services Not Starting
@@ -558,37 +544,21 @@ docker info
 Then start services:
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 ### OpenAI API Key Error
 
-Set your API key as environment variable:
+Pass the key in the config (`llm.providers.openai.apiKey`), or export it and load the config with `loadConfig()`:
 
 ```bash
 export OPENAI_API_KEY=sk-...
-```
-
-Or in `.env` file:
-
-```
-OPENAI_API_KEY=sk-...
 ```
 
 ---
 
 ## Getting Help
 
-- **Documentation**: [docs/](./README.md)
+- **Documentation**: [cogitator.app/docs](https://cogitator.app/docs)
 - **Examples**: [examples/](../examples/)
 - **Issues**: [GitHub Issues](https://github.com/cogitator-ai/Cogitator-AI/issues)
-
----
-
-<div align="center">
-
-**Ready to build something amazing?**
-
-[Explore Agents →](./AGENTS.md)
-
-</div>

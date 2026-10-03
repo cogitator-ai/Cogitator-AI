@@ -2,38 +2,46 @@
 
 > Multi-agent coordination patterns
 
+`@cogitator-ai/swarms` runs several agents together under one coordination strategy. The website covers the same ground in more depth:
+
+- [Swarms overview](https://cogitator.app/docs/swarms)
+- [Strategies](https://cogitator.app/docs/swarms/strategies)
+- [Builder and Swarm API](https://cogitator.app/docs/swarms/builder)
+- [Agent communication](https://cogitator.app/docs/swarms/communication)
+- [Model assessment](https://cogitator.app/docs/swarms/assessment)
+- [Distributed swarms](https://cogitator.app/docs/swarms/distributed)
+
 ## Overview
 
-Swarms enable multiple agents to work together on complex tasks. Cogitator supports 7 coordination strategies:
+A `Swarm` wraps a coordinator (agent registry, budgets, error recovery, pause/abort) and one of 7 strategies. Every swarm also owns a message bus, a shared blackboard and an event emitter.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              Swarm Coordinator                                   │
+│                                     Swarm                                       │
 │                                                                                 │
 │   ┌─────────────────────────────────────────────────────────────────────────┐   │
-│   │                         Strategy Engine                                 │   │
+│   │                               Strategy                                  │   │
 │   │                                                                         │   │
 │   │  Hierarchical │ Round-Robin │ Consensus │ Auction │ Pipeline │ Debate   │   │
-│   │                         Negotiation                                     │   │
+│   │                              Negotiation                                │   │
 │   └─────────────────────────────────────────────────────────────────────────┘   │
 │                                      │                                          │
 │                    ┌─────────────────┼─────────────────┐                        │
 │                    ▼                 ▼                 ▼                        │
 │              ┌──────────┐      ┌──────────┐      ┌──────────┐                   │
 │              │  Agent A │      │  Agent B │      │  Agent C │                   │
-│              │          │      │          │      │          │                   │
-│              │ Coder    │      │ Reviewer │      │ Tester   │                   │
+│              │  Coder   │      │ Reviewer │      │  Tester  │                   │
 │              └──────────┘      └──────────┘      └──────────┘                   │
 │                                                                                 │
 │   ┌─────────────────────────────────────────────────────────────────────────┐   │
-│   │                         Message Bus                                     │   │
-│   │                                                                         │   │
-│   │   Agent-to-Agent messaging  │  Shared state  │  Event coordination     │   │
-│   │                                                                         │   │
+│   │     MessageBus      │       Blackboard        │      Event emitter      │   │
+│   │  agent-to-agent     │  shared sections with   │  swarm, agent and       │   │
+│   │  messages           │  versions and history   │  strategy events        │   │
 │   └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+Agents run through the `Cogitator` you pass in, so every agent needs a `model` (or the Cogitator needs `llm.defaultModel`). Agent names must be unique within a swarm: two different agents with the same name throw at construction.
 
 ---
 
@@ -41,13 +49,13 @@ Swarms enable multiple agents to work together on complex tasks. Cogitator suppo
 
 ### 1. Hierarchical
 
-A supervisor agent delegates tasks to worker agents:
+A supervisor delegates subtasks to workers. The supervisor automatically gets the `delegate_task`, `check_progress`, `request_revision` and `list_workers` tools (tools it already defines with the same name are kept), and each `delegate_task` call runs the worker and returns its output.
 
 ```typescript
 import { Swarm } from '@cogitator-ai/swarms';
 import { Cogitator, Agent } from '@cogitator-ai/core';
 
-const cog = new Cogitator({ llm: { defaultModel: 'gpt-6.1-sol' } });
+const cog = new Cogitator();
 
 const devTeam = new Swarm(cog, {
   name: 'dev-team',
@@ -55,7 +63,7 @@ const devTeam = new Swarm(cog, {
 
   supervisor: new Agent({
     name: 'tech-lead',
-    model: 'gpt-6.1-sol',
+    model: 'openai/gpt-5.5',
     instructions: `You are a tech lead managing a development team.
                    Break down tasks and delegate to appropriate team members.
                    Coordinate their work and ensure quality.`,
@@ -64,31 +72,29 @@ const devTeam = new Swarm(cog, {
   workers: [
     new Agent({
       name: 'frontend-dev',
-      model: 'claude-sonnet-5-5',
+      model: 'anthropic/claude-sonnet-5-5',
       instructions: 'You are a frontend developer. Build React/Vue components.',
       tools: [fileWrite, npmRun],
     }),
-
     new Agent({
       name: 'backend-dev',
-      model: 'claude-sonnet-5-5',
+      model: 'anthropic/claude-sonnet-5-5',
       instructions: 'You are a backend developer. Build APIs and services.',
       tools: [fileWrite, databaseTool],
     }),
-
     new Agent({
       name: 'qa-engineer',
-      model: 'gpt-6.1-sol',
+      model: 'openai/gpt-5.5',
       instructions: 'You are a QA engineer. Write and run tests.',
       tools: [fileWrite, testRunner],
     }),
   ],
 
   hierarchical: {
-    maxDelegationDepth: 3,
-    workerCommunication: false,
-    routeThrough: 'supervisor',
-    visibility: 'full',
+    maxDelegationDepth: 3, // default 3
+    workerCommunication: false, // default false
+    routeThrough: 'supervisor', // 'supervisor' (default) | 'direct'
+    visibility: 'full', // 'full' (default) | 'summary' | 'none': how much worker output the supervisor sees
   },
 });
 
@@ -97,9 +103,11 @@ const result = await devTeam.run({
 });
 ```
 
+The result `output` is the supervisor's final answer; `agentResults` holds the supervisor's run and the latest run of every worker it delegated to. Delegated tasks are tracked on the blackboard in the `tasks` and `workerResults` sections.
+
 ### 2. Round-Robin
 
-Tasks rotate between agents for balanced workload:
+Each `run()` call is handled by one agent; the next call goes to the next agent.
 
 ```typescript
 const supportTeam = new Swarm(cog, {
@@ -107,22 +115,28 @@ const supportTeam = new Swarm(cog, {
   strategy: 'round-robin',
 
   agents: [
-    new Agent({ name: 'support-1', instructions: 'Handle customer support tickets.' }),
-    new Agent({ name: 'support-2', instructions: 'Handle customer support tickets.' }),
-    new Agent({ name: 'support-3', instructions: 'Handle customer support tickets.' }),
+    new Agent({ name: 'support-1', model, instructions: 'Handle customer support tickets.' }),
+    new Agent({ name: 'support-2', model, instructions: 'Handle customer support tickets.' }),
+    new Agent({ name: 'support-3', model, instructions: 'Handle customer support tickets.' }),
   ],
 
-  // Optional: sticky sessions (same agent handles follow-ups)
   roundRobin: {
+    rotation: 'sequential', // 'sequential' (default) | 'random'
+    // Sticky sessions: the same key is always routed to the same agent.
+    // stickyKey receives the run input string.
     sticky: true,
-    stickyKey: (input) => (input as { ticketId: string }).ticketId,
+    stickyKey: (input) => String(input).match(/ticket #(\d+)/)?.[1] ?? 'default',
   },
 });
+
+await supportTeam.run({ input: 'ticket #1042: I cannot log in' });
 ```
+
+Every agent in the swarm takes part in the rotation, whichever slot (`agents`, `workers`, ...) it was configured in. With `sticky: true` the rotation index does not advance, so every new key is currently assigned to the same agent; see the note in [Known limitations](#known-limitations).
 
 ### 3. Consensus
 
-All agents must agree on a decision:
+Agents vote over up to `maxRounds` rounds until a decision reaches the threshold. Voters answer with a `VOTE: <decision>` line (votes cast through the `cast_vote` / `change_vote` tools take precedence). A `supervisor`, if configured, does not vote; it only decides on `onNoConsensus: 'supervisor-decides'`.
 
 ```typescript
 const reviewBoard = new Swarm(cog, {
@@ -130,21 +144,17 @@ const reviewBoard = new Swarm(cog, {
   strategy: 'consensus',
 
   agents: [
-    new Agent({ name: 'security-reviewer', instructions: 'Focus on security issues.' }),
-    new Agent({ name: 'performance-reviewer', instructions: 'Focus on performance.' }),
-    new Agent({ name: 'maintainability-reviewer', instructions: 'Focus on code quality.' }),
+    new Agent({ name: 'security-reviewer', model, instructions: 'Focus on security issues.' }),
+    new Agent({ name: 'performance-reviewer', model, instructions: 'Focus on performance.' }),
+    new Agent({ name: 'maintainability-reviewer', model, instructions: 'Focus on code quality.' }),
   ],
 
   consensus: {
-    // Voting rules
-    threshold: 0.66, // 2/3 of all eligible voters must agree (abstentions count against)
-    maxRounds: 3, // Max discussion rounds
-
-    // How to determine final answer
+    threshold: 0.66, // share of all eligible voters (abstentions count against); ties never win
+    maxRounds: 3,
     resolution: 'majority', // 'majority' | 'unanimous' | 'weighted'
-
-    // What to do if no consensus
     onNoConsensus: 'escalate', // 'escalate' | 'supervisor-decides' | 'fail'
+    weights: { 'security-reviewer': 2 }, // used by 'weighted'
   },
 });
 
@@ -153,13 +163,15 @@ const result = await reviewBoard.run({
   context: { prDiff: '...' },
 });
 
-console.log(result.output);
-// { approved: true, votes: { security: 'approve', performance: 'approve', maintainability: 'reject' } }
+console.log(result.output); // text summary of the decision and the votes
+console.log(result.votes); // Map: 'security-reviewer_round1' -> { decision, reasoning, weight }
 ```
+
+The swarm needs at least 2 voting agents. `onNoConsensus: 'fail'` throws, `'escalate'` returns an `ESCALATION REQUIRED` summary, and `'supervisor-decides'` runs the supervisor with the votes and discussion.
 
 ### 4. Auction
 
-Agents bid on tasks based on capability:
+Agents bid for the task and the winner executes it. With `bidding: 'capability-match'` every agent is asked (in parallel) to rate itself with a `SCORE: 0.0-1.0` answer; with `bidding: 'custom'` your `bidFunction` scores each agent without an LLM call.
 
 ```typescript
 const expertPool = new Swarm(cog, {
@@ -169,44 +181,48 @@ const expertPool = new Swarm(cog, {
   agents: [
     new Agent({
       name: 'python-expert',
+      model,
       instructions: 'Python and data science specialist.',
     }),
     new Agent({
       name: 'typescript-expert',
+      model,
       instructions: 'TypeScript and Node.js specialist.',
     }),
     new Agent({
       name: 'devops-expert',
+      model,
       instructions: 'DevOps and infrastructure specialist.',
     }),
   ],
 
+  agentMetadata: {
+    'python-expert': { expertise: ['python', 'pandas'] },
+    'typescript-expert': { expertise: ['typescript', 'node'] },
+    'devops-expert': { expertise: ['kubernetes', 'docker', 'ci'] },
+  },
+
   auction: {
-    // How agents bid
-    bidding: 'capability-match', // Match task keywords to expertise
-
-    // Custom bidding function
-    bidFunction: async (agent, task) => {
-      const taskKeywords = extractKeywords(task);
+    bidding: 'custom', // 'capability-match' | 'custom'
+    bidFunction: (agent, task) => {
       const expertise = agent.metadata.expertise ?? [];
-      return calculateMatch(expertise, taskKeywords);
+      const text = task.toLowerCase();
+      return expertise.filter((skill) => text.includes(skill)).length / expertise.length;
     },
-
-    // Winner selection
     selection: 'highest-bid', // 'highest-bid' | 'weighted-random'
+    minBid: 0.1, // bids below this are dropped (default 0); no valid bid throws
   },
 });
 
-// Task automatically routed to most capable agent
 const result = await expertPool.run({
   input: 'Write a Kubernetes deployment for our Node.js service',
 });
-// Routed to devops-expert
+console.log(result.auctionWinner, result.bids);
 ```
 
 ### 5. Pipeline
 
-Sequential processing through specialized agents:
+Stages run sequentially; each stage receives the previous stage's output.
 
 ```typescript
 const contentPipeline = new Swarm(cog, {
@@ -219,6 +235,7 @@ const contentPipeline = new Swarm(cog, {
         name: 'research',
         agent: new Agent({
           name: 'researcher',
+          model,
           instructions: 'Research topics thoroughly.',
           tools: [webSearch, webFetch],
         }),
@@ -227,52 +244,40 @@ const contentPipeline = new Swarm(cog, {
         name: 'outline',
         agent: new Agent({
           name: 'outliner',
-          instructions: 'Create detailed outlines from research.',
+          model,
+          instructions: 'Create outlines from research.',
         }),
       },
       {
         name: 'draft',
-        agent: new Agent({
-          name: 'writer',
-          instructions: 'Write engaging content from outlines.',
-        }),
+        agent: new Agent({ name: 'writer', model, instructions: 'Write content from outlines.' }),
       },
       {
         name: 'edit',
-        agent: new Agent({
-          name: 'editor',
-          instructions: 'Polish and improve drafts.',
-        }),
-      },
-      {
-        name: 'fact-check',
-        agent: new Agent({
-          name: 'fact-checker',
-          instructions: 'Verify all claims and citations.',
-          tools: [webSearch],
-        }),
+        agent: new Agent({ name: 'editor', model, instructions: 'Polish and improve drafts.' }),
       },
     ],
 
-    // Data flows from one stage to the next
-    stageInput: (prevOutput, stage, ctx) => {
-      return {
-        previous: prevOutput,
-        originalRequest: ctx.input,
-        stageInstructions: `You are in the ${stage.name} stage.`,
-      };
-    },
+    // Optional: build each stage's input. The return value is converted with String().
+    stageInput: (prevOutput, stage, ctx) =>
+      `Original request: ${String(ctx.input)}\n\n` +
+      `You are the ${stage.name} stage (${ctx.stageIndex + 1}).\n\n` +
+      `Previous output:\n${String(prevOutput)}`,
   },
 });
 
 const article = await contentPipeline.run({
   input: 'Write an article about the future of AI agents',
 });
+console.log(article.output); // output of the last stage
+console.log(article.pipelineOutputs); // Map: stage name -> output
 ```
+
+Stages are read from `pipeline.stages`; the pipeline strategy throws without at least one stage there.
 
 ### 6. Debate
 
-Agents argue opposing positions:
+Debaters argue over `rounds` rounds; a moderator (if configured) synthesizes the transcript into the final answer. Without a moderator the output is a plain summary of the arguments. Give agents the `advocate` / `critic` roles through `agentMetadata` to get role-specific instructions; when no agent has either role, every non-moderator agent debates.
 
 ```typescript
 const debateSwarm = new Swarm(cog, {
@@ -282,23 +287,30 @@ const debateSwarm = new Swarm(cog, {
   agents: [
     new Agent({
       name: 'advocate',
+      model,
       instructions: 'Argue IN FAVOR of the proposed solution. Find all benefits.',
     }),
     new Agent({
       name: 'critic',
+      model,
       instructions: 'Argue AGAINST the proposed solution. Find all risks.',
     }),
   ],
+  agentMetadata: {
+    advocate: { role: 'advocate' },
+    critic: { role: 'critic' },
+  },
 
   moderator: new Agent({
     name: 'moderator',
+    model: 'openai/gpt-5.5',
     instructions: 'Synthesize arguments from both sides and make a balanced recommendation.',
-    model: 'gpt-6.1-sol', // Use strong model for synthesis
   }),
 
   debate: {
-    rounds: 3, // Number of back-and-forth rounds
-    turnDuration: 500, // Max tokens per turn
+    rounds: 3,
+    maxTokensPerTurn: 500, // caps each debater turn
+    format: 'structured', // 'structured' (default) | 'freeform'
   },
 });
 
@@ -306,11 +318,12 @@ const decision = await debateSwarm.run({
   input: 'Should we rewrite our backend in Rust?',
   context: { currentStack: 'Node.js', teamSize: 5 },
 });
+console.log(decision.debateTranscript?.length);
 ```
 
 ### 7. Negotiation
 
-Agents negotiate structured agreements through multi-round proposals and counter-offers:
+Agents negotiate structured agreements through multi-round proposals and counter-offers. Every negotiating agent automatically gets the negotiation tools (`make_offer`, `counter_offer`, `accept_offer`, `reject_offer`, `declare_interests`, `propose_coalition`, ...). A `supervisor` or `moderator` does not negotiate.
 
 ```typescript
 const negotiationSwarm = new Swarm(cog, {
@@ -320,18 +333,20 @@ const negotiationSwarm = new Swarm(cog, {
   agents: [
     new Agent({
       name: 'buyer',
+      model,
       instructions: 'You represent the buyer. Negotiate favorable pricing and delivery terms.',
     }),
     new Agent({
       name: 'seller',
+      model,
       instructions: 'You represent the seller. Negotiate sustainable pricing and timeline.',
     }),
   ],
 
   negotiation: {
     maxRounds: 5,
-    turnOrder: 'round-robin', // 'round-robin' | 'dynamic'
-    onDeadlock: 'supervisor-decides', // 'escalate' | 'supervisor-decides' | 'majority-rules' | 'arbitrate' | 'fail'
+    turnOrder: 'round-robin', // 'round-robin' | 'priority' (by weight) | 'dynamic'
+    onDeadlock: 'arbitrate', // 'escalate' | 'supervisor-decides' | 'majority-rules' | 'arbitrate' | 'fail'
   },
 });
 
@@ -339,150 +354,136 @@ const result = await negotiationSwarm.run({
   input: 'Negotiate a software development contract: 6-month project, estimated 500 hours',
 });
 
-// Access negotiation-specific result
-console.log(result.negotiationResult?.outcome); // 'agreement' | 'deadlock' | 'escalated' | 'arbitrated'
+// 'agreement' | 'deadlock' | 'escalated' | 'arbitrated' | 'terminated'
+console.log(result.negotiationResult?.outcome);
 console.log(result.negotiationResult?.agreement?.terms);
 ```
+
+Other `negotiation` options: `maxOffersPerRound`, `offerTimeout`, `turnTimeout`, `allowCoalitions`, `minCoalitionSize`, `approvalGates`, `quorum`, `weights`, `stagnationThreshold`, `maxRoundsWithoutProgress`. Defaults come from `DEFAULT_NEGOTIATION_CONFIG` in `@cogitator-ai/types` (10 rounds, `onDeadlock: 'escalate'`, coalitions allowed).
 
 ---
 
 ## Agent Communication
 
-### Message Passing
+Every swarm exposes `swarm.messageBus`, `swarm.blackboard` and `swarm.events`. Details: [Agent communication](https://cogitator.app/docs/swarms/communication).
 
-Agents can communicate via the message bus:
+### Message Bus
 
 ```typescript
-import { tool } from '@cogitator-ai/core';
-import { z } from 'zod';
-
 const collaborativeSwarm = new Swarm(cog, {
   name: 'collaborative-team',
   strategy: 'round-robin',
-
   agents: [agentA, agentB, agentC],
 
-  // Enable direct messaging
+  // Optional; defaults to { enabled: true, protocol: 'direct' }
   messaging: {
-    enabled: true,
-    protocol: 'direct', // or 'broadcast', 'pub-sub'
+    enabled: true, // false makes send() throw
+    protocol: 'direct',
+    maxMessageLength: 2000,
+    maxMessagesPerTurn: 5,
+    maxTotalMessages: 100,
   },
 });
 
-// Inside agent instructions:
-// "You can message other agents using the send_message tool.
-//  Available agents: agentB, agentC"
+const bus = collaborativeSwarm.messageBus;
 
-const sendMessage = tool({
-  name: 'send_message',
-  description: 'Send a message to another agent',
-  parameters: z.object({
-    to: z.string().describe('Target agent name'),
-    message: z.string().describe('Message content'),
-  }),
-  execute: async ({ to, message }) => {
-    const response = await collaborativeSwarm.messageBus.send({
-      swarmId: collaborativeSwarm.id,
-      from: 'current-agent',
-      to,
-      type: 'request',
-      content: message,
-    });
-    return response;
-  },
+await bus.send({
+  swarmId: collaborativeSwarm.id,
+  from: 'agent-a',
+  to: 'agent-b', // or 'broadcast'
+  type: 'request', // 'request' | 'response' | 'notification' | 'error'
+  content: 'Can you review my analysis?',
 });
+await bus.broadcast('agent-a', 'I found something important', 'announcements');
+
+bus.getMessages('agent-b');
+bus.getUnreadMessages('agent-b');
+bus.getConversation('agent-a', 'agent-b');
+const unsubscribe = bus.subscribe('agent-b', (msg) => console.log(msg.from, msg.content));
 ```
+
+Routing is decided by `to` (an agent name or `'broadcast'`). Before each agent turn the coordinator injects that agent's unread messages into the run context (once) and emits `message:received`.
 
 ### Shared Blackboard
 
-Agents share a common knowledge space:
+The blackboard holds named sections with versions and optional history. Strategies use it too (`consensus`, `auction`, `pipeline`, `debate`, `round-robin`, `tasks`, `workerResults`, `negotiation` sections).
 
 ```typescript
 const researchSwarm = new Swarm(cog, {
   name: 'research-team',
   strategy: 'pipeline',
-
   pipeline: {
     stages: [
-      {
-        name: 'search',
-        agent: new Agent({ name: 'searcher', instructions: 'Find relevant sources.' }),
-      },
-      {
-        name: 'read',
-        agent: new Agent({ name: 'reader', instructions: 'Extract key information.' }),
-      },
-      {
-        name: 'synthesize',
-        agent: new Agent({ name: 'synthesizer', instructions: 'Combine findings.' }),
-      },
+      { name: 'search', agent: searcherAgent },
+      { name: 'read', agent: readerAgent },
+      { name: 'synthesize', agent: synthesizerAgent },
     ],
   },
 
-  // Shared blackboard
+  // Optional; defaults to { enabled: true, sections: {}, trackHistory: true }
   blackboard: {
     enabled: true,
-    sections: {
-      sources: [], // List of found sources
-      facts: [], // Extracted facts
-      questions: [], // Unanswered questions
-      conclusions: [], // Final conclusions
-    },
+    sections: { sources: [], facts: [], conclusions: [] },
+    trackHistory: true,
   },
 });
 
-// Agents can read/write to blackboard
-const readBlackboard = tool({
-  name: 'read_blackboard',
-  parameters: z.object({ section: z.string() }),
-  execute: async ({ section }) => {
-    return researchSwarm.blackboard.read(section);
-  },
-});
-
-const writeBlackboard = tool({
-  name: 'write_blackboard',
-  parameters: z.object({
-    section: z.string(),
-    content: z.any(),
-  }),
-  execute: async ({ section, content }) => {
-    researchSwarm.blackboard.write(section, content, 'agent');
-    return { success: true };
-  },
-});
+const board = researchSwarm.blackboard;
+board.write('sources', ['https://example.com/paper.pdf'], 'searcher');
+board.append('facts', { claim: 'X is true' }, 'reader');
+const sources = board.read<string[]>('sources'); // throws if the section does not exist
+board.getSection('facts'); // { name, data, lastModified, modifiedBy, version }
+board.getHistory('facts'); // [{ value, writtenBy, timestamp, version }, ...]
+board.subscribe('conclusions', (data, agentName) => console.log(agentName, data));
 ```
 
-### Event-Driven Coordination
+### Giving Agents Communication Tools
 
-Subscribe to swarm events:
+Apart from the delegation tools (hierarchical supervisor) and negotiation tools (negotiating agents), the swarm does not add communication tools to agents. Agents are created before the swarm, so write tools that resolve the swarm lazily at call time:
 
 ```typescript
-const monitoringSwarm = new Swarm(cog, {
-  name: 'monitoring-team',
-  strategy: 'round-robin',
-  agents: [monitorAgent, responderAgent, escalatorAgent],
+import { tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+let researchTeam: Swarm | undefined;
+
+const recordFact = tool({
+  name: 'record_fact',
+  description: 'Add a fact to the shared blackboard',
+  parameters: z.object({ claim: z.string(), source: z.string() }),
+  execute: async ({ claim, source }) => {
+    researchTeam?.blackboard.append('facts', { claim, source }, 'reader');
+    return { recorded: true };
+  },
 });
 
-// Subscribe to events (returns unsubscribe function)
+const reader = new Agent({ name: 'reader', model, instructions: '...', tools: [recordFact] });
+```
+
+`createMessagingTools`, `createBlackboardTools`, `createDelegationTools`, `createVotingTools`, `createNegotiationTools`, `createSwarmTools` and `createStrategyTools` build the ready-made tool sets (`send_message`, `read_blackboard`, `cast_vote`, ...) when you hold the bus/blackboard instances, for example in a custom coordinator.
+
+### Events
+
+```typescript
 const unsub = monitoringSwarm.on('agent:complete', (event) => {
   console.log(`Agent ${event.agentName} completed`);
 });
 
-// Emit custom events via the event emitter
-monitoringSwarm.events.emit('swarm:start', { swarmId: monitoringSwarm.id });
+monitoringSwarm.once('swarm:complete', (event) => console.log(event.data));
+monitoringSwarm.on('*', (event) => console.log(`[${event.type}]`, event.data));
 
-// Clean up listener
 unsub();
+
+const history = monitoringSwarm.events.getEvents(); // rolling buffer of recent events
 ```
+
+Subscriptions made with `swarm.on()` / `swarm.once()` survive the coordinator re-creation that happens after model assessment; listeners attached directly to `swarm.events` do not. Common events: `swarm:start`, `swarm:complete`, `swarm:error`, `swarm:paused`, `swarm:resumed`, `swarm:aborted`, `swarm:reset`, `agent:start`, `agent:complete`, `agent:error`, `message:sent`, `message:received`, `blackboard:write`, `assessor:complete`, plus strategy events (`consensus:*`, `auction:*`, `pipeline:*`, `debate:*`, `round-robin:assigned`, `negotiation:*`). The full list is `SwarmEventType` in `@cogitator-ai/types`.
 
 ---
 
 ## Swarm Patterns
 
 ### 1. Supervisor-Worker
-
-Classic delegation pattern:
 
 ```typescript
 const supervisorWorker = new Swarm(cog, {
@@ -491,39 +492,25 @@ const supervisorWorker = new Swarm(cog, {
 
   supervisor: new Agent({
     name: 'project-manager',
+    model,
     instructions: `
-      You manage a team of specialists.
-
-      Available workers:
-      - designer: UI/UX design
-      - developer: Code implementation
-      - tester: Quality assurance
-
-      Delegate tasks by calling: delegate_task(worker, task)
-      Check status by calling: check_progress(worker)
-      Request changes by calling: request_revision(worker, feedback)
+      You manage a team of specialists: designer (UI/UX), developer (code), tester (QA).
+      Use delegate_task, check_progress and request_revision to coordinate them.
     `,
-    tools: [delegateTask, checkProgress, requestRevision],
   }),
 
   workers: [designerAgent, developerAgent, testerAgent],
 
   hierarchical: {
-    // Supervisor can see worker outputs
-    visibility: 'full',
-
-    // Workers cannot message each other directly
+    visibility: 'summary', // supervisor sees a shortened version of worker outputs
     workerCommunication: false,
-
-    // All messages go through supervisor
-    routeThrough: 'supervisor',
   },
 });
 ```
 
 ### 2. Quality Gate
 
-Multi-stage validation pipeline:
+Stages marked `gate: true` check their own output with the matching `gates[stageName]` entry. Stage outputs are strings.
 
 ```typescript
 const qualityGate = new Swarm(cog, {
@@ -540,14 +527,13 @@ const qualityGate = new Swarm(cog, {
 
     gates: {
       validate: {
-        // Must pass to continue
-        condition: (output) => (output as { valid: boolean }).valid === true,
-        onFail: 'retry-previous', // or 'abort', 'skip', 'goto:<stage>'
+        condition: (output) => String(output).includes('VALID'),
+        onFail: 'retry-previous', // 'retry-previous' | 'abort' | 'skip' | 'goto:<stage>'
         maxRetries: 3,
       },
       'final-review': {
-        condition: (output) => (output as { approved: boolean }).approved === true,
-        onFail: 'goto:refine', // Go back to refine stage
+        condition: (output) => String(output).includes('APPROVED'),
+        onFail: 'goto:refine',
         maxRetries: 2,
       },
     },
@@ -555,23 +541,24 @@ const qualityGate = new Swarm(cog, {
 });
 ```
 
+`retry-previous` re-runs the stage before the gate and aborts after `maxRetries`. `goto:<stage>` jumps to that stage; jumps are capped at three times the number of stages (`maxRetries` does not apply). `skip` continues as if the gate passed. A gate stage without a `gates` entry always passes.
+
 ### 3. Expert Routing
 
-Route tasks to the most capable specialist:
-
 ```typescript
-const expertPool = new Swarm(cog, {
-  name: 'expert-pool',
+const router = new Swarm(cog, {
+  name: 'expert-router',
   strategy: 'auction',
 
   agents: [
+    new Agent({ name: 'database-expert', model, instructions: 'Schema design, SQL optimization.' }),
+    new Agent({ name: 'api-expert', model, instructions: 'REST APIs, GraphQL, authentication.' }),
     new Agent({
-      name: 'database-expert',
-      instructions: 'Database queries, schema design, SQL optimization.',
+      name: 'frontend-expert',
+      model,
+      instructions: 'React, Vue, CSS, user interfaces.',
     }),
-    new Agent({ name: 'api-expert', instructions: 'REST APIs, GraphQL, authentication.' }),
-    new Agent({ name: 'frontend-expert', instructions: 'React, Vue, CSS, user interfaces.' }),
-    new Agent({ name: 'devops-expert', instructions: 'Docker, Kubernetes, CI/CD, monitoring.' }),
+    new Agent({ name: 'devops-expert', model, instructions: 'Docker, Kubernetes, CI/CD.' }),
   ],
 
   auction: {
@@ -583,22 +570,21 @@ const expertPool = new Swarm(cog, {
 
 ### 4. Multi-Party Negotiation
 
-Structured agreement-reaching:
-
 ```typescript
 const negotiation = new Swarm(cog, {
   name: 'resource-allocation',
   strategy: 'negotiation',
 
   agents: [
-    new Agent({ name: 'team-a', instructions: 'Advocate for Team A resource needs.' }),
-    new Agent({ name: 'team-b', instructions: 'Advocate for Team B resource needs.' }),
-    new Agent({ name: 'team-c', instructions: 'Advocate for Team C resource needs.' }),
+    new Agent({ name: 'team-a', model, instructions: 'Advocate for Team A resource needs.' }),
+    new Agent({ name: 'team-b', model, instructions: 'Advocate for Team B resource needs.' }),
+    new Agent({ name: 'team-c', model, instructions: 'Advocate for Team C resource needs.' }),
   ],
 
-  // Optional: supervisor to break deadlocks
+  // Breaks deadlocks with onDeadlock: 'supervisor-decides'
   supervisor: new Agent({
     name: 'cto',
+    model,
     instructions: 'Make final resource allocation decisions when teams cannot agree.',
   }),
 
@@ -617,98 +603,95 @@ const negotiation = new Swarm(cog, {
 ### Resource Management
 
 ```typescript
-const swarm = new Swarm(cog, {
+const managed = new Swarm(cog, {
   name: 'managed-swarm',
   strategy: 'round-robin',
-  agents: [...],
+  agents,
 
   resources: {
-    // Max concurrent agent runs
-    maxConcurrency: 5,
-
-    // Total token budget
+    maxConcurrency: 5, // parallel agent runs (default 4)
     tokenBudget: 100_000,
-
-    // Cost limit
-    costLimit: 1.00, // $1.00
-
-    // Time limit
-    timeout: 300_000, // 5 minutes
-
-    // Per-agent limits
+    costLimit: 1.0, // dollars
+    timeout: 300_000, // ms of elapsed run time
     perAgent: {
       maxIterations: 10,
       maxTokens: 10_000,
+      timeout: 60_000,
     },
   },
 });
+
+await managed.run({ input: '...', timeout: 120_000 });
+console.log(managed.getResourceUsage()); // { totalTokens, totalCost, elapsedTime, agentUsage }
 ```
+
+Budgets are checked before every agent turn: once `tokenBudget`, `costLimit` or `resources.timeout` is exceeded, the next turn throws `Swarm resource budget exceeded` (a turn already running is not interrupted). `run({ timeout })` is a hard deadline: the run rejects with `SwarmTimeoutError` and in-flight agent runs are cancelled. `perAgent` limits are applied to each agent by running a clone with the lower `maxIterations` / `maxTokens`. Usage counters reset at the start of every run.
 
 ### Error Handling
 
+Without `errorHandling` an agent failure rejects the run.
+
 ```typescript
-const swarm = new Swarm(cog, {
+const resilient = new Swarm(cog, {
   name: 'resilient-swarm',
   strategy: 'round-robin',
-  agents: [...],
+  agents,
 
   errorHandling: {
-    // What to do when an agent fails
     onAgentFailure: 'retry', // 'retry' | 'skip' | 'failover' | 'abort'
 
-    // Retry configuration
     retry: {
       maxRetries: 3,
-      backoff: 'exponential',
-      initialDelay: 1000,
+      backoff: 'exponential', // 'constant' | 'linear' | 'exponential'
+      initialDelay: 1000, // default 1000
+      maxDelay: 30_000, // default 30000
     },
 
-    // Failover to backup agent
+    // Used by onAgentFailure: 'failover' (backup agents must be part of the swarm)
     failover: {
       'primary-coder': 'backup-coder',
     },
 
-    // Circuit breaker
     circuitBreaker: {
       enabled: true,
-      threshold: 5, // Open after 5 failures
+      threshold: 5, // open after 5 failures
       resetTimeout: 60_000,
     },
+
+    // Parallel phases (e.g. auction bidding) keep the successful results
+    partialResults: true,
   },
 });
 ```
+
+`skip` turns a failed agent run into an empty result. While the circuit breaker is open every agent turn throws `Circuit breaker is open for swarm '<name>'`.
 
 ### Observability
 
 ```typescript
-const swarm = new Swarm(cog, {
+const observable = new Swarm(cog, {
   name: 'observable-swarm',
   strategy: 'pipeline',
-  pipeline: { stages: [...] },
+  pipeline: { stages },
 
   observability: {
-    // Trace all agent interactions
-    tracing: true,
-
-    // Log message passing
-    messageLogging: true,
-
-    // Log blackboard changes
-    blackboardLogging: true,
+    messageLogging: true, // log every bus message through the core logger
+    blackboardLogging: true, // log every blackboard write
   },
 });
 
-// Subscribe to all events for custom observability
-swarm.on('*', (event) => {
+observable.on('*', (event) => {
   console.log(`[${event.type}]`, event.data);
 });
 ```
+
+`message:sent` and `blackboard:write` events are emitted regardless of these flags. `observability.tracing` exists in the type but is not used by the coordinator.
 
 ---
 
 ## SwarmBuilder API
 
-Fluent builder for constructing swarms:
+Fluent builder for the same `SwarmConfig`. Details: [Builder and Swarm API](https://cogitator.app/docs/swarms/builder).
 
 ```typescript
 import { swarm } from '@cogitator-ai/swarms';
@@ -728,11 +711,13 @@ const mySwarm = swarm('content-team')
 const result = await mySwarm.run({ input: 'Write about quantum computing' });
 ```
 
+Builder methods: `strategy`, `supervisor`, `workers`, `agents`, `moderator`, `router`, `agentMetadata` (merged across calls), `hierarchical`, `roundRobin`, `consensus`, `auction`, `pipeline`, `debate`, `negotiation`, `messaging`, `blackboardConfig`, `resources`, `errorHandling`, `observability`, `distributed`, `withAssessor`, `build(cogitator)`. `build()` throws when the strategy is missing; the `Swarm` constructor then validates the strategy-specific requirements (a supervisor for hierarchical, `consensus` / `auction` / `debate` / `negotiation` config for those strategies, at least 2 agents for consensus and negotiation, at least one pipeline stage).
+
 ---
 
-## Assessor — Automatic Model Assignment
+## Assessor: Automatic Model Assignment
 
-The assessor analyzes your task and automatically assigns the best LLM to each agent:
+The assessor analyzes the task and assigns a model to each agent. Details: [Model assessment](https://cogitator.app/docs/swarms/assessment).
 
 ```typescript
 import { swarm } from '@cogitator-ai/swarms';
@@ -741,6 +726,7 @@ const mySwarm = swarm('dev-team')
   .strategy('hierarchical')
   .supervisor(supervisorAgent)
   .workers([frontendAgent, backendAgent])
+  .agentMetadata({ 'tech-lead': { locked: true } }) // keep this agent's model
   .withAssessor({
     mode: 'hybrid', // 'rules' | 'ai' | 'hybrid'
     preferLocal: true, // prefer Ollama models when capable
@@ -754,12 +740,35 @@ for (const assignment of assessment.assignments) {
   console.log(`${assignment.agentName}: ${assignment.assignedModel} (score: ${assignment.score})`);
 }
 
-// Run with auto-assigned models
+// The first run() assesses once, then runs with the assigned models
 const result = await mySwarm.run({ input: 'Build a REST API' });
 console.log(mySwarm.getLastAssessment()?.totalEstimatedCost);
 ```
 
-Assigned models are provider-qualified (e.g. `ollama/llama3.2:3b`). Unlocked agents are replaced by clones running the assigned model; locked agents keep theirs.
+Other `AssessorConfig` options: `assessorModel`, `minCapabilityMatch`, `ollamaUrl`, `enabledProviders`, `cacheAssessments`, `cacheTTL`. Assigned models are provider-qualified (e.g. `ollama/llama3.2:3b`). Unlocked agents are replaced by clones running the assigned model; locked agents keep theirs. `dryRun()` throws when no assessor is configured, and `getLastAssessment()` is only set by `run()`.
+
+---
+
+## Workflows and Distributed Mode
+
+Run a swarm as a workflow step with `swarmNode`, `conditionalSwarmNode` or `parallelSwarmsNode`. The node takes a `Swarm` or a `SwarmConfig` (a config is turned into a swarm per execution and closed afterwards) and uses the `cogitator` the workflow executor passes in the node context:
+
+```typescript
+import { swarmNode } from '@cogitator-ai/swarms';
+import type { WorkflowState } from '@cogitator-ai/types';
+
+interface ReviewState extends WorkflowState {
+  code: string;
+  verdict?: string;
+}
+
+const reviewNode = swarmNode<ReviewState>(reviewBoard, {
+  inputMapper: (state) => `Review this code:\n${state.code}`,
+  stateMapper: (result) => ({ verdict: String(result.output) }),
+});
+```
+
+With `distributed: { enabled: true, redis, queue, timeout }` agent turns are queued in Redis and executed by `DistributedSwarmWorker` processes from `@cogitator-ai/worker`; the message bus, blackboard and events move to Redis. Call `swarm.close()` when done. See [Distributed swarms](https://cogitator.app/docs/swarms/distributed).
 
 ---
 
@@ -771,56 +780,49 @@ Assigned models are provider-qualified (e.g. `ollama/llama3.2:3b`). Unlocked age
 class Swarm {
   constructor(cogitator: Cogitator, config: SwarmConfig, assessorConfig?: AssessorConfig);
 
-  // Identifiers
   get name(): string;
   get id(): string;
   get strategyType(): string;
+  get isDistributed(): boolean;
 
-  // Run the swarm
+  // One run at a time per instance; a second concurrent run() throws
   run(options: SwarmRunOptions): Promise<StrategyResult>;
 
-  // Dry run — analyze model assignments without executing (requires assessor)
+  // Requires an assessor
   dryRun(options: { input: string }): Promise<AssessmentResult>;
-
-  // Get last assessor result
   getLastAssessment(): AssessmentResult | undefined;
 
-  // Access individual agents
   getAgent(name: string): SwarmAgent | undefined;
   getAgents(): SwarmAgent[];
 
-  // Communication interfaces
   get messageBus(): MessageBus;
   get blackboard(): Blackboard;
   get events(): SwarmEventEmitter;
 
-  // Event subscription (returns unsubscribe fn)
+  // Return an unsubscribe function
   on(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void;
   once(event: SwarmEventType | '*', handler: SwarmEventHandler): () => void;
 
-  // Resource usage
   getResourceUsage(): SwarmResourceUsage;
 
-  // Control
-  pause(): void;
+  pause(): void; // the next agent turn waits until resume()
   resume(): void;
-  abort(): void;
+  abort(): void; // cancels in-flight agent runs; call reset() before running again
   isPaused(): boolean;
   isAborted(): boolean;
-  reset(): Promise<void>;
+  reset(): Promise<void>; // clears agent state, messages, blackboard, usage and the abort flag
 
-  // Close distributed connections
-  close(): Promise<void>;
+  close(): Promise<void>; // closes Redis connections in distributed mode
 }
 ```
+
+`SwarmTimeoutError` (exported) is thrown when `run({ timeout })` expires; it carries `swarmName` and `timeoutMs`.
 
 ### SwarmConfig
 
 ```typescript
 interface SwarmConfig {
   name: string;
-
-  // Strategy selection
   strategy:
     | 'hierarchical'
     | 'round-robin'
@@ -830,16 +832,15 @@ interface SwarmConfig {
     | 'debate'
     | 'negotiation';
 
-  // Agents
   supervisor?: Agent;
   workers?: Agent[];
   agents?: Agent[];
-  stages?: PipelineStage[]; // legacy alias for pipeline.stages
+  stages?: PipelineStage[]; // registers stage agents only; the pipeline strategy reads pipeline.stages
   moderator?: Agent;
   router?: Agent;
-  // Agent names must be unique within a swarm (two different agents with the same name throw)
+  // Per-agent metadata keyed by agent name: role, expertise, priority, weight, locked, custom
+  agentMetadata?: Record<string, SwarmAgentMetadata>;
 
-  // Strategy-specific config (use the matching key for your strategy)
   hierarchical?: HierarchicalConfig;
   roundRobin?: RoundRobinConfig;
   consensus?: ConsensusConfig;
@@ -848,35 +849,34 @@ interface SwarmConfig {
   debate?: DebateConfig;
   negotiation?: NegotiationConfig;
 
-  // Communication
   messaging?: MessageBusConfig;
   blackboard?: BlackboardConfig;
 
-  // Resources & limits
   resources?: SwarmResourceConfig;
   errorHandling?: SwarmErrorConfig;
 
-  // Observability
+  distributed?: DistributedSwarmConfig;
+
   observability?: {
-    tracing?: boolean;
+    tracing?: boolean; // currently unused
     messageLogging?: boolean;
     blackboardLogging?: boolean;
   };
-
-  // Distributed execution (Redis-backed)
-  distributed?: DistributedSwarmConfig;
 }
 ```
+
+Agents configured as `supervisor`, `workers`, `moderator` and `router` get the matching `role` automatically; `agentMetadata` overrides it.
 
 ### SwarmRunOptions
 
 ```typescript
 interface SwarmRunOptions {
   input: string;
-  context?: Record<string, unknown>;
-  threadId?: string;
-  timeout?: number;
-  saveHistory?: boolean;
+  context?: Record<string, unknown>; // passed to every agent
+  threadId?: string; // each agent uses `${threadId}:${agentName}`
+  userId?: string; // every agent run is made on behalf of this user
+  timeout?: number; // hard deadline for the whole run (SwarmTimeoutError)
+  saveHistory?: boolean; // default true
 
   onAgentStart?: (agentName: string) => void;
   onAgentComplete?: (agentName: string, result: RunResult) => void;
@@ -892,9 +892,8 @@ interface SwarmRunOptions {
 interface StrategyResult {
   output: unknown;
   structured?: unknown;
-  agentResults: Map<string, RunResult>;
+  agentResults: Map<string, RunResult>; // keys: agent name, `${agent}_round${n}` or stage name
 
-  // Strategy-specific fields
   votes?: Map<string, unknown>; // consensus
   bids?: Map<string, number>; // auction
   auctionWinner?: string; // auction
@@ -911,7 +910,7 @@ interface StrategyResult {
 ### 1. Clear Agent Roles
 
 ```typescript
-// Good: Specific, non-overlapping roles
+// Good: specific, non-overlapping roles
 const team = new Swarm(cog, {
   name: 'content-team',
   strategy: 'pipeline',
@@ -919,27 +918,31 @@ const team = new Swarm(cog, {
     stages: [
       {
         name: 'research',
-        agent: new Agent({ name: 'researcher', instructions: 'Find and verify information.' }),
+        agent: new Agent({
+          name: 'researcher',
+          model,
+          instructions: 'Find and verify information.',
+        }),
       },
       {
         name: 'write',
-        agent: new Agent({ name: 'writer', instructions: 'Write clear, engaging content.' }),
+        agent: new Agent({ name: 'writer', model, instructions: 'Write clear, engaging content.' }),
       },
       {
         name: 'edit',
-        agent: new Agent({ name: 'editor', instructions: 'Polish grammar and style.' }),
+        agent: new Agent({ name: 'editor', model, instructions: 'Polish grammar and style.' }),
       },
     ],
   },
 });
 
-// Bad: Vague, overlapping roles
+// Bad: vague, overlapping roles
 const badTeam = new Swarm(cog, {
   name: 'bad-team',
   strategy: 'round-robin',
   agents: [
-    new Agent({ name: 'helper1', instructions: 'Help with tasks.' }),
-    new Agent({ name: 'helper2', instructions: 'Assist with work.' }),
+    new Agent({ name: 'helper1', model, instructions: 'Help with tasks.' }),
+    new Agent({ name: 'helper2', model, instructions: 'Assist with work.' }),
   ],
 });
 ```
@@ -959,21 +962,16 @@ const badTeam = new Swarm(cog, {
 ### 3. Communication Limits
 
 ```typescript
-const swarm = new Swarm(cog, {
+const bounded = new Swarm(cog, {
   name: 'bounded-swarm',
   strategy: 'round-robin',
-  agents: [...],
+  agents,
   messaging: {
     enabled: true,
     protocol: 'direct',
-    // Limit message length
-    maxMessageLength: 2000,
-
-    // Limit messages per turn
-    maxMessagesPerTurn: 5,
-
-    // Prevent infinite loops
-    maxTotalMessages: 100,
+    maxMessageLength: 2000, // longer messages are rejected
+    maxMessagesPerTurn: 5, // per agent, reset at the start of each of its turns
+    maxTotalMessages: 100, // prevents message loops
   },
 });
 ```
@@ -981,20 +979,28 @@ const swarm = new Swarm(cog, {
 ### 4. Graceful Degradation
 
 ```typescript
-const swarm = new Swarm(cog, {
+const degrading = new Swarm(cog, {
   name: 'resilient-swarm',
   strategy: 'auction',
-  agents: [...],
+  agents: [pythonExpert, devopsExpert, generalCoder],
+  auction: { bidding: 'capability-match', selection: 'highest-bid' },
   errorHandling: {
     onAgentFailure: 'failover',
-    // If specialist unavailable, use generalist
+    // If a specialist fails, the generalist takes over the same input
     failover: {
       'python-expert': 'general-coder',
       'devops-expert': 'general-coder',
     },
-
-    // Continue with partial results
+    // Keep successful bids when some agents fail during bidding
     partialResults: true,
   },
 });
 ```
+
+---
+
+## Known Limitations
+
+- Round-robin with `sticky: true` never advances the rotation index, so every new sticky key is assigned to the same (first) agent.
+- `SwarmConfig.stages` only registers the stage agents; use `pipeline.stages` for the pipeline strategy.
+- `observability.tracing`, `messaging.protocol`, `blackboard.locking` and the `distributed.workerConcurrency` / `retry` / `cleanupAfter` fields are accepted but not used by the coordinator.

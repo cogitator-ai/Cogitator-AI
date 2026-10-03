@@ -6,6 +6,8 @@
 
 The `@cogitator-ai/memory` package provides conversation persistence for agents. It separates storage backends (adapters) from context assembly (`ContextBuilder`) so you can swap adapters without changing agent code.
 
+More detail on the website: [Memory](https://cogitator.app/docs/memory), [Adapters](https://cogitator.app/docs/memory/adapters), [Embeddings](https://cogitator.app/docs/memory/embeddings), [Hybrid Search](https://cogitator.app/docs/memory/hybrid-search), [Knowledge Graphs](https://cogitator.app/docs/memory/knowledge-graphs).
+
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                        ContextBuilder                        │
@@ -17,14 +19,38 @@ The `@cogitator-ai/memory` package provides conversation persistence for agents.
                                         │
               ┌───────────────┬─────────┴──────────┬──────────────┐
               ▼               ▼                    ▼              ▼
-        MemoryAdapter    FactAdapter       EmbeddingAdapter  GraphAdapter
-              │               │                    │              │
-     ┌────────┼────────┐      │                    │              │
-     ▼        ▼        ▼      │                    │              │
-  InMemory  Redis  Postgres───┴────────────────────┘       PostgresGraph
-              SQLite
-              MongoDB
-              Qdrant
+        MemoryAdapter    FactAdapter       EmbeddingAdapter    GraphAdapter
+              │               │                    │                │
+   InMemory, Redis,       Postgres         Postgres, Qdrant,   PostgresGraph,
+   Postgres, SQLite,                       InMemoryEmbedding   SQLiteGraph
+   MongoDB
+```
+
+### MemoryResult
+
+Adapter methods do not throw for expected failures; they return `MemoryResult<T>` (`{ success: true, data }` or `{ success: false, error }`). Check `result.success`, or use `unwrap()` to get the data and throw on failure:
+
+```typescript
+import { InMemoryAdapter, unwrap } from '@cogitator-ai/memory';
+
+const memory = new InMemoryAdapter({ provider: 'memory' });
+unwrap(await memory.connect());
+
+const thread = unwrap(await memory.createThread('agent-1', { title: 'Support chat' }));
+unwrap(
+  await memory.addEntry({
+    threadId: thread.id,
+    message: { role: 'user', content: 'Hello!' },
+    tokenCount: 2,
+  })
+);
+
+const result = await memory.getEntries({ threadId: thread.id, limit: 20 });
+if (result.success) {
+  console.log(result.data.map((e) => e.message.content));
+} else {
+  console.error(result.error);
+}
 ```
 
 ---
@@ -49,16 +75,14 @@ Redis-backed storage with TTL. Supports standalone and cluster mode via `@cogita
 ```typescript
 import { RedisAdapter } from '@cogitator-ai/memory';
 
-// Standalone
-const adapter = new RedisAdapter({
+const standalone = new RedisAdapter({
   provider: 'redis',
   url: 'redis://localhost:6379',
-  ttl: 86400, // 24 hours
-  keyPrefix: 'cogitator:',
+  ttl: 86400, // default: 24 hours
+  keyPrefix: 'cogitator:', // default
 });
 
-// Cluster
-const adapter = new RedisAdapter({
+const cluster = new RedisAdapter({
   provider: 'redis',
   cluster: {
     nodes: [
@@ -68,8 +92,10 @@ const adapter = new RedisAdapter({
   },
 });
 
-await adapter.connect();
+await standalone.connect();
 ```
+
+In cluster mode the key prefix must contain a hash tag so multi-key commands hit one slot; the default is `{cogitator}:` and a prefix without one is wrapped (`app:` becomes `{app}:`).
 
 ### PostgresAdapter
 
@@ -99,7 +125,7 @@ await adapter.connect(); // creates tables automatically
 | `cogitator.facts`      | Long-term agent knowledge                |
 | `cogitator.embeddings` | Vector embeddings (ivfflat + GIN index)  |
 
-Vector dimensions default to 768 (nomic-embed-text). Override with `adapter.setVectorDimensions(1536)` before connecting.
+Vector dimensions default to 768 (nomic-embed-text). Override with `adapter.setVectorDimensions(1536)` before connecting (it throws after `connect()`). The `embeddings` table also gets a generated `content_tsv` column with a GIN index for keyword search.
 
 ### SQLiteAdapter
 
@@ -111,7 +137,7 @@ import { SQLiteAdapter } from '@cogitator-ai/memory';
 const adapter = new SQLiteAdapter({
   provider: 'sqlite',
   path: './data/memory.db',
-  walMode: true, // default, better concurrency
+  walMode: true, // default, better concurrency (ignored for ':memory:')
 });
 
 await adapter.connect();
@@ -134,7 +160,7 @@ await adapter.connect();
 
 ### QdrantAdapter
 
-Optimized for vector search workloads.
+Vector store only: implements `EmbeddingAdapter`, not `MemoryAdapter`, so pair it with a conversation adapter. Requires `@qdrant/js-client-rest`.
 
 ```typescript
 import { QdrantAdapter } from '@cogitator-ai/memory';
@@ -149,6 +175,20 @@ const adapter = new QdrantAdapter({
 
 await adapter.connect();
 ```
+
+### InMemoryEmbeddingAdapter
+
+In-process `EmbeddingAdapter` + `KeywordSearchAdapter` for tests and small workloads:
+
+```typescript
+import { InMemoryEmbeddingAdapter } from '@cogitator-ai/memory';
+
+const embeddings = new InMemoryEmbeddingAdapter();
+```
+
+### Factories
+
+`createMemoryAdapter(config)` builds a conversation adapter from a config with `provider: 'memory' | 'redis' | 'postgres' | 'sqlite' | 'mongodb'`; `createEmbeddingAdapter({ provider: 'qdrant', ... })` builds the Qdrant vector store. Both lazy-load the backend's driver.
 
 ---
 
@@ -221,13 +261,18 @@ type MemoryResult<T> = { success: true; data: T } | { success: false; error: str
 
 ### FactAdapter (Postgres only)
 
+For an SQLite-backed fact store with history, see `CoreFactsStore`.
+
 Long-term knowledge storage — user preferences, learned facts, domain knowledge.
 
 ```typescript
 interface FactAdapter {
   addFact(fact: Omit<Fact, 'id' | 'createdAt' | 'updatedAt'>): Promise<MemoryResult<Fact>>;
   getFacts(agentId: string, category?: string): Promise<MemoryResult<Fact[]>>;
-  updateFact(factId: string, updates: Partial<...>): Promise<MemoryResult<Fact>>;
+  updateFact(
+    factId: string,
+    updates: Partial<Pick<Fact, 'content' | 'category' | 'confidence' | 'metadata' | 'expiresAt'>>
+  ): Promise<MemoryResult<Fact>>;
   deleteFact(factId: string): Promise<MemoryResult<void>>;
   searchFacts(agentId: string, query: string): Promise<MemoryResult<Fact[]>>;
 }
@@ -246,9 +291,9 @@ interface Fact {
 }
 ```
 
-### EmbeddingAdapter (Postgres only)
+### EmbeddingAdapter
 
-pgvector-backed semantic search.
+Implemented by `PostgresAdapter` (pgvector), `QdrantAdapter` and `InMemoryEmbeddingAdapter`.
 
 ```typescript
 interface EmbeddingAdapter {
@@ -277,11 +322,12 @@ interface SemanticSearchOptions {
     sourceType?: Embedding['sourceType'];
     threadId?: string;
     agentId?: string;
+    userId?: string;
   };
 }
 ```
 
-`filter.threadId` / `filter.agentId` match the embedding's `metadata.threadId` / `metadata.agentId` (in Qdrant these are the `metadata.threadId` / `metadata.agentId` payload keys). Semantic context is scoped per agent: embeddings whose `metadata.agentId` belongs to another agent are never injected, while embeddings without an `agentId` (shared documents) are visible to every agent.
+`filter.threadId` / `filter.agentId` / `filter.userId` match the embedding's `metadata.threadId` / `metadata.agentId` / `metadata.userId` (in Qdrant these are the same `metadata.*` payload keys). Semantic context is scoped per agent: embeddings whose `metadata.agentId` belongs to another agent are never injected, while embeddings without an `agentId` (shared documents) are visible to every agent.
 
 ---
 
@@ -296,22 +342,24 @@ const builder = new ContextBuilder(
   {
     maxTokens: 128_000,
     reserveTokens: 4000, // headroom for output
-    strategy: 'hybrid', // 'recent' | 'hybrid' (| 'relevant' — not yet implemented)
+    strategy: 'hybrid', // 'recent' | 'relevant' | 'hybrid'
     includeSystemPrompt: true,
-    includeFacts: true, // requires FactAdapter
-    includeSemanticContext: true, // requires EmbeddingAdapter + EmbeddingService
+    includeFacts: true, // requires factAdapter
+    includeSemanticContext: true, // requires embeddingAdapter + embeddingService
   },
   {
-    memoryAdapter: adapter,
+    memoryAdapter: postgresAdapter,
     factAdapter: postgresAdapter, // optional
     embeddingAdapter: postgresAdapter, // optional
-    embeddingService: embeddingService, // optional
+    embeddingService, // optional
+    // graphContextBuilder, // optional, for includeGraphContext
   }
 );
 
 const context = await builder.build({
   threadId: 'thread_abc123',
   agentId: 'agent_xyz',
+  userId: 'alice', // optional: leave out other users' facts and embeddings
   systemPrompt: 'You are a helpful assistant.',
   currentInput: 'What did we discuss yesterday?', // used for semantic retrieval
 });
@@ -321,28 +369,33 @@ const context = await builder.build({
 // context.truncated — whether history was cut
 // context.facts — facts included in system prompt
 // context.semanticResults — embeddings included
+// context.graphContext — graph nodes/edges, when includeGraphContext is on
 ```
+
+Facts (up to 10% of the budget), semantic context (top 5 embeddings scoring ≥ 0.7, up to 10%) and graph context (up to 15%) are merged into the system message. The rest of the budget is filled with conversation entries by the strategy.
 
 ### Strategies
 
-| Strategy   | Behavior                                                                      |
-| ---------- | ----------------------------------------------------------------------------- |
-| `recent`   | Most recent entries first, fills token budget                                 |
-| `hybrid`   | Semantically relevant older entries + recent entries (30/70 split by default) |
-| `relevant` | Not yet implemented — throws on use                                           |
+| Strategy   | Behavior                                                                                                     |
+| ---------- | ------------------------------------------------------------------------------------------------------------ |
+| `recent`   | Most recent entries that fit the token budget                                                                |
+| `relevant` | Entries selected by semantic similarity to `currentInput`                                                    |
+| `hybrid`   | Up to 30% of the budget on older entries (outside the last 10) scoring above 0.6, the rest on recent entries |
+
+`relevant` and `hybrid` need an `embeddingService` and a `currentInput`; without them (or, for `hybrid`, with 10 entries or fewer) they fall back to `recent`. Selected messages are always returned in chronological order.
 
 ### ContextBuilderConfig
 
 ```typescript
 interface ContextBuilderConfig {
   maxTokens: number;
-  reserveTokens?: number; // default: 10% of maxTokens
+  reserveTokens?: number; // default: 10% of maxTokens (min 100)
   strategy: ContextStrategy;
   includeSystemPrompt?: boolean; // default: true
   includeFacts?: boolean; // default: false
   includeSemanticContext?: boolean; // default: false
   includeGraphContext?: boolean; // default: false
-  graphContextOptions?: { maxNodes?: number; maxDepth?: number };
+  graphContextOptions?: GraphContextOptions; // maxNodes, maxEdges, maxDepth, includeInferred, entityTypes, userId
 }
 ```
 
@@ -351,38 +404,33 @@ interface ContextBuilderConfig {
 ## Embedding Services
 
 ```typescript
-import {
-  OpenAIEmbeddingService,
-  OllamaEmbeddingService,
-  GoogleEmbeddingService,
-  createEmbeddingService,
-} from '@cogitator-ai/memory';
+import { createEmbeddingService } from '@cogitator-ai/memory';
 
-// Factory
-const service = createEmbeddingService({
+const openai = createEmbeddingService({
   provider: 'openai',
   apiKey: process.env.OPENAI_API_KEY!,
-  model: 'text-embedding-3-small', // optional
+  model: 'text-embedding-3-small', // default
+  dimensions: 768, // optional, text-embedding-3-* only
 });
 
-// Or Ollama
-const service = createEmbeddingService({
+const ollama = createEmbeddingService({
   provider: 'ollama',
-  model: 'nomic-embed-text',
+  model: 'nomic-embed-text', // default
   baseUrl: 'http://localhost:11434', // optional
 });
 
-// Or Google
-const service = createEmbeddingService({
+const google = createEmbeddingService({
   provider: 'google',
   apiKey: process.env.GOOGLE_API_KEY!,
-  model: 'gemini-embedding-001', // optional
+  model: 'gemini-embedding-001', // default
 });
 
-const vector = await service.embed('hello world');
-const vectors = await service.embedBatch(['text1', 'text2']);
-console.log(service.dimensions); // 1536 for OpenAI, 768 for nomic, etc.
+const vector = await openai.embed('hello world');
+const vectors = await openai.embedBatch(['text1', 'text2']);
+console.log(openai.dimensions, ollama.dimensions, google.dimensions); // 768, 768, 3072
 ```
+
+Default dimensions: OpenAI `text-embedding-3-small` 1536 (`-3-large` 3072), Ollama `nomic-embed-text` 768, Google `gemini-embedding-001` 3072. The classes `OpenAIEmbeddingService`, `OllamaEmbeddingService` and `GoogleEmbeddingService` take the same config.
 
 ---
 
@@ -391,27 +439,33 @@ console.log(service.dimensions); // 1536 for OpenAI, 768 for nomic, etc.
 BM25 keyword search + vector search fused with Reciprocal Rank Fusion.
 
 ```typescript
-import { HybridSearch, type HybridSearchConfig } from '@cogitator-ai/memory';
+import { HybridSearch, unwrap } from '@cogitator-ai/memory';
 
 const search = new HybridSearch({
   embeddingAdapter: postgresAdapter,
-  embeddingService: embeddingService,
+  embeddingService,
   keywordAdapter: postgresAdapter, // PostgresAdapter implements KeywordSearchAdapter
   defaultWeights: { bm25: 0.3, vector: 0.7 },
 });
 
-const results = await search.search({
-  query: 'user preferences about dark mode',
-  strategy: 'hybrid', // 'vector' | 'keyword' | 'hybrid'
-  limit: 10,
-  threshold: 0.5,
-});
-// results: SearchResult[] with score, vectorScore, keywordScore
+const results = unwrap(
+  await search.search({
+    query: 'user preferences about dark mode',
+    strategy: 'hybrid', // 'vector' | 'keyword' | 'hybrid'
+    limit: 10,
+    threshold: 0.5,
+  })
+);
+// SearchResult[] with score, vectorScore, keywordScore
 ```
+
+Without a `keywordAdapter`, keyword search uses a local `BM25Index`.
 
 ---
 
 ## Configuration (via CogitatorConfig)
+
+The runtime builds its adapter from `memory.adapter`, which it supports for `'memory'`, `'redis'` (requires `redis.url`) and `'postgres'` (requires `postgres.connectionString`). Other values log a warning and leave memory off: for SQLite, MongoDB or a Redis cluster, connect the adapter yourself and assign it with `cog.memory = adapter` (such runs load the last 20 entries, since the context builder is only created from the `memory` config).
 
 ```typescript
 interface MemoryConfig {
@@ -455,73 +509,85 @@ interface MemoryConfig {
     dimensions: number; // required — must match embedding model
   };
 
-  embedding?: {
-    provider: 'openai' | 'ollama' | 'google';
-    apiKey?: string;
-    model?: string;
-    baseUrl?: string;
-  };
+  embedding?: EmbeddingServiceConfig; // { provider: 'openai' | 'ollama' | 'google', apiKey?, model?, baseUrl?, dimensions? }
 
-  contextBuilder?: {
-    maxTokens?: number;
-    reserveTokens?: number;
-    strategy?: 'recent' | 'hybrid';
-    includeFacts?: boolean;
-    includeSemanticContext?: boolean;
-  };
+  contextBuilder?: Partial<ContextBuilderConfig>; // maxTokens defaults to 4000, strategy to 'recent'
 }
 ```
+
+With `contextBuilder` set, Postgres is used as the fact and embedding adapter automatically. The runtime creates the Postgres `embeddings` table with 768-dimensional vectors, so pick an embedding config that produces 768 dimensions (`dimensions: 768` for OpenAI `text-embedding-3-*` or Google, or Ollama `nomic-embed-text`). Without `contextBuilder`, a run loads the last 20 entries of the thread.
 
 ---
 
 ## Knowledge Graph (Advanced)
 
-Postgres-backed entity–relationship graph with LLM-assisted extraction and inference rules.
+Entity–relationship graph (Postgres or SQLite) with LLM-assisted extraction (`LLMEntityExtractor`), inference rules (`GraphInferenceEngine`) and context retrieval (`GraphContextBuilder`).
 
 ```typescript
-import {
-  PostgresGraphAdapter,
-  LLMEntityExtractor,
-  GraphInferenceEngine,
-  GraphContextBuilder,
-} from '@cogitator-ai/memory';
+import { PostgresGraphAdapter, GraphContextBuilder, unwrap } from '@cogitator-ai/memory';
+import pg from 'pg';
 
-// Store and query entities and relationships
 const graph = new PostgresGraphAdapter({
-  connectionString: 'postgres://localhost/cogitator',
-});
-await graph.connect();
-
-// Add nodes and edges
-const node = await graph.addNode({
-  type: 'person',
-  label: 'Alice',
-  source: 'user',
-  properties: { role: 'engineer' },
+  pool: new pg.Pool({ connectionString: process.env.DATABASE_URL! }),
+  schema: 'cogitator', // default
+  vectorDimensions: 1536,
 });
 
-await graph.addEdge({
-  fromId: alice.id,
-  toId: project.id,
-  type: 'works_on',
-  properties: {},
-});
+const alice = unwrap(
+  await graph.addNode({
+    agentId: 'agent_123',
+    type: 'person',
+    name: 'Alice',
+    aliases: [],
+    properties: { role: 'engineer' },
+    confidence: 1,
+    source: 'user',
+  })
+);
 
-// Semantic graph search
-const results = await graph.semanticSearch({
-  query: 'engineers working on ML projects',
-  vector: await embeddingService.embed('engineers ML projects'),
-  limit: 10,
-});
+const project = unwrap(
+  await graph.addNode({
+    agentId: 'agent_123',
+    type: 'concept',
+    name: 'Recommendation model',
+    aliases: [],
+    properties: {},
+    confidence: 1,
+    source: 'user',
+  })
+);
 
-// Build graph-enriched context
-const gctx = new GraphContextBuilder(graph, { maxNodes: 20, maxDepth: 2 });
-const graphContext = await gctx.buildContext({
-  agentId: 'agent_123',
-  query: 'who works on what projects?',
-  embeddingService,
+unwrap(
+  await graph.addEdge({
+    agentId: 'agent_123',
+    sourceNodeId: alice.id,
+    targetNodeId: project.id,
+    type: 'related_to',
+    label: 'works on',
+    weight: 1,
+    bidirectional: false,
+    properties: {},
+    confidence: 1,
+    source: 'user',
+  })
+);
+
+const similar = unwrap(
+  await graph.searchNodesSemantic({
+    agentId: 'agent_123',
+    vector: await embeddingService.embed('engineers on ML projects'),
+    limit: 10,
+  })
+);
+
+const graphContext = new GraphContextBuilder(graph, embeddingService, {
+  maxNodes: 20,
+  maxDepth: 2,
 });
+const context = await graphContext.buildContext('agent_123', 'who works on what projects?');
 ```
+
+Tables (`graph_nodes`, `graph_edges`) are created on first use. Pass the `GraphContextBuilder` as `graphContextBuilder` to `ContextBuilder` with `includeGraphContext: true` to inject graph context into runs. See [Knowledge Graphs](https://cogitator.app/docs/memory/knowledge-graphs).
 
 ---
 
@@ -530,7 +596,7 @@ const graphContext = await gctx.buildContext({
 For document ingestion (PDFs, web pages, code, CSV) with chunking and retrieval, see `@cogitator-ai/rag`. It builds on top of `EmbeddingAdapter` from this package.
 
 ```typescript
-import { RAGPipelineBuilder, MarkdownLoader, createChunker } from '@cogitator-ai/rag';
+import { RAGPipelineBuilder, MarkdownLoader } from '@cogitator-ai/rag';
 
 const rag = new RAGPipelineBuilder()
   .withLoader(new MarkdownLoader())
@@ -543,30 +609,40 @@ await rag.ingest('./docs/');
 const results = await rag.query('how does authentication work?');
 ```
 
+See [RAG](https://cogitator.app/docs/rag).
+
 ---
 
 ## Usage with Cogitator
 
 ```typescript
 import { Cogitator, Agent } from '@cogitator-ai/core';
+import { unwrap } from '@cogitator-ai/memory';
 
 const cog = new Cogitator({
-  llm: { defaultModel: 'openai/gpt-6.1-sol' },
+  llm: { defaultModel: 'openai/gpt-5.5' },
   memory: {
     adapter: 'postgres',
     postgres: { connectionString: process.env.DATABASE_URL! },
-    embedding: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY! },
-    contextBuilder: { strategy: 'hybrid', includeSemanticContext: true },
+    embedding: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY!, dimensions: 768 },
+    contextBuilder: { maxTokens: 8000, strategy: 'hybrid', includeSemanticContext: true },
   },
 });
 
 const agent = new Agent({ name: 'assistant', instructions: 'You are helpful.' });
 
-// Pass threadId to persist conversation
 const result = await cog.run(agent, {
   input: 'Hello!',
   threadId: 'thread_user_123',
-  useMemory: true,
-  saveHistory: true,
 });
+
+const memory = await cog.getMemory();
+if (memory) {
+  const history = unwrap(await memory.getEntries({ threadId: result.threadId }));
+  console.log(history.length);
+}
 ```
+
+- A run with a `threadId` loads and saves its history; per run, `useMemory: false` disables memory, `loadHistory: false` / `saveHistory: false` skip loading or saving, and `onMemoryError` is called when a load or save fails.
+- `await cog.getMemory()` connects and returns the adapter before any run (`undefined` when memory is not configured or could not connect); `cog.memory` returns it once connected, and assigning `cog.memory = adapter` plugs in an adapter you created yourself.
+- Pass `userId` in run options to scope threads, facts and embeddings per user — see [Multiple Users](https://cogitator.app/docs/advanced/multi-user).

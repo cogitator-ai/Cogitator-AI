@@ -1,12 +1,31 @@
 # Disaster Recovery Playbook
 
-This document provides procedures for recovering Cogitator from various failure scenarios.
+This document provides procedures for recovering a Cogitator deployment from common failure scenarios.
 
 ## Overview
 
-Cogitator's architecture is designed for resilience with stateless workers and persistent backing stores. This playbook covers recovery procedures for common failure scenarios.
+Cogitator is a library: the processes you run (an API server built on a server adapter, `WorkerPool` workers, schedulers) keep no state of their own beyond in-process caches. Durable state lives in the backing stores you configure — PostgreSQL, Redis, SQLite, MongoDB or Qdrant. Recovery therefore means restoring those stores and restarting your processes.
+
+Cogitator ships no Kubernetes manifests or Helm chart. The `kubectl` and `systemctl` commands below use example names (`cogitator-worker`, `redis`, `postgres`); substitute your own.
+
+### What Cogitator Stores
+
+| Store      | Data                                                                                                                                             | Written by                                                                                   |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| PostgreSQL | Schema `cogitator`: `threads`, `entries`, `facts`, `embeddings` (`vector(768)` by default)                                                       | `PostgresAdapter` (`@cogitator-ai/memory`)                                                   |
+| PostgreSQL | Schema `cogitator`: `graph_nodes`, `graph_edges`                                                                                                 | `PostgresGraphAdapter`                                                                       |
+| PostgreSQL | Schema `cogitator`: `traces`, `prompts`, `ab_tests`, `instruction_versions`                                                                      | `PostgresTraceStore` (`@cogitator-ai/core` learning)                                         |
+| PostgreSQL | `cogitator_workflow_runs`, `cogitator_workflow_checkpoints`, `cogitator_workflow_timers`, `cogitator_workflow_approvals_requests` / `_responses` | `PostgresRunStore`, `PostgresCheckpointStore`, `PostgresTimerStore`, `PostgresApprovalStore` |
+| Redis      | `cogitator:*` memory keys                                                                                                                        | `RedisAdapter` (`@cogitator-ai/memory`)                                                      |
+| Redis      | `cogitator:workflow-runs`, `cogitator:workflow-checkpoints`, `cogitator:workflow-timers`, `cogitator:workflow-approvals` prefixes                | `RedisRunStore`, `RedisCheckpointStore`, `RedisTimerStore`, `RedisApprovalStore`             |
+| Redis      | BullMQ queue `cogitator-jobs` (key prefix `cogitator`, `{cogitator}` in cluster mode)                                                            | `JobQueue` / `WorkerPool` (`@cogitator-ai/worker`)                                           |
+| SQLite     | The database file you pass as `path` (the CLI assistant defaults to `~/.cogitator/memory.db`)                                                    | `SQLiteAdapter`                                                                              |
+
+Every schema, table name and key prefix above is a default and can be overridden (`schema`, `table`, `tablePrefix`, `keyPrefix`). Tables are created on first use, so a fresh database needs no migrations.
 
 ### Recovery Time Objectives (RTO)
+
+Example targets — adjust them to your service level.
 
 | Scenario                 | Target RTO   | Priority |
 | ------------------------ | ------------ | -------- |
@@ -18,13 +37,12 @@ Cogitator's architecture is designed for resilience with stateless workers and p
 
 ### Recovery Point Objectives (RPO)
 
-| Data Type                | Target RPO    | Backup Frequency |
-| ------------------------ | ------------- | ---------------- |
-| Agent runs (in-progress) | 0 (real-time) | Continuous       |
-| Agent definitions        | < 5 minutes   | Every 5 min      |
-| Memory store             | < 1 hour      | Hourly           |
-| Vector embeddings        | < 24 hours    | Daily            |
-| Audit logs               | 0 (real-time) | Continuous       |
+| Data Type                                  | Target RPO               | Backup Method                      |
+| ------------------------------------------ | ------------------------ | ---------------------------------- |
+| Queued jobs, workflow timers and approvals | < 1 second               | Redis AOF (`appendfsync everysec`) |
+| Workflow runs and checkpoints              | Point-in-time            | Postgres WAL archiving             |
+| Conversation memory and facts              | < 1 hour                 | Hourly `pg_dump` or WAL archiving  |
+| Vector embeddings                          | < 24 hours (rebuildable) | Daily `pg_dump`                    |
 
 ---
 
@@ -37,12 +55,13 @@ Cogitator's architecture is designed for resilience with stateless workers and p
 ```bash
 #!/bin/bash
 # /opt/cogitator/scripts/backup-postgres.sh
+set -euo pipefail
 
 BACKUP_DIR="/var/backups/cogitator/postgres"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RETENTION_DAYS=30
 
-# Create backup
+# Create backup (custom format, restorable with pg_restore)
 pg_dump -h localhost -U cogitator -Fc cogitator > "${BACKUP_DIR}/cogitator_${TIMESTAMP}.dump"
 
 # Upload to S3 (optional)
@@ -53,32 +72,49 @@ aws s3 cp "${BACKUP_DIR}/cogitator_${TIMESTAMP}.dump" \
 find "${BACKUP_DIR}" -name "*.dump" -mtime +${RETENTION_DAYS} -delete
 ```
 
+With Docker Compose (the repository's `docker-compose.yml`, or the stack `cogitator deploy --target docker` starts), run `pg_dump` inside the container:
+
+```bash
+docker compose exec -T postgres pg_dump -U cogitator -Fc cogitator > cogitator_$(date +%Y%m%d_%H%M%S).dump
+```
+
 #### Point-in-Time Recovery Setup
 
-```sql
--- Enable WAL archiving in postgresql.conf
--- wal_level = replica
--- archive_mode = on
--- archive_command = 'cp %p /var/lib/postgresql/wal_archive/%f'
+Enable WAL archiving in `postgresql.conf` and take a base backup to replay the archive onto:
+
+```conf
+# postgresql.conf
+wal_level = replica
+archive_mode = on
+archive_command = 'test ! -f /var/lib/postgresql/wal_archive/%f && cp %p /var/lib/postgresql/wal_archive/%f'
+```
+
+```bash
+pg_basebackup -h localhost -U cogitator -D /var/backups/cogitator/base_$(date +%Y%m%d) -Ft -z -P
 ```
 
 ### Redis Backups
+
+Redis holds queued jobs and, if you use the Redis stores, memory and workflow state. If you use Redis only as a cache you can skip these backups.
 
 #### RDB Snapshots
 
 ```bash
 #!/bin/bash
 # /opt/cogitator/scripts/backup-redis.sh
+set -euo pipefail
 
 BACKUP_DIR="/var/backups/cogitator/redis"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+REDIS_DIR=$(redis-cli CONFIG GET dir | tail -1)
 
-# Trigger RDB save
+# Trigger an RDB save and wait for it to finish
+BEFORE=$(redis-cli LASTSAVE)
 redis-cli BGSAVE
-sleep 5
+while [ "$(redis-cli LASTSAVE)" = "$BEFORE" ]; do sleep 1; done
 
 # Copy dump file
-cp /var/lib/redis/dump.rdb "${BACKUP_DIR}/dump_${TIMESTAMP}.rdb"
+cp "${REDIS_DIR}/dump.rdb" "${BACKUP_DIR}/dump_${TIMESTAMP}.rdb"
 
 # Upload to S3
 aws s3 cp "${BACKUP_DIR}/dump_${TIMESTAMP}.rdb" \
@@ -95,23 +131,33 @@ auto-aof-rewrite-percentage 100
 auto-aof-rewrite-min-size 64mb
 ```
 
+The repository's `docker-compose.yml` already starts Redis with `--appendonly yes`.
+
+### SQLite Backups
+
+```bash
+sqlite3 ~/.cogitator/memory.db ".backup '/var/backups/cogitator/memory_$(date +%Y%m%d_%H%M%S).db'"
+```
+
 ### Configuration Backups
 
 ```bash
 #!/bin/bash
-# Backup all configuration files
+# Backup configuration files (adjust the paths to your deployment)
 
 BACKUP_DIR="/var/backups/cogitator/config"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 tar -czf "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
-  /opt/cogitator/config/ \
+  /opt/cogitator/cogitator.yml \
   /opt/cogitator/.env \
-  /etc/cogitator/
+  /opt/cogitator/.cogitator/
 
 aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
   "s3://cogitator-backups/config/config_${TIMESTAMP}.tar.gz"
 ```
+
+`.env` contains provider API keys: encrypt the archive or store it in a secrets manager rather than a plain bucket.
 
 ---
 
@@ -122,14 +168,14 @@ aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
 **Symptoms:**
 
 - Worker process exits unexpectedly
-- Health check fails for one instance
-- Load balancer removes instance from pool
+- Health check fails for one API instance
+- `cogitator_workers_total` drops
 
 **Recovery Steps:**
 
 1. **Automatic recovery** (Kubernetes/systemd)
-   - Kubernetes will restart the pod automatically
-   - systemd will restart the service if configured with `Restart=always`
+   - Kubernetes restarts the pod automatically
+   - systemd restarts the service if configured with `Restart=always`
 
 2. **Manual verification**
 
@@ -140,22 +186,25 @@ aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
    # Check logs for failure cause
    kubectl logs <pod-name> --previous
 
-   # Verify worker rejoined cluster
-   curl http://localhost:3000/health
+   # API servers: Express and Fastify mount their routes under /cogitator by default
+   curl http://localhost:3000/cogitator/health
+
+   # Workers: the worker count comes from your /metrics endpoint (see Monitoring)
+   curl -s http://localhost:3000/metrics | grep cogitator_workers_total
    ```
 
-3. **In-progress runs**
-   - Runs assigned to failed worker will timeout
-   - BullMQ will retry failed jobs automatically
-   - No data loss for completed steps
+3. **In-progress jobs**
+   - A job whose worker died keeps its lock until `lockDuration` (default 30 s) expires; the next stalled-job check (`stalledInterval`, default 30 s) moves it back to waiting for another worker (BullMQ does this once; a job that stalls again is failed)
+   - Failed jobs are retried with exponential backoff (`attempts: 3` by default)
+   - Workflow timers claimed by the dead process become available again when their claim (`claimTtl`) runs out
 
 ### Scenario 2: Redis Failure
 
 **Symptoms:**
 
 - Connection refused to Redis
-- Memory operations failing
-- Job queue stalled
+- Memory adapter calls return `{ success: false, error }`
+- Job queue stalled (`cogitator_queue_depth` rising, `cogitator_queue_active` at 0)
 
 **Recovery Steps:**
 
@@ -180,20 +229,29 @@ aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
 
    # Systemd
    systemctl restart redis
+
+   # Docker Compose
+   docker compose restart redis
    ```
 
 3. **Restore from backup (if data lost)**
+
+   When AOF is enabled Redis loads the AOF on startup and ignores `dump.rdb`, so start from the RDB with AOF off, then turn AOF back on:
 
    ```bash
    # Stop Redis
    systemctl stop redis
 
-   # Restore RDB file
-   cp /var/backups/cogitator/redis/dump_latest.rdb /var/lib/redis/dump.rdb
-   chown redis:redis /var/lib/redis/dump.rdb
+   # Restore RDB file and move the stale AOF out of the way
+   REDIS_DIR=/var/lib/redis
+   cp /var/backups/cogitator/redis/dump_<timestamp>.rdb "${REDIS_DIR}/dump.rdb"
+   chown redis:redis "${REDIS_DIR}/dump.rdb"
+   mv "${REDIS_DIR}/appendonlydir" "${REDIS_DIR}/appendonlydir.bak"
 
-   # Start Redis
+   # Start with AOF disabled (set appendonly no in redis.conf), then rebuild the AOF
    systemctl start redis
+   redis-cli CONFIG SET appendonly yes
+   # and set appendonly yes in redis.conf again
    ```
 
 4. **Failover to replica (Redis Cluster)**
@@ -207,8 +265,9 @@ aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
    ```
 
 5. **Reconnect workers**
+
    ```bash
-   # Workers will auto-reconnect, but force restart if needed
+   # Workers reconnect automatically, but force a restart if needed
    kubectl rollout restart deployment/cogitator-worker
    ```
 
@@ -217,8 +276,8 @@ aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
 **Symptoms:**
 
 - Database connection errors
-- Agent definitions not loading
-- Long-term memory unavailable
+- Postgres memory adapter calls return `{ success: false, error }`
+- Workflow run, approval or timer store calls throw
 
 **Recovery Steps:**
 
@@ -247,43 +306,59 @@ aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
 
 3. **Recover from backup**
 
+   `pg_restore` needs a running server. Restore into a fresh database (or pass `--clean --if-exists` to replace the objects in place):
+
    ```bash
-   # Stop Postgres
+   # Stop the applications writing to the database first
+   kubectl scale deployment/cogitator-api deployment/cogitator-worker --replicas=0
+
+   dropdb -h localhost -U cogitator cogitator
+   createdb -h localhost -U cogitator cogitator
+   pg_restore -h localhost -U cogitator -d cogitator \
+     /var/backups/cogitator/postgres/cogitator_<timestamp>.dump
+   ```
+
+   The dump includes the `vector` extension, so the target server needs pgvector (the `pgvector/pgvector:pg16` image has it).
+
+4. **Point-in-time recovery** (PostgreSQL 12+)
+
+   ```bash
    systemctl stop postgresql
 
-   # Restore from dump
-   pg_restore -h localhost -U cogitator -d cogitator \
-     /var/backups/cogitator/postgres/cogitator_latest.dump
+   # Replace the data directory with the base backup
+   mv /var/lib/postgresql/16/main /var/lib/postgresql/16/main.broken
+   mkdir /var/lib/postgresql/16/main
+   tar -xzf /var/backups/cogitator/base_<date>/base.tar.gz -C /var/lib/postgresql/16/main
+   chown -R postgres:postgres /var/lib/postgresql/16/main
+   chmod 700 /var/lib/postgresql/16/main
 
-   # Start Postgres
-   systemctl start postgresql
-   ```
-
-4. **Point-in-time recovery**
-
-   ```bash
-   # Create recovery.conf
-   cat > /var/lib/postgresql/data/recovery.conf << EOF
+   # Recovery settings live in postgresql.conf; recovery.signal starts recovery
+   cat >> /etc/postgresql/16/main/postgresql.conf << EOF
    restore_command = 'cp /var/lib/postgresql/wal_archive/%f %p'
-   recovery_target_time = '2024-12-15 14:30:00'
+   recovery_target_time = '2026-10-01 14:30:00'
+   recovery_target_action = 'promote'
    EOF
+   touch /var/lib/postgresql/16/main/recovery.signal
 
-   # Start Postgres in recovery mode
    systemctl start postgresql
    ```
+
+   Remove the recovery settings from `postgresql.conf` once the server has promoted.
 
 5. **Verify data integrity**
 
    ```bash
-   # Check tables
-   psql -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';"
+   # Cogitator tables
+   psql -c "SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema = 'cogitator' OR table_name LIKE 'cogitator_workflow_%';"
 
-   # Verify agent count
-   psql -c "SELECT COUNT(*) FROM cogitator_agents;"
+   # Memory row counts
+   psql -c "SELECT (SELECT count(*) FROM cogitator.threads) AS threads, (SELECT count(*) FROM cogitator.entries) AS entries, (SELECT count(*) FROM cogitator.embeddings) AS embeddings;"
 
-   # Check for orphaned records
-   psql -c "SELECT COUNT(*) FROM cogitator_runs WHERE status = 'running' AND started_at < NOW() - INTERVAL '1 hour';"
+   # Workflow runs left 'running' for more than an hour (timestamps are epoch milliseconds)
+   psql -c "SELECT id, workflow_name FROM cogitator_workflow_runs WHERE status = 'running' AND started_at < (EXTRACT(EPOCH FROM now()) - 3600) * 1000;"
    ```
+
+   Runs interrupted by the outage are not resumed automatically. Resume them from their last checkpoint with `executor.resume(workflow, checkpointId)` if you run with `checkpoint: true`, or cancel and re-run them with `manager.cancel(runId)` and `manager.retry(runId)`. See [Checkpointing](https://cogitator.app/docs/workflows/execution#checkpointing).
 
 ### Scenario 4: Complete Cluster Failure
 
@@ -309,29 +384,23 @@ aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
 2. **Restore infrastructure**
 
    ```bash
-   # Terraform/Pulumi rebuild
+   # Rebuild from your infrastructure-as-code
    cd infrastructure/
    terraform apply
-
-   # Or restore from IaC
-   pulumi up
    ```
 
 3. **Restore data stores first**
-
-   ```bash
-   # 1. Restore PostgreSQL
-   ./scripts/restore-postgres.sh latest
-
-   # 2. Restore Redis
-   ./scripts/restore-redis.sh latest
-   ```
+   1. PostgreSQL — Scenario 3, step 3 (or step 4 for point-in-time recovery)
+   2. Redis — Scenario 2, step 3
 
 4. **Deploy application**
 
    ```bash
-   # Apply Kubernetes manifests
+   # Your own manifests
    kubectl apply -f k8s/
+
+   # Or, for projects deployed with the CLI
+   cogitator deploy --target fly
    ```
 
 5. **Verify recovery**
@@ -340,11 +409,11 @@ aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
    # Check all pods running
    kubectl get pods
 
-   # Run health checks (Express adapter mounted at basePath '/api')
-   curl http://api.cogitator.dev/api/health
+   # Health check (Express adapter, default basePath /cogitator)
+   curl https://api.example.com/cogitator/health
 
    # Test agent execution
-   curl -X POST http://api.cogitator.dev/api/agents/test-agent/run \
+   curl -X POST https://api.example.com/cogitator/agents/test-agent/run \
      -H "Content-Type: application/json" \
      -d '{"input": "hello"}'
    ```
@@ -353,48 +422,57 @@ aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
 
 **Symptoms:**
 
-- JSON parse errors from database
-- Inconsistent agent state
-- Vector search returning invalid results
+- JSON parse errors from the database
+- Conversation history missing messages or returning malformed entries
+- Vector search returning irrelevant results
 
 **Recovery Steps:**
 
 1. **Identify corruption scope**
 
    ```bash
-   # Check for null/empty output in completed runs
-   psql -c "SELECT id FROM cogitator_runs WHERE status = 'completed' AND (output IS NULL OR output = '');"
+   # Memory entries whose message has no role
+   psql -c "SELECT id, thread_id FROM cogitator.entries WHERE message->>'role' IS NULL;"
 
-   # Check vector dimensions (768-dim, nomic-embed-text-v2-moe)
-   psql -c "SELECT id FROM cogitator_memory_entries WHERE embedding IS NOT NULL AND vector_dims(embedding) != 768;"
+   # Embeddings without a vector
+   psql -c "SELECT count(*) FROM cogitator.embeddings WHERE vector IS NULL;"
+
+   # Workflow runs whose indexed status disagrees with the stored run
+   psql -c "SELECT id FROM cogitator_workflow_runs WHERE status <> data->>'status';"
    ```
 
 2. **Isolate affected data**
 
-   ```bash
-   # Mark corrupted runs
-   psql -c "UPDATE cogitator_runs SET status = 'failed', error = 'data corruption' WHERE id IN (SELECT id FROM corrupted_runs_view);"
-
-   # Identify affected agents
-   psql -c "SELECT DISTINCT agent_id FROM cogitator_runs WHERE status = 'failed' AND error = 'data corruption';"
-   ```
+   Stop the processes writing to the affected stores. Do not patch workflow runs with SQL `UPDATE`: the run is stored as JSONB in `data` next to indexed columns, and both must stay in sync. Use `manager.cancel(runId)` and `manager.retry(runId)` instead.
 
 3. **Restore from known good backup**
+
+   Restore the dump into a scratch database and copy back only the rows you need:
 
    ```bash
    # Find last good backup
    aws s3 ls s3://cogitator-backups/postgres/ | tail -10
 
-   # Restore specific tables
-   pg_restore -h localhost -U cogitator -d cogitator \
-     --table=cogitator_runs --table=cogitator_memory_entries \
-     /var/backups/cogitator/postgres/cogitator_20241214.dump
+   createdb -h localhost -U cogitator cogitator_restore
+   pg_restore -h localhost -U cogitator -d cogitator_restore \
+     /var/backups/cogitator/postgres/cogitator_<timestamp>.dump
+
+   # Example: replace the entries of one thread with the restored ones
+   psql -d cogitator_restore -c "\copy (SELECT * FROM cogitator.entries WHERE thread_id = 'thread_abc') TO 'entries.csv' CSV"
+   psql -d cogitator -c "DELETE FROM cogitator.entries WHERE thread_id = 'thread_abc';"
+   psql -d cogitator -c "\copy cogitator.entries FROM 'entries.csv' CSV"
+
+   dropdb -h localhost -U cogitator cogitator_restore
    ```
 
+   `cogitator.embeddings` has a generated `content_tsv` column: copy it with an explicit column list that leaves `content_tsv` out.
+
 4. **Reindex vectors**
+
+   After a large restore, rebuild the IVFFlat index so its lists match the data:
+
    ```bash
-   # Rebuild vector index
-   psql -c "REINDEX INDEX idx_memory_embedding;"
+   psql -c "REINDEX INDEX cogitator.idx_embeddings_vector;"
    ```
 
 ---
@@ -403,14 +481,16 @@ aws s3 cp "${BACKUP_DIR}/config_${TIMESTAMP}.tar.gz" \
 
 ### Docker Sandbox Failures
 
-**Container stuck or unresponsive:**
+Sandbox containers are labelled `ai.cogitator.sandbox=true` and run `sleep infinity` until a command is executed in them. The container pool lives in the process that created it, so containers left behind by a crashed process are never reused.
+
+**Container stuck or orphaned:**
 
 ```bash
-# List containers running the sandbox base image
-docker ps --filter "ancestor=alpine:3.19" --filter "status=running"
+# List sandbox containers
+docker ps -a --filter "label=ai.cogitator.sandbox=true"
 
-# Force cleanup of all sandbox containers (uses 'sleep infinity' as the entrypoint)
-docker rm -f $(docker ps -q --filter "ancestor=alpine:3.19")
+# Force cleanup of all sandbox containers
+docker rm -f $(docker ps -aq --filter "label=ai.cogitator.sandbox=true")
 
 # Restart workers to reinitialize the container pool
 kubectl rollout restart deployment/cogitator-worker
@@ -418,36 +498,29 @@ kubectl rollout restart deployment/cogitator-worker
 
 **Image corruption:**
 
+The default image is `alpine:3.19`; a tool can choose another with `sandbox.image`, and missing images are pulled on first use.
+
 ```bash
 # Remove and repull the default sandbox image
 docker rmi alpine:3.19
 docker pull alpine:3.19
 
-# If using a custom image (configured via SandboxDockerConfig.image):
-docker rmi <your-custom-image>
-docker pull <your-custom-image>
+# The built-in exec tool uses cogitator/sandbox:base, built from this repository
+docker build -t cogitator/sandbox:base -f docker/sandbox/Dockerfile.base docker/sandbox
 ```
 
 ### WASM Sandbox Failures
 
-**Plugin cache corruption:**
-
-```bash
-# Clear WASM plugin cache
-rm -rf /var/cache/cogitator/wasm/*
-
-# Restart workers to rebuild cache
-kubectl rollout restart deployment/cogitator-worker
-```
+Loaded WASM plugins are cached in memory only (`wasm.cacheSize`, default 10); restarting the process clears the cache.
 
 **Extism runtime issues:**
 
 ```bash
-# Check Extism package is installed
+# Check that the optional Extism package is installed
 node -e "import('@extism/extism').then(m => console.log('extism ok:', Object.keys(m)))"
 
 # Reinstall if needed
-pnpm install @extism/extism@latest
+pnpm add @extism/extism@^2.0.0-rc13
 ```
 
 ---
@@ -456,10 +529,10 @@ pnpm install @extism/extism@latest
 
 ### Critical Alerts
 
-Configure alerts for:
+`pg_up` and `redis_up` come from [postgres_exporter](https://github.com/prometheus-community/postgres_exporter) and [redis_exporter](https://github.com/oliver006/redis_exporter). The `cogitator_*` metrics come from `@cogitator-ai/worker` and are exposed by a `/metrics` route you add with `formatPrometheusMetrics()` or `pool.metrics.format()` — see [Worker Queues](https://cogitator.app/docs/deployment/worker-queues#prometheus-metrics).
 
 ```yaml
-# alertmanager.yml
+# cogitator-alerts.yml (Prometheus rule file)
 groups:
   - name: cogitator-critical
     rules:
@@ -483,23 +556,35 @@ groups:
         labels:
           severity: critical
 
-      - alert: HighErrorRate
-        expr: rate(cogitator_queue_failed_total[5m]) > 0.1
+      - alert: QueueBacklog
+        expr: sum(cogitator_queue_depth) > 100 and sum(cogitator_queue_active) == 0
+        for: 5m
+        labels:
+          severity: warning
+
+      - alert: JobFailures
+        expr: increase(cogitator_queue_failed_total[5m]) > 5
         for: 5m
         labels:
           severity: warning
 ```
 
+`cogitator_queue_failed_total` is the number of failed jobs BullMQ still retains, not a true counter: once `removeOnFail` (default 500) jobs are kept it stops rising and `JobFailures` goes quiet. Raise `removeOnFail`, or count failures yourself in `WorkerPool`'s `onJobFailed` event.
+
 ### Health Check Endpoints
 
-The available endpoints depend on which server adapter you use. Cogitator has no built-in admin service with its own health endpoints; `@cogitator-ai/dashboard` is only the public website (landing, docs, cookbook).
+Cogitator has no standalone admin service; health endpoints come from the server adapter you mount. The Express, Fastify, Hono, Koa and Tetsu adapters all register:
 
-**Express adapter (`@cogitator-ai/express`):**
+| Endpoint  | Response                                    | Use as          |
+| --------- | ------------------------------------------- | --------------- |
+| `/health` | `200` `{ status: 'ok', uptime, timestamp }` | Liveness probe  |
+| `/ready`  | `200` `{ status: 'ok' }`                    | Readiness probe |
 
-| Endpoint  | Purpose                 | Expected Response |
-| --------- | ----------------------- | ----------------- |
-| `/health` | Overall health + uptime | `200 OK`          |
-| `/ready`  | Ready to accept traffic | `200 OK`          |
+The paths are relative to where the routes are mounted: Express (`config.basePath`) and Fastify (`prefix`) default to `/cogitator`, so the probes are `/cogitator/health` and `/cogitator/ready`; Hono, Koa and Tetsu serve them where you mount the app, router or controller. See [Common Endpoints](https://cogitator.app/docs/server-adapters#common-endpoints).
+
+- Both endpoints answer as soon as the process is up; neither checks Postgres, Redis or the LLM provider. Add your own route if readiness should depend on them.
+- In Express, Fastify, Hono and Koa the `auth` function also runs for `/health` and `/ready`, and a throw becomes `401`. Let probe requests through, or probes fail. Tetsu leaves both open.
+- Projects deployed with `cogitator deploy` should set `deploy.health.path: /cogitator/health` (the default `/health` misses the base path).
 
 ---
 
@@ -565,11 +650,13 @@ Changes to prevent recurrence.
 
 ## Emergency Contacts
 
-| Role             | Contact                | Escalation Path           |
-| ---------------- | ---------------------- | ------------------------- |
-| On-call Engineer | PagerDuty              | Auto-escalate after 15m   |
-| Platform Lead    | @platform-lead         | If P1 not resolved in 30m |
-| Security         | security@cogitator.dev | Any security incident     |
+Fill in your own escalation path:
+
+| Role             | Contact | Escalation Path           |
+| ---------------- | ------- | ------------------------- |
+| On-call Engineer |         | Auto-escalate after 15m   |
+| Platform Lead    |         | If P1 not resolved in 30m |
+| Security         |         | Any security incident     |
 
 ---
 
@@ -581,4 +668,6 @@ This document should be:
 - Updated after each incident
 - Tested via disaster recovery drills (quarterly)
 
-Last updated: December 2024
+Related: [Docker](https://cogitator.app/docs/deployment/docker), [Redis](https://cogitator.app/docs/deployment/redis), [Worker Queues](https://cogitator.app/docs/deployment/worker-queues), [Observability](https://cogitator.app/docs/deployment/observability), [Deployment guide](./DEPLOY.md).
+
+Last updated: October 2026

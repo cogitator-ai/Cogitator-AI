@@ -1,45 +1,50 @@
 # Cogitator Architecture
 
-> Deep technical dive into the system design
+> Deep technical dive into the system design. The website has the overview and the step-by-step agent execution flow: [cogitator.app/docs/architecture](https://cogitator.app/docs/architecture).
+
+Cogitator is a library-first runtime: everything runs inside your Node.js (or Bun) process, or in worker processes you start yourself. There is no hosted control plane or admin dashboard — every capability is a package you add when you need it.
 
 ## Package Ecosystem
 
-Cogitator is a monorepo with 31 packages covering the full stack of agent infrastructure:
+The monorepo has 35 packages: 32 published `@cogitator-ai/*` packages, the `create-cogitator-app` scaffolder, and two private ones (the website and the end-to-end suite):
 
-| Layer              | Package                        | Description                                                          |
-| ------------------ | ------------------------------ | -------------------------------------------------------------------- |
-| **Core**           | `@cogitator-ai/types`          | Shared TypeScript interfaces                                         |
-|                    | `@cogitator-ai/core`           | Main runtime — Agent, Cogitator, tools, LLM backends                 |
-|                    | `@cogitator-ai/models`         | Dynamic model registry with pricing                                  |
-|                    | `@cogitator-ai/config`         | Configuration management with YAML/env support                       |
-| **Memory**         | `@cogitator-ai/memory`         | Memory adapters: Redis, Postgres, SQLite, MongoDB, Qdrant, in-memory |
-| **Execution**      | `@cogitator-ai/sandbox`        | Docker + WASM + native execution isolation                           |
-|                    | `@cogitator-ai/wasm-tools`     | 14 pre-built WASM tools (calc, hash, regex, CSV, XML, …)             |
-|                    | `@cogitator-ai/worker`         | BullMQ distributed job queue for agent execution                     |
-| **Orchestration**  | `@cogitator-ai/workflows`      | DAG engine with sagas, map-reduce, scheduling                        |
-|                    | `@cogitator-ai/swarms`         | 7 swarm strategies (sequential, parallel, roundrobin, …)             |
-| **Protocols**      | `@cogitator-ai/a2a`            | Agent-to-Agent Protocol v0.3                                         |
-|                    | `@cogitator-ai/mcp`            | Model Context Protocol client                                        |
-|                    | `@cogitator-ai/openai-compat`  | OpenAI Assistants API compatibility layer                            |
-| **Integrations**   | `@cogitator-ai/ai-sdk`         | Vercel AI SDK adapter                                                |
-|                    | `@cogitator-ai/express`        | Express.js middleware                                                |
-|                    | `@cogitator-ai/fastify`        | Fastify plugin                                                       |
-|                    | `@cogitator-ai/hono`           | Hono middleware                                                      |
-|                    | `@cogitator-ai/koa`            | Koa middleware                                                       |
-|                    | `@cogitator-ai/next`           | Next.js App Router                                                   |
-|                    | `@cogitator-ai/server-shared`  | Shared REST/SSE/WebSocket utilities                                  |
-| **Advanced**       | `@cogitator-ai/self-modifying` | Runtime tool generation                                              |
-|                    | `@cogitator-ai/neuro-symbolic` | Prolog-style logic, SAT/SMT                                          |
-|                    | `@cogitator-ai/rag`            | RAG pipeline (loaders, chunkers, retrieval, reranking)               |
-|                    | `@cogitator-ai/evals`          | Eval framework (metrics, A/B testing, assertions)                    |
-|                    | `@cogitator-ai/voice`          | Voice/Realtime agents (STT, TTS, VAD)                                |
-| **Infrastructure** | `@cogitator-ai/redis`          | Redis client (standalone + cluster)                                  |
-|                    | `@cogitator-ai/deploy`         | Docker & Fly.io deployment utilities                                 |
-|                    | `@cogitator-ai/cli`            | CLI (init/up/run/deploy)                                             |
-| **Support**        | `@cogitator-ai/dashboard`      | Next.js website: landing, docs (Fumadocs) and cookbook               |
-|                    | `@cogitator-ai/test-utils`     | Testing utilities                                                    |
-|                    | `@cogitator-ai/e2e`            | End-to-end test suite                                                |
-|                    | `create-cogitator-app`         | Interactive project scaffolder                                       |
+| Layer              | Package                        | Description                                                                     |
+| ------------------ | ------------------------------ | ------------------------------------------------------------------------------- |
+| **Core**           | `@cogitator-ai/types`          | Shared TypeScript interfaces, error codes and defaults                          |
+|                    | `@cogitator-ai/core`           | Main runtime — `Cogitator`, `Agent`, `tool()`, LLM backends, built-in tools     |
+|                    | `@cogitator-ai/models`         | Dynamic model registry with pricing                                             |
+|                    | `@cogitator-ai/config`         | `cogitator.yml` and environment loading with Zod validation                     |
+| **Memory**         | `@cogitator-ai/memory`         | Memory adapters (in-memory, Redis, Postgres, SQLite, MongoDB), Qdrant vectors   |
+| **Execution**      | `@cogitator-ai/sandbox`        | Docker, WASM and native execution                                               |
+|                    | `@cogitator-ai/wasm-tools`     | 14 pre-built WASM tools (calc, hash, regex, CSV, XML, …)                        |
+|                    | `@cogitator-ai/worker`         | BullMQ distributed job queue for agent execution                                |
+|                    | `@cogitator-ai/browser`        | Browser automation (Playwright, stealth, vision)                                |
+| **Orchestration**  | `@cogitator-ai/workflows`      | DAG engine with sagas, map-reduce, human-in-the-loop, timers, scheduling        |
+|                    | `@cogitator-ai/swarms`         | 7 swarm strategies (hierarchical, round-robin, consensus, auction, pipeline, …) |
+| **Protocols**      | `@cogitator-ai/a2a`            | Agent-to-Agent Protocol v0.3                                                    |
+|                    | `@cogitator-ai/mcp`            | Model Context Protocol client and server                                        |
+|                    | `@cogitator-ai/openai-compat`  | OpenAI Assistants API compatibility layer                                       |
+| **Integrations**   | `@cogitator-ai/ai-sdk`         | Vercel AI SDK adapter                                                           |
+|                    | `@cogitator-ai/express`        | Express.js server adapter                                                       |
+|                    | `@cogitator-ai/fastify`        | Fastify plugin                                                                  |
+|                    | `@cogitator-ai/hono`           | Hono app (Node.js, Bun, Deno, Cloudflare Workers)                               |
+|                    | `@cogitator-ai/koa`            | Koa router                                                                      |
+|                    | `@cogitator-ai/tetsu`          | Tetsu controller on Bun (SSE, WebSocket, OpenAPI)                               |
+|                    | `@cogitator-ai/next`           | Next.js App Router handlers                                                     |
+|                    | `@cogitator-ai/server-shared`  | Shared REST/SSE/WebSocket protocol and OpenAPI generation                       |
+|                    | `@cogitator-ai/channels`       | Messaging channels (Telegram, Discord, Slack, WhatsApp, WebChat)                |
+| **Advanced**       | `@cogitator-ai/self-modifying` | Runtime tool generation                                                         |
+|                    | `@cogitator-ai/neuro-symbolic` | Prolog-style logic, SAT/SMT                                                     |
+|                    | `@cogitator-ai/rag`            | RAG pipeline (loaders, chunkers, retrieval, reranking)                          |
+|                    | `@cogitator-ai/evals`          | Eval framework (metrics, A/B testing, assertions)                               |
+|                    | `@cogitator-ai/voice`          | Voice/Realtime agents (STT, TTS, VAD)                                           |
+| **Infrastructure** | `@cogitator-ai/redis`          | Redis client (standalone + cluster)                                             |
+|                    | `@cogitator-ai/deploy`         | Docker & Fly.io deployment                                                      |
+|                    | `@cogitator-ai/cli`            | The `cogitator` command (init, up, run, deploy, …)                              |
+| **Support**        | `@cogitator-ai/test-utils`     | Testing utilities                                                               |
+|                    | `create-cogitator-app`         | Interactive project scaffolder                                                  |
+|                    | `@cogitator-ai/dashboard`      | Private: the website — landing page, docs (Fumadocs) and cookbook               |
+|                    | `@cogitator-ai/e2e`            | Private: end-to-end test suite                                                  |
 
 ---
 
@@ -47,24 +52,25 @@ Cogitator is a monorepo with 31 packages covering the full stack of agent infras
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                                USER LAYER                                        │
+│                                 ENTRY POINTS                                     │
 │                                                                                 │
-│  TypeScript SDK  │  REST/SSE (Express/Fastify/Hono/Koa/Next)  │  CLI           │
-│  OpenAI-compat   │  Vercel AI SDK adapter   │  A2A Protocol                    │
+│  TypeScript SDK  │  Server adapters (Express/Fastify/Hono/Koa/Tetsu/Next)  │ CLI │
+│  Channels gateway │ OpenAI-compat server │ Vercel AI SDK │ MCP server │ A2A     │
 └─────────────────────────────────────────────────────────────────────────────────┘
                                        │
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              RUNTIME CORE (@cogitator-ai/core)                   │
+│                          RUNTIME CORE (@cogitator-ai/core)                       │
 │                                                                                 │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐ │
-│  │   Agent     │  │  Cogitator  │  │ CostRouter  │  │   ConstitutionalAI      │ │
-│  │             │  │  (Runtime)  │  │             │  │   (Guardrails)          │ │
-│  │ • Tools     │  │ • Runs      │  │ • Routing   │  │ • Input/output filter   │ │
-│  │ • Prompt    │  │ • Memory    │  │ • Budget    │  │ • Critique-revise       │ │
-│  │ • Model     │  │ • Sandbox   │  │ • Tracking  │  │ • Tool guard            │ │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────────────────┘ │
-│                                                                                 │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  ┌────────────────────┐  │
+│  │   Agent     │  │  Cogitator   │  │ CostAwareRouter│  │  ConstitutionalAI  │  │
+│  │             │  │  (Runtime)   │  │                │  │  (guardrails)      │  │
+│  │ • Tools     │  │ • Runs       │  │ • Model pick   │  │ • Input/output     │  │
+│  │ • Prompt    │  │ • Memory     │  │ • Budgets      │  │ • Critique-revise  │  │
+│  │ • Model     │  │ • Sandbox    │  │ • Cost summary │  │ • Tool guard       │  │
+│  └─────────────┘  │ • Approvals  │  └────────────────┘  └────────────────────┘  │
+│                   └──────────────┘                                              │
+│  Prompt-injection detection · PII masking · LLM retries · tracing               │
 └─────────────────────────────────────────────────────────────────────────────────┘
                                        │
                           ┌────────────┴────────────┐
@@ -73,24 +79,26 @@ Cogitator is a monorepo with 31 packages covering the full stack of agent infras
 │  DISTRIBUTED EXECUTION        │   │               MEMORY LAYER                    │
 │  (@cogitator-ai/worker)       │   │           (@cogitator-ai/memory)              │
 │                               │   │                                               │
-│  ┌────────────┐  ┌──────────┐ │   │ ┌──────────┐  ┌──────────┐  ┌─────────────┐  │
-│  │  JobQueue  │  │WorkerPool│ │   │ │ InMemory │  │  Redis   │  │  Postgres   │  │
-│  │  (BullMQ)  │  │          │ │   │ │ Adapter  │  │ Adapter  │  │  Adapter    │  │
-│  │            │  │ • agent  │ │   │ └──────────┘  └──────────┘  └─────────────┘  │
-│  │ addAgent   │  │ • workflow│ │   │ ┌──────────┐  ┌──────────┐  ┌─────────────┐  │
-│  │ addWorkflow│  │ • swarm  │ │   │ │  SQLite  │  │ MongoDB  │  │   Qdrant    │  │
-│  │ addSwarm   │  └──────────┘ │   │ │ Adapter  │  │ Adapter  │  │  Adapter    │  │
-│  └────────────┘               │   │ └──────────┘  └──────────┘  └─────────────┘  │
+│  ┌────────────┐  ┌──────────┐ │   │  MemoryAdapter:                               │
+│  │  JobQueue  │  │WorkerPool│ │   │    InMemory │ Redis │ Postgres │ SQLite │     │
+│  │  (BullMQ)  │  │          │ │   │    MongoDB                                    │
+│  │            │  │ • agent  │ │   │  FactAdapter: Postgres                        │
+│  │ addAgentJob│  │ • workflow│ │   │  EmbeddingAdapter: Postgres (pgvector),      │
+│  │ addWorkflow│  │ • swarm  │ │   │    Qdrant, InMemoryEmbeddingAdapter           │
+│  │ addSwarmJob│  └──────────┘ │   │                                               │
+│  └────────────┘               │   │                                               │
 └──────────────────────────────┘   └───────────────────────────────────────────────┘
                                        │
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              LLM BACKENDS                                        │
+│                                LLM BACKENDS                                      │
 │                                                                                 │
 │  Ollama │ vLLM │ OpenAI │ Anthropic │ Google │ Azure │ Bedrock │ Mistral │ Groq │
-│                          Together │ DeepSeek                                    │
+│               Together │ DeepSeek │ custom backends & plugins                    │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+What happens inside a single `cog.run()` — run slots, model resolution, prompt versions, input checks, the tool loop with approvals and handoffs, structured-output repair, memory saves — is laid out step by step in [Agent Execution Flow](https://cogitator.app/docs/architecture#agent-execution-flow).
 
 ---
 
@@ -98,38 +106,64 @@ Cogitator is a monorepo with 31 packages covering the full stack of agent infras
 
 ### 1. HTTP Adapters
 
-Cogitator integrates with any Node.js HTTP framework via thin adapters. Each adapter exposes the same REST/SSE API surface:
+Every server adapter registers the same REST routes, request bodies and SSE streaming protocol from `@cogitator-ai/server-shared`. An adapter serves only the agents, workflows and swarms you pass to it:
 
 ```typescript
-// Express
+import express from 'express';
+import Fastify from 'fastify';
+import { Hono } from 'hono';
+import { Agent, Cogitator } from '@cogitator-ai/core';
 import { CogitatorServer } from '@cogitator-ai/express';
-
-const app = express();
-await new CogitatorServer({ app, cogitator, config: { basePath: '/api' } }).init();
-
-// Fastify
 import { cogitatorPlugin } from '@cogitator-ai/fastify';
-
-await fastify.register(cogitatorPlugin, { cogitator, prefix: '/api' });
-
-// Hono
 import { cogitatorApp } from '@cogitator-ai/hono';
 
-app.route('/api', cogitatorApp({ cogitator }));
+const cogitator = new Cogitator();
+const assistant = new Agent({
+  name: 'assistant',
+  model: 'ollama/llama3.2',
+  instructions: 'You are a helpful assistant.',
+});
+
+// Express: routes under config.basePath (default '/cogitator')
+const app = express();
+await new CogitatorServer({
+  app,
+  cogitator,
+  agents: { assistant },
+  config: { basePath: '/api' },
+}).init();
+
+// Fastify: routes under prefix (default '/cogitator')
+const fastify = Fastify();
+await fastify.register(cogitatorPlugin, { cogitator, agents: { assistant }, prefix: '/api' });
+
+// Hono: routes where you mount the app
+const hono = new Hono();
+hono.route('/api', cogitatorApp({ cogitator, agents: { assistant } }));
 ```
 
-For OpenAI-compatible endpoints (drop-in replacement):
+Koa (`cogitatorApp` returning a `@koa/router`), Tetsu (`cogitatorController`) and Next.js (`createChatHandler`, `createAgentHandler`, `createResumeHandler`) follow the same pattern. Routes, error format, WebSocket support per adapter and authentication: [Server Adapters](https://cogitator.app/docs/server-adapters).
+
+For OpenAI-compatible endpoints, `@cogitator-ai/openai-compat` runs its own Fastify server (default port 8080) that implements the Assistants API, so the official `openai` SDK works as a client:
 
 ```typescript
 import OpenAI from 'openai';
+import { Cogitator } from '@cogitator-ai/core';
+import { createOpenAIServer } from '@cogitator-ai/openai-compat';
+
+const server = createOpenAIServer(new Cogitator(), {
+  port: 8080,
+  apiKeys: ['sk-my-secret-key'], // empty or omitted: no auth
+});
+await server.start();
 
 const client = new OpenAI({
-  baseURL: 'http://localhost:3000/v1', // Cogitator endpoint
-  apiKey: 'cog_xxx',
+  baseURL: 'http://localhost:8080/v1',
+  apiKey: 'sk-my-secret-key',
 });
 
 const assistant = await client.beta.assistants.create({
-  model: 'ollama/llama3.3:latest',
+  model: 'ollama/llama3.2', // any Cogitator model string
   instructions: 'You are a helpful assistant.',
 });
 
@@ -144,16 +178,18 @@ const run = await client.beta.threads.runs.createAndPoll(thread.id, {
 });
 ```
 
+See [OpenAI Compatibility](https://cogitator.app/docs/integrations/openai-compat).
+
 ---
 
 ### 2. Distributed Job Queue
 
-The `@cogitator-ai/worker` package provides BullMQ-based job processing for distributing agent/workflow/swarm execution across worker processes.
+The `@cogitator-ai/worker` package provides BullMQ-based job processing for distributing agent, workflow and swarm execution across worker processes.
 
 #### Architecture
 
 ```typescript
-import { JobQueue, WorkerPool } from '@cogitator-ai/worker';
+import { JobQueue, WorkerPool, type SerializedAgent } from '@cogitator-ai/worker';
 
 // Producer side: enqueue jobs
 const queue = new JobQueue({
@@ -167,79 +203,110 @@ const queue = new JobQueue({
   },
 });
 
-// Add an agent job (SerializedAgent: name, model, provider, instructions, tool schemas)
+const serializedAgent: SerializedAgent = {
+  name: 'analyst',
+  model: 'llama3.2',
+  provider: 'ollama',
+  instructions: 'You analyze data.',
+  tools: [webSearch.toJSON()], // tool schemas only
+};
+
 const job = await queue.addAgentJob(serializedAgent, 'Analyze this data', {
   threadId: 'thread-123',
+  userId: 'user-abc',
   priority: 10,
-  metadata: { userId: 'user-abc' },
+  metadata: { source: 'api' },
 });
 
-// Add a workflow job
-await queue.addWorkflowJob(workflowConfig, { input: 'Start workflow' });
-
-// Add a swarm job
-await queue.addSwarmJob(swarmConfig, 'Process batch');
+await queue.addWorkflowJob(serializedWorkflow, { topic: 'quarterly report' });
+await queue.addSwarmJob(serializedSwarm, 'Process batch');
 
 // Consumer side: process jobs
 const pool = new WorkerPool({
   name: 'cogitator-jobs',
   redis: { host: 'localhost', port: 6379 },
-  cogitator: cogitatorInstance,
-  tools: [webSearch, calculator], // implementations for tools referenced by serialized agents
+  cogitator, // optional; a runtime is created when left out
+  tools: [webSearch], // implementations for tools referenced by serialized agents
   workerCount: 2,
   concurrency: 10,
 });
 await pool.start();
 ```
 
-Serialized agents carry tool schemas only; a job whose agent references a tool missing from the worker's `tools` fails instead of running with a stub.
+Serialized agents carry tool schemas only; a job whose agent references a tool missing from the worker's `tools` fails instead of running with a stub. `SerializedWorkflow` (agent, transform, condition and parallel nodes) and `SerializedSwarm` (`sequential`, `hierarchical`, `collaborative`, `debate`, `voting`) are the worker's own JSON formats, not `@cogitator-ai/workflows` or `@cogitator-ai/swarms` objects. Swarms can also run one agent per job with `DistributedSwarmWorker` — see [Worker Queues](https://cogitator.app/docs/deployment/worker-queues) and [Distributed Swarms](https://cogitator.app/docs/swarms/distributed).
 
 #### Queue Metrics (for HPA)
 
 ```typescript
+import { formatPrometheusMetrics } from '@cogitator-ai/worker';
+
 const metrics = await queue.getMetrics();
 // { waiting, active, completed, failed, delayed, depth, workerCount }
 
-// Prometheus exposition format for autoscaling
-import { formatPrometheusMetrics } from '@cogitator-ai/worker';
-const prometheusText = formatPrometheusMetrics(metrics, 'cogitator-jobs');
+// Prometheus exposition format: queue gauges only
+const queueText = formatPrometheusMetrics(metrics, { queue: 'cogitator-jobs' });
+
+// Queue gauges plus the pool's job-duration histogram and per-type counts
+const fullText = pool.metrics.format(metrics, { queue: 'cogitator-jobs' });
 ```
 
-#### Run State Machine
+#### Job Lifecycle
+
+Jobs follow BullMQ's states. A failed attempt goes back to the queue after its backoff until `attempts` is used up:
 
 ```
-┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐
-│  QUEUED │───►│ ACTIVE  │───►│COMPLETED│    │ FAILED  │
-└─────────┘    └────┬────┘    └─────────┘    └────▲────┘
-                    │                              │
-                    │ (retryable error)            │
-                    └──────────────────────────────┘
-                         (on maxRetries exceeded)
+┌─────────┐    ┌─────────┐    ┌───────────┐
+│ WAITING │───►│ ACTIVE  │───►│ COMPLETED │
+└────▲────┘    └────┬────┘    └───────────┘
+     │              │ error
+     │              ▼
+┌────┴────┐  attempts left   ┌─────────┐
+│ DELAYED │◄─────────────────┤  retry? │
+└─────────┘                  └────┬────┘
+                                  │ attempts exhausted
+                                  ▼
+                             ┌─────────┐
+                             │ FAILED  │
+                             └─────────┘
 ```
 
 ---
 
 ### 3. Memory Architecture
 
-The `@cogitator-ai/memory` package provides pluggable storage adapters for conversation history, facts, and embeddings.
+The `@cogitator-ai/memory` package provides pluggable storage for conversation history, long-term facts and embeddings.
 
-#### Memory Hierarchy (Conceptual)
+| Interface          | Implementations                                                                         |
+| ------------------ | --------------------------------------------------------------------------------------- |
+| `MemoryAdapter`    | `InMemoryAdapter`, `RedisAdapter`, `PostgresAdapter`, `SQLiteAdapter`, `MongoDBAdapter` |
+| `FactAdapter`      | `PostgresAdapter`                                                                       |
+| `EmbeddingAdapter` | `PostgresAdapter` (pgvector), `QdrantAdapter`, `InMemoryEmbeddingAdapter`               |
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Memory System                                 │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  In-Memory / Redis: short-lived conversation context                │
-│  Postgres / MongoDB / SQLite: persistent conversation history       │
-│  Qdrant: semantic (vector) search over past conversations           │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+Qdrant is a vector store only — it does not store threads or messages. Note the known issue on [Memory Adapters](https://cogitator.app/docs/memory/adapters#qdrant): `QdrantAdapter.addEmbedding` uses `emb_…` ids as point ids, which a real Qdrant server rejects; use pgvector for vectors until it is fixed.
+
+#### Runtime Memory
+
+The `Cogitator` runtime creates its memory adapter from `memory.adapter`, and only for `'memory'`, `'redis'` and `'postgres'` (any other value logs `Unknown memory provider` and runs without memory). SQLite, MongoDB and Qdrant adapters are constructed and used directly from your own code.
+
+```typescript
+const cog = new Cogitator({
+  memory: {
+    adapter: 'postgres',
+    postgres: { connectionString: process.env.DATABASE_URL! },
+    embedding: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY! },
+    contextBuilder: {
+      maxTokens: 8000, // default 4000
+      strategy: 'hybrid', // 'recent' (default) | 'relevant' | 'hybrid'
+      includeFacts: true,
+      includeSemanticContext: true,
+    },
+  },
+});
+
+const memory = await cog.getMemory(); // the connected MemoryAdapter, or undefined
 ```
 
 #### MemoryAdapter Interface
-
-All adapters implement this interface:
 
 ```typescript
 interface MemoryAdapter {
@@ -286,21 +353,24 @@ interface MemoryQueryOptions {
 }
 ```
 
-#### Extended Adapters
+Every method returns a `MemoryResult` — `{ success: true, data }` or `{ success: false, error }`. Use `unwrap(result)` from `@cogitator-ai/memory` to get the data or throw.
 
-Postgres adapter also implements `FactAdapter` (long-term facts) and `EmbeddingAdapter` (semantic search via pgvector):
+#### Extended Adapters
 
 ```typescript
 // FactAdapter — long-term memory (Postgres)
 interface FactAdapter {
   addFact(fact: Omit<Fact, 'id' | 'createdAt' | 'updatedAt'>): Promise<MemoryResult<Fact>>;
   getFacts(agentId: string, category?: string): Promise<MemoryResult<Fact[]>>;
-  updateFact(factId: string, updates: Partial<Fact>): Promise<MemoryResult<Fact>>;
+  updateFact(
+    factId: string,
+    updates: Partial<Pick<Fact, 'content' | 'category' | 'confidence' | 'metadata' | 'expiresAt'>>
+  ): Promise<MemoryResult<Fact>>;
   deleteFact(factId: string): Promise<MemoryResult<void>>;
   searchFacts(agentId: string, query: string): Promise<MemoryResult<Fact[]>>;
 }
 
-// EmbeddingAdapter — semantic search (pgvector / Qdrant)
+// EmbeddingAdapter — semantic search (pgvector / Qdrant / in-memory)
 interface EmbeddingAdapter {
   addEmbedding(embedding: Omit<Embedding, 'id' | 'createdAt'>): Promise<MemoryResult<Embedding>>;
   search(options: SemanticSearchOptions): Promise<MemoryResult<(Embedding & { score: number })[]>>;
@@ -309,27 +379,44 @@ interface EmbeddingAdapter {
 }
 ```
 
+On top of these, the package ships `HybridSearch` (BM25 + vectors with reciprocal rank fusion), knowledge graphs, `CoreFactsStore`, `SessionManager` and `CompactionService` — see [Memory](https://cogitator.app/docs/memory), [Hybrid Search](https://cogitator.app/docs/memory/hybrid-search) and [Knowledge Graphs](https://cogitator.app/docs/memory/knowledge-graphs).
+
 #### ContextBuilder
 
-Automatically builds LLM-ready context from stored entries, respecting token limits:
+Builds LLM-ready context from stored entries within a token budget. The runtime creates one from `memory.contextBuilder`; you can also use it directly:
 
 ```typescript
-import { ContextBuilder } from '@cogitator-ai/memory';
+import { ContextBuilder, PostgresAdapter, createEmbeddingService } from '@cogitator-ai/memory';
 
-const builder = new ContextBuilder({
-  adapter,
-  embeddingAdapter, // optional
-  embeddingService, // optional
-  config: {
+const postgres = new PostgresAdapter({
+  provider: 'postgres',
+  connectionString: process.env.DATABASE_URL!,
+});
+await postgres.connect();
+
+const builder = new ContextBuilder(
+  {
     maxTokens: 8192,
     strategy: 'hybrid', // 'recent' | 'relevant' | 'hybrid'
     includeFacts: true,
     includeSemanticContext: true,
   },
-});
+  {
+    memoryAdapter: postgres,
+    factAdapter: postgres, // optional
+    embeddingAdapter: postgres, // optional
+    embeddingService: createEmbeddingService({ provider: 'ollama' }), // optional
+  }
+);
 
-const context = await builder.buildContext(threadId, query);
-// context.messages, context.facts, context.semanticResults, context.truncated
+const context = await builder.build({
+  threadId: 'thread-123',
+  agentId: 'assistant',
+  userId: 'user-abc', // facts and embeddings of other users are left out
+  systemPrompt: 'You are a helpful assistant.',
+  currentInput: 'What did we decide about the launch?',
+});
+// context.messages, context.facts, context.semanticResults, context.tokenCount, context.truncated
 ```
 
 ---
@@ -351,7 +438,7 @@ const manager = new SandboxManager({
   wasm: { cacheSize: 20, memoryPages: 256 },
 });
 
-// Execute in Docker sandbox
+// Execute in a Docker sandbox
 const result = await manager.execute(
   {
     command: ['python', 'script.py'],
@@ -366,32 +453,39 @@ const result = await manager.execute(
   }
 );
 
-// result: { stdout, stderr, exitCode, timedOut, duration }
+if (result.success) {
+  const { stdout, stderr, exitCode, timedOut, duration } = result.data;
+} else {
+  console.error(result.error);
+}
 ```
 
 #### Three Execution Modes
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        SandboxManager                                 │
+│                        SandboxManager                               │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  DockerSandboxExecutor  — full OS isolation, ~100ms startup         │
-│  • Custom images (Python, Node, etc.)                               │
-│  • Resource limits (CPU, memory, PIDs)                              │
-│  • Network policies (none / bridge / host)                          │
+│  DockerSandboxExecutor  — container isolation                       │
+│  • Custom images (Python, Node, etc.; default alpine:3.19)          │
+│  • Resource limits (memory, CPUs, CPU shares, PIDs)                 │
+│  • Network modes (none by default / bridge / host)                  │
+│  • All capabilities dropped, no-new-privileges                      │
 │  • ContainerPool for warm container reuse                           │
 │                                                                     │
-│  WASM Sandbox (Extism)  — process-level isolation, ~1ms startup     │
-│  • Memory-safe execution                                            │
-│  • No filesystem / restricted network by default                   │
-│  • 14 pre-built tools in @cogitator-ai/wasm-tools                  │
+│  WasmSandboxExecutor (Extism)  — memory-safe WASM modules           │
+│  • No host network unless allowedHosts; WASI off by default         │
+│  • Capped memory pages, compiled-module cache                       │
+│  • 14 pre-built tools in @cogitator-ai/wasm-tools                   │
 │                                                                     │
-│  NativeSandboxExecutor  — direct Node.js, 0ms overhead             │
-│  • For trusted internal tools                                       │
+│  NativeSandboxExecutor  — host child process, no isolation          │
+│  • Minimal inherited environment, process-group kill on timeout     │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+When the requested executor is unavailable, `SandboxManager` falls back with a warning: WASM → Docker → native, Docker → native. Check `isDockerAvailable()` / `isWasmAvailable()` first when untrusted code must never run on the host. Details: [Sandbox](https://cogitator.app/docs/deployment/sandbox).
 
 #### WASM Tools
 
@@ -415,13 +509,14 @@ The `@cogitator-ai/wasm-tools` package ships 14 pre-built WASM tools:
 | `signing`      | Ed25519 keypair generation, sign, verify      |
 
 ```typescript
+import { z } from 'zod';
 import { createCalcTool, createHashTool, defineWasmTool } from '@cogitator-ai/wasm-tools';
 
 const calc = createCalcTool();
 const hash = createHashTool();
 
 // Custom WASM tool
-const myTool = defineWasmTool({
+const resize = defineWasmTool({
   name: 'image_resize',
   description: 'Resize images in WASM sandbox',
   wasmModule: './resize.wasm',
@@ -433,6 +528,8 @@ const myTool = defineWasmTool({
   }),
 });
 ```
+
+See [WASM Tools](https://cogitator.app/docs/tools/wasm-tools).
 
 ---
 
@@ -459,6 +556,9 @@ interface ChatRequest {
   stop?: string[];
   stream?: boolean;
   responseFormat?: LLMResponseFormat;
+  reasoning?: ReasoningConfig;
+  cache?: PromptCacheConfig | false;
+  signal?: AbortSignal;
 }
 
 interface ChatResponse {
@@ -467,6 +567,7 @@ interface ChatResponse {
   toolCalls?: ToolCall[];
   finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
   usage: ChatUsage;
+  reasoning?: string; // readable reasoning summary, when the provider returns one
 }
 
 interface ChatUsage {
@@ -474,52 +575,41 @@ interface ChatUsage {
   outputTokens: number;
   totalTokens: number;
   cachedInputTokens?: number; // already counted in inputTokens
+  cacheWriteTokens?: number; // already counted in inputTokens
   reasoningTokens?: number; // already counted in outputTokens
 }
 ```
 
 #### Provider Implementations
 
-All backends live in `@cogitator-ai/core`:
+All backends live in `@cogitator-ai/core`. Usually you configure them through `llm.providers` and let the runtime create them; you can also construct them directly:
 
 ```typescript
-// Ollama (local models)
-import { OllamaBackend } from '@cogitator-ai/core';
+import {
+  AnthropicBackend,
+  AzureOpenAIBackend,
+  BedrockBackend,
+  GoogleBackend,
+  OllamaBackend,
+  OpenAIBackend,
+} from '@cogitator-ai/core';
 
-const ollama = new OllamaBackend({
-  baseUrl: 'http://localhost:11434',
-  apiKey: undefined, // optional
-});
-
-// OpenAI
-import { OpenAIBackend } from '@cogitator-ai/core';
+const ollama = new OllamaBackend({ baseUrl: 'http://localhost:11434' }); // apiKey optional
 
 const openai = new OpenAIBackend({ apiKey: process.env.OPENAI_API_KEY! });
-// Responses API on api.openai.com (default model gpt-6.1-sol); Chat Completions for other
-// base URLs or requests with stop sequences. Force with api: 'responses' | 'chat-completions'.
-
-// Anthropic
-import { AnthropicBackend } from '@cogitator-ai/core';
+// Responses API on api.openai.com; Chat Completions for other base URLs and for
+// requests with stop sequences. Force one with api: 'responses' | 'chat-completions'.
 
 const anthropic = new AnthropicBackend({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
-// Google
-import { GoogleBackend } from '@cogitator-ai/core';
-
 const google = new GoogleBackend({ apiKey: process.env.GOOGLE_API_KEY! });
-
-// Azure OpenAI
-import { AzureOpenAIBackend } from '@cogitator-ai/core';
 
 const azure = new AzureOpenAIBackend({
   endpoint: 'https://my-resource.openai.azure.com',
   apiKey: process.env.AZURE_API_KEY!,
-  apiVersion: '2024-05-01-preview',
+  apiVersion: '2024-08-01-preview', // the default
   deployment: 'gpt-6.1-sol',
 });
-
-// AWS Bedrock
-import { BedrockBackend } from '@cogitator-ai/core';
 
 const bedrock = new BedrockBackend({
   region: 'us-east-1',
@@ -528,51 +618,59 @@ const bedrock = new BedrockBackend({
 });
 ```
 
+Every backend the runtime uses is wrapped with retries for rate limits, 5xx, timeouts and dropped connections (`llm.retry`, 2 retries by default; `false` turns them off).
+
 #### Supported Providers
 
-| Provider    | Type  | Package              |
-| ----------- | ----- | -------------------- |
-| `ollama`    | Local | `@cogitator-ai/core` |
-| `vllm`      | Local | `@cogitator-ai/core` |
-| `openai`    | Cloud | `@cogitator-ai/core` |
-| `anthropic` | Cloud | `@cogitator-ai/core` |
-| `google`    | Cloud | `@cogitator-ai/core` |
-| `azure`     | Cloud | `@cogitator-ai/core` |
-| `bedrock`   | Cloud | `@cogitator-ai/core` |
-| `mistral`   | Cloud | `@cogitator-ai/core` |
-| `groq`      | Cloud | `@cogitator-ai/core` |
-| `together`  | Cloud | `@cogitator-ai/core` |
-| `deepseek`  | Cloud | `@cogitator-ai/core` |
+| Provider    | Type  | Backend                                      |
+| ----------- | ----- | -------------------------------------------- |
+| `ollama`    | Local | `OllamaBackend`                              |
+| `vllm`      | Local | `OpenAIBackend` against your vLLM `baseUrl`  |
+| `openai`    | Cloud | `OpenAIBackend`                              |
+| `anthropic` | Cloud | `AnthropicBackend`                           |
+| `google`    | Cloud | `GoogleBackend`                              |
+| `azure`     | Cloud | `AzureOpenAIBackend`                         |
+| `bedrock`   | Cloud | `BedrockBackend`                             |
+| `mistral`   | Cloud | `OpenAIBackend` (OpenAI-compatible endpoint) |
+| `groq`      | Cloud | `OpenAIBackend` (OpenAI-compatible endpoint) |
+| `together`  | Cloud | `OpenAIBackend` (OpenAI-compatible endpoint) |
+| `deepseek`  | Cloud | `OpenAIBackend` (OpenAI-compatible endpoint) |
+
+Your own backends go into `llm.backends` (by provider name) or are registered as plugins with `registerLLMBackend()` — see [LLM Backends](https://cogitator.app/docs/core/llm-backends#custom-backends).
 
 #### Cost-Aware Routing
 
-The `CostRouter` in `@cogitator-ai/core` automatically selects the cheapest model that meets task requirements:
+`CostAwareRouter` in `@cogitator-ai/core` analyzes a task, recommends the cheapest capable model and tracks spending. In the runtime, `costRouting.enabled` turns on cost tracking (`cog.getCostSummary()`); with `autoSelectModel: true` each run's model is picked from its input and checked against the budget first:
 
 ```typescript
 const cog = new Cogitator({
   llm: {
     defaultModel: 'anthropic/claude-sonnet-5-5',
-    providers: {/* ... */},
+    providers: {
+      anthropic: { apiKey: process.env.ANTHROPIC_API_KEY! },
+      openai: { apiKey: process.env.OPENAI_API_KEY! },
+    },
   },
   costRouting: {
     enabled: true,
+    autoSelectModel: true,
+    preferLocal: false,
     budget: {
-      dailyLimit: 10.0, // USD
-      runLimit: 0.1,
-    },
-    routing: {
-      simple: 'openai/gpt-6-luna',
-      complex: 'anthropic/claude-sonnet-5-5',
+      maxCostPerRun: 0.1, // USD
+      maxCostPerDay: 10,
+      warningThreshold: 0.8,
     },
   },
 });
 ```
 
+See [Cost-Aware Routing](https://cogitator.app/docs/advanced/cost-routing).
+
 ---
 
 ### 6. Observability
 
-Full observability with OpenTelemetry export via `OTLPExporter`:
+Every run returns its spans in `RunResult.trace` and streams them to `onSpan` as they finish. Export them with `OTLPExporter` (or the Langfuse exporter):
 
 ```typescript
 import { OTLPExporter } from '@cogitator-ai/core';
@@ -581,12 +679,11 @@ const exporter = new OTLPExporter({
   endpoint: 'http://localhost:4318/v1/traces',
   serviceName: 'my-agent-service',
   serviceVersion: '1.0.0',
-  enabled: true,
+  enabled: true, // off unless set
 });
 
-exporter.start();
+exporter.start(); // flushes every 5 seconds
 
-// Wire up via RunOptions
 let runId = '';
 await cog.run(agent, {
   input: 'Hello',
@@ -598,8 +695,6 @@ await cog.run(agent, {
 ```
 
 #### Span Type
-
-Every meaningful operation in a run emits a `Span`:
 
 ```typescript
 interface Span {
@@ -617,36 +712,31 @@ interface Span {
 }
 ```
 
-Spans are collected in `RunResult.trace`:
+The runtime emits `llm.chat` (per LLM call), `tool.<name>` (per tool call), `agent.handoff` and, last, the root `agent.run` span:
 
 ```typescript
-const result = await cog.run(agent, { input: 'Hello' });
+const result = await cog.run(agent, { input: 'What is the weather in Paris?' });
 
 console.log(result.trace.traceId);
 for (const span of result.trace.spans) {
   console.log(`${span.name} — ${span.duration}ms (${span.status})`);
 }
-// agent.run — 2500ms (ok)
-// memory.load — 50ms (ok)
-// llm.chat — 1800ms (ok) [attributes: { model, inputTokens, outputTokens }]
-// tool.execute — 200ms (ok) [attributes: { tool }]
+// llm.chat — 1800ms (ok)       attributes: llm.model, llm.input_tokens, llm.output_tokens, …
+// tool.get_weather — 200ms (ok) attributes: tool.name, tool.call_id, tool.success, …
 // llm.chat — 400ms (ok)
+// agent.run — 2450ms (ok)      attributes: agent.name, run.iterations, run.tool_calls, …
 ```
+
+Full attribute list, Langfuse wiring and cost tracking: [Observability](https://cogitator.app/docs/deployment/observability).
 
 #### Metrics
 
-Key metrics to track via Prometheus or OpenTelemetry:
+The runtime does not export Prometheus metrics for agent runs; use spans for those. Prometheus text comes from two places:
 
-```
-cogitator_agent_runs_total          counter
-cogitator_agent_runs_failed_total   counter
-cogitator_llm_requests_total        counter
-cogitator_tool_executions_total     counter
-cogitator_agent_run_duration_ms     histogram
-cogitator_llm_latency_ms            histogram
-cogitator_queue_depth               gauge  (from JobQueue.getMetrics())
-cogitator_queue_active              gauge
-```
+| Source                                                                      | Metrics                                                                                                                                                                                                                                                                 |
+| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@cogitator-ai/worker` (`formatPrometheusMetrics`, `pool.metrics.format`)   | `cogitator_queue_depth`, `cogitator_queue_waiting`, `cogitator_queue_active`, `cogitator_queue_delayed`, `cogitator_queue_completed_total`, `cogitator_queue_failed_total`, `cogitator_workers_total`, `cogitator_jobs_by_type_total`, `cogitator_job_duration_seconds` |
+| `@cogitator-ai/workflows` (`WorkflowMetricsCollector.toPrometheusFormat()`) | Workflow and node counters, latencies, token and cost histograms, prefixed `cogitator_workflow_`                                                                                                                                                                        |
 
 ---
 
@@ -654,31 +744,27 @@ cogitator_queue_active              gauge
 
 ### Single Node (Development)
 
+The repository's `docker-compose.yml` starts the infrastructure; your app (which embeds the runtime) runs on the host:
+
 ```yaml
-# docker-compose.yml
 services:
-  cogitator:
-    image: cogitator/runtime:latest
-    ports:
-      - '3000:3000'
-    environment:
-      - DATABASE_URL=postgres://localhost/cogitator
-      - REDIS_URL=redis://localhost:6379
-      - OLLAMA_URL=http://host.docker.internal:11434
-
   postgres:
-    image: pgvector/pgvector:pg16
-
+    image: pgvector/pgvector:pg16 # memory + pgvector embeddings
   redis:
-    image: redis:7-alpine
-
+    image: redis:7-alpine # memory, BullMQ queues, workflow stores
   ollama:
-    image: ollama/ollama
-    volumes:
-      - ollama_data:/root/.ollama
+    image: ollama/ollama:latest # local models
 ```
 
+```bash
+docker compose up -d   # or: cogitator up
+```
+
+See [Docker](https://cogitator.app/docs/deployment/docker) for the full Compose file, environment variables and a production Dockerfile, and [Deploy Package](https://cogitator.app/docs/deployment/deploy-package) for `cogitator deploy` (Docker and Fly.io).
+
 ### Kubernetes (Production)
+
+There are no prebuilt Cogitator images: you build your own API image (a server adapter around the runtime) and worker image (a `WorkerPool` process), and scale them separately:
 
 ```yaml
 # Horizontal scaling with dedicated worker pools
@@ -692,7 +778,7 @@ spec:
     spec:
       containers:
         - name: api
-          image: cogitator/api:latest
+          image: registry.example.com/my-agents-api:1.0.0
           resources:
             requests:
               memory: '512Mi'
@@ -702,70 +788,84 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cogitator-workers
+  name: cogitator-worker
 spec:
   replicas: 10
   template:
     spec:
       containers:
         - name: worker
-          image: cogitator/worker:latest
+          image: registry.example.com/my-agents-worker:1.0.0
           resources:
             requests:
               memory: '2Gi'
               cpu: '2'
-            limits:
-              nvidia.com/gpu: 1 # for local inference
 ```
 
-Workers scale independently via HPA using the `cogitator_queue_depth` metric from `JobQueue.getMetrics()`.
+Workers scale via an HPA on `cogitator_queue_depth`, exposed from `queue.getMetrics()` through a custom-metrics adapter (prometheus-adapter or KEDA) — see [HPA Autoscaling](https://cogitator.app/docs/deployment/worker-queues#hpa-autoscaling).
 
 ---
 
 ## Security Model
 
+See [Security](https://cogitator.app/docs/advanced/security) for the full picture.
+
 ### Sandbox Isolation
 
-Tool execution isolation is enforced at the sandbox level:
+A tool declares its sandbox with `sandbox`. For a `docker` tool the runtime does **not** call `execute`: it runs `sh -c <args.command>` in the container (with `args.cwd` and `args.env` when present). For a `wasm` tool the arguments go to the module as JSON on stdin:
 
 ```typescript
-// Tools can declare their sandbox requirements
-const tool = tool({
-  name: 'run_python',
-  description: 'Execute Python code',
-  parameters: z.object({ code: z.string() }),
+import { z } from 'zod';
+import { tool } from '@cogitator-ai/core';
+
+const runShell = tool({
+  name: 'run_shell',
+  description: 'Run a shell command in an isolated container',
+  parameters: z.object({ command: z.string() }),
   sandbox: {
     type: 'docker',
     image: 'python:3.12-slim',
     resources: { memory: '256MB', cpuShares: 512 },
     network: { mode: 'none' }, // no internet access
-    timeout: 30_000,
   },
-  execute: async ({ code }) => {
-    /* ... */
-  },
+  timeout: 30_000,
+  execute: async ({ command }) => ({ command }), // not called for docker tools
+});
+```
+
+If the sandbox cannot be initialized at all, the tool runs natively with a warning, and `SandboxManager` itself falls back from Docker to native execution when Docker is unavailable (see [Three Execution Modes](#three-execution-modes)).
+
+### Tool Approvals
+
+A tool with `requiresApproval` (a boolean or a function of the arguments) never runs without a decision: the run asks `onApproval`, else `guardrails.onToolApproval`, else pauses with `status: 'paused'` and continues with `cog.resume()` — see [Approvals](https://cogitator.app/docs/tools/approvals).
+
+```typescript
+const result = await cog.run(agent, {
+  input: 'Clean up the temp directory',
+  onApproval: async (call) =>
+    call.toolName === 'delete_file' && String(call.arguments.path).startsWith('/tmp/')
+      ? { approved: true }
+      : { approved: false, reason: 'only /tmp may be deleted' },
 });
 ```
 
 ### Constitutional AI Guardrails
 
-Input/output filtering via `@cogitator-ai/core`:
+`guardrails` turns on input, output, tool-call and (with `filterToolResults`) tool-result filtering with a critique-revise loop; fields left out take `DEFAULT_GUARDRAIL_CONFIG`, and without a `guardrails` section (or with `enabled: false`) nothing is filtered. Its tool guard also refuses dangerous shell commands and system paths:
 
 ```typescript
 const cog = new Cogitator({
   guardrails: {
-    // fields left out use DEFAULT_GUARDRAIL_CONFIG; `constitution` takes a Constitution object
-    onToolApproval: async (toolName, args) => {
-      if (toolName === 'delete_file') {
-        return confirm(`Allow delete: ${args.path}?`);
-      }
-      return true;
-    },
+    model: 'openai/gpt-6-luna', // defaults to the running agent's model
+    filterToolResults: true,
+    onViolation: (result, layer) => console.warn(layer, result.blockedReason),
   },
 });
 ```
 
-### Prompt Injection Detection
+See [Constitutional AI](https://cogitator.app/docs/advanced/constitutional-ai).
+
+### Prompt Injection Detection and PII Masking
 
 ```typescript
 const cog = new Cogitator({
@@ -774,23 +874,14 @@ const cog = new Cogitator({
       action: 'block', // 'block' | 'warn' | 'log'
       threshold: 0.8,
     },
+    pii: {
+      mode: 'mask', // 'mask' | 'redact' | 'block'
+    },
   },
 });
 ```
 
----
-
-## Performance Benchmarks (Target)
-
-| Metric                     | Target  | Notes                           |
-| -------------------------- | ------- | ------------------------------- |
-| HTTP adapter latency (p50) | < 5ms   | Excluding LLM time              |
-| HTTP adapter latency (p99) | < 20ms  |                                 |
-| Concurrent agent runs      | 10,000+ | Per node, via queue             |
-| Memory retrieval           | < 10ms  | With proper indexing            |
-| Tool execution (WASM)      | < 5ms   | Excluding tool logic            |
-| Tool execution (Docker)    | < 200ms | Cold start; ~1ms with pool      |
-| Span export                | < 1ms   | Async batching via OTLPExporter |
+With `pii`, emails, phone numbers, card numbers, IBANs, SSNs, IP addresses and API keys are replaced with placeholders before every LLM request; memory keeps the real values.
 
 ---
 
@@ -798,9 +889,9 @@ const cog = new Cogitator({
 
 - [OpenAI Assistants API](https://platform.openai.com/docs/assistants/overview)
 - [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
-- [Agent-to-Agent Protocol (A2A)](https://google.github.io/A2A/)
+- [Agent-to-Agent Protocol (A2A)](https://a2a-protocol.org/)
 - [OpenTelemetry](https://opentelemetry.io/)
 - [BullMQ](https://docs.bullmq.io/)
 - [Extism (WASM)](https://extism.org/)
 - [pgvector](https://github.com/pgvector/pgvector)
-- [Vercel AI SDK](https://sdk.vercel.ai/)
+- [Vercel AI SDK](https://ai-sdk.dev/)
