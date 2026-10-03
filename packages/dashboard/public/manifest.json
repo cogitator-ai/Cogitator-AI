@@ -1,18 +1,24 @@
 {
-  "name": "Cogitator - Kubernetes for AI Agents",
+  "name": "Cogitator - AI agents that survive production",
   "short_name": "Cogitator",
-  "description": "Self-hosted, production-grade AI agent orchestration platform",
+  "description": "Self-hosted TypeScript runtime for AI agents: approvals, durable workflows, swarms, memory and RAG on any model.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0a0a0a",
-  "theme_color": "#00ff88",
+  "background_color": "#07080a",
+  "theme_color": "#07080a",
   "orientation": "portrait-primary",
   "icons": [
     {
       "src": "/favicon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/apple-icon",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
     }
   ],
   "categories": ["developer tools", "productivity", "utilities"]

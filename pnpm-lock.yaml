@@ -595,6 +595,9 @@ importers:
       react-dom:
         specifier: ^19.3.0
         version: 19.3.0(react@19.3.0)
+      simple-icons:
+        specifier: ^16.33.0
+        version: 16.33.0
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3
@@ -6615,6 +6618,10 @@ packages:
   signal-exit@4.1.0:
     resolution: {integrity: sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==}
     engines: {node: '>=14'}
+
+  simple-icons@16.33.0:
+    resolution: {integrity: sha512-z14u6A8ngAg9mgERRsNO8YkjIMefehIpBk7A8Dz3Gd91945qFP19MLPSHgV4z8P5u/MRYd5e07OTzaDoB4d6qA==}
+    engines: {node: '>=0.12.18'}
 
   simple-yenc@1.0.4:
     resolution: {integrity: sha512-5gvxpSd79e9a3V4QDYUqnqxeD4HGlhCakVpb6gMnDD7lexJggSBJRBO5h52y/iJrdXRilX9UCuDaIJhSWm5OWw==}
@@ -12852,6 +12859,8 @@ snapshots:
       side-channel-weakmap: 1.0.2
 
   signal-exit@4.1.0: {}
+
+  simple-icons@16.33.0: {}
 
   simple-yenc@1.0.4: {}
 

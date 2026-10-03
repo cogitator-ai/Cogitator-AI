@@ -1,141 +1,118 @@
-'use client';
-
 import Link from 'next/link';
-import { motion } from 'framer-motion';
-import { ArrowRight, BookOpen, Bot, Cpu, Rocket } from 'lucide-react';
-import { GithubIcon } from '@/components/icons/GithubIcon';
-import { DOCS_HOME, GET_STARTED_URL, GITHUB_URL, LLMS_TXT_URL, SITE_URL } from '@/lib/site';
-import { TerminalDemo } from './TerminalDemo';
+import { ArrowRight, Bot } from 'lucide-react';
+import corePackage from '../../../../core/package.json';
+import { DOCS_HOME, LLMS_TXT_URL } from '@/lib/site';
+import { CopyCommand } from './CopyCommand';
+import { HeroRun } from './HeroRun';
+import { highlightCode } from './highlight';
+import { CodeBody, Window } from './ui';
 
-export function Hero() {
-  const llmsTxtLabel = `${new URL(SITE_URL).host}${LLMS_TXT_URL}`;
+const AGENT_CODE = `
+const refund = tool({
+  name: 'refund_order',
+  description: 'Refund part or all of an order.',
+  parameters: z.object({ order: z.string(), amount: z.number() }),
+  requiresApproval: ({ amount }) => amount > 100,
+  execute: ({ order, amount }) => payments.refund(order, amount),
+});
+
+const support = new Agent({
+  name: 'support',
+  model: 'anthropic/claude-sonnet-5-5',
+  instructions: 'Refund orders when the customer asks.',
+  tools: [refund],
+});
+
+const run = await cog.run(support, { input, threadId });
+
+if (run.status === 'paused') {
+  await cog.resume(support, threadId, {
+    defaultDecision: { approved: true },
+  });
+}
+`;
+
+export async function Hero() {
+  const code = await highlightCode(AGENT_CODE);
 
   return (
-    <section className="relative min-h-screen flex flex-col items-center justify-center px-6 py-20">
-      <motion.div
-        initial={{ opacity: 0, y: 30 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8 }}
-        className="text-center max-w-4xl mx-auto mb-12"
-      >
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.5 }}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-[#00ff88]/10 border border-[#00ff88]/30 rounded-full text-sm text-[#00ff88] mb-8"
-        >
-          <Cpu className="w-4 h-4" />
-          <span>Open Source AI Agent Framework</span>
-        </motion.div>
+    <section className="relative overflow-hidden px-5 pb-20 pt-36 sm:px-8 sm:pt-44">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-[720px] bg-[radial-gradient(60%_50%_at_50%_0%,rgba(0,255,136,0.10),transparent_70%)]"
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-[720px] bg-[linear-gradient(to_right,rgb(255_255_255/0.035)_1px,transparent_1px),linear-gradient(to_bottom,rgb(255_255_255/0.035)_1px,transparent_1px)] bg-[size:64px_64px] [mask-image:radial-gradient(55%_60%_at_50%_0%,black,transparent)]"
+      />
 
-        <h1 className="text-5xl md:text-7xl font-bold mb-6 tracking-tight">
-          <span className="text-[#fafafa]">Kubernetes for</span>
-          <br />
-          <span className="relative">
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#00ff88] via-[#00ddaa] to-[#00aaff] animate-gradient">
-              AI Agents
+      <div className="relative mx-auto max-w-6xl">
+        <div className="mx-auto max-w-3xl text-center">
+          <a
+            href="https://www.npmjs.com/package/@cogitator-ai/core"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 rounded-full border border-l-line-strong bg-l-surface/60 py-1 pl-1 pr-3 text-xs text-l-muted transition-colors hover:text-l-text"
+          >
+            <span className="rounded-full bg-l-accent/10 px-2 py-0.5 font-mono text-[10.5px] text-l-accent">
+              v{corePackage.version}
             </span>
-            <motion.span
-              className="absolute -inset-1 bg-gradient-to-r from-[#00ff88]/20 to-[#00aaff]/20 blur-2xl -z-10"
-              animate={{
-                opacity: [0.5, 0.8, 0.5],
-              }}
-              transition={{
-                duration: 3,
-                repeat: Infinity,
-                ease: 'easeInOut',
-              }}
-            />
-          </span>
-        </h1>
+            Open source · MIT · TypeScript
+          </a>
 
-        <p className="text-xl md:text-2xl text-[#a1a1a1] mb-10 font-light">
-          Self-hosted. <span className="text-[#fafafa]">Production-grade.</span> TypeScript-native.
-        </p>
+          <h1 className="mt-7 text-[2.75rem] font-semibold leading-[1.02] tracking-[-0.045em] text-l-text text-balance sm:text-7xl">
+            Agents that survive
+            <br />
+            <span className="text-l-muted">production.</span>
+          </h1>
 
-        <div className="flex flex-col sm:flex-row sm:flex-wrap items-center justify-center gap-4">
-          <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-            <Link
-              href={GET_STARTED_URL}
-              className="group relative flex items-center gap-2 px-8 py-4 bg-[#00ff88] text-[#0a0a0a] rounded-xl font-semibold text-lg overflow-hidden transition-shadow hover:shadow-[0_0_30px_rgba(0,255,136,0.3)]"
-            >
-              <span className="relative z-10 flex items-center gap-2">
-                Get Started
-                <ArrowRight className="w-5 h-5 transition-transform group-hover:translate-x-0.5" />
-              </span>
-            </Link>
-          </motion.div>
+          <p className="mx-auto mt-6 max-w-2xl text-base leading-relaxed text-l-muted text-pretty sm:text-lg">
+            A self-hosted TypeScript runtime for AI agents: tools that wait for a human, workflows
+            that outlive the process, swarms, memory and RAG — on any model, in your own
+            infrastructure.
+          </p>
 
-          <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+          <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
+            <CopyCommand command="npx create-cogitator-app" />
             <Link
               href={DOCS_HOME}
-              className="group flex items-center gap-2 px-8 py-4 bg-transparent border border-[#333333] text-[#fafafa] rounded-xl font-semibold text-lg hover:border-[#00ff88]/50 hover:bg-[#00ff88]/5 transition-all"
+              className="group inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium text-l-text"
             >
-              <BookOpen className="w-5 h-5" />
-              Docs
+              Read the docs
+              <ArrowRight className="size-4 text-l-muted transition-transform group-hover:translate-x-0.5" />
             </Link>
-          </motion.div>
+          </div>
 
-          <motion.a
-            href={GITHUB_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            className="group flex items-center gap-2 px-8 py-4 bg-transparent border border-[#333333] text-[#fafafa] rounded-xl font-semibold text-lg hover:border-[#00ff88]/50 hover:bg-[#00ff88]/5 transition-all"
+          <a
+            href={LLMS_TXT_URL}
+            className="mt-6 inline-flex items-center gap-2 text-xs text-l-faint transition-colors hover:text-l-muted"
           >
-            <GithubIcon className="w-5 h-5" />
-            View on GitHub
-          </motion.a>
-
-          <motion.a
-            href="https://www.producthunt.com/posts/cogitator?utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-cogitator"
-            target="_blank"
-            rel="noopener noreferrer"
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            className="group flex items-center gap-2 px-8 py-4 bg-transparent border border-[#333333] text-[#fafafa] rounded-xl font-semibold text-lg hover:border-[#ff6154]/50 hover:bg-[#ff6154]/5 transition-all"
-          >
-            <Rocket className="w-5 h-5 text-[#ff6154]" />
-            Product Hunt
-          </motion.a>
+            <Bot className="size-3.5" />
+            Agent-friendly docs at <span className="font-mono text-l-muted">/llms.txt</span>
+          </a>
         </div>
 
-        <motion.a
-          href={LLMS_TXT_URL}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.4, duration: 0.6 }}
-          className="group mt-8 inline-flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-sm text-[#a1a1a1] hover:text-[#fafafa] transition-colors"
-        >
-          <Bot className="w-4 h-4 text-[#00aaff]" />
-          <span>Agent-friendly docs — point your coding agent at</span>
-          <code className="font-mono text-[#00ff88] group-hover:underline underline-offset-4">
-            {llmsTxtLabel}
-          </code>
-        </motion.a>
-      </motion.div>
-
-      <TerminalDemo />
-
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 1.5, duration: 1 }}
-        className="absolute bottom-10 left-1/2 -translate-x-1/2"
-      >
-        <motion.div
-          animate={{ y: [0, 8, 0] }}
-          transition={{ duration: 2, repeat: Infinity }}
-          className="w-6 h-10 rounded-full border-2 border-[#333333] flex items-start justify-center p-2"
-        >
-          <motion.div
-            animate={{ opacity: [0.5, 1, 0.5], y: [0, 8, 0] }}
-            transition={{ duration: 2, repeat: Infinity }}
-            className="w-1.5 h-1.5 rounded-full bg-[#00ff88]"
+        <div className="relative mt-16 sm:mt-20">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute -inset-x-10 -top-10 bottom-0 bg-[radial-gradient(50%_60%_at_50%_30%,rgba(0,255,136,0.07),transparent_70%)] blur-2xl"
           />
-        </motion.div>
-      </motion.div>
+          <Window
+            title="support-agent.ts"
+            className="relative"
+            bodyClassName="grid lg:grid-cols-[1.08fr_1fr]"
+          >
+            <CodeBody className="border-b border-l-line lg:border-b-0 lg:border-r">{code}</CodeBody>
+            <div className="crt min-h-[420px] bg-l-bg/40">
+              <HeroRun />
+            </div>
+          </Window>
+          <p className="mt-4 text-center font-mono text-[11px] text-l-faint">
+            A run pauses before a sensitive tool and resumes when a human approves — even after a
+            restart, with a durable checkpoint store · examples/core/14-approvals.ts
+          </p>
+        </div>
+      </div>
     </section>
   );
 }

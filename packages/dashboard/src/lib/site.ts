@@ -3,7 +3,7 @@ export const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://cogitator.a
 
 export const SITE_NAME = 'Cogitator';
 
-export const SITE_TAGLINE = 'Kubernetes for AI Agents';
+export const SITE_TAGLINE = 'AI agents that survive production';
 
 export const SITE_DESCRIPTION =
   'Self-hosted, production-grade AI agent runtime for TypeScript: multi-provider LLMs, tools with approvals, memory and RAG, DAG workflows, multi-agent swarms, sandboxed execution, MCP and A2A.';
