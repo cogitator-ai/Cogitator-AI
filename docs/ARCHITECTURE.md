@@ -472,7 +472,7 @@ if (result.success) {
 │  • Resource limits (memory, CPUs, CPU shares, PIDs)                 │
 │  • Network modes (none by default / bridge / host)                  │
 │  • All capabilities dropped, no-new-privileges                      │
-│  • ContainerPool for warm container reuse                           │
+│  • ContainerPool keeps fresh containers warm (opt-in reuse)         │
 │                                                                     │
 │  WasmSandboxExecutor (Extism)  — memory-safe WASM modules           │
 │  • No host network unless allowedHosts; WASI off by default         │
@@ -485,7 +485,7 @@ if (result.success) {
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-When the requested executor is unavailable, `SandboxManager` falls back with a warning: WASM → Docker → native, Docker → native. Check `isDockerAvailable()` / `isWasmAvailable()` first when untrusted code must never run on the host. Details: [Sandbox](https://cogitator.app/docs/deployment/sandbox).
+When Docker is unavailable, `SandboxManager` runs Docker-sandboxed commands natively on the host with a warning, unless `sandbox.allowNativeFallback: false` makes them fail instead. WASM never falls back: without Extism a WASM execution returns an error. Check `isDockerAvailable()` / `isWasmAvailable()` first, or set `allowNativeFallback: false`, when untrusted code must never run on the host. Details: [Sandbox](https://cogitator.app/docs/deployment/sandbox).
 
 #### WASM Tools
 
@@ -833,7 +833,7 @@ const runShell = tool({
 });
 ```
 
-If the sandbox cannot be initialized at all, the tool runs natively with a warning, and `SandboxManager` itself falls back from Docker to native execution when Docker is unavailable (see [Three Execution Modes](#three-execution-modes)).
+If the sandbox cannot be initialized at all, a Docker-sandboxed tool runs its command natively with a warning (or fails with `sandbox.allowNativeFallback: false`) and a WASM tool runs its own `execute`; `SandboxManager` itself falls back from Docker to native execution under the same setting when Docker is unavailable (see [Three Execution Modes](#three-execution-modes)).
 
 ### Tool Approvals
 

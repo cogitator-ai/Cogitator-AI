@@ -135,7 +135,7 @@ Cogitator provides three levels of code execution isolation (`@cogitator-ai/sand
 
 How tools use them (`packages/core/src/cogitator/tool-executor.ts`): for a tool with `sandbox.type: 'docker'` the runtime runs the call's `command` argument with `sh -c` in the container instead of calling the tool's `execute()`; for `'wasm'` it passes the arguments to the module as JSON. Tools without `sandbox` run in the host process.
 
-**Fallback behaviour**: when `@cogitator-ai/sandbox` is not installed, sandboxed tools run natively with a logged warning; when Docker or Extism is unavailable, the sandbox falls back WASM → Docker → native, also with a warning. Isolation is therefore not guaranteed unless the deployment checks `isDockerAvailable()` / `isWasmAvailable()` before registering such tools.
+**Fallback behaviour**: when Docker is unavailable (or `@cogitator-ai/sandbox` is not installed), Docker-sandboxed tools run their commands natively on the host with a logged warning. Setting `sandbox.allowNativeFallback: false` makes those calls fail instead, which is the setting to use when isolation must be guaranteed. WASM never falls back to the host: a WASM tool runs its own `execute` function only when `@cogitator-ai/sandbox` is missing or fails to start, and a WASM execution without Extism returns an error.
 
 #### WASM Sandbox Security Properties
 
@@ -162,7 +162,7 @@ Security Controls:
   Timeout: 30s # default; the container is destroyed after a timeout
 ```
 
-Containers are pooled and reused across calls with identical settings, so files written by one call can be seen by a later one until the container is destroyed (idle timeout 60 s by default). See [SECURITY.md](./SECURITY.md#docker-sandbox) and [Sandbox](https://cogitator.app/docs/deployment/sandbox).
+Each execution gets a fresh container that no code ran in before: a used container is destroyed and a new one with the same settings is started in its place, so the pool keeps executions fast without sharing state. `sandbox.pool.reuseContainers: true` restores reuse across calls with identical settings, so files and processes left by one call (including another user's) are visible to the next until the container is destroyed (idle timeout 60 s by default). See [SECURITY.md](./SECURITY.md#docker-sandbox) and [Sandbox](https://cogitator.app/docs/deployment/sandbox).
 
 #### Input and Output Guards
 

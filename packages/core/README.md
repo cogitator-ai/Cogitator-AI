@@ -488,7 +488,9 @@ const shellTool = tool({
 });
 ```
 
-A Docker-sandboxed tool does not call `execute`: the sandbox runs the `command` argument with `sh -c` (plus optional `cwd` / `env` arguments) and returns its output. A WASM tool gets its arguments as JSON on stdin and its JSON stdout is parsed as the result. Sandboxing needs `@cogitator-ai/sandbox` installed (options go in `new Cogitator({ sandbox })`); when the sandbox cannot start, the tool runs natively with a warning (a Docker-sandboxed tool returns an error instead with `sandbox.allowNativeFallback: false`).
+A Docker-sandboxed tool does not call `execute`: the sandbox runs the `command` argument with `sh -c` (plus optional `cwd` / `env` arguments) and returns its output. A WASM tool gets its arguments as JSON on stdin and its JSON stdout is parsed as the result. Sandboxing needs `@cogitator-ai/sandbox` installed (options go in `new Cogitator({ sandbox })`).
+
+When Docker is unavailable (or `@cogitator-ai/sandbox` is missing), a Docker-sandboxed tool runs its command directly on the host with a warning; set `sandbox.allowNativeFallback: false` to make those calls fail instead. WASM tools never fall back to the host: they run their own `execute` only when `@cogitator-ai/sandbox` is missing or fails to start, and a WASM sandbox that cannot load the module returns an error. Each Docker execution gets a fresh container (the pool keeps them warm); `sandbox.pool.reuseContainers: true` reuses containers between executions with the same settings, which is faster but lets files and processes leak from one execution to the next.
 
 `timeout` is enforced for every tool: native tools get an aborted `context.signal` and the model receives a `Tool "<name>" timed out after <ms>ms` error; sandboxed tools forward it to the sandbox executor. The sandbox is initialized lazily on the first sandboxed call, and that call already runs inside it.
 
@@ -845,7 +847,7 @@ const cog = new Cogitator({
 });
 ```
 
-`adapter` also accepts `'sqlite'`, `'mongodb'` and `'qdrant'` (configured under the key of the same name); `embedding` turns on semantic context. Runs with a `threadId` load history from and save messages to the adapter.
+`adapter` also accepts `'sqlite'` (`sqlite.path`), `'mongodb'` (`mongodb.uri`) and `'redis'` (`redis.url`, or `redis.host` + `redis.port`, or `redis.cluster`). Qdrant stores embeddings, not threads: configure it in `memory.qdrant` next to a thread adapter, together with `memory.embedding` and `memory.contextBuilder.includeSemanticContext`, and semantic context is retrieved from it. The Postgres adapter sizes its vector column to the `memory.embedding` model. Runs with a `threadId` load history from and save messages to the adapter.
 
 The adapter connects on the first run. To read threads before that (for example in an API route), use `getMemory()`, which connects it on first use; `cog.memory` stays `undefined` until something connected it:
 
