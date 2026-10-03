@@ -4,7 +4,8 @@
  * Measures cold start, warm execution, and memory overhead
  * for WASM, Docker, and Native sandbox executors.
  *
- * Run: pnpm test -- benchmark.test.ts
+ * Wall-clock thresholds only hold on an idle machine, so these run apart
+ * from the unit tests: `pnpm --filter @cogitator-ai/sandbox bench`.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -42,7 +43,7 @@ const dockerConfig: SandboxConfig = {
   timeout: 10000,
 };
 
-describe('Sandbox Performance Benchmarks', () => {
+describe.runIf(process.env.SANDBOX_BENCHMARK === '1')('Sandbox Performance Benchmarks', () => {
   const results: BenchmarkResult[] = [];
 
   afterAll(() => {

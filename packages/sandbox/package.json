@@ -20,7 +20,8 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "bench": "SANDBOX_BENCHMARK=1 vitest run benchmark"
   },
   "engines": {
     "node": ">=22.12.0"
