@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { TurnManager } from '../strategies/negotiation/turn-manager';
 import { ConvergenceCalculator } from '../strategies/negotiation/convergence';
 import { ApprovalIntegration } from '../strategies/negotiation/approval';
-import type { NegotiationOffer, NegotiationState, SwarmEventEmitter } from '@cogitator-ai/types';
+import type {
+  NegotiationOffer,
+  NegotiationState,
+  NegotiationTerm,
+  SwarmEventEmitter,
+} from '@cogitator-ai/types';
 
 describe('TurnManager', () => {
   describe('round-robin mode', () => {
@@ -542,7 +547,12 @@ function createOffer(id: string, from: string, to: string | string[]): Negotiati
 function createOfferWithTerms(
   id: string,
   from: string,
-  terms: Array<{ termId: string; value: unknown; priority?: number; negotiable?: boolean }>,
+  terms: Array<{
+    termId: string;
+    value: NegotiationTerm['value'];
+    priority?: number;
+    negotiable?: boolean;
+  }>,
   round = 1
 ): NegotiationOffer {
   return {

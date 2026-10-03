@@ -14,6 +14,7 @@ import type {
   CogitatorLike,
   AgentRunResult,
 } from '../types';
+import { expectResponse } from './helpers';
 
 function createMockAgent(name: string): Agent {
   const config: AgentConfig = {
@@ -299,15 +300,17 @@ describe('A2AServer push notification methods', () => {
     });
     const taskId = (sent!.result as { id: string }).id;
 
-    const response = await server.handleJsonRpc({
-      jsonrpc: '2.0',
-      method: 'tasks/pushNotification/create',
-      params: {
-        taskId,
-        config: { webhookUrl: 'https://example.com/webhook' },
-      },
-      id: 1,
-    });
+    const response = expectResponse(
+      await server.handleJsonRpc({
+        jsonrpc: '2.0',
+        method: 'tasks/pushNotification/create',
+        params: {
+          taskId,
+          config: { webhookUrl: 'https://example.com/webhook' },
+        },
+        id: 1,
+      })
+    );
 
     expect(response.error).toBeUndefined();
     const result = response.result as PushNotificationConfig;
@@ -320,12 +323,14 @@ describe('A2AServer push notification methods', () => {
       webhookUrl: 'https://example.com/webhook',
     });
 
-    const response = await server.handleJsonRpc({
-      jsonrpc: '2.0',
-      method: 'tasks/pushNotification/get',
-      params: { taskId: 'task_1', configId: created.id },
-      id: 1,
-    });
+    const response = expectResponse(
+      await server.handleJsonRpc({
+        jsonrpc: '2.0',
+        method: 'tasks/pushNotification/get',
+        params: { taskId: 'task_1', configId: created.id },
+        id: 1,
+      })
+    );
 
     expect(response.error).toBeUndefined();
     const result = response.result as PushNotificationConfig;
@@ -336,12 +341,14 @@ describe('A2AServer push notification methods', () => {
     await pushStore.create('task_1', { webhookUrl: 'https://example.com/hook1' });
     await pushStore.create('task_1', { webhookUrl: 'https://example.com/hook2' });
 
-    const response = await server.handleJsonRpc({
-      jsonrpc: '2.0',
-      method: 'tasks/pushNotification/list',
-      params: { taskId: 'task_1' },
-      id: 1,
-    });
+    const response = expectResponse(
+      await server.handleJsonRpc({
+        jsonrpc: '2.0',
+        method: 'tasks/pushNotification/list',
+        params: { taskId: 'task_1' },
+        id: 1,
+      })
+    );
 
     expect(response.error).toBeUndefined();
     const result = response.result as PushNotificationConfig[];
@@ -353,12 +360,14 @@ describe('A2AServer push notification methods', () => {
       webhookUrl: 'https://example.com/hook',
     });
 
-    const response = await server.handleJsonRpc({
-      jsonrpc: '2.0',
-      method: 'tasks/pushNotification/delete',
-      params: { taskId: 'task_1', configId: created.id },
-      id: 1,
-    });
+    const response = expectResponse(
+      await server.handleJsonRpc({
+        jsonrpc: '2.0',
+        method: 'tasks/pushNotification/delete',
+        params: { taskId: 'task_1', configId: created.id },
+        id: 1,
+      })
+    );
 
     expect(response.error).toBeUndefined();
     const remaining = await pushStore.list('task_1');
@@ -366,34 +375,40 @@ describe('A2AServer push notification methods', () => {
   });
 
   it('should reject push configs for unknown tasks', async () => {
-    const response = await server.handleJsonRpc({
-      jsonrpc: '2.0',
-      method: 'tasks/pushNotification/create',
-      params: { taskId: 'task_missing', config: { webhookUrl: 'https://example.com/webhook' } },
-      id: 1,
-    });
+    const response = expectResponse(
+      await server.handleJsonRpc({
+        jsonrpc: '2.0',
+        method: 'tasks/pushNotification/create',
+        params: { taskId: 'task_missing', config: { webhookUrl: 'https://example.com/webhook' } },
+        id: 1,
+      })
+    );
 
     expect(response!.error!.code).toBe(-32001);
   });
 
   it('should return error when taskId is missing for create', async () => {
-    const response = await server.handleJsonRpc({
-      jsonrpc: '2.0',
-      method: 'tasks/pushNotification/create',
-      params: { config: { webhookUrl: 'https://example.com' } },
-      id: 1,
-    });
+    const response = expectResponse(
+      await server.handleJsonRpc({
+        jsonrpc: '2.0',
+        method: 'tasks/pushNotification/create',
+        params: { config: { webhookUrl: 'https://example.com' } },
+        id: 1,
+      })
+    );
     expect(response.error).toBeDefined();
     expect(response.error!.code).toBe(-32602);
   });
 
   it('should return error when webhookUrl is missing for create', async () => {
-    const response = await server.handleJsonRpc({
-      jsonrpc: '2.0',
-      method: 'tasks/pushNotification/create',
-      params: { taskId: 'task_1', config: {} },
-      id: 1,
-    });
+    const response = expectResponse(
+      await server.handleJsonRpc({
+        jsonrpc: '2.0',
+        method: 'tasks/pushNotification/create',
+        params: { taskId: 'task_1', config: {} },
+        id: 1,
+      })
+    );
     expect(response.error).toBeDefined();
     expect(response.error!.code).toBe(-32602);
   });
@@ -518,22 +533,26 @@ describe('Webhook receives events on task completion', () => {
       allowPrivateUrls: true,
     });
 
-    const sendResponse = await server.handleJsonRpc({
-      jsonrpc: '2.0',
-      method: 'message/send',
-      params: { message: userMessage('Hello') },
-      id: 1,
-    });
+    const sendResponse = expectResponse(
+      await server.handleJsonRpc({
+        jsonrpc: '2.0',
+        method: 'message/send',
+        params: { message: userMessage('Hello') },
+        id: 1,
+      })
+    );
     const taskId = (sendResponse.result as { id: string }).id;
 
     await pushStore.create(taskId, { webhookUrl });
 
-    const secondResponse = await server.handleJsonRpc({
-      jsonrpc: '2.0',
-      method: 'message/send',
-      params: { message: { ...userMessage('Continue'), taskId } },
-      id: 2,
-    });
+    const secondResponse = expectResponse(
+      await server.handleJsonRpc({
+        jsonrpc: '2.0',
+        method: 'message/send',
+        params: { message: { ...userMessage('Continue'), taskId } },
+        id: 2,
+      })
+    );
     expect(secondResponse.error).toBeUndefined();
 
     await vi.waitFor(

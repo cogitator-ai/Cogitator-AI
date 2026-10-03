@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { RuntimeBuilder } from '@cogitator-ai/channels';
+import { AssistantConfigSchema, RuntimeBuilder } from '@cogitator-ai/channels';
 import type { BuiltRuntime } from '@cogitator-ai/channels';
 
 describe('RuntimeBuilder E2E', () => {
@@ -14,14 +14,14 @@ describe('RuntimeBuilder E2E', () => {
 
   it('builds runtime from minimal config', async () => {
     const builder = new RuntimeBuilder(
-      {
+      AssistantConfigSchema.parse({
         name: 'test-assistant',
         personality: 'Helpful bot',
         llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:' },
-      },
+      }),
       { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
     );
 
@@ -35,14 +35,14 @@ describe('RuntimeBuilder E2E', () => {
 
   it('includes memory tools when knowledge graph enabled', async () => {
     const builder = new RuntimeBuilder(
-      {
+      AssistantConfigSchema.parse({
         name: 'memory-bot',
         personality: 'Bot with memory',
         llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:', knowledgeGraph: true },
-      },
+      }),
       { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
     );
 
@@ -56,14 +56,14 @@ describe('RuntimeBuilder E2E', () => {
 
   it('excludes memory tools when knowledge graph disabled', async () => {
     const builder = new RuntimeBuilder(
-      {
+      AssistantConfigSchema.parse({
         name: 'no-memory-bot',
         personality: 'Bot without memory',
         llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:', knowledgeGraph: false },
-      },
+      }),
       { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
     );
 
@@ -77,14 +77,14 @@ describe('RuntimeBuilder E2E', () => {
 
   it('includes scheduler tools and hint when scheduler enabled', async () => {
     const builder = new RuntimeBuilder(
-      {
+      AssistantConfigSchema.parse({
         name: 'scheduler-bot',
         personality: 'Bot with scheduler',
         llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: { scheduler: true },
         memory: { adapter: 'sqlite', path: ':memory:' },
-      },
+      }),
       { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
     );
 
@@ -100,14 +100,14 @@ describe('RuntimeBuilder E2E', () => {
 
   it('includes lookup_capabilities tool', async () => {
     const builder = new RuntimeBuilder(
-      {
+      AssistantConfigSchema.parse({
         name: 'capable-bot',
         personality: 'Bot with self-awareness',
         llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: { webSearch: true },
         memory: { adapter: 'sqlite', path: ':memory:' },
-      },
+      }),
       { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
     );
 
@@ -119,14 +119,14 @@ describe('RuntimeBuilder E2E', () => {
 
   it('always includes calculator and datetime tools', async () => {
     const builder = new RuntimeBuilder(
-      {
+      AssistantConfigSchema.parse({
         name: 'basic-bot',
         personality: 'Basic bot',
         llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:' },
-      },
+      }),
       { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
     );
 
@@ -139,14 +139,14 @@ describe('RuntimeBuilder E2E', () => {
 
   it('returns null scheduler by default', async () => {
     const builder = new RuntimeBuilder(
-      {
+      AssistantConfigSchema.parse({
         name: 'no-scheduler-bot',
         personality: 'Bot',
         llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:' },
-      },
+      }),
       { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
     );
 
@@ -157,14 +157,14 @@ describe('RuntimeBuilder E2E', () => {
 
   it('embeds personality in agent instructions', async () => {
     const builder = new RuntimeBuilder(
-      {
+      AssistantConfigSchema.parse({
         name: 'persona-bot',
         personality: 'You are a pirate. Speak in pirate speak.',
         llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:' },
-      },
+      }),
       { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
     );
 
@@ -175,14 +175,14 @@ describe('RuntimeBuilder E2E', () => {
 
   it('includes device tools when deviceTools enabled', async () => {
     const builder = new RuntimeBuilder(
-      {
+      AssistantConfigSchema.parse({
         name: 'device-bot',
         personality: 'Bot with device access',
         llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: { deviceTools: true },
         memory: { adapter: 'sqlite', path: ':memory:' },
-      },
+      }),
       { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
     );
 
@@ -197,14 +197,14 @@ describe('RuntimeBuilder E2E', () => {
 
   it('cleanup closes all resources without throwing', async () => {
     const builder = new RuntimeBuilder(
-      {
+      AssistantConfigSchema.parse({
         name: 'cleanup-bot',
         personality: 'Bot',
         llm: { provider: 'google', model: 'google/gemini-3.5-flash-lite' },
         channels: {},
         capabilities: {},
         memory: { adapter: 'sqlite', path: ':memory:', knowledgeGraph: true },
-      },
+      }),
       { GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ?? 'test-key' }
     );
 

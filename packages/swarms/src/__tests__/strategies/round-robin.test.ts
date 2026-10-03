@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import type { SwarmEvent } from '@cogitator-ai/types';
 import { RoundRobinStrategy } from '../../strategies/round-robin';
 import { MockCoordinator } from './__mocks__/mock-coordinator';
 import { createMockSwarmAgent } from './__mocks__/mock-helpers';
@@ -12,7 +13,7 @@ describe('RoundRobinStrategy', () => {
 
   describe('initialization', () => {
     it('should throw when no agents exist', async () => {
-      const strategy = new RoundRobinStrategy(coordinator as any);
+      const strategy = new RoundRobinStrategy(coordinator);
 
       await expect(strategy.execute({ input: 'test' })).rejects.toThrow(
         'Round-robin strategy requires at least 1 agent'
@@ -20,13 +21,13 @@ describe('RoundRobinStrategy', () => {
     });
 
     it('should default to sequential rotation', () => {
-      const strategy = new RoundRobinStrategy(coordinator as any);
+      const strategy = new RoundRobinStrategy(coordinator);
       const state = strategy.getState();
       expect(state.currentIndex).toBe(0);
     });
 
     it('should apply provided config', () => {
-      const strategy = new RoundRobinStrategy(coordinator as any, {
+      const strategy = new RoundRobinStrategy(coordinator, {
         sticky: true,
         rotation: 'random',
       });
@@ -50,7 +51,7 @@ describe('RoundRobinStrategy', () => {
     });
 
     it('should select first agent on first call', async () => {
-      const strategy = new RoundRobinStrategy(coordinator as any, { rotation: 'sequential' });
+      const strategy = new RoundRobinStrategy(coordinator, { rotation: 'sequential' });
 
       const result = await strategy.execute({ input: 'test' });
 
@@ -59,7 +60,7 @@ describe('RoundRobinStrategy', () => {
     });
 
     it('should advance to next agent on subsequent calls', async () => {
-      const strategy = new RoundRobinStrategy(coordinator as any, { rotation: 'sequential' });
+      const strategy = new RoundRobinStrategy(coordinator, { rotation: 'sequential' });
 
       await strategy.execute({ input: 'test 1' });
       await strategy.execute({ input: 'test 2' });
@@ -70,7 +71,7 @@ describe('RoundRobinStrategy', () => {
     });
 
     it('should wrap around after all agents', async () => {
-      const strategy = new RoundRobinStrategy(coordinator as any, { rotation: 'sequential' });
+      const strategy = new RoundRobinStrategy(coordinator, { rotation: 'sequential' });
 
       await strategy.execute({ input: 'test 1' });
       await strategy.execute({ input: 'test 2' });
@@ -82,7 +83,7 @@ describe('RoundRobinStrategy', () => {
     });
 
     it('should maintain index across multiple executions', async () => {
-      const strategy = new RoundRobinStrategy(coordinator as any, { rotation: 'sequential' });
+      const strategy = new RoundRobinStrategy(coordinator, { rotation: 'sequential' });
 
       await strategy.execute({ input: 'test' });
       expect(strategy.getState().currentIndex).toBe(1);
@@ -105,7 +106,7 @@ describe('RoundRobinStrategy', () => {
     });
 
     it('should select agent and update currentIndex', async () => {
-      const strategy = new RoundRobinStrategy(coordinator as any, { rotation: 'random' });
+      const strategy = new RoundRobinStrategy(coordinator, { rotation: 'random' });
 
       await strategy.execute({ input: 'test' });
 
@@ -127,7 +128,7 @@ describe('RoundRobinStrategy', () => {
     });
 
     it('should return same agent for same stickyKey', async () => {
-      const strategy = new RoundRobinStrategy(coordinator as any, {
+      const strategy = new RoundRobinStrategy(coordinator, {
         sticky: true,
         rotation: 'sequential',
         stickyKey: (input) => (input as string).split(':')[0],
@@ -142,7 +143,7 @@ describe('RoundRobinStrategy', () => {
     });
 
     it('should assign new keys to current agent (index does not advance with sticky)', async () => {
-      const strategy = new RoundRobinStrategy(coordinator as any, {
+      const strategy = new RoundRobinStrategy(coordinator, {
         sticky: true,
         rotation: 'sequential',
         stickyKey: (input) => (input as string).split(':')[0],
@@ -157,7 +158,7 @@ describe('RoundRobinStrategy', () => {
     });
 
     it('should track sticky assignments in state', async () => {
-      const strategy = new RoundRobinStrategy(coordinator as any, {
+      const strategy = new RoundRobinStrategy(coordinator, {
         sticky: true,
         stickyKey: (input) => (input as string).split(':')[0],
       });
@@ -180,7 +181,7 @@ describe('RoundRobinStrategy', () => {
     });
 
     it('getState() should return currentIndex and stickyAssignments', () => {
-      const strategy = new RoundRobinStrategy(coordinator as any);
+      const strategy = new RoundRobinStrategy(coordinator);
 
       const state = strategy.getState();
 
@@ -191,7 +192,7 @@ describe('RoundRobinStrategy', () => {
     });
 
     it('reset() should clear index and assignments', async () => {
-      const strategy = new RoundRobinStrategy(coordinator as any, {
+      const strategy = new RoundRobinStrategy(coordinator, {
         sticky: true,
         stickyKey: (input) => input as string,
       });
@@ -214,22 +215,24 @@ describe('RoundRobinStrategy', () => {
     });
 
     it('should emit round-robin:assigned event', async () => {
-      const strategy = new RoundRobinStrategy(coordinator as any);
-      const events: unknown[] = [];
+      const strategy = new RoundRobinStrategy(coordinator);
+      const events: SwarmEvent[] = [];
 
-      coordinator.events.on('round-robin:assigned', (e) => events.push(e));
+      coordinator.events.on('round-robin:assigned', (e) => {
+        events.push(e);
+      });
 
       await strategy.execute({ input: 'test' });
 
       expect(events.length).toBe(1);
-      expect((events[0] as any).data).toMatchObject({
+      expect(events[0].data).toMatchObject({
         agent: 'agent-1',
         index: 0,
       });
     });
 
     it('should write round-robin state to blackboard', async () => {
-      const strategy = new RoundRobinStrategy(coordinator as any);
+      const strategy = new RoundRobinStrategy(coordinator);
 
       await strategy.execute({ input: 'test' });
 
@@ -249,7 +252,7 @@ describe('RoundRobinStrategy', () => {
     });
 
     it('should include roundRobinContext in agent context', async () => {
-      const strategy = new RoundRobinStrategy(coordinator as any);
+      const strategy = new RoundRobinStrategy(coordinator);
 
       await strategy.execute({ input: 'test' });
 
@@ -270,7 +273,7 @@ describe('RoundRobinStrategy', () => {
     });
 
     it('should return correct StrategyResult', async () => {
-      const strategy = new RoundRobinStrategy(coordinator as any);
+      const strategy = new RoundRobinStrategy(coordinator);
 
       const result = await strategy.execute({ input: 'test' });
 

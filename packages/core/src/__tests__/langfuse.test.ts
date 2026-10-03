@@ -115,8 +115,9 @@ describe('LangfuseExporter', () => {
         output: 'Response here',
         toolCalls: [],
         usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150, cost: 0.01, duration: 500 },
-        model: 'gpt-4',
-        trace: { runId: 'run-1', spans: [], startTime: 0, endTime: 100 },
+        modelUsed: 'gpt-4',
+        messages: [],
+        trace: { traceId: 'trace-run-1', spans: [] },
       };
 
       exporter.onRunComplete(result);
@@ -137,8 +138,9 @@ describe('LangfuseExporter', () => {
         output: 'Response',
         toolCalls: [],
         usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0, duration: 0 },
-        model: 'gpt-4',
-        trace: { runId: 'unknown', spans: [], startTime: 0, endTime: 0 },
+        modelUsed: 'gpt-4',
+        messages: [],
+        trace: { traceId: 'trace-unknown', spans: [] },
       };
 
       exporter.onRunComplete(result);
@@ -154,7 +156,9 @@ describe('LangfuseExporter', () => {
 
       exporter.onSpanStart('run-1', {
         id: 'span-1',
+        traceId: 'trace-run-1',
         name: 'processing',
+        kind: 'internal',
         startTime: Date.now(),
         attributes: {},
       });
@@ -171,8 +175,9 @@ describe('LangfuseExporter', () => {
         output: 'Response',
         toolCalls: [],
         usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0, duration: 0 },
-        model: 'gpt-4',
-        trace: { runId: 'run-1', spans: [], startTime: 0, endTime: 0 },
+        modelUsed: 'gpt-4',
+        messages: [],
+        trace: { traceId: 'trace-run-1', spans: [] },
       };
 
       exporter.onRunComplete(result);
@@ -201,7 +206,9 @@ describe('LangfuseExporter', () => {
 
       const span: Omit<Span, 'endTime' | 'duration' | 'status'> = {
         id: 'span-1',
+        traceId: 'trace-run-1',
         name: 'processing',
+        kind: 'internal',
         startTime: Date.now(),
         attributes: { foo: 'bar' },
       };
@@ -235,7 +242,9 @@ describe('LangfuseExporter', () => {
 
       const parentSpan: Omit<Span, 'endTime' | 'duration' | 'status'> = {
         id: 'parent-1',
+        traceId: 'trace-run-1',
         name: 'parent',
+        kind: 'internal',
         startTime: Date.now(),
         attributes: {},
       };
@@ -244,7 +253,9 @@ describe('LangfuseExporter', () => {
 
       const childSpan: Omit<Span, 'endTime' | 'duration' | 'status'> = {
         id: 'child-1',
+        traceId: 'trace-run-1',
         name: 'child',
+        kind: 'internal',
         parentId: 'parent-1',
         startTime: Date.now(),
         attributes: {},

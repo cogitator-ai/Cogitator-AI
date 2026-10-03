@@ -3,6 +3,10 @@ import { CompactionService, type SummarizeFn } from '../compaction';
 import { InMemoryAdapter } from '../adapters/memory';
 import type { CompactionConfig, Message } from '@cogitator-ai/types';
 
+function isSummary(content: Message['content']): boolean {
+  return typeof content === 'string' && content.includes('Summary');
+}
+
 describe('CompactionService', () => {
   let adapter: InMemoryAdapter;
   let summarize: SummarizeFn;
@@ -61,12 +65,12 @@ describe('CompactionService', () => {
       if (entries.success) {
         expect(entries.data).toHaveLength(5);
 
-        const summary = entries.data.find((e) => e.message.content.includes('Summary'));
+        const summary = entries.data.find((e) => isSummary(e.message.content));
         expect(summary).toBeDefined();
         expect(summary!.message.role).toBe('system');
         expect(summary!.message.content).toContain('Summary of 6 messages');
 
-        const kept = entries.data.filter((e) => !e.message.content.includes('Summary'));
+        const kept = entries.data.filter((e) => !isSummary(e.message.content));
         expect(kept).toHaveLength(4);
         expect(kept[0].message.content).toBe('Message 7');
         expect(kept[3].message.content).toBe('Message 10');

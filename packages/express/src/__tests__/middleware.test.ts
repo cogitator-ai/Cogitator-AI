@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { Response, NextFunction, Request } from 'express';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+import type { Response, Request } from 'express';
 import { createAuthMiddleware } from '../middleware/auth.js';
 import { createCorsMiddleware } from '../middleware/cors.js';
 import { createRateLimitMiddleware } from '../middleware/rate-limit.js';
@@ -49,13 +49,12 @@ function mockRes() {
   return res as unknown as Response & typeof res;
 }
 
-function mockNext(): NextFunction & { wasCalled: () => boolean } {
+function mockNext(): Mock<() => void> & { wasCalled: () => boolean } {
   let called = false;
   const fn = vi.fn(() => {
     called = true;
-  }) as NextFunction & { wasCalled: () => boolean };
-  fn.wasCalled = () => called;
-  return fn;
+  });
+  return Object.assign(fn, { wasCalled: () => called });
 }
 
 describe('createAuthMiddleware', () => {
@@ -151,8 +150,8 @@ describe('createCorsMiddleware', () => {
 
     middleware(req, res, next);
 
-    const originHeaderSet = (res.setHeader as ReturnType<typeof vi.fn>).mock.calls.some(
-      ([name]: [string]) => name === 'Access-Control-Allow-Origin'
+    const originHeaderSet = res.setHeader.mock.calls.some(
+      ([name]) => name === 'Access-Control-Allow-Origin'
     );
     expect(originHeaderSet).toBe(false);
     expect(next).toHaveBeenCalled();
@@ -302,12 +301,6 @@ describe('createRateLimitMiddleware', () => {
 
   it('trusts X-Forwarded-For when trustProxy is true', () => {
     const keys: string[] = [];
-    const _middleware = createRateLimitMiddleware({
-      windowMs: 60000,
-      max: 100,
-      trustProxy: true,
-    });
-
     const req = mockReq({
       headers: { 'x-forwarded-for': '10.0.0.1, 10.0.0.2' },
       ip: '192.168.1.1',

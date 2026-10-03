@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, type Mock } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -97,24 +97,26 @@ describe('SimpleTimerStore', () => {
   });
 });
 
-function mockStore(overdue: TimerEntry[][]): TimerStore & Record<string, ReturnType<typeof vi.fn>> {
-  const getOverdue = vi.fn();
+type MockTimerStore = { [K in keyof TimerStore]: Mock<TimerStore[K]> };
+
+function mockStore(overdue: TimerEntry[][]): MockTimerStore {
+  const getOverdue = vi.fn<TimerStore['getOverdue']>();
   for (const batch of overdue) getOverdue.mockResolvedValueOnce(batch);
   getOverdue.mockResolvedValue([]);
   return {
     getOverdue,
-    markFired: vi.fn().mockResolvedValue(undefined),
-    schedule: vi.fn().mockResolvedValue('next'),
-    cancel: vi.fn(),
-    get: vi.fn(),
-    getByWorkflow: vi.fn(),
-    getByRun: vi.fn(),
-    getPending: vi.fn(),
-    cleanup: vi.fn().mockResolvedValue(0),
-    onFire: vi.fn(),
-    update: vi.fn().mockResolvedValue(undefined),
-    list: vi.fn(),
-  } as unknown as TimerStore & Record<string, ReturnType<typeof vi.fn>>;
+    markFired: vi.fn<TimerStore['markFired']>().mockResolvedValue(undefined),
+    schedule: vi.fn<TimerStore['schedule']>().mockResolvedValue('next'),
+    cancel: vi.fn<TimerStore['cancel']>(),
+    get: vi.fn<TimerStore['get']>(),
+    getByWorkflow: vi.fn<TimerStore['getByWorkflow']>(),
+    getByRun: vi.fn<TimerStore['getByRun']>(),
+    getPending: vi.fn<TimerStore['getPending']>(),
+    cleanup: vi.fn<TimerStore['cleanup']>().mockResolvedValue(0),
+    onFire: vi.fn<TimerStore['onFire']>(),
+    update: vi.fn<TimerStore['update']>().mockResolvedValue(undefined),
+    list: vi.fn<TimerStore['list']>(),
+  };
 }
 
 function entry(overrides: Partial<TimerEntry> = {}): TimerEntry {
@@ -142,7 +144,7 @@ describe('HeartbeatScheduler regressions', () => {
     await vi.waitFor(() => expect(store.schedule).toHaveBeenCalled());
     scheduler.stop();
 
-    const scheduled = store.schedule.mock.calls[0][0] as TimerEntry;
+    const scheduled = store.schedule.mock.calls[0][0];
     const nextFire = new Date(scheduled.firesAt);
     expect(nextFire.getUTCHours()).toBe(9);
     expect(nextFire.getUTCMinutes()).toBe(0);
@@ -163,7 +165,7 @@ describe('HeartbeatScheduler regressions', () => {
     await vi.waitFor(() => expect(store.schedule).toHaveBeenCalled());
     scheduler.stop();
 
-    expect((store.schedule.mock.calls[0][0] as TimerEntry).consecutiveErrors).toBe(3);
+    expect(store.schedule.mock.calls[0][0].consecutiveErrors).toBe(3);
   });
 
   it('keeps polling after a store failure', async () => {
@@ -235,7 +237,7 @@ describe('HeartbeatScheduler regressions', () => {
     scheduler.start();
     await vi.waitFor(() => expect(store.cleanup).toHaveBeenCalled());
     scheduler.stop();
-    const cutoff = store.cleanup.mock.calls[0][0] as number;
+    const cutoff = store.cleanup.mock.calls[0][0];
     expect(Date.now() - cutoff).toBeGreaterThanOrEqual(1000);
   });
 

@@ -4,6 +4,7 @@ import { RuntimeBuilder, type AssistantConfig } from '../runtime-builder';
 let mockFormatForPrompt = vi.fn().mockResolvedValue('');
 
 const slackConfigs = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+const cogitatorInstances = vi.hoisted(() => [] as Array<{ config: unknown }>);
 
 vi.mock('../channels/slack', () => ({
   slackChannel: (config: Record<string, unknown>) => {
@@ -105,8 +106,6 @@ vi.mock('@cogitator-ai/core', () => {
     }
   }
 
-  const cogitatorInstances: unknown[] = [];
-
   class MockCogitator {
     close = vi.fn().mockResolvedValue(undefined);
     run = vi.fn().mockResolvedValue({ output: 'ok' });
@@ -194,7 +193,6 @@ vi.mock('@cogitator-ai/core', () => {
     createDeviceTools,
     parseModel,
     tool: toolFactory,
-    _cogitatorInstances: cogitatorInstances,
   };
 });
 
@@ -204,7 +202,7 @@ const minimalConfig: AssistantConfig = {
   llm: { provider: 'google', model: 'google/gemini-2.5-flash' },
   channels: {},
   capabilities: {},
-  memory: { adapter: 'sqlite', path: ':memory:' },
+  memory: { adapter: 'sqlite', path: ':memory:', autoExtract: true, knowledgeGraph: true },
 };
 
 describe('RuntimeBuilder', () => {
@@ -398,15 +396,10 @@ describe('RuntimeBuilder', () => {
   });
 
   it('builds cogitator with correct provider config', async () => {
-    const { _cogitatorInstances } = (await import('@cogitator-ai/core')) as Record<
-      string,
-      unknown[]
-    >;
-
     const builder = new RuntimeBuilder(minimalConfig, { GOOGLE_API_KEY: 'my-key' });
     await builder.build();
 
-    const latest = _cogitatorInstances[_cogitatorInstances.length - 1] as Record<string, unknown>;
+    const latest = cogitatorInstances[cogitatorInstances.length - 1];
     expect(latest.config).toEqual(
       expect.objectContaining({
         llm: expect.objectContaining({

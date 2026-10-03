@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { sqlQuery } from '../tools/sql-query';
+import { createToolContext } from './helpers/tool-context';
 
 vi.mock('pg', () => {
   const mockQuery = vi.fn();
@@ -53,7 +54,7 @@ describe('sql-query tool', () => {
     it('returns error when no connection string provided', async () => {
       delete process.env.DATABASE_URL;
 
-      const result = await sqlQuery.execute({ query: 'SELECT 1' });
+      const result = await sqlQuery.execute({ query: 'SELECT 1' }, createToolContext());
 
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('No connection string');
@@ -68,7 +69,7 @@ describe('sql-query tool', () => {
         rows: [{ id: 1 }],
       });
 
-      await sqlQuery.execute({ query: 'SELECT 1' });
+      await sqlQuery.execute({ query: 'SELECT 1' }, createToolContext());
 
       expect(mockInstance.connect).toHaveBeenCalled();
     });
@@ -78,7 +79,7 @@ describe('sql-query tool', () => {
     it('blocks non-SELECT queries when readOnly is true (default)', async () => {
       process.env.DATABASE_URL = 'postgres://localhost/db';
 
-      const result = await sqlQuery.execute({ query: 'DELETE FROM users' });
+      const result = await sqlQuery.execute({ query: 'DELETE FROM users' }, createToolContext());
 
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('Only SELECT queries are allowed');
@@ -87,10 +88,13 @@ describe('sql-query tool', () => {
     it('blocks INSERT when readOnly is true', async () => {
       process.env.DATABASE_URL = 'postgres://localhost/db';
 
-      const result = await sqlQuery.execute({
-        query: 'INSERT INTO users (name) VALUES ($1)',
-        params: ['test'],
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'INSERT INTO users (name) VALUES ($1)',
+          params: ['test'],
+        },
+        createToolContext()
+      );
 
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('Only SELECT queries');
@@ -99,10 +103,13 @@ describe('sql-query tool', () => {
     it('blocks UPDATE when readOnly is true', async () => {
       process.env.DATABASE_URL = 'postgres://localhost/db';
 
-      const result = await sqlQuery.execute({
-        query: 'UPDATE users SET name = $1',
-        params: ['test'],
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'UPDATE users SET name = $1',
+          params: ['test'],
+        },
+        createToolContext()
+      );
 
       expect(result).toHaveProperty('error');
     });
@@ -116,7 +123,7 @@ describe('sql-query tool', () => {
         rows: [{ id: 1, name: 'test' }],
       });
 
-      const result = await sqlQuery.execute({ query: 'SELECT * FROM users' });
+      const result = await sqlQuery.execute({ query: 'SELECT * FROM users' }, createToolContext());
 
       expect(result).not.toHaveProperty('error');
     });
@@ -130,10 +137,13 @@ describe('sql-query tool', () => {
         rows: [{ count: 5 }],
       });
 
-      const result = await sqlQuery.execute({
-        query:
-          'WITH active AS (SELECT * FROM users WHERE active = true) SELECT COUNT(*) FROM active',
-      });
+      const result = await sqlQuery.execute(
+        {
+          query:
+            'WITH active AS (SELECT * FROM users WHERE active = true) SELECT COUNT(*) FROM active',
+        },
+        createToolContext()
+      );
 
       expect(result).not.toHaveProperty('error');
     });
@@ -147,7 +157,7 @@ describe('sql-query tool', () => {
         rows: [{ version: 'PostgreSQL 15.0' }],
       });
 
-      const result = await sqlQuery.execute({ query: 'SHOW server_version' });
+      const result = await sqlQuery.execute({ query: 'SHOW server_version' }, createToolContext());
 
       expect(result).not.toHaveProperty('error');
     });
@@ -161,7 +171,10 @@ describe('sql-query tool', () => {
         rows: [{ 'QUERY PLAN': 'Seq Scan on users' }],
       });
 
-      const result = await sqlQuery.execute({ query: 'EXPLAIN SELECT * FROM users' });
+      const result = await sqlQuery.execute(
+        { query: 'EXPLAIN SELECT * FROM users' },
+        createToolContext()
+      );
 
       expect(result).not.toHaveProperty('error');
     });
@@ -175,11 +188,14 @@ describe('sql-query tool', () => {
         rows: [],
       });
 
-      const result = await sqlQuery.execute({
-        query: 'DELETE FROM users WHERE id = $1',
-        params: [1],
-        readOnly: false,
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'DELETE FROM users WHERE id = $1',
+          params: [1],
+          readOnly: false,
+        },
+        createToolContext()
+      );
 
       expect(result).not.toHaveProperty('error');
     });
@@ -187,10 +203,13 @@ describe('sql-query tool', () => {
     it('blocks SELECT FOR UPDATE in read-only mode', async () => {
       process.env.DATABASE_URL = 'postgres://localhost/db';
 
-      const result = await sqlQuery.execute({
-        query: 'SELECT * FROM users WHERE id = $1 FOR UPDATE',
-        params: [1],
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'SELECT * FROM users WHERE id = $1 FOR UPDATE',
+          params: [1],
+        },
+        createToolContext()
+      );
 
       expect(result).toHaveProperty('error');
     });
@@ -211,7 +230,7 @@ describe('sql-query tool', () => {
         ],
       });
 
-      const result = await sqlQuery.execute({ query: 'SELECT * FROM users' });
+      const result = await sqlQuery.execute({ query: 'SELECT * FROM users' }, createToolContext());
 
       expect(result).toMatchObject({
         rows: [
@@ -232,10 +251,13 @@ describe('sql-query tool', () => {
         rows: [{ id: 1, name: 'Alice' }],
       });
 
-      await sqlQuery.execute({
-        query: 'SELECT * FROM users WHERE id = $1',
-        params: [1],
-      });
+      await sqlQuery.execute(
+        {
+          query: 'SELECT * FROM users WHERE id = $1',
+          params: [1],
+        },
+        createToolContext()
+      );
 
       expect(mockInstance.query).toHaveBeenCalledWith(
         expect.stringContaining('SELECT * FROM users WHERE id = $1'),
@@ -252,10 +274,13 @@ describe('sql-query tool', () => {
         rows: manyRows,
       });
 
-      const result = await sqlQuery.execute({
-        query: 'SELECT * FROM big_table',
-        maxRows: 10,
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'SELECT * FROM big_table',
+          maxRows: 10,
+        },
+        createToolContext()
+      );
 
       expect((result as { rows: unknown[] }).rows).toHaveLength(10);
       expect((result as { truncated: boolean }).truncated).toBe(true);
@@ -268,7 +293,7 @@ describe('sql-query tool', () => {
         rows: [{ id: 1 }],
       });
 
-      await sqlQuery.execute({ query: 'SELECT * FROM users' });
+      await sqlQuery.execute({ query: 'SELECT * FROM users' }, createToolContext());
 
       const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[1][0];
       expect(calledQuery).toContain('LIMIT');
@@ -281,7 +306,10 @@ describe('sql-query tool', () => {
         rows: [{ title: 'LIMIT' }],
       });
 
-      await sqlQuery.execute({ query: "SELECT * FROM songs WHERE title = 'LIMIT'" });
+      await sqlQuery.execute(
+        { query: "SELECT * FROM songs WHERE title = 'LIMIT'" },
+        createToolContext()
+      );
 
       const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[1][0];
       expect(calledQuery).toBe("SELECT * FROM songs WHERE title = 'LIMIT'\nLIMIT 101");
@@ -294,7 +322,7 @@ describe('sql-query tool', () => {
         rows: [{ id: 1 }],
       });
 
-      await sqlQuery.execute({ query: 'SELECT * FROM users -- LIMIT 1' });
+      await sqlQuery.execute({ query: 'SELECT * FROM users -- LIMIT 1' }, createToolContext());
 
       const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[1][0];
       expect(calledQuery).toBe('SELECT * FROM users -- LIMIT 1\nLIMIT 101');
@@ -307,7 +335,10 @@ describe('sql-query tool', () => {
         rows: [{ id: 1 }],
       });
 
-      await sqlQuery.execute({ query: 'SELECT * FROM users; -- keep this comment' });
+      await sqlQuery.execute(
+        { query: 'SELECT * FROM users; -- keep this comment' },
+        createToolContext()
+      );
 
       const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[1][0];
       expect(calledQuery).toBe('SELECT * FROM users -- keep this comment\nLIMIT 101');
@@ -320,7 +351,7 @@ describe('sql-query tool', () => {
         rows: [{ id: 1 }],
       });
 
-      await sqlQuery.execute({ query: 'SELECT * FROM users LIMIT 5' });
+      await sqlQuery.execute({ query: 'SELECT * FROM users LIMIT 5' }, createToolContext());
 
       const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[1][0];
       expect(calledQuery).toBe('SELECT * FROM users LIMIT 5');
@@ -333,7 +364,7 @@ describe('sql-query tool', () => {
         rows: [{ server_version: '15.0' }],
       });
 
-      await sqlQuery.execute({ query: 'SHOW server_version' });
+      await sqlQuery.execute({ query: 'SHOW server_version' }, createToolContext());
 
       const calledQuery = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[1][0];
       expect(calledQuery).toBe('SHOW server_version');
@@ -346,11 +377,14 @@ describe('sql-query tool', () => {
         rows: [],
       });
 
-      await sqlQuery.execute({
-        query: 'DELETE FROM users WHERE id = $1',
-        params: [1],
-        readOnly: false,
-      });
+      await sqlQuery.execute(
+        {
+          query: 'DELETE FROM users WHERE id = $1',
+          params: [1],
+          readOnly: false,
+        },
+        createToolContext()
+      );
 
       expect(mockInstance.query).toHaveBeenCalledWith('DELETE FROM users WHERE id = $1', [1]);
     });
@@ -361,7 +395,10 @@ describe('sql-query tool', () => {
       const query = mockInstance.query as ReturnType<typeof vi.fn>;
       query.mockResolvedValue({ rows: [{ n: 1 }] });
 
-      await sqlQuery.execute({ query: 'SELECT nextval($1) AS n', params: ['seq'] });
+      await sqlQuery.execute(
+        { query: 'SELECT nextval($1) AS n', params: ['seq'] },
+        createToolContext()
+      );
 
       expect(query.mock.calls.map((call) => call[0])).toEqual([
         'BEGIN TRANSACTION READ ONLY',
@@ -381,7 +418,10 @@ describe('sql-query tool', () => {
         return { rows: [] };
       });
 
-      const result = await sqlQuery.execute({ query: 'SELECT nextval($1)', params: ['seq'] });
+      const result = await sqlQuery.execute(
+        { query: 'SELECT nextval($1)', params: ['seq'] },
+        createToolContext()
+      );
 
       expect(result).toMatchObject({ error: expect.stringContaining('read-only transaction') });
       expect(query.mock.calls.at(-1)?.[0]).toBe('ROLLBACK');
@@ -394,7 +434,10 @@ describe('sql-query tool', () => {
         new Error('relation "nonexistent" does not exist')
       );
 
-      const result = await sqlQuery.execute({ query: 'SELECT * FROM nonexistent' });
+      const result = await sqlQuery.execute(
+        { query: 'SELECT * FROM nonexistent' },
+        createToolContext()
+      );
 
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('does not exist');
@@ -406,7 +449,7 @@ describe('sql-query tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      await sqlQuery.execute({ query: 'SELECT 1' });
+      await sqlQuery.execute({ query: 'SELECT 1' }, createToolContext());
 
       expect(mockInstance.end).toHaveBeenCalled();
     });
@@ -416,7 +459,7 @@ describe('sql-query tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Query failed'));
 
-      await sqlQuery.execute({ query: 'SELECT 1' });
+      await sqlQuery.execute({ query: 'SELECT 1' }, createToolContext());
 
       expect(mockInstance.end).toHaveBeenCalled();
     });
@@ -429,10 +472,13 @@ describe('sql-query tool', () => {
       const mockStmt = { reader: true, all: vi.fn().mockReturnValue([{ id: 1 }]) };
       (mockDb.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
 
-      const result = await sqlQuery.execute({
-        query: 'SELECT * FROM users',
-        connectionString: '/path/to/test.db',
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'SELECT * FROM users',
+          connectionString: '/path/to/test.db',
+        },
+        createToolContext()
+      );
 
       expect((result as { database: string }).database).toBe('sqlite');
     });
@@ -443,10 +489,13 @@ describe('sql-query tool', () => {
       const mockStmt = { reader: true, all: vi.fn().mockReturnValue([]) };
       (mockDb.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
 
-      const result = await sqlQuery.execute({
-        query: 'SELECT 1',
-        connectionString: 'data.sqlite',
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'SELECT 1',
+          connectionString: 'data.sqlite',
+        },
+        createToolContext()
+      );
 
       expect((result as { database: string }).database).toBe('sqlite');
     });
@@ -457,10 +506,13 @@ describe('sql-query tool', () => {
       const mockStmt = { reader: true, all: vi.fn().mockReturnValue([]) };
       (mockDb.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
 
-      const result = await sqlQuery.execute({
-        query: 'SELECT 1',
-        connectionString: ':memory:',
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'SELECT 1',
+          connectionString: ':memory:',
+        },
+        createToolContext()
+      );
 
       expect((result as { database: string }).database).toBe('sqlite');
     });
@@ -477,10 +529,13 @@ describe('sql-query tool', () => {
       };
       (mockDb.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
 
-      const result = await sqlQuery.execute({
-        query: 'SELECT * FROM users',
-        connectionString: 'test.db',
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'SELECT * FROM users',
+          connectionString: 'test.db',
+        },
+        createToolContext()
+      );
 
       expect(result).toMatchObject({
         rows: [
@@ -499,11 +554,14 @@ describe('sql-query tool', () => {
       const mockStmt = { reader: true, all: vi.fn().mockReturnValue([{ id: 1 }]) };
       (mockDb.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
 
-      await sqlQuery.execute({
-        query: 'SELECT * FROM users WHERE id = ?',
-        connectionString: 'test.db',
-        params: [1],
-      });
+      await sqlQuery.execute(
+        {
+          query: 'SELECT * FROM users WHERE id = ?',
+          connectionString: 'test.db',
+          params: [1],
+        },
+        createToolContext()
+      );
 
       expect(mockStmt.all).toHaveBeenCalledWith(1);
     });
@@ -514,10 +572,13 @@ describe('sql-query tool', () => {
       const mockStmt = { reader: true, all: vi.fn().mockReturnValue([]) };
       (mockDb.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
 
-      await sqlQuery.execute({
-        query: 'SELECT 1',
-        connectionString: 'test.db',
-      });
+      await sqlQuery.execute(
+        {
+          query: 'SELECT 1',
+          connectionString: 'test.db',
+        },
+        createToolContext()
+      );
 
       expect(mockDb.close).toHaveBeenCalled();
     });
@@ -534,12 +595,15 @@ describe('sql-query tool', () => {
       };
       (mockDb.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
 
-      const result = await sqlQuery.execute({
-        query: 'UPDATE users SET active = ? WHERE team = ?',
-        connectionString: 'test.db',
-        params: [1, 'core'],
-        readOnly: false,
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'UPDATE users SET active = ? WHERE team = ?',
+          connectionString: 'test.db',
+          params: [1, 'core'],
+          readOnly: false,
+        },
+        createToolContext()
+      );
 
       expect(mockStmt.run).toHaveBeenCalledWith(1, 'core');
       expect(mockStmt.all).not.toHaveBeenCalled();
@@ -553,34 +617,46 @@ describe('sql-query tool', () => {
     });
 
     it('blocks multi-statement injection via semicolon', async () => {
-      const result = await sqlQuery.execute({
-        query: 'SELECT 1; DROP TABLE users',
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'SELECT 1; DROP TABLE users',
+        },
+        createToolContext()
+      );
 
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('Only SELECT queries');
     });
 
     it('blocks SELECT with embedded DROP', async () => {
-      const result = await sqlQuery.execute({
-        query: "SELECT * FROM users WHERE name = 'x' UNION SELECT 1; DROP TABLE users--",
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: "SELECT * FROM users WHERE name = 'x' UNION SELECT 1; DROP TABLE users--",
+        },
+        createToolContext()
+      );
 
       expect(result).toHaveProperty('error');
     });
 
     it('blocks SELECT with INSERT keyword', async () => {
-      const result = await sqlQuery.execute({
-        query: "SELECT * FROM users WHERE id = 1 UNION INSERT INTO admin VALUES ('hacked')",
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: "SELECT * FROM users WHERE id = 1 UNION INSERT INTO admin VALUES ('hacked')",
+        },
+        createToolContext()
+      );
 
       expect(result).toHaveProperty('error');
     });
 
     it('blocks SELECT with TRUNCATE', async () => {
-      const result = await sqlQuery.execute({
-        query: 'SELECT 1; TRUNCATE TABLE users',
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'SELECT 1; TRUNCATE TABLE users',
+        },
+        createToolContext()
+      );
 
       expect(result).toHaveProperty('error');
     });
@@ -592,25 +668,34 @@ describe('sql-query tool', () => {
         rows: [{ name: "Drop it like it's hot" }],
       });
 
-      const result = await sqlQuery.execute({
-        query: "SELECT * FROM songs WHERE title = 'DROP TABLE beats'",
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: "SELECT * FROM songs WHERE title = 'DROP TABLE beats'",
+        },
+        createToolContext()
+      );
 
       expect(result).not.toHaveProperty('error');
     });
 
     it('blocks GRANT statement', async () => {
-      const result = await sqlQuery.execute({
-        query: 'GRANT ALL ON users TO attacker',
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'GRANT ALL ON users TO attacker',
+        },
+        createToolContext()
+      );
 
       expect(result).toHaveProperty('error');
     });
 
     it('blocks ALTER TABLE', async () => {
-      const result = await sqlQuery.execute({
-        query: 'ALTER TABLE users ADD COLUMN backdoor TEXT',
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'ALTER TABLE users ADD COLUMN backdoor TEXT',
+        },
+        createToolContext()
+      );
 
       expect(result).toHaveProperty('error');
     });
@@ -622,10 +707,13 @@ describe('sql-query tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      const result = await sqlQuery.execute({
-        query: 'SELECT 1',
-        connectionString: 'postgres://localhost/db',
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'SELECT 1',
+          connectionString: 'postgres://localhost/db',
+        },
+        createToolContext()
+      );
 
       expect((result as { database: string }).database).toBe('postgres');
     });
@@ -635,10 +723,13 @@ describe('sql-query tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      const result = await sqlQuery.execute({
-        query: 'SELECT 1',
-        connectionString: 'postgresql://localhost/db',
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'SELECT 1',
+          connectionString: 'postgresql://localhost/db',
+        },
+        createToolContext()
+      );
 
       expect((result as { database: string }).database).toBe('postgres');
     });
@@ -649,11 +740,14 @@ describe('sql-query tool', () => {
       const mockStmt = { reader: true, all: vi.fn().mockReturnValue([]) };
       (mockDb.prepare as ReturnType<typeof vi.fn>).mockReturnValue(mockStmt);
 
-      const result = await sqlQuery.execute({
-        query: 'SELECT 1',
-        connectionString: 'some-path',
-        database: 'sqlite',
-      });
+      const result = await sqlQuery.execute(
+        {
+          query: 'SELECT 1',
+          connectionString: 'some-path',
+          database: 'sqlite',
+        },
+        createToolContext()
+      );
 
       expect((result as { database: string }).database).toBe('sqlite');
     });

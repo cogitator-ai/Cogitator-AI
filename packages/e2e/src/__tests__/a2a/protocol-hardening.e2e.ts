@@ -10,7 +10,7 @@ import type {
 } from '@cogitator-ai/a2a';
 import { Cogitator } from '@cogitator-ai/core';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
-import { startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
+import { createStubAgent, startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
 import { createTestAgent } from '../../helpers/setup';
 
 const describeHeavy = process.env.OLLAMA_API_KEY ? describe : describe.skip;
@@ -19,16 +19,7 @@ const OLLAMA_CLOUD_URL = process.env.OLLAMA_URL || 'https://ollama.com';
 
 function mockAgent(name: string): Agent {
   const config: AgentConfig = { name, model: 'mock', instructions: 'test', description: name };
-  return {
-    id: `agent_${name}`,
-    name,
-    config,
-    model: config.model,
-    instructions: config.instructions,
-    tools: [],
-    clone: (() => {}) as Agent['clone'],
-    serialize: (() => {}) as Agent['serialize'],
-  };
+  return createStubAgent(config);
 }
 
 function runResult(output: string): AgentRunResult {

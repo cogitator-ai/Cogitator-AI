@@ -223,7 +223,7 @@ describe('StreamBuffer', () => {
       const calls = channel.sendDraft.mock.calls;
       expect(calls.length).toBeGreaterThanOrEqual(2);
       const ids = calls.map((c: unknown[]) => c[1]);
-      const allSame = ids.every((id: number) => id === ids[0]);
+      const allSame = ids.every((id) => id === ids[0]);
       expect(allSame).toBe(true);
 
       await buffer.abort();

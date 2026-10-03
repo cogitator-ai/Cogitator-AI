@@ -21,6 +21,15 @@ async function* emptyStream(): AsyncGenerator<ChatStreamChunk> {
   yield* [];
 }
 
+function chatResponse(content: string): ChatResponse {
+  return {
+    id: 'test-response',
+    content,
+    finishReason: 'stop',
+    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+  };
+}
+
 describe('parseBranchResponse', () => {
   it('parses valid JSON response', () => {
     const response = JSON.stringify({
@@ -332,13 +341,9 @@ describe('Reasoning Prompts', () => {
 
 describe('BranchGenerator', () => {
   const createMockLLM = (response: string): LLMBackend => ({
-    chat: vi.fn().mockResolvedValue({ content: response } as ChatResponse),
-    stream: vi.fn(),
-    listModels: vi.fn(),
-    healthCheck: vi.fn(),
-    countTokens: vi.fn(),
-    validateModel: vi.fn(),
-    config: {} as never,
+    provider: 'openai',
+    chat: vi.fn().mockResolvedValue(chatResponse(response)),
+    chatStream: vi.fn(emptyStream),
   });
 
   it('generates branches from LLM response', async () => {
@@ -469,13 +474,9 @@ describe('BranchGenerator', () => {
 
 describe('BranchEvaluator', () => {
   const createMockLLM = (response: string): LLMBackend => ({
-    chat: vi.fn().mockResolvedValue({ content: response } as ChatResponse),
-    stream: vi.fn(),
-    listModels: vi.fn(),
-    healthCheck: vi.fn(),
-    countTokens: vi.fn(),
-    validateModel: vi.fn(),
-    config: {} as never,
+    provider: 'openai',
+    chat: vi.fn().mockResolvedValue(chatResponse(response)),
+    chatStream: vi.fn(emptyStream),
   });
 
   const createContext = (): AgentContext => ({
@@ -569,23 +570,21 @@ describe('BranchEvaluator', () => {
   it('evaluates batch of branches', async () => {
     let callCount = 0;
     const llm: LLMBackend = {
+      provider: 'openai',
       chat: vi.fn().mockImplementation(() => {
         callCount++;
-        return Promise.resolve({
-          content: JSON.stringify({
-            confidence: 0.5 + callCount * 0.1,
-            progress: 0.5,
-            novelty: 0.5,
-            reasoning: `Response ${callCount}`,
-          }),
-        } as ChatResponse);
+        return Promise.resolve(
+          chatResponse(
+            JSON.stringify({
+              confidence: 0.5 + callCount * 0.1,
+              progress: 0.5,
+              novelty: 0.5,
+              reasoning: `Response ${callCount}`,
+            })
+          )
+        );
       }),
-      stream: vi.fn(),
-      listModels: vi.fn(),
-      healthCheck: vi.fn(),
-      countTokens: vi.fn(),
-      validateModel: vi.fn(),
-      config: {} as never,
+      chatStream: vi.fn(emptyStream),
     };
 
     const evaluator = new BranchEvaluator({ llm, model: 'gpt-4' });

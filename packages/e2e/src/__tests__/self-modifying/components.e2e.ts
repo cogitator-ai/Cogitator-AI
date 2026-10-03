@@ -11,6 +11,8 @@ import {
   SelfModifyingEventEmitter,
   DEFAULT_MODE_PROFILES,
 } from '@cogitator-ai/self-modifying';
+import { tool } from '@cogitator-ai/core';
+import { z } from 'zod';
 import type {
   GeneratedTool,
   EvolutionCandidate,
@@ -392,7 +394,12 @@ describe('RollbackManager', () => {
   it('rollback restores previous state', async () => {
     const config = { name: 'agent', model: 'gpt-4', instructions: 'original', temperature: 0.5 };
     const tools = [
-      { name: 'tool_a', description: 'Tool A', parameters: {}, execute: async () => 'a' },
+      tool({
+        name: 'tool_a',
+        description: 'Tool A',
+        parameters: z.object({}),
+        execute: async () => 'a',
+      }),
     ];
 
     const checkpoint = await manager.createCheckpoint('agent_1', config, tools, []);
@@ -407,14 +414,28 @@ describe('RollbackManager', () => {
     const cpA = await manager.createCheckpoint(
       'agent_1',
       { name: 'agent', model: 'gpt-4', instructions: 'v1' },
-      [{ name: 'old_tool', description: 'Old', parameters: {}, execute: async () => 'old' }],
+      [
+        tool({
+          name: 'old_tool',
+          description: 'Old',
+          parameters: z.object({}),
+          execute: async () => 'old',
+        }),
+      ],
       []
     );
 
     const cpB = await manager.createCheckpoint(
       'agent_1',
       { name: 'agent', model: 'gpt-4o', instructions: 'v2' },
-      [{ name: 'new_tool', description: 'New', parameters: {}, execute: async () => 'new' }],
+      [
+        tool({
+          name: 'new_tool',
+          description: 'New',
+          parameters: z.object({}),
+          execute: async () => 'new',
+        }),
+      ],
       [{ id: 'mod_1', type: 'config_change', appliedAt: new Date(), data: {} }]
     );
 

@@ -12,7 +12,8 @@ describe('AuctionStrategy', () => {
 
   describe('initialization', () => {
     it('should throw when no agents exist', async () => {
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -25,7 +26,8 @@ describe('AuctionStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('bidder-1'));
       coordinator.setAgentResponse('bidder-1', 'SCORE: 0.01\nCAPABILITIES: testing');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -44,7 +46,8 @@ describe('AuctionStrategy', () => {
       coordinator.setAgentResponse('agent-a', 'SCORE: 0.8\nCAPABILITIES: coding');
       coordinator.setAgentResponse('agent-b', 'SCORE: 0.6\nCAPABILITIES: testing');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -59,7 +62,8 @@ describe('AuctionStrategy', () => {
       coordinator.setAgentResponse('agent-a', 'SCORE: 0.8');
       coordinator.setAgentResponse('agent-b', 'SCORE: 0.6');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -78,7 +82,7 @@ describe('AuctionStrategy', () => {
       coordinator.setAgentResponse('agent-a', 'Winner output');
       coordinator.setAgentResponse('agent-b', 'Loser output');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
         selection: 'highest-bid',
         bidding: 'custom',
         bidFunction: customBidFn,
@@ -99,7 +103,7 @@ describe('AuctionStrategy', () => {
       coordinator.setAgentResponse('agent-a', 'output');
       coordinator.setAgentResponse('agent-b', 'output');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
         selection: 'highest-bid',
         bidding: 'custom',
         bidFunction: failingBidFn,
@@ -120,7 +124,8 @@ describe('AuctionStrategy', () => {
     it('should parse SCORE from response', async () => {
       coordinator.setAgentResponse('parser-test', 'SCORE: 0.75\nCAPABILITIES: parsing');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -133,7 +138,8 @@ describe('AuctionStrategy', () => {
       coordinator.setAgentResponse('parser-test', 'SCORE: 1.5');
       coordinator.setAgentResponse('high-bidder', 'SCORE: -0.5');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -146,7 +152,8 @@ describe('AuctionStrategy', () => {
     it('should default to 0.5 for invalid score', async () => {
       coordinator.setAgentResponse('parser-test', 'SCORE: invalid\nCAPABILITIES: testing');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -157,7 +164,8 @@ describe('AuctionStrategy', () => {
     it('should default to 0.5 when no SCORE found', async () => {
       coordinator.setAgentResponse('parser-test', 'I can do this task well');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -171,7 +179,8 @@ describe('AuctionStrategy', () => {
         'SCORE: 0.8\nCAPABILITIES: coding, testing, debugging'
       );
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -194,7 +203,8 @@ describe('AuctionStrategy', () => {
       coordinator.setAgentResponse('mid-bidder', 'SCORE: 0.5');
       coordinator.setAgentResponse('high-bidder', 'SCORE: 0.9');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -207,7 +217,8 @@ describe('AuctionStrategy', () => {
       coordinator.setAgentResponse('mid-bidder', 'SCORE: 0.0');
       coordinator.setAgentResponse('high-bidder', 'SCORE: 1.0');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'weighted-random',
       });
 
@@ -220,7 +231,8 @@ describe('AuctionStrategy', () => {
       coordinator.setAgentResponse('mid-bidder', 'SCORE: 0.0');
       coordinator.setAgentResponse('high-bidder', 'SCORE: 0.0');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'weighted-random',
       });
 
@@ -239,7 +251,8 @@ describe('AuctionStrategy', () => {
       coordinator.setAgentResponse('below-threshold', 'SCORE: 0.2');
       coordinator.setAgentResponse('above-threshold', 'SCORE: 0.6');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
         minBid: 0.5,
       });
@@ -254,7 +267,8 @@ describe('AuctionStrategy', () => {
       coordinator.setAgentResponse('below-threshold', 'SCORE: 0.1');
       coordinator.setAgentResponse('above-threshold', 'SCORE: 0.2');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
         minBid: 0.5,
       });
@@ -268,7 +282,8 @@ describe('AuctionStrategy', () => {
       coordinator.setAgentResponse('below-threshold', 'SCORE: 0.49');
       coordinator.setAgentResponse('above-threshold', 'SCORE: 0.5');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
         minBid: 0.5,
       });
@@ -291,7 +306,8 @@ describe('AuctionStrategy', () => {
       });
       coordinator.setAgentResponse('loser-agent', 'SCORE: 0.1');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -307,7 +323,8 @@ describe('AuctionStrategy', () => {
       });
       coordinator.setAgentResponse('loser-agent', 'SCORE: 0.2');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -332,7 +349,8 @@ describe('AuctionStrategy', () => {
       });
       coordinator.setAgentResponse('loser-agent', 'SCORE: 0.25');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -354,7 +372,8 @@ describe('AuctionStrategy', () => {
     });
 
     it('should initialize auction state on blackboard', async () => {
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -366,7 +385,8 @@ describe('AuctionStrategy', () => {
     });
 
     it('should update blackboard with winner info', async () => {
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -388,7 +408,8 @@ describe('AuctionStrategy', () => {
       const startHandler = vi.fn();
       coordinator.events.on('auction:start', startHandler);
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -411,7 +432,8 @@ describe('AuctionStrategy', () => {
       const bidHandler = vi.fn();
       coordinator.events.on('auction:bid', bidHandler);
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -424,7 +446,8 @@ describe('AuctionStrategy', () => {
       const winnerHandler = vi.fn();
       coordinator.events.on('auction:winner', winnerHandler);
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -445,7 +468,8 @@ describe('AuctionStrategy', () => {
       const completeHandler = vi.fn();
       coordinator.events.on('auction:complete', completeHandler);
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -475,7 +499,8 @@ describe('AuctionStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('other-agent'));
       coordinator.setAgentResponse('other-agent', 'SCORE: 0.45');
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -487,7 +512,8 @@ describe('AuctionStrategy', () => {
     });
 
     it('should return auctionWinner', async () => {
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -496,7 +522,8 @@ describe('AuctionStrategy', () => {
     });
 
     it('should return winner output as final output', async () => {
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -505,7 +532,8 @@ describe('AuctionStrategy', () => {
     });
 
     it('should include winner result in agentResults', async () => {
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
+        bidding: 'capability-match',
         selection: 'highest-bid',
       });
 
@@ -528,7 +556,7 @@ describe('AuctionStrategy', () => {
         trace: { traceId: 'trace1', spans: [] },
       });
 
-      const strategy = new AuctionStrategy(coordinator as any, {
+      const strategy = new AuctionStrategy(coordinator, {
         selection: 'highest-bid',
         bidding: 'custom',
         bidFunction: () => 1.0,

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { toolCallMessage } from './helpers/messages';
 import { OllamaBackend } from '../llm/ollama';
 
 const mockFetch = vi.fn();
@@ -330,7 +331,9 @@ describe('OllamaBackend', () => {
       await backend.chat({
         model: 'llama3.2',
         messages: [{ role: 'user', content: 'Test' }],
-        tools: [{ name: 'tool1', description: 'Tool 1', parameters: { type: 'object' } }],
+        tools: [
+          { name: 'tool1', description: 'Tool 1', parameters: { type: 'object', properties: {} } },
+        ],
         toolChoice: 'auto',
       });
 
@@ -352,7 +355,9 @@ describe('OllamaBackend', () => {
       await backend.chat({
         model: 'llama3.2',
         messages: [{ role: 'user', content: 'Test' }],
-        tools: [{ name: 'tool1', description: 'Tool 1', parameters: { type: 'object' } }],
+        tools: [
+          { name: 'tool1', description: 'Tool 1', parameters: { type: 'object', properties: {} } },
+        ],
         toolChoice: 'none',
       });
 
@@ -375,10 +380,10 @@ describe('OllamaBackend', () => {
         model: 'llama3.2',
         messages: [{ role: 'user', content: 'Test' }],
         tools: [
-          { name: 'tool1', description: 'Tool 1', parameters: { type: 'object' } },
-          { name: 'tool2', description: 'Tool 2', parameters: { type: 'object' } },
+          { name: 'tool1', description: 'Tool 1', parameters: { type: 'object', properties: {} } },
+          { name: 'tool2', description: 'Tool 2', parameters: { type: 'object', properties: {} } },
         ],
-        toolChoice: { function: { name: 'tool2' } },
+        toolChoice: { type: 'function', function: { name: 'tool2' } },
       });
 
       const [, options] = mockFetch.mock.calls[0] as [string, RequestInit];
@@ -756,11 +761,7 @@ describe('OllamaBackend', () => {
         model: 'm',
         messages: [
           { role: 'user', content: 'time?' },
-          {
-            role: 'assistant',
-            content: '',
-            toolCalls: [{ id: 'c1', name: 'now', arguments: {} }],
-          } as never,
+          toolCallMessage([{ id: 'c1', name: 'now', arguments: {} }]),
           { role: 'tool', content: '"12:00"', toolCallId: 'c1', name: 'now' },
         ],
       });

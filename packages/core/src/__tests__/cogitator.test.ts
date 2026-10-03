@@ -76,7 +76,7 @@ describe('Cogitator', () => {
     vi.clearAllMocks();
   });
 
-  const createTestAgent = (overrides?: Partial<Parameters<typeof Agent>[0]>) =>
+  const createTestAgent = (overrides?: Partial<ConstructorParameters<typeof Agent>[0]>) =>
     new Agent({
       name: 'test-agent',
       model: 'openai/gpt-4o-mini',

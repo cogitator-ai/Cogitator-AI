@@ -143,7 +143,7 @@ describe('paired t-test', () => {
     const a = [85, 90, 78, 92, 88, 95, 82, 91];
     const b = [80, 85, 79, 90, 84, 88, 76, 85];
     const result = pairedTTest(a, b);
-    const meanDiff = mean(a.map((v, i) => v - b[i]));
+    const meanDiff = referenceMean(a.map((v, i) => v - b[i]));
 
     expect(result.confidenceInterval[0]).toBeLessThan(meanDiff);
     expect(result.confidenceInterval[1]).toBeGreaterThan(meanDiff);
@@ -210,7 +210,7 @@ describe('McNemar test', () => {
   });
 });
 
-function mean(values: number[]): number {
+function referenceMean(values: number[]): number {
   if (values.length === 0) return 0;
   return values.reduce((s, v) => s + v, 0) / values.length;
 }

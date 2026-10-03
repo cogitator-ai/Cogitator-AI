@@ -6,15 +6,23 @@ import {
   parseTaskProfileResponse,
   parseCandidateGenerationResponse,
 } from '../architecture-evolution';
-import type { LLMBackend, EvolutionCandidate } from '@cogitator-ai/types';
+import type { ChatResponse, LLMBackend, EvolutionCandidate } from '@cogitator-ai/types';
 
-const mockLLM: LLMBackend = {
-  complete: vi.fn(),
-  name: 'mock',
-  supportsTool: () => true,
-  supportsStreaming: () => false,
-  validateConfig: () => true,
-};
+function chatResponse(content: string): ChatResponse {
+  return {
+    id: 'resp',
+    content,
+    finishReason: 'stop',
+    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+  };
+}
+
+const mockLLM = {
+  provider: 'ollama',
+  chat: vi.fn<LLMBackend['chat']>(),
+  chatStream: async function* () {},
+  complete: vi.fn<NonNullable<LLMBackend['complete']>>(),
+} satisfies LLMBackend;
 
 describe('CapabilityAnalyzer', () => {
   it('analyzes task with heuristics', async () => {
@@ -290,24 +298,26 @@ describe('EvolutionStrategy', () => {
 describe('ParameterOptimizer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (mockLLM.complete as ReturnType<typeof vi.fn>).mockResolvedValue({
-      content: JSON.stringify([
-        {
-          id: 'candidate_1',
-          config: { temperature: 0.5 },
-          reasoning: 'Lower temperature for precision',
-          expectedImprovement: 0.7,
-          risk: 'low',
-        },
-        {
-          id: 'candidate_2',
-          config: { temperature: 0.9, maxTokens: 8000 },
-          reasoning: 'Higher temperature for creativity',
-          expectedImprovement: 0.6,
-          risk: 'medium',
-        },
-      ]),
-    });
+    mockLLM.complete.mockResolvedValue(
+      chatResponse(
+        JSON.stringify([
+          {
+            id: 'candidate_1',
+            config: { temperature: 0.5 },
+            reasoning: 'Lower temperature for precision',
+            expectedImprovement: 0.7,
+            risk: 'low',
+          },
+          {
+            id: 'candidate_2',
+            config: { temperature: 0.9, maxTokens: 8000 },
+            reasoning: 'Higher temperature for creativity',
+            expectedImprovement: 0.6,
+            risk: 'medium',
+          },
+        ])
+      )
+    );
   });
 
   it('optimizes architecture for task', async () => {

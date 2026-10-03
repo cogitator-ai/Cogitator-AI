@@ -51,7 +51,7 @@ describe('vector-search tool', () => {
       delete process.env.OLLAMA_HOST;
       process.env.DATABASE_URL = 'postgres://localhost/db';
 
-      const result = await vectorSearch.execute({ query: 'test query' });
+      const result = await vectorSearch.execute({ query: 'test query' }, ctx);
 
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('No embedding provider');
@@ -73,7 +73,7 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      const result = await vectorSearch.execute({ query: 'test' });
+      const result = await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect((result as { provider: string }).provider).toBe('openai');
       expect(mockFetch).toHaveBeenCalledWith(
@@ -104,7 +104,7 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      const result = await vectorSearch.execute({ query: 'test' });
+      const result = await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect((result as { provider: string }).provider).toBe('ollama');
       expect(mockFetch).toHaveBeenCalledWith(
@@ -131,7 +131,7 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      const result = await vectorSearch.execute({ query: 'test' });
+      const result = await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect((result as { provider: string }).provider).toBe('google');
       expect(mockFetch).toHaveBeenCalledWith(
@@ -157,10 +157,13 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      const result = await vectorSearch.execute({
-        query: 'test',
-        embeddingProvider: 'google',
-      });
+      const result = await vectorSearch.execute(
+        {
+          query: 'test',
+          embeddingProvider: 'google',
+        },
+        ctx
+      );
 
       expect((result as { provider: string }).provider).toBe('google');
     });
@@ -171,7 +174,7 @@ describe('vector-search tool', () => {
       process.env.OPENAI_API_KEY = 'sk-test';
       delete process.env.DATABASE_URL;
 
-      const result = await vectorSearch.execute({ query: 'test' });
+      const result = await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('No database connection');
@@ -193,7 +196,7 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      await vectorSearch.execute({ query: 'test' });
+      await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect(mockInstance.connect).toHaveBeenCalled();
     });
@@ -213,10 +216,13 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      await vectorSearch.execute({
-        query: 'test',
-        connectionString: 'postgres://custom:conn@host/db',
-      });
+      await vectorSearch.execute(
+        {
+          query: 'test',
+          connectionString: 'postgres://custom:conn@host/db',
+        },
+        ctx
+      );
 
       expect(mockInstance.connect).toHaveBeenCalled();
     });
@@ -241,7 +247,7 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      const result = await vectorSearch.execute({ query: 'test' });
+      const result = await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect((result as { model: string }).model).toBe('text-embedding-3-small');
 
@@ -262,10 +268,13 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      const result = await vectorSearch.execute({
-        query: 'test',
-        embeddingModel: 'text-embedding-3-large',
-      });
+      const result = await vectorSearch.execute(
+        {
+          query: 'test',
+          embeddingModel: 'text-embedding-3-large',
+        },
+        ctx
+      );
 
       expect((result as { model: string }).model).toBe('text-embedding-3-large');
     });
@@ -276,7 +285,7 @@ describe('vector-search tool', () => {
         text: () => Promise.resolve('Invalid API key'),
       });
 
-      const result = await vectorSearch.execute({ query: 'test' });
+      const result = await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('OpenAI embedding error');
@@ -322,7 +331,7 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      const result = await vectorSearch.execute({ query: 'test' });
+      const result = await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect((result as { model: string }).model).toBe('nomic-embed-text');
 
@@ -337,7 +346,7 @@ describe('vector-search tool', () => {
         text: () => Promise.resolve('Model not found'),
       });
 
-      const result = await vectorSearch.execute({ query: 'test' });
+      const result = await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('Ollama embedding error');
@@ -365,7 +374,7 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      const result = await vectorSearch.execute({ query: 'test' });
+      const result = await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect((result as { model: string }).model).toBe('gemini-embedding-001');
     });
@@ -383,7 +392,7 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      await vectorSearch.execute({ query: 'test' });
+      await vectorSearch.execute({ query: 'test' }, ctx);
 
       const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
       expect(url).toBe(
@@ -405,7 +414,7 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      const result = await vectorSearch.execute({ query: 'test' });
+      const result = await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect((result as { provider: string }).provider).toBe('ollama');
       expect(mockFetch.mock.calls[0][0]).toBe('http://gpu-box:11434/api/embeddings');
@@ -417,7 +426,7 @@ describe('vector-search tool', () => {
         text: () => Promise.resolve('Invalid API key'),
       });
 
-      const result = await vectorSearch.execute({ query: 'test' });
+      const result = await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('Google embedding error');
@@ -445,7 +454,7 @@ describe('vector-search tool', () => {
         rows: [{ id: '1', content: 'test doc', metadata: {}, similarity: 0.9 }],
       });
 
-      await vectorSearch.execute({ query: 'test' });
+      await vectorSearch.execute({ query: 'test' }, ctx);
 
       const queryCall = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
       expect(queryCall).toContain('FROM documents');
@@ -456,10 +465,13 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      await vectorSearch.execute({
-        query: 'test',
-        collection: 'my_vectors',
-      });
+      await vectorSearch.execute(
+        {
+          query: 'test',
+          collection: 'my_vectors',
+        },
+        ctx
+      );
 
       const queryCall = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
       expect(queryCall).toContain('FROM my_vectors');
@@ -470,10 +482,13 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      await vectorSearch.execute({
-        query: 'test',
-        topK: 10,
-      });
+      await vectorSearch.execute(
+        {
+          query: 'test',
+          topK: 10,
+        },
+        ctx
+      );
 
       const queryParams = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][1];
       expect(queryParams).toContain(10);
@@ -484,10 +499,13 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      await vectorSearch.execute({
-        query: 'test',
-        threshold: 0.8,
-      });
+      await vectorSearch.execute(
+        {
+          query: 'test',
+          threshold: 0.8,
+        },
+        ctx
+      );
 
       const queryCall = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
       expect(queryCall).toContain('>= $3');
@@ -500,10 +518,13 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      await vectorSearch.execute({
-        query: 'test',
-        filter: { category: 'science' },
-      });
+      await vectorSearch.execute(
+        {
+          query: 'test',
+          filter: { category: 'science' },
+        },
+        ctx
+      );
 
       const queryCall = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
       expect(queryCall).toContain('metadata @>');
@@ -529,7 +550,7 @@ describe('vector-search tool', () => {
         ],
       });
 
-      const result = await vectorSearch.execute({ query: 'search query' });
+      const result = await vectorSearch.execute({ query: 'search query' }, ctx);
 
       expect(result).toMatchObject({
         query: 'search query',
@@ -559,7 +580,7 @@ describe('vector-search tool', () => {
         new Error('relation "documents" does not exist')
       );
 
-      const result = await vectorSearch.execute({ query: 'test' });
+      const result = await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('does not exist');
@@ -571,7 +592,7 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      await vectorSearch.execute({ query: 'test' });
+      await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect(mockInstance.end).toHaveBeenCalled();
     });
@@ -581,7 +602,7 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('DB error'));
 
-      await vectorSearch.execute({ query: 'test' });
+      await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect(mockInstance.end).toHaveBeenCalled();
     });
@@ -606,7 +627,7 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      const result = await vectorSearch.execute({ query: 'very obscure query' });
+      const result = await vectorSearch.execute({ query: 'very obscure query' }, ctx);
 
       expect((result as { results: unknown[] }).results).toHaveLength(0);
     });
@@ -618,7 +639,7 @@ describe('vector-search tool', () => {
         rows: [{ id: '1', content: null, metadata: null, similarity: 0.9 }],
       });
 
-      const result = await vectorSearch.execute({ query: 'test' });
+      const result = await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect((result as { results: Array<{ content: string }> }).results[0].content).toBe('');
       expect((result as { results: Array<{ metadata: object }> }).results[0].metadata).toEqual({});
@@ -631,7 +652,7 @@ describe('vector-search tool', () => {
         rows: [{ id: '1', content: 'test', metadata: {}, similarity: '0.9' }],
       });
 
-      const result = await vectorSearch.execute({ query: 'test' });
+      const result = await vectorSearch.execute({ query: 'test' }, ctx);
 
       expect(
         typeof (result as { results: Array<{ similarity: number }> }).results[0].similarity
@@ -654,20 +675,26 @@ describe('vector-search tool', () => {
     });
 
     it('rejects collection names with SQL injection', async () => {
-      const result = await vectorSearch.execute({
-        query: 'test',
-        collection: 'users; DROP TABLE--',
-      });
+      const result = await vectorSearch.execute(
+        {
+          query: 'test',
+          collection: 'users; DROP TABLE--',
+        },
+        ctx
+      );
 
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('Invalid collection name');
     });
 
     it('rejects collection names starting with numbers', async () => {
-      const result = await vectorSearch.execute({
-        query: 'test',
-        collection: '123_table',
-      });
+      const result = await vectorSearch.execute(
+        {
+          query: 'test',
+          collection: '123_table',
+        },
+        ctx
+      );
 
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('Invalid collection name');
@@ -678,10 +705,13 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      const result = await vectorSearch.execute({
-        query: 'test',
-        collection: 'my_collection',
-      });
+      const result = await vectorSearch.execute(
+        {
+          query: 'test',
+          collection: 'my_collection',
+        },
+        ctx
+      );
 
       expect(result).not.toHaveProperty('error');
       const queryCall = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -693,10 +723,13 @@ describe('vector-search tool', () => {
       const mockInstance = new Client();
       (mockInstance.query as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
 
-      const result = await vectorSearch.execute({
-        query: 'test',
-        collection: 'embeddings.data',
-      });
+      const result = await vectorSearch.execute(
+        {
+          query: 'test',
+          collection: 'embeddings.data',
+        },
+        ctx
+      );
 
       expect(result).not.toHaveProperty('error');
       const queryCall = (mockInstance.query as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -704,20 +737,26 @@ describe('vector-search tool', () => {
     });
 
     it('rejects collection names with spaces', async () => {
-      const result = await vectorSearch.execute({
-        query: 'test',
-        collection: 'my table',
-      });
+      const result = await vectorSearch.execute(
+        {
+          query: 'test',
+          collection: 'my table',
+        },
+        ctx
+      );
 
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('Invalid collection name');
     });
 
     it('rejects collection names with parentheses', async () => {
-      const result = await vectorSearch.execute({
-        query: 'test',
-        collection: 'users()',
-      });
+      const result = await vectorSearch.execute(
+        {
+          query: 'test',
+          collection: 'users()',
+        },
+        ctx
+      );
 
       expect(result).toHaveProperty('error');
       expect((result as { error: string }).error).toContain('Invalid collection name');

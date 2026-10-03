@@ -88,7 +88,10 @@ describe('Reliability: Error Propagation', () => {
     const backend = new OllamaBackend({ baseUrl: `http://localhost:${mockPort}` });
     const error = await backend
       .chat({ model: 'mock', messages: [{ role: 'user', content: 'test' }] })
-      .catch((e: unknown) => e as CogitatorError);
+      .then(
+        () => expect.unreachable('should have thrown'),
+        (e: unknown) => e as CogitatorError
+      );
 
     expect(error.code).toBe(ErrorCode.LLM_UNAVAILABLE);
     expect(error.retryable).toBe(true);

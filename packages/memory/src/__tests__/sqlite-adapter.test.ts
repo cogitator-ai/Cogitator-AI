@@ -234,7 +234,7 @@ describe('SQLiteAdapter', () => {
         message,
         tokenCount: 15,
         toolCalls: [{ id: 'call_1', name: 'test', arguments: {} }],
-        toolResults: [{ toolCallId: 'call_1', result: 'ok' }],
+        toolResults: [{ callId: 'call_1', name: 'test', result: 'ok' }],
         metadata: { source: 'test' },
       });
 

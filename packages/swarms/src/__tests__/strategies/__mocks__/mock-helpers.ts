@@ -51,6 +51,18 @@ export function createMockAgent(
       tools: [],
     },
     clone: () => createMockAgent(name, options),
+    serialize: () => ({
+      version: '1.0.0',
+      id,
+      name,
+      config: {
+        model,
+        instructions,
+        tools: [],
+        description: options?.description,
+      },
+      metadata: { serializedAt: new Date().toISOString() },
+    }),
   };
 }
 

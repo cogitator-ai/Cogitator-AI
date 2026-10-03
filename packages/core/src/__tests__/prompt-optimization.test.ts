@@ -33,6 +33,7 @@ function createTrace(overrides: Partial<ExecutionTrace> = {}): ExecutionTrace {
       toolAccuracy: 1,
       efficiency: 1,
       completeness: 1,
+      coherence: 1,
     },
     score: 0.8,
     model: 'test-model',

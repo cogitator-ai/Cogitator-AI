@@ -18,7 +18,7 @@
     "build": "tsc && tsx ../../scripts/fix-esm-imports.ts .",
     "dev": "tsc --watch",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "clean": "rm -rf dist"
   },
   "engines": {

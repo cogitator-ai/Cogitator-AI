@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { WebSocketTransport, VoiceClient } from '../../transport/ws-transport';
 import { WebSocket } from 'ws';
 import http from 'node:http';
+import type { EventEmitter } from 'node:events';
 
 function connectWs(port: number, path = '/voice'): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
@@ -11,10 +12,7 @@ function connectWs(port: number, path = '/voice'): Promise<WebSocket> {
   });
 }
 
-function waitForEvent<T>(
-  emitter: { on: (event: string, cb: (...args: unknown[]) => void) => unknown },
-  event: string
-): Promise<T> {
+function waitForEvent<T>(emitter: EventEmitter, event: string): Promise<T> {
   return new Promise((resolve) => {
     emitter.on(event, (...args: unknown[]) =>
       resolve(args.length === 1 ? (args[0] as T) : (args as T))

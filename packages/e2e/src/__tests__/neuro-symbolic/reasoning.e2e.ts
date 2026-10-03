@@ -143,11 +143,15 @@ describe('Neuro-Symbolic: knowledge graph queries', () => {
     expect(describeResult.data!.results.count).toBe(3);
   });
 
+  async function nodeIdByName(name: string): Promise<string> {
+    const result = await ns.getGraphAdapter()!.getNodeByName('kg', name);
+    if (!result.success) throw new Error(result.error);
+    if (!result.data) throw new Error(`Node ${name} not found`);
+    return result.data.id;
+  }
+
   it('finds paths across bidirectional edges', async () => {
-    const result = await ns.findPath(
-      (await ns.getGraphAdapter()!.getNodeByName('kg', 'Bob')).data!.id,
-      (await ns.getGraphAdapter()!.getNodeByName('kg', 'Berlin')).data!.id
-    );
+    const result = await ns.findPath(await nodeIdByName('Bob'), await nodeIdByName('Berlin'));
     expect(result.success).toBe(true);
   });
 });

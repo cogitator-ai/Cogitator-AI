@@ -1,9 +1,10 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
+import type { Channel, ChannelMessage } from '@cogitator-ai/types';
 import { TerminalChannel } from '../channels/terminal';
 
 describe('TerminalChannel', () => {
   let channel: TerminalChannel;
-  let stdoutSpy: ReturnType<typeof vi.spyOn>;
+  let stdoutSpy: MockInstance<typeof process.stdout.write>;
 
   beforeEach(() => {
     channel = new TerminalChannel({ userName: 'TestUser', userId: 'test-user' });
@@ -68,18 +69,19 @@ describe('TerminalChannel', () => {
   });
 
   it('sendTyping is a no-op', async () => {
-    await channel.sendTyping('terminal');
+    const asChannel: Channel = channel;
+    await asChannel.sendTyping('terminal');
     expect(stdoutSpy).not.toHaveBeenCalled();
   });
 
   it('onMessage stores handler and it gets called', async () => {
-    const handler = vi.fn().mockResolvedValue(undefined);
+    const handler = vi.fn<(msg: ChannelMessage) => Promise<void>>().mockResolvedValue(undefined);
     channel.onMessage(handler);
 
     await (channel as unknown as { handleInput(s: string): Promise<void> }).handleInput('hello');
 
     expect(handler).toHaveBeenCalledTimes(1);
-    const calledMsg = handler.mock.calls[0][0] as ChannelMessage;
+    const calledMsg = handler.mock.calls[0][0];
     expect(calledMsg.channelType).toBe('terminal');
     expect(calledMsg.text).toBe('hello');
     expect(calledMsg.userId).toBe('test-user');
@@ -87,7 +89,7 @@ describe('TerminalChannel', () => {
   });
 
   it('empty input does not call handler', async () => {
-    const handler = vi.fn().mockResolvedValue(undefined);
+    const handler = vi.fn<(msg: ChannelMessage) => Promise<void>>().mockResolvedValue(undefined);
     channel.onMessage(handler);
 
     await (channel as unknown as { handleInput(s: string): Promise<void> }).handleInput('   ');

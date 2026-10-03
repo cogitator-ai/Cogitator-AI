@@ -3,6 +3,7 @@ import net from 'node:net';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import { WebSocketTransport, type VoiceClient } from '../../transport/ws-transport';
+import type { VerifyClientResult } from '../../types';
 
 function rawUpgrade(port: number, path: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -135,7 +136,7 @@ describe('WebSocketTransport hardening', () => {
     });
     transport = new WebSocketTransport({
       maxConnections: 1,
-      verifyClient: async () => {
+      verifyClient: async (): Promise<VerifyClientResult> => {
         await gate;
         return true;
       },

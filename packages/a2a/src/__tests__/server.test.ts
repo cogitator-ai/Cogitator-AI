@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { A2AServer } from '../server';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
 import type { A2AMessage, A2AStreamEvent, CogitatorLike, AgentRunResult } from '../types';
+import { expectResponse } from './helpers';
 
 function createMockAgent(name: string): Agent {
   const config: AgentConfig = {
@@ -100,12 +101,14 @@ describe('A2AServer', () => {
 
   describe('handleJsonRpc — message/send', () => {
     it('should handle message/send and return completed task', async () => {
-      const response = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'message/send',
-        params: { message: userMessage('Hello') },
-        id: 1,
-      });
+      const response = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'message/send',
+          params: { message: userMessage('Hello') },
+          id: 1,
+        })
+      );
       expect(response.error).toBeUndefined();
       expect(response.result).toBeDefined();
       const task = response.result as Record<string, unknown>;
@@ -127,12 +130,14 @@ describe('A2AServer', () => {
     });
 
     it('should handle missing message in params', async () => {
-      const response = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'message/send',
-        params: {},
-        id: 1,
-      });
+      const response = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'message/send',
+          params: {},
+          id: 1,
+        })
+      );
       expect(response.error).toBeDefined();
       expect(response.error!.code).toBe(-32602);
     });
@@ -145,12 +150,14 @@ describe('A2AServer', () => {
         agents: { test: createMockAgent('test') },
         cogitator: failingCogitator,
       });
-      const response = await s.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'message/send',
-        params: { message: userMessage('Crash') },
-        id: 1,
-      });
+      const response = expectResponse(
+        await s.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'message/send',
+          params: { message: userMessage('Crash') },
+          id: 1,
+        })
+      );
       const task = response.result as Record<string, unknown>;
       expect((task.status as Record<string, unknown>).state).toBe('failed');
     });
@@ -158,31 +165,37 @@ describe('A2AServer', () => {
 
   describe('handleJsonRpc — tasks/get', () => {
     it('should get a previously created task', async () => {
-      const sendResponse = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'message/send',
-        params: { message: userMessage('Hello') },
-        id: 1,
-      });
+      const sendResponse = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'message/send',
+          params: { message: userMessage('Hello') },
+          id: 1,
+        })
+      );
       const taskId = (sendResponse.result as Record<string, unknown>).id;
 
-      const getResponse = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'tasks/get',
-        params: { id: taskId },
-        id: 2,
-      });
+      const getResponse = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'tasks/get',
+          params: { id: taskId },
+          id: 2,
+        })
+      );
       expect(getResponse.error).toBeUndefined();
       expect((getResponse.result as Record<string, unknown>).id).toBe(taskId);
     });
 
     it('should return error for unknown task', async () => {
-      const response = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'tasks/get',
-        params: { id: 'nonexistent' },
-        id: 1,
-      });
+      const response = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'tasks/get',
+          params: { id: 'nonexistent' },
+          id: 1,
+        })
+      );
       expect(response.error).toBeDefined();
       expect(response.error!.code).toBe(-32001);
     });
@@ -190,41 +203,45 @@ describe('A2AServer', () => {
 
   describe('handleJsonRpc — tasks/cancel', () => {
     it('should return error for unknown task', async () => {
-      const response = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'tasks/cancel',
-        params: { id: 'nonexistent' },
-        id: 1,
-      });
+      const response = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'tasks/cancel',
+          params: { id: 'nonexistent' },
+          id: 1,
+        })
+      );
       expect(response.error).toBeDefined();
     });
   });
 
   describe('handleJsonRpc — errors', () => {
     it('should return methodNotFound for unknown method', async () => {
-      const response = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'unknown/method',
-        params: {},
-        id: 1,
-      });
+      const response = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'unknown/method',
+          params: {},
+          id: 1,
+        })
+      );
       expect(response.error).toBeDefined();
       expect(response.error!.code).toBe(-32601);
     });
 
     it('should return invalidRequest for a body that is not a JSON-RPC object', async () => {
-      const response = await server.handleJsonRpc('not an object');
+      const response = expectResponse(await server.handleJsonRpc('not an object'));
       expect(response.error).toBeDefined();
       expect(response.error!.code).toBe(-32600);
     });
 
     it('should return invalidRequest for a malformed request object', async () => {
-      const response = await server.handleJsonRpc({ jsonrpc: '1.0', method: 5 });
+      const response = expectResponse(await server.handleJsonRpc({ jsonrpc: '1.0', method: 5 }));
       expect(response.error!.code).toBe(-32600);
     });
 
     it('should return parseError for null body', async () => {
-      const response = await server.handleJsonRpc(null);
+      const response = expectResponse(await server.handleJsonRpc(null));
       expect(response.error).toBeDefined();
     });
   });
@@ -366,12 +383,14 @@ describe('A2AServer', () => {
 
   describe('SSRF protection', () => {
     it('should reject private webhook URLs by default', async () => {
-      const response = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'tasks/pushNotification/create',
-        params: { taskId: 'task_1', config: { webhookUrl: 'http://localhost:8080/hook' } },
-        id: 1,
-      });
+      const response = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'tasks/pushNotification/create',
+          params: { taskId: 'task_1', config: { webhookUrl: 'http://localhost:8080/hook' } },
+          id: 1,
+        })
+      );
       expect(response.error).toBeDefined();
       expect(response.error!.code).toBe(-32602);
       expect(response.error!.message).toContain('private/internal');
@@ -390,22 +409,26 @@ describe('A2AServer', () => {
         id: 0,
       });
       const taskId = (sent!.result as { id: string }).id;
-      const response = await permissiveServer.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'tasks/pushNotification/create',
-        params: { taskId, config: { webhookUrl: 'http://localhost:8080/hook' } },
-        id: 1,
-      });
+      const response = expectResponse(
+        await permissiveServer.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'tasks/pushNotification/create',
+          params: { taskId, config: { webhookUrl: 'http://localhost:8080/hook' } },
+          id: 1,
+        })
+      );
       expect(response!.error).toBeUndefined();
     });
   });
 
   describe('handleJsonRpc — batch rejection', () => {
     it('should reject batch requests with error', async () => {
-      const response = await server.handleJsonRpc([
-        { jsonrpc: '2.0', method: 'message/send', params: { message: userMessage('a') }, id: 1 },
-        { jsonrpc: '2.0', method: 'message/send', params: { message: userMessage('b') }, id: 2 },
-      ]);
+      const response = expectResponse(
+        await server.handleJsonRpc([
+          { jsonrpc: '2.0', method: 'message/send', params: { message: userMessage('a') }, id: 1 },
+          { jsonrpc: '2.0', method: 'message/send', params: { message: userMessage('b') }, id: 2 },
+        ])
+      );
       expect(response.error).toBeDefined();
       expect(response.error!.code).toBe(-32600);
       expect(response.error!.message).toContain('Batch');

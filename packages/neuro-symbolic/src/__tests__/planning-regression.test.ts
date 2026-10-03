@@ -17,6 +17,7 @@ import {
 describe('exists precondition', () => {
   it('returns true when condition holds for some value in domain', () => {
     const state: PlanState = {
+      id: 'state-0',
       variables: {
         items: [1, 2, 3, 4, 5],
         x: 0,
@@ -35,6 +36,7 @@ describe('exists precondition', () => {
 
   it('returns false when condition holds for no value in domain', () => {
     const state: PlanState = {
+      id: 'state-0',
       variables: {
         items: [1, 2, 3],
         x: 0,
@@ -53,6 +55,7 @@ describe('exists precondition', () => {
 
   it('returns false on empty domain', () => {
     const state: PlanState = {
+      id: 'state-0',
       variables: {
         items: [],
         x: 0,
@@ -71,6 +74,7 @@ describe('exists precondition', () => {
 
   it('works with range domain', () => {
     const state: PlanState = {
+      id: 'state-0',
       variables: {
         range: { min: 1, max: 5 },
         n: 0,
@@ -91,6 +95,7 @@ describe('exists precondition', () => {
 describe('forall precondition', () => {
   it('returns true when condition holds for all values in domain', () => {
     const state: PlanState = {
+      id: 'state-0',
       variables: {
         items: [2, 4, 6, 8],
         x: 0,
@@ -109,6 +114,7 @@ describe('forall precondition', () => {
 
   it('returns false when condition fails for at least one value', () => {
     const state: PlanState = {
+      id: 'state-0',
       variables: {
         items: [2, 4, -1, 8],
         x: 0,
@@ -127,6 +133,7 @@ describe('forall precondition', () => {
 
   it('returns true on empty domain (vacuous truth)', () => {
     const state: PlanState = {
+      id: 'state-0',
       variables: {
         items: [],
         x: 0,
@@ -145,6 +152,7 @@ describe('forall precondition', () => {
 
   it('does not leak bound variable into outer state', () => {
     const state: PlanState = {
+      id: 'state-0',
       variables: {
         items: [10, 20, 30],
         x: 42,
@@ -203,7 +211,7 @@ describe('until safety property', () => {
 
     const plan: Plan = {
       id: 'until-plan-ok',
-      initialState: { variables: { counter: 0, safe: true } },
+      initialState: { id: 'state-0', variables: { counter: 0, safe: true } },
       actions: [createAction('step', {}), createAction('step', {}), createAction('step', {})],
       goalConditions: [],
     };
@@ -232,7 +240,7 @@ describe('until safety property', () => {
 
     const plan: Plan = {
       id: 'until-plan-fail',
-      initialState: { variables: { counter: 0, safe: true } },
+      initialState: { id: 'state-0', variables: { counter: 0, safe: true } },
       actions: [
         createAction('step', {}),
         createAction('break_safe', {}),
@@ -267,7 +275,7 @@ describe('InvariantChecker config flags', () => {
 
   const makePlan = (): Plan => ({
     id: 'cfg-plan',
-    initialState: { variables: { x: 1 } },
+    initialState: { id: 'state-0', variables: { x: 1 } },
     actions: [createAction('noop', {})],
     goalConditions: [],
   });
@@ -346,7 +354,7 @@ describe('findParallelizable', () => {
 
     const plan: Plan = {
       id: 'par-1',
-      initialState: { variables: {} },
+      initialState: { id: 'state-0', variables: {} },
       actions: [createAction('a', {}, 'a1'), createAction('b', {}, 'b1')],
       goalConditions: [],
     };
@@ -364,7 +372,7 @@ describe('findParallelizable', () => {
 
     const plan: Plan = {
       id: 'par-2',
-      initialState: { variables: { x: true } },
+      initialState: { id: 'state-0', variables: { x: true } },
       actions: [createAction('a', {}, 'a1'), createAction('b', {}, 'b1')],
       goalConditions: [],
     };
@@ -383,7 +391,7 @@ describe('findParallelizable', () => {
 
     const plan: Plan = {
       id: 'par-3',
-      initialState: { variables: { x: true, y: true } },
+      initialState: { id: 'state-0', variables: { x: true, y: true } },
       actions: [
         createAction('a', {}, 'a1'),
         createAction('b', {}, 'b1'),
@@ -438,7 +446,7 @@ describe('producedBy tracking', () => {
   it('picks the closest preceding producer for a dependency edge', () => {
     const plan: Plan = {
       id: 'prod-1',
-      initialState: { variables: { x: 0 } },
+      initialState: { id: 'state-0', variables: { x: 0 } },
       actions: [
         createAction('set_x_to_1', {}, 'writer1'),
         createAction('set_x_to_2', {}, 'writer2'),
@@ -466,7 +474,7 @@ describe('producedBy tracking', () => {
 
     const plan: Plan = {
       id: 'prod-2',
-      initialState: { variables: { x: 0 } },
+      initialState: { id: 'state-0', variables: { x: 0 } },
       actions: [createAction('self_modify', {}, 'self1')],
       goalConditions: [],
     };
@@ -499,7 +507,7 @@ describe('producedBy tracking', () => {
 
     const plan: Plan = {
       id: 'prod-3',
-      initialState: { variables: { x: 0, y: 0 } },
+      initialState: { id: 'state-0', variables: { x: 0, y: 0 } },
       actions: [
         createAction('set_x_to_1', {}, 'wx'),
         createAction('set_y', {}, 'wy'),

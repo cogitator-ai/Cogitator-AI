@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NegotiationStrategy } from '../../strategies/negotiation-strategy';
-import { MockCoordinator } from './__mocks__/mock-coordinator';
+import { MockCoordinator, getCallContext } from './__mocks__/mock-coordinator';
 import { createMockSwarmAgent } from './__mocks__/mock-helpers';
 
 describe('NegotiationStrategy', () => {
@@ -15,7 +15,7 @@ describe('NegotiationStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('solo'));
       coordinator.setAgentResponse('solo', 'I declare my interests');
 
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
       });
 
@@ -30,7 +30,7 @@ describe('NegotiationStrategy', () => {
       coordinator.setAgentResponse('agent', 'interests');
       coordinator.setAgentResponse('supervisor', 'decision');
 
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
       });
 
@@ -45,7 +45,7 @@ describe('NegotiationStrategy', () => {
       coordinator.setAgentResponse('agent', 'interests');
       coordinator.setAgentResponse('moderator', 'moderate');
 
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
       });
 
@@ -67,7 +67,7 @@ describe('NegotiationStrategy', () => {
       const phaseHandler = vi.fn();
       coordinator.events.on('negotiation:phase-change', phaseHandler);
 
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -86,7 +86,7 @@ describe('NegotiationStrategy', () => {
       const phaseHandler = vi.fn();
       coordinator.events.on('negotiation:phase-change', phaseHandler);
 
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -102,7 +102,7 @@ describe('NegotiationStrategy', () => {
       const phaseHandler = vi.fn();
       coordinator.events.on('negotiation:phase-change', phaseHandler);
 
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -126,7 +126,7 @@ describe('NegotiationStrategy', () => {
       const roundHandler = vi.fn();
       coordinator.events.on('negotiation:round', roundHandler);
 
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 3,
         onDeadlock: 'fail',
       });
@@ -140,7 +140,7 @@ describe('NegotiationStrategy', () => {
       const turnHandler = vi.fn();
       coordinator.events.on('negotiation:turn', turnHandler);
 
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -162,7 +162,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should pass negotiationContext to agents', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 2,
         onDeadlock: 'fail',
       });
@@ -171,11 +171,11 @@ describe('NegotiationStrategy', () => {
 
       const call = coordinator.getCallsFor('ctx-agent-1')[0];
       expect(call?.context?.negotiationContext).toBeDefined();
-      expect(call?.context?.negotiationContext?.maxRounds).toBe(2);
+      expect(getCallContext(call, 'negotiationContext')?.maxRounds).toBe(2);
     });
 
     it('should track current phase in context', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -184,7 +184,7 @@ describe('NegotiationStrategy', () => {
 
       const initCall = coordinator
         .getCallsFor('ctx-agent-1')
-        .find((c) => c.context?.negotiationContext?.phase === 'initialization');
+        .find((c) => getCallContext(c, 'negotiationContext')?.phase === 'initialization');
       expect(initCall).toBeDefined();
     });
   });
@@ -198,7 +198,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should return deadlock outcome on fail mode', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -211,7 +211,7 @@ describe('NegotiationStrategy', () => {
       const deadlockHandler = vi.fn();
       coordinator.events.on('negotiation:deadlock', deadlockHandler);
 
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -225,7 +225,7 @@ describe('NegotiationStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('supervisor', { role: 'supervisor' }));
       coordinator.setAgentResponse('supervisor', 'Final decision: split 50/50');
 
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'supervisor-decides',
       });
@@ -240,7 +240,7 @@ describe('NegotiationStrategy', () => {
       const escalationHandler = vi.fn();
       coordinator.events.on('negotiation:escalation', escalationHandler);
 
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'escalate',
       });
@@ -252,7 +252,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should return agreement via majority on majority-rules mode', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'majority-rules',
       });
@@ -265,7 +265,7 @@ describe('NegotiationStrategy', () => {
       const arbitrationHandler = vi.fn();
       coordinator.events.on('negotiation:arbitration', arbitrationHandler);
 
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'arbitrate',
       });
@@ -285,7 +285,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should initialize negotiation state on blackboard', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 2,
         onDeadlock: 'fail',
       });
@@ -298,7 +298,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should track offers on blackboard', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -310,7 +310,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should track turn history', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -335,7 +335,7 @@ describe('NegotiationStrategy', () => {
       const startHandler = vi.fn();
       coordinator.events.on('negotiation:start', startHandler);
 
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -356,7 +356,7 @@ describe('NegotiationStrategy', () => {
       const roundHandler = vi.fn();
       coordinator.events.on('negotiation:round', roundHandler);
 
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 2,
         onDeadlock: 'fail',
       });
@@ -376,7 +376,7 @@ describe('NegotiationStrategy', () => {
       const convergenceHandler = vi.fn();
       coordinator.events.on('negotiation:convergence-update', convergenceHandler);
 
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -390,7 +390,7 @@ describe('NegotiationStrategy', () => {
       const terminatedHandler = vi.fn();
       coordinator.events.on('negotiation:terminated', terminatedHandler);
 
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -410,7 +410,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should return negotiationResult', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -422,7 +422,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should include outcome in result', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -436,7 +436,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should track convergence history', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 2,
         onDeadlock: 'fail',
       });
@@ -448,7 +448,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should record total rounds', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 3,
         onDeadlock: 'fail',
       });
@@ -459,7 +459,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should track duration', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -471,7 +471,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should include final positions', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -482,7 +482,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should include formatted output string', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -495,7 +495,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should include agentResults for all phases', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -517,7 +517,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should build initialization prompt with topic', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -530,7 +530,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should build proposal prompt with round info', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 2,
         onDeadlock: 'fail',
       });
@@ -543,7 +543,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should build proposal prompt with phase info', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -564,7 +564,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should key init results with _init suffix', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });
@@ -576,7 +576,7 @@ describe('NegotiationStrategy', () => {
     });
 
     it('should key proposal results with round number', async () => {
-      const strategy = new NegotiationStrategy(coordinator as any, {
+      const strategy = new NegotiationStrategy(coordinator, {
         maxRounds: 1,
         onDeadlock: 'fail',
       });

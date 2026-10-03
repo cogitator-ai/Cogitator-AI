@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { cogitatorApp } from '../app.js';
-import type { CogitatorAppOptions } from '../types.js';
+import type { CogitatorAppOptions, HonoEnv } from '../types.js';
 
 beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -87,7 +87,7 @@ function json(data: unknown) {
 }
 
 describe('healthRoutes', () => {
-  let app: Hono;
+  let app: Hono<HonoEnv>;
 
   beforeEach(() => {
     app = buildApp();

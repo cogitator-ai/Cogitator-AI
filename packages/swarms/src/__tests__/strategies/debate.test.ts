@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { DebateStrategy } from '../../strategies/debate';
-import { MockCoordinator } from './__mocks__/mock-coordinator';
+import { MockCoordinator, getCallContext } from './__mocks__/mock-coordinator';
 import { createMockSwarmAgent } from './__mocks__/mock-helpers';
 
 describe('DebateStrategy', () => {
@@ -15,7 +15,7 @@ describe('DebateStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('solo-debater'));
       coordinator.setAgentResponse('solo-debater', 'My argument');
 
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
 
       await expect(strategy.execute({ input: 'topic' })).rejects.toThrow(
         'Debate strategy requires at least 2 debating agents'
@@ -28,7 +28,7 @@ describe('DebateStrategy', () => {
       coordinator.setAgentResponse('debater', 'argument');
       coordinator.setAgentResponse('moderator', 'synthesis');
 
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
 
       await expect(strategy.execute({ input: 'topic' })).rejects.toThrow(
         'Debate strategy requires at least 2 debating agents'
@@ -41,11 +41,11 @@ describe('DebateStrategy', () => {
       coordinator.setAgentResponse('d1', 'arg1');
       coordinator.setAgentResponse('d2', 'arg2');
 
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       await strategy.execute({ input: 'topic' });
 
       const call = coordinator.getCallsFor('d1')[0];
-      expect(call?.context?.debateContext?.format).toBe('structured');
+      expect(getCallContext(call, 'debateContext')?.format).toBe('structured');
     });
   });
 
@@ -56,7 +56,7 @@ describe('DebateStrategy', () => {
       coordinator.setAgentResponse('pro', 'for argument');
       coordinator.setAgentResponse('con', 'against argument');
 
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       await strategy.execute({ input: 'topic' });
 
       expect(coordinator.getCallsFor('pro').length).toBeGreaterThan(0);
@@ -71,7 +71,7 @@ describe('DebateStrategy', () => {
       coordinator.setAgentResponse('agent-b', 'argument b');
       coordinator.setAgentResponse('mod', 'synthesis');
 
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       await strategy.execute({ input: 'topic' });
 
       expect(coordinator.getCallsFor('agent-a').length).toBeGreaterThan(0);
@@ -88,7 +88,7 @@ describe('DebateStrategy', () => {
     });
 
     it('should run specified number of rounds', async () => {
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 3 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 3 });
       await strategy.execute({ input: 'topic' });
 
       expect(coordinator.getCallsFor('debater-1')).toHaveLength(3);
@@ -96,7 +96,7 @@ describe('DebateStrategy', () => {
     });
 
     it('should give all debaters a turn each round', async () => {
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 2 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 2 });
       const result = await strategy.execute({ input: 'topic' });
 
       expect(result.agentResults.has('debater-1_round1')).toBe(true);
@@ -106,7 +106,7 @@ describe('DebateStrategy', () => {
     });
 
     it('should pass original input in round 1', async () => {
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       await strategy.execute({ input: 'Should AI be regulated?' });
 
       const call = coordinator.getCallsFor('debater-1')[0];
@@ -114,7 +114,7 @@ describe('DebateStrategy', () => {
     });
 
     it('should include previous arguments in later rounds', async () => {
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 2 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 2 });
       await strategy.execute({ input: 'topic' });
 
       const round2Call = coordinator.getCallsFor('debater-1')[1];
@@ -132,9 +132,9 @@ describe('DebateStrategy', () => {
     });
 
     it('should pass debateContext to agents', async () => {
-      const strategy = new DebateStrategy(coordinator as any, {
+      const strategy = new DebateStrategy(coordinator, {
         rounds: 3,
-        format: 'free-form',
+        format: 'freeform',
       });
 
       await strategy.execute({ input: 'topic' });
@@ -144,12 +144,12 @@ describe('DebateStrategy', () => {
         round: 1,
         totalRounds: 3,
         role: 'advocate',
-        format: 'free-form',
+        format: 'freeform',
       });
     });
 
     it('should include debateInstructions', async () => {
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 2 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 2 });
       await strategy.execute({ input: 'topic' });
 
       const advocateCall = coordinator.getCallsFor('ctx-debater')[0];
@@ -160,7 +160,7 @@ describe('DebateStrategy', () => {
     });
 
     it('should include round info in instructions', async () => {
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 3 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 3 });
       await strategy.execute({ input: 'topic' });
 
       const call = coordinator.getCallsFor('ctx-debater')[0];
@@ -180,7 +180,7 @@ describe('DebateStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('moderator', { role: 'moderator' }));
       coordinator.setAgentResponse('moderator', 'Balanced synthesis of the debate');
 
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       const result = await strategy.execute({ input: 'debate topic' });
 
       const modCall = coordinator.getLastCallFor('moderator');
@@ -193,7 +193,7 @@ describe('DebateStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('moderator', { role: 'moderator' }));
       coordinator.setAgentResponse('moderator', 'synthesis');
 
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       await strategy.execute({ input: 'topic' });
 
       const modCall = coordinator.getLastCallFor('moderator');
@@ -205,7 +205,7 @@ describe('DebateStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('moderator', { role: 'moderator' }));
       coordinator.setAgentResponse('moderator', 'synthesis');
 
-      const strategy = new DebateStrategy(coordinator as any, {
+      const strategy = new DebateStrategy(coordinator, {
         rounds: 2,
         format: 'structured',
       });
@@ -224,7 +224,7 @@ describe('DebateStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('moderator', { role: 'moderator' }));
       coordinator.setAgentResponse('moderator', 'final synthesis');
 
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       const result = await strategy.execute({ input: 'topic' });
 
       expect(result.agentResults.has('moderator')).toBe(true);
@@ -241,7 +241,7 @@ describe('DebateStrategy', () => {
     });
 
     it('should synthesize debate without moderator', async () => {
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       const result = await strategy.execute({ input: 'the topic' });
 
       expect(result.output).toContain('Debate Summary');
@@ -249,7 +249,7 @@ describe('DebateStrategy', () => {
     });
 
     it('should include all agent arguments in synthesis', async () => {
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       const result = await strategy.execute({ input: 'topic' });
 
       expect(result.output).toContain('d1');
@@ -266,7 +266,7 @@ describe('DebateStrategy', () => {
     });
 
     it('should initialize debate state on blackboard', async () => {
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 2 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 2 });
       await strategy.execute({ input: 'debate topic' });
 
       const state = coordinator.blackboard.read<Record<string, unknown>>('debate');
@@ -276,7 +276,7 @@ describe('DebateStrategy', () => {
     });
 
     it('should update blackboard with arguments', async () => {
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       await strategy.execute({ input: 'topic' });
 
       const state = coordinator.blackboard.read<{ arguments: unknown[] }>('debate');
@@ -284,7 +284,7 @@ describe('DebateStrategy', () => {
     });
 
     it('should track current round', async () => {
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 2 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 2 });
       await strategy.execute({ input: 'topic' });
 
       const state = coordinator.blackboard.read<{ currentRound: number }>('debate');
@@ -304,7 +304,7 @@ describe('DebateStrategy', () => {
       const roundHandler = vi.fn();
       coordinator.events.on('debate:round', roundHandler);
 
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 2 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 2 });
       await strategy.execute({ input: 'topic' });
 
       expect(roundHandler).toHaveBeenCalledTimes(2);
@@ -324,7 +324,7 @@ describe('DebateStrategy', () => {
       const turnHandler = vi.fn();
       coordinator.events.on('debate:turn', turnHandler);
 
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       await strategy.execute({ input: 'topic' });
 
       expect(turnHandler).toHaveBeenCalledTimes(2);
@@ -360,7 +360,7 @@ describe('DebateStrategy', () => {
     });
 
     it('should return debateTranscript in result', async () => {
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       const result = await strategy.execute({ input: 'topic' });
 
       expect(result.debateTranscript).toBeDefined();
@@ -368,7 +368,7 @@ describe('DebateStrategy', () => {
     });
 
     it('should include message metadata', async () => {
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 2 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 2 });
       const result = await strategy.execute({ input: 'topic' });
 
       const transcript = result.debateTranscript as Array<{ metadata?: Record<string, unknown> }>;
@@ -376,7 +376,7 @@ describe('DebateStrategy', () => {
     });
 
     it('should include argument content', async () => {
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       const result = await strategy.execute({ input: 'topic' });
 
       const transcript = result.debateTranscript as Array<{ content: string }>;
@@ -395,7 +395,7 @@ describe('DebateStrategy', () => {
     });
 
     it('should include agentResults for all rounds', async () => {
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 2 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 2 });
       const result = await strategy.execute({ input: 'topic' });
 
       expect(result.agentResults.has('res-d1_round1')).toBe(true);
@@ -418,7 +418,7 @@ describe('DebateStrategy', () => {
         trace: { traceId: 'trace1', spans: [] },
       });
 
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       const result = await strategy.execute({ input: 'topic' });
 
       expect(result.structured).toEqual({ conclusion: 'balanced' });
@@ -432,7 +432,7 @@ describe('DebateStrategy', () => {
       coordinator.setAgentResponse('adv', 'pro');
       coordinator.setAgentResponse('crit', 'con');
 
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       await strategy.execute({ input: 'topic' });
 
       const call = coordinator.getCallsFor('adv')[0];
@@ -445,7 +445,7 @@ describe('DebateStrategy', () => {
       coordinator.setAgentResponse('adv', 'pro');
       coordinator.setAgentResponse('crit', 'con');
 
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       await strategy.execute({ input: 'topic' });
 
       const call = coordinator.getCallsFor('crit')[0];
@@ -458,7 +458,7 @@ describe('DebateStrategy', () => {
       coordinator.setAgentResponse('neutral1', 'view1');
       coordinator.setAgentResponse('neutral2', 'view2');
 
-      const strategy = new DebateStrategy(coordinator as any, { rounds: 1 });
+      const strategy = new DebateStrategy(coordinator, { rounds: 1 });
       await strategy.execute({ input: 'topic' });
 
       const call = coordinator.getCallsFor('neutral1')[0];

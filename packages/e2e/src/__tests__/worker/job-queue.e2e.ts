@@ -416,7 +416,9 @@ describeRedisOllama('Worker: distributed swarm execution', () => {
     });
 
     const events: string[] = [];
-    swarm.on('agent:complete', (event) => events.push(event.agentName ?? ''));
+    swarm.on('agent:complete', (event) => {
+      events.push(event.agentName ?? '');
+    });
 
     try {
       const result = await swarm.run({ input: 'Write one sentence about Redis.' });

@@ -20,7 +20,7 @@
     "build:wasm": "node scripts/build-wasm.js",
     "dev": "tsc -p tsconfig.build.json --watch",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest"
   },

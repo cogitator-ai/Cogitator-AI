@@ -32,7 +32,7 @@ function searchingBackend() {
     provider: 'openai',
     chat: vi.fn(async (request: ChatRequest): Promise<ChatResponse> => {
       requests.push(request);
-      const toolMessage = request.messages.findLast((m) => m.role === 'tool');
+      const toolMessage = request.messages.filter((m) => m.role === 'tool').at(-1);
       if (!toolMessage) {
         return {
           id: 'r1',

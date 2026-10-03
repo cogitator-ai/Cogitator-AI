@@ -6,10 +6,11 @@ import {
 } from '@cogitator-ai/workflows';
 import { createTestCogitator, isOllamaRunning } from '../../helpers/setup';
 import type { Cogitator } from '@cogitator-ai/core';
+import type { WorkflowState } from '@cogitator-ai/types';
 
 const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
 
-interface TestState {
+interface TestState extends WorkflowState {
   steps: string[];
   value: number;
   counter: number;

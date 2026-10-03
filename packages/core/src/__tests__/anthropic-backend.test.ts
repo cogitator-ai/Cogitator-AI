@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { toolCallMessage } from './helpers/messages';
 import { AnthropicBackend } from '../llm/anthropic';
 import { getLogger } from '../logger';
 
@@ -378,17 +379,13 @@ describe('AnthropicBackend', () => {
         model: 'claude-sonnet-4-20250514',
         messages: [
           { role: 'user', content: 'What is the weather?' },
-          {
-            role: 'assistant',
-            content: '',
-            toolCalls: [
-              {
-                id: 'toolu_123',
-                name: 'get_weather',
-                arguments: { city: 'Tokyo' },
-              },
-            ],
-          },
+          toolCallMessage([
+            {
+              id: 'toolu_123',
+              name: 'get_weather',
+              arguments: { city: 'Tokyo' },
+            },
+          ]),
           {
             role: 'tool',
             content: '{"temperature": 25, "condition": "sunny"}',
@@ -672,7 +669,7 @@ describe('AnthropicBackend', () => {
             parameters: { type: 'object', properties: {} },
           },
         ],
-        toolChoice: { function: { name: 'get_weather' } },
+        toolChoice: { type: 'function', function: { name: 'get_weather' } },
       });
 
       expect(mockCreate).toHaveBeenCalledWith(
@@ -994,14 +991,10 @@ describe('AnthropicBackend', () => {
         model: 'claude-sonnet-4-20250514',
         messages: [
           { role: 'user', content: 'Weather in Tokyo and Paris?' },
-          {
-            role: 'assistant',
-            content: '',
-            toolCalls: [
-              { id: 'toolu_1', name: 'weather', arguments: { city: 'Tokyo' } },
-              { id: 'toolu_2', name: 'weather', arguments: { city: 'Paris' } },
-            ],
-          } as never,
+          toolCallMessage([
+            { id: 'toolu_1', name: 'weather', arguments: { city: 'Tokyo' } },
+            { id: 'toolu_2', name: 'weather', arguments: { city: 'Paris' } },
+          ]),
           { role: 'tool', content: '"sunny"', toolCallId: 'toolu_1', name: 'weather' },
           { role: 'tool', content: '"rainy"', toolCallId: 'toolu_2', name: 'weather' },
         ],

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Cogitator } from '@cogitator-ai/core';
 import type { SwarmConfig, SwarmCoordinatorInterface, IStrategy } from '@cogitator-ai/types';
+import type { SwarmCoordinator } from '../coordinator';
 import { createMockAgent } from './strategies/__mocks__/mock-helpers';
 
 const mockEvents = {
@@ -12,7 +13,25 @@ const mockEvents = {
   listeners: vi.fn(() => []),
 } as unknown as SwarmCoordinatorInterface['events'];
 
-const mockCoordinatorFields: SwarmCoordinatorInterface = {
+type MockedCoordinatorFields = Pick<
+  SwarmCoordinatorInterface,
+  'messageBus' | 'blackboard' | 'events'
+> &
+  Pick<
+    SwarmCoordinator,
+    | 'runAgent'
+    | 'getAgents'
+    | 'getAgent'
+    | 'getSwarmId'
+    | 'pause'
+    | 'resume'
+    | 'abort'
+    | 'isPaused'
+    | 'isAborted'
+    | 'reset'
+  >;
+
+const mockCoordinatorFields: MockedCoordinatorFields = {
   messageBus: {} as SwarmCoordinatorInterface['messageBus'],
   blackboard: {} as SwarmCoordinatorInterface['blackboard'],
   events: mockEvents,
@@ -28,7 +47,7 @@ const mockCoordinatorFields: SwarmCoordinatorInterface = {
   reset: vi.fn(),
 };
 
-class MockSwarmCoordinator implements SwarmCoordinatorInterface {
+class MockSwarmCoordinator implements MockedCoordinatorFields {
   messageBus = mockCoordinatorFields.messageBus;
   blackboard = mockCoordinatorFields.blackboard;
   events = mockCoordinatorFields.events;
@@ -355,7 +374,7 @@ describe('SwarmBuilder', () => {
       builder
         .strategy('negotiation')
         .agents([createMockAgent('alice'), createMockAgent('bob')])
-        .negotiation({ maxRounds: 8, onDeadlock: 'split-difference' });
+        .negotiation({ maxRounds: 8, onDeadlock: 'majority-rules' });
 
       const swarm = builder.build(mockCogitator);
       expect(swarm.strategyType).toBe('negotiation');
@@ -374,7 +393,7 @@ describe('SwarmBuilder', () => {
       const swarm = new SwarmBuilder('deal-maker')
         .strategy('negotiation')
         .agents([createMockAgent('buyer'), createMockAgent('seller')])
-        .negotiation({ maxRounds: 10, onDeadlock: 'mediator-decides' })
+        .negotiation({ maxRounds: 10, onDeadlock: 'arbitrate' })
         .build(mockCogitator);
 
       expect(swarm.name).toBe('deal-maker');
@@ -416,9 +435,9 @@ describe('SwarmBuilder', () => {
         .debate({ rounds: 3, format: 'structured' })
         .negotiation({ maxRounds: 5, onDeadlock: 'escalate' })
         .messaging({ enabled: true, protocol: 'direct' })
-        .blackboardConfig({ enabled: true })
-        .resources({ maxTokens: 10000 })
-        .errorHandling({ strategy: 'retry', maxRetries: 3 })
+        .blackboardConfig({ enabled: true, sections: {} })
+        .resources({ tokenBudget: 10000 })
+        .errorHandling({ onAgentFailure: 'retry', retry: { maxRetries: 3, backoff: 'constant' } })
         .distributed({ enabled: false });
 
       expect(result).toBe(builder);

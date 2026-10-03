@@ -13,10 +13,11 @@ import {
 } from '../../helpers/setup';
 import { expectJudge, setJudge } from '../../helpers/assertions';
 import type { Cogitator } from '@cogitator-ai/core';
+import type { WorkflowState } from '@cogitator-ai/types';
 
 const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
 
-interface AgentWorkflowState {
+interface AgentWorkflowState extends WorkflowState {
   input: string;
   agentOutput: string;
   processed: boolean;

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WorkerPool } from '../worker';
 
-const mockWorkerOn = vi.fn();
+const mockWorkerOn = vi.fn<(event: string, handler: (...args: unknown[]) => void) => void>();
 const mockWorkerClose = vi.fn();
 
 vi.mock('bullmq', () => {
@@ -160,7 +160,7 @@ describe('WorkerPool', () => {
       const completedCall = mockWorkerOn.mock.calls.find((call) => call[0] === 'completed');
       expect(completedCall).toBeDefined();
 
-      const handler = completedCall[1];
+      const handler = completedCall![1];
       handler({ id: 'job_123', data: { jobId: 'job_123' } }, { success: true });
 
       expect(onJobCompleted).toHaveBeenCalledWith('job_123', { success: true });
@@ -174,7 +174,7 @@ describe('WorkerPool', () => {
       const failedCall = mockWorkerOn.mock.calls.find((call) => call[0] === 'failed');
       expect(failedCall).toBeDefined();
 
-      const handler = failedCall[1];
+      const handler = failedCall![1];
       const error = new Error('Job failed');
       handler({ id: 'job_123', data: { jobId: 'job_123' } }, error);
 
@@ -189,7 +189,7 @@ describe('WorkerPool', () => {
       const errorCall = mockWorkerOn.mock.calls.find((call) => call[0] === 'error');
       expect(errorCall).toBeDefined();
 
-      const handler = errorCall[1];
+      const handler = errorCall![1];
       const error = new Error('Worker error');
       handler(error);
 

@@ -11,6 +11,8 @@ vi.mock('../llm/index', async (importOriginal) => {
   return { ...original, createLLMBackend: vi.fn() };
 });
 
+const safeVerdict = JSON.stringify({ isHarmful: false, harmScores: [] });
+
 function backend(answers: ChatResponse[]): LLMBackend {
   let turn = 0;
   return {

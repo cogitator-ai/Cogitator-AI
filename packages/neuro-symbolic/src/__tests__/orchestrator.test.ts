@@ -1,7 +1,17 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { ActionSchema, Plan } from '@cogitator-ai/types';
+import type { ActionSchema, ConstraintModel, Plan, SolverResult } from '@cogitator-ai/types';
 import { NeuroSymbolic, createNeuroSymbolic } from '../orchestrator';
 import { ConstraintBuilder } from '../constraints';
+
+function defined<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error('Expected value to be defined');
+  return value;
+}
+
+function satModel(result: SolverResult | undefined): ConstraintModel {
+  if (result?.status !== 'sat') throw new Error(`Expected sat result, got ${result?.status}`);
+  return result.model;
+}
 
 describe('NeuroSymbolic', () => {
   let ns: NeuroSymbolic;
@@ -13,21 +23,21 @@ describe('NeuroSymbolic', () => {
   describe('constructor', () => {
     it('creates with default config', () => {
       const config = ns.getConfig();
-      expect(config.logic.maxDepth).toBe(50);
-      expect(config.logic.maxSolutions).toBe(10);
-      expect(config.logic.timeout).toBe(5000);
-      expect(config.logic.enableCut).toBe(true);
-      expect(config.logic.enableNegation).toBe(true);
-      expect(config.logic.traceExecution).toBe(false);
-      expect(config.constraints.timeout).toBe(10000);
-      expect(config.constraints.solver).toBe('z3');
-      expect(config.constraints.enableOptimization).toBe(true);
-      expect(config.constraints.randomSeed).toBe(42);
-      expect(config.planning.maxPlanLength).toBe(100);
-      expect(config.planning.enableRepair).toBe(true);
-      expect(config.planning.verifyInvariants).toBe(true);
-      expect(config.knowledgeGraph.enableNaturalLanguage).toBe(true);
-      expect(config.knowledgeGraph.defaultQueryLimit).toBe(100);
+      expect(config.logic?.maxDepth).toBe(50);
+      expect(config.logic?.maxSolutions).toBe(10);
+      expect(config.logic?.timeout).toBe(5000);
+      expect(config.logic?.enableCut).toBe(true);
+      expect(config.logic?.enableNegation).toBe(true);
+      expect(config.logic?.traceExecution).toBe(false);
+      expect(config.constraints?.timeout).toBe(10000);
+      expect(config.constraints?.solver).toBe('z3');
+      expect(config.constraints?.enableOptimization).toBe(true);
+      expect(config.constraints?.randomSeed).toBe(42);
+      expect(config.planning?.maxPlanLength).toBe(100);
+      expect(config.planning?.enableRepair).toBe(true);
+      expect(config.planning?.verifyInvariants).toBe(true);
+      expect(config.knowledgeGraph?.enableNaturalLanguage).toBe(true);
+      expect(config.knowledgeGraph?.defaultQueryLimit).toBe(100);
     });
 
     it('creates with partial config', () => {
@@ -37,8 +47,8 @@ describe('NeuroSymbolic', () => {
         },
       });
       const config = custom.getConfig();
-      expect(config.logic.maxDepth).toBe(100);
-      expect(config.logic.maxSolutions).toBe(10);
+      expect(config.logic?.maxDepth).toBe(100);
+      expect(config.logic?.maxSolutions).toBe(10);
     });
 
     it('merges nested config sections independently', () => {
@@ -49,10 +59,10 @@ describe('NeuroSymbolic', () => {
         },
       });
       const config = custom.getConfig();
-      expect(config.constraints.timeout).toBe(5000);
-      expect(config.constraints.solver).toBe('z3');
-      expect(config.planning.enableRepair).toBe(false);
-      expect(config.planning.maxPlanLength).toBe(100);
+      expect(config.constraints?.timeout).toBe(5000);
+      expect(config.constraints?.solver).toBe('z3');
+      expect(config.planning?.enableRepair).toBe(false);
+      expect(config.planning?.maxPlanLength).toBe(100);
     });
 
     it('accepts agentId', () => {
@@ -71,7 +81,7 @@ describe('NeuroSymbolic', () => {
       const instance = createNeuroSymbolic({
         config: { logic: { maxDepth: 200 } },
       });
-      expect(instance.getConfig().logic.maxDepth).toBe(200);
+      expect(instance.getConfig().logic?.maxDepth).toBe(200);
     });
   });
 
@@ -186,8 +196,8 @@ describe('NeuroSymbolic', () => {
       expect(result.success).toBe(true);
       expect(result.data).toBeDefined();
       expect(result.data!.status).toBe('sat');
-      expect(result.data!.model).toBeDefined();
-      expect(result.data!.model!.assignments.x).toBe(true);
+      expect(satModel(result.data)).toBeDefined();
+      expect(satModel(result.data).assignments.x).toBe(true);
     });
 
     it('returns success: true for unsatisfiable problem (regression)', async () => {
@@ -226,7 +236,7 @@ describe('NeuroSymbolic', () => {
       expect(result.success).toBe(true);
       expect(result.data!.status).toBe('sat');
 
-      const assignments = result.data!.model!.assignments;
+      const assignments = satModel(result.data).assignments;
       expect(assignments.a !== assignments.b).toBe(true);
     });
   });
@@ -241,20 +251,20 @@ describe('NeuroSymbolic', () => {
   describe('getConfig()', () => {
     it('returns a deep copy — mutations do not affect internal state (regression)', () => {
       const config1 = ns.getConfig();
-      config1.logic.maxDepth = 9999;
-      config1.constraints.timeout = 1;
+      defined(config1.logic).maxDepth = 9999;
+      defined(config1.constraints).timeout = 1;
 
       const config2 = ns.getConfig();
-      expect(config2.logic.maxDepth).toBe(50);
-      expect(config2.constraints.timeout).toBe(10000);
+      expect(config2.logic?.maxDepth).toBe(50);
+      expect(config2.constraints?.timeout).toBe(10000);
     });
   });
 
   describe('updateConfig()', () => {
     it('updates a single section', () => {
       ns.updateConfig({ logic: { maxDepth: 200 } });
-      expect(ns.getConfig().logic.maxDepth).toBe(200);
-      expect(ns.getConfig().logic.maxSolutions).toBe(10);
+      expect(ns.getConfig().logic?.maxDepth).toBe(200);
+      expect(ns.getConfig().logic?.maxSolutions).toBe(10);
     });
 
     it('updates multiple sections at once', () => {
@@ -262,15 +272,15 @@ describe('NeuroSymbolic', () => {
         constraints: { timeout: 3000 },
         planning: { enableRepair: false },
       });
-      expect(ns.getConfig().constraints.timeout).toBe(3000);
-      expect(ns.getConfig().planning.enableRepair).toBe(false);
+      expect(ns.getConfig().constraints?.timeout).toBe(3000);
+      expect(ns.getConfig().planning?.enableRepair).toBe(false);
     });
 
     it('does not affect untouched sections', () => {
       ns.updateConfig({ logic: { maxDepth: 300 } });
-      expect(ns.getConfig().constraints.timeout).toBe(10000);
-      expect(ns.getConfig().planning.maxPlanLength).toBe(100);
-      expect(ns.getConfig().knowledgeGraph.defaultQueryLimit).toBe(100);
+      expect(ns.getConfig().constraints?.timeout).toBe(10000);
+      expect(ns.getConfig().planning?.maxPlanLength).toBe(100);
+      expect(ns.getConfig().knowledgeGraph?.defaultQueryLimit).toBe(100);
     });
 
     it('recreates resolver when logic config changes', () => {
@@ -319,7 +329,7 @@ describe('NeuroSymbolic', () => {
       };
       const result = ns.validatePlan(badPlan);
       expect(result.success).toBe(true);
-      expect(result.data.valid).toBe(false);
+      expect(result.data?.valid).toBe(false);
     });
 
     it('repairs an invalid plan', () => {
@@ -401,14 +411,14 @@ describe('NeuroSymbolic', () => {
     it('preserves config after reset', () => {
       ns.updateConfig({ logic: { maxDepth: 999 } });
       ns.reset();
-      expect(ns.getConfig().logic.maxDepth).toBe(999);
+      expect(ns.getConfig().logic?.maxDepth).toBe(999);
     });
   });
 
   describe('graph operations without adapter', () => {
     it('queryGraph returns error without adapter', async () => {
       const result = await ns.queryGraph({
-        type: 'pattern',
+        type: 'select',
         patterns: [],
       });
       expect(result.success).toBe(false);

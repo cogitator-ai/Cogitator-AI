@@ -36,6 +36,7 @@ function createMockTool(name: string, result: unknown): Tool {
 
 function chatResponse(content: string, toolCalls?: ToolCall[]): ChatResponse {
   return {
+    id: 'resp',
     content,
     toolCalls,
     finishReason: toolCalls?.length ? 'tool_calls' : 'stop',

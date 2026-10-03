@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { z } from 'zod';
+import type { AgentConfig, Tool } from '@cogitator-ai/types';
 import {
   ModificationValidator,
   RollbackManager,
@@ -6,6 +8,20 @@ import {
   DEFAULT_SAFETY_CONSTRAINTS,
   mergeSafetyConstraints,
 } from '../constraints';
+
+function agentConfig(overrides: Partial<AgentConfig>): AgentConfig {
+  return { name: 'agent', instructions: 'Test agent', ...overrides };
+}
+
+function makeTool(name: string, description: string): Tool {
+  return {
+    name,
+    description,
+    parameters: z.object({}),
+    execute: async () => null,
+    toJSON: () => ({ name, description, parameters: { type: 'object', properties: {} } }),
+  };
+}
 
 describe('ModificationValidator', () => {
   let validator: ModificationValidator;
@@ -132,8 +148,8 @@ describe('RollbackManager', () => {
   it('creates checkpoints', async () => {
     const checkpoint = await manager.createCheckpoint(
       'agent-1',
-      { model: 'gpt-4', temperature: 0.7 },
-      [{ name: 'tool1', description: 'Test', parameters: {}, execute: async () => null }],
+      agentConfig({ model: 'gpt-4', temperature: 0.7 }),
+      [makeTool('tool1', 'Test')],
       []
     );
 
@@ -145,15 +161,8 @@ describe('RollbackManager', () => {
   it('rolls back to checkpoint', async () => {
     const checkpoint = await manager.createCheckpoint(
       'agent-1',
-      { model: 'gpt-4', temperature: 0.7 },
-      [
-        {
-          name: 'original_tool',
-          description: 'Original',
-          parameters: {},
-          execute: async () => null,
-        },
-      ],
+      agentConfig({ model: 'gpt-4', temperature: 0.7 }),
+      [makeTool('original_tool', 'Original')],
       []
     );
 
@@ -168,18 +177,15 @@ describe('RollbackManager', () => {
   it('compares checkpoints', async () => {
     const cp1 = await manager.createCheckpoint(
       'agent-1',
-      { model: 'gpt-4', temperature: 0.7 },
-      [{ name: 'tool1', description: 'Test', parameters: {}, execute: async () => null }],
+      agentConfig({ model: 'gpt-4', temperature: 0.7 }),
+      [makeTool('tool1', 'Test')],
       []
     );
 
     const cp2 = await manager.createCheckpoint(
       'agent-1',
-      { model: 'gpt-4o', temperature: 0.9 },
-      [
-        { name: 'tool1', description: 'Test', parameters: {}, execute: async () => null },
-        { name: 'tool2', description: 'New', parameters: {}, execute: async () => null },
-      ],
+      agentConfig({ model: 'gpt-4o', temperature: 0.9 }),
+      [makeTool('tool1', 'Test'), makeTool('tool2', 'New')],
       []
     );
 
@@ -195,7 +201,7 @@ describe('RollbackManager', () => {
     const customManager = new RollbackManager({ maxCheckpoints: 3 });
 
     for (let i = 0; i < 5; i++) {
-      await customManager.createCheckpoint('agent-1', { iteration: i }, [], []);
+      await customManager.createCheckpoint('agent-1', agentConfig({ name: `agent-${i}` }), [], []);
     }
 
     const checkpoints = await customManager.listCheckpoints('agent-1');

@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { GraphNode, GraphEdge, GraphAdapter } from '@cogitator-ai/types';
+import type {
+  EntityType,
+  GraphAdapter,
+  GraphEdge,
+  GraphNode,
+  MemoryResult,
+  RelationType,
+} from '@cogitator-ai/types';
 import {
   GraphQueryBuilder,
   parseQueryString,
@@ -7,135 +14,144 @@ import {
   variable,
 } from '../knowledge-graph/query-language';
 
-const createMockAdapter = (): GraphAdapter => {
+interface MockGraphAdapter extends GraphAdapter {
+  getConnections(nodeId: string): Promise<MemoryResult<GraphEdge[]>>;
+}
+
+const MOCK_AGENT_ID = 'test';
+const MOCK_TIMESTAMP = new Date(0);
+
+function ok<T>(data: T): MemoryResult<T> {
+  return { success: true, data };
+}
+
+function unwrap<T>(result: MemoryResult<T>): T {
+  if (!result.success) throw new Error(result.error);
+  return result.data;
+}
+
+function createNode(
+  id: string,
+  type: EntityType,
+  name: string,
+  properties: Record<string, unknown>
+): GraphNode {
+  return {
+    id,
+    agentId: MOCK_AGENT_ID,
+    type,
+    name,
+    aliases: [],
+    properties,
+    confidence: 1,
+    source: 'user',
+    createdAt: MOCK_TIMESTAMP,
+    updatedAt: MOCK_TIMESTAMP,
+    lastAccessedAt: MOCK_TIMESTAMP,
+    accessCount: 0,
+  };
+}
+
+function createEdge(
+  id: string,
+  sourceNodeId: string,
+  targetNodeId: string,
+  type: RelationType,
+  properties: Record<string, unknown>
+): GraphEdge {
+  return {
+    id,
+    agentId: MOCK_AGENT_ID,
+    sourceNodeId,
+    targetNodeId,
+    type,
+    weight: 1,
+    bidirectional: false,
+    properties,
+    confidence: 1,
+    source: 'user',
+    createdAt: MOCK_TIMESTAMP,
+    updatedAt: MOCK_TIMESTAMP,
+  };
+}
+
+const createMockAdapter = (): MockGraphAdapter => {
   const nodes: GraphNode[] = [
-    {
-      id: 'person1',
-      type: 'Person',
-      name: 'Alice',
-      properties: { age: 30 },
-      confidence: 1,
-      source: 'test',
-    },
-    {
-      id: 'person2',
-      type: 'Person',
-      name: 'Bob',
-      properties: { age: 25 },
-      confidence: 1,
-      source: 'test',
-    },
-    {
-      id: 'company1',
-      type: 'Company',
-      name: 'TechCorp',
-      properties: { employees: 100 },
-      confidence: 1,
-      source: 'test',
-    },
-    {
-      id: 'city1',
-      type: 'City',
-      name: 'New York',
-      properties: { population: 8000000 },
-      confidence: 1,
-      source: 'test',
-    },
+    createNode('person1', 'person', 'Alice', { age: 30 }),
+    createNode('person2', 'person', 'Bob', { age: 25 }),
+    createNode('company1', 'organization', 'TechCorp', { employees: 100 }),
+    createNode('city1', 'location', 'New York', { population: 8000000 }),
   ];
 
   const edges: GraphEdge[] = [
-    {
-      id: 'e1',
-      sourceNodeId: 'person1',
-      targetNodeId: 'company1',
-      type: 'WORKS_AT',
-      properties: { since: 2020 },
-      confidence: 1,
-      source: 'test',
-    },
-    {
-      id: 'e2',
-      sourceNodeId: 'person2',
-      targetNodeId: 'company1',
-      type: 'WORKS_AT',
-      properties: { since: 2021 },
-      confidence: 1,
-      source: 'test',
-    },
-    {
-      id: 'e3',
-      sourceNodeId: 'person1',
-      targetNodeId: 'city1',
-      type: 'LIVES_IN',
-      properties: {},
-      confidence: 1,
-      source: 'test',
-    },
-    {
-      id: 'e4',
-      sourceNodeId: 'person1',
-      targetNodeId: 'person2',
-      type: 'KNOWS',
-      properties: { years: 5 },
-      confidence: 1,
-      source: 'test',
-    },
+    createEdge('e1', 'person1', 'company1', 'works_at', { since: 2020 }),
+    createEdge('e2', 'person2', 'company1', 'works_at', { since: 2021 }),
+    createEdge('e3', 'person1', 'city1', 'located_in', {}),
+    createEdge('e4', 'person1', 'person2', 'knows', { years: 5 }),
   ];
 
+  const findNode = (nodeId: string) => nodes.find((n) => n.id === nodeId);
+  const findEdge = (edgeId: string) => edges.find((e) => e.id === edgeId);
+
   return {
-    addNode: async () => ({ success: true, data: nodes[0] }),
-    addEdge: async () => ({ success: true, data: edges[0] }),
-    getNode: async (query) => {
-      const node = nodes.find((n) => n.id === query.nodeId);
-      return { success: !!node, data: node };
+    addNode: async () => ok(nodes[0]),
+    addEdge: async () => ok(edges[0]),
+    getNode: async (nodeId) => ok(findNode(nodeId) ?? null),
+    getNodeByName: async (agentId, name) =>
+      ok(nodes.find((n) => n.agentId === agentId && n.name === name) ?? null),
+    getEdge: async (edgeId) => ok(findEdge(edgeId) ?? null),
+    getEdgesBetween: async (sourceNodeId, targetNodeId) =>
+      ok(edges.filter((e) => e.sourceNodeId === sourceNodeId && e.targetNodeId === targetNodeId)),
+    updateNode: async (nodeId, updates) => {
+      const node = findNode(nodeId);
+      return node
+        ? ok({ ...node, ...updates })
+        : { success: false, error: `Node not found: ${nodeId}` };
     },
-    getEdge: async (query) => {
-      const edge = edges.find((e) => e.id === query.edgeId);
-      return { success: !!edge, data: edge };
+    updateEdge: async (edgeId, updates) => {
+      const edge = findEdge(edgeId);
+      return edge
+        ? ok({ ...edge, ...updates })
+        : { success: false, error: `Edge not found: ${edgeId}` };
     },
-    updateNode: async (query) => {
-      const node = nodes.find((n) => n.id === query.nodeId);
-      return { success: !!node, data: node };
+    deleteNode: async () => ok(undefined),
+    deleteEdge: async () => ok(undefined),
+    queryNodes: async (query) =>
+      ok(nodes.filter((n) => !query.types || query.types.includes(n.type))),
+    searchNodesSemantic: async () => ok([]),
+    queryEdges: async (query) =>
+      ok(edges.filter((e) => !query.types || query.types.includes(e.type))),
+    traverse: async () => ok({ paths: [], visitedNodes: [], visitedEdges: [], depth: 0 }),
+    findShortestPath: async () => ok(null),
+    getNeighbors: async (nodeId, direction = 'both') =>
+      ok(
+        edges.flatMap((edge) => {
+          const neighborId =
+            edge.sourceNodeId === nodeId && direction !== 'incoming'
+              ? edge.targetNodeId
+              : edge.targetNodeId === nodeId && direction !== 'outgoing'
+                ? edge.sourceNodeId
+                : undefined;
+          const node = neighborId === undefined ? undefined : findNode(neighborId);
+          return node ? [{ node, edge }] : [];
+        })
+      ),
+    getConnections: async (nodeId) =>
+      ok(edges.filter((e) => e.sourceNodeId === nodeId || e.targetNodeId === nodeId)),
+    mergeNodes: async (targetNodeId) => {
+      const node = findNode(targetNodeId);
+      return node ? ok(node) : { success: false, error: `Node not found: ${targetNodeId}` };
     },
-    updateEdge: async (query) => {
-      const edge = edges.find((e) => e.id === query.edgeId);
-      return { success: !!edge, data: edge };
-    },
-    deleteNode: async () => ({ success: true }),
-    deleteEdge: async () => ({ success: true }),
-    queryNodes: async (query) => {
-      let result = nodes;
-      if (query.type) {
-        result = result.filter((n) => n.type === query.type);
-      }
-      return { success: true, data: result };
-    },
-    queryEdges: async (query) => {
-      let result = edges;
-      if (query.type) {
-        result = result.filter((e) => e.type === query.type);
-      }
-      return { success: true, data: result };
-    },
-    getNeighbors: async (query) => {
-      const neighborIds = new Set<string>();
-      for (const edge of edges) {
-        if (edge.sourceNodeId === query.nodeId) neighborIds.add(edge.targetNodeId);
-        if (edge.targetNodeId === query.nodeId) neighborIds.add(edge.sourceNodeId);
-      }
-      return { success: true, data: nodes.filter((n) => neighborIds.has(n.id)) };
-    },
-    getConnections: async (query) => {
-      const result = edges.filter(
-        (e) => e.sourceNodeId === query.nodeId || e.targetNodeId === query.nodeId
-      );
-      return { success: true, data: result };
-    },
-    clear: async () => ({ success: true }),
-    getStats: async () => ({
-      success: true,
-      data: { nodeCount: nodes.length, edgeCount: edges.length },
-    }),
+    clearGraph: async () => ok(undefined),
+    getGraphStats: async () =>
+      ok({
+        nodeCount: nodes.length,
+        edgeCount: edges.length,
+        nodesByType: {},
+        edgesByType: {},
+        averageEdgesPerNode: edges.length / nodes.length,
+        maxDepth: 0,
+      }),
   };
 };
 
@@ -376,53 +392,53 @@ describe('formatQueryResult', () => {
 });
 
 describe('Query Execution Context', () => {
-  let adapter: GraphAdapter;
+  let adapter: MockGraphAdapter;
 
   beforeEach(() => {
     adapter = createMockAdapter();
   });
 
   it('mock adapter returns nodes by type', async () => {
-    const result = await adapter.queryNodes({ agentId: 'test', type: 'Person' });
+    const result = await adapter.queryNodes({ agentId: 'test', types: ['person'] });
     expect(result.success).toBe(true);
-    expect(result.data).toHaveLength(2);
+    expect(unwrap(result)).toHaveLength(2);
   });
 
   it('mock adapter returns edges by type', async () => {
-    const result = await adapter.queryEdges({ agentId: 'test', type: 'WORKS_AT' });
+    const result = await adapter.queryEdges({ agentId: 'test', types: ['works_at'] });
     expect(result.success).toBe(true);
-    expect(result.data).toHaveLength(2);
+    expect(unwrap(result)).toHaveLength(2);
   });
 
   it('mock adapter returns neighbors', async () => {
-    const result = await adapter.getNeighbors({ agentId: 'test', nodeId: 'person1' });
+    const result = await adapter.getNeighbors('person1');
     expect(result.success).toBe(true);
-    expect(result.data!.length).toBeGreaterThan(0);
+    expect(unwrap(result).length).toBeGreaterThan(0);
   });
 
   it('mock adapter returns connections', async () => {
-    const result = await adapter.getConnections({ agentId: 'test', nodeId: 'person1' });
+    const result = await adapter.getConnections('person1');
     expect(result.success).toBe(true);
-    expect(result.data!.length).toBeGreaterThan(0);
+    expect(unwrap(result).length).toBeGreaterThan(0);
   });
 
   it('mock adapter gets node by id', async () => {
-    const result = await adapter.getNode({ agentId: 'test', nodeId: 'person1' });
+    const result = await adapter.getNode('person1');
     expect(result.success).toBe(true);
-    expect(result.data?.name).toBe('Alice');
+    expect(unwrap(result)?.name).toBe('Alice');
   });
 
   it('mock adapter gets edge by id', async () => {
-    const result = await adapter.getEdge({ agentId: 'test', edgeId: 'e1' });
+    const result = await adapter.getEdge('e1');
     expect(result.success).toBe(true);
-    expect(result.data?.type).toBe('WORKS_AT');
+    expect(unwrap(result)?.type).toBe('works_at');
   });
 
   it('mock adapter returns stats', async () => {
-    const result = await adapter.getStats({ agentId: 'test' });
+    const result = await adapter.getGraphStats('test');
     expect(result.success).toBe(true);
-    expect(result.data?.nodeCount).toBe(4);
-    expect(result.data?.edgeCount).toBe(4);
+    expect(unwrap(result).nodeCount).toBe(4);
+    expect(unwrap(result).edgeCount).toBe(4);
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { PipelineStrategy } from '../../strategies/pipeline';
-import { MockCoordinator } from './__mocks__/mock-coordinator';
+import { MockCoordinator, getCallContext } from './__mocks__/mock-coordinator';
 import { createMockAgent, createMockSwarmAgent } from './__mocks__/mock-helpers';
 
 describe('PipelineStrategy', () => {
@@ -14,7 +14,7 @@ describe('PipelineStrategy', () => {
     it('should throw when no stages provided', () => {
       expect(
         () =>
-          new PipelineStrategy(coordinator as any, {
+          new PipelineStrategy(coordinator, {
             stages: [],
           })
       ).toThrow('Pipeline strategy requires at least one stage');
@@ -23,7 +23,7 @@ describe('PipelineStrategy', () => {
     it('should throw when stages is undefined', () => {
       expect(
         () =>
-          new PipelineStrategy(coordinator as any, {
+          new PipelineStrategy(coordinator, {
             stages: undefined as any,
           })
       ).toThrow('Pipeline strategy requires at least one stage');
@@ -34,7 +34,7 @@ describe('PipelineStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('processor'));
       coordinator.setAgentResponse('processor', 'processed');
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [{ name: 'stage-1', agent }],
       });
 
@@ -68,7 +68,7 @@ describe('PipelineStrategy', () => {
         return 'output-3';
       });
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [
           { name: 'stage-1', agent: stage1 },
           { name: 'stage-2', agent: stage2 },
@@ -90,7 +90,7 @@ describe('PipelineStrategy', () => {
       coordinator.setAgentResponse('s1', 'stage 1 result');
       coordinator.setAgentResponse('s2', 'final result');
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [
           { name: 'first', agent: stage1 },
           { name: 'second', agent: stage2 },
@@ -113,7 +113,7 @@ describe('PipelineStrategy', () => {
       coordinator.setAgentResponse('a1', 'intermediate');
       coordinator.setAgentResponse('a2', 'final output here');
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [
           { name: 'pre', agent: stage1 },
           { name: 'post', agent: stage2 },
@@ -131,7 +131,7 @@ describe('PipelineStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('ctx-agent'));
       coordinator.setAgentResponse('ctx-agent', 'done');
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [{ name: 'only-stage', agent }],
       });
 
@@ -160,7 +160,7 @@ describe('PipelineStrategy', () => {
       coordinator.setAgentResponse('a2', 'out2');
       coordinator.setAgentResponse('a3', 'out3');
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [
           { name: 's1', agent: agent1 },
           { name: 's2', agent: agent2 },
@@ -174,14 +174,14 @@ describe('PipelineStrategy', () => {
       const call2 = coordinator.getCallsFor('a2')[0];
       const call3 = coordinator.getCallsFor('a3')[0];
 
-      expect(call1?.context?.pipelineContext?.isFirstStage).toBe(true);
-      expect(call1?.context?.pipelineContext?.isLastStage).toBe(false);
+      expect(getCallContext(call1, 'pipelineContext')?.isFirstStage).toBe(true);
+      expect(getCallContext(call1, 'pipelineContext')?.isLastStage).toBe(false);
 
-      expect(call2?.context?.pipelineContext?.isFirstStage).toBe(false);
-      expect(call2?.context?.pipelineContext?.isLastStage).toBe(false);
+      expect(getCallContext(call2, 'pipelineContext')?.isFirstStage).toBe(false);
+      expect(getCallContext(call2, 'pipelineContext')?.isLastStage).toBe(false);
 
-      expect(call3?.context?.pipelineContext?.isFirstStage).toBe(false);
-      expect(call3?.context?.pipelineContext?.isLastStage).toBe(true);
+      expect(getCallContext(call3, 'pipelineContext')?.isFirstStage).toBe(false);
+      expect(getCallContext(call3, 'pipelineContext')?.isLastStage).toBe(true);
     });
 
     it('should include previousOutputs in context', async () => {
@@ -194,7 +194,7 @@ describe('PipelineStrategy', () => {
       coordinator.setAgentResponse('p1', 'first output');
       coordinator.setAgentResponse('p2', 'second output');
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [
           { name: 'step1', agent: agent1 },
           { name: 'step2', agent: agent2 },
@@ -204,7 +204,7 @@ describe('PipelineStrategy', () => {
       await strategy.execute({ input: 'test' });
 
       const call2 = coordinator.getLastCallFor('p2');
-      expect(call2?.context?.pipelineContext?.previousOutputs).toMatchObject({
+      expect(getCallContext(call2, 'pipelineContext')?.previousOutputs).toMatchObject({
         step1: 'first output',
       });
     });
@@ -214,7 +214,7 @@ describe('PipelineStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('instr-agent'));
       coordinator.setAgentResponse('instr-agent', 'done');
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [{ name: 'processor', agent }],
       });
 
@@ -234,7 +234,7 @@ describe('PipelineStrategy', () => {
 
       const customStageInput = vi.fn().mockReturnValue('custom formatted input');
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [{ name: 'custom', agent }],
         stageInput: customStageInput,
       });
@@ -254,11 +254,11 @@ describe('PipelineStrategy', () => {
         coordinator.addAgent(createMockSwarmAgent('gate-agent'));
         coordinator.setAgentResponse('gate-agent', 'valid output');
 
-        const strategy = new PipelineStrategy(coordinator as any, {
+        const strategy = new PipelineStrategy(coordinator, {
           stages: [{ name: 'gated', agent, gate: true }],
           gates: {
             gated: {
-              condition: (output) => output.includes('valid'),
+              condition: (output) => typeof output === 'string' && output.includes('valid'),
               onFail: 'abort',
               maxRetries: 0,
             },
@@ -276,7 +276,7 @@ describe('PipelineStrategy', () => {
         coordinator.addAgent(createMockSwarmAgent('abort-gate-agent'));
         coordinator.setAgentResponse('abort-gate-agent', 'invalid output');
 
-        const strategy = new PipelineStrategy(coordinator as any, {
+        const strategy = new PipelineStrategy(coordinator, {
           stages: [{ name: 'abort-stage', agent, gate: true }],
           gates: {
             'abort-stage': {
@@ -304,7 +304,7 @@ describe('PipelineStrategy', () => {
         coordinator.setAgentResponse('skip-agent', 'problematic output');
         coordinator.setAgentResponse('next-agent', 'final');
 
-        const strategy = new PipelineStrategy(coordinator as any, {
+        const strategy = new PipelineStrategy(coordinator, {
           stages: [
             { name: 'skip-stage', agent: agent1, gate: true },
             { name: 'next-stage', agent: agent2 },
@@ -343,14 +343,14 @@ describe('PipelineStrategy', () => {
           return gateCheck === 1 ? 'fail output' : 'success output';
         });
 
-        const strategy = new PipelineStrategy(coordinator as any, {
+        const strategy = new PipelineStrategy(coordinator, {
           stages: [
             { name: 'initial', agent: agent1 },
             { name: 'checked', agent: agent2, gate: true },
           ],
           gates: {
             checked: {
-              condition: (output) => output.includes('success'),
+              condition: (output) => typeof output === 'string' && output.includes('success'),
               onFail: 'retry-previous',
               maxRetries: 3,
             },
@@ -372,7 +372,7 @@ describe('PipelineStrategy', () => {
         coordinator.setAgentResponse('max-retry-1', 'retry input');
         coordinator.setAgentResponse('max-retry-2', 'always fails');
 
-        const strategy = new PipelineStrategy(coordinator as any, {
+        const strategy = new PipelineStrategy(coordinator, {
           stages: [
             { name: 'before', agent: agent1 },
             { name: 'failing', agent: agent2, gate: true },
@@ -410,7 +410,7 @@ describe('PipelineStrategy', () => {
         });
         coordinator.setAgentResponse('goto-3', 'final');
 
-        const strategy = new PipelineStrategy(coordinator as any, {
+        const strategy = new PipelineStrategy(coordinator, {
           stages: [
             { name: 'start', agent: agent1 },
             { name: 'middle', agent: agent2, gate: true },
@@ -418,7 +418,7 @@ describe('PipelineStrategy', () => {
           ],
           gates: {
             middle: {
-              condition: (output) => output.includes('ok'),
+              condition: (output) => typeof output === 'string' && output.includes('ok'),
               onFail: 'goto:start',
               maxRetries: 3,
             },
@@ -434,7 +434,7 @@ describe('PipelineStrategy', () => {
         coordinator.addAgent(createMockSwarmAgent('bad-goto'));
         coordinator.setAgentResponse('bad-goto', 'output');
 
-        const strategy = new PipelineStrategy(coordinator as any, {
+        const strategy = new PipelineStrategy(coordinator, {
           stages: [{ name: 'only', agent, gate: true }],
           gates: {
             only: {
@@ -462,7 +462,7 @@ describe('PipelineStrategy', () => {
         coordinator.setAgentResponse('error-agent', 'An error occurred');
         coordinator.setAgentResponse('next-agent', 'recovered');
 
-        const strategy = new PipelineStrategy(coordinator as any, {
+        const strategy = new PipelineStrategy(coordinator, {
           stages: [
             { name: 'error-stage', agent: agent1, gate: true },
             { name: 'recovery', agent: agent2 },
@@ -478,7 +478,7 @@ describe('PipelineStrategy', () => {
         coordinator.addAgent(createMockSwarmAgent('clean-agent'));
         coordinator.setAgentResponse('clean-agent', 'Success: all good');
 
-        const strategy = new PipelineStrategy(coordinator as any, {
+        const strategy = new PipelineStrategy(coordinator, {
           stages: [{ name: 'clean', agent, gate: true }],
         });
 
@@ -494,7 +494,7 @@ describe('PipelineStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('bb-agent'));
       coordinator.setAgentResponse('bb-agent', 'done');
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [{ name: 'step-a', agent }],
       });
 
@@ -514,7 +514,7 @@ describe('PipelineStrategy', () => {
       coordinator.setAgentResponse('t1', 'out1');
       coordinator.setAgentResponse('t2', 'out2');
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [
           { name: 'track-1', agent: agent1 },
           { name: 'track-2', agent: agent2 },
@@ -538,7 +538,7 @@ describe('PipelineStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('evt-agent'));
       coordinator.setAgentResponse('evt-agent', 'done');
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [{ name: 'event-stage', agent }],
       });
 
@@ -563,7 +563,7 @@ describe('PipelineStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('complete-agent'));
       coordinator.setAgentResponse('complete-agent', 'done');
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [{ name: 'complete-stage', agent }],
       });
 
@@ -587,7 +587,7 @@ describe('PipelineStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('pass-gate-agent'));
       coordinator.setAgentResponse('pass-gate-agent', 'valid');
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [{ name: 'pass-gate', agent, gate: true }],
         gates: {
           'pass-gate': {
@@ -620,7 +620,7 @@ describe('PipelineStrategy', () => {
       coordinator.setAgentResponse('fail-gate-agent', 'invalid');
       coordinator.setAgentResponse('next-agent', 'done');
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [
           { name: 'fail-gate', agent: agent1, gate: true },
           { name: 'next', agent: agent2 },
@@ -658,7 +658,7 @@ describe('PipelineStrategy', () => {
       coordinator.setAgentResponse('out1', 'output from stage 1');
       coordinator.setAgentResponse('out2', 'output from stage 2');
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [
           { name: 'stage-1', agent: agent1 },
           { name: 'stage-2', agent: agent2 },
@@ -677,7 +677,7 @@ describe('PipelineStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('res-agent'));
       coordinator.setAgentResponse('res-agent', 'result');
 
-      const strategy = new PipelineStrategy(coordinator as any, {
+      const strategy = new PipelineStrategy(coordinator, {
         stages: [{ name: 'result-stage', agent }],
       });
 

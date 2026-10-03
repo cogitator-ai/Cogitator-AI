@@ -1,13 +1,41 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { SwarmEvent } from '@cogitator-ai/types';
+import type { Redis } from 'ioredis';
 import { RedisSwarmEventEmitter } from '../../communication/redis-event-emitter.js';
 
-function createMockRedis() {
+type RedisHandler = (...args: unknown[]) => void;
+
+interface MockRedis {
+  data: Map<string, string[]>;
+  subscribers: Map<string, ((channel: string, message: string) => void)[]>;
+  eventHandlers: Map<string, RedisHandler[]>;
+  rpush(key: string, value: string): Promise<number>;
+  lrange(key: string, start: number, stop: number): Promise<string[]>;
+  llen(key: string): Promise<number>;
+  ltrim(key: string, start: number, stop: number): Promise<'OK'>;
+  del(key: string): Promise<number>;
+  publish(channel: string, message: string): Promise<number>;
+  subscribe(channel: string): Promise<void>;
+  unsubscribe(): Promise<void>;
+  quit(): Promise<void>;
+  eval(script: string, numKeys: number, ...args: string[]): Promise<number>;
+  on(event: string, handler: RedisHandler): MockRedis;
+  off(event: string, handler: RedisHandler): MockRedis;
+  removeAllListeners(event?: string): MockRedis;
+  duplicate(): MockRedis;
+  triggerMessage(channel: string, message: string): void;
+}
+
+function asRedis(mock: MockRedis): Redis {
+  return mock as unknown as Redis;
+}
+
+function createMockRedis(): MockRedis {
   const data = new Map<string, string[]>();
   const subscribers = new Map<string, ((channel: string, message: string) => void)[]>();
   const eventHandlers = new Map<string, ((...args: unknown[]) => void)[]>();
 
-  const mock = {
+  const mock: MockRedis = {
     data,
     subscribers,
     eventHandlers,
@@ -65,14 +93,14 @@ function createMockRedis() {
       }
       return 1;
     },
-    on(event: string, handler: (...args: unknown[]) => void): typeof mock {
+    on(event: string, handler: (...args: unknown[]) => void): MockRedis {
       if (!eventHandlers.has(event)) {
         eventHandlers.set(event, []);
       }
       eventHandlers.get(event)!.push(handler);
       return mock;
     },
-    off(event: string, handler: (...args: unknown[]) => void): typeof mock {
+    off(event: string, handler: (...args: unknown[]) => void): MockRedis {
       const handlers = eventHandlers.get(event);
       if (handlers) {
         eventHandlers.set(
@@ -82,7 +110,7 @@ function createMockRedis() {
       }
       return mock;
     },
-    removeAllListeners(event?: string): typeof mock {
+    removeAllListeners(event?: string): MockRedis {
       if (event) {
         eventHandlers.delete(event);
       } else {
@@ -90,7 +118,7 @@ function createMockRedis() {
       }
       return mock;
     },
-    duplicate(): typeof mock {
+    duplicate(): MockRedis {
       return mock;
     },
     triggerMessage(channel: string, message: string) {
@@ -105,7 +133,7 @@ function createMockRedis() {
 }
 
 describe('RedisSwarmEventEmitter', () => {
-  let mockRedis: ReturnType<typeof createMockRedis>;
+  let mockRedis: MockRedis;
   let emitter: RedisSwarmEventEmitter;
 
   const triggerEvent = (channel: string, event: SwarmEvent) => {
@@ -115,7 +143,7 @@ describe('RedisSwarmEventEmitter', () => {
   beforeEach(async () => {
     mockRedis = createMockRedis();
     emitter = new RedisSwarmEventEmitter({
-      redis: mockRedis as never,
+      redis: asRedis(mockRedis),
       swarmId: 'test-swarm',
       keyPrefix: 'test',
       maxEvents: 100,
@@ -151,7 +179,7 @@ describe('RedisSwarmEventEmitter', () => {
 
     it('should trim events when exceeding maxEvents', async () => {
       const smallEmitter = new RedisSwarmEventEmitter({
-        redis: mockRedis as never,
+        redis: asRedis(mockRedis),
         swarmId: 'trim-test',
         maxEvents: 3,
       });

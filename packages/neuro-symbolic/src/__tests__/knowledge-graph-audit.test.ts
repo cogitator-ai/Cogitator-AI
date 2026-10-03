@@ -318,8 +318,11 @@ describe('MemoryGraphAdapter hardening', () => {
     const { adapter, nodes } = await buildFixture();
     const merged = await adapter.mergeNodes(nodes.Paris.id, [nodes.Paris.id, nodes.France.id]);
     expect(merged.success).toBe(true);
-    expect((await adapter.getNode(nodes.Paris.id)).data).not.toBeNull();
-    expect((await adapter.getNode(nodes.France.id)).data).toBeNull();
+    const target = await adapter.getNode(nodes.Paris.id);
+    expect(target.success).toBe(true);
+    expect(target.success && target.data).not.toBeNull();
+    const source = await adapter.getNode(nodes.France.id);
+    expect(source.success && source.data).toBeNull();
   });
 });
 

@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { createVotingTools } from '../../tools/voting.js';
 import { InMemoryBlackboard } from '../../communication/blackboard.js';
 import { SwarmEventEmitterImpl } from '../../communication/event-emitter.js';
-import type { SwarmEvent } from '@cogitator-ai/types';
+import type { SwarmEvent, ToolContext } from '@cogitator-ai/types';
+
+const ctx: ToolContext = { agentId: 'a', runId: 'r', signal: new AbortController().signal };
 
 interface ConsensusState {
   topic: string;
@@ -46,7 +48,7 @@ describe('createVotingTools', () => {
       blackboard.write('consensus', createConsensusState(), 'system');
       const { castVote } = createVotingTools(blackboard, events, 'agent-alpha', 1);
 
-      const result = await castVote.execute({ decision: 'React', reasoning: 'Fast UI' });
+      const result = await castVote.execute({ decision: 'React', reasoning: 'Fast UI' }, ctx);
 
       expect(result).toEqual({
         success: true,
@@ -61,7 +63,7 @@ describe('createVotingTools', () => {
       blackboard.write('consensus', createConsensusState(), 'system');
       const { castVote } = createVotingTools(blackboard, events, 'agent-alpha', 1);
 
-      await castVote.execute({ decision: 'Vue' });
+      await castVote.execute({ decision: 'Vue' }, ctx);
 
       const state = blackboard.read<ConsensusState>('consensus');
       expect(state.votes).toHaveLength(1);
@@ -75,7 +77,7 @@ describe('createVotingTools', () => {
       blackboard.write('consensus', createConsensusState(), 'system');
       const { castVote } = createVotingTools(blackboard, events, 'lead-agent', 3);
 
-      const result = await castVote.execute({ decision: 'Svelte' });
+      const result = await castVote.execute({ decision: 'Svelte' }, ctx);
 
       expect(result.weight).toBe(3);
       const state = blackboard.read<ConsensusState>('consensus');
@@ -86,8 +88,8 @@ describe('createVotingTools', () => {
       blackboard.write('consensus', createConsensusState(), 'system');
       const { castVote } = createVotingTools(blackboard, events, 'agent-alpha', 1);
 
-      await castVote.execute({ decision: 'React' });
-      const dup = await castVote.execute({ decision: 'Vue' });
+      await castVote.execute({ decision: 'React' }, ctx);
+      const dup = await castVote.execute({ decision: 'Vue' }, ctx);
 
       expect(dup).toEqual({
         success: false,
@@ -104,13 +106,13 @@ describe('createVotingTools', () => {
       blackboard.write('consensus', state, 'system');
       const { castVote } = createVotingTools(blackboard, events, 'agent-alpha', 1);
 
-      await castVote.execute({ decision: 'React' });
+      await castVote.execute({ decision: 'React' }, ctx);
 
       const updated = blackboard.read<ConsensusState>('consensus');
       updated.currentRound = 2;
       blackboard.write('consensus', updated, 'system');
 
-      const result = await castVote.execute({ decision: 'Vue' });
+      const result = await castVote.execute({ decision: 'Vue' }, ctx);
       expect(result.success).toBe(true);
 
       const final = blackboard.read<ConsensusState>('consensus');
@@ -122,8 +124,8 @@ describe('createVotingTools', () => {
       const toolsA = createVotingTools(blackboard, events, 'agent-alpha', 1);
       const toolsB = createVotingTools(blackboard, events, 'agent-beta', 1);
 
-      await toolsA.castVote.execute({ decision: 'React' });
-      const result = await toolsB.castVote.execute({ decision: 'Vue' });
+      await toolsA.castVote.execute({ decision: 'React' }, ctx);
+      const result = await toolsB.castVote.execute({ decision: 'Vue' }, ctx);
 
       expect(result.success).toBe(true);
       const state = blackboard.read<ConsensusState>('consensus');
@@ -134,9 +136,11 @@ describe('createVotingTools', () => {
       blackboard.write('consensus', createConsensusState(), 'system');
       const { castVote } = createVotingTools(blackboard, events, 'agent-alpha', 1);
       const emitted: SwarmEvent[] = [];
-      events.on('consensus:vote', (e) => emitted.push(e));
+      events.on('consensus:vote', (e) => {
+        emitted.push(e);
+      });
 
-      await castVote.execute({ decision: 'React', confidence: 0.9 });
+      await castVote.execute({ decision: 'React', confidence: 0.9 }, ctx);
 
       expect(emitted).toHaveLength(1);
       expect(emitted[0].agentName).toBe('agent-alpha');
@@ -146,7 +150,7 @@ describe('createVotingTools', () => {
 
     it('should return error when no consensus session exists', async () => {
       const { castVote } = createVotingTools(blackboard, events, 'agent-alpha', 1);
-      const result = await castVote.execute({ decision: 'React' });
+      const result = await castVote.execute({ decision: 'React' }, ctx);
       expect(result).toEqual({ success: false, error: 'No active consensus session' });
     });
 
@@ -154,7 +158,7 @@ describe('createVotingTools', () => {
       blackboard.write('consensus', createConsensusState(), 'system');
       const { castVote } = createVotingTools(blackboard, events, 'agent-alpha', 1);
 
-      await castVote.execute({ decision: 'React', reasoning: 'Large ecosystem' });
+      await castVote.execute({ decision: 'React', reasoning: 'Large ecosystem' }, ctx);
 
       const state = blackboard.read<ConsensusState>('consensus');
       expect(state.votes[0].reasoning).toBe('Large ecosystem');
@@ -166,8 +170,11 @@ describe('createVotingTools', () => {
       blackboard.write('consensus', createConsensusState(), 'system');
       const { castVote, changeVote } = createVotingTools(blackboard, events, 'agent-alpha', 1);
 
-      await castVote.execute({ decision: 'React' });
-      const result = await changeVote.execute({ newDecision: 'Vue', reasoning: 'Changed mind' });
+      await castVote.execute({ decision: 'React' }, ctx);
+      const result = await changeVote.execute(
+        { newDecision: 'Vue', reasoning: 'Changed mind' },
+        ctx
+      );
 
       expect(result).toEqual({
         success: true,
@@ -186,7 +193,7 @@ describe('createVotingTools', () => {
       blackboard.write('consensus', createConsensusState(), 'system');
       const { changeVote } = createVotingTools(blackboard, events, 'agent-alpha', 1);
 
-      const result = await changeVote.execute({ newDecision: 'Svelte' });
+      const result = await changeVote.execute({ newDecision: 'Svelte' }, ctx);
 
       expect(result.success).toBe(true);
       expect(result.previousDecision).toBeNull();
@@ -200,10 +207,12 @@ describe('createVotingTools', () => {
       blackboard.write('consensus', createConsensusState(), 'system');
       const { castVote, changeVote } = createVotingTools(blackboard, events, 'agent-alpha', 1);
       const emitted: SwarmEvent[] = [];
-      events.on('consensus:vote:changed', (e) => emitted.push(e));
+      events.on('consensus:vote:changed', (e) => {
+        emitted.push(e);
+      });
 
-      await castVote.execute({ decision: 'React' });
-      await changeVote.execute({ newDecision: 'Angular' });
+      await castVote.execute({ decision: 'React' }, ctx);
+      await changeVote.execute({ newDecision: 'Angular' }, ctx);
 
       expect(emitted).toHaveLength(1);
       const data = emitted[0].data as Record<string, unknown>;
@@ -213,7 +222,7 @@ describe('createVotingTools', () => {
 
     it('should return error when no consensus session exists', async () => {
       const { changeVote } = createVotingTools(blackboard, events, 'agent-alpha', 1);
-      const result = await changeVote.execute({ newDecision: 'React' });
+      const result = await changeVote.execute({ newDecision: 'React' }, ctx);
       expect(result).toEqual({ success: false, error: 'No active consensus session' });
     });
 
@@ -222,9 +231,9 @@ describe('createVotingTools', () => {
       const toolsA = createVotingTools(blackboard, events, 'agent-alpha', 1);
       const toolsB = createVotingTools(blackboard, events, 'agent-beta', 1);
 
-      await toolsA.castVote.execute({ decision: 'React' });
-      await toolsB.castVote.execute({ decision: 'Vue' });
-      await toolsA.changeVote.execute({ newDecision: 'Angular' });
+      await toolsA.castVote.execute({ decision: 'React' }, ctx);
+      await toolsB.castVote.execute({ decision: 'Vue' }, ctx);
+      await toolsA.changeVote.execute({ newDecision: 'Angular' }, ctx);
 
       const state = blackboard.read<ConsensusState>('consensus');
       expect(state.votes).toHaveLength(2);
@@ -245,10 +254,10 @@ describe('createVotingTools', () => {
       const toolsA = createVotingTools(blackboard, events, 'agent-alpha', 1);
       const toolsB = createVotingTools(blackboard, events, 'agent-beta', 2);
 
-      await toolsA.castVote.execute({ decision: 'React', reasoning: 'Popular' });
-      await toolsB.castVote.execute({ decision: 'Vue', reasoning: 'Simple' });
+      await toolsA.castVote.execute({ decision: 'React', reasoning: 'Popular' }, ctx);
+      await toolsB.castVote.execute({ decision: 'Vue', reasoning: 'Simple' }, ctx);
 
-      const result = await toolsA.getVotes.execute({});
+      const result = await toolsA.getVotes.execute({}, ctx);
 
       expect(result.success).toBe(true);
       expect(result.totalVotes).toBe(2);
@@ -262,22 +271,22 @@ describe('createVotingTools', () => {
       blackboard.write('consensus', state, 'system');
       const tools = createVotingTools(blackboard, events, 'agent-alpha', 1);
 
-      await tools.castVote.execute({ decision: 'React' });
+      await tools.castVote.execute({ decision: 'React' }, ctx);
 
       const s = blackboard.read<ConsensusState>('consensus');
       s.currentRound = 2;
       blackboard.write('consensus', s, 'system');
-      await tools.castVote.execute({ decision: 'Vue' });
+      await tools.castVote.execute({ decision: 'Vue' }, ctx);
 
-      const round1 = await tools.getVotes.execute({ round: 1 });
+      const round1 = await tools.getVotes.execute({ round: 1 }, ctx);
       expect(round1.totalVotes).toBe(1);
       expect(round1.votes![0].decision).toBe('React');
 
-      const round2 = await tools.getVotes.execute({ round: 2 });
+      const round2 = await tools.getVotes.execute({ round: 2 }, ctx);
       expect(round2.totalVotes).toBe(1);
       expect(round2.votes![0].decision).toBe('Vue');
 
-      const allRounds = await tools.getVotes.execute({});
+      const allRounds = await tools.getVotes.execute({}, ctx);
       expect(allRounds.totalVotes).toBe(2);
     });
 
@@ -285,12 +294,12 @@ describe('createVotingTools', () => {
       blackboard.write('consensus', createConsensusState(), 'system');
       const tools = createVotingTools(blackboard, events, 'agent-alpha', 1);
 
-      await tools.castVote.execute({ decision: 'React', reasoning: 'Ecosystem' });
+      await tools.castVote.execute({ decision: 'React', reasoning: 'Ecosystem' }, ctx);
 
-      const withReasoning = await tools.getVotes.execute({ includeReasoning: true });
+      const withReasoning = await tools.getVotes.execute({ includeReasoning: true }, ctx);
       expect(withReasoning.votes![0].reasoning).toBe('Ecosystem');
 
-      const withoutReasoning = await tools.getVotes.execute({ includeReasoning: false });
+      const withoutReasoning = await tools.getVotes.execute({ includeReasoning: false }, ctx);
       expect(withoutReasoning.votes![0]).not.toHaveProperty('reasoning');
     });
 
@@ -300,11 +309,11 @@ describe('createVotingTools', () => {
       const toolsB = createVotingTools(blackboard, events, 'agent-beta', 3);
       const toolsC = createVotingTools(blackboard, events, 'agent-gamma', 1);
 
-      await toolsA.castVote.execute({ decision: 'React' });
-      await toolsB.castVote.execute({ decision: 'React' });
-      await toolsC.castVote.execute({ decision: 'Vue' });
+      await toolsA.castVote.execute({ decision: 'React' }, ctx);
+      await toolsB.castVote.execute({ decision: 'React' }, ctx);
+      await toolsC.castVote.execute({ decision: 'Vue' }, ctx);
 
-      const result = await toolsA.getVotes.execute({});
+      const result = await toolsA.getVotes.execute({}, ctx);
 
       expect(result.summary).toHaveLength(2);
 
@@ -329,7 +338,7 @@ describe('createVotingTools', () => {
 
     it('should return error when no consensus session exists', async () => {
       const tools = createVotingTools(blackboard, events, 'agent-alpha', 1);
-      const result = await tools.getVotes.execute({});
+      const result = await tools.getVotes.execute({}, ctx);
       expect(result.success).toBe(false);
       expect(result.votes).toEqual([]);
     });
@@ -339,10 +348,10 @@ describe('createVotingTools', () => {
       const toolsA = createVotingTools(blackboard, events, 'agent-alpha', 1);
       const toolsB = createVotingTools(blackboard, events, 'agent-beta', 1);
 
-      await toolsA.castVote.execute({ decision: 'React' });
-      await toolsB.castVote.execute({ decision: '  react  ' });
+      await toolsA.castVote.execute({ decision: 'React' }, ctx);
+      await toolsB.castVote.execute({ decision: '  react  ' }, ctx);
 
-      const result = await toolsA.getVotes.execute({});
+      const result = await toolsA.getVotes.execute({}, ctx);
       expect(result.summary).toHaveLength(1);
       expect(result.summary![0].count).toBe(2);
     });
@@ -351,7 +360,7 @@ describe('createVotingTools', () => {
   describe('getConsensusStatus', () => {
     it('should return inactive when no session exists', async () => {
       const tools = createVotingTools(blackboard, events, 'agent-alpha', 1);
-      const result = await tools.getConsensusStatus.execute({});
+      const result = await tools.getConsensusStatus.execute({}, ctx);
 
       expect(result).toEqual({
         active: false,
@@ -367,7 +376,7 @@ describe('createVotingTools', () => {
       );
       const tools = createVotingTools(blackboard, events, 'agent-alpha', 1);
 
-      const status = await tools.getConsensusStatus.execute({});
+      const status = await tools.getConsensusStatus.execute({}, ctx);
 
       expect(status.active).toBe(true);
       expect(status.topic).toBe('Best DB');
@@ -383,8 +392,8 @@ describe('createVotingTools', () => {
       blackboard.write('consensus', createConsensusState(), 'system');
       const tools = createVotingTools(blackboard, events, 'agent-alpha', 1);
 
-      await tools.castVote.execute({ decision: 'Postgres' });
-      const status = await tools.getConsensusStatus.execute({});
+      await tools.castVote.execute({ decision: 'Postgres' }, ctx);
+      const status = await tools.getConsensusStatus.execute({}, ctx);
 
       expect(status.hasVoted).toBe(true);
     });
@@ -399,11 +408,11 @@ describe('createVotingTools', () => {
       const toolsB = createVotingTools(blackboard, events, 'agent-beta', 1);
       const toolsC = createVotingTools(blackboard, events, 'agent-gamma', 1);
 
-      await toolsA.castVote.execute({ decision: 'Postgres' });
-      await toolsB.castVote.execute({ decision: 'Postgres' });
-      await toolsC.castVote.execute({ decision: 'MySQL' });
+      await toolsA.castVote.execute({ decision: 'Postgres' }, ctx);
+      await toolsB.castVote.execute({ decision: 'Postgres' }, ctx);
+      await toolsC.castVote.execute({ decision: 'MySQL' }, ctx);
 
-      const status = await toolsA.getConsensusStatus.execute({});
+      const status = await toolsA.getConsensusStatus.execute({}, ctx);
 
       expect(status.leadingDecision).toBe('postgres');
       expect(status.leadingVotes).toBe(2);
@@ -421,11 +430,11 @@ describe('createVotingTools', () => {
       const toolsB = createVotingTools(blackboard, events, 'agent-beta', 1);
       const toolsC = createVotingTools(blackboard, events, 'agent-gamma', 1);
 
-      await toolsA.castVote.execute({ decision: 'Postgres' });
-      await toolsB.castVote.execute({ decision: 'Postgres' });
-      await toolsC.castVote.execute({ decision: 'MySQL' });
+      await toolsA.castVote.execute({ decision: 'Postgres' }, ctx);
+      await toolsB.castVote.execute({ decision: 'Postgres' }, ctx);
+      await toolsC.castVote.execute({ decision: 'MySQL' }, ctx);
 
-      const status = await toolsA.getConsensusStatus.execute({});
+      const status = await toolsA.getConsensusStatus.execute({}, ctx);
 
       expect(status.wouldReachConsensus).toBe(false);
     });
@@ -439,10 +448,10 @@ describe('createVotingTools', () => {
       const toolsA = createVotingTools(blackboard, events, 'agent-alpha', 1);
       const toolsB = createVotingTools(blackboard, events, 'agent-beta', 5);
 
-      await toolsA.castVote.execute({ decision: 'MySQL' });
-      await toolsB.castVote.execute({ decision: 'Postgres' });
+      await toolsA.castVote.execute({ decision: 'MySQL' }, ctx);
+      await toolsB.castVote.execute({ decision: 'Postgres' }, ctx);
 
-      const status = await toolsA.getConsensusStatus.execute({});
+      const status = await toolsA.getConsensusStatus.execute({}, ctx);
 
       expect(status.resolution).toBe('weighted');
       expect(status.leadingDecision).toBe('postgres');
@@ -461,11 +470,11 @@ describe('createVotingTools', () => {
       const toolsB = createVotingTools(blackboard, events, 'agent-beta', 1);
       const toolsC = createVotingTools(blackboard, events, 'agent-gamma', 10);
 
-      await toolsA.castVote.execute({ decision: 'X' });
-      await toolsB.castVote.execute({ decision: 'X' });
-      await toolsC.castVote.execute({ decision: 'Y' });
+      await toolsA.castVote.execute({ decision: 'X' }, ctx);
+      await toolsB.castVote.execute({ decision: 'X' }, ctx);
+      await toolsC.castVote.execute({ decision: 'Y' }, ctx);
 
-      const status = await toolsA.getConsensusStatus.execute({});
+      const status = await toolsA.getConsensusStatus.execute({}, ctx);
 
       expect(status.leadingDecision).toBe('y');
       expect(status.leadingVotes).toBe(10);
@@ -477,13 +486,13 @@ describe('createVotingTools', () => {
       blackboard.write('consensus', state, 'system');
       const tools = createVotingTools(blackboard, events, 'agent-alpha', 1);
 
-      await tools.castVote.execute({ decision: 'X' });
+      await tools.castVote.execute({ decision: 'X' }, ctx);
 
       const s = blackboard.read<ConsensusState>('consensus');
       s.currentRound = 2;
       blackboard.write('consensus', s, 'system');
 
-      const status = await tools.getConsensusStatus.execute({});
+      const status = await tools.getConsensusStatus.execute({}, ctx);
 
       expect(status.currentVotes).toBe(0);
       expect(status.hasVoted).toBe(false);
@@ -494,7 +503,7 @@ describe('createVotingTools', () => {
       blackboard.write('consensus', createConsensusState(), 'system');
       const tools = createVotingTools(blackboard, events, 'agent-alpha', 1);
 
-      const status = await tools.getConsensusStatus.execute({});
+      const status = await tools.getConsensusStatus.execute({}, ctx);
 
       expect(status.consensusRatio).toBe(0);
       expect(status.wouldReachConsensus).toBe(false);

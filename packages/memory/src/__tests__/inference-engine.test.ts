@@ -212,6 +212,7 @@ async function createNode(
     confidence: 1.0,
     source: 'user',
   });
+  if (!result.success) throw new Error(result.error);
   return result.data;
 }
 
@@ -233,6 +234,7 @@ async function createEdge(
     confidence: 1.0,
     source: 'user',
   });
+  if (!result.success) throw new Error(result.error);
   return result.data;
 }
 
@@ -404,6 +406,7 @@ describe('GraphInferenceEngine', () => {
 
       const result = await engine.materialize(colleagueEdges);
       expect(result.success).toBe(true);
+      if (!result.success) throw new Error(result.error);
       expect(result.data.length).toBe(colleagueEdges.length);
     });
   });

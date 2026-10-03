@@ -11,9 +11,13 @@ function createMockReflectionEngine(insights: { content: string }[]): Reflection
 
 const agentContext: AgentContext = {
   agentId: 'agent_1',
+  agentName: 'test-agent',
   runId: 'run_1',
   threadId: 'thread_1',
-  currentInput: 'test input',
+  goal: 'test input',
+  iterationIndex: 0,
+  previousActions: [],
+  availableTools: [],
 };
 
 describe('enrichMessagesWithInsights', () => {

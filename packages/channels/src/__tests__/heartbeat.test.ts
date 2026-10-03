@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { HeartbeatScheduler } from '../heartbeat';
-import type { TimerStore } from '@cogitator-ai/types';
+import type { ChannelMessage, TimerStore } from '@cogitator-ai/types';
 
 function createMockStore(): Record<keyof TimerStore, ReturnType<typeof vi.fn>> {
   return {
@@ -20,7 +20,7 @@ function createMockStore(): Record<keyof TimerStore, ReturnType<typeof vi.fn>> {
 }
 
 describe('HeartbeatScheduler', () => {
-  let onFire: ReturnType<typeof vi.fn>;
+  let onFire: Mock<(msg: ChannelMessage) => Promise<void> | void>;
   let store: ReturnType<typeof createMockStore>;
 
   beforeEach(() => {

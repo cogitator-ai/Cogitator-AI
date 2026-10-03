@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import { InboundDebouncer } from '../inbound-debounce';
 import type { ChannelMessage } from '@cogitator-ai/types';
 
@@ -16,7 +16,7 @@ function makeMsg(overrides: Partial<ChannelMessage> = {}): ChannelMessage {
 }
 
 describe('InboundDebouncer', () => {
-  let onFlush: ReturnType<typeof vi.fn>;
+  let onFlush: Mock<(merged: ChannelMessage) => Promise<void>>;
 
   beforeEach(() => {
     vi.useFakeTimers();

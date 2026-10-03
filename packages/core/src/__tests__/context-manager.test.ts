@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ContextManager } from '../context/context-manager';
-import type { Message, LLMBackend, LLMResponse } from '@cogitator-ai/types';
+import type { Message, LLMBackend, ChatResponse } from '@cogitator-ai/types';
 
 function createMessages(count: number, contentLength = 100): Message[] {
   return Array.from({ length: count }, (_, i) => ({
@@ -11,12 +11,13 @@ function createMessages(count: number, contentLength = 100): Message[] {
 
 function createMockBackend(): LLMBackend {
   return {
+    provider: 'openai',
     chat: vi.fn().mockResolvedValue({
+      id: 'summary',
       content: 'Summary of conversation',
-      model: 'test-model',
-      usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
       finishReason: 'stop',
-    } as LLMResponse),
+    } satisfies ChatResponse),
     chatStream: vi.fn(),
   };
 }

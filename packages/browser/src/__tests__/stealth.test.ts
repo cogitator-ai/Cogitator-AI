@@ -405,7 +405,11 @@ describe('humanLikeScroll', () => {
     const { humanLikeScroll } = await import('../stealth/human-like');
 
     const mockPage = {
-      mouse: { wheel: vi.fn().mockResolvedValue(undefined) },
+      mouse: {
+        wheel: vi
+          .fn<(deltaX: number, deltaY: number) => Promise<void>>()
+          .mockResolvedValue(undefined),
+      },
     };
 
     const promise = humanLikeScroll(mockPage as never, 'up', 300);
@@ -416,7 +420,7 @@ describe('humanLikeScroll', () => {
     await promise;
 
     const calls = mockPage.mouse.wheel.mock.calls;
-    const totalDy = calls.reduce((sum: number, [, dy]: [number, number]) => sum + dy, 0);
+    const totalDy = calls.reduce((sum, [, dy]) => sum + dy, 0);
     expect(totalDy).toBeLessThan(0);
 
     vi.useRealTimers();

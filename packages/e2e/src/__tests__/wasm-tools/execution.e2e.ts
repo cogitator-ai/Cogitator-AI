@@ -38,7 +38,7 @@ function context(signal: AbortSignal = AbortSignal.timeout(60_000)): ToolContext
   return { agentId: 'e2e-wasm', runId: 'e2e-wasm-run', signal };
 }
 
-async function run<T>(tool: Tool<never, unknown>, params: unknown): Promise<T> {
+async function run<T>(tool: Pick<Tool<never>, 'execute'>, params: unknown): Promise<T> {
   return (await tool.execute(params as never, context())) as T;
 }
 

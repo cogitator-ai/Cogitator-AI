@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { toolCallMessage } from './helpers/messages';
 import { GoogleBackend } from '../llm/google';
 
 const mockFetch = vi.fn();
@@ -263,17 +264,13 @@ describe('GoogleBackend', () => {
         model: 'gemini-2.5-flash',
         messages: [
           { role: 'user', content: 'What is the weather?' },
-          {
-            role: 'assistant',
-            content: '',
-            toolCalls: [
-              {
-                id: 'call_1',
-                name: 'get_weather',
-                arguments: { city: 'Tokyo' },
-              },
-            ],
-          },
+          toolCallMessage([
+            {
+              id: 'call_1',
+              name: 'get_weather',
+              arguments: { city: 'Tokyo' },
+            },
+          ]),
           {
             role: 'tool',
             content: '{"temperature": 25, "condition": "sunny"}',
@@ -701,14 +698,10 @@ describe('GoogleBackend', () => {
         model: 'gemini-2.5-flash',
         messages: [
           { role: 'user', content: 'Weather?' },
-          {
-            role: 'assistant',
-            content: '',
-            toolCalls: [
-              { id: 'c1', name: 'weather', arguments: { city: 'Tokyo' } },
-              { id: 'c2', name: 'weather', arguments: { city: 'Paris' } },
-            ],
-          } as never,
+          toolCallMessage([
+            { id: 'c1', name: 'weather', arguments: { city: 'Tokyo' } },
+            { id: 'c2', name: 'weather', arguments: { city: 'Paris' } },
+          ]),
           { role: 'tool', content: '{"t":20}', toolCallId: 'c1', name: 'weather' },
           { role: 'tool', content: '{"t":12}', toolCallId: 'c2', name: 'weather' },
         ],
@@ -732,15 +725,11 @@ describe('GoogleBackend', () => {
         model: 'gemini-2.5-flash',
         messages: [
           { role: 'user', content: 'Tasks?' },
-          {
-            role: 'assistant',
-            content: '',
-            toolCalls: [
-              { id: 'c1', name: 'list', arguments: {} },
-              { id: 'c2', name: 'count', arguments: {} },
-              { id: 'c3', name: 'note', arguments: {} },
-            ],
-          } as never,
+          toolCallMessage([
+            { id: 'c1', name: 'list', arguments: {} },
+            { id: 'c2', name: 'count', arguments: {} },
+            { id: 'c3', name: 'note', arguments: {} },
+          ]),
           { role: 'tool', content: '[{"id":1},{"id":2}]', toolCallId: 'c1', name: 'list' },
           { role: 'tool', content: '42', toolCallId: 'c2', name: 'count' },
           { role: 'tool', content: 'plain text', toolCallId: 'c3', name: 'note' },
@@ -779,6 +768,7 @@ describe('GoogleBackend', () => {
         messages: [{ role: 'user', content: 'Look up x' }],
       });
       expect(first.toolCalls?.[0].thoughtSignature).toBe('sig-1');
+      if (!first.toolCalls) throw new Error('Expected tool calls in the first response');
 
       mockFetch.mockReset();
       mockFetch.mockResolvedValueOnce({ ok: true, json: async () => okJson });
@@ -787,8 +777,8 @@ describe('GoogleBackend', () => {
         model: 'gemini-3-flash',
         messages: [
           { role: 'user', content: 'Look up x' },
-          { role: 'assistant', content: '', toolCalls: first.toolCalls } as never,
-          { role: 'tool', content: '"found"', toolCallId: first.toolCalls![0].id, name: 'lookup' },
+          toolCallMessage(first.toolCalls),
+          { role: 'tool', content: '"found"', toolCallId: first.toolCalls[0].id, name: 'lookup' },
         ],
       });
 

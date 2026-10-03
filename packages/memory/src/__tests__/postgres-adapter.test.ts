@@ -406,7 +406,7 @@ describe('PostgresAdapter', () => {
     it('adds an embedding', async () => {
       const result = await adapter.addEmbedding({
         sourceId: 'entry_123',
-        sourceType: 'entry',
+        sourceType: 'message',
         vector: [0.1, 0.2, 0.3],
         content: 'Hello world',
       });
@@ -520,11 +520,8 @@ describe('PostgresAdapter', () => {
   describe('vector dimensions', () => {
     it('allows setting custom dimensions before connect', () => {
       const freshAdapter = new PostgresAdapter({
-        host: 'localhost',
-        port: 5432,
-        database: 'test',
-        user: 'test',
-        password: 'test',
+        provider: 'postgres',
+        connectionString: 'postgresql://test:test@localhost:5432/test',
       });
       freshAdapter.setVectorDimensions(1536);
     });
@@ -537,11 +534,8 @@ describe('PostgresAdapter', () => {
 
     it('rejects invalid dimensions', () => {
       const freshAdapter = new PostgresAdapter({
-        host: 'localhost',
-        port: 5432,
-        database: 'test',
-        user: 'test',
-        password: 'test',
+        provider: 'postgres',
+        connectionString: 'postgresql://test:test@localhost:5432/test',
       });
       expect(() => freshAdapter.setVectorDimensions(0)).toThrow();
       expect(() => freshAdapter.setVectorDimensions(-1)).toThrow();

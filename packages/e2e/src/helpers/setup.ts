@@ -11,6 +11,7 @@ import { InMemoryAdapter } from '@cogitator-ai/memory';
 import { WorkflowExecutor } from '@cogitator-ai/workflows';
 import { Swarm } from '@cogitator-ai/swarms';
 import type { SwarmConfig } from '@cogitator-ai/swarms';
+import type { ResponseFormat } from '@cogitator-ai/types';
 import { z } from 'zod';
 import { LLMJudge } from './judge';
 
@@ -46,7 +47,7 @@ export function createTestAgent(opts?: {
   model?: string;
   maxTokens?: number;
   maxIterations?: number;
-  responseFormat?: { type: 'text' } | { type: 'json' };
+  responseFormat?: ResponseFormat;
   temperature?: number;
 }): Agent {
   return new Agent({

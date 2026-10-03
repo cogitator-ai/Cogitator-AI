@@ -106,6 +106,7 @@ describe('createAction', () => {
 
 describe('evaluatePrecondition', () => {
   const state: PlanState = {
+    id: 'state-0',
     variables: {
       robot_at: 'A',
       holding: null,
@@ -198,7 +199,7 @@ describe('applyAction', () => {
   const schema = createMoveSchema();
 
   it('applies effects to state', () => {
-    const state: PlanState = { variables: { robot_at: 'A' } };
+    const state: PlanState = { id: 'state-0', variables: { robot_at: 'A' } };
     const action = createAction('move', { from: 'A', to: 'B' });
 
     const newState = applyAction(action, state, schema);
@@ -206,7 +207,7 @@ describe('applyAction', () => {
   });
 
   it('preserves unchanged variables', () => {
-    const state: PlanState = { variables: { robot_at: 'A', other: 'value' } };
+    const state: PlanState = { id: 'state-0', variables: { robot_at: 'A', other: 'value' } };
     const action = createAction('move', { from: 'A', to: 'B' });
 
     const newState = applyAction(action, state, schema);
@@ -214,7 +215,7 @@ describe('applyAction', () => {
   });
 
   it('does not mutate original state', () => {
-    const state: PlanState = { variables: { robot_at: 'A' } };
+    const state: PlanState = { id: 'state-0', variables: { robot_at: 'A' } };
     const action = createAction('move', { from: 'A', to: 'B' });
 
     applyAction(action, state, schema);
@@ -238,7 +239,7 @@ describe('PlanValidator', () => {
     const plan: Plan = {
       id: 'plan1',
       name: 'delivery',
-      initialState: { variables: { robot_at: 'A', holding: null } },
+      initialState: { id: 'state-0', variables: { robot_at: 'A', holding: null } },
       actions: [
         createAction('move', { from: 'A', to: 'B' }),
         createAction('pickup', { obj: 'box', loc: 'B' }),
@@ -259,7 +260,7 @@ describe('PlanValidator', () => {
   it('detects precondition violation', () => {
     const plan: Plan = {
       id: 'plan2',
-      initialState: { variables: { robot_at: 'A', holding: null } },
+      initialState: { id: 'state-0', variables: { robot_at: 'A', holding: null } },
       actions: [createAction('pickup', { obj: 'box', loc: 'B' })],
       goalConditions: [],
     };
@@ -272,7 +273,7 @@ describe('PlanValidator', () => {
   it('detects undefined action', () => {
     const plan: Plan = {
       id: 'plan3',
-      initialState: { variables: {} },
+      initialState: { id: 'state-0', variables: {} },
       actions: [createAction('unknown_action', {})],
       goalConditions: [],
     };
@@ -285,7 +286,7 @@ describe('PlanValidator', () => {
   it('detects unreachable goal', () => {
     const plan: Plan = {
       id: 'plan4',
-      initialState: { variables: { robot_at: 'A', holding: null } },
+      initialState: { id: 'state-0', variables: { robot_at: 'A', holding: null } },
       actions: [createAction('move', { from: 'A', to: 'B' })],
       goalConditions: [{ type: 'simple', variable: 'robot_at', value: 'C' }],
     };
@@ -298,7 +299,7 @@ describe('PlanValidator', () => {
   it('returns state trace', () => {
     const plan: Plan = {
       id: 'plan5',
-      initialState: { variables: { robot_at: 'A', holding: null } },
+      initialState: { id: 'state-0', variables: { robot_at: 'A', holding: null } },
       actions: [
         createAction('move', { from: 'A', to: 'B' }),
         createAction('move', { from: 'B', to: 'C' }),
@@ -321,7 +322,7 @@ describe('validatePlan helper', () => {
 
     const plan: Plan = {
       id: 'plan1',
-      initialState: { variables: { robot_at: 'A' } },
+      initialState: { id: 'state-0', variables: { robot_at: 'A' } },
       actions: [createAction('move', { from: 'A', to: 'B' })],
       goalConditions: [{ type: 'simple', variable: 'robot_at', value: 'B' }],
     };
@@ -401,7 +402,7 @@ describe('InvariantChecker', () => {
 
     const plan: Plan = {
       id: 'plan1',
-      initialState: { variables: { counter: 5 } },
+      initialState: { id: 'state-0', variables: { counter: 5 } },
       actions: [createAction('increment', {}), createAction('increment', {})],
       goalConditions: [],
     };
@@ -421,7 +422,7 @@ describe('InvariantChecker', () => {
 
     const plan: Plan = {
       id: 'plan2',
-      initialState: { variables: { counter: 0 } },
+      initialState: { id: 'state-0', variables: { counter: 0 } },
       actions: [createAction('decrement', {}), createAction('decrement', {})],
       goalConditions: [],
     };
@@ -436,7 +437,7 @@ describe('InvariantChecker', () => {
 
     const plan: Plan = {
       id: 'plan3',
-      initialState: { variables: { counter: 0 } },
+      initialState: { id: 'state-0', variables: { counter: 0 } },
       actions: [
         createAction('increment', {}),
         createAction('increment', {}),
@@ -459,7 +460,7 @@ describe('InvariantChecker', () => {
 
     const plan: Plan = {
       id: 'plan4',
-      initialState: { variables: { counter: 5 } },
+      initialState: { id: 'state-0', variables: { counter: 5 } },
       actions: [createAction('increment', {}), createAction('increment', {})],
       goalConditions: [],
     };
@@ -478,7 +479,7 @@ describe('InvariantChecker', () => {
 
     const plan: Plan = {
       id: 'plan5',
-      initialState: { variables: { counter: 1 } },
+      initialState: { id: 'state-0', variables: { counter: 1 } },
       actions: [createAction('decrement', {}), createAction('decrement', {})],
       goalConditions: [],
     };
@@ -504,7 +505,7 @@ describe('PlanRepairer', () => {
   it('returns success for valid plan', () => {
     const plan: Plan = {
       id: 'valid',
-      initialState: { variables: { robot_at: 'A', holding: null } },
+      initialState: { id: 'state-0', variables: { robot_at: 'A', holding: null } },
       actions: [createAction('move', { from: 'A', to: 'B' })],
       goalConditions: [{ type: 'simple', variable: 'robot_at', value: 'B' }],
     };
@@ -517,7 +518,7 @@ describe('PlanRepairer', () => {
   it('suggests removing undefined action', () => {
     const plan: Plan = {
       id: 'undefined',
-      initialState: { variables: { robot_at: 'A' } },
+      initialState: { id: 'state-0', variables: { robot_at: 'A' } },
       actions: [createAction('nonexistent', {})],
       goalConditions: [],
     };
@@ -529,7 +530,7 @@ describe('PlanRepairer', () => {
   it('suggests insertion for precondition violation', () => {
     const plan: Plan = {
       id: 'missing_precond',
-      initialState: { variables: { robot_at: 'A', holding: null } },
+      initialState: { id: 'state-0', variables: { robot_at: 'A', holding: null } },
       actions: [createAction('pickup', { obj: 'box', loc: 'B' })],
       goalConditions: [],
     };
@@ -541,7 +542,7 @@ describe('PlanRepairer', () => {
   it('repairs plan by removing invalid action', () => {
     const plan: Plan = {
       id: 'repairable',
-      initialState: { variables: { robot_at: 'A' } },
+      initialState: { id: 'state-0', variables: { robot_at: 'A' } },
       actions: [createAction('move', { from: 'A', to: 'B' }), createAction('undefined_action', {})],
       goalConditions: [{ type: 'simple', variable: 'robot_at', value: 'B' }],
     };
@@ -556,7 +557,7 @@ describe('PlanRepairer', () => {
   it('provides explanation for failed repair', () => {
     const plan: Plan = {
       id: 'unfixable',
-      initialState: { variables: {} },
+      initialState: { id: 'state-0', variables: {} },
       actions: [createAction('move', { from: 'X', to: 'Y' })],
       goalConditions: [{ type: 'simple', variable: 'impossible', value: true }],
     };
@@ -574,7 +575,7 @@ describe('repairPlan helper', () => {
 
     const plan: Plan = {
       id: 'plan1',
-      initialState: { variables: { robot_at: 'A' } },
+      initialState: { id: 'state-0', variables: { robot_at: 'A' } },
       actions: [createAction('move', { from: 'A', to: 'B' })],
       goalConditions: [{ type: 'simple', variable: 'robot_at', value: 'B' }],
     };

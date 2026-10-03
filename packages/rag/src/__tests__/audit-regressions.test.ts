@@ -10,7 +10,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect, vi, afterAll } from 'vitest';
+import { describe, it, expect, vi, afterAll, type Mock } from 'vitest';
 import { HybridSearch, InMemoryEmbeddingAdapter } from '@cogitator-ai/memory';
 import type {
   DocumentLoader,
@@ -50,7 +50,12 @@ function bagOfWords(text: string): number[] {
   return vector.some((v) => v > 0) ? vector : VOCAB.map((_, i) => (i === 0 ? 0.001 : 0));
 }
 
-function bowService(): EmbeddingService & { embedBatch: ReturnType<typeof vi.fn> } {
+interface MockEmbeddingService extends EmbeddingService {
+  embed: Mock<EmbeddingService['embed']>;
+  embedBatch: Mock<EmbeddingService['embedBatch']>;
+}
+
+function bowService(): MockEmbeddingService {
   return {
     dimensions: VOCAB.length,
     model: 'bow',

@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ModelCache } from '../cache';
 import type { ModelInfo } from '../types';
 
+type CacheEntry = Parameters<ModelCache['isStale']>[0];
+
 vi.mock('fs/promises', () => ({
   readFile: vi.fn(),
   writeFile: vi.fn().mockResolvedValue(undefined),
@@ -192,7 +194,7 @@ describe('ModelCache', () => {
   describe('isStale', () => {
     it('returns true for expired entries', () => {
       const cache = new ModelCache({ ttl: 1000 });
-      const entry = {
+      const entry: CacheEntry = {
         models: [mockModel],
         timestamp: Date.now() - 2000,
         version: '1.0.0',
@@ -203,7 +205,7 @@ describe('ModelCache', () => {
 
     it('returns false for fresh entries', () => {
       const cache = new ModelCache({ ttl: 1000 });
-      const entry = {
+      const entry: CacheEntry = {
         models: [mockModel],
         timestamp: Date.now(),
         version: '1.0.0',
@@ -214,11 +216,12 @@ describe('ModelCache', () => {
 
     it('returns true for version mismatch', () => {
       const cache = new ModelCache({ ttl: 1000 });
-      const entry = {
+      const entry: CacheEntry = {
         models: [mockModel],
         timestamp: Date.now(),
-        version: '0.0.1',
+        version: '1.0.0',
       };
+      Reflect.set(entry, 'version', '0.0.1');
 
       expect(cache.isStale(entry)).toBe(true);
     });

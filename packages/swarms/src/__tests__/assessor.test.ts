@@ -363,7 +363,11 @@ describe('RoleMatcher', () => {
 
   describe('extractAgentsFromConfig', () => {
     it('should extract supervisor from config', () => {
-      const config = { supervisor: { name: 'boss' } };
+      const config: SwarmConfig = {
+        name: 'extract',
+        strategy: 'hierarchical',
+        supervisor: new Agent({ name: 'boss', instructions: 'Lead' }),
+      };
       const agents = matcher.extractAgentsFromConfig(config);
 
       expect(agents).toHaveLength(1);
@@ -372,7 +376,14 @@ describe('RoleMatcher', () => {
     });
 
     it('should extract workers from config', () => {
-      const config = { workers: [{ name: 'worker1' }, { name: 'worker2' }] };
+      const config: SwarmConfig = {
+        name: 'extract',
+        strategy: 'hierarchical',
+        workers: [
+          new Agent({ name: 'worker1', instructions: 'Work' }),
+          new Agent({ name: 'worker2', instructions: 'Work' }),
+        ],
+      };
       const agents = matcher.extractAgentsFromConfig(config);
 
       expect(agents).toHaveLength(2);
@@ -380,9 +391,11 @@ describe('RoleMatcher', () => {
     });
 
     it('should extract moderator and router', () => {
-      const config = {
-        moderator: { name: 'mod' },
-        router: { name: 'route' },
+      const config: SwarmConfig = {
+        name: 'extract',
+        strategy: 'debate',
+        moderator: new Agent({ name: 'mod', instructions: 'Moderate' }),
+        router: new Agent({ name: 'route', instructions: 'Route' }),
       };
       const agents = matcher.extractAgentsFromConfig(config);
 
@@ -392,8 +405,13 @@ describe('RoleMatcher', () => {
     });
 
     it('should extract pipeline stages', () => {
-      const config = {
-        stages: [{ agent: { name: 'stage1' } }, { agent: { name: 'stage2' } }],
+      const config: SwarmConfig = {
+        name: 'extract',
+        strategy: 'pipeline',
+        stages: [
+          { name: 'stage1', agent: new Agent({ name: 'stage1', instructions: 'Stage one' }) },
+          { name: 'stage2', agent: new Agent({ name: 'stage2', instructions: 'Stage two' }) },
+        ],
       };
       const agents = matcher.extractAgentsFromConfig(config);
 

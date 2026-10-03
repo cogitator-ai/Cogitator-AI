@@ -9,6 +9,7 @@ import {
   createGetApiCallsTool,
   createInterceptRequestTool,
   createRemoveInterceptorTool,
+  createBlockResourcesTool,
   createNetworkTools,
   toUrlMatcher,
 } from '../tools/network';
@@ -115,6 +116,25 @@ function createMockSession() {
       for (const listener of startListeners) listener(state.context);
     },
   };
+}
+
+type NetworkTool = ReturnType<typeof createNetworkTools>[number];
+type HarResult = Awaited<ReturnType<ReturnType<typeof createCaptureHarTool>['execute']>>;
+
+function networkTool<T extends NetworkTool>(
+  tools: NetworkTool[],
+  factory: (session: BrowserSession) => T,
+  session: BrowserSession
+): T {
+  const { name } = factory(session);
+  const found = tools.find((t): t is T => t.name === name);
+  if (!found) throw new Error(`createNetworkTools does not include ${name}`);
+  return found;
+}
+
+function stoppedHar(result: HarResult): Extract<HarResult, { har: unknown }> {
+  if (!('har' in result)) throw new Error('Expected the result of a stopped HAR capture');
+  return result;
 }
 
 function mockRoute(request = mockRequest({ url: 'https://x.test/a', type: 'image' })) {
@@ -250,7 +270,9 @@ describe('network tools', () => {
     });
 
     it('increments interceptor IDs across intercept and block tools', async () => {
-      const [intercept, , block] = createNetworkTools(session);
+      const tools = createNetworkTools(session);
+      const intercept = networkTool(tools, createInterceptRequestTool, session);
+      const block = networkTool(tools, createBlockResourcesTool, session);
       const r1 = await intercept.execute({ urlPattern: '**/a', action: 'block' }, dummyContext);
       const r2 = await block.execute({ types: ['image'] }, dummyContext);
 
@@ -290,7 +312,9 @@ describe('network tools', () => {
     });
 
     it('removes all interceptors when no id is given', async () => {
-      const [intercept, , block] = createNetworkTools(session);
+      const tools = createNetworkTools(session);
+      const intercept = networkTool(tools, createInterceptRequestTool, session);
+      const block = networkTool(tools, createBlockResourcesTool, session);
       const remove = createRemoveInterceptorTool(session);
       await intercept.execute({ urlPattern: '**/a', action: 'block' }, dummyContext);
       await block.execute({ types: ['font'] }, dummyContext);
@@ -373,7 +397,7 @@ describe('network tools', () => {
 
   describe('browser_block_resources', () => {
     it('routes every request on the context', async () => {
-      const [, , block] = createNetworkTools(session);
+      const block = networkTool(createNetworkTools(session), createBlockResourcesTool, session);
       const result = await block.execute({ types: ['image', 'font'] }, dummyContext);
 
       expect(result).toEqual({
@@ -385,7 +409,7 @@ describe('network tools', () => {
     });
 
     it('aborts blocked types and falls back for the rest', async () => {
-      const [, , block] = createNetworkTools(session);
+      const block = networkTool(createNetworkTools(session), createBlockResourcesTool, session);
       await block.execute({ types: ['image'] }, dummyContext);
       const handler = mock.state.context.routes[0].handler;
 
@@ -437,7 +461,7 @@ describe('network tools', () => {
       );
       await flush();
 
-      const result = await har.execute({ action: 'stop' }, dummyContext);
+      const result = stoppedHar(await har.execute({ action: 'stop' }, dummyContext));
       expect(result.capturing).toBe(false);
       expect(result.entries).toBe(2);
       expect(result.truncated).toBe(false);
@@ -469,7 +493,7 @@ describe('network tools', () => {
 
       const stopping = har.execute({ action: 'stop' }, dummyContext);
       setTimeout(release, 5);
-      const result = await stopping;
+      const result = stoppedHar(await stopping);
 
       expect(result.entries).toBe(1);
       expect(result.har[0].responseBody).toBe('"slow"');
@@ -487,7 +511,7 @@ describe('network tools', () => {
 
       const stopping = har.execute({ action: 'stop' }, dummyContext);
       setTimeout(() => mock.state.context.emit('requestfinished', first), 10);
-      const result = await stopping;
+      const result = stoppedHar(await stopping);
 
       expect(result.har.map((e: { url: string }) => e.url)).toEqual([
         'https://api.test/first',
@@ -505,7 +529,7 @@ describe('network tools', () => {
 
         const stopping = har.execute({ action: 'stop' }, dummyContext);
         await vi.advanceTimersByTimeAsync(2000);
-        const result = await stopping;
+        const result = stoppedHar(await stopping);
 
         expect(result.har.map((e: { url: string }) => e.url)).toEqual(['https://api.test/done']);
       } finally {
@@ -548,7 +572,7 @@ describe('network tools', () => {
       mock.state.context.emit('requestfinished', mockRequest({ url: 'https://api.test/2' }));
       await flush();
 
-      const result = await har.execute({ action: 'stop' }, dummyContext);
+      const result = stoppedHar(await har.execute({ action: 'stop' }, dummyContext));
       expect(result.har.map((e: { url: string }) => e.url)).toEqual(['https://api.test/2']);
       expect(mock.state.context.listeners.get('requestfinished')).toHaveLength(1);
     });
@@ -567,7 +591,7 @@ describe('network tools', () => {
       );
       await flush();
 
-      const result = await har.execute({ action: 'stop' }, dummyContext);
+      const result = stoppedHar(await har.execute({ action: 'stop' }, dummyContext));
       expect(result.har[0]).not.toHaveProperty('responseBody');
     });
 
@@ -595,8 +619,10 @@ describe('network tools', () => {
         );
         await flush();
 
-        const result = await har.execute({ action: 'stop', path: 'out.har' }, dummyContext);
-        expect(relative(workDir, result.path)).toBe('out.har');
+        const result = stoppedHar(
+          await har.execute({ action: 'stop', path: 'out.har' }, dummyContext)
+        );
+        expect(relative(workDir, result.path!)).toBe('out.har');
 
         const doc = JSON.parse(await readFile(join(workDir, 'out.har'), 'utf-8'));
         expect(doc.log.version).toBe('1.2');
@@ -717,7 +743,7 @@ describe('network tools', () => {
 
     it('shares recorded calls between tool instances of the same session', async () => {
       const first = createGetApiCallsTool(session);
-      const second = createNetworkTools(session)[4];
+      const second = networkTool(createNetworkTools(session), createGetApiCallsTool, session);
       mock.state.context.emit('requestfinished', mockRequest({ url: 'https://api.test/shared' }));
       await flush();
 

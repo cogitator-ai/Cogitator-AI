@@ -1,10 +1,20 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { GraphAdapter } from '@cogitator-ai/types';
+import type { GraphAdapter, MemoryResult } from '@cogitator-ai/types';
 import { MemoryGraphAdapter } from '../knowledge-graph/adapters/memory-adapter';
 import { PostgresGraphAdapter } from '../knowledge-graph/adapters/postgres-adapter';
 import { Neo4jGraphAdapter } from '../knowledge-graph/adapters/neo4j-adapter';
 
 const TEST_AGENT_ID = 'test-agent-123';
+
+function unwrap<T>(result: MemoryResult<T>): T {
+  if (!result.success) throw new Error(result.error);
+  return result.data;
+}
+
+function failureOf<T>(result: MemoryResult<T>): string {
+  if (result.success) throw new Error('Expected a failed result');
+  return result.error;
+}
 
 function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
   describe(`${name} - GraphAdapter interface`, () => {
@@ -29,10 +39,10 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
         });
 
         expect(result.success).toBe(true);
-        expect(result.data!.id).toBeDefined();
-        expect(result.data!.name).toBe('Alice');
-        expect(result.data!.type).toBe('person');
-        expect(result.data!.accessCount).toBe(0);
+        expect(unwrap(result).id).toBeDefined();
+        expect(unwrap(result).name).toBe('Alice');
+        expect(unwrap(result).type).toBe('person');
+        expect(unwrap(result).accessCount).toBe(0);
       });
 
       it('gets a node by id', async () => {
@@ -46,11 +56,11 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
           source: 'user',
         });
 
-        const getResult = await adapter.getNode(addResult.data!.id);
+        const getResult = await adapter.getNode(unwrap(addResult).id);
 
         expect(getResult.success).toBe(true);
-        expect(getResult.data!.name).toBe('Bob');
-        expect(getResult.data!.accessCount).toBe(1);
+        expect(unwrap(getResult)?.name).toBe('Bob');
+        expect(unwrap(getResult)?.accessCount).toBe(1);
       });
 
       it('gets a node by name', async () => {
@@ -66,11 +76,11 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
 
         const result = await adapter.getNodeByName(TEST_AGENT_ID, 'Charlie');
         expect(result.success).toBe(true);
-        expect(result.data!.name).toBe('Charlie');
+        expect(unwrap(result)?.name).toBe('Charlie');
 
         const aliasResult = await adapter.getNodeByName(TEST_AGENT_ID, 'Chuck');
         expect(aliasResult.success).toBe(true);
-        expect(aliasResult.data!.name).toBe('Charlie');
+        expect(unwrap(aliasResult)?.name).toBe('Charlie');
       });
 
       it('updates a node', async () => {
@@ -84,15 +94,15 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
           source: 'user',
         });
 
-        const updateResult = await adapter.updateNode(addResult.data!.id, {
+        const updateResult = await adapter.updateNode(unwrap(addResult).id, {
           name: 'Dave',
           confidence: 0.95,
           properties: { age: 26, city: 'NYC' },
         });
 
         expect(updateResult.success).toBe(true);
-        expect(updateResult.data!.name).toBe('Dave');
-        expect(updateResult.data!.confidence).toBe(0.95);
+        expect(unwrap(updateResult).name).toBe('Dave');
+        expect(unwrap(updateResult).confidence).toBe(0.95);
       });
 
       it('deletes a node', async () => {
@@ -106,11 +116,11 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
           source: 'user',
         });
 
-        const deleteResult = await adapter.deleteNode(addResult.data!.id);
+        const deleteResult = await adapter.deleteNode(unwrap(addResult).id);
         expect(deleteResult.success).toBe(true);
 
-        const getResult = await adapter.getNode(addResult.data!.id);
-        expect(getResult.data).toBeNull();
+        const getResult = await adapter.getNode(unwrap(addResult).id);
+        expect(unwrap(getResult)).toBeNull();
       });
 
       it('queries nodes with filters', async () => {
@@ -140,8 +150,8 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
         });
 
         expect(personQuery.success).toBe(true);
-        expect(personQuery.data!.length).toBeGreaterThanOrEqual(1);
-        expect(personQuery.data!.every((n) => n.type === 'person')).toBe(true);
+        expect(unwrap(personQuery).length).toBeGreaterThanOrEqual(1);
+        expect(unwrap(personQuery).every((n) => n.type === 'person')).toBe(true);
       });
 
       it('queries nodes with name pattern', async () => {
@@ -161,7 +171,7 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
         });
 
         expect(result.success).toBe(true);
-        expect(result.data!.some((n) => n.name === 'TestPattern123')).toBe(true);
+        expect(unwrap(result).some((n) => n.name === 'TestPattern123')).toBe(true);
       });
 
       it('queries nodes with min confidence', async () => {
@@ -191,7 +201,7 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
         });
 
         expect(result.success).toBe(true);
-        expect(result.data!.every((n) => n.confidence >= 0.9)).toBe(true);
+        expect(unwrap(result).every((n) => n.confidence >= 0.9)).toBe(true);
       });
     });
 
@@ -218,8 +228,8 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
           confidence: 1,
           source: 'user',
         });
-        node1Id = n1.data!.id;
-        node2Id = n2.data!.id;
+        node1Id = unwrap(n1).id;
+        node2Id = unwrap(n2).id;
       });
 
       it('adds an edge', async () => {
@@ -238,8 +248,8 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
         });
 
         expect(result.success).toBe(true);
-        expect(result.data!.id).toBeDefined();
-        expect(result.data!.type).toBe('knows');
+        expect(unwrap(result).id).toBeDefined();
+        expect(unwrap(result).type).toBe('knows');
       });
 
       it('gets an edge by id', async () => {
@@ -255,10 +265,10 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
           source: 'user',
         });
 
-        const getResult = await adapter.getEdge(addResult.data!.id);
+        const getResult = await adapter.getEdge(unwrap(addResult).id);
 
         expect(getResult.success).toBe(true);
-        expect(getResult.data!.type).toBe('works_at');
+        expect(unwrap(getResult)?.type).toBe('works_at');
       });
 
       it('gets edges between nodes', async () => {
@@ -277,7 +287,7 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
         const result = await adapter.getEdgesBetween(node1Id, node2Id);
 
         expect(result.success).toBe(true);
-        expect(result.data!.length).toBeGreaterThanOrEqual(1);
+        expect(unwrap(result).length).toBeGreaterThanOrEqual(1);
       });
 
       it('updates an edge', async () => {
@@ -293,15 +303,15 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
           source: 'user',
         });
 
-        const updateResult = await adapter.updateEdge(addResult.data!.id, {
+        const updateResult = await adapter.updateEdge(unwrap(addResult).id, {
           weight: 0.9,
           confidence: 0.95,
           label: 'updated',
         });
 
         expect(updateResult.success).toBe(true);
-        expect(updateResult.data!.weight).toBe(0.9);
-        expect(updateResult.data!.confidence).toBe(0.95);
+        expect(unwrap(updateResult).weight).toBe(0.9);
+        expect(unwrap(updateResult).confidence).toBe(0.95);
       });
 
       it('deletes an edge', async () => {
@@ -317,11 +327,11 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
           source: 'user',
         });
 
-        const deleteResult = await adapter.deleteEdge(addResult.data!.id);
+        const deleteResult = await adapter.deleteEdge(unwrap(addResult).id);
         expect(deleteResult.success).toBe(true);
 
-        const getResult = await adapter.getEdge(addResult.data!.id);
-        expect(getResult.data).toBeNull();
+        const getResult = await adapter.getEdge(unwrap(addResult).id);
+        expect(unwrap(getResult)).toBeNull();
       });
 
       it('queries edges with filters', async () => {
@@ -344,8 +354,8 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
         });
 
         expect(result.success).toBe(true);
-        expect(result.data!.every((e) => e.type === 'knows')).toBe(true);
-        expect(result.data!.every((e) => e.weight >= 0.8)).toBe(true);
+        expect(unwrap(result).every((e) => e.type === 'knows')).toBe(true);
+        expect(unwrap(result).every((e) => e.weight >= 0.8)).toBe(true);
       });
     });
 
@@ -383,9 +393,9 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
           source: 'user',
         });
 
-        nodeA = a.data!.id;
-        nodeB = b.data!.id;
-        nodeC = c.data!.id;
+        nodeA = unwrap(a).id;
+        nodeB = unwrap(b).id;
+        nodeC = unwrap(c).id;
 
         await adapter.addEdge({
           agentId: TEST_AGENT_ID,
@@ -416,32 +426,32 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
         const result = await adapter.getNeighbors(nodeB, 'both');
 
         expect(result.success).toBe(true);
-        expect(result.data!.length).toBe(2);
+        expect(unwrap(result).length).toBe(2);
       });
 
       it('gets outgoing neighbors', async () => {
         const result = await adapter.getNeighbors(nodeA, 'outgoing');
 
         expect(result.success).toBe(true);
-        expect(result.data!.length).toBe(1);
-        expect(result.data![0].node.name).toBe('B');
+        expect(unwrap(result).length).toBe(1);
+        expect(unwrap(result)[0].node.name).toBe('B');
       });
 
       it('gets incoming neighbors', async () => {
         const result = await adapter.getNeighbors(nodeB, 'incoming');
 
         expect(result.success).toBe(true);
-        expect(result.data!.length).toBe(1);
-        expect(result.data![0].node.name).toBe('A');
+        expect(unwrap(result).length).toBe(1);
+        expect(unwrap(result)[0].node.name).toBe('A');
       });
 
       it('finds shortest path', async () => {
         const result = await adapter.findShortestPath(TEST_AGENT_ID, nodeA, nodeC);
 
         expect(result.success).toBe(true);
-        expect(result.data).not.toBeNull();
-        expect(result.data!.nodes.length).toBe(3);
-        expect(result.data!.edges.length).toBe(2);
+        expect(unwrap(result)).not.toBeNull();
+        expect(unwrap(result)?.nodes.length).toBe(3);
+        expect(unwrap(result)?.edges.length).toBe(2);
       });
 
       it('returns null for no path', async () => {
@@ -455,10 +465,10 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
           source: 'user',
         });
 
-        const result = await adapter.findShortestPath(TEST_AGENT_ID, nodeA, isolated.data!.id);
+        const result = await adapter.findShortestPath(TEST_AGENT_ID, nodeA, unwrap(isolated).id);
 
         expect(result.success).toBe(true);
-        expect(result.data).toBeNull();
+        expect(unwrap(result)).toBeNull();
       });
 
       it('traverses graph with depth limit', async () => {
@@ -470,7 +480,7 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
         });
 
         expect(result.success).toBe(true);
-        expect(result.data!.visitedNodes.length).toBeLessThanOrEqual(2);
+        expect(unwrap(result).visitedNodes.length).toBeLessThanOrEqual(2);
       });
     });
 
@@ -496,14 +506,14 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
           source: 'user',
         });
 
-        const result = await adapter.mergeNodes(n1.data!.id, [n2.data!.id]);
+        const result = await adapter.mergeNodes(unwrap(n1).id, [unwrap(n2).id]);
 
         expect(result.success).toBe(true);
-        expect(result.data!.aliases).toContain('MergeSource');
-        expect(result.data!.properties).toHaveProperty('key2');
+        expect(unwrap(result).aliases).toContain('MergeSource');
+        expect(unwrap(result).properties).toHaveProperty('key2');
 
-        const sourceGone = await adapter.getNode(n2.data!.id);
-        expect(sourceGone.data).toBeNull();
+        const sourceGone = await adapter.getNode(unwrap(n2).id);
+        expect(unwrap(sourceGone)).toBeNull();
       });
 
       it('clears graph for agent', async () => {
@@ -523,7 +533,7 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
 
         const result = await adapter.queryNodes({ agentId: clearAgentId });
         expect(result.success).toBe(true);
-        expect(result.data!.length).toBe(0);
+        expect(unwrap(result).length).toBe(0);
       });
 
       it('gets graph stats', async () => {
@@ -551,8 +561,8 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
 
         await adapter.addEdge({
           agentId: statsAgentId,
-          sourceNodeId: n1.data!.id,
-          targetNodeId: n2.data!.id,
+          sourceNodeId: unwrap(n1).id,
+          targetNodeId: unwrap(n2).id,
           type: 'works_at',
           weight: 1,
           bidirectional: false,
@@ -564,10 +574,10 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
         const result = await adapter.getGraphStats(statsAgentId);
 
         expect(result.success).toBe(true);
-        expect(result.data!.nodeCount).toBe(2);
-        expect(result.data!.edgeCount).toBe(1);
-        expect(result.data!.nodesByType.person).toBe(1);
-        expect(result.data!.nodesByType.organization).toBe(1);
+        expect(unwrap(result).nodeCount).toBe(2);
+        expect(unwrap(result).edgeCount).toBe(1);
+        expect(unwrap(result).nodesByType.person).toBe(1);
+        expect(unwrap(result).nodesByType.organization).toBe(1);
       });
     });
 
@@ -594,8 +604,8 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
         });
 
         expect(result.success).toBe(true);
-        expect(result.data!.length).toBeGreaterThanOrEqual(1);
-        expect(result.data![0].score).toBeGreaterThanOrEqual(0.5);
+        expect(unwrap(result).length).toBeGreaterThanOrEqual(1);
+        expect(unwrap(result)[0].score).toBeGreaterThanOrEqual(0.5);
       });
 
       it('returns empty for no vector', async () => {
@@ -605,7 +615,7 @@ function runAdapterTests(name: string, createAdapter: () => GraphAdapter) {
         });
 
         expect(result.success).toBe(true);
-        expect(result.data!.length).toBe(0);
+        expect(unwrap(result).length).toBe(0);
       });
     });
   });
@@ -637,7 +647,7 @@ describe('PostgresGraphAdapter', () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toBe('Not connected');
+    expect(failureOf(result)).toBe('Not connected');
   });
 });
 
@@ -669,6 +679,6 @@ describe('Neo4jGraphAdapter', () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toBe('Not connected');
+    expect(failureOf(result)).toBe('Not connected');
   });
 });

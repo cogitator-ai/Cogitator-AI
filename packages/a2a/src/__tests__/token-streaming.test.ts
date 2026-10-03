@@ -148,8 +148,10 @@ describe('Token-level Streaming', () => {
         events.push(event);
       }
 
-      const lastStatusIdx = events.findLastIndex(
-        (e) => e.type === 'status-update' && e.status.state === 'completed'
+      const lastStatusIdx = events.reduce(
+        (last, e, index) =>
+          e.type === 'status-update' && e.status.state === 'completed' ? index : last,
+        -1
       );
       const firstTokenIdx = events.findIndex((e) => e.type === 'token');
 

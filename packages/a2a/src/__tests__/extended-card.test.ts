@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { A2AServer } from '../server';
 import type { ExtendedAgentCard, CogitatorLike, AgentRunResult } from '../types';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
+import { expectResponse } from './helpers';
 
 function createMockAgent(name: string): Agent {
   const config: AgentConfig = {
@@ -68,12 +69,14 @@ describe('Extended Agent Card', () => {
         },
       });
 
-      const response = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'agent/extendedCard',
-        params: {},
-        id: 1,
-      });
+      const response = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'agent/extendedCard',
+          params: {},
+          id: 1,
+        })
+      );
 
       expect(response.error).toBeUndefined();
       const result = response.result as ExtendedAgentCard;
@@ -149,12 +152,14 @@ describe('Extended Agent Card', () => {
         cogitator: createMockCogitator(),
       });
 
-      const response = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'agent/extendedCard',
-        params: {},
-        id: 1,
-      });
+      const response = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'agent/extendedCard',
+          params: {},
+          id: 1,
+        })
+      );
 
       expect(response.error).toBeDefined();
       expect(response.error!.code).toBe(-32004);
@@ -175,12 +180,14 @@ describe('Extended Agent Card', () => {
         }),
       });
 
-      const response = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'agent/extendedCard',
-        params: { agentName: 'nonexistent' },
-        id: 1,
-      });
+      const response = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'agent/extendedCard',
+          params: { agentName: 'nonexistent' },
+          id: 1,
+        })
+      );
 
       expect(response.error).toBeDefined();
       expect(response.error!.code).toBe(-32007);

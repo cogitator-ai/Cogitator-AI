@@ -3,7 +3,6 @@ import { OllamaBackend } from '../llm/ollama';
 
 describe('OllamaBackend Cloud Support', () => {
   let fetchSpy: ReturnType<typeof vi.fn>;
-  const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
     fetchSpy = vi.fn().mockResolvedValue({
@@ -17,11 +16,11 @@ describe('OllamaBackend Cloud Support', () => {
         eval_count: 5,
       }),
     });
-    globalThis.fetch = fetchSpy;
+    vi.stubGlobal('fetch', fetchSpy);
   });
 
   afterEach(() => {
-    globalThis.fetch = originalFetch;
+    vi.unstubAllGlobals();
   });
 
   it('sends Authorization header when apiKey is set', async () => {

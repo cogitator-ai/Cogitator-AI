@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { z } from 'zod';
 import {
   GapAnalyzer,
   ToolGenerator,
@@ -8,7 +9,12 @@ import {
   parseGapAnalysisResponse,
   parseToolGenerationResponse,
 } from '../tool-generation';
-import type { LLMBackend, GeneratedTool, ToolSelfGenerationConfig } from '@cogitator-ai/types';
+import type {
+  ChatResponse,
+  LLMBackend,
+  GeneratedTool,
+  ToolSelfGenerationConfig,
+} from '@cogitator-ai/types';
 
 const mockToolConfig: ToolSelfGenerationConfig = {
   enabled: true,
@@ -26,13 +32,21 @@ const mockToolConfig: ToolSelfGenerationConfig = {
   },
 };
 
-const mockLLM: LLMBackend = {
-  complete: vi.fn(),
-  name: 'mock',
-  supportsTool: () => true,
-  supportsStreaming: () => false,
-  validateConfig: () => true,
-};
+function chatResponse(content: string): ChatResponse {
+  return {
+    id: 'resp',
+    content,
+    finishReason: 'stop',
+    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+  };
+}
+
+const mockLLM = {
+  provider: 'ollama',
+  chat: vi.fn<LLMBackend['chat']>(),
+  chatStream: async function* () {},
+  complete: vi.fn<NonNullable<LLMBackend['complete']>>(),
+} satisfies LLMBackend;
 
 describe('ToolSandbox', () => {
   let sandbox: ToolSandbox;
@@ -218,23 +232,25 @@ describe('GapAnalyzer', () => {
   });
 
   it('analyzes capability gaps', async () => {
-    (mockLLM.complete as ReturnType<typeof vi.fn>).mockResolvedValue({
-      content: JSON.stringify({
-        hasGap: true,
-        gaps: [
-          {
-            id: 'gap-1',
-            description: 'Missing CSV parsing capability',
-            requiredCapability: 'Parse CSV files',
-            suggestedToolName: 'csv_parser',
-            complexity: 'simple',
-            confidence: 0.9,
-            reasoning: 'User needs to analyze CSV data',
-          },
-        ],
-        canProceed: false,
-      }),
-    });
+    mockLLM.complete.mockResolvedValue(
+      chatResponse(
+        JSON.stringify({
+          hasGap: true,
+          gaps: [
+            {
+              id: 'gap-1',
+              description: 'Missing CSV parsing capability',
+              requiredCapability: 'Parse CSV files',
+              suggestedToolName: 'csv_parser',
+              complexity: 'simple',
+              confidence: 0.9,
+              reasoning: 'User needs to analyze CSV data',
+            },
+          ],
+          canProceed: false,
+        })
+      )
+    );
 
     const analyzer = new GapAnalyzer({ llm: mockLLM, config: mockToolConfig, model: 'test-model' });
 
@@ -242,8 +258,13 @@ describe('GapAnalyzer', () => {
       {
         name: 'calculator',
         description: 'Perform calculations',
-        parameters: {},
+        parameters: z.object({}),
         execute: async () => null,
+        toJSON: () => ({
+          name: 'calculator',
+          description: 'Perform calculations',
+          parameters: { type: 'object', properties: {} },
+        }),
       },
     ]);
 
@@ -258,11 +279,12 @@ describe('ToolGenerator', () => {
   });
 
   it('generates tools from gaps', async () => {
-    (mockLLM.complete as ReturnType<typeof vi.fn>).mockResolvedValue({
-      content: JSON.stringify({
-        name: 'csv_parser',
-        description: 'Parse CSV data into JSON',
-        implementation: `
+    mockLLM.complete.mockResolvedValue(
+      chatResponse(
+        JSON.stringify({
+          name: 'csv_parser',
+          description: 'Parse CSV data into JSON',
+          implementation: `
           async function execute(params) {
             const lines = params.data.split('\\n');
             const headers = lines[0].split(',');
@@ -274,14 +296,15 @@ describe('ToolGenerator', () => {
             });
           }
         `,
-        parameters: {
-          type: 'object',
-          properties: { data: { type: 'string' } },
-          required: ['data'],
-        },
-        reasoning: 'Simple CSV parsing without external dependencies',
-      }),
-    });
+          parameters: {
+            type: 'object',
+            properties: { data: { type: 'string' } },
+            required: ['data'],
+          },
+          reasoning: 'Simple CSV parsing without external dependencies',
+        })
+      )
+    );
 
     const generator = new ToolGenerator({
       llm: mockLLM,

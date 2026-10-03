@@ -15,7 +15,8 @@ describe('ConsensusStrategy', () => {
       coordinator.addAgent(createMockSwarmAgent('solo'));
       coordinator.setAgentResponse('solo', 'VOTE: yes');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'majority',
         threshold: 0.5,
@@ -32,7 +33,8 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('agent-a', 'VOTE: yes');
       coordinator.setAgentResponse('agent-b', 'VOTE: yes');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'majority',
         threshold: 0.5,
@@ -53,7 +55,8 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('voter-1', 'VOTE: approve\nBecause it is good');
       coordinator.setAgentResponse('voter-2', 'VOTE: approve\nI agree');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'majority',
         threshold: 0.5,
@@ -69,7 +72,8 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('voter-1', 'vote: yes\nReasoning here');
       coordinator.setAgentResponse('voter-2', 'vote: yes');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'majority',
         threshold: 0.5,
@@ -85,7 +89,8 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('voter-1', 'After thinking, decision: option A');
       coordinator.setAgentResponse('voter-2', 'My choice: option A');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'majority',
         threshold: 0.5,
@@ -101,7 +106,8 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('voter-1', 'VOTE: yes\nThis is my reasoning for voting yes');
       coordinator.setAgentResponse('voter-2', 'VOTE: yes');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'majority',
         threshold: 0.5,
@@ -126,7 +132,8 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('b', 'VOTE: yes');
       coordinator.setAgentResponse('c', 'VOTE: no');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'majority',
         threshold: 0.5,
@@ -142,7 +149,7 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('b', 'VOTE: no');
       coordinator.setAgentResponse('c', 'VOTE: maybe');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
         maxRounds: 1,
         resolution: 'majority',
         threshold: 0.5,
@@ -158,7 +165,7 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('b', 'VOTE: yes');
       coordinator.setAgentResponse('c', 'VOTE: no');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
         maxRounds: 1,
         resolution: 'majority',
         threshold: 0.75,
@@ -182,7 +189,8 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('voter-2', 'VOTE: accept');
       coordinator.setAgentResponse('voter-3', 'VOTE: accept');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'unanimous',
         threshold: 1.0,
@@ -197,7 +205,7 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('voter-2', 'VOTE: accept');
       coordinator.setAgentResponse('voter-3', 'VOTE: reject');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
         maxRounds: 1,
         resolution: 'unanimous',
         threshold: 1.0,
@@ -213,7 +221,8 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('voter-2', 'VOTE: YES');
       coordinator.setAgentResponse('voter-3', 'VOTE: yes');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'unanimous',
         threshold: 1.0,
@@ -231,7 +240,8 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('expert', 'VOTE: plan-a');
       coordinator.setAgentResponse('junior', 'VOTE: plan-b');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'weighted',
         threshold: 0.6,
@@ -252,7 +262,8 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('weighted-agent', 'VOTE: option-x');
       coordinator.setAgentResponse('normal-agent', 'VOTE: option-y');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'weighted',
         threshold: 0.7,
@@ -269,7 +280,8 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('agent-1', 'VOTE: same');
       coordinator.setAgentResponse('agent-2', 'VOTE: same');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'weighted',
         threshold: 0.5,
@@ -294,7 +306,8 @@ describe('ConsensusStrategy', () => {
         return changeableRound === 1 ? 'VOTE: no' : 'VOTE: yes';
       });
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 3,
         resolution: 'unanimous',
         threshold: 1.0,
@@ -309,7 +322,7 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('persistent', 'VOTE: yes\nMy argument for yes');
       coordinator.setAgentResponse('changeable', 'VOTE: no');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
         maxRounds: 2,
         resolution: 'unanimous',
         threshold: 1.0,
@@ -326,7 +339,7 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('persistent', 'VOTE: yes');
       coordinator.setAgentResponse('changeable', 'VOTE: no');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
         maxRounds: 2,
         resolution: 'unanimous',
         threshold: 1.0,
@@ -349,7 +362,7 @@ describe('ConsensusStrategy', () => {
     });
 
     it('should throw on fail mode', async () => {
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
         maxRounds: 1,
         resolution: 'unanimous',
         threshold: 1.0,
@@ -362,7 +375,7 @@ describe('ConsensusStrategy', () => {
     });
 
     it('should return escalation message on escalate mode', async () => {
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
         maxRounds: 1,
         resolution: 'unanimous',
         threshold: 1.0,
@@ -379,7 +392,7 @@ describe('ConsensusStrategy', () => {
       coordinator.addAgent(supervisor);
       coordinator.setAgentResponse('supervisor', 'FINAL DECISION: option-1\nI decided based on...');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
         maxRounds: 1,
         resolution: 'unanimous',
         threshold: 1.0,
@@ -395,7 +408,7 @@ describe('ConsensusStrategy', () => {
     });
 
     it('should fallback to no-consensus output if no supervisor', async () => {
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
         maxRounds: 1,
         resolution: 'unanimous',
         threshold: 1.0,
@@ -417,7 +430,8 @@ describe('ConsensusStrategy', () => {
       coordinator.setAgentResponse('worker-2', 'VOTE: yes');
       coordinator.setAgentResponse('supervisor', 'VOTE: no');
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'unanimous',
         threshold: 1.0,
@@ -440,7 +454,8 @@ describe('ConsensusStrategy', () => {
     });
 
     it('should initialize consensus state on blackboard', async () => {
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 3,
         resolution: 'majority',
         threshold: 0.6,
@@ -456,7 +471,8 @@ describe('ConsensusStrategy', () => {
     });
 
     it('should update blackboard with votes', async () => {
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'majority',
         threshold: 0.5,
@@ -481,7 +497,8 @@ describe('ConsensusStrategy', () => {
       const roundHandler = vi.fn();
       coordinator.events.on('consensus:round', roundHandler);
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 2,
         resolution: 'majority',
         threshold: 0.5,
@@ -500,7 +517,8 @@ describe('ConsensusStrategy', () => {
       const turnHandler = vi.fn();
       coordinator.events.on('consensus:turn', turnHandler);
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'majority',
         threshold: 0.5,
@@ -521,7 +539,8 @@ describe('ConsensusStrategy', () => {
       const reachedHandler = vi.fn();
       coordinator.events.on('consensus:reached', reachedHandler);
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'majority',
         threshold: 0.5,
@@ -546,7 +565,7 @@ describe('ConsensusStrategy', () => {
       const reachedHandler = vi.fn();
       coordinator.events.on('consensus:reached', reachedHandler);
 
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
         maxRounds: 1,
         resolution: 'unanimous',
         threshold: 1.0,
@@ -568,7 +587,8 @@ describe('ConsensusStrategy', () => {
     });
 
     it('should pass consensusContext to agents', async () => {
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 3,
         resolution: 'weighted',
         threshold: 0.7,
@@ -586,7 +606,8 @@ describe('ConsensusStrategy', () => {
     });
 
     it('should include consensusInstructions', async () => {
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 2,
         resolution: 'majority',
         threshold: 0.6,
@@ -609,7 +630,8 @@ describe('ConsensusStrategy', () => {
     });
 
     it('should return votes map', async () => {
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'majority',
         threshold: 0.5,
@@ -622,7 +644,8 @@ describe('ConsensusStrategy', () => {
     });
 
     it('should include agentResults for each round', async () => {
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'majority',
         threshold: 0.5,
@@ -635,7 +658,8 @@ describe('ConsensusStrategy', () => {
     });
 
     it('should include vote history in output', async () => {
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'majority',
         threshold: 0.5,
@@ -649,7 +673,8 @@ describe('ConsensusStrategy', () => {
     });
 
     it('should include final vote tally', async () => {
-      const strategy = new ConsensusStrategy(coordinator as any, {
+      const strategy = new ConsensusStrategy(coordinator, {
+        onNoConsensus: 'fail',
         maxRounds: 1,
         resolution: 'majority',
         threshold: 0.5,

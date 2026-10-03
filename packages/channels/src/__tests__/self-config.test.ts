@@ -3,12 +3,19 @@ import { writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createSelfConfigTools } from '../tools/self-config';
+import type { ToolContext } from '@cogitator-ai/types';
 
 const testConfig = join(tmpdir(), `cogitator-config-test-${Date.now()}.yml`);
 
 const parseYaml = (s: string) => JSON.parse(s);
 const stringifyYaml = (o: unknown) => JSON.stringify(o, null, 2);
 const validateConfig = (o: unknown) => o;
+
+const toolContext: ToolContext = {
+  agentId: 'agent_test',
+  runId: 'run_test',
+  signal: new AbortController().signal,
+};
 
 beforeEach(() => {
   writeFileSync(testConfig, JSON.stringify({ name: 'test-bot', llm: { model: 'gpt-4o' } }));
@@ -44,7 +51,7 @@ describe('createSelfConfigTools', () => {
     });
     const readTool = tools.find((t) => t.name === 'config_read')!;
 
-    const result = (await readTool.execute({})) as { config: Record<string, unknown> };
+    const result = (await readTool.execute({}, toolContext)) as { config: Record<string, unknown> };
     expect(result.config.name).toBe('test-bot');
     expect((result.config.llm as Record<string, unknown>).model).toBe('gpt-4o');
   });
@@ -58,9 +65,12 @@ describe('createSelfConfigTools', () => {
     });
     const updateTool = tools.find((t) => t.name === 'config_update')!;
 
-    const result = (await updateTool.execute({
-      updates: { llm: { model: 'claude-4' } },
-    })) as Record<string, unknown>;
+    const result = (await updateTool.execute(
+      {
+        updates: { llm: { model: 'claude-4' } },
+      },
+      toolContext
+    )) as Record<string, unknown>;
     expect(result.success).toBe(true);
 
     const written = JSON.parse(readFileSync(testConfig, 'utf-8'));
@@ -79,7 +89,7 @@ describe('createSelfConfigTools', () => {
     });
     const updateTool = tools.find((t) => t.name === 'config_update')!;
 
-    await updateTool.execute({ updates: { name: 'new-name' } });
+    await updateTool.execute({ updates: { name: 'new-name' } }, toolContext);
     expect(onUpdate).toHaveBeenCalledOnce();
   });
 
@@ -99,9 +109,12 @@ describe('createSelfConfigTools', () => {
     const updateTool = tools.find((t) => t.name === 'config_update')!;
 
     writeFileSync(testConfig, JSON.stringify({ llm: { model: 'gpt-4o' } }));
-    const result = (await updateTool.execute({
-      updates: { llm: { model: 'bad' } },
-    })) as Record<string, unknown>;
+    const result = (await updateTool.execute(
+      {
+        updates: { llm: { model: 'bad' } },
+      },
+      toolContext
+    )) as Record<string, unknown>;
     expect(result.success).toBe(false);
     expect(result.error).toContain('name is required');
   });

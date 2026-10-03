@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { toolCallMessage } from './helpers/messages';
 
 const mockSend = vi.fn();
 let shouldThrowOnConstruct = false;
@@ -323,17 +324,13 @@ describe('BedrockBackend', () => {
         model: 'anthropic.claude-3-sonnet-20240229-v1:0',
         messages: [
           { role: 'user', content: 'What is the weather?' },
-          {
-            role: 'assistant',
-            content: '',
-            toolCalls: [
-              {
-                id: 'tool-1',
-                name: 'get_weather',
-                arguments: { city: 'Berlin' },
-              },
-            ],
-          },
+          toolCallMessage([
+            {
+              id: 'tool-1',
+              name: 'get_weather',
+              arguments: { city: 'Berlin' },
+            },
+          ]),
           {
             role: 'tool',
             content: '{"temperature": 25, "condition": "sunny"}',
@@ -539,14 +536,10 @@ describe('BedrockBackend', () => {
         messages: [
           { role: 'system', content: 'Base' },
           { role: 'user', content: 'Weather?' },
-          {
-            role: 'assistant',
-            content: '',
-            toolCalls: [
-              { id: 't1', name: 'weather', arguments: { city: 'Tokyo' } },
-              { id: 't2', name: 'weather', arguments: { city: 'Paris' } },
-            ],
-          } as never,
+          toolCallMessage([
+            { id: 't1', name: 'weather', arguments: { city: 'Tokyo' } },
+            { id: 't2', name: 'weather', arguments: { city: 'Paris' } },
+          ]),
           { role: 'tool', content: 'sunny', toolCallId: 't1', name: 'weather' },
           { role: 'tool', content: 'rainy', toolCallId: 't2', name: 'weather' },
           { role: 'system', content: 'Reflection' },

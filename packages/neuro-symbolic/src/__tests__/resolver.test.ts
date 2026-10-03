@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import type { LogicQueryResult } from '@cogitator-ai/types';
 import { SLDResolver, createResolver, formatSolutions } from '../logic/resolver';
 import { KnowledgeBase, createKnowledgeBase } from '../logic/knowledge-base';
 
@@ -266,9 +267,10 @@ describe('formatSolutions', () => {
     const solution2 = new Map<string, { type: 'atom'; value: string }>();
     solution2.set('X', { type: 'atom', value: 'bar' });
 
-    const result = {
+    const result: LogicQueryResult = {
       success: true,
       solutions: [solution1, solution2],
+      confidence: 1,
     };
 
     const formatted = formatSolutions(result);
@@ -278,9 +280,10 @@ describe('formatSolutions', () => {
   });
 
   it('formats failed query', () => {
-    const result = {
+    const result: LogicQueryResult = {
       success: false,
       solutions: [],
+      confidence: 0,
     };
 
     const formatted = formatSolutions(result);
@@ -288,9 +291,10 @@ describe('formatSolutions', () => {
   });
 
   it('formats ground query success', () => {
-    const result = {
+    const result: LogicQueryResult = {
       success: true,
       solutions: [new Map()],
+      confidence: 1,
     };
 
     const formatted = formatSolutions(result);

@@ -31,9 +31,19 @@ import type {
 } from '@cogitator-ai/types';
 import { z } from 'zod';
 
+const withToolSchema = (definition: Omit<Tool, 'toJSON'>): Tool => ({
+  ...definition,
+  toJSON: () => ({
+    name: definition.name,
+    description: definition.description,
+    parameters: { type: 'object', properties: {} },
+  }),
+});
+
 const createMockLLM = (
   response: string = '{"isHarmful": false, "harmScores": []}'
 ): LLMBackend => ({
+  provider: 'openai',
   chat: vi.fn().mockResolvedValue({
     id: 'test',
     content: response,
@@ -570,13 +580,14 @@ describe('ToolGuard', () => {
     });
   });
 
-  const createTool = (overrides: Partial<Tool> = {}): Tool => ({
-    name: 'test_tool',
-    description: 'A test tool',
-    parameters: z.object({}),
-    execute: async () => ({ result: 'ok' }),
-    ...overrides,
-  });
+  const createTool = (overrides: Partial<Tool> = {}): Tool =>
+    withToolSchema({
+      name: 'test_tool',
+      description: 'A test tool',
+      parameters: z.object({}),
+      execute: async () => ({ result: 'ok' }),
+      ...overrides,
+    });
 
   const createContext = (): ToolContext => ({
     agentId: 'agent_1',
@@ -787,12 +798,12 @@ describe('ConstitutionalAI', () => {
   });
 
   it('guards tools', async () => {
-    const tool: Tool = {
+    const tool = withToolSchema({
       name: 'safe_tool',
       description: 'A safe tool',
       parameters: z.object({}),
       execute: async () => ({}),
-    };
+    });
 
     const result = await ai.guardTool(
       tool,
@@ -898,13 +909,13 @@ describe('ConstitutionalAI', () => {
       llm: mockLLM,
       config: { ...createGuardrailConfig(), enabled: false },
     });
-    const tool: Tool = {
+    const tool = withToolSchema({
       name: 'exec',
       description: 'Run command',
       parameters: z.object({}),
       execute: async () => ({}),
       sideEffects: ['process'],
-    };
+    });
 
     const input = await aiDisabled.filterInput('how to make a bomb at home');
     const output = await aiDisabled.filterOutput('sudo rm -rf /', []);
@@ -945,13 +956,13 @@ describe('ConstitutionalAI', () => {
       config: { ...createGuardrailConfig(), filterToolCalls: false },
     });
 
-    const tool: Tool = {
+    const tool = withToolSchema({
       name: 'any_tool',
       description: 'Test',
       parameters: z.object({}),
       execute: async () => ({}),
       sideEffects: ['process'],
-    };
+    });
 
     const result = await aiDisabled.guardTool(
       tool,

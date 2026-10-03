@@ -149,9 +149,9 @@ describe('RedisTaskStore', () => {
         internalStore.set(key, value);
       });
       scanRedis.get = vi.fn(async (key: string) => internalStore.get(key) ?? null);
-      (scanRedis as RedisClientLike).scan = vi.fn(async (_cursor: number) => {
+      scanRedis.scan = vi.fn(async (_cursor: number | string): Promise<[string, string[]]> => {
         const allKeys = Array.from(internalStore.keys()).filter((k) => k.startsWith('a2a:task:'));
-        return [0, allKeys] as [number, string[]];
+        return ['0', allKeys];
       });
       scanRedis.keys = vi.fn();
 

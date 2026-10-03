@@ -9,8 +9,11 @@ import {
 } from '../meta-reasoning';
 import type { LLMBackend, MetaObservation } from '@cogitator-ai/types';
 
-const mockLLM: LLMBackend = {
-  chat: vi.fn().mockResolvedValue({
+const mockLLM = {
+  provider: 'ollama',
+  chat: vi.fn<LLMBackend['chat']>().mockResolvedValue({
+    id: 'resp',
+    finishReason: 'stop',
     content: JSON.stringify({
       onTrack: true,
       confidence: 0.8,
@@ -23,13 +26,10 @@ const mockLLM: LLMBackend = {
         reasoning: 'Making good progress',
       },
     }),
-    usage: { outputTokens: 100 },
+    usage: { inputTokens: 0, outputTokens: 100, totalTokens: 100 },
   }),
-  name: 'mock',
-  supportsTool: () => true,
-  supportsStreaming: () => false,
-  validateConfig: () => true,
-};
+  chatStream: async function* () {},
+} satisfies LLMBackend;
 
 describe('ObservationCollector', () => {
   let collector: ObservationCollector;
@@ -224,9 +224,8 @@ describe('MetaReasoner', () => {
       model: 'gpt-4o',
       config: {
         enabled: true,
-        maxAssessmentsPerRun: 5,
-        maxAdaptationsPerRun: 3,
-        assessmentCooldown: 0,
+        maxMetaAssessments: 5,
+        maxAdaptations: 3,
         metaAssessmentCooldown: 0,
         adaptationCooldown: 0,
         triggers: ['iteration_complete', 'confidence_drop', 'progress_stall'],
@@ -270,7 +269,20 @@ describe('MetaReasoner', () => {
         iterationsRemaining: 5,
         budgetRemaining: 0.8,
       },
-      [{ type: 'observation', content: 'Test insight', confidence: 0.8 }]
+      [
+        {
+          id: 'insight-1',
+          type: 'pattern',
+          content: 'Test insight',
+          context: 'Test goal',
+          confidence: 0.8,
+          usageCount: 0,
+          createdAt: new Date(0),
+          lastUsedAt: new Date(0),
+          agentId: 'agent-1',
+          source: { runId, reflectionId: 'reflection-1' },
+        },
+      ]
     );
 
     expect(observation.tokensUsed).toBe(1000);

@@ -3,6 +3,7 @@ import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createSelfTools, loadCustomTools } from '../tools/self-tools';
+import { createToolContext } from './helpers/tool-context';
 
 const testDir = join(tmpdir(), `cogitator-self-tools-test-${Date.now()}`);
 
@@ -37,7 +38,10 @@ describe('createSelfTools', () => {
   execute: async ({ name }) => ({ message: 'Hello ' + name })
 };`;
 
-    const result = (await createTool.execute({ name: 'greet', code })) as Record<string, unknown>;
+    const result = (await createTool.execute(
+      { name: 'greet', code },
+      createToolContext()
+    )) as Record<string, unknown>;
     expect(result.success).toBe(true);
     expect(existsSync(join(testDir, 'greet.mjs'))).toBe(true);
   });
@@ -47,7 +51,10 @@ describe('createSelfTools', () => {
     const createTool = tools.find((t) => t.name === 'create_tool')!;
 
     const code = `export default { name: 'bad', description: 'no execute' };`;
-    const result = (await createTool.execute({ name: 'bad', code })) as Record<string, unknown>;
+    const result = (await createTool.execute({ name: 'bad', code }, createToolContext())) as Record<
+      string,
+      unknown
+    >;
     expect(result.success).toBe(false);
     expect(result.error).toContain('execute');
     expect(existsSync(join(testDir, 'bad.mjs'))).toBe(false);
@@ -57,10 +64,13 @@ describe('createSelfTools', () => {
     const tools = createSelfTools({ toolsDir: testDir });
     const createTool = tools.find((t) => t.name === 'create_tool')!;
 
-    const result = (await createTool.execute({
-      name: 'broken',
-      code: 'export default {{{',
-    })) as Record<string, unknown>;
+    const result = (await createTool.execute(
+      {
+        name: 'broken',
+        code: 'export default {{{',
+      },
+      createToolContext()
+    )) as Record<string, unknown>;
     expect(result.success).toBe(false);
     expect(existsSync(join(testDir, 'broken.mjs'))).toBe(false);
   });
@@ -75,11 +85,14 @@ describe('createSelfTools', () => {
   execute: async () => ({ ok: true })
 };`;
 
-    await createTool.execute({ name: 'stable', code: good });
-    const failed = (await createTool.execute({
-      name: 'stable',
-      code: 'export default {{{',
-    })) as Record<string, unknown>;
+    await createTool.execute({ name: 'stable', code: good }, createToolContext());
+    const failed = (await createTool.execute(
+      {
+        name: 'stable',
+        code: 'export default {{{',
+      },
+      createToolContext()
+    )) as Record<string, unknown>;
 
     expect(failed.success).toBe(false);
     expect(readFileSync(join(testDir, 'stable.mjs'), 'utf8')).toBe(good);
@@ -92,7 +105,10 @@ describe('createSelfTools', () => {
     const code = 'export default { name: "x", description: "x", execute: async () => 1 };';
 
     for (const name of ['../escape', 'nested/tool', '.hidden']) {
-      const result = (await createTool.execute({ name, code })) as Record<string, unknown>;
+      const result = (await createTool.execute({ name, code }, createToolContext())) as Record<
+        string,
+        unknown
+      >;
       expect(result).toEqual({ success: false, error: 'Invalid tool name' });
     }
     expect(readdirSync(testDir)).toEqual([]);
@@ -109,12 +125,15 @@ describe('createSelfTools', () => {
   parameters: { type: 'object', properties: { a: { type: 'number' }, b: { type: 'number' } } },
   execute: async ({ a, b }) => ({ sum: a + b })
 };`;
-    await createTool.execute({ name: 'adder', code });
+    await createTool.execute({ name: 'adder', code }, createToolContext());
 
-    const result = (await testTool.execute({
-      name: 'adder',
-      params: { a: 3, b: 7 },
-    })) as Record<string, unknown>;
+    const result = (await testTool.execute(
+      {
+        name: 'adder',
+        params: { a: 3, b: 7 },
+      },
+      createToolContext()
+    )) as Record<string, unknown>;
     expect(result.success).toBe(true);
     expect(result.result).toEqual({ sum: 10 });
     expect(typeof result.durationMs).toBe('number');
@@ -124,10 +143,13 @@ describe('createSelfTools', () => {
     const tools = createSelfTools({ toolsDir: testDir });
     const testTool = tools.find((t) => t.name === 'test_tool')!;
 
-    const result = (await testTool.execute({
-      name: 'nope',
-      params: {},
-    })) as Record<string, unknown>;
+    const result = (await testTool.execute(
+      {
+        name: 'nope',
+        params: {},
+      },
+      createToolContext()
+    )) as Record<string, unknown>;
     expect(result.success).toBe(false);
     expect(result.error).toContain('not found');
   });
@@ -143,9 +165,11 @@ describe('createSelfTools', () => {
   parameters: { type: 'object', properties: {} },
   execute: async (p) => p
 };`;
-    await createTool.execute({ name: 'echo', code });
+    await createTool.execute({ name: 'echo', code }, createToolContext());
 
-    const result = (await listTools.execute({})) as { tools: Array<{ name: string }> };
+    const result = (await listTools.execute({}, createToolContext())) as {
+      tools: Array<{ name: string }>;
+    };
     expect(result.tools).toHaveLength(1);
     expect(result.tools[0].name).toBe('echo');
   });
@@ -161,10 +185,13 @@ describe('createSelfTools', () => {
   parameters: { type: 'object', properties: {} },
   execute: async () => ({})
 };`;
-    await createTool.execute({ name: 'tmp', code });
+    await createTool.execute({ name: 'tmp', code }, createToolContext());
     expect(existsSync(join(testDir, 'tmp.mjs'))).toBe(true);
 
-    const result = (await deleteTool.execute({ name: 'tmp' })) as Record<string, unknown>;
+    const result = (await deleteTool.execute({ name: 'tmp' }, createToolContext())) as Record<
+      string,
+      unknown
+    >;
     expect(result.success).toBe(true);
     expect(existsSync(join(testDir, 'tmp.mjs'))).toBe(false);
   });

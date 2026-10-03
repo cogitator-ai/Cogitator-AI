@@ -126,6 +126,7 @@ function createMockTrace(overrides: Partial<ExecutionTrace> = {}): ExecutionTrac
       toolAccuracy: 1,
       efficiency: 0.8,
       completeness: 0.9,
+      coherence: 0.9,
     },
     score: 0.85,
     model: 'test-model',

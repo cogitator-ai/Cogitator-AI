@@ -380,9 +380,10 @@ describe('Reliability: LLM Resilience', () => {
       };
       const cog = cogitator({ maxRetryAfter: 60_000 });
 
-      const error = await cog
-        .run(agent, { input: 'hi' })
-        .catch((e: unknown) => e as CogitatorError);
+      const error = await cog.run(agent, { input: 'hi' }).then(
+        () => expect.unreachable('should have thrown'),
+        (e: unknown) => e as CogitatorError
+      );
 
       expect(error.code).toBe(ErrorCode.LLM_RATE_LIMITED);
       expect(error.retryAfter).toBe(3_600_000);

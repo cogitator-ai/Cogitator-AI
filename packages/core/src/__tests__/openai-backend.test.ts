@@ -601,7 +601,7 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       await backend.chat({
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: 'Test' }],
-        toolChoice: { function: { name: 'get_weather' } },
+        toolChoice: { type: 'function', function: { name: 'get_weather' } },
       });
 
       expect(mockCreate).toHaveBeenCalledWith(

@@ -3,6 +3,7 @@ import http from 'node:http';
 import { A2AServer } from '@cogitator-ai/a2a';
 import { a2aExpress } from '@cogitator-ai/a2a/express';
 import type { A2AServerConfig } from '@cogitator-ai/a2a';
+import type { Agent, AgentConfig } from '@cogitator-ai/types';
 
 export interface TestA2AServer {
   server: A2AServer;
@@ -31,4 +32,28 @@ export async function startTestA2AServer(config: A2AServerConfig): Promise<TestA
       });
     });
   });
+}
+
+export function createStubAgent(config: AgentConfig): Agent {
+  const id = config.id ?? `agent_${config.name}`;
+  return {
+    id,
+    name: config.name,
+    config,
+    model: config.model,
+    instructions: config.instructions,
+    tools: [],
+    clone: (overrides) => createStubAgent({ ...config, ...overrides }),
+    serialize: () => ({
+      version: '1.0.0',
+      id,
+      name: config.name,
+      config: {
+        model: config.model,
+        instructions: config.instructions,
+        tools: [],
+        description: config.description,
+      },
+    }),
+  };
 }

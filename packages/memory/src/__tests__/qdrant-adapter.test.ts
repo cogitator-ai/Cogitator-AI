@@ -29,6 +29,7 @@ describe('QdrantAdapter', () => {
     mockClient.search.mockResolvedValue([]);
 
     adapter = new QdrantAdapter({
+      provider: 'qdrant',
       url: 'http://localhost:6333',
       collection: 'test_collection',
       dimensions: 1536,
@@ -46,6 +47,7 @@ describe('QdrantAdapter', () => {
       mockClient.getCollections.mockResolvedValue({ collections: [] });
 
       const newAdapter = new QdrantAdapter({
+        provider: 'qdrant',
         url: 'http://localhost:6333',
         collection: 'new_collection',
         dimensions: 768,
@@ -67,6 +69,7 @@ describe('QdrantAdapter', () => {
       });
 
       const newAdapter = new QdrantAdapter({
+        provider: 'qdrant',
         url: 'http://localhost:6333',
         collection: 'existing_collection',
         dimensions: 1536,
@@ -82,6 +85,7 @@ describe('QdrantAdapter', () => {
       mockClient.getCollections.mockResolvedValue({ collections: [] });
 
       const newAdapter = new QdrantAdapter({
+        provider: 'qdrant',
         dimensions: 1536,
       });
 
@@ -92,6 +96,7 @@ describe('QdrantAdapter', () => {
 
     it('uses API key when provided', async () => {
       const newAdapter = new QdrantAdapter({
+        provider: 'qdrant',
         url: 'http://localhost:6333',
         apiKey: 'test-api-key',
         collection: 'test',
@@ -119,7 +124,7 @@ describe('QdrantAdapter', () => {
     it('adds an embedding', async () => {
       const result = await adapter.addEmbedding({
         sourceId: 'entry_123',
-        sourceType: 'entry',
+        sourceType: 'message',
         vector: Array(1536).fill(0.1),
         content: 'Test content',
       });
@@ -128,7 +133,7 @@ describe('QdrantAdapter', () => {
       if (result.success) {
         expect(result.data.id).toMatch(/^emb_/);
         expect(result.data.sourceId).toBe('entry_123');
-        expect(result.data.sourceType).toBe('entry');
+        expect(result.data.sourceType).toBe('message');
         expect(result.data.content).toBe('Test content');
         expect(result.data.createdAt).toBeInstanceOf(Date);
       }
@@ -140,7 +145,7 @@ describe('QdrantAdapter', () => {
             vector: expect.any(Array),
             payload: expect.objectContaining({
               sourceId: 'entry_123',
-              sourceType: 'entry',
+              sourceType: 'message',
               content: 'Test content',
             }),
           },
@@ -151,7 +156,7 @@ describe('QdrantAdapter', () => {
     it('includes metadata in payload', async () => {
       await adapter.addEmbedding({
         sourceId: 'entry_123',
-        sourceType: 'entry',
+        sourceType: 'message',
         vector: [0.1, 0.2],
         content: 'Test',
         metadata: { category: 'science', language: 'en' },
@@ -170,6 +175,7 @@ describe('QdrantAdapter', () => {
 
     it('returns error when not connected', async () => {
       const disconnectedAdapter = new QdrantAdapter({
+        provider: 'qdrant',
         url: 'http://localhost:6333',
         collection: 'test',
         dimensions: 1536,
@@ -177,7 +183,7 @@ describe('QdrantAdapter', () => {
 
       const result = await disconnectedAdapter.addEmbedding({
         sourceId: 'entry_123',
-        sourceType: 'entry',
+        sourceType: 'message',
         vector: [0.1],
         content: 'Test',
       });
@@ -193,7 +199,7 @@ describe('QdrantAdapter', () => {
 
       const result = await adapter.addEmbedding({
         sourceId: 'entry_123',
-        sourceType: 'entry',
+        sourceType: 'message',
         vector: [0.1],
         content: 'Test',
       });
@@ -215,7 +221,7 @@ describe('QdrantAdapter', () => {
           payload: {
             embeddingId: 'emb_123',
             sourceId: 'entry_123',
-            sourceType: 'entry',
+            sourceType: 'message',
             content: 'Similar content',
             createdAt: now.toISOString(),
             metadata: { category: 'test' },
@@ -349,7 +355,7 @@ describe('QdrantAdapter', () => {
       await adapter.search({
         vector: [0.1],
         filter: {
-          sourceType: 'entry',
+          sourceType: 'message',
           threadId: 'thread_123',
           agentId: 'agent_456',
         },
@@ -361,7 +367,7 @@ describe('QdrantAdapter', () => {
         score_threshold: undefined,
         filter: {
           must: [
-            { key: 'sourceType', match: { value: 'entry' } },
+            { key: 'sourceType', match: { value: 'message' } },
             { key: 'metadata.threadId', match: { value: 'thread_123' } },
             { key: 'metadata.agentId', match: { value: 'agent_456' } },
           ],
@@ -380,6 +386,7 @@ describe('QdrantAdapter', () => {
 
     it('returns error when not connected', async () => {
       const disconnectedAdapter = new QdrantAdapter({
+        provider: 'qdrant',
         url: 'http://localhost:6333',
         collection: 'test',
         dimensions: 1536,
@@ -411,7 +418,7 @@ describe('QdrantAdapter', () => {
           score: 0.9,
           payload: {
             sourceId: 'entry_123',
-            sourceType: 'entry',
+            sourceType: 'message',
             content: 'Test',
             createdAt: new Date().toISOString(),
           },
@@ -439,6 +446,7 @@ describe('QdrantAdapter', () => {
 
     it('returns error when not connected', async () => {
       const disconnectedAdapter = new QdrantAdapter({
+        provider: 'qdrant',
         url: 'http://localhost:6333',
         collection: 'test',
         dimensions: 1536,
@@ -475,6 +483,7 @@ describe('QdrantAdapter', () => {
 
     it('returns error when not connected', async () => {
       const disconnectedAdapter = new QdrantAdapter({
+        provider: 'qdrant',
         url: 'http://localhost:6333',
         collection: 'test',
         dimensions: 1536,
@@ -502,6 +511,7 @@ describe('QdrantAdapter', () => {
       mockClient.getCollections.mockRejectedValueOnce(new Error('Connection refused'));
 
       const newAdapter = new QdrantAdapter({
+        provider: 'qdrant',
         url: 'http://invalid:6333',
         collection: 'test',
         dimensions: 1536,
@@ -521,6 +531,7 @@ describe('QdrantAdapter', () => {
       mockClient.createCollection.mockRejectedValueOnce(new Error('Insufficient permissions'));
 
       const newAdapter = new QdrantAdapter({
+        provider: 'qdrant',
         url: 'http://localhost:6333',
         collection: 'new_collection',
         dimensions: 1536,

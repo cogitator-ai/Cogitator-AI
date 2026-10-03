@@ -109,8 +109,10 @@ describeHeavy('Cross-Package: Remote Tool Execution (heavy model)', () => {
     const toolCall = result!.toolCalls.find((tc) => tc.name === 'ask_math_agent');
     expect(toolCall).toBeDefined();
 
-    const toolResultStr = JSON.stringify(toolCall?.result ?? '');
-    const combined = result!.output + toolResultStr;
-    expect(combined).toMatch(/105/);
+    const toolResult = result!.messages.find(
+      (m) => m.role === 'tool' && m.toolCallId === toolCall?.id
+    );
+    expect(JSON.stringify(toolResult?.content ?? '')).toMatch(/105/);
+    expect(result!.output).toMatch(/105/);
   }, 120_000);
 });

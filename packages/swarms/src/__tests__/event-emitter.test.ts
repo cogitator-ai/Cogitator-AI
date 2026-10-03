@@ -28,9 +28,15 @@ describe('SwarmEventEmitterImpl', () => {
     it('should support multiple handlers', () => {
       let count = 0;
 
-      emitter.on('agent:start', () => count++);
-      emitter.on('agent:start', () => count++);
-      emitter.on('agent:start', () => count++);
+      emitter.on('agent:start', () => {
+        count++;
+      });
+      emitter.on('agent:start', () => {
+        count++;
+      });
+      emitter.on('agent:start', () => {
+        count++;
+      });
 
       emitter.emit('agent:start');
 
@@ -40,11 +46,13 @@ describe('SwarmEventEmitterImpl', () => {
     it('should return unsubscribe function', () => {
       let count = 0;
 
-      const unsub = emitter.on('test', () => count++);
+      const unsub = emitter.on('swarm:paused', () => {
+        count++;
+      });
 
-      emitter.emit('test');
+      emitter.emit('swarm:paused');
       unsub();
-      emitter.emit('test');
+      emitter.emit('swarm:paused');
 
       expect(count).toBe(1);
     });
@@ -54,11 +62,13 @@ describe('SwarmEventEmitterImpl', () => {
     it('should only fire once', () => {
       let count = 0;
 
-      emitter.once('once:event', () => count++);
+      emitter.once('swarm:reset', () => {
+        count++;
+      });
 
-      emitter.emit('once:event');
-      emitter.emit('once:event');
-      emitter.emit('once:event');
+      emitter.emit('swarm:reset');
+      emitter.emit('swarm:reset');
+      emitter.emit('swarm:reset');
 
       expect(count).toBe(1);
     });
@@ -74,7 +84,7 @@ describe('SwarmEventEmitterImpl', () => {
 
       emitter.emit('swarm:start');
       emitter.emit('agent:complete');
-      emitter.emit('custom:event');
+      emitter.emit('debate:turn');
 
       expect(events).toHaveLength(3);
     });
@@ -83,13 +93,15 @@ describe('SwarmEventEmitterImpl', () => {
   describe('off', () => {
     it('should remove specific handler', () => {
       let count = 0;
-      const handler = () => count++;
+      const handler = () => {
+        count++;
+      };
 
-      emitter.on('test', handler);
-      emitter.emit('test');
+      emitter.on('swarm:paused', handler);
+      emitter.emit('swarm:paused');
 
-      emitter.off('test', handler);
-      emitter.emit('test');
+      emitter.off('swarm:paused', handler);
+      emitter.emit('swarm:paused');
 
       expect(count).toBe(1);
     });
@@ -99,14 +111,20 @@ describe('SwarmEventEmitterImpl', () => {
     it('should remove all handlers for event', () => {
       let count = 0;
 
-      emitter.on('test', () => count++);
-      emitter.on('test', () => count++);
-      emitter.on('other', () => count++);
+      emitter.on('swarm:paused', () => {
+        count++;
+      });
+      emitter.on('swarm:paused', () => {
+        count++;
+      });
+      emitter.on('swarm:resumed', () => {
+        count++;
+      });
 
-      emitter.removeAllListeners('test');
+      emitter.removeAllListeners('swarm:paused');
 
-      emitter.emit('test');
-      emitter.emit('other');
+      emitter.emit('swarm:paused');
+      emitter.emit('swarm:resumed');
 
       expect(count).toBe(1);
     });
@@ -114,15 +132,21 @@ describe('SwarmEventEmitterImpl', () => {
     it('should remove all handlers when no event specified', () => {
       let count = 0;
 
-      emitter.on('a', () => count++);
-      emitter.on('b', () => count++);
-      emitter.on('c', () => count++);
+      emitter.on('auction:start', () => {
+        count++;
+      });
+      emitter.on('auction:bid', () => {
+        count++;
+      });
+      emitter.on('auction:winner', () => {
+        count++;
+      });
 
       emitter.removeAllListeners();
 
-      emitter.emit('a');
-      emitter.emit('b');
-      emitter.emit('c');
+      emitter.emit('auction:start');
+      emitter.emit('auction:bid');
+      emitter.emit('auction:winner');
 
       expect(count).toBe(0);
     });
@@ -130,15 +154,15 @@ describe('SwarmEventEmitterImpl', () => {
 
   describe('getEvents', () => {
     it('should return event history', () => {
-      emitter.emit('event1', { data: 1 });
-      emitter.emit('event2', { data: 2 });
-      emitter.emit('event3', { data: 3 });
+      emitter.emit('consensus:round', { data: 1 });
+      emitter.emit('consensus:vote', { data: 2 });
+      emitter.emit('consensus:reached', { data: 3 });
 
       const events = emitter.getEvents();
 
       expect(events).toHaveLength(3);
-      expect(events[0].type).toBe('event1');
-      expect(events[2].type).toBe('event3');
+      expect(events[0].type).toBe('consensus:round');
+      expect(events[2].type).toBe('consensus:reached');
     });
 
     it('should include agent name in event', () => {
@@ -151,8 +175,8 @@ describe('SwarmEventEmitterImpl', () => {
 
   describe('clearEvents', () => {
     it('should clear event history', () => {
-      emitter.emit('event1');
-      emitter.emit('event2');
+      emitter.emit('consensus:round');
+      emitter.emit('consensus:vote');
 
       emitter.clearEvents();
 

@@ -5,6 +5,7 @@ import { A2AServer } from '../server';
 import { InMemoryTaskStore } from '../task-store';
 import type { A2AMessage, A2ATask } from '../types';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
+import { expectResponse } from './helpers';
 
 function createUserMessage(text: string): A2AMessage {
   return { role: 'user', parts: [{ type: 'text', text }] };
@@ -172,12 +173,14 @@ describe('ListTasks', () => {
         id: 2,
       });
 
-      const response = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'tasks/list',
-        params: {},
-        id: 3,
-      });
+      const response = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'tasks/list',
+          params: {},
+          id: 3,
+        })
+      );
 
       expect(response.error).toBeUndefined();
       const result = response.result as { tasks: A2ATask[] };
@@ -199,12 +202,14 @@ describe('ListTasks', () => {
         id: 2,
       });
 
-      const response = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'tasks/list',
-        params: { contextId: ctx },
-        id: 3,
-      });
+      const response = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'tasks/list',
+          params: { contextId: ctx },
+          id: 3,
+        })
+      );
 
       const result = response.result as { tasks: A2ATask[] };
       expect(result.tasks).toHaveLength(1);
@@ -221,24 +226,28 @@ describe('ListTasks', () => {
         });
       }
 
-      const response = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'tasks/list',
-        params: { limit: 2 },
-        id: 10,
-      });
+      const response = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'tasks/list',
+          params: { limit: 2 },
+          id: 10,
+        })
+      );
 
       const result = response.result as { tasks: A2ATask[] };
       expect(result.tasks).toHaveLength(2);
     });
 
     it('should return empty tasks array when no tasks exist', async () => {
-      const response = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'tasks/list',
-        params: {},
-        id: 1,
-      });
+      const response = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'tasks/list',
+          params: {},
+          id: 1,
+        })
+      );
 
       const result = response.result as { tasks: A2ATask[] };
       expect(result.tasks).toEqual([]);

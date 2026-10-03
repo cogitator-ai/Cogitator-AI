@@ -21,7 +21,7 @@
     "build": "tsc && tsx ../../scripts/fix-esm-imports.ts .",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest"
   },

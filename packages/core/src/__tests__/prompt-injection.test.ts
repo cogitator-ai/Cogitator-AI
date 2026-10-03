@@ -11,6 +11,7 @@ import {
 import type { LLMBackend, InjectionThreatType } from '@cogitator-ai/types';
 
 const createMockLLM = (response: string): LLMBackend => ({
+  provider: 'openai',
   chat: vi.fn().mockResolvedValue({
     id: 'test',
     content: response,
@@ -416,6 +417,7 @@ describe('PromptInjectionDetector', () => {
   describe('Fail Mode', () => {
     it('defaults to secure mode and re-throws classifier errors', async () => {
       const mockLLM: LLMBackend = {
+        provider: 'openai',
         chat: vi.fn().mockRejectedValue(new Error('Connection refused')),
         chatStream: vi.fn(),
       };
@@ -648,6 +650,7 @@ describe('LLMInjectionClassifier', () => {
 
   it('fails closed on LLM errors', async () => {
     const mockLLM: LLMBackend = {
+      provider: 'openai',
       chat: vi.fn().mockRejectedValue(new Error('LLM unavailable')),
       chatStream: vi.fn(),
     };

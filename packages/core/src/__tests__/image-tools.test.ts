@@ -38,10 +38,13 @@ describe('image tools', () => {
       (mockLlm.chat as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mockResponse);
 
       const tool = createAnalyzeImageTool({ llm: mockLlm });
-      const result = await tool.execute({
-        image: 'https://example.com/cat.jpg',
-        prompt: 'What animal is this?',
-      });
+      const result = await tool.execute(
+        {
+          image: 'https://example.com/cat.jpg',
+          prompt: 'What animal is this?',
+        },
+        mockContext
+      );
 
       expect(result.analysis).toBe('This is a photo of a cat.');
       expect(mockLlm.chat).toHaveBeenCalledWith({
@@ -71,9 +74,12 @@ describe('image tools', () => {
       (mockLlm.chat as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mockResponse);
 
       const tool = createAnalyzeImageTool({ llm: mockLlm });
-      const result = await tool.execute({
-        image: { data: 'iVBORw0KGgo=', mimeType: 'image/png' },
-      });
+      const result = await tool.execute(
+        {
+          image: { data: 'iVBORw0KGgo=', mimeType: 'image/png' },
+        },
+        mockContext
+      );
 
       expect(result.analysis).toBe('A landscape photo.');
       expect(mockLlm.chat).toHaveBeenCalledWith({
@@ -103,10 +109,13 @@ describe('image tools', () => {
       (mockLlm.chat as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mockResponse);
 
       const tool = createAnalyzeImageTool({ llm: mockLlm, defaultModel: 'gpt-4.1' });
-      await tool.execute({
-        image: 'https://example.com/image.jpg',
-        model: 'claude-opus-4-5',
-      });
+      await tool.execute(
+        {
+          image: 'https://example.com/image.jpg',
+          model: 'claude-opus-4-5',
+        },
+        mockContext
+      );
 
       expect(mockLlm.chat).toHaveBeenCalledWith(
         expect.objectContaining({ model: 'claude-opus-4-5' })
@@ -123,10 +132,13 @@ describe('image tools', () => {
       (mockLlm.chat as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mockResponse);
 
       const tool = createAnalyzeImageTool({ llm: mockLlm });
-      await tool.execute({
-        image: 'https://example.com/chart.png',
-        detail: 'high',
-      });
+      await tool.execute(
+        {
+          image: 'https://example.com/chart.png',
+          detail: 'high',
+        },
+        mockContext
+      );
 
       expect(mockLlm.chat).toHaveBeenCalledWith({
         model: 'gpt-6.1-sol',
@@ -182,7 +194,7 @@ describe('image tools', () => {
       });
 
       const tool = createGenerateImageTool();
-      const result = await tool.execute({ prompt: 'A cute cat' });
+      const result = await tool.execute({ prompt: 'A cute cat' }, mockContext);
 
       expect(result).toEqual({
         imageBase64: 'aW1hZ2U=',
@@ -224,12 +236,15 @@ describe('image tools', () => {
       });
 
       const tool = createGenerateImageTool();
-      const result = await tool.execute({
-        prompt: 'A landscape',
-        size: '1792x1024',
-        quality: 'hd',
-        style: 'natural',
-      });
+      const result = await tool.execute(
+        {
+          prompt: 'A landscape',
+          size: '1792x1024',
+          quality: 'hd',
+          style: 'natural',
+        },
+        mockContext
+      );
 
       expect(result.size).toBe('1792x1024');
       expect(result.quality).toBe('high');
@@ -249,12 +264,15 @@ describe('image tools', () => {
       });
 
       const tool = createGenerateImageTool();
-      const result = await tool.execute({
-        prompt: 'A logo',
-        quality: 'standard',
-        outputFormat: 'webp',
-        background: 'transparent',
-      });
+      const result = await tool.execute(
+        {
+          prompt: 'A logo',
+          quality: 'standard',
+          outputFormat: 'webp',
+          background: 'transparent',
+        },
+        mockContext
+      );
 
       const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(callBody.quality).toBe('medium');
@@ -283,7 +301,7 @@ describe('image tools', () => {
         model: 'dall-e-3',
         baseUrl: 'http://localhost:8080/v1',
       });
-      const result = await tool.execute({ prompt: 'A cute cat', style: 'natural' });
+      const result = await tool.execute({ prompt: 'A cute cat', style: 'natural' }, mockContext);
 
       expect(result.url).toBe('https://example.com/image.png');
       expect(result.imageBase64).toBeUndefined();
@@ -311,7 +329,7 @@ describe('image tools', () => {
       });
 
       const tool = createGenerateImageTool();
-      await expect(tool.execute({ prompt: 'test' })).rejects.toThrow(
+      await expect(tool.execute({ prompt: 'test' }, mockContext)).rejects.toThrow(
         'Image generation failed: response contained no image'
       );
     });
@@ -320,7 +338,9 @@ describe('image tools', () => {
       delete process.env.OPENAI_API_KEY;
 
       const tool = createGenerateImageTool();
-      await expect(tool.execute({ prompt: 'test' })).rejects.toThrow('OpenAI API key required');
+      await expect(tool.execute({ prompt: 'test' }, mockContext)).rejects.toThrow(
+        'OpenAI API key required'
+      );
     });
 
     it('throws on API error', async () => {
@@ -331,7 +351,7 @@ describe('image tools', () => {
       });
 
       const tool = createGenerateImageTool();
-      await expect(tool.execute({ prompt: 'test' })).rejects.toThrow(
+      await expect(tool.execute({ prompt: 'test' }, mockContext)).rejects.toThrow(
         'Image generation failed: 400'
       );
     });
@@ -347,7 +367,7 @@ describe('image tools', () => {
       });
 
       const tool = createGenerateImageTool({ apiKey: 'custom-key' });
-      await tool.execute({ prompt: 'test' });
+      await tool.execute({ prompt: 'test' }, mockContext);
 
       expect(mockFetch).toHaveBeenCalledWith(
         expect.any(String),

@@ -1,6 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createMemoryTools } from '../tools/memory-tools';
 import type { MemoryToolsConfig } from '../tools/memory-tools';
+import type { Tool } from '@cogitator-ai/types';
+import { createToolContext } from './helpers/tool-context';
+
+type MemoryTool = ReturnType<typeof createMemoryTools>[number];
+type RememberTool = Extract<MemoryTool, Tool<{ fact: string }, unknown>>;
+type RecallTool = Extract<MemoryTool, Tool<{ query: string }, { results: unknown }>>;
+type ForgetTool = Extract<MemoryTool, Tool<{ query: string }, { deleted: number }>>;
+
+function getTool<T extends MemoryTool>(tools: MemoryTool[], name: string): T {
+  const found = tools.find((t): t is T => t.name === name);
+  if (!found) throw new Error(`Tool ${name} not found`);
+  return found;
+}
 
 function createMocks() {
   const mockGraph = {
@@ -50,7 +63,7 @@ function createConfig(
   };
 }
 
-const stubContext = {} as Parameters<ReturnType<typeof createMemoryTools>[0]['execute']>[1];
+const stubContext = createToolContext();
 
 describe('createMemoryTools', () => {
   let mocks: ReturnType<typeof createMocks>;
@@ -68,7 +81,7 @@ describe('createMemoryTools', () => {
   describe('remember', () => {
     it('saves fact to graph with embedding', async () => {
       const tools = createMemoryTools(createConfig(mocks));
-      const remember = tools.find((t) => t.name === 'remember')!;
+      const remember = getTool<RememberTool>(tools, 'remember');
 
       const result = await remember.execute(
         { fact: 'My birthday is March 15', category: 'personal' },
@@ -90,7 +103,7 @@ describe('createMemoryTools', () => {
 
     it('saves fact without embedding when embeddingFn not provided', async () => {
       const tools = createMemoryTools(createConfig(mocks, { embeddingFn: undefined }));
-      const remember = tools.find((t) => t.name === 'remember')!;
+      const remember = getTool<RememberTool>(tools, 'remember');
 
       const result = await remember.execute({ fact: 'Some fact' }, stubContext);
 
@@ -105,7 +118,7 @@ describe('createMemoryTools', () => {
 
     it('saves core fact when isCoreFact + coreFactKey provided', async () => {
       const tools = createMemoryTools(createConfig(mocks));
-      const remember = tools.find((t) => t.name === 'remember')!;
+      const remember = getTool<RememberTool>(tools, 'remember');
 
       await remember.execute(
         { fact: 'John', isCoreFact: true, coreFactKey: 'user_name' },
@@ -118,7 +131,7 @@ describe('createMemoryTools', () => {
 
     it('rejects core facts without a key before writing memory', async () => {
       const tools = createMemoryTools(createConfig(mocks));
-      const remember = tools.find((t) => t.name === 'remember')!;
+      const remember = getTool<RememberTool>(tools, 'remember');
 
       const result = await remember.execute({ fact: 'John', isCoreFact: true }, stubContext);
 
@@ -136,7 +149,7 @@ describe('createMemoryTools', () => {
         error: 'graph unavailable',
       });
       const tools = createMemoryTools(createConfig(mocks));
-      const remember = tools.find((t) => t.name === 'remember')!;
+      const remember = getTool<RememberTool>(tools, 'remember');
 
       const result = await remember.execute(
         { fact: 'John', isCoreFact: true, coreFactKey: 'user_name' },
@@ -149,7 +162,7 @@ describe('createMemoryTools', () => {
 
     it('does not save core fact when coreFacts store not provided', async () => {
       const tools = createMemoryTools(createConfig(mocks, { coreFacts: undefined }));
-      const remember = tools.find((t) => t.name === 'remember')!;
+      const remember = getTool<RememberTool>(tools, 'remember');
 
       const result = await remember.execute(
         { fact: 'John', isCoreFact: true, coreFactKey: 'user_name' },
@@ -161,7 +174,7 @@ describe('createMemoryTools', () => {
 
     it('stores category in properties', async () => {
       const tools = createMemoryTools(createConfig(mocks));
-      const remember = tools.find((t) => t.name === 'remember')!;
+      const remember = getTool<RememberTool>(tools, 'remember');
 
       await remember.execute({ fact: 'Likes pizza', category: 'preferences' }, stubContext);
 
@@ -188,7 +201,7 @@ describe('createMemoryTools', () => {
       });
 
       const tools = createMemoryTools(createConfig(mocks));
-      const recall = tools.find((t) => t.name === 'recall')!;
+      const recall = getTool<RecallTool>(tools, 'recall');
 
       const result = (await recall.execute({ query: 'birthday' }, stubContext)) as {
         results: Array<{ fact: string; type: string; confidence: number }>;
@@ -217,7 +230,7 @@ describe('createMemoryTools', () => {
       });
 
       const tools = createMemoryTools(createConfig(mocks, { embeddingFn: undefined }));
-      const recall = tools.find((t) => t.name === 'recall')!;
+      const recall = getTool<RecallTool>(tools, 'recall');
 
       const result = (await recall.execute({ query: 'birthday' }, stubContext)) as {
         results: Array<{ fact: string; type: string; confidence: number }>;
@@ -241,7 +254,7 @@ describe('createMemoryTools', () => {
       });
 
       const tools = createMemoryTools(createConfig(mocks));
-      const recall = tools.find((t) => t.name === 'recall')!;
+      const recall = getTool<RecallTool>(tools, 'recall');
 
       const result = (await recall.execute({ query: 'anything' }, stubContext)) as {
         results: unknown[];
@@ -253,7 +266,7 @@ describe('createMemoryTools', () => {
 
     it('returns empty coreFacts when store not provided', async () => {
       const tools = createMemoryTools(createConfig(mocks, { coreFacts: undefined }));
-      const recall = tools.find((t) => t.name === 'recall')!;
+      const recall = getTool<RecallTool>(tools, 'recall');
 
       const result = (await recall.execute({ query: 'test' }, stubContext)) as {
         results: unknown[];
@@ -275,7 +288,7 @@ describe('createMemoryTools', () => {
       });
 
       const tools = createMemoryTools(createConfig(mocks));
-      const forget = tools.find((t) => t.name === 'forget')!;
+      const forget = getTool<ForgetTool>(tools, 'forget');
 
       const result = (await forget.execute({ query: 'old fact' }, stubContext)) as {
         deleted: number;
@@ -310,7 +323,7 @@ describe('createMemoryTools', () => {
         .mockResolvedValueOnce({ success: false, error: 'delete failed' });
 
       const tools = createMemoryTools(createConfig(mocks));
-      const forget = tools.find((t) => t.name === 'forget')!;
+      const forget = getTool<ForgetTool>(tools, 'forget');
 
       const result = await forget.execute({ query: 'old fact' }, stubContext);
 
@@ -323,7 +336,7 @@ describe('createMemoryTools', () => {
 
     it('returns zero when no nodes match', async () => {
       const tools = createMemoryTools(createConfig(mocks));
-      const forget = tools.find((t) => t.name === 'forget')!;
+      const forget = getTool<ForgetTool>(tools, 'forget');
 
       const result = (await forget.execute({ query: 'nonexistent' }, stubContext)) as {
         deleted: number;

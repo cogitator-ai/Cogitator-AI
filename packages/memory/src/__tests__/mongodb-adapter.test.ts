@@ -249,7 +249,7 @@ describe('MongoDBAdapter', () => {
         message,
         tokenCount: 15,
         toolCalls: [{ id: 'call_1', name: 'test_tool', arguments: { x: 1 } }],
-        toolResults: [{ toolCallId: 'call_1', result: { success: true } }],
+        toolResults: [{ callId: 'call_1', name: 'test_tool', result: { success: true } }],
       });
 
       expect(result.success).toBe(true);

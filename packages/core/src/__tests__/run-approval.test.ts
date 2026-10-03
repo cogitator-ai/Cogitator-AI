@@ -24,7 +24,7 @@ const refund = tool({
   description: 'Refund an order',
   parameters: z.object({ order: z.string(), amount: z.number() }),
   requiresApproval: ({ amount }) => amount > 100,
-  sideEffects: ['payment'],
+  sideEffects: ['external'],
   execute: refundImpl,
 });
 const lookupImpl = vi.fn(async ({ order }: { order: string }) => ({ order, status: 'paid' }));
@@ -105,7 +105,7 @@ describe('tool approvals', () => {
         toolName: 'refund',
         arguments: { order: 'A-1', amount: 500 },
         description: 'Refund an order',
-        sideEffects: ['payment'],
+        sideEffects: ['external'],
       },
     ]);
     expect(refundImpl).not.toHaveBeenCalled();
@@ -203,7 +203,7 @@ describe('tool approvals', () => {
     expect(result.status).toBe('completed');
     expect(onToolApproval).toHaveBeenCalledTimes(1);
     expect(onToolApproval).toHaveBeenCalledWith('refund', { order: 'A-1', amount: 500 }, [
-      'payment',
+      'external',
     ]);
     await cog.close();
   });

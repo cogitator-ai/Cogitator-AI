@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import type { ChatStreamChunk, LLMBackend, Message, ToolCall } from '@cogitator-ai/types';
 import { streamChat } from '../cogitator/streaming';
 import { ToolRegistry } from '../registry';
@@ -32,7 +32,7 @@ describe('streamChat', () => {
   let registry: ToolRegistry;
   let agent: Agent;
   let messages: Message[];
-  let onToken: ReturnType<typeof vi.fn>;
+  let onToken: Mock<(token: string) => void>;
 
   beforeEach(() => {
     registry = new ToolRegistry();
@@ -41,7 +41,7 @@ describe('streamChat', () => {
       { role: 'system', content: 'You are helpful.' },
       { role: 'user', content: 'Hello' },
     ];
-    onToken = vi.fn();
+    onToken = vi.fn<(token: string) => void>();
   });
 
   it('accumulates tool calls by ID across chunks', async () => {

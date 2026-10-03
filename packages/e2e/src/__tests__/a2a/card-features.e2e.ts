@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { A2AClient, signAgentCard, verifyAgentCardSignature } from '@cogitator-ai/a2a';
 import type { AgentRunResult, ExtendedAgentCard } from '@cogitator-ai/a2a';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
-import { startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
+import { createStubAgent, startTestA2AServer, type TestA2AServer } from '../../helpers/a2a-server';
 
 function createMockAgent(name: string): Agent {
   const config: AgentConfig = {
@@ -11,16 +11,7 @@ function createMockAgent(name: string): Agent {
     instructions: 'test',
     description: `${name} agent`,
   };
-  return {
-    id: `agent_${name}`,
-    name,
-    config,
-    model: config.model,
-    instructions: config.instructions,
-    tools: [],
-    clone: (() => {}) as Agent['clone'],
-    serialize: (() => {}) as Agent['serialize'],
-  };
+  return createStubAgent(config);
 }
 
 function createMockCogitator() {

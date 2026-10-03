@@ -5,6 +5,7 @@ import { A2AServer } from '../server';
 import { A2AError } from '../errors';
 import type { A2AMessage, A2AStreamEvent } from '../types';
 import type { Agent, AgentConfig } from '@cogitator-ai/types';
+import { expectResponse } from './helpers';
 
 function createUserMessage(text: string, extra?: Partial<A2AMessage>): A2AMessage {
   return { role: 'user', parts: [{ type: 'text', text }], ...extra };
@@ -187,22 +188,26 @@ describe('Multi-turn conversations', () => {
     });
 
     it('should handle message/send with taskId (continuation)', async () => {
-      const firstResponse = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'message/send',
-        params: { message: createUserMessage('Hello') },
-        id: 1,
-      });
+      const firstResponse = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'message/send',
+          params: { message: createUserMessage('Hello') },
+          id: 1,
+        })
+      );
       const firstTask = firstResponse.result as { id: string; contextId: string };
 
-      const secondResponse = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'message/send',
-        params: {
-          message: createUserMessage('Follow-up', { taskId: firstTask.id }),
-        },
-        id: 2,
-      });
+      const secondResponse = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'message/send',
+          params: {
+            message: createUserMessage('Follow-up', { taskId: firstTask.id }),
+          },
+          id: 2,
+        })
+      );
       expect(secondResponse.error).toBeUndefined();
       const secondTask = secondResponse.result as {
         id: string;
@@ -217,33 +222,39 @@ describe('Multi-turn conversations', () => {
     it('should handle message/send with contextId (new task in same context)', async () => {
       const ctx = 'my_context';
 
-      const firstResponse = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'message/send',
-        params: { message: createUserMessage('Hello', { contextId: ctx }) },
-        id: 1,
-      });
+      const firstResponse = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'message/send',
+          params: { message: createUserMessage('Hello', { contextId: ctx }) },
+          id: 1,
+        })
+      );
       const firstTask = firstResponse.result as { id: string; contextId: string };
       expect(firstTask.contextId).toBe(ctx);
 
-      const secondResponse = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'message/send',
-        params: { message: createUserMessage('New task, same context', { contextId: ctx }) },
-        id: 2,
-      });
+      const secondResponse = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'message/send',
+          params: { message: createUserMessage('New task, same context', { contextId: ctx }) },
+          id: 2,
+        })
+      );
       const secondTask = secondResponse.result as { id: string; contextId: string };
       expect(secondTask.contextId).toBe(ctx);
       expect(secondTask.id).not.toBe(firstTask.id);
     });
 
     it('should handle multi-turn streaming', async () => {
-      const firstResponse = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'message/send',
-        params: { message: createUserMessage('Hello') },
-        id: 1,
-      });
+      const firstResponse = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'message/send',
+          params: { message: createUserMessage('Hello') },
+          id: 1,
+        })
+      );
       const firstTask = firstResponse.result as { id: string };
 
       const events: A2AStreamEvent[] = [];
@@ -265,14 +276,16 @@ describe('Multi-turn conversations', () => {
     });
 
     it('should return error for continuing non-existent task', async () => {
-      const response = await server.handleJsonRpc({
-        jsonrpc: '2.0',
-        method: 'message/send',
-        params: {
-          message: createUserMessage('Follow-up', { taskId: 'nonexistent' }),
-        },
-        id: 1,
-      });
+      const response = expectResponse(
+        await server.handleJsonRpc({
+          jsonrpc: '2.0',
+          method: 'message/send',
+          params: {
+            message: createUserMessage('Follow-up', { taskId: 'nonexistent' }),
+          },
+          id: 1,
+        })
+      );
       expect(response.error).toBeDefined();
       expect(response.error!.code).toBe(-32001);
     });

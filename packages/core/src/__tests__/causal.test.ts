@@ -116,7 +116,7 @@ describe('CausalGraphImpl', () => {
   let graph: CausalGraphImpl;
 
   beforeEach(() => {
-    graph = new CausalGraphImpl('test-graph');
+    graph = new CausalGraphImpl('test-graph', 'Test Graph');
   });
 
   describe('node operations', () => {
@@ -411,7 +411,7 @@ describe('d-separation', () => {
   let graph: CausalGraphImpl;
 
   beforeEach(() => {
-    graph = new CausalGraphImpl('test');
+    graph = new CausalGraphImpl('test', 'Test');
     graph.addNode({ id: 'X', name: 'X', variableType: 'treatment' });
     graph.addNode({ id: 'Y', name: 'Y', variableType: 'outcome' });
     graph.addNode({ id: 'Z', name: 'Z', variableType: 'confounder' });
@@ -559,12 +559,11 @@ describe('CausalInferenceEngine', () => {
   });
 
   it('should estimate ATE', () => {
-    const data = [
-      { X: 0, Y: 0, Z: 0 },
-      { X: 0, Y: 0.2, Z: 0.5 },
-      { X: 1, Y: 0.8, Z: 0 },
-      { X: 1, Y: 1, Z: 0.5 },
-    ];
+    const data = {
+      X: [0, 0, 1, 1],
+      Y: [0, 0.2, 0.8, 1],
+      Z: [0, 0.5, 0, 0.5],
+    };
 
     const result = engine.estimateATE('X', 'Y', data);
     expect(result).toBeDefined();
@@ -596,7 +595,6 @@ describe('CausalInferenceEngine', () => {
 
 describe('CounterfactualReasoner', () => {
   let graph: CausalGraphImpl;
-  let _reasoner: CounterfactualReasoner;
 
   beforeEach(() => {
     graph = CausalGraphBuilder.create('test')
@@ -604,10 +602,9 @@ describe('CounterfactualReasoner', () => {
       .outcome('Y', 'Outcome')
       .from('X')
       .causes('Y', { strength: 0.8 })
-      .withEquation('Y', { type: 'linear', coefficients: { X: 0.8 }, intercept: 0.1 })
+      .from('Y')
+      .withEquation({ type: 'linear', coefficients: { X: 0.8 }, intercept: 0.1 })
       .build() as CausalGraphImpl;
-
-    _reasoner = new CounterfactualReasoner({ config: {} });
   });
 
   it('should evaluate counterfactual with structural equations', () => {

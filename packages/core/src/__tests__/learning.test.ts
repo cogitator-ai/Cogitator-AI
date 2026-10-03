@@ -16,7 +16,27 @@ import type {
   ChatResponse,
   RunResult,
   Span,
+  MetricFn,
+  MetricResult,
+  Demo,
 } from '@cogitator-ai/types';
+
+function chatResponse(content: string): ChatResponse {
+  return {
+    id: 'test-response',
+    content,
+    usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+    finishReason: 'stop',
+  };
+}
+
+function syncMetric(metric: MetricFn): (trace: ExecutionTrace, expected?: unknown) => MetricResult {
+  return (trace, expected) => {
+    const result = metric(trace, expected);
+    if (result instanceof Promise) throw new Error('Expected a synchronous metric result');
+    return result;
+  };
+}
 
 function createMockTrace(overrides: Partial<ExecutionTrace> = {}): ExecutionTrace {
   return {
@@ -52,19 +72,24 @@ function createMockTrace(overrides: Partial<ExecutionTrace> = {}): ExecutionTrac
 
 function createMockLLM(): LLMBackend {
   return {
-    chat: vi.fn().mockResolvedValue({
-      content: '{"score": 0.85, "strengths": ["good"], "weaknesses": [], "reasoning": "test"}',
-      usage: { inputTokens: 10, outputTokens: 20 },
-      finishReason: 'stop',
-    } as ChatResponse),
+    provider: 'openai',
+    chat: vi
+      .fn()
+      .mockResolvedValue(
+        chatResponse(
+          '{"score": 0.85, "strengths": ["good"], "weaknesses": [], "reasoning": "test"}'
+        )
+      ),
     chatStream: vi.fn(),
-    listModels: vi.fn().mockResolvedValue([]),
   };
 }
 
 function createMockRunResult(overrides: Partial<RunResult> = {}): RunResult {
   const span: Span = {
+    id: 'span_123',
+    traceId: 'trace_123',
     name: 'test-span',
+    kind: 'internal',
     startTime: Date.now(),
     endTime: Date.now() + 100,
     duration: 100,
@@ -86,12 +111,10 @@ function createMockRunResult(overrides: Partial<RunResult> = {}): RunResult {
       cost: 0.01,
       duration: 1000,
     },
-    model: 'test-model',
+    modelUsed: 'test-model',
     trace: {
-      runId: 'run_123',
+      traceId: 'trace_123',
       spans: [span],
-      startTime: Date.now(),
-      endTime: Date.now() + 100,
     },
     ...overrides,
   };
@@ -249,7 +272,7 @@ describe('MetricEvaluator', () => {
 
   describe('built-in metrics', () => {
     it('should evaluate success metric', () => {
-      const successMetric = createSuccessMetric();
+      const successMetric = syncMetric(createSuccessMetric());
 
       const successTrace = createMockTrace({ steps: [] });
       const failTrace = createMockTrace({
@@ -272,7 +295,7 @@ describe('MetricEvaluator', () => {
     });
 
     it('should evaluate exact match metric', () => {
-      const exactMatch = createExactMatchMetric();
+      const exactMatch = syncMetric(createExactMatchMetric());
 
       const matchTrace = createMockTrace({ output: 'Paris' });
       const noMatchTrace = createMockTrace({ output: 'London' });
@@ -285,7 +308,7 @@ describe('MetricEvaluator', () => {
     });
 
     it('should evaluate exact match with fieldPath on JSON output', () => {
-      const metric = createExactMatchMetric('result.answer');
+      const metric = syncMetric(createExactMatchMetric('result.answer'));
       const trace = createMockTrace({
         output: JSON.stringify({ result: { answer: 'Paris' } }),
       });
@@ -296,7 +319,7 @@ describe('MetricEvaluator', () => {
     });
 
     it('should evaluate exact match with fieldPath — mismatch', () => {
-      const metric = createExactMatchMetric('result.answer');
+      const metric = syncMetric(createExactMatchMetric('result.answer'));
       const trace = createMockTrace({
         output: JSON.stringify({ result: { answer: 'London' } }),
       });
@@ -307,7 +330,7 @@ describe('MetricEvaluator', () => {
     });
 
     it('should handle missing fieldPath gracefully', () => {
-      const metric = createExactMatchMetric('nonexistent.path');
+      const metric = syncMetric(createExactMatchMetric('nonexistent.path'));
       const trace = createMockTrace({
         output: JSON.stringify({ data: 'hello' }),
       });
@@ -317,7 +340,7 @@ describe('MetricEvaluator', () => {
     });
 
     it('should handle non-JSON output with fieldPath', () => {
-      const metric = createExactMatchMetric('field');
+      const metric = syncMetric(createExactMatchMetric('field'));
       const trace = createMockTrace({ output: 'plain text' });
 
       const result = metric(trace, 'plain text');
@@ -325,7 +348,7 @@ describe('MetricEvaluator', () => {
     });
 
     it('should return value=1 when no expected value provided', () => {
-      const metric = createExactMatchMetric('field');
+      const metric = syncMetric(createExactMatchMetric('field'));
       const trace = createMockTrace({ output: 'anything' });
 
       const result = metric(trace);
@@ -334,7 +357,7 @@ describe('MetricEvaluator', () => {
     });
 
     it('should evaluate contains metric', () => {
-      const containsMetric = createContainsMetric(['Paris', 'France']);
+      const containsMetric = syncMetric(createContainsMetric(['Paris', 'France']));
 
       const containsTrace = createMockTrace({ output: 'The capital is Paris, France' });
       const partialTrace = createMockTrace({ output: 'I love Paris' });
@@ -393,11 +416,9 @@ describe('MetricEvaluator', () => {
     });
 
     it('should preserve zero scores returned by LLM metrics', async () => {
-      vi.mocked(mockLLM.chat).mockResolvedValue({
-        content: JSON.stringify({ score: 0, reasoning: 'failed completely' }),
-        usage: { inputTokens: 10, outputTokens: 20 },
-        finishReason: 'stop',
-      });
+      vi.mocked(mockLLM.chat).mockResolvedValue(
+        chatResponse(JSON.stringify({ score: 0, reasoning: 'failed completely' }))
+      );
 
       const zeroEvaluator = new MetricEvaluator({
         llm: mockLLM,
@@ -552,39 +573,39 @@ describe('InstructionOptimizer', () => {
     await store.store(failedTrace);
 
     vi.mocked(mockLLM.chat)
-      .mockResolvedValueOnce({
-        content: JSON.stringify({
-          gaps: [
-            {
-              description: 'Missing error handling',
-              frequency: 3,
-              suggestedFix: 'Add error handling',
-            },
-          ],
-          overallAnalysis: 'Needs improvement',
-        }),
-        usage: { inputTokens: 10, outputTokens: 20 },
-        finishReason: 'stop',
-      })
-      .mockResolvedValueOnce({
-        content: JSON.stringify({
-          candidates: [
-            { instructions: 'Be helpful and handle errors', reasoning: 'Added error handling' },
-          ],
-        }),
-        usage: { inputTokens: 10, outputTokens: 20 },
-        finishReason: 'stop',
-      })
-      .mockResolvedValue({
-        content: JSON.stringify({
-          score: 0.8,
-          strengths: ['good'],
-          weaknesses: [],
-          reasoning: 'improved',
-        }),
-        usage: { inputTokens: 10, outputTokens: 20 },
-        finishReason: 'stop',
-      });
+      .mockResolvedValueOnce(
+        chatResponse(
+          JSON.stringify({
+            gaps: [
+              {
+                description: 'Missing error handling',
+                frequency: 3,
+                suggestedFix: 'Add error handling',
+              },
+            ],
+            overallAnalysis: 'Needs improvement',
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        chatResponse(
+          JSON.stringify({
+            candidates: [
+              { instructions: 'Be helpful and handle errors', reasoning: 'Added error handling' },
+            ],
+          })
+        )
+      )
+      .mockResolvedValue(
+        chatResponse(
+          JSON.stringify({
+            score: 0.8,
+            strengths: ['good'],
+            weaknesses: [],
+            reasoning: 'improved',
+          })
+        )
+      );
 
     const result = await optimizer.optimize('agent1', 'Be helpful');
 
@@ -682,16 +703,16 @@ describe('AgentOptimizer', () => {
   it('should capture trace with expected output', async () => {
     const runResult = createMockRunResult({ output: 'Paris' });
 
-    vi.mocked(mockLLM.chat).mockResolvedValue({
-      content: JSON.stringify({
-        score: 0.9,
-        strengths: ['correct'],
-        weaknesses: [],
-        reasoning: 'good',
-      }),
-      usage: { inputTokens: 10, outputTokens: 20 },
-      finishReason: 'stop',
-    });
+    vi.mocked(mockLLM.chat).mockResolvedValue(
+      chatResponse(
+        JSON.stringify({
+          score: 0.9,
+          strengths: ['correct'],
+          weaknesses: [],
+          reasoning: 'good',
+        })
+      )
+    );
 
     const trace = await optimizer.captureTrace(runResult, 'What is the capital of France?', {
       expected: 'Paris',
@@ -706,16 +727,16 @@ describe('AgentOptimizer', () => {
       createMockRunResult({ agentId: 'agent1' }),
     ];
 
-    vi.mocked(mockLLM.chat).mockResolvedValue({
-      content: JSON.stringify({
-        score: 0.9,
-        strengths: ['good'],
-        weaknesses: [],
-        reasoning: 'good',
-      }),
-      usage: { inputTokens: 10, outputTokens: 20 },
-      finishReason: 'stop',
-    });
+    vi.mocked(mockLLM.chat).mockResolvedValue(
+      chatResponse(
+        JSON.stringify({
+          score: 0.9,
+          strengths: ['good'],
+          weaknesses: [],
+          reasoning: 'good',
+        })
+      )
+    );
 
     for (const result of runResults) {
       await optimizer.captureTrace(result, 'test input');
@@ -728,16 +749,16 @@ describe('AgentOptimizer', () => {
   it('should get demos for prompt', async () => {
     const runResult = createMockRunResult({ agentId: 'agent1' });
 
-    vi.mocked(mockLLM.chat).mockResolvedValue({
-      content: JSON.stringify({
-        score: 0.95,
-        strengths: ['excellent'],
-        weaknesses: [],
-        reasoning: 'great',
-      }),
-      usage: { inputTokens: 10, outputTokens: 20 },
-      finishReason: 'stop',
-    });
+    vi.mocked(mockLLM.chat).mockResolvedValue(
+      chatResponse(
+        JSON.stringify({
+          score: 0.95,
+          strengths: ['excellent'],
+          weaknesses: [],
+          reasoning: 'great',
+        })
+      )
+    );
 
     await optimizer.captureTrace(runResult, 'What is AI?');
     await optimizer.bootstrapDemos('agent1');
@@ -747,7 +768,7 @@ describe('AgentOptimizer', () => {
   });
 
   it('should format demos for prompt', () => {
-    const demos = [
+    const demos: Demo[] = [
       {
         id: 'demo1',
         agentId: 'agent1',
@@ -756,7 +777,15 @@ describe('AgentOptimizer', () => {
         output: '4',
         keySteps: [],
         score: 0.9,
+        metrics: {
+          success: true,
+          toolAccuracy: 1,
+          efficiency: 1,
+          completeness: 1,
+          coherence: 1,
+        },
         usageCount: 0,
+        lastUsedAt: new Date(),
         createdAt: new Date(),
       },
     ];

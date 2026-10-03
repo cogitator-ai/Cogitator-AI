@@ -607,11 +607,11 @@ describe('EvalSuite', () => {
     });
 
     it('passes correct aggregated and stats to assertion', async () => {
-      let _capturedAgg: Record<string, AggregatedMetric> = {};
+      let capturedAgg: Record<string, AggregatedMetric> = {};
       let capturedStats = { total: 0, duration: 0, cost: 0 };
 
       const assertFn: AssertionFn = (agg, stats) => {
-        _capturedAgg = agg;
+        capturedAgg = agg;
         capturedStats = stats;
         return { name: 'capture', passed: true, message: 'ok' };
       };
@@ -622,8 +622,9 @@ describe('EvalSuite', () => {
         assertions: [assertFn],
       });
 
-      await suite.run();
+      const result = await suite.run();
 
+      expect(capturedAgg).toBe(result.aggregated);
       expect(capturedStats.total).toBe(3);
       expect(capturedStats.duration).toBeGreaterThanOrEqual(0);
     });

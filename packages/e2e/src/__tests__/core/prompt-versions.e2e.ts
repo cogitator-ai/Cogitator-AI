@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { Agent, Cogitator, PostgresTraceStore } from '@cogitator-ai/core';
+import type { PromptsConfig } from '@cogitator-ai/types';
 
 const describeDurable =
   process.env.GOOGLE_API_KEY && process.env.TEST_POSTGRES_URL ? describe : describe.skip;
@@ -15,7 +16,7 @@ const agent = () =>
     temperature: 0,
   });
 
-function cogitatorWith(prompts: ConstructorParameters<typeof Cogitator>[0]['prompts']) {
+function cogitatorWith(prompts: PromptsConfig) {
   return new Cogitator({
     llm: { providers: { google: { apiKey: process.env.GOOGLE_API_KEY! } } },
     prompts,

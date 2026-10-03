@@ -105,12 +105,9 @@ describe('TokenEstimator', () => {
         includeMemory: false,
         toolSchemas: [
           {
-            type: 'function',
-            function: {
-              name: 'search',
-              description: 'Search the web',
-              parameters: { type: 'object', properties: { query: { type: 'string' } } },
-            },
+            name: 'search',
+            description: 'Search the web',
+            parameters: { type: 'object', properties: { query: { type: 'string' } } },
           },
         ],
       });

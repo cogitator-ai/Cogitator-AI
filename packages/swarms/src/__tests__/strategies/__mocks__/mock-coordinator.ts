@@ -23,6 +23,18 @@ export interface AgentCall {
   timestamp: number;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function getCallContext(
+  call: AgentCall | undefined,
+  key: string
+): Record<string, unknown> | undefined {
+  const value = call?.context?.[key];
+  return isRecord(value) ? value : undefined;
+}
+
 export class MockCoordinator implements SwarmCoordinatorInterface {
   private responses = new Map<string, RunResult | ResponseGenerator>();
   private agents = new Map<string, SwarmAgent>();

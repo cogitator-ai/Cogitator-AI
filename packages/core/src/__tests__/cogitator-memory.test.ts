@@ -188,6 +188,7 @@ describe('Cogitator with Memory', () => {
 
       const entries = await cog.memory!.getEntries({ threadId });
       expect(entries.success).toBe(true);
+      if (!entries.success) throw new Error(entries.error);
 
       const userMessage = entries.data.find((entry) => entry.message.role === 'user')?.message;
       expect(Array.isArray(userMessage?.content)).toBe(true);
