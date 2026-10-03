@@ -1,5 +1,27 @@
 # @cogitator-ai/cli
 
+## 0.5.2
+
+### Patch Changes
+
+- 9eae101: Slack: answer @mentions in channels. The adapter only listened to `message` events, so a mention delivered as `app_mention` (the documented subscription) was dropped. Mentions are now handled, the `<@bot>` token is stripped from the text, a message that arrives both as `message` and `app_mention` is handled once, and the new `mentionOnly` option ignores channel messages that do not mention the bot. `RuntimeBuilder` now passes `SLACK_APP_TOKEN` (Socket Mode) and `SLACK_PORT`, and warns when Slack falls back to HTTP mode; `cogitator wizard` and `cogitator init` ask for the app token.
+- Updated dependencies [480f2a3]
+- Updated dependencies [c4a4252]
+- Updated dependencies [f134b01]
+- Updated dependencies [6404340]
+- Updated dependencies [c1cd7a1]
+- Updated dependencies [22f47c9]
+- Updated dependencies [51d581e]
+- Updated dependencies [9eae101]
+- Updated dependencies [5b12191]
+- Updated dependencies [f36a121]
+  - @cogitator-ai/core@0.22.0
+  - @cogitator-ai/types@0.25.0
+  - @cogitator-ai/config@0.8.0
+  - @cogitator-ai/channels@0.5.0
+  - @cogitator-ai/deploy@0.3.1
+  - @cogitator-ai/memory@0.8.1
+
 ## 0.5.1
 
 ### Patch Changes

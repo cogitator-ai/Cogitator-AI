@@ -1,5 +1,55 @@
 # @cogitator-ai/core
 
+## 0.22.0
+
+### Minor Changes
+
+- c4a4252: Agents can run on backends of your own. `llm.backends` takes `LLMBackend` instances by name: an agent with model `name/model` or `provider: 'name'` runs on it, and a name of a built-in provider replaces it. Backend plugins registered with `registerLLMBackend()` are now used by the runtime, created on first use with their config from `llm.plugins`; before, the registry was never consulted. A provider nobody provides fails with `CONFIGURATION_ERROR`. `cogitator.route(model)` returns the backend and model name a run uses. With `fromAISDK()`, any AI SDK model now runs Cogitator agents, tools included.
+- f134b01: Config keys that did nothing now either work or are gone.
+
+  - `reflection.reflectAfterError` works: a failed tool call gets the error reflection (`ReflectionEngine.reflectOnError`), and its suggestion reaches the next model call.
+  - `TimeTravelConfig.maxCheckpointsPerTrace` and `checkpointRetention` are enforced when `TimeTravel` saves checkpoints.
+
+  **Breaking (types):** removed keys nothing read — `CogitatorConfig.knowledgeGraph` and `promptOptimization` (the knowledge-graph and prompt-optimization classes keep their own config types), `ContextManagerConfig.windowOverlap`, `TimeTravelConfig.autoCheckpoint` / `autoCheckpointInterval`, `ReplayOptions.onStep` / `pauseAt`, and `CompileOptions.teacherModel` / `verbose`. The YAML schema drops the same keys.
+
+- 6404340: `llm.defaultModel` and `limits` now do what they say.
+
+  - An agent may leave out `model` (`AgentConfig.model` is optional): it runs on the Cogitator's `llm.defaultModel`, and a run without either fails with a `CONFIGURATION_ERROR` naming the agent. `cogitator.resolveModel(agent)` returns the model a run uses. **Breaking for types:** `Agent.model` is `string | undefined`.
+  - `limits.maxConcurrentRuns` caps concurrent `run()` calls; the rest wait in order, and their timeout and abort signal cover the wait.
+  - `limits.defaultTimeout` applies to runs whose options and agent set no timeout. The 120 s default moved from the `Agent` constructor to the runtime, so `agent.config.timeout` is `undefined` unless set.
+  - `limits.maxTokensPerRun` is checked before every model call and fails the run with the new `RUN_TOKEN_LIMIT_EXCEEDED` code.
+  - Swarms: the assessor and the distributed coordinator resolve models through the Cogitator, so agents without a model work there too (`Assessor.analyze()` takes an optional resolver).
+
+- c1cd7a1: Guardrails take partial configs and keep the revisions they produce.
+
+  - `CogitatorConfig.guardrails` and `security.promptInjection` are `Partial<…>`: fields left out take the defaults, as the runtime always merged them. The YAML schema accepts partial blocks too (`thresholds` may name some categories).
+  - Guardrails are on when configured, unless `enabled: false`, matching `DEFAULT_GUARDRAIL_CONFIG`. The run checks the merged config: a partial config such as `{ enabled: true }` filtered nothing before.
+  - When the output filter blocked an answer and the critique-revise loop produced a safe one, `filterOutput()` returned `allowed: true` with the revision, so the run kept the original harmful text and the violation was never logged. It now returns the block with `suggestedRevision`, the run answers with the revision, and the violation reaches the log and `onViolation`.
+  - `filterToolResults` is implemented: tool results pass the input filter before the model reads them (`ConstitutionalAI.filterToolResult()`).
+
+- 22f47c9: `AgentOptimizer.compile(agent, trainset)` uses the trainset. It ignored it, scored the same stored traces before and after, and so always reported zero improvement, which also kept `AutoOptimizer` from ever deploying a change. Pass `cogitator` to `AgentOptimizer`: `compile()` runs the trainset with the original agent (scoring it and collecting demo candidates) and again with the optimized instructions, so `scoreAfter` is measured. Without a runner it says so in `errors` and estimates `scoreAfter` from the instruction optimizer. Traces are re-read every round and handed to the instruction optimizer.
+- 5b12191: Structured output now works in runs. `agent.config.responseFormat` was never passed to the LLM backend by `cogitator.run()`, so `json` and `json_schema` agents were only as structured as their prompt, and `RunResult.structured` was never set. The format now reaches every backend on both the streaming and non-streaming paths (Zod schemas become JSON Schema, strict only when the schema allows it), and `result.structured` holds the parsed answer, validated by the schema. Agents with tools keep calling them: older Claude models and Gemini 2.x, which cannot combine a JSON format with tools, get the schema as an instruction instead. `Agent.serialize()` keeps `responseFormat`.
+- f36a121: Time travel works end to end.
+
+  - `compare()` and `compareWithOriginal()` failed with `Trace not found` because nothing wrote to the trace store. Checkpoints, replays and forks now store their traces; a deterministic replay's trace is the original's up to the replayed step.
+  - `mockToolResults` (forks) and `modifiedToolResults` (replays) are keyed by tool name, as documented: the tool answers with the given value and never runs. Before, live replays looked them up by call id and never matched. In deterministic replays a modified result now wins over the cached one.
+  - `skipTools` removes the tools from the replayed agent; it did nothing before.
+  - Checkpoints record the results of tool calls (`toolResults` was always empty) and pick the pending call by call id.
+  - `AgentOptimizer.captureTrace()` stores traces under the run's trace id, so it can share a trace store with `TimeTravel`.
+
+### Patch Changes
+
+- 480f2a3: Context management turns on when `context` is configured. The runtime created the context manager only with `enabled: true`, although `enabled` defaults to true and the documented strategy examples leave it out, so those configs silently never compressed anything. Pass `enabled: false` to keep a config switched off.
+- 51d581e: OTLP exporter: send valid OpenTelemetry ids. Span ids went out as `span_…` and trace ids as `trace_…` whenever `onRunStart` had not mapped the run, so collectors refused the batch with 400, and the exporter re-queued it forever. Ids are now derived from the Cogitator ids with SHA-256 (32 hex chars per trace, 16 per span), which keeps parent links and works after a run ends; the original ids and the run id are kept as attributes. Attributes keep their types (doubles, booleans, objects as JSON), timestamps are exact, and a batch refused with a 4xx status is dropped instead of retried.
+- Updated dependencies [c4a4252]
+- Updated dependencies [f134b01]
+- Updated dependencies [6404340]
+- Updated dependencies [c1cd7a1]
+- Updated dependencies [f36a121]
+  - @cogitator-ai/types@0.25.0
+  - @cogitator-ai/memory@0.8.1
+  - @cogitator-ai/sandbox@0.4.1
+
 ## 0.21.1
 
 ### Patch Changes

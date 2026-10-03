@@ -1,5 +1,37 @@
 # @cogitator-ai/channels
 
+## 0.5.0
+
+### Minor Changes
+
+- 9eae101: Slack: answer @mentions in channels. The adapter only listened to `message` events, so a mention delivered as `app_mention` (the documented subscription) was dropped. Mentions are now handled, the `<@bot>` token is stripped from the text, a message that arrives both as `message` and `app_mention` is handled once, and the new `mentionOnly` option ignores channel messages that do not mention the bot. `RuntimeBuilder` now passes `SLACK_APP_TOKEN` (Socket Mode) and `SLACK_PORT`, and warns when Slack falls back to HTTP mode; `cogitator wizard` and `cogitator init` ask for the app token.
+
+### Patch Changes
+
+- 6404340: `llm.defaultModel` and `limits` now do what they say.
+
+  - An agent may leave out `model` (`AgentConfig.model` is optional): it runs on the Cogitator's `llm.defaultModel`, and a run without either fails with a `CONFIGURATION_ERROR` naming the agent. `cogitator.resolveModel(agent)` returns the model a run uses. **Breaking for types:** `Agent.model` is `string | undefined`.
+  - `limits.maxConcurrentRuns` caps concurrent `run()` calls; the rest wait in order, and their timeout and abort signal cover the wait.
+  - `limits.defaultTimeout` applies to runs whose options and agent set no timeout. The 120 s default moved from the `Agent` constructor to the runtime, so `agent.config.timeout` is `undefined` unless set.
+  - `limits.maxTokensPerRun` is checked before every model call and fails the run with the new `RUN_TOKEN_LIMIT_EXCEEDED` code.
+  - Swarms: the assessor and the distributed coordinator resolve models through the Cogitator, so agents without a model work there too (`Assessor.analyze()` takes an optional resolver).
+
+- Updated dependencies [480f2a3]
+- Updated dependencies [c4a4252]
+- Updated dependencies [f134b01]
+- Updated dependencies [6404340]
+- Updated dependencies [c1cd7a1]
+- Updated dependencies [22f47c9]
+- Updated dependencies [51d581e]
+- Updated dependencies [5b12191]
+- Updated dependencies [f36a121]
+  - @cogitator-ai/core@0.22.0
+  - @cogitator-ai/types@0.25.0
+  - @cogitator-ai/browser@0.3.2
+  - @cogitator-ai/mcp@19.0.1
+  - @cogitator-ai/memory@0.8.1
+  - @cogitator-ai/rag@0.3.1
+
 ## 0.4.1
 
 ### Patch Changes

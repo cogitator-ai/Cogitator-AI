@@ -1,5 +1,20 @@
 # @cogitator-ai/self-modifying
 
+## 19.1.0
+
+### Minor Changes
+
+- 126bd47: No more model `'default'`. Components called their LLM with the literal model name `'default'` when none was given, which every backend except Google rejected with a 404, and a checkpoint without a model switched the running agent to it. **Breaking:** `GapAnalyzer`, `ToolGenerator` and `ParameterOptimizer` require `model`; `ToolValidator` and `CapabilityAnalyzer` require it when they call an LLM; `SelfModifyingAgent` requires the agent to set a model; `llmChat()` takes a required `model`. Rollback keeps the current model when a checkpoint has none.
+
+### Patch Changes
+
+- Updated dependencies [c4a4252]
+- Updated dependencies [f134b01]
+- Updated dependencies [6404340]
+- Updated dependencies [c1cd7a1]
+- Updated dependencies [f36a121]
+  - @cogitator-ai/types@0.25.0
+
 ## 19.0.0
 
 ### Major Changes

@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/mcp",
-  "version": "19.0.0",
+  "version": "19.0.1",
   "description": "MCP (Model Context Protocol) integration for Cogitator",
   "type": "module",
   "main": "./dist/index.js",
@@ -33,7 +33,7 @@
     "vitest": "^5.0.3"
   },
   "peerDependencies": {
-    "@cogitator-ai/types": "workspace:>=0.24.0"
+    "@cogitator-ai/types": "workspace:>=0.25.0"
   },
   "engines": {
     "node": ">=22.12.0"

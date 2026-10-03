@@ -1,5 +1,16 @@
 # @cogitator-ai/mcp
 
+## 19.0.1
+
+### Patch Changes
+
+- Updated dependencies [c4a4252]
+- Updated dependencies [f134b01]
+- Updated dependencies [6404340]
+- Updated dependencies [c1cd7a1]
+- Updated dependencies [f36a121]
+  - @cogitator-ai/types@0.25.0
+
 ## 19.0.0
 
 ### Major Changes
