@@ -3,7 +3,6 @@ import net from 'node:net';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import { WebSocketTransport, type VoiceClient } from '../../transport/ws-transport';
-import type { VerifyClientResult } from '../../types';
 
 function rawUpgrade(port: number, path: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -71,6 +70,17 @@ describe('WebSocketTransport hardening', () => {
     ws.close();
   });
 
+  it('rejects with 401 when verifyClient returns false', async () => {
+    transport = new WebSocketTransport({
+      verifyClient: async (req) => req.headers['x-token'] === 'ok',
+    });
+    await transport.listen(0);
+
+    const response = await rawUpgrade(transport.port!, '/voice');
+
+    expect(response).toMatch(/^HTTP\/1\.1 401 Unauthorized\r\n/);
+  });
+
   it('rejects with 500 when verifyClient throws', async () => {
     transport = new WebSocketTransport({
       verifyClient: () => {
@@ -136,7 +146,7 @@ describe('WebSocketTransport hardening', () => {
     });
     transport = new WebSocketTransport({
       maxConnections: 1,
-      verifyClient: async (): Promise<VerifyClientResult> => {
+      verifyClient: async () => {
         await gate;
         return true;
       },

@@ -177,10 +177,7 @@ const voiceAgent = new VoiceAgent({
   transport: {
     path: '/voice',
     maxConnections: 50,
-    verifyClient: async (req) =>
-      (await isValidToken(req.headers.authorization))
-        ? true
-        : { code: 401, message: 'Unauthorized' },
+    verifyClient: async (req) => isValidToken(req.headers.authorization), // false → 401; { code, message } for another status
   },
 });
 

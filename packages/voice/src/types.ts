@@ -94,14 +94,15 @@ export interface RealtimeSessionConfig {
   voice?: string;
 }
 
-export type VerifyClientResult = true | { code: number; message: string };
+/** `true` accepts, `false` rejects with 401, `{ code, message }` rejects with that status. */
+export type VerifyClientResult = boolean | { code: number; message: string };
 
 export interface WebSocketTransportConfig {
   path?: string;
   maxConnections?: number;
   /**
-   * Authorize an incoming upgrade request. Return `true` to accept or
-   * `{ code, message }` to reject with that HTTP status.
+   * Authorize an incoming upgrade request. Return `true` to accept, `false`
+   * to reject with 401, or `{ code, message }` to reject with that status.
    */
   verifyClient?: (req: IncomingMessage) => VerifyClientResult | Promise<VerifyClientResult>;
 }

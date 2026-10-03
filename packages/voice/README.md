@@ -383,8 +383,7 @@ import { WebSocketTransport, VoiceClient } from '@cogitator-ai/voice';
 const transport = new WebSocketTransport({
   path: '/voice',
   maxConnections: 100,
-  verifyClient: async (req) =>
-    (await isValidToken(req.headers.authorization)) ? true : { code: 401, message: 'Unauthorized' },
+  verifyClient: async (req) => isValidToken(req.headers.authorization), // false rejects with 401
 });
 
 transport.on('connection', (client: VoiceClient) => {
@@ -611,11 +610,11 @@ detectAudioFormat(fileBuffer); // 'wav' | 'mp3' | 'ogg' | 'flac' | 'webm' | 'mp4
 
 ### `WebSocketTransportConfig`
 
-| Field            | Type                                                 | Default  | Description                                    |
-| ---------------- | ---------------------------------------------------- | -------- | ---------------------------------------------- |
-| `path`           | `string`                                             | `/voice` | WebSocket endpoint path                        |
-| `maxConnections` | `number`                                             | `100`    | Maximum concurrent connections                 |
-| `verifyClient`   | `(req) => true \| { code, message } \| Promise<...>` | —        | Authorize upgrades (throwing rejects with 500) |
+| Field            | Type                                                    | Default  | Description                                                                                           |
+| ---------------- | ------------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------- |
+| `path`           | `string`                                                | `/voice` | WebSocket endpoint path                                                                               |
+| `maxConnections` | `number`                                                | `100`    | Maximum concurrent connections                                                                        |
+| `verifyClient`   | `(req) => boolean \| { code, message } \| Promise<...>` | —        | Authorize upgrades: `false` rejects with 401, `{ code, message }` with that status, throwing with 500 |
 
 ---
 

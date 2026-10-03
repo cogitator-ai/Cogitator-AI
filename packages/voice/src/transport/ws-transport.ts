@@ -223,6 +223,10 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> {
           rejectUpgrade(socket, 500, 'Internal Server Error');
           return;
         }
+        if (result === false) {
+          rejectUpgrade(socket, 401, 'Unauthorized');
+          return;
+        }
         if (result !== true) {
           rejectUpgrade(socket, result.code, result.message);
           return;
