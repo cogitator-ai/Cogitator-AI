@@ -105,6 +105,7 @@ export {
 } from './learning/index';
 export type {
   AgentOptimizerOptions,
+  TrainsetRunner,
   MetricEvaluatorOptions,
   DemoSelectorOptions,
   InstructionOptimizerOptions,

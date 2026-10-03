@@ -13,13 +13,21 @@ import type {
 } from '@cogitator-ai/types';
 import { InMemoryTraceStore } from './trace-store';
 import { buildExecutionTrace } from './trace-builder';
+import { Agent as CoreAgent } from '../agent';
 import { MetricEvaluator } from './metrics';
 import { DemoSelector } from './demo-selector';
 import { InstructionOptimizer } from './instruction-optimizer';
 
+/** What `compile()` needs to run a trainset: `Cogitator.run`. */
+export interface TrainsetRunner {
+  run(agent: CoreAgent, options: { input: string }): Promise<RunResult>;
+}
+
 export interface AgentOptimizerOptions {
   llm: LLMBackend;
   model: string;
+  /** Runs the trainset given to `compile()`; without it, `compile()` works on stored traces. */
+  cogitator?: TrainsetRunner;
   traceStore?: TraceStore;
   insightStore?: InsightStore;
   config?: Partial<LearningConfig>;
@@ -30,6 +38,7 @@ export class AgentOptimizer {
   private model: string;
   private traceStore: TraceStore;
   private insightStore?: InsightStore;
+  private cogitator?: TrainsetRunner;
   private metricEvaluator: MetricEvaluator;
   private demoSelector: DemoSelector;
   private instructionOptimizer: InstructionOptimizer;
@@ -45,6 +54,7 @@ export class AgentOptimizer {
     this.model = options.model;
     this.traceStore = options.traceStore ?? new InMemoryTraceStore();
     this.insightStore = options.insightStore;
+    this.cogitator = options.cogitator;
 
     const defaultConfig: LearningConfig = {
       enabled: true,
@@ -97,9 +107,17 @@ export class AgentOptimizer {
     return trace;
   }
 
+  /**
+   * Multi-round optimization of an agent's instructions and demos.
+   *
+   * With a `cogitator`, the trainset is run before and after optimizing: the
+   * first runs score the original agent and become demo candidates, the last
+   * runs score the optimized instructions. Without one, the score after is the
+   * instruction optimizer's estimate on the stored traces.
+   */
   async compile(
     agent: Agent,
-    _trainset: Array<{ input: string; expected?: unknown }>,
+    trainset: Array<{ input: string; expected?: unknown }>,
     options?: CompileOptions
   ): Promise<OptimizationResult> {
     const startTime = Date.now();
@@ -109,30 +127,39 @@ export class AgentOptimizer {
     const demosAdded: Demo[] = [];
     const demosRemoved: Demo[] = [];
     const errors: string[] = [];
+    let tokensUsed = 0;
+    let tracesEvaluated = 0;
 
-    const existingTraces = await this.traceStore.getAll(agent.id);
-    const scoreBefore =
-      existingTraces.length > 0
-        ? existingTraces.reduce((sum, t) => sum + t.score, 0) / existingTraces.length
-        : 0;
+    const runnable = this.runnableAgent(agent, trainset, errors);
+
+    let scoreBefore: number;
+    if (runnable) {
+      const baseline = await this.runTrainset(runnable, trainset, errors);
+      scoreBefore = baseline.score;
+      tokensUsed += baseline.tokens;
+      tracesEvaluated += baseline.traces;
+    } else {
+      const existing = await this.traceStore.getAll(agent.id);
+      scoreBefore = averageScore(existing);
+      tracesEvaluated += existing.length;
+    }
 
     const instructionsBefore = agent.instructions;
     let currentInstructions = instructionsBefore;
+    let estimatedImprovement = 0;
 
     for (let round = 0; round < maxRounds; round++) {
-      const highScoringTraces = existingTraces
-        .filter((t) => t.score >= (this.config.minScoreForDemo ?? 0.8))
+      const traces = await this.traceStore.getAll(agent.id);
+      const highScoringTraces = traces
+        .filter((t) => !t.isDemo && t.score >= (this.config.minScoreForDemo ?? 0.8))
         .sort((a, b) => b.score - a.score)
         .slice(0, maxBootstrappedDemos);
 
       for (const trace of highScoringTraces) {
-        if (!trace.isDemo) {
-          try {
-            const demo = await this.demoSelector.addDemo(trace);
-            demosAdded.push(demo);
-          } catch (e) {
-            errors.push(`Failed to add demo: ${e instanceof Error ? e.message : String(e)}`);
-          }
+        try {
+          demosAdded.push(await this.demoSelector.addDemo(trace));
+        } catch (e) {
+          errors.push(`Failed to add demo: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
 
@@ -140,11 +167,13 @@ export class AgentOptimizer {
         try {
           const optimizationResult = await this.instructionOptimizer.optimize(
             agent.id,
-            currentInstructions
+            currentInstructions,
+            { traces }
           );
 
           if (optimizationResult.improvement > 0) {
             currentInstructions = optimizationResult.optimizedInstructions;
+            estimatedImprovement += optimizationResult.improvement;
           }
         } catch (e) {
           errors.push(
@@ -154,9 +183,19 @@ export class AgentOptimizer {
       }
     }
 
-    const allTraces = await this.traceStore.getAll(agent.id);
-    const scoreAfter =
-      allTraces.length > 0 ? allTraces.reduce((sum, t) => sum + t.score, 0) / allTraces.length : 0;
+    let scoreAfter: number;
+    if (runnable && currentInstructions !== instructionsBefore) {
+      const tuned = runnable.clone({ instructions: currentInstructions });
+      const after =
+        tuned instanceof CoreAgent ? await this.runTrainset(tuned, trainset, errors) : null;
+      scoreAfter = after?.score ?? scoreBefore;
+      tokensUsed += after?.tokens ?? 0;
+      tracesEvaluated += after?.traces ?? 0;
+    } else if (runnable) {
+      scoreAfter = scoreBefore;
+    } else {
+      scoreAfter = Math.min(1, scoreBefore + estimatedImprovement);
+    }
 
     const stats = this.optimizationRuns.get(agent.id) ?? {
       lastRun: new Date(),
@@ -177,12 +216,57 @@ export class AgentOptimizer {
       scoreBefore,
       scoreAfter,
       improvement: scoreAfter - scoreBefore,
-      tracesEvaluated: existingTraces.length,
+      tracesEvaluated,
       bootstrapRounds: maxRounds,
       duration: Date.now() - startTime,
-      tokensUsed: 0,
+      tokensUsed,
       errors,
     };
+  }
+
+  private runnableAgent(
+    agent: Agent,
+    trainset: Array<{ input: string; expected?: unknown }>,
+    errors: string[]
+  ): CoreAgent | null {
+    if (trainset.length === 0) return null;
+    if (!this.cogitator) {
+      errors.push(
+        'compile() got a trainset but the optimizer has no cogitator to run it: pass `cogitator` to AgentOptimizer'
+      );
+      return null;
+    }
+    if (!(agent instanceof CoreAgent)) {
+      errors.push('compile() can run a trainset only for agents created with `new Agent()`');
+      return null;
+    }
+    return agent;
+  }
+
+  private async runTrainset(
+    agent: CoreAgent,
+    trainset: Array<{ input: string; expected?: unknown }>,
+    errors: string[]
+  ): Promise<{ score: number; tokens: number; traces: number }> {
+    const scores: number[] = [];
+    let tokens = 0;
+    for (const example of trainset) {
+      try {
+        const result = await this.cogitator!.run(agent, { input: example.input });
+        const trace = await this.captureTrace(result, example.input, {
+          expected: example.expected,
+          labels: ['compile'],
+        });
+        scores.push(trace.score);
+        tokens += result.usage.totalTokens;
+      } catch (e) {
+        errors.push(
+          `Trainset run failed for "${example.input.slice(0, 60)}": ${e instanceof Error ? e.message : String(e)}`
+        );
+      }
+    }
+    const score = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+    return { score, tokens, traces: scores.length };
   }
 
   async bootstrapDemos(agentId: string): Promise<Demo[]> {
@@ -254,4 +338,8 @@ export class AgentOptimizer {
   getInstructionOptimizer(): InstructionOptimizer {
     return this.instructionOptimizer;
   }
+}
+
+function averageScore(traces: ReadonlyArray<{ score: number }>): number {
+  return traces.length > 0 ? traces.reduce((sum, t) => sum + t.score, 0) / traces.length : 0;
 }

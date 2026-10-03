@@ -11,7 +11,7 @@ export type { DemoSelectorOptions } from './demo-selector';
 export { InstructionOptimizer } from './instruction-optimizer';
 export type { InstructionOptimizerOptions } from './instruction-optimizer';
 export { AgentOptimizer } from './agent-optimizer';
-export type { AgentOptimizerOptions } from './agent-optimizer';
+export type { AgentOptimizerOptions, TrainsetRunner } from './agent-optimizer';
 export {
   buildFailureAnalysisPrompt,
   buildInstructionCandidatePrompt,

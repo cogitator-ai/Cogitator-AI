@@ -51,6 +51,7 @@ async function main() {
     llm,
     model: 'gemini-3.8-flash',
     traceStore,
+    cogitator: cog,
   });
 
   const agent = new Agent({

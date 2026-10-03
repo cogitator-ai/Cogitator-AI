@@ -17,6 +17,7 @@ import { AgentOptimizer } from '@cogitator-ai/core';
 const optimizer = new AgentOptimizer({
   llm: backend,
   model: 'openai/gpt-6.1-sol',
+  cogitator, // runs the trainset of compile(); optional
   config: {
     enabled: true,
     captureTraces: true,
@@ -64,7 +65,9 @@ console.log(`Demos added: ${result.demosAdded.length}`);
 console.log(`New instructions: ${result.instructionsAfter}`);
 ```
 
-Each round: high-scoring traces become bootstrapped demos, the `InstructionOptimizer` analyzes failures and generates improved instruction candidates, and the best candidate is selected through LLM-based evaluation.
+With a `cogitator`, `compile()` first runs the trainset with the original agent: those runs give `scoreBefore` and are stored as traces. Each round, high-scoring traces become bootstrapped demos, the `InstructionOptimizer` analyzes failures in the stored traces and generates improved instruction candidates, and the best candidate is selected through LLM-based evaluation. Finally the trainset runs again with the optimized instructions, which gives `scoreAfter`.
+
+Without a `cogitator`, a trainset cannot run: `compile()` reports that in `errors`, works on the traces already captured, and `scoreAfter` is the instruction optimizer's estimate.
 
 ## Bootstrapping Demos
 

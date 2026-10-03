@@ -668,33 +668,30 @@ const executor = new ThoughtTreeExecutor(cogitator, {
 DSPy-style optimization through execution traces:
 
 ```typescript
-import {
-  AgentOptimizer,
-  InMemoryTraceStore,
-  createSuccessMetric,
-  createContainsMetric,
-} from '@cogitator-ai/core';
+import { AgentOptimizer, InMemoryTraceStore } from '@cogitator-ai/core';
 
 const traceStore = new InMemoryTraceStore();
-const optimizer = new AgentOptimizer(cogitator, {
+const optimizer = new AgentOptimizer({
+  llm: cogitator.getLLMBackend('openai/gpt-6.1-sol'),
+  model: 'gpt-6.1-sol',
   traceStore,
-  optimizationModel: 'openai/gpt-6.1-sol',
-  maxCandidates: 5,
-  evaluationRuns: 3,
+  cogitator,
 });
 
-const result = await optimizer.compile(agent, {
-  demos: [
-    { input: 'Calculate 2+2', expectedOutput: '4' },
-    { input: 'Calculate 10*5', expectedOutput: '50' },
+const result = await optimizer.compile(
+  agent,
+  [
+    { input: 'Calculate 2+2', expected: '4' },
+    { input: 'Calculate 10*5', expected: '50' },
   ],
-  metric: createSuccessMetric(),
-  maxIterations: 10,
-});
+  { maxRounds: 3 }
+);
 
-console.log('Optimized instructions:', result.optimizedAgent.instructions);
-console.log('Improvement:', result.improvement);
+console.log('Optimized instructions:', result.instructionsAfter);
+console.log('Score:', result.scoreBefore, '→', result.scoreAfter);
 ```
+
+With `cogitator`, `compile()` runs the trainset with the original agent (those runs score it and become demo candidates) and again with the optimized instructions, so `scoreAfter` is measured. Without it, `compile()` works on the traces already stored and `scoreAfter` is the instruction optimizer's estimate.
 
 ### Built-in Metrics
 
