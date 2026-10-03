@@ -1,5 +1,13 @@
 import { nanoid } from 'nanoid';
-import type { LLMBackend, LLMResponseFormat, Message, ToolCall } from '@cogitator-ai/types';
+import type {
+  ChatUsage,
+  LLMBackend,
+  LLMResponseFormat,
+  Message,
+  PromptCacheConfig,
+  ReasoningConfig,
+  ToolCall,
+} from '@cogitator-ai/types';
 import { countMessagesTokens } from '@cogitator-ai/memory';
 import { ToolRegistry } from '../registry';
 import type { Agent } from '../agent';
@@ -9,11 +17,14 @@ export interface StreamChatResult {
   content: string;
   toolCalls?: ToolCall[];
   finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-  };
+  usage: ChatUsage;
+  reasoning?: string;
+}
+
+export interface StreamChatExtras {
+  reasoning?: ReasoningConfig;
+  cache?: PromptCacheConfig | false;
+  onReasoning?: (delta: string) => void;
 }
 
 export async function streamChat(
@@ -24,11 +35,14 @@ export async function streamChat(
   agent: Agent,
   onToken: (token: string) => void,
   signal?: AbortSignal,
-  responseFormat?: LLMResponseFormat
+  responseFormat?: LLMResponseFormat,
+  extras: StreamChatExtras = {}
 ): Promise<StreamChatResult> {
   throwIfStreamAborted(signal);
 
   let content = '';
+  let reasoning = '';
+  let streamUsage: ChatUsage | undefined;
   let toolCalls: ToolCall[] | undefined;
   let finishReason: 'stop' | 'tool_calls' | 'length' | 'error' = 'stop';
   let inputTokens = 0;
@@ -44,6 +58,8 @@ export async function streamChat(
     maxTokens: agent.config.maxTokens,
     stop: agent.config.stopSequences,
     responseFormat,
+    reasoning: extras.reasoning,
+    cache: extras.cache,
     signal,
   });
 
@@ -53,6 +69,10 @@ export async function streamChat(
     if (chunk.delta.content) {
       content += chunk.delta.content;
       onToken(chunk.delta.content);
+    }
+    if (chunk.delta.reasoning) {
+      reasoning += chunk.delta.reasoning;
+      extras.onReasoning?.(chunk.delta.reasoning);
     }
     if (chunk.delta.toolCalls) {
       if (!toolCalls) toolCalls = [];
@@ -95,6 +115,7 @@ export async function streamChat(
     if (chunk.usage) {
       inputTokens = chunk.usage.inputTokens;
       outputTokens = chunk.usage.outputTokens;
+      streamUsage = chunk.usage;
       hasUsageFromStream = true;
     }
   }
@@ -114,10 +135,12 @@ export async function streamChat(
     toolCalls,
     finishReason,
     usage: {
+      ...streamUsage,
       inputTokens,
       outputTokens,
       totalTokens: inputTokens + outputTokens,
     },
+    ...(reasoning && { reasoning }),
   };
 }
 

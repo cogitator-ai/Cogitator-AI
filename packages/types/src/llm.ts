@@ -48,6 +48,40 @@ export interface JsonSchemaFormat {
 export type ToolChoice =
   'auto' | 'none' | 'required' | { type: 'function'; function: { name: string } };
 
+/**
+ * How hard a reasoning model thinks, from `none` (no thinking where the model
+ * allows turning it off, otherwise its lowest level) to `max`. Each backend
+ * maps it to its provider: Anthropic `output_config.effort` with adaptive
+ * thinking (or a thinking budget on older Claude models), OpenAI
+ * `reasoning.effort`, Gemini `thinkingConfig`, Ollama `think`.
+ */
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export interface ReasoningConfig {
+  effort?: ReasoningEffort;
+  /**
+   * Thinking token budget, for providers that take one: Gemini 2.5
+   * `thinkingBudget` and Claude models before 4.6. Ignored elsewhere.
+   */
+  budgetTokens?: number;
+  /**
+   * Return a readable summary of the reasoning: `ChatResponse.reasoning`, and
+   * `delta.reasoning` while streaming. Providers never return the raw chain
+   * of thought; without it most return nothing.
+   */
+  summary?: boolean;
+}
+
+/**
+ * Provider prompt caching. Anthropic caches the stable prefix of a request
+ * (tools, system prompt, history) only when asked, so the backend marks it;
+ * OpenAI and Gemini cache on their own and report the hits.
+ */
+export interface PromptCacheConfig {
+  /** How long Anthropic keeps a cached prefix (default `5m`) */
+  ttl?: '5m' | '1h';
+}
+
 export interface ChatRequest {
   model: string;
   messages: Message[];
@@ -59,6 +93,9 @@ export interface ChatRequest {
   stop?: string[];
   stream?: boolean;
   responseFormat?: LLMResponseFormat;
+  reasoning?: ReasoningConfig;
+  /** Prompt caching; `false` turns it off where the provider allows */
+  cache?: PromptCacheConfig | false;
   /** Abort signal for cancelling the provider request. */
   signal?: AbortSignal;
 }
@@ -69,6 +106,8 @@ export interface ChatResponse {
   toolCalls?: ToolCall[];
   finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
   usage: ChatUsage;
+  /** Readable summary of the model's reasoning, when the provider returned one */
+  reasoning?: string;
 }
 
 export interface ChatUsage {
@@ -77,6 +116,8 @@ export interface ChatUsage {
   totalTokens: number;
   /** Input tokens served from the provider prompt cache; already counted in `inputTokens`. */
   cachedInputTokens?: number;
+  /** Input tokens written to the provider prompt cache; already counted in `inputTokens`. */
+  cacheWriteTokens?: number;
   /** Hidden reasoning tokens; already counted in `outputTokens`. */
   reasoningTokens?: number;
 }
@@ -85,6 +126,8 @@ export interface ChatStreamChunk {
   id: string;
   delta: {
     content?: string;
+    /** Piece of the reasoning summary */
+    reasoning?: string;
     toolCalls?: Partial<ToolCall>[];
   };
   finishReason?: 'stop' | 'tool_calls' | 'length' | 'error';

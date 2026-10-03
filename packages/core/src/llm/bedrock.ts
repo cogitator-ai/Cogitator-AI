@@ -9,6 +9,7 @@ import type {
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
+  ChatUsage,
   ToolCall,
   ToolChoice,
   Message,
@@ -28,6 +29,12 @@ import {
   supportsForcedToolChoice,
 } from './claude-models';
 import { toClaudeStrictJsonSchema } from './claude-json-schema';
+import {
+  claudeThinkingParams,
+  thinkingBlocksOf,
+  type ClaudeThinkingBlock,
+  type ClaudeThinkingParams,
+} from './anthropic-thinking';
 import { fetchImageAsBase64 } from '../utils/image-fetch';
 import { getLogger } from '../logger';
 
@@ -38,8 +45,15 @@ interface BedrockRuntimeClientType {
   send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<unknown>;
 }
 
-interface SystemContentBlock {
-  text: string;
+type SystemContentBlock = { text: string } | { cachePoint: CachePoint };
+
+interface CachePoint {
+  type: 'default';
+}
+
+interface ReasoningContentBlock {
+  reasoningText?: { text: string; signature?: string };
+  redactedContent?: Uint8Array;
 }
 
 interface ToolResultContentBlock {
@@ -63,6 +77,8 @@ interface ContentBlock {
     input: unknown;
   };
   toolResult?: ToolResultBlock;
+  reasoningContent?: ReasoningContentBlock;
+  cachePoint?: CachePoint;
 }
 
 interface BedrockMessage {
@@ -118,6 +134,15 @@ interface ConverseCommandInput {
   toolConfig?: ToolConfiguration;
   inferenceConfig?: InferenceConfiguration;
   outputConfig?: OutputConfiguration;
+  additionalModelRequestFields?: Record<string, unknown>;
+}
+
+interface BedrockUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheWriteInputTokens?: number;
 }
 
 interface ConverseCommandOutput {
@@ -127,11 +152,7 @@ interface ConverseCommandOutput {
     };
   };
   stopReason?: string;
-  usage?: {
-    inputTokens?: number;
-    outputTokens?: number;
-    totalTokens?: number;
-  };
+  usage?: BedrockUsage;
 }
 
 type ConverseStreamCommandInput = ConverseCommandInput;
@@ -153,6 +174,7 @@ interface StreamEvent {
       toolUse?: {
         input?: string;
       };
+      reasoningContent?: { text?: string; signature?: string; redactedContent?: Uint8Array };
     };
   };
   contentBlockStop?: {
@@ -162,11 +184,7 @@ interface StreamEvent {
     stopReason?: string;
   };
   metadata?: {
-    usage?: {
-      inputTokens?: number;
-      outputTokens?: number;
-      totalTokens?: number;
-    };
+    usage?: BedrockUsage;
   };
 }
 
@@ -277,8 +295,12 @@ export class BedrockBackend extends BaseLLMBackend {
     }
 
     const id = this.generateId();
-    const toolCalls: ToolCall[] = [];
-    const toolCallInputs = new Map<number, { id: string; name: string; input: string }>();
+    const state: StreamState = {
+      toolCalls: [],
+      toolCallInputs: new Map(),
+      reasoning: new Map(),
+      thinking: [],
+    };
 
     if (!response.stream) {
       return;
@@ -286,7 +308,7 @@ export class BedrockBackend extends BaseLLMBackend {
 
     try {
       for await (const event of response.stream) {
-        yield* this.processStreamEvent(event, id, toolCalls, toolCallInputs);
+        yield* this.processStreamEvent(event, id, state);
       }
     } catch (e) {
       throw this.wrapBedrockError(e, ctx);
@@ -296,9 +318,9 @@ export class BedrockBackend extends BaseLLMBackend {
   private *processStreamEvent(
     event: StreamEvent,
     id: string,
-    toolCalls: ToolCall[],
-    toolCallInputs: Map<number, { id: string; name: string; input: string }>
+    state: StreamState
   ): Generator<ChatStreamChunk> {
+    const { toolCalls, toolCallInputs } = state;
     if (event.contentBlockStart?.start?.toolUse) {
       const idx = event.contentBlockStart.contentBlockIndex ?? 0;
       toolCallInputs.set(idx, {
@@ -325,17 +347,40 @@ export class BedrockBackend extends BaseLLMBackend {
           existing.input += delta.toolUse.input;
         }
       }
+
+      if (delta?.reasoningContent) {
+        const block = state.reasoning.get(idx) ?? {};
+        const { text, signature, redactedContent } = delta.reasoningContent;
+        if (text) {
+          block.reasoningText = {
+            text: (block.reasoningText?.text ?? '') + text,
+            signature: block.reasoningText?.signature,
+          };
+          yield { id, delta: { reasoning: text } };
+        }
+        if (signature) {
+          block.reasoningText = { text: block.reasoningText?.text ?? '', signature };
+        }
+        if (redactedContent) block.redactedContent = redactedContent;
+        state.reasoning.set(idx, block);
+      }
     }
 
     if (event.contentBlockStop) {
       const idx = event.contentBlockStop.contentBlockIndex ?? 0;
       const toolCall = toolCallInputs.get(idx);
-      if (toolCall) {
+      const reasoning = state.reasoning.get(idx);
+      if (reasoning) {
+        const item = toThinkingItem(reasoning);
+        if (item) state.thinking.push(item);
+      } else if (toolCall) {
         toolCalls.push({
           id: toolCall.id,
           name: toolCall.name,
           arguments: this.tryParseJson(toolCall.input),
+          ...(state.thinking.length > 0 && { replay: { precedingItems: state.thinking } }),
         });
+        state.thinking = [];
       }
     }
 
@@ -351,15 +396,7 @@ export class BedrockBackend extends BaseLLMBackend {
     }
 
     if (event.metadata?.usage) {
-      yield {
-        id,
-        delta: {},
-        usage: {
-          inputTokens: event.metadata.usage.inputTokens ?? 0,
-          outputTokens: event.metadata.usage.outputTokens ?? 0,
-          totalTokens: event.metadata.usage.totalTokens ?? 0,
-        },
-      };
+      yield { id, delta: {}, usage: toChatUsage(event.metadata.usage) };
     }
   }
 
@@ -372,8 +409,9 @@ export class BedrockBackend extends BaseLLMBackend {
   }> {
     const systemParts: string[] = [];
     const bedrockMessages: BedrockMessage[] = [];
+    const lastUser = messages.map((m) => m.role).lastIndexOf('user');
 
-    for (const msg of messages) {
+    for (const [index, msg] of messages.entries()) {
       switch (msg.role) {
         case 'system': {
           const text = this.getTextContent(msg.content);
@@ -389,22 +427,26 @@ export class BedrockBackend extends BaseLLMBackend {
           break;
 
         case 'assistant': {
-          const blocks = await this.convertContentToBlocks(msg.content, signal);
-          const toolCalls = (msg as Message & { toolCalls?: ToolCall[] }).toolCalls;
-          if (toolCalls && toolCalls.length > 0) {
-            blocks.push(
-              ...toolCalls.map((tc) => ({
-                toolUse: {
-                  toolUseId: tc.id,
-                  name: tc.name,
-                  input: tc.arguments as DocumentType,
-                },
-              }))
-            );
-          }
+          const text = await this.convertContentToBlocks(msg.content, signal);
+          const toolCalls = (msg as Message & { toolCalls?: ToolCall[] }).toolCalls ?? [];
+          const withThinking = index > lastUser;
+          const calls = toolCalls.map((tc) => ({
+            thinking: withThinking ? thinkingBlocksOf(tc).map(toReasoningContent) : [],
+            toolUse: {
+              toolUse: { toolUseId: tc.id, name: tc.name, input: tc.arguments as DocumentType },
+            },
+          }));
+          const [first, ...rest] = calls;
           bedrockMessages.push({
             role: 'assistant',
-            content: blocks,
+            content: first
+              ? [
+                  ...first.thinking,
+                  ...text,
+                  first.toolUse,
+                  ...rest.flatMap((call) => [...call.thinking, call.toolUse]),
+                ]
+              : text,
           });
           break;
         }
@@ -492,14 +534,21 @@ export class BedrockBackend extends BaseLLMBackend {
       .join(' ');
   }
 
-  private buildInferenceConfig(request: ChatRequest): InferenceConfiguration | undefined {
+  private buildInferenceConfig(
+    request: ChatRequest,
+    thinking: ClaudeThinkingParams
+  ): InferenceConfiguration | undefined {
     const inferenceConfig: InferenceConfiguration = {};
-    if (request.maxTokens !== undefined) inferenceConfig.maxTokens = request.maxTokens;
+    const budgetThinking = thinking.thinking?.type === 'enabled';
+    if (budgetThinking) inferenceConfig.maxTokens = thinking.maxTokens;
+    else if (request.maxTokens !== undefined) inferenceConfig.maxTokens = request.maxTokens;
 
-    const { temperature, topP } = resolveClaudeSampling(request.model, {
-      temperature: request.temperature,
-      topP: request.topP,
-    });
+    const { temperature, topP } = budgetThinking
+      ? {}
+      : resolveClaudeSampling(request.model, {
+          temperature: request.temperature,
+          topP: request.topP,
+        });
     if (temperature !== undefined) inferenceConfig.temperature = temperature;
     if (topP !== undefined) inferenceConfig.topP = topP;
     if (request.stop) inferenceConfig.stopSequences = request.stop;
@@ -613,9 +662,31 @@ export class BedrockBackend extends BaseLLMBackend {
       input.system = [{ text: systemText }];
     }
 
-    const inferenceConfig = this.buildInferenceConfig(request);
+    const forcedTool = toolChoice?.any !== undefined || toolChoice?.tool !== undefined;
+    const reasoning = claudeThinkingParams(
+      request.model,
+      request.reasoning,
+      request.maxTokens ?? 4096
+    );
+    const thinking =
+      reasoning.budgetThinking && forcedTool ? { ...reasoning, thinking: undefined } : reasoning;
+    const additional = {
+      ...(thinking.thinking && { thinking: thinking.thinking }),
+      ...(thinking.effort && { output_config: { effort: thinking.effort } }),
+    };
+    if (Object.keys(additional).length > 0) {
+      input.additionalModelRequestFields = additional;
+    }
+
+    const inferenceConfig = this.buildInferenceConfig(request, thinking);
     if (inferenceConfig) {
       input.inferenceConfig = inferenceConfig;
+    }
+
+    if (request.cache) {
+      input.system = [...(input.system ?? []), { cachePoint: { type: 'default' } }];
+      const last = input.messages.at(-1);
+      if (last) last.content = [...last.content, { cachePoint: { type: 'default' } }];
     }
 
     return input;
@@ -624,18 +695,26 @@ export class BedrockBackend extends BaseLLMBackend {
   private parseResponse(response: ConverseCommandOutput): ChatResponse {
     const message = response.output?.message;
     let content = '';
+    let reasoning = '';
+    let thinking: Record<string, unknown>[] = [];
     const toolCalls: ToolCall[] = [];
 
     if (message?.content) {
       for (const block of message.content) {
         if ('text' in block && block.text) {
           content += block.text;
+        } else if (block.reasoningContent) {
+          reasoning += block.reasoningContent.reasoningText?.text ?? '';
+          const item = toThinkingItem(block.reasoningContent);
+          if (item) thinking.push(item);
         } else if ('toolUse' in block && block.toolUse) {
           toolCalls.push({
             id: block.toolUse.toolUseId ?? '',
             name: block.toolUse.name ?? '',
             arguments: (block.toolUse.input as Record<string, unknown>) ?? {},
+            ...(thinking.length > 0 && { replay: { precedingItems: thinking } }),
           });
+          thinking = [];
         }
       }
     }
@@ -645,11 +724,8 @@ export class BedrockBackend extends BaseLLMBackend {
       content,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       finishReason: mapClaudeStopReason(response.stopReason),
-      usage: {
-        inputTokens: response.usage?.inputTokens ?? 0,
-        outputTokens: response.usage?.outputTokens ?? 0,
-        totalTokens: response.usage?.totalTokens ?? 0,
-      },
+      usage: toChatUsage(response.usage ?? {}),
+      ...(reasoning && { reasoning }),
     };
   }
 
@@ -697,4 +773,53 @@ export class BedrockBackend extends BaseLLMBackend {
 
     throw llmUnavailable(ctx, String(error));
   }
+}
+
+interface StreamState {
+  toolCalls: ToolCall[];
+  toolCallInputs: Map<number, { id: string; name: string; input: string }>;
+  reasoning: Map<number, ReasoningContentBlock>;
+  thinking: Record<string, unknown>[];
+}
+
+/**
+ * Bedrock reports uncached input apart from cache reads and writes, like the
+ * Anthropic API; the total input is their sum.
+ */
+function toChatUsage(usage: BedrockUsage): ChatUsage {
+  const cacheRead = usage.cacheReadInputTokens ?? 0;
+  const cacheWrite = usage.cacheWriteInputTokens ?? 0;
+  const inputTokens = (usage.inputTokens ?? 0) + cacheRead + cacheWrite;
+  const outputTokens = usage.outputTokens ?? 0;
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+    ...(cacheRead > 0 && { cachedInputTokens: cacheRead }),
+    ...(cacheWrite > 0 && { cacheWriteTokens: cacheWrite }),
+  };
+}
+
+/** A Bedrock reasoning block in the format Claude thinking blocks are kept in. */
+function toThinkingItem(block: ReasoningContentBlock): Record<string, unknown> | undefined {
+  if (block.redactedContent) {
+    return {
+      type: 'redacted_thinking',
+      data: Buffer.from(block.redactedContent).toString('base64'),
+    };
+  }
+  if (block.reasoningText?.signature) {
+    return {
+      type: 'thinking',
+      thinking: block.reasoningText.text,
+      signature: block.reasoningText.signature,
+    };
+  }
+  return undefined;
+}
+
+function toReasoningContent(block: ClaudeThinkingBlock): ContentBlock {
+  return block.type === 'thinking'
+    ? { reasoningContent: { reasoningText: { text: block.thinking, signature: block.signature } } }
+    : { reasoningContent: { redactedContent: Buffer.from(block.data, 'base64') } };
 }

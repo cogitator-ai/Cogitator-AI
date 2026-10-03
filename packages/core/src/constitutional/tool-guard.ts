@@ -22,10 +22,11 @@ export class ToolGuard {
   async evaluate(
     tool: Tool,
     args: Record<string, unknown>,
-    _context: ToolContext
+    _context: ToolContext,
+    options: { approvedByUser?: boolean } = {}
   ): Promise<ToolGuardResult> {
     const sideEffects = tool.sideEffects ?? [];
-    const requiresApproval = this.checkApproval(tool, args);
+    const requiresApproval = !options.approvedByUser && this.checkApproval(tool, args);
     const riskLevel = this.assessRisk(tool, args, sideEffects);
 
     const dangerCheck = this.checkDangerousOperation(tool, args);

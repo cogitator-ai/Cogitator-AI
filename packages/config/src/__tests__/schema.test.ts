@@ -98,6 +98,42 @@ describe('CogitatorConfigSchema', () => {
     expect(() => CogitatorConfigSchema.parse({ llm: { retry: { maxRetries: -1 } } })).toThrow();
   });
 
+  it('keeps prompt cache settings, or false to turn caching off', () => {
+    expect(
+      CogitatorConfigSchema.parse({ llm: { promptCache: { ttl: '1h' } } }).llm?.promptCache
+    ).toEqual({
+      ttl: '1h',
+    });
+    expect(CogitatorConfigSchema.parse({ llm: { promptCache: false } }).llm?.promptCache).toBe(
+      false
+    );
+    expect(() => CogitatorConfigSchema.parse({ llm: { promptCache: { ttl: '2h' } } })).toThrow();
+  });
+
+  it('reads PII masking settings, compiling custom patterns given as strings', () => {
+    const pii = CogitatorConfigSchema.parse({
+      security: {
+        pii: {
+          mode: 'redact',
+          detect: ['email', 'iban'],
+          custom: [{ type: 'customer_id', pattern: 'CUS-\\d{6}' }],
+        },
+      },
+    }).security?.pii;
+
+    expect(pii?.mode).toBe('redact');
+    expect(pii?.detect).toEqual(['email', 'iban']);
+    expect(pii?.custom?.[0].pattern).toEqual(/CUS-\d{6}/);
+    expect(() =>
+      CogitatorConfigSchema.parse({ security: { pii: { detect: ['passport'] } } })
+    ).toThrow();
+    expect(() =>
+      CogitatorConfigSchema.parse({
+        security: { pii: { custom: [{ type: 'x', pattern: '([' }] } },
+      })
+    ).toThrow();
+  });
+
   it('accepts partial config', () => {
     const config = {
       llm: {

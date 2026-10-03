@@ -3,16 +3,24 @@
  */
 
 import type { Message, ToolCall, ToolResult } from './message';
-import type { LLMBackend, LLMProvider, LLMProvidersConfig, LLMRetryConfig } from './llm';
+import type {
+  LLMBackend,
+  LLMProvider,
+  LLMProvidersConfig,
+  LLMRetryConfig,
+  PromptCacheConfig,
+  ReasoningConfig,
+} from './llm';
 import type { MemoryConfig } from './memory';
 import type { SandboxManagerConfig } from './sandbox';
 import type { ReflectionConfig, Reflection, ReflectionSummary } from './reflection';
 import type { GuardrailConfig } from './constitutional';
 import type { CostRoutingConfig } from './cost-routing';
-import type { PromptInjectionConfig } from './security';
+import type { PiiConfig, PromptInjectionConfig } from './security';
 import type { DeployConfig } from './deploy';
 import type { ContextManagerConfig } from './context';
 import type { LoggingConfig } from './logging';
+import type { ABTestStore, ABTestVariant, InstructionVersionStore } from './prompt-optimization';
 
 export interface CogitatorConfig {
   llm?: {
@@ -31,7 +39,24 @@ export interface CogitatorConfig {
      * turns them off. On by default: 2 retries with exponential backoff.
      */
     retry?: LLMRetryConfig | false;
+    /**
+     * Prompt caching for agent runs; `false` turns it off. On by default:
+     * Anthropic requests mark their stable prefix for caching, and every
+     * provider's cache hits lower the run's cost.
+     */
+    promptCache?: PromptCacheConfig | false;
   };
+  /**
+   * Where paused runs are kept. Defaults to the memory adapter's threads (so
+   * pauses last as long as the memory does), or to process memory without one.
+   */
+  runCheckpoints?: RunCheckpointStore;
+  /**
+   * Versioned instructions and A/B tests. Runs of an agent with a deployed
+   * version use its instructions; while an A/B test runs, each thread gets
+   * one variant. Every run's outcome is recorded against what it used.
+   */
+  prompts?: PromptsConfig;
   limits?: {
     maxConcurrentRuns?: number;
     defaultTimeout?: number;
@@ -42,15 +67,16 @@ export interface CogitatorConfig {
   sandbox?: SandboxManagerConfig;
   /** Reflection configuration for self-analyzing agents */
   reflection?: ReflectionConfig;
-  /** Constitutional AI guardrails configuration */
   /** Constitutional AI guardrails; fields left out take `DEFAULT_GUARDRAIL_CONFIG`. On unless `enabled: false`. */
   guardrails?: Partial<GuardrailConfig>;
   /** Cost-aware model routing configuration */
   costRouting?: CostRoutingConfig;
-  /** Security configuration for prompt injection detection */
+  /** Prompt injection detection and PII masking */
   security?: {
     /** Prompt injection detection; fields left out take the detector's defaults */
     promptInjection?: Partial<PromptInjectionConfig>;
+    /** Keep personal data and secrets away from the model provider */
+    pii?: PiiConfig;
   };
   /** Context management for long conversations (128k+ tokens) */
   context?: ContextManagerConfig;
@@ -78,6 +104,22 @@ export interface RunOptions {
   signal?: AbortSignal;
   stream?: boolean;
   onToken?: (token: string) => void;
+  /** Pieces of the model's reasoning summary while streaming (needs `reasoning.summary`) */
+  onReasoning?: (delta: string) => void;
+  /** Called when an agent hands the conversation over to another */
+  onHandoff?: (handoff: HandoffEvent) => void;
+  /** Overrides the agent's `reasoning` for this run */
+  reasoning?: ReasoningConfig;
+  /**
+   * Decides tool calls that need approval (`requiresApproval`) while the run
+   * waits. Return `{ approved }` to go on, or `'pause'` to pause the run: it
+   * returns with `status: 'paused'`, the calls in `pendingApprovals` and a
+   * `checkpoint` to continue from with `cogitator.resume()`. Without it (and
+   * without `guardrails.onToolApproval`) such calls always pause the run.
+   */
+  onApproval?: (
+    request: ToolApprovalRequest
+  ) => ToolApprovalDecision | 'pause' | Promise<ToolApprovalDecision | 'pause'>;
   onToolCall?: (call: ToolCall) => void;
   onToolResult?: (result: ToolResult) => void;
 
@@ -119,6 +161,110 @@ export interface RunOptions {
   channelId?: string;
 }
 
+export interface PromptsConfig {
+  /** Default: in process memory */
+  versions?: InstructionVersionStore;
+  /** Default: in process memory */
+  abTests?: ABTestStore;
+  /** Score of a completed run, 0 – 1, for version metrics and A/B tests. Default: 1 */
+  score?: (result: RunResult) => number | Promise<number>;
+  /** Deploy the winning instructions when an A/B test completes with a significant winner */
+  autoDeployWinner?: boolean;
+}
+
+/** The versioned instructions a run used. */
+export interface RunPrompt {
+  /** Instructions are versioned per agent `id` when it was set explicitly, else per `name` */
+  key: string;
+  versionId?: string;
+  version?: number;
+  abTest?: { id: string; variant: ABTestVariant };
+}
+
+/** The conversation went from one agent to another. */
+export interface HandoffEvent {
+  from: string;
+  to: string;
+  reason?: string;
+}
+
+/** A tool call waiting for a person to approve it. */
+export interface ToolApprovalRequest {
+  toolCallId: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+  description: string;
+  /** What the tool touches, as it declares (`sideEffects`) */
+  sideEffects?: string[];
+}
+
+export type ToolApprovalDecision = { approved: true } | { approved: false; reason?: string };
+
+/**
+ * Everything needed to continue a paused run, as plain JSON: keep it on your
+ * server (it holds the conversation) and hand it to `cogitator.resume()`.
+ */
+export interface RunCheckpoint {
+  version: 1;
+  runId: string;
+  agentId: string;
+  threadId: string;
+  userId?: string;
+  /** The model the run uses, and the provider it was routed to */
+  model: string;
+  provider?: string;
+  input: string;
+  messages: Message[];
+  toolCalls: ToolCall[];
+  prompt?: RunPrompt;
+  /** The agent the run was in when it paused, after handoffs */
+  activeAgent?: string;
+  handoffs?: HandoffEvent[];
+  /** The tool calls of the turn that paused, with the decisions made so far */
+  turn: {
+    toolCalls: ToolCall[];
+    decisions: Record<string, ToolApprovalDecision>;
+  };
+  iterations: number;
+  lastToolCallSignature: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
+    cacheWriteTokens: number;
+    reasoningTokens: number;
+  };
+  reasoning: string[];
+  startedAt: number;
+}
+
+/**
+ * Where paused runs wait for their approvals, one per thread. The runtime
+ * saves a run's checkpoint when it pauses and removes it once the run goes
+ * on, so `cogitator.resume(agent, threadId)` finds it.
+ */
+export interface RunCheckpointStore {
+  save(checkpoint: RunCheckpoint): Promise<void>;
+  load(threadId: string): Promise<RunCheckpoint | null>;
+  delete(threadId: string): Promise<void>;
+}
+
+/** Options for `cogitator.resume()`: run options, minus what the checkpoint fixes. */
+export interface ResumeOptions extends Omit<
+  RunOptions,
+  'input' | 'images' | 'audio' | 'context' | 'threadId' | 'threadAccess'
+> {
+  /**
+   * Who resumes the run. When set, or when resuming by thread id, it must be
+   * the user the run belongs to, or the resume fails with `THREAD_ACCESS_DENIED`.
+   */
+  userId?: string;
+  /** Decisions for the paused calls, by tool call id; calls left out pause again */
+  decisions?: Record<string, ToolApprovalDecision>;
+  /** Decision for every paused call `decisions` leaves out, e.g. one "approve all" answer */
+  defaultDecision?: ToolApprovalDecision;
+}
+
 export interface RunResult {
   readonly output: string;
   readonly structured?: unknown;
@@ -133,7 +279,26 @@ export interface RunResult {
     readonly totalTokens: number;
     readonly cost: number;
     readonly duration: number;
+    /** Hidden reasoning tokens; already counted in `outputTokens` */
+    readonly reasoningTokens?: number;
+    /** Input tokens served from the prompt cache; already counted in `inputTokens` */
+    readonly cachedInputTokens?: number;
+    /** Input tokens written to the prompt cache; already counted in `inputTokens` */
+    readonly cacheWriteTokens?: number;
   };
+  /** The model's reasoning summary for the run, when the agent asked for one (`reasoning.summary`) */
+  readonly reasoning?: string;
+  /** The versioned instructions or A/B variant the run used */
+  readonly prompt?: RunPrompt;
+  /** Handoffs during the run, in order */
+  readonly handoffs?: readonly HandoffEvent[];
+  /** The agent that answered, when the run handed the conversation over */
+  readonly finalAgent?: string;
+  /** `paused` when tool calls wait for approval; see `pendingApprovals` and `checkpoint` */
+  readonly status?: 'completed' | 'paused';
+  readonly pendingApprovals?: readonly ToolApprovalRequest[];
+  /** Pass to `cogitator.resume()` with the decisions to continue a paused run */
+  readonly checkpoint?: RunCheckpoint;
   readonly toolCalls: readonly ToolCall[];
   readonly messages: readonly Message[];
   readonly trace: {

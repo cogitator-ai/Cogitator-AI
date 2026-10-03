@@ -22,7 +22,8 @@ export async function executeTool(
   filterToolCalls: boolean,
   initializeSandbox: () => Promise<SandboxManager | undefined>,
   signal?: AbortSignal,
-  extraContext?: ExtraToolContext
+  extraContext?: ExtraToolContext,
+  approvedByUser = false
 ): Promise<ToolResult> {
   const tool = registry.get(toolCall.name);
 
@@ -61,7 +62,8 @@ export async function executeTool(
     const guardResult = await constitutionalAI.guardTool(
       tool,
       validatedArgs as Record<string, unknown>,
-      context
+      context,
+      { approvedByUser }
     );
     if (!guardResult.approved) {
       return {

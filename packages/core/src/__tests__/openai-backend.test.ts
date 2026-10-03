@@ -98,6 +98,64 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       );
     });
 
+    it('sends reasoning effort and reads reasoning text and cache usage', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'chatcmpl-1',
+        choices: [
+          {
+            message: { role: 'assistant', content: '42', reasoning_content: 'Six times seven.' },
+            finish_reason: 'stop',
+          },
+        ],
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 30,
+          total_tokens: 130,
+          prompt_tokens_details: { cached_tokens: 64 },
+          completion_tokens_details: { reasoning_tokens: 20 },
+        },
+      });
+
+      const result = await backend.chat({
+        model: 'deepseek-reasoner',
+        messages: [{ role: 'user', content: '6*7?' }],
+        reasoning: { effort: 'low' },
+      });
+
+      expect(mockCreate.mock.calls[0][0]).toMatchObject({ reasoning_effort: 'low' });
+      expect(result.reasoning).toBe('Six times seven.');
+      expect(result.usage).toEqual({
+        inputTokens: 100,
+        outputTokens: 30,
+        totalTokens: 130,
+        cachedInputTokens: 64,
+        reasoningTokens: 20,
+      });
+    });
+
+    it('streams reasoning deltas', async () => {
+      mockCreate.mockResolvedValueOnce(
+        (async function* () {
+          yield { id: 'c', choices: [{ index: 0, delta: { reasoning: 'Hmm, ' } }] };
+          yield { id: 'c', choices: [{ index: 0, delta: { reasoning: 'yes.' } }] };
+          yield {
+            id: 'c',
+            choices: [{ index: 0, delta: { content: 'Yes' }, finish_reason: 'stop' }],
+          };
+        })()
+      );
+
+      const chunks = [];
+      for await (const chunk of backend.chatStream({
+        model: 'openai/gpt-oss-120b',
+        messages: [{ role: 'user', content: '?' }],
+      })) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks.map((c) => c.delta.reasoning).filter(Boolean)).toEqual(['Hmm, ', 'yes.']);
+    });
+
     it('passes abort signal to SDK request options', async () => {
       mockCreate.mockResolvedValueOnce({
         id: 'chatcmpl-123',

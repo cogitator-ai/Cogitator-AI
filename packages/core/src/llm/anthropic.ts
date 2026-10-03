@@ -7,6 +7,7 @@ import type {
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
+  ChatUsage,
   ToolCall,
   ToolChoice,
   Message,
@@ -25,6 +26,12 @@ import {
   supportsNativeStructuredOutput,
 } from './claude-models';
 import { toClaudeStrictJsonSchema } from './claude-json-schema';
+import {
+  claudeThinkingParams,
+  isThinkingReplayError,
+  thinkingBlocksOf,
+  toThinkingItem,
+} from './anthropic-thinking';
 import { getLogger } from '../logger';
 
 interface AnthropicConfig {
@@ -59,51 +66,42 @@ export class AnthropicBackend extends BaseLLMBackend {
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const model = this.resolveModel(request.model);
-    const ctx: LLMErrorContext = {
-      provider: this.provider,
-      model,
+    const ctx: LLMErrorContext = { provider: this.provider, model };
+
+    const send = (replayThinking: boolean) => {
+      const params = this.buildParams(request, model, replayThinking);
+      return request.signal
+        ? this.client.messages.create(params, { signal: request.signal })
+        : this.client.messages.create(params);
     };
-
-    const { system, messages } = this.convertMessages(request.messages);
-    const { tools, toolChoice, systemSuffix, outputConfig } = this.prepareJsonMode(request, model);
-
-    const allTools = [
-      ...(request.tools?.map((t) => ({
-        name: t.name,
-        description: t.description,
-        input_schema: t.parameters as AnthropicToolInput,
-      })) ?? []),
-      ...tools,
-    ];
 
     let response: Anthropic.Message;
     try {
-      const params = {
-        model,
-        system: this.buildSystemPrompt(system, systemSuffix),
-        messages,
-        tools: allTools.length > 0 ? allTools : undefined,
-        tool_choice: toolChoice,
-        max_tokens: request.maxTokens ?? 4096,
-        ...this.buildSamplingParams(model, request),
-        stop_sequences: request.stop,
-        ...(outputConfig && { output_config: outputConfig }),
-      };
-
-      response = request.signal
-        ? await this.client.messages.create(params, { signal: request.signal })
-        : await this.client.messages.create(params);
+      response = await send(true).catch((error: unknown) => {
+        if (!isThinkingReplayError(error)) throw error;
+        this.warnOnce(
+          `thinking-replay:${model}`,
+          'Anthropic rejected replayed thinking blocks; retrying without them',
+          { provider: this.provider, model }
+        );
+        return send(false);
+      });
     } catch (e) {
       throw this.wrapAnthropicError(e, ctx);
     }
 
     const toolCalls: ToolCall[] = [];
     let content = '';
+    let reasoning = '';
     let jsonSchemaResponse: Record<string, unknown> | null = null;
+    let thinking: Record<string, unknown>[] = [];
 
     for (const block of response.content) {
       if (block.type === 'text') {
         content += block.text;
+      } else if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+        if (block.type === 'thinking') reasoning += block.thinking;
+        thinking.push(toThinkingItem(block));
       } else if (block.type === 'tool_use') {
         if (block.name === JSON_RESPONSE_TOOL) {
           jsonSchemaResponse = block.input as Record<string, unknown>;
@@ -112,7 +110,9 @@ export class AnthropicBackend extends BaseLLMBackend {
             id: block.id,
             name: block.name,
             arguments: block.input as Record<string, unknown>,
+            ...(thinking.length > 0 && { replay: { precedingItems: thinking } }),
           });
+          thinking = [];
         }
       }
     }
@@ -129,47 +129,18 @@ export class AnthropicBackend extends BaseLLMBackend {
         jsonSchemaResponse && toolCalls.length === 0
           ? 'stop'
           : mapClaudeStopReason(response.stop_reason),
-      usage: {
-        inputTokens: response.usage.input_tokens,
-        outputTokens: response.usage.output_tokens,
-        totalTokens: response.usage.input_tokens + response.usage.output_tokens,
-      },
+      usage: toChatUsage(response.usage, response.usage.output_tokens),
+      ...(reasoning && { reasoning }),
     };
   }
 
   async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
     const model = this.resolveModel(request.model);
-    const ctx: LLMErrorContext = {
-      provider: this.provider,
-      model,
-    };
-
-    const { system, messages } = this.convertMessages(request.messages);
-    const { tools, toolChoice, systemSuffix, outputConfig } = this.prepareJsonMode(request, model);
-
-    const allTools = [
-      ...(request.tools?.map((t) => ({
-        name: t.name,
-        description: t.description,
-        input_schema: t.parameters as AnthropicToolInput,
-      })) ?? []),
-      ...tools,
-    ];
+    const ctx: LLMErrorContext = { provider: this.provider, model };
 
     let stream: ReturnType<typeof this.client.messages.stream>;
     try {
-      const params = {
-        model,
-        system: this.buildSystemPrompt(system, systemSuffix),
-        messages,
-        tools: allTools.length > 0 ? allTools : undefined,
-        tool_choice: toolChoice,
-        max_tokens: request.maxTokens ?? 4096,
-        ...this.buildSamplingParams(model, request),
-        stop_sequences: request.stop,
-        ...(outputConfig && { output_config: outputConfig }),
-      };
-
+      const params = this.buildParams(request, model, true);
       stream = request.signal
         ? this.client.messages.stream(params, { signal: request.signal })
         : this.client.messages.stream(params);
@@ -181,8 +152,10 @@ export class AnthropicBackend extends BaseLLMBackend {
     const toolCalls: ToolCall[] = [];
     let currentToolCall: Partial<ToolCall> | null = null;
     let currentToolName = '';
+    let currentThinking: { thinking: string; signature: string } | null = null;
+    let thinking: Record<string, unknown>[] = [];
     let inputJson = '';
-    let inputTokens = 0;
+    let startUsage: Anthropic.Usage | null = null;
     let outputTokens = 0;
     let jsonSchemaContent = '';
     let streamStopReason: string | null = null;
@@ -190,7 +163,7 @@ export class AnthropicBackend extends BaseLLMBackend {
     try {
       for await (const event of stream) {
         if (event.type === 'message_start') {
-          inputTokens = event.message.usage.input_tokens;
+          startUsage = event.message.usage;
         } else if (event.type === 'content_block_start') {
           const block = event.content_block;
           if (block.type === 'tool_use') {
@@ -198,22 +171,33 @@ export class AnthropicBackend extends BaseLLMBackend {
               id: block.id,
               name: block.name,
               arguments: {},
+              ...(thinking.length > 0 && { replay: { precedingItems: thinking } }),
             };
+            thinking = [];
             currentToolName = block.name;
             inputJson = '';
+          } else if (block.type === 'thinking') {
+            currentThinking = { thinking: block.thinking, signature: block.signature };
+          } else if (block.type === 'redacted_thinking') {
+            thinking.push(toThinkingItem(block));
           }
         } else if (event.type === 'content_block_delta') {
           const delta = event.delta;
           if (delta.type === 'text_delta') {
-            yield {
-              id,
-              delta: { content: delta.text },
-            };
+            yield { id, delta: { content: delta.text } };
           } else if (delta.type === 'input_json_delta') {
             inputJson += delta.partial_json;
+          } else if (delta.type === 'thinking_delta' && currentThinking) {
+            currentThinking.thinking += delta.thinking;
+            if (delta.thinking) yield { id, delta: { reasoning: delta.thinking } };
+          } else if (delta.type === 'signature_delta' && currentThinking) {
+            currentThinking.signature += delta.signature;
           }
         } else if (event.type === 'content_block_stop') {
-          if (currentToolCall) {
+          if (currentThinking) {
+            thinking.push({ type: 'thinking', ...currentThinking });
+            currentThinking = null;
+          } else if (currentToolCall) {
             currentToolCall.arguments = this.parseToolInput(inputJson, currentToolName);
 
             if (currentToolName === JSON_RESPONSE_TOOL) {
@@ -233,10 +217,7 @@ export class AnthropicBackend extends BaseLLMBackend {
           }
         } else if (event.type === 'message_stop') {
           if (jsonSchemaContent) {
-            yield {
-              id,
-              delta: { content: jsonSchemaContent },
-            };
+            yield { id, delta: { content: jsonSchemaContent } };
           }
 
           yield {
@@ -250,17 +231,73 @@ export class AnthropicBackend extends BaseLLMBackend {
                 : jsonSchemaContent
                   ? 'stop'
                   : mapClaudeStopReason(streamStopReason),
-            usage: {
-              inputTokens,
-              outputTokens,
-              totalTokens: inputTokens + outputTokens,
-            },
+            usage: startUsage
+              ? toChatUsage(startUsage, outputTokens)
+              : { inputTokens: 0, outputTokens, totalTokens: outputTokens },
           };
         }
       }
     } catch (e) {
       throw this.wrapAnthropicError(e, ctx);
     }
+  }
+
+  /**
+   * Request parameters shared by `chat` and `chatStream`. Thinking blocks are
+   * replayed only for the turns after the last user message — the current
+   * tool loop — since earlier ones are tied to a conversation prefix that
+   * memory and context management may have changed since.
+   */
+  private buildParams(
+    request: ChatRequest,
+    model: string,
+    replayThinking: boolean
+  ): Anthropic.MessageCreateParamsNonStreaming {
+    const { system, messages } = this.convertMessages(request.messages, replayThinking);
+    const { tools, toolChoice, systemSuffix, outputConfig } = this.prepareJsonMode(request, model);
+
+    const allTools = [
+      ...(request.tools?.map((t) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.parameters as AnthropicToolInput,
+      })) ?? []),
+      ...tools,
+    ];
+
+    const reasoning = claudeThinkingParams(model, request.reasoning, request.maxTokens ?? 4096);
+    const forcedTool = toolChoice?.type === 'tool' || toolChoice?.type === 'any';
+    const thinking = reasoning.budgetThinking && forcedTool ? undefined : reasoning.thinking;
+    if (thinking !== reasoning.thinking) {
+      this.warnOnce(
+        `thinking-forced-tool:${model}`,
+        `${model} cannot think while a tool is forced; this request runs without thinking`,
+        { provider: this.provider, model }
+      );
+    }
+    const budgetThinking = thinking?.type === 'enabled';
+    const effort = reasoning.effort ?? outputConfig?.effort ?? undefined;
+    const config: Anthropic.OutputConfig | undefined =
+      outputConfig || effort ? { ...outputConfig, ...(effort && { effort }) } : undefined;
+
+    return {
+      model,
+      system: this.buildSystemPrompt(system, systemSuffix),
+      messages,
+      tools: allTools.length > 0 ? allTools : undefined,
+      tool_choice: toolChoice,
+      max_tokens: budgetThinking ? reasoning.maxTokens : (request.maxTokens ?? 4096),
+      ...(budgetThinking ? {} : this.buildSamplingParams(model, request)),
+      stop_sequences: request.stop,
+      ...(thinking && { thinking }),
+      ...(config && { output_config: config }),
+      ...(request.cache && {
+        cache_control: {
+          type: 'ephemeral' as const,
+          ...(request.cache.ttl && { ttl: request.cache.ttl }),
+        },
+      }),
+    };
   }
 
   private parseToolInput(inputJson: string, toolName: string): Record<string, unknown> {
@@ -287,14 +324,18 @@ export class AnthropicBackend extends BaseLLMBackend {
     return combined.length > 0 ? combined : undefined;
   }
 
-  private convertMessages(messages: Message[]): {
+  private convertMessages(
+    messages: Message[],
+    replayThinking: boolean
+  ): {
     system: string;
     messages: Anthropic.MessageParam[];
   } {
     const systemParts: string[] = [];
     const anthropicMessages: Anthropic.MessageParam[] = [];
+    const lastUser = messages.map((m) => m.role).lastIndexOf('user');
 
-    for (const m of messages) {
+    for (const [index, m] of messages.entries()) {
       switch (m.role) {
         case 'system': {
           const text = this.getTextContent(m.content);
@@ -310,7 +351,7 @@ export class AnthropicBackend extends BaseLLMBackend {
         case 'assistant':
           anthropicMessages.push({
             role: 'assistant',
-            content: this.convertAssistantContent(m),
+            content: this.convertAssistantContent(m, replayThinking && index > lastUser),
           });
           break;
         case 'tool': {
@@ -346,26 +387,34 @@ export class AnthropicBackend extends BaseLLMBackend {
     return content.map((part) => this.convertContentPart(part));
   }
 
-  private convertAssistantContent(message: Message): string | Anthropic.ContentBlockParam[] {
+  /**
+   * An assistant turn: its text, then each tool call preceded by the thinking
+   * blocks that came before it when `withThinking` is set. The first call's
+   * thinking leads the turn, as the API expects.
+   */
+  private convertAssistantContent(
+    message: Message,
+    withThinking: boolean
+  ): string | Anthropic.ContentBlockParam[] {
     const content = this.convertContent(message.content);
     const toolCalls = (message as Message & { toolCalls?: ToolCall[] }).toolCalls;
     if (!toolCalls || toolCalls.length === 0) {
       return content;
     }
 
-    const blocks: Anthropic.ContentBlockParam[] =
+    const text: Anthropic.ContentBlockParam[] =
       typeof content === 'string' ? (content ? [{ type: 'text', text: content }] : []) : content;
+    const [first, ...rest] = toolCalls.map((tc) => ({
+      thinking: withThinking ? thinkingBlocksOf(tc) : [],
+      toolUse: { type: 'tool_use' as const, id: tc.id, name: tc.name, input: tc.arguments },
+    }));
 
-    blocks.push(
-      ...toolCalls.map((tc) => ({
-        type: 'tool_use' as const,
-        id: tc.id,
-        name: tc.name,
-        input: tc.arguments,
-      }))
-    );
-
-    return blocks;
+    return [
+      ...first.thinking,
+      ...text,
+      first.toolUse,
+      ...rest.flatMap((call) => [...call.thinking, call.toolUse]),
+    ];
   }
 
   private convertContentPart(part: ContentPart): Anthropic.ContentBlockParam {
@@ -524,4 +573,21 @@ export class AnthropicBackend extends BaseLLMBackend {
   private wrapAnthropicError(error: unknown, ctx: LLMErrorContext): LLMError {
     return wrapSDKError(error, ctx);
   }
+}
+
+/**
+ * Anthropic reports uncached input apart from cache reads and writes; the
+ * total input is their sum.
+ */
+function toChatUsage(usage: Anthropic.Usage, outputTokens: number): ChatUsage {
+  const cacheRead = usage.cache_read_input_tokens ?? 0;
+  const cacheWrite = usage.cache_creation_input_tokens ?? 0;
+  const inputTokens = usage.input_tokens + cacheRead + cacheWrite;
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+    ...(cacheRead > 0 && { cachedInputTokens: cacheRead }),
+    ...(cacheWrite > 0 && { cacheWriteTokens: cacheWrite }),
+  };
 }

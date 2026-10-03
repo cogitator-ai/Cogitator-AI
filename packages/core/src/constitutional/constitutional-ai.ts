@@ -117,10 +117,15 @@ export class ConstitutionalAI {
     return result;
   }
 
+  /**
+   * Check a tool call against the guardrails. `approvedByUser` marks a call a
+   * person already approved, so its `requiresApproval` is not asked again.
+   */
   async guardTool(
     tool: Tool,
     args: Record<string, unknown>,
-    context: ToolContext
+    context: ToolContext,
+    options: { approvedByUser?: boolean } = {}
   ): Promise<ToolGuardResult> {
     if (!this._config.enabled || !this._config.filterToolCalls) {
       return {
@@ -131,7 +136,7 @@ export class ConstitutionalAI {
       };
     }
 
-    return this.toolGuard.evaluate(tool, args, context);
+    return this.toolGuard.evaluate(tool, args, context, options);
   }
 
   async critiqueAndRevise(response: string, context: Message[]): Promise<RevisionResult> {

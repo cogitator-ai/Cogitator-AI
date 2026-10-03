@@ -11,6 +11,8 @@ import type {
   InstructionVersion,
   InstructionVersionMetrics,
   CombinedPersistentStore,
+  ABTestStore,
+  InstructionVersionStore,
   ToolCall,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
@@ -953,6 +955,32 @@ export class PostgresTraceStore implements CombinedPersistentStore {
         totalCost: row.total_cost as number,
       },
       parentVersionId: row.parent_version_id as string | undefined,
+    };
+  }
+
+  /** This store as an `ABTestStore`, e.g. for the `prompts` config. */
+  abTests(): ABTestStore {
+    return {
+      create: (test) => this.create(test),
+      get: (id) => this.getABTest(id),
+      getActive: (agentId) => this.getActive(agentId),
+      update: (id, updates) => this.update(id, updates),
+      recordResult: (testId, variant, score, latency, cost) =>
+        this.recordResult(testId, variant, score, latency, cost),
+      list: (agentId, status) => this.list(agentId, status),
+      delete: (id) => this.deleteABTest(id),
+    };
+  }
+
+  /** This store as an `InstructionVersionStore`, e.g. for the `prompts` config. */
+  instructionVersions(): InstructionVersionStore {
+    return {
+      save: (version) => this.save(version),
+      get: (id) => this.getVersion(id),
+      getCurrent: (agentId) => this.getCurrent(agentId),
+      getHistory: (agentId, limit) => this.getHistory(agentId, limit),
+      retire: (id) => this.retire(id),
+      updateMetrics: (id, metrics) => this.updateMetrics(id, metrics),
     };
   }
 }

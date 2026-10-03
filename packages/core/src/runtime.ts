@@ -17,14 +17,23 @@ import type {
   CostEstimate,
   EstimateOptions,
   MemoryAdapter,
+  HandoffEvent,
+  ResumeOptions,
+  RunCheckpoint,
+  RunCheckpointStore,
+  RunPrompt,
+  Tool,
+  ToolApprovalDecision,
+  ToolApprovalRequest,
 } from '@cogitator-ai/types';
-import { getPrice } from '@cogitator-ai/models';
+import { calculateCost as calculateModelCost, type TokenUsageForCost } from '@cogitator-ai/models';
 import { type Agent } from './agent';
 import { ToolRegistry } from './registry';
 import { createLLMBackend, parseModel } from './llm/index';
 import { isLLMProvider } from './llm/providers';
 import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { withLLMRetry } from './llm/retry';
+import { PiiMasker, withPiiMasking } from './security/pii';
 import { getLogger } from './logger';
 import {
   type InitializerState,
@@ -49,6 +58,9 @@ import { createSpan, getTextContent } from './cogitator/span-factory';
 import { executeTool, createToolMessage } from './cogitator/tool-executor';
 import { streamChat } from './cogitator/streaming';
 import { RunLimiter } from './cogitator/run-limiter';
+import { findHandoffAgent, handoffTools } from './cogitator/handoffs';
+import { PromptRegistry } from './cogitator/prompts';
+import { InMemoryRunCheckpointStore, ThreadRunCheckpointStore } from './cogitator/run-checkpoints';
 import { parseStructuredOutput, toLLMResponseFormat } from './cogitator/response-format';
 import { CostEstimator } from './cost-routing/cost-estimator';
 
@@ -106,6 +118,9 @@ const DEFAULT_RUN_TIMEOUT = 120_000;
 export class Cogitator {
   private config: CogitatorConfig;
   private backends = new Map<string, LLMBackend>();
+  private processCheckpoints?: InMemoryRunCheckpointStore;
+  private promptRegistry?: PromptRegistry;
+  private threadCheckpoints?: { memory: MemoryAdapter; store: ThreadRunCheckpointStore };
   /** Global tool registry shared across all runs */
   public readonly tools: ToolRegistry = new ToolRegistry();
 
@@ -173,7 +188,64 @@ export class Cogitator {
    * ```
    */
   async run(agent: Agent, options: RunOptions): Promise<RunResult> {
-    const runId = `run_${nanoid(12)}`;
+    return this.execute(agent, options);
+  }
+
+  /**
+   * Continue a run that paused for tool approvals (`status: 'paused'`) from its
+   * `checkpoint`. Approved calls run, declined ones answer the model with the
+   * reason, and the run goes on; calls without a decision pause it again.
+   *
+   * @example
+   * ```ts
+   * const paused = await cog.run(agent, { input: 'Refund order 42' });
+   * if (paused.status === 'paused') {
+   *   await store.save(paused.checkpoint);
+   *   // ... later, once someone approved it
+   *   const result = await cog.resume(agent, checkpoint, {
+   *     decisions: { [paused.pendingApprovals[0].toolCallId]: { approved: true } },
+   *   });
+   * }
+   * ```
+   */
+  async resume(
+    agent: Agent,
+    target: RunCheckpoint | string,
+    options: ResumeOptions = {}
+  ): Promise<RunResult> {
+    if (typeof target !== 'string' && target.version !== 1) {
+      throw new CogitatorError({
+        message: `Unsupported run checkpoint version: ${String(target.version)}`,
+        code: ErrorCode.VALIDATION_ERROR,
+      });
+    }
+    const { decisions = {}, defaultDecision, userId, ...rest } = options;
+    const threadId = typeof target === 'string' ? target : target.threadId;
+    return this.execute(
+      agent,
+      { ...rest, input: '', threadId, ...(userId !== undefined && { userId }) },
+      {
+        ...(typeof target === 'string' ? {} : { checkpoint: target }),
+        decisions,
+        ...(defaultDecision && { defaultDecision }),
+        checkUser: typeof target === 'string' || userId !== undefined,
+      }
+    );
+  }
+
+  private async execute(
+    agent: Agent,
+    options: RunOptions,
+    resumeFrom?: {
+      checkpoint?: RunCheckpoint;
+      decisions: Record<string, ToolApprovalDecision>;
+      defaultDecision?: ToolApprovalDecision;
+      checkUser: boolean;
+    }
+  ): Promise<RunResult> {
+    let checkpoint = resumeFrom?.checkpoint;
+    let prompt: RunPrompt | undefined;
+    let runId = checkpoint?.runId ?? `run_${nanoid(12)}`;
     const threadId = options.threadId ?? `thread_${nanoid(12)}`;
     const traceId = `trace_${nanoid(16)}`;
     const startTime = Date.now();
@@ -215,98 +287,117 @@ export class Cogitator {
     try {
       releaseRunSlot = await this.acquireRunSlot(abortController.signal);
       throwIfAborted(abortController.signal);
-      options.onRunStart?.({ runId, agentId: agent.id, input: options.input, threadId });
+      if (!checkpoint) {
+        options.onRunStart?.({ runId, agentId: agent.id, input: options.input, threadId });
+      }
 
       const agentModel = this.resolveModel(agent);
       await this.initializeAll(agentModel);
 
-      const input = await buildInputWithAudio(options.input, options.audio, {
         apiKey: this.config.llm?.providers?.openai?.apiKey ?? process.env.OPENAI_API_KEY,
-        signal: abortController.signal,
-      });
-      const runOptions: RunOptions = input === options.input ? options : { ...options, input };
-
-      const registry = new ToolRegistry();
-      registry.registerMany(this.tools.getAll());
-      if (agent.tools && agent.tools.length > 0) {
-        registry.registerMany(agent.tools);
-      }
-
-      let effectiveModel = agentModel;
-      let backend: LLMBackend;
-      let model: string;
-
-      if (this.state.costRouter && this.config.costRouting?.autoSelectModel) {
-        const recommendation = await this.state.costRouter.recommendModel(input);
-        effectiveModel = `${recommendation.provider}/${recommendation.modelId}`;
-
-        const budgetCheck = this.state.costRouter.checkBudget(recommendation.estimatedCost);
-        if (!budgetCheck.allowed) {
-          throw new Error(`Budget exceeded: ${budgetCheck.reason}`);
-        }
-
-        backend = this.getBackend(effectiveModel, recommendation.provider);
-        model = recommendation.modelId;
-      } else {
-        ({ backend, model } = this.route(effectiveModel, agent.config.provider));
-      }
-
-      const messages = await buildInitialMessages(
-        agent,
-        runOptions,
-        threadId,
-        this.state.memoryAdapter,
-        this.state.contextBuilder
-      );
-
-      if (this.state.injectionDetector) {
-        const injectionResult = await this.state.injectionDetector.analyze(input);
-        if (injectionResult.action === 'blocked') {
-          const threatTypes = injectionResult.threats.map((t) => t.type).join(', ');
+      if (resumeFrom) {
+        checkpoint ??= (await this.runCheckpointStore().load(threadId)) ?? undefined;
+        if (!checkpoint) {
           throw new CogitatorError({
-            message: `Prompt injection detected: ${threatTypes}`,
-            code: ErrorCode.PROMPT_INJECTION_DETECTED,
-            details: { threats: injectionResult.threats },
+            message: `Thread ${threadId} has no paused run`,
+            code: ErrorCode.RUN_NOT_PAUSED,
           });
         }
+        if (resumeFrom.checkUser && checkpoint.userId !== options.userId) {
+          throw new CogitatorError({
+            message: `The paused run in thread ${threadId} belongs to another user`,
+            code: ErrorCode.THREAD_ACCESS_DENIED,
+          });
+        }
+        runId = checkpoint.runId;
+        options = { ...options, userId: checkpoint.userId };
       }
 
-      if (this.state.constitutionalAI?.config.filterInput) {
-        const inputResult = await this.state.constitutionalAI.filterInput(input);
-        if (!inputResult.allowed) {
-          throw new Error(`Input blocked: ${inputResult.blockedReason ?? 'Policy violation'}`);
+      prompt = checkpoint?.prompt;
+      if (!checkpoint && (this.config.prompts || this.promptRegistry)) {
+        const resolution = await this.prompts.resolve(agent, threadId);
+        prompt = resolution.prompt;
+        if (resolution.instructions !== agent.instructions) {
+          agent = agent.clone({ id: agent.id, instructions: resolution.instructions });
         }
       }
 
-      if (options.context) {
-        addContextToMessages(messages, options.context);
+      let active: Agent = agent;
+      if (checkpoint?.activeAgent && checkpoint.activeAgent !== agent.name) {
+        const found = findHandoffAgent(agent, checkpoint.activeAgent);
+        if (!found) {
+          throw new CogitatorError({
+            message: `The paused run is in agent "${checkpoint.activeAgent}", which ${agent.name} cannot hand over to`,
+            code: ErrorCode.VALIDATION_ERROR,
+          });
+        }
+        active = found;
+      }
+      const handoffs: HandoffEvent[] = [...(checkpoint?.handoffs ?? [])];
+
+      const buildRegistry = (owner: Agent) => {
+        const ownerRegistry = new ToolRegistry();
+        ownerRegistry.registerMany(this.tools.getAll());
+        if (owner.tools.length > 0) ownerRegistry.registerMany(owner.tools);
+        const handoff = handoffTools(owner);
+        ownerRegistry.registerMany(handoff.tools);
+        return { registry: ownerRegistry, targets: handoff.targets };
+      };
+      let { registry, targets: handoffTargets } = buildRegistry(active);
+
+      let effectiveModel = agentModel;
+      let routeProvider = agent.config.provider;
+      let backend: LLMBackend;
+      let model: string;
+      let input: string;
+      let messages: Message[];
+
+      if (checkpoint) {
+        input = checkpoint.input;
+        effectiveModel = checkpoint.model;
+        routeProvider = checkpoint.provider;
+        ({ backend, model } = this.route(effectiveModel, routeProvider));
+        messages = [...checkpoint.messages];
+      } else {
+        input = await buildInputWithAudio(options.input, options.audio, {
+          signal: abortController.signal,
+        });
+        const runOptions: RunOptions = input === options.input ? options : { ...options, input };
+
+        if (this.state.costRouter && this.config.costRouting?.autoSelectModel) {
+          const recommendation = await this.state.costRouter.recommendModel(input);
+          effectiveModel = `${recommendation.provider}/${recommendation.modelId}`;
+          routeProvider = recommendation.provider;
+
+          const budgetCheck = this.state.costRouter.checkBudget(recommendation.estimatedCost);
+          if (!budgetCheck.allowed) {
+            throw new Error(`Budget exceeded: ${budgetCheck.reason}`);
+          }
+
+          backend = this.getBackend(effectiveModel, recommendation.provider);
+          model = recommendation.modelId;
+        } else {
+          ({ backend, model } = this.route(effectiveModel, agent.config.provider));
+        }
+
+        await this.abandonPausedRun(agent, runOptions, threadId);
+        messages = await this.prepareMessages(agent, runOptions, input, threadId);
       }
 
-      if (
-        this.state.memoryAdapter &&
-        options.saveHistory !== false &&
-        options.useMemory !== false
-      ) {
-        const currentUserMessage = messages[messages.length - 1];
-        await saveEntry(
-          threadId,
-          agent.id,
-          currentUserMessage,
-          this.state.memoryAdapter,
-          undefined,
-          undefined,
-          options.onMemoryError,
-          options.userId
-        );
-      }
-
-      const allToolCalls: ToolCall[] = [];
-      let totalInputTokens = 0;
-      let totalOutputTokens = 0;
-      let iterations = 0;
+      const allToolCalls: ToolCall[] = [...(checkpoint?.toolCalls ?? [])];
+      let totalInputTokens = checkpoint?.usage.inputTokens ?? 0;
+      let totalOutputTokens = checkpoint?.usage.outputTokens ?? 0;
+      let cachedInputTokens = checkpoint?.usage.cachedInputTokens ?? 0;
+      let cacheWriteTokens = checkpoint?.usage.cacheWriteTokens ?? 0;
+      let reasoningTokens = checkpoint?.usage.reasoningTokens ?? 0;
+      const reasoningParts: string[] = [...(checkpoint?.reasoning ?? [])];
+      let reasoning = options.reasoning ?? active.config.reasoning;
+      const promptCache = this.config.llm?.promptCache ?? {};
+      let iterations = checkpoint?.iterations ?? 0;
       const maxIterations = agent.config?.maxIterations ?? 10;
-      let lastToolCallSig = '';
-      const responseFormat = toLLMResponseFormat(agent.config.responseFormat);
+      let lastToolCallSig = checkpoint?.lastToolCallSignature ?? '';
+      let pausedTurn: PausedTurn | undefined;
+      let responseFormat = toLLMResponseFormat(active.config.responseFormat);
 
       const allReflections: Reflection[] = [];
       const allActions: ReflectionAction[] = [];
@@ -321,11 +412,267 @@ export class Cogitator {
         availableTools: registry.getNames(),
       };
 
-      if (this.state.reflectionEngine && this.config.reflection?.enabled) {
+      if (!checkpoint && this.state.reflectionEngine && this.config.reflection?.enabled) {
         await enrichMessagesWithInsights(messages, this.state.reflectionEngine, agentContext);
       }
 
-      while (iterations < maxIterations) {
+      const switchTo = (target: Agent, reason: unknown) => {
+        const event: HandoffEvent = {
+          from: active.name,
+          to: target.name,
+          ...(typeof reason === 'string' && reason && { reason }),
+        };
+        handoffs.push(event);
+        options.onHandoff?.(event);
+        const system = messages[0];
+        const content =
+          system?.role === 'system' &&
+          typeof system.content === 'string' &&
+          system.content.startsWith(active.instructions)
+            ? target.instructions + system.content.slice(active.instructions.length)
+            : target.instructions;
+        if (system?.role === 'system') messages[0] = { role: 'system', content };
+        else messages.unshift({ role: 'system', content });
+        spans.push(
+          createSpan(
+            'agent.handoff',
+            traceId,
+            rootSpanId,
+            Date.now(),
+            Date.now(),
+            { 'handoff.from': event.from, 'handoff.to': event.to },
+            'ok',
+            'internal',
+            options.onSpan
+          )
+        );
+        active = target;
+        ({ registry, targets: handoffTargets } = buildRegistry(target));
+        effectiveModel = this.resolveModel(target);
+        routeProvider = target.config.provider;
+        ({ backend, model } = this.route(effectiveModel, routeProvider));
+        reasoning = options.reasoning ?? target.config.reasoning;
+        responseFormat = toLLMResponseFormat(target.config.responseFormat);
+        lastToolCallSig = '';
+      };
+
+      const handleToolTurn = async (
+        toolCalls: ToolCall[],
+        resumed?: {
+          decisions: Record<string, ToolApprovalDecision>;
+          fallback?: ToolApprovalDecision;
+        }
+      ): Promise<PausedTurn | undefined> => {
+        if (!resumed) {
+          const currentSig = toolCalls
+            .map((tc) => `${tc.name}:${JSON.stringify(tc.arguments)}`)
+            .join('|');
+          if (currentSig === lastToolCallSig) {
+            for (const tc of toolCalls) {
+              const errorResult: ToolResult = {
+                callId: tc.id,
+                name: tc.name,
+                result: null,
+                error: 'Duplicate tool call detected. Try a different approach.',
+              };
+              const duplicateMessage = createToolMessage(tc, errorResult);
+              messages.push(duplicateMessage);
+              if (
+                this.state.memoryAdapter &&
+                options.saveHistory !== false &&
+                options.useMemory !== false
+              ) {
+                await saveEntry(
+                  threadId,
+                  active.id,
+                  duplicateMessage,
+                  this.state.memoryAdapter,
+                  undefined,
+                  [errorResult],
+                  options.onMemoryError,
+                  options.userId
+                );
+              }
+            }
+            lastToolCallSig = '';
+            return undefined;
+          }
+          lastToolCallSig = currentSig;
+
+          for (const toolCall of toolCalls) {
+            allToolCalls.push(toolCall);
+            options.onToolCall?.(toolCall);
+          }
+        }
+
+        const decisions = new Map(Object.entries(resumed?.decisions ?? {}));
+        const pending: ToolApprovalRequest[] = [];
+        for (const toolCall of toolCalls) {
+          const tool = registry.get(toolCall.name);
+          if (!tool || decisions.has(toolCall.id) || !needsApproval(tool, toolCall.arguments)) {
+            continue;
+          }
+          const request: ToolApprovalRequest = {
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            arguments: toolCall.arguments,
+            description: tool.description,
+            ...(tool.sideEffects && { sideEffects: [...tool.sideEffects] }),
+          };
+          const decision = resumed?.fallback ?? (await this.decideApproval(request, options));
+          if (decision === 'pause') pending.push(request);
+          else decisions.set(toolCall.id, decision);
+        }
+        if (pending.length > 0) {
+          return { toolCalls, decisions: Object.fromEntries(decisions), pending };
+        }
+        if (resumed) await this.runCheckpointStore().delete(threadId);
+
+        const executeToolCall = async (toolCall: ToolCall) => {
+          const toolSpanStart = Date.now();
+          const decision = decisions.get(toolCall.id);
+          if (decision?.approved === false) {
+            const declined: ToolResult = {
+              callId: toolCall.id,
+              name: toolCall.name,
+              result: null,
+              error: `The user declined this tool call${decision.reason ? `: ${decision.reason}` : ''}`,
+            };
+            return { toolCall, result: declined, toolSpanStart, toolSpanEnd: Date.now() };
+          }
+          const result = await waitForAbortable(
+            executeTool(
+              registry,
+              toolCall,
+              runId,
+              active.id,
+              this.state.sandboxManager,
+              this.state.constitutionalAI,
+              this.state.constitutionalAI?.config.filterToolCalls ?? false,
+              () => initializeSandbox(this.config, this.state),
+              abortController.signal,
+              {
+                threadId,
+                userId: options.userId,
+                channelType: options.channelType,
+                channelId: options.channelId,
+              },
+              decision?.approved === true
+            ),
+            abortController.signal
+          );
+          const toolSpanEnd = Date.now();
+          return { toolCall, result, toolSpanStart, toolSpanEnd };
+        };
+
+        const toolResults = options.parallelToolCalls
+          ? await Promise.all(toolCalls.map(executeToolCall))
+          : await (async () => {
+              const results: Awaited<ReturnType<typeof executeToolCall>>[] = [];
+              for (const toolCall of toolCalls) {
+                results.push(await executeToolCall(toolCall));
+              }
+              return results;
+            })();
+
+        const reflectionMessages: Message[] = [];
+
+        for (const { toolCall, result, toolSpanStart, toolSpanEnd } of toolResults) {
+          const toolSpan = createSpan(
+            `tool.${toolCall.name}`,
+            traceId,
+            rootSpanId,
+            toolSpanStart,
+            toolSpanEnd,
+            {
+              'tool.name': toolCall.name,
+              'tool.call_id': toolCall.id,
+              'tool.arguments': JSON.stringify(toolCall.arguments),
+              'tool.success': !result.error,
+              'tool.error': result.error,
+            },
+            result.error ? 'error' : 'ok',
+            'internal',
+            options.onSpan
+          );
+          spans.push(toolSpan);
+
+          options.onToolResult?.(result);
+
+          const toolMessage = createToolMessage(toolCall, result);
+          messages.push(toolMessage);
+
+          if (
+            this.state.memoryAdapter &&
+            options.saveHistory !== false &&
+            options.useMemory !== false
+          ) {
+            await saveEntry(
+              threadId,
+              active.id,
+              toolMessage,
+              this.state.memoryAdapter,
+              undefined,
+              [result],
+              options.onMemoryError,
+              options.userId
+            );
+          }
+
+          const action: ReflectionAction = {
+            type: 'tool_call',
+            toolName: toolCall.name,
+            input: toolCall.arguments,
+            output: result.result,
+            error: result.error,
+            duration: toolSpanEnd - toolSpanStart,
+          };
+          allActions.push(action);
+
+          const reflection = this.config.reflection;
+          const reflectOnFailure = action.error !== undefined && !!reflection?.reflectAfterError;
+          if (
+            this.state.reflectionEngine &&
+            reflection?.enabled &&
+            (reflectOnFailure || reflection.reflectAfterToolCall)
+          ) {
+            try {
+              const reflectionResult = reflectOnFailure
+                ? await this.state.reflectionEngine.reflectOnError(action, agentContext)
+                : await this.state.reflectionEngine.reflectOnToolCall(action, agentContext);
+              allReflections.push(reflectionResult.reflection);
+
+              if (reflectionResult.shouldAdjustStrategy && reflectionResult.suggestedAction) {
+                reflectionMessages.push({
+                  role: 'system',
+                  content: `Reflection: ${reflectionResult.reflection.analysis.reasoning}. Consider: ${reflectionResult.suggestedAction}`,
+                });
+              }
+            } catch (reflectionError) {
+              getLogger().warn('Reflection failed', {
+                error:
+                  reflectionError instanceof Error
+                    ? reflectionError.message
+                    : String(reflectionError),
+              });
+            }
+          }
+        }
+        messages.push(...reflectionMessages);
+        const handoff = toolCalls.find((call) => handoffTargets.has(call.name));
+        const target = handoff && handoffTargets.get(handoff.name);
+        if (handoff && target) switchTo(target, handoff.arguments.reason);
+        return undefined;
+      };
+
+      if (checkpoint && resumeFrom) {
+        pausedTurn = await handleToolTurn(checkpoint.turn.toolCalls, {
+          decisions: { ...checkpoint.turn.decisions, ...resumeFrom.decisions },
+          fallback: resumeFrom.defaultDecision,
+        });
+      }
+
+      while (!pausedTurn && iterations < maxIterations) {
         throwIfAborted(abortController.signal);
         this.assertTokenBudget(totalInputTokens + totalOutputTokens);
 
@@ -352,10 +699,11 @@ export class Cogitator {
               model,
               messages,
               registry,
-              agent,
+              active,
               options.onToken,
               abortController.signal,
-              responseFormat
+              responseFormat,
+              { reasoning, cache: promptCache, onReasoning: options.onReasoning }
             ),
             abortController.signal
           );
@@ -365,11 +713,13 @@ export class Cogitator {
               model,
               messages,
               tools: registry.getSchemas(),
-              temperature: agent.config.temperature,
-              topP: agent.config.topP,
-              maxTokens: agent.config.maxTokens,
-              stop: agent.config.stopSequences,
+              temperature: active.config.temperature,
+              topP: active.config.topP,
+              maxTokens: active.config.maxTokens,
+              stop: active.config.stopSequences,
               responseFormat,
+              reasoning,
+              cache: promptCache,
               signal: abortController.signal,
             }),
             abortController.signal
@@ -387,6 +737,12 @@ export class Cogitator {
             'llm.iteration': iterations,
             'llm.input_tokens': response.usage.inputTokens,
             'llm.output_tokens': response.usage.outputTokens,
+            ...(response.usage.cachedInputTokens && {
+              'llm.cached_input_tokens': response.usage.cachedInputTokens,
+            }),
+            ...(response.usage.reasoningTokens && {
+              'llm.reasoning_tokens': response.usage.reasoningTokens,
+            }),
             'llm.finish_reason': response.finishReason,
           },
           'ok',
@@ -397,6 +753,10 @@ export class Cogitator {
 
         totalInputTokens += response.usage.inputTokens;
         totalOutputTokens += response.usage.outputTokens;
+        cachedInputTokens += response.usage.cachedInputTokens ?? 0;
+        cacheWriteTokens += response.usage.cacheWriteTokens ?? 0;
+        reasoningTokens += response.usage.reasoningTokens ?? 0;
+        if (response.reasoning) reasoningParts.push(response.reasoning);
 
         let outputContent = response.content;
 
@@ -432,7 +792,7 @@ export class Cogitator {
         ) {
           await saveEntry(
             threadId,
-            agent.id,
+            active.id,
             assistantMessage,
             this.state.memoryAdapter,
             response.toolCalls,
@@ -447,178 +807,76 @@ export class Cogitator {
           response.toolCalls &&
           response.toolCalls.length > 0
         ) {
-          let toolCalls = response.toolCalls;
-
-          const currentSig = toolCalls
-            .map((tc) => `${tc.name}:${JSON.stringify(tc.arguments)}`)
-            .join('|');
-          if (currentSig === lastToolCallSig) {
-            for (const tc of toolCalls) {
-              const errorResult: ToolResult = {
-                callId: tc.id,
-                name: tc.name,
-                result: null,
-                error: 'Duplicate tool call detected. Try a different approach.',
-              };
-              const duplicateMessage = createToolMessage(tc, errorResult);
-              messages.push(duplicateMessage);
-              if (
-                this.state.memoryAdapter &&
-                options.saveHistory !== false &&
-                options.useMemory !== false
-              ) {
-                await saveEntry(
-                  threadId,
-                  agent.id,
-                  duplicateMessage,
-                  this.state.memoryAdapter,
-                  undefined,
-                  [errorResult],
-                  options.onMemoryError,
-                  options.userId
-                );
-              }
-            }
-            lastToolCallSig = '';
-            continue;
-          }
-          lastToolCallSig = currentSig;
-
-          for (const toolCall of toolCalls) {
-            allToolCalls.push(toolCall);
-            options.onToolCall?.(toolCall);
-          }
-
-          const executeToolCall = async (toolCall: ToolCall) => {
-            const toolSpanStart = Date.now();
-            const result = await waitForAbortable(
-              executeTool(
-                registry,
-                toolCall,
-                runId,
-                agent.id,
-                this.state.sandboxManager,
-                this.state.constitutionalAI,
-                this.state.constitutionalAI?.config.filterToolCalls ?? false,
-                () => initializeSandbox(this.config, this.state),
-                abortController.signal,
-                {
-                  threadId,
-                  userId: options.userId,
-                  channelType: options.channelType,
-                  channelId: options.channelId,
-                }
-              ),
-              abortController.signal
-            );
-            const toolSpanEnd = Date.now();
-            return { toolCall, result, toolSpanStart, toolSpanEnd };
-          };
-
-          const toolResults = options.parallelToolCalls
-            ? await Promise.all(toolCalls.map(executeToolCall))
-            : await (async () => {
-                const results: Awaited<ReturnType<typeof executeToolCall>>[] = [];
-                for (const toolCall of toolCalls) {
-                  results.push(await executeToolCall(toolCall));
-                }
-                return results;
-              })();
-
-          const reflectionMessages: Message[] = [];
-
-          for (const { toolCall, result, toolSpanStart, toolSpanEnd } of toolResults) {
-            const toolSpan = createSpan(
-              `tool.${toolCall.name}`,
-              traceId,
-              rootSpanId,
-              toolSpanStart,
-              toolSpanEnd,
-              {
-                'tool.name': toolCall.name,
-                'tool.call_id': toolCall.id,
-                'tool.arguments': JSON.stringify(toolCall.arguments),
-                'tool.success': !result.error,
-                'tool.error': result.error,
-              },
-              result.error ? 'error' : 'ok',
-              'internal',
-              options.onSpan
-            );
-            spans.push(toolSpan);
-
-            options.onToolResult?.(result);
-
-            const toolMessage = createToolMessage(toolCall, result);
-            messages.push(toolMessage);
-
-            if (
-              this.state.memoryAdapter &&
-              options.saveHistory !== false &&
-              options.useMemory !== false
-            ) {
-              await saveEntry(
-                threadId,
-                agent.id,
-                toolMessage,
-                this.state.memoryAdapter,
-                undefined,
-                [result],
-                options.onMemoryError,
-                options.userId
-              );
-            }
-
-            const action: ReflectionAction = {
-              type: 'tool_call',
-              toolName: toolCall.name,
-              input: toolCall.arguments,
-              output: result.result,
-              error: result.error,
-              duration: toolSpanEnd - toolSpanStart,
-            };
-            allActions.push(action);
-
-            const reflection = this.config.reflection;
-            const reflectOnFailure = action.error !== undefined && !!reflection?.reflectAfterError;
-            if (
-              this.state.reflectionEngine &&
-              reflection?.enabled &&
-              (reflectOnFailure || reflection.reflectAfterToolCall)
-            ) {
-              try {
-                const reflectionResult = reflectOnFailure
-                  ? await this.state.reflectionEngine.reflectOnError(action, agentContext)
-                  : await this.state.reflectionEngine.reflectOnToolCall(action, agentContext);
-                allReflections.push(reflectionResult.reflection);
-
-                if (reflectionResult.shouldAdjustStrategy && reflectionResult.suggestedAction) {
-                  reflectionMessages.push({
-                    role: 'system',
-                    content: `Reflection: ${reflectionResult.reflection.analysis.reasoning}. Consider: ${reflectionResult.suggestedAction}`,
-                  });
-                }
-              } catch (reflectionError) {
-                getLogger().warn('Reflection failed', {
-                  error:
-                    reflectionError instanceof Error
-                      ? reflectionError.message
-                      : String(reflectionError),
-                });
-              }
-            }
-          }
-
-          messages.push(...reflectionMessages);
+          pausedTurn = await handleToolTurn(response.toolCalls);
+          if (pausedTurn) break;
         } else {
           break;
         }
       }
 
+      if (pausedTurn) {
+        const pausedCheckpoint: RunCheckpoint = {
+          version: 1,
+          runId,
+          agentId: active.id,
+          threadId,
+          ...(options.userId !== undefined && { userId: options.userId }),
+          model: effectiveModel,
+          ...(routeProvider !== undefined && { provider: routeProvider }),
+          input,
+          messages,
+          toolCalls: allToolCalls,
+          ...(prompt && { prompt }),
+          ...(active !== agent && { activeAgent: active.name }),
+          ...(handoffs.length > 0 && { handoffs }),
+          turn: { toolCalls: pausedTurn.toolCalls, decisions: pausedTurn.decisions },
+          iterations,
+          lastToolCallSignature: lastToolCallSig,
+          usage: {
+            inputTokens: totalInputTokens,
+            outputTokens: totalOutputTokens,
+            cachedInputTokens,
+            cacheWriteTokens,
+            reasoningTokens,
+          },
+          reasoning: reasoningParts,
+          startedAt: checkpoint?.startedAt ?? startTime,
+        };
+        const paused: RunResult = {
+          output: getTextContent(messages[messages.length - 1]?.content ?? ''),
+          runId,
+          agentId: agent.id,
+          threadId,
+          status: 'paused',
+          pendingApprovals: pausedTurn.pending,
+          ...(handoffs.length > 0 && { handoffs, finalAgent: active.name }),
+          checkpoint: pausedCheckpoint,
+          usage: {
+            inputTokens: totalInputTokens,
+            outputTokens: totalOutputTokens,
+            totalTokens: totalInputTokens + totalOutputTokens,
+            cost: this.calculateCost(effectiveModel, {
+              inputTokens: totalInputTokens,
+              outputTokens: totalOutputTokens,
+              cachedInputTokens,
+              cacheWriteTokens,
+            }),
+            duration: Date.now() - startTime,
+          },
+          ...(reasoningParts.length > 0 && { reasoning: reasoningParts.join('\n\n') }),
+          toolCalls: allToolCalls,
+          messages,
+          trace: { traceId, spans },
+        };
+        await this.runCheckpointStore().save(pausedCheckpoint);
+        options.onRunComplete?.(paused);
+        return paused;
+      }
+
       const endTime = Date.now();
       const lastAssistantMessage = messages.filter((m) => m.role === 'assistant').pop();
       const finalOutput = lastAssistantMessage ? getTextContent(lastAssistantMessage.content) : '';
-      const structured = parseStructuredOutput(agent.config.responseFormat, finalOutput);
+      const structured = parseStructuredOutput(active.config.responseFormat, finalOutput);
 
       if (
         this.state.reflectionEngine &&
@@ -665,7 +923,12 @@ export class Cogitator {
       );
       spans.unshift(rootSpan);
 
-      const runCost = this.calculateCost(effectiveModel, totalInputTokens, totalOutputTokens);
+      const runCost = this.calculateCost(effectiveModel, {
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        cachedInputTokens,
+        cacheWriteTokens,
+      });
 
       if (this.state.costRouter) {
         this.state.costRouter.recordCost({
@@ -682,6 +945,9 @@ export class Cogitator {
       const result: RunResult = {
         output: finalOutput,
         ...(structured !== undefined && { structured }),
+        status: 'completed',
+        ...(prompt && { prompt }),
+        ...(handoffs.length > 0 && { handoffs, finalAgent: active.name }),
         runId,
         agentId: agent.id,
         threadId,
@@ -692,7 +958,11 @@ export class Cogitator {
           totalTokens: totalInputTokens + totalOutputTokens,
           cost: runCost,
           duration: endTime - startTime,
+          ...(reasoningTokens > 0 && { reasoningTokens }),
+          ...(cachedInputTokens > 0 && { cachedInputTokens }),
+          ...(cacheWriteTokens > 0 && { cacheWriteTokens }),
         },
+        ...(reasoningParts.length > 0 && { reasoning: reasoningParts.join('\n\n') }),
         toolCalls: allToolCalls,
         messages,
         trace: {
@@ -705,10 +975,13 @@ export class Cogitator {
           : undefined,
       };
 
+      if (prompt) await this.recordPrompt(prompt, result, Date.now() - startTime);
+
       options.onRunComplete?.(result);
 
       return result;
     } catch (error) {
+      if (prompt) await this.recordPrompt(prompt, undefined, Date.now() - startTime);
       const endTime = Date.now();
 
       const errorSpan = createSpan(
@@ -741,6 +1014,175 @@ export class Cogitator {
       }
       removeParentAbortListener?.();
     }
+  }
+
+  /**
+   * The messages a new run starts with: the thread's history and the input,
+   * once the input passed the injection and constitutional checks, with the
+   * input saved to memory.
+   */
+  private async prepareMessages(
+    agent: Agent,
+    options: RunOptions,
+    input: string,
+    threadId: string
+  ): Promise<Message[]> {
+    const messages = await buildInitialMessages(
+      agent,
+      options,
+      threadId,
+      this.state.memoryAdapter,
+      this.state.contextBuilder
+    );
+
+    const pii = this.config.security?.pii;
+    if (pii?.mode === 'block') {
+      const found = new PiiMasker(pii).find(input);
+      if (found.length > 0) {
+        throw new CogitatorError({
+          message: `The input contains personal data: ${[...new Set(found.map((f) => f.type))].join(', ')}`,
+          code: ErrorCode.PII_DETECTED,
+          details: { types: [...new Set(found.map((f) => f.type))] },
+        });
+      }
+    }
+
+    if (this.state.injectionDetector) {
+      const injectionResult = await this.state.injectionDetector.analyze(input);
+      if (injectionResult.action === 'blocked') {
+        const threatTypes = injectionResult.threats.map((t) => t.type).join(', ');
+        throw new CogitatorError({
+          message: `Prompt injection detected: ${threatTypes}`,
+          code: ErrorCode.PROMPT_INJECTION_DETECTED,
+          details: { threats: injectionResult.threats },
+        });
+      }
+    }
+
+    if (this.state.constitutionalAI?.config.filterInput) {
+      const inputResult = await this.state.constitutionalAI.filterInput(input);
+      if (!inputResult.allowed) {
+        throw new Error(`Input blocked: ${inputResult.blockedReason ?? 'Policy violation'}`);
+      }
+    }
+
+    if (options.context) {
+      addContextToMessages(messages, options.context);
+    }
+
+    if (this.state.memoryAdapter && options.saveHistory !== false && options.useMemory !== false) {
+      const currentUserMessage = messages[messages.length - 1];
+      await saveEntry(
+        threadId,
+        agent.id,
+        currentUserMessage,
+        this.state.memoryAdapter,
+        undefined,
+        undefined,
+        options.onMemoryError,
+        options.userId
+      );
+    }
+
+    return messages;
+  }
+
+  /**
+   * Versioned instructions and A/B tests of this Cogitator's agents
+   * (`prompts` config, in process memory by default).
+   */
+  get prompts(): PromptRegistry {
+    this.promptRegistry ??= new PromptRegistry(this.config.prompts);
+    return this.promptRegistry;
+  }
+
+  private async recordPrompt(
+    prompt: RunPrompt,
+    result: RunResult | undefined,
+    durationMs: number
+  ): Promise<void> {
+    try {
+      await this.prompts.record(prompt, { result, durationMs });
+    } catch (error) {
+      getLogger().warn('Could not record the outcome of a run against its instructions', {
+        prompt: prompt.key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private runCheckpointStore(): RunCheckpointStore {
+    if (this.config.runCheckpoints) return this.config.runCheckpoints;
+    const memory = this.state.memoryAdapter;
+    if (memory) {
+      if (this.threadCheckpoints?.memory !== memory) {
+        this.threadCheckpoints = { memory, store: new ThreadRunCheckpointStore(memory) };
+      }
+      return this.threadCheckpoints.store;
+    }
+    this.processCheckpoints ??= new InMemoryRunCheckpointStore();
+    return this.processCheckpoints;
+  }
+
+  /**
+   * A new run on a thread whose run is waiting for approvals means the user
+   * moved on: the waiting calls are answered as declined, so the thread's
+   * history stays whole, and the pause is dropped.
+   */
+  private async abandonPausedRun(
+    agent: Agent,
+    options: RunOptions,
+    threadId: string
+  ): Promise<void> {
+    if (options.threadId === undefined) return;
+    const store = this.runCheckpointStore();
+    const paused = await store.load(threadId).catch((error: unknown) => {
+      getLogger().warn('Could not read the paused run of a thread', {
+        threadId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    });
+    if (!paused) return;
+    if (options.threadAccess !== 'shared' && paused.userId !== options.userId) return;
+    if (this.state.memoryAdapter && options.useMemory !== false && options.saveHistory !== false) {
+      for (const toolCall of paused.turn.toolCalls) {
+        const result: ToolResult = {
+          callId: toolCall.id,
+          name: toolCall.name,
+          result: null,
+          error: 'The user moved on without approving this tool call',
+        };
+        await saveEntry(
+          threadId,
+          agent.id,
+          createToolMessage(toolCall, result),
+          this.state.memoryAdapter,
+          undefined,
+          [result],
+          options.onMemoryError,
+          options.userId
+        );
+      }
+    }
+    await store.delete(threadId);
+  }
+
+  /**
+   * The decision for a call that needs approval: the run's `onApproval`, else
+   * `guardrails.onToolApproval`, else a pause.
+   */
+  private async decideApproval(
+    request: ToolApprovalRequest,
+    options: RunOptions
+  ): Promise<ToolApprovalDecision | 'pause'> {
+    if (options.onApproval) return options.onApproval(request);
+    const legacy = this.config.guardrails?.onToolApproval;
+    if (legacy) {
+      const approved = await legacy(request.toolName, request.arguments, request.sideEffects ?? []);
+      return approved ? { approved: true } : { approved: false };
+    }
+    return 'pause';
   }
 
   private async acquireRunSlot(signal: AbortSignal): Promise<(() => void) | undefined> {
@@ -852,7 +1294,10 @@ export class Cogitator {
   private backendFor(name: string): LLMBackend {
     const cached = this.backends.get(name);
     if (cached) return cached;
-    const backend = withLLMRetry(this.createBackend(name), this.config.llm?.retry);
+    const backend = withPiiMasking(
+      withLLMRetry(this.createBackend(name), this.config.llm?.retry),
+      this.config.security?.pii
+    );
     this.backends.set(name, backend);
     return backend;
   }
@@ -870,15 +1315,9 @@ export class Cogitator {
     });
   }
 
-  private calculateCost(model: string, inputTokens: number, outputTokens: number): number {
+  private calculateCost(model: string, usage: TokenUsageForCost): number {
     const { model: modelName } = parseModel(model);
-    const price = getPrice(modelName);
-
-    if (!price) {
-      return 0;
-    }
-
-    return (inputTokens * price.input + outputTokens * price.output) / 1_000_000;
+    return calculateModelCost(modelName, usage) ?? 0;
   }
 
   /**
@@ -1071,4 +1510,21 @@ function waitForAbortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<
       signal.removeEventListener('abort', onAbort);
     });
   });
+}
+
+interface PausedTurn {
+  toolCalls: ToolCall[];
+  decisions: Record<string, ToolApprovalDecision>;
+  pending: ToolApprovalRequest[];
+}
+
+/** Whether a call to `tool` with `args` needs approval; a check that throws counts as yes. */
+function needsApproval(tool: Tool, args: Record<string, unknown>): boolean {
+  const check = tool.requiresApproval;
+  if (typeof check !== 'function') return check === true;
+  try {
+    return check(args);
+  } catch {
+    return true;
+  }
 }

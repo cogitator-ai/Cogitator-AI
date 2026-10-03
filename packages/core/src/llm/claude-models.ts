@@ -131,6 +131,66 @@ export function supportsBedrockStructuredOutput(modelId: string): boolean {
   );
 }
 
+/**
+ * How a Claude model takes extended thinking:
+ * - `adaptive`: `thinking: { type: 'adaptive' }` plus `output_config.effort` (Claude 4.6+, 5.x, Fable, Mythos)
+ * - `budget`: `thinking: { type: 'enabled', budget_tokens }` (Claude 3.7 Sonnet, 4.0 – 4.5)
+ * - `none`: no extended thinking
+ */
+export type ClaudeThinkingMode = 'adaptive' | 'budget' | 'none';
+
+const ADAPTIVE_THINKING_FROM: ModelVersionThreshold = { major: 4, minor: 6 };
+const BUDGET_THINKING_FROM: ModelVersionThreshold = { major: 3, minor: 7 };
+
+export function getClaudeThinkingMode(modelId: string): ClaudeThinkingMode {
+  const version = parseClaudeModelId(modelId);
+  if (!version) return 'none';
+  if (ALWAYS_CURRENT_FAMILIES.has(version.family)) return 'adaptive';
+  if (version.major === null) return 'none';
+  if (isAtLeast(version, ADAPTIVE_THINKING_FROM) && version.family !== 'haiku') return 'adaptive';
+  if (isAtLeast(version, BUDGET_THINKING_FROM)) return 'budget';
+  return 'none';
+}
+
+export type ClaudeEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+/**
+ * Effort levels `output_config.effort` accepts: all five from Claude 4.7 on
+ * (and on 5.x, Fable, Mythos), no `xhigh` on 4.6, `low`–`high` on Opus 4.5,
+ * none on other models.
+ */
+export function getClaudeEffortLevels(modelId: string): readonly ClaudeEffort[] {
+  const version = parseClaudeModelId(modelId);
+  if (!version) return [];
+  const all: readonly ClaudeEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+  if (ALWAYS_CURRENT_FAMILIES.has(version.family)) return all;
+  if (version.major === null || version.family === 'haiku') return [];
+  if (isAtLeast(version, { major: 4, minor: 7 })) return all;
+  if (isAtLeast(version, { major: 4, minor: 6 })) return ['low', 'medium', 'high', 'max'];
+  if (version.family === 'opus' && isAtLeast(version, { major: 4, minor: 5 })) {
+    return ['low', 'medium', 'high'];
+  }
+  return [];
+}
+
+/**
+ * How a Claude model with adaptive thinking turns thinking off:
+ * - `disabled`: `thinking: { type: 'disabled' }` (4.6 – 4.8, Sonnet 5, Opus 5 at effort `high` or below)
+ * - `between_tools`: `thinking: { type: 'between_tools' }` (Sonnet 5.5 and later)
+ * - `never`: it cannot; the lowest effort is the closest (Opus 5.5+, Fable, Mythos)
+ */
+export type ClaudeThinkingOff = 'disabled' | 'between_tools' | 'never';
+
+export function getClaudeThinkingOff(modelId: string): ClaudeThinkingOff {
+  const version = parseClaudeModelId(modelId);
+  if (!version || ALWAYS_CURRENT_FAMILIES.has(version.family)) return 'never';
+  if (version.family === 'opus' && isAtLeast(version, { major: 5, minor: 5 })) return 'never';
+  if (version.family === 'sonnet' && isAtLeast(version, { major: 5, minor: 5 })) {
+    return 'between_tools';
+  }
+  return 'disabled';
+}
+
 export type WarnOnce = (key: string, message: string, context?: Record<string, unknown>) => void;
 
 /**

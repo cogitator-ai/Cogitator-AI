@@ -11,6 +11,8 @@ import type {
   Message,
   LLMResponseFormat,
   MessageContent,
+  ReasoningConfig,
+  ReasoningEffort,
   ToolSchema,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
@@ -36,6 +38,8 @@ interface OllamaMessage {
   images?: string[];
   tool_calls?: OllamaToolCall[];
   tool_name?: string;
+  /** Reasoning of thinking models, apart from `content` */
+  thinking?: string;
 }
 
 interface OllamaToolCall {
@@ -110,6 +114,7 @@ export class OllamaBackend extends BaseLLMBackend {
           messages,
           tools: tools ? this.convertTools(tools) : undefined,
           format: this.convertResponseFormat(request.responseFormat),
+          think: ollamaThink(request.model, request.reasoning),
           stream: false,
           options: {
             temperature: request.temperature,
@@ -162,6 +167,7 @@ export class OllamaBackend extends BaseLLMBackend {
           messages,
           tools: tools ? this.convertTools(tools) : undefined,
           format: this.convertResponseFormat(request.responseFormat),
+          think: ollamaThink(request.model, request.reasoning),
           stream: true,
           options: {
             temperature: request.temperature,
@@ -239,6 +245,7 @@ export class OllamaBackend extends BaseLLMBackend {
             id,
             delta: {
               content: data.message?.content || undefined,
+              ...(data.message?.thinking && { reasoning: data.message.thinking }),
               toolCalls: toolCalls?.map((tc) => ({
                 id: tc.id ?? `call_${nanoid(12)}`,
                 name: tc.function.name,
@@ -368,6 +375,7 @@ export class OllamaBackend extends BaseLLMBackend {
     return {
       id: this.generateId(),
       content: message.content ?? '',
+      ...(message.thinking && { reasoning: message.thinking }),
       toolCalls: toolCalls?.length ? toolCalls : undefined,
       finishReason,
       usage: {
@@ -404,4 +412,28 @@ export class OllamaBackend extends BaseLLMBackend {
 
     return tools.filter((t) => t.name === choice.function.name);
   }
+}
+
+const OLLAMA_THINK_LEVELS: Readonly<Record<ReasoningEffort, 'low' | 'medium' | 'high'>> = {
+  none: 'low',
+  minimal: 'low',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  xhigh: 'high',
+  max: 'high',
+};
+
+/**
+ * Ollama's `think` for a reasoning config: a level for models that take one
+ * (gpt-oss), on or off for the rest (qwen3, deepseek-r1, ...).
+ */
+export function ollamaThink(
+  model: string,
+  reasoning: ReasoningConfig | undefined
+): boolean | 'low' | 'medium' | 'high' | undefined {
+  if (!reasoning) return undefined;
+  if (reasoning.effort === 'none') return false;
+  if (/gpt-oss/i.test(model) && reasoning.effort) return OLLAMA_THINK_LEVELS[reasoning.effort];
+  return true;
 }

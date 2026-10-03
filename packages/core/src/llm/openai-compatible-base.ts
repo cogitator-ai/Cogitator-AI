@@ -3,6 +3,7 @@ import type {
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
+  ChatUsage,
   ToolCall,
   ToolChoice,
   Message,
@@ -64,6 +65,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         ...this.maxTokensParams(request.maxTokens),
         stop: request.stop,
         response_format: this.convertResponseFormat(request.responseFormat),
+        ...(request.reasoning?.effort && { reasoning_effort: request.reasoning.effort }),
       };
 
       response = request.signal
@@ -87,16 +89,14 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         arguments: this.tryParseJson(tc.function.arguments, ctx),
       }));
 
+    const reasoning = reasoningTextOf(message);
     return {
       id: response.id,
       content: message.content ?? '',
       toolCalls,
       finishReason: this.mapFinishReason(choice.finish_reason),
-      usage: {
-        inputTokens: response.usage?.prompt_tokens ?? 0,
-        outputTokens: response.usage?.completion_tokens ?? 0,
-        totalTokens: response.usage?.total_tokens ?? 0,
-      },
+      usage: toChatUsage(response.usage),
+      ...(reasoning && { reasoning }),
     };
   }
 
@@ -131,6 +131,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         stream: true as const,
         stream_options: { include_usage: true },
         response_format: this.convertResponseFormat(request.responseFormat),
+        ...(request.reasoning?.effort && { reasoning_effort: request.reasoning.effort }),
       };
 
       stream = request.signal
@@ -147,28 +148,15 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
       const choice = chunk.choices[0];
 
       if (!choice && chunk.usage) {
-        yield {
-          id: chunk.id,
-          delta: {},
-          usage: {
-            inputTokens: chunk.usage.prompt_tokens,
-            outputTokens: chunk.usage.completion_tokens,
-            totalTokens: chunk.usage.total_tokens,
-          },
-        };
+        yield { id: chunk.id, delta: {}, usage: toChatUsage(chunk.usage) };
         continue;
       }
 
       if (!choice) continue;
 
       const delta = choice.delta;
-      const usage = chunk.usage
-        ? {
-            inputTokens: chunk.usage.prompt_tokens,
-            outputTokens: chunk.usage.completion_tokens,
-            totalTokens: chunk.usage.total_tokens,
-          }
-        : undefined;
+      const usage = chunk.usage ? toChatUsage(chunk.usage) : undefined;
+      const reasoningDelta = reasoningTextOf(delta);
 
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
@@ -206,6 +194,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
         id: chunk.id,
         delta: {
           content: delta.content ?? undefined,
+          ...(reasoningDelta && { reasoning: reasoningDelta }),
           toolCalls: finalToolCalls,
         },
         finishReason: choice.finish_reason
@@ -391,4 +380,26 @@ export function parseToolCallArguments(str: string, ctx: LLMErrorContext): Recor
     );
   }
   return parsed as Record<string, unknown>;
+}
+
+function toChatUsage(usage: OpenAI.CompletionUsage | null | undefined): ChatUsage {
+  const cached = usage?.prompt_tokens_details?.cached_tokens;
+  const reasoning = usage?.completion_tokens_details?.reasoning_tokens;
+  return {
+    inputTokens: usage?.prompt_tokens ?? 0,
+    outputTokens: usage?.completion_tokens ?? 0,
+    totalTokens: usage?.total_tokens ?? 0,
+    ...(cached ? { cachedInputTokens: cached } : {}),
+    ...(reasoning ? { reasoningTokens: reasoning } : {}),
+  };
+}
+
+/**
+ * Reasoning text OpenAI-compatible servers attach to a message or delta:
+ * `reasoning_content` (DeepSeek, vLLM) or `reasoning` (Groq, OpenRouter).
+ */
+function reasoningTextOf(message: object): string | undefined {
+  const fields = message as { reasoning_content?: unknown; reasoning?: unknown };
+  const text = fields.reasoning_content ?? fields.reasoning;
+  return typeof text === 'string' && text.length > 0 ? text : undefined;
 }

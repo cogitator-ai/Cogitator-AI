@@ -203,6 +203,24 @@ describe('OpenAIBackend (Responses API)', () => {
       });
     });
 
+    it('asks reasoning models for the effort and a reasoning summary', async () => {
+      mockResponsesCreate.mockResolvedValue(response({ output: [textMessage('ok')] }));
+
+      await backend.chat({
+        model: 'gpt-6.1-sol',
+        messages: [{ role: 'user', content: 'Hi' }],
+        reasoning: { effort: 'xhigh', summary: true },
+      });
+      expect(lastParams()).toMatchObject({ reasoning: { effort: 'xhigh', summary: 'auto' } });
+
+      await backend.chat({
+        model: 'gpt-4.1',
+        messages: [{ role: 'user', content: 'Hi' }],
+        reasoning: { effort: 'high' },
+      });
+      expect(lastParams()).not.toHaveProperty('reasoning');
+    });
+
     it('keeps later system messages in place', async () => {
       mockResponsesCreate.mockResolvedValueOnce(response({ output: [textMessage('ok')] }));
 
@@ -437,6 +455,7 @@ describe('OpenAIBackend (Responses API)', () => {
           cachedInputTokens: 1024,
           reasoningTokens: 256,
         },
+        reasoning: 'Need the weather first.',
       });
     });
 
@@ -862,6 +881,38 @@ describe('OpenAIBackend (Responses API)', () => {
         },
       });
       expect(lastParams()).toMatchObject({ stream: true, store: false });
+    });
+
+    it('streams the reasoning summary', async () => {
+      mockResponsesCreate.mockResolvedValueOnce(
+        streamOf([
+          created,
+          {
+            type: 'response.reasoning_summary_text.delta',
+            item_id: 'rs_1',
+            output_index: 0,
+            summary_index: 0,
+            delta: 'Weighing ',
+          },
+          {
+            type: 'response.reasoning_summary_text.delta',
+            item_id: 'rs_1',
+            output_index: 0,
+            summary_index: 0,
+            delta: 'options.',
+          },
+          { type: 'response.completed', response: response({ output: [textMessage('ok')] }) },
+        ])
+      );
+
+      const chunks = await collect(
+        backend.chatStream({ model: 'gpt-6.1-sol', messages: [{ role: 'user', content: 'Hi' }] })
+      );
+
+      expect(chunks.map((c) => c.delta.reasoning).filter(Boolean)).toEqual([
+        'Weighing ',
+        'options.',
+      ]);
     });
 
     it('assembles streamed function call arguments', async () => {

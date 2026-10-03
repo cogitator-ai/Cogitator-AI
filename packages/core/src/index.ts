@@ -216,6 +216,12 @@ export type {
   LLMPlugin,
 } from './llm/index';
 
+export { InMemoryRunCheckpointStore, ThreadRunCheckpointStore } from './cogitator/run-checkpoints';
+export { PromptRegistry, promptKey } from './cogitator/prompts';
+export { PiiMasker, PiiVault, PiiMaskingBackend, withPiiMasking, PII_TYPES } from './security/pii';
+export type { PromptTarget, StartABTestOptions, PromptResolution } from './cogitator/prompts';
+export { InMemoryInstructionVersionStore, InMemoryABTestStore } from './learning/prompt-stores';
+
 export {
   threadOwner,
   threadMetadata,

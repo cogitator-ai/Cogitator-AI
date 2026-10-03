@@ -71,6 +71,9 @@ export const LLMConfigSchema = z.object({
   defaultModel: z.string().optional(),
   providers: ProvidersConfigSchema.optional(),
   retry: LLMRetryConfigSchema.optional(),
+  promptCache: z
+    .union([z.literal(false), z.object({ ttl: z.enum(['5m', '1h']).optional() })])
+    .optional(),
 });
 
 export const LimitsConfigSchema = z.object({
@@ -373,8 +376,44 @@ export const PromptInjectionConfigSchema = z.object({
   allowlist: z.array(z.string()).optional(),
 });
 
+export const PiiTypeSchema = z.enum([
+  'email',
+  'phone',
+  'credit_card',
+  'iban',
+  'ssn',
+  'ip_address',
+  'api_key',
+]);
+
+const PiiPatternSchema = z.union([
+  z.instanceof(RegExp),
+  z
+    .string()
+    .min(1)
+    .refine(
+      (source) => {
+        try {
+          new RegExp(source);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { message: 'Invalid regular expression' }
+    )
+    .transform((source) => new RegExp(source)),
+]);
+
+export const PiiConfigSchema = z.object({
+  mode: z.enum(['mask', 'redact', 'block']).optional(),
+  detect: z.array(PiiTypeSchema).optional(),
+  custom: z.array(z.object({ type: z.string().min(1), pattern: PiiPatternSchema })).optional(),
+});
+
 export const SecurityConfigSchema = z.object({
   promptInjection: PromptInjectionConfigSchema.optional(),
+  pii: PiiConfigSchema.optional(),
 });
 
 export const CompressionStrategySchema = z.enum([

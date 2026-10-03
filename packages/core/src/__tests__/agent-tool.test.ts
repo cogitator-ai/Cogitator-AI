@@ -1,3 +1,4 @@
+import type { RunOptions } from '@cogitator-ai/types';
 import { describe, it, expect, vi } from 'vitest';
 import { agentAsTool } from '../agent-tool';
 import { Agent } from '../agent';
@@ -261,5 +262,46 @@ describe('agentAsTool()', () => {
         timeout: 45000,
       })
     );
+  });
+
+  it('runs the sub-agent for the same user and declines its approvals by default', async () => {
+    const runSpy = vi.fn().mockResolvedValue(createMockRunResult('done'));
+    const tool = agentAsTool(createMockCogitator(runSpy), testAgent, {
+      name: 'delegate',
+      description: 'Delegate',
+    });
+
+    await tool.execute(
+      { task: 'refund' },
+      { agentId: 'p', runId: 'r', userId: 'ann', signal: new AbortController().signal }
+    );
+
+    const options = runSpy.mock.calls[0][1] as RunOptions;
+    expect(options.userId).toBe('ann');
+    expect(
+      await options.onApproval?.({
+        toolCallId: 'c',
+        toolName: 'refund',
+        arguments: {},
+        description: 'Refund',
+      })
+    ).toEqual({ approved: false, reason: 'no one can approve calls of a delegated agent' });
+  });
+
+  it('lets the caller decide the sub-agent approvals', async () => {
+    const runSpy = vi.fn().mockResolvedValue(createMockRunResult('done'));
+    const onApproval = vi.fn(() => ({ approved: true as const }));
+    const tool = agentAsTool(createMockCogitator(runSpy), testAgent, {
+      name: 'delegate',
+      description: 'Delegate',
+      onApproval,
+    });
+
+    await tool.execute(
+      { task: 'refund' },
+      { agentId: 'p', runId: 'r', signal: new AbortController().signal }
+    );
+
+    expect((runSpy.mock.calls[0][1] as RunOptions).onApproval).toBe(onApproval);
   });
 });

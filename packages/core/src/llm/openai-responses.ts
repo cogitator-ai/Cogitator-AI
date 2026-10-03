@@ -16,6 +16,7 @@ import type {
   ToolChoiceFunction,
   ToolChoiceOptions,
 } from 'openai/resources/responses/responses';
+import type { Reasoning } from 'openai/resources/shared';
 import type {
   ChatRequest,
   ChatResponse,
@@ -25,6 +26,7 @@ import type {
   LLMResponseFormat,
   Message,
   MessageContent,
+  ReasoningConfig,
   ToolCall,
   ToolCallReplayState,
   ToolChoice,
@@ -63,8 +65,18 @@ export function buildResponsesParams(request: ChatRequest, model: string): Respo
     text: toTextConfig(request.responseFormat),
     store: false,
     ...(reasoning
-      ? { include: ['reasoning.encrypted_content'] }
+      ? {
+          include: ['reasoning.encrypted_content'],
+          ...(request.reasoning && { reasoning: toReasoningParam(request.reasoning) }),
+        }
       : { temperature: request.temperature, top_p: request.topP }),
+  };
+}
+
+function toReasoningParam(config: ReasoningConfig): Reasoning {
+  return {
+    ...(config.effort && { effort: config.effort }),
+    ...(config.summary && { summary: 'auto' as const }),
   };
 }
 
@@ -73,7 +85,7 @@ export function parseResponsesResponse(response: Response, ctx: LLMErrorContext)
     throw toResponsesError(response.error, ctx);
   }
 
-  const { content, toolCalls } = parseOutput(response.output, ctx);
+  const { content, toolCalls, reasoning } = parseOutput(response.output, ctx);
 
   return {
     id: response.id,
@@ -81,6 +93,7 @@ export function parseResponsesResponse(response: Response, ctx: LLMErrorContext)
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     finishReason: toFinishReason(response, toolCalls.length > 0),
     usage: toUsage(response.usage),
+    ...(reasoning && { reasoning }),
   };
 }
 
@@ -106,6 +119,12 @@ export async function* readResponsesStream(
       case 'response.refusal.delta':
         if (event.delta) {
           yield { id: responseId, delta: { content: event.delta } };
+        }
+        break;
+
+      case 'response.reasoning_summary_text.delta':
+        if (event.delta) {
+          yield { id: responseId, delta: { reasoning: event.delta } };
         }
         break;
 
@@ -306,14 +325,16 @@ function captureMessage(item: ResponseOutputMessage): Record<string, unknown> {
 function parseOutput(
   output: ResponseOutputItem[],
   ctx: LLMErrorContext
-): { content: string; toolCalls: ToolCall[] } {
+): { content: string; toolCalls: ToolCall[]; reasoning: string } {
   let content = '';
   const toolCalls: ToolCall[] = [];
+  const summaries: string[] = [];
   let preceding: Record<string, unknown>[] = [];
 
   for (const item of output) {
     switch (item.type) {
       case 'reasoning': {
+        summaries.push(...item.summary.map((part) => part.text).filter((text) => text.length > 0));
         const captured = captureReasoning(item);
         if (captured) preceding.push(captured);
         break;
@@ -340,7 +361,7 @@ function parseOutput(
     }
   }
 
-  return { content, toolCalls };
+  return { content, toolCalls, reasoning: summaries.join('\n\n') };
 }
 
 function toReplayState(

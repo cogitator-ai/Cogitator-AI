@@ -12,6 +12,9 @@ import type {
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
+  ChatUsage,
+  ReasoningConfig,
+  ReasoningEffort,
   ToolCall,
   ToolChoice,
   Message,
@@ -90,6 +93,7 @@ interface GeminiRequest {
     stopSequences?: string[];
     responseMimeType?: string;
     responseSchema?: Record<string, unknown>;
+    thinkingConfig?: GeminiThinkingConfig;
   };
   systemInstruction?: {
     parts: { text: string }[];
@@ -105,8 +109,18 @@ interface GeminiCandidate {
 
 interface GeminiUsageMetadata {
   promptTokenCount: number;
-  candidatesTokenCount: number;
+  candidatesTokenCount?: number;
   totalTokenCount: number;
+  /** Reasoning tokens; billed as output but not part of `candidatesTokenCount` */
+  thoughtsTokenCount?: number;
+  /** Prompt tokens served from the context cache; part of `promptTokenCount` */
+  cachedContentTokenCount?: number;
+}
+
+interface GeminiThinkingConfig {
+  thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
+  thinkingBudget?: number;
+  includeThoughts?: boolean;
 }
 
 interface GeminiPromptFeedback {
@@ -244,7 +258,10 @@ export class GoogleBackend extends BaseLLMBackend {
 
         for (const part of parts) {
           if ('text' in part) {
-            if (part.thought) continue;
+            if (part.thought) {
+              if (part.text) yield { id, delta: { reasoning: part.text } };
+              continue;
+            }
             yield {
               id,
               delta: { content: part.text },
@@ -268,11 +285,7 @@ export class GoogleBackend extends BaseLLMBackend {
           };
 
           if (chunk.usageMetadata) {
-            streamChunk.usage = {
-              inputTokens: chunk.usageMetadata.promptTokenCount,
-              outputTokens: chunk.usageMetadata.candidatesTokenCount ?? 0,
-              totalTokens: chunk.usageMetadata.totalTokenCount,
-            };
+            streamChunk.usage = toChatUsage(chunk.usageMetadata);
           }
 
           yield streamChunk;
@@ -346,6 +359,10 @@ export class GoogleBackend extends BaseLLMBackend {
     }
     if (request.stop !== undefined) {
       geminiRequest.generationConfig.stopSequences = request.stop;
+    }
+    const thinkingConfig = geminiThinkingConfig(model, request.reasoning);
+    if (thinkingConfig) {
+      geminiRequest.generationConfig.thinkingConfig = thinkingConfig;
     }
 
     const jsonConfig = this.convertResponseFormat(request.responseFormat);
@@ -588,11 +605,15 @@ export class GoogleBackend extends BaseLLMBackend {
 
     const parts = candidate.content?.parts ?? [];
     let content = '';
+    let reasoning = '';
     const toolCalls: ToolCall[] = [];
 
     for (const part of parts) {
       if ('text' in part) {
-        if (part.thought) continue;
+        if (part.thought) {
+          reasoning += part.text;
+          continue;
+        }
         content += part.text;
       } else if ('functionCall' in part) {
         toolCalls.push(toToolCall(part));
@@ -605,11 +626,10 @@ export class GoogleBackend extends BaseLLMBackend {
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       finishReason:
         toolCalls.length > 0 ? 'tool_calls' : this.mapFinishReason(candidate.finishReason),
-      usage: {
-        inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
-        outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
-        totalTokens: data.usageMetadata?.totalTokenCount ?? 0,
-      },
+      usage: data.usageMetadata
+        ? toChatUsage(data.usageMetadata)
+        : { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      ...(reasoning && { reasoning }),
     };
   }
 
@@ -704,4 +724,78 @@ function toToolCall(part: {
     toolCall.thoughtSignature = part.thoughtSignature;
   }
   return toolCall;
+}
+
+/**
+ * Gemini counts reasoning (`thoughtsTokenCount`) apart from the answer
+ * (`candidatesTokenCount`) but bills both as output.
+ */
+function toChatUsage(meta: GeminiUsageMetadata): ChatUsage {
+  const thoughts = meta.thoughtsTokenCount ?? 0;
+  const outputTokens = (meta.candidatesTokenCount ?? 0) + thoughts;
+  return {
+    inputTokens: meta.promptTokenCount,
+    outputTokens,
+    totalTokens: meta.totalTokenCount || meta.promptTokenCount + outputTokens,
+    ...(meta.cachedContentTokenCount ? { cachedInputTokens: meta.cachedContentTokenCount } : {}),
+    ...(thoughts > 0 ? { reasoningTokens: thoughts } : {}),
+  };
+}
+
+const GEMINI_VERSION = /gemini-(\d+)(?:\.(\d+))?/i;
+const GEMINI_THINKING_LEVELS: Readonly<
+  Record<ReasoningEffort, NonNullable<GeminiThinkingConfig['thinkingLevel']>>
+> = {
+  none: 'minimal',
+  minimal: 'minimal',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  xhigh: 'high',
+  max: 'high',
+};
+const GEMINI_THINKING_BUDGETS: Readonly<Record<ReasoningEffort, number>> = {
+  none: 0,
+  minimal: 512,
+  low: 1024,
+  medium: 8192,
+  high: 24576,
+  xhigh: 24576,
+  max: 32768,
+};
+
+/**
+ * `thinkingConfig` for a reasoning config: Gemini 3+ takes a thinking level,
+ * Gemini 2.5 a token budget (Pro cannot think less than 128 tokens). Older
+ * models do not think.
+ */
+export function geminiThinkingConfig(
+  model: string,
+  reasoning: ReasoningConfig | undefined
+): GeminiThinkingConfig | undefined {
+  if (!reasoning) return undefined;
+  const match = GEMINI_VERSION.exec(model);
+  if (!match) return undefined;
+  const major = Number(match[1]);
+  const minor = Number(match[2] ?? 0);
+  const includeThoughts = reasoning.summary ? { includeThoughts: true } : {};
+
+  if (major >= 3) {
+    if (reasoning.effort) {
+      return { thinkingLevel: GEMINI_THINKING_LEVELS[reasoning.effort], ...includeThoughts };
+    }
+    if (reasoning.budgetTokens !== undefined) {
+      return { thinkingBudget: reasoning.budgetTokens, ...includeThoughts };
+    }
+    return reasoning.summary ? { includeThoughts: true } : undefined;
+  }
+  if (major === 2 && minor >= 5) {
+    const budget =
+      reasoning.budgetTokens ??
+      (reasoning.effort ? GEMINI_THINKING_BUDGETS[reasoning.effort] : undefined);
+    if (budget === undefined) return reasoning.summary ? { includeThoughts: true } : undefined;
+    const floor = /pro/i.test(model) ? 128 : 0;
+    return { thinkingBudget: Math.max(floor, budget), ...includeThoughts };
+  }
+  return undefined;
 }

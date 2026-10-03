@@ -1,4 +1,4 @@
-import type { Tool, ToolContext } from '@cogitator-ai/types';
+import type { RunOptions, Tool, ToolContext } from '@cogitator-ai/types';
 import type { Agent } from './agent';
 import type { Cogitator } from './runtime';
 import { tool } from './tool';
@@ -10,6 +10,12 @@ export interface AgentAsToolOptions {
   timeout?: number;
   includeUsage?: boolean;
   includeToolCalls?: boolean;
+  /**
+   * Decides the calls of the inner agent that need approval. Without it they
+   * are declined, since a delegated run cannot wait for a person; the inner
+   * agent is told why and answers accordingly.
+   */
+  onApproval?: RunOptions['onApproval'];
 }
 
 export interface AgentToolResult {
@@ -35,7 +41,14 @@ export function agentAsTool(
   agent: Agent,
   options: AgentAsToolOptions
 ): Tool<{ task: string }, AgentToolResult> {
-  const { name, description, timeout, includeUsage = false, includeToolCalls = false } = options;
+  const {
+    name,
+    description,
+    timeout,
+    includeUsage = false,
+    includeToolCalls = false,
+    onApproval,
+  } = options;
 
   return tool({
     name,
@@ -52,6 +65,10 @@ export function agentAsTool(
           input: params.task,
           timeout: effectiveTimeout,
           signal: context.signal,
+          ...(context.userId !== undefined && { userId: context.userId }),
+          onApproval:
+            onApproval ??
+            (() => ({ approved: false, reason: 'no one can approve calls of a delegated agent' })),
         });
 
         return {
