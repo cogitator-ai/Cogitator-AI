@@ -1,7 +1,13 @@
 export const VERSION = '0.1.0';
 
 export { EvalSuite, isLLMMetric } from './eval-suite';
-export type { EvalTarget, EvalProgress, EvalSuiteOptions, EvalSuiteResult } from './eval-suite';
+export type {
+  EvalTarget,
+  EvalProgress,
+  EvalRunOptions,
+  EvalSuiteOptions,
+  EvalSuiteResult,
+} from './eval-suite';
 export { EvalComparison } from './eval-comparison';
 export type { EvalComparisonOptions, MetricComparison, ComparisonResult } from './eval-comparison';
 export { EvalBuilder } from './eval-builder';
@@ -45,7 +51,13 @@ export { mcnemarsTest } from './stats/mcnemar';
 export type { McNemarResult } from './stats/mcnemar';
 export { mean, median, stdDev, percentile, aggregate } from './stats/percentiles';
 
-export type { EvalCase, EvalSuiteConfig, JudgeConfig, EvalComparisonConfig } from './schema';
+export type {
+  EvalCase,
+  EvalSuiteConfig,
+  JudgeConfig,
+  JudgeConfigInput,
+  EvalComparisonConfig,
+} from './schema';
 
 export { createRunEvalTool, evalTools } from './tools';
 export type { EvalTool } from './tools';

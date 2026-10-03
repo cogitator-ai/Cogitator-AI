@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createRunEvalTool, evalTools } from '../tools';
-import type { EvalSuite, EvalSuiteResult } from '../eval-suite';
+import { EvalSuite } from '../eval-suite';
+import type { EvalSuiteResult } from '../eval-suite';
+import { Dataset } from '../datasets';
+import { exactMatch } from '../metrics/deterministic';
+import { threshold } from '../assertions';
 
 function mockSuiteResult(overrides?: Partial<EvalSuiteResult>): EvalSuiteResult {
   return {
@@ -114,20 +118,33 @@ describe('createRunEvalTool', () => {
     expect(result).toMatchObject({ assertionsPassed: false });
   });
 
-  it('limits results when maxCases is provided', async () => {
+  it('passes maxCases to suite.run()', async () => {
     const tool = createRunEvalTool(suite);
-    const result = (await tool.execute({ maxCases: 2 })) as Record<string, unknown>;
+    await tool.execute({ maxCases: 2 });
 
-    expect(suite.run).toHaveBeenCalledOnce();
-    expect(result.success).toBe(true);
-    expect(result.total).toBe(2);
+    expect(suite.run).toHaveBeenCalledWith({ maxCases: 2 });
   });
 
-  it('uses all cases when maxCases exceeds dataset size', async () => {
-    const tool = createRunEvalTool(suite);
-    const result = (await tool.execute({ maxCases: 100 })) as Record<string, unknown>;
+  it('executes only maxCases cases and reports their real assertion outcome', async () => {
+    const fn = vi.fn(async () => 'ok');
+    const realSuite = new EvalSuite({
+      dataset: Dataset.from([
+        { input: 'a', expected: 'ok' },
+        { input: 'b', expected: 'ok' },
+        { input: 'c', expected: 'other' },
+      ]),
+      target: { fn },
+      metrics: [exactMatch()],
+      assertions: [threshold('exactMatch', 1)],
+    });
+    const tool = createRunEvalTool(realSuite);
 
-    expect(result.total).toBe(3);
+    const limited = await tool.execute({ maxCases: 2 });
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(limited).toMatchObject({ total: 2, metrics: { exactMatch: 1 }, assertionsPassed: true });
+
+    const all = await tool.execute({ maxCases: 3 });
+    expect(all).toMatchObject({ total: 3, assertionsPassed: false });
   });
 
   it('returns error object when suite.run() throws', async () => {

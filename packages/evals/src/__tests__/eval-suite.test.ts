@@ -431,6 +431,45 @@ describe('EvalSuite', () => {
     });
   });
 
+  describe('maxCases', () => {
+    it('runs only the first maxCases cases and aggregates over them', async () => {
+      const fn = vi.fn(async (input: string) => `echo: ${input}`);
+      const assertionFn = vi.fn<AssertionFn>((_aggregated, stats) => ({
+        name: 'total',
+        passed: stats.total === 2,
+        message: `${stats.total} cases`,
+      }));
+      const suite = new EvalSuite({
+        dataset: simpleDataset(),
+        target: simpleFnTarget(fn),
+        assertions: [assertionFn],
+      });
+
+      const result = await suite.run({ maxCases: 2 });
+
+      expect(fn).toHaveBeenCalledTimes(2);
+      expect(result.results.map((r) => r.case.input)).toEqual(['hello', 'foo']);
+      expect(result.stats.total).toBe(2);
+      expect(result.assertions[0].passed).toBe(true);
+    });
+
+    it('runs every case when maxCases exceeds the dataset size', async () => {
+      const fn = vi.fn(async (input: string) => input);
+      const suite = new EvalSuite({ dataset: simpleDataset(), target: simpleFnTarget(fn) });
+
+      const result = await suite.run({ maxCases: 100 });
+
+      expect(fn).toHaveBeenCalledTimes(3);
+      expect(result.stats.total).toBe(3);
+    });
+
+    it.each([0, -1, 1.5])('rejects maxCases %s', async (maxCases) => {
+      const suite = new EvalSuite({ dataset: simpleDataset(), target: simpleFnTarget() });
+
+      await expect(suite.run({ maxCases })).rejects.toThrow('maxCases must be a positive integer');
+    });
+  });
+
   describe('LLM metrics', () => {
     beforeAll(async () => {
       await import('@cogitator-ai/core');
@@ -465,6 +504,24 @@ describe('EvalSuite', () => {
       expect(options.input).toContain('faithfulness');
       expect(options.input).toContain('What is 2+2?');
       expect(options.useMemory).toBe(false);
+    });
+
+    it('runs the judge at the default temperature 0 when none is given', async () => {
+      const run = vi.fn(async (_agent: unknown, _options: { input: string }) => ({
+        output: '{"score": 1, "reasoning": "ok"}',
+      }));
+
+      const suite = new EvalSuite({
+        dataset: Dataset.from([{ input: 'q', expected: 'a' }]),
+        target: simpleFnTarget(),
+        metrics: [faithfulness()],
+        judge: { model: 'openai/gpt-6-luna', cogitator: { run } },
+      });
+
+      await suite.run();
+
+      const [judgeAgent] = run.mock.calls[0] as [{ config: { temperature?: number } }, unknown];
+      expect(judgeAgent.config.temperature).toBe(0);
     });
 
     it("judges with the agent target's cogitator when judge.cogitator is not set", async () => {

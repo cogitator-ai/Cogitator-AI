@@ -48,4 +48,5 @@ export type EvalCaseInput = z.input<typeof EvalCaseSchema>;
 export type EvalSuiteConfig = z.output<typeof EvalSuiteConfigSchema>;
 export type EvalSuiteConfigInput = z.input<typeof EvalSuiteConfigSchema>;
 export type JudgeConfig = z.output<typeof JudgeConfigSchema>;
+export type JudgeConfigInput = z.input<typeof JudgeConfigSchema>;
 export type EvalComparisonConfig = z.output<typeof EvalComparisonConfigSchema>;

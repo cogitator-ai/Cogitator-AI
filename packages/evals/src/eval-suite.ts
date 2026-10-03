@@ -1,8 +1,8 @@
 import { writeFileSync } from 'node:fs';
 import { Dataset } from './datasets';
 import type { EvalCase } from './schema';
-import { EvalSuiteConfigSchema } from './schema';
-import type { JudgeCogitator, JudgeConfig } from './schema';
+import { EvalSuiteConfigSchema, JudgeConfigSchema } from './schema';
+import type { JudgeCogitator, JudgeConfigInput } from './schema';
 import type { MetricFn, MetricScore, EvalCaseResult, StatisticalMetricFn } from './metrics/types';
 import type { LLMMetricFn } from './metrics/llm-judge';
 import { bindJudgeContext, judgeContextFor } from './metrics/llm-judge';
@@ -28,12 +28,17 @@ export interface EvalSuiteOptions {
   target: EvalTarget;
   metrics?: MetricFn[];
   statisticalMetrics?: StatisticalMetricFn[];
-  judge?: JudgeConfig;
+  judge?: JudgeConfigInput;
   assertions?: AssertionFn[];
   concurrency?: number;
   timeout?: number;
   retries?: number;
   onProgress?: (progress: EvalProgress) => void;
+}
+
+export interface EvalRunOptions {
+  /** Run only the first `maxCases` cases of the dataset (a positive integer) */
+  maxCases?: number;
 }
 
 export interface EvalSuiteResult {
@@ -85,14 +90,16 @@ export class EvalSuite {
       throw new Error('LLM metrics require a judge config');
     }
 
+    const judgeConfig = opts.judge ? JudgeConfigSchema.parse(opts.judge) : undefined;
     const judgeCogitator =
-      opts.judge?.cogitator ?? (this.target.cogitator as JudgeCogitator | undefined);
+      judgeConfig?.cogitator ?? (this.target.cogitator as JudgeCogitator | undefined);
     if (hasLLMMetrics && !judgeCogitator) {
       throw new Error(
         'LLM metrics need a Cogitator to run the judge: pass judge.cogitator, or use an agent target'
       );
     }
-    const judge = opts.judge && judgeCogitator ? judgeContextFor(judgeCogitator, opts.judge) : null;
+    const judge =
+      judgeConfig && judgeCogitator ? judgeContextFor(judgeCogitator, judgeConfig) : null;
 
     this.boundMetrics = rawMetrics.map((m) =>
       isLLMMetric(m) && judge ? bindJudgeContext(m, judge) : m
@@ -122,9 +129,14 @@ export class EvalSuite {
     }
   }
 
-  async run(): Promise<EvalSuiteResult> {
+  async run(options: EvalRunOptions = {}): Promise<EvalSuiteResult> {
+    const { maxCases } = options;
+    if (maxCases !== undefined && (!Number.isInteger(maxCases) || maxCases < 1)) {
+      throw new Error(`maxCases must be a positive integer, got ${maxCases}`);
+    }
+
     const suiteStart = Date.now();
-    const cases = [...this.dataset.cases];
+    const cases = this.dataset.cases.slice(0, maxCases);
     const total = cases.length;
     let completed = 0;
 

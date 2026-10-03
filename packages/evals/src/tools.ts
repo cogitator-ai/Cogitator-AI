@@ -9,47 +9,30 @@ export interface EvalTool<TParams = unknown> {
 }
 
 const RunEvalParamsSchema = z.object({
-  maxCases: z.number().int().positive().optional(),
+  maxCases: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe('Run only the first N cases of the dataset'),
 });
 
 type RunEvalParams = z.infer<typeof RunEvalParamsSchema>;
 
-function buildSummary(result: EvalSuiteResult, maxCases?: number) {
-  const capped = maxCases ? result.results.slice(0, maxCases) : result.results;
-
-  const total = capped.length;
-  const duration = maxCases
-    ? capped.reduce((sum, r) => sum + r.duration, 0)
-    : result.stats.duration;
-  const cost = maxCases
-    ? capped.reduce((sum, r) => sum + (r.usage?.cost ?? 0), 0)
-    : result.stats.cost;
-
+function buildSummary(result: EvalSuiteResult) {
   const metrics: Record<string, number> = {};
-  if (maxCases && total > 0) {
-    const scoresByMetric = new Map<string, number[]>();
-    for (const r of capped) {
-      for (const s of r.scores) {
-        let arr = scoresByMetric.get(s.name);
-        if (!arr) {
-          arr = [];
-          scoresByMetric.set(s.name, arr);
-        }
-        arr.push(s.score);
-      }
-    }
-    for (const [name, values] of scoresByMetric) {
-      metrics[name] = values.reduce((a, b) => a + b, 0) / values.length;
-    }
-  } else {
-    for (const [name, agg] of Object.entries(result.aggregated)) {
-      metrics[name] = agg.mean;
-    }
+  for (const [name, agg] of Object.entries(result.aggregated)) {
+    metrics[name] = agg.mean;
   }
 
-  const assertionsPassed = maxCases ? true : result.assertions.every((a) => a.passed);
-
-  return { success: true as const, total, duration, cost, metrics, assertionsPassed };
+  return {
+    success: true as const,
+    total: result.stats.total,
+    duration: result.stats.duration,
+    cost: result.stats.cost,
+    metrics,
+    assertionsPassed: result.assertions.every((a) => a.passed),
+  };
 }
 
 export function createRunEvalTool(suite: EvalSuite): EvalTool<RunEvalParams> {
@@ -59,8 +42,8 @@ export function createRunEvalTool(suite: EvalSuite): EvalTool<RunEvalParams> {
     parameters: RunEvalParamsSchema,
     execute: async ({ maxCases }) => {
       try {
-        const result = await suite.run();
-        return buildSummary(result, maxCases);
+        const result = await suite.run({ maxCases });
+        return buildSummary(result);
       } catch (err) {
         return { success: false, error: err instanceof Error ? err.message : String(err) };
       }

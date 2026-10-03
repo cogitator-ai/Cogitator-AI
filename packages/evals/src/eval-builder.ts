@@ -2,7 +2,7 @@ import { EvalSuite, isLLMMetric } from './eval-suite';
 import type { EvalTarget, EvalSuiteOptions } from './eval-suite';
 import { Dataset } from './datasets';
 import type { MetricFn, StatisticalMetricFn } from './metrics/types';
-import type { JudgeConfig } from './schema';
+import type { JudgeConfigInput } from './schema';
 import type { AssertionFn } from './assertions';
 
 export class EvalBuilder {
@@ -10,7 +10,7 @@ export class EvalBuilder {
   private _target?: EvalTarget;
   private _metrics: MetricFn[] = [];
   private _statisticalMetrics: StatisticalMetricFn[] = [];
-  private _judge?: JudgeConfig;
+  private _judge?: JudgeConfigInput;
   private _assertions: AssertionFn[] = [];
   private _concurrency?: number;
   private _timeout?: number;
@@ -37,7 +37,7 @@ export class EvalBuilder {
     return this;
   }
 
-  withJudge(config: JudgeConfig): this {
+  withJudge(config: JudgeConfigInput): this {
     this._judge = config;
     return this;
   }

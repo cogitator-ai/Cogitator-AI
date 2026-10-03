@@ -1,7 +1,7 @@
 import { EvalSuite } from './eval-suite';
 import type { EvalTarget, EvalSuiteResult } from './eval-suite';
 import type { MetricFn, MetricScore, StatisticalMetricFn } from './metrics/types';
-import type { JudgeConfig } from './schema';
+import type { JudgeConfigInput } from './schema';
 import { Dataset } from './datasets';
 import { pairedTTest } from './stats/t-test';
 import { mcnemarsTest } from './stats/mcnemar';
@@ -15,7 +15,7 @@ export interface EvalComparisonOptions {
   };
   metrics?: MetricFn[];
   statisticalMetrics?: StatisticalMetricFn[];
-  judge?: JudgeConfig;
+  judge?: JudgeConfigInput;
   concurrency?: number;
   timeout?: number;
   retries?: number;
