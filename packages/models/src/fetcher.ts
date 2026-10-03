@@ -152,9 +152,16 @@ function calculatePricing(entry: LiteLLMModelEntry): ModelPricing {
     outputCost = entry.output_cost_per_character * 4 * 1_000_000;
   }
 
+  const perMillion = (cost: number) => Math.round(cost * 1_000_000 * 1000) / 1000;
   return {
     input: Math.round(inputCost * 1000) / 1000,
     output: Math.round(outputCost * 1000) / 1000,
+    ...(entry.cache_read_input_token_cost !== undefined && {
+      inputCached: perMillion(entry.cache_read_input_token_cost),
+    }),
+    ...(entry.cache_creation_input_token_cost !== undefined && {
+      inputCacheWrite: perMillion(entry.cache_creation_input_token_cost),
+    }),
   };
 }
 

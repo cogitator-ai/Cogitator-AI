@@ -171,7 +171,12 @@ describe('Builtin data integrity', () => {
 
     expect(byId.get('gpt-5.5')?.pricing).toEqual({ input: 5, output: 30 });
     expect(byId.get('gpt-5.4-mini')?.pricing).toEqual({ input: 0.75, output: 4.5 });
-    expect(byId.get('claude-fable-5')?.pricing).toEqual({ input: 10, output: 50 });
+    expect(byId.get('claude-fable-5')?.pricing).toEqual({
+      input: 10,
+      output: 50,
+      inputCached: 1,
+      inputCacheWrite: 12.5,
+    });
     expect(byId.get('claude-sonnet-4-6')?.maxOutputTokens).toBe(128000);
     expect(byId.get('gemini-3.5-flash')?.pricing).toEqual({ input: 1.5, output: 9 });
     expect(byId.get('gpt-6.1-sol')?.pricing).toEqual({ input: 2, output: 10, inputCached: 0.1 });
@@ -182,11 +187,13 @@ describe('Builtin data integrity', () => {
       input: 4,
       output: 20,
       inputCached: 0.2,
+      inputCacheWrite: 5,
     });
     expect(byId.get('claude-sonnet-5-5')?.pricing).toEqual({
       input: 2,
       output: 10,
       inputCached: 0.2,
+      inputCacheWrite: 2.5,
     });
     expect(byId.get('claude-sonnet-5-5')?.contextWindow).toBe(1000000);
     expect(byId.get('gemini-3.8-flash')?.pricing).toEqual({
@@ -222,5 +229,24 @@ describe('Builtin data integrity', () => {
     ]) {
       expect(byId.get(id)?.deprecated, id).toBeFalsy();
     }
+  });
+});
+
+describe('calculateCost', () => {
+  it('prices cache reads and writes apart from the rest of the input', async () => {
+    const { calculateCost } = await import('../registry');
+
+    const cost = calculateCost('claude-opus-5-5', {
+      inputTokens: 1_000_000,
+      outputTokens: 100_000,
+      cachedInputTokens: 600_000,
+      cacheWriteTokens: 300_000,
+    });
+
+    expect(cost).toBeCloseTo((100_000 * 4 + 600_000 * 0.2 + 300_000 * 5 + 100_000 * 20) / 1e6);
+    expect(calculateCost('claude-opus-5-5', { inputTokens: 1000, outputTokens: 0 })).toBeCloseTo(
+      0.004
+    );
+    expect(calculateCost('no-such-model', { inputTokens: 1, outputTokens: 1 })).toBeNull();
   });
 });

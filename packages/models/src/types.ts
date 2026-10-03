@@ -10,10 +10,14 @@ export const ModelCapabilitiesSchema = z.object({
 
 export type ModelCapabilities = z.infer<typeof ModelCapabilitiesSchema>;
 
+/** Prices in USD per million tokens. */
 export const ModelPricingSchema = z.object({
   input: z.number(),
   output: z.number(),
+  /** Input served from the provider's prompt cache */
   inputCached: z.number().optional(),
+  /** Input written to the prompt cache (Anthropic charges extra for it) */
+  inputCacheWrite: z.number().optional(),
   outputCached: z.number().optional(),
 });
 
@@ -72,6 +76,8 @@ export interface LiteLLMModelEntry {
   output_cost_per_token?: number;
   input_cost_per_character?: number;
   output_cost_per_character?: number;
+  cache_read_input_token_cost?: number;
+  cache_creation_input_token_cost?: number;
   litellm_provider?: string;
   mode?: string;
   supports_function_calling?: boolean;

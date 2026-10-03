@@ -1,4 +1,4 @@
-import type { ModelInfo, ModelFilter, RegistryOptions, ProviderInfo } from './types';
+import type { ModelInfo, ModelFilter, ModelPricing, RegistryOptions, ProviderInfo } from './types';
 import { ModelCache } from './cache';
 import { fetchLiteLLMData, transformLiteLLMData } from './fetcher';
 import { BUILTIN_MODELS, BUILTIN_PROVIDERS } from './providers/index';
@@ -99,6 +99,10 @@ export class ModelRegistry {
     const model = this.getModel(id);
     if (!model?.pricing) return null;
     return { input: model.pricing.input, output: model.pricing.output };
+  }
+
+  getPricing(id: string): ModelPricing | null {
+    return this.getModel(id)?.pricing ?? null;
   }
 
   listModels(filter?: ModelFilter): ModelInfo[] {
@@ -322,6 +326,39 @@ export async function initializeModels(): Promise<ModelRegistry> {
 
 export function getPrice(modelId: string): { input: number; output: number } | null {
   return getModelRegistry().getPrice(modelId);
+}
+
+export function getPricing(modelId: string): ModelPricing | null {
+  return getModelRegistry().getPricing(modelId);
+}
+
+export interface TokenUsageForCost {
+  inputTokens: number;
+  outputTokens: number;
+  /** Part of `inputTokens` served from the prompt cache */
+  cachedInputTokens?: number;
+  /** Part of `inputTokens` written to the prompt cache */
+  cacheWriteTokens?: number;
+}
+
+/**
+ * Cost in USD of a model's tokens: cache reads and writes at the model's
+ * cache prices where it has them, the rest of the input at the input price.
+ * `null` when the model's price is unknown.
+ */
+export function calculateCost(modelId: string, usage: TokenUsageForCost): number | null {
+  const pricing = getPricing(modelId);
+  if (!pricing) return null;
+  const cached = Math.min(usage.cachedInputTokens ?? 0, usage.inputTokens);
+  const written = Math.min(usage.cacheWriteTokens ?? 0, usage.inputTokens - cached);
+  const uncached = usage.inputTokens - cached - written;
+  return (
+    (uncached * pricing.input +
+      cached * (pricing.inputCached ?? pricing.input) +
+      written * (pricing.inputCacheWrite ?? pricing.input) +
+      usage.outputTokens * pricing.output) /
+    1_000_000
+  );
 }
 
 export function getModel(modelId: string): ModelInfo | null {
