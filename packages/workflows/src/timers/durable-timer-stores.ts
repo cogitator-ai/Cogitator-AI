@@ -2,11 +2,13 @@
  * Durable workflow timer stores: Redis and Postgres.
  *
  * Several workers may run a `TimerManager` against one durable store, so
- * `getOverdue()` claims what it returns: each overdue timer is leased to one
- * caller for `claimTtl` ms and skipped by every other `getOverdue()` until
- * `markFired`/`cancel` ends the claim or the lease runs out (a crashed
- * worker's timers come back after that). A timer whose handler failed stays
- * claimed, so it is retried once its lease expires.
+ * `getOverdue()` claims what it returns: each overdue timer is leased to the
+ * store instance that returned it for `claimTtl` ms and skipped by every
+ * other `getOverdue()` until `markFired`/`cancel` ends the claim, the owner
+ * gives it up with `release`, or the lease runs out (a crashed worker's
+ * timers come back after that). The owner keeps a long-running timer with
+ * `renew`; a timer whose handler failed stays claimed, so it is retried once
+ * its lease expires.
  */
 
 import type { TimerEntry, TimerStore } from '@cogitator-ai/types';
@@ -100,18 +102,22 @@ export interface RedisTimerStoreOptions {
  *
  * A claim is a per-timer sorted set of lease generations scored by their
  * expiry. Claiming adds the next generation; only the caller whose `ZADD`
- * creates it owns the lease, so concurrent workers never share one. Leases
- * are measured on the workers' clocks, so keep them in sync.
+ * creates it owns the lease, and it backs off if another generation is still
+ * live afterwards, so concurrent workers never share one. Each store
+ * instance remembers the generations it holds, which is what `renew` and
+ * `release` act on. Leases are measured on the workers' clocks, so keep
+ * them in sync.
  *
  * `cancel`, `markFired` and `update` read, change and write a timer, so
  * concurrent writes to one timer are last-writer-wins. `onFire` callbacks run
  * in the process that calls `markFired`.
  */
 export class RedisTimerStore implements TimerStore {
+  readonly claimTtl: number;
   private readonly client: TimerStoreRedisClient;
   private readonly prefix: string;
-  private readonly claimTtl: number;
   private readonly listeners = new FireListeners();
+  private readonly held = new Map<string, string>();
 
   constructor(options: RedisTimerStoreOptions) {
     this.client = options.client;
@@ -134,6 +140,37 @@ export class RedisTimerStore implements TimerStore {
     const timer = await this.get(id);
     if (!timer || !isPending(timer)) return;
     await this.write({ ...timer, cancelled: true }, timer);
+  }
+
+  /** Extends this instance's live claim on a timer; `false` when it no longer holds one. */
+  async renew(id: string): Promise<boolean> {
+    const generation = this.held.get(id);
+    if (generation === undefined) return false;
+    const key = this.claimKey(id);
+    const now = Date.now();
+    const live = await this.client.zrangebyscore(key, `(${now}`, '+inf');
+    if (!live.includes(generation)) {
+      this.held.delete(id);
+      return false;
+    }
+    await this.client.zadd(key, now + this.claimTtl, generation);
+    const contenders = await this.client.zrangebyscore(key, `(${now}`, '+inf');
+    if (contenders.some((other) => other !== generation)) {
+      await this.client.zadd(key, 0, generation);
+      this.held.delete(id);
+      return false;
+    }
+    return true;
+  }
+
+  /** Expires this instance's claim on a timer so any worker can take it now. */
+  async release(id: string): Promise<void> {
+    const generation = this.held.get(id);
+    if (generation === undefined) return;
+    this.held.delete(id);
+    const key = this.claimKey(id);
+    const live = await this.client.zrangebyscore(key, `(${Date.now()}`, '+inf');
+    if (live.includes(generation)) await this.client.zadd(key, 0, generation);
   }
 
   async getByWorkflow(workflowId: string): Promise<TimerEntry[]> {
@@ -214,7 +251,10 @@ export class RedisTimerStore implements TimerStore {
     if (generation === null) return null;
     const timer = await this.get(id);
     if (timer && isPending(timer)) {
-      if (timer.firesAt <= now) return timer;
+      if (timer.firesAt <= now) {
+        this.held.set(id, generation);
+        return timer;
+      }
       await this.client.zadd(this.claimKey(id), 0, generation);
       return null;
     }
@@ -227,7 +267,8 @@ export class RedisTimerStore implements TimerStore {
    * Takes the lease on a timer unless a live one exists, returning the lease
    * generation it now owns. Generations only grow while the claim key lives,
    * and releasing a lease expires its generation in place, so two callers can
-   * only contend for the same generation and `ZADD` picks one of them.
+   * only contend for the same generation and `ZADD` picks one of them; a
+   * winner that finds an older generation renewed meanwhile backs off.
    */
   private async claim(id: string, now: number): Promise<string | null> {
     const key = this.claimKey(id);
@@ -237,7 +278,13 @@ export class RedisTimerStore implements TimerStore {
     const latest = generations.reduce((max, generation) => Math.max(max, Number(generation)), -1);
     const next = String(latest + 1);
     const added = await this.client.zadd(key, now + this.claimTtl, next);
-    return added === 1 ? next : null;
+    if (added !== 1) return null;
+    const contenders = await this.client.zrangebyscore(key, `(${now}`, '+inf');
+    if (contenders.some((other) => other !== next)) {
+      await this.client.zadd(key, 0, next);
+      return null;
+    }
+    return next;
   }
 
   private async write(timer: TimerEntry, previous: TimerEntry | null): Promise<void> {
@@ -258,6 +305,7 @@ export class RedisTimerStore implements TimerStore {
       await this.client.zadd(this.doneKey(), timer.createdAt, timer.id);
       await this.client.zrem(this.pendingKey(), timer.id);
       await this.client.del(this.claimKey(timer.id));
+      this.held.delete(timer.id);
     }
   }
 
@@ -329,17 +377,20 @@ const statusOf = (data: string) =>
  * Timers in a Postgres table, as JSONB rows with indexed `status`,
  * `fires_at`, `workflow_id` and `run_id` columns.
  *
- * `getOverdue()` claims rows with `UPDATE … SET claimed_until` over a
- * `SELECT … FOR UPDATE SKIP LOCKED`, so concurrent workers split the overdue
- * timers between them; leases are measured on the database clock. `cancel`,
+ * `getOverdue()` claims rows with `UPDATE … SET claimed_until, claimed_by`
+ * over a `SELECT … FOR UPDATE SKIP LOCKED`, so concurrent workers split the
+ * overdue timers between them; `claimed_by` is a random id per store
+ * instance, which `renew` and `release` check. Leases are measured on the
+ * database clock. `cancel`,
  * `markFired` and `update` are single statements, so concurrent writers never
  * lose each other's changes and `onFire` callbacks run once, in the process
  * whose `markFired` fired the timer.
  */
 export class PostgresTimerStore implements TimerStore {
+  readonly claimTtl: number;
   private readonly client: TimerStorePgClient;
   private readonly table: string;
-  private readonly claimTtl: number;
+  private readonly owner = nanoid();
   private readonly listeners = new FireListeners();
   private ready?: Promise<void>;
 
@@ -381,6 +432,29 @@ export class PostgresTimerStore implements TimerStore {
     await this.finish(id, 'cancelled');
   }
 
+  /** Extends this instance's live claim on a timer; `false` when it no longer holds one. */
+  async renew(id: string): Promise<boolean> {
+    await this.ensureTable();
+    const { rows } = await this.client.query(
+      `UPDATE ${this.table}
+          SET claimed_until = now() + $3::double precision * interval '1 millisecond'
+        WHERE id = $1 AND claimed_by = $2 AND status = 'pending' AND claimed_until > now()
+        RETURNING id`,
+      [id, this.owner, this.claimTtl]
+    );
+    return rows.length > 0;
+  }
+
+  /** Clears this instance's claim on a timer so any worker can take it now. */
+  async release(id: string): Promise<void> {
+    await this.ensureTable();
+    await this.client.query(
+      `UPDATE ${this.table} SET claimed_until = NULL, claimed_by = NULL
+        WHERE id = $1 AND claimed_by = $2 AND status = 'pending'`,
+      [id, this.owner]
+    );
+  }
+
   async getByWorkflow(workflowId: string): Promise<TimerEntry[]> {
     return this.select('workflow_id = $1', [workflowId]);
   }
@@ -401,7 +475,8 @@ export class PostgresTimerStore implements TimerStore {
     await this.ensureTable();
     const { rows } = await this.client.query(
       `UPDATE ${this.table}
-          SET claimed_until = now() + $2::double precision * interval '1 millisecond'
+          SET claimed_until = now() + $2::double precision * interval '1 millisecond',
+              claimed_by = $3
         WHERE id IN (
           SELECT id FROM ${this.table}
            WHERE status = 'pending' AND fires_at <= $1::double precision
@@ -410,7 +485,7 @@ export class PostgresTimerStore implements TimerStore {
            FOR UPDATE SKIP LOCKED
         )
         RETURNING data`,
-      [Date.now(), this.claimTtl]
+      [Date.now(), this.claimTtl, this.owner]
     );
     return rows.map((row) => toTimer(row.data)).sort(byFiresAt);
   }
@@ -456,7 +531,8 @@ export class PostgresTimerStore implements TimerStore {
               fires_at = COALESCE((${next}->>'firesAt')::double precision, fires_at),
               created_at = COALESCE((${next}->>'createdAt')::double precision, created_at),
               status = ${statusOf(next)},
-              claimed_until = CASE WHEN ${statusOf(next)} = 'pending' THEN claimed_until END
+              claimed_until = CASE WHEN ${statusOf(next)} = 'pending' THEN claimed_until END,
+              claimed_by = CASE WHEN ${statusOf(next)} = 'pending' THEN claimed_by END
         WHERE id = $1`,
       [id, JSON.stringify(set), removed]
     );
@@ -480,7 +556,8 @@ export class PostgresTimerStore implements TimerStore {
     await this.ensureTable();
     const { rows } = await this.client.query(
       `UPDATE ${this.table}
-          SET status = $2::text, claimed_until = NULL, data = jsonb_set(data, ARRAY[$2::text], 'true')
+          SET status = $2::text, claimed_until = NULL, claimed_by = NULL,
+              data = jsonb_set(data, ARRAY[$2::text], 'true')
         WHERE id = $1 AND status = 'pending'
         RETURNING data`,
       [id, status]
@@ -517,8 +594,13 @@ export class PostgresTimerStore implements TimerStore {
          fires_at DOUBLE PRECISION NOT NULL,
          created_at DOUBLE PRECISION NOT NULL,
          claimed_until TIMESTAMPTZ,
+         claimed_by TEXT,
          data JSONB NOT NULL
        )`
+    );
+    await createIfMissing(
+      this.client,
+      `ALTER TABLE ${this.table} ADD COLUMN IF NOT EXISTS claimed_by TEXT`
     );
     await createIfMissing(
       this.client,

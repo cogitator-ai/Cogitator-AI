@@ -431,6 +431,25 @@ export interface TimerStore {
   onFire(callback: (entry: TimerEntry) => void): () => void;
   update(id: string, patch: Partial<TimerEntry>): Promise<void>;
   list(filter?: { enabled?: boolean; type?: string }): Promise<TimerEntry[]>;
+  /**
+   * How long, in ms, a timer handed out by `getOverdue()` stays claimed by
+   * this store instance. Only stores that claim timers have it; a
+   * `TimerManager` renews claims at a third of it while a handler runs.
+   */
+  readonly claimTtl?: number;
+  /**
+   * Extends this store instance's claim on a timer by `claimTtl` from now.
+   * Resolves to `false`, changing nothing, when this instance no longer
+   * holds a live claim on it (it expired, was released, or another worker
+   * took the timer over).
+   */
+  renew?(id: string): Promise<boolean>;
+  /**
+   * Gives up this store instance's claim on a timer so another worker's
+   * `getOverdue()` can take it right away. Does nothing when this instance
+   * does not hold the claim.
+   */
+  release?(id: string): Promise<void>;
 }
 
 export interface CronSchedule {

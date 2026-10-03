@@ -82,6 +82,14 @@ export interface TimerManagerConfig {
    * Called when a timer is dead-lettered after exceeding maxRetries
    */
   onDeadLetter?: (entry: TimerEntry, error: Error) => void;
+
+  /**
+   * Called when the store says this manager no longer holds the claim on a
+   * timer: before its handler starts (the handler is then skipped) or while
+   * it runs (its lease ran out before a renewal got through, so another
+   * worker may run the same timer)
+   */
+  onClaimLost?: (entry: TimerEntry) => void;
 }
 
 const DEFAULT_POLL_INTERVAL = 1000;
@@ -89,6 +97,13 @@ const DEFAULT_BATCH_SIZE = 100;
 const DEFAULT_CLEANUP_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_CLEANUP_INTERVAL = 60 * 60 * 1000;
 const DEFAULT_MAX_RETRIES = 5;
+
+type TimerManagerCallback =
+  'onError' | 'onTimerFired' | 'onTimerMissed' | 'onDeadLetter' | 'onClaimLost';
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
 
 /**
  * Timer manager stats
@@ -109,10 +124,8 @@ export interface TimerManagerStats {
  */
 export class TimerManager {
   private store: TimerStore;
-  private config: Required<
-    Omit<TimerManagerConfig, 'onError' | 'onTimerFired' | 'onTimerMissed' | 'onDeadLetter'>
-  > &
-    Pick<TimerManagerConfig, 'onError' | 'onTimerFired' | 'onTimerMissed' | 'onDeadLetter'>;
+  private config: Required<Omit<TimerManagerConfig, TimerManagerCallback>> &
+    Pick<TimerManagerConfig, TimerManagerCallback>;
   private handlers = new Map<string, TimerHandler>();
   private defaultHandler?: TimerHandler;
   private pollTimer?: ReturnType<typeof setInterval>;
@@ -141,6 +154,7 @@ export class TimerManager {
       onTimerFired: config.onTimerFired,
       onTimerMissed: config.onTimerMissed,
       onDeadLetter: config.onDeadLetter,
+      onClaimLost: config.onClaimLost,
     };
   }
 
@@ -224,6 +238,10 @@ export class TimerManager {
       const overdue = await this.store.getOverdue();
       const batch = overdue.slice(0, this.config.batchSize);
 
+      for (const entry of overdue.slice(this.config.batchSize)) {
+        await this.releaseClaim(entry);
+      }
+
       for (const entry of batch) {
         await this.processTimer(entry);
       }
@@ -249,7 +267,13 @@ export class TimerManager {
   }
 
   /**
-   * Process a single timer
+   * Process a single timer. With a store that claims timers, the claim is
+   * renewed right before the handler starts (a timer whose claim ran out
+   * while it waited in the batch is left to the worker that took it) and
+   * every `claimTtl / 3` while the handler runs, and released when no
+   * handler is registered, so another worker can take the timer at once. A
+   * failed handler keeps the claim until its lease runs out, which spaces out
+   * the retries.
    */
   private async processTimer(entry: TimerEntry): Promise<void> {
     try {
@@ -257,17 +281,25 @@ export class TimerManager {
 
       if (!handler) {
         this.config.onTimerMissed?.(entry, Date.now() - entry.firesAt);
+        await this.releaseClaim(entry);
         return;
       }
 
-      await handler(entry);
+      if (!(await this.confirmClaim(entry))) return;
+
+      const stopRenewing = this.keepClaim(entry);
+      try {
+        await handler(entry);
+      } finally {
+        await stopRenewing();
+      }
       await this.store.markFired(entry.id);
 
       this.processedTotal++;
       this.config.onTimerFired?.(entry);
     } catch (error) {
       this.errorTotal++;
-      const err = error instanceof Error ? error : new Error(String(error));
+      const err = toError(error);
       this.config.onError?.(err, entry);
 
       const consecutiveErrors = (entry.consecutiveErrors ?? 0) + 1;
@@ -281,6 +313,65 @@ export class TimerManager {
         await this.store.markFired(entry.id);
         this.config.onDeadLetter?.(entry, err);
       }
+    }
+  }
+
+  /**
+   * Renews the store's claim on a timer before its handler runs; `false`
+   * when the claim is gone or could not be renewed
+   */
+  private async confirmClaim(entry: TimerEntry): Promise<boolean> {
+    const store = this.store;
+    if (!store.renew || !store.claimTtl) return true;
+    try {
+      if (await store.renew(entry.id)) return true;
+      this.config.onClaimLost?.(entry);
+    } catch (error) {
+      this.config.onError?.(toError(error), entry);
+    }
+    return false;
+  }
+
+  /**
+   * Renews the store's claim on a timer every `claimTtl / 3` until the
+   * returned function is called; it resolves once no renewal is in flight.
+   */
+  private keepClaim(entry: TimerEntry): () => Promise<void> {
+    const store = this.store;
+    const renew = store.renew;
+    if (!renew || !store.claimTtl) return async () => undefined;
+
+    let lost = false;
+    let renewal: Promise<void> = Promise.resolve();
+    const tick = async (): Promise<void> => {
+      if (lost) return;
+      try {
+        if (await renew.call(store, entry.id)) return;
+        lost = true;
+        clearInterval(interval);
+        this.config.onClaimLost?.(entry);
+      } catch (error) {
+        this.config.onError?.(toError(error), entry);
+      }
+    };
+    const interval = setInterval(() => {
+      renewal = renewal.then(tick);
+    }, store.claimTtl / 3);
+
+    return async () => {
+      clearInterval(interval);
+      await renewal;
+    };
+  }
+
+  /**
+   * Gives up the store's claim on a timer this manager will not run now
+   */
+  private async releaseClaim(entry: TimerEntry): Promise<void> {
+    try {
+      await this.store.release?.(entry.id);
+    } catch (error) {
+      this.config.onError?.(toError(error), entry);
     }
   }
 

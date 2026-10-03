@@ -274,7 +274,7 @@ new RedisApprovalStore({ client: redis, pollInterval: 1000 }); // answers from o
 new PostgresTimerStore({ client: pool, claimTtl: 60_000 }); // each overdue timer is claimed by one TimerManager
 ```
 
-Approvals answered in another process reach the waiting human node within `pollInterval`; overdue timers are claimed for `claimTtl` so several `TimerManager`s can share a store without firing a timer twice.
+Approvals answered in another process reach the waiting human node within `pollInterval`; overdue timers are claimed for `claimTtl` so several `TimerManager`s can share a store without firing a timer twice. A `TimerManager` renews the claim while a handler runs (so slow handlers keep their timer) and releases timers it has no handler for, so another manager can run them at once.
 
 ---
 

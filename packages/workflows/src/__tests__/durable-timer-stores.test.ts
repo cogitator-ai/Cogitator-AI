@@ -345,6 +345,203 @@ describe('RedisTimerStore claims', () => {
       'Invalid timer claimTtl'
     );
   });
+
+  it('keeps a renewed timer away from other workers past its first lease', async () => {
+    const { first, second } = twoWorkers();
+    const id = await first.schedule(timer({ firesAt: NOW - 10 }));
+    await first.getOverdue();
+
+    vi.setSystemTime(NOW + 900);
+    expect(await first.renew(id)).toBe(true);
+    vi.setSystemTime(NOW + 1_899);
+    expect(await second.getOverdue()).toEqual([]);
+
+    vi.setSystemTime(NOW + 1_900);
+    expect(ids(await second.getOverdue())).toEqual([id]);
+  });
+
+  it('refuses to renew a claim another worker took over', async () => {
+    const { first, second } = twoWorkers();
+    const id = await first.schedule(timer({ firesAt: NOW - 10 }));
+    await first.getOverdue();
+
+    vi.setSystemTime(NOW + 1_000);
+    expect(ids(await second.getOverdue())).toEqual([id]);
+    expect(await first.renew(id)).toBe(false);
+    expect(await second.renew(id)).toBe(true);
+    expect(await first.renew(id)).toBe(false);
+    expect(await first.renew('timer_never_claimed')).toBe(false);
+  });
+
+  it('refuses to renew a lease that already ran out', async () => {
+    const { first } = twoWorkers();
+    const id = await first.schedule(timer({ firesAt: NOW - 10 }));
+    await first.getOverdue();
+
+    vi.setSystemTime(NOW + 1_000);
+    expect(await first.renew(id)).toBe(false);
+    expect(ids(await first.getOverdue())).toEqual([id]);
+  });
+
+  it('makes a released timer available at once, ignoring releases by non-owners', async () => {
+    const { first, second } = twoWorkers();
+    const id = await first.schedule(timer({ firesAt: NOW - 10 }));
+    await first.getOverdue();
+
+    await second.release(id);
+    expect(await second.getOverdue()).toEqual([]);
+
+    await first.release(id);
+    expect(ids(await second.getOverdue())).toEqual([id]);
+    expect(await first.renew(id)).toBe(false);
+    await first.release(id);
+    expect(await first.getOverdue()).toEqual([]);
+    expect(await second.renew(id)).toBe(true);
+    expect(first.claimTtl).toBe(1_000);
+  });
+});
+
+describe('TimerManager with a claiming store', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const twoWorkers = () => {
+    const client = fakeRedis();
+    return {
+      first: new RedisTimerStore({ client, keyPrefix: 'app', claimTtl: 900 }),
+      second: new RedisTimerStore({ client, keyPrefix: 'app', claimTtl: 900 }),
+    };
+  };
+
+  it('renews the claim while a slow handler runs, so nobody else runs the timer', async () => {
+    const { first, second } = twoWorkers();
+    const id = await first.schedule(timer({ firesAt: NOW - 10 }));
+    const renew = vi.spyOn(first, 'renew');
+    const handled: string[] = [];
+    let finish: () => void = () => undefined;
+    const slow = new TimerManager(first);
+    slow.setDefaultHandler(async (entry) => {
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      handled.push(`slow:${entry.id}`);
+    });
+    const other = new TimerManager(second);
+    other.setDefaultHandler((entry) => {
+      handled.push(`other:${entry.id}`);
+    });
+
+    const running = slow.processNow();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(await other.processNow()).toBe(0);
+    expect(renew).toHaveBeenCalledTimes(11);
+
+    finish();
+    expect(await running).toBe(1);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(renew).toHaveBeenCalledTimes(11);
+    expect(await other.processNow()).toBe(0);
+    expect(handled).toEqual([`slow:${id}`]);
+    expect(await second.get(id)).toMatchObject({ fired: true });
+  });
+
+  it('reports a claim lost while the handler runs and stops renewing it', async () => {
+    const { first } = twoWorkers();
+    await first.schedule(timer({ firesAt: NOW - 10 }));
+    const renew = vi.spyOn(first, 'renew').mockResolvedValueOnce(true).mockResolvedValue(false);
+    const lost: string[] = [];
+    let finish: () => void = () => undefined;
+    const manager = new TimerManager(first, { onClaimLost: (entry) => lost.push(entry.id) });
+    manager.setDefaultHandler(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        })
+    );
+
+    const running = manager.processNow();
+    await vi.advanceTimersByTimeAsync(2_000);
+    finish();
+    await running;
+
+    expect(renew).toHaveBeenCalledTimes(2);
+    expect(lost).toHaveLength(1);
+  });
+
+  it('skips a batched timer whose claim another worker took while it waited', async () => {
+    const { first, second } = twoWorkers();
+    const blocking = await first.schedule(timer({ firesAt: NOW - 20 }));
+    const waiting = await first.schedule(timer({ firesAt: NOW - 10 }));
+    const handled: string[] = [];
+    const lost: string[] = [];
+    let finish: () => void = () => undefined;
+    const slow = new TimerManager(first, { onClaimLost: (entry) => lost.push(entry.id) });
+    slow.setDefaultHandler(async (entry) => {
+      if (entry.id === blocking) {
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+      }
+      handled.push(`slow:${entry.id}`);
+    });
+    const other = new TimerManager(second);
+    other.setDefaultHandler((entry) => {
+      handled.push(`other:${entry.id}`);
+    });
+
+    const running = slow.processNow();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await other.processNow()).toBe(1);
+    finish();
+    await running;
+
+    expect(handled).toEqual([`other:${waiting}`, `slow:${blocking}`]);
+    expect(lost).toEqual([waiting]);
+  });
+
+  it('releases a timer it has no handler for, so another manager runs it at once', async () => {
+    const { first, second } = twoWorkers();
+    const id = await first.schedule(timer({ workflowId: 'billing', firesAt: NOW - 10 }));
+    const missed: string[] = [];
+    const handled: string[] = [];
+    const without = new TimerManager(first, { onTimerMissed: (entry) => missed.push(entry.id) });
+    without.registerHandler('orders', () => undefined);
+    const withHandler = new TimerManager(second);
+    withHandler.registerHandler('billing', (entry) => {
+      handled.push(entry.id);
+    });
+
+    await without.processNow();
+    expect(missed).toEqual([id]);
+    expect(await withHandler.processNow()).toBe(1);
+    expect(handled).toEqual([id]);
+  });
+
+  it('releases the claims a poll takes beyond its batch', async () => {
+    const { first, second } = twoWorkers();
+    const early = await first.schedule(timer({ firesAt: NOW - 20 }));
+    const late = await first.schedule(timer({ firesAt: NOW - 10 }));
+    const manager = new TimerManager(first, {
+      batchSize: 1,
+      pollInterval: 100,
+      processOverdueOnStart: false,
+      enableCleanup: false,
+    });
+    manager.setDefaultHandler(() => undefined);
+
+    await manager.start();
+    await vi.advanceTimersByTimeAsync(100);
+    await manager.stop();
+
+    expect(await first.get(early)).toMatchObject({ fired: true });
+    expect(ids(await second.getOverdue())).toEqual([late]);
+  });
 });
 
 describe('PostgresTimerStore', () => {
@@ -376,7 +573,10 @@ describe('PostgresTimerStore', () => {
     const creates = client.statements.filter((s) => s.sql.startsWith('CREATE'));
     expect(creates).toHaveLength(4);
     expect(creates[0].sql).toContain('CREATE TABLE IF NOT EXISTS app.timers');
-    expect(creates[0].sql).toContain('claimed_until TIMESTAMPTZ');
+    expect(creates[0].sql).toContain('claimed_until TIMESTAMPTZ, claimed_by TEXT');
+    expect(client.statements.filter((s) => s.sql.startsWith('ALTER'))).toEqual([
+      { sql: 'ALTER TABLE app.timers ADD COLUMN IF NOT EXISTS claimed_by TEXT', values: [] },
+    ]);
     expect(creates.slice(1).map((s) => s.sql)).toEqual([
       'CREATE INDEX IF NOT EXISTS app_timers_due_idx ON app.timers (status, fires_at)',
       'CREATE INDEX IF NOT EXISTS app_timers_workflow_idx ON app.timers (workflow_id, fires_at)',
@@ -421,13 +621,43 @@ describe('PostgresTimerStore', () => {
     expect(ids(await store.getOverdue())).toEqual(['timer_a', 'timer_b']);
 
     const { sql, values } = client.last();
-    expect(sql).toContain('SET claimed_until = now() + $2::double precision');
+    expect(sql).toContain(
+      "SET claimed_until = now() + $2::double precision * interval '1 millisecond', claimed_by = $3"
+    );
     expect(sql).toContain(
       "WHERE status = 'pending' AND fires_at <= $1::double precision AND (claimed_until IS NULL OR claimed_until <= now())"
     );
     expect(sql).toContain('FOR UPDATE SKIP LOCKED');
     expect(sql).toContain('RETURNING data');
-    expect(values).toEqual([NOW, 5_000]);
+    expect(values).toEqual([NOW, 5_000, expect.any(String)]);
+  });
+
+  it('renews and releases only the claims this instance holds', async () => {
+    let renewed: Array<Record<string, unknown>> = [];
+    const client = fakePostgres((sql) =>
+      sql.startsWith('UPDATE') && sql.includes('RETURNING id') ? renewed : []
+    );
+    const store = new PostgresTimerStore({ client, claimTtl: 5_000 });
+    const other = new PostgresTimerStore({ client, claimTtl: 5_000 });
+    await store.getOverdue();
+    const owner = client.last().values[2];
+    await other.getOverdue();
+    expect(client.last().values[2]).not.toBe(owner);
+
+    expect(await store.renew('timer_a')).toBe(false);
+    expect(client.last()).toEqual({
+      sql: "UPDATE cogitator_workflow_timers SET claimed_until = now() + $3::double precision * interval '1 millisecond' WHERE id = $1 AND claimed_by = $2 AND status = 'pending' AND claimed_until > now() RETURNING id",
+      values: ['timer_a', owner, 5_000],
+    });
+    renewed = [{ id: 'timer_a' }];
+    expect(await store.renew('timer_a')).toBe(true);
+
+    await store.release('timer_a');
+    expect(client.last()).toEqual({
+      sql: "UPDATE cogitator_workflow_timers SET claimed_until = NULL, claimed_by = NULL WHERE id = $1 AND claimed_by = $2 AND status = 'pending'",
+      values: ['timer_a', owner],
+    });
+    expect(store.claimTtl).toBe(5_000);
   });
 
   it('fires listeners only when markFired moved a pending row', async () => {
@@ -440,7 +670,7 @@ describe('PostgresTimerStore', () => {
     await store.markFired('timer_a');
     expect(seen).toEqual([]);
     expect(client.last().sql).toContain(
-      "SET status = $2::text, claimed_until = NULL, data = jsonb_set(data, ARRAY[$2::text], 'true') WHERE id = $1 AND status = 'pending'"
+      "SET status = $2::text, claimed_until = NULL, claimed_by = NULL, data = jsonb_set(data, ARRAY[$2::text], 'true') WHERE id = $1 AND status = 'pending'"
     );
     expect(client.last().values).toEqual(['timer_a', 'fired']);
 

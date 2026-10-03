@@ -176,6 +176,64 @@ function twoWorkerClaims(createPair: (claimTtl: number) => [TimerStore, TimerSto
     expect(await survivor.get(id)).toMatchObject({ fired: true });
     expect(await crashed.getOverdue()).toEqual([]);
   });
+
+  it('keeps timers with handlers slower than the lease to the manager running them', async () => {
+    const [first, second] = createPair(400);
+    const scheduled = await Promise.all(
+      [30, 20, 10].map((ago) => first.schedule(timer({ firesAt: Date.now() - ago })))
+    );
+    const handled = new Map<string, string[]>();
+    const record = (worker: string) => async (entry: TimerEntry) => {
+      handled.set(entry.id, [...(handled.get(entry.id) ?? []), worker]);
+      if (worker === 'slow') await new Promise((resolve) => setTimeout(resolve, 1_000));
+    };
+    const slow = new TimerManager(first, { enableCleanup: false, onClaimLost: () => undefined });
+    slow.setDefaultHandler(record('slow'));
+    const other = new TimerManager(second, { enableCleanup: false });
+    other.setDefaultHandler(record('other'));
+
+    let done = false;
+    const running = slow.processNow().finally(() => {
+      done = true;
+    });
+    let otherHandled = 0;
+    while (!done) {
+      otherHandled += await other.processNow();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await running;
+
+    expect(handled.get(scheduled[0])).toEqual(['slow']);
+    expect([...handled.keys()].sort()).toEqual([...scheduled].sort());
+    expect([...handled.values()].every((workers) => workers.length === 1)).toBe(true);
+    expect(otherHandled).toBe(2);
+    expect(await second.getPending()).toEqual([]);
+  });
+
+  it('lets a manager with a handler run a timer another manager has none for', async () => {
+    const [first, second] = createPair(30_000);
+    const id = await first.schedule(timer({ workflowId: 'billing', firesAt: Date.now() - 10 }));
+    const missed: string[] = [];
+    const handled: string[] = [];
+    const without = new TimerManager(first, {
+      enableCleanup: false,
+      onTimerMissed: (entry) => missed.push(entry.id),
+    });
+    without.registerHandler('orders', () => undefined);
+    const withHandler = new TimerManager(second, { enableCleanup: false });
+    withHandler.registerHandler('billing', (entry) => {
+      handled.push(entry.id);
+    });
+
+    await without.processNow();
+    const started = Date.now();
+    expect(await withHandler.processNow()).toBe(1);
+
+    expect(missed).toEqual([id]);
+    expect(handled).toEqual([id]);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(await first.get(id)).toMatchObject({ fired: true });
+  });
 }
 
 describeRedis('Workflows: timer stores in Redis', () => {
@@ -244,5 +302,26 @@ describePostgres('Workflows: timer stores in Postgres', () => {
         new PostgresTimerStore({ client: pool, table: name, claimTtl }),
       ];
     });
+  });
+
+  it('adds claim ownership to a table created before it existed', async () => {
+    const name = table('legacy');
+    await pool.query(
+      `CREATE TABLE ${name} (
+         id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, run_id TEXT NOT NULL,
+         status TEXT NOT NULL, fires_at DOUBLE PRECISION NOT NULL,
+         created_at DOUBLE PRECISION NOT NULL, claimed_until TIMESTAMPTZ, data JSONB NOT NULL
+       )`
+    );
+    const [first, second] = [0, 1].map(
+      () => new PostgresTimerStore({ client: pool, table: name, claimTtl: 30_000 })
+    );
+    const id = await first.schedule(timer({ firesAt: Date.now() - 10 }));
+
+    expect(ids(await first.getOverdue())).toEqual([id]);
+    expect(await second.renew(id)).toBe(false);
+    expect(await first.renew(id)).toBe(true);
+    await first.release(id);
+    expect(ids(await second.getOverdue())).toEqual([id]);
   });
 });

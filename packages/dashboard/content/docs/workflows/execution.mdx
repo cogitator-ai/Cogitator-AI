@@ -244,7 +244,7 @@ const timers = createTimerManager(timerStore);
 
 - **Runs** — `listRuns`, `getStats` and `cleanup` work across processes; Postgres filters, sorts and counts in SQL, Redis keeps sorted-set indexes so nothing scans the keyspace.
 - **Approvals** — a human node in one process resumes when another answers: `onResponse` fires at once for answers given through the same store and otherwise checks every `pollInterval` ms.
-- **Timers** — several `TimerManager`s can poll one store: `getOverdue()` claims the timers it returns for `claimTtl` ms (Postgres with `FOR UPDATE SKIP LOCKED`), so each fires once, and a timer whose worker died becomes available again when the claim runs out.
+- **Timers** — several `TimerManager`s can poll one store: `getOverdue()` claims the timers it returns for `claimTtl` ms (Postgres with `FOR UPDATE SKIP LOCKED`), so each fires once. The manager renews a claim every `claimTtl / 3` while its handler runs, so a handler slower than the lease is not picked up by another worker (`onClaimLost` reports a claim that ran out anyway), and releases a timer it has no handler for so a manager that has one runs it right away. A timer whose worker died becomes available again when the claim runs out; one whose handler failed stays claimed until then, which spaces out the retries.
 
 Tables are created on first use and each store accepts its own `table` / `tablePrefix` or `keyPrefix`. In Redis Cluster put a hash tag in the prefix (`{myapp}:approvals`) so a store's keys share a slot.
 
