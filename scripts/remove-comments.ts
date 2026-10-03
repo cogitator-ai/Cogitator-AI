@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import { readFileSync, writeFileSync, readdirSync } from 'fs';
-import { join, extname } from 'path';
+import { join, extname, resolve } from 'path';
 
 function findFiles(dir: string, extensions: string[]): string[] {
   const results: string[] = [];
@@ -243,11 +243,22 @@ function processFile(filePath: string): boolean {
   return false;
 }
 
+const PACKAGE_SOURCE = /[\\/]packages[\\/][^\\/]+[\\/]/;
+
+/** Source files of the packages: the ones named on the command line, or all of them. */
+function targetFiles(): string[] {
+  const named = process.argv.slice(2).filter((arg) => !arg.startsWith('--'));
+  if (named.length === 0) return findFiles(join(process.cwd(), 'packages'), ['.ts', '.tsx']);
+  return named
+    .map((file) => resolve(file))
+    .filter((file) => PACKAGE_SOURCE.test(file) && ['.ts', '.tsx'].includes(extname(file)));
+}
+
+
 function main() {
   console.log(`Removing single-line comments...${DRY_RUN ? ' (dry run)' : ''}`);
 
-  const packagesDir = join(process.cwd(), 'packages');
-  const files = findFiles(packagesDir, ['.ts', '.tsx']);
+  const files = targetFiles();
 
   let modifiedCount = 0;
   let totalCount = 0;
