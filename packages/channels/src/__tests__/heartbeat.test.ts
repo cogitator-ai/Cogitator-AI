@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { HeartbeatScheduler } from '../heartbeat';
 import type { ChannelMessage, TimerStore } from '@cogitator-ai/types';
 
-function createMockStore(): Record<keyof TimerStore, ReturnType<typeof vi.fn>> {
+/** The members every TimerStore has; claims (claimTtl, renew, release) are optional. */
+type RequiredKeys<T> = { [K in keyof T]-?: undefined extends T[K] ? never : K }[keyof T];
+
+function createMockStore(): Record<RequiredKeys<TimerStore>, ReturnType<typeof vi.fn>> {
   return {
     getOverdue: vi.fn().mockResolvedValue([]),
     markFired: vi.fn().mockResolvedValue(undefined),

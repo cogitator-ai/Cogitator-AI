@@ -97,7 +97,10 @@ describe('SimpleTimerStore', () => {
   });
 });
 
-type MockTimerStore = { [K in keyof TimerStore]: Mock<TimerStore[K]> };
+/** The members every TimerStore has; claims (claimTtl, renew, release) are optional. */
+type RequiredKeys<T> = { [K in keyof T]-?: undefined extends T[K] ? never : K }[keyof T];
+
+type MockTimerStore = { [K in RequiredKeys<TimerStore>]: Mock<TimerStore[K]> };
 
 function mockStore(overdue: TimerEntry[][]): MockTimerStore {
   const getOverdue = vi.fn<TimerStore['getOverdue']>();
