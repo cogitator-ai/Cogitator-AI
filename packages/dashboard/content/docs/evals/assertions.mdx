@@ -31,10 +31,10 @@ const suite = new EvalSuite({
   target: { fn },
   metrics: [exactMatch(), contains()],
   assertions: [
-    threshold('exactMatch', 0.9),    // mean exactMatch >= 0.9
-    threshold('contains', 0.95),     // mean contains >= 0.95
-    threshold('latency.p95', 5000),  // p95 latency <= 5000ms
-    threshold('cost.mean', 0.01),    // mean cost <= $0.01
+    threshold('exactMatch', 0.9), // mean exactMatch >= 0.9
+    threshold('contains', 0.95), // mean contains >= 0.95
+    threshold('latency.p95', 5000), // p95 latency <= 5000ms
+    threshold('cost.mean', 0.01), // mean cost <= $0.01
   ],
 });
 ```
@@ -43,12 +43,12 @@ const suite = new EvalSuite({
 
 You can access nested aggregation fields with dot notation:
 
-| Path              | Resolves to                          |
-| ----------------- | ------------------------------------ |
-| `exactMatch`      | `aggregated.exactMatch.mean`         |
-| `exactMatch.p95`  | `aggregated.exactMatch.p95`          |
-| `latency.p99`     | `aggregated.latency.p99`            |
-| `cost.median`     | `aggregated.cost.median`             |
+| Path             | Resolves to                  |
+| ---------------- | ---------------------------- |
+| `exactMatch`     | `aggregated.exactMatch.mean` |
+| `exactMatch.p95` | `aggregated.exactMatch.p95`  |
+| `latency.p99`    | `aggregated.latency.p99`     |
+| `cost.median`    | `aggregated.cost.median`     |
 
 ### Direction Detection
 
@@ -89,14 +89,14 @@ const suite = new EvalSuite({
   metrics: [exactMatch(), contains()],
   assertions: [
     noRegression('./baseline.json'),
-    noRegression('./baseline.json', { tolerance: 0.1 }),  // 10% tolerance
+    noRegression('./baseline.json', { tolerance: 0.1 }), // 10% tolerance
   ],
 });
 ```
 
-| Option      | Type   | Default | Description                                           |
-| ----------- | ------ | ------- | ----------------------------------------------------- |
-| `tolerance` | number | 0.05    | Allowed regression as a fraction (0.05 = 5%)          |
+| Option      | Type   | Default | Description                                  |
+| ----------- | ------ | ------- | -------------------------------------------- |
+| `tolerance` | number | 0.05    | Allowed regression as a fraction (0.05 = 5%) |
 
 For "higher is better" metrics, the assertion fails if `actual < baseline * (1 - tolerance)`. For "lower is better" metrics (latency, cost), it fails if `actual > baseline * (1 + tolerance)`.
 
@@ -141,6 +141,7 @@ const suite = new EvalSuite({
 ```
 
 The `check` function receives:
+
 - `aggregated` — `Record<string, AggregatedMetric>` with per-metric stats
 - `stats` — `{ total: number, duration: number, cost: number }` for the full run
 
@@ -156,7 +157,7 @@ assertions: [
   threshold('relevance', 0.8),
   noRegression('./baseline.json'),
   budgetCheck,
-]
+];
 ```
 
 The `report('ci')` reporter exits with code 1 if any assertion fails, making it straightforward to integrate with CI pipelines.

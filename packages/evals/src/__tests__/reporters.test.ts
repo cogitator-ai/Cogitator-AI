@@ -362,19 +362,47 @@ describe('report() dispatcher', () => {
     expect(process.exit).not.toHaveBeenCalled();
   });
 
-  it('runs all reporters when given an array', () => {
+  it('writes each file report next to the shared base path with its own extension', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'evals-multi-'));
-    const jsonPath = join(tempDir, 'out.json');
-    const _csvPath = join(tempDir, 'out.csv');
-
+    const base = join(tempDir, 'reports', 'eval');
     const result = makeSuiteResult({ assertions: [{ name: 'x', passed: true, message: 'ok' }] });
 
-    report(result, ['console', 'json', 'csv', 'ci'], { path: jsonPath });
+    report(result, ['console', 'json', 'csv'], { path: base });
 
-    const consoleOutput = logs.join('\n');
-    expect(consoleOutput).toContain('exactMatch');
-    expect(() => readFileSync(jsonPath, 'utf-8')).not.toThrow();
+    expect(logs.join('\n')).toContain('exactMatch');
+    const json = JSON.parse(readFileSync(`${base}.json`, 'utf-8')) as EvalSuiteResult;
+    expect(json.stats.total).toBe(result.stats.total);
+    expect(readFileSync(`${base}.csv`, 'utf-8').split('\n')[0]).toContain('input');
 
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('keeps an explicit extension for its own reporter', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'evals-ext-'));
+    const path = join(tempDir, 'out.json');
+
+    report(makeSuiteResult(), ['json', 'csv'], { path });
+
+    expect(() => JSON.parse(readFileSync(path, 'utf-8'))).not.toThrow();
+    expect(readFileSync(join(tempDir, 'out.csv'), 'utf-8')).toContain('input');
+
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('runs ci after the file reporters, since it may end the process', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'evals-ci-'));
+    const base = join(tempDir, 'eval');
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('exit');
+    }) as never);
+    const failing = makeSuiteResult({
+      assertions: [{ name: 'x', passed: false, message: 'failed' }],
+    });
+
+    expect(() => report(failing, ['ci', 'json'], { path: base })).toThrow('exit');
+    expect(() => readFileSync(`${base}.json`, 'utf-8')).not.toThrow();
+
+    exit.mockRestore();
     rmSync(tempDir, { recursive: true, force: true });
   });
 });

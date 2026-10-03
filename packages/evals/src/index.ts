@@ -22,7 +22,13 @@ export {
 export type { LLMMetricFn, JudgeContext } from './metrics/llm-judge';
 export { latency, cost, tokenUsage } from './metrics/statistical';
 export { metric } from './metrics/custom';
-export type { MetricFn, MetricScore, EvalCaseResult, StatisticalMetricFn } from './metrics/types';
+export type {
+  MetricFn,
+  MetricScore,
+  EvalCaseResult,
+  StatisticalMetricFn,
+  StatisticalScore,
+} from './metrics/types';
 export type { CustomMetricConfig } from './metrics/custom';
 
 export { threshold } from './assertions';

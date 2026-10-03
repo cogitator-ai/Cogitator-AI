@@ -124,7 +124,11 @@ describe('EvalBuilder', () => {
         .withDataset(simpleDataset())
         .withTarget({ fn: async () => '' })
         .withMetrics([makeLLMMetricFn('faithfulness')])
-        .withJudge({ model: 'gpt-4', temperature: 0 })
+        .withJudge({
+          model: 'gpt-4',
+          temperature: 0,
+          cogitator: { run: async () => ({ output: '{"score":1}' }) },
+        })
         .build();
 
       expect(suite).toBeInstanceOf(EvalSuite);

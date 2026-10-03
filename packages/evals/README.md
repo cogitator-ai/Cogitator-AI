@@ -164,7 +164,7 @@ const suite = new EvalSuite({
       prompt: 'Rate how technically accurate the response is for a software engineering audience.',
     }),
   ],
-  judge: { model: 'gpt-6.1-sol', temperature: 0 },
+  judge: { model: 'openai/gpt-6.1-sol', temperature: 0, cogitator },
 });
 ```
 

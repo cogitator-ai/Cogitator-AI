@@ -31,6 +31,14 @@ export type MetricFn = ((result: EvalCaseResult) => Promise<MetricScore>) & {
   metricName: string;
 };
 
-export type StatisticalMetricFn = ((results: EvalCaseResult[]) => MetricScore) & {
+export interface StatisticalScore extends MetricScore {
+  /**
+   * One value per case; the suite aggregates them into mean, percentiles and so
+   * on. Without it the suite aggregates `score` alone.
+   */
+  values?: number[];
+}
+
+export type StatisticalMetricFn = ((results: EvalCaseResult[]) => StatisticalScore) & {
   metricName: string;
 };

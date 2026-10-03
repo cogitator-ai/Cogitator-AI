@@ -8,6 +8,8 @@ export interface AggregatedMetric {
   p50: number;
   p95: number;
   p99: number;
+  /** Extra figures a statistical metric reports, such as the total cost */
+  metadata?: Record<string, unknown>;
 }
 
 export interface AssertionResult {

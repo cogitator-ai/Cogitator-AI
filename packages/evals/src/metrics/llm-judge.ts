@@ -1,4 +1,5 @@
-import type { JudgeConfig } from '../schema';
+import { z } from 'zod';
+import type { JudgeCogitator, JudgeConfig } from '../schema';
 import type { MetricFn, EvalCaseResult, MetricScore } from './types';
 
 export interface JudgeContext {
@@ -13,21 +14,73 @@ export interface LLMMetricFn extends MetricFn {
 }
 
 const SCORE_REGEX = /\b(0(?:\.\d+)?|1(?:\.0+)?)\b/;
+const JSON_OBJECT = /\{[\s\S]*\}/;
+
+const JudgeVerdict = z.object({ score: z.number(), reasoning: z.string() });
+
+const JUDGE_INSTRUCTIONS =
+  'You are an impartial evaluator. Score the response with the rubric in the request. Reply with JSON: {"score": <number from 0 to 1>, "reasoning": "<explanation>"}.';
+
+function verdictOf(value: unknown): { score: number; reasoning?: string } | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const { score, reasoning } = value as { score?: unknown; reasoning?: unknown };
+  if (typeof score !== 'number' || !Number.isFinite(score)) return null;
+  return { score, ...(typeof reasoning === 'string' && { reasoning }) };
+}
+
+function parseJson(text: string | undefined): { ok: true; value: unknown } | { ok: false } {
+  if (text === undefined) return { ok: false };
+  try {
+    return { ok: true, value: JSON.parse(text) as unknown };
+  } catch {
+    return { ok: false };
+  }
+}
 
 function parseJudgeOutput(raw: string): { score: number; reasoning?: string } | null {
-  try {
-    const parsed = JSON.parse(raw);
-    if (typeof parsed.score === 'number') {
-      return { score: parsed.score, reasoning: parsed.reasoning };
-    }
-    return null;
-  } catch {
-    const match = SCORE_REGEX.exec(raw);
-    if (match) {
-      return { score: parseFloat(match[1]) };
-    }
-    return null;
-  }
+  const json = [raw, JSON_OBJECT.exec(raw)?.[0]].map(parseJson).find((result) => result.ok);
+  if (json?.ok) return verdictOf(json.value);
+  const match = SCORE_REGEX.exec(raw);
+  return match ? { score: parseFloat(match[1]) } : null;
+}
+
+/**
+ * A judge context that runs the judge as a Cogitator agent on `judgeConfig.model`,
+ * asking for a `{ score, reasoning }` JSON answer.
+ */
+export function judgeContextFor(cogitator: JudgeCogitator, judgeConfig: JudgeConfig): JudgeContext {
+  let judgeAgent: Promise<unknown> | undefined;
+  const agent = () =>
+    (judgeAgent ??= import('@cogitator-ai/core').then(
+      ({ Agent }) =>
+        new Agent({
+          name: 'eval-judge',
+          model: judgeConfig.model,
+          instructions: JUDGE_INSTRUCTIONS,
+          temperature: judgeConfig.temperature,
+          ...(judgeConfig.maxTokens !== undefined && { maxTokens: judgeConfig.maxTokens }),
+          maxIterations: 1,
+          responseFormat: { type: 'json_schema', schema: JudgeVerdict },
+        }),
+      (error: unknown) => {
+        throw new Error(
+          `The LLM judge needs @cogitator-ai/core: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    ));
+
+  return {
+    judgeConfig,
+    cogitator: {
+      run: async ({ input }) => {
+        const result = await cogitator.run(await agent(), { input, useMemory: false });
+        return {
+          output:
+            result.structured !== undefined ? JSON.stringify(result.structured) : result.output,
+        };
+      },
+    },
+  };
 }
 
 function createJudgeMetric(name: string, systemPrompt: string): LLMMetricFn {

@@ -13,10 +13,28 @@ export const EvalSuiteConfigSchema = z.object({
   retries: z.number().int().min(0).max(10).default(0),
 });
 
+/** The part of a Cogitator runtime the judge needs: running an agent. */
+export interface JudgeCogitator {
+  run(
+    agent: unknown,
+    options: { input: string; useMemory?: boolean }
+  ): Promise<{ output: string; structured?: unknown }>;
+}
+
+function isJudgeCogitator(value: unknown): value is JudgeCogitator {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { run?: unknown }).run === 'function'
+  );
+}
+
 export const JudgeConfigSchema = z.object({
   model: z.string(),
   temperature: z.number().default(0),
   maxTokens: z.number().int().positive().optional(),
+  /** Runtime that runs the judge; defaults to the `cogitator` of an agent target */
+  cogitator: z.custom<JudgeCogitator>(isJudgeCogitator).optional(),
 });
 
 export const EvalComparisonConfigSchema = z.object({

@@ -71,7 +71,7 @@ const suite = new EvalSuite({
   target: { fn },         // required — what to evaluate
   metrics: [...],         // optional — per-case scoring functions
   statisticalMetrics: [], // optional — aggregate metrics (latency, cost)
-  judge: { model: '...'}, // required if using LLM metrics
+  judge: { model: '...', cogitator }, // required if using LLM metrics
   assertions: [...],      // optional — pass/fail checks
   concurrency: 5,         // optional — parallel case execution
   timeout: 30000,         // optional — per-case timeout in ms

@@ -2,10 +2,10 @@ import { writeFileSync } from 'node:fs';
 import { Dataset } from './datasets';
 import type { EvalCase } from './schema';
 import { EvalSuiteConfigSchema } from './schema';
-import type { JudgeConfig } from './schema';
+import type { JudgeCogitator, JudgeConfig } from './schema';
 import type { MetricFn, MetricScore, EvalCaseResult, StatisticalMetricFn } from './metrics/types';
 import type { LLMMetricFn } from './metrics/llm-judge';
-import { bindJudgeContext } from './metrics/llm-judge';
+import { bindJudgeContext, judgeContextFor } from './metrics/llm-judge';
 import type { AssertionFn, AssertionResult, AggregatedMetric } from './assertions';
 import { aggregate } from './stats';
 import { report } from './reporters';
@@ -85,15 +85,18 @@ export class EvalSuite {
       throw new Error('LLM metrics require a judge config');
     }
 
-    this.boundMetrics = rawMetrics.map((m) => {
-      if (isLLMMetric(m) && opts.judge) {
-        return bindJudgeContext(m, {
-          cogitator: { run: async ({ input }: { input: string }) => ({ output: input }) },
-          judgeConfig: opts.judge,
-        });
-      }
-      return m;
-    });
+    const judgeCogitator =
+      opts.judge?.cogitator ?? (this.target.cogitator as JudgeCogitator | undefined);
+    if (hasLLMMetrics && !judgeCogitator) {
+      throw new Error(
+        'LLM metrics need a Cogitator to run the judge: pass judge.cogitator, or use an agent target'
+      );
+    }
+    const judge = opts.judge && judgeCogitator ? judgeContextFor(judgeCogitator, opts.judge) : null;
+
+    this.boundMetrics = rawMetrics.map((m) =>
+      isLLMMetric(m) && judge ? bindJudgeContext(m, judge) : m
+    );
   }
 
   private validateTarget(): void {
@@ -169,7 +172,11 @@ export class EvalSuite {
 
     for (const statMetric of this.statisticalMetrics) {
       const score = statMetric(orderedResults);
-      aggregated[score.name] = { name: score.name, ...aggregate([score.score]) };
+      aggregated[score.name] = {
+        name: score.name,
+        ...aggregate(score.values ?? [score.score]),
+        ...(score.metadata && { metadata: score.metadata }),
+      };
     }
 
     const totalCost = orderedResults.reduce((sum, r) => sum + (r.usage?.cost ?? 0), 0);

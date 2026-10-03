@@ -140,7 +140,7 @@ const comparison = new EvalComparison({
   },
   metrics: [exactMatch(), contains(), faithfulness()],
   statisticalMetrics: [latency()],
-  judge: { model: 'gpt-6.1-sol', temperature: 0 },
+  judge: { model: 'openai/gpt-6.1-sol', temperature: 0, cogitator },
   concurrency: 10,
   timeout: 30000,
   onProgress: ({ target, completed, total }) => {

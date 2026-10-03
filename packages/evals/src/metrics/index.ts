@@ -1,4 +1,10 @@
-export type { MetricScore, EvalCaseResult, MetricFn, StatisticalMetricFn } from './types';
+export type {
+  MetricScore,
+  EvalCaseResult,
+  MetricFn,
+  StatisticalMetricFn,
+  StatisticalScore,
+} from './types';
 export { exactMatch, contains, regex, jsonSchema } from './deterministic';
 export { metric } from './custom';
 export type { CustomMetricConfig } from './custom';

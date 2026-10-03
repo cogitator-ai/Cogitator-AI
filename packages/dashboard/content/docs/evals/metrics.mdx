@@ -86,7 +86,7 @@ Returns score 1 if the output parses as JSON and passes validation, 0 otherwise.
 
 ## LLM-as-Judge Metrics
 
-Use an LLM to evaluate subjective qualities like faithfulness, relevance, and coherence. These metrics require a `judge` config in the EvalSuite.
+Use an LLM to evaluate subjective qualities like faithfulness, relevance, and coherence. These metrics require a `judge` config in the EvalSuite. The judge runs as a Cogitator agent on `judge.model`: pass the runtime as `judge.cogitator`, or use an agent target, whose `cogitator` is used when `judge.cogitator` is not set. A suite with LLM metrics and nothing to run the judge fails when it is built.
 
 ```typescript
 import { EvalSuite, faithfulness, relevance, coherence, helpfulness } from '@cogitator-ai/evals';
@@ -96,13 +96,14 @@ const suite = new EvalSuite({
   target: { fn },
   metrics: [faithfulness(), relevance(), coherence(), helpfulness()],
   judge: {
-    model: 'gpt-6.1-sol',
+    model: 'openai/gpt-6.1-sol',
     temperature: 0,
+    cogitator, // runs the judge; defaults to the target's cogitator for agent targets
   },
 });
 ```
 
-Each judge metric prompts the LLM to score the response on a 0–1 scale and return JSON with `score` and `reasoning`. The score is clamped to [0, 1].
+Each judge metric prompts the LLM to score the response on a 0–1 scale and return JSON with `score` and `reasoning`; the judge agent asks for that shape with a JSON schema. The score is clamped to [0, 1], and an answer without a score counts as 0 with the reason in `details`.
 
 ### Built-in Judge Metrics
 
@@ -129,7 +130,7 @@ const suite = new EvalSuite({
   dataset,
   target: { fn },
   metrics: [tone],
-  judge: { model: 'gpt-6.1-sol', temperature: 0 },
+  judge: { model: 'openai/gpt-6.1-sol', temperature: 0, cogitator },
 });
 ```
 
@@ -163,9 +164,11 @@ const suite = new EvalSuite({
 });
 ```
 
+Each statistical metric reports one value per case; `result.aggregated.<name>` holds their mean, median, min, max, standard deviation and p50/p95/p99, so thresholds such as `threshold('latency.p95', 5000)` check real numbers. Extra figures are in `metadata`.
+
 ### latency
 
-Reports execution time distribution across all cases.
+Reports execution time distribution across all cases, in milliseconds.
 
 ```typescript
 // result.aggregated.latency.metadata:
@@ -178,12 +181,12 @@ Reports cost distribution. Requires the target to return `usage` data with a `co
 
 ```typescript
 // result.aggregated.cost.metadata:
-// { total, mean, median, min, max }
+// { total, mean, median, min, max, p95, p99 }
 ```
 
 ### tokenUsage
 
-Reports token consumption. Requires `usage` data with `inputTokens` and `outputTokens`.
+Reports token consumption per case (input plus output). Requires `usage` data with `inputTokens` and `outputTokens`.
 
 ```typescript
 // result.aggregated.tokenUsage.metadata:
@@ -229,7 +232,7 @@ const suite = new EvalSuite({
   target: { fn },
   metrics: [exactMatch(), contains(), faithfulness(), wordCount],
   statisticalMetrics: [latency(), cost()],
-  judge: { model: 'gpt-6.1-sol', temperature: 0 },
+  judge: { model: 'openai/gpt-6.1-sol', temperature: 0, cogitator },
 });
 ```
 

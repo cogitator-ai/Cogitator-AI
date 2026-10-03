@@ -1,15 +1,22 @@
-import type { EvalCaseResult, MetricScore, StatisticalMetricFn } from './types';
+import type { EvalCaseResult, StatisticalMetricFn, StatisticalScore } from './types';
 import { aggregate, mean } from '../stats';
 
 function createStatisticalFn(
   name: string,
-  fn: (results: EvalCaseResult[]) => MetricScore
+  fn: (results: EvalCaseResult[]) => StatisticalScore
 ): StatisticalMetricFn {
   const statFn = fn as StatisticalMetricFn;
   statFn.metricName = name;
   return statFn;
 }
 
+function sum(values: number[]): number {
+  let total = 0;
+  for (const value of values) total += value;
+  return total;
+}
+
+/** Run duration per case, in milliseconds. */
 export function latency(): StatisticalMetricFn {
   return createStatisticalFn('latency', (results: EvalCaseResult[]) => {
     const durations = results.map((r) => r.duration);
@@ -17,7 +24,8 @@ export function latency(): StatisticalMetricFn {
 
     return {
       name: 'latency',
-      score: 0,
+      score: stats.mean,
+      values: durations,
       metadata: {
         p50: stats.p50,
         p95: stats.p95,
@@ -31,61 +39,43 @@ export function latency(): StatisticalMetricFn {
   });
 }
 
+/** Cost per case, in USD, for cases that report usage. */
 export function cost(): StatisticalMetricFn {
   return createStatisticalFn('cost', (results: EvalCaseResult[]) => {
     const costs = results.filter((r) => r.usage).map((r) => r.usage!.cost);
-
-    if (costs.length === 0) {
-      return {
-        name: 'cost',
-        score: 0,
-        metadata: { total: 0, mean: 0, median: 0, min: 0, max: 0 },
-      };
-    }
-
     const stats = aggregate(costs);
-    let total = 0;
-    for (const c of costs) {
-      total += c;
-    }
 
     return {
       name: 'cost',
-      score: 0,
+      score: stats.mean,
+      values: costs,
       metadata: {
-        total,
+        total: sum(costs),
         mean: stats.mean,
         median: stats.median,
         min: stats.min,
         max: stats.max,
+        p95: stats.p95,
+        p99: stats.p99,
       },
     };
   });
 }
 
+/** Total tokens per case, for cases that report usage. */
 export function tokenUsage(): StatisticalMetricFn {
   return createStatisticalFn('tokenUsage', (results: EvalCaseResult[]) => {
     const withUsage = results.filter((r) => r.usage);
-
-    if (withUsage.length === 0) {
-      return {
-        name: 'tokenUsage',
-        score: 0,
-        metadata: { totalInput: 0, totalOutput: 0, totalTokens: 0, meanInput: 0, meanOutput: 0 },
-      };
-    }
-
     const inputTokens = withUsage.map((r) => r.usage!.inputTokens);
     const outputTokens = withUsage.map((r) => r.usage!.outputTokens);
-
-    let totalInput = 0;
-    let totalOutput = 0;
-    for (const t of inputTokens) totalInput += t;
-    for (const t of outputTokens) totalOutput += t;
+    const totals = withUsage.map((r) => r.usage!.inputTokens + r.usage!.outputTokens);
+    const totalInput = sum(inputTokens);
+    const totalOutput = sum(outputTokens);
 
     return {
       name: 'tokenUsage',
-      score: 0,
+      score: mean(totals),
+      values: totals,
       metadata: {
         totalInput,
         totalOutput,

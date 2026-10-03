@@ -1,3 +1,5 @@
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { consoleReport } from './console';
 import { jsonReport } from './json';
 import { csvReport } from './csv';
@@ -13,6 +15,8 @@ export interface AggregatedMetric {
   p50: number;
   p95: number;
   p99: number;
+  /** Extra figures a statistical metric reports, such as the total cost */
+  metadata?: Record<string, unknown>;
 }
 
 export interface AssertionResult {
@@ -36,25 +40,49 @@ export interface EvalSuiteResult {
 }
 
 export type ReporterType = 'console' | 'json' | 'csv' | 'ci';
-export type ReporterOptions = { path?: string };
+export type ReporterOptions = {
+  /**
+   * Base path of file reports. Each file reporter writes it with its own
+   * extension, so `./reports/eval` gives `eval.json` and `eval.csv`.
+   */
+  path?: string;
+};
 
+const DEFAULT_BASE = 'eval-report';
+
+/** The file a reporter writes: the base path with the reporter's extension. */
+export function reportPath(base: string | undefined, extension: 'json' | 'csv'): string {
+  const stem = (base ?? DEFAULT_BASE).replace(/\.(json|csv)$/i, '');
+  return `${stem}.${extension}`;
+}
+
+function prepare(path: string): string {
+  mkdirSync(dirname(path), { recursive: true });
+  return path;
+}
+
+/**
+ * Runs the reporters in the order given, except `ci`, which runs last because
+ * it ends the process when an assertion failed.
+ */
 export function report(
   result: EvalSuiteResult,
   type: ReporterType | ReporterType[],
   options?: ReporterOptions
 ): void {
   const types = Array.isArray(type) ? type : [type];
+  const ordered = [...types.filter((t) => t !== 'ci'), ...types.filter((t) => t === 'ci')];
 
-  for (const t of types) {
+  for (const t of ordered) {
     switch (t) {
       case 'console':
         consoleReport(result);
         break;
       case 'json':
-        jsonReport(result, { path: options?.path ?? 'eval-report.json' });
+        jsonReport(result, { path: prepare(reportPath(options?.path, 'json')) });
         break;
       case 'csv':
-        csvReport(result, { path: options?.path ?? 'eval-report.csv' });
+        csvReport(result, { path: prepare(reportPath(options?.path, 'csv')) });
         break;
       case 'ci':
         ciReport(result);

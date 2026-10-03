@@ -7,6 +7,9 @@ import {
   exactMatch,
   contains,
   faithfulness,
+  relevance,
+  latency,
+  cost,
   bindJudgeContext,
 } from '@cogitator-ai/evals';
 
@@ -97,6 +100,40 @@ describeIf('Evals E2E', () => {
     expect(result.stats.duration).toBeGreaterThan(0);
     expect(result.stats.total).toBe(5);
   }, 120_000);
+
+  it('scores with the judge from EvalSuite options, and aggregates latency and cost', async () => {
+    const dataset = Dataset.from([
+      { input: 'What is the capital of France? Answer in one word.', expected: 'Paris' },
+      { input: 'How many legs does a spider have? Answer with a number.', expected: '8' },
+    ]);
+    const agent = new Agent({
+      name: 'Answerer',
+      model: getModel(),
+      instructions: 'Answer correctly and briefly.',
+      temperature: 0,
+    });
+
+    const suite = new EvalSuite({
+      dataset,
+      target: { agent, cogitator },
+      metrics: [relevance()],
+      statisticalMetrics: [latency(), cost()],
+      judge: { model: getModel(), temperature: 0 },
+      concurrency: 1,
+      retries: 2,
+    });
+
+    const result = await suite.run();
+
+    for (const r of result.results) {
+      const score = r.scores.find((s) => s.name === 'relevance');
+      expect(score, `case "${r.case.input}"`).toBeDefined();
+      expect(score!.score).toBeGreaterThan(0.5);
+      expect(score!.details?.length).toBeGreaterThan(0);
+    }
+    expect(result.aggregated.latency.mean).toBeGreaterThan(0);
+    expect(result.aggregated.cost.metadata?.total).toBeGreaterThanOrEqual(0);
+  }, 180_000);
 
   it('LLM-as-judge with faithfulness', async () => {
     const dataset = Dataset.from([

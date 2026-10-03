@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { EvalSuite } from '../eval-suite';
 import { Dataset } from '../datasets';
 import type { EvalCaseResult, MetricFn, MetricScore, StatisticalMetricFn } from '../metrics/types';
+import { faithfulness, relevance } from '../metrics/llm-judge';
+import { cost, latency } from '../metrics/statistical';
 import type { LLMMetricFn } from '../metrics/llm-judge';
 import type { AssertionFn, AggregatedMetric } from '../assertions';
 import type { EvalProgress, EvalTarget } from '../eval-suite';
@@ -430,20 +432,67 @@ describe('EvalSuite', () => {
   });
 
   describe('LLM metrics', () => {
-    it('detects requiresJudge and binds with judge context', async () => {
-      const llmMetric = makeLLMMetricFn('faithfulness');
+    it('runs the judge as an agent on the judge model and uses its verdict', async () => {
+      const run = vi.fn(async (_agent: unknown, _options: { input: string }) => ({
+        output: 'ignored',
+        structured: { score: 0.8, reasoning: 'mostly faithful' },
+      }));
 
       const suite = new EvalSuite({
-        dataset: Dataset.from([{ input: 'test', expected: 'expected' }]),
+        dataset: Dataset.from([{ input: 'What is 2+2?', expected: '4' }]),
         target: simpleFnTarget(),
-        metrics: [llmMetric],
-        judge: { model: 'gpt-4', temperature: 0 },
+        metrics: [faithfulness()],
+        judge: { model: 'openai/gpt-6-luna', temperature: 0, cogitator: { run } },
       });
 
       const result = await suite.run();
 
-      expect(result.results[0].scores).toHaveLength(1);
-      expect(result.results[0].scores[0].name).toBe('faithfulness');
+      expect(result.results[0].scores[0]).toEqual({
+        name: 'faithfulness',
+        score: 0.8,
+        details: 'mostly faithful',
+      });
+      const [judgeAgent, options] = run.mock.calls[0] as [
+        { model: string; config: { responseFormat?: { type: string } } },
+        { input: string; useMemory?: boolean },
+      ];
+      expect(judgeAgent.model).toBe('openai/gpt-6-luna');
+      expect(judgeAgent.config.responseFormat?.type).toBe('json_schema');
+      expect(options.input).toContain('faithfulness');
+      expect(options.input).toContain('What is 2+2?');
+      expect(options.useMemory).toBe(false);
+    });
+
+    it("judges with the agent target's cogitator when judge.cogitator is not set", async () => {
+      const run = vi.fn(async (agent: { name: string }) =>
+        agent.name === 'eval-judge'
+          ? { output: '{"score": 0.5, "reasoning": "half"}' }
+          : { output: 'answer' }
+      );
+
+      const suite = new EvalSuite({
+        dataset: Dataset.from([{ input: 'q' }]),
+        target: { agent: { name: 'target' }, cogitator: { run } },
+        metrics: [relevance()],
+        judge: { model: 'openai/gpt-6-luna', temperature: 0 },
+      });
+
+      const result = await suite.run();
+
+      expect(result.results[0].scores[0].score).toBe(0.5);
+      expect(run).toHaveBeenCalledTimes(2);
+    });
+
+    it('refuses LLM metrics when nothing can run the judge', () => {
+      expect(
+        () =>
+          new EvalSuite({
+            dataset: simpleDataset(),
+            target: simpleFnTarget(),
+            metrics: [faithfulness()],
+            judge: { model: 'gpt-4', temperature: 0 },
+          })
+      ).toThrow('judge.cogitator');
     });
 
     it('throws if LLM metrics present but no judge config', () => {
@@ -460,6 +509,37 @@ describe('EvalSuite', () => {
   });
 
   describe('statistical metrics', () => {
+    it('aggregates latency and cost over the cases, so thresholds can fail', async () => {
+      let call = 0;
+      const run = vi.fn(async () => {
+        call++;
+        return {
+          output: 'ok',
+          usage: {
+            inputTokens: 10,
+            outputTokens: 10,
+            totalTokens: 20,
+            cost: call * 0.01,
+            duration: 1,
+          },
+        };
+      });
+      const suite = new EvalSuite({
+        dataset: Dataset.from([{ input: 'a' }, { input: 'b' }, { input: 'c' }]),
+        target: { agent: {}, cogitator: { run } },
+        statisticalMetrics: [latency(), cost()],
+        concurrency: 1,
+      });
+
+      const result = await suite.run();
+
+      expect(result.aggregated.cost.mean).toBeCloseTo(0.02, 10);
+      expect(result.aggregated.cost.max).toBeCloseTo(0.03, 10);
+      expect(result.aggregated.cost.metadata?.total).toBeCloseTo(0.06, 10);
+      expect(result.aggregated.latency.max).toBeGreaterThanOrEqual(result.aggregated.latency.min);
+      expect(Object.keys(result.aggregated.latency.metadata ?? {})).toContain('p95');
+    });
+
     it('runs statistical metrics on full results array', async () => {
       const statMetric = makeStatisticalMetricFn('avgLatency', (results) => {
         const total = results.reduce((sum, r) => sum + r.duration, 0);

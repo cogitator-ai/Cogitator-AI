@@ -18,7 +18,8 @@ describe('latency', () => {
     const score = latency()(results);
 
     expect(score.name).toBe('latency');
-    expect(score.score).toBe(0);
+    expect(score.score).toBe(550);
+    expect(score.values).toEqual(durations);
     expect(score.metadata).toBeDefined();
 
     const meta = score.metadata as Record<string, number>;
@@ -78,7 +79,8 @@ describe('cost', () => {
     const score = cost()(results);
 
     expect(score.name).toBe('cost');
-    expect(score.score).toBe(0);
+    expect(score.score).toBeCloseTo(0.02, 10);
+    expect(score.values).toEqual([0.01, 0.02, 0.03]);
 
     const meta = score.metadata as Record<string, number>;
     expect(meta.total).toBeCloseTo(0.06, 10);
@@ -160,7 +162,8 @@ describe('tokenUsage', () => {
     const score = tokenUsage()(results);
 
     expect(score.name).toBe('tokenUsage');
-    expect(score.score).toBe(0);
+    expect(score.score).toBe(300);
+    expect(score.values).toEqual([150, 300, 450]);
 
     const meta = score.metadata as Record<string, number>;
     expect(meta.totalInput).toBe(600);
