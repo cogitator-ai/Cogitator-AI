@@ -5,7 +5,7 @@ import {
   LOGO_SULCI_PATH,
   LOGO_VIEWBOX,
 } from '@/lib/logo';
-import { cx } from './ui';
+import { cx } from './cx';
 
 /** The Cogitator mark: a phosphor-green brain beside a brass half-gear. */
 export function LogoMark({ className, title }: { className?: string; title?: string }) {

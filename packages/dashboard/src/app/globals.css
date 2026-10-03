@@ -47,8 +47,8 @@
   --color-l-line: rgb(255 255 255 / 0.07);
   --color-l-line-strong: rgb(255 255 255 / 0.13);
   --color-l-text: #ededef;
-  --color-l-muted: #8b8f98;
-  --color-l-faint: #5d616b;
+  --color-l-muted: #a1a5ae;
+  --color-l-faint: #7c818b;
   --color-l-accent: #00ff88;
   --color-l-accent-dim: #00c46a;
   --color-l-warn: #f5b544;
@@ -541,6 +541,26 @@
       0 0 0 3px #0b0b0c,
       0 0 0 4px rgb(201 164 92 / 0.25);
     animation: cog-flicker 6s infinite;
+  }
+
+  .cog-screen--code {
+    animation: none;
+    background: radial-gradient(120% 95% at 50% 30%, #0b1414 0%, #070c0c 60%, #040707 100%);
+  }
+
+  .cog-screen--code::after {
+    opacity: 0.6;
+  }
+
+  @media (max-width: 639px) {
+    .cog-bezel {
+      padding: 8px 10px 12px;
+      border-radius: 13px;
+    }
+
+    .cog-rail {
+      display: none;
+    }
   }
 
   .cog-screen .crt-glow {

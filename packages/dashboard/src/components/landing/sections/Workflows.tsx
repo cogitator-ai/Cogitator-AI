@@ -82,7 +82,7 @@ export async function WorkflowsSection() {
         <WorkflowRun />
       </div>
 
-      <p className="mt-4 font-mono text-[11px] leading-relaxed text-l-faint">
+      <p className="mt-5 text-sm leading-relaxed text-l-muted">
         checkpointStrategy: &apos;per-node&apos; — on resume, finished nodes are skipped and only
         the nodes that were in flight run again · @cogitator-ai/workflows
       </p>
@@ -102,7 +102,7 @@ export async function WorkflowsSection() {
             >
               <span className="font-mono text-[11px] text-l-text">{point.label}</span>
               <span className="text-sm leading-relaxed text-l-muted text-pretty">{point.text}</span>
-              <span className="mt-auto inline-flex items-center gap-1 pt-1 font-mono text-[10.5px] text-l-faint transition-colors group-hover:text-l-text">
+              <span className="mt-auto inline-flex items-center gap-1 pt-1 font-mono text-xs text-l-muted transition-colors group-hover:text-l-text">
                 {point.link}
                 <ArrowRight className="size-3 transition-transform group-hover:translate-x-0.5" />
               </span>

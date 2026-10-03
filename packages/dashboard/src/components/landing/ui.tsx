@@ -1,8 +1,9 @@
 import type { ReactNode } from 'react';
 
-export function cx(...classes: (string | false | null | undefined)[]): string {
-  return classes.filter(Boolean).join(' ');
-}
+import { CogitatorFrame } from './CogitatorFrame';
+import { cx } from './cx';
+
+export { cx };
 
 export function Section({
   id,
@@ -52,7 +53,10 @@ export function SectionHeader({
   );
 }
 
-/** A code or app window: hairline frame, quiet title bar, optional tabs on the right. */
+/**
+ * A window drawn as a cogitator terminal (see CogitatorFrame). `crt` marks live output: a phosphor
+ * screen with the watermark; without it the screen is plain dark glass for code.
+ */
 export function Window({
   title,
   aside,
@@ -66,27 +70,19 @@ export function Window({
   children: ReactNode;
   className?: string;
   bodyClassName?: string;
-  /** Render the body as a cogitator screen (scanlines, vignette). */
+  /** Render the body as a live phosphor screen. */
   crt?: boolean;
 }) {
   return (
-    <div
-      className={cx(
-        'overflow-hidden rounded-xl border border-l-line bg-l-surface shadow-[0_30px_80px_-40px_rgba(0,0,0,0.9)]',
-        className
-      )}
+    <CogitatorFrame
+      title={title}
+      aside={aside}
+      className={className}
+      screenClassName={bodyClassName}
+      variant={crt ? 'phosphor' : 'code'}
     >
-      <div className="flex h-10 items-center gap-3 border-b border-l-line px-4">
-        <div className="flex items-center gap-1.5" aria-hidden>
-          <span className="size-2 rotate-45 border border-l-brass/60" />
-          <span className="size-2 rotate-45 border border-l-brass/35" />
-          <span className="size-2 rotate-45 border border-l-brass/20" />
-        </div>
-        <div className="min-w-0 flex-1 truncate font-mono text-xs text-l-faint">{title}</div>
-        {aside}
-      </div>
-      <div className={cx(crt && 'crt', bodyClassName)}>{children}</div>
-    </div>
+      {children}
+    </CogitatorFrame>
   );
 }
 

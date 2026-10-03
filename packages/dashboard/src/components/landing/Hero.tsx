@@ -97,7 +97,7 @@ export async function Hero() {
 
           <a
             href={LLMS_TXT_URL}
-            className="mt-6 inline-flex items-center gap-2 text-xs text-l-faint transition-colors hover:text-l-muted"
+            className="mt-6 inline-flex items-center gap-2 text-sm text-l-muted transition-colors hover:text-l-text"
           >
             <Bot className="size-3.5" />
             Agent-friendly docs at <span className="font-mono text-l-muted">/llms.txt</span>
@@ -123,7 +123,7 @@ export async function Hero() {
               </div>
             </div>
           </CogitatorFrame>
-          <p className="mt-4 text-center font-mono text-[11px] text-l-faint">
+          <p className="mx-auto mt-5 max-w-3xl text-center text-sm leading-relaxed text-l-muted">
             A run pauses before a sensitive tool and resumes when a human approves — even after a
             restart, with a durable checkpoint store · examples/core/14-approvals.ts
           </p>

@@ -111,7 +111,7 @@ export function Footer() {
       >
         cogitator
       </div>
-      <div className="mx-auto flex max-w-6xl justify-between border-t border-l-line py-6 text-xs text-l-faint">
+      <div className="mx-auto flex max-w-6xl justify-between border-t border-l-line py-6 text-sm text-l-muted">
         <span>© {new Date().getFullYear()} Cogitator · MIT License</span>
         <span className="font-mono text-l-brass/70">+++ blessed by the machine spirit +++</span>
       </div>

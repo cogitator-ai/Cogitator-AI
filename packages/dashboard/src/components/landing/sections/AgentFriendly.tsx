@@ -198,7 +198,7 @@ export async function AgentFriendlySection() {
                 </span>
               ))}
             </div>
-            <p className="mt-3 text-[13px] leading-relaxed text-l-faint text-pretty">
+            <p className="mt-3 text-sm leading-relaxed text-l-muted text-pretty">
               Paste a page into your prompt, or open ChatGPT, Claude or Cursor with a prompt to read
               it.
             </p>

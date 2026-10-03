@@ -241,7 +241,7 @@ export function SwarmShowcase({ snippets }: { snippets: Record<StrategyId, React
         </Window>
       </div>
 
-      <p className="mt-4 text-center font-mono text-[11px] text-l-faint">
+      <p className="mx-auto mt-5 max-w-3xl text-center text-sm leading-relaxed text-l-muted">
         Replays of what each strategy runs · the event names are the ones swarm.on() receives ·
         examples/swarms
       </p>

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { LogoMark } from './Logo';
-import { cx } from './ui';
+import { cx } from './cx';
 
 type Lamp = 'green' | 'amber' | 'red' | 'off';
 
@@ -40,7 +40,7 @@ function Corner({ className }: { className: string }) {
 
 function Lamps({ lamps }: { lamps: Lamp[] }) {
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="hidden items-center gap-1.5 sm:flex">
       {lamps.map((lamp, index) => (
         <span key={index} className="cog-lamp" data-on={lamp === 'off' ? undefined : lamp} />
       ))}
@@ -54,18 +54,25 @@ function Lamps({ lamps }: { lamps: Lamp[] }) {
  */
 export function CogitatorFrame({
   title,
+  aside,
   children,
   lamps = ['green', 'amber', 'off'],
   className,
   screenClassName,
-  watermark = true,
+  variant = 'phosphor',
+  watermark = variant === 'phosphor',
   psalm,
 }: {
   title: ReactNode;
+  /** Controls shown on the title plate, right of the plaque (tabs, badges, links). */
+  aside?: ReactNode;
   children: ReactNode;
   lamps?: Lamp[];
   className?: string;
+  /** Classes for the screen's content box (layout, height, padding). */
   screenClassName?: string;
+  /** `phosphor` for live output; `code` for plain dark glass behind highlighted code. */
+  variant?: 'phosphor' | 'code';
   watermark?: boolean;
   /** A line of "data psalm" (binary or hex noise) along the bottom of the screen. */
   psalm?: string;
@@ -81,21 +88,22 @@ export function CogitatorFrame({
       <div className="cog-plate">
         <span className="cog-rivet" aria-hidden />
         <Lamps lamps={lamps} />
-        <span className="cog-vents hidden sm:block" />
+        <span className="cog-vents hidden md:block" />
         <div className="cog-title">
           <span className="cog-plaque">{title}</span>
         </div>
-        <span className="cog-vents hidden sm:block" />
+        {aside && <div className="flex shrink-0 items-center">{aside}</div>}
+        <span className="cog-vents hidden md:block" />
         <Lamps lamps={[...lamps].reverse()} />
         <span className="cog-rivet" aria-hidden />
       </div>
-      <div className={cx('cog-screen', screenClassName)}>
+      <div className={cx('cog-screen', variant === 'code' && 'cog-screen--code')}>
         {watermark && (
           <div className="cog-watermark" aria-hidden>
             <LogoMark className="size-56" />
           </div>
         )}
-        <div className="relative z-[1]">{children}</div>
+        <div className={cx('relative z-[1]', screenClassName)}>{children}</div>
         {psalm && (
           <div
             className="cog-psalm relative z-[1] border-t border-l-accent/10 px-4 py-1.5"

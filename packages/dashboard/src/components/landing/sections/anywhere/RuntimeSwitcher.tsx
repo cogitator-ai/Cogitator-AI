@@ -181,7 +181,7 @@ export function RuntimeSwitcher({ tabs }: { tabs: RuntimeTab[] }) {
               <RouteRow key={`${route.method} ${route.path}`} route={route} />
             ))}
           </ul>
-          <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-1 font-mono text-[11px] text-l-faint">
+          <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-1 font-mono text-xs text-l-muted">
             <span>{tab.example}</span>
             <Link
               href={tab.docsHref}
