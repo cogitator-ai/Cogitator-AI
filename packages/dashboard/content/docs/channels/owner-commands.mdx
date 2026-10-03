@@ -10,9 +10,9 @@ Owner commands let you monitor and control your AI assistant directly from your 
 ## Setup
 
 ```typescript
-import { ownerCommands } from '@cogitator-ai/channels';
+import { Gateway, ownerCommands } from '@cogitator-ai/channels';
 
-const gateway = new Gateway({
+const gateway: Gateway = new Gateway({
   // ...
   middleware: [
     ownerCommands({
@@ -32,17 +32,19 @@ const gateway = new Gateway({
 
 ## Available Commands
 
-| Command | Level | Description |
-|---------|-------|-------------|
-| `/status` | authorized | Show uptime, sessions, message count |
-| `/sessions` | authorized | List recent sessions |
-| `/help` | authorized | Show available commands |
-| `/users` | owner | List owners and approved users |
-| `/model <name> [@user]` | owner | Switch model globally or for a specific user |
-| `/compact [target]` | owner | Compact the current conversation (or `target` thread) |
-| `/restart` | owner | Restart the assistant |
+| Command                 | Level      | Description                                           |
+| ----------------------- | ---------- | ----------------------------------------------------- |
+| `/status`               | authorized | Show uptime, sessions, message count                  |
+| `/sessions`             | authorized | List recent sessions                                  |
+| `/help`                 | authorized | Show available commands                               |
+| `/users`                | owner      | List owners and approved users                        |
+| `/model <name> [@user]` | owner      | Switch model globally or for a specific user          |
+| `/compact [target]`     | owner      | Compact the current conversation (or `target` thread) |
+| `/restart`              | owner      | Restart the assistant                                 |
 
-Arguments may follow on the next line, and Telegram group syntax `/status@your_bot` is recognized.
+Arguments may follow on the next line, and Telegram group syntax `/status@your_bot` is recognized. `/help` also lists `/pair <code>`, which is handled by the [pairing / DM policy middleware](/docs/channels/middleware), not by this one.
+
+`/model` without an `onModel` callback only echoes `Model set to: …` and changes nothing; wire it to your runtime as `RuntimeBuilder` does. With `RuntimeBuilder`, `/model gemini-3.5-flash @42` sets a model for one user (bare model names get the configured provider prefix) and `/restart` exits the process with code `78` — `cogitator up` restarts it only when it supervises the assistant, which it does when `capabilities.selfConfig` is on; otherwise the assistant just stops.
 
 ## Configuration
 
@@ -79,7 +81,7 @@ ownerCommands({
     // update model configuration
     return `Switched to ${model}${forUser ? ` for ${forUser}` : ''}`;
   },
-})
+});
 ```
 
 ## Security

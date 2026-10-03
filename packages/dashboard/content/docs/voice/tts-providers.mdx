@@ -15,7 +15,7 @@ interface TTSProvider {
 }
 ```
 
-Both providers support batch synthesis via `synthesize()` and streaming via `streamSynthesize()`.
+Both providers support batch synthesis via `synthesize()` and streaming via `streamSynthesize()`. Empty or whitespace-only text throws.
 
 ## Provider Comparison
 
@@ -46,6 +46,8 @@ const tts = new OpenAITTS({
 ### Batch Synthesis
 
 ```typescript
+import fs from 'node:fs';
+
 const audio = await tts.synthesize('Hello, world!', {
   speed: 1.0,
   format: 'mp3',
@@ -127,13 +129,15 @@ for await (const chunk of tts.streamSynthesize('Streaming audio...')) {
 | `voiceId` | `string` | `21m00Tcm4TlvDq8ikWAM` | Default voice ID   |
 | `model`   | `string` | `eleven_flash_v2_5`    | Model ID           |
 
+Formats map to ElevenLabs output formats: `mp3` → 44.1kHz 128kbps (default), `pcm16` → 24kHz, `opus` → 48kHz, `flac` → 22.05kHz; `wav` and `aac` throw. Requests use `stability: 0.5` and `similarity_boost: 0.75` and time out after 60 seconds.
+
 ## TTS Options
 
 Options shared by both providers:
 
 | Field          | Type               | Description                                                                                     |
 | -------------- | ------------------ | ----------------------------------------------------------------------------------------------- |
-| `voice`        | `string`           | Override the default voice                                                                      |
+| `voice`        | `string`           | Override the default voice (OpenAI voice name, ElevenLabs voice ID)                             |
 | `speed`        | `number`           | Playback speed (OpenAI 0.25 - 4.0, ElevenLabs 0.7 - 1.2)                                        |
 | `format`       | `VoiceAudioFormat` | Output format: `"mp3"` (default), `"pcm16"` (raw PCM16 mono **24kHz** for both providers), etc. |
 | `instructions` | `string`           | Voice style instructions (OpenAI `gpt-4o-mini-tts` only)                                        |

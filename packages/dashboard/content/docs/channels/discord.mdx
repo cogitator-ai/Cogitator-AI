@@ -47,32 +47,32 @@ interface DiscordConfig {
 }
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `token` | -- | Bot token from the Developer Portal |
-| `intents` | `Guilds, GuildMessages, DirectMessages, MessageContent` | Gateway intents array |
-| `mentionOnly` | `false` | Only respond when @mentioned in servers |
+| Option        | Default                                                 | Description                             |
+| ------------- | ------------------------------------------------------- | --------------------------------------- |
+| `token`       | --                                                      | Bot token from the Developer Portal     |
+| `intents`     | `Guilds, GuildMessages, DirectMessages, MessageContent` | Gateway intents array                   |
+| `mentionOnly` | `false`                                                 | Only respond when @mentioned in servers |
 
 ## Features
 
-| Feature | Support |
-|---------|---------|
-| Server messages | Supported |
-| Direct messages | Supported (`Partials.Channel` is enabled automatically) |
-| Attachments | Images → vision, audio → STT (downloaded from the CDN URL), files announced |
-| Mention-only mode | Supported (respond only when @mentioned) |
-| Streaming (edit) | Supported |
-| Reactions | Supported (status reactions) |
-| Replies | `replyTo` is set from the message reference |
-| Typing indicator | Supported |
-| Auto-chunking | Supported (2000 char limit, code-block aware) |
-| Markdown | Supported (native Discord markdown) |
+| Feature           | Support                                                                     |
+| ----------------- | --------------------------------------------------------------------------- |
+| Server messages   | Supported                                                                   |
+| Direct messages   | Supported (`Partials.Channel` is enabled automatically)                     |
+| Attachments       | Images → vision, audio → STT (downloaded from the CDN URL), files announced |
+| Mention-only mode | Supported (respond only when @mentioned)                                    |
+| Streaming (edit)  | Supported                                                                   |
+| Reactions         | Supported (status reactions)                                                |
+| Replies           | `replyTo` is set from the message reference                                 |
+| Typing indicator  | Supported                                                                   |
+| Auto-chunking     | Supported (2000 char limit, code-block aware)                               |
+| Markdown          | Supported (native Discord markdown)                                         |
 
 ## Mention-Only Mode
 
 When `mentionOnly: true`, the bot only responds to messages that @mention it in server channels. DMs always get a response regardless of this setting.
 
-Both `<@BOT_ID>` and nickname mentions `<@!BOT_ID>` are recognized. The mention is automatically stripped from the message text before it reaches your agent, so instructions like `@MyBot what is 2+2?` arrive as `what is 2+2?`.
+Both `<@BOT_ID>` and nickname mentions `<@!BOT_ID>` are recognized. The mention is automatically stripped from the message text before it reaches your agent, so instructions like `@MyBot what is 2+2?` arrive as `what is 2+2?`. Mentions are stripped in every mode, and a message that is empty after stripping (and has no attachments) is ignored. Messages from bots, including this one, are always ignored.
 
 ## Message Chunking
 
@@ -88,4 +88,5 @@ Discord enforces a 2000-character limit per message. Long responses are automati
 
 - You **must** enable **Message Content Intent** in the Developer Portal or the bot receives empty messages
 - For DM-only bots, you don't need to add the bot to any server
-- Discord rate limits message edits to ~5/sec per channel -- streaming responses account for this
+- Discord rate limits message edits to ~5/sec per channel -- keep `stream.flushInterval` at 500ms or more
+- With `RuntimeBuilder` (`cogitator.yml`), the token comes from `DISCORD_TOKEN`

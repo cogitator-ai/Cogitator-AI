@@ -44,4 +44,5 @@ interface TerminalConfig {
 - Messages that arrive while you are typing (e.g. scheduled reminders) are printed above the prompt and your input line is redrawn.
 - The prompt returns after every answer, including when the agent fails.
 - **Ctrl+C**, **Ctrl+D**, `/quit`, `/exit` and `exit` call `onExit`. The default raises `SIGINT`, so your process' signal handler (for example `cogitator up`'s graceful shutdown) runs; `gateway.stop()` closes readline without exiting the process.
-- `RuntimeBuilder` treats the terminal user as an owner for self-configuration tools.
+- `RuntimeBuilder` treats the terminal user as an owner for self-configuration tools, and takes `userName` from a personality line like `assistant for Alex`.
+- `sendFile` prints `[filename] url`; there is no typing indicator.

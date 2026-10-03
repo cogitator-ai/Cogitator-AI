@@ -105,9 +105,11 @@ console.log(result.words);
 // [{ word: 'Hello', start: 0.0, end: 0.32, confidence: 0.99 }, ...]
 ```
 
+Files with a container (wav, mp3, ogg, flac, webm, mp4) are sent as-is; headerless input is sent as raw PCM16 mono at `sampleRate`. Requests time out after 30 seconds.
+
 ### Streaming
 
-Deepgram streaming opens a WebSocket connection and provides real-time results as audio arrives. Interim results update continuously, final results are emitted when Deepgram detects an endpoint.
+Deepgram streaming opens a WebSocket connection and provides real-time results as audio arrives. Interim results (on by default) update continuously; a `final` event is emitted for every finalized segment, and `close()` resolves with all final segments joined, their words and the total duration. Audio written before the socket opens is queued. `close()` waits up to 10 seconds for Deepgram to flush; if the connection drops before `close()`, an `error` is emitted.
 
 ```typescript
 const stream = stt.createStream({
@@ -135,26 +137,27 @@ await stream.close();
 
 ### Configuration
 
-| Field      | Type     | Default  | Description           |
-| ---------- | -------- | -------- | --------------------- |
-| `apiKey`   | `string` | required | Deepgram API key      |
-| `model`    | `string` | `nova-3` | Model ID              |
-| `language` | `string` | —        | Default language code |
+| Field        | Type     | Default  | Description                                                   |
+| ------------ | -------- | -------- | ------------------------------------------------------------- |
+| `apiKey`     | `string` | required | Deepgram API key                                              |
+| `model`      | `string` | `nova-3` | Model ID                                                      |
+| `language`   | `string` | —        | Default language code                                         |
+| `sampleRate` | `number` | `16000`  | Sample rate of raw PCM16 (streams and headerless batch input) |
 
 ## STT Options
 
-Options shared by both providers when calling `transcribe()`:
+Options for `transcribe()` (and `createStream()`):
 
-| Field      | Type     | Description                                    |
-| ---------- | -------- | ---------------------------------------------- |
-| `language` | `string` | Language code (e.g. `"en"`, `"es"`, `"ja"`)    |
-| `prompt`   | `string` | Context hint to improve transcription accuracy |
+| Field      | Type     | Description                                                  |
+| ---------- | -------- | ------------------------------------------------------------ |
+| `language` | `string` | Language code (e.g. `"en"`, `"es"`, `"ja"`)                  |
+| `prompt`   | `string` | Context hint to improve transcription accuracy (OpenAI only) |
 
 Additional options for `createStream()`:
 
 | Field            | Type      | Description                                                        |
 | ---------------- | --------- | ------------------------------------------------------------------ |
-| `interimResults` | `boolean` | Enable partial/interim transcription results                       |
+| `interimResults` | `boolean` | Partial/interim results (Deepgram, default `true`)                 |
 | `endpointing`    | `number`  | Silence duration (ms) for Deepgram endpointing                     |
 | `sampleRate`     | `number`  | Sample rate of the raw PCM16 written to the stream (default 16000) |
 
@@ -181,7 +184,35 @@ interface TranscribeResult {
 Implement `STTProvider` to integrate any speech recognition service:
 
 ```typescript
-import type { STTProvider, STTOptions, STTStream, TranscribeResult } from '@cogitator-ai/voice';
+import { EventEmitter } from 'node:events';
+import type {
+  STTProvider,
+  STTOptions,
+  STTStream,
+  STTStreamOptions,
+  TranscribeResult,
+} from '@cogitator-ai/voice';
+
+class BufferedStream extends EventEmitter implements STTStream {
+  private chunks: Buffer[] = [];
+
+  constructor(
+    private readonly stt: STTProvider,
+    private readonly options?: STTStreamOptions
+  ) {
+    super();
+  }
+
+  write(chunk: Buffer): void {
+    this.chunks.push(chunk);
+  }
+
+  async close(): Promise<TranscribeResult> {
+    const result = await this.stt.transcribe(Buffer.concat(this.chunks), this.options);
+    this.emit('final', result);
+    return result;
+  }
+}
 
 class WhisperLocalSTT implements STTProvider {
   readonly name = 'whisper-local';
@@ -192,7 +223,9 @@ class WhisperLocalSTT implements STTProvider {
   }
 
   createStream(options?: STTStreamOptions): STTStream {
-    // return an STTStream implementation
+    return new BufferedStream(this, options);
   }
 }
 ```
+
+The pipeline writes raw PCM16 (16kHz) chunks to the stream, listens for `partial` / `final` / `error`, and uses the result of `close()` as the user's turn.

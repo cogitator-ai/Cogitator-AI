@@ -28,62 +28,67 @@ WhatsApp doesn't have a bot API like Telegram. Instead, Baileys connects as a "l
 ## Usage
 
 ```typescript
-import { whatsappChannel } from '@cogitator-ai/channels';
+import { Gateway, whatsappChannel } from '@cogitator-ai/channels';
 
 const whatsapp = whatsappChannel({
   sessionPath: '.cogitator/whatsapp-session',
   printQr: true,
 });
+
+const gateway = new Gateway({ agent, cogitator, channels: [whatsapp] });
+await gateway.start();
 ```
+
+`cogitator.yml` / `RuntimeBuilder` do not set up WhatsApp (their channels are Telegram, Discord and Slack), so add the channel to a `Gateway` in code as above.
 
 ## Configuration
 
 ```typescript
 interface WhatsAppChannelConfig {
-  sessionPath?: string;  // default: '.cogitator/whatsapp-session'
+  sessionPath?: string; // default: '.cogitator/whatsapp-session'
   qrCallback?: (qr: string) => void; // takes precedence over printQr
-  printQr?: boolean;     // default: true, uses qrcode-terminal
+  printQr?: boolean; // default: true, uses qrcode-terminal
 }
 ```
 
 ## Features
 
-| Feature | Support |
-|---------|---------|
-| 1-on-1 chats | ✅ |
-| Group chats | ✅ |
-| Streaming (edit) | ✅ via message edits |
-| Typing indicator | ✅ (presence update) |
-| Reactions | ❌ |
-| Incoming media | ✅ images, voice, video, documents (+ captions) |
-| Sending files | ✅ image / audio / video / document by type, from buffers or URLs |
-| Quoted replies | ✅ for recent messages |
-| Markdown | ✅ WhatsApp-native formatting |
-| Auto-reconnect | ✅ exponential backoff (1s → 60s), not after `stop()` or logout |
-| Session persistence | ✅ (filesystem) |
+| Feature             | Support                                                           |
+| ------------------- | ----------------------------------------------------------------- |
+| 1-on-1 chats        | ✅                                                                |
+| Group chats         | ✅                                                                |
+| Streaming (edit)    | ✅ via message edits                                              |
+| Typing indicator    | ✅ (presence update)                                              |
+| Reactions           | ❌                                                                |
+| Incoming media      | ✅ images, voice, video, documents (+ captions)                   |
+| Sending files       | ✅ image / audio / video / document by type, from buffers or URLs |
+| Quoted replies      | ✅ for recent messages                                            |
+| Markdown            | ✅ WhatsApp-native formatting                                     |
+| Auto-reconnect      | ✅ exponential backoff (1s → 60s), not after `stop()` or logout   |
+| Session persistence | ✅ (filesystem)                                                   |
 
 ### User ids
 
-Baileys 6 and 7 both work. WhatsApp increasingly addresses people by a private id (LID, `...@lid`) instead of their phone number; Baileys 7 passes the number along when WhatsApp shares it. A message's `userId` is the phone number whenever it is known — so owner lists and per-user memory keep matching — and the LID only for someone whose number WhatsApp hides. Replies go to the chat the message came from either way.
+Baileys 6 and 7 both work. WhatsApp increasingly addresses people by a private id (LID, `...@lid`) instead of their phone number; Baileys 7 passes the number along when WhatsApp shares it. A message's `userId` is the phone number whenever it is known — so owner lists and per-user memory keep matching — and the LID only for someone whose number WhatsApp hides. Replies go to the chat the message came from either way: `channelId` is the chat JID (the group JID in groups, where `groupId` is set too). Messages you send yourself from the linked phone are ignored.
 
 ## WhatsApp Markdown
 
 WhatsApp uses its own formatting syntax. Cogitator auto-converts standard markdown before sending:
 
-| Standard | WhatsApp |
-|----------|----------|
-| `**bold**` | `*bold*` |
-| `__bold__` | `*bold*` |
-| `~~strike~~` | `~strike~` |
-| `# Heading` | `*Heading*` |
+| Standard      | WhatsApp     |
+| ------------- | ------------ |
+| `**bold**`    | `*bold*`     |
+| `__bold__`    | `*bold*`     |
+| `~~strike~~`  | `~strike~`   |
+| `# Heading`   | `*Heading*`  |
 | `[text](url)` | `text (url)` |
-| Code blocks | Preserved |
-| Inline code | Preserved |
+| Code blocks   | Preserved    |
+| Inline code   | Preserved    |
 
 ## Limitations
 
 - QR code expires after ~20 seconds, bot retries automatically
-- If you unlink the device from your phone, you need to re-pair
+- If you unlink the device from your phone (logout), the channel stops reconnecting; delete the `sessionPath` directory and restart to pair again
 - WhatsApp may temporarily ban automated accounts with high message volume
 
 ## Tips

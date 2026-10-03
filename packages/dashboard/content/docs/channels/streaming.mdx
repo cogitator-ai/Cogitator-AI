@@ -9,9 +9,11 @@ Cogitator uses a **send-then-edit** pattern for streaming responses in chat. Ins
 
 ## How It Works
 
+Streaming is on when the Gateway gets a `stream` config; without it every answer is sent once, complete (chunked to the platform limit).
+
 1. LLM generates tokens via `cogitator.run()` with `stream: true`
 2. Tokens accumulate in a `StreamBuffer`
-3. Every ~500ms, the buffer flushes:
+3. Every `flushInterval` ms (measured from the end of the previous flush), the buffer flushes:
    - **First flush** → `channel.sendText()` creates a new message (or a Telegram draft via `sendDraft`)
    - **Subsequent flushes** → `channel.editText()` updates the message
 4. When the text reaches `maxMessageChars` (platform limit by default) the current message is finalized at a line/word boundary and a new one is started — no text is lost
@@ -23,11 +25,11 @@ All channel calls are serialized, so a slow `sendText` never races with an edit 
 
 ```typescript
 interface StreamConfig {
-  flushInterval: number;    // ms between edits, default: 500
-  minChunkSize: number;     // don't send before N chars, default: 20
+  flushInterval: number; // ms between flushes, e.g. 500
+  minChunkSize: number; // skip a flush while the current message text is shorter than this
   minInitialChars?: number; // hold back the first message until N chars
   maxMessageChars?: number; // split threshold, default: platform limit
-  deleteOnAbort?: boolean;  // delete partial messages when the run fails
+  deleteOnAbort?: boolean; // delete partial messages when the run fails or is interrupted
 }
 ```
 
@@ -43,13 +45,16 @@ const gateway = new Gateway({
 
 ## Platform Support
 
-| Platform | Edit Support | Rate Limit | Max Length |
-|----------|-------------|------------|-----------|
-| Telegram | Yes (`editMessageText`) | ~30 edits/sec | 4,096 chars |
-| Discord | Yes (`message.edit`) | ~5 edits/sec | 2,000 chars |
-| Slack | Yes (`chat.update`) | ~20 edits/sec | No hard limit |
-| WhatsApp | Yes (message edit) | — | 65,536 chars |
-| WebChat | Yes (WebSocket `edit` event) | No limit | No limit |
+| Platform | Edit Support                    | Rate Limit    | Max Length   |
+| -------- | ------------------------------- | ------------- | ------------ |
+| Telegram | Yes (`editMessageText`)         | ~30 edits/sec | 4,096 chars  |
+| Discord  | Yes (`message.edit`)            | ~5 edits/sec  | 2,000 chars  |
+| Slack    | Yes (`chat.update`)             | ~20 edits/sec | 40,000 chars |
+| WhatsApp | Yes (message edit)              | —             | 65,536 chars |
+| WebChat  | Yes (WebSocket `edit` event)    | No limit      | No limit     |
+| Terminal | Yes (output rewritten in place) | No limit      | No limit     |
+
+`RuntimeBuilder` streams with `flushInterval: 600` and `minChunkSize: 30` unless `stream` in `cogitator.yml` overrides them. Telegram streams through drafts (`sendMessageDraft`) and falls back to `editMessageText` if a draft fails; Discord edits keep their continuation messages in sync when an answer grows past 2,000 chars.
 
 If the model produced no tokens (e.g. a provider without streaming), the Gateway sends the complete response as regular chunked messages.
 
@@ -58,7 +63,7 @@ If the model produced no tokens (e.g. a provider without streaming), the Gateway
 The `StreamBuffer` class is used internally by Gateway, but can be used standalone:
 
 ```typescript
-import { StreamBuffer } from '@cogitator-ai/channels';
+import { StreamBuffer, adaptMarkdown } from '@cogitator-ai/channels';
 
 const buffer = new StreamBuffer(
   channel, // any Channel implementation

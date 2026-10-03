@@ -26,7 +26,7 @@ const webchat = webchatChannel({
 ```typescript
 interface WebChatConfig {
   port: number;
-  path?: string;       // default: '/ws'
+  path?: string; // default: '/ws'
   auth?: (token: string) => boolean;
   maxPayload?: number; // max incoming frame size in bytes, default 1 MiB
 }
@@ -65,33 +65,34 @@ ws.onopen = () => ws.send(JSON.stringify({ text: 'Hi!' }));
 
 ### Server → Client
 
-| Type | Fields | Description |
-|------|--------|-------------|
-| `connected` | `clientId` | Connection established |
-| `message` | `id`, `text`, `replyTo?` | New message |
-| `edit` | `id`, `text` | Updated message (streaming) |
-| `delete` | `id` | Message removed (e.g. aborted stream) |
-| `typing` | — | Agent is thinking |
-| `file` | `filename`, `mimeType`, `url?`, `data?` (base64) | File attachment |
-| `error` | `message` | Sent before closing an unauthorized socket (close code 1008) |
+| Type        | Fields                                           | Description                                                  |
+| ----------- | ------------------------------------------------ | ------------------------------------------------------------ |
+| `connected` | `clientId`                                       | Connection established                                       |
+| `message`   | `id`, `text`, `replyTo?`                         | New message                                                  |
+| `edit`      | `id`, `text`                                     | Updated message (streaming)                                  |
+| `delete`    | `id`                                             | Message removed (e.g. aborted stream)                        |
+| `typing`    | —                                                | Agent is thinking                                            |
+| `file`      | `filename`, `mimeType`, `url?`, `data?` (base64) | File attachment                                              |
+| `error`     | `message`                                        | Sent before closing an unauthorized socket (close code 1008) |
 
 Frames that are not JSON or have no non-empty `text` string are ignored.
 
 ## Features
 
-| Feature | Support |
-|---------|---------|
-| Streaming (edit) | ✅ |
-| Typing indicator | ✅ |
-| Token auth | ✅ |
-| File metadata | ✅ |
-| Message length limit | None |
-| Multiple clients | ✅ (each gets own session) |
+| Feature              | Support                    |
+| -------------------- | -------------------------- |
+| Streaming (edit)     | ✅                         |
+| Typing indicator     | ✅                         |
+| Token auth           | ✅                         |
+| File metadata        | ✅                         |
+| Message length limit | None                       |
+| Multiple clients     | ✅ (each gets own session) |
 
 ## Tips
 
 - Perfect for building custom chat UIs
 - Auth is optional but recommended for production
-- Each WebSocket connection is treated as a separate user
+- Each WebSocket connection is treated as a separate user: `channelId` and `userId` are the random `clientId`, so a reconnect starts a new thread
+- Incoming messages carry text only — attachments are not supported from the client
 - `start()` rejects if the port is already in use; `stop()` closes all client connections (code 1001)
 - Use with reverse proxy (nginx) for TLS in production

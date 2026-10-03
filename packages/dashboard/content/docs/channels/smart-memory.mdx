@@ -5,7 +5,7 @@ description: Three-level memory system with knowledge graph, core facts, and com
 
 ## Overview
 
-The smart memory system provides three levels of persistent memory for your assistant, from fast key-value lookups to a full knowledge graph with semantic search.
+The smart memory system provides three levels of persistent memory for your assistant, from key-value facts in the system prompt to a knowledge graph and the conversation history. `RuntimeBuilder` sets all three up from `cogitator.yml`.
 
 ## Level 1: Core Facts
 
@@ -21,10 +21,10 @@ await coreFacts.set('user_name', 'Alex');
 await coreFacts.set('timezone', 'Europe/Berlin');
 
 const prompt = await coreFacts.formatForPrompt();
-// "user_name: Alex\ntimezone: Europe/Berlin"
+// one "key: value" line per fact
 ```
 
-Core facts are injected into the agent instructions automatically by `RuntimeBuilder` — re-read for every message, so facts saved during a conversation are visible immediately.
+Core facts are injected into the agent instructions automatically by `RuntimeBuilder` (under "What I know about the user") — re-read for every message, so facts saved during a conversation are visible immediately. The agent saves one with `remember({ fact, isCoreFact: true, coreFactKey })`. `CoreFactsStore` keeps a change history per key (`getHistory(key)`).
 
 ## Level 2: Knowledge Graph
 
@@ -40,22 +40,27 @@ memory:
 
 When `knowledgeGraph` is enabled, three tools are added to the agent:
 
-**remember** — Save a fact to the knowledge graph
+**remember** — Save a fact to the knowledge graph (optionally also as a core fact)
 
 ```
 User: "My dog's name is Luna"
 Agent calls: remember({ fact: "User's dog is named Luna", category: "pets" })
+
+User: "Call me Alex"
+Agent calls: remember({ fact: "Alex", isCoreFact: true, coreFactKey: "user_name" })
 ```
 
 **recall** — Search memory by query
 
 ```
 User: "What's my dog's name?"
-Agent calls: recall({ query: "dog name" })
-→ Returns: "User's dog is named Luna"
+Agent calls: recall({ query: "dog" })
+→ Returns: { results: [{ fact: "User's dog is named Luna", ... }], coreFacts: { ... } }
 ```
 
-**forget** — Delete facts matching a pattern
+`recall` matches the query against stored fact text (up to 10 results) and always returns all core facts. Pass `embeddingFn` to `createMemoryTools()` to switch it to semantic vector search — `RuntimeBuilder` does not.
+
+**forget** — Delete every fact whose text matches the query
 
 ```
 User: "Forget everything about my old address"
@@ -64,7 +69,7 @@ Agent calls: forget({ query: "address" })
 
 ### Auto-extraction
 
-When `autoExtract` is enabled, the `AutoExtractMiddleware` runs in the background for each user message and automatically extracts entities and relationships into the knowledge graph — without the agent needing to call `remember` explicitly.
+When `autoExtract` is enabled, the `AutoExtractMiddleware` runs in the background for each user message and automatically extracts entities and relationships into the knowledge graph (using the assistant's LLM) — without the agent needing to call `remember` explicitly. It needs `knowledgeGraph: true`.
 
 ```yaml
 memory:
@@ -112,7 +117,7 @@ If you're not using `RuntimeBuilder`, you can set up memory manually:
 
 ```typescript
 import { SQLiteAdapter, SQLiteGraphAdapter, CoreFactsStore } from '@cogitator-ai/memory';
-import { createMemoryTools } from '@cogitator-ai/core';
+import { Agent, createMemoryTools } from '@cogitator-ai/core';
 
 const memory = new SQLiteAdapter({ provider: 'sqlite', path: './memory.db' });
 await memory.connect();

@@ -68,7 +68,7 @@ Cancel the current response. For OpenAI, sends `response.cancel` (only while a r
 session.close();
 ```
 
-Closes the WebSocket connection.
+Closes the WebSocket connection and drops queued input; a closed session cannot reconnect. `session.provider` and `session.isConnected` report its state. The provider adapters (`OpenAIRealtimeAdapter`, `GeminiRealtimeAdapter`) are exported for direct use.
 
 ### Events
 
@@ -145,7 +145,7 @@ session.pushAudio(pcm16Chunk);
 
 - **Server-side VAD** — OpenAI handles turn detection, emits `speech_start` events
 - **Tool calling** — all function calls of a completed response are executed, their outputs sent back, then a single follow-up response is requested; unknown tools and invalid arguments are answered with an error output
-- **Input audio transcription** — user speech transcripts (`gpt-live-transcribe`) via `transcript` event
+- **Transcription** — user speech transcripts (`gpt-live-transcribe`) and the model's audio transcripts via the `transcript` event
 - **Audio format** — PCM16 24kHz input and output
 
 ### OpenAI Voices
@@ -213,7 +213,14 @@ session.pushAudio(pcm16Chunk);
 Use `VoiceAgent` to expose a realtime session over WebSocket transport:
 
 ```typescript
-import { VoiceAgent } from '@cogitator-ai/voice';
+import { VoiceAgent, createCogitatorRunner, type RealtimeTool } from '@cogitator-ai/voice';
+
+const weatherTool: RealtimeTool = {
+  name: 'get_weather',
+  description: 'Get current weather for a city',
+  parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+  execute: async (args) => ({ city: (args as { city: string }).city, temperature: 21, unit: 'C' }),
+};
 
 const voiceAgent = new VoiceAgent({
   agent: createCogitatorRunner(cogitator, agent),
@@ -228,7 +235,7 @@ const voiceAgent = new VoiceAgent({
 await voiceAgent.listen(8080);
 ```
 
-Each WebSocket client gets its own `RealtimeSession`. The session instructions come from `instructions` or, if unset, from `agent.instructions`; `tools` are executed server-side. Audio from the client is forwarded to the realtime API, and audio/`transcript`/`speech_start`/`turn_end` events are forwarded back. Clients can send `{ type: 'text', text }` and `{ type: 'interrupt' }` control messages. If the provider connection fails or drops, the client is closed with code `1011`.
+Each WebSocket client gets its own `RealtimeSession`. The session instructions come from `instructions` or, if unset, from `agent.instructions`; `tools` are executed server-side. The model talks to the user directly — `agent.run()` is not called in realtime mode, so the Cogitator agent's tools and memory are not used; give the session its own `tools`. Audio from the client is forwarded to the realtime API, and audio/`transcript`/`speech_start`/`turn_end` events are forwarded back. Clients can send `{ type: 'text', text }` and `{ type: 'interrupt' }` control messages. If the provider connection fails or drops, the client is closed with code `1011`.
 
 ## RealtimeSessionConfig
 

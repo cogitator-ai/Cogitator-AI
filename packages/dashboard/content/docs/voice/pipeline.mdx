@@ -17,7 +17,7 @@ Two classes handle different use cases:
 One-shot processing for complete audio buffers.
 
 ```typescript
-import { VoicePipeline, OpenAISTT, OpenAITTS } from '@cogitator-ai/voice';
+import { VoicePipeline, OpenAISTT, OpenAITTS, createCogitatorRunner } from '@cogitator-ai/voice';
 
 const pipeline = new VoicePipeline({
   stt: new OpenAISTT({ apiKey: process.env.OPENAI_API_KEY! }),
@@ -40,9 +40,9 @@ console.log(result.response); // what the agent replied
 // result.audio — synthesized response as Buffer
 ```
 
-### `createSession()`
+### `createSession(options?)`
 
-Creates a `PipelineSession` for streaming use. See below.
+Creates a `PipelineSession` for streaming use. Pass `{ sessionId }` to set the id the agent sees (default: a random id). See below.
 
 ## PipelineSession
 
@@ -50,6 +50,9 @@ Streaming mode for continuous conversations. Push audio chunks as they arrive, r
 
 ```typescript
 const session = pipeline.createSession();
+
+session.id; // passed to the agent as context.sessionId
+session.currentState; // 'idle' | 'listening' | 'processing' | 'speaking'
 ```
 
 ### Pushing Audio
@@ -103,15 +106,15 @@ session.on('error', (error: Error) => {
 });
 ```
 
-| Event            | Payload           | Description                             |
-| ---------------- | ----------------- | --------------------------------------- |
-| `speech_start`   | —                 | VAD detected speech beginning           |
-| `speech_end`     | —                 | VAD detected speech ending              |
-| `transcript`     | `(text, isFinal)` | STT result (interim or final)           |
-| `agent_response` | `(text)`          | Agent's text response                   |
-| `audio`          | `(chunk: Buffer)` | Streamed TTS audio chunk                |
-| `turn_end`       | —                 | Response fully spoken (or empty)        |
-| `error`          | `(error: Error)`  | Processing error (STT, VAD, agent, TTS) |
+| Event            | Payload           | Description                              |
+| ---------------- | ----------------- | ---------------------------------------- |
+| `speech_start`   | —                 | VAD detected speech beginning (VAD only) |
+| `speech_end`     | —                 | VAD detected speech ending (VAD only)    |
+| `transcript`     | `(text, isFinal)` | STT result (interim or final)            |
+| `agent_response` | `(text)`          | Agent's text response                    |
+| `audio`          | `(chunk: Buffer)` | Streamed TTS audio chunk                 |
+| `turn_end`       | —                 | Response fully spoken (or empty)         |
+| `error`          | `(error: Error)`  | Processing error (STT, VAD, agent, TTS)  |
 
 ### Interruption
 
@@ -155,7 +158,7 @@ session.on('speech_end', () => {
   // VAD detected silence — session closes STT, runs agent, streams TTS
 });
 
-// just keep pushing audio, VAD handles the rest
+// just keep pushing audio (PCM16 at the VAD's sample rate), VAD handles the rest
 microphoneStream.on('data', (chunk) => {
   session.pushAudio(chunk);
 });
@@ -191,16 +194,38 @@ console.log(`Active sessions: ${voiceAgent.activeSessions}`);
 await voiceAgent.close();
 ```
 
-Use `voiceAgent.attach(httpServer)` instead of `listen()` to share an existing HTTP server; upgrades for other paths are left to other handlers. Errors are only emitted when an `error` listener is attached — a misbehaving client cannot crash the process.
+Use `voiceAgent.attach(httpServer)` instead of `listen()` to share an existing HTTP server; upgrades for other paths are left to other handlers (with `listen()` they get 404). `voiceAgent.port` is the bound port. Errors are only emitted when an `error` listener is attached — a misbehaving client cannot crash the process.
+
+### Transport options
+
+| Option           | Default    | Description                                                                                                                                                                  |
+| ---------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `path`           | `'/voice'` | WebSocket path                                                                                                                                                               |
+| `maxConnections` | `100`      | Further upgrades are rejected with `503`                                                                                                                                     |
+| `verifyClient`   | —          | `(req) => boolean \| { code, message }` (may be async): `true` accepts, `false` rejects with `401`, `{ code, message }` rejects with that status; a throw rejects with `500` |
+
+```typescript
+transport: {
+  verifyClient: (req) => {
+    const token = new URL(req.url ?? '/', 'http://localhost').searchParams.get('token');
+    if (!token) return false;
+    return token === process.env.VOICE_TOKEN ? true : { code: 403, message: 'Forbidden' };
+  },
+},
+```
+
+Browsers cannot set headers on a WebSocket, so pass credentials in the query string or a cookie. Idle clients that stop answering pings (every 30s) are dropped. `WebSocketTransport` is exported too, for building your own server around `VoiceClient` connections (`audio` / `message` events, `sendAudio()`, `sendMessage()`).
 
 ### WebSocket protocol
 
-| Direction        | Format | Content                                                                        |
-| ---------------- | ------ | ------------------------------------------------------------------------------ |
-| Client -> Server | Binary | PCM16 mono (16kHz pipeline / Gemini, 24kHz OpenAI realtime)                    |
-| Client -> Server | JSON   | `{ type: 'interrupt' }`, `{ type: 'end_of_speech' }`, `{ type: 'text', text }` |
-| Server -> Client | Binary | Response audio                                                                 |
-| Server -> Client | JSON   | `transcript`, `agent_response`, `speech_start`, `speech_end`, `turn_end`       |
+| Direction        | Format | Content                                                                                             |
+| ---------------- | ------ | --------------------------------------------------------------------------------------------------- |
+| Client -> Server | Binary | PCM16 mono (16kHz pipeline / Gemini, 24kHz OpenAI realtime)                                         |
+| Client -> Server | JSON   | `{ type: 'interrupt' }`, `{ type: 'end_of_speech' }` (pipeline), `{ type: 'text', text }`           |
+| Server -> Client | Binary | Response audio (MP3 from the pipeline's TTS, PCM16 24kHz in realtime mode)                          |
+| Server -> Client | JSON   | `{ type: 'transcript', text, isFinal }`, `agent_response`, `speech_start`, `speech_end`, `turn_end` |
+
+In realtime mode `transcript` carries `role` (`'user'` or `'assistant'`) instead of `isFinal`, and there is no `agent_response` or `speech_end`. Invalid JSON and unknown control types are reported through the `error` event and otherwise ignored.
 
 ### VoicePipelineConfig
 

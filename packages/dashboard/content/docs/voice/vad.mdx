@@ -10,7 +10,7 @@ Voice Activity Detection (VAD) determines when a user is speaking. The voice pac
 ```typescript
 interface VADProvider {
   readonly name: string;
-  process(samples: Float32Array): VADEvent;
+  process(samples: Float32Array): VADEvent | Promise<VADEvent>;
   reset(): void;
 }
 
@@ -21,7 +21,7 @@ type VADEvent =
   | { type: 'silence' };
 ```
 
-Feed audio frames (as Float32Array samples) into `process()` and it returns an event describing what it detected. The VAD is stateful — it tracks whether speech is in progress and emits `speech_start` / `speech_end` transitions based on configurable silence duration.
+Feed audio frames (as Float32Array samples) into `process()` and it returns an event describing what it detected — synchronously for `EnergyVAD`, as a promise for `SileroVAD`. The VAD is stateful — it tracks whether speech is in progress and emits `speech_start` / `speech_end` transitions based on configurable silence duration.
 
 ## Provider Comparison
 
@@ -110,7 +110,7 @@ const event = await vad.process(float32Samples);
 // same event types as EnergyVAD
 ```
 
-Chunks of any length are accepted: samples are buffered into 32ms frames (512 samples at 16kHz, 256 at 8kHz) and the transitions within one call are summarized into a single event. Only 8kHz and 16kHz are supported.
+Chunks of any length are accepted: samples are buffered into 32ms frames (512 samples at 16kHz, 256 at 8kHz) and the transitions within one call are summarized into a single event. Only 8kHz and 16kHz are supported (other rates throw in the constructor). `process()` throws until `init()` has resolved — initialize the VAD before handing it to a pipeline. `dispose()` drops the ONNX session and state.
 
 ### Configuration
 

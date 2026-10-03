@@ -10,15 +10,11 @@ Gateway middleware intercepts messages before they reach your agent. Use it for 
 ```typescript
 interface GatewayMiddleware {
   name: string;
-  handle(
-    msg: ChannelMessage,
-    ctx: MiddlewareContext,
-    next: () => Promise<void>
-  ): Promise<void>;
+  handle(msg: ChannelMessage, ctx: MiddlewareContext, next: () => Promise<void>): Promise<void>;
 }
 ```
 
-Middleware follows an Express-style chain: call `next()` to pass the message forward, or skip it to block the message. The whole chain completes before the agent runs, so code after `await next()` executes before the LLM call (use [lifecycle hooks](/docs/channels/gateway) such as `agent:after_run` to react to answers).
+Middleware follows an Express-style chain: call `next()` to pass the message forward, or skip it to block the message. The whole chain completes before the agent runs, so code after `await next()` executes before the LLM call (use [lifecycle hooks](/docs/channels/gateway#lifecycle-hooks) such as `agent:after_run` to react to answers).
 
 ## Built-in Middleware
 
@@ -42,25 +38,28 @@ const gateway = new Gateway({
 ```
 
 **Flow:**
+
 1. Unknown user sends a message
 2. Bot responds: ``Hi! Ask the bot owner to approve you with: `/pair A7X92K` ``
 3. Owner types `/pair A7X92K` (or `/pair@your_bot A7X92K` in groups)
 4. User is now approved and can chat normally
 
-Only owners can approve codes — approved users cannot pair others. Codes use an unambiguous alphabet (no `0/O/1/I`) and expired codes are pruned automatically. For persistent approvals use `DmPolicyMiddleware` below.
+Only owners can approve codes — approved users cannot pair others. Codes use an unambiguous alphabet (no `0/O/1/I`) and expired codes are pruned automatically. Approvals live in memory and are lost on restart; for persistent approvals use `dmPolicy` below. `PairingMiddleware` applies to every message, including group chats.
 
 ### DM Policy
 
 Controls who may talk to the bot in direct messages and groups, with approvals persisted to disk.
 
 ```typescript
-import { DmPolicyMiddleware } from '@cogitator-ai/channels';
+import { dmPolicy } from '@cogitator-ai/channels';
 
-new DmPolicyMiddleware({
+dmPolicy({
   mode: 'pairing', // 'open' | 'allowlist' | 'pairing' | 'disabled'
   ownerIds: { telegram: '123456789' },
   allowlist: ['telegram:42', '777'], // channel-scoped or bare user ids
-  storePath: '~/.cogitator/dm-allowlist.json',
+  storePath: './data/dm-allowlist.json', // default: ~/.cogitator/dm-allowlist.json
+  pairingCodeLength: 6, // default
+  pairingExpiresMs: 300_000, // default: 5 minutes
   groupPolicy: 'allowlist', // 'open' | 'allowlist' | 'disabled'
   groupAllowlist: ['-1001234567890'],
   onPairingRequest: (userId, code) => notifyOwner(userId, code),
@@ -68,7 +67,14 @@ new DmPolicyMiddleware({
 });
 ```
 
-Owners always pass. The allowlist file is written atomically; write failures go to `onStoreError` (default: `console.error`).
+| Mode        | Unknown user in a DM                                                      |
+| ----------- | ------------------------------------------------------------------------- |
+| `open`      | Passes                                                                    |
+| `allowlist` | Gets `Not authorized.`                                                    |
+| `pairing`   | Gets a `/pair CODE` message; an owner approves it with `/pair CODE` in DM |
+| `disabled`  | Silently ignored                                                          |
+
+Owners always pass. Group messages (`groupId` set) are judged only by `groupPolicy` — `allowlist` lets in the chats in `groupAllowlist` plus owners. Approved users are saved to `storePath` (written atomically, loaded on start) and listed by `getApprovedUsers()`; write failures go to `onStoreError` (default: `console.error`). `storePath` is used as given — `~` is not expanded (`RuntimeBuilder` expands it for `security.storePath`). The class form is `new DmPolicyMiddleware(config)`.
 
 ### Auto-Extract
 
@@ -91,7 +97,7 @@ Unknown entity/relation types are stored as `custom` (the original type is kept 
 
 ### Rate Limiting
 
-Per-user sliding window rate limiter. The limit notice is sent once per window, not for every blocked message; idle buckets are pruned.
+Per-user (`channelType:userId`) sliding one-minute window. The limit notice is sent once per window, not for every blocked message; idle buckets are pruned. Blocked messages never reach the agent.
 
 ```typescript
 import { rateLimit } from '@cogitator-ai/channels';

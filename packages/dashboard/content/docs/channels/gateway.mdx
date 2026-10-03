@@ -61,15 +61,17 @@ interface GatewayConfig {
   envelope?: EnvelopeConfig;
   queueMode?: 'parallel' | 'sequential' | 'interrupt' | 'collect';
   approvals?: {
-    format?: (approvals: ToolApprovalRequest[], words: ApprovalReplyWords) => string;
-    approveWords?: string[]; // default: approve, yes, да, одобряю
-    denyWords?: string[]; // default: deny, no, нет, отклоняю
+    format?: (approvals: readonly ToolApprovalRequest[], words: ApprovalReplyWords) => string;
+    approveWords?: readonly string[]; // default: approve, yes, да, одобряю
+    denyWords?: readonly string[]; // default: deny, no, нет, отклоняю
     notAllowedMessage?: string;
   };
 
   onError?: (error: Error, msg: ChannelMessage) => void;
 }
 ```
+
+Without `memory` (and without `sessionManager`) the Gateway keeps no history: every run starts from an empty thread. `onError` receives failures of runs, middleware and compaction; the message is dropped silently when it is not set.
 
 ### Per-user Agents
 
@@ -93,20 +95,22 @@ const gateway = new Gateway({
 User sends message
   → Channel converts to ChannelMessage
   → Debouncer (if enabled): buffer rapid messages, merge into one
-  → MessageQueue (if configured): sequential/interrupt/collect
-  → Middleware pipeline (pairing → rate-limit → ...)
-  → Envelope formatting (if enabled): wrap with [channel user +elapsed timestamp]
-  → Session lookup/create (emits session:created)
+  → MessageQueue (if queueMode is not 'parallel'): sequential/interrupt/collect per thread
+  → Middleware pipeline (dm-policy → owner-commands → rate-limit → ...)
+  → message:received hook
+  → Agent resolved (factory called per message), session lookup/create (emits session:created)
   → Compaction (if the thread holds ≥ threshold messages)
-  → Status reaction: 👀 → 🤔 → 🔥 on tool calls (if enabled)
+  → Status reaction 👀 → 🤔, typing indicator every 4s
   → Approve/deny reply on a paused thread? cogitator.resume(agent, threadId, { defaultDecision })
-    otherwise cogitator.run(agent, { input, threadId, stream })
-  → Status reaction: 👍 or 😱
-  → StreamBuffer flushes progressively via editText
+    otherwise: envelope (if enabled), media processing, cogitator.run(agent, { input, threadId, ... })
+  → 🔥 while tools run, back to 🤔 after each result
+  → StreamBuffer flushes progressively via sendText/editText (or plain chunked reply)
   → Platform-specific markdown adaptation
-  → Response delivered
+  → Response delivered, status reaction 👍 (or 😱 on failure)
   → Run paused for approval? Prompt listing the waiting tool calls
 ```
+
+Runs use `threadId` from `session.threadKey` (default `` `${channelType}:${userId}` ``), `threadAccess: 'shared'`, and pass `userId`, `channelType` and `channelId` to the run, so tools see them in their context. Scheduled messages (`raw.scheduled === true`, see [Scheduler](/docs/channels/scheduler)) are answered without quoting the trigger message.
 
 ## Status Reactions
 
@@ -194,7 +198,7 @@ const gateway = new Gateway({
 | `interrupt`  | Abort current processing (the run's `AbortSignal` fires), start new message immediately. Aborted runs are not reported to `onError`. |
 | `collect`    | Buffer messages during processing, merge all when idle.                                                                              |
 
-`parallel` is the default and matches the behavior before Phase 4. For personal assistants, `sequential` or `collect` usually give the best UX.
+For personal assistants, `sequential` or `collect` usually give the best UX. Queues are keyed by the same thread id as sessions.
 
 ## Multi-channel Setup
 
@@ -238,7 +242,7 @@ const gateway = new Gateway({
 
 ## Approvals
 
-Tools marked `requiresApproval` (for example `create_tool` from `capabilities.selfTools`) pause the run before they execute. The Gateway turns that pause into a chat conversation:
+Tools marked `requiresApproval` (for example `create_tool` from `capabilities.selfTools`) pause the run before they execute — unless the Cogitator has `guardrails.onToolApproval`, which then decides instead. The Gateway turns that pause into a chat conversation:
 
 1. The paused run's text (if any) is sent, followed by a prompt listing each waiting call — tool name, description and compact JSON arguments (cut at 300 characters).
 2. The user replies `approve` / `yes` to run the calls, or `deny` / `no` to refuse, optionally followed by a reason (`no, too risky`) that the agent sees. Replies are case-insensitive and may end with punctuation; `да` / `одобряю` and `нет` / `отклоняю` work out of the box.
@@ -251,8 +255,11 @@ Only the user who started the run can answer it: the runtime checks the run's `u
 Pauses survive restarts when the runtime persists them (in the thread's memory once the Cogitator has a memory adapter, or in `runCheckpoints`): the first approve/deny reply on a thread the Gateway has not seen since it started tries `resume`, and runs as a normal message if nothing is paused. On threads it has already seen, the Gateway resumes only pauses it sent a prompt for, so one Gateway process should serve a given thread.
 
 ```typescript
+import type { ApprovalRequestedEvent, ApprovalResolvedEvent } from '@cogitator-ai/channels';
+
 const gateway = new Gateway({
   // ...
+  hooks,
   approvals: {
     approveWords: ['approve', 'yes', 'да'],
     denyWords: ['deny', 'no', 'нет'],
@@ -263,13 +270,87 @@ const gateway = new Gateway({
   },
 });
 
-hooks.on('approval:requested', ({ threadId, approvals }) => audit.log(threadId, approvals));
-hooks.on('approval:resolved', ({ threadId, decision, superseded }) =>
-  audit.log(threadId, decision, superseded)
-);
+hooks.on('approval:requested', (event) => {
+  const { threadId, approvals } = event as ApprovalRequestedEvent;
+  audit.log(
+    threadId,
+    approvals.map((a) => a.toolName)
+  );
+});
+hooks.on('approval:resolved', (event) => {
+  const { threadId, decision, superseded } = event as ApprovalResolvedEvent;
+  audit.log(threadId, decision.approved, superseded);
+});
 ```
 
-`parseApprovalReply(text, words)` and `formatApprovalPrompt(approvals, words)` are exported for custom channels and UIs.
+`approval:resolved` carries `superseded: true` when the user sent a new message instead of answering (the calls were declined), and has no `approvals` when the pause predates this process.
+
+`parseApprovalReply(text, words)` and `formatApprovalPrompt(approvals, words)` are exported for custom channels and UIs, together with `DEFAULT_APPROVE_WORDS`, `DEFAULT_DENY_WORDS` and `DEFAULT_NOT_ALLOWED_MESSAGE`.
+
+## Lifecycle Hooks
+
+Hooks observe the pipeline without changing it. Create a registry with `createHookRegistry()` and pass it as `hooks`:
+
+```typescript
+import { createHookRegistry, Gateway } from '@cogitator-ai/channels';
+import type { ChannelMessage } from '@cogitator-ai/channels';
+
+const hooks = createHookRegistry();
+
+hooks.on('agent:after_run', (event) => {
+  const { threadId, output } = event as { msg: ChannelMessage; threadId: string; output: string };
+  console.log(`[${threadId}] ${output.length} chars`);
+});
+
+const gateway = new Gateway({ agent, cogitator, channels, hooks });
+```
+
+| Hook                 | Payload                                                                                 |
+| -------------------- | --------------------------------------------------------------------------------------- |
+| `message:received`   | `{ msg, threadId, user }` — after middleware accepted a message                         |
+| `session:created`    | `{ session, threadId }` — first message of a session                                    |
+| `session:compacted`  | `{ threadId, result }` (`CompactionResult`)                                             |
+| `agent:before_run`   | `{ msg, threadId, agent }` (agent name)                                                 |
+| `agent:after_run`    | `{ msg, threadId, output }`                                                             |
+| `agent:error`        | `{ msg, threadId, error }`                                                              |
+| `stream:started`     | `{ msg, threadId }`                                                                     |
+| `stream:finished`    | `{ msg, threadId, messageIds }`                                                         |
+| `message:sending`    | `{ msg, threadId, text, channelId }`                                                    |
+| `message:sent`       | `{ msg, threadId, text, messageId }`                                                    |
+| `approval:requested` | `ApprovalRequestedEvent` — `{ msg, threadId, userId, approvals }`                       |
+| `approval:resolved`  | `ApprovalResolvedEvent` — `{ msg, threadId, userId, decision, approvals?, superseded }` |
+
+Handlers run in registration order and are awaited, so a slow handler delays the reply; a throwing handler is logged and does not stop the others. `message:sending` / `message:sent` fire for replies when `stream` is off and for approval prompts — with `stream` on, the answer reports its messages through `stream:finished`. Handlers receive `unknown`, so cast to the payload type (`ApprovalRequestedEvent` and `ApprovalResolvedEvent` are exported). `hooks.off(name, handler)` removes a handler.
+
+## Media and Voice Messages
+
+Channels deliver photos, voice notes, videos and files as `attachments`. Pass a `MediaProcessor` to turn them into model input:
+
+```typescript
+import { Gateway, MediaProcessor, LocalWhisper, DeepgramSttProvider } from '@cogitator-ai/channels';
+import { getModel } from '@cogitator-ai/models';
+
+const mediaProcessor = new MediaProcessor(
+  new LocalWhisper(), // offline fallback, used once its model is downloaded
+  (modelId) => getModel(modelId)?.capabilities?.supportsVision ?? true,
+  new DeepgramSttProvider({ apiKey: process.env.DEEPGRAM_API_KEY! }),
+  { maxInlineTextChars: 20_000, maxDownloadBytes: 25 * 1024 * 1024 } // defaults
+);
+
+const gateway = new Gateway({ agent, cogitator, channels, mediaProcessor });
+```
+
+| Attachment | What the agent gets                                                                                   |
+| ---------- | ----------------------------------------------------------------------------------------------------- |
+| Image      | Passed as run `images` when the vision check returns `true`, otherwise a system note asking to say so |
+| Audio      | Transcribed; the text is prepended to the message                                                     |
+| Video      | A system note naming the file (video content is not analyzed)                                         |
+| Text file  | Inlined (by MIME type or extension such as `.md`, `.json`, `.ts`), cut at `maxInlineTextChars`        |
+| Other file | A system note naming the file                                                                         |
+
+STT providers: `DeepgramSttProvider` (`nova-3`), `GroqSttProvider` (`whisper-large-v3`), `OpenAISttProvider` (`gpt-transcribe`) — each takes `{ apiKey, model? }` (Deepgram also `language`) — or any `{ transcribe(buffer, mimeType) }`. The provider is tried first; without one, `LocalWhisper` (Xenova `whisper-tiny`, cached in `~/.cogitator/models`) transcribes once downloaded. `createWhisperDownloadTool(whisper)` gives the agent a `download_stt_model` tool that installs it on request. When nothing can transcribe, the agent is told so instead of failing. Attachments fetched by URL (Discord) are capped at `maxDownloadBytes`.
+
+`RuntimeBuilder` wires this up automatically, picking `DEEPGRAM_API_KEY`, then `GROQ_API_KEY`, then `OPENAI_API_KEY`.
 
 ## Session Management
 
@@ -341,6 +422,21 @@ SLACK_APP_TOKEN=xapp-...
 # WebChat
 WEBCHAT_SECRET=your-secret-token
 ```
+
+## Running with the CLI
+
+`cogitator assistant` runs a Gateway you build in code, with a live status view:
+
+```typescript title="src/gateway.ts"
+export const gateway = new Gateway({ agent, cogitator, channels });
+```
+
+```bash
+cogitator assistant                 # loads .env into process.env, imports src/gateway.ts
+cogitator assistant -c bot/gateway.ts --quiet
+```
+
+The module must export `gateway`; the command starts it, shows stats and a live log, and stops it on `q` or Ctrl+C. For a config-driven assistant use [`cogitator.yml` and `cogitator up`](/docs/channels/wizard) instead.
 
 ## Graceful Shutdown
 

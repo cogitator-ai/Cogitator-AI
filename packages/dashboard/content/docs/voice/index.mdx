@@ -26,15 +26,11 @@ Realtime Mode:
 ## Installation
 
 ```bash
-pnpm add @cogitator-ai/voice
+pnpm add @cogitator-ai/voice openai
+pnpm add onnxruntime-node   # only for Silero VAD
 ```
 
-Peer dependencies based on your provider choices:
-
-```bash
-pnpm add openai             # OpenAI STT/TTS
-pnpm add onnxruntime-node   # Silero VAD (neural network)
-```
+`openai` is an optional peer dependency, but the package entry point imports the OpenAI STT/TTS classes, so install it even when you use only Deepgram or ElevenLabs. `@cogitator-ai/core` is needed for `createCogitatorRunner()` with a Cogitator agent.
 
 ## Quick Start — Pipeline
 
@@ -68,7 +64,15 @@ await voiceAgent.listen(8080);
 
 Connect from any WebSocket client at `ws://localhost:8080/voice` — send binary PCM16 audio frames, receive audio and JSON events back (see [WebSocket protocol](/docs/voice/pipeline#websocket-protocol)).
 
-`createCogitatorRunner()` adapts a `Cogitator` runtime and `Agent` to the `VoiceAgentRunner` interface (`run(input, { sessionId, signal })`): each voice session gets its own memory thread and interrupted turns abort the run.
+`createCogitatorRunner()` adapts a `Cogitator` runtime and `Agent` to the `VoiceAgentRunner` interface (`run(input, { sessionId, signal })`): each voice session gets its own memory thread (`voice:<sessionId>`) and interrupted turns abort the run. Pass `{ threadId: (ctx) => ... }` as the third argument to choose threads yourself, e.g. to continue a user's chat history:
+
+```typescript
+const runner = createCogitatorRunner(cogitator, agent, {
+  threadId: ({ sessionId }) => `call:${sessionId}`,
+});
+```
+
+Any object with `run(input, context?) => Promise<{ content }>` (and optionally `instructions`) works as the runner.
 
 ## Quick Start — Realtime
 
@@ -100,13 +104,13 @@ await voiceAgent.listen(8080);
 
 All raw audio in the voice package is **PCM16**: 16-bit signed integers, little-endian, mono.
 
-| Path                        | Input                             | Output                                       |
-| --------------------------- | --------------------------------- | -------------------------------------------- |
-| Pipeline (STT streams, VAD) | 16kHz (configurable `sampleRate`) | TTS format (MP3 by default, `pcm16` = 24kHz) |
-| OpenAI Realtime             | 24kHz                             | 24kHz                                        |
-| Gemini Live                 | 16kHz                             | 24kHz                                        |
+| Path                        | Input                                        | Output                                  |
+| --------------------------- | -------------------------------------------- | --------------------------------------- |
+| Pipeline (STT streams, VAD) | 16kHz (Deepgram and VAD take a `sampleRate`) | MP3 (the TTS provider's default format) |
+| OpenAI Realtime             | 24kHz                                        | 24kHz                                   |
+| Gemini Live                 | 16kHz                                        | 24kHz                                   |
 
-STT providers also accept containerized files (wav, mp3, ogg, flac, webm, mp4); the container is detected from magic bytes.
+STT providers also accept containerized files (wav, mp3, ogg, flac, webm, mp4); the container is detected from magic bytes. The pipeline calls `tts.streamSynthesize(text)` without options, so it always gets the provider's default format (MP3); call `synthesize(text, { format: 'pcm16' })` yourself for raw 24kHz PCM.
 
 The package includes audio conversion utilities:
 
@@ -121,6 +125,29 @@ import {
   detectAudioFormat,
 } from '@cogitator-ai/voice';
 ```
+
+## Voice Tools
+
+`voiceTools({ stt, tts })` returns two tools for text agents that handle audio as data: `transcribe_audio` (`{ audioBase64, language? }` → `{ text, language, duration }`) and `speak_text` (`{ text, voice?, format? }` → `{ audioBase64, format }`). They are plain `{ name, description, parameters, execute }` objects with Zod parameters — wrap them with `tool()` from `@cogitator-ai/core`:
+
+```typescript
+import { Agent, tool } from '@cogitator-ai/core';
+import { voiceTools, DeepgramSTT, ElevenLabsTTS } from '@cogitator-ai/voice';
+
+const [transcribe, speak] = voiceTools({
+  stt: new DeepgramSTT({ apiKey: process.env.DEEPGRAM_API_KEY! }),
+  tts: new ElevenLabsTTS({ apiKey: process.env.ELEVENLABS_API_KEY! }),
+});
+
+const agent = new Agent({
+  name: 'media-assistant',
+  model: 'openai/gpt-5.5',
+  instructions: 'Transcribe audio the user sends and answer with speech when asked.',
+  tools: [tool(transcribe), tool(speak)],
+});
+```
+
+`transcribeTool(stt)` and `speakTool(tts)` create them one at a time.
 
 ## Next Steps
 

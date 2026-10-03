@@ -15,20 +15,23 @@ npx @cogitator-ai/cli wizard
 
 The wizard walks you through:
 
-1. **LLM provider and model** — Google, OpenAI, Anthropic, or Ollama (local or cloud); models are fetched live
-2. **Channels** — Telegram, Discord, Slack (bot tokens and owner user IDs)
-3. **Capabilities** — web search, file system, GitHub, device tools, browser, scheduler, RAG, self-config, self-tools
-4. **MCP servers** — any command line, quoted arguments supported
-5. **Memory** — SQLite database path
-6. **Personality** — custom system prompt for the assistant
+1. **Names** — your name and the assistant's name (used in the default personality)
+2. **LLM provider and model** — Google, Anthropic, OpenAI, or Ollama (local, or a remote/cloud URL with an optional API key); models are fetched live
+3. **Channels** — Telegram, Discord, Slack: bot token and owner user IDs (Slack also asks for the signing secret and an optional `xapp-` app token for Socket Mode). The terminal channel is always on
+4. **Capabilities** — web search, file system (allowed paths), GitHub (token), device tools, browser (visible window / stealth), scheduler, RAG (paths to index), self-config, self-tools
+5. **MCP servers** — any command line, quoted arguments supported
+6. **Memory** — SQLite database path
+7. **Personality** — the system prompt, pre-filled from the names above
 
-Secrets are merged into `.env` without removing your other variables or comments. If `cogitator.yml` already exists, the wizard asks before overwriting it.
+Secrets are merged into `.env` (written with mode `0600`) without removing your other variables or comments. If `cogitator.yml` already exists, the wizard asks before overwriting it.
 
 After setup, start the assistant:
 
 ```bash
 cogitator up
 ```
+
+`cogitator up` finds `cogitator.yml` (or `cogitator.yaml`, or `--config <path>`) in the current directory, reads `.env` next to it, builds the runtime with `RuntimeBuilder` and starts every channel. With `capabilities.selfConfig` it runs the assistant in a child process and restarts it when the assistant changes its config (exit code `78`); `--no-restart-loop` turns that off.
 
 ## Editing an Existing Config
 
@@ -38,7 +41,7 @@ Re-run the wizard with `--edit` to modify an existing `cogitator.yml`:
 cogitator wizard --edit
 ```
 
-This loads the current config and pre-fills every prompt. Leaving a secret blank keeps the value already in `.env`; existing MCP servers and settings the wizard does not ask about (security, rate limits, stream tuning) are preserved.
+This loads the current config and pre-fills every prompt. Leaving a secret blank keeps the value already in `.env`; existing MCP servers and settings the wizard does not ask about (security, rate limits, stream tuning, compaction) are preserved. The wizard only sets up SQLite memory: it writes `memory.adapter: sqlite` even when the file had `postgres`, so edit a Postgres config by hand.
 
 ## Generated Files
 
@@ -46,25 +49,30 @@ This loads the current config and pre-fills every prompt. Leaving a secret blank
 
 ```yaml title="cogitator.yml"
 name: jarvis
-personality: |
-  You are Jarvis, a personal AI assistant.
-
+personality: |-
+  You are jarvis, a personal AI assistant for Alex.
+  Be concise, friendly, and proactive. Use tools when they can help.
+  Remember important things about Alex using memory tools.
 llm:
   provider: google
   model: google/gemini-3.8-flash
-
 channels:
   telegram:
-    ownerIds: ['123456789']
-
+    ownerIds:
+      - '123456789'
 capabilities:
   webSearch: true
   scheduler: true
-
 memory:
   adapter: sqlite
   path: ~/.cogitator/memory.db
+  autoExtract: true
   knowledgeGraph: true
+  compaction:
+    threshold: 50
+stream:
+  flushInterval: 600
+  minChunkSize: 30
 ```
 
 ### .env
@@ -76,7 +84,7 @@ TG_TOKEN=your-telegram-bot-token
 
 ## Programmatic Equivalent
 
-Instead of the wizard, you can use `RuntimeBuilder` directly:
+Instead of the wizard, you can use `RuntimeBuilder` directly. It validates the config with `AssistantConfigSchema` and fills in the schema defaults, so only `name`, `personality` and `llm` are required:
 
 ```typescript
 import { RuntimeBuilder } from '@cogitator-ai/channels';
@@ -84,38 +92,87 @@ import { RuntimeBuilder } from '@cogitator-ai/channels';
 const builder = new RuntimeBuilder(
   {
     name: 'jarvis',
-    personality: 'You are Jarvis, a personal AI assistant.',
+    personality: 'You are Jarvis, a personal AI assistant for Alex.',
     llm: { provider: 'google', model: 'google/gemini-3.8-flash' },
     channels: { telegram: { ownerIds: ['123456789'] } },
     capabilities: { webSearch: true, scheduler: true },
-    memory: { adapter: 'sqlite', path: '~/.cogitator/memory.db', knowledgeGraph: true },
+    memory: { path: '~/.cogitator/memory.db', compaction: { threshold: 50 } },
   },
   process.env
 );
 
 const runtime = await builder.build();
 await runtime.gateway.start();
+
+process.on('SIGTERM', async () => {
+  await runtime.cleanup(); // stops the scheduler and gateway, closes memory, MCP and browser
+  process.exit(0);
+});
 ```
+
+`build()` returns `{ agent, cogitator, gateway, scheduler, cleanup }`; `scheduler` is `null` unless `capabilities.scheduler` is on. An invalid config throws a `ZodError` from the constructor. The optional third argument takes:
+
+| Option          | Description                                                                                      |
+| --------------- | ------------------------------------------------------------------------------------------------ |
+| `configPath`    | Path of `cogitator.yml`, needed (with `configHelpers`) for the `selfConfig` tools                |
+| `configHelpers` | `{ parseYaml, stringifyYaml, validateConfig }` used by the `config_read` / `config_update` tools |
+| `onRestart`     | Called on `/restart` or after a config update; default `process.exit(78)` (`RESTART_EXIT_CODE`)  |
+
+The second argument is the environment the runtime reads keys and tokens from; it is not copied into `process.env`.
 
 ## Config Reference
 
-| Field                           | Type                                       | Default                  | Description                                                             |
-| ------------------------------- | ------------------------------------------ | ------------------------ | ----------------------------------------------------------------------- |
-| `name`                          | `string`                                   | required                 | Assistant name                                                          |
-| `personality`                   | `string`                                   | required                 | System prompt / personality                                             |
-| `llm.provider`                  | `google \| openai \| anthropic \| ollama`  | required                 | LLM provider                                                            |
-| `llm.model`                     | `string`                                   | required                 | Model identifier (e.g. `google/gemini-3.8-flash`)                       |
-| `channels`                      | `object`                                   | `{}`                     | Channel configs (telegram, discord, slack)                              |
-| `capabilities`                  | `object`                                   | `{}`                     | Enabled capabilities                                                    |
-| `memory.adapter`                | `sqlite \| postgres`                       | `sqlite`                 | Memory storage backend                                                  |
-| `memory.path`                   | `string`                                   | `~/.cogitator/memory.db` | SQLite file                                                             |
-| `memory.connectionString`       | `string`                                   | `DATABASE_URL`           | Postgres connection (requires `pg`)                                     |
-| `memory.compaction.threshold`   | `number`                                   | —                        | Messages in a conversation before compaction                            |
-| `memory.knowledgeGraph`         | `boolean`                                  | `true`                   | Enable knowledge graph                                                  |
-| `memory.autoExtract`            | `boolean`                                  | `true`                   | Auto-extract entities from conversations                                |
-| `capabilities.fileSystem.paths` | `string[]`                                 | home dir                 | File tools are restricted to these paths                                |
-| `capabilities.selfConfig`       | `boolean`                                  | `false`                  | Config/env tools — usable only by channel owners and the local terminal |
-| `security.dmPolicy`             | `open \| allowlist \| pairing \| disabled` | `open`                   | Who may DM the assistant                                                |
-| `stream.flushInterval`          | `number`                                   | `600`                    | Stream flush interval (ms)                                              |
-| `stream.minChunkSize`           | `number`                                   | `30`                     | Minimum chunk size before flushing                                      |
-| `rateLimit.maxPerMinute`        | `number`                                   | `30`                     | Per-user rate limit                                                     |
+`cogitator.yml` is validated by `AssistantConfigSchema` (exported from `@cogitator-ai/channels`, with `AssistantConfigInput` / `AssistantConfigOutput` types).
+
+| Field                                     | Type                                       | Default                          | Description                                                                                 |
+| ----------------------------------------- | ------------------------------------------ | -------------------------------- | ------------------------------------------------------------------------------------------- |
+| `name`                                    | `string`                                   | required                         | Assistant name (also the agent name and memory namespace)                                   |
+| `personality`                             | `string`                                   | required                         | System prompt; date, core facts and capability notes are appended                           |
+| `llm.provider`                            | `google \| openai \| anthropic \| ollama`  | required                         | LLM provider                                                                                |
+| `llm.model`                               | `string`                                   | required                         | Model id; the provider prefix is added when missing (e.g. `google/gemini-3.8-flash`)        |
+| `channels.telegram` / `discord` / `slack` | `{ ownerIds?: string[] }`                  | —                                | Enables the channel; the first owner id gets owner commands and self-config access          |
+| `capabilities.webSearch`                  | `boolean`                                  | —                                | `web_search` tool, added only when a Tavily, Brave or Serper key is set                     |
+| `capabilities.fileSystem.paths`           | `string[]`                                 | home dir                         | `file_*` tools, restricted to these paths                                                   |
+| `capabilities.github`                     | `boolean`                                  | —                                | `github_api` tool (needs `GITHUB_TOKEN`)                                                    |
+| `capabilities.deviceTools`                | `boolean`                                  | —                                | Clipboard, system info and screenshot tools                                                 |
+| `capabilities.browser`                    | `boolean \| { headless, stealth }`         | `headless: true`                 | Playwright browser tools via `@cogitator-ai/browser` (Chromium is installed on first run)   |
+| `capabilities.scheduler`                  | `boolean`                                  | —                                | [Scheduler](/docs/channels/scheduler) tools and heartbeat                                   |
+| `capabilities.rag.paths`                  | `string[]`                                 | —                                | Index these paths with `@cogitator-ai/rag` (needs an embedding key for the provider)        |
+| `capabilities.selfConfig`                 | `boolean`                                  | —                                | Config/env tools — usable only by channel owners and the local terminal                     |
+| `capabilities.selfTools`                  | `boolean \| { path }`                      | `~/.cogitator/tools`             | `create_tool` & co.; created tools load on restart, `create_tool` asks for approval in chat |
+| `mcpServers.<name>`                       | `{ command, args, env? }`                  | —                                | Stdio MCP servers whose tools are added (needs `@cogitator-ai/mcp`)                         |
+| `memory.adapter`                          | `sqlite \| postgres`                       | `sqlite`                         | Memory storage backend                                                                      |
+| `memory.path`                             | `string`                                   | `~/.cogitator/memory.db`         | SQLite file (also holds core facts with Postgres)                                           |
+| `memory.connectionString`                 | `string`                                   | `DATABASE_URL`                   | Postgres connection (or `POSTGRES_URL`; the graph needs `pg`)                               |
+| `memory.knowledgeGraph`                   | `boolean`                                  | `true`                           | Knowledge graph and `remember` / `recall` / `forget` tools                                  |
+| `memory.autoExtract`                      | `boolean`                                  | `true`                           | Auto-extract entities from conversations                                                    |
+| `memory.compaction.threshold`             | `number`                                   | —                                | Messages in a conversation before compaction (keeps the 10 newest)                          |
+| `security.dmPolicy`                       | `open \| allowlist \| pairing \| disabled` | `open`                           | Who may DM the assistant (see [DM Policy](/docs/channels/middleware#dm-policy))             |
+| `security.allowlist`                      | `string[]`                                 | —                                | Allowed users, `telegram:42` or bare ids                                                    |
+| `security.groupPolicy`                    | `open \| allowlist \| disabled`            | `open`                           | Which group chats the assistant answers                                                     |
+| `security.groupAllowlist`                 | `string[]`                                 | —                                | Allowed group/chat ids                                                                      |
+| `security.storePath`                      | `string`                                   | `~/.cogitator/dm-allowlist.json` | Where paired users are saved                                                                |
+| `security.commandAccess.authorized`       | `string[]`                                 | —                                | Users who may run `/status`, `/sessions`, `/help`                                           |
+| `security.commandAccess.publicCommands`   | `string[]`                                 | —                                | Owner commands anyone may run                                                               |
+| `stream.flushInterval`                    | `number`                                   | `600`                            | Stream flush interval (ms)                                                                  |
+| `stream.minChunkSize`                     | `number`                                   | `30`                             | Minimum buffered text before a flush                                                        |
+| `rateLimit.maxPerMinute`                  | `number`                                   | `30`                             | Per-user rate limit, applied only when `rateLimit` is set                                   |
+
+Without a `security` block no DM policy is applied and everyone can talk to the assistant. Owner commands are enabled when at least one channel has `ownerIds`. Approvals in chat use the [default reply words](/docs/channels/gateway#approvals).
+
+## Environment Variables
+
+`RuntimeBuilder` reads these from the environment it is given (`cogitator up`: the process environment plus `.env`):
+
+| Variable                                                                      | Used for                                                                    |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `GOOGLE_API_KEY` (or `GEMINI_API_KEY`), `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | LLM provider (and RAG embeddings; Anthropic uses `OPENAI_API_KEY` for them) |
+| `OLLAMA_URL` (default `http://localhost:11434`), `OLLAMA_API_KEY`             | Ollama, local or remote                                                     |
+| `TG_TOKEN` (or `TELEGRAM_TOKEN`), `DISCORD_TOKEN`                             | Telegram and Discord bots                                                   |
+| `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SLACK_APP_TOKEN`, `SLACK_PORT`    | Slack (Socket Mode with the app token, else HTTP mode on `SLACK_PORT`)      |
+| `DATABASE_URL` / `POSTGRES_URL`                                               | Postgres memory without `memory.connectionString`                           |
+| `DEEPGRAM_API_KEY`, `GROQ_API_KEY`, `OPENAI_API_KEY`                          | Voice message transcription, first one found wins (else local Whisper)      |
+| `TAVILY_API_KEY`, `BRAVE_API_KEY`, `SERPER_API_KEY`                           | Web search                                                                  |
+| `GITHUB_TOKEN`                                                                | GitHub tool                                                                 |
+
+The `web_search` and `github_api` tools read their keys from `process.env` when they run, while `cogitator up` loads `.env` only into the runtime's own environment. Export `TAVILY_API_KEY` / `BRAVE_API_KEY` / `SERPER_API_KEY` and `GITHUB_TOKEN` in the shell (or service environment) that starts `cogitator up`, not just in `.env`.

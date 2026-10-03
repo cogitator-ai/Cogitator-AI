@@ -74,7 +74,7 @@ interface TelegramConfig {
 | Feature                | Support                                                               |
 | ---------------------- | --------------------------------------------------------------------- |
 | Text messages          | Supported                                                             |
-| Photos                 | Supported (passed to LLM as vision)                                   |
+| Photos                 | Supported (passed to LLM as vision, caption becomes the text)         |
 | Voice / audio messages | Supported (transcribed via STT)                                       |
 | Video                  | Supported (announced to the model)                                    |
 | Documents              | Supported (text files are inlined)                                    |
@@ -109,7 +109,7 @@ On `start()` the channel initializes the bot, starts an HTTP server on `port` th
 
 **Photos** are downloaded automatically and forwarded to the LLM as image attachments. If the model supports vision (Claude, GPT-6, Gemini), it can see and reason about the image. The largest available resolution is used.
 
-**Voice messages** are downloaded as OGG audio and passed through the configured STT pipeline (Whisper local or API). The transcribed text is sent to the LLM as the user's message. See the [Gateway docs](/docs/channels/gateway) for STT configuration.
+**Voice messages** are downloaded as OGG audio and passed through the Gateway's `mediaProcessor` (Deepgram, Groq or OpenAI API, or local Whisper). The transcribed text is sent to the LLM as the user's message, followed by the caption if any. See [Media and Voice Messages](/docs/channels/gateway#media-and-voice-messages) for STT configuration.
 
 **Documents** are downloaded and attached to the message. Image documents (PNG, JPEG, etc.) are treated as image attachments; text-like files are inlined into the prompt and other files are announced to the model.
 
@@ -121,3 +121,5 @@ On `start()` the channel initializes the bot, starts an HTTP server on `port` th
 - Disable "Group Privacy" in BotFather settings (via `/setprivacy`) if the bot should see all group messages, not just commands and @mentions
 - Telegram rate limits: ~30 messages/sec to the same chat, ~20 message edits/sec globally
 - Pending updates are dropped on startup (`drop_pending_updates: true`) to avoid replaying old messages after a restart
+- In groups `groupId` is the chat id, so `DmPolicyMiddleware`'s `groupPolicy` applies; a reply's `replyTo` is the quoted message id
+- With `RuntimeBuilder` the token comes from `TG_TOKEN` (or `TELEGRAM_TOKEN`); the bot runs in long-polling mode

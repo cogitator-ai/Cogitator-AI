@@ -22,6 +22,8 @@ This adds three tools to the agent automatically:
 - **list_tasks** — List all pending scheduled tasks
 - **cancel_task** — Cancel a task by ID
 
+Timers are stored in `~/.cogitator/timers.json` and polled every 30 seconds. A task created in chat remembers the conversation's channel, chat and user, and fires back into it; tasks without one go to the first channel in `cogitator.yml` and its first owner.
+
 ## Programmatic Setup
 
 ```typescript
@@ -53,11 +55,11 @@ scheduler.start();
 ```typescript
 interface HeartbeatConfig {
   onFire: (msg: ChannelMessage) => Promise<void> | void;
-  pollInterval?: number;        // default: 30000 (30s)
+  pollInterval?: number; // default: 30000 (30s)
   getNextCronMs?: (cron: string) => number; // default: cron-parser, honors entry.timezone
-  maxRetries?: number;          // default: 5 — skip after N consecutive errors
-  staggerMs?: number;           // random startup delay (0-N ms) to prevent thundering herd
-  retentionMs?: number;         // default: 7 days — fired/cancelled entries are cleaned up hourly
+  maxRetries?: number; // default: 5 — skip after N consecutive errors
+  staggerMs?: number; // random startup delay (0-N ms) to prevent thundering herd
+  retentionMs?: number; // default: 7 days — fired/cancelled entries are cleaned up hourly
   onError?: (error: Error, entry?: TimerEntry) => void; // store/onFire failures never stop the loop
   onRunComplete?: (
     entry: TimerEntry,
@@ -70,11 +72,11 @@ interface HeartbeatConfig {
 
 ## Schedule Types
 
-| Type | Field | Behavior |
-|------|-------|----------|
-| Cron | `cron: "0 12 * * *"`, optional `timezone` | Recurring via cron expression (local time unless `timezone` is set), reschedules at the next occurrence |
-| Interval | `type: 'recurring', interval: 60000` | Reschedules at `now + interval` after each fire |
-| One-shot | `type: 'fixed'` | Fires once, not rescheduled |
+| Type     | Field                                     | Behavior                                                                                                |
+| -------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Cron     | `cron: "0 12 * * *"`, optional `timezone` | Recurring via cron expression (local time unless `timezone` is set), reschedules at the next occurrence |
+| Interval | `type: 'recurring', interval: 60000`      | Reschedules at `now + interval` after each fire                                                         |
+| One-shot | `type: 'fixed'`                           | Fires once, not rescheduled                                                                             |
 
 ## Tool Usage
 
@@ -100,13 +102,17 @@ Once enabled, the agent schedules tasks naturally in conversation:
 
 ## Scheduling Formats
 
-The `schedule_task` tool accepts three formats:
+The `schedule_task` tool takes a `description` and exactly one of three formats:
 
-| Format | Example | Description |
-|--------|---------|-------------|
-| Delay | `"20m"`, `"2h"`, `"1d"` | Relative delay from now |
-| Cron | `"0 12 * * *"` | Standard cron expression (recurring) |
-| ISO datetime | `"2025-03-15T10:00:00Z"` | Absolute time (one-off) |
+| Field   | Example                  | Description                                                       |
+| ------- | ------------------------ | ----------------------------------------------------------------- |
+| `delay` | `"20m"`, `"2h"`, `"1d"`  | Relative delay from now (one-off)                                 |
+| `cron`  | `"0 12 * * *"`           | Five-field cron expression (recurring, server local time)         |
+| `at`    | `"2026-03-15T10:00:00Z"` | ISO datetime (one-off; without an offset it is server local time) |
+
+Optional fields: `channel` and `userId` (filled from the current conversation when omitted) and `bestEffort` (failures never count towards `maxRetries`). `createSchedulerTools({ store, defaultChannel?, defaultUserId? })` from `@cogitator-ai/core` builds the three tools for your own agent.
+
+When a task fires, the scheduler injects a message with `channelType`, `channelId` and `userId` from the task and `raw: { scheduled: true, taskId }`; the agent is asked to carry the task out. The Gateway only answers messages for channels it runs, so a task whose channel is missing (or `system`) is not delivered.
 
 ## Job Management
 
@@ -115,9 +121,9 @@ The scheduler exposes methods for runtime job control:
 ```typescript
 const jobs = await scheduler.listJobs();
 
-await scheduler.disableJob(jobId);   // soft-disable, skipped on poll
-await scheduler.enableJob(jobId);    // re-enable + reset error count
-await scheduler.cancelJob(jobId);    // permanent cancel
+await scheduler.disableJob(jobId); // soft-disable, skipped on poll
+await scheduler.enableJob(jobId); // re-enable + reset error count
+await scheduler.cancelJob(jobId); // permanent cancel
 const job = await scheduler.getJob(jobId);
 ```
 
@@ -142,7 +148,9 @@ Rescheduled cron/interval jobs get a new id; use `listJobs()` to find the curren
 
 ## Persistence
 
-`SimpleTimerStore` persists timers to a JSON file with atomic writes (write to temp file, then rename). Timers survive restarts.
+`SimpleTimerStore` persists timers to a JSON file with atomic writes (write to temp file, then rename). Timers survive restarts. Without `persistPath` it keeps timers in memory.
+
+`HeartbeatScheduler` accepts any `TimerStore`. It does not renew or release claims of stores that claim timers (the Redis/Postgres timer stores of `@cogitator-ai/workflows`), so run a single scheduler per store.
 
 ```typescript
 const store = new SimpleTimerStore({
