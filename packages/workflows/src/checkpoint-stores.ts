@@ -3,6 +3,7 @@
  */
 
 import type { CheckpointStore, WorkflowCheckpoint } from '@cogitator-ai/types';
+import { createIfMissing, fromJson, TABLE_NAME } from './postgres-schema';
 
 /**
  * The Redis commands the store uses; `@cogitator-ai/redis` clients and
@@ -93,8 +94,6 @@ export interface PostgresCheckpointStoreOptions {
   table?: string;
 }
 
-const TABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/;
-
 /** Checkpoints in a Postgres table, as JSONB rows indexed by workflow and time. */
 export class PostgresCheckpointStore implements CheckpointStore {
   private readonly client: CheckpointPgClient;
@@ -151,7 +150,8 @@ export class PostgresCheckpointStore implements CheckpointStore {
 
   private async createTable(): Promise<void> {
     const index = `${this.table.replace('.', '_')}_workflow_idx`;
-    await this.client.query(
+    await createIfMissing(
+      this.client,
       `CREATE TABLE IF NOT EXISTS ${this.table} (
          id TEXT PRIMARY KEY,
          workflow_name TEXT NOT NULL,
@@ -159,13 +159,13 @@ export class PostgresCheckpointStore implements CheckpointStore {
          created_at BIGINT NOT NULL
        )`
     );
-    await this.client.query(
+    await createIfMissing(
+      this.client,
       `CREATE INDEX IF NOT EXISTS ${index} ON ${this.table} (workflow_name, created_at DESC)`
     );
   }
 }
 
-/** `pg` returns JSONB columns parsed; other drivers may return the text. */
 function toCheckpoint(data: unknown): WorkflowCheckpoint {
-  return (typeof data === 'string' ? JSON.parse(data) : data) as WorkflowCheckpoint;
+  return fromJson<WorkflowCheckpoint>(data);
 }

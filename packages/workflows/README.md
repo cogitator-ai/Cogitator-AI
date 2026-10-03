@@ -259,6 +259,23 @@ new PostgresCheckpointStore({ client: pool, table: 'workflow_checkpoints' }); //
 
 Resuming runs only the nodes that did not finish, and the nodes after them get the finished nodes' outputs as input.
 
+Runs, approvals and timers have the same kind of durable stores:
+
+```typescript
+import {
+  PostgresRunStore,
+  RedisApprovalStore,
+  PostgresTimerStore,
+  createWorkflowManager,
+} from '@cogitator-ai/workflows';
+
+createWorkflowManager({ cogitator, runStore: new PostgresRunStore({ client: pool }) });
+new RedisApprovalStore({ client: redis, pollInterval: 1000 }); // answers from other processes arrive by polling
+new PostgresTimerStore({ client: pool, claimTtl: 60_000 }); // each overdue timer is claimed by one TimerManager
+```
+
+Approvals answered in another process reach the waiting human node within `pollInterval`; overdue timers are claimed for `claimTtl` so several `TimerManager`s can share a store without firing a timer twice.
+
 ---
 
 ## Timers

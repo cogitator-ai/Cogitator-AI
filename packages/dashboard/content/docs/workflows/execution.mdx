@@ -217,6 +217,37 @@ const pgStore = new PostgresCheckpointStore({ client: pool }); // creates cogita
 
 A checkpoint saved by one process resumes in any other that reads the same store. A `WorkflowManager` with a `checkpointStore` checkpoints every run, so `replay(workflow, runId, node)` can run that node and everything after it again, while the nodes before it keep their results.
 
+### Runs, approvals and timers in Redis or Postgres
+
+The other workflow state has durable stores of the same kind, so a deployment with several processes — a web server and workers, or a worker that gets replaced — shares it:
+
+```typescript
+import {
+  PostgresCheckpointStore,
+  PostgresRunStore,
+  PostgresTimerStore,
+  RedisApprovalStore,
+  createTimerManager,
+  createWorkflowManager,
+} from '@cogitator-ai/workflows';
+
+const manager = createWorkflowManager({
+  cogitator,
+  runStore: new PostgresRunStore({ client: pool }), // cogitator_workflow_runs
+  checkpointStore: new PostgresCheckpointStore({ client: pool }),
+});
+
+const approvalStore = new RedisApprovalStore({ client: redis, pollInterval: 1000 });
+const timerStore = new PostgresTimerStore({ client: pool, claimTtl: 60_000 });
+const timers = createTimerManager(timerStore);
+```
+
+- **Runs** — `listRuns`, `getStats` and `cleanup` work across processes; Postgres filters, sorts and counts in SQL, Redis keeps sorted-set indexes so nothing scans the keyspace.
+- **Approvals** — a human node in one process resumes when another answers: `onResponse` fires at once for answers given through the same store and otherwise checks every `pollInterval` ms.
+- **Timers** — several `TimerManager`s can poll one store: `getOverdue()` claims the timers it returns for `claimTtl` ms (Postgres with `FOR UPDATE SKIP LOCKED`), so each fires once, and a timer whose worker died becomes available again when the claim runs out.
+
+Tables are created on first use and each store accepts its own `table` / `tablePrefix` or `keyPrefix`. In Redis Cluster put a hash tag in the prefix (`{myapp}:approvals`) so a store's keys share a slot.
+
 ### Enabling Checkpoints
 
 ```typescript
