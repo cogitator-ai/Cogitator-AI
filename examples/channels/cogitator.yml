@@ -13,10 +13,10 @@ llm:
   model: google/gemini-2.5-flash
 
 # Messaging platform channels.
-# Each requires tokens in .env (TG_TOKEN, DISCORD_TOKEN, SLACK_BOT_TOKEN, etc.)
+# Each requires tokens in .env (TG_TOKEN, DISCORD_TOKEN, SLACK_BOT_TOKEN + SLACK_SIGNING_SECRET + SLACK_APP_TOKEN, etc.)
 channels:
   telegram:
-    ownerIds: ["123456789"]
+    ownerIds: ['123456789']
 
 # Agent capabilities — each adds relevant tools to the agent.
 capabilities:

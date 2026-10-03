@@ -102,7 +102,7 @@ slackChannel({
 });
 ```
 
-Supports: DMs, channel messages (via @mention), threads (replies go to the thread root), file shares, Socket Mode (no public URL), streaming via chat.update, reactions.
+Supports: DMs, channel messages (via @mention, the mention is stripped from the text), threads (replies go to the thread root), file shares, Socket Mode (no public URL), streaming via chat.update, reactions. Set `mentionOnly: true` to ignore channel messages that do not mention the bot when the app also subscribes to `message.channels`. In `RuntimeBuilder`, Socket Mode is on when `SLACK_APP_TOKEN` is set; otherwise Slack runs in HTTP mode on `SLACK_PORT` (default 3000).
 
 ### WhatsApp
 

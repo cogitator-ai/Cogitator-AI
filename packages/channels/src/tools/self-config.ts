@@ -122,6 +122,8 @@ export function createSelfConfigTools(opts: SelfConfigToolsOptions): Tool[] {
     'DISCORD_TOKEN',
     'SLACK_BOT_TOKEN',
     'SLACK_SIGNING_SECRET',
+    'SLACK_APP_TOKEN',
+    'SLACK_PORT',
     'DEEPGRAM_API_KEY',
     'GROQ_API_KEY',
   ];

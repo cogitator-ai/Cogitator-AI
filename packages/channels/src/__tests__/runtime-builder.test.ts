@@ -3,6 +3,20 @@ import { RuntimeBuilder, type AssistantConfig } from '../runtime-builder';
 
 let mockFormatForPrompt = vi.fn().mockResolvedValue('');
 
+const slackConfigs = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+
+vi.mock('../channels/slack', () => ({
+  slackChannel: (config: Record<string, unknown>) => {
+    slackConfigs.push(config);
+    return {
+      type: 'slack',
+      onMessage: () => undefined,
+      start: async () => undefined,
+      stop: async () => undefined,
+    };
+  },
+}));
+
 vi.mock('@cogitator-ai/memory', () => {
   class MockSQLiteAdapter {
     provider = 'sqlite' as const;
@@ -226,6 +240,42 @@ describe('RuntimeBuilder', () => {
     expect(toolNames).toContain('recall');
     expect(toolNames).toContain('forget');
 
+    await built.cleanup();
+  });
+
+  it('passes SLACK_APP_TOKEN and SLACK_PORT to the Slack channel', async () => {
+    slackConfigs.length = 0;
+    const config: AssistantConfig = { ...minimalConfig, channels: { slack: {} } };
+    const env = {
+      GOOGLE_API_KEY: 'test-key',
+      SLACK_BOT_TOKEN: 'xoxb-1',
+      SLACK_SIGNING_SECRET: 'secret',
+      SLACK_APP_TOKEN: 'xapp-1',
+      SLACK_PORT: '3105',
+    };
+
+    const built = await new RuntimeBuilder(config, env).build();
+
+    expect(slackConfigs).toEqual([
+      { token: 'xoxb-1', signingSecret: 'secret', appToken: 'xapp-1', port: 3105 },
+    ]);
+    await built.cleanup();
+  });
+
+  it('warns when Slack runs without an app token', async () => {
+    slackConfigs.length = 0;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const config: AssistantConfig = { ...minimalConfig, channels: { slack: {} } };
+
+    const built = await new RuntimeBuilder(config, {
+      GOOGLE_API_KEY: 'test-key',
+      SLACK_BOT_TOKEN: 'xoxb-1',
+      SLACK_SIGNING_SECRET: 'secret',
+    }).build();
+
+    expect(slackConfigs).toEqual([{ token: 'xoxb-1', signingSecret: 'secret' }]);
+    expect(warn.mock.calls.some((call) => String(call[0]).includes('SLACK_APP_TOKEN'))).toBe(true);
+    warn.mockRestore();
     await built.cleanup();
   });
 

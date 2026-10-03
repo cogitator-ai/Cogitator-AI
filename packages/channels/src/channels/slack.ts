@@ -12,10 +12,12 @@ export interface SlackConfig {
   signingSecret: string;
   appToken?: string;
   port?: number;
+  mentionOnly?: boolean;
 }
 
 interface SlackApp {
   message(handler: (event: SlackMessageEvent) => Promise<void>): void;
+  event(name: 'app_mention', handler: (event: SlackMentionEvent) => Promise<void>): void;
   start(port: number): Promise<unknown>;
   stop(): Promise<unknown>;
   client: {
@@ -44,18 +46,30 @@ interface SlackFile {
   name?: string;
 }
 
+interface SlackMessage {
+  ts: string;
+  channel: string;
+  channel_type?: string;
+  thread_ts?: string;
+  user?: string;
+  text?: string;
+  subtype?: string;
+  bot_id?: string;
+  files?: SlackFile[];
+}
+
+interface SlackListenerContext {
+  botUserId?: string;
+}
+
 interface SlackMessageEvent {
-  message: {
-    ts: string;
-    channel: string;
-    channel_type?: string;
-    thread_ts?: string;
-    user?: string;
-    text?: string;
-    subtype?: string;
-    bot_id?: string;
-    files?: SlackFile[];
-  };
+  message: SlackMessage;
+  context?: SlackListenerContext;
+}
+
+interface SlackMentionEvent {
+  event: SlackMessage;
+  context?: SlackListenerContext;
 }
 
 const MAX_TRACKED = 1000;
@@ -83,6 +97,7 @@ export class SlackChannel implements Channel {
   private app: SlackApp | null = null;
   private readonly threadRoots = new Map<string, string>();
   private readonly userNames = new Map<string, string>();
+  private readonly handled = new Map<string, true>();
 
   constructor(private readonly config: SlackConfig) {}
 
@@ -114,8 +129,16 @@ export class SlackChannel implements Channel {
 
     const app = new bolt.App(appConfig) as SlackApp;
 
-    app.message(async ({ message }: SlackMessageEvent) => {
-      await this.handleSlackMessage(message);
+    app.message(async ({ message, context }: SlackMessageEvent) => {
+      await this.handleSlackMessage(message, context?.botUserId, false);
+    });
+
+    app.event('app_mention', async ({ event, context }: SlackMentionEvent) => {
+      await this.handleSlackMessage(
+        { ...event, channel_type: event.channel_type ?? 'channel' },
+        context?.botUserId,
+        true
+      );
     });
 
     await app.start(this.config.port ?? 3000);
@@ -145,10 +168,30 @@ export class SlackChannel implements Channel {
     }
   }
 
-  private async handleSlackMessage(message: SlackMessageEvent['message']): Promise<void> {
+  private async handleSlackMessage(
+    message: SlackMessage,
+    botUserId: string | undefined,
+    mentioned: boolean
+  ): Promise<void> {
     if (!this.handler) return;
     if (message.bot_id || !message.user) return;
     if (message.subtype && message.subtype !== 'file_share') return;
+
+    const isDirect = message.channel_type === 'im';
+    const mention = botUserId ? `<@${botUserId}>` : undefined;
+    const rawText = message.text ?? '';
+    if (
+      !isDirect &&
+      !mentioned &&
+      this.config.mentionOnly &&
+      !(mention && rawText.includes(mention))
+    ) {
+      return;
+    }
+
+    const key = `${message.channel}:${message.ts}`;
+    if (this.handled.has(key)) return;
+    this.remember(this.handled, key, true);
 
     const attachments: Attachment[] = [];
     for (const file of message.files ?? []) {
@@ -167,12 +210,11 @@ export class SlackChannel implements Channel {
       }
     }
 
-    const text = message.text ?? '';
+    const text = mention ? rawText.split(mention).join('').trim() : rawText;
     if (!text && attachments.length === 0) return;
 
     this.remember(this.threadRoots, message.ts, message.thread_ts ?? message.ts);
 
-    const isDirect = message.channel_type === 'im';
     const userName = await this.resolveUserName(message.user);
 
     const channelMessage: ChannelMessage = {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -91,7 +91,9 @@ describe('detectPackageManager', () => {
   });
 
   it('defaults to pnpm', () => {
-    expect(detectPackageManager(undefined)).toBe('pnpm');
+    vi.stubEnv('npm_config_user_agent', undefined);
+    expect(detectPackageManager()).toBe('pnpm');
+    vi.unstubAllEnvs();
     expect(detectPackageManager('unknown/1.0')).toBe('pnpm');
   });
 });

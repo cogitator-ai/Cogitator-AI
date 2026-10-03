@@ -326,6 +326,15 @@ export const wizardCommand = new Command('wizard')
           required: 'Required',
         });
         if (signingSecret) envUpdates.set('SLACK_SIGNING_SECRET', signingSecret);
+
+        const appToken = prompt(
+          await p.password({
+            message: existingEnv.SLACK_APP_TOKEN
+              ? 'Slack app token for Socket Mode (leave blank to keep current)'
+              : 'Slack app token for Socket Mode (xapp-..., leave blank for HTTP mode)',
+          })
+        ).trim();
+        if (appToken) envUpdates.set('SLACK_APP_TOKEN', appToken);
       }
 
       channelsConfig[ch] = { ownerIds: parsePathList(ownerIdsRaw) };

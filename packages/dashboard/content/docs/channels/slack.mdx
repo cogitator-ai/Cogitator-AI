@@ -52,8 +52,13 @@ interface SlackConfig {
   signingSecret: string;
   appToken?: string; // enables Socket Mode
   port?: number; // HTTP mode port, default 3000
+  mentionOnly?: boolean; // in channels, answer only messages that @mention the bot
 }
 ```
+
+The bot answers @mentions delivered as `app_mention` events and strips the mention from the text. If the app also subscribes to `message.channels`, it answers every channel message unless `mentionOnly` is set; a mention that arrives both as a message and as `app_mention` is handled once.
+
+With `RuntimeBuilder` (`cogitator.yml`), the tokens come from `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` and `SLACK_APP_TOKEN`. Without `SLACK_APP_TOKEN` the channel runs in HTTP mode on `SLACK_PORT` (default 3000) and logs a warning.
 
 ## Features
 

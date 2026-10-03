@@ -30,6 +30,7 @@ export interface InitAnswers {
   discordToken?: string;
   slackToken?: string;
   slackSigningSecret?: string;
+  slackAppToken?: string;
   memory: InitMemory;
   databaseUrl?: string;
 }
@@ -153,6 +154,7 @@ export function buildEnvFile(answers: InitAnswers): string | null {
   if (answers.slackSigningSecret) {
     lines.push(formatEnvLine('SLACK_SIGNING_SECRET', answers.slackSigningSecret));
   }
+  if (answers.slackAppToken) lines.push(formatEnvLine('SLACK_APP_TOKEN', answers.slackAppToken));
   if (answers.memory === 'postgres') {
     lines.push(formatEnvLine('DATABASE_URL', answers.databaseUrl ?? DEFAULT_POSTGRES_URL));
   }
@@ -202,7 +204,7 @@ export function buildGatewayFile(answers: InitAnswers): string {
       case 'slack':
         channelImports.push('slackChannel');
         channelSetup.push(
-          `    slackChannel({\n      token: requireEnv('SLACK_BOT_TOKEN'),\n      signingSecret: requireEnv('SLACK_SIGNING_SECRET'),\n    }),`
+          `    slackChannel({\n      token: requireEnv('SLACK_BOT_TOKEN'),\n      signingSecret: requireEnv('SLACK_SIGNING_SECRET'),\n      appToken: process.env.SLACK_APP_TOKEN,\n    }),`
         );
         break;
       case 'webchat':
@@ -437,6 +439,13 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
   const slackSigningSecret = channels.includes('slack')
     ? await askSecret('Slack signing secret:', 'Signing secret is required')
     : undefined;
+  const slackAppToken = channels.includes('slack')
+    ? answer(
+        await p.password({
+          message: 'Slack app token for Socket Mode (xapp-..., leave blank for HTTP mode):',
+        })
+      ).trim() || undefined
+    : undefined;
 
   const memoryChoice = answer(
     await p.select({
@@ -473,6 +482,7 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
     discordToken,
     slackToken,
     slackSigningSecret,
+    slackAppToken,
     memory,
     databaseUrl,
   };

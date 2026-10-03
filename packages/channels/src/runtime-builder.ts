@@ -804,8 +804,22 @@ export class RuntimeBuilder {
     if (this.config.channels.slack) {
       const token = this.env.SLACK_BOT_TOKEN;
       const signingSecret = this.env.SLACK_SIGNING_SECRET;
+      const appToken = this.env.SLACK_APP_TOKEN;
+      const port = this.env.SLACK_PORT ? Number(this.env.SLACK_PORT) : undefined;
       if (token && signingSecret) {
-        channels.push(slackChannel({ token, signingSecret }));
+        if (!appToken) {
+          console.warn(
+            `[RuntimeBuilder] SLACK_APP_TOKEN not found in env: Slack runs in HTTP mode on port ${port ?? 3000} and needs a public Request URL. Set SLACK_APP_TOKEN for Socket Mode.`
+          );
+        }
+        channels.push(
+          slackChannel({
+            token,
+            signingSecret,
+            ...(appToken && { appToken }),
+            ...(port !== undefined && Number.isInteger(port) && port > 0 && { port }),
+          })
+        );
       } else {
         console.warn(
           '[RuntimeBuilder] Slack configured but SLACK_BOT_TOKEN/SLACK_SIGNING_SECRET not found in env'
@@ -906,7 +920,7 @@ Required env vars per provider:
 - ollama (local): none
 - ollama (cloud): OLLAMA_URL=https://ollama.com, OLLAMA_API_KEY
 
-Other env vars: GITHUB_TOKEN (for GitHub capability), TG_TOKEN, DISCORD_TOKEN, SLACK_BOT_TOKEN.`;
+Other env vars: GITHUB_TOKEN (for GitHub capability), TG_TOKEN, DISCORD_TOKEN, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, SLACK_APP_TOKEN (Slack Socket Mode).`;
     }
 
     if (this.config.capabilities.selfTools) {
