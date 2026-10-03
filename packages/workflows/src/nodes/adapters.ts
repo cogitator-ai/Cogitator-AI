@@ -68,6 +68,7 @@ export function timerWorkflowNode<S extends WorkflowState>(
         nodeId: ctx.nodeId,
         timerStore: options.timerStore ?? extended(ctx).timerStore,
         signal: extended(ctx).signal,
+        onTimerScheduled: extended(ctx).onTimerScheduled,
       });
       return { output: result, state: options.stateMapper?.(result, ctx.state) };
     },
@@ -105,6 +106,7 @@ export function humanWorkflowNode<S extends WorkflowState>(
         nodeId: ctx.nodeId,
         approvalStore,
         approvalNotifier: options.approvalNotifier ?? extended(ctx).approvalNotifier,
+        onApprovalRequired: extended(ctx).onApprovalRequired,
       });
       return {
         output: {
@@ -112,6 +114,7 @@ export function humanWorkflowNode<S extends WorkflowState>(
           decision: result.decision,
           timedOut: result.timedOut ?? false,
           escalated: result.escalated ?? false,
+          withdrawn: result.withdrawn ?? false,
         },
         state: options.stateMapper?.(result, ctx.state),
       };
@@ -175,10 +178,17 @@ function subworkflowContext<S>(
   };
 }
 
+function caughtError(error: Error | undefined): { name: string; message: string } {
+  return error
+    ? { name: error.name, message: error.message }
+    : { name: 'Error', message: 'Subworkflow failed' };
+}
+
 /**
  * Run another workflow as a step (`subworkflowNode`, `simpleSubworkflow`,
  * `nestedSubworkflow`, `conditionalSubworkflow` configs). The parent state returned by the
- * config's `outputMapper` replaces the current state.
+ * config's `outputMapper` replaces the current state. With `onError: 'catch'` a failed child
+ * leaves the state as it was and the node outputs `{ error: { name, message } }`.
  */
 export function subworkflowWorkflowNode<PS extends WorkflowState, CS extends WorkflowState>(
   config: SubworkflowConfig<PS, CS>,
@@ -192,8 +202,11 @@ export function subworkflowWorkflowNode<PS extends WorkflowState, CS extends Wor
         config,
         subworkflowContext(ctx, options)
       );
-      if (!result.success && result.error) {
-        throw result.error;
+      if (!result.success) {
+        return {
+          state: result.parentState,
+          output: { error: caughtError(result.error) },
+        };
       }
       return {
         state: result.parentState,
@@ -207,14 +220,17 @@ export function subworkflowWorkflowNode<PS extends WorkflowState, CS extends Wor
  * Run several workflows concurrently and aggregate their results
  * (`parallelSubworkflows`, `fanOutFanIn`, `scatterGather` configs).
  */
-export function parallelSubworkflowsNode<S extends WorkflowState>(
-  config: ParallelSubworkflowsConfig<S>,
+export function parallelSubworkflowsNode<
+  S extends WorkflowState,
+  CS extends WorkflowState = WorkflowState,
+>(
+  config: ParallelSubworkflowsConfig<S, CS>,
   options: SubworkflowNodeOptions = {}
 ): WorkflowNode<S> {
   return {
     name: config.name,
     fn: async (ctx): Promise<NodeResult<S>> => {
-      const result: ParallelSubworkflowsResult<S> = await executeParallelSubworkflows(
+      const result: ParallelSubworkflowsResult<S, CS> = await executeParallelSubworkflows(
         ctx.state,
         config,
         subworkflowContext(ctx, options)

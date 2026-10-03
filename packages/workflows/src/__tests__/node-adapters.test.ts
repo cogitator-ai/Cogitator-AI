@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Cogitator } from '@cogitator-ai/core';
+import type { WorkflowState } from '@cogitator-ai/types';
 import { WorkflowBuilder } from '../builder';
 import { WorkflowExecutor } from '../executor';
 import {
@@ -7,12 +8,14 @@ import {
   humanWorkflowNode,
   mapReduceWorkflowNode,
   subworkflowWorkflowNode,
+  parallelSubworkflowsNode,
 } from '../nodes/adapters';
 import { delayNode } from '../timers/timer-node';
 import { approvalNode } from '../human/human-node';
 import { InMemoryApprovalStore } from '../human/approval-store';
 import { mapReduceNode } from '../patterns/map-reduce';
 import { subworkflowNode } from '../subworkflows/subworkflow-node';
+import { fanOutFanIn } from '../subworkflows/parallel-subworkflows';
 
 const cogitator = {} as Cogitator;
 
@@ -83,6 +86,31 @@ describe('humanWorkflowNode', () => {
     expect(result.error).toBeUndefined();
     expect(result.state.approved).toBe(true);
     expect(result.nodeResults.get('review')?.output).toMatchObject({ approved: true });
+  });
+
+  it('outputs withdrawn when the request is deleted before anyone answers', async () => {
+    const approvalStore = new InMemoryApprovalStore();
+    const workflow = new WorkflowBuilder('withdrawn')
+      .addNode('review', humanWorkflowNode(approvalNode('review', { title: 'Ship it?' })))
+      .build();
+
+    const result = await new WorkflowExecutor(cogitator).execute(
+      workflow,
+      {},
+      {
+        approvalStore,
+        onApprovalRequired: (request) => void approvalStore.deleteRequest(request.id),
+      }
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.nodeResults.get('review')?.output).toEqual({
+      approved: false,
+      decision: expect.anything(),
+      timedOut: false,
+      escalated: false,
+      withdrawn: true,
+    });
   });
 });
 
@@ -162,6 +190,78 @@ describe('subworkflowWorkflowNode', () => {
     const result = await new WorkflowExecutor(cogitator).execute(parent);
 
     expect(result.error?.message).toContain('child exploded');
+  });
+
+  it("continues the parent with onError: 'catch' and outputs the caught error", async () => {
+    const failing = new WorkflowBuilder('failing-caught')
+      .addNode('boom', async () => {
+        throw new Error('child exploded');
+      })
+      .build();
+    const after: unknown[] = [];
+
+    const parent = new WorkflowBuilder<{ value: number }>('parent-catch')
+      .initialState({ value: 1 })
+      .addNode(
+        'child',
+        subworkflowWorkflowNode(
+          subworkflowNode<{ value: number }, WorkflowState>('child', {
+            workflow: failing,
+            inputMapper: () => ({}),
+            outputMapper: (_result, state) => state,
+            onError: 'catch',
+          })
+        )
+      )
+      .addNode(
+        'after',
+        async (ctx) => {
+          after.push(ctx.input);
+          return {};
+        },
+        { after: ['child'] }
+      )
+      .build();
+
+    const result = await new WorkflowExecutor(cogitator).execute(parent);
+
+    expect(result.error).toBeUndefined();
+    expect(result.state.value).toBe(1);
+    expect(after).toEqual([{ error: { name: 'Error', message: 'child exploded' } }]);
+  });
+
+  it('accepts parallel configs typed with the child state', async () => {
+    interface ChildState extends WorkflowState {
+      n: number;
+    }
+    const square = new WorkflowBuilder<ChildState>('square')
+      .initialState({ n: 0 })
+      .addNode('square', async (ctx) => ({ state: { n: ctx.state.n * ctx.state.n } }))
+      .build();
+
+    const parent = new WorkflowBuilder<{ total: number }>('fan')
+      .initialState({ total: 0 })
+      .addNode(
+        'fan',
+        parallelSubworkflowsNode(
+          fanOutFanIn<{ total: number }, ChildState>('fan', {
+            workflow: square,
+            getInputs: () => [
+              { id: 'a', input: { n: 2 } },
+              { id: 'b', input: { n: 3 } },
+            ],
+            aggregator: (results, state) => ({
+              ...state,
+              total: [...results.values()].reduce((sum, r) => sum + r.state.n, 0),
+            }),
+          })
+        )
+      )
+      .build();
+
+    const result = await new WorkflowExecutor(cogitator).execute(parent);
+
+    expect(result.state.total).toBe(13);
   });
 
   it('enforces maxDepth for recursive subworkflows', async () => {

@@ -519,6 +519,83 @@ describe('Human-in-the-Loop', () => {
       store.dispose();
     });
 
+    it('marks a request answered after a timeout escalation as escalated', async () => {
+      const store = new InMemoryApprovalStore();
+      const requested: ApprovalRequest[] = [];
+      const config: HumanNodeConfig<TestState> = {
+        name: 'escalating',
+        approval: {
+          type: 'approve-reject',
+          title: 'Refund',
+          assignee: 'agent',
+          timeout: 20,
+          timeoutAction: 'escalate',
+          escalateTo: 'supervisor',
+        },
+      };
+
+      const resultPromise = executeHumanNode({ value: 1 }, config, {
+        workflowId: 'wf-1',
+        runId: 'run-1',
+        nodeId: 'node-1',
+        approvalStore: store,
+        onApprovalRequired: (request) => requested.push(request),
+      });
+
+      while (requested.length < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      await store.submitResponse({
+        requestId: requested[1].id,
+        decision: true,
+        respondedBy: 'supervisor',
+        respondedAt: Date.now(),
+      });
+
+      const result = await resultPromise;
+
+      expect(requested.map((r) => r.assignee)).toEqual(['agent', 'supervisor']);
+      expect(result.approved).toBe(true);
+      expect(result.escalated).toBe(true);
+      expect(result.timedOut).toBe(false);
+
+      store.dispose();
+    });
+
+    it('does not mark a directly answered request as escalated', async () => {
+      const store = new InMemoryApprovalStore();
+      const config: HumanNodeConfig<TestState> = {
+        name: 'direct',
+        approval: {
+          type: 'approve-reject',
+          title: 'Refund',
+          timeout: 1000,
+          timeoutAction: 'escalate',
+          escalateTo: 'supervisor',
+        },
+      };
+
+      const resultPromise = executeHumanNode({ value: 1 }, config, {
+        workflowId: 'wf-1',
+        runId: 'run-1',
+        nodeId: 'node-1',
+        approvalStore: store,
+        onApprovalRequired: (request) => {
+          void store.submitResponse({
+            requestId: request.id,
+            decision: true,
+            respondedBy: 'agent',
+            respondedAt: Date.now(),
+          });
+        },
+      });
+
+      const result = await resultPromise;
+      expect(result.escalated).toBe(false);
+
+      store.dispose();
+    });
+
     it('handles timeout with auto-approve', async () => {
       const store = new InMemoryApprovalStore();
 

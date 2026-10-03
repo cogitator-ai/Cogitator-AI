@@ -33,6 +33,14 @@ export interface HumanNodeContext {
   nodeId: string;
   approvalStore: ApprovalStore;
   approvalNotifier?: ApprovalNotifier;
+  /** Called for every request created: the node's own, each chain step and escalations */
+  onApprovalRequired?: (request: ApprovalRequest) => void;
+}
+
+interface AwaitedResponse {
+  response: ApprovalResponse;
+  /** The request timed out and was handed to its `escalateTo` assignee */
+  escalated: boolean;
 }
 
 /**
@@ -94,11 +102,9 @@ export async function executeHumanNode<S extends WorkflowState>(
     createdAt: Date.now(),
   };
 
-  await context.approvalStore.createRequest(request);
+  await openRequest(request, context);
 
-  await context.approvalNotifier?.notify(request);
-
-  const response = await waitForResponse(request, context.approvalStore, context.approvalNotifier);
+  const { response, escalated } = await waitForResponse(request, context);
 
   const approved = !isUnanswered(response) && isApproved(request.type, response.decision);
 
@@ -108,7 +114,7 @@ export async function executeHumanNode<S extends WorkflowState>(
     response,
     state,
     timedOut: response.respondedBy === '__timeout__',
-    escalated: response.respondedBy === '__escalation__',
+    escalated,
     withdrawn: response.respondedBy === WITHDRAWN,
   };
 }
@@ -159,14 +165,9 @@ async function executeApprovalChain<S extends WorkflowState>(
       createdAt: Date.now(),
     };
 
-    await context.approvalStore.createRequest(request);
-    await context.approvalNotifier?.notify(request);
+    await openRequest(request, context);
 
-    const response = await waitForResponse(
-      request,
-      context.approvalStore,
-      context.approvalNotifier
-    );
+    const { response, escalated } = await waitForResponse(request, context);
 
     responses.push(response);
     lastResponse = response;
@@ -187,7 +188,7 @@ async function executeApprovalChain<S extends WorkflowState>(
         response,
         state,
         timedOut,
-        escalated: response.respondedBy === '__escalation__',
+        escalated,
         withdrawn: response.respondedBy === WITHDRAWN,
       };
     }
@@ -202,14 +203,34 @@ async function executeApprovalChain<S extends WorkflowState>(
 }
 
 /**
+ * Store a request and notify about it
+ */
+async function openRequest(request: ApprovalRequest, context: HumanNodeContext): Promise<void> {
+  await context.approvalStore.createRequest(request);
+  await context.approvalNotifier?.notify(request);
+}
+
+/**
+ * Report a request to `onApprovalRequired` once its answer is being waited for, so an
+ * observer that answers or withdraws it right away is not missed
+ */
+function reportRequest(request: ApprovalRequest, context: HumanNodeContext): void {
+  try {
+    context.onApprovalRequired?.(request);
+  } catch (error) {
+    console.warn(`[HumanNode] onApprovalRequired failed for request '${request.id}':`, error);
+  }
+}
+
+/**
  * Wait for response or handle timeout
  */
 async function waitForResponse(
   request: ApprovalRequest,
-  store: ApprovalStore,
-  notifier?: ApprovalNotifier
-): Promise<ApprovalResponse> {
-  return new Promise<ApprovalResponse>((resolve) => {
+  context: HumanNodeContext
+): Promise<AwaitedResponse> {
+  const store = context.approvalStore;
+  return new Promise<AwaitedResponse>((resolve) => {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let unsubscribeFn: (() => void) | undefined;
 
@@ -220,17 +241,17 @@ async function waitForResponse(
 
     unsubscribeFn = store.onResponse(request.id, (response) => {
       cleanup();
-      resolve(response);
+      resolve({ response, escalated: false });
     });
 
     if (request.timeout) {
       timeoutId = setTimeout(async () => {
         cleanup();
-
-        const timeoutResponse = await handleTimeout(request, store, notifier);
-        resolve(timeoutResponse);
+        resolve(await handleTimeout(request, context));
       }, request.timeout);
     }
+
+    reportRequest(request, context);
   });
 }
 
@@ -256,9 +277,10 @@ async function createFailResponse(
  */
 async function handleTimeout(
   request: ApprovalRequest,
-  store: ApprovalStore,
-  notifier?: ApprovalNotifier
-): Promise<ApprovalResponse> {
+  context: HumanNodeContext
+): Promise<AwaitedResponse> {
+  const store = context.approvalStore;
+  const notifier = context.approvalNotifier;
   await notifier?.notifyTimeout(request);
 
   const action = request.timeoutAction ?? 'fail';
@@ -272,7 +294,7 @@ async function handleTimeout(
         respondedAt: Date.now(),
         comment: 'Auto-approved due to timeout',
       };
-      return submitOrExisting(store, response);
+      return { response: await submitOrExisting(store, response), escalated: false };
     }
 
     case 'reject': {
@@ -283,7 +305,7 @@ async function handleTimeout(
         respondedAt: Date.now(),
         comment: 'Auto-rejected due to timeout',
       };
-      return submitOrExisting(store, response);
+      return { response: await submitOrExisting(store, response), escalated: false };
     }
 
     case 'escalate': {
@@ -303,12 +325,11 @@ async function handleTimeout(
           createdAt: Date.now(),
         };
 
-        await store.createRequest(escalatedRequest);
-        await notifier?.notify(escalatedRequest);
+        await openRequest(escalatedRequest, context);
 
         const escalationTimeout = Math.max(request.timeout ?? 0, 30 * 60 * 1000);
 
-        return new Promise<ApprovalResponse>((resolve) => {
+        const response = await new Promise<ApprovalResponse>((resolve) => {
           let settled = false;
           const escalationTimer = setTimeout(() => {
             if (settled) return;
@@ -323,14 +344,16 @@ async function handleTimeout(
             clearTimeout(escalationTimer);
             resolve(resp);
           });
+          reportRequest(escalatedRequest, context);
         });
+        return { response, escalated: true };
       }
-      return createFailResponse(request, store);
+      return { response: await createFailResponse(request, store), escalated: false };
     }
 
     case 'fail':
     default:
-      return createFailResponse(request, store);
+      return { response: await createFailResponse(request, store), escalated: false };
   }
 }
 
