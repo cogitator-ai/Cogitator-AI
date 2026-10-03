@@ -3,22 +3,30 @@ title: OpenAPI Generation
 description: Auto-generate OpenAPI 3.0 specs and serve Swagger UI from any Cogitator server adapter.
 ---
 
-Every Cogitator server adapter can generate an OpenAPI 3.0.3 specification dynamically from your registered agents, workflows, and swarms. The spec is served as JSON at `/openapi.json` and rendered as Swagger UI at `/docs`. The generation logic lives in the shared `@cogitator-ai/server-shared` package, so the output is identical across all adapters.
+Every Cogitator server adapter can serve an OpenAPI document and a Swagger UI. Express, Hono and Koa use the shared generator in `@cogitator-ai/server-shared`, which builds an OpenAPI 3.0.3 spec with one path per registered agent, workflow and swarm. Fastify delegates to `@fastify/swagger`, and Tetsu to `@tetsujs/openapi` — see [their notes](#fastify-and-tetsu).
 
 ## How It Works
 
-When you set `enableSwagger: true` in any adapter, two routes are registered:
+With the shared generator, `enableSwagger` registers two routes:
 
 | Route           | Content-Type       | Description                  |
 | --------------- | ------------------ | ---------------------------- |
 | `/openapi.json` | `application/json` | Raw OpenAPI 3.0.3 spec       |
 | `/docs`         | `text/html`        | Swagger UI (loaded from CDN) |
 
-The spec is generated at request time, so it always reflects the current state of your registered agents, workflows, and swarms.
+Express builds the spec once in `init()`, Hono on the first request (then caches it), and Koa on every request. All three build it from the agents, workflows and swarms you passed to the adapter.
+
+Paths in the spec are relative to `servers`, so when you don't set `swagger.servers` each adapter fills in where its routes live: Express uses `basePath` (`/cogitator` by default), and Hono and Koa read the mount prefix from the request (`app.route('/api/ai', cogitatorApp(...))` gives `[{ url: '/api/ai' }]`). Swagger UI's "Try it out" then calls the right URLs. Set `swagger.servers` yourself to publish absolute URLs, for example one per environment:
+
+```typescript
+swagger: { servers: [{ url: 'https://api.example.com/cogitator' }] },
+```
 
 ## Enabling Swagger
 
 ### Express
+
+Swagger is on by default (`enableSwagger: true`):
 
 ```typescript
 const server = new CogitatorServer({
@@ -35,26 +43,9 @@ const server = new CogitatorServer({
 });
 ```
 
-### Fastify
-
-Fastify uses `@fastify/swagger` and `@fastify/swagger-ui` under the hood. Install them as dependencies:
-
-```bash
-pnpm add @fastify/swagger @fastify/swagger-ui
-```
-
-```typescript
-await fastify.register(cogitatorPlugin, {
-  cogitator,
-  agents: { assistant },
-  enableSwagger: true,
-  swagger: { title: 'My API' },
-});
-```
-
 ### Hono & Koa
 
-Both use the shared generator directly — no extra dependencies needed:
+Both use the shared generator directly — no extra dependencies needed. Swagger is off until you enable it:
 
 ```typescript
 const app = cogitatorApp({
@@ -65,9 +56,30 @@ const app = cogitatorApp({
 });
 ```
 
+## Fastify and Tetsu
+
+Fastify uses `@fastify/swagger` and `@fastify/swagger-ui`. Install them as dependencies:
+
+```bash
+pnpm add @fastify/swagger @fastify/swagger-ui
+```
+
+```typescript
+await fastify.register(cogitatorPlugin, {
+  cogitator,
+  agents: { assistant },
+  enableSwagger: true,
+  swagger: { title: 'My API', servers: [{ url: '/cogitator' }] },
+});
+```
+
+Its document is generated from the Fastify route schemas: it describes the generic routes (`/cogitator/agents/{name}/run`, …) and their validated bodies, not one path per agent. Swagger UI is at `<prefix>/docs` and the JSON at `<prefix>/docs/json`.
+
+Tetsu describes each route of `cogitatorController` with its Zod schemas and error responses; mount `docs()` from `@tetsujs/openapi` next to it to serve `/openapi.json` and `/docs` ([Tetsu Adapter](/docs/server-adapters/tetsu)).
+
 ## SwaggerConfig
 
-All adapters accept the same `SwaggerConfig` shape:
+Express, Fastify, Hono and Koa accept the same `SwaggerConfig` shape:
 
 ```typescript
 interface SwaggerConfig {
@@ -86,7 +98,8 @@ interface SwaggerConfig {
   servers?: Array<{
     url: string;
     description?: string;
-  }>;
+  }>; // default: where the adapter's routes are mounted
+  auth?: boolean; // default: whether the adapter has `auth`
 }
 ```
 
@@ -118,16 +131,16 @@ const swagger: SwaggerConfig = {
 
 The spec organizes endpoints into six tags:
 
-| Tag         | Endpoints                                                                          |
-| ----------- | ---------------------------------------------------------------------------------- |
-| `health`    | `/health`, `/ready`                                                                |
-| `agents`    | `/agents`, `/agents/:name/run`, `/agents/:name/stream`                             |
-| `threads`   | `/threads/:id`, `/threads/:id/messages`                                            |
-| `tools`     | `/tools`                                                                           |
-| `workflows` | `/workflows`, `/workflows/:name/run`, `/workflows/:name/stream`                    |
-| `swarms`    | `/swarms`, `/swarms/:name/run`, `/swarms/:name/stream`, `/swarms/:name/blackboard` |
+| Tag         | Endpoints                                                                             |
+| ----------- | ------------------------------------------------------------------------------------- |
+| `health`    | `/health`, `/ready`                                                                   |
+| `agents`    | `/agents`, `/agents/{name}/run`, `/agents/{name}/resume`, `/agents/{name}/stream`     |
+| `threads`   | `/threads/{id}` (GET, DELETE), `/threads/{id}/messages`                               |
+| `tools`     | `/tools`                                                                              |
+| `workflows` | `/workflows`, `/workflows/{name}/run`, `/workflows/{name}/stream`                     |
+| `swarms`    | `/swarms`, `/swarms/{name}/run`, `/swarms/{name}/stream`, `/swarms/{name}/blackboard` |
 
-Agent, workflow, and swarm endpoints are generated dynamically. If you register agents named `assistant` and `coder`, the spec will include `/agents/assistant/run`, `/agents/assistant/stream`, `/agents/coder/run`, and `/agents/coder/stream`.
+Agent, workflow, and swarm endpoints are listed per registered name. If you register agents named `assistant` and `coder`, the spec includes `/agents/assistant/run`, `/agents/assistant/resume`, `/agents/assistant/stream` and the same three for `coder`. Paths are relative to `servers`.
 
 ## Component Schemas
 
@@ -136,7 +149,10 @@ The generated spec includes schemas for all request and response types:
 - `HealthResponse` — status, uptime, timestamp
 - `AgentListResponse` — list of agent names, descriptions, and tool names
 - `AgentRunRequest` — input (required), context, threadId
-- `AgentRunResponse` — output, threadId, usage, toolCalls
+- `AgentRunResponse` — output, threadId, usage, toolCalls, reasoning, status (`completed` | `paused`), pendingApprovals
+- `AgentResumeRequest` — threadId (required), decisions, defaultDecision
+- `PendingApproval` — toolCallId, toolName, arguments, description, sideEffects
+- `ToolApprovalDecision` — approved (required), reason
 - `ThreadResponse` — id, messages, createdAt, updatedAt
 - `AddMessageRequest` — role, content, metadata
 - `ToolListResponse` — tool names, descriptions, parameters
@@ -151,7 +167,7 @@ The generated spec includes schemas for all request and response types:
 
 ## Security Scheme
 
-The spec includes a `bearerAuth` security scheme:
+When the adapter has an `auth` function (or you set `swagger.auth: true`), the spec declares a `bearerAuth` scheme and an optional top-level requirement:
 
 ```json
 {
@@ -162,9 +178,14 @@ The spec includes a `bearerAuth` security scheme:
         "scheme": "bearer"
       }
     }
-  }
+  },
+  "security": [{ "bearerAuth": [] }, {}]
 }
 ```
+
+The empty `{}` keeps every operation callable without a token, since your `auth` function decides what a request needs; a token you enter under **Authorize** in Swagger UI is sent as `Authorization: Bearer <token>`. Without `auth` the spec has no security section. Set `swagger.auth: false` to leave it out even when `auth` is configured (for example when your `auth` reads a cookie, not a bearer token).
+
+Fastify adds the same scheme and requirement to its `@fastify/swagger` document. Its paths already include the plugin `prefix`, so its `servers` stays `[{ url: '/' }]`.
 
 ## Using the Shared Generator Directly
 
@@ -183,10 +204,14 @@ const context: OpenAPIContext = {
 const config: SwaggerConfig = {
   title: 'My API',
   version: '1.0.0',
+  servers: [{ url: '/cogitator' }],
+  auth: true,
 };
 
 const spec = generateOpenAPISpec(context, config);
 const html = generateSwaggerHTML(spec);
 ```
 
-The `generateSwaggerHTML` function returns a self-contained HTML page that loads Swagger UI from a CDN and embeds the spec inline. No server-side rendering or static files required.
+Called directly, `generateOpenAPISpec` uses `servers` as given (`[{ url: '/' }]` when unset) and declares `bearerAuth` only with `auth: true`.
+
+The `generateSwaggerHTML` function returns a self-contained HTML page that loads Swagger UI from a CDN and embeds the spec inline. No server-side rendering or static files required. The spec's title is HTML-escaped and the embedded JSON is escaped for a `<script>` block, so agent names and descriptions can't inject markup into the page.

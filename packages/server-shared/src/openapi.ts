@@ -22,13 +22,16 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
     paths: {},
     components: {
       schemas: generateSchemas(),
-      securitySchemes: {
-        bearerAuth: {
-          type: 'http',
-          scheme: 'bearer',
+      ...(config.auth && {
+        securitySchemes: {
+          bearerAuth: {
+            type: 'http',
+            scheme: 'bearer',
+          },
         },
-      },
+      }),
     },
+    ...(config.auth && { security: [{ bearerAuth: [] }, {}] }),
   };
 
   spec.paths['/health'] = {
@@ -304,13 +307,39 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
   return spec;
 }
 
+const HTML_ESCAPES: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+};
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (char) => HTML_ESCAPES[char]);
+}
+
+/**
+ * JSON safe to embed in an inline <script>: `<`, `>`, `&` and the line
+ * separators JavaScript treats as newlines become unicode escapes, so text
+ * from the spec (agent names, descriptions) cannot close the script tag.
+ */
+function scriptJson(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
 export function generateSwaggerHTML(spec: OpenAPISpec): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${spec.info.title} - API Documentation</title>
+  <title>${escapeHtml(spec.info.title)} - API Documentation</title>
   <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui.css">
   <style>
     body { margin: 0; padding: 0; }
@@ -323,7 +352,7 @@ export function generateSwaggerHTML(spec: OpenAPISpec): string {
   <script>
     window.onload = () => {
       SwaggerUIBundle({
-        spec: ${JSON.stringify(spec)},
+        spec: ${scriptJson(spec)},
         dom_id: '#swagger-ui',
         deepLinking: true,
         presets: [

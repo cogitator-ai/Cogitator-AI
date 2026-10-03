@@ -466,3 +466,42 @@ describe('thread routes', () => {
     });
   });
 });
+
+describe('swagger', () => {
+  async function spec(config: Partial<NonNullable<CogitatorServerConfig['config']>>) {
+    const { base } = await start(async () => ({}), { config: { enableSwagger: true, ...config } });
+    return (await fetch(`${base}/openapi.json`)).json();
+  }
+
+  it('points servers at the base path', async () => {
+    expect((await spec({})).servers).toEqual([{ url: '/api' }]);
+  });
+
+  it('keeps servers set in the swagger config', async () => {
+    const servers = [{ url: 'https://api.example.com/api' }];
+    expect((await spec({ swagger: { servers } })).servers).toEqual(servers);
+  });
+
+  it('declares bearer auth only when the server checks credentials', async () => {
+    const open = await spec({});
+    expect(open.security).toBeUndefined();
+    expect(open.components.securitySchemes).toBeUndefined();
+    await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = undefined;
+
+    const guarded = await spec({ auth: () => ({ userId: 'u1' }) });
+    expect(guarded.components.securitySchemes).toEqual({
+      bearerAuth: { type: 'http', scheme: 'bearer' },
+    });
+    expect(guarded.security).toEqual([{ bearerAuth: [] }, {}]);
+  });
+
+  it('escapes agent names embedded in the Swagger page', async () => {
+    const { base } = await start(async () => ({}), {
+      agents: { '</script><script>alert(1)</script>': agent },
+      config: { enableSwagger: true },
+    });
+    const html = await (await fetch(`${base}/docs`)).text();
+    expect(html).not.toContain('<script>alert(1)');
+  });
+});

@@ -37,7 +37,13 @@ export interface SwaggerConfig {
     name: string;
     url?: string;
   };
+  /** Where the API is mounted; adapters fill in their own base path when this is not set */
   servers?: Array<{ url: string; description?: string }>;
+  /**
+   * The server checks credentials (an adapter with `auth`): the spec then
+   * declares an optional bearer token, so Swagger UI offers to send one.
+   */
+  auth?: boolean;
 }
 
 export interface OpenAPIContext {

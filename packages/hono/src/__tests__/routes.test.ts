@@ -791,3 +791,47 @@ describe('swarmRoutes', () => {
     expect(body.swarms[0].agents).toContain('a1');
   });
 });
+
+describe('swaggerRoutes', () => {
+  it('serves the spec and the Swagger UI', async () => {
+    const app = buildApp({ enableSwagger: true });
+    const spec = await app.request('/openapi.json');
+    expect(spec.status).toBe(200);
+    expect((await spec.json()).openapi).toMatch(/^3\.0\./);
+
+    const docs = await app.request('/docs');
+    expect(docs.headers.get('content-type')).toMatch(/html/);
+  });
+
+  it('points servers at the path the app is mounted under', async () => {
+    const parent = new Hono();
+    parent.route('/api/ai', buildApp({ enableSwagger: true }));
+    const res = await parent.request('/api/ai/openapi.json');
+    expect((await res.json()).servers).toEqual([{ url: '/api/ai' }]);
+
+    const root = await buildApp({ enableSwagger: true }).request('/openapi.json');
+    expect((await root.json()).servers).toEqual([{ url: '/' }]);
+  });
+
+  it('keeps servers set in the swagger config', async () => {
+    const app = buildApp({
+      enableSwagger: true,
+      swagger: { servers: [{ url: 'https://api.example.com/ai' }] },
+    });
+    const res = await app.request('/openapi.json');
+    expect((await res.json()).servers).toEqual([{ url: 'https://api.example.com/ai' }]);
+  });
+
+  it('declares bearer auth only when the app checks credentials', async () => {
+    const open = await (await buildApp({ enableSwagger: true }).request('/openapi.json')).json();
+    expect(open.security).toBeUndefined();
+    expect(open.components.securitySchemes).toBeUndefined();
+
+    const guarded = buildApp({ enableSwagger: true, auth: () => ({ userId: 'u1' }) });
+    const spec = await (await guarded.request('/openapi.json')).json();
+    expect(spec.components.securitySchemes).toEqual({
+      bearerAuth: { type: 'http', scheme: 'bearer' },
+    });
+    expect(spec.security).toEqual([{ bearerAuth: [] }, {}]);
+  });
+});

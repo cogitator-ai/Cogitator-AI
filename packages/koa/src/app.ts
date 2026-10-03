@@ -37,7 +37,9 @@ export function cogitatorApp(opts: CogitatorAppOptions): Router<CogitatorState> 
   ];
 
   if (opts.enableSwagger) {
-    subrouters.push(createSwaggerRoutes(opts.swagger));
+    subrouters.push(
+      createSwaggerRoutes({ ...opts.swagger, auth: opts.swagger?.auth ?? Boolean(opts.auth) })
+    );
   }
 
   for (const sub of subrouters) {

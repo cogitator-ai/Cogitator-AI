@@ -33,7 +33,10 @@ export function cogitatorApp(opts: CogitatorAppOptions): Hono<HonoEnv> {
   app.route('/', createSwarmRoutes());
 
   if (opts.enableSwagger) {
-    app.route('/', createSwaggerRoutes(opts.swagger));
+    app.route(
+      '/',
+      createSwaggerRoutes({ ...opts.swagger, auth: opts.swagger?.auth ?? Boolean(opts.auth) })
+    );
   }
 
   if (opts.enableWebSocket) {

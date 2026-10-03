@@ -71,6 +71,11 @@ export interface SwaggerConfig {
     url?: string;
   };
   servers?: Array<{ url: string; description?: string }>;
+  /**
+   * Declare an optional bearer token so Swagger UI offers to send one.
+   * Defaults to whether the plugin has `auth`.
+   */
+  auth?: boolean;
 }
 
 export interface WebSocketConfig {

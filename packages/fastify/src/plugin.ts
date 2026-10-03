@@ -83,6 +83,12 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
                 license: opts.swagger?.license,
               },
               servers: opts.swagger?.servers ?? [{ url: '/', description: 'Current server' }],
+              ...((opts.swagger?.auth ?? Boolean(opts.auth)) && {
+                components: {
+                  securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer' } },
+                },
+                security: [{ bearerAuth: [] }, {}],
+              }),
               tags: [
                 { name: 'agents', description: 'Agent operations' },
                 { name: 'threads', description: 'Thread/memory operations' },

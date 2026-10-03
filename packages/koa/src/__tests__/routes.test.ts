@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Koa from 'koa';
 import request from 'supertest';
+import Router from '@koa/router';
 import { cogitatorApp } from '../app.js';
 import type { CogitatorAppOptions, CogitatorState } from '../types.js';
 
@@ -72,15 +73,19 @@ function mockMemory(
   };
 }
 
-function buildApp(overrides: Partial<CogitatorAppOptions> = {}) {
-  const app = new Koa<CogitatorState>();
-  const router = cogitatorApp({
+function buildRouter(overrides: Partial<CogitatorAppOptions> = {}) {
+  return cogitatorApp({
     cogitator: mockRuntime() as unknown as CogitatorAppOptions['cogitator'],
     agents: {},
     workflows: {},
     swarms: {},
     ...overrides,
   });
+}
+
+function buildApp(overrides: Partial<CogitatorAppOptions> = {}) {
+  const app = new Koa<CogitatorState>();
+  const router = buildRouter(overrides);
   app.use(router.routes());
   app.use(router.allowedMethods());
   return app;
@@ -827,6 +832,42 @@ describe('swaggerRoutes', () => {
     const app = buildApp({ enableSwagger: false });
     const res = await request(app.callback()).get('/openapi.json');
     expect(res.status).toBe(404);
+  });
+
+  it('points servers at the path the router is mounted under', async () => {
+    const app = new Koa<CogitatorState>();
+    const parent = new Router<CogitatorState>();
+    const router = buildRouter({ enableSwagger: true });
+    parent.use('/api/ai', router.routes(), router.allowedMethods());
+    app.use(parent.routes());
+
+    const spec = await request(app.callback()).get('/api/ai/openapi.json');
+    expect(spec.body.servers).toEqual([{ url: '/api/ai' }]);
+
+    const root = await request(buildApp({ enableSwagger: true }).callback()).get('/openapi.json');
+    expect(root.body.servers).toEqual([{ url: '/' }]);
+  });
+
+  it('keeps servers set in the swagger config', async () => {
+    const app = buildApp({
+      enableSwagger: true,
+      swagger: { servers: [{ url: 'https://api.example.com/ai' }] },
+    });
+    const res = await request(app.callback()).get('/openapi.json');
+    expect(res.body.servers).toEqual([{ url: 'https://api.example.com/ai' }]);
+  });
+
+  it('declares bearer auth only when the router checks credentials', async () => {
+    const open = await request(buildApp({ enableSwagger: true }).callback()).get('/openapi.json');
+    expect(open.body.security).toBeUndefined();
+    expect(open.body.components.securitySchemes).toBeUndefined();
+
+    const guarded = buildApp({ enableSwagger: true, auth: () => ({ userId: 'u1' }) });
+    const res = await request(guarded.callback()).get('/openapi.json');
+    expect(res.body.components.securitySchemes).toEqual({
+      bearerAuth: { type: 'http', scheme: 'bearer' },
+    });
+    expect(res.body.security).toEqual([{ bearerAuth: [] }, {}]);
   });
 
   it('caches the OpenAPI spec across requests', async () => {

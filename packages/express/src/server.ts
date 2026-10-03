@@ -104,7 +104,11 @@ export class CogitatorServer {
   }
 
   private setupSwagger(router: Router, ctx: RouteContext): void {
-    const spec = generateOpenAPISpec(ctx, this.config.swagger);
+    const spec = generateOpenAPISpec(ctx, {
+      ...this.config.swagger,
+      servers: this.config.swagger?.servers ?? [{ url: this.config.basePath }],
+      auth: this.config.swagger?.auth ?? Boolean(this.config.auth),
+    });
 
     router.get('/openapi.json', (_req, res) => {
       res.json(spec);
