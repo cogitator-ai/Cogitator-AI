@@ -6,6 +6,7 @@ export interface OTLPExporterConfig {
   headers?: Record<string, string>;
   serviceName?: string;
   serviceVersion?: string;
+  /** Export spans only when `true`; off by default, so the exporter can be built unconditionally */
   enabled?: boolean;
 }
 

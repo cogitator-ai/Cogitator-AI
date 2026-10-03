@@ -6,6 +6,7 @@ export interface LangfuseConfig {
   baseUrl?: string;
   flushAt?: number;
   flushInterval?: number;
+  /** Export traces only when `true`; off by default, so the exporter can be built unconditionally */
   enabled?: boolean;
 }
 
