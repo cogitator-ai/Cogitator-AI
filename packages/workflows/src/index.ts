@@ -242,7 +242,7 @@ export {
   managementChain,
 } from './human/index';
 
-export type { HumanNodeContext, HumanNodeResult } from './human/index';
+export type { HumanNodeContext, HumanNodeResult, NamedHumanNodeConfig } from './human/index';
 
 export {
   InMemoryRunStore,

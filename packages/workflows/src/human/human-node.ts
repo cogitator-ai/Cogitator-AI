@@ -354,10 +354,13 @@ function isApproved(type: ApprovalType, decision: unknown): boolean {
 /**
  * Create a human approval node factory
  */
+/** A human node config with its name set, as the node factories return it. */
+export type NamedHumanNodeConfig<S extends WorkflowState> = HumanNodeConfig<S> & { name: string };
+
 export function humanNode<S extends WorkflowState>(
   name: string,
   approval: HumanNodeConfig<S>['approval']
-): HumanNodeConfig<S> {
+): NamedHumanNodeConfig<S> {
   return {
     name,
     approval,
@@ -377,7 +380,7 @@ export function approvalNode<S extends WorkflowState>(
     timeoutAction?: 'approve' | 'reject' | 'fail';
     priority?: 'low' | 'normal' | 'high' | 'urgent';
   }
-): HumanNodeConfig<S> {
+): NamedHumanNodeConfig<S> {
   return humanNode(name, {
     type: 'approve-reject',
     title: options.title,
@@ -402,7 +405,7 @@ export function choiceNode<S extends WorkflowState>(
     timeout?: number;
     priority?: 'low' | 'normal' | 'high' | 'urgent';
   }
-): HumanNodeConfig<S> {
+): NamedHumanNodeConfig<S> {
   return humanNode(name, {
     type: 'multi-choice',
     title: options.title,
@@ -426,7 +429,7 @@ export function inputNode<S extends WorkflowState>(
     timeout?: number;
     priority?: 'low' | 'normal' | 'high' | 'urgent';
   }
-): HumanNodeConfig<S> {
+): NamedHumanNodeConfig<S> {
   return humanNode(name, {
     type: 'free-form',
     title: options.title,
@@ -449,7 +452,7 @@ export function ratingNode<S extends WorkflowState>(
     timeout?: number;
     priority?: 'low' | 'normal' | 'high' | 'urgent';
   }
-): HumanNodeConfig<S> {
+): NamedHumanNodeConfig<S> {
   return humanNode(name, {
     type: 'numeric-rating',
     title: options.title,
@@ -471,7 +474,7 @@ export function chainNode<S extends WorkflowState>(
     chain: ApprovalChainStep[];
     priority?: 'low' | 'normal' | 'high' | 'urgent';
   }
-): HumanNodeConfig<S> {
+): NamedHumanNodeConfig<S> {
   return humanNode(name, {
     type: 'approve-reject',
     title: options.title,
@@ -494,7 +497,7 @@ export function managementChain<S extends WorkflowState>(
     vp?: string;
     timeoutPerStep?: number;
   }
-): HumanNodeConfig<S> {
+): NamedHumanNodeConfig<S> {
   const chain: ApprovalChainStep[] = [
     {
       assignee: options.manager,

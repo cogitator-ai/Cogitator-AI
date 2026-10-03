@@ -27,6 +27,7 @@ export {
 export {
   type HumanNodeContext,
   type HumanNodeResult,
+  type NamedHumanNodeConfig,
   executeHumanNode,
   humanNode,
   approvalNode,
