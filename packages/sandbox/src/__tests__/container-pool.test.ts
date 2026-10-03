@@ -1,24 +1,30 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { ContainerPool } from '../pool/container-pool';
+import { dockerConnectionCandidates } from '../utils/docker-connection';
 import type { Docker } from '../docker-types';
 
-describe('ContainerPool', () => {
-  let docker: Docker | null = null;
-  let dockerAvailable = false;
-
-  beforeAll(async () => {
-    try {
-      const Dockerode = await import('dockerode');
-      docker = new Dockerode.default() as unknown as Docker;
-      await docker.ping();
-      dockerAvailable = true;
-    } catch {
-      dockerAvailable = false;
+async function connectDocker(): Promise<Docker | null> {
+  try {
+    const Dockerode = (await import('dockerode')).default;
+    for (const options of dockerConnectionCandidates()) {
+      const client = new Dockerode(options) as unknown as Docker;
+      try {
+        await client.ping();
+        return client;
+      } catch {
+        continue;
+      }
     }
-  });
+  } catch {
+    return null;
+  }
+  return null;
+}
 
-  afterAll(async () => {});
+const docker = await connectDocker();
+const dockerAvailable = docker !== null;
 
+describe('ContainerPool', () => {
   describe('when Docker is available', () => {
     it.skipIf(!dockerAvailable)('creates pool with default options', () => {
       const pool = new ContainerPool(docker!);
