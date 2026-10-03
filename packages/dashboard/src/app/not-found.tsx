@@ -45,7 +45,7 @@ function GlitchText({ text }: { text: string }) {
 
 export default function NotFound() {
   return (
-    <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center relative overflow-hidden">
+    <div className="dark min-h-screen bg-[#0a0a0a] text-text-primary [color-scheme:dark] flex items-center justify-center relative overflow-hidden">
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(0,255,136,0.03),transparent_70%)]" />
 
       <div

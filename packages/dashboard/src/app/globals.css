@@ -51,8 +51,21 @@
   /* Shadows */
   --shadow-glow: 0 0 20px var(--color-accent-glow), 0 0 40px var(--color-accent-glow);
   --shadow-glow-sm: 0 0 10px var(--color-accent-glow);
+}
 
-  /* Fumadocs overrides */
+/* Docs palette: Fumadocs' light theme with the brand green, and the site's dark theme. */
+:root {
+  --color-fd-background: #ffffff;
+  --color-fd-card: #f7f7f7;
+  --color-fd-muted-foreground: #5c5c5c;
+  --color-fd-primary: #008f50;
+  --color-fd-primary-foreground: #ffffff;
+  --color-fd-accent: rgba(0, 143, 80, 0.1);
+  --color-fd-accent-foreground: #007341;
+  --color-fd-ring: #008f50;
+}
+
+.dark {
   --color-fd-background: #0a0a0a;
   --color-fd-foreground: #fafafa;
   --color-fd-muted: #1a1a1a;
@@ -73,18 +86,22 @@
 
 @layer base {
   * {
-    border-color: var(--color-border-default);
+    border-color: var(--color-fd-border);
   }
 
   html {
-    color-scheme: dark;
+    color-scheme: light;
     scroll-behavior: smooth;
+  }
+
+  html.dark {
+    color-scheme: dark;
   }
 
   body {
     font-family: var(--font-sans);
-    background: var(--color-bg-primary);
-    color: var(--color-text-primary);
+    background: var(--color-fd-background);
+    color: var(--color-fd-foreground);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }

@@ -391,7 +391,7 @@ export default function CookbookPage() {
     activeId === section.id || section.recipes.some((recipe) => recipe.id === activeId);
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a]">
+    <div className="dark min-h-screen bg-[#0a0a0a] text-text-primary [color-scheme:dark]">
       <header className="fixed top-0 left-0 right-0 z-50 bg-[#0a0a0a]/80 backdrop-blur-xl border-b border-[#1a1a1a]">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-4">
