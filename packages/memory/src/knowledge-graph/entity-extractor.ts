@@ -6,21 +6,36 @@ import type {
   ExtractedRelation,
   EntityType,
   RelationType,
+  LLMBackend,
 } from '@cogitator-ai/types';
 import { z } from 'zod';
 import { ExtractedEntitySchema, ExtractedRelationSchema } from './schema';
 
+interface ExtractionChatRequest {
+  /** The configured `model`, when there is one */
+  model?: string;
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+  responseFormat?: { type: 'json_object' };
+}
+
+/**
+ * A hand-written chat function for the extractor. A Cogitator `LLMBackend` can be passed
+ * directly instead, together with a `model`.
+ */
 export interface LLMBackendMinimal {
-  chat(options: {
-    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
-    responseFormat?: { type: 'json_object' };
-  }): Promise<{ content: string }>;
+  chat(options: ExtractionChatRequest): Promise<{ content: string }>;
 }
 
 export interface LLMEntityExtractorConfig {
+  /** Model for extraction; required with an `LLMBackend`, passed through to an `LLMBackendMinimal` */
+  model?: string;
   minConfidence?: number;
   maxEntitiesPerText?: number;
   maxRelationsPerText?: number;
+}
+
+function isLLMBackend(backend: LLMBackend | LLMBackendMinimal): backend is LLMBackend {
+  return 'provider' in backend && 'chatStream' in backend;
 }
 
 const ExtractionOutputSchema = z.object({
@@ -51,11 +66,21 @@ const RELATION_TYPES: RelationType[] = [
 ];
 
 export class LLMEntityExtractor implements EntityExtractor {
-  private backend: LLMBackendMinimal;
-  private config: Required<LLMEntityExtractorConfig>;
+  private readonly chat: (request: ExtractionChatRequest) => Promise<{ content: string }>;
+  private config: Required<Omit<LLMEntityExtractorConfig, 'model'>>;
 
-  constructor(backend: LLMBackendMinimal, config: LLMEntityExtractorConfig = {}) {
-    this.backend = backend;
+  constructor(backend: LLMBackend, config: LLMEntityExtractorConfig & { model: string });
+  constructor(backend: LLMBackendMinimal, config?: LLMEntityExtractorConfig);
+  constructor(backend: LLMBackend | LLMBackendMinimal, config: LLMEntityExtractorConfig = {}) {
+    const { model } = config;
+    if (isLLMBackend(backend)) {
+      if (!model) {
+        throw new Error('LLMEntityExtractor needs a model when given an LLMBackend');
+      }
+      this.chat = (request) => backend.chat({ ...request, model });
+    } else {
+      this.chat = (request) => backend.chat(model === undefined ? request : { ...request, model });
+    }
     this.config = {
       minConfidence: config.minConfidence ?? 0.7,
       maxEntitiesPerText: config.maxEntitiesPerText ?? 20,
@@ -67,7 +92,7 @@ export class LLMEntityExtractor implements EntityExtractor {
     const systemPrompt = this.buildSystemPrompt(context);
     const userPrompt = this.buildUserPrompt(text, context);
 
-    const response = await this.backend.chat({
+    const response = await this.chat({
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
