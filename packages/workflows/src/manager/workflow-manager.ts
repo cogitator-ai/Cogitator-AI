@@ -26,6 +26,7 @@ import type {
 } from '@cogitator-ai/types';
 import type { Cogitator } from '@cogitator-ai/core';
 import { WorkflowExecutor } from '../executor';
+import { WorkflowScheduler } from '../scheduler';
 import { type JobScheduler, createJobScheduler } from './scheduler';
 import { InMemoryRunStore } from './run-store';
 import { createTracer, type WorkflowTracer } from '../observability/tracer';
@@ -170,6 +171,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
 
     try {
       const executed = await this.executor.execute(workflow, input, {
+        checkpoint: !!this.checkpointStore,
         ...options,
         signal: abortController.signal,
         tracer: runTracer,
@@ -408,8 +410,13 @@ export class DefaultWorkflowManager implements IWorkflowManager {
     return newRunId;
   }
 
+  private reachability<S extends WorkflowState>(workflow: Workflow<S>): Map<string, Set<string>> {
+    return new WorkflowScheduler().buildReachability(workflow);
+  }
+
   /**
-   * Replay a workflow from a specific node
+   * Replay a workflow from a specific node: that node and every node after it
+   * run again; the nodes before it keep their results.
    */
   async replay<S extends WorkflowState>(
     workflow: Workflow<S>,
@@ -425,6 +432,13 @@ export class DefaultWorkflowManager implements IWorkflowManager {
 
     const newRunId = nanoid();
     const now = Date.now();
+    const rerun = new Set([fromNode, ...(this.reachability(workflow).get(fromNode) ?? [])]);
+    const checkpoint = await this.checkpointStore?.load(run.checkpointId);
+    const done = checkpoint?.completedNodes ?? run.completedNodes;
+    const kept = done.filter((n) => workflow.nodes.has(n) && !rerun.has(n));
+    const keptResults = Object.fromEntries(
+      Object.entries(checkpoint?.nodeResults ?? {}).filter(([node]) => kept.includes(node))
+    );
 
     const newRun: WorkflowRun = {
       id: newRunId,
@@ -433,9 +447,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       state: run.state,
       input: run.input,
       currentNodes: [],
-      completedNodes: run.completedNodes.filter((n) => {
-        return workflow.nodes.has(n) && n !== fromNode;
-      }),
+      completedNodes: kept,
       failedNodes: [],
       startedAt: now,
       priority: run.priority,
@@ -462,6 +474,7 @@ export class DefaultWorkflowManager implements IWorkflowManager {
       const result = await this.executor.execute(workflow, run.state as Partial<S>, {
         checkpoint: !!this.checkpointStore,
         skipNodes,
+        nodeResults: keptResults,
         signal: abortController.signal,
       });
 

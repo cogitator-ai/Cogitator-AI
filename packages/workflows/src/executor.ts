@@ -222,7 +222,12 @@ export class WorkflowExecutor {
     const skipNodes = options?.skipNodes;
 
     let state: S = { ...workflow.initialState, ...input } as S;
-    const nodeResults = new Map<string, { output: unknown; duration: number }>();
+    const nodeResults = new Map<string, { output: unknown; duration: number }>(
+      Object.entries(options?.nodeResults ?? {}).map(([node, output]) => [
+        node,
+        { output, duration: 0 },
+      ])
+    );
     const completedNodes = new Set<string>();
     let iterations = 0;
     let checkpointId: string | undefined;
@@ -244,8 +249,10 @@ export class WorkflowExecutor {
 
     let currentNodes = [workflow.entryPoint];
 
+    let lastCheckpointAt = 0;
     const saveCheckpoint = async () => {
       checkpointId = createCheckpointId();
+      lastCheckpointAt = Math.max(Date.now(), lastCheckpointAt + 1);
       await this.checkpointStore.save({
         id: checkpointId,
         workflowId,
@@ -255,7 +262,7 @@ export class WorkflowExecutor {
         nodeResults: Object.fromEntries(
           Array.from(nodeResults.entries()).map(([k, v]) => [k, v.output])
         ),
-        timestamp: Date.now(),
+        timestamp: lastCheckpointAt,
       });
     };
 
@@ -401,13 +408,14 @@ export class WorkflowExecutor {
 
         if (skipNodes) {
           const skipped = currentNodes.filter((n) => skipNodes.has(n));
-          for (const nodeName of skipped) {
+          while (skipped.length > 0) {
+            const nodeName = skipped.shift()!;
+            if (completedNodes.has(nodeName)) continue;
             completedNodes.add(nodeName);
-            const edgeNext = this.scheduler.getNextNodes(workflow, nodeName, state);
-            for (const next of edgeNext) {
-              if (!currentNodes.includes(next) && !completedNodes.has(next)) {
-                nodesToRun.push(next);
-              }
+            for (const next of this.scheduler.getNextNodes(workflow, nodeName, state)) {
+              if (completedNodes.has(next) || currentNodes.includes(next)) continue;
+              if (skipNodes.has(next)) skipped.push(next);
+              else nodesToRun.push(next);
             }
           }
         }
@@ -537,6 +545,7 @@ export class WorkflowExecutor {
       ...options,
       workflowId: checkpoint.workflowId,
       skipNodes: completed,
+      nodeResults: checkpoint.nodeResults,
     });
   }
 

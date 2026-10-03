@@ -89,7 +89,10 @@ export interface WorkflowExecuteOptions {
   maxIterations?: number;
   checkpoint?: boolean;
   checkpointStrategy?: CheckpointStrategy;
+  /** Nodes that already ran (when resuming): they are passed over, not run again */
   skipNodes?: Set<string>;
+  /** Outputs of the `skipNodes`, so the nodes after them get their inputs */
+  nodeResults?: Record<string, unknown>;
   workflowId?: string;
   onNodeStart?: (node: string) => void;
   onNodeComplete?: (node: string, result: unknown, duration: number) => void;

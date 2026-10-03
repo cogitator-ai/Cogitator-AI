@@ -248,6 +248,17 @@ if (first.error && first.checkpointId) {
 }
 ```
 
+Checkpoints shared between processes live in Redis or Postgres; the stores take your existing client (an `@cogitator-ai/redis` client or ioredis, a `pg` Pool):
+
+```typescript
+import { RedisCheckpointStore, PostgresCheckpointStore } from '@cogitator-ai/workflows';
+
+new RedisCheckpointStore({ client: redis, keyPrefix: 'myapp:checkpoints' });
+new PostgresCheckpointStore({ client: pool, table: 'workflow_checkpoints' }); // created on first use
+```
+
+Resuming runs only the nodes that did not finish, and the nodes after them get the finished nodes' outputs as input.
+
 ---
 
 ## Timers

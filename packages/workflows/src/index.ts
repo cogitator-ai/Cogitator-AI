@@ -13,6 +13,13 @@ export type { ExecutorExecuteOptions } from './executor';
 export { WorkflowScheduler } from './scheduler';
 
 export { InMemoryCheckpointStore, FileCheckpointStore, createCheckpointId } from './checkpoint';
+export { RedisCheckpointStore, PostgresCheckpointStore } from './checkpoint-stores';
+export type {
+  CheckpointRedisClient,
+  CheckpointPgClient,
+  RedisCheckpointStoreOptions,
+  PostgresCheckpointStoreOptions,
+} from './checkpoint-stores';
 
 export {
   agentNode,
