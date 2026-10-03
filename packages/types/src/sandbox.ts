@@ -101,7 +101,7 @@ export interface SandboxDockerConfig {
 export interface SandboxWasmConfig {
   /** Path or URL to WASM module */
   wasmModule?: string;
-  /** WASM memory limit in 64KB pages (default: 256 = 16MB) */
+  /** Memory limit in 64 KiB pages for the module's own memory and Extism's (default: 256 = 16 MB) */
   memoryPages?: number;
   /** Function name to call in WASM module (default: 'run') */
   functionName?: string;

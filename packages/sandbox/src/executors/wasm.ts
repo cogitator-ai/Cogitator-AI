@@ -16,6 +16,7 @@ import { BaseSandboxExecutor } from './base';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { capModuleMemory } from './wasm-memory.js';
 
 export interface WasmExecutorOptions {
   wasm?: SandboxWasmConfig;
@@ -27,7 +28,7 @@ interface ExtismPlugin {
 }
 
 interface WasmManifest {
-  wasm: Array<{ data: Uint8Array } | { url: string }>;
+  wasm: Array<{ data: Uint8Array }>;
   memory?: { maxPages?: number };
 }
 
@@ -168,9 +169,10 @@ export class WasmSandboxExecutor extends BaseSandboxExecutor {
       return reused;
     }
 
+    const maxPages = this.options.wasm?.memoryPages ?? DEFAULT_MEMORY_PAGES;
     const manifest: WasmManifest = {
-      ...(await this.loadManifest(spec.module)),
-      memory: { maxPages: this.options.wasm?.memoryPages ?? DEFAULT_MEMORY_PAGES },
+      wasm: [{ data: capModuleMemory(await this.loadModule(spec.module), maxPages) }],
+      memory: { maxPages },
     };
     const plugin = await this.createPlugin!(manifest, {
       useWasi: spec.useWasi,
@@ -214,13 +216,18 @@ export class WasmSandboxExecutor extends BaseSandboxExecutor {
     }
   }
 
-  private async loadManifest(wasmModule: string): Promise<WasmManifest> {
+  /** The module's bytes, from a URL, a file or an installed package. */
+  private async loadModule(wasmModule: string): Promise<Uint8Array> {
     if (wasmModule.startsWith('http://') || wasmModule.startsWith('https://')) {
-      return { wasm: [{ url: wasmModule }] };
+      const response = await fetch(wasmModule);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch WASM module ${wasmModule}: HTTP ${response.status}`);
+      }
+      return new Uint8Array(await response.arrayBuffer());
     }
 
     if (existsSync(wasmModule)) {
-      return { wasm: [{ data: new Uint8Array(await readFile(wasmModule)) }] };
+      return new Uint8Array(await readFile(wasmModule));
     }
 
     let resolved: string;
@@ -229,7 +236,7 @@ export class WasmSandboxExecutor extends BaseSandboxExecutor {
     } catch {
       throw new Error(`WASM module not found: ${wasmModule}`);
     }
-    return { wasm: [{ data: new Uint8Array(await readFile(resolved)) }] };
+    return new Uint8Array(await readFile(resolved));
   }
 
   private buildInput(request: SandboxExecutionRequest): string {

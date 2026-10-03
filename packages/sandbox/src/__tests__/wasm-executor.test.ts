@@ -19,6 +19,11 @@ vi.mock('@extism/extism', () => {
   };
 });
 
+/** The smallest valid module: the preamble and nothing else. */
+const EMPTY_MODULE = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+
+const fetchModule = vi.fn(async () => new Response(EMPTY_MODULE));
+
 async function getMocks() {
   const mod = await import('@extism/extism');
   return {
@@ -49,11 +54,36 @@ describe('WasmSandboxExecutor', () => {
       close: mockClose,
     });
 
+    fetchModule.mockClear();
+    vi.stubGlobal('fetch', fetchModule);
     executor = new WasmSandboxExecutor();
   });
 
   afterEach(async () => {
     await executor.disconnect();
+    vi.unstubAllGlobals();
+  });
+
+  describe('module loading', () => {
+    it('fetches a module URL itself so its memory can be capped', async () => {
+      await executor.connect();
+      const { mockCall } = await getMocks();
+      mockCall.mockResolvedValue(new TextEncoder().encode('ok'));
+
+      await executor.execute({ command: ['test'] }, defaultConfig);
+
+      expect(fetchModule).toHaveBeenCalledWith('https://example.com/module.wasm');
+    });
+
+    it('fails the execution when the module cannot be fetched', async () => {
+      await executor.connect();
+      fetchModule.mockResolvedValueOnce(new Response('gone', { status: 404 }));
+
+      const result = await executor.execute({ command: ['test'] }, defaultConfig);
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error).toContain('HTTP 404');
+    });
   });
 
   describe('lifecycle', () => {
@@ -228,7 +258,7 @@ describe('WasmSandboxExecutor', () => {
 
       expect(mockCreatePlugin).toHaveBeenCalledWith(
         expect.objectContaining({
-          wasm: [{ url: 'https://example.com/module.wasm' }],
+          wasm: [{ data: EMPTY_MODULE }],
           memory: { maxPages: 64 },
         }),
         expect.any(Object)

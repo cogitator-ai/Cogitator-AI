@@ -85,6 +85,38 @@ describe('WasmSandboxExecutor with a real Extism runtime', () => {
     expect(after.data.stdout).toBe('still alive');
   });
 
+  it("caps the module's own memory at memoryPages", async () => {
+    const limited = new WasmSandboxExecutor({ wasm: { memoryPages: 4 } });
+    await limited.connect();
+    try {
+      const result = await limited.execute(
+        { command: [], stdin: '' },
+        { type: 'wasm', wasmModule: modulePath, wasmFunction: 'grow' }
+      );
+
+      assertSuccess(result);
+      expect(result.data.exitCode).toBe(1);
+    } finally {
+      await limited.disconnect();
+    }
+  });
+
+  it('lets the module grow its memory within memoryPages', async () => {
+    const roomy = new WasmSandboxExecutor({ wasm: { memoryPages: 2048 } });
+    await roomy.connect();
+    try {
+      const result = await roomy.execute(
+        { command: [], stdin: '' },
+        { type: 'wasm', wasmModule: modulePath, wasmFunction: 'grow' }
+      );
+
+      assertSuccess(result);
+      expect(result.data.exitCode).toBe(0);
+    } finally {
+      await roomy.disconnect();
+    }
+  });
+
   it('reports missing functions as a failed execution', async () => {
     const result = await executor.execute(
       { command: [], stdin: 'x' },

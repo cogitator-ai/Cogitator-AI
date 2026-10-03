@@ -258,7 +258,7 @@ await wasm.disconnect();
 - Local paths, module specifiers and `http(s)` URLs are supported for `wasmModule`.
 - `wasmModule`, `functionName` and `wasi` from the executor options are used when the per-request config omits them.
 - `network.allowedHosts` is forwarded to Extism's HTTP allow-list (empty when `network.mode` is `'none'`).
-- `memoryPages` (default 256 = 16 MB) is passed to Extism as `memory.maxPages`. It caps the memory Extism allocates for plugin input, output and vars; the module's own linear memory is not limited by it.
+- `memoryPages` (default 256 = 16 MB) caps the module's own memory: its memory section gets that maximum before the module loads, so `memory.grow` past it fails inside the module, and a module that needs more to start is refused. Extism's memory for plugin input, output and vars gets the same limit. Modules from a URL are fetched by the executor so the cap applies to them too.
 
 ---
 

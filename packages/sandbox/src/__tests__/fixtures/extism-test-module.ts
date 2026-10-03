@@ -43,7 +43,9 @@ const OUTPUT_SET = 4;
 
 /**
  * Builds a minimal Extism plugin exporting `echo` (copies input to output),
- * `spin` (never returns) and `fail` (returns a non-zero status).
+ * `spin` (never returns), `fail` (returns a non-zero status) and `grow`
+ * (grows its one-page memory by 1000 pages and traps when that is refused).
+ * The module declares its memory without a maximum.
  */
 export function buildExtismTestModule(): Uint8Array {
   const types = section(
@@ -69,7 +71,9 @@ export function buildExtismTestModule(): Uint8Array {
     ])
   );
 
-  const functions = section(3, vector([[5], [5], [5]]));
+  const functions = section(3, vector([[5], [5], [5], [5]]));
+
+  const memory = section(5, vector([[0x00, ...uleb(1)]]));
 
   const exports = section(
     7,
@@ -77,6 +81,7 @@ export function buildExtismTestModule(): Uint8Array {
       [...name('echo'), 0x00, 5],
       [...name('spin'), 0x00, 6],
       [...name('fail'), 0x00, 7],
+      [...name('grow'), 0x00, 8],
     ])
   );
 
@@ -143,8 +148,12 @@ export function buildExtismTestModule(): Uint8Array {
   );
   const spin = body([], [0x03, 0x40, 0x0c, 0, 0x0b, 0x41, 0, 0x0b]);
   const fail = body([], [0x41, 1, 0x0b]);
+  const grow = body(
+    [],
+    [0x41, 0xe8, 0x07, 0x40, 0x00, 0x41, 0x7f, 0x46, 0x04, 0x40, 0x00, 0x0b, 0x41, 0, 0x0b]
+  );
 
-  const code = section(10, [...uleb(3), ...echo, ...spin, ...fail]);
+  const code = section(10, [...uleb(4), ...echo, ...spin, ...fail, ...grow]);
 
   return new Uint8Array([
     0x00,
@@ -158,6 +167,7 @@ export function buildExtismTestModule(): Uint8Array {
     ...types,
     ...imports,
     ...functions,
+    ...memory,
     ...exports,
     ...code,
   ]);
