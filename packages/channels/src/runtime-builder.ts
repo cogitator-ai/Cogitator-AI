@@ -57,7 +57,11 @@ import { LocalWhisper } from './media/whisper-local';
 import { createWhisperDownloadTool } from './media/whisper-tool';
 import { GroqSttProvider, OpenAISttProvider } from './media/whisper-api';
 import { DeepgramSttProvider } from './media/deepgram-stt';
-import type { AssistantConfigOutput } from './assistant-config';
+import {
+  AssistantConfigSchema,
+  type AssistantConfigInput,
+  type AssistantConfigOutput,
+} from './assistant-config';
 
 export type AssistantConfig = AssistantConfigOutput;
 
@@ -125,11 +129,19 @@ function formatDuration(ms: number): string {
 }
 
 export class RuntimeBuilder {
+  private readonly config: AssistantConfig;
+
+  /**
+   * `config` is validated and completed with the schema's defaults here, so
+   * a config built in code needs only the fields it sets.
+   */
   constructor(
-    private config: AssistantConfig,
+    config: AssistantConfigInput,
     private env: Record<string, string | undefined>,
     private opts?: RuntimeBuilderOpts
-  ) {}
+  ) {
+    this.config = AssistantConfigSchema.parse(config);
+  }
 
   async build(): Promise<BuiltRuntime> {
     const cogitator = this.buildCogitator();

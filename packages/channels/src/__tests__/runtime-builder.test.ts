@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { RuntimeBuilder, type AssistantConfig } from '../runtime-builder';
+import { RuntimeBuilder } from '../runtime-builder';
+import type { AssistantConfigInput } from '../assistant-config';
 
 let mockFormatForPrompt = vi.fn().mockResolvedValue('');
 
@@ -196,14 +197,14 @@ vi.mock('@cogitator-ai/core', () => {
   };
 });
 
-const minimalConfig: AssistantConfig = {
+const minimalConfig = {
   name: 'test-bot',
   personality: 'Helpful assistant',
   llm: { provider: 'google', model: 'google/gemini-2.5-flash' },
   channels: {},
   capabilities: {},
-  memory: { adapter: 'sqlite', path: ':memory:', autoExtract: true, knowledgeGraph: true },
-};
+  memory: { adapter: 'sqlite', path: ':memory:' },
+} satisfies AssistantConfigInput;
 
 describe('RuntimeBuilder', () => {
   beforeEach(() => {
@@ -224,8 +225,20 @@ describe('RuntimeBuilder', () => {
     await built.cleanup();
   });
 
+  it('applies the schema defaults to a config built in code', async () => {
+    const built = await new RuntimeBuilder(minimalConfig, {}).build();
+
+    const toolNames = built.agent.tools.map((t: { name: string }) => t.name);
+    expect(toolNames).toContain('remember');
+    await built.cleanup();
+  });
+
+  it('rejects a config the schema refuses', () => {
+    expect(() => new RuntimeBuilder({ ...minimalConfig, name: 42 } as never, {})).toThrow();
+  });
+
   it('includes memory tools when knowledgeGraph enabled', async () => {
-    const config: AssistantConfig = {
+    const config: AssistantConfigInput = {
       ...minimalConfig,
       memory: { ...minimalConfig.memory, knowledgeGraph: true },
     };
@@ -243,7 +256,7 @@ describe('RuntimeBuilder', () => {
 
   it('passes SLACK_APP_TOKEN and SLACK_PORT to the Slack channel', async () => {
     slackConfigs.length = 0;
-    const config: AssistantConfig = { ...minimalConfig, channels: { slack: {} } };
+    const config: AssistantConfigInput = { ...minimalConfig, channels: { slack: {} } };
     const env = {
       GOOGLE_API_KEY: 'test-key',
       SLACK_BOT_TOKEN: 'xoxb-1',
@@ -263,7 +276,7 @@ describe('RuntimeBuilder', () => {
   it('warns when Slack runs without an app token', async () => {
     slackConfigs.length = 0;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const config: AssistantConfig = { ...minimalConfig, channels: { slack: {} } };
+    const config: AssistantConfigInput = { ...minimalConfig, channels: { slack: {} } };
 
     const built = await new RuntimeBuilder(config, {
       GOOGLE_API_KEY: 'test-key',
@@ -308,7 +321,7 @@ describe('RuntimeBuilder', () => {
   });
 
   it('adds web_search tool when capability enabled', async () => {
-    const config: AssistantConfig = {
+    const config: AssistantConfigInput = {
       ...minimalConfig,
       capabilities: { webSearch: true },
     };
@@ -326,7 +339,7 @@ describe('RuntimeBuilder', () => {
   });
 
   it('adds file tools when fileSystem capability enabled', async () => {
-    const config: AssistantConfig = {
+    const config: AssistantConfigInput = {
       ...minimalConfig,
       capabilities: { fileSystem: { paths: ['/tmp'] } },
     };
@@ -343,7 +356,7 @@ describe('RuntimeBuilder', () => {
   });
 
   it('adds github_api tool when capability enabled', async () => {
-    const config: AssistantConfig = {
+    const config: AssistantConfigInput = {
       ...minimalConfig,
       capabilities: { github: true },
     };
@@ -358,7 +371,7 @@ describe('RuntimeBuilder', () => {
   });
 
   it('includes scheduler tools and hint when enabled', async () => {
-    const config: AssistantConfig = {
+    const config: AssistantConfigInput = {
       ...minimalConfig,
       capabilities: { scheduler: true },
     };
@@ -413,7 +426,7 @@ describe('RuntimeBuilder', () => {
   });
 
   it('does not include memory tools when knowledgeGraph is explicitly false', async () => {
-    const config: AssistantConfig = {
+    const config: AssistantConfigInput = {
       ...minimalConfig,
       memory: { ...minimalConfig.memory, knowledgeGraph: false },
     };
@@ -429,7 +442,7 @@ describe('RuntimeBuilder', () => {
   });
 
   it('adds rate limit middleware when configured', async () => {
-    const config: AssistantConfig = {
+    const config: AssistantConfigInput = {
       ...minimalConfig,
       rateLimit: { maxPerMinute: 10 },
     };
@@ -452,7 +465,7 @@ describe('RuntimeBuilder', () => {
   });
 
   it('adds device tools when deviceTools capability enabled', async () => {
-    const config: AssistantConfig = {
+    const config: AssistantConfigInput = {
       ...minimalConfig,
       capabilities: { deviceTools: true },
     };
@@ -470,7 +483,7 @@ describe('RuntimeBuilder', () => {
   });
 
   it('uses correct model in agent config', async () => {
-    const config: AssistantConfig = {
+    const config: AssistantConfigInput = {
       ...minimalConfig,
       llm: { provider: 'openai', model: 'openai/gpt-4o' },
     };
@@ -483,7 +496,7 @@ describe('RuntimeBuilder', () => {
     await built.cleanup();
   });
   it('sandboxes file tools to the configured paths', async () => {
-    const config: AssistantConfig = {
+    const config: AssistantConfigInput = {
       ...minimalConfig,
       capabilities: { fileSystem: { paths: ['/tmp/cogitator-allowed'] } },
     };
@@ -526,7 +539,7 @@ describe('RuntimeBuilder', () => {
   });
 
   it('requires a connection string for the postgres adapter', async () => {
-    const config: AssistantConfig = {
+    const config: AssistantConfigInput = {
       ...minimalConfig,
       memory: { ...minimalConfig.memory, adapter: 'postgres' },
     };
