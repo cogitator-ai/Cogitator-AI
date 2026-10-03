@@ -1,6 +1,6 @@
 import type {
   LLMBackend,
-  LLMProvider,
+  LLMBackendProvider,
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
@@ -24,7 +24,7 @@ export interface PromptLoggerConfig {
 }
 
 export class PromptLogger implements LLMBackend {
-  readonly provider: LLMProvider;
+  readonly provider: LLMBackendProvider;
 
   private backend: LLMBackend;
   private store: Pick<PromptStore, 'capture'>;

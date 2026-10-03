@@ -4,14 +4,14 @@
 
 import type {
   LLMBackend,
-  LLMProvider,
+  LLMBackendProvider,
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
 } from '@cogitator-ai/types';
 
 export abstract class BaseLLMBackend implements LLMBackend {
-  abstract readonly provider: LLMProvider;
+  abstract readonly provider: LLMBackendProvider;
 
   abstract chat(request: ChatRequest): Promise<ChatResponse>;
 

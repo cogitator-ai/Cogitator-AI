@@ -207,19 +207,34 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
     }
   }
 
+  /**
+   * Chat Completions takes only text in tool messages, so the images of tool
+   * results follow the tool messages of their turn in one user message.
+   */
   protected convertMessages(messages: Message[]): OpenAI.Chat.ChatCompletionMessageParam[] {
-    return messages.map((m): OpenAI.Chat.ChatCompletionMessageParam => {
+    const converted: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+    let toolImages: OpenAI.Chat.ChatCompletionContentPart[] = [];
+    const flushToolImages = () => {
+      if (toolImages.length === 0) return;
+      converted.push({
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Images returned by the tool calls above:' },
+          ...toolImages,
+        ],
+      });
+      toolImages = [];
+    };
+
+    for (const m of messages) {
+      if (m.role !== 'tool') flushToolImages();
       switch (m.role) {
         case 'system':
-          return {
-            role: 'system' as const,
-            content: this.getTextContent(m.content),
-          };
+          converted.push({ role: 'system', content: this.getTextContent(m.content) });
+          break;
         case 'user':
-          return {
-            role: 'user' as const,
-            content: this.convertContent(m.content),
-          };
+          converted.push({ role: 'user', content: this.convertContent(m.content) });
+          break;
         case 'assistant': {
           const assistantMsg: OpenAI.Chat.ChatCompletionAssistantMessageParam = {
             role: 'assistant' as const,
@@ -236,16 +251,27 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
               },
             }));
           }
-          return assistantMsg;
+          converted.push(assistantMsg);
+          break;
         }
         case 'tool':
-          return {
-            role: 'tool' as const,
+          converted.push({
+            role: 'tool',
             content: this.getTextContent(m.content),
             tool_call_id: m.toolCallId ?? '',
-          };
+          });
+          if (typeof m.content !== 'string') {
+            toolImages.push(
+              ...m.content
+                .filter((part) => part.type !== 'text')
+                .map((part) => this.convertContentPart(part))
+            );
+          }
+          break;
       }
-    });
+    }
+    flushToolImages();
+    return converted;
   }
 
   protected convertContent(

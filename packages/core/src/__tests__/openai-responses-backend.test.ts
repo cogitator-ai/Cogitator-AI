@@ -680,6 +680,45 @@ describe('OpenAIBackend (Responses API)', () => {
       ]);
     });
 
+    it('sends the image of a tool result in its function_call_output', async () => {
+      mockResponsesCreate.mockResolvedValueOnce(response({ output: [textMessage('Done')] }));
+
+      await backend.chat({
+        model: 'gpt-6.1-sol',
+        messages: [
+          { role: 'user', content: 'Look' },
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [{ id: 'call_1', name: 'screenshot', arguments: {} }],
+          } as Message,
+          {
+            role: 'tool',
+            content: [
+              { type: 'text', text: '{"image":"(image attached)"}' },
+              {
+                type: 'image_base64',
+                image_base64: { data: 'iVBORw0KGgoAAAANSUhEUg==', media_type: 'image/png' },
+              },
+            ],
+            toolCallId: 'call_1',
+          },
+        ],
+      });
+
+      const output = (lastParams().input as { type: string; output?: unknown }[]).find(
+        (item) => item.type === 'function_call_output'
+      );
+      expect(output?.output).toEqual([
+        { type: 'input_text', text: '{"image":"(image attached)"}' },
+        {
+          type: 'input_image',
+          image_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==',
+          detail: 'auto',
+        },
+      ]);
+    });
+
     it('replays preamble messages verbatim without duplicating the text', async () => {
       mockResponsesCreate.mockResolvedValueOnce(
         response({

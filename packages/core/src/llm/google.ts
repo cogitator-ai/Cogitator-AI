@@ -461,17 +461,23 @@ export class GoogleBackend extends BaseLLMBackend {
             response: this.parseToolResult(this.getTextContent(msg.content)),
           };
 
+          const images =
+            typeof msg.content === 'string'
+              ? []
+              : msg.content
+                  .filter((part) => part.type !== 'text')
+                  .map((part) => this.convertContentPart(part));
+
           const previous = contents[contents.length - 1];
-          if (
-            previous?.role === 'user' &&
-            previous.parts.length > 0 &&
-            previous.parts.every((part) => 'functionResponse' in part)
-          ) {
-            previous.parts.push({ functionResponse });
+          if (previous?.role === 'user' && isToolResponseTurn(previous.parts)) {
+            const firstImage = previous.parts.findIndex((part) => !('functionResponse' in part));
+            const at = firstImage === -1 ? previous.parts.length : firstImage;
+            previous.parts.splice(at, 0, { functionResponse });
+            previous.parts.push(...images);
           } else {
             contents.push({
               role: 'user',
-              parts: [{ functionResponse }],
+              parts: [{ functionResponse }, ...images],
             });
           }
           break;
@@ -573,8 +579,9 @@ export class GoogleBackend extends BaseLLMBackend {
     schema: Record<string, unknown>,
     isPropertiesMap = false
   ): Record<string, unknown> {
+    const source = isPropertiesMap ? schema : nullableForGemini(schema);
     const cleaned: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(schema)) {
+    for (const [key, value] of Object.entries(source)) {
       if (!isPropertiesMap && !GoogleBackend.GEMINI_ALLOWED_KEYS.has(key)) continue;
       if (Array.isArray(value)) {
         cleaned[key] = value.map((item) =>
@@ -798,4 +805,52 @@ export function geminiThinkingConfig(
     return { thinkingBudget: Math.max(floor, budget), ...includeThoughts };
   }
   return undefined;
+}
+
+/**
+ * A user turn of function responses, followed by the images those tool
+ * results returned: Gemini reads them after the responses of the turn.
+ */
+function isToolResponseTurn(parts: GeminiPart[]): boolean {
+  return (
+    parts.length > 0 &&
+    'functionResponse' in parts[0] &&
+    parts.every((part) => 'functionResponse' in part || 'inlineData' in part || 'fileData' in part)
+  );
+}
+
+const isNullSchema = (value: unknown): boolean =>
+  typeof value === 'object' && value !== null && (value as { type?: unknown }).type === 'null';
+
+/**
+ * Gemini's schema has no `null` type: a JSON Schema null in a `type` array
+ * or in `anyOf`/`oneOf` (what Zod's `.nullable()` produces) becomes
+ * `nullable: true` on the rest.
+ */
+function nullableForGemini(schema: Record<string, unknown>): Record<string, unknown> {
+  const { type } = schema;
+  if (Array.isArray(type) && type.includes('null')) {
+    const types = type.filter((t) => t !== 'null');
+    const { type: _type, ...rest } = schema;
+    if (types.length === 0) return { ...rest, nullable: true };
+    if (types.length === 1) return { ...rest, type: types[0], nullable: true };
+    return { ...rest, anyOf: types.map((t) => ({ type: t })), nullable: true };
+  }
+
+  for (const key of ['anyOf', 'oneOf'] as const) {
+    const options = schema[key];
+    if (!Array.isArray(options) || !options.some(isNullSchema)) continue;
+    const rest = Object.fromEntries(Object.entries(schema).filter(([k]) => k !== key));
+    const remaining = options.filter((option) => !isNullSchema(option));
+    if (remaining.length === 1 && typeof remaining[0] === 'object' && remaining[0] !== null) {
+      return nullableForGemini({
+        ...(remaining[0] as Record<string, unknown>),
+        ...rest,
+        nullable: true,
+      });
+    }
+    return { ...rest, [key]: remaining, nullable: true };
+  }
+
+  return schema;
 }

@@ -4,7 +4,9 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { toolCallMessage } from './helpers/messages';
+import { z } from 'zod';
 import { GoogleBackend } from '../llm/google';
+import { toLLMResponseFormat } from '../cogitator/response-format';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -674,6 +676,55 @@ describe('GoogleBackend', () => {
       return JSON.parse(mockFetch.mock.calls[0][1].body as string) as Record<string, unknown>;
     }
 
+    it('turns the nulls of a zod .nullable() response schema into nullable: true', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => okJson });
+      const format = toLLMResponseFormat({
+        type: 'json_schema',
+        schema: z.object({
+          title: z.string(),
+          note: z.string().nullable(),
+          tags: z.array(z.string()).nullable(),
+          when: z.union([z.string(), z.number()]).nullable(),
+        }),
+      });
+
+      await backend.chat({
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'Hi' }],
+        responseFormat: format,
+      });
+
+      const config = sentBody().generationConfig as { responseSchema: Record<string, unknown> };
+      expect(config.responseSchema.properties).toEqual({
+        title: { type: 'string' },
+        note: { type: 'string', nullable: true },
+        tags: { type: 'array', items: { type: 'string' }, nullable: true },
+        when: { anyOf: [{ type: 'string' }, { type: 'number' }], nullable: true },
+      });
+      expect(JSON.stringify(config.responseSchema)).not.toContain('"null"');
+    });
+
+    it('turns a null in a type array into nullable: true', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => okJson });
+
+      await backend.chat({
+        model: 'gemini-2.5-flash',
+        messages: [{ role: 'user', content: 'Hi' }],
+        responseFormat: {
+          type: 'json_schema',
+          jsonSchema: {
+            name: 'r',
+            schema: { type: 'object', properties: { n: { type: ['integer', 'null'] } } },
+          },
+        },
+      });
+
+      const config = sentBody().generationConfig as { responseSchema: Record<string, unknown> };
+      expect(config.responseSchema.properties).toEqual({
+        n: { type: 'integer', nullable: true },
+      });
+    });
+
     it('combines every system message into the system instruction', async () => {
       mockFetch.mockResolvedValueOnce({ ok: true, json: async () => okJson });
 
@@ -716,6 +767,42 @@ describe('GoogleBackend', () => {
           { functionResponse: { name: 'weather', response: { t: 12 } } },
         ],
       });
+    });
+
+    it('sends the images of tool results after the function responses of the turn', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => okJson });
+
+      await backend.chat({
+        model: 'gemini-2.5-flash',
+        messages: [
+          { role: 'user', content: 'Look' },
+          toolCallMessage([
+            { id: 'c1', name: 'screenshot', arguments: {} },
+            { id: 'c2', name: 'count', arguments: {} },
+          ]),
+          {
+            role: 'tool',
+            content: [
+              { type: 'text', text: '{"image":"(image attached)"}' },
+              {
+                type: 'image_base64',
+                image_base64: { data: 'iVBORw0KGgoAAAANSUhEUg==', media_type: 'image/png' },
+              },
+            ],
+            toolCallId: 'c1',
+            name: 'screenshot',
+          },
+          { role: 'tool', content: '42', toolCallId: 'c2', name: 'count' },
+        ],
+      });
+
+      const contents = sentBody().contents as Array<{ role: string; parts: unknown[] }>;
+      expect(contents).toHaveLength(3);
+      expect(contents[2].parts).toEqual([
+        { functionResponse: { name: 'screenshot', response: { image: '(image attached)' } } },
+        { functionResponse: { name: 'count', response: { result: 42 } } },
+        { inlineData: { mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUg==' } },
+      ]);
     });
 
     it('wraps tool results that are not JSON objects, since Gemini expects a Struct', async () => {

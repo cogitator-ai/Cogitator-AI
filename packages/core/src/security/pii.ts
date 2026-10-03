@@ -4,7 +4,7 @@ import type {
   ChatStreamChunk,
   ContentPart,
   LLMBackend,
-  LLMProvider,
+  LLMBackendProvider,
   Message,
   PiiConfig,
   PiiFinding,
@@ -155,7 +155,7 @@ export class PiiVault {
  * answer, its stream and the tool calls it makes.
  */
 export class PiiMaskingBackend implements LLMBackend {
-  readonly provider: LLMProvider;
+  readonly provider: LLMBackendProvider;
   private readonly masker: PiiMasker;
 
   constructor(

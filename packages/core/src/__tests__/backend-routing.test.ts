@@ -4,6 +4,7 @@ import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { defineBackend, registerLLMBackend, unregisterLLMBackend } from '../llm/plugin';
+import { BaseLLMBackend } from '../llm/base';
 
 vi.mock('../llm/index', async (importOriginal) => {
   const original = await importOriginal<typeof import('../llm/index')>();
@@ -119,5 +120,31 @@ describe('backend routing', () => {
     const cog = new Cogitator({ llm: { backends: { local: custom.backend }, retry: false } });
 
     expect(cog.route('local/a/b')).toEqual({ backend: custom.backend, model: 'a/b' });
+  });
+
+  it('lets a custom backend report its own provider name', async () => {
+    class LocalBackend extends BaseLLMBackend {
+      readonly provider = 'local-llm';
+
+      async chat(request: ChatRequest) {
+        return {
+          id: this.generateId(),
+          content: `local:${request.model}`,
+          finishReason: 'stop' as const,
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        };
+      }
+
+      async *chatStream(): AsyncGenerator<ChatStreamChunk> {
+        yield { id: this.generateId(), delta: {}, finishReason: 'stop' };
+      }
+    }
+    const cog = new Cogitator({ llm: { backends: { 'local-llm': new LocalBackend() } } });
+
+    const result = await cog.run(agent('local-llm/tiny'), { input: 'hi' });
+
+    expect(cog.getLLMBackend('local-llm/tiny').provider).toBe('local-llm');
+    expect(result.output).toBe('local:tiny');
+    await cog.close();
   });
 });

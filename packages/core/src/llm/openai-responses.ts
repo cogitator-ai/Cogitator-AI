@@ -204,7 +204,8 @@ function toInputItems(message: Message, replayReasoning: boolean): ResponseInput
         {
           type: 'function_call_output',
           call_id: message.toolCallId ?? '',
-          output: getTextContent(message.content),
+          output:
+            typeof message.content === 'string' ? message.content : toInputContent(message.content),
         },
       ];
     case 'assistant':

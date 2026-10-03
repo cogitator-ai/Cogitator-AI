@@ -358,7 +358,7 @@ export class AnthropicBackend extends BaseLLMBackend {
           const toolResult: Anthropic.ToolResultBlockParam = {
             type: 'tool_result',
             tool_use_id: m.toolCallId ?? '',
-            content: this.getTextContent(m.content),
+            content: this.convertToolResultContent(m.content),
           };
           const previous = anthropicMessages[anthropicMessages.length - 1];
           if (
@@ -377,6 +377,13 @@ export class AnthropicBackend extends BaseLLMBackend {
     }
 
     return { system: systemParts.join('\n\n'), messages: anthropicMessages };
+  }
+
+  private convertToolResultContent(
+    content: MessageContent
+  ): string | Anthropic.ToolResultBlockParam['content'] {
+    if (typeof content === 'string') return content;
+    return content.map((part) => this.convertContentPart(part));
   }
 
   private convertContent(content: MessageContent): string | Anthropic.ContentBlockParam[] {
@@ -417,7 +424,9 @@ export class AnthropicBackend extends BaseLLMBackend {
     ];
   }
 
-  private convertContentPart(part: ContentPart): Anthropic.ContentBlockParam {
+  private convertContentPart(
+    part: ContentPart
+  ): Anthropic.TextBlockParam | Anthropic.ImageBlockParam {
     switch (part.type) {
       case 'text':
         return { type: 'text', text: part.text };

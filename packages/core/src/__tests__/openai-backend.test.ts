@@ -450,6 +450,61 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       );
     });
 
+    it('follows the tool messages of a turn with the images their results returned', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'chatcmpl-123',
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+      const screenshot = (id: string) => ({
+        role: 'tool' as const,
+        content: [
+          { type: 'text' as const, text: '{"image":"(image attached)"}' },
+          {
+            type: 'image_base64' as const,
+            image_base64: { data: 'iVBORw0KGgoAAAANSUhEUg==', media_type: 'image/png' as const },
+          },
+        ],
+        toolCallId: id,
+        name: 'screenshot',
+      });
+
+      await backend.chat({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'user', content: 'Look' },
+          { role: 'assistant', content: '' },
+          screenshot('call_1'),
+          screenshot('call_2'),
+          { role: 'user', content: 'And?' },
+        ],
+      });
+
+      const sent = mockCreate.mock.calls[0][0].messages;
+      expect(sent.map((m: { role: string }) => m.role)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+        'tool',
+        'user',
+        'user',
+      ]);
+      expect(sent[2]).toEqual({
+        role: 'tool',
+        content: '{"image":"(image attached)"}',
+        tool_call_id: 'call_1',
+      });
+      const image = {
+        type: 'image_url',
+        image_url: { url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==' },
+      };
+      expect(sent[4].content).toEqual([
+        { type: 'text', text: 'Images returned by the tool calls above:' },
+        image,
+        image,
+      ]);
+    });
+
     it('handles rate limit errors', async () => {
       mockCreate.mockRejectedValueOnce(new MockAPIError('Rate limit exceeded', 429));
 

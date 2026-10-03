@@ -3,7 +3,7 @@ import type {
   ChatResponse,
   ChatStreamChunk,
   LLMBackend,
-  LLMProvider,
+  LLMBackendProvider,
   LLMRetryConfig,
 } from '@cogitator-ai/types';
 import { CogitatorError, isRetryableError } from '@cogitator-ai/types';
@@ -25,7 +25,7 @@ export const DEFAULT_LLM_RETRY = {
  * both the calls and the waits between them.
  */
 export class RetryingBackend implements LLMBackend {
-  readonly provider: LLMProvider;
+  readonly provider: LLMBackendProvider;
   readonly complete?: LLMBackend['complete'];
   private readonly config: Required<Omit<LLMRetryConfig, 'onRetry'>> &
     Pick<LLMRetryConfig, 'onRetry'>;

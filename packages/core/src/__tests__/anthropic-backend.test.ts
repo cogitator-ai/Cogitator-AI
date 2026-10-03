@@ -984,6 +984,44 @@ describe('AnthropicBackend', () => {
       expect(mockCreate.mock.calls[0][0].system).toBeUndefined();
     });
 
+    it('sends the image of a tool result inside its tool_result block', async () => {
+      mockCreate.mockResolvedValueOnce(okResponse);
+
+      await backend.chat({
+        model: 'claude-sonnet-4-20250514',
+        messages: [
+          { role: 'user', content: 'Look' },
+          toolCallMessage([{ id: 'toolu_1', name: 'screenshot', arguments: {} }]),
+          {
+            role: 'tool',
+            content: [
+              { type: 'text', text: '{"image":"(image attached)"}' },
+              {
+                type: 'image_base64',
+                image_base64: { data: 'iVBORw0KGgoAAAANSUhEUg==', media_type: 'image/png' },
+              },
+            ],
+            toolCallId: 'toolu_1',
+            name: 'screenshot',
+          },
+        ],
+      });
+
+      expect(mockCreate.mock.calls[0][0].messages[2].content).toEqual([
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_1',
+          content: [
+            { type: 'text', text: '{"image":"(image attached)"}' },
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUg==' },
+            },
+          ],
+        },
+      ]);
+    });
+
     it('groups parallel tool results into a single user message', async () => {
       mockCreate.mockResolvedValueOnce(okResponse);
 

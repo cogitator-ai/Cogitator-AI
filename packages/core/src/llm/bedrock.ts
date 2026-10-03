@@ -56,9 +56,7 @@ interface ReasoningContentBlock {
   redactedContent?: Uint8Array;
 }
 
-interface ToolResultContentBlock {
-  text: string;
-}
+type ToolResultContentBlock = Pick<ContentBlock, 'text' | 'image'>;
 
 interface ToolResultBlock {
   toolUseId: string;
@@ -455,7 +453,10 @@ export class BedrockBackend extends BaseLLMBackend {
           const toolResultBlock: ContentBlock = {
             toolResult: {
               toolUseId: msg.toolCallId ?? '',
-              content: [{ text: this.getTextContent(msg.content) }],
+              content:
+                typeof msg.content === 'string'
+                  ? [{ text: msg.content }]
+                  : await this.convertContentToBlocks(msg.content, signal),
             },
           };
           const previous = bedrockMessages[bedrockMessages.length - 1];

@@ -24,6 +24,12 @@ export type LLMProvider =
   | 'together'
   | 'deepseek';
 
+/**
+ * The provider name a backend reports: a built-in {@link LLMProvider}, or the
+ * name of a backend of your own (`llm.backends`) or of a registered plugin.
+ */
+export type LLMBackendProvider = LLMProvider | (string & {});
+
 export interface LLMConfig {
   provider: LLMProvider;
   model: string;
@@ -136,7 +142,7 @@ export interface ChatStreamChunk {
 }
 
 export interface LLMBackend {
-  readonly provider: LLMProvider;
+  readonly provider: LLMBackendProvider;
   chat(request: ChatRequest): Promise<ChatResponse>;
   chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk>;
   complete?(request: Omit<ChatRequest, 'model'> & { model?: string }): Promise<ChatResponse>;

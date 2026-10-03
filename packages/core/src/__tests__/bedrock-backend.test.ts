@@ -106,6 +106,50 @@ describe('BedrockBackend', () => {
       expect(command).toBeInstanceOf(MockConverseCommand);
     });
 
+    it('sends the image of a tool result inside its toolResult block', async () => {
+      mockSend.mockResolvedValueOnce({
+        output: { message: { content: [{ text: 'ok' }] } },
+        stopReason: 'end_turn',
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      });
+
+      await backend.chat({
+        model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+        messages: [
+          { role: 'user', content: 'Look' },
+          toolCallMessage([{ id: 't1', name: 'screenshot', arguments: {} }]),
+          {
+            role: 'tool',
+            content: [
+              { type: 'text', text: '{"image":"(image attached)"}' },
+              {
+                type: 'image_base64',
+                image_base64: { data: 'iVBORw0KGgoAAAANSUhEUg==', media_type: 'image/png' },
+              },
+            ],
+            toolCallId: 't1',
+            name: 'screenshot',
+          },
+        ],
+      });
+
+      const command = mockSend.mock.calls[0][0] as MockConverseCommand;
+      const { messages } = command.input as {
+        messages: { content: { toolResult?: { content: unknown[] } }[] }[];
+      };
+      expect(messages[2].content[0].toolResult?.content).toEqual([
+        { text: '{"image":"(image attached)"}' },
+        {
+          image: {
+            format: 'png',
+            source: {
+              bytes: Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUg=='), (c) => c.charCodeAt(0)),
+            },
+          },
+        },
+      ]);
+    });
+
     it('passes abort signal to AWS request options', async () => {
       mockSend.mockResolvedValueOnce({
         output: { message: { content: [{ text: 'OK' }] } },

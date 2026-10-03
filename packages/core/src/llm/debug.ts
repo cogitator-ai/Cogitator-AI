@@ -6,7 +6,7 @@
 
 import type {
   LLMBackend,
-  LLMProvider,
+  LLMBackendProvider,
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
@@ -39,7 +39,7 @@ const defaultLogger: LLMDebugLogger = {
 };
 
 export class LLMDebugWrapper implements LLMBackend {
-  readonly provider: LLMProvider;
+  readonly provider: LLMBackendProvider;
   private backend: LLMBackend;
   private options: Required<LLMDebugOptions>;
 
