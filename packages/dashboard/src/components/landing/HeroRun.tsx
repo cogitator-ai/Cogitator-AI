@@ -6,7 +6,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Badge, Vox, cx } from './ui';
 import { paced } from './pace';
 
-const STEP_DURATIONS = [900, 1300, 1300, 1500, 1300, 1200, 1100, 2200, 3200];
+const STEP_DURATIONS = [900, 1300, 1300, 2600, 2400, 1200, 1100, 2200, 3200];
 const FINAL_STEP = STEP_DURATIONS.length - 1;
 
 type Status = 'running' | 'paused' | 'completed';
