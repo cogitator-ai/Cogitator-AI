@@ -515,6 +515,22 @@ const a2aServer = new A2AServer({
 
 Every adapter extracts the credential (`Authorization: Bearer ...`, or the `x-api-key` header / `headerName` for `type: 'apiKey'`) and the public Agent Card advertises the scheme in `securitySchemes`.
 
+### One caller per user
+
+When several users or tenants share the server, return who the caller is instead of `true`:
+
+```typescript
+auth: {
+  type: 'bearer',
+  validate: async (token) => {
+    const session = await sessions.verify(token);
+    return session ? { userId: session.userId } : false;
+  },
+},
+```
+
+Each task then belongs to the user who created it: another user's `tasks/get`, `tasks/cancel`, push-notification calls and attempts to continue the task get `Task not found`, `tasks/list` returns only their own tasks, and a `contextId` holding someone else's tasks is refused. Runs carry the `userId`, so the agent's threads and memory are scoped to the user as well ([multi-user](/docs/advanced/multi-user)). Returning `true` keeps the earlier behaviour: every caller shares one space.
+
 Clients include credentials via headers:
 
 ```typescript

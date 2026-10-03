@@ -78,6 +78,7 @@ export type {
   AgentRunResult,
   CogitatorLike,
   A2AAuthConfig,
+  A2ACaller,
   A2AServerConfig,
   A2AClientConfig,
   PushNotificationConfig,

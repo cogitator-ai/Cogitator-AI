@@ -1,4 +1,5 @@
 import type { A2ATask, TaskFilter, TaskStore } from './types.js';
+import { isTaskVisibleTo } from './ownership.js';
 
 export interface RedisClientLike {
   get(key: string): Promise<string | null>;
@@ -127,6 +128,10 @@ export class RedisTaskStore implements TaskStore {
     let filtered = tasks;
     if (filter?.contextId) {
       filtered = filtered.filter((t) => t.contextId === filter.contextId);
+    }
+    if (filter?.visibleTo !== undefined) {
+      const userId = filter.visibleTo;
+      filtered = filtered.filter((t) => isTaskVisibleTo(t, userId));
     }
     if (filter?.state) {
       filtered = filtered.filter((t) => t.status.state === filter.state);

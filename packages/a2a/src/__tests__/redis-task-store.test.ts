@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { RedisTaskStore, type RedisClientLike } from '../redis-task-store';
 import type { A2ATask } from '../types';
+import { TASK_OWNER_KEY } from '../ownership';
 
 function createMockRedis(): RedisClientLike {
   const store = new Map<string, string>();
@@ -90,6 +91,19 @@ describe('RedisTaskStore', () => {
     const filtered = await store.list({ contextId: 'ctx_a' });
     expect(filtered).toHaveLength(2);
     expect(filtered.every((t) => t.contextId === 'ctx_a')).toBe(true);
+  });
+
+  it('lists only the tasks a caller may see', async () => {
+    await store.create(createTask('task_ada', { metadata: { [TASK_OWNER_KEY]: 'ada' } }));
+    await store.create(createTask('task_bob', { metadata: { [TASK_OWNER_KEY]: 'bob' } }));
+    await store.create(createTask('task_shared'));
+
+    const ids = async (visibleTo: string | null) =>
+      (await store.list({ visibleTo })).map((t) => t.id).sort();
+
+    expect(await ids('ada')).toEqual(['task_ada', 'task_shared']);
+    expect(await ids(null)).toEqual(['task_shared']);
+    expect(await store.list()).toHaveLength(3);
   });
 
   it('should filter by state', async () => {

@@ -131,6 +131,12 @@ export interface SendMessageConfiguration {
 export interface TaskFilter {
   contextId?: string;
   state?: TaskState;
+  /**
+   * Only tasks this caller may see: those it owns and those without an
+   * owner. `null` stands for a caller without a user (no auth, or `validate`
+   * returned `true`), who sees only tasks without an owner.
+   */
+  visibleTo?: string | null;
   limit?: number;
   offset?: number;
 }
@@ -194,13 +200,25 @@ export interface CogitatorLike {
       threadId?: string;
       timeout?: number;
       loadHistory?: boolean;
+      /** The caller the run acts for, so thread and memory access is scoped to them */
+      userId?: string;
     }
   ): Promise<AgentRunResult>;
 }
 
+/** Who an authenticated A2A request comes from. */
+export interface A2ACaller {
+  userId: string;
+}
+
 export interface A2AAuthConfig {
   type: 'bearer' | 'apiKey';
-  validate: (credentials: string) => Promise<boolean>;
+  /**
+   * Checks the credentials. Return the caller to keep each user's tasks,
+   * contexts and memory apart; `true` admits the request without a user
+   * (every such caller shares the same tasks), `false` rejects it.
+   */
+  validate: (credentials: string) => Promise<boolean | A2ACaller>;
   /** Header carrying the API key when `type` is 'apiKey' (default: 'x-api-key') */
   headerName?: string;
 }

@@ -16,6 +16,7 @@ import { InMemoryTaskStore } from './task-store.js';
 import { isTerminalState } from './types.js';
 import { A2AError } from './errors.js';
 import * as errors from './errors.js';
+import { TASK_OWNER_KEY } from './ownership.js';
 
 export interface TaskManagerConfig {
   taskStore?: TaskStore;
@@ -26,6 +27,8 @@ export interface ExecuteTaskOptions {
   onToken?: (token: string) => void;
   /** Maximum agent run time in ms */
   timeout?: number;
+  /** The caller the run acts for */
+  userId?: string;
 }
 
 const CONTINUABLE_STATES: readonly string[] = ['input-required', 'completed'];
@@ -41,13 +44,15 @@ export class TaskManager extends EventEmitter {
     this.store = config?.taskStore ?? new InMemoryTaskStore();
   }
 
-  async createTask(message: A2AMessage, contextId?: string): Promise<A2ATask> {
+  /** A new task; `ownerId` keeps it visible only to that user. */
+  async createTask(message: A2AMessage, contextId?: string, ownerId?: string): Promise<A2ATask> {
     const task: A2ATask = {
       id: `task_${randomUUID()}`,
       contextId: contextId ?? `ctx_${randomUUID()}`,
       status: { state: 'working', timestamp: new Date().toISOString() },
       history: [message],
       artifacts: [],
+      ...(ownerId !== undefined && { metadata: { [TASK_OWNER_KEY]: ownerId } }),
     };
     await this.store.create(task);
     this.emitStatusUpdate(task);
@@ -77,6 +82,7 @@ export class TaskManager extends EventEmitter {
         onToken: options.onToken,
         threadId: task.contextId,
         timeout: options.timeout,
+        ...(options.userId !== undefined && { userId: options.userId }),
         ...(priorHistory.length > 0 && { loadHistory: false }),
       });
 

@@ -126,6 +126,8 @@ const client = new A2AClient('https://remote-agent.example.com', {
 
 Custom integrations can call `a2aServer.getAuthToken((name) => headers.get(name))` and pass the result to `handleJsonRpc(body, token)` / `handleJsonRpcStream(body, token, signal)`.
 
+`validate` may return the caller instead of `true` — `{ userId }` — to keep users apart: each task belongs to the user who created it, other users get `Task not found` for it and do not see it in `tasks/list`, a `contextId` holding another user's tasks is refused, and runs carry the `userId` so threads and memory are per user too.
+
 ## Send Configuration
 
 `sendMessage(message, configuration)` supports the A2A `SendMessageConfiguration`:

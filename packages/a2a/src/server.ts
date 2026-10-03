@@ -13,6 +13,7 @@ import type {
   PushNotificationConfig,
   PushNotificationStore,
   A2AAuthConfig,
+  A2ACaller,
 } from './types.js';
 import type { JsonRpcRequest, JsonRpcResponse } from './json-rpc.js';
 import {
@@ -33,6 +34,7 @@ import {
   validateWebhookUrl,
 } from './push-notifications.js';
 import { isStreamFinalState } from './types.js';
+import { isTaskVisibleTo, publicTask } from './ownership.js';
 
 type HeaderGetter = (name: string) => string | null | undefined;
 
@@ -203,8 +205,9 @@ export class A2AServer {
       return createErrorResponse(null, errors.internalError(String(e)));
     }
 
+    let caller: A2ACaller | undefined;
     try {
-      await this.validateAuth(authToken);
+      caller = await this.authenticate(authToken);
     } catch (e) {
       if (request.id === undefined) return null;
       if (e instanceof A2AError) {
@@ -214,7 +217,7 @@ export class A2AServer {
     }
 
     try {
-      const result = await this.routeMethod(request.method, request.params);
+      const result = await this.routeMethod(request.method, request.params, caller);
       if (request.id === undefined) return null;
       return createSuccessResponse(request.id, result);
     } catch (e) {
@@ -247,8 +250,9 @@ export class A2AServer {
       return;
     }
 
+    let caller: A2ACaller | undefined;
     try {
-      await this.validateAuth(authToken);
+      caller = await this.authenticate(authToken);
     } catch (e) {
       yield failedStatusEvent(e instanceof Error ? e.message : 'Authentication failed');
       return;
@@ -308,9 +312,11 @@ export class A2AServer {
       try {
         this.validateInitialPushConfig(params.configuration);
         if (isContinued) {
+          await this.visibleTask(message.taskId!, caller);
           task = await this.taskManager.continueTask(message.taskId!, message);
         } else {
-          task = await this.taskManager.createTask(message, message.contextId);
+          await this.assertContextAvailable(message.contextId, caller);
+          task = await this.taskManager.createTask(message, message.contextId, caller?.userId);
           taskId = task.id;
           await this.registerInitialPushConfig(task.id, params.configuration);
         }
@@ -338,6 +344,7 @@ export class A2AServer {
         .executeTask(task, this.cogitator, agent, message, {
           onToken,
           timeout: params.configuration?.timeout,
+          ...(caller && { userId: caller.userId }),
         })
         .then(
           () => {
@@ -394,37 +401,67 @@ export class A2AServer {
     }
   }
 
-  private async validateAuth(authToken?: string): Promise<void> {
-    if (!this.auth) return;
+  /**
+   * The caller of a request: undefined when there is no auth or `validate`
+   * admitted it without a user. Throws `unauthorized` otherwise.
+   */
+  private async authenticate(authToken?: string): Promise<A2ACaller | undefined> {
+    if (!this.auth) return undefined;
     if (!authToken) {
       throw new A2AError(errors.unauthorized('Authentication required'));
     }
-    const valid = await this.auth.validate(authToken);
-    if (!valid) {
+    const verdict = await this.auth.validate(authToken);
+    if (!verdict) {
       throw new A2AError(errors.unauthorized('Invalid credentials'));
+    }
+    return verdict === true ? undefined : verdict;
+  }
+
+  /** A task the caller may see; another user's task is reported as not found. */
+  private async visibleTask(taskId: string, caller: A2ACaller | undefined): Promise<A2ATask> {
+    const task = await this.taskManager.getTask(taskId);
+    if (!isTaskVisibleTo(task, caller?.userId)) {
+      throw new A2AError(errors.taskNotFound(taskId));
+    }
+    return task;
+  }
+
+  /** Rejects joining a context that holds another user's tasks. */
+  private async assertContextAvailable(
+    contextId: string | undefined,
+    caller: A2ACaller | undefined
+  ): Promise<void> {
+    if (!contextId) return;
+    const tasks = await this.taskManager.listTasks({ contextId });
+    if (tasks.some((task) => !isTaskVisibleTo(task, caller?.userId))) {
+      throw new A2AError(errors.invalidParams(`Unknown contextId: ${contextId}`));
     }
   }
 
-  private async routeMethod(method: string, params: unknown): Promise<unknown> {
+  private async routeMethod(
+    method: string,
+    params: unknown,
+    caller: A2ACaller | undefined
+  ): Promise<unknown> {
     switch (method) {
       case 'message/send':
-        return this.handleSendMessage(params);
+        return this.handleSendMessage(params, caller);
       case 'message/stream':
         throw new A2AError(errors.unsupportedOperation('Use handleJsonRpcStream for streaming'));
       case 'tasks/get':
-        return this.handleGetTask(params);
+        return this.handleGetTask(params, caller);
       case 'tasks/cancel':
-        return this.handleCancelTask(params);
+        return this.handleCancelTask(params, caller);
       case 'tasks/list':
-        return this.handleListTasks(params);
+        return this.handleListTasks(params, caller);
       case 'tasks/pushNotification/create':
-        return this.handleCreatePushNotification(params);
+        return this.handleCreatePushNotification(params, caller);
       case 'tasks/pushNotification/get':
-        return this.handleGetPushNotification(params);
+        return this.handleGetPushNotification(params, caller);
       case 'tasks/pushNotification/list':
-        return this.handleListPushNotifications(params);
+        return this.handleListPushNotifications(params, caller);
       case 'tasks/pushNotification/delete':
-        return this.handleDeletePushNotification(params);
+        return this.handleDeletePushNotification(params, caller);
       case 'agent/extendedCard':
         return this.handleExtendedCard(params);
       default:
@@ -432,7 +469,10 @@ export class A2AServer {
     }
   }
 
-  private async handleSendMessage(params: unknown): Promise<A2ATask> {
+  private async handleSendMessage(
+    params: unknown,
+    caller: A2ACaller | undefined
+  ): Promise<A2ATask> {
     const { message, agentName, configuration } = (params ?? {}) as Partial<SendMessageParams>;
 
     if (!isValidMessage(message)) {
@@ -449,14 +489,17 @@ export class A2AServer {
 
     let task: A2ATask;
     if (message.taskId) {
+      await this.visibleTask(message.taskId, caller);
       task = await this.taskManager.continueTask(message.taskId, message);
     } else {
-      task = await this.taskManager.createTask(message, message.contextId);
+      await this.assertContextAvailable(message.contextId, caller);
+      task = await this.taskManager.createTask(message, message.contextId, caller?.userId);
       await this.registerInitialPushConfig(task.id, configuration);
     }
 
     const execution = this.taskManager.executeTask(task, this.cogitator, agent, message, {
       timeout: configuration?.timeout,
+      ...(caller && { userId: caller.userId }),
     });
 
     if (configuration?.blocking === false) {
@@ -511,7 +554,7 @@ export class A2AServer {
     task: A2ATask,
     configuration?: Pick<SendMessageConfiguration, 'historyLength' | 'acceptedOutputModes'>
   ): A2ATask {
-    let shaped = task;
+    let shaped = publicTask(task);
     const historyLength = configuration?.historyLength;
     if (historyLength !== undefined) {
       shaped = {
@@ -529,20 +572,24 @@ export class A2AServer {
     return shaped;
   }
 
-  private async handleGetTask(params: unknown): Promise<A2ATask> {
+  private async handleGetTask(params: unknown, caller: A2ACaller | undefined): Promise<A2ATask> {
     const { id, historyLength } = (params ?? {}) as { id?: string; historyLength?: number };
     if (!id) throw new A2AError(errors.invalidParams('id is required'));
     assertOptionalNonNegativeInt(historyLength, 'historyLength');
-    return this.shapeTask(await this.taskManager.getTask(id), { historyLength });
+    return this.shapeTask(await this.visibleTask(id, caller), { historyLength });
   }
 
-  private async handleCancelTask(params: unknown): Promise<A2ATask> {
+  private async handleCancelTask(params: unknown, caller: A2ACaller | undefined): Promise<A2ATask> {
     const { id } = (params ?? {}) as { id?: string };
     if (!id) throw new A2AError(errors.invalidParams('id is required'));
-    return this.taskManager.cancelTask(id);
+    await this.visibleTask(id, caller);
+    return publicTask(await this.taskManager.cancelTask(id));
   }
 
-  private async handleListTasks(params: unknown): Promise<{ tasks: A2ATask[] }> {
+  private async handleListTasks(
+    params: unknown,
+    caller: A2ACaller | undefined
+  ): Promise<{ tasks: A2ATask[] }> {
     const raw = (params ?? {}) as TaskFilter;
     assertOptionalNonNegativeInt(raw.limit, 'limit');
     assertOptionalNonNegativeInt(raw.offset, 'offset');
@@ -551,12 +598,16 @@ export class A2AServer {
       state: raw.state,
       offset: raw.offset,
       limit: Math.min(raw.limit ?? MAX_LIST_LIMIT, MAX_LIST_LIMIT),
+      visibleTo: caller?.userId ?? null,
     };
     const tasks = await this.taskManager.listTasks(filter);
-    return { tasks };
+    return { tasks: tasks.map(publicTask) };
   }
 
-  private async handleCreatePushNotification(params: unknown): Promise<PushNotificationConfig> {
+  private async handleCreatePushNotification(
+    params: unknown,
+    caller: A2ACaller | undefined
+  ): Promise<PushNotificationConfig> {
     const { taskId, config } = (params ?? {}) as {
       taskId?: string;
       config?: PushNotificationConfig;
@@ -565,29 +616,41 @@ export class A2AServer {
     if (!config?.webhookUrl)
       throw new A2AError(errors.invalidParams('config.webhookUrl is required'));
     this.assertWebhookAllowed(config.webhookUrl);
-    await this.taskManager.getTask(taskId);
+    await this.visibleTask(taskId, caller);
     return this.pushNotificationStore.create(taskId, config);
   }
 
-  private async handleGetPushNotification(params: unknown): Promise<PushNotificationConfig | null> {
+  private async handleGetPushNotification(
+    params: unknown,
+    caller: A2ACaller | undefined
+  ): Promise<PushNotificationConfig | null> {
     const { taskId, configId } = (params ?? {}) as { taskId?: string; configId?: string };
     if (!taskId || !configId) {
       throw new A2AError(errors.invalidParams('taskId and configId are required'));
     }
+    await this.visibleTask(taskId, caller);
     return this.pushNotificationStore.get(taskId, configId);
   }
 
-  private async handleListPushNotifications(params: unknown): Promise<PushNotificationConfig[]> {
+  private async handleListPushNotifications(
+    params: unknown,
+    caller: A2ACaller | undefined
+  ): Promise<PushNotificationConfig[]> {
     const { taskId } = (params ?? {}) as { taskId?: string };
     if (!taskId) throw new A2AError(errors.invalidParams('taskId is required'));
+    await this.visibleTask(taskId, caller);
     return this.pushNotificationStore.list(taskId);
   }
 
-  private async handleDeletePushNotification(params: unknown): Promise<{ success: boolean }> {
+  private async handleDeletePushNotification(
+    params: unknown,
+    caller: A2ACaller | undefined
+  ): Promise<{ success: boolean }> {
     const { taskId, configId } = (params ?? {}) as { taskId?: string; configId?: string };
     if (!taskId || !configId) {
       throw new A2AError(errors.invalidParams('taskId and configId are required'));
     }
+    await this.visibleTask(taskId, caller);
     await this.pushNotificationStore.delete(taskId, configId);
     return { success: true };
   }

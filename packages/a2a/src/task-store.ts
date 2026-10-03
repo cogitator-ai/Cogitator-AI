@@ -1,5 +1,6 @@
 import type { A2ATask, TaskFilter, TaskStore } from './types.js';
 import { isTerminalState } from './types.js';
+import { isTaskVisibleTo } from './ownership.js';
 
 export interface InMemoryTaskStoreConfig {
   maxSize?: number;
@@ -34,6 +35,10 @@ export class InMemoryTaskStore implements TaskStore {
 
     if (filter?.contextId) {
       tasks = tasks.filter((t) => t.contextId === filter.contextId);
+    }
+    if (filter?.visibleTo !== undefined) {
+      const userId = filter.visibleTo;
+      tasks = tasks.filter((t) => isTaskVisibleTo(t, userId));
     }
     if (filter?.state) {
       tasks = tasks.filter((t) => t.status.state === filter.state);

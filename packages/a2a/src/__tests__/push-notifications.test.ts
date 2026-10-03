@@ -291,6 +291,18 @@ describe('A2AServer push notification methods', () => {
     });
   });
 
+  async function sendTask(): Promise<string> {
+    const sent = expectResponse(
+      await server.handleJsonRpc({
+        jsonrpc: '2.0',
+        method: 'message/send',
+        params: { message: userMessage('Hello') },
+        id: 0,
+      })
+    );
+    return (sent.result as { id: string }).id;
+  }
+
   it('should create a push notification config via JSON-RPC', async () => {
     const sent = await server.handleJsonRpc({
       jsonrpc: '2.0',
@@ -319,7 +331,8 @@ describe('A2AServer push notification methods', () => {
   });
 
   it('should get a push notification config via JSON-RPC', async () => {
-    const created = await pushStore.create('task_1', {
+    const taskId = await sendTask();
+    const created = await pushStore.create(taskId, {
       webhookUrl: 'https://example.com/webhook',
     });
 
@@ -327,7 +340,7 @@ describe('A2AServer push notification methods', () => {
       await server.handleJsonRpc({
         jsonrpc: '2.0',
         method: 'tasks/pushNotification/get',
-        params: { taskId: 'task_1', configId: created.id },
+        params: { taskId, configId: created.id },
         id: 1,
       })
     );
@@ -338,14 +351,15 @@ describe('A2AServer push notification methods', () => {
   });
 
   it('should list push notification configs via JSON-RPC', async () => {
-    await pushStore.create('task_1', { webhookUrl: 'https://example.com/hook1' });
-    await pushStore.create('task_1', { webhookUrl: 'https://example.com/hook2' });
+    const taskId = await sendTask();
+    await pushStore.create(taskId, { webhookUrl: 'https://example.com/hook1' });
+    await pushStore.create(taskId, { webhookUrl: 'https://example.com/hook2' });
 
     const response = expectResponse(
       await server.handleJsonRpc({
         jsonrpc: '2.0',
         method: 'tasks/pushNotification/list',
-        params: { taskId: 'task_1' },
+        params: { taskId },
         id: 1,
       })
     );
@@ -356,7 +370,8 @@ describe('A2AServer push notification methods', () => {
   });
 
   it('should delete a push notification config via JSON-RPC', async () => {
-    const created = await pushStore.create('task_1', {
+    const taskId = await sendTask();
+    const created = await pushStore.create(taskId, {
       webhookUrl: 'https://example.com/hook',
     });
 
@@ -364,13 +379,13 @@ describe('A2AServer push notification methods', () => {
       await server.handleJsonRpc({
         jsonrpc: '2.0',
         method: 'tasks/pushNotification/delete',
-        params: { taskId: 'task_1', configId: created.id },
+        params: { taskId, configId: created.id },
         id: 1,
       })
     );
 
     expect(response.error).toBeUndefined();
-    const remaining = await pushStore.list('task_1');
+    const remaining = await pushStore.list(taskId);
     expect(remaining).toHaveLength(0);
   });
 
