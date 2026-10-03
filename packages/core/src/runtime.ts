@@ -45,6 +45,7 @@ import {
 import { createSpan, getTextContent } from './cogitator/span-factory';
 import { executeTool, createToolMessage } from './cogitator/tool-executor';
 import { streamChat } from './cogitator/streaming';
+import { parseStructuredOutput, toLLMResponseFormat } from './cogitator/response-format';
 import { CostEstimator } from './cost-routing/cost-estimator';
 
 /**
@@ -290,6 +291,7 @@ export class Cogitator {
       let iterations = 0;
       const maxIterations = agent.config?.maxIterations ?? 10;
       let lastToolCallSig = '';
+      const responseFormat = toLLMResponseFormat(agent.config.responseFormat);
 
       const allReflections: Reflection[] = [];
       const allActions: ReflectionAction[] = [];
@@ -336,7 +338,8 @@ export class Cogitator {
               registry,
               agent,
               options.onToken,
-              abortController.signal
+              abortController.signal,
+              responseFormat
             ),
             abortController.signal
           );
@@ -350,6 +353,7 @@ export class Cogitator {
               topP: agent.config.topP,
               maxTokens: agent.config.maxTokens,
               stop: agent.config.stopSequences,
+              responseFormat,
               signal: abortController.signal,
             }),
             abortController.signal
@@ -594,6 +598,7 @@ export class Cogitator {
       const endTime = Date.now();
       const lastAssistantMessage = messages.filter((m) => m.role === 'assistant').pop();
       const finalOutput = lastAssistantMessage ? getTextContent(lastAssistantMessage.content) : '';
+      const structured = parseStructuredOutput(agent.config.responseFormat, finalOutput);
 
       if (
         this.state.reflectionEngine &&
@@ -656,6 +661,7 @@ export class Cogitator {
 
       const result: RunResult = {
         output: finalOutput,
+        ...(structured !== undefined && { structured }),
         runId,
         agentId: agent.id,
         threadId,

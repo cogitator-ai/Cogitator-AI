@@ -51,7 +51,7 @@ const agent = new Agent({
 });
 
 const result = await cog.run(agent, { input: 'Analyze this sentence: "I love TypeScript"' });
-const data = JSON.parse(result.output);
+const data = result.structured; // the parsed JSON, or undefined if the answer was not JSON
 ```
 
 ### `json_schema`
@@ -109,7 +109,7 @@ OpenAI-compatible providers (and requests with stop sequences) use Chat Completi
 
 - `json` mode: Appends "respond with valid JSON only" to the system prompt
 - `json_schema` mode on Claude 4.5+ and Fable: uses **native structured outputs** (`output_config.format`). The schema is adapted to the subset Claude accepts: every object gets `additionalProperties: false`, `oneOf` becomes `anyOf`, and unsupported constraints (numeric bounds, string lengths, `maxItems`, unknown formats) are moved into the description so the model still sees them
-- `json_schema` mode on older models: Cogitator uses a **tool trick** -- it creates a synthetic tool named `__json_response` with your schema as its parameters and forces the LLM to call it. The output is extracted from the tool call arguments
+- `json_schema` mode on older models: Cogitator uses a **tool trick** -- it creates a synthetic tool named `__json_response` with your schema as its parameters and forces the LLM to call it. The output is extracted from the tool call arguments. When the agent has tools of its own, forcing that call would keep it from using them, so the schema goes into the system prompt instead
 
 Either way you get the same structured response regardless of provider.
 
@@ -123,7 +123,8 @@ Either way you get the same structured response regardless of provider.
 Google supports structured outputs via `responseMimeType` and `responseSchema`:
 
 - `json` mode: Sets `responseMimeType: 'application/json'`
-- `json_schema` mode: Sets both `responseMimeType` and `responseSchema`
+- `json_schema` mode: Sets both `responseMimeType` and `responseSchema` (keywords Gemini does not accept are dropped)
+- Gemini 1.x and 2.x refuse a JSON mime type together with function calling, so for an agent with tools the schema goes into the system instruction instead. Gemini 3 takes both in one request
 
 ### Ollama
 
@@ -168,20 +169,18 @@ const analysisSchema = z.object({
 
 Field descriptions (`.describe()`) are included in the JSON Schema sent to the LLM, which improves output quality.
 
-## Parsing the Output
+## Reading the Result
 
-The `result.output` is always a string. For structured outputs, parse it:
+`result.output` is always the raw text of the final answer. For `json` and `json_schema` agents, `result.structured` holds the parsed value: the JSON (a ` ```json ` fence around it is tolerated), run through your Zod schema in `json_schema` mode, so transforms and defaults apply.
 
 ```typescript
 const result = await cog.run(agent, { input: 'Analyze this article...' });
-const data = JSON.parse(result.output);
+const analysis = result.structured as z.infer<typeof analysisSchema> | undefined;
 ```
 
-Since the LLM is constrained by the schema, the parsed JSON will match your Zod type. You can validate it for extra safety:
+`structured` is `undefined` when the answer is not valid JSON or does not match the schema, so check it before use. Agents with tools can call them as usual: the format applies to the final answer.
 
-```typescript
-const parsed = analysisSchema.parse(JSON.parse(result.output));
-```
+Strict mode is requested only when the schema allows it: OpenAI rejects strict schemas with optional fields, so a schema with `.optional()` properties is sent with `strict: false`.
 
 ## Common Patterns
 

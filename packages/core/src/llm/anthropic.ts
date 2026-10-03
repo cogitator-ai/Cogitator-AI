@@ -455,6 +455,17 @@ export class AnthropicBackend extends BaseLLMBackend {
       };
     }
 
+    if (request.tools?.length) {
+      const { toolChoice, instruction } = this.convertToolChoice(request.toolChoice, model);
+      return {
+        tools: [],
+        toolChoice,
+        systemSuffix: [instruction, jsonOutputInstruction(jsonSchema.schema)]
+          .filter((part) => part.length > 0)
+          .join('\n\n'),
+      };
+    }
+
     const schema = jsonSchema.schema;
     const inputSchema: AnthropicToolInput = {
       ...schema,

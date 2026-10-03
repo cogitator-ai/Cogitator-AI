@@ -87,6 +87,75 @@ describe('Structured Outputs / JSON Mode', () => {
       expect(body.generationConfig.responseSchema).toEqual(schema);
     });
 
+    function geminiReply() {
+      return {
+        ok: true,
+        json: async () => ({
+          candidates: [
+            { content: { role: 'model', parts: [{ text: '{}' }] }, finishReason: 'STOP' },
+          ],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        }),
+      };
+    }
+
+    const tools = [
+      {
+        name: 'lookup',
+        description: 'Look up',
+        parameters: { type: 'object' as const, properties: { q: { type: 'string' } } },
+      },
+    ];
+    const schemaFormat: LLMResponseFormat = {
+      type: 'json_schema',
+      jsonSchema: {
+        name: 'r',
+        schema: {
+          type: 'object',
+          properties: { a: { type: 'number' } },
+          required: ['a'],
+          additionalProperties: false,
+        },
+      },
+    };
+
+    it('puts the schema in the instructions for Gemini 2 when tools are present', async () => {
+      mockFetch.mockResolvedValueOnce(geminiReply());
+
+      await backend.chat({
+        model: 'gemini-2.5-flash',
+        messages: [
+          { role: 'system', content: 'Be brief.' },
+          { role: 'user', content: 'x' },
+        ],
+        tools,
+        responseFormat: schemaFormat,
+      });
+
+      const body = JSON.parse((mockFetch.mock.calls[0] as [string, RequestInit])[1].body as string);
+      expect(body.generationConfig?.responseMimeType).toBeUndefined();
+      expect(body.systemInstruction.parts[0].text).toMatch(/^Be brief\.\n\n.*valid JSON only/s);
+    });
+
+    it('sends the JSON mime type with tools to Gemini 3, without unsupported keywords', async () => {
+      mockFetch.mockResolvedValueOnce(geminiReply());
+
+      await backend.chat({
+        model: 'gemini-3.5-flash-lite',
+        messages: [{ role: 'user', content: 'x' }],
+        tools,
+        responseFormat: schemaFormat,
+      });
+
+      const body = JSON.parse((mockFetch.mock.calls[0] as [string, RequestInit])[1].body as string);
+      expect(body.generationConfig.responseMimeType).toBe('application/json');
+      expect(body.generationConfig.responseSchema).toEqual({
+        type: 'object',
+        properties: { a: { type: 'number' } },
+        required: ['a'],
+      });
+    });
+
     it('should not include responseFormat for text type', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,

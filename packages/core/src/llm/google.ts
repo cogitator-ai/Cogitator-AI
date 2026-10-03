@@ -339,7 +339,14 @@ export class GoogleBackend extends BaseLLMBackend {
     }
 
     const jsonConfig = this.convertResponseFormat(request.responseFormat);
-    if (jsonConfig) {
+    if (jsonConfig && request.tools?.length && !supportsJsonModeWithTools(model)) {
+      const instruction = jsonInstruction(jsonConfig.responseSchema);
+      geminiRequest.systemInstruction = {
+        parts: [
+          { text: systemInstruction ? `${systemInstruction}\n\n${instruction}` : instruction },
+        ],
+      };
+    } else if (jsonConfig) {
       geminiRequest.generationConfig.responseMimeType = jsonConfig.responseMimeType;
       if (jsonConfig.responseSchema) {
         geminiRequest.generationConfig.responseSchema = jsonConfig.responseSchema;
@@ -629,7 +636,7 @@ export class GoogleBackend extends BaseLLMBackend {
 
     return {
       responseMimeType: 'application/json',
-      responseSchema: format.jsonSchema.schema,
+      responseSchema: this.cleanSchemaForGemini(format.jsonSchema.schema),
     };
   }
 
@@ -658,6 +665,20 @@ export class GoogleBackend extends BaseLLMBackend {
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Gemini 1.x and 2.x refuse a JSON response mime type together with function
+ * calling; Gemini 3 accepts both in one request.
+ */
+function supportsJsonModeWithTools(model: string): boolean {
+  return !/^gemini-[12](\.|-|$)/.test(model);
+}
+
+function jsonInstruction(schema: Record<string, unknown> | undefined): string {
+  return schema
+    ? `When you give your final answer, respond with valid JSON only, conforming to this JSON schema:\n${JSON.stringify(schema)}`
+    : 'When you give your final answer, respond with valid JSON only.';
 }
 
 function toToolCall(part: {

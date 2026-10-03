@@ -1,5 +1,5 @@
 import { nanoid } from 'nanoid';
-import type { LLMBackend, Message, ToolCall } from '@cogitator-ai/types';
+import type { LLMBackend, LLMResponseFormat, Message, ToolCall } from '@cogitator-ai/types';
 import { countMessagesTokens } from '@cogitator-ai/memory';
 import { ToolRegistry } from '../registry';
 import type { Agent } from '../agent';
@@ -23,7 +23,8 @@ export async function streamChat(
   registry: ToolRegistry,
   agent: Agent,
   onToken: (token: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  responseFormat?: LLMResponseFormat
 ): Promise<StreamChatResult> {
   throwIfStreamAborted(signal);
 
@@ -42,6 +43,7 @@ export async function streamChat(
     topP: agent.config.topP,
     maxTokens: agent.config.maxTokens,
     stop: agent.config.stopSequences,
+    responseFormat,
     signal,
   });
 

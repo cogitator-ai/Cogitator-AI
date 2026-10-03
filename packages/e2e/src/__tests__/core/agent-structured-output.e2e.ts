@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createTestCogitator, createTestAgent, isOllamaRunning } from '../../helpers/setup';
-import type { Cogitator } from '@cogitator-ai/core';
+import { Agent, Cogitator, tool } from '@cogitator-ai/core';
+import { z } from 'zod';
 
 const describeE2E = process.env.TEST_OLLAMA === 'true' ? describe : describe.skip;
 
@@ -61,5 +62,86 @@ describeE2E('Core: Structured Output', () => {
       const val = typeof item === 'object' && item !== null ? Object.values(item)[0] : item;
       expect(typeof val).toBe('string');
     }
+  });
+});
+
+const Weather = z.object({ city: z.string(), celsius: z.number(), sunny: z.boolean() });
+
+const lookupWeather = tool({
+  name: 'lookup_weather',
+  description: 'Current weather for a city',
+  parameters: z.object({ city: z.string() }),
+  execute: async ({ city }) => ({ city, celsius: 18, sunny: true }),
+});
+
+describeE2E('Core: Structured Output with a JSON schema on Ollama', () => {
+  let cogitator: Cogitator;
+
+  beforeAll(() => {
+    cogitator = createTestCogitator();
+  });
+
+  afterAll(async () => {
+    await cogitator.close();
+  });
+
+  it('returns result.structured that matches the schema', async () => {
+    const agent = createTestAgent({
+      instructions: 'You describe the weather.',
+      responseFormat: { type: 'json_schema', schema: Weather },
+    });
+
+    const result = await cogitator.run(agent, {
+      input: 'It is 21 degrees Celsius and sunny in Rome. Describe it.',
+    });
+
+    expect(Weather.safeParse(result.structured).success).toBe(true);
+  });
+});
+
+const describeGoogle = process.env.GOOGLE_API_KEY ? describe : describe.skip;
+
+describeGoogle('Core: Structured Output with a JSON schema on Gemini', () => {
+  let cogitator: Cogitator;
+  const model = 'google/gemini-3.5-flash-lite';
+
+  beforeAll(() => {
+    cogitator = new Cogitator({
+      llm: { defaultModel: model, providers: { google: { apiKey: process.env.GOOGLE_API_KEY! } } },
+    });
+  });
+
+  afterAll(async () => {
+    await cogitator.close();
+  });
+
+  it('returns result.structured without any JSON instructions in the prompt', async () => {
+    const agent = new Agent({
+      name: 'weather',
+      model,
+      instructions: 'You describe the weather.',
+      responseFormat: { type: 'json_schema', schema: Weather },
+    });
+
+    const result = await cogitator.run(agent, {
+      input: 'It is 21 degrees Celsius and sunny in Rome.',
+    });
+
+    expect(result.structured).toEqual({ city: 'Rome', celsius: 21, sunny: true });
+  });
+
+  it('calls tools and then answers in the schema', async () => {
+    const agent = new Agent({
+      name: 'weather-tools',
+      model,
+      instructions: 'Use the lookup_weather tool, then report the weather.',
+      tools: [lookupWeather],
+      responseFormat: { type: 'json_schema', schema: Weather },
+    });
+
+    const result = await cogitator.run(agent, { input: 'What is the weather in Lisbon?' });
+
+    expect(result.toolCalls.map((call) => call.name)).toContain('lookup_weather');
+    expect(result.structured).toEqual({ city: 'Lisbon', celsius: 18, sunny: true });
   });
 });

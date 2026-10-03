@@ -510,6 +510,44 @@ describe('AnthropicBackend', () => {
       );
     });
 
+    it('keeps real tools callable when an older model needs a JSON schema', async () => {
+      mockCreate.mockResolvedValueOnce({
+        id: 'msg_1',
+        content: [{ type: 'tool_use', id: 'toolu_1', name: 'lookup', input: { q: 'x' } }],
+        stop_reason: 'tool_use',
+        usage: { input_tokens: 10, output_tokens: 5 },
+      });
+
+      const response = await backend.chat({
+        model: 'claude-sonnet-4-20250514',
+        messages: [{ role: 'user', content: 'Test' }],
+        tools: [
+          {
+            name: 'lookup',
+            description: 'Look something up',
+            parameters: { type: 'object', properties: { q: { type: 'string' } } },
+          },
+        ],
+        responseFormat: {
+          type: 'json_schema',
+          jsonSchema: {
+            name: 'answer',
+            schema: { type: 'object', properties: { a: { type: 'number' } }, required: ['a'] },
+          },
+        },
+      });
+
+      const params = mockCreate.mock.calls[0][0] as {
+        tools: Array<{ name: string }>;
+        tool_choice?: unknown;
+        system: string;
+      };
+      expect(params.tools.map((t) => t.name)).toEqual(['lookup']);
+      expect(params.tool_choice).toBeUndefined();
+      expect(params.system).toContain('"required":["a"]');
+      expect(response.toolCalls?.[0].name).toBe('lookup');
+    });
+
     it('handles json_schema response format using tool trick', async () => {
       mockCreate.mockResolvedValueOnce({
         id: 'msg_123',

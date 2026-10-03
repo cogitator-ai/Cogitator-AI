@@ -4,6 +4,8 @@ import type {
   Tool,
   AgentSnapshot,
   DeserializeOptions,
+  ResponseFormat,
+  SerializedAgentConfig,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { mergeSkillsIntoAgent } from './skill';
@@ -140,6 +142,7 @@ export class Agent implements IAgent {
         topP: this.config.topP,
         maxTokens: this.config.maxTokens,
         stopSequences: this.config.stopSequences,
+        responseFormat: serializeResponseFormat(this.config.responseFormat),
         maxIterations: this.config.maxIterations,
         timeout: this.config.timeout,
       },
@@ -204,6 +207,7 @@ export class Agent implements IAgent {
       topP: snapshot.config.topP,
       maxTokens: snapshot.config.maxTokens,
       stopSequences: snapshot.config.stopSequences,
+      responseFormat: deserializeResponseFormat(snapshot, overrides?.responseFormat),
       maxIterations: snapshot.config.maxIterations,
       timeout: snapshot.config.timeout,
       ...overrides,
@@ -233,4 +237,25 @@ export class Agent implements IAgent {
 
     return true;
   }
+}
+
+function serializeResponseFormat(
+  format: ResponseFormat | undefined
+): SerializedAgentConfig['responseFormat'] {
+  if (format?.type !== 'json_schema') return format;
+  const name = format.schema.description;
+  return { type: 'json_schema', schemaName: name || 'response' };
+}
+
+function deserializeResponseFormat(
+  snapshot: AgentSnapshot,
+  override: ResponseFormat | undefined
+): ResponseFormat | undefined {
+  const format = snapshot.config.responseFormat;
+  if (override || !format) return override;
+  if (format.type !== 'json_schema') return format;
+  throw new Error(
+    `Agent "${snapshot.name}" was serialized with the JSON schema "${format.schemaName}". ` +
+      'Pass the Zod schema back as overrides.responseFormat to deserialize it.'
+  );
 }
