@@ -4,6 +4,7 @@ import type { LLMBackend } from './llm';
 export type CompressionStrategy = 'truncate' | 'sliding-window' | 'summarize' | 'hybrid';
 
 export interface ContextManagerConfig {
+  /** Default: true. A Cogitator compresses context whenever `context` is set, unless this is false. */
   enabled?: boolean;
   strategy?: CompressionStrategy;
   compressionThreshold?: number;

@@ -6,6 +6,7 @@ import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { tool } from '../tool';
 import { RunLimiter } from '../cogitator/run-limiter';
+import { ContextManager } from '../context/context-manager';
 
 vi.mock('../llm/index', async (importOriginal) => {
   const original = await importOriginal<typeof import('../llm/index')>();
@@ -213,5 +214,33 @@ describe('RunLimiter', () => {
 
   it('refuses a limit that is not a positive integer', () => {
     expect(() => new RunLimiter(0)).toThrow('maxConcurrentRuns');
+  });
+});
+
+describe('context management', () => {
+  it('compresses context whenever `context` is configured', async () => {
+    const { backend } = scriptedBackend(async () => answer('ok'));
+    await useBackend(backend);
+    const shouldCompress = vi.spyOn(ContextManager.prototype, 'shouldCompress');
+    const cog = new Cogitator({ context: { strategy: 'truncate' } });
+
+    await cog.run(new Agent({ name: 'a', model: 'openai/x', instructions: 'x' }), { input: 'hi' });
+
+    expect(shouldCompress).toHaveBeenCalled();
+    shouldCompress.mockRestore();
+    await cog.close();
+  });
+
+  it('stays off with enabled: false', async () => {
+    const { backend } = scriptedBackend(async () => answer('ok'));
+    await useBackend(backend);
+    const shouldCompress = vi.spyOn(ContextManager.prototype, 'shouldCompress');
+    const cog = new Cogitator({ context: { enabled: false, strategy: 'truncate' } });
+
+    await cog.run(new Agent({ name: 'a', model: 'openai/x', instructions: 'x' }), { input: 'hi' });
+
+    expect(shouldCompress).not.toHaveBeenCalled();
+    shouldCompress.mockRestore();
+    await cog.close();
   });
 });

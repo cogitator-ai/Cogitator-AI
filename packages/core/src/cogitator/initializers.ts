@@ -227,7 +227,7 @@ export function initializeContextManager(
   route: (model: string) => ModelRoute
 ): void {
   if (state.contextManagerInitialized) return;
-  if (!config.context?.enabled) {
+  if (!config.context || config.context.enabled === false) {
     state.contextManagerInitialized = true;
     return;
   }

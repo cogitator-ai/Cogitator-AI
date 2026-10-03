@@ -801,7 +801,7 @@ export class Cogitator {
       initializeSecurity(this.config, this.state, agentModel, (model) => this.route(model));
     }
 
-    if (this.config.context?.enabled && !this.state.contextManagerInitialized) {
+    if (this.config.context && !this.state.contextManagerInitialized) {
       initializeContextManager(this.config, this.state, (model) => this.route(model));
     }
   }

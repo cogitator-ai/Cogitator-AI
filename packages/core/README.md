@@ -1402,16 +1402,15 @@ const cog = new Cogitator({
 Automatic context window management with compression strategies:
 
 ```typescript
-import { ContextManager, TruncateStrategy, SummarizeStrategy } from '@cogitator-ai/core';
-
 const cog = new Cogitator({
   context: {
-    enabled: true,
-    maxTokens: 8000,
     strategy: 'hybrid',
+    compressionThreshold: 0.8,
   },
 });
 ```
+
+Setting `context` turns compression on; pass `enabled: false` to keep the config but switch it off.
 
 Available strategies: `TruncateStrategy`, `SlidingWindowStrategy`, `SummarizeStrategy`, `HybridStrategy`.
 
