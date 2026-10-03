@@ -4,6 +4,7 @@ import { motion, useInView, useReducedMotion } from 'framer-motion';
 import { useEffect, useRef, useState } from 'react';
 import { Vox, cx } from '../../ui';
 import type { StreamLine, StreamScript, StreamTone } from './types';
+import { FINAL_HOLD_MS, PACE } from '../../pace';
 
 const FIRST_EVENT_DELAY = 800;
 const FINAL_HOLD = 3200;
@@ -27,10 +28,10 @@ function useReplay(events: StreamLine[], active: boolean, reduced: boolean): num
     if (!active) return;
     const delay =
       shown === 0
-        ? FIRST_EVENT_DELAY
+        ? FIRST_EVENT_DELAY * PACE
         : shown >= total
-          ? FINAL_HOLD
-          : TONE_DELAY[events[shown]?.tone ?? 'meta'];
+          ? Math.max(FINAL_HOLD * PACE, FINAL_HOLD_MS)
+          : TONE_DELAY[events[shown]?.tone ?? 'meta'] * PACE;
     const timer = setTimeout(() => setShown((count) => (count >= total ? 0 : count + 1)), delay);
     return () => clearTimeout(timer);
   }, [active, reduced, shown, total, events]);

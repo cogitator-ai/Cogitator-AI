@@ -4,6 +4,7 @@ import { AnimatePresence, motion, useInView, useReducedMotion } from 'framer-mot
 import { Check, Pause, RotateCcw, Unplug } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Badge, Vox, Window, cx } from '../../ui';
+import { paced } from '../../pace';
 
 type NodeId = 'research' | 'draft' | 'fact-check' | 'review' | 'publish';
 type NodeKind = 'agent' | 'human' | 'fn';
@@ -298,6 +299,8 @@ function travelTimes(points: Point[]): number[] {
   return times.map((distance) => distance / travelled);
 }
 
+const STEP_MS = STEPS.map((item) => item.duration);
+
 function useRunTimeline(active: boolean, reduced: boolean): number {
   const [step, setStep] = useState(0);
 
@@ -309,7 +312,7 @@ function useRunTimeline(active: boolean, reduced: boolean): number {
     if (!active) return;
     const timer = setTimeout(
       () => setStep((current) => (current >= FINAL_STEP ? 0 : current + 1)),
-      STEPS[step].duration
+      paced(STEP_MS, step)
     );
     return () => clearTimeout(timer);
   }, [active, reduced, step]);
@@ -494,7 +497,9 @@ function ApprovalChip({ state }: { state: NodeState }) {
             strokeWidth={1}
             className={cx(
               'transition-[fill,stroke] duration-500',
-              approved ? 'fill-l-accent/15 stroke-l-accent/60' : 'fill-l-warn/[0.08] stroke-l-warn/50'
+              approved
+                ? 'fill-l-accent/15 stroke-l-accent/60'
+                : 'fill-l-warn/[0.08] stroke-l-warn/50'
             )}
           />
           <text

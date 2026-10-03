@@ -22,7 +22,7 @@ import {
 import { CodeBody, Section, SectionHeader, Window, cx } from '../../ui';
 import type { ExplorerFeature } from './types';
 
-const ADVANCE_MS = 7000;
+const ADVANCE_MS = 24000;
 const EASE = [0.16, 1, 0.3, 1] as const;
 const DESKTOP_QUERY = '(min-width: 1024px)';
 const PANEL_ID = 'feature-explorer-panel';

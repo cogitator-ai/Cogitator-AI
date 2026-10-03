@@ -4,6 +4,7 @@ import { useInView, useReducedMotion } from 'framer-motion';
 import { useEffect, useRef, useState } from 'react';
 import { Vox, Window, cx } from '../../ui';
 import type { TerminalLine } from './types';
+import { FINAL_HOLD_MS, PACE } from '../../pace';
 
 const TYPE_START = 650;
 const TYPE_STEP = 22;
@@ -50,13 +51,13 @@ function useTerminal(lines: TerminalLine[], active: boolean, reduced: boolean): 
     let next: Progress;
 
     if (!line) {
-      delay = FINAL_HOLD;
+      delay = Math.max(FINAL_HOLD * PACE, FINAL_HOLD_MS);
       next = { count: 0, typed: 0 };
     } else if (isTyped(line) && typed < line.text.length) {
-      delay = typed === 0 ? TYPE_START : TYPE_STEP;
+      delay = (typed === 0 ? TYPE_START : TYPE_STEP) * 1.4;
       next = { count, typed: Math.min(line.text.length, typed + 2) };
     } else {
-      delay = isTyped(line) ? AFTER_TYPED : STREAM_DELAY[line.kind];
+      delay = (isTyped(line) ? AFTER_TYPED : STREAM_DELAY[line.kind]) * PACE;
       next = { count: count + 1, typed: 0 };
     }
 

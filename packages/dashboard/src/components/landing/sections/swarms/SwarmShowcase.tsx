@@ -17,6 +17,7 @@ import {
   type Tone,
   type TopologyNode,
 } from './scenes';
+import { PACE, paced } from '../../pace';
 
 const EASE = [0.16, 1, 0.3, 1] as const;
 const LOG_LINES = 3;
@@ -112,13 +113,19 @@ export function SwarmShowcase({ snippets }: { snippets: Record<StrategyId, React
 
   useEffect(() => {
     if (!playing) return;
-    const timer = setTimeout(() => {
-      setPosition(({ index, beat: current }) => {
-        if (current < lastBeat) return { index, beat: current + 1 };
-        if (auto) return { index: (index + 1) % SCENES.length, beat: 0 };
-        return { index, beat: 0 };
-      });
-    }, scene.beats[position.beat].ms);
+    const timer = setTimeout(
+      () => {
+        setPosition(({ index, beat: current }) => {
+          if (current < lastBeat) return { index, beat: current + 1 };
+          if (auto) return { index: (index + 1) % SCENES.length, beat: 0 };
+          return { index, beat: 0 };
+        });
+      },
+      paced(
+        scene.beats.map((item) => item.ms),
+        position.beat
+      )
+    );
     return () => clearTimeout(timer);
   }, [playing, auto, scene, lastBeat, position.beat]);
 
@@ -182,7 +189,14 @@ export function SwarmShowcase({ snippets }: { snippets: Record<StrategyId, React
                   className="absolute inset-x-2 bottom-0 h-px origin-left bg-l-accent/70"
                   initial={{ scaleX: 0 }}
                   animate={{ scaleX: (position.beat + 1) / item.beats.length }}
-                  transition={{ duration: item.beats[position.beat].ms / 1000, ease: 'linear' }}
+                  transition={{
+                    duration:
+                      paced(
+                        item.beats.map((b) => b.ms),
+                        position.beat
+                      ) / 1000,
+                    ease: 'linear',
+                  }}
                 />
               )}
             </button>
@@ -315,7 +329,7 @@ function Stage({ scene, beat, animate }: { scene: StrategyScene; beat: number; a
             pulse={pulse}
             from={from}
             to={to}
-            travel={Math.min(0.9, (current.ms / 1000) * 0.75)}
+            travel={Math.min(1.6, ((current.ms * PACE) / 1000) * 0.75)}
           />
         );
       })}

@@ -4,6 +4,7 @@ import { AnimatePresence, motion, useInView, useReducedMotion } from 'framer-mot
 import { Check, Pause, Play, RotateCcw, ShieldCheck, Wrench } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Badge, Vox, cx } from './ui';
+import { paced } from './pace';
 
 const STEP_DURATIONS = [900, 1300, 1300, 1500, 1300, 1200, 1100, 2200, 3200];
 const FINAL_STEP = STEP_DURATIONS.length - 1;
@@ -27,7 +28,7 @@ function useRunTimeline(active: boolean, reduced: boolean): number {
     if (!active) return;
     const timer = setTimeout(
       () => setStep((current) => (current >= FINAL_STEP ? 0 : current + 1)),
-      STEP_DURATIONS[step]
+      paced(STEP_DURATIONS, step)
     );
     return () => clearTimeout(timer);
   }, [active, reduced, step]);
@@ -53,7 +54,7 @@ function Streamed({ text, play }: { text: string; play: boolean }) {
         }
         return count + 2;
       });
-    }, 18);
+    }, 32);
     return () => clearInterval(interval);
   }, [play, reduced, text]);
 

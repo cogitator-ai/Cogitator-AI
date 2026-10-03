@@ -10,6 +10,7 @@ import {
   type RefObject,
 } from 'react';
 import { cx } from '../../../ui';
+import { paced } from '../../../pace';
 
 export const EASE = [0.16, 1, 0.3, 1] as const;
 
@@ -53,7 +54,7 @@ export function useDemoTimeline(durations: readonly number[]): DemoTimeline {
         setPosition(({ step, loop }) =>
           step >= last ? { step: 0, loop: loop + 1 } : { step: step + 1, loop }
         ),
-      durations[position.step]
+      paced(durations, position.step)
     );
     return () => clearTimeout(timer);
   }, [durations, inView, last, position.step, reduced]);
@@ -115,7 +116,7 @@ export function Streamed({
         }
         return count + speed;
       });
-    }, 22);
+    }, 34);
     return () => clearInterval(interval);
   }, [play, reduced, speed, text]);
 

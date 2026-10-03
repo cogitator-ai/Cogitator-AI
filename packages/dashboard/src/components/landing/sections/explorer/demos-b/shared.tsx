@@ -3,6 +3,7 @@
 import { AnimatePresence, MotionConfig, motion, useInView, useReducedMotion } from 'framer-motion';
 import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { cx } from '../../../ui';
+import { paced } from '../../../pace';
 
 export const EASE = [0.16, 1, 0.3, 1] as const;
 
@@ -30,7 +31,7 @@ export function useDemoTimeline(durations: readonly number[]): DemoTimeline {
     if (reduced || !inView) return;
     const timer = setTimeout(
       () => setStep((current) => (current >= last ? 0 : current + 1)),
-      durations[step] ?? 1000
+      paced(durations, step)
     );
     return () => clearTimeout(timer);
   }, [durations, inView, last, reduced, step]);
@@ -199,7 +200,7 @@ export function Typed({
         }
         return count + 1;
       });
-    }, speed);
+    }, speed * 1.4);
     return () => {
       clearInterval(interval);
       setShown(0);
