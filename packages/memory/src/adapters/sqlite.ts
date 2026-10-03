@@ -21,6 +21,14 @@ interface Statement {
   all(...params: unknown[]): unknown[];
 }
 
+interface ThreadRow {
+  id: string;
+  agent_id: string;
+  metadata: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export class SQLiteAdapter extends BaseMemoryAdapter {
   readonly provider: MemoryProvider = 'sqlite';
 
@@ -108,13 +116,8 @@ export class SQLiteAdapter extends BaseMemoryAdapter {
   ): Promise<MemoryResult<Thread>> {
     if (!this.db) return this.failure('Not connected');
 
-    const thread: Thread = {
-      id: threadId ?? this.generateId('thread'),
-      agentId,
-      metadata,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+    const id = threadId ?? this.generateId('thread');
+    const now = new Date().toISOString();
 
     try {
       const stmt = this.db.prepare(`
@@ -124,15 +127,12 @@ export class SQLiteAdapter extends BaseMemoryAdapter {
           agent_id = excluded.agent_id,
           metadata = excluded.metadata,
           updated_at = excluded.updated_at
+        RETURNING *
       `);
-      stmt.run(
-        thread.id,
-        thread.agentId,
-        JSON.stringify(thread.metadata),
-        thread.createdAt.toISOString(),
-        thread.updatedAt.toISOString()
-      );
-      return this.success(thread);
+      const row = stmt.get(id, agentId, JSON.stringify(metadata), now, now) as
+        ThreadRow | undefined;
+      if (!row) return this.failure(`Failed to create thread: ${id}`);
+      return this.success(this.rowToThread(row));
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -143,25 +143,10 @@ export class SQLiteAdapter extends BaseMemoryAdapter {
 
     try {
       const stmt = this.db.prepare('SELECT * FROM threads WHERE id = ?');
-      const row = stmt.get(threadId) as
-        | {
-            id: string;
-            agent_id: string;
-            metadata: string;
-            created_at: string;
-            updated_at: string;
-          }
-        | undefined;
+      const row = stmt.get(threadId) as ThreadRow | undefined;
 
       if (!row) return this.success(null);
-
-      return this.success({
-        id: row.id,
-        agentId: row.agent_id,
-        metadata: JSON.parse(row.metadata),
-        createdAt: new Date(row.created_at),
-        updatedAt: new Date(row.updated_at),
-      });
+      return this.success(this.rowToThread(row));
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -346,5 +331,15 @@ export class SQLiteAdapter extends BaseMemoryAdapter {
     } catch (err) {
       return this.failure((err as Error).message);
     }
+  }
+
+  private rowToThread(row: ThreadRow): Thread {
+    return {
+      id: row.id,
+      agentId: row.agent_id,
+      metadata: JSON.parse(row.metadata),
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at),
+    };
   }
 }

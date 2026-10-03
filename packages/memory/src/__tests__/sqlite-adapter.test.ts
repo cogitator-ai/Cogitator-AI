@@ -25,6 +25,17 @@ vi.mock('better-sqlite3', () => {
   return { default: Database };
 });
 
+const returnInsertedThread = () =>
+  mockStmt.get.mockImplementationOnce(
+    (id: string, agentId: string, metadata: string, createdAt: string, updatedAt: string) => ({
+      id,
+      agent_id: agentId,
+      metadata,
+      created_at: createdAt,
+      updated_at: updatedAt,
+    })
+  );
+
 describe('SQLiteAdapter', () => {
   let adapter: SQLiteAdapter;
 
@@ -118,6 +129,7 @@ describe('SQLiteAdapter', () => {
 
   describe('thread operations', () => {
     it('creates a thread', async () => {
+      returnInsertedThread();
       const result = await adapter.createThread('agent1', { foo: 'bar' });
 
       expect(result.success).toBe(true);
@@ -131,6 +143,7 @@ describe('SQLiteAdapter', () => {
     });
 
     it('creates thread with custom id', async () => {
+      returnInsertedThread();
       const result = await adapter.createThread('agent1', {}, 'custom-thread-id');
 
       expect(result.success).toBe(true);

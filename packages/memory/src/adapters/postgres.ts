@@ -174,11 +174,15 @@ export class PostgresAdapter
   }
 
   async disconnect(): Promise<MemoryResult<void>> {
-    if (this.pool) {
+    if (!this.pool) return this.success(undefined);
+    try {
       await this.pool.end();
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    } finally {
       this.pool = null;
     }
-    return this.success(undefined);
   }
 
   async createThread(
@@ -192,14 +196,17 @@ export class PostgresAdapter
     const now = new Date();
 
     try {
-      await this.pool.query(
+      const result = await this.pool.query(
         `INSERT INTO ${this.schema}.threads (id, agent_id, metadata, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $4)
-         ON CONFLICT (id) DO UPDATE SET agent_id = $2, metadata = $3, updated_at = $4`,
+         ON CONFLICT (id) DO UPDATE SET agent_id = $2, metadata = $3, updated_at = $4
+         RETURNING *`,
         [id, agentId, metadata, now]
       );
 
-      return this.success({ id, agentId, metadata, createdAt: now, updatedAt: now });
+      const row = result.rows[0];
+      if (!row) return this.failure(`Failed to create thread: ${id}`);
+      return this.success(this.rowToThread(row));
     } catch (err) {
       return this.failure((err as Error).message);
     }
@@ -208,20 +215,16 @@ export class PostgresAdapter
   async getThread(threadId: string): Promise<MemoryResult<Thread | null>> {
     if (!this.pool) return this.failure('Not connected');
 
-    const result = await this.pool.query(`SELECT * FROM ${this.schema}.threads WHERE id = $1`, [
-      threadId,
-    ]);
+    try {
+      const result = await this.pool.query(`SELECT * FROM ${this.schema}.threads WHERE id = $1`, [
+        threadId,
+      ]);
 
-    if (result.rows.length === 0) return this.success(null);
-
-    const row = result.rows[0];
-    return this.success({
-      id: row.id as string,
-      agentId: row.agent_id as string,
-      metadata: row.metadata as Record<string, unknown>,
-      createdAt: new Date(row.created_at as string),
-      updatedAt: new Date(row.updated_at as string),
-    });
+      if (result.rows.length === 0) return this.success(null);
+      return this.success(this.rowToThread(result.rows[0]));
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
   }
 
   async updateThread(
@@ -230,26 +233,23 @@ export class PostgresAdapter
   ): Promise<MemoryResult<Thread>> {
     if (!this.pool) return this.failure('Not connected');
 
-    const result = await this.pool.query(
-      `UPDATE ${this.schema}.threads
-       SET metadata = metadata || $2, updated_at = NOW()
-       WHERE id = $1
-       RETURNING *`,
-      [threadId, metadata]
-    );
+    try {
+      const result = await this.pool.query(
+        `UPDATE ${this.schema}.threads
+         SET metadata = metadata || $2, updated_at = NOW()
+         WHERE id = $1
+         RETURNING *`,
+        [threadId, metadata]
+      );
 
-    if (result.rows.length === 0) {
-      return this.failure(`Thread not found: ${threadId}`);
+      if (result.rows.length === 0) {
+        return this.failure(`Thread not found: ${threadId}`);
+      }
+
+      return this.success(this.rowToThread(result.rows[0]));
+    } catch (err) {
+      return this.failure((err as Error).message);
     }
-
-    const row = result.rows[0];
-    return this.success({
-      id: row.id as string,
-      agentId: row.agent_id as string,
-      metadata: row.metadata as Record<string, unknown>,
-      createdAt: new Date(row.created_at as string),
-      updatedAt: new Date(row.updated_at as string),
-    });
   }
 
   async deleteThread(threadId: string): Promise<MemoryResult<void>> {
@@ -315,7 +315,12 @@ export class PostgresAdapter
       query += ' ORDER BY created_at ASC';
     }
 
-    const result = await this.pool.query(query, params);
+    let result: { rows: Record<string, unknown>[] };
+    try {
+      result = await this.pool.query(query, params);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
 
     return this.success(
       result.rows.map((row) => ({
@@ -338,9 +343,14 @@ export class PostgresAdapter
   async getEntry(entryId: string): Promise<MemoryResult<MemoryEntry | null>> {
     if (!this.pool) return this.failure('Not connected');
 
-    const result = await this.pool.query(`SELECT * FROM ${this.schema}.entries WHERE id = $1`, [
-      entryId,
-    ]);
+    let result: { rows: Record<string, unknown>[] };
+    try {
+      result = await this.pool.query(`SELECT * FROM ${this.schema}.entries WHERE id = $1`, [
+        entryId,
+      ]);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
 
     if (result.rows.length === 0) return this.success(null);
 
@@ -421,7 +431,12 @@ export class PostgresAdapter
     query += ' AND (expires_at IS NULL OR expires_at > NOW())';
     query += ' ORDER BY confidence DESC, updated_at DESC';
 
-    const result = await this.pool.query(query, params);
+    let result: { rows: Record<string, unknown>[] };
+    try {
+      result = await this.pool.query(query, params);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
 
     return this.success(
       result.rows.map((row) => ({
@@ -472,10 +487,15 @@ export class PostgresAdapter
 
     params.push(factId);
 
-    const result = await this.pool.query(
-      `UPDATE ${this.schema}.facts SET ${setClauses.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
-      params
-    );
+    let result: { rows: Record<string, unknown>[] };
+    try {
+      result = await this.pool.query(
+        `UPDATE ${this.schema}.facts SET ${setClauses.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
+        params
+      );
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
 
     if (result.rows.length === 0) {
       return this.failure(`Fact not found: ${factId}`);
@@ -718,6 +738,16 @@ export class PostgresAdapter
       params.push(filter.userId);
     }
     return { sql, nextIndex: index };
+  }
+
+  private rowToThread(row: Record<string, unknown>): Thread {
+    return {
+      id: row.id as string,
+      agentId: row.agent_id as string,
+      metadata: row.metadata as Record<string, unknown>,
+      createdAt: new Date(row.created_at as string),
+      updatedAt: new Date(row.updated_at as string),
+    };
   }
 
   setVectorDimensions(dimensions: number): void {

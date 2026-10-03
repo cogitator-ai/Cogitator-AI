@@ -12,6 +12,10 @@ import { fetchWithRetry } from '../embedding/retry';
 const msg = (role: Message['role'], content: string): Message => ({ role, content }) as Message;
 
 describe('thread creation', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('keeps existing entries when a thread is created again', async () => {
     const adapter = new InMemoryAdapter();
     await adapter.createThread('agent', {}, 't1');
@@ -37,6 +41,25 @@ describe('thread creation', () => {
     expect(again.success).toBe(true);
     const entries = await adapter.getEntries({ threadId: 't1' });
     expect(entries.success && entries.data).toHaveLength(1);
+    await adapter.disconnect();
+  });
+
+  it('returns the stored createdAt when SQLite upserts an existing thread', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const adapter = new SQLiteAdapter({ provider: 'sqlite', path: ':memory:' });
+    await adapter.connect();
+
+    vi.setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
+    const created = await adapter.createThread('agent', {}, 't1');
+    vi.setSystemTime(new Date('2024-06-01T00:00:00.000Z'));
+    const again = await adapter.createThread('agent', { v: 2 }, 't1');
+    const stored = await adapter.getThread('t1');
+
+    expect(created.success && created.data.createdAt).toEqual(new Date('2024-01-01T00:00:00.000Z'));
+    expect(again.success && again.data.createdAt).toEqual(new Date('2024-01-01T00:00:00.000Z'));
+    expect(again.success && again.data.updatedAt).toEqual(new Date('2024-06-01T00:00:00.000Z'));
+    expect(again.success && again.data.metadata).toEqual({ v: 2 });
+    expect(stored.success && stored.data).toEqual(again.success && again.data);
     await adapter.disconnect();
   });
 });

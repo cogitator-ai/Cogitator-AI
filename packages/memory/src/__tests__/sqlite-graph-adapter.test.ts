@@ -633,4 +633,21 @@ describe('SQLiteGraphAdapter', () => {
       expect(res.success).toBe(true);
     });
   });
+
+  describe('database errors', () => {
+    it('returns a failed result instead of throwing when a write violates a constraint', async () => {
+      const res = await adapter.addEdge(makeEdge('node_missing_a', 'node_missing_b'));
+
+      expect(res.success).toBe(false);
+      if (!res.success) expect(res.error).toContain('FOREIGN KEY');
+    });
+
+    it('returns a failed result when the database cannot be opened', async () => {
+      const broken = new SQLiteGraphAdapter({ path: '/nonexistent-dir/graph.db' });
+
+      const res = await broken.getNode('node_1');
+
+      expect(res.success).toBe(false);
+    });
+  });
 });

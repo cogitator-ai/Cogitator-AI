@@ -74,6 +74,18 @@ describe('PostgresAdapter', () => {
 
   describe('thread operations', () => {
     it('creates a thread', async () => {
+      mockPool.query.mockImplementationOnce(async (_sql: string, params: unknown[]) => ({
+        rows: [
+          {
+            id: params[0],
+            agent_id: params[1],
+            metadata: params[2],
+            created_at: params[3],
+            updated_at: params[3],
+          },
+        ],
+      }));
+
       const result = await adapter.createThread('agent1', { foo: 'bar' });
 
       expect(result.success).toBe(true);
@@ -507,6 +519,60 @@ describe('PostgresAdapter', () => {
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.error).toContain('Not connected');
+      }
+    });
+
+    it.each([
+      ['getThread', () => adapter.getThread('thread_1')],
+      ['updateThread', () => adapter.updateThread('thread_1', { a: 1 })],
+      ['getEntries', () => adapter.getEntries({ threadId: 'thread_1' })],
+      ['getEntry', () => adapter.getEntry('entry_1')],
+      ['getFacts', () => adapter.getFacts('agent1')],
+      ['updateFact', () => adapter.updateFact('fact_1', { content: 'x' })],
+    ])('%s returns a failed result when the query fails', async (_name, call) => {
+      mockPool.query.mockRejectedValueOnce(new Error('connection terminated'));
+
+      const result = await call();
+
+      expect(result).toEqual({ success: false, error: 'connection terminated' });
+    });
+
+    it('disconnect returns a failed result when closing the pool fails', async () => {
+      mockPool.end.mockRejectedValueOnce(new Error('pool already ended'));
+
+      const result = await adapter.disconnect();
+
+      expect(result).toEqual({ success: false, error: 'pool already ended' });
+      expect((await adapter.getThread('thread_1')).success).toBe(false);
+    });
+  });
+
+  describe('createThread upsert', () => {
+    it('returns the stored createdAt when the thread already exists', async () => {
+      const storedCreatedAt = new Date('2024-01-01T00:00:00.000Z');
+      mockPool.query.mockImplementationOnce(async (_sql: string, params: unknown[]) => ({
+        rows: [
+          {
+            id: params[0],
+            agent_id: params[1],
+            metadata: params[2],
+            created_at: storedCreatedAt.toISOString(),
+            updated_at: params[3],
+          },
+        ],
+      }));
+
+      const result = await adapter.createThread('agent1', { v: 2 }, 'thread_existing');
+
+      expect(mockPool.query).toHaveBeenLastCalledWith(
+        expect.stringContaining('RETURNING *'),
+        expect.any(Array)
+      );
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.createdAt).toEqual(storedCreatedAt);
+        expect(result.data.updatedAt.getTime()).toBeGreaterThan(storedCreatedAt.getTime());
+        expect(result.data.metadata).toEqual({ v: 2 });
       }
     });
   });
