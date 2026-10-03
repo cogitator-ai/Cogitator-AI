@@ -1,5 +1,41 @@
 # @cogitator-ai/evals
 
+## 0.4.0
+
+### Minor Changes
+
+- 27789fc: The `run_eval` tool ran the whole dataset even with `maxCases` and reported `assertionsPassed: true` for limited runs. `EvalSuite.run({ maxCases })` now executes only the first `maxCases` cases, and the tool passes the limit through and reports the real assertion results.
+
+### Patch Changes
+
+- 27789fc: Judge configs had to set `temperature` in TypeScript although the schema defines a default, and that default was never applied. `judge` now takes `JudgeConfigInput` with an optional `temperature`, and the suite resolves it to 0 when it is omitted.
+- fd688a0: `threshold` and `noRegression` treated `tokenUsage` as higher-is-better; it is now lower-is-better like `latency` and `cost`. McNemar's test clamps the continuity correction at zero, so equal discordant counts give chi-square 0 and p-value 1.
+- Updated dependencies [9175c69]
+- Updated dependencies [e70e482]
+- Updated dependencies [1993d56]
+- Updated dependencies [1369ed1]
+- Updated dependencies [0bf2e44]
+- Updated dependencies [bc76f42]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [c117071]
+- Updated dependencies [656499e]
+- Updated dependencies [1993d56]
+- Updated dependencies [bc76f42]
+- Updated dependencies [656499e]
+- Updated dependencies [bc76f42]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [9175c69]
+- Updated dependencies [d35ef2a]
+- Updated dependencies [db2e373]
+- Updated dependencies [49503b9]
+- Updated dependencies [a36cde4]
+  - @cogitator-ai/core@0.26.0
+
 ## 0.3.0
 
 ### Minor Changes

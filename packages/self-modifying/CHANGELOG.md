@@ -1,5 +1,28 @@
 # @cogitator-ai/self-modifying
 
+## 19.2.0
+
+### Minor Changes
+
+- aef2008: `metaReasoning.modeProfiles` accepts profiles for only some modes and only some fields (`MetaReasoningOverrides`, `ModeProfileOverrides`); each is merged over the default profile of its mode, so a partial profile no longer drops the mode's other fields. `mergeModeProfiles` is exported.
+
+### Patch Changes
+
+- Updated dependencies [9175c69]
+- Updated dependencies [e70e482]
+- Updated dependencies [8d520c0]
+- Updated dependencies [1993d56]
+- Updated dependencies [c117071]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [9175c69]
+- Updated dependencies [db2e373]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [6b7e672]
+- Updated dependencies [ae26101]
+  - @cogitator-ai/types@0.29.0
+
 ## 19.1.3
 
 ### Patch Changes

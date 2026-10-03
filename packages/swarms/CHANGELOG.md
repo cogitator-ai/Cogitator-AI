@@ -1,5 +1,57 @@
 # @cogitator-ai/swarms
 
+## 0.9.0
+
+### Minor Changes
+
+- e2da4f9: Consensus voters get the `cast_vote`, `get_votes`, `change_vote` and `get_consensus_status` tools automatically (they were never attached, so votes could only be parsed from text). New `agentTools: { messaging, blackboard }` swarm option (and `SwarmBuilder.agentTools()`) gives every agent the built-in messaging and blackboard tools; it is rejected for distributed swarms and when the message bus or blackboard is disabled.
+- e2da4f9: The assessor honours `mode: 'ai' | 'hybrid'` and `assessorModel`: inside a Swarm the model (default: the Cogitator's default model) analyzes the task, 'hybrid' adds the hard requirements the keyword rules detect, and any failure falls back to the rules with a warning. Model discovery inside a Swarm only offers cloud models whose provider the Cogitator can run, instead of suggesting providers without an API key. `createAssessor(config, cogitator)` takes the Cogitator for the same behaviour standalone.
+- e2da4f9: Negotiation approval gates work inside a `Swarm`: a gate without `timeout` now waits for an answer instead of being rejected at once, and the new `swarm.respondToApproval(requestId, response)` answers it (the id comes with the `negotiation:approval-required` event). A swarm timeout or `swarm.abort()` stops the wait. Gates on a deadlock were also cancelled the moment they were raised; they now wait for their answer or timeout.
+- 0e17a89: A swarm run that timed out or failed rejected while its strategy kept going, and the strategy could still start agents and retries afterwards — even inside the next run of the same swarm. Agent runs are now bound to the run that started them (`SwarmCoordinator.runInScope`), and a run that rejects cancels its scope, so nothing of it launches once `run()` has settled.
+
+### Patch Changes
+
+- e2da4f9: Swarm config fields that were accepted but ignored now work or say why they cannot: `observability.tracing` logs each agent run's spans, `distributed.retry` re-dispatches jobs that fail on a worker or time out, and `distributed.cleanupAfter` expires the swarm's Redis state after `close()` (default one hour). `messaging.protocol` (now optional), `blackboard.locking` and `distributed.workerConcurrency` have no effect and are marked deprecated with the reason. `swarm.messageBus` and `swarm.events` are typed with their full API (`markAsRead`, `onMessage`, `getEventsByType`, `getEventsByAgent`).
+- e2da4f9: A pipeline swarm configured with the top-level `stages` field runs (it was rejected because only `pipeline.stages` was read); `gates` and `stageInput` still come from `pipeline`. Giving different stages in both places is rejected with a clear error.
+- 6b7e672: Round-robin with `sticky: true` advances its rotation again: a known `stickyKey` stays with the agent that handled it first, while every new key goes to the next agent (before, the rotation never moved, so all keys landed on the first agent). Without a `stickyKey`, runs rotate normally. The `round-robin:assigned` event reports the index of the agent that was picked.
+- Updated dependencies [9175c69]
+- Updated dependencies [e70e482]
+- Updated dependencies [8d520c0]
+- Updated dependencies [1993d56]
+- Updated dependencies [1369ed1]
+- Updated dependencies [0bf2e44]
+- Updated dependencies [bc76f42]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [c117071]
+- Updated dependencies [656499e]
+- Updated dependencies [1993d56]
+- Updated dependencies [bc76f42]
+- Updated dependencies [656499e]
+- Updated dependencies [bc76f42]
+- Updated dependencies [e7445e2]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [9175c69]
+- Updated dependencies [d35ef2a]
+- Updated dependencies [db2e373]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [6b7e672]
+- Updated dependencies [49503b9]
+- Updated dependencies [a36cde4]
+- Updated dependencies [ae26101]
+- Updated dependencies [25af97f]
+- Updated dependencies [1a41760]
+- Updated dependencies [ae26101]
+  - @cogitator-ai/core@0.26.0
+  - @cogitator-ai/types@0.29.0
+  - @cogitator-ai/workflows@0.10.0
+
 ## 0.8.2
 
 ### Patch Changes

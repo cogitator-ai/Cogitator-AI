@@ -1,5 +1,11 @@
 # @cogitator-ai/server-shared
 
+## 0.3.1
+
+### Patch Changes
+
+- 65d0cc0: Swagger UI calls the right URLs and offers a bearer token when the server checks credentials. The spec's `servers` now defaults to where the routes are mounted (Express `basePath`, the Hono/Koa mount prefix), and with `auth` configured the spec declares `bearerAuth` as an optional requirement (`swagger.auth` overrides it). The Swagger page escapes the title and the embedded spec, so agent names and descriptions can't inject markup.
+
 ## 0.3.0
 
 ### Minor Changes

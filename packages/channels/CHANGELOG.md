@@ -1,5 +1,61 @@
 # @cogitator-ai/channels
 
+## 0.7.0
+
+### Minor Changes
+
+- f43f6af: `RuntimeBuilder` now wires what the gateway supports: `channels.whatsapp` and `channels.webchat` in the assistant config (WebChat requires `WEBCHAT_TOKEN`), an `approvals` config block, and `hooks` / `approvals` builder options passed to the gateway. Previously only Telegram, Discord and Slack could be configured and hooks or approval settings never reached the gateway.
+- 8d520c0: Gateway hooks are typed per hook name. `HookPayloads` maps every hook to its payload (`MessageReceivedEvent`, `AgentErrorEvent`, `ApprovalResolvedEvent`, ...), so `hooks.on('agent:error', (e) => e.error.message)` type-checks instead of receiving `unknown`; handlers typed with an `unknown` payload are still accepted. The `agent:error` payload now always carries an `Error`. `GatewayConfig.owner`, which the gateway never read, is deprecated in favour of `ownerIds` on `ownerCommands` and `dmPolicy`.
+
+### Patch Changes
+
+- 8963e1e: `DmPolicyMiddleware` now expands a leading `~` in `storePath`. Previously a path like `~/.cogitator/dm-allowlist.json` created a literal `~` directory in the working directory when the middleware was used outside `RuntimeBuilder`.
+- 1df914a: `HeartbeatScheduler` now honours stores that claim timers (`claimTtl`, `renew`, `release`), like the workflows `TimerManager`: it renews the claim before a task fires and every `claimTtl / 3` while it runs, skips a task whose claim was taken over (new `onClaimLost` callback), and releases disabled, exhausted and not-yet-processed tasks so other workers are not blocked by its lease.
+- Updated dependencies [9175c69]
+- Updated dependencies [fede839]
+- Updated dependencies [e70e482]
+- Updated dependencies [8d520c0]
+- Updated dependencies [a3c2ee1]
+- Updated dependencies [1993d56]
+- Updated dependencies [1369ed1]
+- Updated dependencies [0bf2e44]
+- Updated dependencies [bc76f42]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [c117071]
+- Updated dependencies [656499e]
+- Updated dependencies [1993d56]
+- Updated dependencies [bc76f42]
+- Updated dependencies [656499e]
+- Updated dependencies [bc76f42]
+- Updated dependencies [e7925d5]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [bb17767]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [9175c69]
+- Updated dependencies [7e42e10]
+- Updated dependencies [7e42e10]
+- Updated dependencies [e7925d5]
+- Updated dependencies [d35ef2a]
+- Updated dependencies [4a2925f]
+- Updated dependencies [db2e373]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [6b7e672]
+- Updated dependencies [49503b9]
+- Updated dependencies [a36cde4]
+- Updated dependencies [ae26101]
+  - @cogitator-ai/core@0.26.0
+  - @cogitator-ai/types@0.29.0
+  - @cogitator-ai/browser@0.3.6
+  - @cogitator-ai/memory@0.11.0
+  - @cogitator-ai/mcp@19.2.2
+  - @cogitator-ai/rag@0.3.5
+
 ## 0.6.1
 
 ### Patch Changes

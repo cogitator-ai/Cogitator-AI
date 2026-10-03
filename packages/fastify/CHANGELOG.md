@@ -1,5 +1,47 @@
 # @cogitator-ai/fastify
 
+## 0.5.2
+
+### Patch Changes
+
+- 87951bf: A failing memory adapter no longer reaches the client through the Express and Fastify thread routes: the error is logged and answered as `500 Internal server error`, as Hono and Koa already did. Every unexpected error, whether caught by a route, a stream or the error handler, now carries the same code, `INTERNAL_ERROR` (routes and streams used `INTERNAL` before).
+- 65d0cc0: Swagger UI calls the right URLs and offers a bearer token when the server checks credentials. The spec's `servers` now defaults to where the routes are mounted (Express `basePath`, the Hono/Koa mount prefix), and with `auth` configured the spec declares `bearerAuth` as an optional requirement (`swagger.auth` overrides it). The Swagger page escapes the title and the embedded spec, so agent names and descriptions can't inject markup.
+- b6b1480: WebSocket `subscribe` channels no longer leak runs across users. A subscriber to `agent:<name>` now receives only the events of runs started by the same `userId` (as returned by `auth`) on other connections; before, any authenticated client could watch every user's prompts, tool calls and results. Servers without `auth` behave as before.
+- Updated dependencies [9175c69]
+- Updated dependencies [e70e482]
+- Updated dependencies [8d520c0]
+- Updated dependencies [1993d56]
+- Updated dependencies [1369ed1]
+- Updated dependencies [0bf2e44]
+- Updated dependencies [bc76f42]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [c117071]
+- Updated dependencies [656499e]
+- Updated dependencies [1993d56]
+- Updated dependencies [bc76f42]
+- Updated dependencies [656499e]
+- Updated dependencies [bc76f42]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [9175c69]
+- Updated dependencies [d35ef2a]
+- Updated dependencies [db2e373]
+- Updated dependencies [65d0cc0]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [6b7e672]
+- Updated dependencies [49503b9]
+- Updated dependencies [a36cde4]
+- Updated dependencies [ae26101]
+  - @cogitator-ai/core@0.26.0
+  - @cogitator-ai/types@0.29.0
+  - @cogitator-ai/server-shared@0.3.1
+
 ## 0.5.1
 
 ### Patch Changes

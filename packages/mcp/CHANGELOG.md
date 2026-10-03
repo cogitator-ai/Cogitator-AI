@@ -1,5 +1,26 @@
 # @cogitator-ai/mcp
 
+## 19.2.2
+
+### Patch Changes
+
+- 7e42e10: `MCPServer.registerTools` and `serveMCPTools` accept a `readonly Tool[]`, so frozen arrays, `as const` lists and toolsets typed as readonly can be served without copying.
+- 7e42e10: `serveAgents` / `agentTools` added the `<agent>_resume` tool for any agent that had a tool with `requiresApproval` set, even `requiresApproval: false`. The resume tool is now added only when a tool can actually ask for approval (`requiresApproval: true` or a check function).
+- Updated dependencies [9175c69]
+- Updated dependencies [e70e482]
+- Updated dependencies [8d520c0]
+- Updated dependencies [1993d56]
+- Updated dependencies [c117071]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [9175c69]
+- Updated dependencies [db2e373]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [6b7e672]
+- Updated dependencies [ae26101]
+  - @cogitator-ai/types@0.29.0
+
 ## 19.2.1
 
 ### Patch Changes

@@ -1,5 +1,33 @@
 # @cogitator-ai/deploy
 
+## 0.4.0
+
+### Minor Changes
+
+- 0736823: `Deployer.deploy` built the artifacts with its own generator and never called the target provider's `generate()`, so a custom provider's artifacts were ignored. It now deploys what `provider.generate(config, projectDir)` returns. The built-in Docker and Fly providers' `generate()` now detect the package manager, lockfile, build script and start command (new `ProjectAnalyzer.detectBuild`), so their Dockerfile matches what `deploy` produced before instead of assuming pnpm and `dist/server.js`.
+
+### Patch Changes
+
+- 0736823: The generated `docker-compose.prod.yml` repeated `REDIS_URL`, `DATABASE_URL`, `PORT` or `NODE_ENV` when `env` or `secrets` also set them, which YAML parsers reject or resolve unpredictably. Each variable is now written once: `env` overrides the defaults and the bundled service URLs, and a secret that names a service URL falls back to that URL when unset.
+- 7d6952d: Export the `ProjectBuild` type, the return type of the public `ProjectAnalyzer.detectBuild()`, so callers can name it.
+- 0736823: The default health check path was `/health`, but the server adapters (Express, Fastify, Hono, Koa) serve it under their default `/cogitator` base path. The Dockerfile `HEALTHCHECK`, the `fly.toml` check and the reported health endpoint now default to `/cogitator/health`; set `health.path` for another base path.
+- Updated dependencies [9175c69]
+- Updated dependencies [e70e482]
+- Updated dependencies [8d520c0]
+- Updated dependencies [8bcf914]
+- Updated dependencies [1993d56]
+- Updated dependencies [c117071]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [9175c69]
+- Updated dependencies [db2e373]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [6b7e672]
+- Updated dependencies [ae26101]
+  - @cogitator-ai/types@0.29.0
+  - @cogitator-ai/config@0.11.0
+
 ## 0.3.4
 
 ### Patch Changes

@@ -1,5 +1,25 @@
 # @cogitator-ai/test-utils
 
+## 0.2.5
+
+### Patch Changes
+
+- bbe49d6: `MockLLMBackend` records each request as it was sent. The runtime keeps appending to the same messages array, so every recorded call used to show the final conversation.
+- Updated dependencies [9175c69]
+- Updated dependencies [e70e482]
+- Updated dependencies [8d520c0]
+- Updated dependencies [1993d56]
+- Updated dependencies [c117071]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [9175c69]
+- Updated dependencies [db2e373]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [6b7e672]
+- Updated dependencies [ae26101]
+  - @cogitator-ai/types@0.29.0
+
 ## 0.2.4
 
 ### Patch Changes

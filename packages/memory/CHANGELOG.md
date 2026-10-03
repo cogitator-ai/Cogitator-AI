@@ -1,5 +1,34 @@
 # @cogitator-ai/memory
 
+## 0.11.0
+
+### Minor Changes
+
+- a3c2ee1: `CompactionConfig.summaryModel` and `summaryPrompt` were ignored by `CompactionService`. The summarizer now receives them as a second `options` argument (`{ model, prompt }`, type `SummarizeOptions`). The Ollama embedding config schema now keeps `dimensions` and the Google one keeps `baseUrl`, matching the TypeScript types.
+- bb17767: `LLMEntityExtractor` now accepts a Cogitator `LLMBackend` directly together with a `model` (`new LLMEntityExtractor(backend, { model })`), so no hand-written adapter is needed. Hand-written `LLMBackendMinimal` adapters keep working and receive the configured `model` when one is set.
+
+### Patch Changes
+
+- e7925d5: `createThread` on an existing thread id in the Postgres and SQLite adapters returned the current time as `createdAt`. It now returns the stored thread, so `createdAt` keeps the original creation time.
+- e7925d5: PostgresAdapter (getThread, updateThread, getEntries, getEntry, getFacts, updateFact, disconnect), PostgresGraphAdapter and SQLiteGraphAdapter threw on database errors. They now return a failed `MemoryResult` like the rest of the adapter contract, and graph traversal, path finding and node merging report a failed lookup instead of returning partial results.
+- 4a2925f: QdrantAdapter stored points under `emb_<id>` ids, which a real Qdrant server rejects because point ids must be unsigned integers or UUIDs. Each embedding is now stored under a deterministic UUID derived from its id, the public `emb_` id is kept in the payload and returned from search, and `deleteEmbedding` removes the matching point.
+- Updated dependencies [9175c69]
+- Updated dependencies [e70e482]
+- Updated dependencies [8d520c0]
+- Updated dependencies [1993d56]
+- Updated dependencies [c117071]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [9175c69]
+- Updated dependencies [7083ee5]
+- Updated dependencies [db2e373]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [6b7e672]
+- Updated dependencies [ae26101]
+  - @cogitator-ai/types@0.29.0
+  - @cogitator-ai/redis@0.5.0
+
 ## 0.10.0
 
 ### Minor Changes

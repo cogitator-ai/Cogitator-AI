@@ -1,5 +1,50 @@
 # @cogitator-ai/workflows
 
+## 0.10.0
+
+### Minor Changes
+
+- 25af97f: `WorkflowManager` no longer overwrites a paused or cancelled run with `failed`, and `resume()` now actually continues a paused run from its last checkpoint (reusing the options it was started with, or new ones passed as a second argument); pausing requires a `checkpointStore`. Scheduled runs now get the manager's checkpoint store, tracer, metrics and `defaultTimeout`, honour `ScheduleOptions.timeout` and retry up to `ScheduleOptions.maxRetries` times, and the manager exposes `registerCronJob`, `unregisterCronJob`, `setCronJobEnabled` and `getCronJobs` for recurring runs.
+- ae26101: The run callbacks `onApprovalRequired`, `onTimerScheduled`, `onDeadLetter`, `onCompensationStart` and `onCompensationComplete` are now called by the executor and the manager. Nodes can declare a saga rollback with `config.compensation`: when a later node fails, the executor compensates the completed nodes (reverse order by default) before returning the error.
+
+### Patch Changes
+
+- e7445e2: Cron triggers registered with `catchUp: true` now fire every occurrence that passed while their timer was late (system sleep, a blocked event loop), each with its own timestamp, instead of skipping them.
+- ae26101: `WorkflowExecutor.resume()` and `stream()` accept the full executor options (`signal`, `tracer`, `metricsCollector`, stores, ...), and runs without their own tracer or metrics collector now use the ones set with `setGlobalTracer` / `setGlobalMetrics` when those are enabled.
+- 1a41760: `humanWorkflowNode` outputs `withdrawn`, and `escalated` is now true when a timed-out request was answered by its `escalateTo` assignee. `subworkflowWorkflowNode` with `onError: 'catch'` keeps the parent running and outputs `{ error: { name, message } }` instead of failing it, and `parallelSubworkflowsNode` accepts configs typed with the child state.
+- Updated dependencies [9175c69]
+- Updated dependencies [e70e482]
+- Updated dependencies [8d520c0]
+- Updated dependencies [1993d56]
+- Updated dependencies [1369ed1]
+- Updated dependencies [0bf2e44]
+- Updated dependencies [bc76f42]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [c117071]
+- Updated dependencies [656499e]
+- Updated dependencies [1993d56]
+- Updated dependencies [bc76f42]
+- Updated dependencies [656499e]
+- Updated dependencies [bc76f42]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [9175c69]
+- Updated dependencies [d35ef2a]
+- Updated dependencies [db2e373]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [6b7e672]
+- Updated dependencies [49503b9]
+- Updated dependencies [a36cde4]
+- Updated dependencies [ae26101]
+  - @cogitator-ai/core@0.26.0
+  - @cogitator-ai/types@0.29.0
+
 ## 0.9.0
 
 ### Minor Changes

@@ -1,5 +1,50 @@
 # @cogitator-ai/worker
 
+## 0.7.0
+
+### Minor Changes
+
+- c8648b0: The completed and failed job counts come from the jobs BullMQ keeps in Redis, which `removeOnComplete`/`removeOnFail` cap, so they drop as old jobs are trimmed, yet they were exported as counters (`cogitator_queue_completed_total`, `cogitator_queue_failed_total`), which broke `rate()` and `increase()`. They are now gauges named `cogitator_queue_completed` and `cogitator_queue_failed`. For a real failure counter, `WorkerPool` records jobs that failed their last attempt in `pool.metrics` (`MetricsCollector.recordFailure`), exported as `cogitator_jobs_failed_total{type}`.
+
+### Patch Changes
+
+- Updated dependencies [9175c69]
+- Updated dependencies [e70e482]
+- Updated dependencies [8d520c0]
+- Updated dependencies [1993d56]
+- Updated dependencies [1369ed1]
+- Updated dependencies [0bf2e44]
+- Updated dependencies [bc76f42]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [c117071]
+- Updated dependencies [656499e]
+- Updated dependencies [1993d56]
+- Updated dependencies [bc76f42]
+- Updated dependencies [656499e]
+- Updated dependencies [bc76f42]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [9175c69]
+- Updated dependencies [d35ef2a]
+- Updated dependencies [db2e373]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [6b7e672]
+- Updated dependencies [0e17a89]
+- Updated dependencies [49503b9]
+- Updated dependencies [a36cde4]
+- Updated dependencies [ae26101]
+  - @cogitator-ai/core@0.26.0
+  - @cogitator-ai/types@0.29.0
+  - @cogitator-ai/swarms@0.9.0
+
 ## 0.6.2
 
 ### Patch Changes

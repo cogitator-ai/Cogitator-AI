@@ -1,5 +1,48 @@
 # @cogitator-ai/a2a
 
+## 0.7.0
+
+### Minor Changes
+
+- 39bc4a9: The Express, Fastify, Hono and Koa adapters serve JSON-RPC on the server's `basePath` (still `/a2a` by default) instead of always `/a2a`, so the endpoint matches the URL the Agent Cards advertise; `A2AServer.basePath` exposes it and must start with `/`. `A2AClient` takes an `agentName` option that it sends with `message/send`, `message/stream` and `agent/extendedCard`, and `agentCard()` returns that agent's card, so every agent of a multi-agent server is reachable, not only the first.
+
+### Patch Changes
+
+- 39bc4a9: Errors that are neither an `A2AError` nor a `CogitatorError` (a failing task store, auth validator or agent run) no longer reach clients with their text: JSON-RPC answers them with a bare `-32603 Internal error`, failed tasks and stream `failed` events say `Internal error`, and the real error is logged on the server. A2A errors and `CogitatorError` messages are kept.
+- e69e30c: `RedisClientLike.scan` now declares the call `RedisTaskStore` makes (`MATCH` / `COUNT`), so an ioredis client is accepted as is; keys SCAN returns twice are listed once.
+- Updated dependencies [9175c69]
+- Updated dependencies [e70e482]
+- Updated dependencies [8d520c0]
+- Updated dependencies [1993d56]
+- Updated dependencies [1369ed1]
+- Updated dependencies [0bf2e44]
+- Updated dependencies [bc76f42]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [c117071]
+- Updated dependencies [656499e]
+- Updated dependencies [1993d56]
+- Updated dependencies [bc76f42]
+- Updated dependencies [656499e]
+- Updated dependencies [bc76f42]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [9175c69]
+- Updated dependencies [d35ef2a]
+- Updated dependencies [db2e373]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [6b7e672]
+- Updated dependencies [49503b9]
+- Updated dependencies [a36cde4]
+- Updated dependencies [ae26101]
+  - @cogitator-ai/core@0.26.0
+  - @cogitator-ai/types@0.29.0
+
 ## 0.6.0
 
 ### Minor Changes

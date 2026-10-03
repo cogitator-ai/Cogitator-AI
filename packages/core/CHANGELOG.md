@@ -1,5 +1,59 @@
 # @cogitator-ai/core
 
+## 0.26.0
+
+### Minor Changes
+
+- 9175c69: `AutoOptimizer` A/B tests now get samples for both variants: traces carry the instructions version or A/B variant the run used (`ExecutionTrace.prompt`, from `RunResult.prompt`), runs served through `cogitator.prompts` are no longer counted again (all as control), and a test Cogitator completed finishes the optimization run. `ABTestingFramework` reads the active test from its store instead of a per-instance cache. `triggerOptimization()` fails with a clear error instead of optimizing empty instructions when the agent has no deployed version.
+- 1993d56: Cost routing budgets (`costRouting.budget`) are enforced on every run, not only with `autoSelectModel`: the run is checked against an estimate for the agent's own model. `autoSelectModel` now picks only models of providers the runtime can call (configured in `llm.providers`, `llm.backends`, a plugin, `llm.defaultProvider` or the agent's own provider) and keeps the agent's model when none fits. New `CostAwareRouter.recommendAvailableModel()` and `checkRunBudget()`.
+- 1993d56: `CogitatorConfig.logging` is applied: a runtime created with it sets the process-wide logger (`getLogger()`) to its `level` (now including `'silent'`), `format` and `destination` (`'file'` appends JSON lines to `filePath`). New `createLoggerFromConfig()` builds such a logger directly.
+- 656499e: `createToolCacheStorage()` now accepts `onEvict` and passes it to the memory or Redis storage, so evictions of a storage built with it can be observed. A `keyPrefix` (or `generateCacheKey` prefix) that already ends with `:` no longer produces keys with `::`.
+- b8c9eca: A custom backend can report its own provider name: `LLMBackend.provider` (and `BaseLLMBackend.provider`) is now `LLMBackendProvider`, a built-in `LLMProvider` or any other string, so `class MyBackend extends BaseLLMBackend { readonly provider = 'my-llm' }` compiles.
+- d35ef2a: `PostgresTraceStore.traces()` adapts the store to a `TraceStore`, so it can back `AgentOptimizer`, `DemoSelector` or `TimeTravel` directly. Traces also persist the run's `prompt` (a `prompt` column is added to existing tables on connect).
+
+### Patch Changes
+
+- e70e482: Counterfactuals now evaluate `custom` structural equations: `customFn` is an arithmetic expression over the parent node ids (numbers, `+ - * / ^`, parentheses, `abs exp log sqrt pow min max tanh sigmoid`), parsed without running code, with additive noise like `linear`. Nodes without an equation keep their observed value instead of a random noise sample.
+- 1993d56: `getGuardrails()`, `setConstitution()`, `getCostRouter()` and `getCostSummary()` work before the first run. The guardrails are built from `guardrails.model` or `llm.defaultModel` when one is set; a constitution set earlier is applied when the first run builds them.
+- 1369ed1: `Agent.deserialize()` accepts the snapshot of an agent without a model (which runs on `llm.defaultModel`); `validateSnapshot()` used to reject it.
+- 0bf2e44: `agentAsTool()` no longer reports a paused inner run as a success with empty output: an `onApproval` that answers `'pause'` declines the call (a delegated run cannot wait for a person), and a run that pauses anyway returns `success: false` with the pending tools.
+- bc76f42: `builtinTools` is a `Tool[]`, so `new Agent({ tools: builtinTools })` compiles; the readonly tuple it was could not be assigned to `AgentConfig.tools`.
+- 1993d56: Config-driven memory now builds every store `memory.adapter` names: `sqlite` (from `memory.sqlite.path`), `mongodb` (from `memory.mongodb.uri`) and `redis` from `host`/`port` or `cluster` as well as `url`. `memory.qdrant` becomes the embedding store that `memory.contextBuilder` searches, and `adapter: 'qdrant'` explains that Qdrant does not store threads instead of logging "Unknown memory provider". A Postgres store gets the vector size of the `memory.embedding` model instead of always `vector(768)`.
+- 1993d56: Deliberate run failures are `CogitatorError`s with a code, so server adapters pass their messages on instead of masking them: a run timeout is `RUN_TIMEOUT` (504, new), a budget stop `BUDGET_EXCEEDED` (429, new), a guardrail-blocked input or output `LLM_CONTENT_FILTERED`, and a missing audio API key, an invalid `limits.maxConcurrentRuns` or a cost estimate without a model `CONFIGURATION_ERROR`. Messages are unchanged.
+- 1993d56: Guardrail tool approvals fail closed. In `strictMode`, calls of tools with side effects now go through the run's approval flow (`onApproval`, `guardrails.onToolApproval`, or a paused run) instead of running silently when no `onToolApproval` is set, and `ToolGuard` denies a call that needs approval when no handler can give it.
+- c117071: Tool cache fixes: `onEvict` also fires for entries evicted to make room (`maxSize`), not only for `invalidate()`. `RedisClientLike` now matches ioredis 5 and 6 (`scan(cursor, 'MATCH', pattern, 'COUNT', count)`), so an ioredis client can be passed as `redisClient`. A Redis `keyPrefix` without a trailing colon gets one, so `withCache` keys read `toolcache:entry:…` instead of `toolcacheentry:…`.
+- 1993d56: Tool results that carry a base64 image (`image` or `imageBase64`, such as browser screenshots and generated images) now reach the model as an image instead of a JSON string full of base64. Anthropic, Bedrock, Google, OpenAI Responses and Ollama attach it to the tool result; OpenAI Chat Completions, which takes only text in tool messages, follows the turn's tool messages with one user message holding the images.
+- bc76f42: Tool parameters with a Zod `.default()` are no longer sent to the model as required: tool schemas describe the input side, as the WASM tools already did.
+- 656499e: `ThoughtTreeExecutor` ignored `ToTConfig.timeout`; only `explore(..., { timeout })` stopped the search. The configured timeout is now the default, and a timeout passed to `explore()` still takes precedence.
+- bc76f42: The `vector_search` tool reads the Ollama endpoint from `OLLAMA_URL` too (after `OLLAMA_BASE_URL`, before `OLLAMA_HOST`), as the config loader does. `sql_query` reads `DATABASE_URL` safely where the environment is not readable.
+- b8c9eca: The Google backend converts JSON Schema nulls (a Zod `.nullable()` field, or `null` in a `type` array) into Gemini's `nullable: true`, so structured output with nullable fields no longer fails with HTTP 400.
+- 9175c69: `AgentOptimizer` now applies `defaultMetrics`, `customMetrics`, `captureTraces` and `traceRetention` from its learning config, and `MetricEvaluator` evaluates metrics added with `registerMetric()` even when they are not in `config.metrics`. `autoOptimize`, `optimizeAfterRuns` and `traceStore` are marked deprecated: use `AutoOptimizer` and the `traceStore` option instead.
+- db2e373: Sandbox fallbacks are explicit and safe. `sandbox.allowNativeFallback: false` refuses to run Docker-sandboxed tools on the host when Docker is unavailable (the fallback stays on by default, with a loud warning). WASM tools no longer fall back to Docker or native execution, which failed with "Command array is empty". Every Docker execution now gets a container no code ran in before (a fresh one is kept warm), so files and processes cannot leak between runs or users; `pool.reuseContainers: true` restores reuse.
+- 49503b9: Time-travel checkpoints are consistent about the tool call they are anchored on: `messages` stop before that call's result, like `toolResults` (and `createFromTrace` no longer includes the pending step's result). `checkpointAll`, `checkpointEvery` and replay step counts count tool calls only, `divergedAt` and `stepsReplayed` use the same numbering, and a live replay keeps the checkpoint's history when its messages have no system message.
+- a36cde4: `ThoughtTreeExecutor` now sends its own model calls the routed model name (not the `provider/model` id) on the backend of the agent's provider, honours `explorationStrategy` (`beam` runs level by level, `best-first` follows the best-scored branch, `dfs` goes deep first) and `maxIterationsPerBranch`, keeps candidates beyond `beamWidth` so a failed branch backtracks to the next best one, and counts the tokens and cost of branch generation, evaluation and synthesis in `usage` and `stats`.
+- Updated dependencies [9175c69]
+- Updated dependencies [e70e482]
+- Updated dependencies [8d520c0]
+- Updated dependencies [a3c2ee1]
+- Updated dependencies [1993d56]
+- Updated dependencies [c117071]
+- Updated dependencies [e7925d5]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [bb17767]
+- Updated dependencies [9175c69]
+- Updated dependencies [e7925d5]
+- Updated dependencies [4a2925f]
+- Updated dependencies [db2e373]
+- Updated dependencies [db2e373]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [6b7e672]
+- Updated dependencies [ae26101]
+  - @cogitator-ai/types@0.29.0
+  - @cogitator-ai/memory@0.11.0
+  - @cogitator-ai/sandbox@0.5.0
+
 ## 0.25.0
 
 ### Minor Changes

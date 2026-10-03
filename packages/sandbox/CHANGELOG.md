@@ -1,5 +1,29 @@
 # @cogitator-ai/sandbox
 
+## 0.5.0
+
+### Minor Changes
+
+- db2e373: Sandbox fallbacks are explicit and safe. `sandbox.allowNativeFallback: false` refuses to run Docker-sandboxed tools on the host when Docker is unavailable (the fallback stays on by default, with a loud warning). WASM tools no longer fall back to Docker or native execution, which failed with "Command array is empty". Every Docker execution now gets a container no code ran in before (a fresh one is kept warm), so files and processes cannot leak between runs or users; `pool.reuseContainers: true` restores reuse.
+
+### Patch Changes
+
+- db2e373: The Docker executor finds the daemon the way the `docker` CLI does: it tries the endpoint of the current Docker context (`DOCKER_CONTEXT` or `~/.docker/config.json`), then the sockets of Docker Engine, Docker Desktop, OrbStack, Colima, Rancher Desktop and rootless Docker, so `isDockerAvailable()` no longer reports `false` when only a non-default context is running.
+- Updated dependencies [9175c69]
+- Updated dependencies [e70e482]
+- Updated dependencies [8d520c0]
+- Updated dependencies [1993d56]
+- Updated dependencies [c117071]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [9175c69]
+- Updated dependencies [db2e373]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [6b7e672]
+- Updated dependencies [ae26101]
+  - @cogitator-ai/types@0.29.0
+
 ## 0.4.4
 
 ### Patch Changes

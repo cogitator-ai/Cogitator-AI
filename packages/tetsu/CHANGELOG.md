@@ -1,5 +1,50 @@
 # @cogitator-ai/tetsu
 
+## 0.3.2
+
+### Patch Changes
+
+- Updated dependencies [9175c69]
+- Updated dependencies [e70e482]
+- Updated dependencies [8d520c0]
+- Updated dependencies [a3c2ee1]
+- Updated dependencies [1993d56]
+- Updated dependencies [1369ed1]
+- Updated dependencies [0bf2e44]
+- Updated dependencies [bc76f42]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [c117071]
+- Updated dependencies [656499e]
+- Updated dependencies [1993d56]
+- Updated dependencies [bc76f42]
+- Updated dependencies [656499e]
+- Updated dependencies [bc76f42]
+- Updated dependencies [e7925d5]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [bb17767]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [9175c69]
+- Updated dependencies [e7925d5]
+- Updated dependencies [d35ef2a]
+- Updated dependencies [4a2925f]
+- Updated dependencies [db2e373]
+- Updated dependencies [65d0cc0]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [6b7e672]
+- Updated dependencies [49503b9]
+- Updated dependencies [a36cde4]
+- Updated dependencies [ae26101]
+  - @cogitator-ai/core@0.26.0
+  - @cogitator-ai/types@0.29.0
+  - @cogitator-ai/memory@0.11.0
+  - @cogitator-ai/server-shared@0.3.1
+
 ## 0.3.1
 
 ### Patch Changes

@@ -1,5 +1,67 @@
 # @cogitator-ai/cli
 
+## 0.5.6
+
+### Patch Changes
+
+- d626dfb: Fix `cogitator up` and `cogitator wizard --edit`:
+
+  - `up` loads `.env` into `process.env` (without overriding variables already set), so tools that read it, such as `web_search` and `github_api`, see keys written by the wizard.
+  - `up` supervises the assistant for restarts even without `selfConfig`, so the owner `/restart` command (exit code 78) restarts it instead of stopping it.
+  - `wizard --edit` keeps a postgres memory config and the WhatsApp/WebChat channels instead of overwriting them.
+
+- cee7c73: The `cogitator up` startup summary listed every configured channel, including ones skipped because their token (e.g. `WEBCHAT_TOKEN`) is missing. It now lists the channels the gateway actually runs, and warns when none are running.
+- cee7c73: `cogitator up` treated every `./cogitator.yml` as an assistant config, so in a project from create-cogitator-app (whose `cogitator.yml` is an `@cogitator-ai/config` runtime config) it failed with assistant validation errors. A runtime config is now recognised: `up` starts the project's Docker Compose services, or explains what the file is when there are none, and `cogitator daemon` no longer picks it as the entry to run.
+- Updated dependencies [9175c69]
+- Updated dependencies [e70e482]
+- Updated dependencies [8963e1e]
+- Updated dependencies [1df914a]
+- Updated dependencies [f43f6af]
+- Updated dependencies [8d520c0]
+- Updated dependencies [a3c2ee1]
+- Updated dependencies [8bcf914]
+- Updated dependencies [1993d56]
+- Updated dependencies [1369ed1]
+- Updated dependencies [0bf2e44]
+- Updated dependencies [bc76f42]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [1993d56]
+- Updated dependencies [c117071]
+- Updated dependencies [656499e]
+- Updated dependencies [1993d56]
+- Updated dependencies [bc76f42]
+- Updated dependencies [656499e]
+- Updated dependencies [bc76f42]
+- Updated dependencies [e7925d5]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [0736823]
+- Updated dependencies [7d6952d]
+- Updated dependencies [0736823]
+- Updated dependencies [0736823]
+- Updated dependencies [bb17767]
+- Updated dependencies [b8c9eca]
+- Updated dependencies [9175c69]
+- Updated dependencies [e7925d5]
+- Updated dependencies [d35ef2a]
+- Updated dependencies [4a2925f]
+- Updated dependencies [db2e373]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [e2da4f9]
+- Updated dependencies [6b7e672]
+- Updated dependencies [49503b9]
+- Updated dependencies [a36cde4]
+- Updated dependencies [ae26101]
+  - @cogitator-ai/core@0.26.0
+  - @cogitator-ai/types@0.29.0
+  - @cogitator-ai/channels@0.7.0
+  - @cogitator-ai/memory@0.11.0
+  - @cogitator-ai/config@0.11.0
+  - @cogitator-ai/deploy@0.4.0
+
 ## 0.5.5
 
 ### Patch Changes
