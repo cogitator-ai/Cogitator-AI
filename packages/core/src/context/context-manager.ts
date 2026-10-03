@@ -26,7 +26,7 @@ export interface ContextManagerDeps {
 }
 
 export class ContextManager {
-  private config: Required<Omit<ContextManagerConfig, 'windowOverlap'>>;
+  private config: Required<ContextManagerConfig>;
   private strategy: CompressionStrategyHandler;
   private deps: ContextManagerDeps;
 

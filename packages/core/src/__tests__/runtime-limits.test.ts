@@ -7,6 +7,7 @@ import { Agent } from '../agent';
 import { tool } from '../tool';
 import { RunLimiter } from '../cogitator/run-limiter';
 import { ContextManager } from '../context/context-manager';
+import { ReflectionEngine } from '../reflection/reflection-engine';
 
 vi.mock('../llm/index', async (importOriginal) => {
   const original = await importOriginal<typeof import('../llm/index')>();
@@ -241,6 +242,82 @@ describe('context management', () => {
 
     expect(shouldCompress).not.toHaveBeenCalled();
     shouldCompress.mockRestore();
+    await cog.close();
+  });
+});
+
+describe('reflection.reflectAfterError', () => {
+  const failing = tool({
+    name: 'flaky',
+    description: 'Fails',
+    parameters: z.object({}),
+    execute: async () => {
+      throw new Error('upstream down');
+    },
+  });
+
+  function failingRun() {
+    let call = 0;
+    return scriptedBackend(async () => {
+      call++;
+      return call === 1
+        ? {
+            id: 'r1',
+            content: '',
+            toolCalls: [{ id: 'c1', name: 'flaky', arguments: {} }],
+            finishReason: 'tool_calls' as const,
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          }
+        : answer('gave up');
+    });
+  }
+
+  const reflection = {
+    reflection: {
+      id: 'r',
+      runId: 'run',
+      agentId: 'a',
+      timestamp: new Date(),
+      action: { type: 'tool_call' as const },
+      analysis: { wasSuccessful: false, confidence: 0.5, reasoning: 'the service is down' },
+      insights: [],
+      iterationIndex: 0,
+    },
+    shouldAdjustStrategy: false,
+  };
+
+  it('reflects on a failed tool call with the error reflection', async () => {
+    const { backend } = failingRun();
+    await useBackend(backend);
+    const onError = vi
+      .spyOn(ReflectionEngine.prototype, 'reflectOnError')
+      .mockResolvedValue(reflection as never);
+    const onToolCall = vi.spyOn(ReflectionEngine.prototype, 'reflectOnToolCall');
+    const cog = new Cogitator({ reflection: { enabled: true, reflectAfterError: true } });
+    const agent = new Agent({ name: 'a', model: 'openai/x', instructions: 'x', tools: [failing] });
+
+    const result = await cog.run(agent, { input: 'go' });
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][0]).toMatchObject({ toolName: 'flaky', error: 'upstream down' });
+    expect(onToolCall).not.toHaveBeenCalled();
+    expect(result.reflections).toHaveLength(1);
+    onError.mockRestore();
+    onToolCall.mockRestore();
+    await cog.close();
+  });
+
+  it('does not reflect on errors unless asked', async () => {
+    const { backend } = failingRun();
+    await useBackend(backend);
+    const onError = vi.spyOn(ReflectionEngine.prototype, 'reflectOnError');
+    const cog = new Cogitator({ reflection: { enabled: true } });
+    const agent = new Agent({ name: 'a', model: 'openai/x', instructions: 'x', tools: [failing] });
+
+    await cog.run(agent, { input: 'go' });
+
+    expect(onError).not.toHaveBeenCalled();
+    onError.mockRestore();
     await cog.close();
   });
 });

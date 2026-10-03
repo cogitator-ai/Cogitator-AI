@@ -79,8 +79,6 @@ export interface ReplayOptions {
   /** Tools removed from the replayed agent, so the model cannot call them */
   skipTools?: string[];
 
-  onStep?: (step: ExecutionStep, index: number) => void;
-  pauseAt?: number;
 }
 
 export interface ReplayResult extends RunResult {
@@ -130,15 +128,13 @@ export interface TraceDiff {
 }
 
 export interface TimeTravelConfig {
-  autoCheckpoint?: boolean;
-  autoCheckpointInterval?: number;
+  /** Checkpoints kept per trace; the oldest go first. */
   maxCheckpointsPerTrace?: number;
+  /** Milliseconds a checkpoint is kept; older ones of the same agent are deleted on the next save. */
   checkpointRetention?: number;
 }
 
 export const DEFAULT_TIME_TRAVEL_CONFIG: TimeTravelConfig = {
-  autoCheckpoint: false,
-  autoCheckpointInterval: 1,
   maxCheckpointsPerTrace: 50,
   checkpointRetention: 24 * 60 * 60 * 1000,
 };

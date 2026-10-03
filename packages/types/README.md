@@ -629,10 +629,8 @@ const checkpoint: ExecutionCheckpoint = {
 const replayOptions: ReplayOptions = {
   fromCheckpoint: 'cp_123',
   mode: 'live', // 'deterministic' | 'live'
-  modifiedToolResults: { call_3: 'different_result' },
-  skipTools: ['expensive_api'],
-  onStep: (step, index) => console.log(`Step ${index}:`, step.type),
-  pauseAt: 8,
+  modifiedToolResults: { web_search: { results: [] } }, // by tool name
+  skipTools: ['expensive_api'], // removed from the replayed agent
 };
 
 // Fork options (branch execution with modifications)

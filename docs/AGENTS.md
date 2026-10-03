@@ -753,7 +753,6 @@ const cog = new Cogitator({
     outputReserve: 0.15, // Reserve 15% for output
     summaryModel: 'openai/gpt-6-luna', // Model used for summarization
     windowSize: 10, // Messages to keep in sliding window
-    windowOverlap: 2, // Overlap between windows
   },
 });
 ```

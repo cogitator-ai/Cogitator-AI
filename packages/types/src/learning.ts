@@ -238,8 +238,6 @@ export interface CompileOptions {
   maxBootstrappedDemos?: number;
   maxRounds?: number;
   optimizeInstructions?: boolean;
-  teacherModel?: string;
-  verbose?: boolean;
 }
 
 export interface LearningStats {

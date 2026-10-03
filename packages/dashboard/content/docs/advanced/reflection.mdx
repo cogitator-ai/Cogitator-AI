@@ -81,6 +81,8 @@ const errorResult = await reflectionEngine.reflectOnError(
 
 Error reflections always set `shouldAdjustStrategy: true` and provide a suggested alternative approach.
 
+In a Cogitator, set `reflection: { enabled: true, reflectAfterError: true }` and every failed tool call gets this error reflection instead of the general one (`reflectAfterToolCall`); its suggested action is added to the conversation before the next model call.
+
 ## End-of-Run Reflection
 
 After a complete agent run, reflect on the entire execution to capture high-level patterns:

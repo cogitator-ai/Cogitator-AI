@@ -623,11 +623,10 @@ describe('TimeTravel', () => {
     it('should return config', () => {
       const mockCogitator = {} as any;
       const tt = new TimeTravel(mockCogitator, {
-        config: { autoCheckpoint: true, maxCheckpointsPerTrace: 100 },
+        config: { maxCheckpointsPerTrace: 100 },
       });
 
       const config = tt.getConfig();
-      expect(config.autoCheckpoint).toBe(true);
       expect(config.maxCheckpointsPerTrace).toBe(100);
     });
   });

@@ -64,12 +64,15 @@ export class TimeTravel {
     const checkpoint = this.checkpointStore.createFromRunResult(result, stepIndex, { label });
     await this.checkpointStore.save(checkpoint);
     await this.recordTrace(result);
+    await this.pruneCheckpoints(result);
     return checkpoint;
   }
 
   async checkpointAll(result: RunResult, labelPrefix?: string): Promise<ExecutionCheckpoint[]> {
     await this.recordTrace(result);
-    return this.checkpointStore.createAllFromRunResult(result, { labelPrefix });
+    const checkpoints = await this.checkpointStore.createAllFromRunResult(result, { labelPrefix });
+    await this.pruneCheckpoints(result);
+    return checkpoints;
   }
 
   async checkpointEvery(
@@ -93,6 +96,7 @@ export class TimeTravel {
       checkpoints.push(checkpoint);
     }
 
+    await this.pruneCheckpoints(result);
     return checkpoints;
   }
 
@@ -271,6 +275,29 @@ export class TimeTravel {
       createdAt: new Date(),
       isDemo: false,
     });
+  }
+
+  /** Deletes expired checkpoints of the run's agent and the oldest beyond the per-trace cap. */
+  private async pruneCheckpoints(result: RunResult): Promise<void> {
+    const { maxCheckpointsPerTrace, checkpointRetention } = this.config;
+
+    if (checkpointRetention !== undefined && checkpointRetention > 0) {
+      const expiredBefore = Date.now() - checkpointRetention;
+      for (const checkpoint of await this.checkpointStore.getByAgent(result.agentId)) {
+        if (checkpoint.createdAt.getTime() < expiredBefore) {
+          await this.checkpointStore.delete(checkpoint.id);
+        }
+      }
+    }
+
+    if (maxCheckpointsPerTrace !== undefined && maxCheckpointsPerTrace > 0) {
+      const forTrace = (await this.checkpointStore.getByTrace(result.trace.traceId)).sort(
+        (a, b) => a.createdAt.getTime() - b.createdAt.getTime()
+      );
+      for (const checkpoint of forTrace.slice(0, forTrace.length - maxCheckpointsPerTrace)) {
+        await this.checkpointStore.delete(checkpoint.id);
+      }
+    }
   }
 
   private async recordFork(fork: ForkResult): Promise<ForkResult> {

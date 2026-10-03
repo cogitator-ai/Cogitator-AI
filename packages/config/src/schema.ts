@@ -380,7 +380,6 @@ export const ContextManagerConfigSchema = z.object({
   outputReserve: z.number().positive().optional(),
   summaryModel: z.string().optional(),
   windowSize: z.number().positive().optional(),
-  windowOverlap: z.number().positive().optional(),
 });
 
 export const DeployTargetSchema = z.enum(['docker', 'fly']);
@@ -425,8 +424,6 @@ export const CogitatorConfigSchema = z.object({
   reflection: ReflectionConfigSchema.optional(),
   guardrails: GuardrailConfigSchema.optional(),
   costRouting: CostRoutingConfigSchema.optional(),
-  knowledgeGraph: KnowledgeGraphConfigSchema.optional(),
-  promptOptimization: PromptOptimizationConfigSchema.optional(),
   security: SecurityConfigSchema.optional(),
   context: ContextManagerConfigSchema.optional(),
   logging: LoggingConfigSchema.optional(),

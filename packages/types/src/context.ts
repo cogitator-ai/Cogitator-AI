@@ -11,7 +11,6 @@ export interface ContextManagerConfig {
   outputReserve?: number;
   summaryModel?: string;
   windowSize?: number;
-  windowOverlap?: number;
 }
 
 export interface CompressionResult {

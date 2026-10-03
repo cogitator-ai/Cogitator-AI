@@ -157,4 +157,30 @@ describe('TimeTravel on real runs', () => {
     const toolMessage = replay.messages.find((m) => m.role === 'tool');
     expect(toolMessage?.content).toBe('{"hits":["mocked"]}');
   });
+
+  it('keeps at most maxCheckpointsPerTrace checkpoints per trace', async () => {
+    const tt = new TimeTravel(cog, { config: { maxCheckpointsPerTrace: 2 } });
+    const run = await cog.run(agent(), { input: 'Research AI' });
+
+    for (let step = 0; step < 4; step++) {
+      await tt.checkpoint(run, step % 2, `cp${step}`);
+      await new Promise((resolve) => setTimeout(resolve, 3));
+    }
+
+    const kept = await tt.getCheckpoints(run.trace.traceId);
+    expect(kept.map((c) => c.label).sort()).toEqual(['cp2', 'cp3']);
+  });
+
+  it('deletes checkpoints older than checkpointRetention', async () => {
+    const tt = new TimeTravel(cog, { config: { checkpointRetention: 1000 } });
+    const run = await cog.run(agent(), { input: 'Research AI' });
+    const old = await tt.checkpoint(run, 0, 'old');
+    old.createdAt = new Date(Date.now() - 5000);
+    await tt.getCheckpointStore().save(old);
+
+    await tt.checkpoint(run, 1, 'fresh');
+
+    const labels = (await tt.getCheckpoints(run.trace.traceId)).map((c) => c.label);
+    expect(labels).toEqual(['fresh']);
+  });
 });

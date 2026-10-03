@@ -9,8 +9,6 @@ import type { SandboxManagerConfig } from './sandbox';
 import type { ReflectionConfig, Reflection, ReflectionSummary } from './reflection';
 import type { GuardrailConfig } from './constitutional';
 import type { CostRoutingConfig } from './cost-routing';
-import type { PromptOptimizationConfig } from './prompt-optimization';
-import type { KnowledgeGraphConfig } from './knowledge-graph';
 import type { PromptInjectionConfig } from './security';
 import type { DeployConfig } from './deploy';
 import type { ContextManagerConfig } from './context';
@@ -44,10 +42,6 @@ export interface CogitatorConfig {
   guardrails?: Partial<GuardrailConfig>;
   /** Cost-aware model routing configuration */
   costRouting?: CostRoutingConfig;
-  /** Knowledge graph memory configuration */
-  knowledgeGraph?: KnowledgeGraphConfig;
-  /** Prompt inspection and auto-optimization configuration */
-  promptOptimization?: PromptOptimizationConfig;
   /** Security configuration for prompt injection detection */
   security?: {
     /** Prompt injection detection; fields left out take the detector's defaults */

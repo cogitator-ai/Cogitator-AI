@@ -17,10 +17,8 @@ const cogitator = new Cogitator({/* ... */});
 
 const timeTravel = new TimeTravel(cogitator, {
   config: {
-    enabled: true,
-    autoCheckpoint: true,
-    maxCheckpointsPerTrace: 50,
-    checkpointInterval: 1,
+    maxCheckpointsPerTrace: 50, // oldest checkpoints of a trace go first
+    checkpointRetention: 24 * 60 * 60 * 1000, // ms; older checkpoints of the agent are deleted
   },
 });
 ```

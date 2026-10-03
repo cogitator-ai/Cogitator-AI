@@ -107,7 +107,6 @@ async function main() {
     compressionThreshold: 0.3,
     outputReserve: 0.15,
     windowSize: 10,
-    windowOverlap: 2,
   });
 
   const longConversation = generateConversation(80, 200);

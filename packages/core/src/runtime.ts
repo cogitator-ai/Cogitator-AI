@@ -574,16 +574,17 @@ export class Cogitator {
             };
             allActions.push(action);
 
+            const reflection = this.config.reflection;
+            const reflectOnFailure = action.error !== undefined && !!reflection?.reflectAfterError;
             if (
               this.state.reflectionEngine &&
-              this.config.reflection?.enabled &&
-              this.config.reflection.reflectAfterToolCall
+              reflection?.enabled &&
+              (reflectOnFailure || reflection.reflectAfterToolCall)
             ) {
               try {
-                const reflectionResult = await this.state.reflectionEngine.reflectOnToolCall(
-                  action,
-                  agentContext
-                );
+                const reflectionResult = reflectOnFailure
+                  ? await this.state.reflectionEngine.reflectOnError(action, agentContext)
+                  : await this.state.reflectionEngine.reflectOnToolCall(action, agentContext);
                 allReflections.push(reflectionResult.reflection);
 
                 if (reflectionResult.shouldAdjustStrategy && reflectionResult.suggestedAction) {
