@@ -6,11 +6,33 @@ const McpServerSchema = z.object({
   env: z.record(z.string(), z.string()).optional(),
 });
 
+const OwnerIdsSchema = z.array(z.string()).optional();
+
 const AssistantChannelsSchema = z.object({
-  telegram: z.object({ ownerIds: z.array(z.string()).optional() }).optional(),
-  discord: z.object({ ownerIds: z.array(z.string()).optional() }).optional(),
-  slack: z.object({ ownerIds: z.array(z.string()).optional() }).optional(),
+  telegram: z.object({ ownerIds: OwnerIdsSchema }).optional(),
+  discord: z.object({ ownerIds: OwnerIdsSchema }).optional(),
+  slack: z.object({ ownerIds: OwnerIdsSchema }).optional(),
+  whatsapp: z
+    .object({
+      ownerIds: OwnerIdsSchema,
+      sessionPath: z.string().optional(),
+    })
+    .optional(),
+  webchat: z
+    .object({
+      port: z.number().int().positive().default(8080),
+      path: z.string().optional(),
+    })
+    .optional(),
 });
+
+const ApprovalsSchema = z
+  .object({
+    approveWords: z.array(z.string()).optional(),
+    denyWords: z.array(z.string()).optional(),
+    notAllowedMessage: z.string().optional(),
+  })
+  .optional();
 
 const AssistantCapabilitiesSchema = z.object({
   webSearch: z.boolean().optional(),
@@ -82,6 +104,7 @@ export const AssistantConfigSchema = z.object({
     knowledgeGraph: true,
   }),
   security: SecuritySchema,
+  approvals: ApprovalsSchema,
   stream: z
     .object({
       flushInterval: z.number().default(600),

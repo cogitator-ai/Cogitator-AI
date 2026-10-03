@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +8,7 @@ import type {
   ChannelUser,
   GatewayMiddleware,
   GraphAdapter,
+  HookRegistry,
   LLMProvidersConfig,
   MemoryAdapter,
 } from '@cogitator-ai/types';
@@ -45,10 +47,14 @@ import { telegramChannel } from './channels/telegram';
 import { discordChannel } from './channels/discord';
 import { slackChannel } from './channels/slack';
 import { terminalChannel } from './channels/terminal';
+import { whatsappChannel } from './channels/whatsapp';
+import { webchatChannel } from './channels/webchat';
+import type { GatewayApprovalsConfig } from './approvals';
 import { ownerCommands } from './middleware/owner-commands';
 import { rateLimit } from './middleware/rate-limit';
 import { autoExtract } from './middleware/auto-extract';
 import { DmPolicyMiddleware } from './middleware/dm-policy';
+import { expandHome } from './paths';
 import type { EntityExtractor } from './middleware/auto-extract';
 import { generateCapabilitiesDoc } from './capabilities';
 import { MediaProcessor } from './media/media-processor';
@@ -99,6 +105,13 @@ export interface RuntimeBuilderOpts {
    * Defaults to exiting the process with code 78, which `cogitator up` treats as a restart request.
    */
   onRestart?: () => void;
+  /** Lifecycle hooks of the assistant's gateway (messages, runs, sessions, approvals) */
+  hooks?: HookRegistry;
+  /**
+   * How runs paused for tool approval are put to the chat. Merged over the config's
+   * `approvals` block; use it for what YAML cannot hold, such as a custom `format`.
+   */
+  approvals?: GatewayApprovalsConfig;
 }
 
 export const RESTART_EXIT_CODE = 78;
@@ -111,8 +124,16 @@ function isModuleNotFound(err: unknown, specifier: string): boolean {
   return !!code && MODULE_NOT_FOUND_CODES.has(code) && err.message.includes(specifier);
 }
 
-function expandHome(path: string): string {
-  return path.startsWith('~') ? path.replace(/^~/, homedir()) : path;
+type AssistantChannelConfig = AssistantConfig['channels'][keyof AssistantConfig['channels']];
+
+function channelOwner(cfg: AssistantChannelConfig): string | undefined {
+  return cfg && 'ownerIds' in cfg ? cfg.ownerIds?.[0] : undefined;
+}
+
+function tokenMatcher(expected: string): (token: string) => boolean {
+  const digest = (value: string) => createHash('sha256').update(value).digest();
+  const expectedDigest = digest(expected);
+  return (token) => timingSafeEqual(digest(token), expectedDigest);
 }
 
 function localIsoDate(date: Date): string {
@@ -201,7 +222,7 @@ export class RuntimeBuilder {
         ...createSchedulerTools({
           store: timerStore,
           defaultChannel: firstChannelName ?? 'system',
-          defaultUserId: firstChannel?.ownerIds?.[0],
+          defaultUserId: channelOwner(firstChannel),
         })
       );
     }
@@ -291,9 +312,7 @@ export class RuntimeBuilder {
         allowlist: this.config.security.allowlist,
         groupPolicy: this.config.security.groupPolicy,
         groupAllowlist: this.config.security.groupAllowlist,
-        storePath: this.config.security.storePath
-          ? expandHome(this.config.security.storePath)
-          : undefined,
+        storePath: this.config.security.storePath,
         ownerIds,
       });
       middleware.push(dmPolicyMiddleware);
@@ -407,6 +426,10 @@ export class RuntimeBuilder {
       memory: memoryAdapter,
       mediaProcessor,
       stream: streamConfig,
+      ...(this.opts?.hooks ? { hooks: this.opts.hooks } : {}),
+      ...(this.config.approvals || this.opts?.approvals
+        ? { approvals: { ...this.config.approvals, ...this.opts?.approvals } }
+        : {}),
       session: this.config.memory.compaction
         ? {
             compaction: {
@@ -455,7 +478,7 @@ export class RuntimeBuilder {
   private collectOwnerIds(): Record<string, string> {
     const ownerIds: Record<string, string> = {};
     for (const [channel, cfg] of Object.entries(this.config.channels)) {
-      const owner = cfg?.ownerIds?.[0];
+      const owner = channelOwner(cfg);
       if (owner) ownerIds[channel] = owner;
     }
     return ownerIds;
@@ -655,7 +678,7 @@ export class RuntimeBuilder {
         .build();
 
       for (const rawPath of this.config.capabilities.rag.paths) {
-        const resolved = rawPath.startsWith('~/') ? join(homedir(), rawPath.slice(2)) : rawPath;
+        const resolved = expandHome(rawPath);
         await pipeline.ingest(resolved).catch((err: Error) => {
           console.warn(`[RuntimeBuilder] Failed to ingest RAG path "${rawPath}":`, err.message);
         });
@@ -839,6 +862,35 @@ export class RuntimeBuilder {
       }
     }
 
+    const whatsapp = this.config.channels.whatsapp;
+    if (whatsapp) {
+      channels.push(
+        whatsappChannel({
+          sessionPath: expandHome(
+            whatsapp.sessionPath ?? join(homedir(), '.cogitator', 'whatsapp-session')
+          ),
+        })
+      );
+    }
+
+    const webchat = this.config.channels.webchat;
+    if (webchat) {
+      const token = this.env.WEBCHAT_TOKEN;
+      if (token) {
+        channels.push(
+          webchatChannel({
+            port: webchat.port,
+            ...(webchat.path && { path: webchat.path }),
+            auth: tokenMatcher(token),
+          })
+        );
+      } else {
+        console.warn(
+          '[RuntimeBuilder] WebChat configured but WEBCHAT_TOKEN not found in env; clients authenticate with ?token=<WEBCHAT_TOKEN>'
+        );
+      }
+    }
+
     return channels;
   }
 
@@ -932,7 +984,7 @@ Required env vars per provider:
 - ollama (local): none
 - ollama (cloud): OLLAMA_URL=https://ollama.com, OLLAMA_API_KEY
 
-Other env vars: GITHUB_TOKEN (for GitHub capability), TG_TOKEN, DISCORD_TOKEN, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, SLACK_APP_TOKEN (Slack Socket Mode).`;
+Other env vars: GITHUB_TOKEN (for GitHub capability), TG_TOKEN, DISCORD_TOKEN, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, SLACK_APP_TOKEN (Slack Socket Mode), WEBCHAT_TOKEN (WebChat).`;
     }
 
     if (this.config.capabilities.selfTools) {
@@ -984,7 +1036,7 @@ You can receive images and voice messages from users.
   private resolveToolsDir(): string {
     const cfg = this.config.capabilities.selfTools;
     if (typeof cfg === 'object' && cfg.path) {
-      return cfg.path.replace(/^~/, homedir());
+      return expandHome(cfg.path);
     }
     return join(homedir(), '.cogitator', 'tools');
   }

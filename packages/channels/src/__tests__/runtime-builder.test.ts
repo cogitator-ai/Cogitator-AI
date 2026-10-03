@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { RuntimeBuilder } from '../runtime-builder';
+import { createHookRegistry } from '../hooks';
 import type { AssistantConfigInput } from '../assistant-config';
 
 let mockFormatForPrompt = vi.fn().mockResolvedValue('');
@@ -12,6 +15,43 @@ vi.mock('../channels/slack', () => ({
     slackConfigs.push(config);
     return {
       type: 'slack',
+      onMessage: () => undefined,
+      start: async () => undefined,
+      stop: async () => undefined,
+    };
+  },
+}));
+
+const whatsappConfigs = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+const webchatConfigs = vi.hoisted(
+  () => [] as Array<{ port: number; path?: string; auth?: (token: string) => boolean }>
+);
+const sentTexts = vi.hoisted(() => [] as string[]);
+
+vi.mock('../channels/whatsapp', () => ({
+  whatsappChannel: (config: Record<string, unknown>) => {
+    whatsappConfigs.push(config);
+    return {
+      type: 'whatsapp',
+      onMessage: () => undefined,
+      start: async () => undefined,
+      stop: async () => undefined,
+      sendText: async (_channelId: string, text: string) => {
+        sentTexts.push(text);
+        return `sent_${sentTexts.length}`;
+      },
+      editText: async () => undefined,
+      sendFile: async () => undefined,
+      sendTyping: async () => undefined,
+    };
+  },
+}));
+
+vi.mock('../channels/webchat', () => ({
+  webchatChannel: (config: { port: number; path?: string; auth?: (token: string) => boolean }) => {
+    webchatConfigs.push(config);
+    return {
+      type: 'webchat',
       onMessage: () => undefined,
       start: async () => undefined,
       stop: async () => undefined,
@@ -535,6 +575,111 @@ describe('RuntimeBuilder', () => {
     expect(perMessage.instructions).toContain('name: Bob');
     expect(perMessage.model).toBe('google/gemini-2.5-flash');
 
+    await built.cleanup();
+  });
+
+  it('builds a WhatsApp channel with its session under ~/.cogitator by default', async () => {
+    whatsappConfigs.length = 0;
+    const built = await new RuntimeBuilder(
+      { ...minimalConfig, channels: { whatsapp: { ownerIds: ['15550001111'] } } },
+      { GOOGLE_API_KEY: 'test-key' }
+    ).build();
+
+    expect(whatsappConfigs).toEqual([
+      { sessionPath: join(homedir(), '.cogitator', 'whatsapp-session') },
+    ]);
+    expect(built.gateway.stats.connectedChannels).toContain('whatsapp');
+    await built.cleanup();
+  });
+
+  it('expands ~ in the WhatsApp session path', async () => {
+    whatsappConfigs.length = 0;
+    const built = await new RuntimeBuilder(
+      { ...minimalConfig, channels: { whatsapp: { sessionPath: '~/wa' } } },
+      { GOOGLE_API_KEY: 'test-key' }
+    ).build();
+
+    expect(whatsappConfigs).toEqual([{ sessionPath: join(homedir(), 'wa') }]);
+    await built.cleanup();
+  });
+
+  it('builds a WebChat channel guarded by WEBCHAT_TOKEN', async () => {
+    webchatConfigs.length = 0;
+    const built = await new RuntimeBuilder(
+      { ...minimalConfig, channels: { webchat: { path: '/chat' } } },
+      { GOOGLE_API_KEY: 'test-key', WEBCHAT_TOKEN: 's3cret' }
+    ).build();
+
+    expect(webchatConfigs).toHaveLength(1);
+    const [webchat] = webchatConfigs;
+    expect(webchat).toMatchObject({ port: 8080, path: '/chat' });
+    expect(webchat.auth?.('s3cret')).toBe(true);
+    expect(webchat.auth?.('s3cre')).toBe(false);
+    expect(webchat.auth?.('')).toBe(false);
+    await built.cleanup();
+  });
+
+  it('does not open WebChat without WEBCHAT_TOKEN', async () => {
+    webchatConfigs.length = 0;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const built = await new RuntimeBuilder(
+      { ...minimalConfig, channels: { webchat: {} } },
+      { GOOGLE_API_KEY: 'test-key' }
+    ).build();
+
+    expect(webchatConfigs).toEqual([]);
+    expect(warn.mock.calls.some((call) => String(call[0]).includes('WEBCHAT_TOKEN'))).toBe(true);
+    warn.mockRestore();
+    await built.cleanup();
+  });
+
+  it('passes hooks and approvals to the gateway', async () => {
+    sentTexts.length = 0;
+    const hooks = createHookRegistry();
+    const received = vi.fn();
+    const requested = vi.fn();
+    hooks.on('message:received', received);
+    hooks.on('approval:requested', requested);
+    const format = vi.fn(
+      (approvals: readonly unknown[], words: { approveWords: readonly string[] }) =>
+        `approve ${approvals.length} with ${words.approveWords.join('/')}`
+    );
+
+    const built = await new RuntimeBuilder(
+      {
+        ...minimalConfig,
+        channels: { whatsapp: {} },
+        approvals: { approveWords: ['ok'], notAllowedMessage: 'not yours' },
+      },
+      { GOOGLE_API_KEY: 'test-key' },
+      { hooks, approvals: { format } }
+    ).build();
+
+    const run = built.cogitator.run as unknown as ReturnType<typeof vi.fn>;
+    run.mockResolvedValueOnce({
+      output: '',
+      status: 'paused',
+      pendingApprovals: [
+        { toolCallId: 'c1', toolName: 'file_delete', arguments: {}, description: 'Delete a file' },
+      ],
+    });
+
+    await built.gateway.injectMessage({
+      id: 'm1',
+      channelType: 'whatsapp',
+      channelId: '15550001111',
+      userId: '15550001111',
+      text: 'delete it',
+      raw: {},
+    });
+
+    expect(received).toHaveBeenCalledTimes(1);
+    expect(requested).toHaveBeenCalledTimes(1);
+    expect(format).toHaveBeenCalledWith(
+      [expect.objectContaining({ toolName: 'file_delete' })],
+      expect.objectContaining({ approveWords: ['ok'] })
+    );
+    expect(sentTexts).toEqual(['approve 1 with ok']);
     await built.cleanup();
   });
 
