@@ -347,7 +347,7 @@ export class CronTriggerExecutor {
       this.timeouts.delete(triggerId);
       if (!this.triggers.has(triggerId)) return;
 
-      void this.fire(triggerId).then(() => {
+      void this.fireDue(triggerId).then(() => {
         if (!this.triggers.has(triggerId)) return;
 
         const currentState = this.triggers.get(triggerId);
@@ -364,7 +364,7 @@ export class CronTriggerExecutor {
 
           const currentNow = Date.now();
           if (s.nextRun && currentNow >= s.nextRun && !this.inFlight.has(triggerId)) {
-            void this.fire(triggerId);
+            void this.fireDue(triggerId);
           }
         }, checkInterval);
 
@@ -373,6 +373,29 @@ export class CronTriggerExecutor {
     }, delay);
 
     this.timeouts.set(triggerId, timeoutId);
+  }
+
+  /**
+   * Fire the occurrence that is due. When it fired so late that later occurrences have
+   * passed too (sleep, a blocked event loop) and the trigger has `catchUp`, every
+   * missed occurrence is fired with its own timestamp (at most 100) instead of being skipped.
+   */
+  private async fireDue(triggerId: string, maxCatchUp = 100): Promise<void> {
+    const state = this.triggers.get(triggerId);
+    const due = state?.nextRun;
+    if (!state?.config.catchUp || due === undefined) {
+      await this.fire(triggerId);
+      return;
+    }
+
+    let occurrence = due;
+    for (let fired = 0; occurrence <= Date.now() && fired < maxCatchUp; fired++) {
+      await this.fire(triggerId, occurrence);
+      occurrence = getNextCronOccurrence(state.config.expression, {
+        timezone: state.config.timezone,
+        currentDate: new Date(occurrence),
+      }).getTime();
+    }
   }
 
   private safeSetTimeout(fn: () => void, delay: number): ReturnType<typeof setTimeout> {

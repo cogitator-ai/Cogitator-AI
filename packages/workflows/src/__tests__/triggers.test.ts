@@ -254,6 +254,46 @@ describe('Triggers', () => {
       await fire1;
       execWithFire.dispose();
     });
+
+    describe('missed occurrences', () => {
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      async function fireLate(catchUp: boolean): Promise<number[]> {
+        vi.useFakeTimers({ now: new Date('2026-01-01T00:00:30Z') });
+        const fired: number[] = [];
+        const execWithFire = new CronTriggerExecutor({
+          onFire: async (_trigger, context) => {
+            fired.push(context.timestamp);
+            return 'run-id';
+          },
+        });
+        execWithFire.register('test-workflow', { expression: '* * * * *', enabled: true, catchUp });
+
+        vi.setSystemTime(new Date('2026-01-01T00:03:30Z'));
+        await vi.advanceTimersByTimeAsync(30_000);
+        execWithFire.dispose();
+        return fired;
+      }
+
+      it('fires every occurrence missed by a late timer when catchUp is set', async () => {
+        const fired = await fireLate(true);
+
+        expect(fired.map((t) => new Date(t).toISOString())).toEqual([
+          '2026-01-01T00:01:00.000Z',
+          '2026-01-01T00:02:00.000Z',
+          '2026-01-01T00:03:00.000Z',
+          '2026-01-01T00:04:00.000Z',
+        ]);
+      });
+
+      it('fires a late occurrence once without catchUp', async () => {
+        const fired = await fireLate(false);
+
+        expect(fired).toHaveLength(1);
+      });
+    });
   });
 
   describe('Webhook Trigger', () => {
