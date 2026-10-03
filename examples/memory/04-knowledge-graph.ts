@@ -367,19 +367,12 @@ async function main() {
   const apiKey = requireEnv('GOOGLE_API_KEY');
   const agentId = 'kg-agent';
 
-  const llmBackend = createLLMBackend('google', {
+  const backend = createLLMBackend('google', {
     providers: { google: { apiKey } },
   });
 
-  const model = 'gemini-3.5-flash-lite';
-  const backend = {
-    chat: (opts: {
-      messages: Array<{ role: string; content: string }>;
-      responseFormat?: unknown;
-    }) => llmBackend.chat({ ...opts, model } as Parameters<typeof llmBackend.chat>[0]),
-  };
-
   const extractor = new LLMEntityExtractor(backend, {
+    model: 'gemini-3.5-flash-lite',
     minConfidence: 0.6,
     maxEntitiesPerText: 15,
     maxRelationsPerText: 20,

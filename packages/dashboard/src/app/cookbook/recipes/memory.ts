@@ -218,7 +218,6 @@ import {
   LLMEntityExtractor,
   SQLiteGraphAdapter,
   unwrap,
-  type LLMBackendMinimal,
 } from '@cogitator-ai/memory';
 import type { GraphNode } from '@cogitator-ai/types';
 
@@ -226,12 +225,6 @@ const apiKey = process.env.GOOGLE_API_KEY;
 if (!apiKey) throw new Error('Set GOOGLE_API_KEY');
 
 const google = createLLMBackend('google', { providers: { google: { apiKey } } });
-const llm: LLMBackendMinimal = {
-  async chat({ messages, responseFormat }) {
-    const response = await google.chat({ model: 'gemini-3.5-flash-lite', messages, responseFormat });
-    return { content: response.content };
-  },
-};
 
 const paragraphs = [
   'Marie Curie was a Polish-born physicist who worked at the University of Paris. She won the Nobel Prize twice.',
@@ -240,7 +233,10 @@ const paragraphs = [
 ];
 
 const agentId = 'kg-agent';
-const extractor = new LLMEntityExtractor(llm, { minConfidence: 0.6 });
+const extractor = new LLMEntityExtractor(google, {
+  model: 'gemini-3.5-flash-lite',
+  minConfidence: 0.6,
+});
 const graph = new SQLiteGraphAdapter({ path: ':memory:' });
 await graph.initialize();
 

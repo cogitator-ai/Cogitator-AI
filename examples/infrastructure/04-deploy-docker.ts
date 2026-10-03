@@ -42,7 +42,7 @@ async function main() {
       port: 3000,
       image: 'cogitator-example',
       services: { redis: true, postgres: false },
-      health: { path: '/health', interval: '30s', timeout: '5s' },
+      health: { path: '/cogitator/health', interval: '30s', timeout: '5s' },
       resources: { memory: '512mb', cpu: 1 },
     },
   });
@@ -81,7 +81,7 @@ async function main() {
       port: 3000,
       image: 'cogitator-example',
       services: { redis: true },
-      health: { path: '/health' },
+      health: { path: '/cogitator/health' },
     },
   });
 

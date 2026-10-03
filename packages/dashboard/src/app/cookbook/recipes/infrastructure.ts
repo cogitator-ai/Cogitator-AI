@@ -350,7 +350,7 @@ const plan = await deployer.plan({
     port: 3000,
     image: 'my-agent',
     services: { redis: true, postgres: false },
-    health: { path: '/health', interval: '30s', timeout: '5s' },
+    health: { path: '/cogitator/health', interval: '30s', timeout: '5s' },
     resources: { memory: '512mb', cpu: 1 },
   },
 });
