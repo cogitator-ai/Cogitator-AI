@@ -11,6 +11,14 @@ const nextConfig = {
   turbopack: {
     root: monorepoRoot,
   },
+  async rewrites() {
+    return [
+      { source: '/docs.mdx', destination: '/llms.mdx/docs' },
+      { source: '/docs.md', destination: '/llms.mdx/docs' },
+      { source: '/docs/:path*.mdx', destination: '/llms.mdx/docs/:path*' },
+      { source: '/docs/:path*.md', destination: '/llms.mdx/docs/:path*' },
+    ];
+  },
 };
 
 const withMDX = createMDX();
