@@ -1,6 +1,6 @@
 import { tool } from '@cogitator-ai/core';
 import { z } from 'zod';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 export const notifyTool = tool({
   name: 'notify',
@@ -14,11 +14,19 @@ export const notifyTool = tool({
     const platform = process.platform;
 
     if (platform === 'darwin') {
-      const soundPart = sound ? 'sound name "default"' : '';
-      const script = `display notification "${escape(message)}" with title "${escape(title)}" ${soundPart}`;
-      execSync(`osascript -e '${script}'`);
+      const display = `display notification (item 2 of argv) with title (item 1 of argv)${sound ? ' sound name "default"' : ''}`;
+      execFileSync('osascript', [
+        '-e',
+        'on run argv',
+        '-e',
+        display,
+        '-e',
+        'end run',
+        title,
+        message,
+      ]);
     } else if (platform === 'linux') {
-      execSync(`notify-send "${escape(title)}" "${escape(message)}"`);
+      execFileSync('notify-send', ['--', title, message]);
     } else {
       throw new Error(`Notifications not supported on ${platform}`);
     }
@@ -26,7 +34,3 @@ export const notifyTool = tool({
     return { sent: true, title, message };
   },
 });
-
-function escape(str: string): string {
-  return str.replace(/'/g, "'\\''").replace(/"/g, '\\"');
-}

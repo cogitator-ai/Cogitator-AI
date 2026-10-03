@@ -1,23 +1,10 @@
 import { createCogitator, DEFAULT_MODEL, header } from '../_shared/setup.js';
-import { Agent, tool } from '@cogitator-ai/core';
+import { Agent, calculator } from '@cogitator-ai/core';
 import { cogitatorApp } from '@cogitator-ai/hono';
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
-import { z } from 'zod';
 
 const PORT = 3102;
-
-const calculator = tool({
-  name: 'calculator',
-  description: 'Evaluate a math expression',
-  parameters: z.object({
-    expression: z.string().describe('Math expression to evaluate'),
-  }),
-  execute: async ({ expression }) => {
-    const result = new Function(`return (${expression})`)() as number;
-    return { expression, result };
-  },
-});
 
 async function main() {
   header('03 — Hono Server Integration');

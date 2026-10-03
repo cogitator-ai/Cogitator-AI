@@ -1,20 +1,8 @@
 import { createCogitator, DEFAULT_MODEL, header, section } from '../_shared/setup.js';
-import { Agent, tool } from '@cogitator-ai/core';
+import { Agent, calculator } from '@cogitator-ai/core';
 import { cogitatorModel, fromAISDK, fromAISDKTool, toAISDKTool } from '@cogitator-ai/ai-sdk';
 import { generateText, streamText, tool as aiTool } from 'ai';
 import { z } from 'zod';
-
-const calculator = tool({
-  name: 'calculator',
-  description: 'Evaluate a math expression',
-  parameters: z.object({
-    expression: z.string().describe('Math expression to evaluate'),
-  }),
-  execute: async ({ expression }) => {
-    const result = new Function(`return (${expression})`)() as number;
-    return { expression, result };
-  },
-});
 
 async function main() {
   header('07 — Vercel AI SDK Adapter');

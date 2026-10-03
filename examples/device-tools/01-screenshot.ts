@@ -1,6 +1,6 @@
 import { tool } from '@cogitator-ai/core';
 import { z } from 'zod';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -16,6 +16,7 @@ export const screenshotTool = tool({
       .describe('What to capture: full screen, active window, or interactive selection'),
     filename: z
       .string()
+      .regex(/^[\w-]{1,64}$/, 'Letters, digits, "-" and "_" only')
       .optional()
       .describe('Custom filename (without extension). Defaults to timestamp.'),
   }),
@@ -30,16 +31,10 @@ export const screenshotTool = tool({
     const platform = process.platform;
 
     if (platform === 'darwin') {
-      const flags = region === 'window' ? '-w' : region === 'selection' ? '-s' : '';
-      execSync(`screencapture ${flags} "${filePath}"`);
+      const flags = region === 'window' ? ['-w'] : region === 'selection' ? ['-s'] : [];
+      execFileSync('screencapture', [...flags, filePath]);
     } else if (platform === 'linux') {
-      if (region === 'full') {
-        execSync(`import -window root "${filePath}"`);
-      } else if (region === 'window') {
-        execSync(`import "${filePath}"`);
-      } else {
-        execSync(`import "${filePath}"`);
-      }
+      execFileSync('import', region === 'full' ? ['-window', 'root', filePath] : [filePath]);
     } else {
       throw new Error(`Screenshot not supported on ${platform}`);
     }

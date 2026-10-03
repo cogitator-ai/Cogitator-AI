@@ -1,6 +1,6 @@
 import { tool } from '@cogitator-ai/core';
 import { z } from 'zod';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 const ALLOWED_COMMANDS = new Set([
   'ls',
@@ -17,29 +17,23 @@ const ALLOWED_COMMANDS = new Set([
   'sort',
   'uniq',
   'grep',
-  'find',
   'which',
   'echo',
-  'env',
   'uname',
   'hostname',
   'ping',
-  'curl',
-  'wget',
   'dig',
   'nslookup',
   'ps',
-  'top',
-  'htop',
   'free',
 ]);
 
 export const shellExecTool = tool({
   name: 'shell_exec',
   description:
-    'Execute a shell command on the host machine. Only a predefined set of safe, read-only commands are allowed.',
+    'Run a command on the host machine. Only a predefined set of read-only commands is allowed; arguments are passed as-is, without a shell, so pipes, redirects and variables have no effect.',
   parameters: z.object({
-    command: z.string().describe('The shell command to execute'),
+    command: z.string().describe('The command and its space-separated arguments'),
     timeout: z.number().default(10000).describe('Timeout in milliseconds (default: 10s)'),
   }),
   execute: async ({ command, timeout }) => {
@@ -53,20 +47,8 @@ export const shellExecTool = tool({
       };
     }
 
-    if (
-      command.includes('|') ||
-      command.includes(';') ||
-      command.includes('&&') ||
-      command.includes('`') ||
-      command.includes('$(')
-    ) {
-      return {
-        error: 'Pipes and command chaining are not allowed for security reasons',
-      };
-    }
-
     try {
-      const output = execSync(command, {
+      const output = execFileSync(baseCmd, parts.slice(1), {
         encoding: 'utf-8',
         timeout,
         maxBuffer: 1024 * 1024,

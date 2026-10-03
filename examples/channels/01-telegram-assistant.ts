@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { Cogitator, Agent, tool } from '@cogitator-ai/core';
+import { Cogitator, Agent, calculator, tool } from '@cogitator-ai/core';
 import { Gateway, telegramChannel, ownerCommands, rateLimit } from '@cogitator-ai/channels';
 import { z } from 'zod';
 
@@ -30,19 +30,6 @@ const timeTool = tool({
   },
 });
 
-const calcTool = tool({
-  name: 'calculate',
-  description: 'Evaluate a math expression',
-  parameters: z.object({
-    expression: z.string().describe('The math expression to evaluate, e.g. "2 + 2 * 3"'),
-  }),
-  execute: async ({ expression }) => {
-    const sanitized = expression.replace(/[^0-9+\-*/().%\s]/g, '');
-    const result = new Function(`return (${sanitized})`)() as number;
-    return { expression, result };
-  },
-});
-
 const agent = new Agent({
   name: 'telegram-assistant',
   model: 'google/gemini-3.8-flash',
@@ -50,11 +37,11 @@ const agent = new Agent({
 
 IMPORTANT: You MUST use your tools when relevant. NEVER guess or make up answers when a tool can provide accurate data.
 - For ANY question about current time/date → ALWAYS call current_time tool
-- For ANY math expression → ALWAYS call calculate tool
+- For ANY math expression → ALWAYS call calculator tool
 
 Keep responses concise — this is a chat messenger, not an essay.
 Use markdown formatting when it helps readability.`,
-  tools: [timeTool, calcTool],
+  tools: [timeTool, calculator],
 });
 
 const cogitator = new Cogitator({

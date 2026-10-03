@@ -1,6 +1,6 @@
 import { tool } from '@cogitator-ai/core';
 import { z } from 'zod';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 export const readClipboardTool = tool({
   name: 'read_clipboard',
@@ -11,9 +11,9 @@ export const readClipboardTool = tool({
 
     let text: string;
     if (platform === 'darwin') {
-      text = execSync('pbpaste', { encoding: 'utf-8' });
+      text = execFileSync('pbpaste', { encoding: 'utf-8' });
     } else if (platform === 'linux') {
-      text = execSync('xclip -selection clipboard -o', { encoding: 'utf-8' });
+      text = execFileSync('xclip', ['-selection', 'clipboard', '-o'], { encoding: 'utf-8' });
     } else {
       throw new Error(`Clipboard read not supported on ${platform}`);
     }
@@ -32,9 +32,9 @@ export const writeClipboardTool = tool({
     const platform = process.platform;
 
     if (platform === 'darwin') {
-      execSync('pbcopy', { input: text });
+      execFileSync('pbcopy', { input: text });
     } else if (platform === 'linux') {
-      execSync('xclip -selection clipboard', { input: text });
+      execFileSync('xclip', ['-selection', 'clipboard'], { input: text });
     } else {
       throw new Error(`Clipboard write not supported on ${platform}`);
     }

@@ -42,7 +42,8 @@ const agent = new Agent({
 
 ## Security
 
-- `shell_exec` only allows a predefined set of read-only commands
-- No pipes, chaining, or subshells allowed
+- No tool goes through a shell: every command runs with `execFile` and the model's input is passed as arguments, so quotes, pipes, redirects and `$(...)` are inert
+- `shell_exec` only allows a predefined set of read-only commands (no `env`, `find`, `curl` or `wget`, which could leak secrets, delete files or send data out)
+- `open_url` accepts only `http(s)` URLs, and `screenshot` filenames are limited to letters, digits, `-` and `_`
 - Screenshots require user confirmation in the agent instructions
 - All tools are macOS/Linux only
