@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/server-shared",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Shared streaming protocol and utilities for Cogitator server adapters",
   "type": "module",
   "exports": {
