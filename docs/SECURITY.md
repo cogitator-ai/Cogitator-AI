@@ -157,20 +157,11 @@ ANTHROPIC_API_KEY: ${VAULT_PATH}
 DATABASE_URL: postgresql://user:${DB_PASS}@host:5432/cogitator?sslmode=require
 REDIS_URL: rediss://user:${REDIS_PASS}@host:6379 # TLS enabled
 
-# Sandbox defaults
-SANDBOX_DEFAULT_TYPE: wasm
-SANDBOX_TIMEOUT: 10000
-SANDBOX_NETWORK_ENABLED: false
-
-# API Security
-API_KEY_REQUIRED: true
-RATE_LIMIT_REQUESTS: 100
-RATE_LIMIT_WINDOW: 60000
-
 # Logging
 LOG_LEVEL: info
-LOG_REDACT_PATTERNS: password,secret,token,key
 ```
+
+Sandboxing, authentication and rate limits are configured in code, not through environment variables: see `sandbox` in `CogitatorConfig` and the `auth` / `rateLimit` options of the server adapters.
 
 ### Kubernetes Security
 

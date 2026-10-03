@@ -185,16 +185,34 @@ guardrails.addPrinciple({
 
 ## Rate Limiting
 
-Protect your deployment from abuse with request-level rate limiting:
+Authentication and rate limits are options of the server adapters, set in code:
 
-```yaml
-# Environment configuration
-API_KEY_REQUIRED: true
-RATE_LIMIT_REQUESTS: 100
-RATE_LIMIT_WINDOW: 60000 # 1 minute
+```typescript
+// Express
+new CogitatorServer({
+  app,
+  cogitator,
+  agents,
+  config: {
+    auth: async (req) => verifyApiKey(req.headers['x-api-key']),
+    rateLimit: {
+      windowMs: 60_000,
+      max: 100,
+      keyGenerator: (req) => String(req.headers['x-api-key']),
+    },
+  },
+});
+
+// Fastify (needs @fastify/rate-limit)
+await app.register(cogitatorPlugin, {
+  cogitator,
+  agents,
+  auth: async (request) => verifyApiKey(request.headers['x-api-key']),
+  rateLimit: { max: 100, timeWindow: '1 minute' },
+});
 ```
 
-For the Express/Fastify/Hono server adapters, rate limiting is configured at the middleware level and applies per API key.
+Limits are counted per client IP unless `keyGenerator` returns something else, such as the API key. Hono and Koa take an `auth` function but have no built-in limiter: add your framework's rate-limit middleware in front of the Cogitator routes. With Tetsu, mount a `rateLimit()` hook from `@tetsujs/rate-limit` on the application or the group. The OpenAI-compatible server checks bearer keys with its `apiKeys` option.
 
 ## Sandboxing Untrusted Inputs
 
