@@ -9,9 +9,12 @@ import type {
   ThoughtBranch,
   Agent,
   AgentContext,
+  ChatUsage,
   LLMBackend,
 } from '@cogitator-ai/types';
 import { DEFAULT_TOT_CONFIG } from '@cogitator-ai/types';
+import { calculateCost } from '@cogitator-ai/models';
+import { parseModel } from '../llm/index';
 import type { Cogitator } from '../runtime';
 import { BranchGenerator } from './branch-generator';
 import { BranchEvaluator } from './branch-evaluator';
@@ -20,6 +23,14 @@ import { ReflectionEngine } from '../reflection/index';
 
 function generateId(): string {
   return `node_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function branchScore(node: ThoughtNode): number {
+  return node.branch.score?.composite ?? 0;
+}
+
+function pendingFirst(a: ThoughtNode, b: ThoughtNode): number {
+  return Number(b.status === 'pending') - Number(a.status === 'pending');
 }
 
 export class ThoughtTreeExecutor {
@@ -38,10 +49,15 @@ export class ThoughtTreeExecutor {
     >;
   private branchGenerator!: BranchGenerator;
   private branchEvaluator!: BranchEvaluator;
-  private currentModel: string = '';
+  private llm?: LLMBackend;
+  private model = '';
+  private modelString = '';
 
   private nodes = new Map<string, ThoughtNode>();
+  private open: ThoughtNode[] = [];
+  private queued = new Set<string>();
   private stats: ToTStats = this.createInitialStats();
+  private cost = 0;
 
   constructor(cogitator: Cogitator, config: Partial<ToTConfig> = {}) {
     this.cogitator = cogitator;
@@ -53,112 +69,71 @@ export class ThoughtTreeExecutor {
     const startTime = Date.now();
 
     this.nodes.clear();
+    this.open = [];
+    this.queued.clear();
     this.stats = this.createInitialStats();
+    this.cost = 0;
 
-    const llm = await this.getLLMBackend(agent);
-    this.cachedLLM = llm;
-    this.currentModel = this.cogitator.resolveModel(agent);
+    this.modelString = this.cogitator.resolveModel(agent);
+    const route = this.cogitator.route(this.modelString, agent.config.provider);
+    this.model = route.model;
+    this.llm = this.trackUsage(route.backend);
 
-    this.branchGenerator = new BranchGenerator(llm, this.currentModel);
+    this.branchGenerator = new BranchGenerator(this.llm, this.model);
     this.branchEvaluator = new BranchEvaluator({
-      llm,
-      model: this.currentModel,
+      llm: this.llm,
+      model: this.model,
       reflectionEngine: this.getReflectionEngine(),
     });
 
     const context = this.buildAgentContext(agent, goal);
+    const branchAgent = this.createBranchAgent(agent);
 
     const root = this.createRootNode(goal);
     this.nodes.set(root.id, root);
+    this.enqueue([root]);
 
-    let frontier: ThoughtNode[] = [root];
     let bestNode: ThoughtNode | null = null;
-    let bestScore = -Infinity;
 
     const timeoutAt = options.timeout ? startTime + options.timeout : null;
     const abortSignal = options.abortSignal;
 
-    while (frontier.length > 0) {
+    while (this.open.length > 0) {
       if (abortSignal?.aborted) {
         break;
       }
       if (timeoutAt && Date.now() > timeoutAt) {
         break;
       }
-      if (this.stats.totalNodes >= this.config.maxTotalNodes) {
+      if (this.stats.exploredNodes >= this.config.maxTotalNodes) {
         break;
       }
 
-      const node = frontier.shift()!;
-      node.status = 'exploring';
-      node.exploredAt = Date.now();
+      const node = this.dequeue();
 
-      if (node.depth >= this.config.maxDepth) {
-        node.status = 'pruned';
-        this.stats.prunedNodes++;
-        continue;
+      if (node.parentId !== null && node.status === 'pending') {
+        const status = await this.executeNode(node, branchAgent, goal);
+
+        if (
+          status === 'completed' &&
+          (!bestNode || node.cumulativeScore > bestNode.cumulativeScore)
+        ) {
+          bestNode = node;
+        }
+
+        if (this.shouldTerminate(node)) {
+          return this.createResult(runId, goal, agent.id, node, startTime);
+        }
+
+        if (status === 'failed') {
+          this.backtrack(node);
+        } else if (node.depth < this.config.maxDepth) {
+          this.enqueue([node]);
+        }
+      } else {
+        await this.expandNode(node, goal, context);
       }
 
-      const branches = await this.branchGenerator.generate(
-        node.depth === 0 ? null : node,
-        goal,
-        this.config.branchFactor,
-        context,
-        this.getExploredThoughts()
-      );
-
-      this.stats.llmCalls++;
-      this.config.onBranchGenerated?.(node, branches);
-
-      const scores = await this.branchEvaluator.evaluateBatch(branches, goal, context);
-      this.stats.llmCalls++;
-
-      for (const branch of branches) {
-        const score = scores.get(branch.id);
-        if (score) {
-          branch.score = score;
-          this.config.onBranchEvaluated?.(branch, score);
-        }
-      }
-
-      const validBranches = branches
-        .filter((b) => b.score && b.score.composite >= this.config.confidenceThreshold)
-        .sort((a, b) => (b.score?.composite ?? 0) - (a.score?.composite ?? 0))
-        .slice(0, this.config.beamWidth);
-
-      if (validBranches.length === 0) {
-        const backtrackTarget = this.backtrack(node);
-        if (backtrackTarget) {
-          frontier.unshift(backtrackTarget);
-        }
-        continue;
-      }
-
-      for (const branch of validBranches) {
-        const childNode = await this.expandNode(branch, node, agent, goal);
-        this.stats.exploredNodes++;
-        this.config.onNodeExplored?.(childNode);
-
-        if (childNode.cumulativeScore > bestScore) {
-          bestScore = childNode.cumulativeScore;
-          bestNode = childNode;
-        }
-
-        if (this.shouldTerminate(childNode)) {
-          return this.createResult(runId, goal, agent.id, childNode, startTime);
-        }
-
-        if (childNode.status === 'completed') {
-          frontier.push(childNode);
-        } else if (childNode.status === 'failed') {
-          const backtrackTarget = this.backtrack(childNode);
-          if (backtrackTarget) {
-            frontier.unshift(backtrackTarget);
-          }
-        }
-      }
-
-      frontier.sort((a, b) => b.cumulativeScore - a.cumulativeScore);
       options.onProgress?.(this.stats);
     }
 
@@ -188,58 +163,139 @@ export class ThoughtTreeExecutor {
     };
   }
 
-  private async expandNode(
-    branch: ThoughtBranch,
-    parent: ThoughtNode,
-    agent: Agent,
-    goal: string
-  ): Promise<ThoughtNode> {
-    const nodeId = generateId();
+  /**
+   * Generates and scores the candidate approaches from `node`. Every candidate
+   * at or above `confidenceThreshold` becomes a pending child; the best
+   * `beamWidth` of them are queued, the rest stay as alternatives to backtrack to.
+   */
+  private async expandNode(node: ThoughtNode, goal: string, context: AgentContext): Promise<void> {
+    if (node.status === 'pending') {
+      node.status = 'exploring';
+      node.exploredAt = Date.now();
+    }
+
+    const branches = await this.branchGenerator.generate(
+      node.parentId === null ? null : node,
+      goal,
+      this.config.branchFactor,
+      context,
+      this.getExploredThoughts()
+    );
+    this.config.onBranchGenerated?.(node, branches);
+
+    const scores = await this.branchEvaluator.evaluateBatch(branches, goal, context);
+
+    for (const branch of branches) {
+      const score = scores.get(branch.id);
+      if (score) {
+        branch.score = score;
+        this.config.onBranchEvaluated?.(branch, score);
+      }
+    }
+
+    const candidates = branches
+      .filter((b) => b.score && b.score.composite >= this.config.confidenceThreshold)
+      .sort((a, b) => (b.score?.composite ?? 0) - (a.score?.composite ?? 0));
+    this.stats.prunedNodes += branches.length - candidates.length;
+
+    if (candidates.length === 0) {
+      this.backtrack(node);
+      return;
+    }
+
+    const children = candidates.map((branch) => this.addChild(branch, node));
+    this.enqueue(children.slice(0, this.config.beamWidth));
+  }
+
+  private addChild(branch: ThoughtBranch, parent: ThoughtNode): ThoughtNode {
     const node: ThoughtNode = {
-      id: nodeId,
+      id: generateId(),
       parentId: parent.id,
       depth: parent.depth + 1,
       branch: { ...branch, parentId: parent.id },
       messages: [...branch.messagesSnapshot],
-      status: 'exploring',
+      status: 'pending',
       cumulativeScore: parent.cumulativeScore + (branch.score?.composite ?? 0),
       children: [],
       createdAt: Date.now(),
     };
 
-    parent.children.push(nodeId);
-    this.nodes.set(nodeId, node);
+    parent.children.push(node.id);
+    this.nodes.set(node.id, node);
     this.stats.totalNodes++;
+    return node;
+  }
+
+  private async executeNode(
+    node: ThoughtNode,
+    agent: Agent,
+    goal: string
+  ): Promise<'completed' | 'failed'> {
+    node.status = 'exploring';
+    this.stats.exploredNodes++;
     this.stats.maxDepthReached = Math.max(this.stats.maxDepthReached, node.depth);
 
-    if (branch.proposedAction.type === 'response') {
-      node.result = { response: branch.proposedAction.content };
-      node.status = 'completed';
-      node.exploredAt = Date.now();
-      return node;
+    const action = node.branch.proposedAction;
+    let status: 'completed' | 'failed' = 'completed';
+    if (action.type === 'response') {
+      node.result = { response: action.content };
+    } else {
+      try {
+        const result = await this.cogitator.run(agent, {
+          input: this.buildNodePrompt(node.branch, goal),
+          useMemory: false,
+        });
+
+        this.stats.tokenUsage.input += result.usage.inputTokens;
+        this.stats.tokenUsage.output += result.usage.outputTokens;
+        this.cost += result.usage.cost;
+
+        node.result = { response: result.output };
+        node.messages = [...result.messages];
+      } catch (error) {
+        node.result = { error: error instanceof Error ? error.message : String(error) };
+        status = 'failed';
+      }
     }
 
-    const input = this.buildNodePrompt(branch, goal);
+    node.status = status;
+    node.exploredAt = Date.now();
+    this.config.onNodeExplored?.(node);
+    return status;
+  }
 
-    try {
-      const result = await this.cogitator.run(agent, {
-        input,
-        useMemory: false,
-      });
+  private enqueue(nodes: ThoughtNode[]): void {
+    const ordered = this.config.explorationStrategy === 'dfs' ? [...nodes].reverse() : nodes;
+    for (const node of ordered) {
+      this.open.push(node);
+      this.queued.add(node.id);
+    }
+  }
 
-      this.stats.tokenUsage.input += result.usage.inputTokens;
-      this.stats.tokenUsage.output += result.usage.outputTokens;
+  /**
+   * Takes the next node off the frontier: the most recently queued one for
+   * `dfs`, the one whose own branch scored highest for `best-first`, and the
+   * shallowest one for `beam`, so a whole level runs before the next is generated.
+   */
+  private dequeue(): ThoughtNode {
+    let index = this.open.length - 1;
 
-      node.result = { response: result.output };
-      node.messages = [...result.messages];
-      node.status = 'completed';
-      node.exploredAt = Date.now();
-    } catch (error) {
-      node.result = { error: error instanceof Error ? error.message : String(error) };
-      node.status = 'failed';
-      node.exploredAt = Date.now();
+    if (this.config.explorationStrategy !== 'dfs') {
+      const compare =
+        this.config.explorationStrategy === 'beam'
+          ? (a: ThoughtNode, b: ThoughtNode) =>
+              a.depth - b.depth || pendingFirst(a, b) || b.cumulativeScore - a.cumulativeScore
+          : (a: ThoughtNode, b: ThoughtNode) =>
+              branchScore(b) - branchScore(a) || pendingFirst(a, b);
+
+      index = 0;
+      for (let i = 1; i < this.open.length; i++) {
+        if (compare(this.open[i], this.open[index]) < 0) index = i;
+      }
     }
 
+    const [node] = this.open.splice(index, 1);
+    this.queued.delete(node.id);
     return node;
   }
 
@@ -264,7 +320,7 @@ export class ThoughtTreeExecutor {
     return node.branch.score.confidence >= this.config.terminationConfidence;
   }
 
-  private backtrack(from: ThoughtNode): ThoughtNode | null {
+  private backtrack(from: ThoughtNode): void {
     from.status = 'failed';
     this.stats.backtrackCount++;
 
@@ -273,25 +329,21 @@ export class ThoughtTreeExecutor {
       const parent = this.nodes.get(current.parentId);
       if (!parent) break;
 
-      const unexplored = parent.children
+      const alternative = parent.children
         .map((id) => this.nodes.get(id))
-        .filter(
-          (n): n is ThoughtNode =>
-            n?.status === 'pending' &&
-            (n.branch.score?.composite ?? 0) >= this.config.confidenceThreshold
-        )
-        .sort((a, b) => (b.branch.score?.composite ?? 0) - (a.branch.score?.composite ?? 0));
+        .filter((n): n is ThoughtNode => n?.status === 'pending' && !this.queued.has(n.id))
+        .sort((a, b) => b.cumulativeScore - a.cumulativeScore)[0];
 
-      if (unexplored.length > 0) {
-        this.config.onBacktrack?.(from, unexplored[0]);
-        return unexplored[0];
+      if (alternative) {
+        this.enqueue([alternative]);
+        this.config.onBacktrack?.(from, alternative);
+        return;
       }
 
       current = parent;
     }
 
     this.config.onBacktrack?.(from, null);
-    return null;
   }
 
   private findBestNode(): ThoughtNode | null {
@@ -342,12 +394,9 @@ export class ThoughtTreeExecutor {
     if (bestNode?.result?.response) {
       output = bestNode.result.response;
     } else if (bestPath.length > 0) {
-      const llm = await this.getLLMBackendFromCache();
-      if (llm) {
-        output = await this.synthesizeOutput(llm, goal, bestPath);
-      } else {
-        output = this.fallbackSynthesis(bestPath);
-      }
+      output = this.llm
+        ? await this.synthesizeOutput(this.llm, goal, bestPath)
+        : this.fallbackSynthesis(bestPath);
     }
 
     const root = this.nodes.values().next().value as ThoughtNode | undefined;
@@ -375,7 +424,7 @@ export class ThoughtTreeExecutor {
         inputTokens: this.stats.tokenUsage.input,
         outputTokens: this.stats.tokenUsage.output,
         totalTokens: this.stats.tokenUsage.input + this.stats.tokenUsage.output,
-        cost: 0,
+        cost: this.cost,
         duration,
       },
     };
@@ -390,13 +439,12 @@ export class ThoughtTreeExecutor {
 
     try {
       const response = await llm.chat({
-        model: this.currentModel,
+        model: this.model,
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.5,
         maxTokens: 1000,
       });
 
-      this.stats.llmCalls++;
       return response.content;
     } catch {
       return this.fallbackSynthesis(path);
@@ -428,13 +476,34 @@ export class ThoughtTreeExecutor {
     };
   }
 
-  private async getLLMBackend(agent: Agent): Promise<LLMBackend> {
-    return this.cogitator.getLLMBackend(this.cogitator.resolveModel(agent));
+  /**
+   * Runs of a branch are capped at `maxIterationsPerBranch` iterations, or at
+   * the agent's own `maxIterations` when that is lower.
+   */
+  private createBranchAgent(agent: Agent): Agent {
+    const own = agent.config.maxIterations;
+    const maxIterations = Math.min(own ?? Infinity, this.config.maxIterationsPerBranch);
+    return maxIterations === own ? agent : agent.clone({ id: agent.id, maxIterations });
   }
 
-  private cachedLLM?: LLMBackend;
-  private async getLLMBackendFromCache(): Promise<LLMBackend | undefined> {
-    return this.cachedLLM;
+  /** The executor's own model calls, counted into the stats, token usage and cost. */
+  private trackUsage(backend: LLMBackend): LLMBackend {
+    return {
+      provider: backend.provider,
+      chat: async (request) => {
+        this.stats.llmCalls++;
+        const response = await backend.chat(request);
+        this.recordUsage(response.usage);
+        return response;
+      },
+      chatStream: (request) => backend.chatStream(request),
+    };
+  }
+
+  private recordUsage(usage: ChatUsage): void {
+    this.stats.tokenUsage.input += usage.inputTokens;
+    this.stats.tokenUsage.output += usage.outputTokens;
+    this.cost += calculateCost(parseModel(this.modelString).model, usage) ?? 0;
   }
 
   private getReflectionEngine(): ReflectionEngine | undefined {
