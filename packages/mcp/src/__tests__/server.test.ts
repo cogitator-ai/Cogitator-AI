@@ -107,6 +107,19 @@ describe('MCPServer', () => {
       expect(server.getRegisteredTools()).toContain('simple_tool');
     });
 
+    it('accepts a readonly tool list', () => {
+      const server = new MCPServer({
+        name: 'test',
+        version: '1.0.0',
+        transport: 'stdio',
+      });
+      const tools: readonly Tool[] = Object.freeze([mockTool, mockToolNoParams]);
+
+      server.registerTools(tools);
+
+      expect(server.getRegisteredTools()).toEqual(['test_tool', 'simple_tool']);
+    });
+
     it('throws when registering after start', async () => {
       const server = new MCPServer({
         name: 'test',
@@ -251,6 +264,19 @@ describe('serveMCPTools', () => {
 
     expect(server.isRunning()).toBe(true);
     expect(server.getRegisteredTools()).toContain('test_tool');
+
+    await server.stop();
+  });
+
+  it('accepts a readonly tool list', async () => {
+    const tools = [mockTool] as const;
+    const server = await serveMCPTools(tools, {
+      name: 'test',
+      version: '1.0.0',
+      transport: 'stdio',
+    });
+
+    expect(server.getRegisteredTools()).toEqual(['test_tool']);
 
     await server.stop();
   });

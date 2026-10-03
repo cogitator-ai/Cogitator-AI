@@ -11,7 +11,7 @@ import type {
   Tool,
   ToolApprovalDecision,
 } from '@cogitator-ai/types';
-import { serveAgents, type AgentHost } from '../server/serve-agents';
+import { agentTools, serveAgents, type AgentHost } from '../server/serve-agents';
 import type { MCPServer } from '../server/mcp-server';
 import { MCPClient } from '../client/mcp-client';
 
@@ -131,6 +131,30 @@ describe('serveAgents', () => {
     expect(tools.find((t) => t.name === 'support')?.description).toBe(
       'Ask the support agent. You are support.'
     );
+  });
+
+  it('adds a resume tool only for agents with a tool that can ask for approval', () => {
+    const host: AgentHost = { run: vi.fn(), resume: vi.fn() };
+    const withApproval = (requiresApproval: Tool['requiresApproval']): Tool => ({
+      ...refundTool,
+      requiresApproval,
+    });
+
+    const names = agentTools(host, [
+      fakeAgent('never', { tools: [withApproval(false)] }),
+      fakeAgent('unset', { tools: [withApproval(undefined)] }),
+      fakeAgent('always', { tools: [withApproval(true)] }),
+      fakeAgent('sometimes', { tools: [withApproval(() => false)] }),
+    ]).map((t) => t.name);
+
+    expect(names).toEqual([
+      'never',
+      'unset',
+      'always',
+      'always_resume',
+      'sometimes',
+      'sometimes_resume',
+    ]);
   });
 
   it('runs the agent for the authenticated caller and returns its answer', async () => {

@@ -139,7 +139,7 @@ export class MCPServer {
   /**
    * Register multiple Cogitator tools
    */
-  registerTools(tools: Tool[]): void {
+  registerTools(tools: readonly Tool[]): void {
     for (const tool of tools) {
       this.registerTool(tool);
     }
@@ -740,7 +740,10 @@ export class MCPServer {
  * });
  * ```
  */
-export async function serveMCPTools(tools: Tool[], config: MCPServerConfig): Promise<MCPServer> {
+export async function serveMCPTools(
+  tools: readonly Tool[],
+  config: MCPServerConfig
+): Promise<MCPServer> {
   const server = new MCPServer(config);
   server.registerTools(tools);
   await server.start();

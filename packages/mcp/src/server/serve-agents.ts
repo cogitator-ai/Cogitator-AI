@@ -68,7 +68,9 @@ export function agentTools(
   return agents.flatMap((agent) => {
     const name = toolNames[agent.name] ?? toToolName(agent.name);
     const resumeName = `${name}_resume`;
-    const needsApprovals = agent.tools.some((t) => t.requiresApproval !== undefined);
+    const needsApprovals = agent.tools.some(
+      (t) => t.requiresApproval === true || typeof t.requiresApproval === 'function'
+    );
 
     const ask = defineTool({
       name,
