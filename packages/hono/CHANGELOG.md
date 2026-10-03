@@ -1,5 +1,12 @@
 # @cogitator-ai/hono
 
+## 0.5.3
+
+### Patch Changes
+
+- Updated dependencies [9a7b6f4]
+  - @cogitator-ai/core@0.26.1
+
 ## 0.5.2
 
 ### Patch Changes

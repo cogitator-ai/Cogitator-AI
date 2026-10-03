@@ -1,5 +1,12 @@
 # @cogitator-ai/tetsu
 
+## 0.3.3
+
+### Patch Changes
+
+- Updated dependencies [9a7b6f4]
+  - @cogitator-ai/core@0.26.1
+
 ## 0.3.2
 
 ### Patch Changes
