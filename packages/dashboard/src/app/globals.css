@@ -574,6 +574,20 @@ body {
     .cog-rail {
       display: none;
     }
+
+    .cog-plate {
+      gap: 8px;
+      padding: 0 4px 8px;
+    }
+
+    .cog-title {
+      font-size: 11.5px;
+      letter-spacing: 0.06em;
+    }
+
+    .cog-plaque {
+      padding: 3px 10px;
+    }
   }
 
   .cog-screen,

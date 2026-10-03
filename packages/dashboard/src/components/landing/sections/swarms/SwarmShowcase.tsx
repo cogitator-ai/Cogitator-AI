@@ -172,7 +172,7 @@ export function SwarmShowcase({ snippets }: { snippets: Record<StrategyId, React
               onClick={() => select(index)}
               onKeyDown={onTabKeyDown}
               className={cx(
-                'plate-tab relative flex-1 shrink-0 overflow-hidden whitespace-nowrap rounded-lg px-3 py-2 text-[13px] outline-none focus-visible:ring-1 focus-visible:ring-l-accent/60'
+                'plate-tab relative flex-none overflow-hidden whitespace-nowrap sm:flex-1 rounded-lg px-3 py-2 text-[13px] outline-none focus-visible:ring-1 focus-visible:ring-l-accent/60'
               )}
             >
               {item.id}

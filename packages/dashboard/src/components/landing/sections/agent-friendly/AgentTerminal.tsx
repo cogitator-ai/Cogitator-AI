@@ -152,7 +152,11 @@ export function AgentTerminal({ lines }: { lines: TerminalLine[] }) {
       <Window
         crt
         title="~/shop-api · agent session"
-        aside={<span className="font-mono text-[11px] text-l-brass/80">text/markdown</span>}
+        aside={
+          <span className="hidden font-mono text-[11px] text-l-brass/80 sm:inline">
+            text/markdown
+          </span>
+        }
         bodyClassName="bg-l-bg/60"
       >
         <div
