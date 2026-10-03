@@ -58,7 +58,7 @@ export function createTestAgent(opts?: {
     maxTokens: opts?.maxTokens,
     maxIterations: opts?.maxIterations,
     responseFormat: opts?.responseFormat,
-    temperature: opts?.temperature ?? 0,
+    temperature: opts?.temperature,
   });
 }
 

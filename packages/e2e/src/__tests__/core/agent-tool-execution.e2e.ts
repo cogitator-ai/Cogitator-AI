@@ -86,6 +86,7 @@ describeE2E('Core: Agent Tool Execution', () => {
       instructions:
         'You are a math assistant. Use the divide tool for division. If the tool fails, explain what went wrong.',
       tools: [tools.failing],
+      temperature: 0,
     });
 
     const result = await runUntilToolCalled(
