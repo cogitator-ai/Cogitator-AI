@@ -138,6 +138,7 @@ See [LLM Backends](https://cogitator.app/docs/core/llm-backends) for every provi
 - **OpenAI** — the official backend uses the Responses API and defaults to `gpt-6.1-sol`. Requests are stateless (`store: false`); reasoning items are round-tripped between tool-call turns via `ToolCall.replay`. Reasoning models (o-series, GPT-5+) get no `temperature` / `top_p`. Requests with stop sequences fall back to Chat Completions (the Responses API has no stop parameter). OpenAI-compatible providers (Azure, Mistral, Groq, Together, DeepSeek, vLLM, custom `baseUrl`) stay on Chat Completions. Force either path with `providers.openai.api: 'responses' | 'chat-completions'`. Usage includes `cachedInputTokens` and `reasoningTokens` when reported.
 - **Anthropic** — defaults to `claude-sonnet-5-5`. Sampling params are omitted for Claude 4.7+, 5.x and Fable (they reject non-default values); Claude 4.0 – 4.6 get at most one of `temperature` / `top_p` (`temperature` wins). `json_schema` uses native structured outputs on Claude 4.5+. Forced tool choice falls back to `auto` with a system-prompt instruction and a one-time warning on Opus/Sonnet 5.5 and Fable.
 - **Bedrock** — Claude models follow the same sampling and tool-choice rules; `json_object` and `json_schema` response formats are supported (schema enforced via `outputConfig.textFormat` on Claude 4.5 – 4.6, system-prompt instruction otherwise).
+- **Google** — Gemini has no `null` schema type, so `.nullable()` fields in response schemas and tool parameters are sent as `nullable: true`.
 
 ### Direct Backend Usage
 
@@ -179,6 +180,8 @@ const myPlugin = defineBackend({
 registerLLMBackend(myPlugin);
 const backend = createLLMBackendFromPlugin('my-provider', { apiKey: '...' });
 ```
+
+A backend's `provider` field is an `LLMBackendProvider`: a built-in provider name or one of your own, such as the plugin's provider or its key in `llm.backends`.
 
 ### LLM Debug Wrapper
 
@@ -349,7 +352,7 @@ const weatherTool = tool({
 });
 ```
 
-`tool()` also takes `category`, `tags`, `sideEffects`, `requiresApproval`, `timeout` and `sandbox`. Tools passed to `new Agent({ tools })` lose their individual parameter types in a plain array; `toolset(...tools)` keeps them as a typed tuple that agents still accept:
+`tool()` also takes `category`, `tags`, `sideEffects`, `requiresApproval`, `timeout` and `sandbox`. A parameter with `.default()` is optional in the JSON Schema the model sees; `execute` receives the default when the model leaves it out. Tools passed to `new Agent({ tools })` lose their individual parameter types in a plain array; `toolset(...tools)` keeps them as a typed tuple that agents still accept:
 
 ```typescript
 import { tool, toolset } from '@cogitator-ai/core';
@@ -374,6 +377,17 @@ function createSearchTools() {
 
 const [search, fetchItem] = createSearchTools();
 await search.execute({ query: 'lamp' }, ctx); // typed as { query: string }
+```
+
+A result object with a base64 image in `image` or `imageBase64` (PNG, JPEG, GIF or WebP, plain or as a `data:` URL) reaches the model as an image, with the rest of the result as JSON, so a vision model sees a screenshot instead of its base64 text. Anthropic, Bedrock and the OpenAI Responses API get the image inside the tool result, Google after the turn's function responses, Ollama in the tool message's `images`, and Chat Completions backends (OpenAI-compatible, Azure) in a user message after the turn's tool messages:
+
+```typescript
+const screenshot = tool({
+  name: 'screenshot',
+  description: 'Capture the dashboard as a PNG',
+  parameters: z.object({}),
+  execute: async () => ({ page: 'dashboard', image: (await capture()).toString('base64') }),
+});
 ```
 
 See [Tools](https://cogitator.app/docs/core/tools) and [Custom Tools](https://cogitator.app/docs/tools/custom-tools).
@@ -474,7 +488,7 @@ const shellTool = tool({
 });
 ```
 
-A Docker-sandboxed tool does not call `execute`: the sandbox runs the `command` argument with `sh -c` (plus optional `cwd` / `env` arguments) and returns its output. A WASM tool gets its arguments as JSON on stdin and its JSON stdout is parsed as the result. Sandboxing needs `@cogitator-ai/sandbox` installed (options go in `new Cogitator({ sandbox })`); when the sandbox cannot start, the tool runs natively with a warning.
+A Docker-sandboxed tool does not call `execute`: the sandbox runs the `command` argument with `sh -c` (plus optional `cwd` / `env` arguments) and returns its output. A WASM tool gets its arguments as JSON on stdin and its JSON stdout is parsed as the result. Sandboxing needs `@cogitator-ai/sandbox` installed (options go in `new Cogitator({ sandbox })`); when the sandbox cannot start, the tool runs natively with a warning (a Docker-sandboxed tool returns an error instead with `sandbox.allowNativeFallback: false`).
 
 `timeout` is enforced for every tool: native tools get an aborted `context.signal` and the model receives a `Tool "<name>" timed out after <ms>ms` error; sandboxed tools forward it to the sandbox executor. The sandbox is initialized lazily on the first sandboxed call, and that call already runs inside it.
 
@@ -564,7 +578,7 @@ const agent = new Agent({
   name: 'utility-agent',
   instructions: 'Use your tools to help users',
   model: 'openai/gpt-6.1-sol',
-  tools: [...builtinTools], // builtinTools is a readonly tuple
+  tools: builtinTools, // Tool[]
 });
 ```
 
@@ -652,7 +666,7 @@ const agent = new Agent({
 });
 
 // Embedding providers: OpenAI, Ollama, Google
-// Auto-detects from OPENAI_API_KEY, OLLAMA_BASE_URL / OLLAMA_HOST, or GOOGLE_API_KEY
+// Auto-detects from OPENAI_API_KEY, OLLAMA_BASE_URL / OLLAMA_URL / OLLAMA_HOST, or GOOGLE_API_KEY
 // Default models: text-embedding-3-small, nomic-embed-text, gemini-embedding-001
 ```
 
@@ -940,16 +954,18 @@ Every field is optional; defaults are in `DEFAULT_TOT_CONFIG`:
 ```typescript
 const executor = new ThoughtTreeExecutor(cog, {
   branchFactor: 3, // branches generated per node
-  beamWidth: 2, // branches kept per level with 'beam'
+  beamWidth: 2, // best candidates queued per expanded node
   maxDepth: 5,
   explorationStrategy: 'beam', // 'beam' | 'best-first' | 'dfs'
   confidenceThreshold: 0.3, // prune branches scored below
   terminationConfidence: 0.8, // stop once a branch reaches this
-  maxTotalNodes: 50,
-  maxIterationsPerBranch: 3,
+  maxTotalNodes: 50, // executed nodes
+  maxIterationsPerBranch: 3, // iteration cap for each branch run
   onBranchEvaluated: (branch, score) => console.log(branch.thought, score.composite),
 });
 ```
+
+Candidates beyond `beamWidth` stay pending, so a failed branch backtracks to the next best one. `beam` runs the tree level by level, `best-first` always runs the node whose own branch scored highest, and `dfs` goes deep first. The executor's own generation, evaluation and synthesis calls use the agent's routed model and count into `usage` (tokens and cost) and `stats`. See [Tree-of-Thought](https://cogitator.app/docs/advanced/reasoning).
 
 ---
 
@@ -1181,6 +1197,8 @@ const optimizer = new AutoOptimizer({
 await optimizer.recordExecution(trace);
 ```
 
+It optimizes the agent's deployed version, so deploy one first. To serve its A/B tests on live traffic, give `new Cogitator({ prompts: { abTests, versions } })` the same stores as `abTesting` and `rollbackManager` and the agent an explicit `id`: the Cogitator then assigns variants per thread and records the results, traces carry the variant (`trace.prompt`) so the optimizer does not count them twice, and the optimizer deploys the winner (leave `prompts.autoDeployWinner` off). `PostgresTraceStore` backs all of it: `traces()` for `AgentOptimizer`, `abTests()` and `instructionVersions()` for the rest. See [Learning](https://cogitator.app/docs/advanced/learning#ab-tests-on-live-traffic).
+
 ---
 
 ## Time Travel Debugging
@@ -1193,10 +1211,10 @@ import { TimeTravel, InMemoryCheckpointStore } from '@cogitator-ai/core';
 const timeTravel = new TimeTravel(cogitator);
 
 const result = await cogitator.run(agent, { input: 'Original task...' });
-const checkpoints = await timeTravel.checkpointAll(result, 'original');
+const checkpoints = await timeTravel.checkpointAll(result, 'original'); // one per tool call
 
 const replayResult = await timeTravel.replayLive(agent, checkpoints[2].id);
-console.log('Replayed from step 2:', replayResult.output);
+console.log('Replayed from the third tool call:', replayResult.output);
 
 const forkResult = await timeTravel.fork(agent, checkpoints[2].id, {
   input: 'Modified task...',
@@ -1250,7 +1268,7 @@ const liveReplay = await timeTravel.replayLive(agent, checkpointId, {
 });
 ```
 
-Mocked tool results are keyed by tool name (in deterministic replays also by call id): the tool answers with the given value and never runs. Tools in `skipTools` are removed from the replayed agent. Checkpoints, replays and forks store their traces in the trace store, so `compare()` and `compareWithOriginal()` can read them.
+Checkpoints are anchored on tool calls: checkpoint `i` holds the conversation after `i` tool calls, stopping before the result of the call it is anchored on. `stepsReplayed` is that index, `stepsExecuted` counts the replay's tool calls, and `divergedAt` uses the original run's numbering. Mocked tool results are keyed by tool name (in deterministic replays also by call id): the tool answers with the given value and never runs. Tools in `skipTools` are removed from the replayed agent. Checkpoints, replays and forks store their traces in the trace store, so `compare()` and `compareWithOriginal()` can read them.
 
 ---
 
@@ -1320,6 +1338,8 @@ const result = evaluateCounterfactual(graph, {
 console.log('Factual value:', result.factualValue);
 console.log('Counterfactual value:', result.counterfactualValue);
 ```
+
+Counterfactuals use the nodes' structural equations (`withEquation()` on the builder): `linear`, `logistic`, `polynomial`, or `custom` with a safe arithmetic expression over the parent ids in `customFn` (`'2 * price - log(demand)'`; `+ - * / ^`, parentheses, `abs exp log sqrt pow min max tanh sigmoid`). Nodes without an equation keep their factual values.
 
 ### D-Separation Analysis
 
@@ -1619,27 +1639,13 @@ await cachedSearch.execute({ query: 'Paris weather forecast' }, ctx); // semanti
 
 ### Redis Storage
 
-For production with persistence. `redisClient` must implement `RedisClientLike`, whose `scan` takes `(cursor, { match, count })`; ioredis and `@cogitator-ai/redis` clients take `scan(cursor, 'MATCH', pattern, 'COUNT', n)`, so wrap them:
+For production with persistence. `redisClient` takes any `RedisClientLike`; an ioredis client fits as it is:
 
 ```typescript
-import { withCache, type RedisClientLike } from '@cogitator-ai/core';
+import { withCache } from '@cogitator-ai/core';
 import { Redis } from 'ioredis';
 
 const redis = new Redis(process.env.REDIS_URL!);
-
-const redisClient: RedisClientLike = {
-  get: (key) => redis.get(key),
-  setex: (key, seconds, value) => redis.setex(key, seconds, value),
-  del: (...keys) => redis.del(...keys),
-  mget: (...keys) => redis.mget(...keys),
-  zadd: (key, score, member) => redis.zadd(key, score, member),
-  zrange: (key, start, stop) => redis.zrange(key, start, String(stop)),
-  zrem: (key, ...members) => redis.zrem(key, ...members),
-  incr: (key) => redis.incr(key),
-  decr: (key) => redis.decr(key),
-  exists: (...keys) => redis.exists(...keys),
-  scan: (cursor, { match, count = 100 }) => redis.scan(cursor, 'MATCH', match, 'COUNT', count),
-};
 
 const cachedTool = withCache(webSearch, {
   strategy: 'semantic',
@@ -1647,11 +1653,13 @@ const cachedTool = withCache(webSearch, {
   ttl: '1h',
   maxSize: 1000,
   storage: 'redis',
-  redisClient,
+  redisClient: redis,
   keyPrefix: 'myapp:cache',
   embeddingService,
 });
 ```
+
+Keys live under `keyPrefix` (a `:` is appended when missing): entries at `<prefix>:entry:<cache key>`, the LRU order in `<prefix>:lru` and the entry count in `<prefix>:counter`. Cached tools sharing a prefix share one LRU and `maxSize`; `cache.clear()` deletes every key under the prefix.
 
 ### Cache Management
 
@@ -1687,6 +1695,8 @@ const cached = withCache(searchTool, {
   onEvict: (key) => console.log('Evicted:', key),
 });
 ```
+
+`onEvict` fires for entries removed by `cache.invalidate()` and for entries evicted to stay under `maxSize`, in memory and in Redis.
 
 ---
 
@@ -1726,13 +1736,15 @@ const revision = await constitutional.critiqueAndRevise('draft answer', messages
 // Integrated with the Cogitator runtime: on when `guardrails` is set (unless enabled: false)
 const cog = new Cogitator({
   guardrails: {
-    model: 'openai/gpt-6-luna', // judge model; defaults to the agent's model
+    model: 'openai/gpt-6-luna', // judge model; default: llm.defaultModel, else the first run's agent model
     filterToolResults: true,
   },
 });
 ```
 
-Fields left out take `DEFAULT_GUARDRAIL_CONFIG` (input, output and tool-call filtering plus critique-revision on). `InputFilter`, `OutputFilter`, `ToolGuard` and `CritiqueReviser` are the layers `ConstitutionalAI` uses; each takes `{ config, constitution }` plus `llm` for the LLM-backed ones. `cog.setConstitution()` swaps the constitution at runtime. See [Constitutional AI](https://cogitator.app/docs/advanced/constitutional-ai).
+Fields left out take `DEFAULT_GUARDRAIL_CONFIG` (input, output and tool-call filtering plus critique-revision on). `InputFilter`, `OutputFilter`, `ToolGuard` and `CritiqueReviser` are the layers `ConstitutionalAI` uses; each takes `{ config, constitution }` plus `llm` for the LLM-backed ones. `cog.getGuardrails()` and `cog.setConstitution()` work before the first run when `guardrails.model` or `llm.defaultModel` names the judge model; a constitution set earlier applies once the guardrails are built.
+
+With `strictMode`, every call of a tool with `sideEffects` needs approval and goes through the run's [approval flow](#approvals) like a `requiresApproval` tool: `onApproval`, then `guardrails.onToolApproval`, else the run pauses. `ToolGuard` fails closed: a call that needs approval and was not approved by that flow or by `onToolApproval` is denied. See [Constitutional AI](https://cogitator.app/docs/advanced/constitutional-ai).
 
 ---
 
@@ -1769,10 +1781,12 @@ const cog = new Cogitator({
   },
 });
 
-cog.getCostSummary(); // tracked costs
+cog.getCostSummary(); // tracked costs, also before the first run
 const estimate = await cog.estimateCost({ agent, input: 'Summarize this report' });
 console.log(estimate.expectedCost);
 ```
+
+With `costRouting.enabled`, every run is checked against `budget`, with or without `autoSelectModel`: the cost is estimated from the task's complexity and the model's price, and a run over a limit throws a `CogitatorError` with code `BUDGET_EXCEEDED` (HTTP 429). `autoSelectModel` only picks models of providers the runtime can call (`llm.backends`, plugins, `llm.defaultProvider`, the agent's own provider, or `llm.providers` entries with credentials) and keeps the agent's model when none fits. The router exposes the same steps: `recommendAvailableModel(input, isProviderAvailable)` (undefined when no provider fits) and `checkRunBudget(input, model)`.
 
 See [Cost Routing](https://cogitator.app/docs/advanced/cost-routing).
 
@@ -1809,6 +1823,7 @@ const langfuse = createLangfuseExporter({
   publicKey: process.env.LANGFUSE_PUBLIC_KEY!,
   secretKey: process.env.LANGFUSE_SECRET_KEY!,
   baseUrl: 'https://cloud.langfuse.com',
+  enabled: true,
 });
 
 await langfuse.init(); // needs the optional `langfuse` package
@@ -1817,6 +1832,7 @@ const otlp = createOTLPExporter({
   endpoint: 'http://localhost:4318/v1/traces',
   headers: { Authorization: 'Bearer ...' },
   serviceName: 'my-agents',
+  enabled: true,
 });
 otlp.start(); // flushes every 5 seconds
 
@@ -1834,7 +1850,7 @@ const result = await cog.run(agent, {
 });
 ```
 
-Exporters are not attached automatically; wire them to the run callbacks as above. See [Observability](https://cogitator.app/docs/deployment/observability).
+Both exporters do nothing unless `enabled: true` is set, so you can build them unconditionally and switch them per environment. They are not attached automatically; wire them to the run callbacks as above. See [Observability](https://cogitator.app/docs/deployment/observability).
 
 ---
 
@@ -1869,14 +1885,14 @@ const manager = new Agent({
 });
 ```
 
-Tool calls of the inner agent that need approval are declined unless `onApproval` decides them, since a delegated run cannot pause for a person. To hand the conversation over instead of calling a sub-agent, use [handoffs](#handoffs). See [Agent as Tool](https://cogitator.app/docs/tools/agent-as-tool).
+Tool calls of the inner agent that need approval are declined unless `onApproval` decides them, since a delegated run cannot pause for a person; an `onApproval` that returns `'pause'` declines too. If the inner run pauses anyway, the tool returns `success: false` with an `error` naming the tools that waited. To hand the conversation over instead of calling a sub-agent, use [handoffs](#handoffs). See [Agent as Tool](https://cogitator.app/docs/tools/agent-as-tool).
 
 ---
 
 ## Logging
 
 ```typescript
-import { getLogger, setLogger, createLogger } from '@cogitator-ai/core';
+import { getLogger, setLogger, createLogger, createLoggerFromConfig } from '@cogitator-ai/core';
 
 const logger = createLogger({
   level: 'debug', // default 'info'; the default logger reads LOG_LEVEL
@@ -1891,6 +1907,24 @@ getLogger().debug('Tool call', { tool: 'calculator', args: { expression: '2+2' }
 getLogger().warn('Rate limited', { retryAfter: 60 });
 getLogger().error('Failed', { error: 'Connection timeout' });
 ```
+
+`new Cogitator({ logging })` installs a logger built from the config with `createLoggerFromConfig()`. It is process-wide, so with several runtimes the last one created with `logging` wins:
+
+```typescript
+import { Cogitator, createLoggerFromConfig, setLogger } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  logging: {
+    level: 'warn', // 'debug' | 'info' | 'warn' | 'error' | 'silent'
+    destination: 'file', // appends JSON lines to filePath
+    filePath: './cogitator.log',
+  },
+});
+
+setLogger(createLoggerFromConfig({ level: 'silent' })); // the same, without a runtime
+```
+
+Without `filePath`, or where there is no file system, `destination: 'file'` logs to the console with a warning.
 
 ---
 
@@ -1922,6 +1956,7 @@ import type {
 import type {
   LLMBackend,
   LLMProvider,
+  LLMBackendProvider, // LLMProvider or the name of your own backend
   LLMConfig,
   ChatRequest,
   ChatResponse,
@@ -2016,6 +2051,8 @@ try {
   }
 }
 ```
+
+Runs that hit their `timeout` throw `RUN_TIMEOUT` (HTTP 504, `Run timed out after <n>ms`), runs over the cost-routing budget `BUDGET_EXCEEDED` (429), and input or output blocked by guardrails (`Input blocked: …` / `Output blocked: …`) `LLM_CONTENT_FILTERED` (400), so server adapters return those statuses and messages.
 
 ---
 

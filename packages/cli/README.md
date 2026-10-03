@@ -105,7 +105,7 @@ cogitator wizard --edit   # edit an existing cogitator.yml, pre-filling current 
 
 The wizard asks for your name and the assistant's name, the LLM provider and model (models are fetched live from the provider registry or your Ollama server), channels (Telegram, Discord, Slack with owner IDs), capabilities (web search, file system, GitHub, device tools, browser, scheduler, RAG, self-config, self-tools), MCP servers (quoted arguments are supported), the SQLite memory path and the assistant's personality. A terminal channel is always available.
 
-Secrets are merged into `.env` without touching your other variables or comments. In `--edit` mode, leaving a secret blank keeps the current value, and existing MCP servers and advanced settings (security, rate limits, …) are preserved.
+Secrets are merged into `.env` without touching your other variables or comments. In `--edit` mode, leaving a secret blank keeps the current value, and existing MCP servers and advanced settings (security, rate limits, …) are preserved. The wizard does not ask about WhatsApp, WebChat or Postgres memory, but keeps them: `channels.whatsapp` / `channels.webchat` entries stay as they are, and a `memory.adapter: postgres` config is kept (the SQLite path prompt is skipped).
 
 See the [wizard guide](https://cogitator.app/docs/channels/wizard) for the generated `cogitator.yml`.
 
@@ -116,10 +116,10 @@ See the [wizard guide](https://cogitator.app/docs/channels/wizard) for the gener
 ```bash
 cogitator up                       # ./cogitator.yml (or .yaml) → run the assistant
 cogitator up -c path/to/assistant.yml
-cogitator up --no-restart-loop     # do not supervise self-config restarts
+cogitator up --no-restart-loop     # run in-process, without the restart supervisor
 ```
 
-When a `cogitator.yml` exists, `up` validates it (errors list the offending fields), loads `.env` from the config's directory (existing environment variables win) and starts the assistant. With the `selfConfig` capability enabled, `up` supervises the assistant and restarts it whenever the agent rewrites its own config; `SIGINT`/`SIGTERM` are forwarded for a graceful shutdown.
+When a `cogitator.yml` exists, `up` validates it (errors list the offending fields), loads the `.env` next to it into `process.env` without overriding variables that are already set (so tools that read `process.env`, such as `web_search` and `github_api`, see the wizard's keys) and starts the assistant. Unless `--no-restart-loop` is given, `up` runs the assistant in a child process and starts it again whenever it exits with code `78` — the owner `/restart` command and self-config updates; `SIGINT`/`SIGTERM` are forwarded for a graceful shutdown. With `--no-restart-loop` the assistant runs in the `up` process and simply stops on `/restart`.
 
 Without an assistant config, `up` manages the Docker Compose project found in the current or a parent directory (`docker-compose.yml`, `compose.yml`, …):
 

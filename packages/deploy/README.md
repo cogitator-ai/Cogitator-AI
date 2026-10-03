@@ -57,7 +57,7 @@ console.log(result.url); // https://my-app.fly.dev
 
 `DeployOptions`: `projectDir`, `target`, `dryRun` (plan and generate, then return `{ success: true, url: '(dry run)' }` without writing artifacts or deploying), `noPush` (drop the registry) and `configOverrides` (a partial `DeployConfig`). `deploy()` does not throw on failed preflight checks: it returns `{ success: false, error }` listing each failed check and its fix.
 
-`ProjectAnalyzer`, `ArtifactGenerator`, `DockerProvider` and `FlyProvider` are exported for building your own pipeline.
+`ProjectAnalyzer` (`analyze(projectDir, overrides?)`, `detectBuild(projectDir)`), `ArtifactGenerator`, `DockerProvider` and `FlyProvider` are exported for building your own pipeline.
 
 ## Configuration
 
@@ -80,13 +80,15 @@ deploy:
   secrets: # default: detected from llm.defaultModel
     - OPENAI_API_KEY
   health: # defaults shown
-    path: /health
+    path: /cogitator/health
     interval: 30s
     timeout: 5s
   resources: # Fly.io VM, default: 256mb, 1 shared CPU
     memory: 512mb
     cpu: 1
 ```
+
+`health.path` defaults to the path the Express and Fastify adapters serve at their default `/cogitator` base path. Set it only when the adapter is mounted elsewhere (Hono, Koa and Tetsu answer wherever you mount them).
 
 Secrets are read from the current environment or the project's `.env` file. They are checked during preflight, passed through to the Docker Compose stack, and imported into Fly.io with `fly secrets import --stage`.
 
@@ -113,7 +115,7 @@ The image is based on `node:22-alpine`, sets `NODE_ENV=production` and `PORT`, e
 
 Artifacts are written to `.cogitator/`: `Dockerfile`, `.dockerignore`, `Dockerfile.dockerignore` and `docker-compose.prod.yml`. A root `.dockerignore` is created when the project has none, so `.env` and `node_modules` never enter the image.
 
-`deploy` builds and tags the image (`<registry>/<image>:latest`), pushes it when a registry is configured, then runs `docker compose up -d` for the app plus the Redis/PostgreSQL services it needs (health-gated, data in named volumes). The result's `url` is `http://localhost:<port>`. `status` reports whether the `app` service is running; `destroy` runs `docker compose down` and keeps volumes.
+`deploy` builds and tags the image (`<registry>/<image>:latest`), pushes it when a registry is configured, then runs `docker compose up -d` for the app plus the Redis/PostgreSQL services it needs (health-gated, data in named volumes). Each key appears once in the app's Compose `environment`: a `REDIS_URL` / `DATABASE_URL` in `env` replaces the bundled service URL, and one listed in `secrets` is read from your environment with the bundled URL as fallback. The result's `url` is `http://localhost:<port>`. `status` reports whether the `app` service is running; `destroy` runs `docker compose down` and keeps volumes.
 
 Preflight checks: Docker installed, daemon running, Compose v2 available, registry credentials (read from the Docker config, credential helpers and stores), secrets.
 
@@ -124,7 +126,12 @@ Generates `.cogitator/fly.toml` (your own `fly.toml` is never overwritten) with 
 ## Custom Providers
 
 ```typescript
-import { Deployer, type DeployProvider } from '@cogitator-ai/deploy';
+import {
+  ArtifactGenerator,
+  Deployer,
+  ProjectAnalyzer,
+  type DeployProvider,
+} from '@cogitator-ai/deploy';
 import type {
   DeployConfig,
   DeployResult,
@@ -140,7 +147,8 @@ class KubernetesProvider implements DeployProvider {
     return { checks: [], passed: true };
   }
   async generate(config: DeployConfig, projectDir: string): Promise<GeneratedArtifacts> {
-    return { files: [], outputDir: '.cogitator' };
+    const build = new ProjectAnalyzer().detectBuild(projectDir);
+    return new ArtifactGenerator().generate(config, build);
   }
   async deploy(
     config: DeployConfig,
@@ -161,15 +169,15 @@ deployer.registerProvider(new KubernetesProvider());
 await deployer.deploy({ projectDir: process.cwd(), target: 'kubernetes' });
 ```
 
-`Deployer.deploy()` passes your provider the artifacts of its own `ArtifactGenerator` (a Dockerfile, `.dockerignore` files and, for targets other than `fly`, `docker-compose.prod.yml`); it does not call the provider's `generate()`. Writing the files to disk is up to the provider.
+`Deployer.deploy()` runs preflight, calls your provider's `generate(config, projectDir)` and hands the result to its `deploy()` (with `dryRun` it stops after `generate()`). Writing the files to disk is up to the provider. The example reuses the built-in Dockerfile: `ProjectAnalyzer.detectBuild(projectDir)` reports the TypeScript setup, package manager, lockfile, build script and start command that `ArtifactGenerator` needs.
 
 All external commands are executed without a shell, so paths with spaces and user-supplied values are passed verbatim.
 
 ## Architecture
 
 ```
-ProjectAnalyzer  →  ArtifactGenerator  →  DeployProvider  →  Result
-(detect config)     (Dockerfile, etc.)     (docker/fly)       (url, status)
+ProjectAnalyzer  →  DeployProvider.generate  →  DeployProvider.deploy  →  Result
+(detect config)     (Dockerfile, etc.)            (docker/fly)              (url, status)
 ```
 
 ## See Also

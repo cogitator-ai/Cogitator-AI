@@ -126,7 +126,7 @@ llm:
 
 ```yaml
 memory:
-  adapter: postgres # memory | redis | postgres | sqlite | mongodb | qdrant
+  adapter: postgres # thread store: memory | redis | postgres | sqlite | mongodb
 
   # In-memory (for development)
   inMemory:
@@ -167,7 +167,7 @@ memory:
     database: cogitator
     collectionPrefix: cog_
 
-  # Qdrant (vector database)
+  # Qdrant: embedding store searched by contextBuilder, next to the thread store
   qdrant:
     url: http://localhost:6333
     apiKey: xxx
@@ -194,6 +194,8 @@ memory:
       maxNodes: 20
       maxDepth: 3
 ```
+
+The `Cogitator` runtime builds the store `adapter` names from its section: `redis` needs `url`, `host`/`port` or `cluster`, `postgres` needs `connectionString`, `sqlite` needs `path` and `mongodb` needs `uri`. A Postgres store sizes its vector column to `embedding`. `qdrant` is not a thread store: keep one of the others as `adapter`, and with `contextBuilder` (`includeSemanticContext: true`) the runtime searches `memory.qdrant` for semantic context. `embedding.dimensions` is not in the schema yet and is stripped; set it in code when you need it.
 
 ### Sandbox Configuration
 
@@ -233,6 +235,8 @@ sandbox:
     wasi: true
     cacheSize: 100
 ```
+
+`sandbox.allowNativeFallback` (default `true`: Docker-sandboxed tools run unsandboxed on the host when Docker is unavailable) and `sandbox.pool.reuseContainers` (default `false`: every execution gets a fresh container) are not in the schema yet and are stripped by validation. Pass them to `new Cogitator()` in code next to the loaded config.
 
 ### Reflection Configuration
 
@@ -348,7 +352,7 @@ deploy:
     NODE_ENV: production
   secrets: [OPENAI_API_KEY]
   health:
-    path: /health
+    path: /cogitator/health
     interval: 30s
     timeout: 5s
   resources:
@@ -374,6 +378,8 @@ logging:
   destination: console # console | file
   filePath: ./logs/cogitator.log
 ```
+
+A `Cogitator` created with `logging` installs it as the process-wide logger (the last such runtime wins). `destination: file` appends one line per entry to `filePath`, as JSON unless `format` is set; without `filePath`, or on runtimes without a file system, it logs to the console. `createLoggerFromConfig()` from `@cogitator-ai/core` builds the same logger in code.
 
 ---
 

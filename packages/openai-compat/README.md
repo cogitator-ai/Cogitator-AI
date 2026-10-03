@@ -270,13 +270,13 @@ for await (const { event, data } of adapter.streamRunEvents(run.id)) {
 }
 ```
 
-`createRun` returns the `queued` run immediately and executes it in the background. It rejects when the assistant or thread is missing or the thread already has an active run (one active run per thread).
+`createRun` returns the `queued` run immediately and executes it in the background. It rejects with an `InvalidRequestError` when the assistant or thread is missing, the thread already has an active run (one active run per thread) or `max_prompt_tokens` is not a positive integer.
 
-Runs use the whole thread as context (earlier messages are replayed to the agent), receive an abort signal on cancel, and honour `additional_instructions`, `response_format` (`json_object` / `json_schema`), `max_completion_tokens`, `top_p`, `tool_choice` (`none` or a specific function), `parallel_tool_calls` and `truncation_strategy` (`last_messages`). Image parts (`image_url`, and `image_file` uploads with a `png`/`jpg`/`jpeg`/`gif`/`webp` extension) are passed to the model.
+Runs use the whole thread as context (earlier messages are replayed to the agent), receive an abort signal on cancel, and honour `additional_instructions`, `response_format` (`json_object` / `json_schema`), `max_completion_tokens`, `top_p`, `tool_choice` (`none` or a specific function), `parallel_tool_calls` and `truncation_strategy` (`last_messages`). `max_prompt_tokens` is a best-effort budget (estimated at about 4 characters per token, instructions included): the oldest replayed messages are dropped until the prompt fits, and when the last user message alone does not fit the run ends `incomplete` with `incomplete_details: { reason: 'max_prompt_tokens' }`. Image parts (`image_url`, and `image_file` uploads with a `png`/`jpg`/`jpeg`/`gif`/`webp` extension) are passed to the model.
 
 `streamRunEvents(runId, fromIndex = 0)` replays the run's event log from `fromIndex` and ends after the next `done` event. `getRunEventCursor(runId)` returns the current log position (use it before `submitToolOutputs` to stream only the continuation), and `getStreamEmitter(runId)` exposes the raw `EventEmitter`. Token deltas are emitted only for runs created with `stream: true`.
 
-Runs live in the adapter's memory, unlike assistants, threads, messages and files, which go to `storage`. Poll or cancel a run on the same process that created it.
+Runs live in the adapter's memory, unlike assistants, threads, messages and files, which go to `storage`. Poll, cancel or submit tool outputs to a run on the same process that created it: with several processes, run a single instance or route each thread to the same one (sticky routing).
 
 ### Tool Outputs
 
@@ -564,7 +564,7 @@ const manager = new ThreadManager(new MyCustomStorage());
 
 ## Supported Endpoints
 
-All endpoints except `/health` live under `/v1`. List endpoints for assistants, messages and runs accept `limit` (1-100, default 20), `order` (`asc` / `desc`, default `desc`), `after` and `before`, and return `{ object: 'list', data, first_id, last_id, has_more }`.
+All endpoints except `/health` live under `/v1`. List endpoints for assistants, messages and runs accept `limit` (1-100, default 20), `order` (`asc` / `desc`, default `desc`), `after` and `before`, and return `{ object: 'list', data, first_id, last_id, has_more }`. `GET /v1/files` accepts `limit` (1-10 000, default 10 000), `order` (default `desc`) and `after`, plus a `purpose` filter.
 
 ### Models
 
@@ -615,13 +615,13 @@ The create and `submit_tool_outputs` endpoints stream SSE when the body has `str
 
 ### Files
 
-| Method | Endpoint                | Description                                 |
-| ------ | ----------------------- | ------------------------------------------- |
-| POST   | `/v1/files`             | Upload file (`multipart/form-data`)         |
-| GET    | `/v1/files`             | List files, newest first (`purpose` filter) |
-| GET    | `/v1/files/:id`         | Get file metadata                           |
-| GET    | `/v1/files/:id/content` | Download file content                       |
-| DELETE | `/v1/files/:id`         | Delete file                                 |
+| Method | Endpoint                | Description                                       |
+| ------ | ----------------------- | ------------------------------------------------- |
+| POST   | `/v1/files`             | Upload file (`multipart/form-data`)               |
+| GET    | `/v1/files`             | List files (`purpose`, `limit`, `order`, `after`) |
+| GET    | `/v1/files/:id`         | Get file metadata                                 |
+| GET    | `/v1/files/:id/content` | Download file content                             |
+| DELETE | `/v1/files/:id`         | Delete file                                       |
 
 Uploads take a `file` part and an optional `purpose` field (`assistants`, `assistants_output`, `batch`, `batch_output`, `fine-tune`, `fine-tune-results`, `vision`; default `assistants`).
 
@@ -654,7 +654,9 @@ interface OpenAIError {
 | 429         | `rate_limit_error`      | `rate_limit_exceeded`                | Errors thrown with status 429                          |
 | 500         | `server_error`          | `internal_error`                     | Unhandled errors                                       |
 
-A run that fails during execution does not produce an HTTP error: it ends with `status: 'failed'` and `last_error: { code: 'server_error', message }`.
+Every 5xx answer says `Internal server error`; the details are logged on the server, never sent to the client. The adapter refuses invalid requests (unknown assistant or thread, a busy thread, a run in the wrong state, missing or unknown tool outputs, an invalid `max_prompt_tokens`) by throwing `InvalidRequestError` (exported, with an optional `param`), which the server answers as `400 invalid_request`; any other error from the adapter is a server failure.
+
+A run that fails during execution does not produce an HTTP error: it ends with `status: 'failed'` and `last_error: { code: 'server_error', message }`. `message` is `Internal server error` unless the cause is a `CogitatorError` or an `InvalidRequestError`, whose message is kept; the original error is logged.
 
 ### Client-Side Error Handling
 
@@ -698,11 +700,12 @@ queued → in_progress → completed
                      → failed
                      → requires_action → in_progress → ...
                                        → expired (no outputs within 10 minutes)
+                     → incomplete (last message exceeds max_prompt_tokens)
 
 queued / in_progress / requires_action → cancelling → cancelled
 ```
 
-`incomplete` is part of the type for OpenAI parity but is never produced.
+`incomplete` is produced only by `max_prompt_tokens` (see [Run Execution](#run-execution)).
 
 ### Polling for Completion
 
@@ -786,6 +789,7 @@ type EmittedEvent =
   | { event: 'thread.run.cancelling'; data: Run }
   | { event: 'thread.run.cancelled'; data: Run }
   | { event: 'thread.run.expired'; data: Run }
+  | { event: 'thread.run.incomplete'; data: Run }
   | { event: 'thread.message.created'; data: Message }
   | { event: 'thread.message.in_progress'; data: Message }
   | { event: 'thread.message.delta'; data: MessageDelta }
@@ -881,7 +885,11 @@ import type {
   UpdateAssistantParams,
 } from '@cogitator-ai/openai-compat';
 
-import { COGITATOR_MODEL_ID, formatOpenAIError } from '@cogitator-ai/openai-compat';
+import {
+  COGITATOR_MODEL_ID,
+  formatOpenAIError,
+  InvalidRequestError,
+} from '@cogitator-ai/openai-compat';
 ```
 
 ### Core Types

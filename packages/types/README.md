@@ -241,6 +241,7 @@ Types for LLM backends and providers.
 ```typescript
 import type {
   LLMProvider,
+  LLMBackendProvider,
   LLMConfig,
   LLMBackend,
   ChatRequest,
@@ -265,6 +266,10 @@ type LLMProvider =
   | 'groq'
   | 'together'
   | 'deepseek';
+
+// What LLMBackend.provider reports: a built-in provider, or the name of your
+// own backend (llm.backends) or of a registered plugin
+type LLMBackendProvider = LLMProvider | (string & {});
 
 // LLM configuration
 const llmConfig: LLMConfig = {
@@ -472,17 +477,19 @@ console.log(ERROR_STATUS_CODES[ErrorCode.LLM_RATE_LIMITED]); // 429
 
 ### Error Codes
 
-| Domain   | Codes                                                                                                                               |
-| -------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| LLM      | `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_TIMEOUT`, `LLM_INVALID_RESPONSE`, `LLM_CONTEXT_LENGTH_EXCEEDED`, `LLM_CONTENT_FILTERED` |
-| Sandbox  | `SANDBOX_UNAVAILABLE`, `SANDBOX_TIMEOUT`, `SANDBOX_OOM`, `SANDBOX_EXECUTION_FAILED`, `SANDBOX_INVALID_MODULE`                       |
-| Tool     | `TOOL_NOT_FOUND`, `TOOL_INVALID_ARGS`, `TOOL_EXECUTION_FAILED`, `TOOL_TIMEOUT`                                                      |
-| Memory   | `MEMORY_UNAVAILABLE`, `MEMORY_WRITE_FAILED`, `MEMORY_READ_FAILED`, `THREAD_ACCESS_DENIED`                                           |
-| Agent    | `AGENT_NOT_FOUND`, `AGENT_ALREADY_RUNNING`, `AGENT_MAX_ITERATIONS`, `RUN_TOKEN_LIMIT_EXCEEDED`, `RUN_NOT_PAUSED`                    |
-| Workflow | `WORKFLOW_NOT_FOUND`, `WORKFLOW_STEP_FAILED`, `WORKFLOW_CYCLE_DETECTED`                                                             |
-| Swarm    | `SWARM_NO_WORKERS`, `SWARM_CONSENSUS_FAILED`                                                                                        |
-| Security | `PROMPT_INJECTION_DETECTED`, `PII_DETECTED`                                                                                         |
-| General  | `VALIDATION_ERROR`, `CONFIGURATION_ERROR`, `INTERNAL_ERROR`, `NOT_IMPLEMENTED`, `CIRCUIT_OPEN`                                      |
+| Domain   | Codes                                                                                                                                              |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| LLM      | `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_TIMEOUT`, `LLM_INVALID_RESPONSE`, `LLM_CONTEXT_LENGTH_EXCEEDED`, `LLM_CONTENT_FILTERED`                |
+| Sandbox  | `SANDBOX_UNAVAILABLE`, `SANDBOX_TIMEOUT`, `SANDBOX_OOM`, `SANDBOX_EXECUTION_FAILED`, `SANDBOX_INVALID_MODULE`                                      |
+| Tool     | `TOOL_NOT_FOUND`, `TOOL_INVALID_ARGS`, `TOOL_EXECUTION_FAILED`, `TOOL_TIMEOUT`                                                                     |
+| Memory   | `MEMORY_UNAVAILABLE`, `MEMORY_WRITE_FAILED`, `MEMORY_READ_FAILED`, `THREAD_ACCESS_DENIED`                                                          |
+| Agent    | `AGENT_NOT_FOUND`, `AGENT_ALREADY_RUNNING`, `AGENT_MAX_ITERATIONS`, `RUN_TOKEN_LIMIT_EXCEEDED`, `RUN_NOT_PAUSED`, `RUN_TIMEOUT`, `BUDGET_EXCEEDED` |
+| Workflow | `WORKFLOW_NOT_FOUND`, `WORKFLOW_STEP_FAILED`, `WORKFLOW_CYCLE_DETECTED`                                                                            |
+| Swarm    | `SWARM_NO_WORKERS`, `SWARM_CONSENSUS_FAILED`                                                                                                       |
+| Security | `PROMPT_INJECTION_DETECTED`, `PII_DETECTED`                                                                                                        |
+| General  | `VALIDATION_ERROR`, `CONFIGURATION_ERROR`, `INTERNAL_ERROR`, `NOT_IMPLEMENTED`, `CIRCUIT_OPEN`                                                     |
+
+The runtime throws `RUN_TIMEOUT` (HTTP 504) for a run that hits its timeout (`Run timed out after <n>ms`), `BUDGET_EXCEEDED` (429) for a run over its cost-routing budget, and `LLM_CONTENT_FILTERED` (400) when guardrails block the input or output (`Input blocked: …` / `Output blocked: …`).
 
 ---
 
@@ -573,14 +580,14 @@ import type {
 // ToT configuration
 const totConfig: ToTConfig = {
   branchFactor: 3, // Generate 3 candidate thoughts per step
-  beamWidth: 2, // Keep top 2 branches
+  beamWidth: 2, // Queue the best 2 candidates per expanded node
   maxDepth: 5, // Max reasoning depth
   explorationStrategy: 'beam', // 'beam' | 'best-first' | 'dfs'
 
   confidenceThreshold: 0.3,
   terminationConfidence: 0.8,
   maxTotalNodes: 50,
-  maxIterationsPerBranch: 3,
+  maxIterationsPerBranch: 3, // Iteration cap for each branch run
 
   // Callbacks
   onBranchGenerated: (node, branches) => console.log('Generated:', branches.length),
@@ -599,6 +606,8 @@ const branch: ThoughtBranch = {
   messagesSnapshot: [/* ... */],
 };
 ```
+
+`beam` runs the tree level by level, `best-first` runs the node whose own branch scored highest, and `dfs` goes deep first; candidates beyond `beamWidth` wait as pending alternatives for backtracking. `maxTotalNodes` caps executed nodes, and `maxIterationsPerBranch` caps each branch run (never above the agent's own `maxIterations`).
 
 ---
 
@@ -620,12 +629,15 @@ import type {
 const learningConfig: LearningConfig = {
   enabled: true,
   captureTraces: true,
-  autoOptimize: true,
-  optimizeAfterRuns: 10,
+  traceRetention: 1000,
   maxDemosPerAgent: 5,
   minScoreForDemo: 0.8,
   defaultMetrics: ['success', 'tool_accuracy', 'efficiency'],
+  customMetrics: [
+    { name: 'tool_accuracy', type: 'numeric', description: 'Tools worked', weight: 0.5 },
+  ],
 };
+// autoOptimize, optimizeAfterRuns and traceStore are deprecated and not read
 
 // Optimizer configuration
 const optimizerConfig: OptimizerConfig = {
@@ -950,19 +962,22 @@ const alert: DegradationAlert = {
 
 Every module below is exported from the package root; the owning package documents how the types are used.
 
-| Module                               | Main types                                                                                                                                              | Used by                                                                                    |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Memory                               | `MemoryAdapter`, `MemoryResult`, `Thread`, `MemoryEntry`, `Fact`, `Embedding`, `EmbeddingService`, `ContextBuilderConfig`, `MemoryConfig`               | [@cogitator-ai/memory](https://www.npmjs.com/package/@cogitator-ai/memory)                 |
-| Sandbox                              | `SandboxConfig`, `SandboxManagerConfig`, `SandboxWasmConfig` (`memoryPages` caps the module's own memory), `SandboxExecutionRequest`                    | [@cogitator-ai/sandbox](https://www.npmjs.com/package/@cogitator-ai/sandbox)               |
-| Workflow                             | `WorkflowState`, `Workflow`, `CheckpointStore`, `RunStore`, `ApprovalStore`, `TimerStore` (optional `claimTtl`, `renew`, `release`), `WorkflowRunStats` | [@cogitator-ai/workflows](https://www.npmjs.com/package/@cogitator-ai/workflows)           |
-| Swarm, negotiation                   | `SwarmConfig`, `SwarmStrategy`, `SwarmResult`, negotiation types                                                                                        | [@cogitator-ai/swarms](https://www.npmjs.com/package/@cogitator-ai/swarms)                 |
-| Constitutional, security             | `GuardrailConfig`, `Constitution`, `PromptInjectionConfig`, `PiiConfig`, `PiiType`                                                                      | `@cogitator-ai/core`                                                                       |
-| Cost routing, context, tool cache    | `CostRoutingConfig`, `BudgetConfig`, `ContextManagerConfig`, `ToolCacheConfig`, `RedisClientLike`                                                       | `@cogitator-ai/core`                                                                       |
-| Causal                               | `CausalGraph`, `InterventionQuery`, `CounterfactualQuery`, `CausalReasoningConfig`                                                                      | `@cogitator-ai/core`                                                                       |
-| Neuro-symbolic                       | `NeuroSymbolicConfig`, `ResolvedNeuroSymbolicConfig` (every section present, returned by `getConfig()`)                                                 | [@cogitator-ai/neuro-symbolic](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) |
-| Self-modifying                       | `SelfModifyingConfig`, generated tool and architecture types                                                                                            | [@cogitator-ai/self-modifying](https://www.npmjs.com/package/@cogitator-ai/self-modifying) |
-| RAG, voice, browser, channel, deploy | `RAGPipelineConfig`, voice/STT/TTS types, browser session types, channel and session types, `DeployConfig`                                              | the package of the same name                                                               |
-| Skills, logging                      | `Skill`, `SkillConfig`, `LoggingConfig`                                                                                                                 | `@cogitator-ai/core`                                                                       |
+| Module                               | Main types                                                                                                                                                          | Used by                                                                                    |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Memory                               | `MemoryAdapter`, `MemoryResult`, `Thread`, `MemoryEntry`, `Fact`, `Embedding`, `EmbeddingService`, `ContextBuilderConfig`, `MemoryConfig`                           | [@cogitator-ai/memory](https://www.npmjs.com/package/@cogitator-ai/memory)                 |
+| Sandbox                              | `SandboxConfig`, `SandboxManagerConfig`, `SandboxWasmConfig` (`memoryPages` caps the module's own memory), `SandboxExecutionRequest`                                | [@cogitator-ai/sandbox](https://www.npmjs.com/package/@cogitator-ai/sandbox)               |
+| Workflow                             | `WorkflowState`, `Workflow`, `CheckpointStore`, `RunStore`, `ApprovalStore`, `TimerStore` (optional `claimTtl`, `renew`, `release`), `WorkflowRunStats`             | [@cogitator-ai/workflows](https://www.npmjs.com/package/@cogitator-ai/workflows)           |
+| Swarm, negotiation                   | `SwarmConfig`, `SwarmStrategy`, `SwarmResult`, negotiation types                                                                                                    | [@cogitator-ai/swarms](https://www.npmjs.com/package/@cogitator-ai/swarms)                 |
+| Constitutional, security             | `GuardrailConfig`, `Constitution`, `PromptInjectionConfig`, `PiiConfig`, `PiiType`                                                                                  | `@cogitator-ai/core`                                                                       |
+| Cost routing, context, tool cache    | `CostRoutingConfig`, `BudgetConfig`, `ContextManagerConfig`, `ToolCacheConfig`, `RedisClientLike` (an ioredis client fits)                                          | `@cogitator-ai/core`                                                                       |
+| Causal                               | `CausalGraph`, `StructuralEquation` (`custom` type with a `customFn` expression), `InterventionQuery`, `CounterfactualQuery`, `CausalReasoningConfig`               | `@cogitator-ai/core`                                                                       |
+| Neuro-symbolic                       | `NeuroSymbolicConfig`, `ResolvedNeuroSymbolicConfig` (every section present, returned by `getConfig()`)                                                             | [@cogitator-ai/neuro-symbolic](https://www.npmjs.com/package/@cogitator-ai/neuro-symbolic) |
+| Self-modifying                       | `SelfModifyingConfig`, generated tool and architecture types                                                                                                        | [@cogitator-ai/self-modifying](https://www.npmjs.com/package/@cogitator-ai/self-modifying) |
+| Channel gateway                      | `GatewayConfig`, `ChannelMessage`, `HookRegistry`, `HookPayloads` (each hook name's payload: `MessageReceivedEvent`, `AgentErrorEvent`, `ApprovalResolvedEvent`, …) | [@cogitator-ai/channels](https://www.npmjs.com/package/@cogitator-ai/channels)             |
+| RAG, voice, browser, session, deploy | `RAGPipelineConfig`, voice/STT/TTS types, browser session types, session types, `DeployConfig`                                                                      | the package of the same name                                                               |
+| Skills, logging                      | `Skill`, `SkillConfig`, `LoggingConfig` (`level` up to `'silent'`, `destination: 'file'` with `filePath`)                                                           | `@cogitator-ai/core`                                                                       |
+
+`HookPayloads` types gateway hooks by name: `HookRegistry.on('agent:error', ({ error, threadId }) => …)` gets an `AgentErrorEvent` (`error` is always an `Error`), and `HookName` is `keyof HookPayloads`. A handler typed `HookHandler` (`unknown` payload) is accepted for any hook. `GatewayConfig.owner` is deprecated: owners are set on `ownerCommands({ ownerIds })` and `dmPolicy({ ownerIds })`.
 
 ---
 

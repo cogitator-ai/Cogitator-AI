@@ -32,7 +32,7 @@ const result = await swarm.run({ input: 'Build a REST API for user management' }
 console.log(result.output);
 ```
 
-Strategies equip agents with the tools they need: the hierarchical supervisor receives `delegate_task`, `check_progress`, `request_revision` and `list_workers`; negotiating agents receive the negotiation tools. Tools an agent already defines with the same name are kept.
+Strategies equip agents with the tools they need: the hierarchical supervisor receives `delegate_task`, `check_progress`, `request_revision` and `list_workers`; consensus voters receive the voting tools; negotiating agents receive the negotiation tools. `agentTools` adds the messaging and blackboard tools to every agent (see [Built-in Swarm Tools](#built-in-swarm-tools)). Tools an agent already defines with the same name are kept.
 
 ## Features
 
@@ -104,9 +104,11 @@ const swarm = new SwarmBuilder('support-team')
   .build(cogitator);
 ```
 
+With `sticky: true` a known `stickyKey` stays with the agent that handled it first; new keys keep rotating. Without `stickyKey` every run rotates.
+
 ### Consensus
 
-Agents vote (`VOTE: <decision>` in their answer or the `cast_vote` tool). A decision wins when its share of **all eligible voters** reaches the threshold and it is not tied; abstentions count against it.
+Agents vote with `VOTE: <decision>` in their answer or with the `cast_vote` tool, which voters get automatically together with `get_votes`, `change_vote` and `get_consensus_status`. A decision wins when its share of **all eligible voters** reaches the threshold and it is not tied; abstentions count against it.
 
 ```typescript
 const swarm = new SwarmBuilder('review-board')
@@ -149,6 +151,8 @@ const swarm = new SwarmBuilder('content-pipeline')
 const result = await swarm.run({ input: 'Write about vector databases' });
 console.log(result.pipelineOutputs);
 ```
+
+With `new Swarm(cogitator, config)` the stages can also be given as the top-level `stages` field; `gates` and `stageInput` still come from `pipeline`, and different stages in both places are rejected.
 
 ### Debate
 
@@ -200,6 +204,24 @@ console.log(result.negotiationResult?.agreement);
 ```
 
 When stagnation is detected, the strategy proposes a mediated compromise as an offer from `mediator`; agents accept it with `accept_offer`.
+
+Approval gates (`approvalGates`) announce each request with the `negotiation:approval-required` event. A gate with `timeout` resolves by its `timeoutAction`; a gate without one waits for your answer. A run `timeout` or `swarm.abort()` stops the wait.
+
+```typescript
+import type { NegotiationApprovalRequest } from '@cogitator-ai/types';
+
+swarm.on('negotiation:approval-required', (event) => {
+  const { request } = event.data as { request: NegotiationApprovalRequest };
+  swarm.respondToApproval(request.id, {
+    requestId: request.id,
+    decision: 'approved',
+    approved: true,
+    continueNegotiation: false,
+    respondedBy: 'legal-team',
+    respondedAt: Date.now(),
+  });
+});
+```
 
 ---
 
@@ -289,7 +311,7 @@ const swarm = new SwarmBuilder('research-team')
   .strategy('hierarchical')
   .supervisor(lead)
   .workers([researcher])
-  .messaging({ enabled: true, protocol: 'direct', maxMessagesPerTurn: 5 })
+  .messaging({ enabled: true, maxMessagesPerTurn: 5 })
   .blackboardConfig({ enabled: true, sections: { findings: [] }, trackHistory: true })
   .observability({ messageLogging: true, blackboardLogging: true })
   .build(cogitator);
@@ -300,6 +322,18 @@ swarm.blackboard.subscribe('findings', (data, writer) => console.log(writer, dat
 ---
 
 ## Built-in Swarm Tools
+
+Enable `agentTools` to give every agent the messaging and blackboard tools, bound to the swarm's own bus and blackboard (local swarms only; rejected when distributed or when the bus / blackboard is disabled):
+
+```typescript
+const swarm = new SwarmBuilder('research-team')
+  .strategy('round-robin')
+  .agents([researcher, writer])
+  .agentTools({ messaging: true, blackboard: true })
+  .build(cogitator);
+```
+
+Consensus voters get the voting tools automatically. For custom strategies and coordinators, the factories build any tool set:
 
 ```typescript
 import { createSwarmTools, createStrategyTools, type SwarmToolContext } from '@cogitator-ai/swarms';
@@ -356,6 +390,8 @@ console.log(swarm.getLastAssessment()?.assignments);
 ```
 
 Assigned models are provider-qualified (e.g. `ollama/llama3.2:3b`). Unlocked agents are replaced by clones running the assigned model; locked agents keep theirs.
+
+`mode: 'rules'` (default) analyzes the task with keyword rules. `'ai'` lets the `assessorModel` (default: the Cogitator's default model) analyze it; `'hybrid'` adds every hard requirement the rules detect. Both fall back to the rules with a warning when the model cannot run. Inside a Swarm only cloud models whose provider the Cogitator can route (API key configured) are offered; standalone, pass the Cogitator to `createAssessor(config, cogitator)` for the same behaviour.
 
 ---
 
@@ -426,6 +462,8 @@ const swarm = new SwarmBuilder('distributed-team')
     queue: 'swarm-agent-jobs',
     timeout: 300_000,
     redis: { host: 'localhost', port: 6379, keyPrefix: 'swarm' },
+    retry: { maxRetries: 2, backoff: 'exponential', initialDelay: 1000 },
+    cleanupAfter: 3_600_000,
   })
   .build(cogitator);
 
@@ -452,7 +490,7 @@ await worker.start();
 process.on('SIGTERM', () => void worker.stop());
 ```
 
-Retry, failover, budgets and circuit breaking work the same as for local swarms. `RedisMessageBus`, `RedisBlackboard` and `RedisSwarmEventEmitter` are exported for direct use.
+`retry` re-dispatches jobs that fail on a worker or time out (defaults: 3 retries, exponential backoff from 1000 ms up to 30000 ms; without it nothing is re-dispatched); a timed-out job may still be running, so its turn can run twice. `cleanupAfter` expires the swarm's Redis state after `close()` (default one hour, `0` deletes it at once). `workerConcurrency` is deprecated — set `concurrency` on the worker. The swarm's `errorHandling` (retry, failover), budgets and circuit breaking work the same as for local swarms. `RedisMessageBus`, `RedisBlackboard` and `RedisSwarmEventEmitter` are exported for direct use.
 
 ---
 

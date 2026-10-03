@@ -430,11 +430,11 @@ Error codes map to HTTP status codes:
 - `PAYLOAD_TOO_LARGE` → 413
 - `RATE_LIMIT_EXCEEDED` → 429
 - `WORKFLOW_FAILED` → 500
-- `INTERNAL` / `INTERNAL_ERROR` → 500
+- `INTERNAL_ERROR` → 500
 - `UNIMPLEMENTED` → 501 (optional workflows/swarms package missing)
 - `UNAVAILABLE` → 503 (no memory configured)
 
-A `CogitatorError` keeps its message and code and uses the code's mapped status (for example `LLM_RATE_LIMITED` → 429). Any other error is logged on the server and answered as `500 Internal server error`, so connection strings, file paths and other internals never reach the client. The same masking applies to SSE `error` events, the `node_error`/`agent_error` stream events, `Workflow failed: …` messages and WebSocket run errors. One exception: when a memory call in the `/threads` routes reports a failure, its error text is returned as-is with `500 INTERNAL`.
+A `CogitatorError` keeps its message and code and uses the code's mapped status (for example `LLM_RATE_LIMITED` → 429). Any other error is logged on the server and answered as `500 Internal server error`, so connection strings, file paths and other internals never reach the client. The same masking applies to SSE `error` events, the `node_error`/`agent_error` stream events, `Workflow failed: …` messages and WebSocket run errors.
 
 ## Documentation
 

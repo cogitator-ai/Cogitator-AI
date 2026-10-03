@@ -180,7 +180,7 @@ const embeddings = new QdrantAdapter({
 await embeddings.connect();
 ```
 
-`QdrantAdapter` is an `EmbeddingAdapter` (store and search vectors), not a thread store; pair it with one of the adapters above.
+`QdrantAdapter` is an `EmbeddingAdapter` (store and search vectors), not a thread store; pair it with one of the adapters above. Points are stored under a deterministic UUID derived from the embedding id (Qdrant accepts only integer and UUID point ids); the `emb_…` id stays in `payload.embeddingId` and is what `search` returns.
 
 ### Factory Function
 
@@ -398,12 +398,26 @@ interface BuiltContext {
 `SessionManager` maps channel conversations (user + channel + agent) onto memory threads. `CompactionService` replaces old history with an LLM summary placed before the most recent messages.
 
 ```typescript
+import { createLLMBackend } from '@cogitator-ai/core';
 import { InMemoryAdapter, SessionManager, CompactionService } from '@cogitator-ai/memory';
 
 const memory = new InMemoryAdapter();
+const llm = createLLMBackend('google', {
+  providers: { google: { apiKey: process.env.GOOGLE_API_KEY! } },
+});
+
 const compaction = new CompactionService({
   adapter: memory,
-  summarize: async (messages) => `Summary of ${messages.length} messages`,
+  summarize: async (messages, { model, prompt } = {}) => {
+    const response = await llm.chat({
+      model: model ?? 'gemini-3.5-flash-lite',
+      messages: [
+        { role: 'system', content: prompt ?? 'Summarize this conversation in a few sentences.' },
+        ...messages,
+      ],
+    });
+    return response.content;
+  },
 });
 const sessions = new SessionManager(memory, { compaction });
 
@@ -417,10 +431,16 @@ const session = await sessions.getOrCreate({
 const all = await sessions.list();
 const mine = await sessions.list({ userId: 'user-1', status: 'active', limit: 20 });
 
-await sessions.compact(session.id, { strategy: 'summary', threshold: 8000, keepRecent: 10 });
+await sessions.compact(session.id, {
+  strategy: 'summary',
+  threshold: 8000,
+  keepRecent: 10,
+  summaryModel: 'gemini-3.5-flash',
+  summaryPrompt: 'Keep names, decisions and open questions.',
+});
 ```
 
-`list()` works with or without a `userId` filter (sessions are tracked in an index thread). `compact()` requires the `compaction` option; without it use `CompactionService` directly.
+`list()` works with or without a `userId` filter (sessions are tracked in an index thread). `compact()` requires the `compaction` option; without it use `CompactionService` directly. The summarizer (`SummarizeFn`) is called as `summarize(messages, options)`, where `options` is a `SummarizeOptions` `{ model?, prompt? }` filled from the `summaryModel` / `summaryPrompt` of the compaction config.
 
 ---
 
@@ -897,15 +917,12 @@ const similar = unwrap(
 ### LLM Entity Extraction
 
 ```typescript
-import { LLMEntityExtractor, type LLMBackendMinimal } from '@cogitator-ai/memory';
+import { LLMEntityExtractor } from '@cogitator-ai/memory';
 
-// The extractor calls chat({ messages, responseFormat }) without a model, so bind one
 const backend = cog.getLLMBackend('openai/gpt-5.5');
-const llmBackend: LLMBackendMinimal = {
-  chat: (request) => backend.chat({ ...request, model: 'gpt-5.5' }),
-};
 
-const extractor = new LLMEntityExtractor(llmBackend, {
+const extractor = new LLMEntityExtractor(backend, {
+  model: 'gpt-5.5', // required with an LLMBackend
   minConfidence: 0.7,
   maxEntitiesPerText: 20,
   maxRelationsPerText: 30,
@@ -919,6 +936,8 @@ const result = await extractor.extract(
 console.log('Entities:', result.entities);
 console.log('Relations:', result.relations);
 ```
+
+Any object with a `chat({ model?, messages, responseFormat })` method resolving to `{ content }` (`LLMBackendMinimal`) also works as the first argument; there `model` is optional and, when set, is passed through in each request.
 
 ### Graph Inference Engine
 

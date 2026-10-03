@@ -15,9 +15,13 @@ npx create-cogitator-app my-project --template basic --provider openai
 
 # Skip every prompt with flags
 npx create-cogitator-app my-project -t swarm -p ollama --pm pnpm --docker --no-git
+
+# Accept the defaults for everything not given
+npx create-cogitator-app -y
+npx create-cogitator-app my-project -p openai --yes
 ```
 
-Prompts are shown only for values not given on the command line: project directory, template, provider, package manager, Docker Compose and git. The target directory must be empty or not exist. After writing the files the scaffolder runs `<pm> install` and, unless disabled, creates a git repository with an initial commit.
+Prompts are shown only for values not given on the command line: project directory, template, provider, package manager, Docker Compose and git. With `-y` / `--yes` nothing is asked and the defaults fill the gaps: `my-agents`, `basic`, `ollama`, the detected package manager, Docker Compose on, git on. The target directory must be empty or not exist. After writing the files the scaffolder runs `<pm> install` and, unless disabled, creates a git repository with an initial commit.
 
 Requires Node.js 22.12+.
 
@@ -42,8 +46,9 @@ Requires Node.js 22.12+.
 | `--pm <name>`              |           | Package manager (`pnpm`, `npm`, `yarn`, `bun`)            |
 | `--docker` / `--no-docker` |           | Include Docker Compose (Redis, Postgres, plus Ollama)     |
 | `--git` / `--no-git`       |           | Initialize git repository                                 |
+| `--yes`                    | `-y`      | Don't prompt; use the defaults for every missing value    |
 
-Unknown values for `--template`, `--provider` and `--pm` are ignored and asked for interactively. The package manager prompt defaults to the one that invoked the scaffolder (`npm_config_user_agent`), falling back to `pnpm`.
+Unknown values for `--template`, `--provider` and `--pm` are ignored and asked for interactively (or replaced by the default with `--yes`). The package manager prompt defaults to the one that invoked the scaffolder (`npm_config_user_agent`), falling back to `pnpm`.
 
 ## Providers
 

@@ -373,6 +373,32 @@ console.log(breaker.getStats('payments'));
 
 ### Compensation
 
+Give a node `config.compensation` and the executor rolls it back when a later node of the run fails:
+
+```typescript
+builder
+  .addNode('reserve', reserveFn, {
+    config: { compensation: { compensate: async (state) => inventory.release(state.orderId) } },
+  })
+  .addNode('charge', chargeFn, {
+    after: ['reserve'],
+    config: {
+      compensation: {
+        compensate: async (state) => payments.refund(state.paymentId!),
+        compensateTimeout: 10_000,
+      },
+    },
+  })
+  .addNode('ship', shipFn, { after: ['charge'] });
+
+const result = await executor.execute(workflow, input, {
+  onCompensationStart: (node) => console.log(`rolling back ${node}`),
+  onCompensationComplete: (node) => console.log(`rolled back ${node}`),
+});
+```
+
+Completed nodes with a `compensate` are rolled back in reverse completion order (`compensateOrder: 'parallel' | 'forward'` changes that, `compensateCondition` skips a step); aborted, paused and cancelled runs are not compensated. For rollbacks outside the executor, use a `CompensationManager`:
+
 ```typescript
 import { compensationBuilder } from '@cogitator-ai/workflows';
 
@@ -384,10 +410,12 @@ const compensation = compensationBuilder<OrderState>()
 compensation.markCompleted('reserve', reservation);
 compensation.markCompleted('charge', payment);
 
-const report = await compensation.compensate(state, 'ship', new Error('carrier down'));
+const report = await compensation.compensate(state, 'ship', new Error('carrier down'), {
+  onStepStart: (nodeId) => console.log(`compensating ${nodeId}`),
+});
 ```
 
-Compensations run in reverse completion order for the steps marked completed.
+Compensations run in reverse completion order for the steps marked completed; the optional `CompensationHooks` argument (`onStepStart`, `onStepComplete`) observes each step that runs.
 
 ### Dead Letter Queue and Idempotency
 
@@ -635,7 +663,13 @@ await manager.cancel(runId);
 const runs = await manager.listRuns({ status: 'failed', workflowName: 'report', limit: 20 });
 const stats = await manager.getStats('report');
 await manager.retry(runs[0].id);
+
+const jobId = manager.registerCronJob(workflow, '0 2 * * *', {
+  jobOptions: { input, maxRetries: 2 },
+});
 ```
+
+`registerCronJob` queues a run on every occurrence while the manager is started (`schedule({ cron })` queues only the next one); `unregisterCronJob`, `setCronJobEnabled` and `getCronJobs` manage the jobs. Scheduled runs get the manager's checkpoint store, tracer, metrics and their `timeout` (else `defaultTimeout`), and `maxRetries` retries a failed scheduled run automatically. With a `checkpointStore`, `pause(runId)` aborts a running run and keeps it `paused`, and `resume(runId, options?)` continues it from its last checkpoint.
 
 Every run — executed, scheduled or started by a trigger — records `currentNodes`, `completedNodes` and `failedNodes`, all written by the time the run is marked finished. Run stores return copies, so changing a returned run does not change the stored one; `listRuns()` is sorted newest first. `getStats()` counts cancelled runs toward neither the success nor the failure rate. Use `PostgresRunStore` / `RedisRunStore` to share runs between processes: queries, counts and stats run in the database (Postgres) or on sorted-set indexes (Redis).
 

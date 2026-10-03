@@ -99,14 +99,14 @@ await session.close();
 
 ### Network (6 tools)
 
-| Tool                         | Description                                                                           |
-| ---------------------------- | ------------------------------------------------------------------------------------- |
-| `browser_intercept_request`  | Block, modify, or continue requests matching a glob or `/regex/flags` in all tabs     |
-| `browser_remove_interceptor` | Remove one interceptor by ID, or all of them                                          |
-| `browser_wait_for_response`  | Wait for a response whose URL contains a substring or matches `/regex/flags`          |
-| `browser_block_resources`    | Block resource types (image, stylesheet, font, media, script) in all tabs             |
-| `browser_capture_har`        | Start/stop traffic capture of all tabs; on stop returns entries and can write HAR 1.2 |
-| `browser_get_api_calls`      | XHR/fetch calls recorded since session start, filtered by URL or method; `clear`      |
+| Tool                         | Description                                                                                                 |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `browser_intercept_request`  | Block, modify, or continue requests matching a glob or `/regex/flags` in all tabs                           |
+| `browser_remove_interceptor` | Remove one interceptor by ID, or all of them                                                                |
+| `browser_wait_for_response`  | Wait for a response whose URL contains a substring or matches `/regex/flags`                                |
+| `browser_block_resources`    | Block resource types (image, stylesheet, font, media, script) in all tabs                                   |
+| `browser_capture_har`        | Start/stop traffic capture of all tabs; on stop returns entries and can write HAR 1.2                       |
+| `browser_get_api_calls`      | XHR/fetch calls recorded since session start, filtered by URL or method; `clear` removes the returned calls |
 
 ## Stealth Mode
 
@@ -183,7 +183,8 @@ const tools = [...createNavigationTools(session), ...createNetworkTools(session)
 // Block resource types to speed up loading:
 // browser_block_resources({ types: ["image", "font", "stylesheet"] })
 
-// Monitor API calls made by the page since the session started:
+// Monitor API calls made by the page since the session started.
+// clear removes only the calls returned here; calls the filters exclude are kept:
 // browser_get_api_calls({ urlPattern: "/api/", method: "POST", clear: true })
 
 // Capture traffic and save a HAR 1.2 file (path must be inside the working directory):

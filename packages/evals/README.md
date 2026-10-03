@@ -66,6 +66,8 @@ A target is either `{ fn: (input) => Promise<string> }` or `{ agent, cogitator }
 
 A case that throws or exceeds `timeout` is retried up to `retries` times. If every attempt fails, its result has an empty `output` and an `error` message describing the last failure.
 
+`suite.run(options?: EvalRunOptions)` takes `{ maxCases?: number }`: with `maxCases` only the first N cases of the dataset run, and the results, aggregates, assertions and `stats.total` cover just those cases.
+
 ---
 
 ## Datasets
@@ -173,6 +175,8 @@ const suite = new EvalSuite({
 });
 ```
 
+The `judge` option is a `JudgeConfigInput`: `{ model, temperature?, maxTokens?, cogitator? }`, with `temperature` defaulting to `0`.
+
 ### Statistical
 
 Aggregate metrics computed across all results. These report percentile breakdowns (p50, p95, p99) rather than per-case scores.
@@ -232,7 +236,7 @@ const assertions = [
 ];
 ```
 
-Latency and cost metrics are automatically detected as lower-is-better.
+Latency, cost and tokenUsage metrics (and names ending in `Duration` or `Latency`) are lower-is-better: the assertion passes when the value is at or below the threshold. `noRegression` uses the same rule.
 
 ### noRegression
 
@@ -452,10 +456,10 @@ result.report('ci');
 
 ### Agent Tools
 
-| Export              | Description                                                                   |
-| ------------------- | ----------------------------------------------------------------------------- |
-| `createRunEvalTool` | Creates a `run_eval` tool for agents (`maxCases` parameter) for a given suite |
-| `evalTools`         | Returns all eval tools for a suite as an array                                |
+| Export              | Description                                                                                                                                                                                |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `createRunEvalTool` | Creates a `run_eval` tool for agents for a given suite; its optional `maxCases` runs `suite.run({ maxCases })` and the summary (`total`, `metrics`, `assertionsPassed`) covers those cases |
+| `evalTools`         | Returns all eval tools for a suite as an array                                                                                                                                             |
 
 Like the RAG tools, eval tools carry a Zod `parameters` schema and can be passed to `tool()` from `@cogitator-ai/core`.
 

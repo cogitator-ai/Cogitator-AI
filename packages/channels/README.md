@@ -129,7 +129,7 @@ whatsappChannel({
 
 Supports: 1-on-1 and group chats, images/voice/video/documents with captions, quoted replies, message edits (streaming), typing indicators, auto-reconnect with exponential backoff (stops when WhatsApp logs the device out), WhatsApp-native markdown.
 
-Works with Baileys 6.x and 7.x. `userId` is the sender's phone number (the part before `@`). When WhatsApp addresses a person by LID (Baileys 7), the phone number is taken from `remoteJidAlt` / `participantAlt` whenever WhatsApp shares it, so owner lists and per-user memory keep matching. Docs: [WhatsApp](https://cogitator.app/docs/channels/whatsapp).
+Works with Baileys 6.x and 7.x. `userId` is the sender's phone number (the part before `@`). When WhatsApp addresses a person by LID (Baileys 7), the phone number is taken from `remoteJidAlt` / `participantAlt` whenever WhatsApp shares it, so owner lists and per-user memory keep matching. With `cogitator up`, enable it with `channels.whatsapp` in `cogitator.yml` (see [RuntimeBuilder](#runtimebuilder-yaml-assistants)). Docs: [WhatsApp](https://cogitator.app/docs/channels/whatsapp).
 
 ### WebChat
 
@@ -141,7 +141,7 @@ import { webchatChannel } from '@cogitator-ai/channels';
 webchatChannel({
   port: 3100,
   path: '/ws',
-  auth: (token) => token === process.env.WEBCHAT_SECRET,
+  auth: (token) => token === process.env.WEBCHAT_TOKEN,
   maxPayload: 1024 * 1024, // bytes per incoming frame (default 1 MiB)
 });
 ```
@@ -150,7 +150,7 @@ Connect: `ws://localhost:3100/ws?token=YOUR_SECRET` (unauthorized sockets get an
 
 Server frames: `connected` (`clientId`), `message` (`id`, `text`, `replyTo`), `edit` (`id`, `text`), `delete` (`id`), `typing`, `file` (`filename`, `mimeType`, and `url` or base64 `data`).
 
-Supports: streaming (via edit frames), typing indicators, token auth, no message limit. Text only on the way in (no attachments). Docs: [WebChat](https://cogitator.app/docs/channels/webchat).
+Supports: streaming (via edit frames), typing indicators, token auth, no message limit. Text only on the way in (no attachments). With `cogitator up`, enable it with `channels.webchat` in `cogitator.yml` plus `WEBCHAT_TOKEN` (see [RuntimeBuilder](#runtimebuilder-yaml-assistants)). Docs: [WebChat](https://cogitator.app/docs/channels/webchat).
 
 ### Terminal
 
@@ -214,6 +214,8 @@ await gateway.injectMessage(msg); // feed a synthetic message (used by the sched
 await gateway.stop();
 ```
 
+`GatewayConfig.owner` is deprecated and never read: set owners on `ownerCommands({ ownerIds })` and `dmPolicy({ ownerIds })` (see [Middleware](#middleware)).
+
 `stream` takes `flushInterval` and `minChunkSize` (ms / chars between edits), plus optional `minInitialChars` (wait for this much text before the first message), `maxMessageChars` (defaults to the platform limit) and `deleteOnAbort` (remove the partial answer when the run is interrupted). Telegram streams through message drafts when available and falls back to edits.
 
 Docs: [Gateway](https://cogitator.app/docs/channels/gateway), [Streaming](https://cogitator.app/docs/channels/streaming).
@@ -233,8 +235,6 @@ Only the user who started the run can answer it: the runtime checks the run's `u
 Pauses survive restarts when the runtime persists them (in the thread's memory once the Cogitator has a memory adapter, or in `runCheckpoints`): the first approve/deny reply on a thread the Gateway has not seen since it started tries `resume`, and runs as a normal message if nothing is paused. On threads it has already seen, the Gateway resumes only pauses it sent a prompt for, so one Gateway process should serve a given thread.
 
 ```typescript
-import type { ApprovalRequestedEvent, ApprovalResolvedEvent } from '@cogitator-ai/channels';
-
 const gateway = new Gateway({
   // ...
   approvals: {
@@ -247,17 +247,15 @@ const gateway = new Gateway({
   },
 });
 
-hooks.on('approval:requested', (event) => {
-  const { threadId, approvals } = event as ApprovalRequestedEvent;
+hooks.on('approval:requested', ({ threadId, approvals }) => {
   audit.log(threadId, approvals);
 });
-hooks.on('approval:resolved', (event) => {
-  const { threadId, decision, superseded } = event as ApprovalResolvedEvent;
+hooks.on('approval:resolved', ({ threadId, decision, superseded }) => {
   audit.log(threadId, decision, superseded);
 });
 ```
 
-`ApprovalRequestedEvent` and `ApprovalResolvedEvent` are exported types; `superseded` is `true` when the user sent a new message instead of answering. `DEFAULT_APPROVE_WORDS`, `DEFAULT_DENY_WORDS` and `DEFAULT_NOT_ALLOWED_MESSAGE` hold the defaults.
+`ApprovalRequestedEvent` and `ApprovalResolvedEvent` are exported types; `superseded` is `true` when the user sent a new message instead of answering. With `RuntimeBuilder` / `cogitator up`, the words and `notAllowedMessage` can be set in the `approvals` block of `cogitator.yml` (see [RuntimeBuilder](#runtimebuilder-yaml-assistants)). `DEFAULT_APPROVE_WORDS`, `DEFAULT_DENY_WORDS` and `DEFAULT_NOT_ALLOWED_MESSAGE` hold the defaults.
 
 `parseApprovalReply(text, words)` and `formatApprovalPrompt(approvals, words)` are exported for custom channels and UIs.
 
@@ -377,7 +375,7 @@ const gateway: Gateway = new Gateway({
 - **pairing** — unknown users get a code, owner approves via `/pair CODE`
 - **disabled** — DMs blocked entirely
 
-`groupPolicy` (`open` | `allowlist` | `disabled`, with `groupAllowlist`) does the same for group chats. Approved users are persisted to `storePath` (default `~/.cogitator/dm-allowlist.json`; pass an absolute path, `~` is not expanded here). `dmPolicy(config)` is the factory form. Docs: [Middleware](https://cogitator.app/docs/channels/middleware).
+`groupPolicy` (`open` | `allowlist` | `disabled`, with `groupAllowlist`) does the same for group chats. Approved users are persisted to `storePath` (default `~/.cogitator/dm-allowlist.json`; a leading `~` expands to the home directory). `dmPolicy(config)` is the factory form. Docs: [Middleware](https://cogitator.app/docs/channels/middleware).
 
 ### Command Authorization Levels
 
@@ -395,17 +393,31 @@ Subscribe to events across the message lifecycle:
 import { createHookRegistry } from '@cogitator-ai/channels';
 
 const hooks = createHookRegistry();
-hooks.on('message:received', (e) => console.log('New message:', e));
-hooks.on('agent:after_run', (e) => console.log('Response:', e));
-hooks.on('agent:error', (e) => console.error('Agent failed:', e));
-// handlers receive `unknown`: cast to the payload you expect, e.g. `e as ApprovalRequestedEvent`
+hooks.on('message:received', (e) => console.log('New message:', e.msg.text));
+hooks.on('agent:after_run', (e) => console.log('Response:', e.output));
+hooks.on('agent:error', (e) => console.error('Agent failed:', e.error.message));
 
 const gateway = new Gateway({ /* ... */ hooks });
 ```
 
-Available hooks: `message:received`, `message:sending`, `message:sent`, `agent:before_run`, `agent:after_run`, `agent:error`, `session:created`, `session:compacted`, `stream:started`, `stream:finished`, `approval:requested`, `approval:resolved`.
+Handlers are typed by hook name through `HookPayloads` (exported here and from `@cogitator-ai/types`, which also exports each event type):
 
-Errors in one handler don't affect others (they are logged). Unsubscribe with `hooks.off(name, handler)`.
+| Hook                 | Payload                  | Fields                                                              |
+| -------------------- | ------------------------ | ------------------------------------------------------------------- |
+| `message:received`   | `MessageReceivedEvent`   | `msg`, `threadId`, `user`                                           |
+| `message:sending`    | `MessageSendingEvent`    | `msg`, `threadId`, `text`, `channelId`                              |
+| `message:sent`       | `MessageSentEvent`       | `msg`, `threadId`, `text`, `messageId` (first chunk)                |
+| `agent:before_run`   | `AgentBeforeRunEvent`    | `msg`, `threadId`, `agent` (agent name)                             |
+| `agent:after_run`    | `AgentAfterRunEvent`     | `msg`, `threadId`, `output`                                         |
+| `agent:error`        | `AgentErrorEvent`        | `msg`, `threadId`, `error` (always an `Error`)                      |
+| `session:created`    | `SessionCreatedEvent`    | `session`, `threadId`                                               |
+| `session:compacted`  | `SessionCompactedEvent`  | `threadId`, `result` (`CompactionResult`)                           |
+| `stream:started`     | `StreamStartedEvent`     | `msg`, `threadId`                                                   |
+| `stream:finished`    | `StreamFinishedEvent`    | `msg`, `threadId`, `messageIds`                                     |
+| `approval:requested` | `ApprovalRequestedEvent` | `msg`, `threadId`, `userId`, `approvals`                            |
+| `approval:resolved`  | `ApprovalResolvedEvent`  | `msg`, `threadId`, `userId`, `decision`, `approvals?`, `superseded` |
+
+A handler typed `HookHandler` (`unknown` payload) is still accepted for any hook. Errors in one handler don't affect others (they are logged). Unsubscribe with `hooks.off(name, handler)`. Docs: [Lifecycle Hooks](https://cogitator.app/docs/channels/gateway#lifecycle-hooks).
 
 ## Media & STT
 
@@ -448,11 +460,14 @@ const scheduler = new HeartbeatScheduler(store, {
     console.log(`Job ${entry.id}: ${status} (${durationMs}ms)`);
   },
   onError: (err, entry) => console.error('scheduler', entry?.id, err.message),
+  onClaimLost: (entry) => console.warn('scheduler: claim lost', entry.id),
 });
 scheduler.start();
 ```
 
 Schedule types: `cron` (recurring, next fire computed with `cron-parser`, honors `timezone`), `recurring` (interval), `fixed` (one-shot). Consecutive failures are carried across reschedules; after `maxRetries` the job is skipped until `enableJob()`. A fired job reaches `onFire` as a message on the `channel` / `channelId` / `userId` stored in its `metadata`, and `staggerMs` adds a random delay before the first poll. Docs: [Scheduler](https://cogitator.app/docs/channels/scheduler).
+
+With a store that claims timers (`claimTtl` / `renew` / `release`, e.g. the Redis/Postgres timer stores of `@cogitator-ai/workflows`), the claim is renewed right before a task fires and every `claimTtl / 3` while it runs; `onClaimLost(entry)` reports a claim that is gone (the task is skipped before firing, or another worker may fire it too). Claims are released for disabled tasks, tasks over `maxRetries` and overdue tasks not reached before `stop()`.
 
 ```typescript
 await scheduler.listJobs();
@@ -477,16 +492,22 @@ const runtime = await new RuntimeBuilder(
     capabilities: { scheduler: true },
   },
   process.env,
-  { onRestart: () => process.exit(78) } // default behaviour (RESTART_EXIT_CODE)
+  {
+    onRestart: () => process.exit(78), // default behaviour (RESTART_EXIT_CODE)
+    hooks, // HookRegistry passed to the gateway
+    approvals: { format: (approvals) => `Run ${approvals.map((a) => a.toolName).join(', ')}?` },
+  }
 ).build();
 await runtime.gateway.start(); // the scheduler (if enabled) is already running
 // ...
 await runtime.cleanup();
 ```
 
+`hooks` and `approvals` are passed to the gateway; `approvals` is merged over the config's `approvals` block (`approveWords`, `denyWords`, `notAllowedMessage`) and wins, so use it for what YAML cannot hold, such as a custom `format`.
+
 For a parsed YAML file, validate it first with `new RuntimeBuilder(AssistantConfigSchema.parse(yamlObject), process.env)` (the schema is exported, along with the `AssistantConfigInput` / `AssistantConfigOutput` types).
 
-- **Channels:** the terminal REPL plus `channels.telegram` (`TG_TOKEN` or `TELEGRAM_TOKEN`), `channels.discord` (`DISCORD_TOKEN`) and `channels.slack` (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, optional `SLACK_APP_TOKEN` / `SLACK_PORT`). A configured channel without its token is skipped with a warning. WhatsApp and WebChat are not built by RuntimeBuilder — add them with a hand-built `Gateway`.
+- **Channels:** the terminal REPL plus `channels.telegram` (`TG_TOKEN` or `TELEGRAM_TOKEN`), `channels.discord` (`DISCORD_TOKEN`) and `channels.slack` (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, optional `SLACK_APP_TOKEN` / `SLACK_PORT`). A configured channel without its token is skipped with a warning. `channels.whatsapp` (`{ ownerIds?, sessionPath? }`; owner ids are phone numbers without `@s.whatsapp.net`, the session defaults to `~/.cogitator/whatsapp-session`) needs `@whiskeysockets/baileys`. `channels.webchat` (`{ port?, path? }`, default `8080` and `/ws`, no `ownerIds`) needs `ws` and starts only with `WEBCHAT_TOKEN` set; clients connect with `?token=<WEBCHAT_TOKEN>`.
 
 - **Memory:** `memory.adapter: sqlite` (default, `memory.path`, default `~/.cogitator/memory.db`) or `postgres` (`memory.connectionString`, `DATABASE_URL` or `POSTGRES_URL`; requires `pg`). Core facts always live in the SQLite file. The knowledge graph (`memory.knowledgeGraph`) and auto-extraction (`memory.autoExtract`) are on by default; `memory.compaction.threshold` enables history compaction.
 - **Fresh context:** the gateway builds an agent per message — instructions (current date/time and known user facts) and the `/model` override are resolved each time. `runtime.agent` is the base agent.
@@ -519,7 +540,7 @@ SLACK_PORT=3000              # HTTP mode port
 DATABASE_URL=postgres://user:pass@localhost:5432/cogitator   # or POSTGRES_URL
 
 # WebChat
-WEBCHAT_SECRET=your-secret
+WEBCHAT_TOKEN=your-secret        # required by channels.webchat in cogitator.yml
 
 # STT (optional, for voice messages — pick one)
 DEEPGRAM_API_KEY=...         # highest priority

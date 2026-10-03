@@ -61,6 +61,8 @@ app.listen(3000);
 // JSON-RPC:   POST /a2a
 ```
 
+`basePath` (default `/a2a`, must start with `/`) is the JSON-RPC path the adapters serve, relative to where they are mounted, and the card URL when `cardUrl` is unset; it is readable as `a2aServer.basePath`. For Next.js, put the `POST` route file at that path. `cardUrl` is the `url` the cards advertise.
+
 ### Connect to a Remote A2A Agent
 
 ```typescript
@@ -85,6 +87,12 @@ for await (const event of client.sendMessageStream({
 })) {
   console.log(event.type, event);
 }
+```
+
+`A2AClient` options: `headers` (sent with every request, e.g. `Authorization`), `timeout` (ms, default `30000`), `agentCardPath` (default `/.well-known/agent.json`), `rpcPath` (default `/a2a`; match the server's `basePath`) and `agentName`. On a server that hosts several agents, `agentName` picks one by its registered name: the client sends it with `message/send`, `message/stream` and `agent/extendedCard`, and `agentCard()` returns that agent's card. Without it the server answers with its first agent.
+
+```typescript
+const writer = new A2AClient('https://my-server.com', { agentName: 'writer' });
 ```
 
 ### Use Remote Agent as a Tool
@@ -261,12 +269,9 @@ For production deployments, use `RedisTaskStore` instead of the default in-memor
 
 ```typescript
 import { A2AServer, RedisTaskStore } from '@cogitator-ai/a2a';
-import type { RedisClientLike } from '@cogitator-ai/a2a';
 import Redis from 'ioredis';
 
-// ioredis's overloaded `scan()` typing does not match `RedisClientLike['scan']`,
-// so type the client without it; the store still uses SCAN at runtime.
-const redis: Omit<RedisClientLike, 'scan'> = new Redis('redis://localhost:6379');
+const redis = new Redis('redis://localhost:6379');
 
 const a2aServer = new A2AServer({
   agents: { researcher },
@@ -397,7 +402,7 @@ The `agent/extendedCard` method is only available when `extendedCardGenerator` i
 import { a2aExpress } from '@cogitator-ai/a2a/express';
 app.use(a2aExpress(server));
 
-// Hono (routes are /.well-known/agent.json and /a2a)
+// Hono (routes are /.well-known/agent.json and server.basePath)
 import { a2aHono } from '@cogitator-ai/a2a/hono';
 app.route('/', a2aHono(server));
 
@@ -415,6 +420,8 @@ export const { GET, POST } = a2aNext(server);
 ```
 
 All adapters stream only for `message/stream` (an `Accept: text/event-stream` header alone does not switch `message/send` to SSE), answer JSON-RPC notifications with `204`, and pass the request credentials to the server. Structurally invalid JSON-RPC requests get `-32600 Invalid Request`; only unparseable JSON gets `-32700 Parse error`.
+
+Errors that are neither A2A errors nor `CogitatorError`s (in parsing, authentication, routing, streams or agent runs) are logged on the server and answered as `-32603 Internal error`, without their text; a `CogitatorError` is answered as `-32603 Internal error: <message>`. A task that fails that way gets the status message `Internal error`, and so does the `failed` status event of a stream.
 
 ## A2A Protocol
 

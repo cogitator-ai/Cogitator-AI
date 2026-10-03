@@ -210,7 +210,7 @@ The meta-reasoning layer monitors the agent's reasoning process and makes strate
 ### Configuration
 
 ```typescript
-import { DEFAULT_MODE_PROFILES, SelfModifyingAgent } from '@cogitator-ai/self-modifying';
+import { SelfModifyingAgent } from '@cogitator-ai/self-modifying';
 
 const selfModifying = new SelfModifyingAgent({
   agent,
@@ -228,9 +228,8 @@ const selfModifying = new SelfModifyingAgent({
         'exploratory',
       ],
       modeProfiles: {
-        ...DEFAULT_MODE_PROFILES, // the type needs all six modes
-        analytical: { mode: 'analytical', temperature: 0.2, depth: 4 },
-        creative: { mode: 'creative', temperature: 1.0, depth: 2 },
+        analytical: { temperature: 0.2, depth: 4 }, // other modes and fields keep their defaults
+        creative: { temperature: 1.0 },
       },
       maxMetaAssessments: 5, // Max assessments per run
       maxAdaptations: 3, // Max mode switches per run
@@ -248,6 +247,8 @@ const selfModifying = new SelfModifyingAgent({
   },
 });
 ```
+
+`modeProfiles` overrides are merged per mode and per field over `DEFAULT_MODE_PROFILES` (the same for `MetaReasoner`'s `config`). `mergeModeProfiles(base, overrides)` does that merge for your own profiles; its overrides are typed `ModeProfileOverrides`.
 
 ### Meta-Reasoning Process
 

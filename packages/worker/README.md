@@ -484,17 +484,20 @@ app.listen(9090);
 
 ### Available Metrics
 
-| Metric                            | Type      | Description                    |
-| --------------------------------- | --------- | ------------------------------ |
-| `cogitator_queue_depth`           | gauge     | Total waiting + delayed jobs   |
-| `cogitator_queue_waiting`         | gauge     | Jobs waiting to be processed   |
-| `cogitator_queue_active`          | gauge     | Jobs currently being processed |
-| `cogitator_queue_completed_total` | counter   | Total completed jobs           |
-| `cogitator_queue_failed_total`    | counter   | Total failed jobs              |
-| `cogitator_queue_delayed`         | gauge     | Scheduled/delayed jobs         |
-| `cogitator_workers_total`         | gauge     | Workers connected to the queue |
-| `cogitator_job_duration_seconds`  | histogram | Job processing time            |
-| `cogitator_jobs_by_type_total`    | counter   | Jobs by type                   |
+| Metric                           | Type      | Description                                                 |
+| -------------------------------- | --------- | ----------------------------------------------------------- |
+| `cogitator_queue_depth`          | gauge     | Total waiting + delayed jobs                                |
+| `cogitator_queue_waiting`        | gauge     | Jobs waiting to be processed                                |
+| `cogitator_queue_active`         | gauge     | Jobs currently being processed                              |
+| `cogitator_queue_completed`      | gauge     | Completed jobs kept in Redis (capped by `removeOnComplete`) |
+| `cogitator_queue_failed`         | gauge     | Failed jobs kept in Redis (capped by `removeOnFail`)        |
+| `cogitator_queue_delayed`        | gauge     | Scheduled/delayed jobs                                      |
+| `cogitator_workers_total`        | gauge     | Workers connected to the queue                              |
+| `cogitator_job_duration_seconds` | histogram | Job processing time                                         |
+| `cogitator_jobs_by_type_total`   | counter   | Jobs by type                                                |
+| `cogitator_jobs_failed_total`    | counter   | Jobs that failed their last attempt, by `type`              |
+
+`cogitator_queue_completed` and `cogitator_queue_failed` can go down as BullMQ trims old jobs, so alert on `cogitator_jobs_failed_total` instead (for example `increase(cogitator_jobs_failed_total[5m]) > 5`). The per-type counters appear after the first job of that kind.
 
 ### Duration Histogram
 
@@ -514,6 +517,8 @@ histogram.reset();
 
 ### Metrics Collector
 
+`WorkerPool` keeps one in `pool.metrics`: it calls `recordJob(type, durationMs)` for each completed job and `recordFailure(type)` for each job that failed its last attempt (retried attempts are not counted). Use your own collector when you process jobs outside the pool.
+
 ```typescript
 import { MetricsCollector } from '@cogitator-ai/worker';
 
@@ -521,6 +526,7 @@ const collector = new MetricsCollector();
 
 collector.recordJob('agent', 1500);
 collector.recordJob('workflow', 3200);
+collector.recordFailure('agent');
 
 const output = collector.format(queueMetrics, { queue: 'main' });
 ```

@@ -7,14 +7,15 @@ Two modes: **Pipeline** (STT -> Agent -> TTS) for any LLM, and **Realtime** (nat
 ## Installation
 
 ```bash
-pnpm add @cogitator-ai/voice openai
+pnpm add @cogitator-ai/voice
 
 # Optional
+pnpm add openai                    # OpenAISTT / OpenAITTS
 pnpm add @cogitator-ai/core        # run Cogitator agents via createCogitatorRunner()
 pnpm add onnxruntime-node          # Silero VAD (neural network-based)
 ```
 
-`openai` is listed as an optional peer, but the package entry imports the OpenAI STT/TTS providers, so install it even if you only use Deepgram or ElevenLabs. Deepgram and the WebSocket transport use the bundled `ws`; ElevenLabs uses `fetch`.
+`openai` is an optional peer, needed only for `OpenAISTT` and `OpenAITTS`. They load it on first use (constructing them does not), so the package works without it when you use Deepgram, ElevenLabs or the realtime providers; a missing `openai` surfaces as an error with an install hint on the first `transcribe` / `synthesize` call. Deepgram, the realtime sessions and the WebSocket transport use the bundled `ws`; ElevenLabs uses `fetch`.
 
 Full documentation: [cogitator.app/docs/voice](https://cogitator.app/docs/voice).
 
@@ -261,6 +262,21 @@ console.log(result.transcript);
 console.log(result.response);
 // result.audio — synthesized response audio
 ```
+
+### TTS options
+
+`ttsOptions` is passed to every `synthesize` / `streamSynthesize` call made by the pipeline, its sessions and a pipeline-mode `VoiceAgent`. Use it for the output format or a per-pipeline `voice`, `speed` or `instructions`:
+
+```typescript
+const pipeline = new VoicePipeline({
+  stt: new OpenAISTT({ apiKey: process.env.OPENAI_API_KEY! }),
+  tts: new OpenAITTS({ apiKey: process.env.OPENAI_API_KEY! }),
+  agent: myAgent,
+  ttsOptions: { format: 'pcm16' },
+});
+```
+
+Without it the provider defaults apply (MP3 output).
 
 ### Streaming sessions
 
@@ -559,6 +575,7 @@ if (format) audioMimeType(format); // e.g. 'audio/wav'
 | `stt`              | `STTProvider`              | Pipeline only | Speech-to-text provider                                   |
 | `tts`              | `TTSProvider`              | Pipeline only | Text-to-speech provider                                   |
 | `vad`              | `VADProvider`              | No            | Voice activity detection                                  |
+| `ttsOptions`       | `TTSOptions`               | No            | Pipeline only: options passed to every TTS call           |
 | `realtimeProvider` | `'openai' \| 'gemini'`     | Realtime only | Realtime API provider                                     |
 | `realtimeApiKey`   | `string`                   | Realtime only | API key for realtime provider                             |
 | `realtimeModel`    | `string`                   | No            | Model override                                            |
